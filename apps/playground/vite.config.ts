@@ -15,6 +15,7 @@ export default defineConfig({
       "@loom/renderer-react",
       "@loom/sdk",
       "@loom/snapshot-runtime",
+      "@loom/telemetry",
       "@loom/workflow-runtime",
     ],
   },

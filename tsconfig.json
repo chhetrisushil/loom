@@ -13,6 +13,7 @@
     { "path": "packages/compiler" },
     { "path": "packages/registry" },
     { "path": "packages/sdk" },
+    { "path": "packages/telemetry" },
     { "path": "apps/playground" },
     { "path": "examples/cloud-command-center" }
   ]

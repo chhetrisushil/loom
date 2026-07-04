@@ -18,6 +18,7 @@
     { "path": "../../packages/projection-runtime" },
     { "path": "../../packages/renderer-react" },
     { "path": "../../packages/snapshot-runtime" },
+    { "path": "../../packages/telemetry" },
     { "path": "../../packages/workflow-runtime" }
   ]
 }

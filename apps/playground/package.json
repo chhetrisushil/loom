@@ -18,6 +18,7 @@
     "@loom/renderer-react": "workspace:*",
     "@loom/sdk": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
+    "@loom/telemetry": "workspace:*",
     "@loom/workflow-runtime": "workspace:*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
