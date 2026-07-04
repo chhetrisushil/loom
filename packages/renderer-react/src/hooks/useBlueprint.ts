@@ -1,4 +1,5 @@
 import type { Blueprint, Widget } from "@loom/blueprint-runtime";
+import { resolveWidgetValue } from "@loom/blueprint-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import { useProjection } from "./useProjection";
 
@@ -7,16 +8,8 @@ export interface ResolvedWidget {
   value: unknown;
 }
 
-function getNestedValue(obj: unknown, path: string): unknown {
-  if (obj === null || obj === undefined) return undefined;
-  const parts = path.split(".");
-  let current: unknown = obj;
-  for (const part of parts) {
-    if (current === null || current === undefined) return undefined;
-    current = (current as Record<string, unknown>)[part];
-  }
-  return current;
-}
+// Re-exported from @loom/blueprint-runtime for backwards compat.
+export { resolveWidgetValue as resolveWidget };
 
 function collectWidgets(node: Blueprint["layout"] | Widget): Widget[] {
   if ("_tag" in node && node._tag === "Widget") {
@@ -38,12 +31,6 @@ export function useBlueprintProjectionValues(
     stateMap.set(projectionId, state);
   }
   return stateMap;
-}
-
-export function resolveWidget(widget: Widget, stateMap: Map<string, unknown>): unknown {
-  if (!widget.binding) return undefined;
-  const projectionState = stateMap.get(widget.binding.projectionId);
-  return getNestedValue(projectionState, widget.binding.path);
 }
 
 export function collectAllWidgets(blueprint: Blueprint): Widget[] {
