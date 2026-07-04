@@ -1,0 +1,549 @@
+#+title: Loom Framework — Architecture
+#+author: Sushil Chhetri
+
+* Overview
+
+Loom is a TypeScript framework for durable, event-sourced AI workflows. Its central design goal is that a workflow function can be interrupted at any point (to wait for a tool call, an LLM response, or a human decision), survive a process restart, and resume from exactly where it left off — without the application code knowing the difference between a fresh run and a replay.
+
+Three ideas underpin the whole system:
+
+1. *Event sourcing* — every state change is an immutable ~EventEnvelope~ appended to an ordered log. State is always derived by replaying that log, never mutated in place.
+2. *Deterministic replay* — on resume, the ~ReplayVM~ fast-forwards through historical events so that previously-completed steps return their cached outputs instead of re-executing.
+3. *Blueprint-driven UI* — the running workflow emits domain events; ~ProjectionRuntime~ folds those events into view models; the React renderer turns a JSON-serializable ~Blueprint~ into live UI widgets bound to those view models.
+
+* Package Dependency Graph
+
+#+begin_example
+┌──────────────────────────────────────────────────────────────────┐
+│                          @loom/sdk                               │
+│          (public re-export surface — start here)                 │
+└──────┬──────────────┬──────────────────┬────────────────┬────────┘
+       │              │                  │                │
+       ▼              ▼                  ▼                ▼
+@loom/workflow  @loom/blueprint   @loom/projection  @loom/renderer-react
+  -runtime        -runtime          -runtime
+       │              │                  │
+       ├──────────────┼──────────────────┘
+       │              │
+       ▼              ▼
+@loom/effect-   @loom/event-    @loom/snapshot-   @loom/replay-vm
+  runtime         runtime         runtime
+       │
+       └──────────────────────────────────────┐
+                                              ▼
+                                          @loom/core
+                              (types, builders, SuspendError)
+#+end_example
+
+All packages depend on ~@loom/core~ for shared types. ~@loom/sdk~ is the single entry point for application code — it re-exports everything public.
+
+* Core Types (~@loom/core~)
+
+** Definitions
+
+| Type                  | Purpose                                                          |
+|-----------------------+------------------------------------------------------------------|
+| ~FlowDefinition~      | Declarative description of a workflow (id, version, steps, I/O schemas) |
+| ~StepDefinition~      | A single unit of work within a flow; links to a ~toolId~        |
+| ~ToolDefinition~      | Metadata for an effect (kind, input/output schemas)             |
+| ~ProjectionDefinition~| Maps event types to reducer functions and an initial state      |
+| ~AgentDefinition~     | Groups tools and policies into an autonomous agent              |
+
+** Runtime Types
+
+| Type              | Purpose                                                           |
+|-------------------+-------------------------------------------------------------------|
+| ~EventEnvelope~   | Immutable event record: id, workflowId, executionId, eventType, sequence, timestamp, payload |
+| ~ExecutionState~  | Snapshot of a workflow's full runtime state (frames, variables, status, suspendedOn) |
+| ~ExecutionFrame~  | Per-step state: status, input, output, error, attempt count      |
+| ~SuspendCondition~| What event type to wait for, optional timeout and correlationKey |
+
+** ~SuspendError~
+
+~SuspendError~ is the mechanism that interrupts a running workflow. When ~ctx.suspend()~ is called, the ~WorkflowContext~ throws a ~SuspendError~ carrying a ~SuspendCondition~. ~WorkflowRuntime~ catches this, persists a snapshot, and resolves the caller's ~waitForSuspend()~ promise. On resume, the VM's state carries a ~_resumePayload~ variable so that ~ctx.suspend()~ passes through instead of throwing again.
+
+* ~WorkflowRuntime~ — Execution Orchestrator
+
+~WorkflowRuntime~ is the central coordinator. It owns the event store, snapshot store, and effect runtime.
+
+#+begin_example
+          WorkflowRuntime
+         ┌───────────────────────────────────────────────────┐
+         │                                                   │
+  start()│  1. Append EXECUTION_STARTED                      │
+  ──────►│  2. Create ReplayVM([ startEvent ])               │
+         │  3. Call execute() ──────────────────────────────►│
+         │                                                   │
+ resume()│  1. Load all events from EventStore               │
+  ──────►│  2. Load snapshot (if any) from SnapshotStore     │
+         │  3. Append resume event + EXECUTION_RESUMED       │
+         │  4. Call execute() ──────────────────────────────►│
+         │                                                   │
+         │           execute() internal                      │
+         │  ┌────────────────────────────────────────┐       │
+         │  │ Build WorkflowContextImpl               │       │
+         │  │ Return ExecutionHandle immediately      │       │
+         │  │ Spawn async runner                      │       │
+         │  │                                         │       │
+         │  │  runner() resolves ──► EXECUTION_COMPLETED     │
+         │  │  SuspendError thrown ──► EXECUTION_SUSPENDED   │
+         │  │                          save Snapshot         │
+         │  │  other error ──────► EXECUTION_FAILED          │
+         │  └────────────────────────────────────────┘       │
+         └───────────────────────────────────────────────────┘
+#+end_example
+
+** ~ExecutionHandle~
+
+~start()~ and ~resume()~ both return an ~ExecutionHandle~ synchronously (before the flow completes). This lets callers set up listeners before the async runner fires:
+
+#+begin_src typescript
+const handle = await runtime.start(MyFlow, input);
+
+handle.waitForSuspend().then(() => {
+  // workflow is paused — show approval UI
+});
+
+handle.waitForCompletion().then(() => {
+  // workflow finished
+});
+
+handle.getState(); // current ExecutionState at any time
+#+end_src
+
+* ~WorkflowContext~ — The Flow API
+
+~WorkflowContextImpl~ is the object passed to every flow runner function. It is the only API a flow author touches.
+
+#+begin_example
+WorkflowContext methods
+─────────────────────────────────────────────────────────────
+ctx.run(step, input)
+  ├─ VM: hasCompleted(step.id)?
+  │     YES → return cached output (replay path)
+  │     NO  → emit STEP_STARTED
+  │           effectRuntime.execute(toolId, input, ctx)
+  │           emit STEP_COMPLETED  (or STEP_FAILED)
+  │           return output
+
+ctx.parallel(pairs)
+  └─ Promise.all(pairs.map(ctx.run)) — steps race concurrently
+
+ctx.emit(eventType, payload)
+  └─ append to EventStore, applyEvent to ReplayVM, notify onEvent
+
+ctx.suspend(config)
+  ├─ Resume path: _resumePayload in variables?
+  │     YES → consume it, return resolved (pass-through)
+  └─ Fresh path: throw SuspendError(config)
+#+end_example
+
+The idempotency of ~ctx.run()~ is critical. If the process crashes after a step completes but before the workflow finishes, resuming replays all historical events through the VM. ~hasCompleted(stepId)~ returns ~true~ for already-done steps, so their effect is never re-executed — they just return the cached ~output~ from the ~ExecutionFrame~.
+
+* ~ReplayVM~ — Deterministic State Machine
+
+~ReplayVM~ holds an ~ExecutionState~ that is built by folding the event log through a set of pure event handlers (~foldEvents~).
+
+#+begin_example
+Event log (ordered by sequence)
+  [EXECUTION_STARTED]
+  [STEP_STARTED: fetch-metrics]
+  [STEP_COMPLETED: fetch-metrics]  ← output cached in frame
+  [STEP_STARTED: fetch-logs]
+  [STEP_COMPLETED: fetch-logs]
+  [EXECUTION_SUSPENDED]
+  [ApprovalGranted]
+  [EXECUTION_RESUMED]
+          │
+          ▼
+     foldEvents()
+          │
+          ▼
+   ExecutionState {
+     status: "running",
+     frames: {
+       "fetch-metrics": { status: "completed", output: {...} },
+       "fetch-logs":    { status: "completed", output: {...} },
+     },
+     variables: { _resumePayload: { approved: true } },
+     sequence: 7
+   }
+#+end_example
+
+On resume, the VM is seeded with either the full event log or a snapshot + tail events. When the flow runner calls ~ctx.run(FetchMetricsStep, ...)~, the VM already has ~frames["fetch-metrics"].status === "completed"~, so it skips re-execution and returns the cached output instantly.
+
+** Event Handlers (~foldEvents~)
+
+| Event type             | Effect on ~ExecutionState~                                   |
+|------------------------+--------------------------------------------------------------|
+| ~EXECUTION_STARTED~    | status → "running", startedAt set                           |
+| ~STEP_STARTED~         | frame[stepId].status → "running"                            |
+| ~STEP_COMPLETED~       | frame[stepId].status → "completed", output stored           |
+| ~STEP_FAILED~          | frame[stepId].status → "failed", error stored               |
+| ~EXECUTION_SUSPENDED~  | status → "suspended", suspendedOn set                       |
+| ~EXECUTION_RESUMED~    | status → "running", payload stored in ~variables._resumePayload~ |
+| ~EXECUTION_COMPLETED~  | status → "completed"                                        |
+| ~EXECUTION_FAILED~     | status → "failed"                                           |
+
+* ~EffectRuntime~ — Side-Effect Sandbox
+
+~EffectRuntime~ is a registry of named effects. Every side effect in a flow must be registered here before it can be executed. This makes effects swappable — use ~ToolEffect~ in production, a mock in tests.
+
+#+begin_example
+EffectRuntime
+  registry: Map<toolId → Effect>
+
+  execute(toolId, input, ctx)
+    └─ registry.get(toolId).execute(input, ctx)
+#+end_example
+
+** Effect Types
+
+| Class          | Kind     | Behaviour                                                     |
+|----------------+----------+---------------------------------------------------------------|
+| ~ToolEffect~   | ~tool~   | Wraps an async function — HTTP call, DB query, anything async |
+| ~LlmEffect~    | ~llm~    | Same shape, semantically marks this as an LLM call            |
+| ~HumanEffect~  | ~human~  | Throws ~SuspendError~ immediately — no async work             |
+| ~A2AEffect~    | ~a2a~    | Agent-to-agent delegation (same shape as ToolEffect)          |
+
+~HumanEffect~ is the bridge between the effect system and the suspend mechanism. When a flow reaches a step backed by a ~HumanEffect~, execution suspends until an external ~resume()~ call delivers the human's decision.
+
+#+begin_example
+Flow runner                    WorkflowRuntime
+  │                                  │
+  ctx.run(ApprovalStep, input)       │
+  │                                  │
+  EffectRuntime.execute()            │
+  │  HumanEffect.execute()           │
+  │  └─ throw SuspendError ─────────►│
+  │                                  │ catch SuspendError
+  │                                  │ append EXECUTION_SUSPENDED
+  │                                  │ save Snapshot
+  │                                  │ resolve suspendPromise
+  │                                  │
+                   (time passes — operator approves)
+                                     │
+  runtime.resume(executionId, {      │
+    eventType: "ApprovalGranted",    │
+    payload: { approved: true }      │
+  }) ─────────────────────────────► │
+                                     │ append ApprovalGranted
+                                     │ append EXECUTION_RESUMED
+                                     │ build ReplayVM from snapshot
+                                     │ re-run flow runner
+                                     │  ctx.suspend() sees _resumePayload
+                                     │  → passes through, no re-throw
+                                     │  ctx.run(ApplyRemediationStep)
+                                     │  → step not yet completed
+                                     │  → executes normally
+                                     │ resolve completionPromise
+#+end_example
+
+* ~EventStore~ — Append-Only Event Log
+
+Two implementations ship with the framework:
+
+| Implementation          | Use case                                     |
+|-------------------------+----------------------------------------------|
+| ~InMemoryEventStore~    | Browser, tests, short-lived processes        |
+| ~SqliteEventStore~      | Server / production (WAL mode, durable)      |
+
+~SqliteEventStore~ enforces a ~UNIQUE(execution_id, sequence)~ constraint — duplicate appends throw, making the log conflict-free by construction. WAL mode keeps writes fast without sacrificing durability.
+
+#+begin_example
+EventStore interface
+──────────────────────────────────────────────
+append(envelope)          → void
+read(executionId)         → EventEnvelope[]     (ordered ASC)
+readFrom(executionId, seq)→ EventEnvelope[]     (seq inclusive)
+subscribe(executionId, fn)→ unsubscribe()
+nextSequence(executionId) → number
+#+end_example
+
+* ~SnapshotStore~ — Resume Acceleration
+
+Reading and folding thousands of events on every resume is expensive. ~SnapshotStore~ solves this by capturing a full ~ExecutionState~ at the moment of suspension.
+
+#+begin_example
+On suspend:
+  snap = {
+    executionId,
+    sequence: vm.getState().sequence,   ← last applied sequence
+    state: vm.getState(),               ← full ExecutionState
+  }
+  snapshotStore.save(snap)
+
+On resume:
+  snapshot = snapshotStore.loadLatest(executionId)
+  if (snapshot):
+    tailEvents = eventStore.readFrom(executionId, snapshot.sequence + 1)
+    vm = new ReplayVM(tailEvents, snapshot.state)
+  else:
+    allEvents = eventStore.read(executionId)
+    vm = new ReplayVM(allEvents)
+#+end_example
+
+In the steady state — one suspend, one resume — the replay cost on resume is proportional to the number of events *after* the snapshot (typically 2–3), not the total event count.
+
+* ~ProjectionRuntime~ — Live View Models
+
+~ProjectionRuntime~ subscribes to workflow events and maintains per-execution view state for each registered ~Projection~. The UI subscribes to projection state changes and re-renders on every update.
+
+#+begin_example
+WorkflowRuntime                ProjectionRuntime
+       │                              │
+       │  onEvent(envelope) ─────────►│
+       │                              │ for each registered projection:
+       │                              │   handler = projection.handlers[eventType]
+       │                              │   if handler:
+       │                              │     nextState = handler(currentState, event)
+       │                              │     states.set(key, nextState)
+       │                              │     notify subscribers
+       │                              │
+                    React UI
+                        │
+              subscribe(projectionId, executionId, setState)
+                        │
+              ◄──────── state updates arrive live
+#+end_example
+
+** Projection State Key
+
+State is keyed by ~projectionId::executionId~, so multiple concurrent executions of the same flow each maintain independent projection state.
+
+** Projection Example
+
+#+begin_src typescript
+export const MetricsProjection: Projection<MetricsState> = {
+  id: "metrics",
+  initialState: { cpu: null, memory: null },
+  handlers: {
+    INCIDENT_ANALYSIS_COMPLETE: (state, event) => ({
+      ...state,
+      cpu: event.payload.metrics.cpu,
+      memory: event.payload.metrics.memory,
+    }),
+  },
+};
+#+end_src
+
+* Blueprint System (~@loom/blueprint-runtime~)
+
+A ~Blueprint~ is a pure JSON-serializable description of a UI. It carries no React imports and can be generated on a server, stored in a database, or sent over the wire.
+
+#+begin_example
+Blueprint {
+  id, title,
+  layout: Layout,          ← grid | flex | stack
+  projections: string[]    ← which projection ids this blueprint reads
+}
+
+Layout
+  grid(columns, gap, children: Widget[])
+  flex(direction, gap, children: Widget[])
+  stack(gap, children: Widget[])
+
+Widget
+  MetricCard  { title, binding, unit, format }
+  Timeline    { title, binding, maxItems }
+  ApprovalCard{ title, binding, approveLabel, rejectLabel }
+  StatusBadge { title, binding }
+  ProgressBar { title, binding, max }
+  DataTable   { title, binding, columns }
+  AlertCard   { title, binding, severity }
+
+DataBinding { projectionId: string, path: string }
+  ← dot-path into the projection's state object
+#+end_example
+
+Widget ids are deterministically hashed from ~(kind, props)~, making blueprints stable across re-renders without explicit key management.
+
+* React Renderer (~@loom/renderer-react~)
+
+~BlueprintRenderer~ is the bridge between the Blueprint JSON and live React components. It:
+
+1. Reads the blueprint's ~projections~ list and subscribes to each via ~ProjectionRuntime~.
+2. On every state update, resolves each widget's ~DataBinding~ by walking the dot-path into the projection state.
+3. Delegates rendering to a component registered in ~defaultRegistry~ by widget ~kind~.
+
+#+begin_example
+BlueprintRenderer
+  props: { blueprint, projectionRuntime, executionId, onAction }
+  │
+  ├─ useEffect: subscribe to each projectionId in blueprint.projections
+  │             setState on every update → triggers re-render
+  │
+  └─ render:
+       traverse layout tree
+         for each Widget:
+           data = resolvePath(projectionState, widget.binding.path)
+           Component = registry.get(widget.kind)
+           <Component data={data} onAction={onAction} />
+#+end_example
+
+** Widget Registry
+
+The registry decouples widget kinds from their React implementations. Applications can extend it:
+
+#+begin_src typescript
+defaultRegistry.register("MetricCard", MetricCardRenderer);
+defaultRegistry.register("ApprovalCard", ApprovalCardRenderer);
+// register custom kinds for your domain
+defaultRegistry.register("HeatMap", HeatMapRenderer);
+#+end_src
+
+** ~onAction~ Callback
+
+Widgets that accept user input (e.g. ~ApprovalCard~) dispatch a typed ~WidgetAction~:
+
+#+begin_src typescript
+type WidgetAction = { type: "APPROVE" } | { type: "REJECT" } | { type: string; payload?: unknown };
+#+end_src
+
+The host application handles these actions and calls ~workflowRuntime.resume()~.
+
+* Full Execution Lifecycle
+
+#+begin_example
+Application code
+      │
+      │  workflowRuntime.start(InvestigateIncidentFlow, { incidentId: "cpu-001" })
+      │
+      ▼
+WorkflowRuntime.start()
+  ├─ append EXECUTION_STARTED → EventStore
+  ├─ onEvent(EXECUTION_STARTED) → ProjectionRuntime → notify UI subscribers
+  └─ execute() → ExecutionHandle { waitForSuspend, waitForCompletion, getState }
+
+async runner (background):
+  ctx.emit("INCIDENT_INVESTIGATION_STARTED")
+    └─ EventStore ← append
+    └─ ProjectionRuntime ← handleEvent → UI update
+
+  ctx.run(FetchMetricsStep, input)
+    ├─ VM.hasCompleted? NO
+    ├─ ctx.emit(STEP_STARTED)
+    ├─ EffectRuntime.execute("metrics-tool") → ToolEffect fn → { cpu, memory, connections }
+    └─ ctx.emit(STEP_COMPLETED, output)
+
+  ctx.run(FetchLogsStep, input)  [same pattern]
+
+  ctx.emit("INCIDENT_ANALYSIS_COMPLETE", { metrics, logs })
+    └─ ProjectionRuntime → MetricsProjection → UI MetricCard widgets update
+
+  ctx.emit("APPROVAL_REQUESTED", ...)
+    └─ ProjectionRuntime → IncidentProjection → UI ApprovalCard widget appears
+
+  ctx.suspend({ on: "ApprovalGranted" })
+    └─ throw SuspendError
+
+WorkflowRuntime catches SuspendError:
+  ├─ append EXECUTION_SUSPENDED → EventStore
+  ├─ SnapshotStore.save(vm.getState())
+  └─ resolve suspendPromise → host app shows "SUSPENDED" badge
+
+                 ← operator clicks "Approve Remediation" in UI
+
+UI onAction({ type: "APPROVE" })
+  └─ workflowRuntime.resume(executionId, { eventType: "ApprovalGranted", payload: {...} })
+
+WorkflowRuntime.resume()
+  ├─ load Snapshot from SnapshotStore
+  ├─ append ApprovalGranted → EventStore
+  ├─ append EXECUTION_RESUMED → EventStore
+  ├─ vm = new ReplayVM(tailEvents, snapshot.state)
+  └─ execute() again
+
+async runner (replay + continuation):
+  ctx.run(FetchMetricsStep)  → VM.hasCompleted? YES → return cached output (no re-execution)
+  ctx.run(FetchLogsStep)     → VM.hasCompleted? YES → return cached output
+  ctx.suspend()              → _resumePayload in variables → pass through (no re-throw)
+  ctx.run(ApplyRemediationStep)
+    ├─ VM.hasCompleted? NO
+    └─ EffectRuntime.execute("remediation-tool") → { success: true, summary: "..." }
+  ctx.emit("INCIDENT_RESOLVED", ...)
+
+WorkflowRuntime catches completion:
+  ├─ append EXECUTION_COMPLETED → EventStore
+  └─ resolve completionPromise → host app shows "COMPLETED" badge
+#+end_example
+
+* Suspend / Resume — Detailed Mechanics
+
+#+begin_example
+             FIRST RUN                        RESUME
+─────────────────────────────   ────────────────────────────────────
+runner(ctx, input)               runner(ctx, input)
+  ctx.run(step-A)                  ctx.run(step-A)
+    executes normally                VM.hasCompleted → true
+    emits STEP_COMPLETED             returns cached output ✓
+                                   ctx.run(step-B)
+  ctx.run(step-B)                    VM.hasCompleted → true
+    executes normally                returns cached output ✓
+    emits STEP_COMPLETED
+                                   ctx.suspend(cfg)
+  ctx.suspend(cfg)                   vm.variables._resumePayload exists
+    throw SuspendError               suspendPassthroughConsumed? no
+    ↓                                consume flag, return payload
+  WorkflowRuntime catches            continues past suspend ✓
+    saves Snapshot
+    resolves waitForSuspend()      ctx.run(step-C)  ← NEW step
+                                     VM.hasCompleted → false
+                                     executes normally ✓
+#+end_example
+
+The ~suspendPassthroughConsumed~ flag on ~WorkflowContextImpl~ ensures that in a flow with multiple suspends, only the *first unresolved* suspend passes through on each resume. Subsequent suspends still throw if they haven't been resumed yet.
+
+* Data Flow Summary
+
+#+begin_example
+┌────────────────────────────────────────────────────────────────────┐
+│                        Application / UI                            │
+│                                                                    │
+│  workflowRuntime.start() ──────────────────────────────────────►  │
+│  handle.waitForSuspend() / waitForCompletion()                     │
+│  onAction → workflowRuntime.resume()                               │
+└──────────────────────────┬─────────────────────────────────────▲──┘
+                           │ events                 │ state
+                           ▼                        │ updates
+┌──────────────────────────────────┐   ┌────────────┴───────────┐
+│        WorkflowRuntime           │   │   ProjectionRuntime     │
+│  ┌────────────────────────────┐  │   │  ┌──────────────────┐  │
+│  │ WorkflowContextImpl        │  │   │  │ projections map  │  │
+│  │   ctx.run → EffectRuntime  │  │   │  │ states map       │  │
+│  │   ctx.emit → EventStore    ├──┼──►│  │ subscribers map  │  │
+│  │   ctx.suspend → SuspendErr │  │   │  └──────────────────┘  │
+│  └────────────────────────────┘  │   └────────────────────────┘
+│  ┌────────┐  ┌────────────────┐  │
+│  │ReplayVM│  │EffectRuntime   │  │
+│  │foldEvts│  │Tool/LLM/Human  │  │
+│  └────────┘  └────────────────┘  │
+└──────────┬──────────────┬────────┘
+           │              │
+     ┌─────▼──────┐ ┌─────▼─────────┐
+     │ EventStore │ │SnapshotStore  │
+     │ (SQLite /  │ │(resume accel) │
+     │  InMemory) │ └───────────────┘
+     └────────────┘
+#+end_example
+
+* Design Decisions
+
+** Why event sourcing?
+
+Events are the only durable write. State is always derived. This means:
+- Debugging: replay any execution to see exactly what happened.
+- Auditability: the event log is a complete, immutable audit trail.
+- Resume: re-derive state at any point without storing intermediate snapshots.
+
+** Why ~SuspendError~?
+
+Suspend is implemented as a thrown exception rather than a ~return~ value so that the flow runner function's control flow is unchanged. A ~return~ would require every step after the suspend to be nested in a callback. Throwing lets the code read as a simple linear function while the runtime handles the mechanics.
+
+** Why JSON-serializable Blueprints?
+
+Blueprints carry no framework imports. A server-side flow step can produce a Blueprint, store it in the event log, and a completely separate renderer picks it up. This makes server-generated UI, persisted layouts, and cross-language rendering all possible without coupling to React.
+
+** Why a widget registry?
+
+The registry keeps ~@loom/blueprint-runtime~ (pure types) independent of ~@loom/renderer-react~. New widget kinds can be added without touching the framework — register a component, use the widget builder, done.
