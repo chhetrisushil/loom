@@ -1,0 +1,38 @@
+{
+  "name": "@loom/cloud-command-center",
+  "version": "0.0.1",
+  "description": "Cloud Database Command Center — reference application for the Loom framework",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --build",
+    "build:ui": "tsc --build && vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "vitest run --reporter=verbose test/e2e",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/blueprint-runtime": "workspace:*",
+    "@loom/core": "workspace:*",
+    "@loom/effect-runtime": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
+    "@loom/projection-runtime": "workspace:*",
+    "@loom/renderer-react": "workspace:*",
+    "@loom/sdk": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vitest": "^2.1.8"
+  }
+}

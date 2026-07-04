@@ -1,0 +1,18 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/event-runtime" },
+    { "path": "packages/replay-vm" },
+    { "path": "packages/effect-runtime" },
+    { "path": "packages/snapshot-runtime" },
+    { "path": "packages/workflow-runtime" },
+    { "path": "packages/projection-runtime" },
+    { "path": "packages/blueprint-runtime" },
+    { "path": "packages/renderer-react" },
+    { "path": "packages/registry" },
+    { "path": "packages/sdk" },
+    { "path": "apps/playground" },
+    { "path": "examples/cloud-command-center" }
+  ]
+}

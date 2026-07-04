@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"],
+  "references": [
+    { "path": "../core" },
+    { "path": "../event-runtime" },
+    { "path": "../snapshot-runtime" },
+    { "path": "../workflow-runtime" },
+    { "path": "../blueprint-runtime" },
+    { "path": "../projection-runtime" }
+  ]
+}

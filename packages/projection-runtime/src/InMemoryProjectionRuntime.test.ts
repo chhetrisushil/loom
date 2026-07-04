@@ -1,0 +1,115 @@
+import type { EventEnvelope } from "@loom/core";
+import { describe, expect, it, vi } from "vitest";
+import { InMemoryProjectionRuntime } from "./InMemoryProjectionRuntime";
+import type { Projection } from "./types";
+
+function makeEvent(executionId: string, sequence: number, eventType: string): EventEnvelope {
+  return {
+    id: `${executionId}-${sequence}`,
+    workflowId: "test-flow",
+    executionId,
+    eventType,
+    sequence,
+    timestamp: Date.now(),
+    payload: {},
+  };
+}
+
+const stepCounterProjection: Projection<{ completedSteps: number }> = {
+  id: "step-counter",
+  initialState: { completedSteps: 0 },
+  handlers: {
+    STEP_COMPLETED: (state) => ({ completedSteps: state.completedSteps + 1 }),
+  },
+};
+
+describe("InMemoryProjectionRuntime", () => {
+  it("returns initialState before any events", () => {
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register(stepCounterProjection);
+    const state = runtime.getState<{ completedSteps: number }>("step-counter", "exec-1");
+    expect(state).toEqual({ completedSteps: 0 });
+  });
+
+  it("throws for unknown projection", () => {
+    const runtime = new InMemoryProjectionRuntime();
+    expect(() => runtime.getState("unknown-proj", "exec-1")).toThrow(
+      'Projection "unknown-proj" is not registered'
+    );
+  });
+
+  it("folds events into projection state", () => {
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register(stepCounterProjection);
+    runtime.handleEvent(makeEvent("exec-1", 0, "STEP_COMPLETED"));
+    runtime.handleEvent(makeEvent("exec-1", 1, "STEP_COMPLETED"));
+    runtime.handleEvent(makeEvent("exec-1", 2, "STEP_COMPLETED"));
+    expect(runtime.getState<{ completedSteps: number }>("step-counter", "exec-1").completedSteps).toBe(3);
+  });
+
+  it("ignores unhandled event types", () => {
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register(stepCounterProjection);
+    runtime.handleEvent(makeEvent("exec-1", 0, "EXECUTION_STARTED"));
+    runtime.handleEvent(makeEvent("exec-1", 1, "EXECUTION_SUSPENDED"));
+    expect(runtime.getState<{ completedSteps: number }>("step-counter", "exec-1").completedSteps).toBe(0);
+  });
+
+  it("isolates state by executionId", () => {
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register(stepCounterProjection);
+    runtime.handleEvent(makeEvent("exec-A", 0, "STEP_COMPLETED"));
+    runtime.handleEvent(makeEvent("exec-A", 1, "STEP_COMPLETED"));
+    runtime.handleEvent(makeEvent("exec-B", 0, "STEP_COMPLETED"));
+    expect(runtime.getState<{ completedSteps: number }>("step-counter", "exec-A").completedSteps).toBe(2);
+    expect(runtime.getState<{ completedSteps: number }>("step-counter", "exec-B").completedSteps).toBe(1);
+  });
+
+  it("calls subscribe handler when event is processed", () => {
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register(stepCounterProjection);
+    const handler = vi.fn();
+    runtime.subscribe("step-counter", "exec-2", handler);
+    runtime.handleEvent(makeEvent("exec-2", 0, "STEP_COMPLETED"));
+    runtime.handleEvent(makeEvent("exec-2", 1, "STEP_COMPLETED"));
+    runtime.handleEvent(makeEvent("exec-2", 2, "STEP_COMPLETED"));
+    expect(handler).toHaveBeenCalledTimes(3);
+    expect(handler.mock.calls[2]?.[0]).toEqual({ completedSteps: 3 });
+  });
+
+  it("does not call handler after unsubscribe", () => {
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register(stepCounterProjection);
+    const handler = vi.fn();
+    const unsub = runtime.subscribe("step-counter", "exec-3", handler);
+    unsub();
+    runtime.handleEvent(makeEvent("exec-3", 0, "STEP_COMPLETED"));
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("does not notify subscribers for other executionIds", () => {
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register(stepCounterProjection);
+    const handler = vi.fn();
+    runtime.subscribe("step-counter", "exec-X", handler);
+    runtime.handleEvent(makeEvent("exec-Y", 0, "STEP_COMPLETED"));
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("integrates with workflow-runtime style: 3-step flow, subscription fires 3 times", () => {
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register(stepCounterProjection);
+
+    const calls: Array<{ completedSteps: number }> = [];
+    runtime.subscribe("step-counter", "exec-flow", (state) =>
+      calls.push(state as { completedSteps: number })
+    );
+
+    for (let i = 0; i < 3; i++) {
+      runtime.handleEvent(makeEvent("exec-flow", i, "STEP_COMPLETED"));
+    }
+
+    expect(calls).toHaveLength(3);
+    expect(calls[2]).toEqual({ completedSteps: 3 });
+  });
+});

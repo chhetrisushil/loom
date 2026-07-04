@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"],
+  "references": [
+    { "path": "../core" },
+    { "path": "../event-runtime" },
+    { "path": "../replay-vm" },
+    { "path": "../effect-runtime" },
+    { "path": "../snapshot-runtime" }
+  ]
+}
