@@ -10,3 +10,5 @@ coverage/
 *.local
 .env
 tsconfig.tsbuildinfo
+**/*.js.map
+**/*.d.ts.map
