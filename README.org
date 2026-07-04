@@ -1,0 +1,130 @@
+#+title: Loom Framework
+#+author: Sushil Chhetri
+
+A TypeScript framework for building durable, event-sourced AI workflows with schema-driven UIs.
+
+Loom provides the plumbing for workflows that can suspend mid-execution, survive process restarts, and resume from exactly where they left off — with a React renderer that turns declarative blueprints into live UIs.
+
+* Repository Layout
+
+#+begin_example
+loom/
+├── packages/          # Core framework packages
+├── examples/          # Reference applications
+└── tools/             # Internal tooling
+#+end_example
+
+** Packages
+
+| Package                | Description                                                  |
+|------------------------+--------------------------------------------------------------|
+| ~@loom/core~           | Core types, builders, and SDK primitives                     |
+| ~@loom/sdk~            | Public re-export surface (start here for most use cases)     |
+| ~@loom/workflow-runtime~   | Durable workflow execution with suspend and resume       |
+| ~@loom/effect-runtime~     | Effect isolation layer for tool, LLM, human, and A2A effects |
+| ~@loom/event-runtime~      | Append-only event store                                  |
+| ~@loom/snapshot-runtime~   | Snapshot serialization and storage for execution state   |
+| ~@loom/projection-runtime~ | Event-to-projection transformation with live subscriptions |
+| ~@loom/blueprint-runtime~  | Schema-driven, JSON-serializable UI blueprint types      |
+| ~@loom/renderer-react~     | React renderer for Loom blueprints                       |
+| ~@loom/registry~           | Workflow and tool registry                               |
+| ~@loom/replay-vm~          | Deterministic replay engine                              |
+
+** Examples
+
+| Example                 | Description                                                                 |
+|-------------------------+-----------------------------------------------------------------------------|
+| ~cloud-command-center~  | Reference React app demonstrating a full suspend/approve/resume workflow     |
+
+* Prerequisites
+
+- Node.js ≥ 20
+- pnpm ≥ 9 (~npm install -g pnpm~)
+
+* Setup
+
+#+begin_src sh
+# Install all workspace dependencies
+pnpm install
+
+# Build all packages (respects the dependency graph via Turbo)
+pnpm build
+#+end_src
+
+* Development
+
+#+begin_src sh
+# Run tests across all packages
+pnpm test
+
+# Type-check all packages
+pnpm typecheck
+
+# Lint
+pnpm lint
+
+# Auto-format
+pnpm format
+
+# Watch mode — rebuilds packages as you edit
+pnpm dev
+#+end_src
+
+* Running the Cloud Command Center Example
+
+The Cloud Command Center is a browser app that demonstrates a durable incident-response workflow.
+
+#+begin_src sh
+# From the repo root
+pnpm --filter @loom/cloud-command-center dev
+#+end_src
+
+Then open http://localhost:5173 (or the next available port) in your browser.
+
+** Using the App
+
+1. Click *Simulate Incident* — starts an ~InvestigateIncident~ workflow that collects metrics and error logs, then suspends waiting for human approval.
+2. Review the metric cards and timeline rendered by the Blueprint renderer.
+3. Click *Approve Remediation* — resumes the workflow, applies the remediation, and marks the incident resolved.
+4. Click *Reset* to run the simulation again.
+
+The *Event Log* panel at the bottom shows each workflow lifecycle event in real time.
+
+* How It Works
+
+Loom workflows are defined as a series of steps that can suspend at any point and resume later — even across process restarts. The key concepts:
+
+- *Flow* — a TypeScript function that describes the steps of a workflow. Steps are serializable and replayable.
+- *EffectRuntime* — sandboxes side effects (tool calls, LLM calls, human approvals) so they can be replayed deterministically.
+- *EventStore / SnapshotStore* — persist execution state so workflows survive crashes.
+- *Blueprint* — a JSON-serializable description of a UI that the renderer turns into React components.
+- *ProjectionRuntime* — subscribes to workflow events and derives view state that drives the Blueprint renderer.
+
+#+begin_example
+Flow definition
+     │
+     ▼
+WorkflowRuntime.start()
+     │
+     ├─ emits events → EventStore
+     │                     │
+     │              ProjectionRuntime
+     │                     │
+     │               BlueprintRenderer → React UI
+     │
+     └─ suspends → waitForSuspend()
+                       │
+                  human approves
+                       │
+              WorkflowRuntime.resume()
+                       │
+                  completes → waitForCompletion()
+#+end_example
+
+* Tech Stack
+
+- *Language:* TypeScript (compiled to CommonJS via ~tsc~)
+- *Monorepo:* pnpm workspaces + Turborepo
+- *Testing:* Vitest
+- *Linting / Formatting:* Biome
+- *Example UI:* React 18 + Vite
