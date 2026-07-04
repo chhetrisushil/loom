@@ -1,5 +1,7 @@
 import { SuspendError } from "@loom/core";
 import type { EventEnvelope, StepDefinition } from "@loom/core";
+import { createA2UIEmitter } from "@loom/a2ui";
+import type { A2UIEmitter } from "@loom/a2ui";
 import type { EffectRuntime } from "@loom/effect-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
@@ -8,6 +10,7 @@ import type { SuspendConfig, WorkflowContext } from "./types";
 export class WorkflowContextImpl implements WorkflowContext {
   readonly executionId: string;
   readonly workflowId: string;
+  readonly ui: A2UIEmitter;
   private suspendPassthroughConsumed = false;
 
   constructor(
@@ -20,6 +23,9 @@ export class WorkflowContextImpl implements WorkflowContext {
   ) {
     this.executionId = executionId;
     this.workflowId = workflowId;
+    // A2UI patches flow through the normal event pipeline, so UI updates are
+    // durable and replay deterministically alongside every other event.
+    this.ui = createA2UIEmitter((eventType, payload) => this.emit(eventType, payload));
   }
 
   emit(eventType: string, payload: unknown): void {
@@ -82,6 +88,10 @@ export class WorkflowContextImpl implements WorkflowContext {
       )
     );
     return results as TResults;
+  }
+
+  stream(eventType: string, delta: string, done = false): void {
+    this.emit(eventType, { delta, done });
   }
 
   suspend(_config: SuspendConfig): Promise<never> {

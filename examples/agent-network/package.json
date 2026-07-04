@@ -1,0 +1,37 @@
+{
+  "name": "@loom/agent-network",
+  "version": "0.0.1",
+  "description": "Server-side showcase: configurable LLM, agents, MCP tools, and A2A — for the Loom framework",
+  "private": true,
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "build": "tsc --build",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/a2a": "workspace:*",
+    "@loom/a2ui": "workspace:*",
+    "@loom/agent": "workspace:*",
+    "@loom/blueprint-runtime": "workspace:*",
+    "@loom/capability": "workspace:*",
+    "@loom/core": "workspace:*",
+    "@loom/effect-runtime": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
+    "@loom/intent": "workspace:*",
+    "@loom/llm": "workspace:*",
+    "@loom/mcp": "workspace:*",
+    "@loom/memory": "workspace:*",
+    "@loom/planner": "workspace:*",
+    "@loom/projection-runtime": "workspace:*",
+    "@loom/registry": "workspace:*",
+    "@loom/renderer-terminal": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

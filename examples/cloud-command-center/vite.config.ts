@@ -7,10 +7,15 @@ export default defineConfig({
   resolve: { conditions: ["require", "default"] },
   optimizeDeps: {
     include: [
+      "@loom/a2ui",
+      "@loom/agent",
       "@loom/blueprint-runtime",
+      "@loom/capability",
       "@loom/core",
       "@loom/effect-runtime",
       "@loom/event-runtime",
+      "@loom/intent",
+      "@loom/llm",
       "@loom/projection-runtime",
       "@loom/renderer-react",
       "@loom/snapshot-runtime",

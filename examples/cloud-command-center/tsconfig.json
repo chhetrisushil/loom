@@ -18,6 +18,11 @@
     { "path": "../../packages/event-runtime" },
     { "path": "../../packages/snapshot-runtime" },
     { "path": "../../packages/projection-runtime" },
-    { "path": "../../packages/blueprint-runtime" }
+    { "path": "../../packages/blueprint-runtime" },
+    { "path": "../../packages/llm" },
+    { "path": "../../packages/agent" },
+    { "path": "../../packages/a2ui" },
+    { "path": "../../packages/capability" },
+    { "path": "../../packages/intent" }
   ]
 }

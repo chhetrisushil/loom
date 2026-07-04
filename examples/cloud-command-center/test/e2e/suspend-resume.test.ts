@@ -58,6 +58,16 @@ function createRuntimes(dbPath: string, snapshotDbPath: string): Runtimes {
     InvestigateIncidentFlow.runner
   );
 
+  // The AI-triage step has no co-located handler$ (its effect is provided at
+  // wiring time), so register a fast deterministic stub here. This keeps the
+  // suspend/resume e2e focused and quick — no LLM streaming delay.
+  workflowRuntime.register(
+    "ai-triage-tool",
+    new ToolEffect(async () => ({
+      analysis: "Root cause: connection-pool starvation. Restart the pod.",
+    }))
+  );
+
   return { workflowRuntime, projectionRuntime, eventStore };
 }
 

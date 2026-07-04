@@ -12,6 +12,7 @@
     { "path": "../core" },
     { "path": "../blueprint-runtime" },
     { "path": "../projection-runtime" },
-    { "path": "../workflow-runtime" }
+    { "path": "../workflow-runtime" },
+    { "path": "../a2ui" }
   ]
 }

@@ -1,9 +1,25 @@
 #+title: Loom Framework
 #+author: Sushil Chhetri
 
-A TypeScript framework for building durable, event-sourced AI workflows with schema-driven UIs.
+A TypeScript framework for building durable, event-sourced *agentic* AI workflows with schema-driven UIs.
 
 Loom provides the plumbing for workflows that can suspend mid-execution, survive process restarts, and resume from exactly where they left off — with a React renderer that turns declarative blueprints into live UIs.
+
+It ships first-class support for the four things every agentic application needs:
+
+- *Configurable LLM* — pick your model provider (Anthropic, OpenAI, or your own) via a single ~LlmProvider~ interface. Nothing is hard-coded.
+- *Bring-your-own agent* — define agents with ~agent$()~ and run a ReAct tool-calling loop with ~AgentRunner~.
+- *MCP servers/tools* — connect to Model Context Protocol servers, discover their tools, and register them as effects automatically.
+- *A2A out of the box* — expose any Loom flow as an Agent-to-Agent endpoint, and call remote agents as effects.
+- *A2UI* — a patch/event-based Agent-to-UI protocol. Agents drive the UI with durable, replayable patches (~ctx.ui.set/merge/append/increment~); the client folds them into a UI surface that any renderer binds to.
+
+On top of these, Loom ships an *intelligence pipeline* that turns intents and goals into runnable work:
+
+- *Intent Runtime* — routes a natural-language intent to a capability (~IntentRuntime.route/run~). Works fully offline with keyword matching, or uses an ~LlmProvider~ to pick the capability.
+- *Planner Runtime* — composes an ordered, multi-step plan of capabilities for a higher-level goal (~PlannerRuntime.plan~).
+- *Capabilities Over APIs* — ~capability$~ wraps a flow with intent-facing metadata; a ~CapabilityCatalog~ makes it discoverable and invocable.
+- *Agent memory* — ~MemoryRuntime~ gives agents scoped, durable recall across turns (honoring ~ttlMs~ / ~maxEntries~).
+- *Multi-surface delivery* — the same blueprint renders to React *or* the terminal (~@loom/renderer-terminal~), because ~traverseBlueprint~ is framework-agnostic.
 
 * Repository Layout
 
@@ -27,14 +43,27 @@ loom/
 | ~@loom/projection-runtime~ | Event-to-projection transformation with live subscriptions |
 | ~@loom/blueprint-runtime~  | Schema-driven, JSON-serializable UI blueprint types      |
 | ~@loom/renderer-react~     | React renderer for Loom blueprints                       |
-| ~@loom/registry~           | Workflow and tool registry                               |
+| ~@loom/registry~           | Agent registry (~AgentDefinition~ + agent card store)    |
 | ~@loom/replay-vm~          | Deterministic replay engine                              |
+| ~@loom/telemetry~          | Zero-overhead telemetry adapters and hooks               |
+| ~@loom/llm~                | Provider-agnostic LLM abstraction (Anthropic, OpenAI, custom) |
+| ~@loom/agent~              | ReAct-style agent loop over your tools                   |
+| ~@loom/mcp~                | MCP (Model Context Protocol) client and tool discovery   |
+| ~@loom/a2a~                | Agent-to-Agent protocol client and server                |
+| ~@loom/a2ui~               | Agent-to-UI protocol — patch/event-based UI updates      |
+| ~@loom/capability~         | Capabilities Over APIs — ~capability$~ + ~CapabilityCatalog~ |
+| ~@loom/intent~             | Intent Runtime — routes natural-language intent to a capability |
+| ~@loom/planner~            | Planner Runtime — composes ordered multi-step plans      |
+| ~@loom/memory~             | Agent memory — scoped, durable recall (~MemoryRuntime~)  |
+| ~@loom/renderer-terminal~  | Terminal renderer — same blueprint, non-React surface    |
 
 ** Examples
 
-| Example                 | Description                                                                 |
-|-------------------------+-----------------------------------------------------------------------------|
-| ~cloud-command-center~  | Reference React app demonstrating a full suspend/approve/resume workflow     |
+| Example                  | Description                                                                  |
+|--------------------------+------------------------------------------------------------------------------|
+| ~cloud-command-center~   | React app: suspend/approve/resume workflow + streaming AI triage (A2UI)      |
+| ~angular-command-center~ | The same workflow in Angular — proves the runtime is UI-framework-agnostic   |
+| ~agent-network~          | Node showcase: the full pipeline — intent routing, planner, capabilities, agent memory, MCP + A2A, and a terminal-rendered dashboard |
 
 * Prerequisites
 
@@ -89,6 +118,48 @@ Then open http://localhost:5173 (or the next available port) in your browser.
 4. Click *Reset* to run the simulation again.
 
 The *Event Log* panel at the bottom shows each workflow lifecycle event in real time.
+
+After metrics and logs are collected, an *AI Root-Cause Analysis* panel streams a live, token-by-token explanation from the configured LLM provider (a deterministic ~MockLlmProvider~ by default, so it runs with no API key). This is the *A2UI* pattern: the flow calls ~ctx.emit("AI_ANALYSIS_TOKEN", …)~, a projection folds the deltas, and the ~StreamingText~ widget re-renders live. Swap in ~AnthropicProvider~ in ~src/runtime/setup.ts~ to run it against a real model.
+
+* Running the Agent Network Example
+
+The Agent Network is a headless Node script that demonstrates the full intelligence pipeline end to end, fully offline:
+
+#+begin_src sh
+pnpm --filter @loom/agent-network start
+#+end_src
+
+It configures an LLM provider, discovers tools from an (in-process) MCP server, runs an agent ReAct loop that calls those tools, then exposes a Loom flow over A2A and calls it back as a client. It also builds a ~CapabilityCatalog~ and shows intent routing (~IntentRuntime~), a multi-step plan (~PlannerRuntime~), agent memory recall (~MemoryRuntime~), and a terminal-rendered dashboard (~@loom/renderer-terminal~). Every step prints to the console.
+
+* Agentic Capabilities
+
+Loom treats LLMs, agents, MCP tools, and remote agents as *effects* — the same durable, replayable primitive as any other step.
+
+#+begin_src ts
+import { AnthropicProvider, createLlmEffect } from "@loom/llm";
+import { agent$, tool$ } from "@loom/core";
+import { AgentRunner } from "@loom/agent";
+import { McpClient } from "@loom/mcp";
+import { createA2AServer, createA2AClientEffect } from "@loom/a2a";
+
+// 1. Configurable LLM — choose any provider.
+const provider = new AnthropicProvider({ model: "claude-opus-4-8" });
+
+// 2. Bring-your-own agent — a ReAct loop over your tools.
+const agent = agent$({ id: "ops", name: "Ops Agent", tools: [/* … */] });
+const runner = new AgentRunner({ definition: agent, provider, effectRuntime });
+
+// 3. MCP — discover tools from an MCP server and register them.
+const mcp = new McpClient({ transport: "http", url: "http://localhost:9000/mcp" });
+await mcp.connect();
+await mcp.registerInto(effectRuntime);
+
+// 4. A2A — expose a flow as an agent, and call remote agents.
+const server = createA2AServer(workflowRuntime, myFlow, agentCard);
+const remote = createA2AClientEffect("https://partner.example.com/agent");
+#+end_src
+
+See [[file:docs/usage-framework.org][docs/usage-framework.org]] for the full guide and [[file:docs/api-reference.org][docs/api-reference.org]] for the API surface.
 
 * How It Works
 

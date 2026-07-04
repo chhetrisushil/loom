@@ -135,3 +135,22 @@ export function AlertCard(props: AlertCardProps): Widget {
     binding: props.binding,
   };
 }
+
+export interface StreamingTextProps {
+  title?: string;
+  binding: DataBinding;
+  placeholder?: string;
+  id?: string;
+}
+
+export function StreamingText(props: StreamingTextProps): Widget {
+  const { title, id, ...rest } = props;
+  return {
+    _tag: "Widget",
+    id: id ?? stableId("StreamingText", props),
+    kind: "StreamingText",
+    ...(title !== undefined && { title }),
+    props: rest,
+    binding: props.binding,
+  };
+}

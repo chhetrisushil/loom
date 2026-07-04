@@ -19,6 +19,9 @@
     { "path": "../../packages/renderer-react" },
     { "path": "../../packages/snapshot-runtime" },
     { "path": "../../packages/telemetry" },
+    { "path": "../../packages/a2ui" },
+    { "path": "../../packages/capability" },
+    { "path": "../../packages/intent" },
     { "path": "../../packages/workflow-runtime" }
   ]
 }

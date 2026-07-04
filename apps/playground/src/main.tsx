@@ -8,7 +8,12 @@ import {
   createTelemetryHook,
 } from "@loom/telemetry";
 import type { FlowTelemetryInfo, StepTelemetryInfo, TelemetryAdapter } from "@loom/telemetry";
+import { A2UI_PATCH, a2uiSurfaceProjection } from "@loom/a2ui";
+import type { A2UIPatch, A2UIPatchPayload, A2UISurfaceState } from "@loom/a2ui";
+import { capability$, CapabilityCatalog } from "@loom/capability";
+import { IntentRuntime } from "@loom/intent";
 import type { EventEnvelope } from "@loom/core";
+import { z } from "zod";
 import React, { useCallback, useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { RegisteredTaskFlow, type TaskInput } from "./flow";
@@ -51,6 +56,8 @@ const eventStore = new InMemoryEventStore();
 const effectRuntime = new EffectRuntime();
 const projectionRuntime = new InMemoryProjectionRuntime();
 projectionRuntime.register(TaskProjection);
+// A2UI: register the "ui" surface so ctx.ui.* patches fold into a projection.
+projectionRuntime.register(a2uiSurfaceProjection("ui"));
 
 const workflowRuntime = new WorkflowRuntime({
   eventStore,
@@ -63,6 +70,20 @@ const workflowRuntime = new WorkflowRuntime({
 });
 
 workflowRuntime.registerFlow(RegisteredTaskFlow.definition, RegisteredTaskFlow.runner);
+
+// ── Capabilities + Intent (Intent Over Routes) ────────────────────────────────
+// Register the flow as an intent-addressable capability, then let the Intent
+// Runtime route a typed goal to it (deterministic keyword routing — no API key).
+const catalog = new CapabilityCatalog().register(
+  capability$({
+    id: "task-analysis",
+    intent: "Analyze a task: fetch data, process it, then apply the result after approval",
+    tags: ["task", "analyze", "data", "process"],
+    inputSchema: z.object({ taskId: z.string(), label: z.string() }),
+    flow: RegisteredTaskFlow,
+  })
+);
+const intentRuntime = new IntentRuntime({ catalog, workflowRuntime });
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -111,6 +132,7 @@ const s: Record<string, React.CSSProperties> = {
   btn: { padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer", background: "#3182ce", color: "#fff", fontWeight: 600, fontSize: 13 },
   btnGreen: { background: "#2f855a" },
   btnGray: { background: "#4a5568" },
+  intentInput: { padding: "7px 12px", borderRadius: 6, border: "1px solid #2d3748", background: "#0f172a", color: "#e2e8f0", fontSize: 13, width: 280 },
   spinner: { fontSize: 13, color: "#718096", fontStyle: "italic" },
   tabBar: { display: "flex", borderBottom: "1px solid #1e293b", background: "#111827", paddingLeft: 16, flexShrink: 0 },
   tab: { padding: "10px 20px", border: "none", background: "transparent", color: "#718096", cursor: "pointer", fontSize: 13, fontWeight: 500, borderBottom: "2px solid transparent" },
@@ -180,10 +202,13 @@ function App() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [executionId, setExecutionId] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
-  const [tab, setTab] = useState<"blueprint" | "events" | "state" | "trace">("blueprint");
+  const [tab, setTab] = useState<"blueprint" | "events" | "state" | "trace" | "a2ui">("blueprint");
   const [counter, setCounter] = useState(1);
   const [projState, setProjState] = useState<TaskState | null>(null);
   const [traceData, setTraceData] = useState<TraceSnapshot>({ flow: null, steps: [] });
+  const [uiSurface, setUiSurface] = useState<A2UISurfaceState>({});
+  const [patchStream, setPatchStream] = useState<{ time: string; patch: A2UIPatch }[]>([]);
+  const [intentText, setIntentText] = useState("analyze a task and apply the result");
 
   const addLog = useCallback((entry: LogEntry) => {
     setLog((prev) => [entry, ...prev]);
@@ -194,12 +219,13 @@ function App() {
     [addLog]
   );
 
-  // Poll projection + trace state every 200ms
+  // Poll projection + A2UI surface + trace state every 200ms
   useEffect(() => {
     if (!executionId) return;
     const tick = () => {
       const st = pr.getState<TaskState>("task", executionId);
       if (st) setProjState(st);
+      setUiSurface(pr.getState<A2UISurfaceState>("ui", executionId));
       setTraceData({
         flow: mutableTrace.flow,
         steps: Array.from(mutableTrace.steps.values()),
@@ -210,29 +236,42 @@ function App() {
     return () => clearInterval(id);
   }, [executionId, pr]);
 
-  // Subscribe to raw events for the event log tab
+  // Subscribe to raw events for the event log + A2UI patch stream tabs
   useEffect(() => {
     if (!executionId) return;
     return eventStore.subscribe(executionId, (e: EventEnvelope) => {
       addLog({ time: now(), kind: "event", label: e.eventType, payload: e.payload });
+      if (e.eventType === A2UI_PATCH) {
+        const payload = e.payload as A2UIPatchPayload;
+        const entries = payload.patches.map((patch) => ({ time: now(), patch }));
+        setPatchStream((prev) => [...entries.reverse(), ...prev]);
+      }
     });
   }, [executionId, addLog]);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (intentText?: string) => {
     const taskId = `task-${String(counter).padStart(3, "0")}`;
     setCounter((n) => n + 1);
     setPhase("running");
     setLog([]);
     setProjState(null);
     setTraceData({ flow: null, steps: [] });
+    setUiSurface({});
+    setPatchStream([]);
     clearTrace();
-    sysLog(`Starting flow — ${taskId}`);
 
     try {
-      const handle = await wfr.start<TaskInput>(RegisteredTaskFlow, {
-        taskId,
-        label: `Sample Task ${taskId}`,
-      });
+      const input: TaskInput = { taskId, label: `Sample Task ${taskId}` };
+      let handle: Awaited<ReturnType<typeof intentRuntime.run>>;
+      if (intentText && intentText.trim().length > 0) {
+        // Intent Over Routes: the Intent Runtime picks the capability, then runs it.
+        const route = await intentRuntime.route(intentText);
+        sysLog(`Intent "${intentText}" → capability ${route?.capability.id ?? "(none)"}`);
+        handle = await intentRuntime.run(intentText, input);
+      } else {
+        sysLog(`Starting flow — ${taskId}`);
+        handle = await wfr.start<TaskInput>(RegisteredTaskFlow, input);
+      }
       setExecutionId(handle.executionId);
       sysLog(`Execution ID: ${handle.executionId}`);
 
@@ -280,6 +319,8 @@ function App() {
     setLog([]);
     setProjState(null);
     setTraceData({ flow: null, steps: [] });
+    setUiSurface({});
+    setPatchStream([]);
     clearTrace();
   }, []);
 
@@ -291,7 +332,19 @@ function App() {
           <span style={{ ...s.badge, background: phaseBg[phase] }}>{phase}</span>
         </div>
         <div style={s.controls}>
-          {phase === "idle" && <button style={s.btn} onClick={() => void start()}>▶ Run Flow</button>}
+          {phase === "idle" && (
+            <>
+              <input
+                style={s.intentInput}
+                value={intentText}
+                onChange={(e) => setIntentText(e.target.value)}
+                placeholder="Describe your intent…"
+                title="Intent Over Routes — the Intent Runtime routes this to a capability"
+              />
+              <button style={s.btn} onClick={() => void start(intentText)}>➤ Run Intent</button>
+              <button style={{ ...s.btn, ...s.btnGray }} onClick={() => void start()}>▶ Run Flow</button>
+            </>
+          )}
           {phase === "suspended" && <button style={{ ...s.btn, ...s.btnGreen }} onClick={() => void approve()}>✓ Approve</button>}
           {(phase === "completed" || phase === "failed") && <button style={{ ...s.btn, ...s.btnGray }} onClick={reset}>↺ Reset</button>}
           {phase === "running" && <span style={s.spinner}>Running…</span>}
@@ -299,9 +352,9 @@ function App() {
       </header>
 
       <div style={s.tabBar}>
-        {(["blueprint", "events", "state", "trace"] as const).map((t) => (
+        {(["blueprint", "events", "state", "trace", "a2ui"] as const).map((t) => (
           <button key={t} style={{ ...s.tab, ...(tab === t ? s.tabActive : {}) }} onClick={() => setTab(t)}>
-            {t === "blueprint" ? "Blueprint" : t === "events" ? "Event Log" : t === "state" ? "Projection State" : "Trace"}
+            {t === "blueprint" ? "Blueprint" : t === "events" ? "Event Log" : t === "state" ? "Projection State" : t === "trace" ? "Trace" : "A2UI"}
           </button>
         ))}
       </div>
@@ -353,6 +406,8 @@ function App() {
         )}
 
         {tab === "trace" && <TraceTab data={traceData} />}
+
+        {tab === "a2ui" && <A2UITab surface={uiSurface} patches={patchStream} />}
       </main>
 
       <footer style={s.footer}>
@@ -550,6 +605,66 @@ function EmptyState() {
         <br />The flow fetches data → processes it → suspends for approval → applies the result.
         <br /><br />
         Edit <code>src/flow.ts</code>, <code>src/projection.ts</code>, or <code>src/blueprint.ts</code> to experiment.
+      </div>
+    </div>
+  );
+}
+
+// ── A2UITab ─────────────────────────────────────────────────────────────────
+// Shows the A2UI protocol in action: the live "ui" surface (rebuilt purely by
+// folding A2UI_PATCH events) on the left, and the raw patch stream on the right.
+
+const patchColor: Record<string, string> = {
+  set: "#3182ce",
+  merge: "#805ad5",
+  append: "#38a169",
+  increment: "#d69e2e",
+  remove: "#e53e3e",
+};
+
+function A2UITab({
+  surface,
+  patches,
+}: {
+  surface: A2UISurfaceState;
+  patches: { time: string; patch: A2UIPatch }[];
+}) {
+  if (patches.length === 0) {
+    return (
+      <div style={s.empty}>
+        No A2UI patches yet — run the flow. Each <code>ctx.ui.*</code> call emits one
+        durable, replayable <code>A2UI_PATCH</code> event that folds into the surface.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div style={s.statePanel}>
+        <div style={s.stateJsonTitle}>Live "ui" surface</div>
+        <pre style={s.json}>{JSON.stringify(surface, null, 2)}</pre>
+      </div>
+      <div style={s.logPanel}>
+        <div style={s.stateJsonTitle}>Patch stream ({patches.length})</div>
+        {patches.map((entry, i) => (
+          <div key={i} style={s.logRow}>
+            <span style={s.logTime}>{entry.time}</span>
+            <span
+              style={{
+                ...s.logLabel,
+                color: patchColor[entry.patch.op] ?? "#a0aec0",
+                minWidth: 74,
+              }}
+            >
+              {entry.patch.op}
+            </span>
+            <span style={s.logPayload}>
+              {entry.patch.path || "(root)"}
+              {"value" in entry.patch ? ` = ${JSON.stringify(entry.patch.value)}` : ""}
+              {entry.patch.op === "increment" ? ` += ${entry.patch.by ?? 1}` : ""}
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );

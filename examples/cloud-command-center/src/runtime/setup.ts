@@ -1,4 +1,5 @@
 import { ToolEffect } from "@loom/effect-runtime";
+import { a2uiSurfaceProjection } from "@loom/a2ui";
 import { SqliteEventStore } from "@loom/event-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
@@ -6,6 +7,11 @@ import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { IncidentProjection } from "../projections/IncidentProjection";
 import { MetricsProjection } from "../projections/MetricsProjection";
 import { EffectRuntime } from "@loom/effect-runtime";
+import { llmProvider, registerAiTriageEffect } from "./aiTriage";
+
+// llmProvider + registerAiTriageEffect live in ./aiTriage (browser-safe, no
+// SQLite imports) so both this Node setup and the browser entry can share them.
+export { llmProvider, registerAiTriageEffect } from "./aiTriage";
 
 export interface RuntimeConfig {
   dbPath: string;
@@ -28,6 +34,8 @@ export function createRuntimes(config: RuntimeConfig): Runtimes {
 
   projectionRuntime.register(MetricsProjection);
   projectionRuntime.register(IncidentProjection);
+  // A2UI: fold the "ui" surface. Widgets bind to it via { projectionId: "ui", … }.
+  projectionRuntime.register(a2uiSurfaceProjection("ui"));
 
   const workflowRuntime = new WorkflowRuntime({
     eventStore,
@@ -67,4 +75,6 @@ export function registerMockEffects(effectRuntime: EffectRuntime): void {
       appliedAt: Date.now(),
     }))
   );
+
+  registerAiTriageEffect(effectRuntime, llmProvider);
 }
