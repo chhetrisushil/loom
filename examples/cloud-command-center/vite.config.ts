@@ -1,8 +1,9 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { loomPlugin } from "@loom/compiler";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [loomPlugin(), react()],
   resolve: { conditions: ["require", "default"] },
   optimizeDeps: {
     include: [

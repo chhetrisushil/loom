@@ -62,6 +62,11 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
     }
   }
 
+  seedState(projectionId: string, executionId: string, state: unknown): void {
+    const key = this.stateKey(projectionId, executionId);
+    this.states.set(key, state);
+  }
+
   private notify(key: string, state: unknown): void {
     const handlers = this.subscribers.get(key);
     if (handlers) {

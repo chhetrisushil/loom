@@ -91,6 +91,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@loom/compiler':
+        specifier: workspace:*
+        version: link:../../packages/compiler
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -125,6 +128,25 @@ importers:
       typescript:
         specifier: ^5.6.3
         version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)
+
+  packages/compiler:
+    dependencies:
+      magic-string:
+        specifier: ^0.30.21
+        version: 0.30.21
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      vite:
+        specifier: ^5.4.10
+        version: 5.4.21(@types/node@22.20.0)
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)
@@ -238,6 +260,9 @@ importers:
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../projection-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../workflow-runtime
     devDependencies:
       '@testing-library/react':
         specifier: ^16.0.0

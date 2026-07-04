@@ -17,4 +17,5 @@ export interface ProjectionRuntime {
     handler: (state: TState) => void
   ): () => void;
   handleEvent(event: EventEnvelope): void;
+  seedState(projectionId: string, executionId: string, state: unknown): void;
 }

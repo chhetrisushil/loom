@@ -9,18 +9,19 @@ import { flow$, step$, tool$, WorkflowRuntime, ToolEffect } from "@loom/sdk";
 
 * Table of Contents
 
-1. [[#builders][Builders]]
-2. [[#workflow-runtime][WorkflowRuntime]]
-3. [[#workflow-context][WorkflowContext — the flow API]]
-4. [[#execution-handle][ExecutionHandle]]
-5. [[#effect-runtime][EffectRuntime & Effects]]
-6. [[#event-store][EventStore]]
-7. [[#snapshot-store][SnapshotStore]]
-8. [[#projection-runtime][ProjectionRuntime]]
-9. [[#blueprint-system][Blueprint System]]
-10. [[#react-renderer][React Renderer]]
-11. [[#errors][Errors]]
-12. [[#complete-example][Complete Example]]
+1.  [[#builders][Builders]] — ~flow$~, ~step$~, ~handler$~, ~tool$~, ~projection$~, ~agent$~, ~memory$~, ~policy$~
+2.  [[#workflow-runtime][WorkflowRuntime]] — ~start~, ~resume~, ~restoreFromState~, ~registerFlow~, ~register~
+3.  [[#workflow-context][WorkflowContext — the flow API]] — ~ctx.run~, ~ctx.parallel~, ~ctx.emit~, ~ctx.suspend~
+4.  [[#execution-handle][ExecutionHandle]]
+5.  [[#effect-runtime][EffectRuntime & Effects]] — ~ToolEffect~, ~LlmEffect~, ~HumanEffect~, ~A2AEffect~, ~LazyEffect~
+6.  [[#event-store][EventStore]]
+7.  [[#snapshot-store][SnapshotStore]]
+8.  [[#projection-runtime][ProjectionRuntime]] — ~register~, ~getState~, ~subscribe~, ~handleEvent~, ~seedState~
+9.  [[#blueprint-system][Blueprint System]]
+10. [[#react-renderer][React Renderer]] — ~BlueprintRenderer~, ~LoomProvider~, ~useLoom~, ~useProjection~
+11. [[#compiler][~@loom/compiler~]] — Vite plugin, CLI, serialization utilities
+12. [[#errors][Errors]]
+13. [[#complete-example][Complete Example]]
 
 -----
 
@@ -64,35 +65,89 @@ const MyFlow = flow$({
 
 ** ~step$~
 
-Defines an individual unit of work within a flow. A step links to an effect via ~toolId~ and declares its own I/O schemas and retry policy.
+Defines an individual unit of work within a flow. A step links to an effect via ~toolId~ (or co-locates the implementation with ~handler$~) and declares its own I/O schemas and retry policy.
 
 #+begin_src typescript
-import { step$ } from "@loom/sdk";
+import { step$, handler$ } from "@loom/sdk";
 import { z } from "zod";
 
+// Option A: co-located handler (recommended — no separate registration needed)
 const FetchMetricsStep = step$({
   id: "fetch-metrics",
-  name: "Fetch Metrics",
-  toolId: "metrics-tool",       // matches a registered EffectRuntime key
+  toolId: "metrics-tool",
   inputSchema: z.object({ incidentId: z.string() }),
   outputSchema: z.object({
     cpu: z.object({ current: z.number(), threshold: z.number() }),
     memory: z.object({ usedMb: z.number(), totalMb: z.number() }),
   }),
+  handler: handler$(async (input, ctx) => {
+    const data = await fetchMetrics(input.incidentId);
+    return data;
+  }),
   retry: { maxAttempts: 3, backoffMs: 500, backoffMultiplier: 2 },
   timeoutMs: 10_000,
 });
+
+// Option B: toolId only (register effect separately via effectRuntime.register)
+const ApplyStep = step$({
+  id: "apply-fix",
+  toolId: "fix-tool",
+  inputSchema: z.object({ ticketId: z.string() }),
+  outputSchema: z.object({ applied: z.boolean() }),
+});
 #+end_src
 
-| Field          | Type            | Required | Description                                          |
-|----------------+-----------------+----------+------------------------------------------------------|
-| ~id~           | ~string~        | yes      | Unique within the flow; used to key ~ExecutionFrame~ |
-| ~name~         | ~string~        | yes      | Display name                                         |
-| ~toolId~       | ~string~        | no       | Effect registry key; defaults to ~id~ if omitted     |
-| ~inputSchema~  | ~ZodSchema~     | yes      | Input shape                                          |
-| ~outputSchema~ | ~ZodSchema~     | yes      | Output shape                                         |
-| ~retry~        | ~RetryPolicy~   | no       | ~{ maxAttempts, backoffMs?, backoffMultiplier? }~    |
-| ~timeoutMs~    | ~number~        | no       | Per-attempt timeout in milliseconds                  |
+| Field          | Type              | Required | Description                                                      |
+|----------------+-------------------+----------+------------------------------------------------------------------|
+| ~id~           | ~string~          | yes      | Unique within the flow; used to key ~ExecutionFrame~             |
+| ~name~         | ~string~          | no       | Display name; defaults to ~id~                                   |
+| ~toolId~       | ~string~          | no       | Effect registry key; defaults to ~id~ if omitted                 |
+| ~handler~      | ~HandlerSpec~     | no       | Co-located implementation via ~handler$()~ — auto-registered by ~registerFlow~ |
+| ~inputSchema~  | ~ZodSchema~       | yes      | Input shape                                                      |
+| ~outputSchema~ | ~ZodSchema~       | yes      | Output shape                                                     |
+| ~retry~        | ~RetryPolicy~     | no       | ~{ maxAttempts, backoffMs?, backoffMultiplier? }~                |
+| ~timeoutMs~    | ~number~          | no       | Per-attempt timeout in milliseconds                              |
+
+** ~handler$~
+
+Co-locates a step's handler implementation with its definition. At runtime, returns a ~HandlerRef~ (called directly by ~LazyEffect~). At build time, ~@loom/compiler~ rewrites it to a dynamic import thunk.
+
+#+begin_src typescript
+import { handler$ } from "@loom/sdk";
+
+const myHandler = handler$(async (input: { id: string }, ctx) => {
+  // ctx: { executionId, stepId, workflowId, attempt, emit }
+  const result = await fetchData(input.id);
+  ctx.emit("DATA_FETCHED", result);
+  return result;
+});
+
+// Use inside step$:
+const MyStep = step$({
+  id: "my-step",
+  handler: myHandler,
+  inputSchema: ..., outputSchema: ...,
+});
+#+end_src
+
+| Signature | ~handler$<TIn, TOut>(fn: HandlerFn<TIn, TOut>): HandlerRef<TIn, TOut>~ |
+|-----------+------------------------------------------------------------------------|
+| Runtime   | Returns ~{ _loomHandlerRef: true, fn }~ — zero overhead               |
+| Build     | Compiler replaces with ~() => import("\0loom:chunk:<id>_<hash>")~     |
+
+~HandlerFn~ signature:
+
+#+begin_src typescript
+type HandlerFn<TIn, TOut> = (input: TIn, ctx: StepHandlerContext) => Promise<TOut>;
+
+interface StepHandlerContext {
+  executionId: string;
+  stepId: string;
+  workflowId: string;
+  attempt: number;           // 1-based retry count
+  emit(eventType: string, payload: unknown): void;
+}
+#+end_src
 
 ** ~tool$~
 
@@ -278,6 +333,31 @@ const handle = await runtime.resume("exec-abc", {
 | ~payload~   | ~unknown~ | Data delivered to the flow after the suspend point       |
 
 Throws ~WorkflowNotFoundError~ if ~executionId~ has no recorded events.
+
+** ~restoreFromState(preloadedState, resumeEvent?)~
+
+Client-side restoration path. Accepts a pre-deserialized ~ExecutionState~ (produced server-side by ~serializeExecution~) and reconstructs an execution without reading the EventStore. Optionally delivers a resume event atomically.
+
+#+begin_src typescript
+import { deserializeExecution } from "@loom/workflow-runtime";
+
+// On client, after receiving serialized state from server
+const preloadedState = deserializeExecution(serializedString);
+
+const handle = await runtime.restoreFromState(preloadedState, {
+  eventType: "ApprovalGranted",
+  payload: { approved: true },
+});
+
+handle.waitForCompletion().then(() => console.log("Done"));
+#+end_src
+
+| Parameter       | Type             | Required | Description                                             |
+|-----------------+------------------+----------+---------------------------------------------------------|
+| ~preloadedState~| ~ExecutionState~ | yes      | Deserialized snapshot from ~deserializeExecution~       |
+| ~resumeEvent~   | ~ResumeEvent~    | no       | Optional event to append before re-running the flow    |
+
+The corresponding flow must already be registered via ~registerFlow()~ before calling ~restoreFromState~.
 
 ** ~register(toolId, effect)~
 
@@ -509,6 +589,29 @@ effectRuntime.register(
 );
 #+end_src
 
+** ~LazyEffect~
+
+The bridge between ~handler$()~ and the effect runtime. Accepts a ~HandlerSpec~ (either a ~HandlerRef~ or a ~HandlerLoader~), resolves the underlying function on the first ~execute()~ call, and caches it for subsequent calls.
+
+You do not normally instantiate ~LazyEffect~ directly — ~WorkflowRuntime.registerFlow()~ creates one automatically for every step with a ~handler~ field.
+
+#+begin_src typescript
+import { LazyEffect } from "@loom/effect-runtime";
+
+// HandlerRef path (runtime — handler$ without compiler)
+const ref = handler$(async (input, ctx) => ({ done: true }));
+effectRuntime.register("my-step", new LazyEffect(ref));
+
+// HandlerLoader path (build time — compiler output)
+const loader = () => import("./chunks/my-step_abc123");
+effectRuntime.register("my-step", new LazyEffect(loader));
+#+end_src
+
+| Path          | When used                          | Resolution                                    |
+|---------------+------------------------------------+-----------------------------------------------|
+| ~HandlerRef~  | Runtime / tests / ts-node          | Calls ~ref.fn~ directly (zero overhead)       |
+| ~HandlerLoader~ | After compiler transform         | ~await loader()~ on first call, caches result |
+
 ** ~EffectContext~
 
 Passed as the second argument to every effect function.
@@ -672,15 +775,29 @@ interface ProjectionRuntime {
     handler: (state: TState) => void
   ): () => void;         // returns unsubscribe function
   handleEvent(event: EventEnvelope): void;
+  seedState(projectionId: string, executionId: string, state: unknown): void;
 }
 #+end_src
 
-| Method          | Description                                                                      |
-|-----------------+----------------------------------------------------------------------------------|
-| ~register~      | Adds a projection; must be called before the first event that triggers a handler |
-| ~getState~      | Synchronous read of current state; returns ~initialState~ if no events yet       |
-| ~subscribe~     | Registers a live listener; called synchronously after every matching event       |
-| ~handleEvent~   | Routes an event to all registered projections; call from ~onEvent~              |
+| Method        | Description                                                                      |
+|---------------+----------------------------------------------------------------------------------|
+| ~register~    | Adds a projection; must be called before the first event that triggers a handler |
+| ~getState~    | Synchronous read of current state; returns ~initialState~ if no events yet       |
+| ~subscribe~   | Registers a live listener; called synchronously after every matching event       |
+| ~handleEvent~ | Routes an event to all registered projections; call from ~onEvent~              |
+| ~seedState~   | Populates state directly without processing events — used by ~LoomProvider~ for client-side restore |
+
+** ~seedState(projectionId, executionId, state)~
+
+Directly sets projection state for a given ~(projectionId, executionId)~ pair, bypassing event processing. Used by ~LoomProvider~ to restore server-serialized projection state synchronously before the first render.
+
+#+begin_src typescript
+// Manual usage (LoomProvider does this automatically from serializedProjectionState)
+const snapshot = deserializeProjections(serializedString);
+for (const [projId, state] of Object.entries(snapshot.states)) {
+  projectionRuntime.seedState(projId, snapshot.executionId, state);
+}
+#+end_src
 
 ** ~Projection~ shape
 
@@ -902,6 +1019,64 @@ defaultRegistry.register("HeatMap", HeatMapRenderer);
 | ~value~    | ~unknown~                          | Resolved value from the projection binding          |
 | ~onAction~ | ~(action: WidgetAction) => void~   | Dispatch an action to the host application          |
 
+** ~LoomProvider~
+
+Context provider that shares ~workflowRuntime~ and ~projectionRuntime~ with all descendant components via ~useLoom()~. Optionally restores projection state from a server-side serialized snapshot synchronously on mount.
+
+#+begin_src typescript
+import { LoomProvider } from "@loom/renderer-react";
+
+// Minimal — share runtimes via context
+createRoot(root).render(
+  <LoomProvider workflowRuntime={workflowRuntime} projectionRuntime={projectionRuntime}>
+    <App />
+  </LoomProvider>
+);
+
+// Full — restore from server-serialized state (no EventStore round-trip on client)
+createRoot(root).render(
+  <LoomProvider
+    workflowRuntime={workflowRuntime}
+    projectionRuntime={projectionRuntime}
+    serializedExecutionState={window.__LOOM_EXEC__}
+    serializedProjectionState={window.__LOOM_PROJ__}
+  >
+    <App />
+  </LoomProvider>
+);
+#+end_src
+
+| Prop                         | Type                  | Required | Description                                               |
+|------------------------------+-----------------------+----------+-----------------------------------------------------------|
+| ~workflowRuntime~            | ~WorkflowRuntime~     | yes      | The workflow runtime instance                             |
+| ~projectionRuntime~          | ~ProjectionRuntime~   | yes      | The projection runtime instance                           |
+| ~serializedExecutionState~   | ~string~              | no       | JSON string from ~serializeExecution()~ on the server     |
+| ~serializedProjectionState~  | ~string~              | no       | JSON string from ~serializeProjections()~ on the server   |
+
+When ~serializedProjectionState~ is provided, ~LoomProvider~ calls ~projectionRuntime.seedState()~ for each entry in the snapshot *before* the first child render — no empty-state flash.
+
+** ~useLoom~
+
+Accesses the ~LoomProvider~ context from any descendant component. Throws if called outside a ~<LoomProvider>~.
+
+#+begin_src typescript
+import { useLoom } from "@loom/renderer-react";
+
+function MyComponent() {
+  const { workflowRuntime, projectionRuntime, preloadedExecutionState } = useLoom();
+
+  const start = () => workflowRuntime.start(MyFlow, input);
+
+  return <button onClick={start}>Start</button>;
+}
+#+end_src
+
+| Field                    | Type                    | Description                                                    |
+|--------------------------+-------------------------+----------------------------------------------------------------|
+| ~workflowRuntime~        | ~WorkflowRuntime~       | Shared runtime from provider                                   |
+| ~projectionRuntime~      | ~ProjectionRuntime~     | Shared runtime from provider                                   |
+| ~preloadedExecutionState~| ~ExecutionState \| null~ | Deserialized from ~serializedExecutionState~, or null         |
+
 ** ~useProjection~ hook
 
 Subscribe to a single projection in any React component:
@@ -921,6 +1096,107 @@ function MetricsPanel({ executionId }: { executionId: string }) {
 #+end_src
 
 The hook initialises from ~getState()~ and re-renders on every projection update.
+
+-----
+
+* ~@loom/compiler~
+:PROPERTIES:
+:CUSTOM_ID: compiler
+:END:
+
+Build-time optimization package. Install as a dev dependency; no compiler code is included in the production bundle.
+
+#+begin_src bash
+pnpm add -D @loom/compiler
+#+end_src
+
+** ~loomPlugin()~ — Vite Plugin
+
+#+begin_src typescript
+import { loomPlugin } from "@loom/compiler";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  plugins: [loomPlugin(), react()],  // loomPlugin must be first
+});
+#+end_src
+
+The plugin runs on all ~.ts~/.tsx~ files and applies three transforms:
+1. Rewrites ~handler$(fn)~ → ~() => import("\0loom:chunk:<id>_<hash>")~
+2. Serves virtual chunks via ~resolveId~ + ~load~ hooks
+3. Emits ~loom-manifest.json~ in ~generateBundle~
+
+** ~transformFile(source, path, state)~
+
+Programmatic transform — applies the same AST rewrite as the Vite plugin.
+
+#+begin_src typescript
+import { transformFile } from "@loom/compiler";
+import type { PluginState } from "@loom/compiler";
+
+const state: PluginState = {
+  chunks: new Map(), steps: new Map(),
+  stepsByVarName: new Map(), flows: new Map(),
+};
+
+const result = transformFile(sourceCode, "/abs/path/file.ts", state);
+// result: { code: string, map: string } | null (null if no handler$ found)
+#+end_src
+
+** ~buildManifest(state, outDir?)~
+
+Generates the ~LoomManifest~ object from the accumulated plugin state.
+
+#+begin_src typescript
+import { buildManifest, printWarnings } from "@loom/compiler";
+
+const manifest = buildManifest(state, "dist");
+printWarnings(manifest);
+// → { version: "1", flows: { "my-flow": { steps, chunkMap, warnings } } }
+#+end_src
+
+** Serialization Utilities (re-exported from ~@loom/workflow-runtime~)
+
+#+begin_src typescript
+import {
+  serializeExecution,
+  deserializeExecution,
+  serializeProjections,
+  deserializeProjections,
+} from "@loom/workflow-runtime";
+#+end_src
+
+| Function                  | Signature                                                           | Description                                     |
+|---------------------------+---------------------------------------------------------------------+-------------------------------------------------|
+| ~serializeExecution~      | ~(state: ExecutionState) => string~                                 | JSON-serializes full execution state            |
+| ~deserializeExecution~    | ~(s: string) => ExecutionState~                                     | Parses and validates; throws on bad input       |
+| ~serializeProjections~    | ~(states: Record<string, unknown>, executionId: string) => string~  | Bundles all projection states into one snapshot |
+| ~deserializeProjections~  | ~(s: string) => { executionId: string; states: Record<string, unknown> }~ | Parses the projection snapshot           |
+
+** CLI — ~loom-compile~
+
+#+begin_src bash
+# Transform src/ → dist-loom/
+npx loom-compile src/ dist-loom/
+#+end_src
+
+Walks ~.ts~/.tsx~ files, applies transforms, writes output + chunks + ~loom-manifest.json~. Equivalent to a Vite build without the bundler step.
+
+** ~LoomManifest~ shape
+
+#+begin_src typescript
+interface LoomManifest {
+  version: "1";
+  flows: Record<string, {
+    version: string;
+    steps: string[];
+    chunkMap: Record<string, string>;  // stepId → output file path
+    suspendPoints: string[];
+    warnings: string[];
+  }>;
+}
+#+end_src
 
 -----
 
@@ -949,9 +1225,9 @@ A minimal agentic application: a flow that fetches data, waits for human approva
 
 #+begin_src typescript
 import {
-  flow$, step$, tool$, projection$,
+  flow$, step$, handler$, projection$,
   WorkflowRuntime,
-  EffectRuntime, ToolEffect, HumanEffect,
+  EffectRuntime,
   type FlowRunner,
 } from "@loom/sdk";
 import { SqliteEventStore } from "@loom/event-runtime";
@@ -962,27 +1238,31 @@ import {
 } from "@loom/blueprint-runtime";
 import { z } from "zod";
 
-// ── 1. Define steps ──────────────────────────────────────────────────────────
+// ── 1. Define steps with co-located handlers ──────────────────────────────────
+// handler$ auto-registers LazyEffect via registerFlow — no manual effectRuntime.register needed
 
 const AnalyzeStep = step$({
   id: "analyze",
-  toolId: "analyze-tool",
   inputSchema: z.object({ ticketId: z.string() }),
   outputSchema: z.object({ severity: z.number(), summary: z.string() }),
+  handler: handler$(async (input) => ({
+    severity: 4,
+    summary: `High CPU spike detected for ticket ${input.ticketId}`,
+  })),
 });
 
+// No handler$ for suspension steps — ctx.suspend() in runner handles it
 const ApprovalStep = step$({
   id: "approval-gate",
-  toolId: "human-approval",
   inputSchema: z.object({ ticketId: z.string() }),
   outputSchema: z.unknown(),
 });
 
 const FixStep = step$({
   id: "apply-fix",
-  toolId: "fix-tool",
   inputSchema: z.object({ ticketId: z.string() }),
   outputSchema: z.object({ applied: z.boolean() }),
+  handler: handler$(async (_input) => ({ applied: true })),
   retry: { maxAttempts: 2, backoffMs: 1000 },
 });
 
@@ -1007,7 +1287,8 @@ const ticketRunner: FlowRunner<{ ticketId: string }, { resolved: boolean }> = as
 
   if (analysis.severity >= 3) {
     ctx.emit("APPROVAL_REQUIRED", { ticketId: input.ticketId, ...analysis });
-    await ctx.run(ApprovalStep, { ticketId: input.ticketId });
+    // Suspend until a "TicketApproved" event arrives via runtime.resume()
+    await ctx.suspend({ on: "TicketApproved", correlationKey: input.ticketId });
   }
 
   const result = await ctx.run(FixStep, { ticketId: input.ticketId });
@@ -1070,19 +1351,7 @@ const runtime = new WorkflowRuntime({
   onEvent: (event) => projectionRuntime.handleEvent(event),
 });
 
-// Register effects
-effectRuntime.register("analyze-tool", new ToolEffect(async (input) => ({
-  severity: 4,
-  summary: "High CPU spike detected",
-})));
-
-effectRuntime.register("human-approval", new HumanEffect({ on: "TicketApproved" }));
-
-effectRuntime.register("fix-tool", new ToolEffect(async (input) => ({
-  applied: true,
-})));
-
-// Register flow (required for resume)
+// registerFlow auto-wires LazyEffect for AnalyzeStep and FixStep (both have handler$)
 runtime.registerFlow(RegisteredTicketFlow.definition, RegisteredTicketFlow.runner);
 
 // ── 7. Start and interact ─────────────────────────────────────────────────────
@@ -1092,7 +1361,6 @@ const handle = await runtime.start(RegisteredTicketFlow, { ticketId: "TICK-001" 
 handle.waitForSuspend().then(async () => {
   console.log("Workflow suspended — awaiting approval");
 
-  // Simulate operator approval after 2 seconds
   setTimeout(async () => {
     const resumeHandle = await runtime.resume(handle.executionId, {
       eventType: "TicketApproved",

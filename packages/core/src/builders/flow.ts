@@ -8,7 +8,8 @@ export interface FlowConfig<TIn, TOut> {
   description?: string;
   inputSchema: z.ZodSchema<TIn>;
   outputSchema: z.ZodSchema<TOut>;
-  steps: StepDefinition[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  steps: StepDefinition<any, any>[];
   policies?: PolicyDefinition[];
 }
 

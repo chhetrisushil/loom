@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { step$, tool$ } from "@loom/core";
+import { step$, handler$, tool$ } from "@loom/core";
 
 export const RemediationTool = tool$({
   id: "remediation-tool",
@@ -27,4 +27,9 @@ export const ApplyRemediationStep = step$({
     summary: z.string(),
     appliedAt: z.number(),
   }),
+  handler: handler$(async (_input, _ctx) => ({
+    success: true,
+    summary: "Pod restarted successfully, CPU normalized to 32%",
+    appliedAt: Date.now(),
+  })),
 });

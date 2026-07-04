@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { step$, tool$ } from "@loom/core";
+import { step$, handler$, tool$ } from "@loom/core";
 
 export const LogsTool = tool$({
   id: "logs-tool",
@@ -24,4 +24,11 @@ export const FetchLogsStep = step$({
       z.object({ level: z.string(), message: z.string(), timestamp: z.number() })
     ),
   }),
+  handler: handler$(async (_input, _ctx) => ({
+    logs: [
+      { level: "error", message: "OOM killer invoked", timestamp: Date.now() - 5000 },
+      { level: "error", message: "Connection pool exhausted", timestamp: Date.now() - 3000 },
+      { level: "warn",  message: "Replication lag > 500ms", timestamp: Date.now() - 1000 },
+    ],
+  })),
 });

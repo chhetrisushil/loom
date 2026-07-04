@@ -10,6 +10,7 @@
     { "path": "packages/projection-runtime" },
     { "path": "packages/blueprint-runtime" },
     { "path": "packages/renderer-react" },
+    { "path": "packages/compiler" },
     { "path": "packages/registry" },
     { "path": "packages/sdk" },
     { "path": "apps/playground" },

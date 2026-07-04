@@ -20,7 +20,8 @@
   "dependencies": {
     "@loom/blueprint-runtime": "workspace:*",
     "@loom/core": "workspace:*",
-    "@loom/projection-runtime": "workspace:*"
+    "@loom/projection-runtime": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*"
   },
   "peerDependencies": {
     "react": "^18.0.0",

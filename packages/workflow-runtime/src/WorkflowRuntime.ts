@@ -1,5 +1,6 @@
 import { SuspendError } from "@loom/core";
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope, ExecutionState } from "@loom/core";
+import { LazyEffect } from "@loom/effect-runtime";
 import type { Effect, EffectRuntime } from "@loom/effect-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import { ReplayVM } from "@loom/replay-vm";
@@ -44,6 +45,46 @@ export class WorkflowRuntime {
     runner: FlowRunner<TIn, TOut>
   ): void {
     this.flows.set(definition.id, { definition, runner } as RegisteredFlow);
+    for (const step of definition.steps) {
+      const toolId = step.toolId ?? step.id;
+      if (step.handler !== undefined && !this.effectRuntime.has(toolId)) {
+        this.effectRuntime.register(toolId, new LazyEffect(step.handler));
+      }
+    }
+  }
+
+  async restoreFromState(
+    preloadedState: ExecutionState,
+    resumeEvent?: ResumeEvent
+  ): Promise<ExecutionHandle> {
+    const flow = this.flows.get(preloadedState.workflowId);
+    if (!flow) {
+      throw new Error(`No flow registered for workflowId: "${preloadedState.workflowId}"`);
+    }
+    const vm = new ReplayVM([], preloadedState);
+    if (resumeEvent) {
+      const envelope: EventEnvelope = {
+        id: `${preloadedState.executionId}-restore-${Date.now()}`,
+        workflowId: preloadedState.workflowId,
+        executionId: preloadedState.executionId,
+        eventType: resumeEvent.eventType,
+        sequence: preloadedState.sequence + 1,
+        timestamp: Date.now(),
+        payload: resumeEvent.payload,
+      };
+      this.eventStore.append(envelope);
+      vm.applyEvent(envelope);
+      this.onEvent?.(envelope);
+    }
+    const originalInput = preloadedState.variables["_input"];
+    return this.execute(
+      preloadedState.executionId,
+      preloadedState.workflowId,
+      preloadedState.workflowVersion,
+      vm,
+      flow.runner as FlowRunner<unknown, unknown>,
+      originalInput
+    );
   }
 
   async start<TIn = unknown, TOut = unknown>(

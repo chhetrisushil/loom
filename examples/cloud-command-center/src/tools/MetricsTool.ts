@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { step$, tool$ } from "@loom/core";
+import { step$, handler$, tool$ } from "@loom/core";
 
 export const MetricsTool = tool$({
   id: "metrics-tool",
@@ -24,4 +24,12 @@ export const FetchMetricsStep = step$({
     memory: z.object({ usedMb: z.number(), totalMb: z.number() }),
     connections: z.object({ active: z.number(), max: z.number() }),
   }),
+  // handler$ co-locates the implementation with the step definition.
+  // At runtime: called directly via LazyEffect → HandlerRef.
+  // At build time: @loom/compiler extracts this into a lazy chunk.
+  handler: handler$(async (_input, _ctx) => ({
+    cpu: { current: 87, threshold: 80 },
+    memory: { usedMb: 14_000, totalMb: 16_000 },
+    connections: { active: 450, max: 500 },
+  })),
 });

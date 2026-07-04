@@ -1,5 +1,5 @@
 export { flow$ } from "./flow";
-export { step$ } from "./step";
+export { step$, handler$ } from "./step";
 export { tool$ } from "./tool";
 export { agent$ } from "./agent";
 export { projection$ } from "./projection";

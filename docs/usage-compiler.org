@@ -1,0 +1,353 @@
+#+title: @loom/compiler — Usage Guide
+#+author: Sushil Chhetri
+
+~@loom/compiler~ is a Vite plugin and standalone CLI that applies three build-time optimizations to Loom applications. This guide covers installation, configuration, and each feature in detail.
+
+* What the Compiler Does
+
+| Feature                    | Without compiler          | With compiler                               |
+|----------------------------+---------------------------+---------------------------------------------|
+| ~handler$()~ bodies        | Called eagerly at startup | Extracted to lazy chunks, loaded on demand  |
+| Step effects               | Must register manually    | Auto-registered by ~registerFlow()~         |
+| Flow graph validation      | Runtime errors only       | Warnings printed at build time              |
+| Client state restoration   | Round-trip to EventStore  | Seed from serialized snapshot, zero network |
+
+The compiler is a dev dependency — no compiler code is included in the application bundle.
+
+* Installation
+
+#+begin_src bash
+pnpm add -D @loom/compiler
+#+end_src
+
+~vite~ must be installed as a peer dependency (≥ 5.0.0).
+
+* Vite Plugin Setup
+
+Add ~loomPlugin()~ as the first plugin in your ~vite.config.ts~, before ~@vitejs/plugin-react~:
+
+#+begin_src typescript
+// vite.config.ts
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import { loomPlugin } from "@loom/compiler";
+
+export default defineConfig({
+  plugins: [
+    loomPlugin(),   // must be before react()
+    react(),
+  ],
+  resolve: {
+    conditions: ["require", "default"],
+  },
+  optimizeDeps: {
+    include: [
+      "@loom/core",
+      "@loom/effect-runtime",
+      "@loom/workflow-runtime",
+      // ... other @loom/* packages
+    ],
+  },
+});
+#+end_src
+
+The plugin runs on every ~.ts~ and ~.tsx~ file in your project (excluding ~node_modules~).
+
+* Feature 1 — ~handler$()~ Co-location
+
+~handler$()~ is the core authoring primitive. Write the implementation directly inside ~step$()~:
+
+#+begin_src typescript
+import { step$, handler$ } from "@loom/core";
+import { z } from "zod";
+
+export const FetchMetricsStep = step$({
+  id: "fetch-metrics",
+  inputSchema: z.object({ incidentId: z.string() }),
+  outputSchema: z.object({
+    cpu: z.object({ current: z.number(), threshold: z.number() }),
+    memory: z.object({ usedMb: z.number(), totalMb: z.number() }),
+  }),
+  handler: handler$(async (input, ctx) => {
+    const data = await fetch(`/api/metrics/${input.incidentId}`).then(r => r.json());
+    ctx.emit("METRICS_FETCHED", data);
+    return data;
+  }),
+});
+#+end_src
+
+** What the compiler does to this
+
+At build time, the ~handler$(fn)~ call is replaced with a dynamic import thunk:
+
+#+begin_src typescript
+// Compiled output (in-memory transform — not written to disk)
+handler: () => import("\0loom:chunk:fetch-metrics_2f936a0b"),
+#+end_src
+
+A separate virtual chunk is generated:
+
+#+begin_src typescript
+// \0loom:chunk:fetch-metrics_2f936a0b (served by Vite)
+import { z } from "zod";   // all top-level imports re-emitted
+
+export default async function(input, ctx) {
+  const data = await fetch(`/api/metrics/${input.incidentId}`).then(r => r.json());
+  ctx.emit("METRICS_FETCHED", data);
+  return data;
+};
+#+end_src
+
+** Runtime path (no compiler)
+
+Without the Vite plugin (unit tests, ~ts-node~, etc.), ~handler$(fn)~ returns a ~HandlerRef~:
+
+#+begin_src typescript
+{ _loomHandlerRef: true, fn: async (input, ctx) => { ... } }
+#+end_src
+
+~LazyEffect~ detects the ~HandlerRef~ and calls ~fn~ directly. No dynamic import, no overhead.
+
+** Removing manual effect registration
+
+With ~handler$()~, you no longer need to call ~effectRuntime.register()~ for step effects. ~WorkflowRuntime.registerFlow()~ auto-registers a ~LazyEffect~ for every step that carries a ~handler~:
+
+#+begin_src typescript
+// Before: manual registration required
+effectRuntime.register("fetch-metrics", new ToolEffect(fetchMetricsFn));
+effectRuntime.register("fetch-logs",    new ToolEffect(fetchLogsFn));
+
+// After: registerFlow handles it
+workflowRuntime.registerFlow(MyFlow.definition, MyFlow.runner);
+// ↑ automatically wires LazyEffect("fetch-metrics") and LazyEffect("fetch-logs")
+#+end_src
+
+* Feature 2 — Flow Graph Analysis + ~loom-manifest.json~
+
+At the end of every build, the plugin emits a ~loom-manifest.json~ file into your ~dist/~ directory.
+
+** Example manifest
+
+#+begin_src json
+{
+  "version": "1",
+  "flows": {
+    "investigate-incident": {
+      "version": "1.0.0",
+      "steps": ["fetch-metrics", "fetch-logs", "apply-remediation"],
+      "chunkMap": {
+        "fetch-metrics": "dist/chunks/fetch-metrics_2f936a0b.js",
+        "fetch-logs":    "dist/chunks/fetch-logs_4a1b3c2d.js"
+      },
+      "suspendPoints": [],
+      "warnings": [
+        "Step \"apply-remediation\" in flow \"investigate-incident\" has neither a handler$ nor a toolId — it must be registered manually."
+      ]
+    }
+  }
+}
+#+end_src
+
+** Console output during build
+
+#+begin_example
+[loom-compiler] ⚠  Step "apply-remediation" in flow "investigate-incident" has neither a handler$ nor a toolId
+[loom-compiler] ✓  flow "investigate-incident" — 3 step(s), 2 lazy chunk(s)
+#+end_example
+
+** What is validated
+
+| Check                              | Action on failure            |
+|------------------------------------+------------------------------|
+| Step in ~flow$()~ but not defined  | Warning in manifest + console |
+| Step has no ~handler$~ or ~toolId~ | Warning — must be registered manually |
+| ~flow$()~ has no steps             | Warning                       |
+
+Warnings never break the build. They are advisory — the intent is to catch configuration mistakes early rather than at runtime.
+
+* Feature 3 — Resumability
+
+The compiler package exports serialization utilities for the server → client state hand-off. This enables a React app to mount with fully-hydrated projection state and resume a suspended workflow without any EventStore round-trip.
+
+** Server side (e.g., Express route, Next.js getServerSideProps)
+
+#+begin_src typescript
+import {
+  serializeExecution,
+  serializeProjections,
+} from "@loom/workflow-runtime";
+
+app.get("/api/execution/:id", async (req, res) => {
+  const { id } = req.params;
+  const state = handle.getState();  // from your running WorkflowRuntime
+
+  const projStates = {
+    metrics:  projectionRuntime.getState("metrics",  id),
+    incident: projectionRuntime.getState("incident", id),
+  };
+
+  res.json({
+    executionState: serializeExecution(state),
+    projectionState: serializeProjections(projStates, id),
+  });
+});
+#+end_src
+
+** Client side (React app)
+
+#+begin_src typescript
+// main.tsx
+import { LoomProvider } from "@loom/renderer-react";
+
+const { executionState, projectionState } = await fetch(`/api/execution/${executionId}`)
+  .then(r => r.json());
+
+createRoot(root).render(
+  <LoomProvider
+    workflowRuntime={workflowRuntime}
+    projectionRuntime={projectionRuntime}
+    serializedExecutionState={executionState}
+    serializedProjectionState={projectionState}
+  >
+    <App />
+  </LoomProvider>
+);
+#+end_src
+
+~LoomProvider~ seeds projection state synchronously before the first child render — no empty-state flash, no loading indicator needed.
+
+** Resuming from pre-loaded state
+
+If the execution is suspended, restore it with ~restoreFromState~:
+
+#+begin_src typescript
+import { deserializeExecution } from "@loom/workflow-runtime";
+import { useLoom } from "@loom/renderer-react";
+
+function ApprovalPanel({ serializedState }: { serializedState: string }) {
+  const { workflowRuntime, preloadedExecutionState } = useLoom();
+
+  const approve = async () => {
+    if (!preloadedExecutionState) return;
+
+    const handle = await workflowRuntime.restoreFromState(
+      preloadedExecutionState,
+      { eventType: "ApprovalGranted", payload: { approved: true } }
+    );
+
+    handle.waitForCompletion().then(() => console.log("Done"));
+  };
+
+  return <button onClick={approve}>Approve</button>;
+}
+#+end_src
+
+* Standalone CLI
+
+Use the CLI to transform source without Vite:
+
+#+begin_src bash
+# Transform src/ → dist-loom/
+npx loom-compile src/ dist-loom/
+
+# Or add to package.json scripts
+#+end_src
+
+#+begin_src json
+{
+  "scripts": {
+    "compile:loom": "loom-compile src dist-loom"
+  }
+}
+#+end_src
+
+The CLI:
+1. Walks all ~.ts~/.tsx~ files in the source directory (skipping ~node_modules~ and ~dist~).
+2. Runs the same AST transform as the Vite plugin.
+3. Writes transformed files and ~.map~ files to the output directory.
+4. Writes extracted handler chunks to ~<outDir>/chunks/~.
+5. Writes ~loom-manifest.json~ to ~<outDir>/~.
+6. Prints per-flow summaries and warnings.
+
+* Programmatic API
+
+Import and use the compiler transforms directly in your own build scripts:
+
+#+begin_src typescript
+import { transformFile, buildManifest, loomPlugin } from "@loom/compiler";
+import type { PluginState } from "@loom/compiler";
+
+const state: PluginState = {
+  chunks: new Map(),
+  steps: new Map(),
+  stepsByVarName: new Map(),
+  flows: new Map(),
+};
+
+const sourceCode = fs.readFileSync("src/flows/MyFlow.ts", "utf-8");
+
+const result = transformFile(sourceCode, "/abs/path/src/flows/MyFlow.ts", state);
+if (result) {
+  console.log(result.code);   // transformed source
+  console.log(result.map);    // source map JSON string
+}
+
+const manifest = buildManifest(state);
+console.log(JSON.stringify(manifest, null, 2));
+#+end_src
+
+* How the AST Transform Works
+
+The compiler uses TypeScript's compiler API (~ts.createSourceFile~) for parsing and ~magic-string~ for minimal source rewriting (preserves line numbers and produces accurate source maps).
+
+#+begin_example
+For each .ts/.tsx file:
+  1. Fast path: skip if source contains neither "step$" nor "flow$"
+  2. Parse: ts.createSourceFile(path, source, ESNext)
+  3. Walk top-level statements
+     For each VariableStatement:
+       If initializer is CallExpression to step$():
+         Extract id, toolId, handler property
+         If handler is handler$(fn):
+           - Collect fn source text via MagicString.original
+           - Compute hash = FNV-1a(filePath + stepId).slice(0,8)
+           - Build chunk source: all import statements + export default fn
+           - Store chunk in state.chunks["\0loom:chunk:<id>_<hash>"]
+           - Overwrite handler$(fn) with () => import("virtual-id")
+         Register step in state.steps, varName in state.stepsByVarName
+       If initializer is CallExpression to flow$():
+         Extract id, version, steps array
+         Resolve step variable names → step ids via state.stepsByVarName
+         Register flow in state.flows
+  4. Return { code: ms.toString(), map: ms.generateMap() }
+#+end_example
+
+** V1 limitations (documented)
+
+- Chunks re-emit *all* top-level import statements from the source file (conservative). Free-variable analysis that emits only imports reachable by the handler function is planned for V2.
+- ~flow$()~ step resolution only handles direct variable references (not computed/spread).
+- Suspend point detection is heuristic (scans for ~ctx.suspend~, ~HumanEffect~ in source text).
+
+* Chunk Hashing
+
+Chunk ids use FNV-1a 32-bit hash of ~filePath + stepId~, truncated to 8 hex characters:
+
+#+begin_example
+input:  "/workspace/src/flows/MetricsTool.ts" + "fetch-metrics"
+hash:   fnv1a32(input) → 0x2f936a0b
+chunk:  "\0loom:chunk:fetch-metrics_2f936a0b"
+file:   "dist/chunks/fetch-metrics_2f936a0b.js"
+#+end_example
+
+The hash is stable across builds as long as the file path and step id do not change. Renaming a step id or moving a file invalidates the hash — existing cached chunks are not loaded.
+
+* Environment Compatibility
+
+| Environment       | Behaviour                                                    |
+|-------------------+--------------------------------------------------------------|
+| Vite dev server   | Plugin active; virtual chunks served in-memory; HMR works for source files |
+| Vite build        | handler$ extracted, chunks emitted, manifest generated       |
+| ts-node / tsx     | handler$(fn) → HandlerRef; LazyEffect calls fn directly      |
+| Vitest (unit)     | Same as ts-node; no plugin; tests run against HandlerRef     |
+| Vitest (browser)  | Plugin active; chunks served by Vite's test server           |
+| Node without Vite | CLI mode: ~loom-compile src/ dist-loom/~                     |

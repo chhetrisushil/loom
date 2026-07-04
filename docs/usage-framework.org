@@ -1,0 +1,530 @@
+#+title: Loom Framework — Usage Guide
+#+author: Sushil Chhetri
+
+Practical step-by-step guide for building agentic applications with Loom. For a complete API listing see ~docs/api-reference.org~. For architecture internals see ~docs/architecture.org~.
+
+* Prerequisites
+
+- Node.js ≥ 20
+- pnpm ≥ 9
+- TypeScript ≥ 5.6
+
+* Installation
+
+#+begin_src bash
+# Core framework
+pnpm add @loom/sdk @loom/effect-runtime @loom/event-runtime
+pnpm add @loom/projection-runtime @loom/snapshot-runtime
+pnpm add @loom/workflow-runtime @loom/blueprint-runtime
+
+# React renderer (if building UI)
+pnpm add @loom/renderer-react
+
+# Compiler (Vite plugin + CLI — dev dependency)
+pnpm add -D @loom/compiler
+#+end_src
+
+All public types and builders are re-exported from ~@loom/sdk~. Import from there unless you need to reference a specific sub-package.
+
+#+begin_src typescript
+import {
+  flow$, step$, handler$, tool$, projection$,
+  WorkflowRuntime,
+  ToolEffect, HumanEffect, LlmEffect,
+} from "@loom/sdk";
+#+end_src
+
+* Step 1 — Define Steps
+
+A step is the smallest unit of work. Each step declares its id, I/O schemas, and optionally a co-located handler implementation using ~handler$()~.
+
+** Option A: co-located handler (recommended)
+
+Use ~handler$()~ to put the implementation next to the definition. The compiler automatically extracts this into a lazy chunk; at runtime it is called directly.
+
+#+begin_src typescript
+import { step$, handler$ } from "@loom/sdk";
+import { z } from "zod";
+
+export const FetchMetricsStep = step$({
+  id: "fetch-metrics",
+  inputSchema: z.object({ incidentId: z.string() }),
+  outputSchema: z.object({
+    cpu: z.object({ current: z.number(), threshold: z.number() }),
+    memory: z.object({ usedMb: z.number(), totalMb: z.number() }),
+  }),
+  handler: handler$(async (input, ctx) => {
+    // ctx: { executionId, stepId, workflowId, attempt, emit }
+    const data = await yourApiClient.getMetrics(input.incidentId);
+    return data;
+  }),
+});
+#+end_src
+
+No separate ~effectRuntime.register()~ call is needed — ~registerFlow()~ auto-registers a ~LazyEffect~ for each step that carries a handler.
+
+** Option B: separate effect registration
+
+Use this when the effect implementation lives outside the step definition (e.g. different file, different environment, or test replacement).
+
+#+begin_src typescript
+export const FetchMetricsStep = step$({
+  id: "fetch-metrics",
+  toolId: "metrics-tool",    // effect registry key
+  inputSchema: z.object({ incidentId: z.string() }),
+  outputSchema: z.object({ cpu: z.number() }),
+});
+
+// Wire the implementation separately:
+effectRuntime.register(
+  "metrics-tool",
+  new ToolEffect(async (input) => {
+    return { cpu: await getMetrics(input.incidentId) };
+  })
+);
+#+end_src
+
+~toolId~ defaults to ~id~ when omitted, so both options can co-exist in the same step: set ~toolId~ if you want a stable registry key independent of ~id~.
+
+** Human approval step (suspend point)
+
+Use ~ctx.suspend()~ directly in the runner — no ~HumanEffect~ registration is needed unless you want the step modelled as a named effect.
+
+#+begin_src typescript
+export const ApprovalStep = step$({
+  id: "wait-for-approval",
+  inputSchema: z.object({ incidentId: z.string() }),
+  outputSchema: z.unknown(),
+  // No handler — suspension is triggered by ctx.suspend() in the runner
+});
+#+end_src
+
+Or use ~HumanEffect~ for explicit modelling:
+
+#+begin_src typescript
+effectRuntime.register(
+  "approval-gate",
+  new HumanEffect({ on: "ApprovalGranted" })
+);
+#+end_src
+
+* Step 2 — Define the Flow
+
+A flow groups steps and declares its I/O schemas. Flows are pure definitions — they carry no runtime state.
+
+#+begin_src typescript
+import { flow$ } from "@loom/sdk";
+import { z } from "zod";
+
+export const InvestigateIncidentFlow = flow$({
+  id: "investigate-incident",
+  name: "Investigate Incident",
+  version: "1.0.0",
+  description: "Gathers metrics and logs, waits for approval, then remediates",
+  inputSchema: z.object({ incidentId: z.string() }),
+  outputSchema: z.object({ resolved: z.boolean(), summary: z.string() }),
+  steps: [FetchMetricsStep, FetchLogsStep, ApplyRemediationStep],
+});
+#+end_src
+
+* Step 3 — Write the Flow Runner
+
+The runner is an async function that receives a ~WorkflowContext~ and the typed input. It calls ~ctx.run()~ for each step and ~ctx.emit()~ for domain events. All control flow is plain TypeScript — conditionals, loops, parallel execution.
+
+#+begin_src typescript
+import type { FlowRunner } from "@loom/workflow-runtime";
+
+const runner: FlowRunner<IncidentInput, IncidentOutput> = async (ctx, input) => {
+  ctx.emit("INCIDENT_INVESTIGATION_STARTED", { incidentId: input.incidentId });
+
+  // Run steps — idempotent; replayed from cache on resume
+  const metrics = await ctx.run(FetchMetricsStep, { incidentId: input.incidentId });
+  const logs    = await ctx.run(FetchLogsStep,    { incidentId: input.incidentId });
+
+  ctx.emit("INCIDENT_ANALYSIS_COMPLETE", { metrics, logs });
+
+  // Parallel execution
+  // const [metrics, logs] = await ctx.parallel([
+  //   [FetchMetricsStep, { incidentId: input.incidentId }],
+  //   [FetchLogsStep,    { incidentId: input.incidentId }],
+  // ]);
+
+  // Emit domain event to update UI projection
+  ctx.emit("APPROVAL_REQUESTED", { incidentId: input.incidentId, metrics, logs });
+
+  // Suspend and wait for human decision — resumes transparently on replay
+  await ctx.suspend({ on: "ApprovalGranted", correlationKey: input.incidentId });
+
+  // Everything after suspend runs only after resume
+  const remediation = await ctx.run(ApplyRemediationStep, { incidentId: input.incidentId });
+
+  ctx.emit("INCIDENT_RESOLVED", { incidentId: input.incidentId, summary: remediation.summary });
+
+  return { resolved: remediation.success, summary: remediation.summary };
+};
+
+// Bundle definition + runner together
+export const InvestigateIncidentRegisteredFlow = {
+  definition: InvestigateIncidentFlow,
+  runner,
+};
+#+end_src
+
+** Key rules for runner functions
+
+1. *No side effects outside ~ctx~* — all I/O must go through ~ctx.run()~, ~ctx.emit()~, or ~ctx.suspend()~. Direct API calls are not replayed idempotently.
+2. *Do not catch ~SuspendError~* — let it propagate to ~WorkflowRuntime~.
+3. *Keep runner logic deterministic* — the same input + event log must always produce the same execution path.
+
+* Step 4 — Set Up Projections
+
+Projections are pure read models derived from the event stream. Each handler is a ~(state, event) => state~ reducer.
+
+#+begin_src typescript
+import { projection$ } from "@loom/sdk";
+import type { EventEnvelope } from "@loom/sdk";
+
+interface MetricsState {
+  cpu: { current: number; threshold: number } | null;
+  memory: { usedMb: number; totalMb: number } | null;
+}
+
+export const MetricsProjection = projection$({
+  id: "metrics",
+  name: "Metrics Projection",
+  initialState: { cpu: null, memory: null } as MetricsState,
+  handlers: {
+    INCIDENT_ANALYSIS_COMPLETE: (state, event: EventEnvelope) => {
+      const p = event.payload as { metrics: MetricsState };
+      return { cpu: p.metrics.cpu, memory: p.metrics.memory };
+    },
+  },
+});
+#+end_src
+
+Register projections with the runtime before the first event arrives:
+
+#+begin_src typescript
+projectionRuntime.register(MetricsProjection);
+projectionRuntime.register(IncidentProjection);
+#+end_src
+
+* Step 5 — Bootstrap the Runtime
+
+Create one ~WorkflowRuntime~ per application. Wire ~onEvent~ to route events into ~ProjectionRuntime~.
+
+#+begin_src typescript
+import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { EffectRuntime } from "@loom/effect-runtime";
+import { InMemoryEventStore, InMemorySnapshotStore } from "./browserStores";
+import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
+
+const effectRuntime     = new EffectRuntime();
+const projectionRuntime = new InMemoryProjectionRuntime();
+
+projectionRuntime.register(MetricsProjection);
+projectionRuntime.register(IncidentProjection);
+
+const workflowRuntime = new WorkflowRuntime({
+  eventStore:    new InMemoryEventStore(),
+  snapshotStore: new InMemorySnapshotStore(),
+  effectRuntime,
+  onEvent: (event) => projectionRuntime.handleEvent(event),
+});
+
+// Auto-registers LazyEffect for steps with handler$
+workflowRuntime.registerFlow(
+  InvestigateIncidentRegisteredFlow.definition,
+  InvestigateIncidentRegisteredFlow.runner,
+);
+#+end_src
+
+For server/production use, replace in-memory stores with SQLite:
+
+#+begin_src typescript
+import { SqliteEventStore } from "@loom/event-runtime";
+import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
+
+const workflowRuntime = new WorkflowRuntime({
+  eventStore:    new SqliteEventStore("./data/events.db"),
+  snapshotStore: new SqliteSnapshotStore("./data/snapshots.db"),
+  effectRuntime,
+  onEvent: (event) => projectionRuntime.handleEvent(event),
+});
+#+end_src
+
+* Step 6 — Start and Resume Executions
+
+** Starting a new execution
+
+#+begin_src typescript
+const handle = await workflowRuntime.start(
+  InvestigateIncidentRegisteredFlow,
+  { incidentId: "cpu-001" }
+);
+
+console.log("Execution started:", handle.executionId);
+
+handle.waitForSuspend().then(() => {
+  console.log("Suspended — awaiting approval");
+  showApprovalUI();
+});
+
+handle.waitForCompletion().then((state) => {
+  console.log("Completed at sequence", state.sequence);
+});
+#+end_src
+
+** Resuming after human approval
+
+#+begin_src typescript
+const resumeHandle = await workflowRuntime.resume(executionId, {
+  eventType: "ApprovalGranted",
+  payload: { approved: true, approvedBy: "operator@acme.com" },
+});
+
+resumeHandle.waitForCompletion().then(() => {
+  console.log("Incident resolved");
+});
+#+end_src
+
+* Step 7 — Define a Blueprint (optional)
+
+Blueprints are JSON-serializable UI descriptions. Build one to connect projection state to rendered widgets.
+
+#+begin_src typescript
+import { blueprint$, grid, stack, MetricCard, Timeline, ApprovalCard } from "@loom/blueprint-runtime";
+
+export const IncidentBlueprint = blueprint$({
+  id: "incident-dashboard",
+  title: "Incident Investigation",
+  layout: grid({
+    columns: 2,
+    gap: 16,
+    children: [
+      MetricCard({
+        title: "CPU Usage %",
+        binding: { projectionId: "metrics", path: "cpu.current" },
+        unit: "%",
+      }),
+      MetricCard({
+        title: "Memory Used",
+        binding: { projectionId: "metrics", path: "memory.usedMb" },
+        unit: "MB",
+      }),
+      Timeline({
+        title: "Event Timeline",
+        binding: { projectionId: "incident", path: "timeline" },
+        maxItems: 10,
+      }),
+      ApprovalCard({
+        title: "Approve Remediation",
+        binding: { projectionId: "incident", path: "pendingApproval" },
+        approveLabel: "Apply Fix",
+        rejectLabel: "Cancel",
+      }),
+    ],
+  }),
+  projections: ["metrics", "incident"],
+});
+#+end_src
+
+* Step 8 — Render in React
+
+Wrap your app in ~LoomProvider~ to share the runtimes via context. Use ~BlueprintRenderer~ to render blueprint widgets and ~useLoom~ to access runtimes anywhere in the tree.
+
+#+begin_src typescript
+// main.tsx
+import { createRoot } from "react-dom/client";
+import { LoomProvider } from "@loom/renderer-react";
+
+const root = document.getElementById("root")!;
+createRoot(root).render(
+  <LoomProvider workflowRuntime={workflowRuntime} projectionRuntime={projectionRuntime}>
+    <App />
+  </LoomProvider>
+);
+#+end_src
+
+#+begin_src typescript
+// App.tsx
+import {
+  useLoom,
+  BlueprintRenderer,
+  defaultRegistry,
+  MetricCardRenderer,
+  TimelineRenderer,
+  ApprovalCardRenderer,
+} from "@loom/renderer-react";
+import type { WidgetAction } from "@loom/renderer-react";
+
+defaultRegistry.register("MetricCard", MetricCardRenderer);
+defaultRegistry.register("Timeline", TimelineRenderer);
+defaultRegistry.register("ApprovalCard", ApprovalCardRenderer);
+
+export function App() {
+  const { workflowRuntime, projectionRuntime } = useLoom();
+  const [executionId, setExecutionId] = useState<string | null>(null);
+
+  const start = async () => {
+    const handle = await workflowRuntime.start(InvestigateIncidentRegisteredFlow, {
+      incidentId: "cpu-001",
+    });
+    setExecutionId(handle.executionId);
+  };
+
+  const handleAction = (action: WidgetAction) => {
+    if (action.type === "APPROVE" && executionId) {
+      workflowRuntime.resume(executionId, {
+        eventType: "ApprovalGranted",
+        payload: { approved: true },
+      });
+    }
+  };
+
+  return (
+    <div>
+      <button onClick={start}>Start Investigation</button>
+      {executionId && (
+        <BlueprintRenderer
+          blueprint={IncidentBlueprint}
+          projectionRuntime={projectionRuntime}
+          executionId={executionId}
+          onAction={handleAction}
+        />
+      )}
+    </div>
+  );
+}
+#+end_src
+
+* Writing Custom Widget Renderers
+
+Extend the registry with domain-specific widgets:
+
+#+begin_src typescript
+import type { WidgetRendererProps } from "@loom/renderer-react";
+
+const ConnectionGaugeRenderer: React.FC<WidgetRendererProps> = ({ widget, value, onAction }) => {
+  const connections = value as { active: number; max: number };
+  const pct = (connections.active / connections.max) * 100;
+
+  return (
+    <div data-widget-kind="ConnectionGauge" data-widget-id={widget.id}>
+      <h4>{widget.title ?? "Connections"}</h4>
+      <progress value={pct} max={100} />
+      <span>{connections.active} / {connections.max}</span>
+    </div>
+  );
+};
+
+defaultRegistry.register("ConnectionGauge", ConnectionGaugeRenderer);
+#+end_src
+
+Then use the widget in a blueprint:
+
+#+begin_src typescript
+import { widget } from "@loom/blueprint-runtime";
+
+// Generic widget builder for custom kinds
+const ConnectionGauge = (props: { title: string; binding: DataBinding }) =>
+  widget({ kind: "ConnectionGauge", ...props });
+#+end_src
+
+* Subscribing to Projection State in Custom Hooks
+
+Use ~useProjection~ to read projection state outside of ~BlueprintRenderer~:
+
+#+begin_src typescript
+import { useProjection } from "@loom/renderer-react";
+
+function StatusBanner({ executionId }: { executionId: string }) {
+  const { projectionRuntime } = useLoom();
+  const incident = useProjection<IncidentState>(
+    projectionRuntime,
+    "incident",
+    executionId
+  );
+
+  return (
+    <div className={`status-${incident.status}`}>
+      Status: {incident.status}
+    </div>
+  );
+}
+#+end_src
+
+* Testing Flows
+
+Test flows without Vite — ~handler$(fn)~ returns a ~HandlerRef~ at runtime so tests work unmodified.
+
+#+begin_src typescript
+import { describe, it, expect } from "vitest";
+import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { InMemoryEventStore, InMemorySnapshotStore } from "./browserStores";
+
+describe("InvestigateIncidentFlow", () => {
+  it("auto-registers LazyEffect from handler$", async () => {
+    const effectRuntime = new EffectRuntime();
+    const runtime = new WorkflowRuntime({
+      eventStore:    new InMemoryEventStore(),
+      snapshotStore: new InMemorySnapshotStore(),
+      effectRuntime,
+    });
+
+    // registerFlow auto-wires LazyEffect for each step with handler$
+    runtime.registerFlow(
+      InvestigateIncidentRegisteredFlow.definition,
+      InvestigateIncidentRegisteredFlow.runner,
+    );
+
+    expect(effectRuntime.has("fetch-metrics")).toBe(true);
+  });
+
+  it("completes after approval", async () => {
+    // ... setup runtime as above
+
+    const handle = await runtime.start(InvestigateIncidentRegisteredFlow, {
+      incidentId: "test-001",
+    });
+
+    await handle.waitForSuspend();
+
+    const resumeHandle = await runtime.resume(handle.executionId, {
+      eventType: "ApprovalGranted",
+      payload: { approved: true },
+    });
+
+    const final = await resumeHandle.waitForCompletion();
+    expect(final.status).toBe("completed");
+  });
+});
+#+end_src
+
+* Common Pitfalls
+
+** "Effect not registered" at runtime
+
+If a step has neither ~handler$()~ nor a manual ~effectRuntime.register()~ call, ~ctx.run()~ will throw. Solution: add ~handler$()~ to the step definition, or call ~effectRuntime.register(toolId, effect)~ before ~start()~.
+
+** Side effects executing twice
+
+If you call an external API directly in the runner (not through ~ctx.run()~), it re-executes on every resume. Always wrap external calls in ~ctx.run(step, ...)~.
+
+** Missing projection updates
+
+Check that ~onEvent~ is wired: ~new WorkflowRuntime({ ..., onEvent: (e) => projectionRuntime.handleEvent(e) })~. Without this, projections never receive events.
+
+** TypeScript exactOptionalPropertyTypes errors on ~step$~
+
+When using ~handler$()~, pass undefined-free values. Use the conditional spread pattern:
+
+#+begin_src typescript
+const step = step$({
+  id: "my-step",
+  handler: handler$(myFn),
+  ...(toolId !== undefined && { toolId }),
+  inputSchema, outputSchema,
+});
+#+end_src

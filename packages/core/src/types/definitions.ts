@@ -2,6 +2,34 @@ import type { ZodSchema } from "zod";
 
 export type EffectKind = "tool" | "llm" | "human" | "a2a";
 
+// ── Handler types (used by handler$() and the compiler) ──────────────────────
+
+export interface StepHandlerContext {
+  executionId: string;
+  stepId: string;
+  workflowId: string;
+  attempt: number;
+  emit(eventType: string, payload: unknown): void;
+}
+
+export type HandlerFn<TIn = unknown, TOut = unknown> = (
+  input: TIn,
+  ctx: StepHandlerContext
+) => Promise<TOut>;
+
+export type HandlerLoader<TIn = unknown, TOut = unknown> = () => Promise<{
+  default: HandlerFn<TIn, TOut>;
+}>;
+
+export interface HandlerRef<TIn = unknown, TOut = unknown> {
+  readonly _loomHandlerRef: true;
+  readonly fn: HandlerFn<TIn, TOut>;
+}
+
+export type HandlerSpec<TIn = unknown, TOut = unknown> =
+  | HandlerRef<TIn, TOut>
+  | HandlerLoader<TIn, TOut>;
+
 export interface RetryPolicy {
   maxAttempts: number;
   backoffMs?: number;
@@ -38,6 +66,7 @@ export interface StepDefinition<TIn = unknown, TOut = unknown> {
   id: string;
   name: string;
   toolId?: string;
+  handler?: HandlerSpec<TIn, TOut>;
   inputSchema: ZodSchema<TIn>;
   outputSchema: ZodSchema<TOut>;
   retry?: RetryPolicy;
@@ -52,7 +81,8 @@ export interface FlowDefinition<TIn = unknown, TOut = unknown> {
   description?: string;
   inputSchema: ZodSchema<TIn>;
   outputSchema: ZodSchema<TOut>;
-  steps: StepDefinition[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  steps: StepDefinition<any, any>[];
   policies?: PolicyDefinition[];
 }
 

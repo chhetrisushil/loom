@@ -5,15 +5,21 @@
 
 Loom is a TypeScript framework for durable, event-sourced AI workflows. Its central design goal is that a workflow function can be interrupted at any point (to wait for a tool call, an LLM response, or a human decision), survive a process restart, and resume from exactly where it left off — without the application code knowing the difference between a fresh run and a replay.
 
-Three ideas underpin the whole system:
+Four ideas underpin the whole system:
 
 1. *Event sourcing* — every state change is an immutable ~EventEnvelope~ appended to an ordered log. State is always derived by replaying that log, never mutated in place.
 2. *Deterministic replay* — on resume, the ~ReplayVM~ fast-forwards through historical events so that previously-completed steps return their cached outputs instead of re-executing.
 3. *Blueprint-driven UI* — the running workflow emits domain events; ~ProjectionRuntime~ folds those events into view models; the React renderer turns a JSON-serializable ~Blueprint~ into live UI widgets bound to those view models.
+4. *Build-time optimization* — ~@loom/compiler~ extracts co-located handler functions into lazy chunks at build time, statically validates flow graphs, and generates resumability metadata that eliminates round-trips to the server on client restore.
 
 * Package Dependency Graph
 
 #+begin_example
+                      @loom/compiler
+                 (Vite plugin + CLI — build time only)
+                      │
+                      │  analyses and transforms
+                      ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │                          @loom/sdk                               │
 │          (public re-export surface — start here)                 │
@@ -35,28 +41,40 @@ Three ideas underpin the whole system:
                               (types, builders, SuspendError)
 #+end_example
 
-All packages depend on ~@loom/core~ for shared types. ~@loom/sdk~ is the single entry point for application code — it re-exports everything public.
+All packages depend on ~@loom/core~ for shared types. ~@loom/sdk~ is the single entry point for application code — it re-exports everything public. ~@loom/compiler~ is a dev-time-only dependency; it transforms source code at build time and is never bundled into the application.
 
 * Core Types (~@loom/core~)
 
 ** Definitions
 
-| Type                  | Purpose                                                          |
-|-----------------------+------------------------------------------------------------------|
-| ~FlowDefinition~      | Declarative description of a workflow (id, version, steps, I/O schemas) |
-| ~StepDefinition~      | A single unit of work within a flow; links to a ~toolId~        |
-| ~ToolDefinition~      | Metadata for an effect (kind, input/output schemas)             |
-| ~ProjectionDefinition~| Maps event types to reducer functions and an initial state      |
-| ~AgentDefinition~     | Groups tools and policies into an autonomous agent              |
+| Type                   | Purpose                                                           |
+|------------------------+-------------------------------------------------------------------|
+| ~FlowDefinition~       | Declarative description of a workflow (id, version, steps, I/O schemas) |
+| ~StepDefinition~       | A single unit of work within a flow; links to a ~toolId~ and optionally carries a co-located ~HandlerSpec~ |
+| ~ToolDefinition~       | Metadata for an effect (kind, input/output schemas)              |
+| ~ProjectionDefinition~ | Maps event types to reducer functions and an initial state       |
+| ~AgentDefinition~      | Groups tools and policies into an autonomous agent               |
+
+** Handler Types (added by Phase A)
+
+These types enable the ~handler$()~ co-location pattern and the lazy-loading path used by the compiler.
+
+| Type              | Description                                                              |
+|-------------------+--------------------------------------------------------------------------|
+| ~HandlerFn~       | ~(input: TIn, ctx: StepHandlerContext) => Promise<TOut>~ — the actual implementation |
+| ~HandlerLoader~   | ~() => Promise<{ default: HandlerFn }>~ — dynamic import thunk produced by compiler |
+| ~HandlerRef~      | ~{ _loomHandlerRef: true, fn: HandlerFn }~ — runtime identity wrapper   |
+| ~HandlerSpec~     | ~HandlerRef | HandlerLoader~ — what a ~step$()~ handler field holds       |
+| ~StepHandlerContext~ | Context passed to ~HandlerFn~: ~executionId, stepId, workflowId, attempt, emit~ |
 
 ** Runtime Types
 
-| Type              | Purpose                                                           |
-|-------------------+-------------------------------------------------------------------|
-| ~EventEnvelope~   | Immutable event record: id, workflowId, executionId, eventType, sequence, timestamp, payload |
-| ~ExecutionState~  | Snapshot of a workflow's full runtime state (frames, variables, status, suspendedOn) |
-| ~ExecutionFrame~  | Per-step state: status, input, output, error, attempt count      |
-| ~SuspendCondition~| What event type to wait for, optional timeout and correlationKey |
+| Type               | Purpose                                                            |
+|--------------------+--------------------------------------------------------------------|
+| ~EventEnvelope~    | Immutable event record: id, workflowId, executionId, eventType, sequence, timestamp, payload |
+| ~ExecutionState~   | Snapshot of a workflow's full runtime state (frames, variables, status, suspendedOn) |
+| ~ExecutionFrame~   | Per-step state: status, input, output, error, attempt count       |
+| ~SuspendCondition~ | What event type to wait for, optional timeout and correlationKey  |
 
 ** ~SuspendError~
 
@@ -79,6 +97,12 @@ All packages depend on ~@loom/core~ for shared types. ~@loom/sdk~ is the single 
          │  3. Append resume event + EXECUTION_RESUMED       │
          │  4. Call execute() ──────────────────────────────►│
          │                                                   │
+restoreFromState()  (client-side path — no EventStore)        │
+  ──────►│  1. Accept preloaded ExecutionState               │
+         │  2. Create ReplayVM([], preloadedState)           │
+         │  3. Apply optional resumeEvent directly           │
+         │  4. Call execute() ──────────────────────────────►│
+         │                                                   │
          │           execute() internal                      │
          │  ┌────────────────────────────────────────┐       │
          │  │ Build WorkflowContextImpl               │       │
@@ -93,9 +117,27 @@ All packages depend on ~@loom/core~ for shared types. ~@loom/sdk~ is the single 
          └───────────────────────────────────────────────────┘
 #+end_example
 
+** Auto-Registration of ~LazyEffect~
+
+When ~registerFlow()~ is called, ~WorkflowRuntime~ inspects every step in the flow definition. For each step that carries a ~handler~ field (a ~HandlerSpec~), it automatically registers a ~LazyEffect~ under ~step.toolId ?? step.id~ — as long as that key is not already occupied. This means steps using ~handler$()~ syntax require no manual ~effectRuntime.register()~ calls.
+
+#+begin_example
+registerFlow(definition, runner)
+  │
+  ├─ flows.set(definition.id, { definition, runner })
+  │
+  └─ for each step in definition.steps:
+       if step.handler !== undefined
+       and NOT effectRuntime.has(step.toolId ?? step.id):
+         effectRuntime.register(
+           step.toolId ?? step.id,
+           new LazyEffect(step.handler)   ← wraps HandlerRef or HandlerLoader
+         )
+#+end_example
+
 ** ~ExecutionHandle~
 
-~start()~ and ~resume()~ both return an ~ExecutionHandle~ synchronously (before the flow completes). This lets callers set up listeners before the async runner fires:
+~start()~, ~resume()~, and ~restoreFromState()~ all return an ~ExecutionHandle~ synchronously (before the flow completes). This lets callers set up listeners before the async runner fires:
 
 #+begin_src typescript
 const handle = await runtime.start(MyFlow, input);
@@ -172,18 +214,20 @@ Event log (ordered by sequence)
 
 On resume, the VM is seeded with either the full event log or a snapshot + tail events. When the flow runner calls ~ctx.run(FetchMetricsStep, ...)~, the VM already has ~frames["fetch-metrics"].status === "completed"~, so it skips re-execution and returns the cached output instantly.
 
+~restoreFromState()~ takes this further: it accepts a pre-serialized ~ExecutionState~ (produced server-side via ~serializeExecution~) and seeds the VM directly — no EventStore read at all. This is the client-side resumption path.
+
 ** Event Handlers (~foldEvents~)
 
-| Event type             | Effect on ~ExecutionState~                                   |
-|------------------------+--------------------------------------------------------------|
-| ~EXECUTION_STARTED~    | status → "running", startedAt set                           |
-| ~STEP_STARTED~         | frame[stepId].status → "running"                            |
-| ~STEP_COMPLETED~       | frame[stepId].status → "completed", output stored           |
-| ~STEP_FAILED~          | frame[stepId].status → "failed", error stored               |
-| ~EXECUTION_SUSPENDED~  | status → "suspended", suspendedOn set                       |
+| Event type             | Effect on ~ExecutionState~                                    |
+|------------------------+---------------------------------------------------------------|
+| ~EXECUTION_STARTED~    | status → "running", startedAt set                            |
+| ~STEP_STARTED~         | frame[stepId].status → "running"                             |
+| ~STEP_COMPLETED~       | frame[stepId].status → "completed", output stored            |
+| ~STEP_FAILED~          | frame[stepId].status → "failed", error stored                |
+| ~EXECUTION_SUSPENDED~  | status → "suspended", suspendedOn set                        |
 | ~EXECUTION_RESUMED~    | status → "running", payload stored in ~variables._resumePayload~ |
-| ~EXECUTION_COMPLETED~  | status → "completed"                                        |
-| ~EXECUTION_FAILED~     | status → "failed"                                           |
+| ~EXECUTION_COMPLETED~  | status → "completed"                                         |
+| ~EXECUTION_FAILED~     | status → "failed"                                            |
 
 * ~EffectRuntime~ — Side-Effect Sandbox
 
@@ -199,12 +243,33 @@ EffectRuntime
 
 ** Effect Types
 
-| Class          | Kind     | Behaviour                                                     |
-|----------------+----------+---------------------------------------------------------------|
-| ~ToolEffect~   | ~tool~   | Wraps an async function — HTTP call, DB query, anything async |
-| ~LlmEffect~    | ~llm~    | Same shape, semantically marks this as an LLM call            |
-| ~HumanEffect~  | ~human~  | Throws ~SuspendError~ immediately — no async work             |
-| ~A2AEffect~    | ~a2a~    | Agent-to-agent delegation (same shape as ToolEffect)          |
+| Class          | Kind     | Behaviour                                                      |
+|----------------+----------+----------------------------------------------------------------|
+| ~ToolEffect~   | ~tool~   | Wraps an async function — HTTP call, DB query, anything async  |
+| ~LlmEffect~    | ~llm~    | Same shape, semantically marks this as an LLM call             |
+| ~HumanEffect~  | ~human~  | Throws ~SuspendError~ immediately — no async work              |
+| ~A2AEffect~    | ~a2a~    | Agent-to-agent delegation (same shape as ToolEffect)           |
+| ~LazyEffect~   | ~tool~   | Resolves and caches a ~HandlerSpec~ on first ~execute()~ call  |
+
+** ~LazyEffect~ — Handler Co-location Bridge
+
+~LazyEffect~ is the runtime counterpart to the ~handler$()~ compiler primitive. It accepts either a ~HandlerRef~ (runtime direct path) or a ~HandlerLoader~ (compiled dynamic-import path) and resolves the underlying function on first call.
+
+#+begin_example
+LazyEffect(spec)
+  execute(input, ctx)
+    │
+    ├─ already resolved? → call cached fn
+    │
+    ├─ spec is HandlerRef (runtime path)?
+    │     YES → cache spec.fn directly
+    │
+    └─ spec is HandlerLoader (compiled path)?
+          YES → await spec()   ← dynamic import()
+                cache mod.default
+#+end_example
+
+At runtime (without the compiler), ~handler$(fn)~ returns a ~HandlerRef~, so ~LazyEffect~ calls ~fn~ directly — zero overhead, full test compatibility. At build time, the compiler rewrites ~handler$(fn)~ to ~() => import("\0loom:chunk:stepId_hash")~ (a ~HandlerLoader~), so the function is loaded lazily from a separate chunk on first execution.
 
 ~HumanEffect~ is the bridge between the effect system and the suspend mechanism. When a flow reaches a step backed by a ~HumanEffect~, execution suspends until an external ~resume()~ call delivers the human's decision.
 
@@ -311,96 +376,183 @@ WorkflowRuntime                ProjectionRuntime
 
 State is keyed by ~projectionId::executionId~, so multiple concurrent executions of the same flow each maintain independent projection state.
 
-** Projection Example
+** ~seedState(projectionId, executionId, state)~
 
-#+begin_src typescript
-export const MetricsProjection: Projection<MetricsState> = {
-  id: "metrics",
-  initialState: { cpu: null, memory: null },
-  handlers: {
-    INCIDENT_ANALYSIS_COMPLETE: (state, event) => ({
-      ...state,
-      cpu: event.payload.metrics.cpu,
-      memory: event.payload.metrics.memory,
+~seedState~ populates projection state synchronously without processing events. It is called by ~LoomProvider~ on mount to restore projection state from a serialized snapshot, preventing an empty-state flash on first render. State seeded this way is immediately visible to all subscribers.
+
+* @loom/compiler — Build-Time Optimizer
+
+The compiler is a Vite plugin and standalone CLI that applies three optimizations at build time, inspired by the QwikJS optimizer.
+
+** Feature 1: ~handler$()~ Lazy Chunk Extraction
+
+~handler$()~ is an identity function at runtime — it wraps a handler function in a ~HandlerRef~ with no overhead. The compiler replaces it at build time:
+
+#+begin_example
+Source (authored):
+  const FetchMetricsStep = step$({
+    id: "fetch-metrics",
+    handler: handler$(async (input, ctx) => {
+      const data = await fetchFromApi(input.incidentId);
+      return data;
     }),
-  },
-};
-#+end_src
+    inputSchema: ..., outputSchema: ...,
+  });
 
-* Blueprint System (~@loom/blueprint-runtime~)
+After compiler transform:
+  const FetchMetricsStep = step$({
+    id: "fetch-metrics",
+    handler: () => import("\0loom:chunk:fetch-metrics_2f936a0b"),
+    inputSchema: ..., outputSchema: ...,
+  });
 
-A ~Blueprint~ is a pure JSON-serializable description of a UI. It carries no React imports and can be generated on a server, stored in a database, or sent over the wire.
+Generated chunk (\0loom:chunk:fetch-metrics_2f936a0b):
+  // re-emits all top-level imports from the source file
+  import { fetchFromApi } from "...";
+  export default async function(input, ctx) {
+    const data = await fetchFromApi(input.incidentId);
+    return data;
+  };
+#+end_example
+
+The dynamic import is only resolved on the first ~ctx.run(FetchMetricsStep, ...)~ call. Steps that are never reached in an execution never load their chunk.
+
+** Feature 2: Static Flow Graph Analysis + ~loom-manifest.json~
+
+The compiler walks every ~step$()~ and ~flow$()~ call in the codebase, resolves variable names to step ids, and emits a ~loom-manifest.json~ build asset:
 
 #+begin_example
-Blueprint {
-  id, title,
-  layout: Layout,          ← grid | flex | stack
-  projections: string[]    ← which projection ids this blueprint reads
+loom-manifest.json
+{
+  "version": "1",
+  "flows": {
+    "investigate-incident": {
+      "version": "1.0.0",
+      "steps": ["fetch-metrics", "fetch-logs", "apply-remediation"],
+      "chunkMap": {
+        "fetch-metrics": "dist/chunks/fetch-metrics_2f936a0b.js",
+        "fetch-logs":    "dist/chunks/fetch-logs_4a1b3c2d.js"
+      },
+      "suspendPoints": ["apply-remediation"],
+      "warnings": [
+        "Step \"apply-remediation\" has neither a handler$ nor a toolId"
+      ]
+    }
+  }
 }
-
-Layout
-  grid(columns, gap, children: Widget[])
-  flex(direction, gap, children: Widget[])
-  stack(gap, children: Widget[])
-
-Widget
-  MetricCard  { title, binding, unit, format }
-  Timeline    { title, binding, maxItems }
-  ApprovalCard{ title, binding, approveLabel, rejectLabel }
-  StatusBadge { title, binding }
-  ProgressBar { title, binding, max }
-  DataTable   { title, binding, columns }
-  AlertCard   { title, binding, severity }
-
-DataBinding { projectionId: string, path: string }
-  ← dot-path into the projection's state object
 #+end_example
 
-Widget ids are deterministically hashed from ~(kind, props)~, making blueprints stable across re-renders without explicit key management.
+Warnings are printed to the terminal at build time for steps that lack both a ~handler$~ and a ~toolId~.
 
-* React Renderer (~@loom/renderer-react~)
+** Feature 3: Resumability Primitives
 
-~BlueprintRenderer~ is the bridge between the Blueprint JSON and live React components. It:
-
-1. Reads the blueprint's ~projections~ list and subscribes to each via ~ProjectionRuntime~.
-2. On every state update, resolves each widget's ~DataBinding~ by walking the dot-path into the projection state.
-3. Delegates rendering to a component registered in ~defaultRegistry~ by widget ~kind~.
+The compiler package exports serialization utilities that implement the server → client state transfer contract:
 
 #+begin_example
-BlueprintRenderer
-  props: { blueprint, projectionRuntime, executionId, onAction }
-  │
-  ├─ useEffect: subscribe to each projectionId in blueprint.projections
-  │             setState on every update → triggers re-render
-  │
-  └─ render:
-       traverse layout tree
-         for each Widget:
-           data = resolvePath(projectionState, widget.binding.path)
-           Component = registry.get(widget.kind)
-           <Component data={data} onAction={onAction} />
+SERVER SIDE (e.g. API route)
+─────────────────────────────────────────────────────────────
+const state = handle.getState();
+const projStates = {
+  metrics:  projectionRuntime.getState("metrics", executionId),
+  incident: projectionRuntime.getState("incident", executionId),
+};
+
+const serializedExec = serializeExecution(state);
+const serializedProj = serializeProjections(projStates, executionId);
+
+// Embed in SSR HTML or API response:
+window.__LOOM_EXEC__ = JSON.parse(serializedExec);
+window.__LOOM_PROJ__ = JSON.parse(serializedProj);
+
+CLIENT SIDE (React mount)
+─────────────────────────────────────────────────────────────
+<LoomProvider
+  workflowRuntime={workflowRuntime}
+  projectionRuntime={projectionRuntime}
+  serializedExecutionState={window.__LOOM_EXEC__}
+  serializedProjectionState={window.__LOOM_PROJ__}
+>
+  <App />
+</LoomProvider>
 #+end_example
 
-** Widget Registry
+~LoomProvider~ calls ~projectionRuntime.seedState()~ synchronously on mount, so child components never see an empty-state flash on first render.
 
-The registry decouples widget kinds from their React implementations. Applications can extend it:
+** Vite Plugin Hook Sequence
 
-#+begin_src typescript
-defaultRegistry.register("MetricCard", MetricCardRenderer);
-defaultRegistry.register("ApprovalCard", ApprovalCardRenderer);
-// register custom kinds for your domain
-defaultRegistry.register("HeatMap", HeatMapRenderer);
-#+end_src
+#+begin_example
+configResolved   → store resolved Vite config (for outDir)
+     │
+transform        → for each .ts/.tsx file:
+     │               parse with ts.createSourceFile()
+     │               walk AST for step$(), flow$() calls
+     │               rewrite handler$(fn) → () => import("\0loom:chunk:…")
+     │               register chunk source, step metadata, flow graph
+     │
+resolveId        → intercept "\0loom:chunk:*" → return id unchanged
+     │
+load             → serve chunk source from in-memory state.chunks map
+     │
+generateBundle   → emit loom-manifest.json as bundle asset
+                   print per-flow warnings/summaries to console
+#+end_example
 
-** ~onAction~ Callback
+~enforce: "pre"~ ensures the transform runs before ~@vitejs/plugin-react~ processes JSX.
 
-Widgets that accept user input (e.g. ~ApprovalCard~) dispatch a typed ~WidgetAction~:
+* Resumability — Client-Side State Restoration
 
-#+begin_src typescript
-type WidgetAction = { type: "APPROVE" } | { type: "REJECT" } | { type: string; payload?: unknown };
-#+end_src
+Resumability eliminates the client's need to re-fetch or re-replay events from the server when mounting a React UI that already has a live (or suspended) execution.
 
-The host application handles these actions and calls ~workflowRuntime.resume()~.
+#+begin_example
+Traditional browser-side execution (current baseline):
+  1. Mount React app
+  2. Call workflowRuntime.start() or resume()
+  3. WorkflowRuntime reads EventStore (SQLite / HTTP)
+  4. Rebuilds ExecutionState from event log
+  5. Re-runs all steps from replay
+  → Round-trip to server / database required on every mount
+
+With Loom resumability:
+  1. Server serializes ExecutionState + ProjectionState into strings
+  2. Strings embedded in SSR HTML / API response
+  3. Mount React app with <LoomProvider serialized…>
+     LoomProvider.seedState() seeds projections synchronously
+  4. Component renders with correct data immediately (no flash)
+  5. If execution is suspended, call restoreFromState(preloadedState)
+     → No EventStore round-trip; VM seeded from preloaded state
+#+end_example
+
+** ~serializeExecution~ / ~deserializeExecution~
+
+Pure JSON serialization of ~ExecutionState~. The state is self-contained — it includes all step outputs, status, variables, and sequence number. Passing it to ~restoreFromState()~ is sufficient to resume execution without touching the EventStore.
+
+** ~serializeProjections~ / ~deserializeProjections~
+
+Serializes a ~Record<projectionId, state>~ snapshot keyed by ~executionId~. ~LoomProvider~ deserializes this on mount and calls ~projectionRuntime.seedState()~ for each entry.
+
+** ~LoomProvider~ + ~useLoom~
+
+~LoomProvider~ is a React context provider that:
+1. Accepts ~workflowRuntime~ and ~projectionRuntime~ as props.
+2. Deserializes and seeds projection state synchronously in the render phase (before the first child render).
+3. Exposes both runtimes and the deserialized ~ExecutionState~ via ~useLoom()~.
+
+#+begin_example
+LoomProvider (React component)
+  props: workflowRuntime, projectionRuntime,
+         serializedExecutionState?, serializedProjectionState?
+  │
+  ├─ First render (synchronous):
+  │     if serializedProjectionState:
+  │       snapshot = deserializeProjections(serializedProjectionState)
+  │       for each [projId, state] in snapshot.states:
+  │         projectionRuntime.seedState(projId, snapshot.executionId, state)
+  │
+  └─ Context value: { workflowRuntime, projectionRuntime, preloadedExecutionState }
+
+useLoom()
+  └─ returns the LoomContext value; throws if called outside <LoomProvider>
+#+end_example
 
 * Full Execution Lifecycle
 
@@ -423,7 +575,10 @@ async runner (background):
   ctx.run(FetchMetricsStep, input)
     ├─ VM.hasCompleted? NO
     ├─ ctx.emit(STEP_STARTED)
-    ├─ EffectRuntime.execute("metrics-tool") → ToolEffect fn → { cpu, memory, connections }
+    ├─ EffectRuntime.execute("fetch-metrics") → LazyEffect
+    │     └─ resolves HandlerRef.fn on first call (runtime path)
+    │        OR dynamic import chunk (compiled path)
+    │     → returns { cpu, memory, connections }
     └─ ctx.emit(STEP_COMPLETED, output)
 
   ctx.run(FetchLogsStep, input)  [same pattern]
@@ -460,7 +615,7 @@ async runner (replay + continuation):
   ctx.suspend()              → _resumePayload in variables → pass through (no re-throw)
   ctx.run(ApplyRemediationStep)
     ├─ VM.hasCompleted? NO
-    └─ EffectRuntime.execute("remediation-tool") → { success: true, summary: "..." }
+    └─ EffectRuntime.execute("apply-remediation") → LazyEffect → handler fn
   ctx.emit("INCIDENT_RESOLVED", ...)
 
 WorkflowRuntime catches completion:
@@ -500,6 +655,9 @@ The ~suspendPassthroughConsumed~ flag on ~WorkflowContextImpl~ ensures that in a
 ┌────────────────────────────────────────────────────────────────────┐
 │                        Application / UI                            │
 │                                                                    │
+│  <LoomProvider workflowRuntime projectionRuntime> (context)        │
+│  useLoom() → { workflowRuntime, projectionRuntime }                │
+│                                                                    │
 │  workflowRuntime.start() ──────────────────────────────────────►  │
 │  handle.waitForSuspend() / waitForCompletion()                     │
 │  onAction → workflowRuntime.resume()                               │
@@ -514,10 +672,12 @@ The ~suspendPassthroughConsumed~ flag on ~WorkflowContextImpl~ ensures that in a
 │  │   ctx.emit → EventStore    ├──┼──►│  │ subscribers map  │  │
 │  │   ctx.suspend → SuspendErr │  │   │  └──────────────────┘  │
 │  └────────────────────────────┘  │   └────────────────────────┘
-│  ┌────────┐  ┌────────────────┐  │
-│  │ReplayVM│  │EffectRuntime   │  │
-│  │foldEvts│  │Tool/LLM/Human  │  │
-│  └────────┘  └────────────────┘  │
+│  ┌────────────┐ ┌──────────────┐ │
+│  │ ReplayVM   │ │EffectRuntime │ │
+│  │ foldEvts   │ │ LazyEffect   │ │
+│  └────────────┘ │ ToolEffect   │ │
+│                 │ HumanEffect  │ │
+│                 └──────────────┘ │
 └──────────┬──────────────┬────────┘
            │              │
      ┌─────▼──────┐ ┌─────▼─────────┐
@@ -525,6 +685,13 @@ The ~suspendPassthroughConsumed~ flag on ~WorkflowContextImpl~ ensures that in a
      │ (SQLite /  │ │(resume accel) │
      │  InMemory) │ └───────────────┘
      └────────────┘
+
+              @loom/compiler (build time)
+              ────────────────────────────
+              Vite plugin transforms source:
+                handler$(fn) → () => import("chunk")
+              Emits loom-manifest.json
+              CLI: loom-compile src/ dist-loom/
 #+end_example
 
 * Design Decisions
@@ -540,6 +707,10 @@ Events are the only durable write. State is always derived. This means:
 
 Suspend is implemented as a thrown exception rather than a ~return~ value so that the flow runner function's control flow is unchanged. A ~return~ would require every step after the suspend to be nested in a callback. Throwing lets the code read as a simple linear function while the runtime handles the mechanics.
 
+** Why ~handler$()~ is a no-op at runtime?
+
+Making ~handler$(fn)~ return a ~HandlerRef~ (rather than nothing) means code works correctly without the Vite plugin — development, unit tests, and environments without a build step all work out of the box. The compiler rewrite is a pure optimization, not a correctness requirement.
+
 ** Why JSON-serializable Blueprints?
 
 Blueprints carry no framework imports. A server-side flow step can produce a Blueprint, store it in the event log, and a completely separate renderer picks it up. This makes server-generated UI, persisted layouts, and cross-language rendering all possible without coupling to React.
@@ -547,3 +718,7 @@ Blueprints carry no framework imports. A server-side flow step can produce a Blu
 ** Why a widget registry?
 
 The registry keeps ~@loom/blueprint-runtime~ (pure types) independent of ~@loom/renderer-react~. New widget kinds can be added without touching the framework — register a component, use the widget builder, done.
+
+** Why a separate ~@loom/compiler~ package?
+
+The compiler has a fundamentally different dependency profile — it imports TypeScript's compiler API and Vite's plugin types, neither of which belong in a runtime bundle. Keeping it separate ensures zero build-tool code reaches the browser and keeps the peerDependency on Vite optional.

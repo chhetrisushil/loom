@@ -11,6 +11,7 @@
   "references": [
     { "path": "../core" },
     { "path": "../blueprint-runtime" },
-    { "path": "../projection-runtime" }
+    { "path": "../projection-runtime" },
+    { "path": "../workflow-runtime" }
   ]
 }

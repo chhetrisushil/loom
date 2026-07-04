@@ -5,4 +5,5 @@ export { TimelineRenderer } from "./renderers/TimelineRenderer";
 export { ApprovalCardRenderer } from "./renderers/ApprovalCardRenderer";
 export { StatusBadgeRenderer } from "./renderers/StatusBadgeRenderer";
 export { useProjection } from "./hooks/useProjection";
+export { LoomProvider, useLoom } from "./LoomProvider";
 export type { WidgetAction, WidgetRenderer, WidgetRendererProps } from "./RendererRegistry";

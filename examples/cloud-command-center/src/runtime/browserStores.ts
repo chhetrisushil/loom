@@ -58,4 +58,6 @@ export class InMemorySnapshotStore implements SnapshotStore {
     const candidates = list.filter((s) => s.sequence <= sequence);
     return candidates[candidates.length - 1] ?? null;
   }
+
+  close(): void {}
 }
