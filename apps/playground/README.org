@@ -1,0 +1,181 @@
+#+title: Loom Playground
+#+author: Sushil Chhetri
+
+The playground is a scratch space for experimenting with the Loom framework interactively. It has no production requirements — break things freely. Use it to prototype flows, test projection logic, try out blueprint layouts, and validate ideas before promoting them into the main example app or framework packages.
+
+* What it is for
+
+| Scenario                              | Example                                                    |
+|---------------------------------------+------------------------------------------------------------|
+| Try a new builder API                 | Wire up ~step$~ + ~handler$~ and call ~ctx.run~            |
+| Test a projection shape               | Register a ~Projection~, emit events, log the state        |
+| Preview a blueprint layout            | Render a ~BlueprintRenderer~ with hard-coded data          |
+| Spike a custom widget renderer        | Drop a component into ~defaultRegistry~ and see it render  |
+| Debug a suspend/resume cycle          | Drive the full workflow lifecycle in-browser with no infra |
+| Validate compiler output by hand      | Paste compiled transform output and confirm it executes    |
+
+It is intentionally minimal — one file (~src/main.tsx~), no routing, no tests, no linting gates. The Vite dev server gives you instant HMR on every save.
+
+* Running
+
+From the repo root:
+
+#+begin_src bash
+# Build framework packages first (one-time after a fresh clone)
+pnpm build
+
+# Start the playground dev server
+pnpm --filter @loom/playground dev
+#+end_src
+
+Or from this directory:
+
+#+begin_src bash
+pnpm dev
+#+end_src
+
+Open http://localhost:5173 (or whichever port Vite picks if 5173 is taken).
+
+* How to use it
+
+Everything lives in ~src/main.tsx~. Edit it freely — Vite reloads on save.
+
+** Quick-start: running a flow in the browser
+
+#+begin_src typescript
+// src/main.tsx
+import React, { useEffect, useState } from "react";
+import ReactDOM from "react-dom/client";
+import { flow$, step$, handler$ } from "@loom/sdk";
+import { WorkflowRuntime } from "@loom/sdk";
+import { EffectRuntime } from "@loom/sdk";
+import { z } from "zod";
+
+// 1. Define a step with a co-located handler
+const GreetStep = step$({
+  id: "greet",
+  inputSchema: z.object({ name: z.string() }),
+  outputSchema: z.object({ message: z.string() }),
+  handler: handler$(async (input) => ({
+    message: `Hello, ${input.name}! Workflow executed at ${new Date().toISOString()}`,
+  })),
+});
+
+// 2. Define a flow
+const HelloFlow = flow$({
+  id: "hello-flow",
+  name: "Hello Flow",
+  version: "1.0.0",
+  inputSchema: z.object({ name: z.string() }),
+  outputSchema: z.object({ message: z.string() }),
+  steps: [GreetStep],
+});
+
+// 3. Wire up the runtime (in-memory — no server needed)
+const effectRuntime = new EffectRuntime();
+const runtime = new WorkflowRuntime({
+  eventStore: yourInMemoryEventStore,    // see below
+  snapshotStore: yourInMemorySnapshotStore,
+  effectRuntime,
+});
+runtime.registerFlow(
+  { definition: HelloFlow, runner: async (ctx, input) => {
+    return ctx.run(GreetStep, input);
+  }}.definition,
+  async (ctx, input) => ctx.run(GreetStep, input)
+);
+
+// 4. Render results
+function App() {
+  const [result, setResult] = useState("");
+
+  useEffect(() => {
+    runtime.start({ definition: HelloFlow, runner: async (ctx, i) => ctx.run(GreetStep, i) }, { name: "World" })
+      .then(handle => handle.waitForCompletion())
+      .then(state => setResult(JSON.stringify(state.variables, null, 2)));
+  }, []);
+
+  return <pre>{result || "Running…"}</pre>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")!).render(<App />);
+#+end_src
+
+For the in-memory stores, copy ~InMemoryEventStore~ and ~InMemorySnapshotStore~ from ~examples/cloud-command-center/src/runtime/browserStores.ts~ — they are self-contained and need no dependencies beyond ~@loom/core~.
+
+** Quick-start: previewing a blueprint
+
+#+begin_src typescript
+import { blueprint$, grid, MetricCard, Timeline } from "@loom/sdk";
+import {
+  BlueprintRenderer, defaultRegistry,
+  MetricCardRenderer, TimelineRenderer,
+  LoomProvider,
+} from "@loom/renderer-react";
+import { InMemoryProjectionRuntime } from "@loom/sdk";
+
+defaultRegistry.register("MetricCard", MetricCardRenderer);
+defaultRegistry.register("Timeline", TimelineRenderer);
+
+const SampleBlueprint = blueprint$({
+  id: "sample",
+  title: "My Layout",
+  layout: grid({
+    columns: 2, gap: 16,
+    children: [
+      MetricCard({ title: "CPU %", binding: { projectionId: "stats", path: "cpu" } }),
+      Timeline({ title: "Events",  binding: { projectionId: "stats", path: "events" } }),
+    ],
+  }),
+  projections: ["stats"],
+});
+
+const projectionRuntime = new InMemoryProjectionRuntime();
+projectionRuntime.register({
+  id: "stats",
+  initialState: { cpu: 72, events: [{ message: "Pod started", timestamp: Date.now() }] },
+  handlers: {},  // static data — no events needed
+});
+// Seed a fake executionId so the renderer can look up state
+projectionRuntime.seedState("stats", "preview-exec", { cpu: 72, events: [...] });
+
+function App() {
+  return (
+    <LoomProvider workflowRuntime={yourRuntime} projectionRuntime={projectionRuntime}>
+      <BlueprintRenderer
+        blueprint={SampleBlueprint}
+        projectionRuntime={projectionRuntime}
+        executionId="preview-exec"
+        onAction={(a) => console.log("action", a)}
+      />
+    </LoomProvider>
+  );
+}
+#+end_src
+
+* Available packages
+
+The playground has direct access to:
+
+| Package               | What to use it for                                          |
+|-----------------------+-------------------------------------------------------------|
+| ~@loom/sdk~           | All builders (~flow$~, ~step$~, ~handler$~, ~projection$~, etc.) and runtime classes |
+| ~@loom/renderer-react~| ~BlueprintRenderer~, ~LoomProvider~, ~useLoom~, ~useProjection~, widget renderers |
+
+To use a package not listed above, add it to ~package.json~ dependencies and run ~pnpm install~ from the repo root.
+
+* Tips
+
+- *Keep it messy.* The playground is never committed with production code. Stub out schemas with ~z.any()~, log to the console, hardcode inputs — whatever gets to the answer fastest.
+- *Copy from the example.* ~examples/cloud-command-center/src/~ has working browser stores, a full flow, projections, and blueprints. Copy any piece freely.
+- *No compiler needed.* ~handler$(fn)~ works at runtime without the Vite plugin — the function is called directly. Add ~loomPlugin()~ to ~vite.config.ts~ only if you specifically want to test the compiler transform.
+- *Check the console.* Loom emits structured event logs. Open DevTools → Console to see every ~EventEnvelope~ in real time.
+
+* Promoting work to the example or framework
+
+Once something works in the playground:
+
+1. Move reusable types / builders to the appropriate ~packages/*~ package.
+2. Move flow or projection code to ~examples/cloud-command-center/src/~.
+3. Add tests in the package's test suite.
+4. Build: ~pnpm build~ from the repo root.
