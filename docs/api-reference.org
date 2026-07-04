@@ -1,0 +1,1106 @@
+#+title: Loom Framework — API Reference
+#+author: Sushil Chhetri
+
+Developer reference for building agentic applications with Loom. All public APIs are re-exported from ~@loom/sdk~ — import from there unless you need a specific sub-package.
+
+#+begin_src typescript
+import { flow$, step$, tool$, WorkflowRuntime, ToolEffect } from "@loom/sdk";
+#+end_src
+
+* Table of Contents
+
+1. [[#builders][Builders]]
+2. [[#workflow-runtime][WorkflowRuntime]]
+3. [[#workflow-context][WorkflowContext — the flow API]]
+4. [[#execution-handle][ExecutionHandle]]
+5. [[#effect-runtime][EffectRuntime & Effects]]
+6. [[#event-store][EventStore]]
+7. [[#snapshot-store][SnapshotStore]]
+8. [[#projection-runtime][ProjectionRuntime]]
+9. [[#blueprint-system][Blueprint System]]
+10. [[#react-renderer][React Renderer]]
+11. [[#errors][Errors]]
+12. [[#complete-example][Complete Example]]
+
+-----
+
+* Builders
+:PROPERTIES:
+:CUSTOM_ID: builders
+:END:
+
+Builders are factory functions (suffixed with ~$~) that produce typed definition objects. Definitions are plain data — they carry no runtime state and can be serialized, stored, or sent over the wire.
+
+** ~flow$~
+
+Defines a workflow. A flow has an id, version, I/O schemas, and the steps it may execute.
+
+#+begin_src typescript
+import { flow$ } from "@loom/sdk";
+import { z } from "zod";
+
+const MyFlow = flow$({
+  id: "my-flow",          // unique identifier — used for registration and resume
+  name: "My Flow",        // human-readable label
+  version: "1.0.0",       // semver — included in every EventEnvelope
+  description: "...",     // optional
+  inputSchema: z.object({ userId: z.string() }),
+  outputSchema: z.object({ done: z.boolean() }),
+  steps: [FetchStep, ProcessStep],  // StepDefinition[]
+  policies: [RateLimitPolicy],      // optional PolicyDefinition[]
+});
+#+end_src
+
+| Field          | Type                     | Required | Description                                     |
+|----------------+--------------------------+----------+-------------------------------------------------|
+| ~id~           | ~string~                 | yes      | Stable identifier; must be unique in the registry |
+| ~name~         | ~string~                 | yes      | Display name                                    |
+| ~version~      | ~string~                 | yes      | Stamped on every event emitted by this flow     |
+| ~description~  | ~string~                 | no       | Optional documentation string                   |
+| ~inputSchema~  | ~ZodSchema<TIn>~         | yes      | Validates ~start()~ input                       |
+| ~outputSchema~ | ~ZodSchema<TOut>~        | yes      | Declares the shape of the runner's return value |
+| ~steps~        | ~StepDefinition[]~       | yes      | All steps the runner may call                   |
+| ~policies~     | ~PolicyDefinition[]~     | no       | Governance rules                                |
+
+** ~step$~
+
+Defines an individual unit of work within a flow. A step links to an effect via ~toolId~ and declares its own I/O schemas and retry policy.
+
+#+begin_src typescript
+import { step$ } from "@loom/sdk";
+import { z } from "zod";
+
+const FetchMetricsStep = step$({
+  id: "fetch-metrics",
+  name: "Fetch Metrics",
+  toolId: "metrics-tool",       // matches a registered EffectRuntime key
+  inputSchema: z.object({ incidentId: z.string() }),
+  outputSchema: z.object({
+    cpu: z.object({ current: z.number(), threshold: z.number() }),
+    memory: z.object({ usedMb: z.number(), totalMb: z.number() }),
+  }),
+  retry: { maxAttempts: 3, backoffMs: 500, backoffMultiplier: 2 },
+  timeoutMs: 10_000,
+});
+#+end_src
+
+| Field          | Type            | Required | Description                                          |
+|----------------+-----------------+----------+------------------------------------------------------|
+| ~id~           | ~string~        | yes      | Unique within the flow; used to key ~ExecutionFrame~ |
+| ~name~         | ~string~        | yes      | Display name                                         |
+| ~toolId~       | ~string~        | no       | Effect registry key; defaults to ~id~ if omitted     |
+| ~inputSchema~  | ~ZodSchema~     | yes      | Input shape                                          |
+| ~outputSchema~ | ~ZodSchema~     | yes      | Output shape                                         |
+| ~retry~        | ~RetryPolicy~   | no       | ~{ maxAttempts, backoffMs?, backoffMultiplier? }~    |
+| ~timeoutMs~    | ~number~        | no       | Per-attempt timeout in milliseconds                  |
+
+** ~tool$~
+
+Defines tool metadata. Use this when you want to describe a tool as a first-class definition separate from its implementation.
+
+#+begin_src typescript
+import { tool$ } from "@loom/sdk";
+
+const MetricsTool = tool$({
+  id: "metrics-tool",
+  name: "Metrics Tool",
+  description: "Fetches database performance metrics",
+  kind: "tool",   // "tool" | "llm" | "human" | "a2a" — defaults to "tool"
+  inputSchema: z.object({ incidentId: z.string() }),
+  outputSchema: z.object({ cpu: z.number() }),
+});
+#+end_src
+
+| Field         | Type         | Required | Description                               |
+|---------------+--------------+----------+-------------------------------------------|
+| ~id~          | ~string~     | yes      | Matches ~toolId~ on ~StepDefinition~      |
+| ~name~        | ~string~     | yes      | Display name                              |
+| ~description~ | ~string~     | yes      | Used by LLM tool-selection prompts        |
+| ~kind~        | ~EffectKind~ | no       | ~"tool" \vert "llm" \vert "human" \vert "a2a"~; defaults to ~"tool"~ |
+| ~inputSchema~ | ~ZodSchema~  | yes      | Input shape                               |
+| ~outputSchema~| ~ZodSchema~  | yes      | Output shape                              |
+
+** ~projection$~
+
+Defines a read model that is derived by folding workflow events. Each handler is a pure reducer ~(state, event) => state~.
+
+#+begin_src typescript
+import { projection$ } from "@loom/sdk";
+import type { EventEnvelope } from "@loom/sdk";
+
+const MetricsProjection = projection$({
+  id: "metrics",
+  name: "Metrics Projection",
+  sourceFlowId: "investigate-incident",  // optional — documentation only
+  initialState: { cpu: null as number | null, memory: null as number | null },
+  handlers: {
+    INCIDENT_ANALYSIS_COMPLETE: (state, event: EventEnvelope) => {
+      const payload = event.payload as { metrics: { cpu: number; memory: number } };
+      return { cpu: payload.metrics.cpu, memory: payload.metrics.memory };
+    },
+  },
+});
+#+end_src
+
+| Field          | Type                                          | Required | Description                                   |
+|----------------+-----------------------------------------------+----------+-----------------------------------------------|
+| ~id~           | ~string~                                      | yes      | Referenced in Blueprint ~DataBinding~ and ~BlueprintRenderer~ |
+| ~name~         | ~string~                                      | yes      | Display name                                  |
+| ~sourceFlowId~ | ~string~                                      | no       | Documentation — which flow produces this projection's events |
+| ~initialState~ | ~TState~                                      | yes      | Starting value before any events are applied  |
+| ~handlers~     | ~Record<string, (state, event) => state>~     | yes      | One entry per event type this projection handles |
+
+** ~agent$~
+
+Groups tools and policies into an agent definition. Agents are composable units for multi-agent architectures.
+
+#+begin_src typescript
+import { agent$ } from "@loom/sdk";
+
+const InvestigatorAgent = agent$({
+  id: "investigator",
+  name: "Investigator Agent",
+  description: "Gathers incident evidence",
+  tools: [MetricsTool, LogsTool],
+  policies: [RateLimitPolicy],
+  memoryId: "incident-memory",   // optional — links to a MemoryDefinition
+});
+#+end_src
+
+** ~memory$~
+
+Declares a scoped memory store for an agent. The framework registers the definition; you supply the runtime implementation.
+
+#+begin_src typescript
+import { memory$ } from "@loom/sdk";
+
+const IncidentMemory = memory$({
+  id: "incident-memory",
+  name: "Incident Memory",
+  ttlMs: 60 * 60 * 1000,   // 1 hour
+  maxEntries: 500,
+});
+#+end_src
+
+** ~policy$~
+
+Declares a governance policy with arbitrary rules. Policies are attached to flows or agents; enforcement is application-level.
+
+#+begin_src typescript
+import { policy$ } from "@loom/sdk";
+
+const RateLimitPolicy = policy$({
+  id: "rate-limit",
+  name: "Rate Limit",
+  rules: { requestsPerMinute: 60, burstAllowance: 10 },
+});
+#+end_src
+
+-----
+
+* WorkflowRuntime
+:PROPERTIES:
+:CUSTOM_ID: workflow-runtime
+:END:
+
+~WorkflowRuntime~ orchestrates flow execution. Construct one instance per application; it is safe to share across concurrent flow executions.
+
+#+begin_src typescript
+import { WorkflowRuntime } from "@loom/sdk";
+import { SqliteEventStore } from "@loom/event-runtime";
+import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
+import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+
+const effectRuntime = new EffectRuntime();
+const eventStore = new SqliteEventStore("./data/events.db");
+const snapshotStore = new SqliteSnapshotStore("./data/snapshots.db");
+
+const runtime = new WorkflowRuntime({
+  eventStore,
+  snapshotStore,
+  effectRuntime,
+  onEvent: (event) => projectionRuntime.handleEvent(event),  // optional
+});
+#+end_src
+
+** Constructor options
+
+| Option          | Type                                  | Required | Description                                               |
+|-----------------+---------------------------------------+----------+-----------------------------------------------------------|
+| ~eventStore~    | ~EventStore~                          | yes      | Where events are persisted                                |
+| ~snapshotStore~ | ~SnapshotStore~                       | yes      | Where suspend-point snapshots are stored                  |
+| ~effectRuntime~ | ~EffectRuntime~                       | yes      | Registry of effect handlers                               |
+| ~onEvent~       | ~(event: EventEnvelope) => void~      | no       | Called after every event append — wire to ProjectionRuntime |
+
+** ~registerFlow(definition, runner)~
+
+Registers a flow so it can be found during ~resume()~. Call before any ~start()~ or ~resume()~ for that flow.
+
+#+begin_src typescript
+runtime.registerFlow(
+  InvestigateIncidentFlow.definition,
+  InvestigateIncidentFlow.runner
+);
+#+end_src
+
+Both ~definition~ (~FlowDefinition~) and ~runner~ (~FlowRunner~) must be provided. The runtime looks up registered flows by ~definition.id~ when resuming a suspended execution.
+
+** ~start(flow, input, options?)~
+
+Starts a new execution. Returns an ~ExecutionHandle~ immediately (the flow runs asynchronously in the background).
+
+#+begin_src typescript
+const handle = await runtime.start(
+  InvestigateIncidentFlow,        // RegisteredFlow
+  { incidentId: "cpu-001" },      // TIn — must satisfy inputSchema
+  { executionId: "exec-abc" }     // optional RunOptions
+);
+#+end_src
+
+| Option        | Type     | Description                                                |
+|---------------+----------+------------------------------------------------------------|
+| ~executionId~ | ~string~ | Pin the execution to a specific id; auto-generated (ULID) if omitted |
+
+** ~resume(executionId, resumeEvent)~
+
+Resumes a suspended execution. Appends the resume event, loads the latest snapshot, and re-runs the flow runner from the beginning (with previously completed steps replayed from cache).
+
+#+begin_src typescript
+const handle = await runtime.resume("exec-abc", {
+  eventType: "ApprovalGranted",
+  payload: { approved: true, approvedBy: "operator@example.com" },
+});
+#+end_src
+
+| Field       | Type      | Description                                              |
+|-------------+-----------+----------------------------------------------------------|
+| ~eventType~ | ~string~  | The event type the flow was waiting for in ~ctx.suspend()~ |
+| ~payload~   | ~unknown~ | Data delivered to the flow after the suspend point       |
+
+Throws ~WorkflowNotFoundError~ if ~executionId~ has no recorded events.
+
+** ~register(toolId, effect)~
+
+Convenience proxy that forwards to the underlying ~EffectRuntime~. Equivalent to calling ~effectRuntime.register()~ directly.
+
+#+begin_src typescript
+runtime.register("metrics-tool", new ToolEffect(async (input) => ({
+  cpu: { current: 87, threshold: 80 },
+})));
+#+end_src
+
+-----
+
+* WorkflowContext — the flow API
+:PROPERTIES:
+:CUSTOM_ID: workflow-context
+:END:
+
+~WorkflowContext~ is the object injected as the first argument to every ~FlowRunner~ function. It is the complete API available inside a flow.
+
+#+begin_src typescript
+type FlowRunner<TIn, TOut> = (ctx: WorkflowContext, input: TIn) => Promise<TOut>;
+#+end_src
+
+** ~ctx.run(step, input)~
+
+Executes a step. If the step already completed in a previous run (detected via ~ReplayVM~), returns the cached output without calling the effect again. This is the primary idempotency guarantee.
+
+#+begin_src typescript
+const metrics = await ctx.run(FetchMetricsStep, { incidentId: input.incidentId });
+// metrics: { cpu: { current: 87, ... }, memory: { ... } }
+#+end_src
+
+- Emits ~STEP_STARTED~ before execution and ~STEP_COMPLETED~ (or ~STEP_FAILED~) after.
+- On failure, re-throws the error after emitting ~STEP_FAILED~.
+- The ~toolId~ on the ~StepDefinition~ determines which registered effect is called; falls back to ~step.id~ if ~toolId~ is not set.
+
+** ~ctx.parallel(pairs)~
+
+Runs multiple steps concurrently with ~Promise.all~. Each pair is ~[StepDefinition, input]~. Returns a tuple of outputs in the same order.
+
+#+begin_src typescript
+const [metrics, logs] = await ctx.parallel([
+  [FetchMetricsStep, { incidentId: input.incidentId }],
+  [FetchLogsStep,    { incidentId: input.incidentId }],
+]);
+#+end_src>
+
+Idempotency works the same as ~ctx.run~ — completed steps return cached results immediately.
+
+** ~ctx.emit(eventType, payload)~
+
+Appends a custom domain event to the event log. Triggers ~onEvent~ on the runtime (which routes to ~ProjectionRuntime~), so UI projections update immediately.
+
+#+begin_src typescript
+ctx.emit("INCIDENT_ANALYSIS_COMPLETE", { metrics, logs, timestamp: Date.now() });
+#+end_src
+
+Use ~ctx.emit~ to push domain-meaningful events that projections can react to. Structural events (~STEP_STARTED~, ~EXECUTION_SUSPENDED~, etc.) are emitted automatically.
+
+** ~ctx.suspend(config)~
+
+Suspends the workflow. On a fresh run, throws ~SuspendError~ (caught by ~WorkflowRuntime~, which saves a snapshot and resolves ~waitForSuspend()~). On resume replay, passes through transparently so the runner continues past the suspend point.
+
+#+begin_src typescript
+await ctx.suspend({
+  on: "ApprovalGranted",              // event type that resumes this execution
+  correlationKey: input.incidentId,   // optional — for routing in multi-instance setups
+  timeout: 24 * 60 * 60 * 1000,      // optional — milliseconds
+});
+// Code here runs only after resume
+#+end_src
+
+| Field            | Type     | Required | Description                                               |
+|------------------+----------+----------+-----------------------------------------------------------|
+| ~on~             | ~string~ | yes      | The ~eventType~ expected in ~runtime.resume()~           |
+| ~correlationKey~ | ~string~ | no       | Scopes the resume to a specific entity                    |
+| ~timeout~        | ~number~ | no       | How long to wait before failing (enforcement is app-level)|
+
+** ~ctx.executionId~ / ~ctx.workflowId~
+
+Read-only strings identifying the current execution and its parent workflow.
+
+-----
+
+* ExecutionHandle
+:PROPERTIES:
+:CUSTOM_ID: execution-handle
+:END:
+
+Both ~start()~ and ~resume()~ return an ~ExecutionHandle~ synchronously. Set up listeners before the async runner fires.
+
+#+begin_src typescript
+interface ExecutionHandle {
+  executionId: string;
+  waitForSuspend(): Promise<ExecutionState>;
+  waitForCompletion(): Promise<ExecutionState>;
+  getState(): ExecutionState;
+}
+#+end_src
+
+| Member               | Description                                                              |
+|----------------------+--------------------------------------------------------------------------|
+| ~executionId~        | The unique id for this execution                                         |
+| ~waitForSuspend()~   | Resolves with ~ExecutionState~ when the flow hits ~ctx.suspend()~        |
+| ~waitForCompletion()~| Resolves with ~ExecutionState~ when the flow returns (or rejects on ~EXECUTION_FAILED~) |
+| ~getState()~         | Synchronous snapshot of the current ~ExecutionState~                     |
+
+~waitForSuspend()~ and ~waitForCompletion()~ are independent — await whichever is relevant:
+
+#+begin_src typescript
+const handle = await runtime.start(MyFlow, input);
+
+// Wait for first suspend
+handle.waitForSuspend().then((state) => {
+  console.log("Suspended at sequence", state.sequence);
+  showApprovalUI();
+});
+
+// Always log completion
+handle.waitForCompletion()
+  .then(() => console.log("Done"))
+  .catch((err) => console.error("Failed", err));
+#+end_src
+
+-----
+
+* EffectRuntime & Effects
+:PROPERTIES:
+:CUSTOM_ID: effect-runtime
+:END:
+
+~EffectRuntime~ is a registry that maps ~toolId~ strings to ~Effect~ implementations. Every side effect a flow executes must be registered here.
+
+** ~EffectRuntime~
+
+#+begin_src typescript
+import { EffectRuntime } from "@loom/effect-runtime";
+
+const effectRuntime = new EffectRuntime();
+effectRuntime.register("my-tool", myEffect);
+effectRuntime.has("my-tool");  // → true
+#+end_src
+
+| Method                            | Description                                               |
+|-----------------------------------+-----------------------------------------------------------|
+| ~register(toolId, effect)~        | Adds an effect to the registry                            |
+| ~execute(toolId, input, ctx)~     | Dispatches to the registered effect; throws if not found  |
+| ~has(toolId)~                     | Returns ~true~ if the toolId is registered                |
+
+** ~ToolEffect~
+
+Wraps a plain async function. Use for HTTP calls, database queries, file I/O, or any deterministic external call.
+
+#+begin_src typescript
+import { ToolEffect } from "@loom/effect-runtime";
+
+effectRuntime.register(
+  "metrics-tool",
+  new ToolEffect(async (input: { incidentId: string }, ctx) => {
+    const data = await fetchMetrics(input.incidentId);
+    ctx.emit("METRICS_FETCHED", data);   // optional — emit from within the effect
+    return data;
+  })
+);
+#+end_src
+
+The function receives ~(input: TIn, ctx: EffectContext)~.
+
+** ~LlmEffect~
+
+Same shape as ~ToolEffect~, semantically tagged as an LLM call. Use for prompting a language model.
+
+#+begin_src typescript
+import { LlmEffect } from "@loom/effect-runtime";
+
+effectRuntime.register(
+  "summarize-logs",
+  new LlmEffect(async (input: { logs: string[] }) => {
+    const summary = await llmClient.complete({
+      prompt: `Summarize these logs:\n${input.logs.join("\n")}`,
+    });
+    return { summary };
+  })
+);
+#+end_src
+
+** ~HumanEffect~
+
+Immediately suspends the workflow to wait for human input. No async work is performed — the suspension itself is the effect. The workflow resumes when the application calls ~runtime.resume()~ with the matching ~eventType~.
+
+#+begin_src typescript
+import { HumanEffect } from "@loom/effect-runtime";
+
+effectRuntime.register(
+  "approval-gate",
+  new HumanEffect({
+    on: "ApprovalGranted",                    // event type to wait for
+    timeout: 24 * 60 * 60 * 1000,            // optional
+    correlationKey: (input) => input.incidentId,  // optional scoping
+  })
+);
+#+end_src
+
+Pair with a ~StepDefinition~ whose ~toolId~ points to this key:
+
+#+begin_src typescript
+const ApprovalStep = step$({
+  id: "wait-for-approval",
+  toolId: "approval-gate",
+  inputSchema: z.object({ incidentId: z.string() }),
+  outputSchema: z.unknown(),
+});
+#+end_src
+
+** ~A2AEffect~
+
+Agent-to-agent delegation. Structurally identical to ~ToolEffect~ — use it to call another Loom workflow or an external agent.
+
+#+begin_src typescript
+import { A2AEffect } from "@loom/effect-runtime";
+
+effectRuntime.register(
+  "sub-agent",
+  new A2AEffect(async (input, ctx) => {
+    const handle = await agentRuntime.start(SubAgentFlow, input);
+    return handle.waitForCompletion();
+  })
+);
+#+end_src
+
+** ~EffectContext~
+
+Passed as the second argument to every effect function.
+
+#+begin_src typescript
+interface EffectContext {
+  executionId: string;
+  stepId: string;
+  workflowId: string;
+  attempt: number;                                    // 1-based retry count
+  emit(eventType: string, payload: unknown): void;   // emit events from within an effect
+}
+#+end_src>
+
+-----
+
+* EventStore
+:PROPERTIES:
+:CUSTOM_ID: event-store
+:END:
+
+~EventStore~ is the append-only log of all workflow events. Loom ships two implementations.
+
+** Interface
+
+#+begin_src typescript
+interface EventStore {
+  append(envelope: EventEnvelope): void;
+  read(executionId: string): EventEnvelope[];
+  readFrom(executionId: string, fromSequence: number): EventEnvelope[];
+  subscribe(executionId: string, handler: (event: EventEnvelope) => void): () => void;
+  nextSequence(executionId: string): number;
+  close(): void;
+}
+#+end_src
+
+| Method              | Description                                                                |
+|---------------------+----------------------------------------------------------------------------|
+| ~append~            | Appends one event; throws on duplicate ~(executionId, sequence)~           |
+| ~read~              | Returns all events for an execution, ordered by sequence ascending         |
+| ~readFrom~          | Returns events from ~fromSequence~ inclusive                               |
+| ~subscribe~         | Calls ~handler~ immediately after each ~append~; returns an unsubscribe fn |
+| ~nextSequence~      | Returns the next available sequence number for an execution                |
+| ~close~             | Releases the underlying resource (SQLite connection, etc.)                 |
+
+** ~SqliteEventStore~
+
+Durable, WAL-mode SQLite store for server/production use.
+
+#+begin_src typescript
+import { SqliteEventStore } from "@loom/event-runtime";
+
+const eventStore = new SqliteEventStore("./data/events.db");
+// ...
+eventStore.close();
+#+end_src
+
+** ~InMemoryEventStore~ (browser/testing)
+
+Exists in the browser bundles and test setups. Not exported from ~@loom/event-runtime~ — instantiate via the example's ~browserStores~ or write your own:
+
+#+begin_src typescript
+// Minimal in-memory implementation for tests
+class InMemoryEventStore implements EventStore {
+  private log: EventEnvelope[] = [];
+  append(e: EventEnvelope) { this.log.push(e); }
+  read(id: string) { return this.log.filter(e => e.executionId === id); }
+  // ...
+}
+#+end_src
+
+** ~EventEnvelope~ shape
+
+#+begin_src typescript
+interface EventEnvelope {
+  id: string;           // globally unique (executionId + sequence)
+  workflowId: string;
+  executionId: string;
+  eventType: string;    // e.g. "STEP_COMPLETED", "APPROVAL_REQUESTED"
+  sequence: number;     // monotonically increasing per execution
+  timestamp: number;    // Date.now() at append time
+  payload: unknown;     // event-specific data
+  metadata?: Record<string, unknown>;
+}
+#+end_src
+
+-----
+
+* SnapshotStore
+:PROPERTIES:
+:CUSTOM_ID: snapshot-store
+:END:
+
+~SnapshotStore~ caches ~ExecutionState~ at suspension points to avoid replaying the full event log on every resume.
+
+** Interface
+
+#+begin_src typescript
+interface SnapshotStore {
+  save(snapshot: Snapshot): void;
+  loadLatest(executionId: string): Snapshot | null;
+  loadAt(executionId: string, sequence: number): Snapshot | null;
+  close(): void;
+}
+
+interface Snapshot {
+  id: string;
+  executionId: string;
+  workflowId: string;
+  sequence: number;     // the event sequence at the time of the snapshot
+  state: ExecutionState;
+  createdAt: number;
+}
+#+end_src
+
+~WorkflowRuntime~ calls ~save~ automatically on every suspend and ~loadLatest~ on every resume. You do not need to call these directly under normal usage.
+
+** ~SqliteSnapshotStore~
+
+#+begin_src typescript
+import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
+
+const snapshotStore = new SqliteSnapshotStore("./data/snapshots.db");
+// ...
+snapshotStore.close();
+#+end_src
+
+-----
+
+* ProjectionRuntime
+:PROPERTIES:
+:CUSTOM_ID: projection-runtime
+:END:
+
+~ProjectionRuntime~ maintains live read models derived from the event stream. Wire it to ~WorkflowRuntime.onEvent~ and it stays up to date automatically.
+
+** ~InMemoryProjectionRuntime~
+
+#+begin_src typescript
+import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
+
+const projectionRuntime = new InMemoryProjectionRuntime();
+projectionRuntime.register(MetricsProjection);
+projectionRuntime.register(IncidentProjection);
+
+const runtime = new WorkflowRuntime({
+  // ...
+  onEvent: (event) => projectionRuntime.handleEvent(event),
+});
+#+end_src
+
+** Interface
+
+#+begin_src typescript
+interface ProjectionRuntime {
+  register<TState>(projection: Projection<TState>): void;
+  getState<TState>(projectionId: string, executionId: string): TState;
+  subscribe<TState>(
+    projectionId: string,
+    executionId: string,
+    handler: (state: TState) => void
+  ): () => void;         // returns unsubscribe function
+  handleEvent(event: EventEnvelope): void;
+}
+#+end_src
+
+| Method          | Description                                                                      |
+|-----------------+----------------------------------------------------------------------------------|
+| ~register~      | Adds a projection; must be called before the first event that triggers a handler |
+| ~getState~      | Synchronous read of current state; returns ~initialState~ if no events yet       |
+| ~subscribe~     | Registers a live listener; called synchronously after every matching event       |
+| ~handleEvent~   | Routes an event to all registered projections; call from ~onEvent~              |
+
+** ~Projection~ shape
+
+#+begin_src typescript
+interface Projection<TState> {
+  id: string;
+  initialState: TState;
+  handlers: {
+    [eventType: string]: (state: TState, event: EventEnvelope) => TState;
+  };
+}
+#+end_src
+
+State keys are scoped to ~projectionId::executionId~, so concurrent executions of the same flow maintain separate state.
+
+** Using ~projection$~ builder
+
+#+begin_src typescript
+import { projection$ } from "@loom/sdk";
+
+const IncidentProjection = projection$({
+  id: "incident",
+  name: "Incident Projection",
+  initialState: {
+    timeline: [] as { message: string; timestamp: number }[],
+    pendingApproval: false,
+  },
+  handlers: {
+    INCIDENT_INVESTIGATION_STARTED: (state, event) => ({
+      ...state,
+      timeline: [...state.timeline, { message: "Investigation started", timestamp: event.timestamp }],
+    }),
+    APPROVAL_REQUESTED: (state) => ({
+      ...state,
+      pendingApproval: true,
+    }),
+    INCIDENT_RESOLVED: (state, event) => ({
+      ...state,
+      pendingApproval: false,
+      timeline: [...state.timeline, { message: (event.payload as any).summary, timestamp: event.timestamp }],
+    }),
+  },
+});
+#+end_src
+
+-----
+
+* Blueprint System
+:PROPERTIES:
+:CUSTOM_ID: blueprint-system
+:END:
+
+Blueprints are JSON-serializable UI descriptions. They carry no React imports and can be generated server-side, stored in a database, or versioned in git.
+
+** ~blueprint$~
+
+#+begin_src typescript
+import { blueprint$, grid, MetricCard, Timeline, ApprovalCard } from "@loom/blueprint-runtime";
+
+const IncidentBlueprint = blueprint$({
+  id: "incident-dashboard",
+  title: "Incident Investigation",
+  layout: grid({
+    columns: 2,
+    gap: 16,
+    children: [
+      MetricCard({
+        title: "CPU Usage %",
+        binding: { projectionId: "metrics", path: "cpu.current" },
+        unit: "%",
+      }),
+      Timeline({
+        title: "Event Timeline",
+        binding: { projectionId: "incident", path: "timeline" },
+      }),
+      ApprovalCard({
+        title: "Approve Remediation",
+        binding: { projectionId: "incident", path: "pendingApproval" },
+        approveLabel: "Apply Fix",
+        rejectLabel: "Cancel",
+      }),
+    ],
+  }),
+  projections: ["metrics", "incident"],   // all projectionIds referenced by bindings
+});
+#+end_src
+
+~projections~ must list every ~projectionId~ used in any widget's ~binding~. The renderer subscribes to exactly these projections.
+
+** Layout builders
+
+| Function  | Options                                         | Description                              |
+|-----------+-------------------------------------------------+------------------------------------------|
+| ~grid~    | ~{ columns, gap?, children }~                   | CSS grid — equal-width columns           |
+| ~flex~    | ~{ direction?, gap?, children }~                | CSS flex; ~direction~ defaults to ~"row"~ |
+| ~stack~   | ~{ gap?, children }~                            | Vertical flex (shorthand for column flex) |
+
+Layouts can be nested: children of any layout can be other layouts or widgets.
+
+** Widget builders
+
+All widgets share a ~binding~ field that resolves a dot-path in a projection's state.
+
+#+begin_src typescript
+type DataBinding = {
+  projectionId: string;  // matches a registered Projection id
+  path: string;          // dot-separated path into the projection state, e.g. "cpu.current"
+};
+#+end_src
+
+| Builder       | Key props                                                        | Bound value shape         |
+|---------------+------------------------------------------------------------------+---------------------------|
+| ~MetricCard~  | ~title, unit?, format?~                                          | ~number \vert string~     |
+| ~Timeline~    | ~title?, maxItems?~                                              | ~{ message, timestamp, level? }[]~ |
+| ~ApprovalCard~| ~title, approveLabel?, rejectLabel?~                             | ~boolean~ (truthy shows buttons) |
+| ~StatusBadge~ | ~title?~                                                         | ~string~ (used as CSS class suffix) |
+| ~ProgressBar~ | ~title?, max?~                                                   | ~number~                  |
+| ~DataTable~   | ~title?, columns?~                                               | ~Record<string, unknown>[]~ |
+| ~AlertCard~   | ~title?, severity?: "info" \vert "warning" \vert "error" \vert "critical"~ | ~string~ (alert message) |
+
+Widget ids are deterministically hashed from ~(kind, props)~, so blueprints are stable across re-renders without explicit keys.
+
+-----
+
+* React Renderer
+:PROPERTIES:
+:CUSTOM_ID: react-renderer
+:END:
+
+** ~BlueprintRenderer~
+
+Renders a ~Blueprint~ as live React UI, subscribing to all referenced projections.
+
+#+begin_src typescript
+import { BlueprintRenderer } from "@loom/renderer-react";
+
+function Dashboard({ executionId }: { executionId: string }) {
+  const handleAction = (action: WidgetAction) => {
+    if (action.type === "APPROVE") {
+      runtime.resume(executionId, {
+        eventType: "ApprovalGranted",
+        payload: { approved: true },
+      });
+    }
+  };
+
+  return (
+    <BlueprintRenderer
+      blueprint={IncidentBlueprint}
+      projectionRuntime={projectionRuntime}
+      executionId={executionId}
+      onAction={handleAction}
+    />
+  );
+}
+#+end_src
+
+| Prop                | Type                               | Required | Description                                            |
+|---------------------+------------------------------------+----------+--------------------------------------------------------|
+| ~blueprint~         | ~Blueprint~                        | yes      | The blueprint to render                                |
+| ~projectionRuntime~ | ~ProjectionRuntime~                | yes      | Live projection state source                           |
+| ~executionId~       | ~string~                           | yes      | Scopes all projection state to this execution          |
+| ~onAction~          | ~(action: WidgetAction) => void~   | no       | Called when a widget dispatches an action (e.g. approval button click) |
+
+** ~WidgetAction~
+
+#+begin_src typescript
+interface WidgetAction {
+  type: string;       // "APPROVE" | "REJECT" | custom
+  widgetId: string;   // id of the widget that fired the action
+  payload?: unknown;  // action-specific data
+}
+#+end_src
+
+** ~RendererRegistry~ / ~defaultRegistry~
+
+Maps widget ~kind~ strings to React components. Register your own components for custom widget types.
+
+#+begin_src typescript
+import { defaultRegistry } from "@loom/renderer-react";
+
+// Register built-in renderers
+defaultRegistry.register("MetricCard", MetricCardRenderer);
+defaultRegistry.register("Timeline", TimelineRenderer);
+defaultRegistry.register("ApprovalCard", ApprovalCardRenderer);
+defaultRegistry.register("StatusBadge", StatusBadgeRenderer);
+
+// Register a custom renderer
+defaultRegistry.register("HeatMap", HeatMapRenderer);
+#+end_src
+
+Rendering falls back to ~[No renderer for <Kind>]~ when a kind is not registered.
+
+** Writing a custom renderer
+
+A renderer is a standard React functional component:
+
+#+begin_src typescript
+import type { WidgetRendererProps } from "@loom/renderer-react";
+
+const HeatMapRenderer: React.FC<WidgetRendererProps> = ({ widget, value, onAction }) => {
+  const data = value as number[][];  // shape determined by your binding
+  return (
+    <div data-widget-kind="HeatMap" data-widget-id={widget.id}>
+      <h3>{widget.title}</h3>
+      {/* render heat map cells */}
+    </div>
+  );
+};
+
+defaultRegistry.register("HeatMap", HeatMapRenderer);
+#+end_src
+
+~WidgetRendererProps~:
+
+| Prop       | Type                               | Description                                         |
+|------------+------------------------------------+-----------------------------------------------------|
+| ~widget~   | ~Widget~                           | Full widget definition including ~props~ and ~binding~ |
+| ~value~    | ~unknown~                          | Resolved value from the projection binding          |
+| ~onAction~ | ~(action: WidgetAction) => void~   | Dispatch an action to the host application          |
+
+** ~useProjection~ hook
+
+Subscribe to a single projection in any React component:
+
+#+begin_src typescript
+import { useProjection } from "@loom/renderer-react";
+
+function MetricsPanel({ executionId }: { executionId: string }) {
+  const metrics = useProjection<MetricsState>(
+    projectionRuntime,
+    "metrics",
+    executionId
+  );
+
+  return <div>CPU: {metrics.cpu?.current ?? "—"}</div>;
+}
+#+end_src
+
+The hook initialises from ~getState()~ and re-renders on every projection update.
+
+-----
+
+* Errors
+:PROPERTIES:
+:CUSTOM_ID: errors
+:END:
+
+| Class                  | When thrown                                                          |
+|------------------------+----------------------------------------------------------------------|
+| ~SuspendError~         | By ~HumanEffect~ or ~ctx.suspend()~; caught internally by ~WorkflowRuntime~ — do not catch in flow code |
+| ~StepError~            | Wraps a step's underlying error with ~stepId~ context                |
+| ~ReplayError~          | Indicates an invalid event sequence during replay                    |
+| ~WorkflowNotFoundError~| ~resume()~ called with an unknown ~executionId~                      |
+
+~SuspendError~ carries a ~condition: SuspendCondition~ field. It should never be caught in flow runner code — let ~WorkflowRuntime~ handle it.
+
+-----
+
+* Complete Example
+:PROPERTIES:
+:CUSTOM_ID: complete-example
+:END:
+
+A minimal agentic application: a flow that fetches data, waits for human approval, then applies a fix.
+
+#+begin_src typescript
+import {
+  flow$, step$, tool$, projection$,
+  WorkflowRuntime,
+  EffectRuntime, ToolEffect, HumanEffect,
+  type FlowRunner,
+} from "@loom/sdk";
+import { SqliteEventStore } from "@loom/event-runtime";
+import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
+import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
+import {
+  blueprint$, grid, MetricCard, ApprovalCard,
+} from "@loom/blueprint-runtime";
+import { z } from "zod";
+
+// ── 1. Define steps ──────────────────────────────────────────────────────────
+
+const AnalyzeStep = step$({
+  id: "analyze",
+  toolId: "analyze-tool",
+  inputSchema: z.object({ ticketId: z.string() }),
+  outputSchema: z.object({ severity: z.number(), summary: z.string() }),
+});
+
+const ApprovalStep = step$({
+  id: "approval-gate",
+  toolId: "human-approval",
+  inputSchema: z.object({ ticketId: z.string() }),
+  outputSchema: z.unknown(),
+});
+
+const FixStep = step$({
+  id: "apply-fix",
+  toolId: "fix-tool",
+  inputSchema: z.object({ ticketId: z.string() }),
+  outputSchema: z.object({ applied: z.boolean() }),
+  retry: { maxAttempts: 2, backoffMs: 1000 },
+});
+
+// ── 2. Define flow ────────────────────────────────────────────────────────────
+
+const TicketFlow = flow$({
+  id: "ticket-resolution",
+  name: "Ticket Resolution",
+  version: "1.0.0",
+  inputSchema: z.object({ ticketId: z.string() }),
+  outputSchema: z.object({ resolved: z.boolean() }),
+  steps: [AnalyzeStep, ApprovalStep, FixStep],
+});
+
+// ── 3. Write the runner ───────────────────────────────────────────────────────
+
+const ticketRunner: FlowRunner<{ ticketId: string }, { resolved: boolean }> = async (ctx, input) => {
+  ctx.emit("TICKET_STARTED", { ticketId: input.ticketId });
+
+  const analysis = await ctx.run(AnalyzeStep, { ticketId: input.ticketId });
+  ctx.emit("ANALYSIS_COMPLETE", analysis);
+
+  if (analysis.severity >= 3) {
+    ctx.emit("APPROVAL_REQUIRED", { ticketId: input.ticketId, ...analysis });
+    await ctx.run(ApprovalStep, { ticketId: input.ticketId });
+  }
+
+  const result = await ctx.run(FixStep, { ticketId: input.ticketId });
+  ctx.emit("TICKET_RESOLVED", { ticketId: input.ticketId });
+
+  return { resolved: result.applied };
+};
+
+const RegisteredTicketFlow = { definition: TicketFlow, runner: ticketRunner };
+
+// ── 4. Wire up projections ───────────────────────────────────────────────────
+
+const TicketProjection = projection$({
+  id: "ticket",
+  name: "Ticket State",
+  initialState: { severity: null as number | null, awaitingApproval: false },
+  handlers: {
+    ANALYSIS_COMPLETE: (state, event) => ({
+      ...state,
+      severity: (event.payload as { severity: number }).severity,
+    }),
+    APPROVAL_REQUIRED: (state) => ({ ...state, awaitingApproval: true }),
+    TICKET_RESOLVED: (state) => ({ ...state, awaitingApproval: false }),
+  },
+});
+
+// ── 5. Define blueprint ───────────────────────────────────────────────────────
+
+const TicketBlueprint = blueprint$({
+  id: "ticket-dashboard",
+  title: "Ticket Resolution",
+  layout: grid({
+    columns: 2,
+    gap: 16,
+    children: [
+      MetricCard({
+        title: "Severity",
+        binding: { projectionId: "ticket", path: "severity" },
+      }),
+      ApprovalCard({
+        title: "Approve Fix",
+        binding: { projectionId: "ticket", path: "awaitingApproval" },
+        approveLabel: "Apply Fix",
+      }),
+    ],
+  }),
+  projections: ["ticket"],
+});
+
+// ── 6. Bootstrap runtime ──────────────────────────────────────────────────────
+
+const effectRuntime = new EffectRuntime();
+const projectionRuntime = new InMemoryProjectionRuntime();
+projectionRuntime.register(TicketProjection);
+
+const runtime = new WorkflowRuntime({
+  eventStore: new SqliteEventStore("./data/events.db"),
+  snapshotStore: new SqliteSnapshotStore("./data/snapshots.db"),
+  effectRuntime,
+  onEvent: (event) => projectionRuntime.handleEvent(event),
+});
+
+// Register effects
+effectRuntime.register("analyze-tool", new ToolEffect(async (input) => ({
+  severity: 4,
+  summary: "High CPU spike detected",
+})));
+
+effectRuntime.register("human-approval", new HumanEffect({ on: "TicketApproved" }));
+
+effectRuntime.register("fix-tool", new ToolEffect(async (input) => ({
+  applied: true,
+})));
+
+// Register flow (required for resume)
+runtime.registerFlow(RegisteredTicketFlow.definition, RegisteredTicketFlow.runner);
+
+// ── 7. Start and interact ─────────────────────────────────────────────────────
+
+const handle = await runtime.start(RegisteredTicketFlow, { ticketId: "TICK-001" });
+
+handle.waitForSuspend().then(async () => {
+  console.log("Workflow suspended — awaiting approval");
+
+  // Simulate operator approval after 2 seconds
+  setTimeout(async () => {
+    const resumeHandle = await runtime.resume(handle.executionId, {
+      eventType: "TicketApproved",
+      payload: { approvedBy: "ops-team" },
+    });
+    resumeHandle.waitForCompletion().then(() => {
+      console.log("Ticket resolved");
+    });
+  }, 2000);
+});
+#+end_src
