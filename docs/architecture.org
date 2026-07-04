@@ -39,9 +39,14 @@ Four ideas underpin the whole system:
                                               ▼
                                           @loom/core
                               (types, builders, SuspendError)
+
+@loom/telemetry (optional — depends only on @loom/core)
+  createTelemetryHook(adapter) → onEvent handler
+  TelemetryAdapter interface (OTel-ready)
+  ConsoleTelemetryAdapter, composeAdapters
 #+end_example
 
-All packages depend on ~@loom/core~ for shared types. ~@loom/sdk~ is the single entry point for application code — it re-exports everything public. ~@loom/compiler~ is a dev-time-only dependency; it transforms source code at build time and is never bundled into the application.
+All packages depend on ~@loom/core~ for shared types. ~@loom/sdk~ is the single entry point for application code — it re-exports everything public. ~@loom/compiler~ is a dev-time-only dependency; it transforms source code at build time and is never bundled into the application. ~@loom/telemetry~ is an optional observability package; it depends only on ~@loom/core~ and is framework-agnostic — it can be used in React, Angular, Vue, or plain Node.js applications.
 
 * Core Types (~@loom/core~)
 
@@ -499,6 +504,110 @@ generateBundle   → emit loom-manifest.json as bundle asset
 
 ~enforce: "pre"~ ensures the transform runs before ~@vitejs/plugin-react~ processes JSX.
 
+* @loom/telemetry — Structured Observability
+
+~@loom/telemetry~ is a zero-dependency observability layer that sits between the ~WorkflowRuntime~ and any telemetry backend. It has no peer dependency on ~@loom/workflow-runtime~ — it only requires ~@loom/core~ for ~EventEnvelope~ types. The canonical usage is:
+
+#+begin_src typescript
+import { createTelemetryHook, ConsoleTelemetryAdapter, composeAdapters } from "@loom/telemetry";
+
+const telemetryHook = createTelemetryHook(ConsoleTelemetryAdapter);
+
+const runtime = new WorkflowRuntime({
+  // ...
+  onEvent: (e) => {
+    projectionRuntime.handleEvent(e);  // existing handler
+    telemetryHook(e);                  // compose in telemetry
+  },
+});
+#+end_src
+
+** ~TelemetryAdapter~ interface
+
+All nine methods are optional; implement only the events you care about:
+
+| Method             | Fires on                   | Payload                      |
+|--------------------+----------------------------+------------------------------|
+| ~onFlowStart~      | ~EXECUTION_STARTED~        | ~FlowTelemetryInfo~          |
+| ~onFlowComplete~   | ~EXECUTION_COMPLETED~      | ~FlowTelemetryInfo~          |
+| ~onFlowFail~       | ~EXECUTION_FAILED~         | ~FlowTelemetryInfo~          |
+| ~onFlowSuspend~    | ~EXECUTION_SUSPENDED~      | ~FlowTelemetryInfo~          |
+| ~onFlowResume~     | ~EXECUTION_RESUMED~        | ~FlowTelemetryInfo~          |
+| ~onStepStart~      | ~STEP_STARTED~             | ~StepTelemetryInfo~          |
+| ~onStepComplete~   | ~STEP_COMPLETED~           | ~StepTelemetryInfo~          |
+| ~onStepFail~       | ~STEP_FAILED~              | ~StepTelemetryInfo~          |
+| ~onStepRetry~      | ~STEP_RETRYING~            | ~StepTelemetryInfo~          |
+
+** ~FlowTelemetryInfo~ and ~StepTelemetryInfo~
+
+~createTelemetryHook~ computes ~durationMs~ from ~EventEnvelope.timestamp~ values, so telemetry adapters receive pre-computed timings rather than raw timestamps. ~FlowTelemetryInfo~ accumulates ~stepCount~ and ~suspendCount~ as the execution progresses. On ~EXECUTION_RESUMED~, ~completedAt~ and ~durationMs~ are cleared and ~status~ resets to ~"running"~ so that the reported duration reflects the total wall-clock time across all resume legs.
+
+** ~createTelemetryHook(adapter)~
+
+Returns an ~(event: EventEnvelope) => void~ function ready to compose with any existing ~onEvent~ handler. The returned function is a pure event transformer — it holds no async operations and will not throw. Internal per-execution state (flow info maps, step start times, attempt counters) is closure-local; multiple hooks from different ~createTelemetryHook~ calls do not share state.
+
+** ~ConsoleTelemetryAdapter~
+
+The built-in zero-dependency adapter. Writes structured, column-aligned lines to ~console.log~:
+
+#+begin_example
+[loom] FLOW_START      exec=01JNXXX  workflow=investigate-incident
+[loom] STEP_START      exec=01JNXXX  step=fetch-metrics   attempt=1
+[loom] STEP_DONE       exec=01JNXXX  step=fetch-metrics   duration=687ms  attempt=1
+[loom] STEP_DONE       exec=01JNXXX  step=fetch-logs      duration=503ms  attempt=1
+[loom] FLOW_SUSPEND    exec=01JNXXX  workflow=investigate-incident  duration=1204ms  suspend#=1
+[loom] STEP_DONE       exec=01JNXXX  step=apply-remediation  duration=615ms  attempt=1
+[loom] FLOW_DONE       exec=01JNXXX  workflow=investigate-incident  duration=1841ms  steps=3
+#+end_example
+
+** ~composeAdapters(...adapters)~
+
+Fans out all nine adapter methods to every adapter in the list. Use this to send telemetry to multiple sinks simultaneously:
+
+#+begin_src typescript
+const telemetryHook = createTelemetryHook(
+  composeAdapters(ConsoleTelemetryAdapter, otelAdapter)
+);
+#+end_src
+
+** OTel integration pattern
+
+~@loom/telemetry~ deliberately does not bundle ~@opentelemetry/api~. The adapter interface is shaped so that each flow-level event maps to span lifecycle operations:
+
+#+begin_src typescript
+import { trace, context, SpanStatusCode } from "@opentelemetry/api";
+import type { TelemetryAdapter, FlowTelemetryInfo, StepTelemetryInfo } from "@loom/telemetry";
+
+const tracer = trace.getTracer("loom");
+const flowSpans = new Map<string, Span>();
+const stepSpans = new Map<string, Span>();
+
+export const OtelAdapter: TelemetryAdapter = {
+  onFlowStart(info) {
+    const span = tracer.startSpan(info.workflowId, { startTime: info.startedAt });
+    flowSpans.set(info.executionId, span);
+  },
+  onStepStart(info) {
+    const parent = flowSpans.get(info.executionId);
+    const ctx = parent ? trace.setSpan(context.active(), parent) : context.active();
+    const span = tracer.startSpan(info.stepId, { startTime: info.startedAt }, ctx);
+    stepSpans.set(`${info.executionId}:${info.stepId}`, span);
+  },
+  onStepComplete(info) {
+    stepSpans.get(`${info.executionId}:${info.stepId}`)?.end(info.completedAt);
+  },
+  onFlowComplete(info) {
+    flowSpans.get(info.executionId)?.end(info.completedAt);
+    flowSpans.delete(info.executionId);
+  },
+  onFlowFail(info) {
+    const span = flowSpans.get(info.executionId);
+    span?.setStatus({ code: SpanStatusCode.ERROR });
+    span?.end(info.completedAt);
+  },
+};
+#+end_src
+
 * Resumability — Client-Side State Restoration
 
 Resumability eliminates the client's need to re-fetch or re-replay events from the server when mounting a React UI that already has a live (or suspended) execution.
@@ -722,3 +831,14 @@ The registry keeps ~@loom/blueprint-runtime~ (pure types) independent of ~@loom/
 ** Why a separate ~@loom/compiler~ package?
 
 The compiler has a fundamentally different dependency profile — it imports TypeScript's compiler API and Vite's plugin types, neither of which belong in a runtime bundle. Keeping it separate ensures zero build-tool code reaches the browser and keeps the peerDependency on Vite optional.
+
+** Why is the framework UI-agnostic?
+
+~WorkflowRuntime~, ~ProjectionRuntime~, ~EffectRuntime~, and ~@loom/telemetry~ carry zero framework imports. The only React-specific code lives in ~@loom/renderer-react~ (~LoomProvider~, ~useLoom~, ~useProjection~, ~BlueprintRenderer~). This means:
+
+- Angular applications use ~WorkflowRuntime~ directly inside an ~@Injectable~ service; Angular signals bridge Loom events to change detection.
+- Vue applications wire ~onEvent~ into a ~reactive()~ store.
+- Server-side Node.js scripts use the runtimes with no DOM dependency.
+- The ~examples/angular-command-center~ app demonstrates this: it imports ~@loom/workflow-runtime~, ~@loom/telemetry~, and ~@loom/projection-runtime~ directly, uses Angular's DI (~@Injectable~) as the equivalent of ~LoomProvider~, and Angular signals (~signal()~, ~computed()~) as the equivalent of React state hooks. The flow definition and runner are identical to the React cloud-command-center example.
+
+The deliberate separation of ~@loom/renderer-react~ from the runtime packages is what makes this possible without any abstraction cost in the common case.

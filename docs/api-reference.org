@@ -20,8 +20,9 @@ import { flow$, step$, tool$, WorkflowRuntime, ToolEffect } from "@loom/sdk";
 9.  [[#blueprint-system][Blueprint System]]
 10. [[#react-renderer][React Renderer]] — ~BlueprintRenderer~, ~LoomProvider~, ~useLoom~, ~useProjection~
 11. [[#compiler][~@loom/compiler~]] — Vite plugin, CLI, serialization utilities
-12. [[#errors][Errors]]
-13. [[#complete-example][Complete Example]]
+12. [[#telemetry][~@loom/telemetry~]] — ~createTelemetryHook~, ~TelemetryAdapter~, ~ConsoleTelemetryAdapter~, ~composeAdapters~
+13. [[#errors][Errors]]
+14. [[#complete-example][Complete Example]]
 
 -----
 
@@ -1196,6 +1197,138 @@ interface LoomManifest {
     warnings: string[];
   }>;
 }
+#+end_src
+
+-----
+
+* ~@loom/telemetry~
+:PROPERTIES:
+:CUSTOM_ID: telemetry
+:END:
+
+Structured observability for Loom workflows. Import from ~@loom/telemetry~; this package is not re-exported from ~@loom/sdk~ because it is optional.
+
+#+begin_src typescript
+import {
+  createTelemetryHook,
+  ConsoleTelemetryAdapter,
+  composeAdapters,
+  type TelemetryAdapter,
+  type FlowTelemetryInfo,
+  type StepTelemetryInfo,
+} from "@loom/telemetry";
+#+end_src
+
+** ~createTelemetryHook(adapter)~
+
+#+begin_src typescript
+function createTelemetryHook(adapter: TelemetryAdapter): (event: EventEnvelope) => void
+#+end_src
+
+Returns a synchronous event handler that translates raw ~EventEnvelope~ objects into structured telemetry calls on ~adapter~. Pass the returned function as ~WorkflowRuntimeDeps.onEvent~ (composing with any existing handler using a simple closure):
+
+#+begin_src typescript
+const telemetryHook = createTelemetryHook(ConsoleTelemetryAdapter);
+
+const runtime = new WorkflowRuntime({
+  eventStore,
+  snapshotStore,
+  effectRuntime,
+  onEvent: (e) => {
+    projectionRuntime.handleEvent(e);
+    telemetryHook(e);
+  },
+});
+#+end_src
+
+The hook tracks per-execution state internally (flow info, step start times, attempt counters). Multiple hooks from separate ~createTelemetryHook~ calls do not share state — create one per ~WorkflowRuntime~ instance.
+
+** ~TelemetryAdapter~
+
+#+begin_src typescript
+interface TelemetryAdapter {
+  onFlowStart?(info: FlowTelemetryInfo): void;
+  onFlowComplete?(info: FlowTelemetryInfo): void;
+  onFlowFail?(info: FlowTelemetryInfo): void;
+  onFlowSuspend?(info: FlowTelemetryInfo): void;
+  onFlowResume?(info: FlowTelemetryInfo): void;
+  onStepStart?(info: StepTelemetryInfo): void;
+  onStepComplete?(info: StepTelemetryInfo): void;
+  onStepFail?(info: StepTelemetryInfo): void;
+  onStepRetry?(info: StepTelemetryInfo): void;
+}
+#+end_src
+
+All methods are optional. Implement only the events you need. The adapter is a plain object, not a class.
+
+** ~FlowTelemetryInfo~
+
+#+begin_src typescript
+interface FlowTelemetryInfo {
+  executionId: string;
+  workflowId: string;
+  startedAt: number;        // Unix ms
+  completedAt?: number;     // present on complete/fail/suspend
+  durationMs?: number;      // computed — completedAt - startedAt
+  status: "running" | "completed" | "failed" | "suspended";
+  stepCount: number;        // incremented on first attempt of each step
+  suspendCount: number;     // incremented on each EXECUTION_SUSPENDED
+}
+#+end_src
+
+~durationMs~ is computed by the hook so adapters do not need to do their own timestamp arithmetic. On ~EXECUTION_RESUMED~, ~completedAt~ and ~durationMs~ are cleared and ~status~ resets to ~"running"~, ensuring that the reported duration always reflects total wall-clock time across all suspend legs.
+
+** ~StepTelemetryInfo~
+
+#+begin_src typescript
+interface StepTelemetryInfo {
+  executionId: string;
+  workflowId: string;
+  stepId: string;
+  attempt: number;          // 1-based; incremented on each retry
+  startedAt: number;
+  completedAt?: number;
+  durationMs?: number;
+  status: "running" | "completed" | "failed" | "retrying";
+  input?: unknown;          // from STEP_STARTED payload
+  output?: unknown;         // from STEP_COMPLETED payload
+  error?: unknown;          // from STEP_FAILED payload
+}
+#+end_src
+
+** ~ConsoleTelemetryAdapter~
+
+A zero-dependency adapter that writes structured, column-aligned output to ~console.log~. Suitable for development and CLI workflows. No configuration required — use it directly as an adapter:
+
+#+begin_src typescript
+import { ConsoleTelemetryAdapter, createTelemetryHook } from "@loom/telemetry";
+
+const hook = createTelemetryHook(ConsoleTelemetryAdapter);
+#+end_src
+
+Sample output:
+
+#+begin_example
+[loom] FLOW_START      exec=01JNXXX  workflow=investigate-incident
+[loom] STEP_START      exec=01JNXXX  step=fetch-metrics   attempt=1
+[loom] STEP_DONE       exec=01JNXXX  step=fetch-metrics   duration=687ms  attempt=1
+[loom] FLOW_SUSPEND    exec=01JNXXX  workflow=investigate-incident  duration=1204ms  suspend#=1
+[loom] STEP_DONE       exec=01JNXXX  step=apply-remediation  duration=615ms  attempt=1
+[loom] FLOW_DONE       exec=01JNXXX  workflow=investigate-incident  duration=1841ms  steps=3
+#+end_example
+
+** ~composeAdapters(...adapters)~
+
+#+begin_src typescript
+function composeAdapters(...adapters: TelemetryAdapter[]): TelemetryAdapter
+#+end_src
+
+Returns a new ~TelemetryAdapter~ that forwards all method calls to every adapter in the argument list. Use to send telemetry to multiple sinks simultaneously:
+
+#+begin_src typescript
+const hook = createTelemetryHook(
+  composeAdapters(ConsoleTelemetryAdapter, datadogAdapter, otelAdapter)
+);
 #+end_src
 
 -----
