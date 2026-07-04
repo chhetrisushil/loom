@@ -117,6 +117,44 @@ describe("WorkflowRuntime — basic execution", () => {
   });
 });
 
+describe("WorkflowRuntime — A2UI (ctx.ui)", () => {
+  it("ctx.ui.* emits durable A2UI_PATCH events with the right patches", async () => {
+    const events: { eventType: string; payload: unknown }[] = [];
+    const eventStore = new SqliteEventStore(dbPath);
+    const snapshotStore = new SqliteSnapshotStore(dbPath + "-snap");
+    const effectRuntime = new EffectRuntime();
+    const runtime = new WorkflowRuntime({
+      eventStore,
+      snapshotStore,
+      effectRuntime,
+      onEvent: (e) => events.push({ eventType: e.eventType, payload: e.payload }),
+    });
+
+    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (ctx) => {
+      ctx.ui.set("phase", "investigating");
+      ctx.ui.merge("stats", { items: 3 });
+      ctx.ui.append("log", "started");
+      ctx.ui.increment("steps");
+      return { resolved: true };
+    };
+
+    await (await runtime.start(makeFlow(runner), { incidentId: "ui-1" })).waitForCompletion();
+
+    const patchEvents = events.filter((e) => e.eventType === "A2UI_PATCH");
+    expect(patchEvents).toHaveLength(4);
+    expect(patchEvents.map((e) => (e.payload as { patches: { op: string }[] }).patches[0]?.op)).toEqual([
+      "set",
+      "merge",
+      "append",
+      "increment",
+    ]);
+    expect(patchEvents[0]?.payload).toEqual({
+      surface: "ui",
+      patches: [{ op: "set", path: "phase", value: "investigating" }],
+    });
+  });
+});
+
 describe("WorkflowRuntime — suspend and resume", () => {
   it("suspends after 2 steps, then resumes correctly (Phase 5 done criteria)", async () => {
     const metricsFn1 = vi.fn().mockResolvedValue({ cpu: 87 });

@@ -10,9 +10,12 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@loom/a2ui": "workspace:*",
     "@loom/blueprint-runtime": "workspace:*",
+    "@loom/capability": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
+    "@loom/intent": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/projection-runtime": "workspace:*",
     "@loom/renderer-react": "workspace:*",

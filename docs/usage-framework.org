@@ -502,6 +502,438 @@ describe("InvestigateIncidentFlow", () => {
 });
 #+end_src
 
+* Building Agentic Applications
+
+Loom's agentic layer builds on the same steps, effects, and projections you have already seen. This section is a practical walkthrough: configure a model, call it from a flow, wrap it in an agent, give the agent tools over MCP, expose and consume agents over A2A, and drive the UI with the A2UI patch protocol.
+
+#+begin_src bash
+# Agentic packages
+pnpm add @loom/llm @loom/agent @loom/mcp @loom/a2a @loom/registry
+#+end_src
+
+Two runnable examples ship with the framework:
+
+- ~examples/cloud-command-center~ — an end-to-end UI that streams an AI analysis into the A2UI ~"ui"~ surface via patches.
+- ~examples/agent-network~ — the server-side pieces (agents, MCP tools, and A2A). Run it with ~pnpm --filter @loom/agent-network start~.
+
+** Configuring an LLM provider
+
+A ~LlmProvider~ is the only integration point between Loom and a model backend. The shipped providers talk to their HTTP APIs through the global ~fetch~, so you do not need to install any vendor SDK.
+
+#+begin_src typescript
+import { AnthropicProvider, OpenAiProvider } from "@loom/llm";
+
+// Anthropic — defaults to model "claude-opus-4-8" and ANTHROPIC_API_KEY
+const provider = new AnthropicProvider();
+
+// Swapping backends is a one-line change — OpenAiProvider defaults to "gpt-4o" and OPENAI_API_KEY
+// const provider = new OpenAiProvider();
+
+// Override model / key / endpoint explicitly:
+const custom = new AnthropicProvider({
+  model: "claude-opus-4-8",
+  apiKey: process.env.MY_KEY,
+  baseUrl: "https://gateway.internal/anthropic",
+});
+#+end_src
+
+Because everything flows through the ~LlmProvider~ interface, you can implement your own — for a local model, a test double, or a corporate gateway — and pass it anywhere a provider is accepted:
+
+#+begin_src typescript
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
+
+class EchoProvider implements LlmProvider {
+  async complete(request: LlmRequest): Promise<LlmResponse> {
+    const last = request.messages.at(-1)?.content ?? "";
+    return { content: `echo: ${last}`, stopReason: "end_turn" };
+  }
+  // Optional: implement stream() to yield { delta, done } chunks
+}
+#+end_src
+
+** Calling an LLM from a flow step
+
+Use ~createLlmEffect~ to turn a provider into a registrable effect. ~buildRequest~ maps your step input into an ~LlmRequest~; ~parseResponse~ (optional) maps the response back — by default it returns ~response.content~.
+
+#+begin_src typescript
+import { createLlmEffect, AnthropicProvider } from "@loom/llm";
+import { step$ } from "@loom/sdk";
+import { z } from "zod";
+
+const summarize = createLlmEffect<{ logs: string[] }, { summary: string }>({
+  provider: new AnthropicProvider(),
+  buildRequest: (input) => ({
+    messages: [{ role: "user", content: `Summarize these logs:\n${input.logs.join("\n")}` }],
+    maxTokens: 512,
+  }),
+  parseResponse: (res) => ({ summary: res.content }),
+});
+
+effectRuntime.register("summarize-logs", summarize);
+
+export const SummarizeStep = step$({
+  id: "summarize-logs",
+  inputSchema: z.object({ logs: z.array(z.string()) }),
+  outputSchema: z.object({ summary: z.string() }),
+});
+
+// In a runner:
+const { summary } = await ctx.run(SummarizeStep, { logs });
+#+end_src
+
+** Defining and running an agent
+
+An agent is an ~agent$~ definition (its tools + policies) driven by a provider in a tool-using loop. ~AgentRunner~ prompts the model with the agent's tools; while the model asks to use a tool it executes each one through the ~EffectRuntime~, feeds the result back, and repeats until the model finishes or ~maxIterations~ (default 10) is hit.
+
+#+begin_src typescript
+import { agent$, tool$ } from "@loom/sdk";
+import { AgentRunner } from "@loom/agent";
+import { AnthropicProvider } from "@loom/llm";
+
+const MetricsTool = tool$({
+  id: "metrics-tool",
+  name: "Metrics Tool",
+  description: "Fetches CPU and memory metrics for an incident",
+  inputSchema: z.object({ incidentId: z.string() }),
+  outputSchema: z.object({ cpu: z.number(), memory: z.number() }),
+});
+effectRuntime.register("metrics-tool", new ToolEffect(async (i) => getMetrics(i.incidentId)));
+
+const InvestigatorAgent = agent$({
+  id: "investigator",
+  name: "Investigator Agent",
+  description: "Gathers incident evidence",
+  tools: [MetricsTool],
+});
+
+const runner = new AgentRunner({
+  definition: InvestigatorAgent,
+  provider: new AnthropicProvider(),
+  effectRuntime,
+  systemPrompt: "You are an incident investigator. Use the tools to gather evidence.",
+});
+
+const result = await runner.run({ prompt: "Diagnose incident cpu-001" }, ctx);
+// result: { content, toolCallLog: AgentStep[], iterations }
+#+end_src
+
+The runner emits an ~AGENT_TOOL_CALL~ event for each tool invocation and a single ~AGENT_COMPLETED~ event at the end, so projections and telemetry can observe the agent's reasoning trace exactly like any other workflow events.
+
+To drop an agent directly into a flow, use ~agentStep$~ — it returns an ordinary ~StepDefinition~ you can pass to ~ctx.run~:
+
+#+begin_src typescript
+import { agentStep$ } from "@loom/agent";
+
+export const InvestigateStep = agentStep$({
+  id: "investigate",
+  agent: InvestigatorAgent,
+  provider: new AnthropicProvider(),
+  effectRuntime,
+});
+
+// In a runner:
+const report = await ctx.run(InvestigateStep, { prompt: "Diagnose incident cpu-001" });
+ctx.emit("INVESTIGATION_COMPLETE", report);
+#+end_src
+
+** Using MCP tools
+
+Instead of hand-writing every tool, connect to a Model Context Protocol server, discover its tools, and register them into the ~EffectRuntime~. The returned ~ToolDefinition[]~ can be handed straight to ~agent$~.
+
+#+begin_src typescript
+import { McpClient } from "@loom/mcp";
+
+const client = new McpClient({ transport: "http", url: "https://tools.example.com/mcp" });
+await client.connect();                         // JSON-RPC "initialize"
+const toolDefs = await client.registerInto(effectRuntime);   // registers each tool as a ToolEffect
+
+const ResearchAgent = agent$({
+  id: "researcher",
+  name: "Research Agent",
+  description: "Answers questions using MCP tools",
+  tools: toolDefs,
+});
+
+// ... run it with AgentRunner or agentStep$ as above.
+// When finished:
+await client.disconnect();
+#+end_src
+
+MCP tools validate their own inputs, so their generated ~ToolDefinition~ uses ~z.unknown()~; the raw JSON Schema stays available on each ~MappedMcpTool.jsonInputSchema~ if you need it.
+
+** Exposing and calling agents over A2A
+
+Expose any registered flow as an A2A HTTP agent with ~createA2AServer~. It serves an agent card at ~/.well-known/agent.json~, accepts tasks at ~POST /tasks/send~, and reports status at ~GET /tasks/:id~.
+
+#+begin_src typescript
+import { createA2AServer } from "@loom/a2a";
+
+const server = createA2AServer(
+  workflowRuntime,
+  InvestigateIncidentRegisteredFlow,
+  {
+    name: "Incident Investigator",
+    version: "1.0.0",
+    capabilities: { streaming: false },
+    skills: [{ id: "investigate", name: "Investigate incident" }],
+  },
+  { port: 4100 },
+);
+
+await server.start();
+console.log("Agent available at", server.url);
+#+end_src
+
+From another process, call that agent from inside a flow with ~createA2AClientEffect~. It POSTs the task and polls until the task is ~completed~ or ~failed~, all over the global ~fetch~.
+
+#+begin_src typescript
+import { createA2AClientEffect } from "@loom/a2a";
+
+effectRuntime.register(
+  "remote-investigator",
+  createA2AClientEffect("http://localhost:4100", { pollIntervalMs: 500 }),
+);
+
+export const DelegateStep = step$({
+  id: "delegate",
+  toolId: "remote-investigator",
+  inputSchema: z.unknown(),
+  outputSchema: z.unknown(),
+});
+
+// In a runner:
+const taskResult = await ctx.run(DelegateStep, {
+  id: "task-1",
+  message: { role: "user", parts: [{ type: "text", text: "Diagnose cpu-001" }] },
+});
+#+end_src
+
+** Driving the UI with A2UI (patch/event protocol)
+
+A2UI (Agent-to-UI) is a first-class protocol for patch/event-based UI updates. Rather than inventing a bespoke event per widget, an agent or flow drives a named *surface* by emitting declarative *patches* (~set~, ~merge~, ~append~, ~remove~, ~increment~) addressed by dot-path. Patches travel as ordinary ~A2UI_PATCH~ events, so every UI update is durable and replays deterministically. Import from ~@loom/a2ui~.
+
+*** 1. Emit patches from a flow (~ctx.ui~) or a step/agent (~createA2UIEmitter~)
+
+Inside a flow runner, ~ctx.ui~ is a ready-made ~A2UIEmitter~ bound to the default ~"ui"~ surface:
+
+#+begin_src typescript
+const runner: FlowRunner<{ prompt: string }, { done: boolean }> = async (ctx, input) => {
+  ctx.ui.set("phase", "analyzing");
+  ctx.ui.merge("meta", { prompt: input.prompt });
+
+  for await (const chunk of provider.stream!(request)) {
+    ctx.ui.append("answer", chunk.delta);   // grow a string token-by-token
+    ctx.ui.increment("tokens");             // += 1
+  }
+
+  ctx.ui.set("phase", "done");
+  return { done: true };
+};
+#+end_src
+
+Anywhere else that can emit events — a step's ~EffectContext~ or an agent — wrap ~emit~ with ~createA2UIEmitter~:
+
+#+begin_src typescript
+import { createA2UIEmitter } from "@loom/a2ui";
+
+export const AnalyzeStep = step$({
+  id: "analyze",
+  inputSchema: z.object({ incidentId: z.string() }),
+  outputSchema: z.object({ severity: z.number() }),
+  handler: handler$(async (input, ctx) => {
+    const ui = createA2UIEmitter((type, payload) => ctx.emit(type, payload));  // surface defaults to "ui"
+    ui.set("status", "fetching metrics");
+    const metrics = await getMetrics(input.incidentId);
+    ui.merge("metrics", metrics);
+    ui.patch([                       // arbitrary batch, applied atomically as one event
+      { op: "set", path: "status", value: "done" },
+      { op: "increment", path: "steps", by: 1 },
+    ]);
+    return { severity: metrics.severity };
+  }),
+});
+#+end_src
+
+*** 2. Consume via a projection (~a2uiSurfaceProjection~)
+
+If you already run a ~ProjectionRuntime~, register the surface as a projection and bind widgets with the ordinary ~{ projectionId, path }~ binding — ~BlueprintRenderer~ needs no changes. The ~projectionId~ is the surface id (~"ui"~).
+
+#+begin_src typescript
+import { a2uiSurfaceProjection } from "@loom/a2ui";
+
+projectionRuntime.register(a2uiSurfaceProjection("ui"));   // id === "ui"
+#+end_src
+
+#+begin_src typescript
+import { blueprint$, stack, StatusBadge, StreamingText } from "@loom/blueprint-runtime";
+
+export const AssistantBlueprint = blueprint$({
+  id: "assistant-dashboard",
+  title: "Assistant",
+  layout: stack({
+    gap: 12,
+    children: [
+      StatusBadge({ title: "Phase", binding: { projectionId: "ui", path: "phase" } }),
+      // StreamingText is the convenience widget for a growing string in the surface
+      StreamingText({
+        title: "Answer",
+        binding: { projectionId: "ui", path: "answer" },
+        placeholder: "Thinking…",
+      }),
+    ],
+  }),
+  projections: ["ui"],
+});
+#+end_src
+
+~StreamingTextRenderer~ is pre-registered in ~defaultRegistry~ under ~"StreamingText"~, so the widget renders with no extra wiring.
+
+*** 3. Consume standalone (~A2UIRuntime~ + ~useA2UISurface~)
+
+For apps without a ~ProjectionRuntime~, use the framework-agnostic ~A2UIRuntime~: point ~onEvent~ at ~handleEvent~ and read a surface with the ~useA2UISurface~ hook from ~@loom/renderer-react~.
+
+#+begin_src typescript
+import { A2UIRuntime } from "@loom/a2ui";
+import { useA2UISurface } from "@loom/renderer-react";
+
+const a2ui = new A2UIRuntime();
+// new WorkflowRuntime({ ..., onEvent: (e) => a2ui.handleEvent(e) })
+
+function LiveSurface({ executionId }: { executionId: string }) {
+  const surface = useA2UISurface(a2ui, executionId, "ui");
+  return <pre>{JSON.stringify(surface, null, 2)}</pre>;
+}
+#+end_src
+
+*** Durability and where to see it
+
+Because patches are just events on the log, an A2UI surface is fully durable and replay-deterministic: after a suspend/resume the surface rebuilds itself by folding the same ~A2UI_PATCH~ events. The ~apps/playground~ "A2UI" tab visualizes the live surface next to the raw patch stream, and ~examples/cloud-command-center~ streams its AI analysis into the ~"ui"~ surface via patches (driving a phase ~StatusBadge~ with ~ctx.ui.set~). See ~docs/api-reference.org~ (~@loom/a2ui~) for the full API.
+
+** Capabilities and the catalog
+
+A *capability* wraps a runnable flow with intent-facing metadata (~capability$~) so the same unit of work is exposed as an API, a UI action, an A2A endpoint, or a workflow node. Register capabilities in a ~CapabilityCatalog~ — the shared vocabulary the Intent and Planner runtimes route over.
+
+#+begin_src typescript
+import { capability$, CapabilityCatalog } from "@loom/capability";
+import { z } from "zod";
+
+const InvestigateCapability = capability$({
+  id: "investigate-incident",
+  name: "Investigate Incident",
+  intent: "Diagnose a production incident from metrics and logs",
+  tags: ["ops", "incident", "diagnosis"],
+  inputSchema: z.object({ incidentId: z.string() }),
+  flow: InvestigateIncidentRegisteredFlow,
+});
+
+const catalog = new CapabilityCatalog().register(InvestigateCapability);
+
+// Wire every capability's flow into the workflow runtime in one call
+catalog.registerInto(workflowRuntime);
+
+// Deterministic keyword discovery — no model needed
+catalog.find("diagnose incident");   // → [{ capability, score }, …]
+
+// Or invoke directly by id
+const handle = await catalog.invoke(workflowRuntime, "investigate-incident", { incidentId: "cpu-001" });
+#+end_src
+
+** Intent routing (Intent Over Routes)
+
+~IntentRuntime~ maps a natural-language intent to a capability, replacing hand-written route tables. It works fully offline with keyword matching; supply an ~LlmProvider~ to let the model pick the capability id.
+
+#+begin_src typescript
+import { IntentRuntime } from "@loom/intent";
+
+// Offline — deterministic keyword routing (no provider)
+const intent = new IntentRuntime({ catalog, workflowRuntime });
+
+const route = await intent.route("diagnose the cpu incident");
+// route: { capability, confidence, rationale? } | null
+
+// route + workflowRuntime.start() in one step
+const handle = await intent.run("diagnose the cpu incident", { incidentId: "cpu-001" });
+
+// Upgrade to LLM routing by adding a provider — everything else is unchanged
+const smart = new IntentRuntime({ catalog, provider: new AnthropicProvider(), workflowRuntime });
+#+end_src
+
+** Planning multi-step goals
+
+Where the Intent Runtime picks one capability, ~PlannerRuntime~ composes an ordered ~Plan~ of capability ids for a higher-level goal. Every id is validated against the catalog and the plan is truncated to ~maxSteps~ (default 5).
+
+#+begin_src typescript
+import { PlannerRuntime } from "@loom/planner";
+
+const planner = new PlannerRuntime({ catalog, provider: new AnthropicProvider(), maxSteps: 4 });
+// Omit provider for a deterministic heuristic plan.
+
+const plan = await planner.plan("Resolve the CPU incident and notify the on-call engineer");
+// plan: { goal, steps: [{ capabilityId, rationale? }, …] }
+
+for (const step of plan.steps) {
+  await catalog.invoke(workflowRuntime, step.capabilityId, { incidentId: "cpu-001" });
+}
+#+end_src
+
+** Agent memory
+
+~MemoryRuntime~ gives an agent durable recall across turns, honoring the ~ttlMs~ / ~maxEntries~ declared by ~memory$()~. Pass it to ~AgentConfig~ and set the agent's ~memoryId~; ~AgentRunner.run~ then recalls prior entries into the prompt and writes each turn back. Use ~AgentInput.memoryScope~ to partition recall per conversation or user (defaults to ~ctx.executionId~).
+
+#+begin_src typescript
+import { memory$, agent$ } from "@loom/sdk";
+import { MemoryRuntime } from "@loom/memory";
+import { AgentRunner } from "@loom/agent";
+
+const IncidentMemory = memory$({ id: "incident-memory", name: "Incident Memory", ttlMs: 3_600_000, maxEntries: 200 });
+
+const memory = new MemoryRuntime();
+memory.register(IncidentMemory);
+
+const InvestigatorAgent = agent$({
+  id: "investigator",
+  name: "Investigator Agent",
+  tools: [MetricsTool],
+  memoryId: "incident-memory",   // links the agent to the memory store
+});
+
+const runner = new AgentRunner({
+  definition: InvestigatorAgent,
+  provider: new AnthropicProvider(),
+  effectRuntime,
+  memory,                         // enables recall + write-back
+});
+
+// memoryScope keeps each user's conversation separate
+await runner.run({ prompt: "What was the CPU peak?", memoryScope: "user-42" }, ctx);
+await runner.run({ prompt: "And now?",               memoryScope: "user-42" }, ctx);  // recalls the prior turn
+#+end_src
+
+You can also read and write memory directly — ~read~ prunes by ~ttlMs~ then trims to ~maxEntries~:
+
+#+begin_src typescript
+memory.append("incident-memory", "user-42", { role: "user", content: "note this" });
+const history = memory.read("incident-memory", "user-42");   // MemoryEntry[]
+#+end_src
+
+** Rendering to other surfaces (terminal)
+
+Blueprints carry no framework imports, and ~traverseBlueprint~ is framework-agnostic — so the same blueprint + projection state renders to React *or* to plain text. ~@loom/renderer-terminal~ is the non-React surface.
+
+#+begin_src typescript
+import { TerminalRenderer, renderBlueprintToString } from "@loom/renderer-terminal";
+
+// Pull projection state for an execution from the ProjectionRuntime and render to text
+const renderer = new TerminalRenderer(projectionRuntime);
+console.log(renderer.render(IncidentBlueprint, executionId));
+
+// Or render from an explicit projection state map (no ProjectionRuntime needed)
+const stateMap = new Map<string, unknown>([["metrics", { cpu: { current: 87 } }]]);
+console.log(renderBlueprintToString(IncidentBlueprint, stateMap));
+#+end_src
+
+The ~examples/agent-network~ showcase demonstrates all five of the above — capability catalog, intent routing, a planner plan, agent memory recall, and a terminal-rendered dashboard — end to end and fully offline. Run it with ~pnpm --filter @loom/agent-network start~.
+
 * Common Pitfalls
 
 ** "Effect not registered" at runtime

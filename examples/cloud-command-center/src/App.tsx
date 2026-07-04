@@ -1,21 +1,24 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   ApprovalCardRenderer,
   BlueprintRenderer,
   MetricCardRenderer,
   StatusBadgeRenderer,
+  StreamingTextRenderer,
   TimelineRenderer,
   defaultRegistry,
   useLoom,
 } from "@loom/renderer-react";
 import type { WidgetAction } from "@loom/renderer-react";
+import { IntentRuntime } from "@loom/intent";
 import { IncidentBlueprint } from "./blueprints/IncidentBlueprint";
-import { InvestigateIncidentFlow } from "./flows/InvestigateIncident";
+import { incidentCatalog } from "./capabilities";
 
 defaultRegistry.register("MetricCard", MetricCardRenderer);
 defaultRegistry.register("Timeline", TimelineRenderer);
 defaultRegistry.register("ApprovalCard", ApprovalCardRenderer);
 defaultRegistry.register("StatusBadge", StatusBadgeRenderer);
+defaultRegistry.register("StreamingText", StreamingTextRenderer);
 
 type Phase = "idle" | "running" | "suspended" | "completed";
 
@@ -26,17 +29,24 @@ export function App() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [executionId, setExecutionId] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
+  const [intentText, setIntentText] = useState("investigate high CPU on the postgres cluster");
+
+  // Intent Over Routes: route a natural-language request to a capability rather
+  // than wiring a button straight to a flow. Offline keyword routing (no API key).
+  const intent = useMemo(
+    () => new IntentRuntime({ catalog: incidentCatalog, workflowRuntime }),
+    [workflowRuntime]
+  );
 
   const addLog = (msg: string) =>
     setLog((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
 
   const startInvestigation = useCallback(async () => {
     setPhase("running");
-    addLog("Starting InvestigateIncident for incident cpu-001…");
+    const route = await intent.route(intentText);
+    addLog(`Intent "${intentText}" → capability ${route?.capability.id ?? "(none)"}`);
 
-    const handle = await workflowRuntime.start(InvestigateIncidentFlow, {
-      incidentId: "cpu-001",
-    });
+    const handle = await intent.run(intentText, { incidentId: "cpu-001" });
     setExecutionId(handle.executionId);
     addLog(`Execution started: ${handle.executionId}`);
 
@@ -44,7 +54,7 @@ export function App() {
       setPhase("suspended");
       addLog("Workflow suspended — awaiting approval");
     });
-  }, [workflowRuntime]);
+  }, [intent, intentText]);
 
   const approve = useCallback(async () => {
     if (!executionId) return;
@@ -81,9 +91,18 @@ export function App() {
         <h1 style={styles.title}>Cloud Command Center</h1>
         <div style={styles.controls}>
           {phase === "idle" && (
-            <button style={styles.btn} onClick={() => void startInvestigation()}>
-              Simulate Incident
-            </button>
+            <>
+              <input
+                style={styles.intentInput}
+                value={intentText}
+                onChange={(e) => setIntentText(e.target.value)}
+                placeholder="Describe your intent…"
+                title="Intent Over Routes — routed to a capability by the Intent Runtime"
+              />
+              <button style={styles.btn} onClick={() => void startInvestigation()}>
+                Run Intent
+              </button>
+            </>
           )}
           {phase === "suspended" && (
             <button style={{ ...styles.btn, ...styles.btnApprove }} onClick={() => void approve()}>
@@ -160,6 +179,15 @@ const styles: Record<string, React.CSSProperties> = {
   },
   btnApprove: { background: "#38a169" },
   btnReset: { background: "#4a5568" },
+  intentInput: {
+    padding: "8px 12px",
+    borderRadius: 6,
+    border: "1px solid #2d3748",
+    background: "#0f172a",
+    color: "#e2e8f0",
+    fontSize: 13,
+    width: 320,
+  },
   badge: {
     padding: "4px 10px",
     borderRadius: 12,

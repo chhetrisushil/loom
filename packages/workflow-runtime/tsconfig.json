@@ -11,6 +11,7 @@
     { "path": "../event-runtime" },
     { "path": "../replay-vm" },
     { "path": "../effect-runtime" },
-    { "path": "../snapshot-runtime" }
+    { "path": "../snapshot-runtime" },
+    { "path": "../a2ui" }
   ]
 }

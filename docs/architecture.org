@@ -44,9 +44,26 @@ Four ideas underpin the whole system:
   createTelemetryHook(adapter) → onEvent handler
   TelemetryAdapter interface (OTel-ready)
   ConsoleTelemetryAdapter, composeAdapters
+
+Agentic layer (depend on @loom/core + @loom/effect-runtime):
+  @loom/llm      LlmProvider, AnthropicProvider, OpenAiProvider, createLlmEffect
+  @loom/agent    AgentRunner (ReAct loop), agentStep$    → depends on @loom/llm
+  @loom/mcp      McpClient, mcpTool$ (Model Context Protocol tool discovery)
+  @loom/a2a      createA2AServer, createA2AClientEffect  → depends on @loom/workflow-runtime
+  @loom/a2ui     A2UIPatch protocol, a2uiSurfaceProjection, A2UIRuntime (Agent-to-UI)
+  @loom/registry AgentRegistry (AgentDefinition + agent card store)
+
+Intelligence pipeline (Intent → Planner → Capabilities):
+  @loom/capability        capability$, CapabilityCatalog (Capabilities Over APIs)
+  @loom/intent            IntentRuntime (route/run — Intent Over Routes)
+  @loom/planner           PlannerRuntime (plan — ordered multi-step goals)
+  @loom/memory            MemoryRuntime, InMemoryMemoryStore (agent memory)
+  @loom/renderer-terminal TerminalRenderer, renderBlueprintToString (non-React surface)
 #+end_example
 
-All packages depend on ~@loom/core~ for shared types. ~@loom/sdk~ is the single entry point for application code — it re-exports everything public. ~@loom/compiler~ is a dev-time-only dependency; it transforms source code at build time and is never bundled into the application. ~@loom/telemetry~ is an optional observability package; it depends only on ~@loom/core~ and is framework-agnostic — it can be used in React, Angular, Vue, or plain Node.js applications.
+All packages depend on ~@loom/core~ for shared types. ~@loom/sdk~ is the single entry point for application code — it re-exports everything public, including the agentic layer. ~@loom/compiler~ is a dev-time-only dependency; it transforms source code at build time and is never bundled into the application. ~@loom/telemetry~ is an optional observability package; it depends only on ~@loom/core~ and is framework-agnostic — it can be used in React, Angular, Vue, or plain Node.js applications.
+
+The *agentic layer* — ~@loom/llm~, ~@loom/agent~, ~@loom/mcp~, ~@loom/a2a~, and ~@loom/registry~ — turns the four ~EffectKind~ vocabulary entries (~tool~, ~llm~, ~human~, ~a2a~) into working protocol implementations. Each capability is expressed as an *effect*, so LLM calls, agent runs, MCP tool invocations, and remote-agent delegations are all durable and replayable exactly like ordinary tool steps. The LLM and MCP providers use the global ~fetch~ (Node 18+) and speak their wire protocols directly, so there are no mandatory SDK dependencies. See the [[*Agentic Capabilities][Agentic Capabilities]] section below.
 
 * Core Types (~@loom/core~)
 
@@ -251,10 +268,12 @@ EffectRuntime
 | Class          | Kind     | Behaviour                                                      |
 |----------------+----------+----------------------------------------------------------------|
 | ~ToolEffect~   | ~tool~   | Wraps an async function — HTTP call, DB query, anything async  |
-| ~LlmEffect~    | ~llm~    | Same shape, semantically marks this as an LLM call             |
+| ~LlmEffect~    | ~llm~    | Wraps an LLM call; produced by ~createLlmEffect~ / ~AgentRunner.asEffect()~ |
 | ~HumanEffect~  | ~human~  | Throws ~SuspendError~ immediately — no async work              |
-| ~A2AEffect~    | ~a2a~    | Agent-to-agent delegation (same shape as ToolEffect)           |
+| ~A2AEffect~    | ~a2a~    | Agent-to-agent delegation; produced by ~createA2AClientEffect~ |
 | ~LazyEffect~   | ~tool~   | Resolves and caches a ~HandlerSpec~ on first ~execute()~ call  |
+
+~LlmEffect~ and ~A2AEffect~ have the same wrapper shape as ~ToolEffect~, but the agentic layer packages (~@loom/llm~, ~@loom/a2a~) provide factories that fill them with real protocol behaviour — see [[*Agentic Capabilities][Agentic Capabilities]].
 
 ** ~LazyEffect~ — Handler Co-location Bridge
 
@@ -607,6 +626,207 @@ export const OtelAdapter: TelemetryAdapter = {
   },
 };
 #+end_src
+
+* Agentic Capabilities
+
+Loom is an *agentic* application framework: the model provider, the agents, the tools, and inter-agent communication are all pluggable, and every one of them is expressed as a durable *effect*. This means an LLM call or a remote-agent delegation is memoized on its step frame and skipped on replay, exactly like a tool call — durability is free.
+
+** Configurable LLM (~@loom/llm~)
+
+The ~LlmProvider~ interface is the single seam through which a model is chosen. It has one required method, ~complete(request)~, and an optional ~stream(request)~.
+
+#+begin_src ts
+interface LlmProvider {
+  complete(request: LlmRequest): Promise<LlmResponse>;
+  stream?(request: LlmRequest): AsyncIterable<LlmStreamChunk>;
+}
+#+end_src
+
+~@loom/llm~ ships ~AnthropicProvider~ and ~OpenAiProvider~, both implemented against the global ~fetch~ (Node 18+) so neither vendor SDK is a required dependency. A provider is turned into a step with ~createLlmEffect~:
+
+#+begin_src ts
+import { AnthropicProvider, createLlmEffect } from "@loom/llm";
+
+const provider = new AnthropicProvider({ model: "claude-opus-4-8" });
+effectRuntime.register("summarize", createLlmEffect({
+  provider,
+  buildRequest: (text: string) => ({ messages: [{ role: "user", content: text }] }),
+}));
+#+end_src
+
+Because the provider is just an object, tests use a hand-written stub and the offline examples use a ~MockLlmProvider~ / ~ScriptedLlmProvider~. Switching to a live model is a one-line change.
+
+** Agents (~@loom/agent~)
+
+~AgentRunner~ implements a ReAct loop: it sends the prompt plus the agent's tool specs to the provider, executes any requested tool calls against the ~EffectRuntime~, feeds the results back, and repeats until the model stops or ~maxIterations~ is hit. Each tool call emits an ~AGENT_TOOL_CALL~ event; the run ends with ~AGENT_COMPLETED~.
+
+#+begin_example
+AgentRunner.run(input, ctx)
+  loop (≤ maxIterations):
+    provider.complete({ messages, tools })
+      │
+      ├─ stopReason "end_turn" → break, return content
+      │
+      └─ stopReason "tool_use":
+           for each toolCall:
+             effectRuntime.execute(toolCall.name, toolCall.input, ctx)
+             ctx.emit("AGENT_TOOL_CALL", …)
+             append result to messages
+  ctx.emit("AGENT_COMPLETED", …)
+#+end_example
+
+~agentStep$({ id, agent, provider, effectRuntime })~ packages a runner as an ordinary ~StepDefinition~ (kind ~llm~), so an agent drops into a flow like any other step and inherits suspend/resume and replay.
+
+** MCP tools (~@loom/mcp~)
+
+~McpClient~ speaks the Model Context Protocol over JSON-RPC. ~connect()~ performs the ~initialize~ handshake; ~registerInto(effectRuntime)~ calls ~tools/list~ and registers each discovered tool as a ~ToolEffect~ whose handler invokes ~tools/call~. MCP tools validate their own inputs, so their ~ToolDefinition~ uses ~z.unknown()~ and the raw JSON Schema is preserved on ~MappedMcpTool.jsonInputSchema~ for building ~LlmToolSpec~s.
+
+#+begin_src ts
+const mcp = new McpClient({ transport: "http", url: "http://localhost:9000/mcp" });
+await mcp.connect();
+const defs = await mcp.registerInto(effectRuntime);   // → ToolDefinition[]
+// defs can be handed straight to agent$({ tools: defs })
+#+end_src
+
+** Agent-to-Agent (~@loom/a2a~)
+
+A2A gives a Loom service two roles. As a *server*, ~createA2AServer(workflowRuntime, flow, agentCard)~ starts a Node HTTP server exposing three routes:
+
+- ~GET /.well-known/agent.json~ — the agent card (capabilities + skills)
+- ~POST /tasks/send~ — starts a flow execution, returns the task id
+- ~GET /tasks/:id~ — maps ~ExecutionStatus~ → ~A2ATaskStatus~ and returns artifacts on completion
+
+As a *client*, ~createA2AClientEffect(agentUrl)~ returns an ~A2AEffect~ that POSTs a task, polls for completion, and returns the result — so calling a remote agent is just another step in a flow. Both use built-in ~http~/~fetch~ with no framework HTTP dependency.
+
+~@loom/registry~ provides ~AgentRegistry~, a store of ~AgentDefinition~ + agent-card pairs that a gateway can use to serve multiple agents.
+
+** A2UI — the Agent-to-UI protocol (~@loom/a2ui~)
+
+A2UI is a first-class, patch/event-based protocol for agents and workflows to drive the UI. Rather than each flow inventing its own event shapes, A2UI standardises UI updates as a stream of typed *patches* carried by a single event type. Because those patches travel through the ordinary Loom event pipeline, UI updates are durable, ordered, and *replayable* — the UI surface is fully reconstructable from the event log, so a refresh or a resume rebuilds the exact same screen.
+
+*** Patches and surfaces
+
+The unit of change is an ~A2UIPatch~ — a declarative mutation addressed by a dot-notation path (~""~ = the root):
+
+#+begin_src ts
+type A2UIPatch =
+  | { op: "set";       path: string; value: unknown }
+  | { op: "merge";     path: string; value: Record<string, unknown> }
+  | { op: "append";    path: string; value: unknown }   // arrays: tokens, logs, timelines
+  | { op: "remove";    path: string }
+  | { op: "increment"; path: string; by?: number };
+#+end_src
+
+A *surface* is one addressable UI state tree (~A2UISurfaceState = Record<string, unknown>~). Most apps use one (id ~"ui"~); an agent can drive several (e.g. ~"ui"~, ~"sidebar"~). Every patch batch is emitted as one ~A2UI_PATCH~ event with payload ~{ surface, patches }~.
+
+*** Producing patches
+
+Any context that can emit events can drive the UI. ~WorkflowContext~ exposes ~ctx.ui~ (an ~A2UIEmitter~), and ~createA2UIEmitter(emit, surface?)~ gives the same API to a step's ~EffectContext~ or an agent:
+
+#+begin_src ts
+ctx.ui.set("phase", "triaging");           // one A2UI_PATCH event
+ctx.ui.merge("stats", { items: 42 });
+ctx.ui.append("log", "connection reset");  // grows an array
+ctx.ui.increment("stepsCompleted");
+#+end_src
+
+*** Consuming patches
+
+There are two consumers, both folding ~A2UI_PATCH~ events with the pure ~applyA2UIPatch~ reducer:
+
+- ~a2uiSurfaceProjection(surfaceId)~ — a ProjectionDefinition whose id is the surface id. Register it in an existing ~ProjectionRuntime~ and widgets bind to A2UI state with the ordinary ~{ projectionId: "ui", path }~ binding — the React ~BlueprintRenderer~ needs no changes.
+- ~A2UIRuntime~ — a standalone, framework-agnostic surface store (subscribe / getSurface), for consumers that are not projection-based. The ~useA2UISurface~ hook in ~@loom/renderer-react~ wraps it for React.
+
+#+begin_example
+ctx.ui.set("phase", "triaging")
+   │  emits
+   ▼
+A2UI_PATCH event  { surface:"ui", patches:[{op:"set",path:"phase",value:"triaging"}] }
+   │  onEvent
+   ├────────────► a2uiSurfaceProjection("ui")  ─► ProjectionRuntime ─► BlueprintRenderer
+   └────────────► A2UIRuntime.handleEvent()     ─► useA2UISurface()  ─► any React tree
+#+end_example
+
+The ~cloud-command-center~ example streams an AI root-cause analysis into the ~"ui"~ surface and drives a phase badge with ~ctx.ui.set~; the playground's *A2UI* tab shows the live surface next to the raw patch stream. Because patches replay deterministically and any producing step is memoized, the surface is consistent across refresh and resume.
+
+The ~StreamingText~ widget (in ~@loom/blueprint-runtime~, rendered by ~StreamingTextRenderer~) is a convenience for binding to a growing string in the surface; ~WorkflowContext.stream()~ remains as low-level sugar over ~emit~ for callers that want raw delta events instead of patches.
+
+* The Intelligence Pipeline (Intent → Planner → Capabilities)
+
+The agentic layer answers "how do I run a model / an agent / a remote agent as a durable effect". The *intelligence pipeline* answers a higher-level question: given a natural-language *intent*, which unit of work should run, and in what order? Five packages fill in the pieces the proposal calls out — Intent Runtime, Planner Runtime, "Capabilities Over APIs", agent memory access, and non-React surface delivery. All are re-exported from ~@loom/sdk~, and the ~examples/agent-network~ showcase demonstrates every one of them.
+
+#+begin_example
+intent text
+     │
+     ▼
+IntentRuntime.route(text) ──► LLM routing (provider set)
+     │                         or deterministic keyword match (offline)
+     ▼
+IntentRoute { capability, confidence }
+     │
+     ▼
+capability.flow  ──►  WorkflowRuntime.start(flow, input)  ──►  ExecutionHandle
+                                                               (durable, resumable)
+#+end_example
+
+A ~PlannerRuntime~ sits alongside the router: instead of picking one capability it composes an ordered *plan* of capability ids from the same catalog. Downstream, everything is ordinary Loom — the chosen capability's ~RegisteredFlow~ runs on ~WorkflowRuntime~, emits events, folds into projections, and renders to a surface.
+
+** Capabilities Over APIs (~@loom/capability~)
+
+A *capability* wraps a runnable flow with intent-facing metadata, so the same unit of work can be exposed as an API, a UI action, an A2A endpoint, or a workflow node without re-authoring it. ~capability$(config)~ produces a ~CapabilityDefinition~ carrying an ~id~, a human ~name~, a natural-language ~intent~, ~tags~, an ~inputSchema~, and the ~flow~ (a ~RegisteredFlow~).
+
+~CapabilityCatalog~ is the registry. Beyond ~register~ / ~get~ / ~all~ / ~ids~, it provides:
+
+- ~find(query)~ — deterministic keyword scoring over each capability's ~id~, ~name~, ~intent~, and ~tags~; returns ~{ capability, score }[]~ ranked high-to-low. No model required, so discovery works offline.
+- ~registerInto(workflowRuntime)~ — registers every capability's flow with a ~WorkflowRuntime~ in one call.
+- ~invoke(workflowRuntime, capabilityId, input)~ — looks up a capability and starts its flow, returning the ~ExecutionHandle~.
+
+The catalog is the shared vocabulary both the Intent Runtime and the Planner Runtime route over.
+
+** Intent Runtime — Intent Over Routes (~@loom/intent~)
+
+~IntentRuntime~ maps a natural-language intent to a capability, replacing hand-written route tables. It is constructed with a ~catalog~ and, optionally, an ~LlmProvider~ and a ~WorkflowRuntime~.
+
+- ~route(intentText)~ → ~IntentRoute | null~. With a ~provider~, the model is asked to pick a capability id from the catalog (returning ~{ capability, confidence, rationale }~). With *no* provider it falls back to ~catalog.find()~ keyword scoring — so routing works fully offline. Returns ~null~ when nothing matches.
+- ~run(intentText, input)~ → routes, then calls ~workflowRuntime.start()~ on the matched capability's flow and returns the ~ExecutionHandle~. Requires ~workflowRuntime~ in the config.
+
+The key property is that the *same* runtime works with or without a model: the deterministic keyword path makes tests and offline demos possible, and adding a provider is a drop-in upgrade to LLM routing.
+
+** Planner Runtime (~@loom/planner~)
+
+~PlannerRuntime~ composes an ordered, multi-step ~Plan~ from the catalog rather than choosing a single capability. It takes a ~catalog~, an optional ~provider~, and ~maxSteps~ (default 5).
+
+- ~plan(goal)~ → ~Plan { goal, steps: PlanStep[] }~, each ~PlanStep~ naming a ~capabilityId~ and an optional ~rationale~. With a ~provider~, the model returns an ordered JSON plan; with none, a heuristic keyword-ranked plan is produced. Either way every emitted ~capabilityId~ is validated against the catalog, so a plan can only reference capabilities that actually exist, and it is truncated to ~maxSteps~.
+
+** Agent Runtime memory (~@loom/memory~)
+
+~MemoryRuntime~ gives an agent durable recall across turns. A ~MemoryStore~ (default ~InMemoryMemoryStore~) holds ~MemoryEntry~ records (~{ role?, content, timestamp }~) under a key. The runtime layers definition-aware semantics on top:
+
+- ~register(definition)~ — takes a ~MemoryDefinition~ (from ~memory$()~) and honors its ~ttlMs~ and ~maxEntries~.
+- ~append(memoryId, scope, entry)~ / ~read(memoryId, scope)~ / ~clear(memoryId, scope)~ — reads are pruned by ~ttlMs~ first, then trimmed to ~maxEntries~. The ~scope~ string partitions memory by conversation or user.
+
+Integration with ~@loom/agent~ is opt-in: ~AgentConfig~ gained an optional ~memory?: MemoryRuntime~. When the agent's ~definition.memoryId~ is set and a ~MemoryRuntime~ is provided, ~AgentRunner.run~ recalls prior entries into the prompt before calling the model, and writes the user prompt plus the assistant answer back afterward. ~AgentInput~ gained ~memoryScope?: string~ (defaulting to ~ctx.executionId~) to scope recall per conversation.
+
+#+begin_example
+AgentRunner.run(input, ctx)   [memory + memoryId configured]
+  │
+  ├─ memory.read(memoryId, input.memoryScope ?? ctx.executionId)
+  │     └─ prior entries → prepended into the prompt
+  │
+  ├─ …ReAct loop (provider.complete + tool calls)…
+  │
+  └─ memory.append(memoryId, scope, { role:"user",      content: input.prompt })
+     memory.append(memoryId, scope, { role:"assistant", content: output.content })
+#+end_example
+
+** Multi-surface delivery (~@loom/renderer-terminal~)
+
+The proposal's surface layer is deliberately framework-agnostic: ~traverseBlueprint<T>~ walks a ~Blueprint~ producing values of any type ~T~, so a blueprint is not tied to React. ~@loom/renderer-terminal~ proves this by rendering the *same* blueprint + projection state to text instead of DOM:
+
+- ~renderBlueprintToString(blueprint, stateMap)~ — uses ~traverseBlueprint<string>~ to fold a blueprint and a ~Map<string, unknown>~ of projection state into a plain string.
+- ~TerminalRenderer~ — constructed with a ~ProjectionRuntime~; its ~render(blueprint, executionId)~ pulls each of the blueprint's projections' state for that execution and renders them to text.
+
+Because ~traverseBlueprint~ is the shared traversal used by both the React ~BlueprintRenderer~ and the terminal renderer, a single blueprint definition renders to the web *or* the terminal with no changes — the multi-surface delivery the proposal calls for.
 
 * Resumability — Client-Side State Restoration
 

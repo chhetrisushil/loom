@@ -1,4 +1,5 @@
 import type { ExecutionState, FlowDefinition, StepDefinition } from "@loom/core";
+import type { A2UIEmitter } from "@loom/a2ui";
 
 export interface SuspendConfig {
   on: string;
@@ -22,6 +23,12 @@ export interface WorkflowContext {
   suspend(config: SuspendConfig): Promise<never>;
 
   emit(eventType: string, payload: unknown): void;
+
+  stream(eventType: string, delta: string, done?: boolean): void;
+
+  // A2UI — drive the UI with durable, replayable patch/event updates.
+  // ctx.ui.set(path, value) / append / merge / increment / remove / patch.
+  readonly ui: A2UIEmitter;
 }
 
 export interface RunOptions {

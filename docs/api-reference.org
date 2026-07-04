@@ -11,7 +11,7 @@ import { flow$, step$, tool$, WorkflowRuntime, ToolEffect } from "@loom/sdk";
 
 1.  [[#builders][Builders]] — ~flow$~, ~step$~, ~handler$~, ~tool$~, ~projection$~, ~agent$~, ~memory$~, ~policy$~
 2.  [[#workflow-runtime][WorkflowRuntime]] — ~start~, ~resume~, ~restoreFromState~, ~registerFlow~, ~register~
-3.  [[#workflow-context][WorkflowContext — the flow API]] — ~ctx.run~, ~ctx.parallel~, ~ctx.emit~, ~ctx.suspend~
+3.  [[#workflow-context][WorkflowContext — the flow API]] — ~ctx.run~, ~ctx.parallel~, ~ctx.emit~, ~ctx.ui~, ~ctx.suspend~
 4.  [[#execution-handle][ExecutionHandle]]
 5.  [[#effect-runtime][EffectRuntime & Effects]] — ~ToolEffect~, ~LlmEffect~, ~HumanEffect~, ~A2AEffect~, ~LazyEffect~
 6.  [[#event-store][EventStore]]
@@ -21,8 +21,19 @@ import { flow$, step$, tool$, WorkflowRuntime, ToolEffect } from "@loom/sdk";
 10. [[#react-renderer][React Renderer]] — ~BlueprintRenderer~, ~LoomProvider~, ~useLoom~, ~useProjection~
 11. [[#compiler][~@loom/compiler~]] — Vite plugin, CLI, serialization utilities
 12. [[#telemetry][~@loom/telemetry~]] — ~createTelemetryHook~, ~TelemetryAdapter~, ~ConsoleTelemetryAdapter~, ~composeAdapters~
-13. [[#errors][Errors]]
-14. [[#complete-example][Complete Example]]
+13. [[#llm][~@loom/llm~]] — ~LlmProvider~, ~AnthropicProvider~, ~OpenAiProvider~, ~createLlmEffect~
+14. [[#agent][~@loom/agent~]] — ~AgentRunner~, ~agentStep$~
+15. [[#mcp][~@loom/mcp~]] — ~McpClient~, ~mcpTool$~
+16. [[#a2a][~@loom/a2a~]] — ~createA2AClientEffect~, ~createA2AServer~
+17. [[#registry][~@loom/registry~]] — ~AgentRegistry~, ~globalAgentRegistry~
+18. [[#a2ui][~@loom/a2ui~ — the Agent-to-UI protocol]] — ~A2UIPatch~, ~createA2UIEmitter~, ~a2uiSurfaceProjection~, ~A2UIRuntime~, ~useA2UISurface~
+19. [[#capability][~@loom/capability~]] — ~capability$~, ~CapabilityCatalog~
+20. [[#intent][~@loom/intent~]] — ~IntentRuntime~ (~route~, ~run~)
+21. [[#planner][~@loom/planner~]] — ~PlannerRuntime~ (~plan~)
+22. [[#memory][~@loom/memory~]] — ~MemoryRuntime~, ~InMemoryMemoryStore~, ~MemoryStore~
+23. [[#renderer-terminal][~@loom/renderer-terminal~]] — ~TerminalRenderer~, ~renderBlueprintToString~
+24. [[#errors][Errors]]
+25. [[#complete-example][Complete Example]]
 
 -----
 
@@ -418,6 +429,21 @@ ctx.emit("INCIDENT_ANALYSIS_COMPLETE", { metrics, logs, timestamp: Date.now() })
 #+end_src
 
 Use ~ctx.emit~ to push domain-meaningful events that projections can react to. Structural events (~STEP_STARTED~, ~EXECUTION_SUSPENDED~, etc.) are emitted automatically.
+
+** ~ctx.ui~ — the A2UI emitter
+
+Every ~WorkflowContext~ carries a pre-wired ~ui: A2UIEmitter~ (from ~@loom/a2ui~) bound to the default ~"ui"~ surface. Each call emits one ~A2UI_PATCH~ event through the normal ~ctx.emit~ pipeline, so UI updates are durable and replay deterministically — the surface rebuilds itself by folding the same patch events on resume.
+
+#+begin_src typescript
+// Address surface state by dot-notation path ("" is the root)
+ctx.ui.set("phase", "analyzing");
+ctx.ui.merge("metrics", { cpu: 87 });
+ctx.ui.append("log", "fetched metrics");     // push onto an array
+ctx.ui.increment("progress", 10);            // numeric bump (default +1)
+ctx.ui.set("done", true);
+#+end_src
+
+See [[#a2ui][~@loom/a2ui~]] for the full emitter, patch, and consumer API. ~ctx.stream(eventType, delta, done?)~ remains as low-level sugar over ~ctx.emit~ for pushing ~{ delta, done }~ payloads.
 
 ** ~ctx.suspend(config)~
 
@@ -1330,6 +1356,1015 @@ const hook = createTelemetryHook(
   composeAdapters(ConsoleTelemetryAdapter, datadogAdapter, otelAdapter)
 );
 #+end_src
+
+-----
+
+* ~@loom/llm~
+:PROPERTIES:
+:CUSTOM_ID: llm
+:END:
+
+Provider-agnostic LLM access. A ~LlmProvider~ is the single seam between Loom and any language-model backend; the shipped providers speak to their HTTP APIs through the global ~fetch~, so no vendor SDK is pulled into your bundle. Import from ~@loom/llm~.
+
+#+begin_src typescript
+import {
+  AnthropicProvider,
+  OpenAiProvider,
+  createLlmEffect,
+  type LlmProvider,
+  type LlmRequest,
+  type LlmResponse,
+} from "@loom/llm";
+#+end_src
+
+** Message & request types
+
+The wire-level types are provider-independent. A provider maps them to and from its own API shape.
+
+#+begin_src typescript
+interface LlmMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+interface LlmToolSpec {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;   // raw JSON Schema
+}
+
+interface LlmRequest {
+  messages: LlmMessage[];
+  tools?: LlmToolSpec[];
+  system?: string;
+  maxTokens?: number;
+  temperature?: number;
+}
+
+interface LlmToolCall {
+  id: string;
+  name: string;
+  input: unknown;
+}
+
+interface LlmResponse {
+  content: string;
+  toolCalls?: LlmToolCall[];
+  stopReason: "end_turn" | "tool_use" | "max_tokens";
+  usage?: { inputTokens: number; outputTokens: number };
+}
+
+interface LlmStreamChunk {
+  delta: string;
+  done: boolean;
+}
+#+end_src
+
+** ~LlmProvider~
+
+The interface every backend implements. ~complete~ is required; ~stream~ is optional and yields incremental text deltas.
+
+#+begin_src typescript
+interface LlmProvider {
+  complete(request: LlmRequest): Promise<LlmResponse>;
+  stream?(request: LlmRequest): AsyncIterable<LlmStreamChunk>;
+}
+#+end_src
+
+** ~AnthropicProvider~
+
+Calls the Anthropic Messages API over the global ~fetch~ — no SDK dependency.
+
+#+begin_src typescript
+class AnthropicProvider implements LlmProvider {
+  constructor(config?: { apiKey?: string; model?: string; baseUrl?: string });
+}
+
+const provider = new AnthropicProvider();   // model "claude-opus-4-8", apiKey from env
+#+end_src
+
+| Option    | Type     | Default                          | Description                       |
+|-----------+----------+----------------------------------+-----------------------------------|
+| ~apiKey~  | ~string~ | ~process.env.ANTHROPIC_API_KEY~  | API credential                    |
+| ~model~   | ~string~ | ~"claude-opus-4-8"~              | Model id                          |
+| ~baseUrl~ | ~string~ | Anthropic API endpoint           | Override for proxies / gateways   |
+
+** ~OpenAiProvider~
+
+Calls the OpenAI Chat Completions API, also via the global ~fetch~. Swapping providers is a one-line change — anywhere a ~LlmProvider~ is accepted, drop in ~OpenAiProvider~ instead.
+
+#+begin_src typescript
+class OpenAiProvider implements LlmProvider {
+  constructor(config?: { apiKey?: string; model?: string; baseUrl?: string });
+}
+
+const provider = new OpenAiProvider();   // model "gpt-4o", apiKey from env
+#+end_src
+
+| Option    | Type     | Default                       | Description                     |
+|-----------+----------+-------------------------------+---------------------------------|
+| ~apiKey~  | ~string~ | ~process.env.OPENAI_API_KEY~  | API credential                  |
+| ~model~   | ~string~ | ~"gpt-4o"~                    | Model id                        |
+| ~baseUrl~ | ~string~ | OpenAI API endpoint           | Override for proxies / gateways |
+
+** ~createLlmEffect(options)~
+
+Wraps a provider as a registrable ~LlmEffect~. You supply ~buildRequest~ to turn the step input into an ~LlmRequest~; ~parseResponse~ maps the response back into your step's output shape (defaults to returning ~response.content~).
+
+#+begin_src typescript
+function createLlmEffect<TIn = string, TOut = string>(options: {
+  provider: LlmProvider;
+  buildRequest: (input: TIn, ctx: EffectContext) => LlmRequest;
+  parseResponse?: (response: LlmResponse, input: TIn) => TOut;   // default: r => r.content
+}): LlmEffect<TIn, TOut>;
+#+end_src
+
+#+begin_src typescript
+const summarize = createLlmEffect<{ logs: string[] }, { summary: string }>({
+  provider: new AnthropicProvider(),
+  buildRequest: (input) => ({
+    messages: [{ role: "user", content: `Summarize:\n${input.logs.join("\n")}` }],
+    maxTokens: 512,
+  }),
+  parseResponse: (res) => ({ summary: res.content }),
+});
+
+effectRuntime.register("summarize-logs", summarize);
+#+end_src
+
+-----
+
+* ~@loom/agent~
+:PROPERTIES:
+:CUSTOM_ID: agent
+:END:
+
+Runs an ~AgentDefinition~ (built with ~agent$~) as a tool-using loop: the provider is prompted with the agent's tools; while it returns ~stopReason: "tool_use"~ the runner executes each requested tool through the ~EffectRuntime~, appends the results, and re-prompts — until the model replies ~"end_turn"~ or ~maxIterations~ is reached. Import from ~@loom/agent~.
+
+#+begin_src typescript
+import { AgentRunner, agentStep$ } from "@loom/agent";
+#+end_src
+
+** I/O types
+
+#+begin_src typescript
+interface AgentInput {
+  prompt: string;
+  context?: unknown;
+}
+
+interface AgentStep {
+  iteration: number;
+  toolName: string;
+  toolInput: unknown;
+  toolOutput: unknown;
+}
+
+interface AgentOutput {
+  content: string;
+  toolCallLog: AgentStep[];
+  iterations: number;
+}
+#+end_src
+
+** ~AgentRunner~
+
+#+begin_src typescript
+interface AgentConfig {
+  definition: AgentDefinition;   // from @loom/core, made via agent$()
+  provider: LlmProvider;
+  effectRuntime: EffectRuntime;
+  maxIterations?: number;        // default 10
+  systemPrompt?: string;
+}
+
+class AgentRunner {
+  constructor(config: AgentConfig);
+  run(input: AgentInput, ctx: EffectContext): Promise<AgentOutput>;
+  asEffect(): LlmEffect<AgentInput, AgentOutput>;
+}
+#+end_src
+
+During ~run~, the runner emits an ~AGENT_TOOL_CALL~ event (via ~ctx.emit~) for every tool it invokes and a single ~AGENT_COMPLETED~ event when the loop finishes. ~asEffect()~ returns the same behaviour wrapped as an ~LlmEffect~, ready to register on an ~EffectRuntime~.
+
+~AgentConfig~ also accepts an optional ~memory?: MemoryRuntime~. When the agent's ~definition.memoryId~ is set and a ~MemoryRuntime~ is supplied, ~run~ recalls prior entries into the prompt and writes the user prompt + assistant answer back afterward; ~AgentInput~ accepts ~memoryScope?: string~ (defaulting to ~ctx.executionId~) to scope recall per conversation. See [[#memory][~@loom/memory~]].
+
+#+begin_src typescript
+const runner = new AgentRunner({
+  definition: InvestigatorAgent,
+  provider: new AnthropicProvider(),
+  effectRuntime,
+  maxIterations: 8,
+  systemPrompt: "You are an incident investigator.",
+});
+
+const result = await runner.run({ prompt: "Diagnose incident cpu-001" }, ctx);
+// result: { content, toolCallLog: AgentStep[], iterations }
+#+end_src
+
+** ~agentStep$(config)~
+
+Wraps an agent as an ordinary ~StepDefinition~ (of kind ~"llm"~) so it can be dropped into any flow and called with ~ctx.run~.
+
+#+begin_src typescript
+function agentStep$(config: {
+  id: string;
+  name?: string;
+  agent: AgentDefinition;
+  provider: LlmProvider;
+  effectRuntime: EffectRuntime;
+  maxIterations?: number;
+  systemPrompt?: string;
+}): StepDefinition<AgentInput, AgentOutput>;
+#+end_src
+
+#+begin_src typescript
+const InvestigateStep = agentStep$({
+  id: "investigate",
+  agent: InvestigatorAgent,
+  provider: new AnthropicProvider(),
+  effectRuntime,
+});
+
+// In a runner:
+const report = await ctx.run(InvestigateStep, { prompt: "Diagnose incident cpu-001" });
+#+end_src
+
+-----
+
+* ~@loom/mcp~
+:PROPERTIES:
+:CUSTOM_ID: mcp
+:END:
+
+Client for the Model Context Protocol. Connect to an MCP server over HTTP, discover its tools, and register them into an ~EffectRuntime~ so agents and flows can call them like any other tool. Import from ~@loom/mcp~.
+
+#+begin_src typescript
+import { McpClient, mcpTool$ } from "@loom/mcp";
+#+end_src
+
+** Types
+
+#+begin_src typescript
+interface McpServerConfig {
+  transport: "http";
+  url: string;
+  headers?: Record<string, string>;
+}
+
+interface McpTool {
+  name: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+}
+
+interface MappedMcpTool {
+  definition: ToolDefinition;
+  effect: ToolEffect;
+  jsonInputSchema: Record<string, unknown>;
+}
+#+end_src
+
+MCP tools validate their own inputs, so each mapped ~ToolDefinition~ uses ~z.unknown()~ as its input schema; the raw JSON Schema advertised by the server is preserved on ~MappedMcpTool.jsonInputSchema~ (useful when forwarding tool specs to an LLM).
+
+** ~McpClient~
+
+#+begin_src typescript
+class McpClient {
+  constructor(config: McpServerConfig);
+  connect(): Promise<void>;                                  // JSON-RPC "initialize" handshake
+  listTools(): Promise<MappedMcpTool[]>;                     // JSON-RPC "tools/list"
+  registerInto(effectRuntime: EffectRuntime): Promise<ToolDefinition[]>;  // registers each as a ToolEffect
+  callTool(name: string, input: unknown): Promise<unknown>;  // JSON-RPC "tools/call"
+  disconnect(): Promise<void>;
+}
+#+end_src
+
+| Method          | Description                                                                   |
+|-----------------+-------------------------------------------------------------------------------|
+| ~connect~       | Performs the JSON-RPC ~initialize~ handshake                                  |
+| ~listTools~     | Lists server tools (~tools/list~) mapped to ~MappedMcpTool~                   |
+| ~registerInto~  | Registers each tool as a ~ToolEffect~; returns the resulting ~ToolDefinition[]~ |
+| ~callTool~      | Invokes a tool directly (~tools/call~)                                        |
+| ~disconnect~    | Closes the connection                                                         |
+
+#+begin_src typescript
+const client = new McpClient({ transport: "http", url: "https://tools.example.com/mcp" });
+await client.connect();
+const toolDefs = await client.registerInto(effectRuntime);
+
+// Hand the discovered tools to an agent:
+const ResearchAgent = agent$({ id: "researcher", name: "Researcher", tools: toolDefs });
+#+end_src
+
+** ~mcpTool$(client, toolName)~
+
+Builds a ~StepDefinition~ that calls a single MCP tool through the client. Because MCP tools self-validate, the step's schemas are ~unknown~.
+
+#+begin_src typescript
+function mcpTool$(client: McpClient, toolName: string): StepDefinition<unknown, unknown>;
+
+const SearchStep = mcpTool$(client, "web_search");
+const hits = await ctx.run(SearchStep, { query: "loom framework" });
+#+end_src
+
+-----
+
+* ~@loom/a2a~
+:PROPERTIES:
+:CUSTOM_ID: a2a
+:END:
+
+Agent-to-Agent interoperability. Expose a Loom flow as an A2A-compatible HTTP agent, and call remote agents from inside a flow via an effect. Import from ~@loom/a2a~.
+
+#+begin_src typescript
+import { createA2AClientEffect, createA2AServer } from "@loom/a2a";
+#+end_src
+
+** Types
+
+#+begin_src typescript
+interface AgentSkill {
+  id: string;
+  name: string;
+  description?: string;
+  inputModes?: string[];
+  outputModes?: string[];
+}
+
+interface AgentCard {
+  name: string;
+  description?: string;
+  url: string;
+  version: string;
+  capabilities: { streaming?: boolean };
+  skills: AgentSkill[];
+}
+
+interface A2AMessagePart { type: "text"; text: string; }
+interface A2AMessage { role: "user" | "agent"; parts: A2AMessagePart[]; }
+
+interface A2ATask {
+  id: string;
+  message: A2AMessage;
+  metadata?: Record<string, unknown>;
+}
+
+type A2ATaskStatus = "submitted" | "working" | "completed" | "failed";
+
+interface A2ATaskResult {
+  id: string;
+  status: A2ATaskStatus;
+  artifacts?: Array<{ name?: string; parts: A2AMessagePart[] }>;
+  error?: string;
+}
+#+end_src
+
+** ~createA2AClientEffect(agentUrl, options?)~
+
+Returns an ~A2AEffect~ that submits a task to a remote agent (~POST {agentUrl}/tasks/send~) and polls ~GET {agentUrl}/tasks/{id}~ until the task is ~completed~ or ~failed~. Uses the global ~fetch~.
+
+#+begin_src typescript
+function createA2AClientEffect(
+  agentUrl: string,
+  options?: { timeoutMs?: number; headers?: Record<string, string>; pollIntervalMs?: number }
+): A2AEffect<A2ATask, A2ATaskResult>;
+
+effectRuntime.register("remote-analyst", createA2AClientEffect("https://analyst.example.com"));
+#+end_src
+
+** ~createA2AServer(workflowRuntime, flow, agentCard, options?)~
+
+Starts a Node ~http.Server~ that fronts a registered flow as an A2A agent. The ~agentCard~ omits ~url~ (the server fills it in from its bound address).
+
+#+begin_src typescript
+function createA2AServer(
+  workflowRuntime: WorkflowRuntime,
+  flow: RegisteredFlow,
+  agentCard: Omit<AgentCard, "url">,
+  options?: { port?: number }
+): { start(): Promise<void>; stop(): Promise<void>; readonly url: string };
+#+end_src
+
+| Route                          | Method | Description                                                     |
+|--------------------------------+--------+-----------------------------------------------------------------|
+| ~/.well-known/agent.json~      | GET    | Returns the ~AgentCard~ (with ~url~ populated)                  |
+| ~/tasks/send~                  | POST   | Starts the flow with the task; returns ~{ id }~                 |
+| ~/tasks/:id~                   | GET    | Maps ~ExecutionStatus~ → ~A2ATaskStatus~ and returns the result |
+
+#+begin_src typescript
+const server = createA2AServer(
+  workflowRuntime,
+  InvestigateIncidentRegisteredFlow,
+  {
+    name: "Incident Investigator",
+    version: "1.0.0",
+    capabilities: { streaming: false },
+    skills: [{ id: "investigate", name: "Investigate incident" }],
+  },
+  { port: 4100 }
+);
+
+await server.start();
+console.log("A2A agent listening at", server.url);
+#+end_src
+
+-----
+
+* ~@loom/registry~
+:PROPERTIES:
+:CUSTOM_ID: registry
+:END:
+
+An in-process directory of agent definitions and their optional cards. Useful for discovery in multi-agent systems and for advertising agents over A2A. Import from ~@loom/registry~.
+
+#+begin_src typescript
+import { AgentRegistry, globalAgentRegistry } from "@loom/registry";
+#+end_src
+
+** Types
+
+#+begin_src typescript
+interface RegisteredAgentCard {
+  name: string;
+  description?: string;
+  url?: string;
+  version: string;
+  capabilities?: { streaming?: boolean };
+  skills?: Array<{ id: string; name: string; description?: string }>;
+}
+
+interface RegisteredAgent {
+  definition: AgentDefinition;
+  card?: RegisteredAgentCard;
+}
+#+end_src
+
+** ~AgentRegistry~
+
+#+begin_src typescript
+class AgentRegistry {
+  register(definition: AgentDefinition, card?: RegisteredAgentCard): this;
+  get(id: string): RegisteredAgent | undefined;
+  has(id: string): boolean;
+  all(): RegisteredAgent[];
+  ids(): string[];
+}
+#+end_src
+
+| Method       | Description                                                        |
+|--------------+--------------------------------------------------------------------|
+| ~register~   | Adds an agent (with optional card); returns ~this~ for chaining    |
+| ~get~        | Looks up a ~RegisteredAgent~ by definition id                     |
+| ~has~        | Returns ~true~ if an agent with that id is registered              |
+| ~all~        | Returns every registered agent                                     |
+| ~ids~        | Returns all registered agent ids                                   |
+
+** ~globalAgentRegistry~
+
+A shared ~AgentRegistry~ singleton for applications that want one process-wide directory.
+
+#+begin_src typescript
+import { globalAgentRegistry } from "@loom/registry";
+
+globalAgentRegistry
+  .register(InvestigatorAgent, { name: "Investigator", version: "1.0.0" })
+  .register(RemediatorAgent, { name: "Remediator", version: "1.0.0" });
+
+globalAgentRegistry.ids();   // → ["investigator", "remediator"]
+#+end_src
+
+-----
+
+* ~@loom/a2ui~ — the Agent-to-UI protocol
+:PROPERTIES:
+:CUSTOM_ID: a2ui
+:END:
+
+A2UI (Agent-to-UI) is a first-class protocol for patch/event-based UI updates. Instead of the ad-hoc "emit a token, accumulate in a projection" pattern, an agent or flow drives a named *surface* by emitting declarative *patches*. A patch is a single addressed mutation; patches travel as ordinary ~A2UI_PATCH~ events through the normal event pipeline, so every UI update is durable, ordered, and replays deterministically. Import from ~@loom/a2ui~.
+
+#+begin_src typescript
+import {
+  A2UI_PATCH, DEFAULT_SURFACE,
+  applyA2UIPatch, applyA2UIPatches, getSurfaceValue,
+  createA2UIEmitter, a2uiSurfaceProjection, A2UIRuntime,
+  type A2UIPatch, type A2UIPatchPayload, type A2UISurfaceState, type A2UIEmitter,
+} from "@loom/a2ui";
+#+end_src
+
+** Protocol constants
+
+#+begin_src typescript
+const A2UI_PATCH = "A2UI_PATCH";   // the single event type carrying UI updates
+const DEFAULT_SURFACE = "ui";      // default surface id
+#+end_src
+
+All A2UI updates ride on a single event type, ~A2UI_PATCH~. A surface is just a keyed bag of state (~A2UISurfaceState = Record<string, unknown>~); the default surface id is ~"ui"~. Multiple surfaces can coexist under one execution by giving each a distinct id.
+
+** ~A2UIPatch~ — the five ops
+
+A patch is one declarative mutation, addressed by a dot-notation ~path~ (~""~ = the surface root).
+
+#+begin_src typescript
+type A2UIPatch =
+  | { op: "set";       path: string; value: unknown }
+  | { op: "merge";     path: string; value: Record<string, unknown> }
+  | { op: "append";    path: string; value: unknown }
+  | { op: "remove";    path: string }
+  | { op: "increment"; path: string; by?: number };
+#+end_src
+
+| Op          | Fields             | Effect                                                        |
+|-------------+--------------------+--------------------------------------------------------------|
+| ~set~       | ~path, value~      | Replaces the value at ~path~                                  |
+| ~merge~     | ~path, value~      | Shallow-merges an object into the object at ~path~           |
+| ~append~    | ~path, value~      | Pushes ~value~ onto the array at ~path~ (tokens/logs/timelines) |
+| ~remove~    | ~path~             | Deletes the key/entry at ~path~                              |
+| ~increment~ | ~path, by?~        | Adds ~by~ to the number at ~path~; ~by~ defaults to ~1~      |
+
+** ~A2UIPatchPayload~ & ~A2UISurfaceState~
+
+#+begin_src typescript
+interface A2UIPatchPayload {
+  surface?: string;        // defaults to DEFAULT_SURFACE ("ui")
+  patches: A2UIPatch[];    // applied in order, atomically per event
+}
+
+type A2UISurfaceState = Record<string, unknown>;
+#+end_src
+
+The payload of every ~A2UI_PATCH~ event is an ~A2UIPatchPayload~: the target ~surface~ plus the ordered list of ~patches~ to apply.
+
+** Pure reducers
+
+The reducers are pure and immutable — they never mutate the input state, so they are safe to use inside projections, tests, and time-travel tooling.
+
+#+begin_src typescript
+// Apply one patch, returning a new state
+function applyA2UIPatch(state: A2UISurfaceState, patch: A2UIPatch): A2UISurfaceState;
+
+// Fold a batch of patches left-to-right
+function applyA2UIPatches(state: A2UISurfaceState, patches: readonly A2UIPatch[]): A2UISurfaceState;
+
+// Resolve a dot-path (already split into parts) against a surface
+function getSurfaceValue(state: A2UISurfaceState, parts: string[]): unknown;
+#+end_src
+
+#+begin_src typescript
+let s: A2UISurfaceState = {};
+s = applyA2UIPatch(s, { op: "set", path: "phase", value: "analyzing" });
+s = applyA2UIPatches(s, [
+  { op: "append", path: "log", value: "started" },
+  { op: "increment", path: "progress", by: 25 },
+]);
+getSurfaceValue(s, ["progress"]);   // → 25
+#+end_src
+
+** ~createA2UIEmitter(emit, surface?)~ — the producer
+
+Wraps any ~emit~ function into an ~A2UIEmitter~. Each method emits exactly one ~A2UI_PATCH~ event carrying a single-patch payload (except ~patch()~, which sends an arbitrary batch atomically as one event).
+
+#+begin_src typescript
+function createA2UIEmitter(
+  emit: (eventType: string, payload: unknown) => void,
+  surface?: string,   // defaults to "ui"
+): A2UIEmitter;
+#+end_src
+
+Any context that can emit events — a flow's ~ctx~, a step's ~EffectContext~, an agent — can build one:
+
+#+begin_src typescript
+// Inside a step handler or effect (EffectContext has emit)
+const ui = createA2UIEmitter((type, payload) => ctx.emit(type, payload));
+ui.set("status", "working");
+#+end_src
+
+Inside a flow runner you do not need to build one — ~ctx.ui~ is already an ~A2UIEmitter~ bound to the ~"ui"~ surface (see [[#workflow-context][WorkflowContext]]).
+
+| Method                      | Emits                                        | Description                                |
+|-----------------------------+----------------------------------------------+--------------------------------------------|
+| ~set(path, value)~          | one ~set~ patch                              | Replace the value at ~path~                |
+| ~merge(path, value)~        | one ~merge~ patch                            | Shallow-merge an object at ~path~          |
+| ~append(path, value)~       | one ~append~ patch                           | Push onto the array at ~path~              |
+| ~remove(path)~              | one ~remove~ patch                           | Delete at ~path~                           |
+| ~increment(path, by?)~      | one ~increment~ patch                        | Bump the number at ~path~ (~by~ default 1) |
+| ~patch(patches)~            | one event with all ~patches~                 | Apply an arbitrary batch atomically        |
+
+** ~a2uiSurfaceProjection(surfaceId?)~ — consumer 1 (projection bridge)
+
+Returns a ~Projection<A2UISurfaceState>~ whose ~id~ equals ~surfaceId~ (default ~"ui"~) and which folds ~A2UI_PATCH~ events into surface state. Register it in an existing ~ProjectionRuntime~ and the A2UI surface becomes an ordinary projection — no other changes required.
+
+#+begin_src typescript
+function a2uiSurfaceProjection(surfaceId?: string): Projection<A2UISurfaceState>;
+
+projectionRuntime.register(a2uiSurfaceProjection("ui"));
+#+end_src
+
+Bind any widget to it with the ordinary ~DataBinding~ — the ~projectionId~ is the surface id, and ~path~ is a dot-path into the surface. ~BlueprintRenderer~ needs no changes:
+
+#+begin_src typescript
+MetricCard({ title: "Progress", binding: { projectionId: "ui", path: "progress" } });
+StatusBadge({ title: "Phase",   binding: { projectionId: "ui", path: "phase" } });
+#+end_src
+
+** ~A2UIRuntime~ — consumer 2 (standalone surface store)
+
+A framework-agnostic store for apps that do not have a ~ProjectionRuntime~. Feed it events and it maintains one surface state per ~(surface, executionId)~ pair; ignores any event whose type is not ~A2UI_PATCH~.
+
+#+begin_src typescript
+class A2UIRuntime {
+  handleEvent(event: EventEnvelope): void;   // ignores non-A2UI_PATCH events
+  getSurface(surface: string, executionId: string): A2UISurfaceState;
+  seed(surface: string, executionId: string, state: A2UISurfaceState): void;
+  subscribe(
+    surface: string,
+    executionId: string,
+    handler: (state: A2UISurfaceState) => void,
+  ): () => void;                             // returns an unsubscribe function
+}
+#+end_src
+
+| Method        | Description                                                                  |
+|---------------+------------------------------------------------------------------------------|
+| ~handleEvent~ | Applies an ~A2UI_PATCH~ event to its surface; skips all other event types    |
+| ~getSurface~  | Synchronous read of the current surface state (empty object if none yet)     |
+| ~seed~        | Populates a surface directly (server-side restore) without processing events |
+| ~subscribe~   | Registers a live listener; called after each matching event; returns unsubscribe |
+
+#+begin_src typescript
+const a2ui = new A2UIRuntime();
+
+const runtime = new WorkflowRuntime({
+  eventStore, snapshotStore, effectRuntime,
+  onEvent: (event) => a2ui.handleEvent(event),
+});
+
+const off = a2ui.subscribe("ui", executionId, (state) => render(state));
+#+end_src
+
+** ~useA2UISurface(runtime, executionId, surface?)~ — ~@loom/renderer-react~
+
+React hook that subscribes a component to an ~A2UIRuntime~ surface. Initialises from ~getSurface()~ and re-renders on every patch.
+
+#+begin_src typescript
+import { useA2UISurface } from "@loom/renderer-react";
+
+function LiveSurface({ executionId }: { executionId: string }) {
+  const surface = useA2UISurface(a2ui, executionId, "ui");   // surface defaults to "ui"
+  return <pre>{JSON.stringify(surface, null, 2)}</pre>;
+}
+#+end_src
+
+** ~StreamingText~ / ~StreamingTextRenderer~ — growing-string convenience
+
+The ~StreamingText~ widget (from ~@loom/blueprint-runtime~) and its pre-registered ~StreamingTextRenderer~ (from ~@loom/renderer-react~) still exist as a convenience for binding to a growing string inside a surface — for example a value you keep extending with ~ctx.ui.append("answer", delta)~ or ~ctx.stream~.
+
+#+begin_src typescript
+import { StreamingText } from "@loom/blueprint-runtime";
+
+StreamingText({
+  title: "Answer",
+  binding: { projectionId: "ui", path: "answer" },
+  placeholder: "Thinking…",
+  id: "answer-stream",   // optional
+});
+#+end_src
+
+| Prop          | Type           | Required | Description                                  |
+|---------------+----------------+----------+----------------------------------------------|
+| ~title~       | ~string~       | no       | Widget heading                               |
+| ~binding~     | ~DataBinding~  | yes      | Surface/projection path holding the text     |
+| ~placeholder~ | ~string~       | no       | Shown before any content arrives             |
+| ~id~          | ~string~       | no       | Explicit widget id (otherwise hashed)        |
+
+~StreamingTextRenderer~ is already registered in ~defaultRegistry~ under ~"StreamingText"~, so ~BlueprintRenderer~ renders it out of the box:
+
+#+begin_src typescript
+import { defaultRegistry, StreamingTextRenderer } from "@loom/renderer-react";
+
+// Register manually only if you build a fresh registry:
+defaultRegistry.register("StreamingText", StreamingTextRenderer);
+#+end_src
+
+The ~examples/cloud-command-center~ app streams an AI analysis into the ~"ui"~ surface via patches and drives a phase ~StatusBadge~ with ~ctx.ui.set~; the ~apps/playground~ "A2UI" tab shows the live surface next to the raw patch stream.
+
+-----
+
+* ~@loom/capability~
+:PROPERTIES:
+:CUSTOM_ID: capability
+:END:
+
+"Capabilities Over APIs". A *capability* wraps a runnable flow with intent-facing metadata so the same unit of work can be exposed as an API, a UI action, an A2A endpoint, or a workflow node. ~CapabilityCatalog~ is the registry the Intent and Planner runtimes route over. Import from ~@loom/capability~ (re-exported from ~@loom/sdk~).
+
+#+begin_src typescript
+import { capability$, CapabilityCatalog } from "@loom/capability";
+#+end_src
+
+** ~CapabilityDefinition~
+
+#+begin_src typescript
+interface CapabilityDefinition<TIn, TOut> {
+  _tag: "CapabilityDefinition";
+  id: string;
+  name: string;
+  intent: string;        // natural-language description of the goal it fulfils
+  tags: string[];
+  inputSchema: ZodSchema<TIn>;
+  flow: RegisteredFlow<TIn, TOut>;
+}
+#+end_src
+
+** ~capability$(config)~
+
+Builds a ~CapabilityDefinition~. ~name~ defaults to ~id~ and ~tags~ defaults to ~[]~.
+
+#+begin_src typescript
+function capability$(config: {
+  id: string;
+  name?: string;
+  intent: string;
+  tags?: string[];
+  inputSchema: ZodSchema;
+  flow: RegisteredFlow;
+}): CapabilityDefinition;
+
+const InvestigateCapability = capability$({
+  id: "investigate-incident",
+  name: "Investigate Incident",
+  intent: "Diagnose a production incident from metrics and logs",
+  tags: ["ops", "incident", "diagnosis"],
+  inputSchema: z.object({ incidentId: z.string() }),
+  flow: InvestigateIncidentRegisteredFlow,
+});
+#+end_src
+
+** ~CapabilityCatalog~
+
+#+begin_src typescript
+class CapabilityCatalog {
+  register(capability: CapabilityDefinition): this;
+  get(id: string): CapabilityDefinition | undefined;
+  all(): CapabilityDefinition[];
+  ids(): string[];
+  find(query: string): { capability: CapabilityDefinition; score: number }[];
+  registerInto(workflowRuntime: WorkflowRuntime): void;
+  invoke(
+    workflowRuntime: WorkflowRuntime,
+    capabilityId: string,
+    input: unknown,
+  ): Promise<ExecutionHandle>;
+}
+#+end_src
+
+| Method          | Description                                                                        |
+|-----------------+------------------------------------------------------------------------------------|
+| ~register~      | Adds a capability; returns ~this~ for chaining                                     |
+| ~get~           | Looks up a capability by id (or ~undefined~)                                       |
+| ~all~           | Returns every registered capability                                                |
+| ~ids~           | Returns all registered capability ids                                              |
+| ~find~          | Deterministic keyword scoring over ~id~/~name~/~intent~/~tags~; ranked high-to-low |
+| ~registerInto~  | Registers every capability's flow with a ~WorkflowRuntime~                         |
+| ~invoke~        | Starts a capability's flow and returns its ~ExecutionHandle~                       |
+
+#+begin_src typescript
+const catalog = new CapabilityCatalog()
+  .register(InvestigateCapability)
+  .register(RemediateCapability);
+
+catalog.registerInto(workflowRuntime);         // wire every flow into the runtime
+catalog.find("diagnose incident");             // → [{ capability, score }, …]
+const handle = await catalog.invoke(workflowRuntime, "investigate-incident", { incidentId: "cpu-001" });
+#+end_src
+
+-----
+
+* ~@loom/intent~
+:PROPERTIES:
+:CUSTOM_ID: intent
+:END:
+
+Intent Runtime — "Intent Over Routes". Maps a natural-language intent to a capability in the catalog. Works fully offline via keyword matching, or uses an ~LlmProvider~ to let the model pick the capability id. Import from ~@loom/intent~.
+
+#+begin_src typescript
+import { IntentRuntime } from "@loom/intent";
+#+end_src
+
+** Types
+
+#+begin_src typescript
+interface IntentRoute {
+  capability: CapabilityDefinition;
+  confidence: number;
+  rationale?: string;
+}
+
+interface IntentRuntimeConfig {
+  catalog: CapabilityCatalog;
+  provider?: LlmProvider;          // omit for deterministic keyword routing
+  workflowRuntime?: WorkflowRuntime;  // required only for run()
+}
+#+end_src
+
+** ~IntentRuntime~
+
+#+begin_src typescript
+class IntentRuntime {
+  constructor(config: IntentRuntimeConfig);
+  route(intentText: string): Promise<IntentRoute | null>;
+  run(intentText: string, input: unknown): Promise<ExecutionHandle>;
+}
+#+end_src
+
+| Method   | Description                                                                                       |
+|----------+---------------------------------------------------------------------------------------------------|
+| ~route~  | Returns the best-matching ~IntentRoute~ (or ~null~). LLM routing if ~provider~ set, else ~catalog.find()~ keyword match |
+| ~run~    | Routes, then ~workflowRuntime.start()~ on the matched capability's flow; needs ~workflowRuntime~ in the config |
+
+#+begin_src typescript
+// Offline — deterministic keyword routing, no provider
+const intent = new IntentRuntime({ catalog, workflowRuntime });
+const route = await intent.route("diagnose the cpu incident");
+// route: { capability, confidence, rationale? } | null
+
+const handle = await intent.run("diagnose the cpu incident", { incidentId: "cpu-001" });
+
+// With a model — the provider picks the capability id
+const smart = new IntentRuntime({ catalog, provider: new AnthropicProvider(), workflowRuntime });
+#+end_src
+
+-----
+
+* ~@loom/planner~
+:PROPERTIES:
+:CUSTOM_ID: planner
+:END:
+
+Planner Runtime. Composes an ordered, multi-step plan of capability ids from the catalog for a high-level goal. Uses an ~LlmProvider~ when supplied, otherwise a deterministic heuristic. Import from ~@loom/planner~.
+
+#+begin_src typescript
+import { PlannerRuntime } from "@loom/planner";
+#+end_src
+
+** Types
+
+#+begin_src typescript
+interface PlanStep {
+  capabilityId: string;
+  rationale?: string;
+}
+
+interface Plan {
+  goal: string;
+  steps: PlanStep[];
+}
+
+interface PlannerRuntimeConfig {
+  catalog: CapabilityCatalog;
+  provider?: LlmProvider;   // omit for the heuristic keyword-ranked plan
+  maxSteps?: number;        // default 5
+}
+#+end_src
+
+** ~PlannerRuntime~
+
+#+begin_src typescript
+class PlannerRuntime {
+  constructor(config: PlannerRuntimeConfig);
+  plan(goal: string): Promise<Plan>;
+}
+#+end_src
+
+~plan(goal)~ returns an ordered ~Plan~. With a ~provider~ the model composes the plan as JSON; with none, a heuristic keyword-ranked plan is produced. Every ~capabilityId~ is validated against the catalog (unknown ids are dropped) and the plan is truncated to ~maxSteps~.
+
+#+begin_src typescript
+const planner = new PlannerRuntime({ catalog, provider: new AnthropicProvider(), maxSteps: 4 });
+const plan = await planner.plan("Resolve the CPU incident and notify the on-call engineer");
+// plan: { goal, steps: [{ capabilityId, rationale? }, …] }
+
+for (const step of plan.steps) {
+  await catalog.invoke(workflowRuntime, step.capabilityId, input);
+}
+#+end_src
+
+-----
+
+* ~@loom/memory~
+:PROPERTIES:
+:CUSTOM_ID: memory
+:END:
+
+Agent Runtime memory. Durable, scoped recall for agents, honoring the ~ttlMs~ and ~maxEntries~ declared by ~memory$()~. Import from ~@loom/memory~.
+
+#+begin_src typescript
+import { MemoryRuntime, InMemoryMemoryStore } from "@loom/memory";
+#+end_src
+
+** Types
+
+#+begin_src typescript
+interface MemoryEntry {
+  role?: string;
+  content: unknown;
+  timestamp: number;
+}
+
+interface MemoryStore {
+  append(key: string, entry: MemoryEntry): void;
+  read(key: string): MemoryEntry[];
+  clear(key: string): void;
+}
+
+class InMemoryMemoryStore implements MemoryStore { /* … */ }
+#+end_src
+
+** ~MemoryRuntime~
+
+#+begin_src typescript
+class MemoryRuntime {
+  constructor(store?: MemoryStore);   // defaults to InMemoryMemoryStore
+  register(definition: MemoryDefinition): this;   // from memory$(); honors ttlMs / maxEntries
+  append(memoryId: string, scope: string, entry: { role?: string; content: unknown; timestamp?: number }): void;
+  read(memoryId: string, scope: string): MemoryEntry[];   // pruned by ttlMs then maxEntries
+  clear(memoryId: string, scope: string): void;
+}
+#+end_src
+
+| Method     | Description                                                                          |
+|------------+--------------------------------------------------------------------------------------|
+| ~register~ | Registers a ~MemoryDefinition~ (from ~memory$~); honors its ~ttlMs~ and ~maxEntries~ |
+| ~append~   | Appends an entry under ~(memoryId, scope)~; ~timestamp~ defaults to now              |
+| ~read~     | Returns entries for ~(memoryId, scope)~, pruned by ~ttlMs~ then trimmed to ~maxEntries~ |
+| ~clear~    | Removes all entries for ~(memoryId, scope)~                                          |
+
+#+begin_src typescript
+const memory = new MemoryRuntime();
+memory.register(IncidentMemory);   // from memory$({ id: "incident-memory", ttlMs, maxEntries })
+
+memory.append("incident-memory", "user-42", { role: "user", content: "What was the CPU peak?" });
+const history = memory.read("incident-memory", "user-42");   // MemoryEntry[]
+#+end_src
+
+*** Agent integration
+
+~AgentConfig~ (see [[#agent][~@loom/agent~]]) accepts an optional ~memory?: MemoryRuntime~. When the agent's ~definition.memoryId~ is set and a ~MemoryRuntime~ is provided, ~AgentRunner.run~ recalls prior entries into the prompt and writes the user prompt + assistant answer back afterward. ~AgentInput~ accepts ~memoryScope?: string~ (defaulting to ~ctx.executionId~) to scope recall per conversation or user.
+
+#+begin_src typescript
+const runner = new AgentRunner({
+  definition: InvestigatorAgent,   // agent$({ …, memoryId: "incident-memory" })
+  provider: new AnthropicProvider(),
+  effectRuntime,
+  memory,
+});
+
+await runner.run({ prompt: "Any updates?", memoryScope: "user-42" }, ctx);
+#+end_src
+
+-----
+
+* ~@loom/renderer-terminal~
+:PROPERTIES:
+:CUSTOM_ID: renderer-terminal
+:END:
+
+Multi-surface delivery. Renders the *same* ~Blueprint~ + projection state to plain text instead of React, using the framework-agnostic ~traverseBlueprint~. Import from ~@loom/renderer-terminal~.
+
+#+begin_src typescript
+import { TerminalRenderer, renderBlueprintToString } from "@loom/renderer-terminal";
+#+end_src
+
+** ~renderBlueprintToString(blueprint, stateMap)~
+
+Folds a blueprint and a ~Map<string, unknown>~ of projection state into a string via ~traverseBlueprint<string>~.
+
+#+begin_src typescript
+function renderBlueprintToString(blueprint: Blueprint, stateMap: Map<string, unknown>): string;
+
+const stateMap = new Map<string, unknown>([
+  ["metrics", { cpu: { current: 87 } }],
+  ["incident", { timeline: [] }],
+]);
+const text = renderBlueprintToString(IncidentBlueprint, stateMap);
+console.log(text);
+#+end_src
+
+** ~TerminalRenderer~
+
+#+begin_src typescript
+class TerminalRenderer {
+  constructor(projectionRuntime: ProjectionRuntime);
+  render(blueprint: Blueprint, executionId: string): string;
+}
+#+end_src
+
+~render~ pulls each of the blueprint's referenced projections' state for the given ~executionId~ from the ~ProjectionRuntime~ and renders them to text — the terminal equivalent of ~BlueprintRenderer~.
+
+#+begin_src typescript
+const renderer = new TerminalRenderer(projectionRuntime);
+console.log(renderer.render(IncidentBlueprint, executionId));
+#+end_src
+
+Because ~traverseBlueprint~ is the same traversal the React ~BlueprintRenderer~ uses, one blueprint definition renders to the web *or* the terminal with no changes.
 
 -----
 

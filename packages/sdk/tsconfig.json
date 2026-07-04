@@ -12,6 +12,17 @@
     { "path": "../snapshot-runtime" },
     { "path": "../workflow-runtime" },
     { "path": "../blueprint-runtime" },
-    { "path": "../projection-runtime" }
+    { "path": "../projection-runtime" },
+    { "path": "../llm" },
+    { "path": "../agent" },
+    { "path": "../mcp" },
+    { "path": "../a2a" },
+    { "path": "../a2ui" },
+    { "path": "../registry" },
+    { "path": "../capability" },
+    { "path": "../intent" },
+    { "path": "../planner" },
+    { "path": "../memory" },
+    { "path": "../renderer-terminal" }
   ]
 }

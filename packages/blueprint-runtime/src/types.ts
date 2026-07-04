@@ -8,7 +8,8 @@ export type WidgetKind =
   | "StatusBadge"
   | "ProgressBar"
   | "DataTable"
-  | "AlertCard";
+  | "AlertCard"
+  | "StreamingText";
 
 export interface DataBinding {
   projectionId: string;

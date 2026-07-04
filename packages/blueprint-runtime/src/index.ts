@@ -8,6 +8,7 @@ export {
   ProgressBar,
   DataTable,
   AlertCard,
+  StreamingText,
 } from "./widgets";
 export { customWidget$ } from "./customWidget";
 export { RendererRegistry } from "./RendererRegistry";
