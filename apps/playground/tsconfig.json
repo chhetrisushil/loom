@@ -10,7 +10,14 @@
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"],
   "references": [
+    { "path": "../../packages/core" },
     { "path": "../../packages/sdk" },
-    { "path": "../../packages/renderer-react" }
+    { "path": "../../packages/blueprint-runtime" },
+    { "path": "../../packages/effect-runtime" },
+    { "path": "../../packages/event-runtime" },
+    { "path": "../../packages/projection-runtime" },
+    { "path": "../../packages/renderer-react" },
+    { "path": "../../packages/snapshot-runtime" },
+    { "path": "../../packages/workflow-runtime" }
   ]
 }

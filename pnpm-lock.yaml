@@ -20,19 +20,46 @@ importers:
 
   apps/playground:
     dependencies:
+      '@loom/blueprint-runtime':
+        specifier: workspace:*
+        version: link:../../packages/blueprint-runtime
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
+      '@loom/projection-runtime':
+        specifier: workspace:*
+        version: link:../../packages/projection-runtime
       '@loom/renderer-react':
         specifier: workspace:*
         version: link:../../packages/renderer-react
       '@loom/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
       react:
         specifier: ^18.3.1
         version: 18.3.1
       react-dom:
         specifier: ^18.3.1
         version: 18.3.1(react@18.3.1)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
+      '@loom/compiler':
+        specifier: workspace:*
+        version: link:../../packages/compiler
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

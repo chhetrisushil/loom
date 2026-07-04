@@ -10,12 +10,21 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@loom/blueprint-runtime": "workspace:*",
+    "@loom/core": "workspace:*",
+    "@loom/effect-runtime": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
+    "@loom/projection-runtime": "workspace:*",
     "@loom/renderer-react": "workspace:*",
     "@loom/sdk": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@loom/compiler": "workspace:*",
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
