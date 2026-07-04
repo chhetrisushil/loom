@@ -204,6 +204,9 @@ function collectImportLines(sourceFile: ts.SourceFile, text: string): string[] {
   const lines: string[] = [];
   for (const statement of sourceFile.statements) {
     if (ts.isImportDeclaration(statement)) {
+      // Skip type-only imports — they're erased at runtime and Rollup can't parse them
+      const raw = text.slice(statement.getStart(), statement.getEnd());
+      if (raw.startsWith("import type ")) continue;
       lines.push(text.slice(statement.getStart(), statement.getEnd()));
     }
   }

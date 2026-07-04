@@ -1,5 +1,6 @@
 import type { Plugin, ResolvedConfig } from "vite";
 import path from "path";
+import ts from "typescript";
 import { transformFile } from "./transform";
 import { buildManifest, printWarnings } from "./manifest";
 import type { PluginState } from "./types";
@@ -34,7 +35,16 @@ export function loomPlugin(): Plugin {
     load(id) {
       if (id.startsWith(VIRTUAL_PREFIX)) {
         const chunk = state.chunks.get(id);
-        if (chunk) return { code: chunk.chunkSource };
+        if (chunk) {
+          // Transpile TS → JS so Vite/Rollup can parse the chunk (no .ts extension on virtual ids)
+          const result = ts.transpileModule(chunk.chunkSource, {
+            compilerOptions: {
+              target: ts.ScriptTarget.ESNext,
+              module: ts.ModuleKind.ESNext,
+            },
+          });
+          return { code: result.outputText };
+        }
       }
       return undefined;
     },
