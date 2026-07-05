@@ -1,7 +1,12 @@
+import { loomPlugin } from "@loom/compiler";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
-import { loomPlugin } from "@loom/compiler";
 
+// The @loom/* workspace packages ship CommonJS. Vite pre-bundles them in dev via
+// optimizeDeps, but `vite build` (build:ui) hands them to Rollup, whose CommonJS
+// interop cannot statically trace named exports through the transitive re-export
+// getter chain (e.g. "LlmEffect is not exported by dist/index.js").
+// transformMixedEsModules lets the CommonJS plugin resolve those named exports.
 export default defineConfig({
   plugins: [loomPlugin(), react()],
   resolve: { conditions: ["require", "default"] },
@@ -21,5 +26,11 @@ export default defineConfig({
       "@loom/snapshot-runtime",
       "@loom/workflow-runtime",
     ],
+  },
+  build: {
+    commonjsOptions: {
+      transformMixedEsModules: true,
+      include: [/node_modules/, /packages\/.*\/dist/],
+    },
   },
 });
