@@ -1,11 +1,15 @@
-import type { Blueprint } from "@loom/blueprint-runtime";
+import type { Blueprint, RendererRegistry } from "@loom/blueprint-runtime";
 import { traverseBlueprint } from "@loom/blueprint-runtime";
-import type { RendererRegistry } from "@loom/blueprint-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import type React from "react";
+import { useContext } from "react";
+import { LoomContext } from "./LoomProvider";
 import type { WidgetAction, WidgetRenderer } from "./RendererRegistry";
 import { defaultRegistry } from "./RendererRegistry";
+import { FiberBlueprintRenderer } from "./fiber/FiberBlueprintRenderer";
+import { type FiberConfig, isFiberMode, resolveFiberConfig } from "./fiber/types";
 import { useBlueprintProjectionValues } from "./hooks/useBlueprint";
+import { renderReactContainer } from "./renderContainer";
 
 interface BlueprintRendererProps {
   blueprint: Blueprint;
@@ -13,15 +17,36 @@ interface BlueprintRendererProps {
   executionId: string;
   registry?: RendererRegistry<WidgetRenderer>;
   onAction?: (action: WidgetAction) => void;
+  // Opt-in render-side fiber capabilities. Defaults off (falls back to an
+  // optional LoomProvider default). See ./fiber/types.
+  fiber?: FiberConfig;
 }
 
-export function BlueprintRenderer({
+// Dispatcher: chooses the fiber or eager render path once per mount. useContext
+// is called unconditionally; only the returned component differs, so there are
+// no conditional hooks.
+export function BlueprintRenderer({ fiber, ...rest }: BlueprintRendererProps) {
+  const ctx = useContext(LoomContext); // non-throwing; may be null (no provider)
+  const cfg = resolveFiberConfig(fiber ?? ctx?.fiber);
+
+  if (isFiberMode(cfg)) {
+    return <FiberBlueprintRenderer {...rest} config={cfg} />;
+  }
+  return <EagerBlueprintRenderer {...rest} />;
+}
+
+type EagerProps = Omit<BlueprintRendererProps, "fiber">;
+
+// The original whole-tree render path, unchanged in behavior: subscribes to all
+// of the blueprint's projections and re-traverses on any change. Container JSX is
+// shared with the fiber path via renderReactContainer.
+function EagerBlueprintRenderer({
   blueprint,
   projectionRuntime,
   executionId,
   registry,
   onAction,
-}: BlueprintRendererProps) {
+}: EagerProps) {
   const stateMap = useBlueprintProjectionValues(blueprint, projectionRuntime, executionId);
   const reg = registry ?? defaultRegistry;
 
@@ -45,43 +70,7 @@ export function BlueprintRenderer({
       );
     },
     renderContainer({ layout, children }) {
-      if (layout.type === "grid") {
-        return (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: `repeat(${layout.columns}, 1fr)`,
-              ...(layout.gap !== undefined && { gap: `${layout.gap}px` }),
-            }}
-          >
-            {children}
-          </div>
-        );
-      }
-      if (layout.type === "flex") {
-        return (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: layout.direction,
-              ...(layout.gap !== undefined && { gap: `${layout.gap}px` }),
-            }}
-          >
-            {children}
-          </div>
-        );
-      }
-      return (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            ...(layout.gap !== undefined && { gap: `${layout.gap}px` }),
-          }}
-        >
-          {children}
-        </div>
-      );
+      return renderReactContainer(layout, children);
     },
     ...(onAction !== undefined && { onAction }),
   });
