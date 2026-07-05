@@ -65,6 +65,8 @@ loom/
 | ~cloud-command-center~   | React app: suspend/approve/resume workflow + streaming AI triage (A2UI)      |
 | ~angular-command-center~ | The same workflow in Angular — proves the runtime is UI-framework-agnostic   |
 | ~agent-network~          | Node showcase: the full pipeline — intent routing, planner, capabilities, agent memory, MCP + A2A, and a terminal-rendered dashboard |
+| ~db-command-center~      | React app: intent-driven, human-in-the-loop, multi-agent (A2A) DB ops command center — a dynamically planned workflow, long-running domain agents, a near-real-time task list, and an observability dashboard; BYOR + BYOC + render-side fiber |
+| ~db-command-center-wc~   | The *same* command center in vanilla Web Components — no framework at all. Reuses the entire agentic backend and swaps only the render layer, proving Loom's BYOR contract |
 
 * Prerequisites
 
@@ -131,6 +133,25 @@ pnpm --filter @loom/agent-network start
 #+end_src
 
 It configures an LLM provider, discovers tools from an (in-process) MCP server, runs an agent ReAct loop that calls those tools, then exposes a Loom flow over A2A and calls it back as a client. It also builds a ~CapabilityCatalog~ and shows intent routing (~IntentRuntime~), a multi-step plan (~PlannerRuntime~), agent memory recall (~MemoryRuntime~), and a terminal-rendered dashboard (~@loom/renderer-terminal~). Every step prints to the console.
+
+* Running the DB Command Center Examples
+
+The DB Command Center is an agentic, intent-driven operations console for a database fleet. You state a goal in plain English; the *Planner Runtime* composes a workflow from it; a fleet of long-running domain agents (Diagnostics, Remediation, Capacity) executes the steps over *A2A*; low-risk remediations auto-apply under policy while riskier ones *suspend for human approval* and resume from the durable event log. A Mission Control view lists the agent tasks in near-real-time and an Observability dashboard tracks the fleet.
+
+#+begin_src sh
+# React surface — BYOR + BYOC custom widgets + opt-in render-side fiber
+pnpm --filter @loom/db-command-center dev
+
+# The SAME app in vanilla Web Components — no framework
+pnpm --filter @loom/db-command-center-wc dev
+#+end_src
+
+Then open http://localhost:5173 (or the next free port). Try either built-in goal:
+
+1. /"Why is CPU utilization high? Fix it if remediation is low risk."/ — diagnosed, assessed *low risk*, and *auto-remediated* under policy.
+2. /"Investigate the read-replica lag issue and fix it if remediation is low risk, else wait for my approval."/ — diagnosed, assessed *medium risk*, so it *pauses for your approval* before scaling replicas.
+
+The two examples share one agentic backend (intent, planner, capabilities, durable flows, the in-process A2A bus, and the orchestrator) verbatim — only the render layer differs. The React app uses ~@loom/renderer-react~ with a custom ~RendererRegistry~ and opt-in fiber (~granular updates / suspense / deferred streaming~); the Web Components app renders the same ~blueprint$~ definitions with native Custom Elements via ~traverseBlueprint<HTMLElement>~, subscribing each widget to only its own projection slice for the same granular, near-real-time updates. This is Loom's *bring-your-own-renderer* contract in its starkest form.
 
 * Agentic Capabilities
 
