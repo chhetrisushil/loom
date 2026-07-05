@@ -63,5 +63,9 @@ export class InMemorySnapshotStore implements SnapshotStore {
     return candidates[candidates.length - 1] ?? null;
   }
 
+  loadLatestBefore(executionId: string, sequence: number): Snapshot | null {
+    return this.loadAt(executionId, sequence);
+  }
+
   close(): void {}
 }

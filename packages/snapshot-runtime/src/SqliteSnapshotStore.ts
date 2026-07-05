@@ -67,6 +67,15 @@ export class SqliteSnapshotStore implements SnapshotStore {
     return row ? rowToSnapshot(row) : null;
   }
 
+  loadLatestBefore(executionId: string, sequence: number): Snapshot | null {
+    const row = this.db
+      .prepare<[string, number], SnapshotRow>(
+        "SELECT * FROM snapshots WHERE execution_id = ? AND sequence <= ? ORDER BY sequence DESC LIMIT 1"
+      )
+      .get(executionId, sequence);
+    return row ? rowToSnapshot(row) : null;
+  }
+
   close(): void {
     this.db.close();
   }

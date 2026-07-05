@@ -61,3 +61,26 @@ export interface ResumeEvent {
   eventType: string;
   payload: unknown;
 }
+
+export interface ForkOptions {
+  /** Optional branch name to register a movable ref for the new branch. */
+  branchName?: string;
+  /** Optional explicit executionId for the child (defaults to a fresh ULID). */
+  executionId?: string;
+}
+
+export interface ForkResult {
+  /** The child (forked) execution id. */
+  executionId: string;
+  parentExecutionId: string;
+  /** The sequence the branch forked at. */
+  forkSequence: number;
+  /** The branch name registered, if any (else the child executionId). */
+  branchName: string;
+  /**
+   * Materialized ExecutionState at the fork point, already stamped with the
+   * child executionId. Hand directly to `restoreFromState` to drive the branch
+   * down an alternate path, or call `resume(child.executionId, …)`.
+   */
+  state: ExecutionState;
+}

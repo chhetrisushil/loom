@@ -49,6 +49,9 @@ class MemSnapshotStore implements SnapshotStore {
     const c = l.filter((s) => s.sequence <= seq);
     return c[c.length - 1] ?? null;
   }
+  loadLatestBefore(id: string, seq: number) {
+    return this.loadAt(id, seq);
+  }
   close() {}
 }
 
