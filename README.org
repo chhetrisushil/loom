@@ -19,6 +19,7 @@ On top of these, Loom ships an *intelligence pipeline* that turns intents and go
 - *Planner Runtime* — composes an ordered, multi-step plan of capabilities for a higher-level goal (~PlannerRuntime.plan~).
 - *Capabilities Over APIs* — ~capability$~ wraps a flow with intent-facing metadata; a ~CapabilityCatalog~ makes it discoverable and invocable.
 - *Agent memory* — ~MemoryRuntime~ gives agents scoped, durable recall across turns (honoring ~ttlMs~ / ~maxEntries~).
+- *Speculative branching* — fork an execution at any point into an independent branch to try alternate plans, then keep the winner (~WorkflowRuntime.fork~ + a git-style ~BranchRegistry~). Copy-on-write over the event log, branch-only (no merge); the parent stays intact.
 - *Multi-surface delivery* — the same blueprint renders to React *or* the terminal (~@loom/renderer-terminal~), because ~traverseBlueprint~ is framework-agnostic.
 
 * Repository Layout
@@ -45,9 +46,9 @@ loom/
 |------------------------+--------------------------------------------------------------|
 | ~@loom/core~           | Core types, builders, and SDK primitives                     |
 | ~@loom/sdk~            | Public re-export surface (start here for most use cases)     |
-| ~@loom/workflow-runtime~   | Durable workflow execution with suspend and resume       |
+| ~@loom/workflow-runtime~   | Durable workflow execution with suspend, resume, and speculative ~fork~ |
 | ~@loom/effect-runtime~     | Effect isolation layer for tool, LLM, human, and A2A effects |
-| ~@loom/event-runtime~      | Append-only event store                                  |
+| ~@loom/event-runtime~      | Append-only event store + git-style ~BranchRegistry~ (refs + fork lineage) |
 | ~@loom/snapshot-runtime~   | Snapshot serialization and storage for execution state   |
 | ~@loom/projection-runtime~ | Event-to-projection transformation with live subscriptions |
 | ~@loom/blueprint-runtime~  | Schema-driven, JSON-serializable UI blueprint types      |

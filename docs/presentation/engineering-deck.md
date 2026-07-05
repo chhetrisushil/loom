@@ -138,6 +138,23 @@ const fix     = await ctx.run(ApplyRemediationStep, input); // step 3, after app
 
 ---
 
+## Speculative branching — fork the log, pick a winner
+
+The same immutable-log machinery gives you git-style branching for **free**:
+
+```ts
+// A task suspended at its approval gate (sequence S). Fork it.
+const branch = await runtime.fork(taskId, S, { branchName: "spec/scale-replicas" });
+await runtime.resume(branch.executionId, { eventType: "ApprovalGranted", payload: { approved: true } });
+branchRegistry.promote("spec/scale-replicas", "main");  // keep the winner
+```
+
+- **`fork`** copies the parent prefix `[0..S]` into a child id (COW) + a seed snapshot → identical replay, cached steps not re-run, **parent untouched**. No new event type.
+- **`BranchRegistry`** (`@loom/event-runtime`): movable refs + fork lineage; **`promote` is a pointer move, not a merge**.
+- **Branch-only by design** — divergent `ExecutionState`s have no principled join. **Proof/demo:** `packages/workflow-runtime/src/fork.test.ts` · `demo:fork` in `db-command-center-server`.
+
+---
+
 ## Effects: one interface, four kinds
 
 ```ts

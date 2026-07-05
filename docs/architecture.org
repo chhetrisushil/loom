@@ -173,6 +173,12 @@ restoreFromState()  (client-side path — no EventStore)        │
          │  3. Apply optional resumeEvent directly           │
          │  4. Call execute() ──────────────────────────────►│
          │                                                   │
+  fork() │  1. Copy parent events [0..S] into a child id     │
+  ──────►│  2. Seed child Snapshot at S (loadLatestBefore)   │
+         │  3. Record lineage + ref (BranchRegistry)         │
+         │  4. Return ForkResult — does NOT execute()         │
+         │     (drive it via restoreFromState / resume)      │
+         │                                                   │
          │           execute() internal                      │
          │  ┌────────────────────────────────────────┐       │
          │  │ Build WorkflowContextImpl               │       │
@@ -224,6 +230,32 @@ handle.getState(); // current ExecutionState at any time
 
 handle.cancel(reason?); // abort in-flight effects and stop this live run
 #+end_src
+
+** Forking — speculative branches (branch-only)
+
+Because state is always *derived* from an immutable log, an execution can be *forked* at any sequence point into an independent branch — the git *branch-and-pick-a-winner* principle applied to the execution model. Use it for speculation: run an alternate remediation, backtrack, or let a human "undo and try a different plan" — all while the parent stays intact.
+
+#+begin_src typescript
+// Fork a suspended task at its approval gate into a named branch.
+const branch = await runtime.fork(parentExecutionId, atSequence, {
+  branchName: "spec/scale-replicas",
+});
+// branch: { executionId, parentExecutionId, forkSequence, branchName, state }
+
+// Drive the branch down an alternate path (the fork point is a suspend here):
+await runtime.resume(branch.executionId, {
+  eventType: "ApprovalGranted",
+  payload: { approved: true, approvedBy: "operator" },
+});
+// ...or hand the materialized state straight to restoreFromState(branch.state, …).
+
+// Pick the winner — a pointer move on the registry, not a merge:
+branchRegistry.promote("spec/scale-replicas", "main");
+#+end_src
+
+~fork~ is *copy-on-write* over the event log. The parent's events ~[0..atSequence]~ are copied verbatim into the child ~executionId~ — only ~id~ and ~executionId~ change, and neither is read by ~foldEvents~, so the copied prefix folds to a *byte-identical* state; completed pre-fork steps short-circuit via ~hasCompleted()~ to their cached outputs. A seed ~Snapshot~ is written at ~atSequence~ (via ~SnapshotStore.loadLatestBefore~) so a later ~resume~ folds an empty tail. The parent log is never touched, so it stays intact and independently resumable. Divergence can only come from events appended *after* the fork point.
+
+Fork provenance lives *out of band* — in the copied events' ~metadata~ (~forkedFrom~ / ~forkSequence~) and in the ~BranchRegistry~ — so **no new event type is introduced**; the replayable log stays pristine. See [[*Why branching, not merge/rebase?][Why branching, not merge/rebase?]].
 
 *** ~ExecutionHandle.cancel(reason?)~ — live cancellation
 
@@ -318,6 +350,8 @@ On resume, the VM is seeded with either the full event log or a snapshot + tail 
 | ~EXECUTION_CANCELLED~  | status → "cancelled", cancel reason stored in ~variables._cancelReason~ |
 
 ~"cancelled"~ is a value of both ~ExecutionStatus~ and ~FrameStatus~. ~STEP_CANCELLED~ marks the in-flight frame only and deliberately does *not* touch the execution status — ~EXECUTION_CANCELLED~ owns that. ~ctx.run()~ emits ~STEP_CANCELLED~ (instead of ~STEP_FAILED~) when an effect rejects while the run's ~signal~ is aborted, so a cancelled step reads as cancelled rather than failed in the log and replayed state.
+
+Note that *forking an execution introduces no new event type*. A fork copies the parent's prefix events verbatim (re-stamping only ~id~ / ~executionId~) and records provenance in event ~metadata~ + the ~BranchRegistry~; the fold handlers above are untouched, which is exactly what keeps a forked prefix byte-identical to its parent. See [[*Forking — speculative branches (branch-only)][Forking — speculative branches]].
 
 * ~EffectRuntime~ — Side-Effect Sandbox
 
@@ -445,6 +479,8 @@ On resume:
 #+end_example
 
 In the steady state — one suspend, one resume — the replay cost on resume is proportional to the number of events *after* the snapshot (typically 2–3), not the total event count.
+
+Alongside ~loadLatest~ and ~loadAt(sequence)~ (exact match), the store exposes ~loadLatestBefore(executionId, sequence)~ — the greatest snapshot *at or below* a given sequence. This is what [[*Forking — speculative branches (branch-only)][~fork~]] uses to materialize state at an arbitrary fork point without folding the log from zero.
 
 * ~ProjectionRuntime~ — Live View Models
 
@@ -1217,6 +1253,12 @@ Making ~handler$(fn)~ return a ~HandlerRef~ (rather than nothing) means code wor
 Fiber solves a specific problem: a synchronous, CPU-bound render blocking a single UI thread, fixed by slicing work against a frame deadline. That problem does not exist here. Loom's render trees are dashboard-sized — the ~traverseBlueprint~ benchmark walks a 10k-node tree in ~0.47ms, well inside a frame budget (see docs/benchmarks.md) — and where React is the surface, React *already* provides fiber. A second reconciler would duplicate that machinery and add latency for no gain.
 
 The Fiber *principles* — priority, interruptibility, incremental progress — do pay off, but in the *async agentic layer*: cancelling an in-flight LLM call, ordering foreground turns ahead of background planning, bounding tool/effect fan-out. So those principles are implemented as an *ephemeral async scheduler* (~@loom/scheduler~) — a priority-ordered semaphore plus ~AbortSignal~ cancellation — which complements (does not replace) the durable pause/resume already owned by ~SuspendError~ + ~ReplayVM~. On the render side, "useFiber" leverages React's fiber directly, and ~traverseBlueprintAsync~ is the async-traversal seam reserved for future non-React renderers. Every piece is opt-in and default-off; the synchronous fast paths (~traverseBlueprint~, ~schedule~ at ~concurrency: Infinity~, synchronous projection notify) are benched with no regression.
+
+** Why branching, not merge/rebase?
+
+Loom already has git's hardest-won properties for free — an immutable, content-stable log and deterministic replay — so *branching* is nearly zero-cost: a fork is a copy-on-write prefix plus a movable ref. That is the git principle worth borrowing, and it serves a real agentic need (speculation, backtracking, human "undo and try a different plan").
+
+The rest of git we deliberately *refuse*. Git's merge/rebase machinery exists because many humans concurrently edit *text*, which has a clean line-based 3-way merge. Loom executions are single-writer and deterministic, and two divergent ~ExecutionState~s have no principled join — merging arbitrary ~frames~ / ~variables~ would mean inventing conflict semantics with no ground truth. Rebase is worse: cached step outputs assume a fixed prefix, and events are immutable and sequence-bound, so replaying a branch onto a different base breaks the determinism contract. The agentic pattern is not "merge divergent branches" but "*pick the winning branch*" — so ~BranchRegistry.promote()~ is a pointer move, and the losing branches remain immutable, independently resumable executions. This is the same discipline as the scheduler decision above: take the principle, refuse the reconciler.
 
 ** Why JSON-serializable Blueprints?
 

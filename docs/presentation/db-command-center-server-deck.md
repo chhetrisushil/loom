@@ -155,6 +155,32 @@ through approval to resolution (`events.db` written); a live run streamed a snap
 
 ---
 
+## Bonus: speculative branching on the durable server
+
+Every remediation task is a real event-sourced execution — so it can be **forked**. When a task
+suspends at its approval gate, fork it into speculative branches, preview each, keep the winner:
+
+```bash
+pnpm --filter @loom/db-command-center-server demo:fork
+```
+
+```
+scale-read-replicas task → SUSPENDED @ seq 1 (awaiting approval)
+  fork → spec/approve → resume(approved) → applied ✓  lag 4200 → 180ms
+  fork → spec/reject  → resume(rejected) → no change
+  parent task: still SUSPENDED, log untouched
+  promote("spec/approve","main") → main now names the winning branch @6
+```
+
+- Wired via `branchRegistry: new SqliteBranchRegistry("branches.db")` in `server/app.ts`.
+- Copy-on-write over the event log; **no merge** — `promote()` is a pointer move. Source: `src/scripts/speculativeFork.ts`.
+
+<!--
+Presenter: an interactive "Try alternate plan" button + POST /fork /promote routes are the natural next step but not wired yet — task-level events fold locally, only mission-level A2UI patches stream today (see the example README "not built"). The demo:fork script proves the mechanics end to end.
+-->
+
+---
+
 ## Takeaway
 
 > Same app. Same agents. Same durable suspend/resume. We moved the runtime to a
