@@ -876,6 +876,26 @@ The proposal's surface layer is deliberately framework-agnostic: ~traverseBluepr
 
 Because ~traverseBlueprint~ is the shared traversal used by both the React ~BlueprintRenderer~ and the terminal renderer, a single blueprint definition renders to the web *or* the terminal with no changes — the multi-surface delivery the proposal calls for.
 
+** Render-side "useFiber" — leveraging React's own fiber
+
+The render side does *not* add a second reconciler. The synchronous ~traverseBlueprint~ (a pull walk that assembles the whole tree) remains the default and is unchanged. On top of it, two opt-in seams apply Fiber principles where they actually pay off:
+
+*** React renderer: ~<BlueprintRenderer fiber={…}>~
+
+The React ~BlueprintRenderer~ accepts an opt-in ~fiber~ prop (~boolean | { granularUpdates, suspense, deferStreaming }~; defaults off, byte-identical output when falsy). Rather than time-slicing itself, it leverages React's *own* fiber scheduler:
+
+- ~granularUpdates~ — each widget subscribes to its own binding path, so only the widget whose slice changed re-renders instead of the whole blueprint.
+- ~suspense~ — each widget is wrapped in its own ~<Suspense>~ boundary, so an async BYOC component can suspend without blanking its siblings.
+- ~deferStreaming~ — high-frequency (streaming) widgets are fed through ~startTransition~, so their updates never block urgent work.
+
+~fiber={true}~ enables all three; an object opts into individual capabilities (requesting any implies per-widget mounting). A ~LoomProvider~ ~fiber~ prop supplies a default that a per-renderer prop can override.
+
+*** Scheduler-less BYOR renderers: ~traverseBlueprintAsync~
+
+For renderers with no framework scheduler of their own (direct DOM, canvas, native), ~@loom/blueprint-runtime~ exports ~traverseBlueprintAsync~ — an interruptible, incremental-commit *push* traversal. It creates each node top-down, commits children into their container as they resolve (progressive paint), cooperatively yields against a counter-based budget (default every 64 nodes, via ~@loom/scheduler~ ~yieldControl~), and checks an ~AbortSignal~ at every node so a stale render can be dropped. This is the validated BYOR extension point; no production renderer targets it yet (all current renderers use the synchronous pull walk).
+
+The division of labour: React already has fiber, so useFiber *rides* it; the async traversal is the seam reserved for future non-React renderers that would otherwise have nothing.
+
 * ~@loom/scheduler~ — Cooperative Scheduling & Cancellation
 
 ~@loom/scheduler~ is an *ephemeral*, dependency-free cooperative scheduler for live, in-flight async work. It applies Fiber *principles* — priority, interruptibility, incremental progress — to the *async agentic layer*, not to UI reconciliation. Concretely it is an async, priority-ordered semaphore plus ~AbortSignal~ cancellation.

@@ -303,6 +303,23 @@ new AgentRunner({ ...cfg, parallelTools: true }); // tool calls, order preserved
 
 ---
 
+## `useFiber` — render-side capabilities (BYOR / BYOC)
+
+On the render side we **leverage React's *own* fiber — no second reconciler**:
+
+```tsx
+<BlueprintRenderer fiber={fiber} />   // per-widget, path-granular re-render
+```
+
+- **Per-widget Suspense** for async BYOC (bring-your-own-component) widgets.
+- **startTransition-deferred streaming** — token floods stay responsive.
+- Projection coalescing: `new InMemoryProjectionRuntime({ coalesceNotifications: true })` + `useDeferredProjection`.
+- **BYOR seam:** `traverseBlueprintAsync` + `IncrementalRenderer` — an interruptible incremental-commit traversal for future scheduler-less renderers (canvas / DOM / native).
+
+All opt-in; existing renderers behave exactly as before.
+
+---
+
 ## Build‑time & observability
 
 **`@loom/compiler`** (Vite plugin + CLI)

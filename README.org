@@ -175,6 +175,8 @@ Loom workflows are defined as a series of steps that can suspend at any point an
 Loom also ships *opt-in* (default-off, no behavior change unless enabled) performance and responsiveness seams — Fiber principles applied to the async agentic layer, plus render-side hooks that leverage React's *own* fiber:
 
 - *Cooperative scheduling & cancellation* — ~@loom/scheduler~ adds priority lanes, order-preserving bounded concurrency (~parallelLimit~), and ~yieldControl~. ~ExecutionHandle.cancel()~ aborts in-flight effects (via ~EffectContext.signal~ / ~LlmRequest.signal~) and records a durable ~EXECUTION_CANCELLED~ event — live-only, so resume is unchanged. Opt-in, replay-safe concurrency via ~ctx.parallel(pairs, { limit })~ and ~AgentRunner.parallelTools~; planner/intent run at Idle priority.
+- *Render-side ~useFiber~ (React)* — ~<BlueprintRenderer fiber={...} />~ gives per-widget, path-granular re-render, per-widget Suspense for async BYOC components, and startTransition-deferred streaming — no second reconciler. ~traverseBlueprintAsync~ + ~IncrementalRenderer~ expose an interruptible incremental-commit seam for future scheduler-less BYOR renderers (canvas/DOM/native). Projection notifications can coalesce (~new InMemoryProjectionRuntime({ coalesceNotifications: true })~) and defer with ~useDeferredProjection~.
+
 #+begin_example
 Flow definition
      │

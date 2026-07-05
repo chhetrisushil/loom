@@ -467,6 +467,61 @@ export function App() {
 }
 #+end_src
 
+** Fiber rendering (large dashboards & streaming widgets)
+
+By default ~BlueprintRenderer~ subscribes to all of a blueprint's projections and re-traverses the whole tree on any change — simple and correct. For large dashboards, high-frequency streaming widgets, or async BYOC (bring-your-own-component) renderers, opt into *fiber mode*, which leans on React's own scheduler (no second reconciler) to render more granularly. It is fully off by default: when ~fiber~ is falsy the output is byte-identical to the current path.
+
+Turn it on per renderer with the ~fiber~ prop — ~fiber~ (all three capabilities) or an object to pick individual ones:
+
+#+begin_src typescript
+// All three capabilities:
+<BlueprintRenderer
+  blueprint={IncidentBlueprint}
+  projectionRuntime={projectionRuntime}
+  executionId={executionId}
+  fiber
+/>
+
+// Or opt into individual capabilities:
+<BlueprintRenderer
+  blueprint={IncidentBlueprint}
+  projectionRuntime={projectionRuntime}
+  executionId={executionId}
+  fiber={{ granularUpdates: true, suspense: true, deferStreaming: true }}
+/>
+#+end_src
+
+The three capabilities:
+
+- ~granularUpdates~ — each widget subscribes to its own bound path, so only the widget whose slice changed re-renders (instead of the whole blueprint). This is the base of fiber mode; enabling either capability below implies it.
+- ~suspense~ — each widget is wrapped in its own ~<Suspense>~ boundary, so an async BYOC component can suspend (throw a promise, or use React's ~use()~) without blanking its siblings. The fallback is the widget's ~placeholder~ prop (when it's a string) or a default skeleton.
+- ~deferStreaming~ — high-frequency widgets (kind ~"StreamingText"~, or any widget with ~props.defer === true~) receive their updates via ~startTransition~, so a token firehose never blocks urgent work such as clicking Approve.
+
+You can also set a tree-wide default on the provider; a ~BlueprintRenderer~ ~fiber~ prop overrides it:
+
+#+begin_src typescript
+<LoomProvider
+  workflowRuntime={workflowRuntime}
+  projectionRuntime={projectionRuntime}
+  fiber={{ granularUpdates: true, deferStreaming: true }}
+>
+  <App />
+</LoomProvider>
+#+end_src
+
+For reading projection state in your own components, ~useDeferredProjection~ is the ~startTransition~ variant of ~useProjection~ — same signature, but streamed updates are marked non-urgent:
+
+#+begin_src typescript
+import { useDeferredProjection } from "@loom/renderer-react";
+
+// Same signature as useProjection; use ONLY for high-frequency, low-urgency state.
+const surface = useDeferredProjection<AssistantSurface>(projectionRuntime, "ui", executionId);
+#+end_src
+
+Keep urgent state (an approval result) on the eager ~useProjection~ path — deferred updates can momentarily tear relative to eager ones.
+
+One rule of thumb: leave fiber off for ordinary blueprints (behavior is unchanged); reach for it when you have a large dashboard, streaming widgets, or async BYOC components.
+
 * Writing Custom Widget Renderers
 
 Extend the registry with domain-specific widgets:
@@ -499,6 +554,27 @@ import { widget } from "@loom/blueprint-runtime";
 const ConnectionGauge = (props: { title: string; binding: DataBinding }) =>
   widget({ kind: "ConnectionGauge", ...props });
 #+end_src
+
+*** Per-widget value hooks (for fiber-friendly renderers)
+
+The renderers above receive their ~value~ prop from ~BlueprintRenderer~. If you write a renderer that subscribes directly — e.g. to stream a value without re-traversing the tree — use the path-granular hooks. ~useWidgetValue~ is tear-free (built on ~useSyncExternalStore~) and only re-renders when the widget's own bound slice changes; ~useDeferredWidgetValue~ is the ~startTransition~ variant for high-frequency streaming widgets.
+
+#+begin_src typescript
+import { useWidgetValue, useDeferredWidgetValue } from "@loom/renderer-react";
+
+// Re-renders ONLY when this widget's bound path changes (not sibling slices):
+const value = useWidgetValue<{ active: number; max: number }>(
+  projectionRuntime,
+  widget,
+  executionId,
+);
+
+// Or, for a token-by-token streaming widget, defer updates so they yield to
+// urgent work:
+const text = useDeferredWidgetValue<string>(projectionRuntime, widget, executionId);
+#+end_src
+
+These are the same hooks fiber mode mounts per widget, so a hand-written renderer participates in granular/deferred updates automatically.
 
 * Subscribing to Projection State in Custom Hooks
 
@@ -1063,6 +1139,8 @@ console.log(renderBlueprintToString(IncidentBlueprint, stateMap));
 #+end_src
 
 The ~examples/agent-network~ showcase demonstrates all five of the above — capability catalog, intent routing, a planner plan, agent memory recall, and a terminal-rendered dashboard — end to end and fully offline. Run it with ~pnpm --filter @loom/agent-network start~.
+
+The terminal renderer uses the synchronous, pull-based ~traverseBlueprint~. If you are writing a scheduler-less renderer that mutates a target as the tree resolves (direct DOM, canvas, native), ~traverseBlueprintAsync~ (in ~@loom/blueprint-runtime~) is the push-based, interruptible counterpart: it commits nodes incrementally and cooperatively yields against a budget so the host stays responsive on large trees. You supply an ~IncrementalRenderer~ with ~createContainer~ / ~createWidget~ / ~appendChild~. React renderers do *not* need this — the fiber path already leverages React's scheduler.
 
 * Common Pitfalls
 
