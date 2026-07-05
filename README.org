@@ -25,9 +25,17 @@ On top of these, Loom ships an *intelligence pipeline* that turns intents and go
 
 #+begin_example
 loom/
-├── packages/          # Core framework packages
-├── examples/          # Reference applications
-└── tools/             # Internal tooling
+├── packages/                     # Core framework packages (see table below)
+├── apps/
+│   └── playground/               # A2UI patch-stream + trace playground
+├── examples/                     # Reference applications (see table below)
+│   ├── agent-network/            # headless Node — full agentic pipeline end to end
+│   ├── cloud-command-center/     # React — durable suspend/approve/resume + streaming AI triage
+│   ├── angular-command-center/   # the same workflow in Angular (runtime is UI-agnostic)
+│   ├── db-command-center/        # React — intent-driven multi-agent DB ops (BYOR + BYOC + fiber)
+│   ├── db-command-center-wc/     # the same app in vanilla Web Components (no framework)
+│   └── db-command-center-server/ # the same app as server + client (durable Node server + WC client)
+└── docs/                         # architecture, API reference, usage guides, presentation kit
 #+end_example
 
 ** Packages
