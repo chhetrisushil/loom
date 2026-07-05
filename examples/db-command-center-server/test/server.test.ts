@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ServerApp, createApp } from "../src/server/app";
 import type { ServerFrame } from "../src/wire";
 
+const CPU_GOAL = "Why is CPU utilization high? Fix it if remediation is low risk.";
 const REPLICA_GOAL =
   "Investigate the read-replica lag issue and fix it if remediation is low risk, else wait for my approval.";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -61,5 +62,31 @@ describe("server app (durable, headless)", () => {
 
     // Durability: the event log was persisted to SQLite on disk.
     expect(existsSync(join(dataDir, "events.db"))).toBe(true);
+  }, 30000);
+
+  it("re-runs missions on the same SQLite store without execution-id collisions", async () => {
+    const mission = () => app.projectionRuntime.getState<{ phase?: string }>("mission", "m-test");
+
+    // First mission: low-risk CPU auto-remediates (no human approval) and fully
+    // resolves — so awaiting run() is safe here.
+    await app.orchestrator.run(CPU_GOAL);
+    expect(mission().phase).toBe("resolved");
+
+    // Second mission on the SAME durable store. With reused execution ids this
+    // throws `UNIQUE constraint failed: events.execution_id, events.sequence`;
+    // the per-run nonce keeps every run's ids distinct.
+    let rejected: unknown = null;
+    const second = app.orchestrator.run(REPLICA_GOAL).catch((e) => {
+      rejected = e;
+    });
+    for (let i = 0; i < 200 && mission().phase !== "awaiting-approval"; i++) await sleep(25);
+    expect(rejected).toBeNull();
+    expect(mission().phase).toBe("awaiting-approval");
+
+    app.orchestrator.resolveApproval(true);
+    await second;
+    for (let i = 0; i < 200 && mission().phase !== "resolved"; i++) await sleep(25);
+    expect(rejected).toBeNull();
+    expect(mission().phase).toBe("resolved");
   }, 30000);
 });
