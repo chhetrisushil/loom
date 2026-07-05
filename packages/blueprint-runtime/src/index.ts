@@ -13,6 +13,11 @@ export {
 export { customWidget$ } from "./customWidget";
 export { RendererRegistry } from "./RendererRegistry";
 export { traverseBlueprint, resolveWidgetValue } from "./traverseBlueprint";
+export { traverseBlueprintAsync } from "./traverseBlueprintAsync";
+export type {
+  AsyncTraversalOptions,
+  IncrementalRenderer,
+} from "./traverseBlueprintAsync";
 export type {
   Blueprint,
   DataBinding,

@@ -14,3 +14,4 @@ export {
   type ScheduleOptions,
 } from "./scheduler";
 export { parallelLimit, type ParallelLimitOptions } from "./structured";
+export { yieldControl } from "./yield";
