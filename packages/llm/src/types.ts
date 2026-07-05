@@ -15,6 +15,8 @@ export interface LlmRequest {
   system?: string;
   maxTokens?: number;
   temperature?: number;
+  /** Cooperative cancellation — forwarded to the underlying HTTP request. */
+  signal?: AbortSignal;
 }
 
 export interface LlmToolCall {

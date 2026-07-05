@@ -29,7 +29,8 @@ export class OpenAiProvider implements LlmProvider {
   private readonly baseUrl: string;
 
   constructor(config: OpenAiProviderConfig = {}) {
-    this.apiKey = config.apiKey ?? (typeof process !== "undefined" ? (process.env["OPENAI_API_KEY"] ?? "") : "");
+    this.apiKey =
+      config.apiKey ?? (typeof process !== "undefined" ? (process.env.OPENAI_API_KEY ?? "") : "");
     this.model = config.model ?? "gpt-4o";
     this.baseUrl = config.baseUrl ?? "https://api.openai.com";
   }
@@ -42,11 +43,11 @@ export class OpenAiProvider implements LlmProvider {
       stream,
     };
 
-    if (request.maxTokens !== undefined) body["max_tokens"] = request.maxTokens;
-    if (request.temperature !== undefined) body["temperature"] = request.temperature;
+    if (request.maxTokens !== undefined) body.max_tokens = request.maxTokens;
+    if (request.temperature !== undefined) body.temperature = request.temperature;
 
     if (request.tools !== undefined && request.tools.length > 0) {
-      body["tools"] = request.tools.map((t) => ({
+      body.tools = request.tools.map((t) => ({
         type: "function",
         function: { name: t.name, description: t.description, parameters: t.inputSchema },
       }));
@@ -63,6 +64,7 @@ export class OpenAiProvider implements LlmProvider {
         authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify(this.buildBody(request)),
+      ...(request.signal !== undefined && { signal: request.signal }),
     });
 
     if (!resp.ok) {
@@ -110,6 +112,7 @@ export class OpenAiProvider implements LlmProvider {
         authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify(this.buildBody(request, true)),
+      ...(request.signal !== undefined && { signal: request.signal }),
     });
 
     if (!resp.ok) {

@@ -1,10 +1,11 @@
-import { SuspendError } from "@loom/core";
-import type { EventEnvelope, StepDefinition } from "@loom/core";
 import { createA2UIEmitter } from "@loom/a2ui";
 import type { A2UIEmitter } from "@loom/a2ui";
+import { SuspendError } from "@loom/core";
+import type { EventEnvelope, StepDefinition } from "@loom/core";
 import type { EffectRuntime } from "@loom/effect-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
+import { parallelLimit } from "@loom/scheduler";
 import type { SuspendConfig, WorkflowContext } from "./types";
 
 export class WorkflowContextImpl implements WorkflowContext {
@@ -19,7 +20,11 @@ export class WorkflowContextImpl implements WorkflowContext {
     private readonly vm: ReplayVM,
     private readonly eventStore: EventStore,
     private readonly effectRuntime: EffectRuntime,
-    private readonly onEventEmitted: ((event: EventEnvelope) => void) | undefined = undefined
+    private readonly onEventEmitted: ((event: EventEnvelope) => void) | undefined = undefined,
+    // Cooperative cancellation for this execution. Threaded into every effect
+    // context so long-running I/O (LLM/tool/A2A) can abort. Undefined = never
+    // cancelled (existing behaviour).
+    private readonly signal: AbortSignal | undefined = undefined
   ) {
     this.executionId = executionId;
     this.workflowId = workflowId;
@@ -60,6 +65,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       workflowId: this.workflowId,
       attempt: this.vm.getState().frames[step.id]?.attempts ?? 1,
       emit: (eventType: string, payload: unknown) => this.emit(eventType, payload),
+      ...(this.signal !== undefined && { signal: this.signal }),
     };
 
     const toolId = step.toolId ?? step.id;
@@ -71,6 +77,13 @@ export class WorkflowContextImpl implements WorkflowContext {
       if (err instanceof SuspendError) {
         throw err;
       }
+      // A cancelled execution surfaces here as an effect rejection. Record it as
+      // a cancelled step (not a failure) so the event log and replayed state stay
+      // truthful; EXECUTION_CANCELLED owns the execution-level status.
+      if (this.signal?.aborted === true) {
+        this.emit("STEP_CANCELLED", { stepId: step.id });
+        throw err;
+      }
       this.emit("STEP_FAILED", { stepId: step.id, error: String(err) });
       throw err;
     }
@@ -80,13 +93,22 @@ export class WorkflowContextImpl implements WorkflowContext {
   }
 
   async parallel<TResults extends unknown[]>(
-    pairs: { [K in keyof TResults]: [StepDefinition<unknown, TResults[K]>, unknown] }
+    pairs: { [K in keyof TResults]: [StepDefinition<unknown, TResults[K]>, unknown] },
+    options?: { limit?: number }
   ): Promise<TResults> {
-    const results = await Promise.all(
-      (pairs as Array<[StepDefinition, unknown]>).map(([step, input]) =>
-        this.run(step, input)
-      )
+    // parallelLimit preserves input order in the result array (deterministic
+    // replay) and degenerates to Promise.all when no limit is set. Each step
+    // already threads this.signal via its effect context, so we don't forward
+    // parallelLimit's per-task signal here.
+    const tasks = (pairs as Array<[StepDefinition, unknown]>).map(
+      ([step, input]) =>
+        () =>
+          this.run(step, input)
     );
+    const results = await parallelLimit(tasks, {
+      ...(options?.limit !== undefined && { limit: options.limit }),
+      ...(this.signal !== undefined && { signal: this.signal }),
+    });
     return results as TResults;
   }
 
@@ -101,7 +123,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     const state = this.vm.getState();
     if ("_resumePayload" in state.variables && !this.suspendPassthroughConsumed) {
       this.suspendPassthroughConsumed = true;
-      return Promise.resolve(state.variables["_resumePayload"]) as unknown as Promise<never>;
+      return Promise.resolve(state.variables._resumePayload) as unknown as Promise<never>;
     }
     throw new SuspendError(_config);
   }

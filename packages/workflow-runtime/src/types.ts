@@ -1,5 +1,5 @@
-import type { ExecutionState, FlowDefinition, StepDefinition } from "@loom/core";
 import type { A2UIEmitter } from "@loom/a2ui";
+import type { ExecutionState, FlowDefinition, StepDefinition } from "@loom/core";
 
 export interface SuspendConfig {
   on: string;
@@ -11,13 +11,14 @@ export interface WorkflowContext {
   readonly executionId: string;
   readonly workflowId: string;
 
-  run<TIn = unknown, TOut = unknown>(
-    step: StepDefinition<TIn, TOut>,
-    input: TIn
-  ): Promise<TOut>;
+  run<TIn = unknown, TOut = unknown>(step: StepDefinition<TIn, TOut>, input: TIn): Promise<TOut>;
 
   parallel<TResults extends unknown[]>(
-    pairs: { [K in keyof TResults]: [StepDefinition<unknown, TResults[K]>, unknown] }
+    pairs: { [K in keyof TResults]: [StepDefinition<unknown, TResults[K]>, unknown] },
+    // Optional bounded concurrency. Omit for the current unbounded behaviour.
+    // Results are always returned in input order regardless of `limit`, which is
+    // load-bearing for deterministic replay.
+    options?: { limit?: number }
   ): Promise<TResults>;
 
   suspend(config: SuspendConfig): Promise<never>;
@@ -40,11 +41,16 @@ export interface ExecutionHandle {
   waitForCompletion(): Promise<ExecutionState>;
   waitForSuspend(): Promise<ExecutionState>;
   getState(): ExecutionState;
+  /**
+   * Cancel this live execution. Aborts the signal handed to in-flight effects,
+   * records a durable EXECUTION_CANCELLED event, and rejects waitForCompletion.
+   * Only affects in-flight work — already-persisted state and resume semantics
+   * are unchanged. Idempotent.
+   */
+  cancel(reason?: unknown): void;
 }
 
-export interface FlowRunner<TIn, TOut> {
-  (ctx: WorkflowContext, input: TIn): Promise<TOut>;
-}
+export type FlowRunner<TIn, TOut> = (ctx: WorkflowContext, input: TIn) => Promise<TOut>;
 
 export interface RegisteredFlow<TIn = unknown, TOut = unknown> {
   definition: FlowDefinition<TIn, TOut>;
