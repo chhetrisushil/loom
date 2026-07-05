@@ -102,7 +102,7 @@ onEvent → ProjectionRuntime → UI
 ```
 
 - `WorkflowRuntime` (`packages/workflow-runtime`) orchestrates; `EffectRuntime` isolates side effects; `ReplayVM` (`packages/replay-vm`) folds events → state.
-- Event store + snapshot store persist everything.
+- Event store + snapshot store persist everything — **async-first** interfaces, so in-memory + SQLite ship in the box and Postgres/Redis/DynamoDB plug in as first-class backends (a per-execution `ExecutionJournal` keeps `ctx.emit`/`ctx.ui` synchronous).
 
 ---
 

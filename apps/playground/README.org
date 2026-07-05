@@ -101,7 +101,7 @@ function App() {
 ReactDOM.createRoot(document.getElementById("root")!).render(<App />);
 #+end_src
 
-For the in-memory stores, copy ~InMemoryEventStore~ and ~InMemorySnapshotStore~ from ~examples/cloud-command-center/src/runtime/browserStores.ts~ — they are self-contained and need no dependencies beyond ~@loom/core~.
+For in-memory stores, import the ready-made async reference backends from the SDK: ~import { InMemoryAsyncEventStore, InMemoryAsyncSnapshotStore } from "@loom/sdk"~. (The store interfaces are async-first, so these Promise-returning stores drop straight in — and swapping to ~SqliteEventStore~ or a BYO Postgres/Redis backend is the same one-line change.)
 
 ** Quick-start: previewing a blueprint
 

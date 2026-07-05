@@ -24,11 +24,26 @@ Fully offline (deterministic `DemoLlmProvider`).
 
 | | Server (Node) | Client (browser) |
 |---|---|---|
-| Durable stores | `SqliteEventStore` + `SqliteSnapshotStore` (`./.data/`) | — |
+| Durable stores | `SqliteEventStore` + `SqliteSnapshotStore` (`./.data/`) — or **BYO** (see below) | — |
 | Runtime | `WorkflowRuntime`, `Orchestrator`, in-process A2A bus, 3 domain agents, durable flows (`ctx.suspend`/`resume`) | — |
 | Projections | authoritative `mission` / `telemetry` surfaces | a mirror `InMemoryProjectionRuntime` fed by the stream |
 | UI | — | the reused `blueprint$` + `customWidget$` + `dom/` Custom Elements |
 | Bundle | — | **~34 kB** (the heavy backend stays on the server) |
+
+### Bring your own backend
+
+This example wires `SqliteEventStore`/`SqliteSnapshotStore` in `src/server/app.ts`, but the store interfaces are **async-first**, so any backend drops in — just swap those two lines:
+
+```ts
+const runtime = new WorkflowRuntime({
+  eventStore:    new PgEventStore(pool),      // Postgres, Redis, DynamoDB, …
+  snapshotStore: new PgSnapshotStore(pool),
+  effectRuntime,
+  onEvent: (e) => projectionRuntime.handleEvent(e),
+});
+```
+
+The runtime `await`s the store; the synchronous `ctx.emit`/`ctx.ui` API is unchanged. A runnable Postgres reference (schema + `LISTEN/NOTIFY`) lives in [`docs/examples/postgres-backend/`](../../docs/examples/postgres-backend/README.md).
 
 ## Wire protocol (`src/wire.ts`)
 

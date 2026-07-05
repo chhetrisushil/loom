@@ -63,23 +63,47 @@ SERVER-ONLY (Node)                    CLIENT-ONLY (browser)
   @loom/renderer-terminal · @loom/compiler (build time)
 ```
 
-**What you inject decides where it runs.**
+**What you inject decides where it runs.** And because the store interfaces are async-first, "server-only" isn't SQLite-only — inject a Postgres/Redis/DynamoDB backend and the same core runs against your cloud datastore.
 
 ---
 
 ## Pluggable edges — same core, different wiring
 
-The store/transport interfaces each ship two implementations — pick per environment:
+The store/transport interfaces are **async-first** — any backend plugs in. Shipped implementations are just two points on the spectrum:
 
 | Concern | Browser / tests | Server / production |
 |---|---|---|
-| `EventStore` | `InMemoryEventStore` | `SqliteEventStore` (WAL, durable) |
-| `SnapshotStore` | `InMemorySnapshotStore` | `SqliteSnapshotStore` |
+| `EventStore` | `InMemoryEventStore` | `SqliteEventStore` · or **BYO** Postgres/Redis/DynamoDB |
+| `SnapshotStore` | `InMemorySnapshotStore` | `SqliteSnapshotStore` · or **BYO** |
 | Agent transport | `createA2AClientEffect` (`fetch`) | `createA2AServer` (`node:http`) |
 | Surface | `@loom/renderer-react` / BYOR DOM | `@loom/renderer-terminal` (TUI) |
 
-The only *runtime* Node-only deps are the SQLite stores and the A2A server.
-`@loom/compiler` is Node-only but runs at **build time**, never bundled.
+Because `EventStore`/`SnapshotStore`/`BranchRegistry` return Promises, a **network backend is first-class** — no adapter, no in-memory shim. The only *runtime* Node-only deps are the SQLite stores and the A2A server; `@loom/compiler` is Node-only but runs at **build time**, never bundled.
+
+<!--
+Presenter: this is the payoff of async-first storage. Postgres via LISTEN/NOTIFY, Redis, DynamoDB — all implement the same interface and inject the same way. The sync ctx.emit/ctx.ui API is preserved by a per-execution write pipeline (next-level detail on the Execution model slide).
+-->
+
+---
+
+## Async-first storage — bring your own backend
+
+```
+ctx.emit(...)  ─sync→  ExecutionJournal.commit()   (per execution)
+                         1. seq = ++counter         (in-memory, no DB read)
+                         2. vm.applyEvent()          (fold, authoritative)
+                         3. onEvent()                (live projection)
+                         4. enqueue → store.append() (serial async writer)
+
+runtime  ─await→  journal.drain()   at durability barriers:
+                    • before waitForCompletion resolves
+                    • before waitForSuspend + snapshot save
+```
+
+- **Any backend**: `EventStore`/`SnapshotStore`/`BranchRegistry`/`MemoryStore` are Promise-returning. SQLite + in-memory ship; Postgres/Redis/DynamoDB are first-class.
+- **Sync `ctx.emit`/`ctx.ui` preserved**: the journal folds in memory synchronously; durable writes flush in order at barriers. No `nextSequence` round-trip — the sequencer is in-memory.
+- **New failure mode**: a rejected `append` aborts the run → `StorageWriteError` at the barrier + `onStorageError` hook. Never fabricated into the log.
+- Reference: `docs/examples/postgres-backend/` (`LISTEN/NOTIFY`) · `InMemoryAsyncEventStore` proves it in the async test suite.
 
 ---
 
@@ -124,7 +148,7 @@ execute() → returns ExecutionHandle immediately, spawns async runner:
    other error        → EXECUTION_FAILED
 ```
 
-`registerFlow()` auto-registers a `LazyEffect` for every `handler$` step — no manual wiring.
+`registerFlow()` auto-registers a `LazyEffect` for every `handler$` step — no manual wiring. Every `append` is **async** and flows through the per-execution `ExecutionJournal` (in-memory sequencer + serial writer); the runtime `await`s a drain barrier before completing, and before the suspend snapshot.
 
 ---
 
@@ -322,6 +346,7 @@ Presenter: fork() is called externally (e.g. an operator at the gate), not from 
 | **Cooperative scheduler, not a reconciler** | fiber principles belong in the async layer; the renderer already has fiber |
 | **Branch, not merge/rebase** | forking is free over an immutable log; divergent state has no principled join → pick a winner |
 | **JSON-serializable Blueprints** | server-generated UI, persisted layouts, cross-renderer — no React coupling |
+| **Async-first storage, BYO backend** | sync stores (SQLite, in-memory) satisfy it trivially; async/network backends (Postgres, Redis, DynamoDB) are native → no architectural ceiling |
 | **Separate `@loom/compiler`** | TS/Vite deps never reach the browser bundle |
 | **UI-agnostic runtime** | only `@loom/renderer-react` is framework-specific → Angular/Vue/Node all reuse it |
 
@@ -335,5 +360,6 @@ Presenter: fork() is called externally (e.g. an operator at the gate), not from 
 - **Isomorphic core, injected edges** — the same runtime powers an offline browser demo and a durable Node server.
 - **Fiber principles in the async layer, not the renderer** — opt-in, default-off, zero-overhead fast paths.
 - **Speculative branching for free** — an immutable log makes fork copy-on-write; borrow git's branch, refuse its merge.
+- **Async-first storage** — the stores are Promise-returning; the same core runs on in-memory (tests), SQLite (embedded), or Postgres/Redis/DynamoDB (cloud).
 
 > Deep dives: `engineering-deck.md` (primitives & API) · `cloud-command-center-deck.md` (durable UI) · `a2a-mesh-deck.md` (interop).
