@@ -38,7 +38,7 @@ export class SqliteEventStore implements EventStore {
     migrate(this.db);
   }
 
-  append(envelope: EventEnvelope): void {
+  async append(envelope: EventEnvelope): Promise<void> {
     const stmt = this.db.prepare<
       [string, string, string, string, number, number, string, string | null]
     >(`
@@ -60,7 +60,7 @@ export class SqliteEventStore implements EventStore {
     this.notify(envelope.executionId, envelope);
   }
 
-  read(executionId: string): EventEnvelope[] {
+  async read(executionId: string): Promise<EventEnvelope[]> {
     const rows = this.db
       .prepare<[string], EventRow>(
         "SELECT * FROM events WHERE execution_id = ? ORDER BY sequence ASC"
@@ -69,7 +69,7 @@ export class SqliteEventStore implements EventStore {
     return rows.map(rowToEnvelope);
   }
 
-  readFrom(executionId: string, fromSequence: number): EventEnvelope[] {
+  async readFrom(executionId: string, fromSequence: number): Promise<EventEnvelope[]> {
     const rows = this.db
       .prepare<[string, number], EventRow>(
         "SELECT * FROM events WHERE execution_id = ? AND sequence >= ? ORDER BY sequence ASC"
@@ -78,7 +78,10 @@ export class SqliteEventStore implements EventStore {
     return rows.map(rowToEnvelope);
   }
 
-  subscribe(executionId: string, handler: (event: EventEnvelope) => void): () => void {
+  async subscribe(
+    executionId: string,
+    handler: (event: EventEnvelope) => void
+  ): Promise<() => void> {
     if (!this.subscribers.has(executionId)) {
       this.subscribers.set(executionId, new Set());
     }
@@ -92,16 +95,7 @@ export class SqliteEventStore implements EventStore {
     };
   }
 
-  nextSequence(executionId: string): number {
-    const row = this.db
-      .prepare<[string], { maxSeq: number | null }>(
-        "SELECT MAX(sequence) as maxSeq FROM events WHERE execution_id = ?"
-      )
-      .get(executionId);
-    return (row?.maxSeq ?? -1) + 1;
-  }
-
-  close(): void {
+  async close(): Promise<void> {
     this.db.close();
   }
 

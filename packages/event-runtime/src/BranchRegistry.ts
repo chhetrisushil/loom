@@ -35,11 +35,11 @@ export interface LineageRecord {
 
 export interface BranchRegistry {
   /** Create or move a ref (upsert by name). */
-  putRef(ref: BranchRef): void;
-  getRef(name: string): BranchRef | null;
-  listRefs(): BranchRef[];
+  putRef(ref: BranchRef): Promise<void>;
+  getRef(name: string): Promise<BranchRef | null>;
+  listRefs(): Promise<BranchRef[]>;
   /** Advance a ref's tip as its execution grows. No-op if the ref is absent. */
-  moveTip(name: string, tip: number): void;
+  moveTip(name: string, tip: number): Promise<void>;
   /**
    * Pick-a-winner: repoint `toName` onto the execution `fromName` currently
    * names, adopting its (executionId, tip). This is the entire "merge"
@@ -47,14 +47,14 @@ export interface BranchRegistry {
    * The losing execution remains immutable and independently resumable.
    * Throws if `fromName` does not exist.
    */
-  promote(fromName: string, toName: string): void;
-  deleteRef(name: string): void;
+  promote(fromName: string, toName: string): Promise<void>;
+  deleteRef(name: string): Promise<void>;
 
   /** Record a fork edge in the DAG. */
-  recordLineage(rec: Omit<LineageRecord, "createdAt">): void;
-  getLineage(executionId: string): LineageRecord | null;
+  recordLineage(rec: Omit<LineageRecord, "createdAt">): Promise<void>;
+  getLineage(executionId: string): Promise<LineageRecord | null>;
   /** Direct children forked from `executionId`. */
-  children(executionId: string): LineageRecord[];
+  children(executionId: string): Promise<LineageRecord[]>;
 
-  close(): void;
+  close(): Promise<void>;
 }

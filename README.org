@@ -20,6 +20,7 @@ On top of these, Loom ships an *intelligence pipeline* that turns intents and go
 - *Capabilities Over APIs* — ~capability$~ wraps a flow with intent-facing metadata; a ~CapabilityCatalog~ makes it discoverable and invocable.
 - *Agent memory* — ~MemoryRuntime~ gives agents scoped, durable recall across turns (honoring ~ttlMs~ / ~maxEntries~).
 - *Speculative branching* — fork an execution at any point into an independent branch to try alternate plans, then keep the winner (~WorkflowRuntime.fork~ + a git-style ~BranchRegistry~). Copy-on-write over the event log, branch-only (no merge); the parent stays intact.
+- *Bring your own storage* — the ~EventStore~ / ~SnapshotStore~ / ~BranchRegistry~ / ~MemoryStore~ interfaces are *async-first*, so any backend plugs in: SQLite and in-memory ship in the box, and async/network backends (Postgres, Redis, DynamoDB) are first-class — the runtime ~await~s the store. The synchronous ~ctx.emit~ / ~ctx.ui~ API is preserved by a per-execution write pipeline (see [[file:docs/architecture.org][architecture]]).
 - *Multi-surface delivery* — the same blueprint renders to React *or* the terminal (~@loom/renderer-terminal~), because ~traverseBlueprint~ is framework-agnostic.
 
 * Repository Layout

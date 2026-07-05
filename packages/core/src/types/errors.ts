@@ -39,3 +39,19 @@ export class WorkflowNotFoundError extends Error {
     Object.setPrototypeOf(this, WorkflowNotFoundError.prototype);
   }
 }
+
+/**
+ * A durable event write (EventStore.append) rejected. Surfaced by the
+ * per-execution write pipeline at a flush barrier — so waitForCompletion /
+ * waitForSuspend reject with this. `cause` is the underlying store error.
+ */
+export class StorageWriteError extends Error {
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super(`Durable event write failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = "StorageWriteError";
+    this.cause = cause;
+    Object.setPrototypeOf(this, StorageWriteError.prototype);
+  }
+}

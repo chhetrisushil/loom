@@ -64,7 +64,7 @@ async function main(): Promise<void> {
     line(`   status: ${suspended.status}  (awaiting "${suspended.suspendedOn?.on}")`);
     line(`   fork point: sequence ${S}`);
     // Point the canonical "main" ref at the suspended task.
-    branchRegistry.putRef({
+    await branchRegistry.putRef({
       name: "main",
       executionId: taskId,
       tip: S,
@@ -97,8 +97,8 @@ async function main(): Promise<void> {
       })
     ).waitForCompletion();
     // Advance each branch's ref tip to its new head as it grows.
-    branchRegistry.moveTip("spec/approve", approveState.sequence);
-    branchRegistry.moveTip("spec/reject", rejectState.sequence);
+    await branchRegistry.moveTip("spec/approve", approveState.sequence);
+    await branchRegistry.moveTip("spec/reject", rejectState.sequence);
     const approved = approveState.variables._output as Remediation;
     const rejected = rejectState.variables._output as Remediation;
     line(`   spec/approve → applied=${approved.applied}  newLagMs=${approved.newLagMs ?? "—"}`);
@@ -109,7 +109,7 @@ async function main(): Promise<void> {
     rule();
     line("④ Original task is untouched — still suspended at the gate");
     rule();
-    const parentEvents = eventStore.read(taskId);
+    const parentEvents = await eventStore.read(taskId);
     line(`   ${taskId} last event: ${parentEvents[parentEvents.length - 1]?.eventType}`);
     line(`   (parent log ends at sequence ${parentEvents[parentEvents.length - 1]?.sequence})`);
 
@@ -117,17 +117,17 @@ async function main(): Promise<void> {
     line("⑤ Pick the winner — promote spec/approve onto main (no merge)");
     rule();
     line("   before:");
-    for (const r of branchRegistry.listRefs()) {
+    for (const r of await branchRegistry.listRefs()) {
       line(`     ${r.name.padEnd(14)} → ${r.executionId}  @${r.tip}`);
     }
-    branchRegistry.promote("spec/approve", "main");
+    await branchRegistry.promote("spec/approve", "main");
     line("   after promote:");
-    for (const r of branchRegistry.listRefs()) {
+    for (const r of await branchRegistry.listRefs()) {
       const win = r.name === "main" ? "  ← now names the approved branch" : "";
       line(`     ${r.name.padEnd(14)} → ${r.executionId}  @${r.tip}${win}`);
     }
     line("");
-    const forkCount = branchRegistry.children(taskId).length;
+    const forkCount = (await branchRegistry.children(taskId)).length;
     line(
       `   lineage: ${forkCount} branches forked from ${taskId}; the losing branch remains immutable and independently resumable.`
     );

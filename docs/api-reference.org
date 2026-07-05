@@ -333,8 +333,9 @@ const runtime = new WorkflowRuntime({
 | ~eventStore~    | ~EventStore~                          | yes      | Where events are persisted                                |
 | ~snapshotStore~ | ~SnapshotStore~                       | yes      | Where suspend-point snapshots are stored                  |
 | ~effectRuntime~ | ~EffectRuntime~                       | yes      | Registry of effect handlers                               |
-| ~onEvent~       | ~(event: EventEnvelope) => void~      | no       | Called after every event append — wire to ProjectionRuntime |
+| ~onEvent~       | ~(event: EventEnvelope) => void~      | no       | Called synchronously after every event is folded — wire to ProjectionRuntime |
 | ~branchRegistry~ | ~BranchRegistry~                     | no       | Enables ~fork()~ to record lineage + refs (see [[#branch-registry][BranchRegistry]]) |
+| ~onStorageError~ | ~(executionId, err) => void~         | no       | Observability hook for a durable-write rejection (the async storage failure mode). The run aborts and ~waitForCompletion~/~waitForSuspend~ reject with a ~StorageWriteError~ regardless. |
 
 ** ~registerFlow(definition, runner)~
 
@@ -777,29 +778,29 @@ new ToolEffect(async (input: { url: string }, ctx) => {
 :CUSTOM_ID: event-store
 :END:
 
-~EventStore~ is the append-only log of all workflow events. Loom ships two implementations.
+~EventStore~ is the append-only log of all workflow events. It is *async-first* — every method returns a ~Promise~, so any backend plugs in (sync stores just mark methods ~async~; async/network stores return real Promises). The runtime ~await~s the store.
 
 ** Interface
 
 #+begin_src typescript
 interface EventStore {
-  append(envelope: EventEnvelope): void;
-  read(executionId: string): EventEnvelope[];
-  readFrom(executionId: string, fromSequence: number): EventEnvelope[];
-  subscribe(executionId: string, handler: (event: EventEnvelope) => void): () => void;
-  nextSequence(executionId: string): number;
-  close(): void;
+  append(envelope: EventEnvelope): Promise<void>;
+  read(executionId: string): Promise<EventEnvelope[]>;
+  readFrom(executionId: string, fromSequence: number): Promise<EventEnvelope[]>;
+  subscribe(executionId: string, handler: (event: EventEnvelope) => void): Promise<() => void>;
+  close(): Promise<void>;
 }
 #+end_src
 
 | Method              | Description                                                                |
 |---------------------+----------------------------------------------------------------------------|
-| ~append~            | Appends one event; throws on duplicate ~(executionId, sequence)~           |
+| ~append~            | Appends one event; rejects on duplicate ~(executionId, sequence)~          |
 | ~read~              | Returns all events for an execution, ordered by sequence ascending         |
 | ~readFrom~          | Returns events from ~fromSequence~ inclusive                               |
-| ~subscribe~         | Calls ~handler~ immediately after each ~append~; returns an unsubscribe fn |
-| ~nextSequence~      | Returns the next available sequence number for an execution                |
+| ~subscribe~         | Calls ~handler~ after each ~append~; resolves to an unsubscribe fn (async so network stores can set up ~LISTEN~) |
 | ~close~             | Releases the underlying resource (SQLite connection, etc.)                 |
+
+There is no ~nextSequence~: sequence allocation is owned by the runtime's per-execution ~ExecutionJournal~, so a backend never does a read-then-write round-trip. ~SqliteEventStore~ and ~SqliteSnapshotStore~ are exported from ~@loom/sdk~. ~InMemoryAsyncEventStore~ / ~InMemoryAsyncSnapshotStore~ are reference async backends (with latency/failure injection) — a starting point for a real network store and used in the async test suite. See [[file:examples/postgres-backend/README.md][the Postgres reference]].
 
 ** ~SqliteEventStore~
 
@@ -854,18 +855,19 @@ interface EventEnvelope {
 ** Interface
 
 #+begin_src typescript
+// Async-first, like the other stores — every method returns a Promise.
 interface BranchRegistry {
-  putRef(ref: BranchRef): void;          // create OR move (upsert by name)
-  getRef(name: string): BranchRef | null;
-  listRefs(): BranchRef[];
-  moveTip(name: string, tip: number): void;      // advance a head as it grows
-  promote(fromName: string, toName: string): void; // pick-a-winner (pointer move)
-  deleteRef(name: string): void;
+  putRef(ref: BranchRef): Promise<void>;          // create OR move (upsert by name)
+  getRef(name: string): Promise<BranchRef | null>;
+  listRefs(): Promise<BranchRef[]>;
+  moveTip(name: string, tip: number): Promise<void>;      // advance a head as it grows
+  promote(fromName: string, toName: string): Promise<void>; // pick-a-winner (pointer move)
+  deleteRef(name: string): Promise<void>;
 
-  recordLineage(rec: Omit<LineageRecord, "createdAt">): void;
-  getLineage(executionId: string): LineageRecord | null;
-  children(executionId: string): LineageRecord[];  // direct forks of an execution
-  close(): void;
+  recordLineage(rec: Omit<LineageRecord, "createdAt">): Promise<void>;
+  getLineage(executionId: string): Promise<LineageRecord | null>;
+  children(executionId: string): Promise<LineageRecord[]>;  // direct forks of an execution
+  close(): Promise<void>;
 }
 
 interface BranchRef {
@@ -914,14 +916,15 @@ branchRegistry.close();
 ** Interface
 
 #+begin_src typescript
+// Async-first, like EventStore.
 interface SnapshotStore {
-  save(snapshot: Snapshot): void;
-  loadLatest(executionId: string): Snapshot | null;
-  loadAt(executionId: string, sequence: number): Snapshot | null;
+  save(snapshot: Snapshot): Promise<void>;
+  loadLatest(executionId: string): Promise<Snapshot | null>;
+  loadAt(executionId: string, sequence: number): Promise<Snapshot | null>;
   // Greatest snapshot AT OR BELOW `sequence` — used by WorkflowRuntime.fork()
   // to materialize state at a fork point without folding the log from zero.
-  loadLatestBefore(executionId: string, sequence: number): Snapshot | null;
-  close(): void;
+  loadLatestBefore(executionId: string, sequence: number): Promise<Snapshot | null>;
+  close(): Promise<void>;
 }
 
 interface Snapshot {
@@ -2960,6 +2963,7 @@ try {
 | ~StepError~            | Wraps a step's underlying error with ~stepId~ context                |
 | ~ReplayError~          | Indicates an invalid event sequence during replay                    |
 | ~WorkflowNotFoundError~| ~resume()~ called with an unknown ~executionId~                      |
+| ~StorageWriteError~    | A durable event write (async ~EventStore.append~) rejected; surfaced at the next flush barrier so ~waitForCompletion~/~waitForSuspend~ reject with it. Carries ~cause~. |
 
 ~SuspendError~ carries a ~condition: SuspendCondition~ field. It should never be caught in flow runner code — let ~WorkflowRuntime~ handle it.
 

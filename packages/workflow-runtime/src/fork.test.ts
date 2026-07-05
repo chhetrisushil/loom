@@ -131,7 +131,7 @@ describe("WorkflowRuntime.fork", () => {
     const { runtime, eventStore } = makeRuntime();
     const handle = await runtime.start(makeFlow(), { incidentId: "i2" });
     const suspendState = await handle.waitForSuspend();
-    const before = eventStore.read(handle.executionId);
+    const before = await eventStore.read(handle.executionId);
 
     const child = await runtime.fork(handle.executionId, suspendState.sequence, {
       branchName: "spec/alt",
@@ -141,7 +141,7 @@ describe("WorkflowRuntime.fork", () => {
       await runtime.resume(child.executionId, { eventType: "ApprovalGranted", payload: {} })
     ).waitForCompletion();
 
-    const after = eventStore.read(handle.executionId);
+    const after = await eventStore.read(handle.executionId);
     expect(after).toEqual(before);
     // Parent is still suspended and never remediated.
     expect(after[after.length - 1]!.eventType).toBe("EXECUTION_SUSPENDED");
@@ -152,14 +152,14 @@ describe("WorkflowRuntime.fork", () => {
     const handle = await runtime.start(makeFlow(), { incidentId: "i3" });
     const suspendState = await handle.waitForSuspend();
     const S = suspendState.sequence;
-    const parentPrefix = eventStore.read(handle.executionId);
+    const parentPrefix = await eventStore.read(handle.executionId);
 
     const child = await runtime.fork(handle.executionId, S, { branchName: "spec/alt" });
     await (
       await runtime.resume(child.executionId, { eventType: "ApprovalGranted", payload: {} })
     ).waitForCompletion();
 
-    const childEvents = eventStore.read(child.executionId);
+    const childEvents = await eventStore.read(child.executionId);
     const childPrefix = childEvents.filter((e) => e.sequence <= S);
     // Prefix folds identically — every field except id/executionId/metadata matches.
     expect(childPrefix.map(normalize)).toEqual(parentPrefix.map(normalize));
@@ -196,7 +196,7 @@ describe("WorkflowRuntime.fork", () => {
     const { runtime, branchRegistry } = makeRuntime();
     const handle = await runtime.start(makeFlow(), { incidentId: "i5" });
     const suspendState = await handle.waitForSuspend();
-    branchRegistry.putRef({
+    await branchRegistry.putRef({
       name: "main",
       executionId: handle.executionId,
       tip: suspendState.sequence,
@@ -208,14 +208,14 @@ describe("WorkflowRuntime.fork", () => {
       branchName: "spec/alt",
     });
 
-    expect(branchRegistry.getLineage(child.executionId)).toMatchObject({
+    expect(await branchRegistry.getLineage(child.executionId)).toMatchObject({
       parentExecutionId: handle.executionId,
       forkSequence: suspendState.sequence,
     });
-    expect(branchRegistry.getRef("spec/alt")!.executionId).toBe(child.executionId);
+    expect((await branchRegistry.getRef("spec/alt"))!.executionId).toBe(child.executionId);
 
-    branchRegistry.promote("spec/alt", "main");
-    expect(branchRegistry.getRef("main")!.executionId).toBe(child.executionId);
+    await branchRegistry.promote("spec/alt", "main");
+    expect((await branchRegistry.getRef("main"))!.executionId).toBe(child.executionId);
   });
 
   it("rejects an out-of-range fork point", async () => {

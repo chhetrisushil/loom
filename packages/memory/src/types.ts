@@ -8,9 +8,11 @@ export interface MemoryEntry {
 }
 
 // Pluggable storage backend. Implement this to persist memory in Redis, a DB,
-// a vector store, etc. InMemoryMemoryStore is the built-in default.
+// a vector store, etc. InMemoryMemoryStore is the built-in default. Async-first,
+// so network-backed stores (Redis, a DB, a vector store) are real implementations
+// — not just the in-memory default.
 export interface MemoryStore {
-  append(key: string, entry: MemoryEntry): void;
-  read(key: string): MemoryEntry[];
-  clear(key: string): void;
+  append(key: string, entry: MemoryEntry): Promise<void>;
+  read(key: string): Promise<MemoryEntry[]>;
+  clear(key: string): Promise<void>;
 }

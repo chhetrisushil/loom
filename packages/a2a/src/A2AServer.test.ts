@@ -15,49 +15,44 @@ import type { A2ATask, A2ATaskResult } from "./types";
 
 class MemEventStore implements EventStore {
   private readonly events = new Map<string, EventEnvelope[]>();
-  append(e: EventEnvelope): void {
+  async append(e: EventEnvelope): Promise<void> {
     const list = this.events.get(e.executionId) ?? [];
     list.push(e);
     this.events.set(e.executionId, list);
   }
-  read(id: string): EventEnvelope[] {
+  async read(id: string): Promise<EventEnvelope[]> {
     return this.events.get(id) ?? [];
   }
-  readFrom(id: string, from: number): EventEnvelope[] {
-    return this.read(id).filter((e) => e.sequence >= from);
+  async readFrom(id: string, from: number): Promise<EventEnvelope[]> {
+    return (await this.read(id)).filter((e) => e.sequence >= from);
   }
-  subscribe(): () => void {
+  async subscribe(): Promise<() => void> {
     return () => {};
   }
-  nextSequence(id: string): number {
-    const list = this.events.get(id);
-    if (!list || list.length === 0) return 0;
-    return (list[list.length - 1]?.sequence ?? -1) + 1;
-  }
-  close(): void {}
+  async close(): Promise<void> {}
 }
 
 class MemSnapshotStore implements SnapshotStore {
   private readonly snaps = new Map<string, Snapshot[]>();
-  save(s: Snapshot): void {
+  async save(s: Snapshot): Promise<void> {
     const list = this.snaps.get(s.executionId) ?? [];
     list.push(s);
     this.snaps.set(s.executionId, list);
   }
-  loadLatest(id: string): Snapshot | null {
+  async loadLatest(id: string): Promise<Snapshot | null> {
     const list = this.snaps.get(id);
     return list && list.length > 0 ? (list[list.length - 1] ?? null) : null;
   }
-  loadAt(id: string, sequence: number): Snapshot | null {
+  async loadAt(id: string, sequence: number): Promise<Snapshot | null> {
     const list = this.snaps.get(id);
     if (!list) return null;
     const c = list.filter((s) => s.sequence <= sequence);
     return c[c.length - 1] ?? null;
   }
-  loadLatestBefore(id: string, sequence: number): Snapshot | null {
+  async loadLatestBefore(id: string, sequence: number): Promise<Snapshot | null> {
     return this.loadAt(id, sequence);
   }
-  close(): void {}
+  async close(): Promise<void> {}
 }
 
 // ── A trivial echo flow ───────────────────────────────────────────────────────

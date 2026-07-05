@@ -436,24 +436,54 @@ Flow runner                    WorkflowRuntime
 
 * ~EventStore~ — Append-Only Event Log
 
-Two implementations ship with the framework:
+The store interfaces are *async-first* (every method returns a ~Promise~), so a developer can plug in *any* backend — the runtime ~await~s the store. Synchronous backends satisfy the interface trivially (mark the methods ~async~, bodies unchanged); async/network backends are first-class.
 
-| Implementation          | Use case                                     |
-|-------------------------+----------------------------------------------|
-| ~InMemoryEventStore~    | Browser, tests, short-lived processes        |
-| ~SqliteEventStore~      | Server / production (WAL mode, durable)      |
+| Implementation             | Use case                                     |
+|----------------------------+----------------------------------------------|
+| ~InMemoryEventStore~       | Browser, tests, short-lived processes        |
+| ~SqliteEventStore~         | Server / production (WAL mode, durable; sync under the hood) |
+| ~InMemoryAsyncEventStore~  | Reference async backend + latency/failure injection for tests |
+| *your* ~PgEventStore~ etc. | Postgres / Redis / DynamoDB — see [[file:examples/postgres-backend/README.md][the Postgres reference]] |
 
 ~SqliteEventStore~ enforces a ~UNIQUE(execution_id, sequence)~ constraint — duplicate appends throw, making the log conflict-free by construction. WAL mode keeps writes fast without sacrificing durability.
 
 #+begin_example
-EventStore interface
+EventStore interface (async-first)
 ──────────────────────────────────────────────
-append(envelope)          → void
-read(executionId)         → EventEnvelope[]     (ordered ASC)
-readFrom(executionId, seq)→ EventEnvelope[]     (seq inclusive)
-subscribe(executionId, fn)→ unsubscribe()
-nextSequence(executionId) → number
+append(envelope)          → Promise<void>
+read(executionId)         → Promise<EventEnvelope[]>    (ordered ASC)
+readFrom(executionId, seq)→ Promise<EventEnvelope[]>    (seq inclusive)
+subscribe(executionId, fn)→ Promise<unsubscribe>        (async: network LISTEN setup)
+close()                   → Promise<void>
 #+end_example
+
+There is deliberately no ~nextSequence~: sequence allocation is owned by the runtime's per-execution in-memory sequencer (see [[*The durable write pipeline (ExecutionJournal)][the write pipeline]]), so a backend never does a read-then-write round-trip to append. ~SnapshotStore~, ~BranchRegistry~, and ~MemoryStore~ are async-first in the same way.
+
+* The durable write pipeline (~ExecutionJournal~)
+
+If the store is async, how do the *synchronous* flow-author APIs — ~ctx.emit~, ~ctx.stream~, ~ctx.ui~, ~handle.cancel~ — still work? They keep working because durability is decoupled from the in-memory event flow by a per-execution ~ExecutionJournal~: the single sequence allocator and the only thing that calls ~eventStore.append~, shared by ~WorkflowRuntime~ and ~WorkflowContext~.
+
+#+begin_example
+journal.commit(type, payload)   ← SYNCHRONOUS, called by ctx.emit / runtime
+  1. seq = ++counter            (in-memory, seeded from vm tip — no DB read)
+  2. vm.applyEvent(envelope)    (fold in memory, authoritative)
+  3. onEvent(envelope)          (live projection fold — durability-independent)
+  4. enqueue(envelope)          → tail = tail.then(() => store.append(envelope))
+                                  (serial FIFO writer — strict sequence order)
+
+await journal.drain()           ← flush barrier, awaited by the runtime at:
+                                   • before resolving waitForCompletion
+                                   • before resolving waitForSuspend AND
+                                     before snapshotStore.save (a snapshot must
+                                     never reference an un-persisted event)
+                                   • before rejecting on failure
+#+end_example
+
+So ~emit~ returns instantly, the write happens asynchronously in order, and durability is *guaranteed at the barriers that matter*. A backend whose ~append~ takes 20 ms never changes flow code.
+
+*New failure mode.* Because writes are async, a durable write can now reject. The journal aborts the run on the first rejection, and the next ~drain()~ throws a ~StorageWriteError~ — so ~waitForCompletion~/~waitForSuspend~ reject with it, and the optional ~WorkflowRuntimeDeps.onStorageError(executionId, err)~ hook fires. A storage failure is *never* fabricated into the log as an ~EXECUTION_FAILED~ event (that would corrupt replay); it is surfaced out of band.
+
+*Determinism.* Moving sequence allocation from the DB to an in-memory counter (seeded from the folded VM tip) is equivalent to the old ~MAX(sequence)+1~ and more robust — provided the invariant holds: exactly one ~ExecutionJournal~ per live execution. ~fork~'s prefix copy bypasses the journal entirely, writing verbatim pre-sequenced envelopes, so the byte-identical prefix-fold guarantee is preserved.
 
 * ~SnapshotStore~ — Resume Acceleration
 

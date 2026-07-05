@@ -110,7 +110,7 @@ describe("InvestigateIncident — full suspend/resume e2e", () => {
     expect(metricsSpy).toHaveBeenCalledTimes(1);
     expect(logsSpy).toHaveBeenCalledTimes(1);
 
-    const events = eventStore.read(handle.executionId);
+    const events = await eventStore.read(handle.executionId);
     expect(events.length).toBeGreaterThanOrEqual(6);
 
     const eventTypes = events.map((e) => e.eventType);
