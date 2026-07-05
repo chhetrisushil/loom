@@ -1,4 +1,4 @@
-import { createA2AClientEffect, createA2AServer } from "@loom/a2a";
+import { createA2AClientEffect, createA2AServer, toAgentCard } from "@loom/a2a";
 import { a2uiSurfaceProjection } from "@loom/a2ui";
 import { AgentRunner } from "@loom/agent";
 import { CapabilityCatalog } from "@loom/capability";
@@ -75,20 +75,20 @@ async function main(): Promise<void> {
   // Define an agent over the discovered tools and run the ReAct loop. The agent
   // reasons, calls the MCP tool, then produces a final answer.
   section("2. Agent ReAct loop (LLM + MCP tools)");
+  // Card metadata (version/capabilities/skills) lives on the agent$ definition,
+  // so the AgentCard is derived — not hand-authored — via toAgentCard below.
   const opsAgent = agent$({
     id: "ops-agent",
     name: "Ops Triage Agent",
     description: "Triages infrastructure incidents using runbooks",
     tools: mcpDefs,
-  });
-
-  const registry = new AgentRegistry();
-  registry.register(opsAgent, {
-    name: opsAgent.name,
     version: "1.0.0",
     capabilities: { streaming: false },
     skills: [{ id: "triage", name: "Incident Triage" }],
   });
+
+  const registry = new AgentRegistry();
+  registry.register(opsAgent, toAgentCard(opsAgent));
 
   const runner = new AgentRunner({
     definition: opsAgent,
@@ -142,18 +142,18 @@ async function main(): Promise<void> {
   });
   serverRuntime.registerFlow(triageFlow.definition, triageFlow.runner);
 
-  const server = createA2AServer(
-    serverRuntime,
-    triageFlow,
-    {
-      name: "Triage Agent",
-      description: "Exposes the triage flow over A2A",
-      version: "1.0.0",
-      capabilities: { streaming: false },
-      skills: [{ id: "triage", name: "Incident Triage" }],
-    },
-    { port: 0 }
-  );
+  // The A2A-fronted agent is a first-class agent$ too; toAgentCard derives its
+  // card and createA2AServer overwrites url with the bound address.
+  const triageAgent = agent$({
+    id: "triage-agent",
+    name: "Triage Agent",
+    description: "Exposes the triage flow over A2A",
+    tools: [],
+    version: "1.0.0",
+    capabilities: { streaming: false },
+    skills: [{ id: "triage", name: "Incident Triage" }],
+  });
+  const server = createA2AServer(serverRuntime, triageFlow, toAgentCard(triageAgent), { port: 0 });
   await server.start();
   console.log(`A2A agent card: ${server.url}/.well-known/agent.json`);
 

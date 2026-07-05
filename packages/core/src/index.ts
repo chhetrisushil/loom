@@ -14,6 +14,7 @@ export type {
 export { ReplayError, StepError, SuspendError, WorkflowNotFoundError } from "./types/errors";
 export type {
   AgentDefinition,
+  AgentSkillDef,
   EffectKind,
   FlowDefinition,
   HandlerFn,

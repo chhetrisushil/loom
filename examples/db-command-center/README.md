@@ -37,7 +37,7 @@ deferred render path against the eager whole-tree path.
 |---|---|
 | 1. Intent/goal driven, human-in-the-loop | `IntentRuntime` routing + the risk gate in `orchestrator/Orchestrator.ts` (`gate`) that pauses for approval |
 | 2. Workflow composed dynamically from the goal | `PlannerRuntime.plan(goal)` → an ordered capability pipeline (`PlanFlow` widget renders it) |
-| 3. Domain agents communicating over A2A | `agents/definitions.ts` (agent$ + AgentCards) dispatched through `a2a/InProcessA2ABus.ts` |
+| 3. Domain agents communicating over A2A | `agents/definitions.ts` (agent$ with AgentCards derived via `toAgentCard`) dispatched through `a2a/InProcessA2ABus.ts` |
 | 4. Long-running agents | Agents are durable Loom flows (`capabilities/flows.ts`) that stream progress; the `AgentFleet` widget shows their health |
 | 5. Near-real-time task list & status | `AgentTaskList` widget bound to the `mission` surface, updated as each A2A task transitions |
 | 6. Agent tasks created dynamically | One `AgentTask` per plan step, created at dispatch time in the orchestrator |
@@ -91,7 +91,7 @@ deferred render path against the eager whole-tree path.
 
 ```
 src/
-  agents/          domain agents (agent$ + tools), AgentCards, a genuine ReAct runner
+  agents/          domain agents (agent$ + tools), AgentCards derived via toAgentCard, a genuine ReAct runner
   capabilities/    capability$ definitions + the durable flows they wrap, + catalog
   a2a/             InProcessA2ABus — the bring-your-own A2A transport
   orchestrator/    Orchestrator — intent → plan → A2A dispatch → risk gate → HITL

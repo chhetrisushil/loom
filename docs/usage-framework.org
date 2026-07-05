@@ -838,20 +838,17 @@ MCP tools validate their own inputs, so their generated ~ToolDefinition~ uses ~z
 
 ** Exposing and calling agents over A2A
 
-Expose any registered flow as an A2A HTTP agent with ~createA2AServer~. It serves an agent card at ~/.well-known/agent.json~, accepts tasks at ~POST /tasks/send~, and reports status at ~GET /tasks/:id~.
+Expose any registered flow as an A2A HTTP agent with ~createA2AServer~. It serves an agent card at ~/.well-known/agent.json~, accepts tasks at ~POST /tasks/send~, and reports status at ~GET /tasks/:id~. The card is derived from the ~agent$~ definition with ~toAgentCard~ rather than hand-written, so it stays in step with the agent; the server supplies the ~url~ from its bound address.
 
 #+begin_src typescript
-import { createA2AServer } from "@loom/a2a";
+import { createA2AServer, toAgentCard } from "@loom/a2a";
 
+// version / capabilities / skills live on the agent$ definition (see agent$);
+// toAgentCard derives the card and the server fills in url from its bound address.
 const server = createA2AServer(
   workflowRuntime,
   InvestigateIncidentRegisteredFlow,
-  {
-    name: "Incident Investigator",
-    version: "1.0.0",
-    capabilities: { streaming: false },
-    skills: [{ id: "investigate", name: "Investigate incident" }],
-  },
+  toAgentCard(InvestigatorAgent),
   { port: 4100 },
 );
 

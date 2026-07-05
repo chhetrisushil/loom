@@ -784,6 +784,8 @@ A2A gives a Loom service two roles. As a *server*, ~createA2AServer(workflowRunt
 
 As a *client*, ~createA2AClientEffect(agentUrl)~ returns an ~A2AEffect~ that POSTs a task, polls for completion, and returns the result — so calling a remote agent is just another step in a flow. Both use built-in ~http~/~fetch~ with no framework HTTP dependency.
 
+The agent card is not hand-authored: an ~agent$~ definition carries optional ~version~, ~capabilities~, and ~skills~ metadata, and ~toAgentCard(agent)~ derives its ~AgentCard~ from that — keeping the card and the agent a single source of truth.
+
 ~@loom/registry~ provides ~AgentRegistry~, a store of ~AgentDefinition~ + agent-card pairs that a gateway can use to serve multiple agents.
 
 ** A2UI — the Agent-to-UI protocol (~@loom/a2ui~)

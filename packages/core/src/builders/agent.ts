@@ -1,4 +1,9 @@
-import type { AgentDefinition, PolicyDefinition, ToolDefinition } from "../types/definitions";
+import type {
+  AgentDefinition,
+  AgentSkillDef,
+  PolicyDefinition,
+  ToolDefinition,
+} from "../types/definitions";
 
 export interface AgentConfig {
   id: string;
@@ -7,6 +12,9 @@ export interface AgentConfig {
   tools: ToolDefinition[];
   policies?: PolicyDefinition[];
   memoryId?: string;
+  version?: string;
+  capabilities?: { streaming?: boolean };
+  skills?: AgentSkillDef[];
 }
 
 export function agent$(config: AgentConfig): AgentDefinition {
@@ -18,5 +26,8 @@ export function agent$(config: AgentConfig): AgentDefinition {
     ...(config.description !== undefined && { description: config.description }),
     ...(config.policies !== undefined && { policies: config.policies }),
     ...(config.memoryId !== undefined && { memoryId: config.memoryId }),
+    ...(config.version !== undefined && { version: config.version }),
+    ...(config.capabilities !== undefined && { capabilities: config.capabilities }),
+    ...(config.skills !== undefined && { skills: config.skills }),
   };
 }

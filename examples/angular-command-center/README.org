@@ -1,0 +1,125 @@
+#+title: Angular Command Center — Example App
+#+author: Sushil Chhetri
+
+A reference application that demonstrates Loom is *frontend-framework agnostic*: the same durable workflow primitives used by the React examples drive an Angular 20 UI with no Angular-specific Loom package. It models an incident investigation — fetch metrics and logs → human approval gate → automated remediation — running entirely in the browser on in-memory stores.
+
+* What This App Demonstrates
+
+| Concept                       | Where to find it                                          |
+|-------------------------------+-----------------------------------------------------------|
+| Flow definition + runner      | ~src/app/incident.flow.ts~ (~InvestigateIncidentFlow~)    |
+| ~step$~ + ~handler$~ steps    | ~incident.flow.ts~ (~FetchMetricsStep~, ~FetchLogsStep~, ~ApplyRemediationStep~) |
+| Durable human-in-the-loop     | ~ctx.suspend({ on: "ApprovalGranted", … })~ in the flow   |
+| Projection (read model)       | ~IncidentProjection~ → ~IncidentState~ in ~loom.service.ts~ |
+| Runtime ↔ Angular binding     | ~src/app/loom.service.ts~ (Angular signals + ~zone.run()~) |
+| Signals-driven template       | ~src/app/app.component.ts~ (~computed()~, ~@if~/~@for~)    |
+| Telemetry hook                | ~ConsoleTelemetryAdapter~ + ~createTelemetryHook~ in ~loom.service.ts~ |
+| In-memory durability          | ~src/app/stores.ts~ (~InMemoryEventStore~, ~InMemorySnapshotStore~) |
+
+Framework-agnostic by design: there is *no* ~@loom/renderer-angular~. ~WorkflowRuntime~ emits plain domain events; ~LoomService~ forwards them into a ~ProjectionRuntime~ and exposes the result as Angular ~signal()~s. The only framework coupling is ~zone.run()~, which lets runtime events trigger Angular change detection.
+
+* Prerequisites
+
+- Node.js ≥ 20
+- pnpm ≥ 9
+
+* Setup
+
+From the repository root:
+
+#+begin_src bash
+# Install all workspace dependencies
+pnpm install
+
+# Build all framework packages (required before dev)
+pnpm build
+#+end_src
+
+* Running the Dev Server
+
+#+begin_src bash
+# From the repo root
+pnpm --filter @loom/angular-command-center dev
+
+# Or from this directory
+pnpm dev
+#+end_src
+
+Open http://localhost:5173 in your browser.
+
+* Using the App
+
+1. *Start an investigation* — kicks off the ~InvestigateIncident~ flow.
+   - Mock handlers fetch metrics and logs (with small delays).
+   - The projection updates in real time and the phase moves *running*.
+   - The workflow emits ~APPROVAL_REQUESTED~, suspends, and waits — phase *suspended*.
+2. *Approve remediation* — resumes the suspended workflow from its durable event log.
+   - The remediation step runs; the timeline records the resolution — phase *completed*.
+3. *Reset* — clears the execution to start a new one.
+
+* Project Structure
+
+#+begin_example
+src/
+  main.ts                 Bootstraps Angular (zone.js + bootstrapApplication)
+  app/
+    app.component.ts      Root component; binds signals with @if/@for control flow
+    loom.service.ts       Integration layer: WorkflowRuntime + ProjectionRuntime → signals
+    incident.flow.ts      Flow, steps, handlers, and events (with ctx.suspend approval gate)
+    stores.ts             In-memory EventStore + SnapshotStore for browser use
+#+end_example
+
+* How the Angular Binding Works
+
+~LoomService~ (~providedIn: "root"~) owns the runtimes and re-exposes their state as signals:
+
+#+begin_src typescript
+// WorkflowRuntime emits domain events → projection → Angular signals
+readonly phase = signal<Phase>("idle");
+readonly incidentState = signal<IncidentState | null>(null);
+readonly eventLog = signal<LogEntry[]>([]);
+
+// onEvent feeds the projection and updates signals inside the Angular zone,
+// so change detection fires without observables or manual subscriptions.
+this.workflowRuntime = new WorkflowRuntime({
+  eventStore, snapshotStore, effectRuntime,
+  onEvent: (e) => {
+    this.projectionRuntime.handleEvent(e);
+    this.zone.run(() => { /* set phase / incidentState / eventLog signals */ });
+  },
+});
+#+end_src
+
+The component reads those signals directly — no observables or manual subscriptions — which keeps the Loom side entirely framework-neutral.
+
+* Building for Production
+
+#+begin_src bash
+pnpm --filter @loom/angular-command-center build
+#+end_src
+
+* Configuration
+
+Angular is compiled by Vite via ~@analogjs/vite-plugin-angular~ (not the Angular CLI). The ~vite.config.ts~ carries the workspace-interop settings the ~@loom/*~ CommonJS packages require:
+
+#+begin_src typescript
+export default defineConfig({
+  plugins: [angular()],
+  resolve: { conditions: ["require", "default"] },   // resolve pnpm workspace CJS
+  optimizeDeps: { include: loomPackages },            // pre-bundle @loom/* to ESM in dev
+  build: {
+    commonjsOptions: {
+      transformMixedEsModules: true,                  // trace named exports for prod build
+      include: [/node_modules/, /packages\/.*\/dist/],
+    },
+  },
+});
+#+end_src
+
+- ~optimizeDeps.include~ pre-bundles the CJS ~@loom/*~ packages into ESM for the dev server.
+- ~build.commonjsOptions.transformMixedEsModules~ lets Rollup resolve named exports through Loom's transitive re-export chain in the production build (otherwise it fails with "step$ is not exported by dist/index.js").
+
+* Notes
+
+- *Offline & deterministic.* Every step is a mock handler with a short delay — no LLM calls, no API keys, no backend.
+- *Simplified scope.* Unlike the ~db-command-center~ / ~cloud-command-center~ examples, this app has no agents, A2A, or A2UI surfaces — it focuses on the core flow + projection + human-in-the-loop primitives bound to Angular.
