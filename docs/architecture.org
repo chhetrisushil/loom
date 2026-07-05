@@ -52,7 +52,7 @@ The only runtime Node-only dependencies are therefore the SQLite stores (~better
 3. On the next input (e.g. a human approval) ~WorkflowRuntime.restoreFromState(preloaded, resumeEvent)~ builds ~new ReplayVM([], preloadedState)~ and continues; ~vm.hasCompleted(stepId)~ means completed steps are *never re-run*.
 4. ~@loom/compiler~ turns each ~handler$~ into a lazy ~import()~ chunk (recorded in ~loom-manifest.json~) so the client downloads a step's code only when it actually executes.
 
-*Where the examples sit.* The browser reference apps (~cloud-command-center~, ~db-command-center~, ~db-command-center-wc~) inject the in-memory stores and run the *entire* runtime client-side for a self-contained, offline demo. A production topology would instead keep durable execution server-side (SQLite event log, A2A server, MCP, long-running agents) and let the client render and resume from serialized state.
+*Where the examples sit.* The browser reference apps (~cloud-command-center~, ~db-command-center~, ~db-command-center-wc~) inject the in-memory stores and run the *entire* runtime client-side for a self-contained, offline demo. The ~db-command-center-server~ example shows the production topology of the *same* app: the durable runtime runs on a Node server (~SqliteEventStore~/~SqliteSnapshotStore~, orchestrator, agents, durable ~ctx.suspend~/~resume~) and the Web-Components client renders and drives it over HTTP + SSE — the server pushes a ~serializeProjections~ snapshot on connect, then one A2UI patch per update, and the client folds them into its own projection runtime. Only the stores and the client/server boundary change; everything upstream of the pixels is reused byte-for-byte.
 
 * Package Dependency Graph
 
