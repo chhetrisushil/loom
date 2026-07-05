@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "description": "Agentic Database Command Center — intent-driven, human-in-the-loop, multi-agent (A2A) reference app for the Loom framework. Demonstrates BYOR + BYOC + render-side fiber.",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --build",

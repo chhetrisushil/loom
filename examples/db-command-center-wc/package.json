@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "description": "Agentic Database Command Center rendered with vanilla Web Components — no React, no Angular. Same Loom agentic backend, a Custom-Elements BYOR/BYOC render layer.",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --build",
