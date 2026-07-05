@@ -69,7 +69,7 @@ This is the single idea the whole framework is built on.
 All in `packages/core/src/builders/` — declarative `$` builders:
 
 ```ts
-import { flow$, step$, handler$, tool$, agent$, projection$, memory$, policy$ } from "@loom/core";
+import { flow$, step$, handler$, tool$, agent$, skill$, instructions$, projection$, memory$, policy$ } from "@loom/core";
 import { capability$ } from "@loom/capability";
 
 const FetchMetrics = step$({
@@ -179,7 +179,7 @@ Providers talk to vendor HTTP APIs over `fetch` — **no SDK dependency**. Swap 
 ## Agents — `@loom/agent`
 
 ```ts
-const runner = new AgentRunner({ definition: agent$({ id, tools }), provider, effectRuntime, memory });
+const runner = new AgentRunner({ definition: agent$({ id, tools }), provider, effectRuntime, memory, skills });
 const out = await runner.run({ prompt, memoryScope: "user-1" }, ctx);
 ```
 
@@ -187,6 +187,7 @@ const out = await runner.run({ prompt, memoryScope: "user-1" }, ctx);
 - Emits `AGENT_TOOL_CALL` / `AGENT_COMPLETED` events (observable + replayable).
 - `agentStep$(...)` drops an agent into a flow as an ordinary step.
 - **Memory**: with a `memoryId` + `MemoryRuntime`, prior turns are recalled into the prompt and the answer is remembered (TTL / size bounded).
+- **Skills** (`skill$` + `instructions$`): a `SkillRegistry` of progressively-disclosed expertise — the runner selects the relevant skills, emits `SKILLS_SELECTED`, and loads **only** their instructions (the compiler lazy-chunks each body, like `handler$`). Deterministic selection → replay-safe.
 
 ---
 

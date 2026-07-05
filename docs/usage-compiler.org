@@ -8,6 +8,7 @@
 | Feature                    | Without compiler          | With compiler                               |
 |----------------------------+---------------------------+---------------------------------------------|
 | ~handler$()~ bodies        | Called eagerly at startup | Extracted to lazy chunks, loaded on demand  |
+| ~skill$~ ~instructions$~ bodies | Inlined in the bundle | Extracted to lazy chunks, loaded when the skill is selected |
 | Step effects               | Must register manually    | Auto-registered by ~registerFlow()~         |
 | Flow graph validation      | Runtime errors only       | Warnings printed at build time              |
 | Client state restoration   | Round-trip to EventStore  | Seed from serialized snapshot, zero network |
@@ -144,9 +145,14 @@ At the end of every build, the plugin emits a ~loom-manifest.json~ file into you
         "Step \"apply-remediation\" in flow \"investigate-incident\" has neither a handler$ nor a toolId — it must be registered manually."
       ]
     }
+  },
+  "skills": {
+    "diagnose-cpu": { "chunk": "dist/chunks/diagnose-cpu_9c1f0a7e.js" }
   }
 }
 #+end_src
+
+The ~skills~ map mirrors a flow's ~chunkMap~ for ~skill$~ instruction bodies: each entry points at the lazy chunk holding that skill's ~instructions$~ text (empty ~chunk~ when the skill uses inline instructions with no ~instructions$~ marker).
 
 ** Console output during build
 

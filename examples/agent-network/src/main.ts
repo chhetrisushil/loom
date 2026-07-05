@@ -1,8 +1,8 @@
 import { createA2AClientEffect, createA2AServer, toAgentCard } from "@loom/a2a";
 import { a2uiSurfaceProjection } from "@loom/a2ui";
-import { AgentRunner } from "@loom/agent";
+import { AgentRunner, SkillRegistry } from "@loom/agent";
 import { CapabilityCatalog } from "@loom/capability";
-import { agent$, flow$, handler$, memory$, step$ } from "@loom/core";
+import { agent$, flow$, handler$, instructions$, memory$, skill$, step$ } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { IntentRuntime } from "@loom/intent";
 import { McpClient } from "@loom/mcp";
@@ -90,17 +90,50 @@ async function main(): Promise<void> {
   const registry = new AgentRegistry();
   registry.register(opsAgent, toAgentCard(opsAgent));
 
+  // Skills — progressively-disclosed expertise. Only the description sits in
+  // context by default; the runbook body is loaded on demand when the incident
+  // prompt selects it (deterministic selection here → replay-safe). The
+  // instructions$ marker is what the @loom/compiler would extract into a lazy
+  // chunk; run under tsx it stays inline, and loadInstructions resolves either.
+  const skills = new SkillRegistry().register(
+    skill$({
+      id: "cpu-saturation-runbook",
+      name: "CPU Saturation Runbook",
+      description: "Resolve database CPU saturation and connection-pool exhaustion",
+      tags: ["cpu", "connections", "pool", "database"],
+      instructions: instructions$(
+        [
+          "CPU Saturation Runbook:",
+          "1. Confirm CPU% and pool utilisation via the metrics tool before acting.",
+          "2. If the pool is exhausted, recycle it and raise the ceiling — graceful and reversible.",
+          "3. Only scale replicas if CPU stays high after the pool recovers.",
+        ].join("\n")
+      ),
+    })
+  );
+
   const runner = new AgentRunner({
     definition: opsAgent,
     provider,
     effectRuntime,
     systemPrompt: "You are an SRE. Use the runbook tools to resolve incidents.",
+    skills,
   });
 
+  let selectedSkills: string[] = [];
   const agentOutput = await runner.run(
     { prompt: "The primary database is at 87% CPU and connections are exhausted. What do I do?" },
-    { executionId: "demo", stepId: "agent", workflowId: "demo", attempt: 1, emit: () => {} }
+    {
+      executionId: "demo",
+      stepId: "agent",
+      workflowId: "demo",
+      attempt: 1,
+      emit: (type, payload) => {
+        if (type === "SKILLS_SELECTED") selectedSkills = (payload as { skillIds: string[] }).skillIds;
+      },
+    }
   );
+  console.log(`Skills loaded on demand: ${selectedSkills.join(", ") || "(none)"}`);
   console.log(
     `Agent used ${agentOutput.toolCallLog.length} tool call(s) over ${agentOutput.iterations} iteration(s).`
   );

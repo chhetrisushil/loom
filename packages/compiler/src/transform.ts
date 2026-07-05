@@ -1,7 +1,7 @@
 import MagicString from "magic-string";
 import ts from "typescript";
 import { shortHash } from "./hash";
-import type { ExtractedChunk, FlowEntry, PluginState, StepEntry } from "./types";
+import type { ExtractedChunk, FlowEntry, PluginState, SkillEntry, StepEntry } from "./types";
 
 const VIRTUAL_PREFIX = "\0loom:chunk:";
 
@@ -10,7 +10,13 @@ export function transformFile(
   absolutePath: string,
   pluginState: PluginState
 ): { code: string; map: string } | null {
-  if (!sourceText.includes("step$") && !sourceText.includes("flow$")) return null;
+  if (
+    !sourceText.includes("step$") &&
+    !sourceText.includes("flow$") &&
+    !sourceText.includes("skill$")
+  ) {
+    return null;
+  }
 
   const sourceFile = ts.createSourceFile(absolutePath, sourceText, ts.ScriptTarget.ESNext, true);
 
@@ -21,6 +27,9 @@ export function transformFile(
 
   ts.forEachChild(sourceFile, function visit(node: ts.Node): void {
     if (tryProcessStep(node, absolutePath, importLines, ms, localSteps, pluginState)) {
+      modified = true;
+    }
+    if (tryProcessSkill(node, absolutePath, importLines, ms, pluginState)) {
       modified = true;
     }
     ts.forEachChild(node, visit);
@@ -97,6 +106,7 @@ function tryProcessStep(
 
     const chunk: ExtractedChunk = {
       stepId,
+      kind: "step",
       chunkVirtualId,
       chunkSource: chunkSrc,
       sourceFile: absolutePath,
@@ -120,6 +130,87 @@ function tryProcessStep(
   localSteps.push(stepEntry);
 
   return stepEntry.hasHandler;
+}
+
+// Match: const Foo = skill$({ ..., instructions: instructions$("...") })
+// and extract the instruction body into its own lazy chunk, exactly as
+// tryProcessStep does for handler$ — so only selected skills load their text.
+function tryProcessSkill(
+  node: ts.Node,
+  absolutePath: string,
+  importLines: string[],
+  ms: MagicString,
+  pluginState: PluginState
+): boolean {
+  let varName: string | undefined;
+  let callNode: ts.CallExpression | undefined;
+
+  if (ts.isVariableStatement(node)) {
+    const decl = node.declarationList.declarations[0];
+    if (
+      decl &&
+      ts.isIdentifier(decl.name) &&
+      decl.initializer &&
+      ts.isCallExpression(decl.initializer)
+    ) {
+      varName = decl.name.text;
+      callNode = decl.initializer;
+    }
+  }
+
+  if (!callNode || !isCallTo(callNode, "skill$") || callNode.arguments.length === 0) return false;
+
+  const argObj = callNode.arguments[0];
+  if (!argObj || !ts.isObjectLiteralExpression(argObj)) return false;
+
+  const idProp = findProperty(argObj, "id");
+  const instructionsProp = findProperty(argObj, "instructions");
+  const skillId = idProp ? getStringLiteral(idProp.initializer) : undefined;
+  if (!skillId) return false;
+
+  const skillEntry: SkillEntry = {
+    id: skillId,
+    varName: varName ?? skillId,
+    sourceFile: absolutePath,
+  };
+
+  if (
+    instructionsProp &&
+    ts.isPropertyAssignment(instructionsProp) &&
+    ts.isCallExpression(instructionsProp.initializer) &&
+    isCallTo(instructionsProp.initializer, "instructions$") &&
+    instructionsProp.initializer.arguments.length > 0
+  ) {
+    // The body is a string/template literal; extract its exact source and emit
+    // it as the chunk's default export.
+    const bodyText = sourceText(ms, instructionsProp.initializer.arguments[0]!);
+    const hash = shortHash(absolutePath + skillId);
+    const chunkVirtualId = `${VIRTUAL_PREFIX}${skillId}_${hash}`;
+    const chunkSrc = buildChunkSource(importLines, bodyText);
+
+    pluginState.chunks.set(chunkVirtualId, {
+      stepId: skillId,
+      kind: "skill",
+      chunkVirtualId,
+      chunkSource: chunkSrc,
+      sourceFile: absolutePath,
+      hash,
+    });
+
+    ms.overwrite(
+      instructionsProp.initializer.getStart(),
+      instructionsProp.initializer.getEnd(),
+      `() => import("${chunkVirtualId}")`
+    );
+
+    skillEntry.chunkVirtualId = chunkVirtualId;
+    skillEntry.hash = hash;
+  }
+
+  if (varName) pluginState.skillsByVarName.set(varName, skillId);
+  pluginState.skills.set(skillId, skillEntry);
+
+  return skillEntry.chunkVirtualId !== undefined;
 }
 
 function collectFlows(

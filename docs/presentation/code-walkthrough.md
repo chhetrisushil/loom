@@ -228,8 +228,8 @@ const startInvestigation = useCallback(async () => {
 // 1. Configurable LLM — ScriptedLlmProvider (swap for AnthropicProvider)
 // 3. MCP — discover tools from an (in-process) MCP server
 const mcpDefs = await mcpClient.registerInto(effectRuntime);
-// 2. Agent — ReAct loop over the discovered tools
-const runner  = new AgentRunner({ definition: opsAgent, provider, effectRuntime });
+// 2. Agent — ReAct loop over the discovered tools, with on-demand skills
+const runner  = new AgentRunner({ definition: opsAgent, provider, effectRuntime, skills });
 // 4. A2A — expose a flow as an agent (card derived from agent$), then call it as a client
 const server  = createA2AServer(serverRuntime, triageFlow, toAgentCard(triageAgent));
 const a2a     = createA2AClientEffect(server.url);

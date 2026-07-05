@@ -9,7 +9,7 @@ import { flow$, step$, tool$, WorkflowRuntime, ToolEffect } from "@loom/sdk";
 
 * Table of Contents
 
-1.  [[#builders][Builders]] — ~flow$~, ~step$~, ~handler$~, ~tool$~, ~projection$~, ~agent$~, ~memory$~, ~policy$~
+1.  [[#builders][Builders]] — ~flow$~, ~step$~, ~handler$~, ~tool$~, ~projection$~, ~agent$~, ~skill$~, ~instructions$~, ~memory$~, ~policy$~
 2.  [[#workflow-runtime][WorkflowRuntime]] — ~start~, ~resume~, ~restoreFromState~, ~registerFlow~, ~register~
 3.  [[#workflow-context][WorkflowContext — the flow API]] — ~ctx.run~, ~ctx.parallel~, ~ctx.emit~, ~ctx.ui~, ~ctx.suspend~
 4.  [[#execution-handle][ExecutionHandle]]
@@ -22,7 +22,7 @@ import { flow$, step$, tool$, WorkflowRuntime, ToolEffect } from "@loom/sdk";
 11. [[#compiler][~@loom/compiler~]] — Vite plugin, CLI, serialization utilities
 12. [[#telemetry][~@loom/telemetry~]] — ~createTelemetryHook~, ~TelemetryAdapter~, ~ConsoleTelemetryAdapter~, ~composeAdapters~
 13. [[#llm][~@loom/llm~]] — ~LlmProvider~, ~AnthropicProvider~, ~OpenAiProvider~, ~createLlmEffect~
-14. [[#agent][~@loom/agent~]] — ~AgentRunner~, ~agentStep$~
+14. [[#agent][~@loom/agent~]] — ~AgentRunner~, ~agentStep$~, ~SkillRegistry~, ~SkillSelector~
 15. [[#mcp][~@loom/mcp~]] — ~McpClient~, ~mcpTool$~
 16. [[#a2a][~@loom/a2a~]] — ~createA2AClientEffect~, ~createA2AServer~, ~toAgentCard~
 17. [[#registry][~@loom/registry~]] — ~AgentRegistry~, ~globalAgentRegistry~
@@ -240,6 +240,35 @@ const InvestigatorAgent = agent$({
 #+end_src
 
 The optional ~version~, ~capabilities~, and ~skills~ fields describe how the agent is advertised over A2A. Co-locating them on the definition lets ~toAgentCard(agent)~ derive the agent's ~AgentCard~ instead of hand-authoring a parallel object (~skills~ is a ~AgentSkillDef[]~).
+
+** ~skill$~ / ~instructions$~
+
+Declares a *Skill*: a progressively-disclosed bundle of authored instructions (and an optional tool subset) an agent loads on demand. The ~description~ is cheap metadata always available for selection; the ~instructions$~ body is lazy — the compiler extracts it into its own chunk exactly as it does for ~handler$~, so only *selected* skills are ever pulled into context. This is the instruction/know-how axis, distinct from ~tool$~ (a function) and ~capability$~ (a runnable flow).
+
+#+begin_src typescript
+import { skill$, instructions$ } from "@loom/sdk";
+
+const CpuRunbook = skill$({
+  id: "diagnose-cpu",
+  name: "Diagnose CPU saturation",
+  description: "Root-cause CPU saturation and connection-pool exhaustion",
+  tags: ["cpu", "pool"],
+  instructions: instructions$(`
+    1. Confirm CPU% and pool utilisation via the metrics tool before acting.
+    2. If the pool is exhausted, recycle it and raise the ceiling — graceful and reversible.
+    3. Only scale replicas if CPU stays high after the pool recovers.
+  `),
+  tools: [RestartPoolTool],   // optional — surfaced to the model when this skill is selected
+});
+#+end_src
+
+| Builder | Purpose |
+|---------+---------|
+| ~skill$(config)~ | Produces a ~SkillDefinition~ (~{ id, name, description, tags?, instructions, tools? }~) |
+| ~instructions$(text)~ | Marks the instruction body. Runtime: ~{ _loomInstructionsRef: true, text }~. Build: compiler rewrites to ~() => import("\0loom:chunk:<id>_<hash>")~ |
+| ~loadInstructions(spec)~ | Resolves either form to its text (inline ref or compiler loader) |
+
+Skills are not hung on ~agent$~; they are grouped in a ~SkillRegistry~ and passed to ~AgentRunner~ (see [[#agent][~@loom/agent~]]). Note: distinct from the A2A ~AgentSkillDef~ metadata on an agent card — that advertises a capability; a ~SkillDefinition~ injects runtime instruction context.
 
 ** ~memory$~
 
@@ -1713,7 +1742,7 @@ effectRuntime.register("summarize-logs", summarize);
 Runs an ~AgentDefinition~ (built with ~agent$~) as a tool-using loop: the provider is prompted with the agent's tools; while it returns ~stopReason: "tool_use"~ the runner executes each requested tool through the ~EffectRuntime~, appends the results, and re-prompts — until the model replies ~"end_turn"~ or ~maxIterations~ is reached. Import from ~@loom/agent~.
 
 #+begin_src typescript
-import { AgentRunner, agentStep$ } from "@loom/agent";
+import { AgentRunner, agentStep$, SkillRegistry, deterministicSkillSelector } from "@loom/agent";
 #+end_src
 
 ** I/O types
@@ -1748,6 +1777,8 @@ interface AgentConfig {
   maxIterations?: number;        // default 10
   systemPrompt?: string;
   parallelTools?: boolean | number;   // run a turn's tool calls concurrently (default false)
+  skills?: SkillRegistry;             // progressively-disclosed expertise (optional)
+  skillSelector?: SkillSelector;      // defaults to deterministicSkillSelector()
 }
 
 class AgentRunner {
@@ -1814,6 +1845,34 @@ const InvestigateStep = agentStep$({
 // In a runner:
 const report = await ctx.run(InvestigateStep, { prompt: "Diagnose incident cpu-001" });
 #+end_src
+
+** Skills — ~SkillRegistry~ / ~SkillSelector~
+
+When ~AgentConfig.skills~ is supplied, ~run~ selects the skills relevant to the turn *before* the loop, emits a ~SKILLS_SELECTED~ event, lazy-loads only those instruction bodies, appends them to the system prompt, and adds their tools to the model's menu (the agent's own tools win on id collision). Skills are defined with [[#builders][~skill$~]] and grouped in a registry.
+
+#+begin_src typescript
+const skills = new SkillRegistry()
+  .register(CpuRunbook)
+  .register(ReplicaLagRunbook);
+
+const runner = new AgentRunner({
+  definition: InvestigatorAgent,
+  provider,
+  effectRuntime,
+  systemPrompt: "You are an SRE.",
+  skills,                                   // selection is deterministic by default
+  // skillSelector: llmSkillSelector(provider),  // opt-in model-driven selection
+});
+#+end_src
+
+| Symbol | Purpose |
+|--------+---------|
+| ~SkillRegistry~ | Holds ~SkillDefinition~s; ~register~ / ~get~ / ~all~ / ~ids~ / ~find(query)~ (keyword scorer over id/name/description/tags) |
+| ~SkillSelector~ | ~select(input, registry): Promise<string[]>~ — returns the relevant skill ids |
+| ~deterministicSkillSelector(max?)~ | Default. Top-N by ~find()~ score — stable for the same input, so a replayed run reconstructs the same prompt |
+| ~llmSkillSelector(provider, max?)~ | Opt-in. The model picks ids from the description menu. Same non-determinism as the ReAct loop; the ~SKILLS_SELECTED~ event is the audit/record hook |
+
+*Replay note.* Because Loom re-executes the agent loop on replay and does not record the LLM's outputs, *which* skills load must be replay-stable — hence the deterministic default. The emitted ~SKILLS_SELECTED~ event records the choice for observability and a future record/replay path.
 
 -----
 

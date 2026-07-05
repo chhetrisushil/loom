@@ -1,7 +1,7 @@
 #+title: Agent Network — Server-Side Agentic Showcase
 #+author: Sushil Chhetri
 
-A single, runnable script that demonstrates Loom's agentic layer end to end — LLM providers, MCP tools, a ReAct agent, A2A server + client, capability/intent routing, planning, memory, and multi-surface rendering. It runs entirely offline and deterministically: no API keys, no external services. See ~src/main.ts~, which is organized into eight numbered sections.
+A single, runnable script that demonstrates Loom's agentic layer end to end — LLM providers, MCP tools, a ReAct agent with on-demand skills, A2A server + client, capability/intent routing, planning, memory, and multi-surface rendering. It runs entirely offline and deterministically: no API keys, no external services. See ~src/main.ts~, which is organized into eight numbered sections.
 
 * What This Example Demonstrates
 
@@ -10,6 +10,7 @@ A single, runnable script that demonstrates Loom's agentic layer end to end — 
 | Configurable LLM provider        | 1 — ~ScriptedLlmProvider~ (swap for a live provider)  |
 | MCP tool discovery               | 3 — ~McpClient~ discovers tools → ~EffectRuntime~     |
 | Bring-your-own agent (ReAct)     | 2 — ~agent$()~ + ~AgentRunner~ loop over the tools    |
+| Skills (progressive disclosure)  | 2 — ~skill$~ + ~SkillRegistry~; runbook loaded on demand |
 | A2A server + client              | 4 — ~createA2AServer~ / ~createA2AClientEffect~       |
 | AgentCard derived from ~agent$~  | 2 & 4 — ~toAgentCard(agent)~ (no hand-written cards)  |
 | Capabilities + intent routing    | 5 — ~CapabilityCatalog~ + ~IntentRuntime.route()~     |
@@ -49,7 +50,7 @@ The script prints each of the eight sections to the terminal as it runs — the 
 * The Eight Sections
 
 1. *Configurable LLM* — a ~ScriptedLlmProvider~ returns a fixed, queued response so the demo is deterministic. In production you swap a single line for ~new AnthropicProvider({ model: "claude-opus-4-8" })~ (or another provider); everything downstream is provider-agnostic.
-2. *Bring-your-own agent* — ~agent$()~ defines the Ops Triage agent (its tools + card metadata); ~AgentRunner~ drives a ReAct loop that reasons, calls the MCP tools, and returns a final answer. Its ~AgentCard~ is *derived* from the definition via ~toAgentCard(opsAgent)~ and stored in the ~AgentRegistry~.
+2. *Bring-your-own agent* — ~agent$()~ defines the Ops Triage agent (its tools + card metadata); ~AgentRunner~ drives a ReAct loop that reasons, calls the MCP tools, and returns a final answer. Its ~AgentCard~ is *derived* from the definition via ~toAgentCard(opsAgent)~ and stored in the ~AgentRegistry~. A ~SkillRegistry~ adds a CPU-saturation runbook via ~skill$~ + ~instructions$~; the runner selects it from the incident prompt (printed as ~Skills loaded on demand: …~), loads only its instructions, and composes them onto the system prompt — progressive disclosure, replay-safe by default.
 3. *MCP tool discovery* — an in-process fake MCP server (~src/fakeMcpServer.ts~) is discovered by ~McpClient~, whose tool definitions are registered into the ~EffectRuntime~ as callable effects.
 4. *A2A server + client* — a flow is exposed as an A2A agent with ~createA2AServer~ (its card derived via ~toAgentCard(triageAgent)~; the server fills in the ~url~), then called back as a client effect via ~createA2AClientEffect~.
 5. *Capabilities + intent* — a ~CapabilityCatalog~ of domain capabilities is routed to by plain-English intent through ~IntentRuntime~ — intent over routes, no switch statements.
@@ -72,4 +73,5 @@ src/
 
 - *Fully offline & deterministic.* The scripted LLM provider and in-process MCP server mean there are no network calls and reproducible output. Swap the provider in section 1 to run against a live model.
 - *AgentCards are derived, not hand-authored.* ~version~, ~capabilities~, and ~skills~ live on the ~agent$()~ definition; ~toAgentCard(agent)~ produces the ~AgentCard~ — a single source of truth. See the framework API reference for ~toAgentCard~.
+- *Two senses of "skills."* The ~agent$~ card ~skills~ (A2A metadata, advertised on the AgentCard) are distinct from the runtime ~skill$~ Skills (instruction bundles the agent loads on demand). Run under ~tsx~ the ~instructions$~ body stays inline; with ~@loom/compiler~ it becomes a lazy chunk.
 - *Ephemeral A2A port.* The A2A server binds to port 0 (an OS-assigned port); the client reads ~server.url~, so nothing is hard-coded.

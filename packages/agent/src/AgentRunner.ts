@@ -1,9 +1,12 @@
-import type { AgentDefinition } from "@loom/core";
+import type { AgentDefinition, ToolDefinition } from "@loom/core";
+import { loadInstructions } from "@loom/core";
 import type { EffectContext, EffectRuntime } from "@loom/effect-runtime";
 import { LlmEffect } from "@loom/effect-runtime";
 import type { LlmMessage, LlmProvider, LlmToolSpec } from "@loom/llm";
 import type { MemoryRuntime } from "@loom/memory";
 import { parallelLimit, throwIfAborted } from "@loom/scheduler";
+import type { SkillRegistry } from "./SkillRegistry";
+import { deterministicSkillSelector, type SkillSelector } from "./SkillSelector";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
 export interface AgentConfig {
@@ -22,6 +25,12 @@ export interface AgentConfig {
   // ALWAYS in the model's tool-call order regardless of completion order, so
   // event-sourced replay stays deterministic.
   parallelTools?: boolean | number;
+  // Optional Skills. When a registry is supplied, the runner selects the
+  // relevant skills for this turn (deterministic by default — replay-safe),
+  // emits SKILLS_SELECTED, lazy-loads only their instruction bodies, appends
+  // them to the system prompt, and adds their tools to the model's tool menu.
+  skills?: SkillRegistry;
+  skillSelector?: SkillSelector;
 }
 
 export class AgentRunner {
@@ -34,15 +43,44 @@ export class AgentRunner {
   }
 
   async run(input: AgentInput, ctx: EffectContext): Promise<AgentOutput> {
-    const { definition, provider, effectRuntime, systemPrompt, memory } = this.config;
+    const { definition, provider, effectRuntime, systemPrompt, memory, skills } = this.config;
 
-    const toolSpecs: LlmToolSpec[] = definition.tools.map(
-      (t: AgentDefinition["tools"][number]) => ({
-        name: t.id,
-        description: t.description,
-        inputSchema: {},
-      })
-    );
+    // Resolve skills first: choose the relevant ones, record the choice for
+    // replay, then lazy-load only those instruction bodies and their tools.
+    const skillTools: ToolDefinition[] = [];
+    const skillInstructions: string[] = [];
+    if (skills !== undefined && skills.all().length > 0) {
+      const selector = this.config.skillSelector ?? deterministicSkillSelector();
+      const selectedIds = await selector.select(input, skills);
+      ctx.emit("SKILLS_SELECTED", { skillIds: selectedIds });
+      for (const id of selectedIds) {
+        const skill = skills.get(id);
+        if (skill === undefined) continue;
+        skillInstructions.push(await loadInstructions(skill.instructions));
+        if (skill.tools !== undefined) skillTools.push(...skill.tools);
+      }
+    }
+
+    const effectiveSystem =
+      skillInstructions.length > 0
+        ? [systemPrompt, ...skillInstructions].filter((s) => s != null && s !== "").join("\n\n")
+        : systemPrompt;
+
+    // Model tool menu = the agent's tools plus any tools the selected skills
+    // bring, de-duplicated by id (the agent's own tools win).
+    const toolDefs: ToolDefinition[] = [...definition.tools];
+    const seenToolIds = new Set(toolDefs.map((t) => t.id));
+    for (const t of skillTools) {
+      if (!seenToolIds.has(t.id)) {
+        seenToolIds.add(t.id);
+        toolDefs.push(t);
+      }
+    }
+    const toolSpecs: LlmToolSpec[] = toolDefs.map((t) => ({
+      name: t.id,
+      description: t.description,
+      inputSchema: {},
+    }));
 
     const memoryId = definition.memoryId;
     const memoryScope = input.memoryScope ?? ctx.executionId;
@@ -78,7 +116,7 @@ export class AgentRunner {
       const response = await provider.complete({
         messages,
         ...(toolSpecs.length > 0 && { tools: toolSpecs }),
-        ...(systemPrompt !== undefined && { system: systemPrompt }),
+        ...(effectiveSystem !== undefined && { system: effectiveSystem }),
         ...(ctx.signal !== undefined && { signal: ctx.signal }),
       });
 
