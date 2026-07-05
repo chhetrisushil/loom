@@ -95,6 +95,17 @@ export interface ProjectionDefinition<TState = unknown> {
   handlers: Record<string, (state: TState, payload: unknown) => TState>;
 }
 
+// A2A skill descriptor carried on an agent. Defined structurally here (rather
+// than importing from @loom/a2a) so @loom/core stays dependency-light; @loom/a2a
+// maps this to its own AgentSkill when deriving an AgentCard.
+export interface AgentSkillDef {
+  id: string;
+  name: string;
+  description?: string;
+  inputModes?: string[];
+  outputModes?: string[];
+}
+
 export interface AgentDefinition {
   readonly _tag: "AgentDefinition";
   id: string;
@@ -103,4 +114,8 @@ export interface AgentDefinition {
   tools: ToolDefinition[];
   policies?: PolicyDefinition[];
   memoryId?: string;
+  // ── A2A AgentCard metadata (optional) ──
+  version?: string;
+  capabilities?: { streaming?: boolean };
+  skills?: AgentSkillDef[];
 }

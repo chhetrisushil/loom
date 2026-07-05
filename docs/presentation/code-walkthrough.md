@@ -230,8 +230,8 @@ const startInvestigation = useCallback(async () => {
 const mcpDefs = await mcpClient.registerInto(effectRuntime);
 // 2. Agent — ReAct loop over the discovered tools
 const runner  = new AgentRunner({ definition: opsAgent, provider, effectRuntime });
-// 4. A2A — expose a flow as an agent, then call it as a client
-const server  = createA2AServer(serverRuntime, triageFlow, agentCard);
+// 4. A2A — expose a flow as an agent (card derived from agent$), then call it as a client
+const server  = createA2AServer(serverRuntime, triageFlow, toAgentCard(triageAgent));
 const a2a     = createA2AClientEffect(server.url);
 // 5. Capabilities + Intent — route NL request → capability → run
 const route   = await intent.route("the prod-postgres database has high CPU, please investigate");

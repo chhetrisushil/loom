@@ -24,7 +24,7 @@ import { flow$, step$, tool$, WorkflowRuntime, ToolEffect } from "@loom/sdk";
 13. [[#llm][~@loom/llm~]] — ~LlmProvider~, ~AnthropicProvider~, ~OpenAiProvider~, ~createLlmEffect~
 14. [[#agent][~@loom/agent~]] — ~AgentRunner~, ~agentStep$~
 15. [[#mcp][~@loom/mcp~]] — ~McpClient~, ~mcpTool$~
-16. [[#a2a][~@loom/a2a~]] — ~createA2AClientEffect~, ~createA2AServer~
+16. [[#a2a][~@loom/a2a~]] — ~createA2AClientEffect~, ~createA2AServer~, ~toAgentCard~
 17. [[#registry][~@loom/registry~]] — ~AgentRegistry~, ~globalAgentRegistry~
 18. [[#a2ui][~@loom/a2ui~ — the Agent-to-UI protocol]] — ~A2UIPatch~, ~createA2UIEmitter~, ~a2uiSurfaceProjection~, ~A2UIRuntime~, ~useA2UISurface~
 19. [[#capability][~@loom/capability~]] — ~capability$~, ~CapabilityCatalog~
@@ -232,8 +232,14 @@ const InvestigatorAgent = agent$({
   tools: [MetricsTool, LogsTool],
   policies: [RateLimitPolicy],
   memoryId: "incident-memory",   // optional — links to a MemoryDefinition
+  // optional A2A AgentCard metadata — read by toAgentCard() (see @loom/a2a)
+  version: "1.0.0",
+  capabilities: { streaming: true },
+  skills: [{ id: "investigate", name: "Investigate incident" }],
 });
 #+end_src
+
+The optional ~version~, ~capabilities~, and ~skills~ fields describe how the agent is advertised over A2A. Co-locating them on the definition lets ~toAgentCard(agent)~ derive the agent's ~AgentCard~ instead of hand-authoring a parallel object (~skills~ is a ~AgentSkillDef[]~).
 
 ** ~memory$~
 
@@ -1897,7 +1903,7 @@ const hits = await ctx.run(SearchStep, { query: "loom framework" });
 Agent-to-Agent interoperability. Expose a Loom flow as an A2A-compatible HTTP agent, and call remote agents from inside a flow via an effect. Import from ~@loom/a2a~.
 
 #+begin_src typescript
-import { createA2AClientEffect, createA2AServer } from "@loom/a2a";
+import { createA2AClientEffect, createA2AServer, toAgentCard } from "@loom/a2a";
 #+end_src
 
 ** Types
@@ -1987,6 +1993,24 @@ const server = createA2AServer(
 await server.start();
 console.log("A2A agent listening at", server.url);
 #+end_src
+
+** ~toAgentCard(agent, options?)~
+
+Derives an ~AgentCard~ from an ~agent$~ definition, so the card is not hand-authored alongside the agent. ~name~/~description~ come from the definition; ~version~, ~capabilities~, and ~skills~ come from the (optional) card metadata on the agent, falling back to ~options~ then to defaults (~version~ ~"1.0.0"~, ~capabilities~ ~{ streaming: false }~, ~skills~ ~[]~). ~url~ defaults to ~loom+inproc://{agent.id}~ and is overridable — an ~createA2AServer~ replaces it with the bound address at request time regardless.
+
+#+begin_src typescript
+function toAgentCard(
+  agent: AgentDefinition,
+  options?: { url?: string; version?: string; capabilities?: { streaming?: boolean } }
+): AgentCard;
+
+// Register a fleet's cards straight from their definitions — one source of truth.
+const AGENT_CARDS = Object.fromEntries(
+  FLEET.map((agent) => [agent.id, toAgentCard(agent)])
+);
+#+end_src
+
+Definition metadata takes precedence over ~options~; ~options~ only supply fallbacks and the deployment ~url~.
 
 -----
 

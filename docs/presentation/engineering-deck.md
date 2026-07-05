@@ -212,7 +212,8 @@ One call turns an external MCP server into first‑class, replayable Loom effect
 
 ```ts
 // server: any flow becomes an A2A agent endpoint
-const server = createA2AServer(workflowRuntime, triageFlow, agentCard);
+// card derived from the agent$ definition; the server fills in url
+const server = createA2AServer(workflowRuntime, triageFlow, toAgentCard(triageAgent));
 await server.start();  // serves /.well-known/agent.json, /tasks/send, /tasks/:id
 
 // client: call a remote agent from inside a flow
