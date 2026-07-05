@@ -10,12 +10,12 @@ import { flow$, step$, tool$, WorkflowRuntime, ToolEffect } from "@loom/sdk";
 * Table of Contents
 
 1.  [[#builders][Builders]] — ~flow$~, ~step$~, ~handler$~, ~tool$~, ~projection$~, ~agent$~, ~skill$~, ~instructions$~, ~memory$~, ~policy$~
-2.  [[#workflow-runtime][WorkflowRuntime]] — ~start~, ~resume~, ~restoreFromState~, ~registerFlow~, ~register~
+2.  [[#workflow-runtime][WorkflowRuntime]] — ~start~, ~resume~, ~restoreFromState~, ~fork~, ~registerFlow~, ~register~
 3.  [[#workflow-context][WorkflowContext — the flow API]] — ~ctx.run~, ~ctx.parallel~, ~ctx.emit~, ~ctx.ui~, ~ctx.suspend~
 4.  [[#execution-handle][ExecutionHandle]]
 5.  [[#effect-runtime][EffectRuntime & Effects]] — ~ToolEffect~, ~LlmEffect~, ~HumanEffect~, ~A2AEffect~, ~LazyEffect~
-6.  [[#event-store][EventStore]]
-7.  [[#snapshot-store][SnapshotStore]]
+6.  [[#event-store][EventStore]] & [[#branch-registry][BranchRegistry]] — event log + git-style refs/lineage
+7.  [[#snapshot-store][SnapshotStore]] — ~loadLatest~, ~loadAt~, ~loadLatestBefore~
 8.  [[#projection-runtime][ProjectionRuntime]] — ~register~, ~getState~, ~subscribe~, ~handleEvent~, ~seedState~
 9.  [[#blueprint-system][Blueprint System]]
 10. [[#react-renderer][React Renderer]] — ~BlueprintRenderer~, ~LoomProvider~, ~useLoom~, ~useProjection~
@@ -334,6 +334,7 @@ const runtime = new WorkflowRuntime({
 | ~snapshotStore~ | ~SnapshotStore~                       | yes      | Where suspend-point snapshots are stored                  |
 | ~effectRuntime~ | ~EffectRuntime~                       | yes      | Registry of effect handlers                               |
 | ~onEvent~       | ~(event: EventEnvelope) => void~      | no       | Called after every event append — wire to ProjectionRuntime |
+| ~branchRegistry~ | ~BranchRegistry~                     | no       | Enables ~fork()~ to record lineage + refs (see [[#branch-registry][BranchRegistry]]) |
 
 ** ~registerFlow(definition, runner)~
 
@@ -406,6 +407,35 @@ handle.waitForCompletion().then(() => console.log("Done"));
 | ~resumeEvent~   | ~ResumeEvent~    | no       | Optional event to append before re-running the flow    |
 
 The corresponding flow must already be registered via ~registerFlow()~ before calling ~restoreFromState~.
+
+** ~fork(parentExecutionId, atSequence, opts?)~
+
+Forks an execution at ~atSequence~ into an independent branch for speculative work. Copy-on-write over the event log: the parent's events ~[0..atSequence]~ are copied into a new child ~executionId~ and a seed snapshot is written at the fork point, so the child re-derives the identical pre-fork state (cached step outputs are *not* re-run) and the parent log is never touched. Returns a ~ForkResult~ — it does *not* start execution; drive the branch with ~resume()~ or ~restoreFromState()~. Branch-only: there is no merge — pick a winner with ~branchRegistry.promote()~.
+
+#+begin_src typescript
+// Fork a suspended task at its approval gate.
+const branch = await runtime.fork("task-abc", 7, {
+  branchName: "spec/scale-replicas",
+});
+
+// Drive the branch down an alternate path...
+await runtime.resume(branch.executionId, {
+  eventType: "ApprovalGranted",
+  payload: { approved: true, approvedBy: "operator" },
+});
+
+// ...then keep the winner (a pointer move, not a merge):
+branchRegistry.promote("spec/scale-replicas", "main");
+#+end_src
+
+| Parameter          | Type          | Required | Description                                                    |
+|--------------------+---------------+----------+----------------------------------------------------------------|
+| ~parentExecutionId~ | ~string~     | yes      | The execution to branch from                                   |
+| ~atSequence~       | ~number~      | yes      | Fork point; must be in ~0..tip~ (throws otherwise)             |
+| ~opts.branchName~  | ~string~      | no       | Registers a movable ref for the branch (needs ~branchRegistry~) |
+| ~opts.executionId~ | ~string~      | no       | Pin the child id; auto-generated (ULID) if omitted             |
+
+Returns ~ForkResult~: ~{ executionId, parentExecutionId, forkSequence, branchName, state }~, where ~state~ is the materialized ~ExecutionState~ at the fork point (already stamped with the child id). Forking records lineage/ref bookkeeping only when a ~branchRegistry~ was supplied to the runtime, and introduces *no new event type* — provenance lives in event ~metadata~.
 
 ** ~register(toolId, effect)~
 
@@ -814,6 +844,66 @@ interface EventEnvelope {
 
 -----
 
+* BranchRegistry
+:PROPERTIES:
+:CUSTOM_ID: branch-registry
+:END:
+
+~BranchRegistry~ (in ~@loom/event-runtime~) holds git-style *movable refs* + immutable *fork lineage* for speculative branching. Pass one to ~WorkflowRuntime~ to enable [[#workflow-runtime][~fork()~]]; ~promote()~ picks a winner. Branch-only — there is no merge (two divergent ~ExecutionState~s have no principled join).
+
+** Interface
+
+#+begin_src typescript
+interface BranchRegistry {
+  putRef(ref: BranchRef): void;          // create OR move (upsert by name)
+  getRef(name: string): BranchRef | null;
+  listRefs(): BranchRef[];
+  moveTip(name: string, tip: number): void;      // advance a head as it grows
+  promote(fromName: string, toName: string): void; // pick-a-winner (pointer move)
+  deleteRef(name: string): void;
+
+  recordLineage(rec: Omit<LineageRecord, "createdAt">): void;
+  getLineage(executionId: string): LineageRecord | null;
+  children(executionId: string): LineageRecord[];  // direct forks of an execution
+  close(): void;
+}
+
+interface BranchRef {
+  name: string;                 // "main", "spec/scale-replicas"
+  executionId: string;          // the execution this ref points at
+  tip: number;                  // latest known sequence on that head
+  parentExecutionId?: string;   // if created by a fork
+  forkSequence?: number;        // if created by a fork
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface LineageRecord {
+  executionId: string;          // the child (forked) execution
+  parentExecutionId: string;
+  forkSequence: number;
+  createdAt: number;
+}
+#+end_src
+
+~promote("spec/x", "main")~ copies ~spec/x~'s ~(executionId, tip)~ onto ~main~ — a pointer move, no history rewrite. The losing branch stays an immutable, independently resumable execution.
+
+** ~SqliteBranchRegistry~
+
+#+begin_src typescript
+import { SqliteBranchRegistry } from "@loom/event-runtime";
+
+// Its own DB file — the refs/lineage tables are independent of the event log,
+// so its writes never contend with the busy event-store write lock.
+const branchRegistry = new SqliteBranchRegistry("./data/branches.db");
+
+const runtime = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime, branchRegistry });
+// ...
+branchRegistry.close();
+#+end_src
+
+-----
+
 * SnapshotStore
 :PROPERTIES:
 :CUSTOM_ID: snapshot-store
@@ -828,6 +918,9 @@ interface SnapshotStore {
   save(snapshot: Snapshot): void;
   loadLatest(executionId: string): Snapshot | null;
   loadAt(executionId: string, sequence: number): Snapshot | null;
+  // Greatest snapshot AT OR BELOW `sequence` — used by WorkflowRuntime.fork()
+  // to materialize state at a fork point without folding the log from zero.
+  loadLatestBefore(executionId: string, sequence: number): Snapshot | null;
   close(): void;
 }
 
@@ -841,7 +934,7 @@ interface Snapshot {
 }
 #+end_src
 
-~WorkflowRuntime~ calls ~save~ automatically on every suspend and ~loadLatest~ on every resume. You do not need to call these directly under normal usage.
+~WorkflowRuntime~ calls ~save~ automatically on every suspend and ~loadLatest~ on every resume. You do not need to call these directly under normal usage. ~loadLatestBefore~ is used internally by ~fork()~.
 
 ** ~SqliteSnapshotStore~
 

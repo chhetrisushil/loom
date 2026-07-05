@@ -357,6 +357,48 @@ handler: handler$(async (input, ctx) => {
 
 Effects that don't touch ~ctx.signal~ still run to completion, but the execution is recorded as cancelled and ~waitForCompletion()~ rejects as soon as ~cancel()~ is called.
 
+** Forking an execution (speculative branches)
+
+~workflowRuntime.fork(parentExecutionId, atSequence, { branchName })~ creates an independent branch of an execution at a point in its history — to try an alternate plan, backtrack, or let a human "undo and try a different path". It is copy-on-write over the event log: the child re-derives the identical pre-fork state (completed steps are *not* re-run) and the parent stays intact. Branch-only — pick a winner with the registry's ~promote()~; there is no merge.
+
+Pass a ~SqliteBranchRegistry~ to the runtime to track refs + lineage:
+
+#+begin_src typescript
+import { SqliteBranchRegistry } from "@loom/event-runtime";
+
+const branchRegistry = new SqliteBranchRegistry("./data/branches.db");
+const workflowRuntime = new WorkflowRuntime({
+  eventStore,
+  snapshotStore,
+  effectRuntime,
+  branchRegistry,
+});
+#+end_src
+
+A task has suspended at its approval gate. Fork it, run the branch to preview the outcome, then keep the winner:
+
+#+begin_src typescript
+// suspended at sequence S (e.g. handle.getState().sequence)
+const branch = await workflowRuntime.fork(taskId, S, {
+  branchName: "spec/scale-replicas",
+});
+// branch: { executionId, parentExecutionId, forkSequence, branchName, state }
+
+// Drive the branch down an alternate path — the original task is untouched.
+const preview = await (
+  await workflowRuntime.resume(branch.executionId, {
+    eventType: "ApprovalGranted",
+    payload: { approved: true, approvedBy: "operator@acme.com" },
+  })
+).waitForCompletion();
+
+// Happy with it? Move the canonical ref onto the winner (a pointer move).
+branchRegistry.moveTip("spec/scale-replicas", preview.sequence);
+branchRegistry.promote("spec/scale-replicas", "main");
+#+end_src
+
+The parent's log is never modified by a fork, so it remains independently resumable; the losing branch likewise stays in the store. See the runnable end-to-end demo in ~examples/db-command-center-server~ (~pnpm --filter @loom/db-command-center-server demo:fork~).
+
 * Step 7 — Define a Blueprint (optional)
 
 Blueprints are JSON-serializable UI descriptions. Build one to connect projection state to rendered widgets.

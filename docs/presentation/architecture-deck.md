@@ -286,6 +286,32 @@ Same code path on first run and replay — the runtime hides the difference.
 
 ---
 
+## Speculative branching — fork & pick a winner
+
+git's *branch-and-pick-a-winner*, applied to the execution model. Because state is derived from an immutable log, forking is **copy-on-write** — and there's no merge to invent.
+
+```
+task suspended at approval gate · sequence 1
+   │
+   ├─ fork(task, 1, "spec/approve") ──► resume(approved) → applied ✓ · lag 4200→180ms
+   ├─ fork(task, 1, "spec/reject")  ──► resume(rejected) → no change
+   │        (each: parent events [0..1] copied verbatim + seed snapshot @1)
+   │
+   parent task: still SUSPENDED, log untouched, independently resumable
+   │
+   promote("spec/approve", "main") → main now names the winning branch
+```
+
+- **Fork** copies the parent prefix into a child id (`foldEvents` reads neither `id` nor `executionId` → byte-identical replay; completed steps stay cached). **No new event type** — provenance lives in metadata + the `BranchRegistry`.
+- **`promote()` is a pointer move**, not a merge — the loser stays an immutable, resumable execution.
+- Runnable: `pnpm --filter @loom/db-command-center-server demo:fork`.
+
+<!--
+Presenter: fork() is called externally (e.g. an operator at the gate), not from inside the flow — there is no ctx.fork. It returns ForkResult{state}; drive the branch with resume() or restoreFromState(). Branch-only is a deliberate refusal: divergent ExecutionStates have no principled 3-way merge, unlike git's text. Same discipline as "scheduler, not a reconciler".
+-->
+
+---
+
 ## Design decisions — the "why"
 
 | Decision | Why |
@@ -294,6 +320,7 @@ Same code path on first run and replay — the runtime hides the difference.
 | **`SuspendError` (throw, not return)** | flow reads as a linear function; no callback nesting after a pause |
 | **`handler$` no-op at runtime** | dev/tests/no-build-step work out of the box; compiler is pure optimization |
 | **Cooperative scheduler, not a reconciler** | fiber principles belong in the async layer; the renderer already has fiber |
+| **Branch, not merge/rebase** | forking is free over an immutable log; divergent state has no principled join → pick a winner |
 | **JSON-serializable Blueprints** | server-generated UI, persisted layouts, cross-renderer — no React coupling |
 | **Separate `@loom/compiler`** | TS/Vite deps never reach the browser bundle |
 | **UI-agnostic runtime** | only `@loom/renderer-react` is framework-specific → Angular/Vue/Node all reuse it |
@@ -307,5 +334,6 @@ Same code path on first run and replay — the runtime hides the difference.
 - **Suspend is a thrown error + a snapshot** — a human gate that survives restarts and machine boundaries.
 - **Isomorphic core, injected edges** — the same runtime powers an offline browser demo and a durable Node server.
 - **Fiber principles in the async layer, not the renderer** — opt-in, default-off, zero-overhead fast paths.
+- **Speculative branching for free** — an immutable log makes fork copy-on-write; borrow git's branch, refuse its merge.
 
 > Deep dives: `engineering-deck.md` (primitives & API) · `cloud-command-center-deck.md` (durable UI) · `a2a-mesh-deck.md` (interop).
