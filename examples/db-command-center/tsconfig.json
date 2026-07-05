@@ -1,0 +1,31 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "composite": false
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"],
+  "references": [
+    { "path": "../../packages/core" },
+    { "path": "../../packages/effect-runtime" },
+    { "path": "../../packages/sdk" },
+    { "path": "../../packages/renderer-react" },
+    { "path": "../../packages/workflow-runtime" },
+    { "path": "../../packages/event-runtime" },
+    { "path": "../../packages/snapshot-runtime" },
+    { "path": "../../packages/projection-runtime" },
+    { "path": "../../packages/blueprint-runtime" },
+    { "path": "../../packages/llm" },
+    { "path": "../../packages/agent" },
+    { "path": "../../packages/a2a" },
+    { "path": "../../packages/a2ui" },
+    { "path": "../../packages/capability" },
+    { "path": "../../packages/intent" },
+    { "path": "../../packages/planner" },
+    { "path": "../../packages/registry" }
+  ]
+}
