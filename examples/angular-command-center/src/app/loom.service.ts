@@ -1,4 +1,8 @@
-import { Injectable, type NgZone, signal } from "@angular/core";
+// NgZone must be a VALUE import, not `type NgZone` — it is the constructor's DI
+// token, and a type-only import is erased at runtime, so Angular's dev transform
+// can't build the factory ("constructor was not compatible with Dependency
+// Injection"). AOT hides this because ngtsc resolves the token statically.
+import { Injectable, NgZone, signal } from "@angular/core";
 import type { EventEnvelope } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
