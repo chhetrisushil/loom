@@ -106,6 +106,29 @@ describe("SqliteSnapshotStore", () => {
     expect(store.loadAt("exec-3", 99)).toBeNull();
   });
 
+  it("loadLatestBefore returns the greatest snapshot at or below the sequence", () => {
+    for (const seq of [2, 6, 9]) {
+      store.save({
+        id: `lb-${seq}`,
+        executionId: "exec-lb",
+        workflowId: "f",
+        sequence: seq,
+        state: makeState("exec-lb", seq),
+        createdAt: seq,
+      });
+    }
+    // Exactly at a snapshot boundary.
+    expect(store.loadLatestBefore("exec-lb", 6)!.sequence).toBe(6);
+    // Between snapshots — picks the greatest below.
+    expect(store.loadLatestBefore("exec-lb", 8)!.sequence).toBe(6);
+    // Above all — picks the highest.
+    expect(store.loadLatestBefore("exec-lb", 100)!.sequence).toBe(9);
+    // Below all — null.
+    expect(store.loadLatestBefore("exec-lb", 1)).toBeNull();
+    // Unknown execution — null.
+    expect(store.loadLatestBefore("nope", 10)).toBeNull();
+  });
+
   it("round-trips ExecutionState through JSON without data loss", () => {
     const state = makeState("exec-4", 3);
     state.suspendedOn = { on: "ApprovalGranted", correlationKey: "my-key", timeout: 86400000 };

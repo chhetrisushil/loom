@@ -53,11 +53,39 @@ only changes are the **stores** (SQLite instead of in-memory) and the **boundary
 client importing and running the runtime, it talks to a server that does. Same agents, same durable
 suspend/resume, same behavior.
 
+## Speculative branching (git-style fork, branch-only)
+
+Because every task is an event-sourced execution with deterministic replay, an execution can be
+**forked** at any point into an independent branch — the git *branch-and-pick-a-winner* principle applied
+to agents. When a mutating remediation reaches its approval gate and suspends, an operator can fork it into
+speculative branches ("what if we approve? what if we reject?"), run each to completion to preview the
+outcome, and keep the winner by moving a ref onto it — all while the original task stays suspended and
+intact.
+
+- **Fork** is copy-on-write: the parent's events `[0..S]` are copied verbatim into the child execution and
+  a seed snapshot is written at the fork point, so the child re-derives the identical pre-fork state (cached
+  step outputs are never re-run) and the parent log is never touched. See `WorkflowRuntime.fork()`.
+- **Refs + lineage** live in a `SqliteBranchRegistry` (`branches.db`), wired into the runtime in
+  `src/server/app.ts`. `promote("spec/x", "main")` repoints the canonical ref onto the winner — a pointer
+  move, **no merge**: two divergent `ExecutionState`s have no principled join, so we pick a branch rather
+  than reconcile.
+
+Run the narrated end-to-end demo (real `ScaleReplicasFlow`, SQLite stores):
+
+```
+pnpm --filter @loom/db-command-center-server demo:fork
+```
+
+It starts the scale-read-replicas task, runs it to the approval gate, forks `spec/approve` + `spec/reject`
+from the gate, runs both to completion (approve applies the fix → lag falls to ~180ms; reject does not),
+shows the parent still suspended, then promotes the winner onto `main`. Source: `src/scripts/speculativeFork.ts`.
+
 ## Verify
 
 - `pnpm --filter @loom/db-command-center-server test` — a headless test drives a mission through the
   server's durable wiring (SQLite), asserts the replica goal reaches `awaiting-approval`, resolves after
   approval, streams patches, and writes `events.db`.
+- `pnpm --filter @loom/db-command-center-server demo:fork` — runs the speculative-fork demo above end to end.
 - Live: `curl -N http://localhost:8787/api/missions/mission-1/stream` in one shell;
   `curl -X POST .../api/missions -d '{"goal":"…"}'` in another; watch the frames.
 
@@ -68,3 +96,7 @@ suspend/resume, same behavior.
   rehydrated on a full process restart.
 - **Cross-process A2A.** The domain agents run in-process on the server via `InProcessA2ABus`; exposing
   each as its own A2A HTTP service (`createA2AServer`) would be the next step.
+- **Interactive fork UI + HTTP routes.** Speculative branching is exercised via the `demo:fork` script and
+  the `fork()`/registry APIs; a "Try alternate plan" widget, `POST /api/missions/:id/fork` + `/promote`
+  routes, and surfacing branch heads over SSE are the natural next step but are not wired here. (Task-level
+  execution events are folded locally, not broadcast — only mission-level `A2UI_PATCH`es stream today.)

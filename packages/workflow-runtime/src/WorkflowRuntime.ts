@@ -2,18 +2,32 @@ import { SuspendError } from "@loom/core";
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import { LazyEffect } from "@loom/effect-runtime";
 import type { Effect, EffectRuntime } from "@loom/effect-runtime";
-import type { EventStore } from "@loom/event-runtime";
+import type { BranchRegistry, EventStore } from "@loom/event-runtime";
 import { ReplayVM } from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 import { WorkflowContextImpl } from "./WorkflowContext";
-import type { ExecutionHandle, FlowRunner, RegisteredFlow, ResumeEvent, RunOptions } from "./types";
+import type {
+  ExecutionHandle,
+  FlowRunner,
+  ForkOptions,
+  ForkResult,
+  RegisteredFlow,
+  ResumeEvent,
+  RunOptions,
+} from "./types";
 
 export interface WorkflowRuntimeDeps {
   eventStore: EventStore;
   snapshotStore: SnapshotStore;
   effectRuntime: EffectRuntime;
   onEvent?: (event: EventEnvelope) => void;
+  /**
+   * Optional branch registry. When provided, `fork()` records fork lineage and
+   * (if a branchName is given) a movable ref. Without it, `fork()` still copies
+   * the prefix and seeds the child snapshot — it just skips ref/lineage bookkeeping.
+   */
+  branchRegistry?: BranchRegistry;
 }
 
 export class WorkflowRuntime {
@@ -21,6 +35,7 @@ export class WorkflowRuntime {
   private readonly snapshotStore: SnapshotStore;
   private readonly effectRuntime: EffectRuntime;
   private readonly onEvent: ((event: EventEnvelope) => void) | undefined;
+  private readonly branchRegistry: BranchRegistry | undefined;
   private readonly flows = new Map<string, RegisteredFlow>();
 
   constructor(deps: WorkflowRuntimeDeps) {
@@ -28,6 +43,7 @@ export class WorkflowRuntime {
     this.snapshotStore = deps.snapshotStore;
     this.effectRuntime = deps.effectRuntime;
     this.onEvent = deps.onEvent;
+    this.branchRegistry = deps.branchRegistry;
   }
 
   register(toolId: string, effect: Effect): void {
@@ -181,6 +197,142 @@ export class WorkflowRuntime {
       flow.runner as FlowRunner<unknown, unknown>,
       originalInput
     );
+  }
+
+  /**
+   * Fork an execution at `atSequence` into a new, independent branch for
+   * speculative/what-if work. Branch-only — there is no merge; select a winner
+   * with `branchRegistry.promote()`.
+   *
+   * Storage model (physical prefix copy): the parent's events [0..atSequence]
+   * are copied verbatim into the child executionId — only `id` and
+   * `executionId` change, and foldEvents reads neither, so the copied prefix
+   * folds to a byte-identical state. The child then gets a seed snapshot at the
+   * fork point so a later resume folds an empty tail. The parent log is never
+   * touched, so the parent stays intact and independently resumable.
+   *
+   * Drive the branch down a new path via `restoreFromState(result.state, …)`,
+   * or `resume(result.executionId, …)` if the fork point is a suspend.
+   */
+  async fork(
+    parentExecutionId: string,
+    atSequence: number,
+    opts?: ForkOptions
+  ): Promise<ForkResult> {
+    const parentEvents = this.eventStore.read(parentExecutionId);
+    if (parentEvents.length === 0) {
+      throw new Error(`No execution found for id: ${parentExecutionId}`);
+    }
+
+    const tip = parentEvents[parentEvents.length - 1]!.sequence;
+    if (atSequence < 0 || atSequence > tip) {
+      throw new Error(
+        `Invalid fork point ${atSequence} for execution ${parentExecutionId} (valid range 0..${tip})`
+      );
+    }
+
+    const childId = opts?.executionId ?? ulid();
+    const workflowId = parentEvents[0]!.workflowId;
+    const workflowVersion = this.flows.get(workflowId)?.definition.version ?? "";
+
+    // 1. Materialize state at the fork point (reusing the nearest prior snapshot).
+    const forkState = this.materializeStateAt(
+      parentExecutionId,
+      atSequence,
+      parentEvents,
+      childId,
+      workflowId,
+      workflowVersion
+    );
+
+    // 2. Copy the prefix [0..atSequence] into the child log. Re-stamp id +
+    //    executionId, record provenance in metadata. No synthetic EXECUTION_FORKED
+    //    event — inserting one would perturb sequence numbering and break the
+    //    prefix-identity guarantee the determinism argument relies on.
+    for (const e of parentEvents) {
+      if (e.sequence > atSequence) break;
+      const copy: EventEnvelope = {
+        ...e,
+        executionId: childId,
+        id: `${childId}-${e.sequence}`,
+        metadata: {
+          ...e.metadata,
+          forkedFrom: parentExecutionId,
+          forkSequence: atSequence,
+        },
+      };
+      this.eventStore.append(copy);
+      this.onEvent?.(copy);
+    }
+
+    // 3. Seed the child snapshot at the fork point so resume(child) folds an
+    //    empty tail instead of replaying from sequence 0.
+    const seed: Snapshot = {
+      id: ulid(),
+      executionId: childId,
+      workflowId,
+      sequence: atSequence,
+      state: forkState,
+      createdAt: Date.now(),
+    };
+    this.snapshotStore.save(seed);
+
+    // 4. Record lineage + optional movable ref.
+    const branchName = opts?.branchName ?? childId;
+    if (this.branchRegistry) {
+      this.branchRegistry.recordLineage({
+        executionId: childId,
+        parentExecutionId,
+        forkSequence: atSequence,
+      });
+      if (opts?.branchName !== undefined) {
+        const now = Date.now();
+        this.branchRegistry.putRef({
+          name: opts.branchName,
+          executionId: childId,
+          tip: atSequence,
+          parentExecutionId,
+          forkSequence: atSequence,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
+    return {
+      executionId: childId,
+      parentExecutionId,
+      forkSequence: atSequence,
+      branchName,
+      state: forkState,
+    };
+  }
+
+  /**
+   * Materialize ExecutionState at `atSequence` for a fork, stamped with the
+   * child executionId. Folds from the nearest snapshot at/below the fork point
+   * (falling back to a full prefix fold) so long histories don't replay from zero.
+   */
+  private materializeStateAt(
+    parentExecutionId: string,
+    atSequence: number,
+    parentEvents: EventEnvelope[],
+    childId: string,
+    workflowId: string,
+    workflowVersion: string
+  ): ExecutionState {
+    const base = this.snapshotStore.loadLatestBefore(parentExecutionId, atSequence);
+    let vm: ReplayVM;
+    if (base) {
+      const tail = parentEvents.filter(
+        (e) => e.sequence > base.sequence && e.sequence <= atSequence
+      );
+      vm = new ReplayVM(tail, base.state);
+    } else {
+      const prefix = parentEvents.filter((e) => e.sequence <= atSequence);
+      vm = new ReplayVM(prefix, { executionId: childId, workflowId, workflowVersion });
+    }
+    return { ...vm.getState(), executionId: childId };
   }
 
   private execute(

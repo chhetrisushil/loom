@@ -26,5 +26,30 @@ export function migrate(db: Database.Database): void {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+
+    -- Branch registry: git-style movable pointers (refs) into the event-log
+    -- topology. A ref names an execution head; promote() repoints a ref onto a
+    -- winning execution ("pick-a-winner"). No merge — see BranchRegistry.
+    CREATE TABLE IF NOT EXISTS refs (
+      name TEXT PRIMARY KEY,
+      execution_id TEXT NOT NULL,
+      tip INTEGER NOT NULL,
+      parent_execution_id TEXT,
+      fork_sequence INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    -- Immutable fork DAG: each forked execution records its parent and the
+    -- sequence it forked at. One row per child execution.
+    CREATE TABLE IF NOT EXISTS lineage (
+      execution_id TEXT PRIMARY KEY,
+      parent_execution_id TEXT NOT NULL,
+      fork_sequence INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_lineage_parent
+      ON lineage (parent_execution_id);
   `);
 }

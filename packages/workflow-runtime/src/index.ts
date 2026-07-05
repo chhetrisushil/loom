@@ -1,6 +1,8 @@
 export { WorkflowRuntime } from "./WorkflowRuntime";
 export type {
   ExecutionHandle,
+  ForkOptions,
+  ForkResult,
   FlowRunner,
   RegisteredFlow,
   ResumeEvent,

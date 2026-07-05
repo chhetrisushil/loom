@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "demo:fork": "tsx src/scripts/speculativeFork.ts",
     "dev:server": "tsx watch src/server/main.ts",
     "dev:client": "vite",
     "build": "tsc --build",

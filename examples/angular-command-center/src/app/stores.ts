@@ -47,5 +47,8 @@ export class InMemorySnapshotStore implements SnapshotStore {
     const candidates = (this.snaps.get(id) ?? []).filter((s) => s.sequence <= seq);
     return candidates[candidates.length - 1] ?? null;
   }
+  loadLatestBefore(id: string, seq: number): Snapshot | null {
+    return this.loadAt(id, seq);
+  }
   close(): void {}
 }

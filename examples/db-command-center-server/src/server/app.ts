@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { a2uiSurfaceProjection } from "@loom/a2ui";
 import type { EventEnvelope } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
-import { SqliteEventStore } from "@loom/event-runtime";
+import { SqliteBranchRegistry, SqliteEventStore } from "@loom/event-runtime";
 import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { InProcessA2ABus } from "../a2a/InProcessA2ABus";
@@ -19,6 +19,11 @@ export interface ServerApp {
   readonly missionId: string;
   readonly orchestrator: Orchestrator;
   readonly projectionRuntime: BroadcastingProjectionRuntime;
+  // The durable workflow runtime — exposed so speculative branches can be forked
+  // from a task execution (missionRuntime.fork) and driven independently.
+  readonly missionRuntime: WorkflowRuntime;
+  // Git-style branch registry: movable refs + fork lineage for speculation.
+  readonly branchRegistry: SqliteBranchRegistry;
   // A serialized ProjectionSnapshot of the mission + telemetry surfaces.
   snapshot(): string;
   // Observe the A2UI patch frames the server would push to SSE clients.
@@ -36,6 +41,9 @@ export function createApp(opts: { dataDir: string; missionId?: string }): Server
 
   const eventStore = new SqliteEventStore(path.join(opts.dataDir, "events.db"));
   const snapshotStore = new SqliteSnapshotStore(path.join(opts.dataDir, "snapshots.db"));
+  // The branch registry gets its own DB file so its writes never contend with
+  // the busy event-log write lock (the `refs`/`lineage` tables are independent).
+  const branchRegistry = new SqliteBranchRegistry(path.join(opts.dataDir, "branches.db"));
   const effectRuntime = new EffectRuntime();
 
   const observers = new Set<(frame: ServerFrame) => void>();
@@ -51,6 +59,7 @@ export function createApp(opts: { dataDir: string; missionId?: string }): Server
     eventStore,
     snapshotStore,
     effectRuntime,
+    branchRegistry,
     onEvent: (e: EventEnvelope) => projectionRuntime.handleEvent(e),
   });
 
@@ -79,6 +88,8 @@ export function createApp(opts: { dataDir: string; missionId?: string }): Server
     missionId,
     orchestrator,
     projectionRuntime,
+    missionRuntime,
+    branchRegistry,
     snapshot: () => projectionRuntime.snapshot(),
     subscribeBroadcast(cb) {
       observers.add(cb);
@@ -87,6 +98,7 @@ export function createApp(opts: { dataDir: string; missionId?: string }): Server
     close() {
       eventStore.close();
       snapshotStore.close();
+      branchRegistry.close();
     },
   };
 }
