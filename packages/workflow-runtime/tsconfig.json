@@ -10,6 +10,7 @@
     { "path": "../core" },
     { "path": "../event-runtime" },
     { "path": "../replay-vm" },
+    { "path": "../scheduler" },
     { "path": "../effect-runtime" },
     { "path": "../snapshot-runtime" },
     { "path": "../a2ui" }

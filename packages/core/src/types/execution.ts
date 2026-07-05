@@ -1,6 +1,12 @@
-export type ExecutionStatus = "pending" | "running" | "suspended" | "completed" | "failed";
+export type ExecutionStatus =
+  | "pending"
+  | "running"
+  | "suspended"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
-export type FrameStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+export type FrameStatus = "pending" | "running" | "completed" | "failed" | "skipped" | "cancelled";
 
 export interface ExecutionFrame {
   stepId: string;

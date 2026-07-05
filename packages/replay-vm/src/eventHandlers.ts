@@ -19,7 +19,9 @@ const handlers: Record<string, Handler> = {
       status: "running",
       startedAt: event.timestamp,
       updatedAt: event.timestamp,
-      ...(payload.input !== undefined && { variables: { ...state.variables, _input: payload.input } }),
+      ...(payload.input !== undefined && {
+        variables: { ...state.variables, _input: payload.input },
+      }),
     };
   },
 
@@ -67,6 +69,23 @@ const handlers: Record<string, Handler> = {
     return { ...state, status: "failed", frames, updatedAt: event.timestamp };
   },
 
+  STEP_CANCELLED: (state, event) => {
+    // Marks the in-flight step as cancelled WITHOUT touching execution status —
+    // the surrounding EXECUTION_CANCELLED event owns the execution-level status,
+    // and this must not overwrite it back to a failure/other state.
+    const payload = event.payload as { stepId: string };
+    const frames = cloneFrames(state.frames);
+    const existing = frames[payload.stepId];
+    frames[payload.stepId] = {
+      stepId: payload.stepId,
+      status: "cancelled",
+      attempts: existing?.attempts ?? 1,
+      ...(existing?.startedAt !== undefined && { startedAt: existing.startedAt }),
+      ...(existing?.input !== undefined && { input: existing.input }),
+    };
+    return { ...state, frames, updatedAt: event.timestamp };
+  },
+
   STEP_RETRYING: (state, event) => {
     const payload = event.payload as { stepId: string; attempt: number };
     const frames = cloneFrames(state.frames);
@@ -99,7 +118,9 @@ const handlers: Record<string, Handler> = {
   },
 
   EXECUTION_SUSPENDED: (state, event) => {
-    const payload = event.payload as { condition: { on: string; timeout?: number; correlationKey?: string } };
+    const payload = event.payload as {
+      condition: { on: string; timeout?: number; correlationKey?: string };
+    };
     return {
       ...state,
       status: "suspended",
@@ -126,7 +147,9 @@ const handlers: Record<string, Handler> = {
     return {
       ...state,
       status: "completed",
-      ...(payload.output !== undefined && { variables: { ...state.variables, _output: payload.output } }),
+      ...(payload.output !== undefined && {
+        variables: { ...state.variables, _output: payload.output },
+      }),
       updatedAt: event.timestamp,
     };
   },
@@ -136,7 +159,21 @@ const handlers: Record<string, Handler> = {
     return {
       ...state,
       status: "failed",
-      ...(payload.error !== undefined && { variables: { ...state.variables, _error: payload.error } }),
+      ...(payload.error !== undefined && {
+        variables: { ...state.variables, _error: payload.error },
+      }),
+      updatedAt: event.timestamp,
+    };
+  },
+
+  EXECUTION_CANCELLED: (state, event) => {
+    const payload = event.payload as { reason?: unknown };
+    return {
+      ...state,
+      status: "cancelled",
+      ...(payload.reason !== undefined && {
+        variables: { ...state.variables, _cancelReason: payload.reason },
+      }),
       updatedAt: event.timestamp,
     };
   },

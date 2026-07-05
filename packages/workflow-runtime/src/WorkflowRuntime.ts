@@ -7,13 +7,7 @@ import { ReplayVM } from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 import { WorkflowContextImpl } from "./WorkflowContext";
-import type {
-  ExecutionHandle,
-  FlowRunner,
-  RegisteredFlow,
-  ResumeEvent,
-  RunOptions,
-} from "./types";
+import type { ExecutionHandle, FlowRunner, RegisteredFlow, ResumeEvent, RunOptions } from "./types";
 
 export interface WorkflowRuntimeDeps {
   eventStore: EventStore;
@@ -76,7 +70,7 @@ export class WorkflowRuntime {
       vm.applyEvent(envelope);
       this.onEvent?.(envelope);
     }
-    const originalInput = preloadedState.variables["_input"];
+    const originalInput = preloadedState.variables._input;
     return this.execute(
       preloadedState.executionId,
       preloadedState.workflowId,
@@ -201,16 +195,21 @@ export class WorkflowRuntime {
     let rejectCompletion!: (err: unknown) => void;
     let resolveSuspend!: (state: ReturnType<typeof vm.getState>) => void;
 
-    const completionPromise = new Promise<ReturnType<typeof vm.getState>>(
-      (resolve, reject) => {
-        resolveCompletion = resolve;
-        rejectCompletion = reject;
-      }
-    );
+    const completionPromise = new Promise<ReturnType<typeof vm.getState>>((resolve, reject) => {
+      resolveCompletion = resolve;
+      rejectCompletion = reject;
+    });
 
     const suspendPromise = new Promise<ReturnType<typeof vm.getState>>((resolve) => {
       resolveSuspend = resolve;
     });
+
+    // Ephemeral cancellation for this live run. The controller's signal is
+    // threaded into every effect context; cancel() aborts it and records a
+    // durable EXECUTION_CANCELLED event. Durable state is untouched, so resume
+    // semantics are unaffected.
+    const controller = new AbortController();
+    let cancelled = false;
 
     const ctx = new WorkflowContextImpl(
       executionId,
@@ -218,8 +217,31 @@ export class WorkflowRuntime {
       vm,
       this.eventStore,
       this.effectRuntime,
-      this.onEvent
+      this.onEvent,
+      controller.signal
     );
+
+    const cancel = (reason?: unknown): void => {
+      if (cancelled) return;
+      cancelled = true;
+      controller.abort(reason);
+
+      const seq = this.eventStore.nextSequence(executionId);
+      const cancelledEnvelope: EventEnvelope = {
+        id: `${executionId}-${seq}`,
+        workflowId,
+        executionId,
+        eventType: "EXECUTION_CANCELLED",
+        sequence: seq,
+        timestamp: Date.now(),
+        payload: { ...(reason !== undefined && { reason: String(reason) }) },
+      };
+      this.eventStore.append(cancelledEnvelope);
+      vm.applyEvent(cancelledEnvelope);
+      this.onEvent?.(cancelledEnvelope);
+
+      rejectCompletion(reason instanceof Error ? reason : new Error("Execution cancelled"));
+    };
 
     const run = async () => {
       try {
@@ -269,6 +291,12 @@ export class WorkflowRuntime {
           return;
         }
 
+        // If the run was cancelled, cancel() already recorded EXECUTION_CANCELLED
+        // and rejected completion. The error bubbling up here is the abort itself
+        // (or a downstream effect observing the signal) — don't double-record it
+        // as a failure.
+        if (cancelled) return;
+
         const seq = this.eventStore.nextSequence(executionId);
         const failedEnvelope: EventEnvelope = {
           id: `${executionId}-${seq}`,
@@ -294,6 +322,7 @@ export class WorkflowRuntime {
       waitForCompletion: () => completionPromise,
       waitForSuspend: () => suspendPromise,
       getState: () => vm.getState(),
+      cancel,
     };
   }
 }

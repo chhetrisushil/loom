@@ -23,6 +23,7 @@
     "@loom/effect-runtime": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/replay-vm": "workspace:*",
+    "@loom/scheduler": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "ulid": "^2.3.0"
   },

@@ -1,12 +1,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod";
 import { step$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { SqliteEventStore } from "@loom/event-runtime";
 import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "./types";
 
@@ -66,18 +66,31 @@ afterEach(() => {
   rmSync(dbDir, { recursive: true, force: true });
 });
 
-function makeRuntime(overrides?: { metricsFn?: () => Promise<unknown>; logsFn?: () => Promise<unknown>; remediationFn?: () => Promise<unknown> }) {
+function makeRuntime(overrides?: {
+  metricsFn?: () => Promise<unknown>;
+  logsFn?: () => Promise<unknown>;
+  remediationFn?: () => Promise<unknown>;
+}) {
   const eventStore = new SqliteEventStore(dbPath);
-  const snapshotStore = new SqliteSnapshotStore(dbPath + "-snap");
+  const snapshotStore = new SqliteSnapshotStore(`${dbPath}-snap`);
   const effectRuntime = new EffectRuntime();
 
   const metricsFn = overrides?.metricsFn ?? vi.fn().mockResolvedValue({ cpu: 87 });
   const logsFn = overrides?.logsFn ?? vi.fn().mockResolvedValue({ logs: ["OOM"] });
   const remediationFn = overrides?.remediationFn ?? vi.fn().mockResolvedValue({ fixed: true });
 
-  effectRuntime.register("metrics-tool", new ToolEffect(metricsFn as (input: unknown) => Promise<unknown>));
-  effectRuntime.register("logs-tool", new ToolEffect(logsFn as (input: unknown) => Promise<unknown>));
-  effectRuntime.register("remediation-tool", new ToolEffect(remediationFn as (input: unknown) => Promise<unknown>));
+  effectRuntime.register(
+    "metrics-tool",
+    new ToolEffect(metricsFn as (input: unknown) => Promise<unknown>)
+  );
+  effectRuntime.register(
+    "logs-tool",
+    new ToolEffect(logsFn as (input: unknown) => Promise<unknown>)
+  );
+  effectRuntime.register(
+    "remediation-tool",
+    new ToolEffect(remediationFn as (input: unknown) => Promise<unknown>)
+  );
 
   const runtime = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime });
 
@@ -121,7 +134,7 @@ describe("WorkflowRuntime — A2UI (ctx.ui)", () => {
   it("ctx.ui.* emits durable A2UI_PATCH events with the right patches", async () => {
     const events: { eventType: string; payload: unknown }[] = [];
     const eventStore = new SqliteEventStore(dbPath);
-    const snapshotStore = new SqliteSnapshotStore(dbPath + "-snap");
+    const snapshotStore = new SqliteSnapshotStore(`${dbPath}-snap`);
     const effectRuntime = new EffectRuntime();
     const runtime = new WorkflowRuntime({
       eventStore,
@@ -142,12 +155,9 @@ describe("WorkflowRuntime — A2UI (ctx.ui)", () => {
 
     const patchEvents = events.filter((e) => e.eventType === "A2UI_PATCH");
     expect(patchEvents).toHaveLength(4);
-    expect(patchEvents.map((e) => (e.payload as { patches: { op: string }[] }).patches[0]?.op)).toEqual([
-      "set",
-      "merge",
-      "append",
-      "increment",
-    ]);
+    expect(
+      patchEvents.map((e) => (e.payload as { patches: { op: string }[] }).patches[0]?.op)
+    ).toEqual(["set", "merge", "append", "increment"]);
     expect(patchEvents[0]?.payload).toEqual({
       surface: "ui",
       patches: [{ op: "set", path: "phase", value: "investigating" }],
@@ -165,9 +175,10 @@ describe("WorkflowRuntime — suspend and resume", () => {
       logsFn: logsFn1,
     });
 
-    let executionId!: string;
-
-    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (ctx, input) => {
+    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (
+      ctx,
+      input
+    ) => {
       const metrics = await ctx.run(fetchMetricsStep, { incidentId: input.incidentId });
       const logs = await ctx.run(fetchLogsStep, { incidentId: input.incidentId });
       await ctx.suspend({ on: "ApprovalGranted", correlationKey: input.incidentId });
@@ -181,7 +192,7 @@ describe("WorkflowRuntime — suspend and resume", () => {
     runtime1.registerFlow(makeFlow(runner).definition, runner);
 
     const handle1 = await runtime1.start(makeFlow(runner), { incidentId: "cpu-001" });
-    executionId = handle1.executionId;
+    const executionId = handle1.executionId;
     const suspendState = await handle1.waitForSuspend();
 
     expect(suspendState.status).toBe("suspended");
@@ -223,6 +234,106 @@ describe("WorkflowRuntime — suspend and resume", () => {
   });
 });
 
+describe("WorkflowRuntime — cancellation", () => {
+  it("cancel() aborts an in-flight effect, records EXECUTION_CANCELLED, and rejects completion — fast", async () => {
+    const events: string[] = [];
+    const eventStore = new SqliteEventStore(dbPath);
+    const snapshotStore = new SqliteSnapshotStore(`${dbPath}-snap`);
+    const effectRuntime = new EffectRuntime();
+
+    // A long-running effect that resolves only when its signal aborts, so we can
+    // measure how quickly cancellation propagates.
+    let observedAbort = false;
+    const slowFn = (_input: unknown, ctx: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        const signal = ctx.signal;
+        if (signal === undefined) return; // never settles; the test would time out
+        signal.addEventListener("abort", () => {
+          observedAbort = true;
+          reject(new Error("aborted"));
+        });
+      });
+
+    effectRuntime.register("metrics-tool", new ToolEffect(slowFn));
+
+    const runtime = new WorkflowRuntime({
+      eventStore,
+      snapshotStore,
+      effectRuntime,
+      onEvent: (e) => events.push(e.eventType),
+    });
+
+    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (
+      ctx,
+      input
+    ) => {
+      await ctx.run(fetchMetricsStep, { incidentId: input.incidentId });
+      return { resolved: true };
+    };
+
+    const handle = await runtime.start(makeFlow(runner), { incidentId: "cancel-1" });
+
+    // Let the effect start and register its abort listener.
+    await new Promise((r) => setTimeout(r, 5));
+
+    const start = performance.now();
+    handle.cancel(new Error("user cancelled"));
+    await expect(handle.waitForCompletion()).rejects.toThrow("user cancelled");
+    const elapsed = performance.now() - start;
+
+    expect(observedAbort).toBe(true);
+    expect(handle.getState().status).toBe("cancelled");
+    expect(events).toContain("EXECUTION_CANCELLED");
+    expect(events).not.toContain("EXECUTION_FAILED");
+    // Cancellation should be effectively immediate (single-digit ms), never
+    // blocked on the long-running effect.
+    expect(elapsed).toBeLessThan(50);
+
+    eventStore.close();
+    snapshotStore.close();
+  });
+
+  it("cancel() is idempotent and records the event only once", async () => {
+    const events: string[] = [];
+    const eventStore = new SqliteEventStore(dbPath);
+    const snapshotStore = new SqliteSnapshotStore(`${dbPath}-snap`);
+    const effectRuntime = new EffectRuntime();
+    effectRuntime.register(
+      "metrics-tool",
+      new ToolEffect(
+        (_i: unknown, ctx: { signal?: AbortSignal }) =>
+          new Promise((_res, rej) =>
+            ctx.signal?.addEventListener("abort", () => rej(new Error("x")))
+          )
+      )
+    );
+    const runtime = new WorkflowRuntime({
+      eventStore,
+      snapshotStore,
+      effectRuntime,
+      onEvent: (e) => events.push(e.eventType),
+    });
+    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (
+      ctx,
+      input
+    ) => {
+      await ctx.run(fetchMetricsStep, { incidentId: input.incidentId });
+      return { resolved: true };
+    };
+    const handle = await runtime.start(makeFlow(runner), { incidentId: "cancel-2" });
+    await new Promise((r) => setTimeout(r, 5));
+
+    handle.cancel();
+    handle.cancel();
+    handle.cancel();
+    await expect(handle.waitForCompletion()).rejects.toThrow();
+
+    expect(events.filter((e) => e === "EXECUTION_CANCELLED")).toHaveLength(1);
+    eventStore.close();
+    snapshotStore.close();
+  });
+});
+
 describe("WorkflowRuntime — parallel steps", () => {
   it("executes parallel steps concurrently", async () => {
     const callOrder: string[] = [];
@@ -241,7 +352,10 @@ describe("WorkflowRuntime — parallel steps", () => {
 
     const { runtime } = makeRuntime({ metricsFn, logsFn });
 
-    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (ctx, input) => {
+    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (
+      ctx,
+      input
+    ) => {
       await ctx.parallel([
         [fetchMetricsStep, { incidentId: input.incidentId }],
         [fetchLogsStep, { incidentId: input.incidentId }],
@@ -256,5 +370,45 @@ describe("WorkflowRuntime — parallel steps", () => {
     expect(callOrder).toContain("logs-start");
     expect(callOrder[0]).toMatch(/start/);
     expect(callOrder[1]).toMatch(/start/);
+  });
+
+  it("parallel with limit:1 serializes execution but preserves result order", async () => {
+    const callOrder: string[] = [];
+    const metricsFn = vi.fn().mockImplementation(async () => {
+      callOrder.push("metrics-start");
+      await new Promise((r) => setTimeout(r, 10));
+      callOrder.push("metrics-end");
+      return { cpu: 42 };
+    });
+    const logsFn = vi.fn().mockImplementation(async () => {
+      callOrder.push("logs-start");
+      await new Promise((r) => setTimeout(r, 1));
+      callOrder.push("logs-end");
+      return { logs: ["x"] };
+    });
+
+    const { runtime } = makeRuntime({ metricsFn, logsFn });
+
+    let results: unknown[] = [];
+    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (
+      ctx,
+      input
+    ) => {
+      results = await ctx.parallel(
+        [
+          [fetchMetricsStep, { incidentId: input.incidentId }],
+          [fetchLogsStep, { incidentId: input.incidentId }],
+        ],
+        { limit: 1 }
+      );
+      return { resolved: true };
+    };
+
+    await (await runtime.start(makeFlow(runner), { incidentId: "limit-1" })).waitForCompletion();
+
+    // limit:1 forces full serialization — metrics fully completes before logs starts.
+    expect(callOrder).toEqual(["metrics-start", "metrics-end", "logs-start", "logs-end"]);
+    // Results stay in INPUT order regardless (deterministic replay).
+    expect(results).toEqual([{ cpu: 42 }, { logs: ["x"] }]);
   });
 });

@@ -30,7 +30,9 @@ export class AnthropicProvider implements LlmProvider {
   private readonly baseUrl: string;
 
   constructor(config: AnthropicProviderConfig = {}) {
-    this.apiKey = config.apiKey ?? (typeof process !== "undefined" ? (process.env["ANTHROPIC_API_KEY"] ?? "") : "");
+    this.apiKey =
+      config.apiKey ??
+      (typeof process !== "undefined" ? (process.env.ANTHROPIC_API_KEY ?? "") : "");
     this.model = config.model ?? "claude-opus-4-8";
     this.baseUrl = config.baseUrl ?? "https://api.anthropic.com";
   }
@@ -49,11 +51,11 @@ export class AnthropicProvider implements LlmProvider {
       messages,
     };
 
-    if (system !== undefined) body["system"] = system;
-    if (request.temperature !== undefined) body["temperature"] = request.temperature;
+    if (system !== undefined) body.system = system;
+    if (request.temperature !== undefined) body.temperature = request.temperature;
 
     if (request.tools !== undefined && request.tools.length > 0) {
-      body["tools"] = request.tools.map((t) => ({
+      body.tools = request.tools.map((t) => ({
         name: t.name,
         description: t.description,
         input_schema: { type: "object", ...t.inputSchema },
@@ -72,6 +74,7 @@ export class AnthropicProvider implements LlmProvider {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(this.buildBody(request)),
+      ...(request.signal !== undefined && { signal: request.signal }),
     });
 
     if (!resp.ok) {
@@ -115,6 +118,7 @@ export class AnthropicProvider implements LlmProvider {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(body),
+      ...(request.signal !== undefined && { signal: request.signal }),
     });
 
     if (!resp.ok) {
@@ -144,12 +148,12 @@ export class AnthropicProvider implements LlmProvider {
         }
         try {
           const event = JSON.parse(json) as Record<string, unknown>;
-          if (event["type"] === "content_block_delta") {
-            const delta = event["delta"] as Record<string, unknown> | undefined;
-            if (delta?.["type"] === "text_delta") {
-              yield { delta: String(delta["text"] ?? ""), done: false };
+          if (event.type === "content_block_delta") {
+            const delta = event.delta as Record<string, unknown> | undefined;
+            if (delta?.type === "text_delta") {
+              yield { delta: String(delta.text ?? ""), done: false };
             }
-          } else if (event["type"] === "message_stop") {
+          } else if (event.type === "message_stop") {
             yield { delta: "", done: true };
             return;
           }
