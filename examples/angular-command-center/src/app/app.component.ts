@@ -277,7 +277,7 @@ import { LoomService } from "./loom.service";
                 <div class="empty" style="padding:16px">Events will appear here…</div>
               } @else {
                 <ul class="log-list">
-                  @for (entry of loom.eventLog(); track entry.time + entry.label) {
+                  @for (entry of loom.eventLog(); track entry.id) {
                     <li class="log-item">
                       <span class="log-time">{{ entry.time }}</span>
                       <span class="log-label">{{ entry.label }}</span>

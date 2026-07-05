@@ -29,6 +29,9 @@ export interface IncidentState {
 }
 
 export interface LogEntry {
+  // Unique per event (executionId-sequence) — used as the @for track key, since
+  // time+label collides for same-type events within the same second.
+  id: string;
   time: string;
   label: string;
   payload: unknown;
@@ -111,6 +114,7 @@ export class LoomService {
           this.eventLog.update((prev) => [
             ...prev,
             {
+              id: e.id,
               time: new Date().toLocaleTimeString("en", { hour12: false }),
               label: e.eventType,
               payload: e.payload,
