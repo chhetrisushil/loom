@@ -4,20 +4,27 @@ import type { WorkflowRuntime } from "@loom/workflow-runtime";
 import { deserializeExecution, deserializeProjections } from "@loom/workflow-runtime";
 import type React from "react";
 import { createContext, useContext, useRef } from "react";
+import type { FiberConfig } from "./fiber/types";
 
 interface LoomContextValue {
   projectionRuntime: ProjectionRuntime;
   workflowRuntime: WorkflowRuntime;
   preloadedExecutionState: ExecutionState | null;
+  // Optional default render-side fiber config; a BlueprintRenderer `fiber` prop
+  // overrides it.
+  fiber?: FiberConfig;
 }
 
-const LoomContext = createContext<LoomContextValue | null>(null);
+// Exported so BlueprintRenderer can read an optional default WITHOUT the throwing
+// useLoom() — the renderer must keep working with no provider (as in tests).
+export const LoomContext = createContext<LoomContextValue | null>(null);
 
 interface LoomProviderProps {
   projectionRuntime: ProjectionRuntime;
   workflowRuntime: WorkflowRuntime;
   serializedExecutionState?: string;
   serializedProjectionState?: string;
+  fiber?: FiberConfig;
   children: React.ReactNode;
 }
 
@@ -26,6 +33,7 @@ export function LoomProvider({
   workflowRuntime,
   serializedExecutionState,
   serializedProjectionState,
+  fiber,
   children,
 }: LoomProviderProps) {
   // Seed projection state synchronously on the first render so child
@@ -44,7 +52,14 @@ export function LoomProvider({
     : null;
 
   return (
-    <LoomContext.Provider value={{ projectionRuntime, workflowRuntime, preloadedExecutionState }}>
+    <LoomContext.Provider
+      value={{
+        projectionRuntime,
+        workflowRuntime,
+        preloadedExecutionState,
+        ...(fiber !== undefined && { fiber }),
+      }}
+    >
       {children}
     </LoomContext.Provider>
   );
