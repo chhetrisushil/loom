@@ -390,6 +390,9 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../core
+      '@loom/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
