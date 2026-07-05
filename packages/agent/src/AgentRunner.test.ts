@@ -1,9 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
-import { z } from "zod";
 import { agent$, tool$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
 import type { LlmProvider, LlmResponse } from "@loom/llm";
+import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { AgentRunner } from "./AgentRunner";
 
 function makeEffectContext(): EffectContext {
@@ -29,6 +29,22 @@ const weatherAgent = agent$({
   name: "Weather Agent",
   tools: [weatherTool],
 });
+
+const timeTool = tool$({
+  id: "get-time",
+  name: "Get Time",
+  description: "Returns the current time for a timezone",
+  inputSchema: z.object({ tz: z.string() }),
+  outputSchema: z.object({ iso: z.string() }),
+});
+
+const multiToolAgent = agent$({
+  id: "multi-agent",
+  name: "Multi Agent",
+  tools: [weatherTool, timeTool],
+});
+
+const delay = <T>(ms: number, value: T) => new Promise<T>((r) => setTimeout(() => r(value), ms));
 
 describe("AgentRunner", () => {
   it("runs a ReAct loop: tool_use then end_turn", async () => {
@@ -128,7 +144,12 @@ describe("AgentRunner", () => {
       },
     };
     const effectRuntime = new EffectRuntime();
-    const runner = new AgentRunner({ definition: rememberingAgent, provider, effectRuntime, memory });
+    const runner = new AgentRunner({
+      definition: rememberingAgent,
+      provider,
+      effectRuntime,
+      memory,
+    });
 
     // First turn — no prior memory.
     await runner.run({ prompt: "my name is Ada", memoryScope: "user-1" }, makeEffectContext());
@@ -144,6 +165,75 @@ describe("AgentRunner", () => {
     seenPrompts.length = 0;
     await runner.run({ prompt: "hello", memoryScope: "user-2" }, makeEffectContext());
     expect(seenPrompts[0]).toBe("user:hello");
+  });
+
+  it("parallelTools: emits tool events in INPUT order regardless of completion order, identical to sequential", async () => {
+    // A provider that asks for two tools in one turn, in a fixed order.
+    const makeProvider = (): LlmProvider => {
+      const responses: LlmResponse[] = [
+        {
+          content: "",
+          toolCalls: [
+            { id: "c1", name: "get-weather", input: { city: "Paris" } },
+            { id: "c2", name: "get-time", input: { tz: "UTC" } },
+          ],
+          stopReason: "tool_use",
+        },
+        { content: "done", stopReason: "end_turn" },
+      ];
+      let call = 0;
+      return { complete: async () => responses[call++] as LlmResponse };
+    };
+
+    // weather is SLOW, time is FAST → completion order is the REVERSE of input
+    // order, which would corrupt event order if we recorded by completion.
+    let peak = 0;
+    let active = 0;
+    const makeEffects = () => {
+      const er = new EffectRuntime();
+      const track = async <T>(ms: number, out: T): Promise<T> => {
+        active++;
+        peak = Math.max(peak, active);
+        const v = await delay(ms, out);
+        active--;
+        return v;
+      };
+      er.register("get-weather", new ToolEffect(() => track(25, { tempC: 18 })));
+      er.register("get-time", new ToolEffect(() => track(1, { iso: "2024" })));
+      return er;
+    };
+
+    const ctxP = makeEffectContext();
+    const parallel = new AgentRunner({
+      definition: multiToolAgent,
+      provider: makeProvider(),
+      effectRuntime: makeEffects(),
+      parallelTools: true,
+    });
+    const outP = await parallel.run({ prompt: "x" }, ctxP);
+
+    const ctxS = makeEffectContext();
+    const sequential = new AgentRunner({
+      definition: multiToolAgent,
+      provider: makeProvider(),
+      effectRuntime: makeEffects(),
+    });
+    const outS = await sequential.run({ prompt: "x" }, ctxS);
+
+    const toolNames = (out: typeof outP) => out.toolCallLog.map((t) => t.toolName);
+    const emittedNames = (ctx: EffectContext) =>
+      (ctx.emit as ReturnType<typeof vi.fn>).mock.calls
+        .filter((c) => c[0] === "AGENT_TOOL_CALL")
+        .map((c) => (c[1] as { toolName: string }).toolName);
+
+    // Input order preserved in BOTH the log and the emitted events...
+    expect(toolNames(outP)).toEqual(["get-weather", "get-time"]);
+    expect(emittedNames(ctxP)).toEqual(["get-weather", "get-time"]);
+    // ...and byte-identical to the sequential run (deterministic replay).
+    expect(toolNames(outP)).toEqual(toolNames(outS));
+    expect(emittedNames(ctxP)).toEqual(emittedNames(ctxS));
+    // The tools really did run concurrently in parallel mode.
+    expect(peak).toBeGreaterThanOrEqual(2);
   });
 
   it("captures tool errors instead of throwing", async () => {
