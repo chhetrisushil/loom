@@ -54,6 +54,12 @@ export class Orchestrator {
   private readonly mission: A2UIEmitter;
   private readonly telemetry: A2UIEmitter;
   private seq = 0;
+  // A per-run nonce so each mission run gets globally-unique flow execution ids.
+  // The mission id is fixed (one active mission), so without this a re-run reuses
+  // execution ids like "task-1-assess-remediation" and collides with the durable
+  // event log — harmless in-memory, a UNIQUE-constraint error on SQLite.
+  private runSeq = 0;
+  private runId = "r0";
 
   private model: MissionModel = {
     goal: "",
@@ -91,6 +97,7 @@ export class Orchestrator {
 
   // Kick off a mission for a natural-language goal.
   async run(goal: string): Promise<void> {
+    this.runId = `${Date.now().toString(36)}-${(this.runSeq++).toString(36)}`;
     this.resetSurfaces(goal);
     this.seedFleet();
 
@@ -153,7 +160,7 @@ export class Orchestrator {
   ): Promise<unknown> {
     const agentId = entry.agentId;
     const agentName = AGENT_CARDS[agentId]?.name ?? agentId;
-    const taskId = `task-${index}-${entry.capabilityId}`;
+    const taskId = `task-${this.runId}-${index}-${entry.capabilityId}`;
 
     const task: AgentTask = {
       id: taskId,
