@@ -44,7 +44,9 @@ describe("InMemoryProjectionRuntime", () => {
     runtime.handleEvent(makeEvent("exec-1", 0, "STEP_COMPLETED"));
     runtime.handleEvent(makeEvent("exec-1", 1, "STEP_COMPLETED"));
     runtime.handleEvent(makeEvent("exec-1", 2, "STEP_COMPLETED"));
-    expect(runtime.getState<{ completedSteps: number }>("step-counter", "exec-1").completedSteps).toBe(3);
+    expect(
+      runtime.getState<{ completedSteps: number }>("step-counter", "exec-1").completedSteps
+    ).toBe(3);
   });
 
   it("ignores unhandled event types", () => {
@@ -52,7 +54,9 @@ describe("InMemoryProjectionRuntime", () => {
     runtime.register(stepCounterProjection);
     runtime.handleEvent(makeEvent("exec-1", 0, "EXECUTION_STARTED"));
     runtime.handleEvent(makeEvent("exec-1", 1, "EXECUTION_SUSPENDED"));
-    expect(runtime.getState<{ completedSteps: number }>("step-counter", "exec-1").completedSteps).toBe(0);
+    expect(
+      runtime.getState<{ completedSteps: number }>("step-counter", "exec-1").completedSteps
+    ).toBe(0);
   });
 
   it("isolates state by executionId", () => {
@@ -61,8 +65,12 @@ describe("InMemoryProjectionRuntime", () => {
     runtime.handleEvent(makeEvent("exec-A", 0, "STEP_COMPLETED"));
     runtime.handleEvent(makeEvent("exec-A", 1, "STEP_COMPLETED"));
     runtime.handleEvent(makeEvent("exec-B", 0, "STEP_COMPLETED"));
-    expect(runtime.getState<{ completedSteps: number }>("step-counter", "exec-A").completedSteps).toBe(2);
-    expect(runtime.getState<{ completedSteps: number }>("step-counter", "exec-B").completedSteps).toBe(1);
+    expect(
+      runtime.getState<{ completedSteps: number }>("step-counter", "exec-A").completedSteps
+    ).toBe(2);
+    expect(
+      runtime.getState<{ completedSteps: number }>("step-counter", "exec-B").completedSteps
+    ).toBe(1);
   });
 
   it("calls subscribe handler when event is processed", () => {
@@ -94,6 +102,45 @@ describe("InMemoryProjectionRuntime", () => {
     runtime.subscribe("step-counter", "exec-X", handler);
     runtime.handleEvent(makeEvent("exec-Y", 0, "STEP_COMPLETED"));
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("coalesce mode: a burst of N events fires the subscriber once with the latest state", async () => {
+    const runtime = new InMemoryProjectionRuntime({ coalesceNotifications: true });
+    runtime.register(stepCounterProjection);
+    const handler = vi.fn();
+    runtime.subscribe("step-counter", "exec-c", handler);
+
+    for (let i = 0; i < 5; i++) {
+      runtime.handleEvent(makeEvent("exec-c", i, "STEP_COMPLETED"));
+    }
+
+    // Nothing synchronously — notifications are deferred to a microtask.
+    expect(handler).toHaveBeenCalledTimes(0);
+    // State is still updated synchronously and correctly.
+    expect(
+      runtime.getState<{ completedSteps: number }>("step-counter", "exec-c").completedSteps
+    ).toBe(5);
+
+    await Promise.resolve();
+
+    // One coalesced call carrying the final state, not five.
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0]?.[0]).toEqual({ completedSteps: 5 });
+  });
+
+  it("coalesce mode: separate microtask ticks each flush once", async () => {
+    const runtime = new InMemoryProjectionRuntime({ coalesceNotifications: true });
+    runtime.register(stepCounterProjection);
+    const handler = vi.fn();
+    runtime.subscribe("step-counter", "exec-d", handler);
+
+    runtime.handleEvent(makeEvent("exec-d", 0, "STEP_COMPLETED"));
+    await Promise.resolve();
+    runtime.handleEvent(makeEvent("exec-d", 1, "STEP_COMPLETED"));
+    await Promise.resolve();
+
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(handler.mock.calls[1]?.[0]).toEqual({ completedSteps: 2 });
   });
 
   it("integrates with workflow-runtime style: 3-step flow, subscription fires 3 times", () => {
