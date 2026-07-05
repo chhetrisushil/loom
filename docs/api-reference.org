@@ -1015,6 +1015,58 @@ type DataBinding = {
 
 Widget ids are deterministically hashed from ~(kind, props)~, so blueprints are stable across re-renders without explicit keys.
 
+** ~traverseBlueprint~ vs ~traverseBlueprintAsync~
+
+The synchronous ~traverseBlueprint~ is a *pull* traversal: it assembles the whole node tree bottom-up and hands it back. It is the default for renderers that need the complete tree (React, string/SSR) and is *unchanged*.
+
+~traverseBlueprintAsync~ is an interruptible, incremental-commit (*push*) counterpart for scheduler-less BYOR renderers that mutate a target as the tree resolves (direct DOM, canvas, native). It creates each node top-down, appends children as they resolve, cooperatively yields against a budget, and honours an ~AbortSignal~ at every node — so a stale render can be interrupted and a large tree stays responsive.
+
+#+begin_src typescript
+import { traverseBlueprintAsync } from "@loom/blueprint-runtime";
+import type { IncrementalRenderer } from "@loom/blueprint-runtime";
+
+async function traverseBlueprintAsync<TNode>(
+  node: Layout | Widget,
+  stateMap: Map<string, unknown>,
+  options: {
+    renderer: IncrementalRenderer<TNode>;
+    onAction?: (action: WidgetAction) => void;
+    signal?: AbortSignal;                        // checked at every node
+    shouldYield?: (nodesSinceYield: number) => boolean;   // default: every 64 nodes
+    yieldTo?: () => Promise<void>;               // default: @loom/scheduler yieldControl
+  },
+): Promise<TNode>;
+
+interface IncrementalRenderer<TNode> {
+  createContainer(layout: Layout): TNode;
+  createWidget(ctx: WidgetRendererProps): TNode;
+  appendChild(parent: TNode, child: TNode): void;
+}
+#+end_src
+
+#+begin_src typescript
+// A minimal DOM IncrementalRenderer (no React, no virtual tree)
+const domRenderer: IncrementalRenderer<HTMLElement> = {
+  createContainer: (layout) => document.createElement("div"),
+  createWidget: ({ widget, value }) => {
+    const el = document.createElement("div");
+    el.dataset.widgetKind = widget.kind;
+    el.textContent = String(value ?? "");
+    return el;
+  },
+  appendChild: (parent, child) => parent.appendChild(child),
+};
+
+const controller = new AbortController();
+const root = await traverseBlueprintAsync(blueprint.layout, stateMap, {
+  renderer: domRenderer,
+  signal: controller.signal,
+});
+document.body.appendChild(root);
+#+end_src
+
+Yielding is counter-based (deterministic, clock-free) and uses ~yieldControl~ from [[#scheduler][~@loom/scheduler~]] (a macrotask) by default. No production renderer ships against this yet — all current renderers are pull-model — so it is the validated BYOR extension point rather than a supported target.
+
 -----
 
 * React Renderer
@@ -1056,6 +1108,39 @@ function Dashboard({ executionId }: { executionId: string }) {
 | ~projectionRuntime~ | ~ProjectionRuntime~                | yes      | Live projection state source                           |
 | ~executionId~       | ~string~                           | yes      | Scopes all projection state to this execution          |
 | ~onAction~          | ~(action: WidgetAction) => void~   | no       | Called when a widget dispatches an action (e.g. approval button click) |
+| ~fiber~             | ~FiberConfig~                      | no       | Opt-in render-side fiber capabilities; default off (see below)         |
+
+** ~fiber~ — opt-in render capabilities
+
+These capabilities leverage React's *own* fiber scheduler (they mark intent — priority, suspension, granular subscription); Loom does not add a second reconciler. All are *off by default*: when ~fiber~ is falsy the renderer takes the exact current code path (byte-identical output).
+
+#+begin_src typescript
+type FiberConfig = boolean | {
+  granularUpdates?: boolean;   // each widget subscribes to its own binding path;
+                               // only the changed widget re-renders (vs whole tree)
+  suspense?: boolean;          // per-widget <React.Suspense> boundary so an async
+                               // BYOC component can suspend without blanking siblings
+  deferStreaming?: boolean;    // streaming widgets update via startTransition
+};
+// `true` enables all three.
+#+end_src
+
+~suspense~'s fallback is the widget placeholder or skeleton; ~deferStreaming~ applies to widgets of kind ~"StreamingText"~ or with ~props.defer === true~. Enabling any capability implies per-widget mounting (fiber mode), which inherently gives granular subscription.
+
+#+begin_src typescript
+// Turn everything on for one renderer:
+<BlueprintRenderer blueprint={bp} projectionRuntime={rt} executionId={id} fiber />
+
+// Or opt into individual capabilities:
+<BlueprintRenderer
+  blueprint={bp}
+  projectionRuntime={rt}
+  executionId={id}
+  fiber={{ granularUpdates: true, deferStreaming: true }}
+/>
+#+end_src
+
+~fiber~ can also be set as a default on ~LoomProvider~ (~<LoomProvider fiber={…}>~); a ~BlueprintRenderer~ ~fiber~ prop overrides the provider default.
 
 ** ~WidgetAction~
 
@@ -1147,6 +1232,8 @@ createRoot(root).render(
 | ~projectionRuntime~          | ~ProjectionRuntime~   | yes      | The projection runtime instance                           |
 | ~serializedExecutionState~   | ~string~              | no       | JSON string from ~serializeExecution()~ on the server     |
 | ~serializedProjectionState~  | ~string~              | no       | JSON string from ~serializeProjections()~ on the server   |
+| ~fiber~                      | ~FiberConfig~         | no       | Default render-side fiber config for descendant ~BlueprintRenderer~s; a renderer's own ~fiber~ prop overrides it (see [[#react-renderer][fiber capabilities]]) |
+
 When ~serializedProjectionState~ is provided, ~LoomProvider~ calls ~projectionRuntime.seedState()~ for each entry in the snapshot *before* the first child render — no empty-state flash.
 
 ** ~useLoom~
@@ -1205,6 +1292,41 @@ function LiveTokens({ executionId }: { executionId: string }) {
 #+end_src
 
 Use *only* for high-frequency, low-urgency projections (streaming text, live metrics); keep urgent projections (an approval result) on ~useProjection~ to avoid momentarily showing stale UI. Pairs well with ~InMemoryProjectionRuntime({ coalesceNotifications: true })~.
+
+** ~useWidgetValue~ hook
+
+Tear-free, *path-granular* selector for a single widget, built on ~useSyncExternalStore~. It subscribes to the widget's bound projection but re-renders only when the widget's own slice (~binding.path~) actually changes — so a projection update re-renders only the widgets whose values changed, not the whole blueprint. This is the subscription primitive behind ~fiber={{ granularUpdates: true }}~.
+
+#+begin_src typescript
+import { useWidgetValue } from "@loom/renderer-react";
+
+function Cell({ widget, executionId }: { widget: Widget; executionId: string }) {
+  const value = useWidgetValue<number>(projectionRuntime, widget, executionId);
+  return <span>{value ?? "—"}</span>;
+}
+#+end_src
+
+| Parameter     | Type                      | Description                                                     |
+|---------------+---------------------------+-----------------------------------------------------------------|
+| ~runtime~     | ~ProjectionRuntime~       | Projection state source                                         |
+| ~widget~      | ~Widget~                  | Widget whose ~binding~ slice is selected                        |
+| ~executionId~ | ~string~                  | Scopes projection state to this execution                       |
+| ~isEqual~     | ~(a, b) => boolean~       | Optional equality for the resolved slice; defaults to ~Object.is~ |
+
+** ~useDeferredWidgetValue~ hook
+
+The ~startTransition~-based variant of ~useWidgetValue~ for high-frequency streaming widgets — path-granular, but subsequent updates are deferred so they never block urgent work. (~startTransition~ cannot be layered on ~useSyncExternalStore~, so this is a separate ~useState~-based implementation with its own ~Object.is~ slice guard.)
+
+#+begin_src typescript
+import { useDeferredWidgetValue } from "@loom/renderer-react";
+
+function StreamingCell({ widget, executionId }: { widget: Widget; executionId: string }) {
+  const text = useDeferredWidgetValue<string>(projectionRuntime, widget, executionId);
+  return <p>{text}</p>;
+}
+#+end_src
+
+Same trade-off as ~useDeferredProjection~: deferred updates can momentarily tear relative to eager widgets, so reserve it for high-frequency, low-urgency widgets.
 
 -----
 
