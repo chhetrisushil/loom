@@ -19,6 +19,7 @@ optimize for continuation, not hydration.*
 | [`demo-script.md`](./demo-script.md) | Presenter | Live runbook — exact commands, what to show, talking points, timings |
 | [`db-command-center-deck.md`](./db-command-center-deck.md) | Engineers / architects | Deep dive on the **agentic DB command center** (React) — intent → planner → A2A → durable human‑in‑the‑loop, BYOR + BYOC + render‑side fiber |
 | [`db-command-center-wc-deck.md`](./db-command-center-wc-deck.md) | Engineers / architects | The **same app in vanilla Web Components** — proof of BYOR: reuse the whole agentic backend, swap only the render layer |
+| [`db-command-center-server-deck.md`](./db-command-center-server-deck.md) | Engineers / architects | The **same app as server + client** — durable runtime on a Node server (SQLite), Web-Components client over HTTP + SSE; Loom's isomorphic deployment model |
 
 Suggested order: **leadership deck → live demo (Demo 0 + 1) → engineering deck → walkthrough** as
 depth requires. The demo script has 5 / 15 / 30‑minute variants.
@@ -57,6 +58,7 @@ pnpm --filter @loom/playground dev                # Demo 2: A2UI patch stream + 
 pnpm --filter @loom/angular-command-center dev    # Demo 3: same runtime, Angular UI (optional)
 pnpm --filter @loom/db-command-center dev         # Demo 4: agentic DB command center — planner + A2A + HITL + fiber (React)
 pnpm --filter @loom/db-command-center-wc dev      # Demo 5: the same app in vanilla Web Components (no framework)
+pnpm --filter @loom/db-command-center-server dev  # Demo 6: the same app as server + client (durable Node server + WC client over SSE)
 ```
 
 **Prerequisites:** Node ≥ 20, pnpm ≥ 9. Use `vite dev` (not `vite build`) for the browser apps.
