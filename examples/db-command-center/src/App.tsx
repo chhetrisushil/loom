@@ -272,6 +272,9 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     cursor: "pointer",
   },
-  tabActive: { background: "#1c2635", color: "#9ecbff", borderColor: "#3182ce" },
+  // Override the full `border` shorthand (not just borderColor) so toggling
+  // active/inactive changes one property instead of mixing shorthand +
+  // non-shorthand — React warns about the latter across rerenders.
+  tabActive: { background: "#1c2635", color: "#9ecbff", border: "1px solid #3182ce" },
   loading: { color: "#6b7d95", padding: 40, textAlign: "center" },
 };
