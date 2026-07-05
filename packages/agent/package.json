@@ -21,7 +21,8 @@
     "@loom/core": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
     "@loom/llm": "workspace:*",
-    "@loom/memory": "workspace:*"
+    "@loom/memory": "workspace:*",
+    "@loom/scheduler": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

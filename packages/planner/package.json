@@ -20,7 +20,8 @@
   "dependencies": {
     "@loom/capability": "workspace:*",
     "@loom/core": "workspace:*",
-    "@loom/llm": "workspace:*"
+    "@loom/llm": "workspace:*",
+    "@loom/scheduler": "workspace:*"
   },
   "devDependencies": {
     "@loom/workflow-runtime": "workspace:*",
