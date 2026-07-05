@@ -392,6 +392,76 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
+  examples/db-command-center-server:
+    dependencies:
+      '@loom/a2a':
+        specifier: workspace:*
+        version: link:../../packages/a2a
+      '@loom/a2ui':
+        specifier: workspace:*
+        version: link:../../packages/a2ui
+      '@loom/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@loom/blueprint-runtime':
+        specifier: workspace:*
+        version: link:../../packages/blueprint-runtime
+      '@loom/capability':
+        specifier: workspace:*
+        version: link:../../packages/capability
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
+      '@loom/intent':
+        specifier: workspace:*
+        version: link:../../packages/intent
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../../packages/llm
+      '@loom/planner':
+        specifier: workspace:*
+        version: link:../../packages/planner
+      '@loom/projection-runtime':
+        specifier: workspace:*
+        version: link:../../packages/projection-runtime
+      '@loom/registry':
+        specifier: workspace:*
+        version: link:../../packages/registry
+      '@loom/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vite:
+        specifier: ^5.4.10
+        version: 5.4.21(@types/node@22.20.0)(sass@1.90.0)
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   examples/db-command-center-wc:
     dependencies:
       '@loom/a2a':

@@ -67,6 +67,7 @@ loom/
 | ~agent-network~          | Node showcase: the full pipeline — intent routing, planner, capabilities, agent memory, MCP + A2A, and a terminal-rendered dashboard |
 | ~db-command-center~      | React app: intent-driven, human-in-the-loop, multi-agent (A2A) DB ops command center — a dynamically planned workflow, long-running domain agents, a near-real-time task list, and an observability dashboard; BYOR + BYOC + render-side fiber |
 | ~db-command-center-wc~   | The *same* command center in vanilla Web Components — no framework at all. Reuses the entire agentic backend and swaps only the render layer, proving Loom's BYOR contract |
+| ~db-command-center-server~ | The *same* command center as a genuine server + client app: the durable runtime runs on a Node server (SQLite); a Web Components client renders it over HTTP + SSE. Demonstrates the isomorphic deployment model (server execution → client render/resume) |
 
 * Prerequisites
 
@@ -152,6 +153,12 @@ Then open http://localhost:5173 (or the next free port). Try either built-in goa
 2. /"Investigate the read-replica lag issue and fix it if remediation is low risk, else wait for my approval."/ — diagnosed, assessed *medium risk*, so it *pauses for your approval* before scaling replicas.
 
 The two examples share one agentic backend (intent, planner, capabilities, durable flows, the in-process A2A bus, and the orchestrator) verbatim — only the render layer differs. The React app uses ~@loom/renderer-react~ with a custom ~RendererRegistry~ and opt-in fiber (~granular updates / suspense / deferred streaming~); the Web Components app renders the same ~blueprint$~ definitions with native Custom Elements via ~traverseBlueprint<HTMLElement>~, subscribing each widget to only its own projection slice for the same granular, near-real-time updates. This is Loom's *bring-your-own-renderer* contract in its starkest form.
+
+A third variant, ~db-command-center-server~, splits the *same* app into a genuine *server + client* topology — the durable runtime (SQLite event/snapshot stores, orchestrator, agents, durable ~ctx.suspend~/~resume~) runs on a Node server, and the Web Components client renders and drives it over HTTP + SSE (server pushes a ~serializeProjections~ snapshot on connect, then one A2UI patch per update; the client seeds and folds them into its own projection runtime). It demonstrates Loom's isomorphic deployment model — server-side execution, client-side rendering:
+
+#+begin_src sh
+pnpm --filter @loom/db-command-center-server dev   # client :5173 + durable server :8787
+#+end_src
 
 * Agentic Capabilities
 
