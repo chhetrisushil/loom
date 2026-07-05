@@ -13,6 +13,8 @@ export function loomPlugin(): Plugin {
     steps: new Map(),
     stepsByVarName: new Map(),
     flows: new Map(),
+    skills: new Map(),
+    skillsByVarName: new Map(),
   };
 
   let resolvedConfig: ResolvedConfig;

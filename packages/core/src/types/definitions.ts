@@ -98,12 +98,44 @@ export interface ProjectionDefinition<TState = unknown> {
 // A2A skill descriptor carried on an agent. Defined structurally here (rather
 // than importing from @loom/a2a) so @loom/core stays dependency-light; @loom/a2a
 // maps this to its own AgentSkill when deriving an AgentCard.
+//
+// NOTE: this is A2A agent-card *metadata* — distinct from the runtime
+// SkillDefinition below (skill$). AgentSkillDef advertises a capability on the
+// discoverable card; SkillDefinition is a progressively-disclosed bundle of
+// authored instructions injected into an agent's prompt at runtime.
 export interface AgentSkillDef {
   id: string;
   name: string;
   description?: string;
   inputModes?: string[];
   outputModes?: string[];
+}
+
+// ── Skills (skill$) — progressively-disclosed agent expertise ────────────────
+//
+// A Skill packages authored instructions (and an optional tool subset) that an
+// agent loads on demand when a task matches its description. The description is
+// cheap metadata always available for selection; the instructions body is
+// lazy-loadable so only selected skills are ever pulled into context — the
+// compiler extracts it into its own chunk exactly as it does for handler$.
+
+export interface InstructionsRef {
+  readonly _loomInstructionsRef: true;
+  readonly text: string;
+}
+
+export type InstructionsLoader = () => Promise<{ default: string }>;
+
+export type InstructionsSpec = InstructionsRef | InstructionsLoader;
+
+export interface SkillDefinition {
+  readonly _tag: "SkillDefinition";
+  id: string;
+  name: string;
+  description: string; // cheap metadata — always available for selection
+  tags?: string[];
+  instructions: InstructionsSpec; // lazy-loaded body (progressive disclosure)
+  tools?: ToolDefinition[]; // optional tool subset the skill brings
 }
 
 export interface AgentDefinition {

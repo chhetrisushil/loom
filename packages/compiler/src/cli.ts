@@ -25,6 +25,8 @@ async function main(): Promise<void> {
     steps: new Map(),
     stepsByVarName: new Map(),
     flows: new Map(),
+    skills: new Map(),
+    skillsByVarName: new Map(),
   };
 
   const files = walk(path.resolve(srcDir));

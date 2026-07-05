@@ -50,7 +50,7 @@ The only runtime Node-only dependencies are therefore the SQLite stores (~better
 1. Server runs a flow to a checkpoint, then ~serializeExecution(state)~ and ~serializeProjections(...)~ (~@loom/workflow-runtime/resumability~) to plain JSON.
 2. Client ~<LoomProvider serializedExecutionState serializedProjectionState>~ seeds projections synchronously via ~seedState(...)~ (no re-fold, no empty-state flash) and holds the preloaded ~ExecutionState~.
 3. On the next input (e.g. a human approval) ~WorkflowRuntime.restoreFromState(preloaded, resumeEvent)~ builds ~new ReplayVM([], preloadedState)~ and continues; ~vm.hasCompleted(stepId)~ means completed steps are *never re-run*.
-4. ~@loom/compiler~ turns each ~handler$~ into a lazy ~import()~ chunk (recorded in ~loom-manifest.json~) so the client downloads a step's code only when it actually executes.
+4. ~@loom/compiler~ turns each ~handler$~ (and each skill's ~instructions$~ body) into a lazy ~import()~ chunk (recorded in ~loom-manifest.json~) so the client downloads a step's code — or a skill's instructions — only when it is actually reached or selected.
 
 *Where the examples sit.* The browser reference apps (~cloud-command-center~, ~db-command-center~, ~db-command-center-wc~) inject the in-memory stores and run the *entire* runtime client-side for a self-contained, offline demo. The ~db-command-center-server~ example shows the production topology of the *same* app: the durable runtime runs on a Node server (~SqliteEventStore~/~SqliteSnapshotStore~, orchestrator, agents, durable ~ctx.suspend~/~resume~) and the Web-Components client renders and drives it over HTTP + SSE — the server pushes a ~serializeProjections~ snapshot on connect, then one A2UI patch per update, and the client folds them into its own projection runtime. Only the stores and the client/server boundary change; everything upstream of the pixels is reused byte-for-byte.
 
@@ -89,7 +89,7 @@ The only runtime Node-only dependencies are therefore the SQLite stores (~better
 
 Agentic layer (depend on @loom/core + @loom/effect-runtime):
   @loom/llm      LlmProvider, AnthropicProvider, OpenAiProvider, createLlmEffect
-  @loom/agent    AgentRunner (ReAct loop), agentStep$    → depends on @loom/llm
+  @loom/agent    AgentRunner (ReAct loop), agentStep$, SkillRegistry  → depends on @loom/llm
   @loom/mcp      McpClient, mcpTool$ (Model Context Protocol tool discovery)
   @loom/a2a      createA2AServer, createA2AClientEffect  → depends on @loom/workflow-runtime
   @loom/a2ui     A2UIPatch protocol, a2uiSurfaceProjection, A2UIRuntime (Agent-to-UI)
@@ -546,11 +546,14 @@ loom-manifest.json
         "Step \"apply-remediation\" has neither a handler$ nor a toolId"
       ]
     }
+  },
+  "skills": {
+    "diagnose-cpu": { "chunk": "dist/chunks/diagnose-cpu_9c1f0a7e.js" }
   }
 }
 #+end_example
 
-Warnings are printed to the terminal at build time for steps that lack both a ~handler$~ and a ~toolId~.
+The ~skills~ map records each ~skill$~'s lazy instruction chunk — the progressive-disclosure analog of a flow's ~chunkMap~ (empty ~chunk~ when the skill was authored with inline instructions and no ~instructions$~ marker to extract). Warnings are printed to the terminal at build time for steps that lack both a ~handler$~ and a ~toolId~.
 
 ** Feature 3: Resumability Primitives
 
@@ -743,6 +746,8 @@ Because the provider is just an object, tests use a hand-written stub and the of
 ** Agents (~@loom/agent~)
 
 ~AgentRunner~ implements a ReAct loop: it sends the prompt plus the agent's tool specs to the provider, executes any requested tool calls against the ~EffectRuntime~, feeds the results back, and repeats until the model stops or ~maxIterations~ is hit. Each tool call emits an ~AGENT_TOOL_CALL~ event; the run ends with ~AGENT_COMPLETED~.
+
+*Skills.* An optional ~SkillRegistry~ (built from ~skill$~ definitions) adds progressively-disclosed expertise. Before the loop the runner selects the skills relevant to the turn, emits ~SKILLS_SELECTED~, lazy-loads *only* those instruction bodies (the compiler extracts each ~instructions$~ body into its own chunk, so unselected skills never load), appends them to the system prompt, and adds their tools to the model's menu. This is the instruction/know-how axis — separate from tools (functions) and capabilities (flows). Selection is deterministic by default so replay reconstructs the same prompt; an opt-in ~llmSkillSelector~ trades that for model-driven choice, with the recorded ~SKILLS_SELECTED~ event as the audit hook. Distinct from the A2A ~AgentSkillDef~ card metadata described in the A2A section.
 
 #+begin_example
 AgentRunner.run(input, ctx)

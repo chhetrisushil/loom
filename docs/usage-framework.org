@@ -811,6 +811,37 @@ const report = await ctx.run(InvestigateStep, { prompt: "Diagnose incident cpu-0
 ctx.emit("INVESTIGATION_COMPLETE", report);
 #+end_src
 
+** Giving an agent skills
+
+A *skill* packages authored expertise — instructions (and an optional tool subset) an agent loads on demand. The ~description~ is always available for selection; the ~instructions$~ body is lazy, so only the skills relevant to a turn are pulled into context (the compiler extracts each body into its own chunk, just like ~handler$~). Group skills in a ~SkillRegistry~ and pass it to ~AgentRunner~; before each run it selects the relevant skills, emits ~SKILLS_SELECTED~, composes their instructions onto the system prompt, and adds their tools to the model's menu.
+
+#+begin_src typescript
+import { skill$, instructions$ } from "@loom/sdk";
+import { AgentRunner, SkillRegistry } from "@loom/agent";
+
+const CpuRunbook = skill$({
+  id: "diagnose-cpu",
+  name: "Diagnose CPU saturation",
+  description: "Root-cause CPU saturation and connection-pool exhaustion",
+  tags: ["cpu", "pool"],
+  instructions: instructions$(`
+    1. Confirm CPU% and pool utilisation via the metrics tool before acting.
+    2. If the pool is exhausted, recycle it and raise the ceiling.
+    3. Only scale replicas if CPU stays high after the pool recovers.
+  `),
+});
+
+const runner = new AgentRunner({
+  definition: InvestigatorAgent,
+  provider,
+  effectRuntime,
+  systemPrompt: "You are an SRE.",
+  skills: new SkillRegistry().register(CpuRunbook),   // selection is deterministic by default
+});
+#+end_src
+
+Selection is deterministic (keyword-scored) by default, so a replayed execution reconstructs the same prompt — important because Loom re-runs the agent loop on replay. For model-driven selection, pass ~skillSelector: llmSkillSelector(provider)~; the ~SKILLS_SELECTED~ event records the choice either way. (This runtime skill is distinct from the A2A ~skills~ metadata on an agent card.)
+
 ** Using MCP tools
 
 Instead of hand-writing every tool, connect to a Model Context Protocol server, discover its tools, and register them into the ~EffectRuntime~. The returned ~ToolDefinition[]~ can be handed straight to ~agent$~.

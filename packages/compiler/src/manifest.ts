@@ -8,13 +8,22 @@ export interface ManifestFlow {
   warnings: string[];
 }
 
+// A skill's lazy-loaded instruction body — the progressive-disclosure analog of
+// a flow's per-step chunkMap. `chunk` is empty when the skill was authored with
+// inline instructions (no instructions$ marker for the compiler to extract).
+export interface ManifestSkill {
+  chunk: string;
+}
+
 export interface LoomManifest {
   version: "1";
   flows: Record<string, ManifestFlow>;
+  skills: Record<string, ManifestSkill>;
 }
 
 export function buildManifest(state: PluginState, outDir = "."): LoomManifest {
   const flows: Record<string, ManifestFlow> = {};
+  const skills: Record<string, ManifestSkill> = {};
 
   for (const [flowId, flow] of state.flows) {
     const chunkMap: Record<string, string> = {};
@@ -47,7 +56,13 @@ export function buildManifest(state: PluginState, outDir = "."): LoomManifest {
     };
   }
 
-  return { version: "1", flows };
+  for (const [skillId, skill] of state.skills) {
+    skills[skillId] = {
+      chunk: skill.chunkVirtualId ? `${outDir}/chunks/${skillId}_${skill.hash}.js` : "",
+    };
+  }
+
+  return { version: "1", flows, skills };
 }
 
 export function printWarnings(manifest: LoomManifest): void {
