@@ -3,17 +3,17 @@ import type { MemoryEntry, MemoryStore } from "./types";
 export class InMemoryMemoryStore implements MemoryStore {
   private readonly entries = new Map<string, MemoryEntry[]>();
 
-  append(key: string, entry: MemoryEntry): void {
+  async append(key: string, entry: MemoryEntry): Promise<void> {
     const list = this.entries.get(key) ?? [];
     list.push(entry);
     this.entries.set(key, list);
   }
 
-  read(key: string): MemoryEntry[] {
+  async read(key: string): Promise<MemoryEntry[]> {
     return this.entries.get(key) ?? [];
   }
 
-  clear(key: string): void {
+  async clear(key: string): Promise<void> {
     this.entries.delete(key);
   }
 }

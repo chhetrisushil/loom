@@ -459,17 +459,30 @@ function App() {
     return () => clearInterval(id);
   }, [executionId, pr]);
 
-  // Subscribe to raw events for the event log + A2UI patch stream tabs
+  // Subscribe to raw events for the event log + A2UI patch stream tabs.
+  // subscribe() is async now, so resolve the unsubscribe and guard against the
+  // effect being torn down before it settles.
   useEffect(() => {
     if (!executionId) return;
-    return eventStore.subscribe(executionId, (e: EventEnvelope) => {
-      addLog({ time: now(), kind: "event", label: e.eventType, payload: e.payload });
-      if (e.eventType === A2UI_PATCH) {
-        const payload = e.payload as A2UIPatchPayload;
-        const entries = payload.patches.map((patch) => ({ time: now(), patch }));
-        setPatchStream((prev) => [...entries.reverse(), ...prev]);
-      }
-    });
+    let unsub: (() => void) | undefined;
+    let cancelled = false;
+    void eventStore
+      .subscribe(executionId, (e: EventEnvelope) => {
+        addLog({ time: now(), kind: "event", label: e.eventType, payload: e.payload });
+        if (e.eventType === A2UI_PATCH) {
+          const payload = e.payload as A2UIPatchPayload;
+          const entries = payload.patches.map((patch) => ({ time: now(), patch }));
+          setPatchStream((prev) => [...entries.reverse(), ...prev]);
+        }
+      })
+      .then((u) => {
+        if (cancelled) u();
+        else unsub = u;
+      });
+    return () => {
+      cancelled = true;
+      unsub?.();
+    };
   }, [executionId, addLog]);
 
   const start = useCallback(

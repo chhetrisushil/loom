@@ -6,7 +6,7 @@ import type { LlmMessage, LlmProvider, LlmToolSpec } from "@loom/llm";
 import type { MemoryRuntime } from "@loom/memory";
 import { parallelLimit, throwIfAborted } from "@loom/scheduler";
 import type { SkillRegistry } from "./SkillRegistry";
-import { deterministicSkillSelector, type SkillSelector } from "./SkillSelector";
+import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
 export interface AgentConfig {
@@ -89,7 +89,7 @@ export class AgentRunner {
 
     // Recall prior memory for this agent+scope, if configured.
     if (memory !== undefined && memoryId !== undefined) {
-      for (const entry of memory.read(memoryId, memoryScope)) {
+      for (const entry of await memory.read(memoryId, memoryScope)) {
         const role = entry.role === "assistant" ? "assistant" : "user";
         messages.push({ role, content: String(entry.content) });
       }
@@ -188,8 +188,8 @@ export class AgentRunner {
 
     // Remember this turn (the user's prompt and the agent's answer).
     if (memory !== undefined && memoryId !== undefined) {
-      memory.append(memoryId, memoryScope, { role: "user", content: input.prompt });
-      memory.append(memoryId, memoryScope, { role: "assistant", content: lastContent });
+      await memory.append(memoryId, memoryScope, { role: "user", content: input.prompt });
+      await memory.append(memoryId, memoryScope, { role: "assistant", content: lastContent });
     }
 
     ctx.emit("AGENT_COMPLETED", {

@@ -287,6 +287,34 @@ const workflowRuntime = new WorkflowRuntime({
 });
 #+end_src
 
+** Bring your own storage backend
+
+The ~EventStore~ / ~SnapshotStore~ / ~BranchRegistry~ / ~MemoryStore~ interfaces are *async-first* (every method returns a ~Promise~), so you can back the runtime with anything — the runtime ~await~s the store. Implement the interface and inject it; nothing else changes:
+
+#+begin_src typescript
+import type { EventStore } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loom/core";
+
+class PgEventStore implements EventStore {
+  async append(e: EventEnvelope): Promise<void> { await this.pool.query(/* INSERT */); }
+  async read(id: string): Promise<EventEnvelope[]> { /* SELECT … */ }
+  async readFrom(id: string, seq: number): Promise<EventEnvelope[]> { /* … */ }
+  async subscribe(id, handler): Promise<() => void> { /* LISTEN … */ }
+  async close(): Promise<void> { await this.pool.end(); }
+}
+
+const workflowRuntime = new WorkflowRuntime({
+  eventStore: new PgEventStore(pool),   // Postgres, Redis, DynamoDB, …
+  snapshotStore,
+  effectRuntime,
+  // A durable write can now reject — observe it (the run aborts and
+  // waitForCompletion rejects with a StorageWriteError regardless):
+  onStorageError: (executionId, err) => logger.error({ executionId, err }, "storage write failed"),
+});
+#+end_src
+
+The synchronous flow-author API (~ctx.emit~ / ~ctx.stream~ / ~ctx.ui~) is unaffected — a per-execution write pipeline folds events in memory synchronously and drains the durable writes at barriers (before completion, and before a snapshot on suspend). A full runnable reference (schema + ~LISTEN/NOTIFY~) lives in ~docs/examples/postgres-backend/~. ~InMemoryAsyncEventStore~ / ~InMemoryAsyncSnapshotStore~ (from ~@loom/sdk~) are ready-made async backends for tests and prototypes.
+
 * Step 6 — Start and Resume Executions
 
 ** Starting a new execution

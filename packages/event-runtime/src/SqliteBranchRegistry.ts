@@ -55,7 +55,7 @@ export class SqliteBranchRegistry implements BranchRegistry {
     migrate(this.db);
   }
 
-  putRef(ref: BranchRef): void {
+  async putRef(ref: BranchRef): Promise<void> {
     this.db
       .prepare<[string, string, number, string | null, number | null, number, number]>(`
         INSERT INTO refs (name, execution_id, tip, parent_execution_id, fork_sequence, created_at, updated_at)
@@ -78,30 +78,30 @@ export class SqliteBranchRegistry implements BranchRegistry {
       );
   }
 
-  getRef(name: string): BranchRef | null {
+  async getRef(name: string): Promise<BranchRef | null> {
     const row = this.db.prepare<[string], RefRow>("SELECT * FROM refs WHERE name = ?").get(name);
     return row ? rowToRef(row) : null;
   }
 
-  listRefs(): BranchRef[] {
+  async listRefs(): Promise<BranchRef[]> {
     const rows = this.db.prepare<[], RefRow>("SELECT * FROM refs ORDER BY name ASC").all();
     return rows.map(rowToRef);
   }
 
-  moveTip(name: string, tip: number): void {
+  async moveTip(name: string, tip: number): Promise<void> {
     this.db
       .prepare<[number, number, string]>("UPDATE refs SET tip = ?, updated_at = ? WHERE name = ?")
       .run(tip, Date.now(), name);
   }
 
-  promote(fromName: string, toName: string): void {
-    const from = this.getRef(fromName);
+  async promote(fromName: string, toName: string): Promise<void> {
+    const from = await this.getRef(fromName);
     if (!from) {
       throw new Error(`Cannot promote: ref "${fromName}" does not exist`);
     }
-    const existing = this.getRef(toName);
+    const existing = await this.getRef(toName);
     const now = Date.now();
-    this.putRef({
+    await this.putRef({
       name: toName,
       executionId: from.executionId,
       tip: from.tip,
@@ -112,11 +112,11 @@ export class SqliteBranchRegistry implements BranchRegistry {
     });
   }
 
-  deleteRef(name: string): void {
+  async deleteRef(name: string): Promise<void> {
     this.db.prepare<[string]>("DELETE FROM refs WHERE name = ?").run(name);
   }
 
-  recordLineage(rec: Omit<LineageRecord, "createdAt">): void {
+  async recordLineage(rec: Omit<LineageRecord, "createdAt">): Promise<void> {
     this.db
       .prepare<[string, string, number, number]>(`
         INSERT OR REPLACE INTO lineage (execution_id, parent_execution_id, fork_sequence, created_at)
@@ -125,14 +125,14 @@ export class SqliteBranchRegistry implements BranchRegistry {
       .run(rec.executionId, rec.parentExecutionId, rec.forkSequence, Date.now());
   }
 
-  getLineage(executionId: string): LineageRecord | null {
+  async getLineage(executionId: string): Promise<LineageRecord | null> {
     const row = this.db
       .prepare<[string], LineageRow>("SELECT * FROM lineage WHERE execution_id = ?")
       .get(executionId);
     return row ? rowToLineage(row) : null;
   }
 
-  children(executionId: string): LineageRecord[] {
+  async children(executionId: string): Promise<LineageRecord[]> {
     const rows = this.db
       .prepare<[string], LineageRow>(
         "SELECT * FROM lineage WHERE parent_execution_id = ? ORDER BY created_at ASC"
@@ -141,7 +141,7 @@ export class SqliteBranchRegistry implements BranchRegistry {
     return rows.map(rowToLineage);
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.db.close();
   }
 }

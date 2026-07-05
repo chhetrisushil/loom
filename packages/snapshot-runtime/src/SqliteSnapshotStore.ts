@@ -33,7 +33,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
     migrate(this.db);
   }
 
-  save(snapshot: Snapshot): void {
+  async save(snapshot: Snapshot): Promise<void> {
     this.db
       .prepare<[string, string, string, number, string, number]>(`
         INSERT OR REPLACE INTO snapshots (id, execution_id, workflow_id, sequence, state, created_at)
@@ -49,7 +49,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
       );
   }
 
-  loadLatest(executionId: string): Snapshot | null {
+  async loadLatest(executionId: string): Promise<Snapshot | null> {
     const row = this.db
       .prepare<[string], SnapshotRow>(
         "SELECT * FROM snapshots WHERE execution_id = ? ORDER BY sequence DESC LIMIT 1"
@@ -58,7 +58,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
     return row ? rowToSnapshot(row) : null;
   }
 
-  loadAt(executionId: string, sequence: number): Snapshot | null {
+  async loadAt(executionId: string, sequence: number): Promise<Snapshot | null> {
     const row = this.db
       .prepare<[string, number], SnapshotRow>(
         "SELECT * FROM snapshots WHERE execution_id = ? AND sequence = ?"
@@ -67,7 +67,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
     return row ? rowToSnapshot(row) : null;
   }
 
-  loadLatestBefore(executionId: string, sequence: number): Snapshot | null {
+  async loadLatestBefore(executionId: string, sequence: number): Promise<Snapshot | null> {
     const row = this.db
       .prepare<[string, number], SnapshotRow>(
         "SELECT * FROM snapshots WHERE execution_id = ? AND sequence <= ? ORDER BY sequence DESC LIMIT 1"
@@ -76,7 +76,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
     return row ? rowToSnapshot(row) : null;
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.db.close();
   }
 }

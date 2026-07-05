@@ -11,7 +11,13 @@ export type {
   FrameStatus,
   SuspendCondition,
 } from "./types/execution";
-export { ReplayError, StepError, SuspendError, WorkflowNotFoundError } from "./types/errors";
+export {
+  ReplayError,
+  StepError,
+  StorageWriteError,
+  SuspendError,
+  WorkflowNotFoundError,
+} from "./types/errors";
 export type {
   AgentDefinition,
   AgentSkillDef,

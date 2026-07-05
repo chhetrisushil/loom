@@ -21,29 +21,29 @@ export class MemoryRuntime {
     return `${memoryId}::${scope}`;
   }
 
-  append(
+  async append(
     memoryId: string,
     scope: string,
     entry: Omit<MemoryEntry, "timestamp"> & { timestamp?: number }
-  ): void {
+  ): Promise<void> {
     const key = this.key(memoryId, scope);
-    this.store.append(key, { ...entry, timestamp: entry.timestamp ?? Date.now() });
-    this.evict(memoryId, key);
+    await this.store.append(key, { ...entry, timestamp: entry.timestamp ?? Date.now() });
+    await this.evict(memoryId, key);
   }
 
-  read(memoryId: string, scope: string): MemoryEntry[] {
+  async read(memoryId: string, scope: string): Promise<MemoryEntry[]> {
     const key = this.key(memoryId, scope);
     return this.prune(memoryId, key);
   }
 
-  clear(memoryId: string, scope: string): void {
-    this.store.clear(this.key(memoryId, scope));
+  async clear(memoryId: string, scope: string): Promise<void> {
+    await this.store.clear(this.key(memoryId, scope));
   }
 
   // Drop entries older than ttlMs, then keep only the newest maxEntries.
-  private prune(memoryId: string, key: string): MemoryEntry[] {
+  private async prune(memoryId: string, key: string): Promise<MemoryEntry[]> {
     const def = this.definitions.get(memoryId);
-    let entries = this.store.read(key);
+    let entries = await this.store.read(key);
 
     if (def?.ttlMs !== undefined) {
       const cutoff = Date.now() - def.ttlMs;
@@ -56,11 +56,11 @@ export class MemoryRuntime {
   }
 
   // Rewrite the stored list to the pruned view so eviction is durable.
-  private evict(memoryId: string, key: string): void {
+  private async evict(memoryId: string, key: string): Promise<void> {
     const def = this.definitions.get(memoryId);
     if (def?.ttlMs === undefined && def?.maxEntries === undefined) return;
-    const pruned = this.prune(memoryId, key);
-    this.store.clear(key);
-    for (const entry of pruned) this.store.append(key, entry);
+    const pruned = await this.prune(memoryId, key);
+    await this.store.clear(key);
+    for (const entry of pruned) await this.store.append(key, entry);
   }
 }

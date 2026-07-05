@@ -129,7 +129,8 @@ async function main(): Promise<void> {
       workflowId: "demo",
       attempt: 1,
       emit: (type, payload) => {
-        if (type === "SKILLS_SELECTED") selectedSkills = (payload as { skillIds: string[] }).skillIds;
+        if (type === "SKILLS_SELECTED")
+          selectedSkills = (payload as { skillIds: string[] }).skillIds;
       },
     }
   );
@@ -258,7 +259,7 @@ async function main(): Promise<void> {
     chatCtx
   );
   console.log("Second-turn answer (with recall):", recalled.content);
-  console.log("Remembered turns:", memory.read("chat", "user-1").length);
+  console.log("Remembered turns:", (await memory.read("chat", "user-1")).length);
 
   // ══ 8. Multi-surface (render the same blueprint to the terminal) ════════════
   section("8. Terminal surface");

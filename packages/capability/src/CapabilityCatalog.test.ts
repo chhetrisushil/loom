@@ -12,47 +12,43 @@ import { capability$ } from "./capability$";
 
 class MemEventStore implements EventStore {
   private m = new Map<string, EventEnvelope[]>();
-  append(e: EventEnvelope) {
+  async append(e: EventEnvelope) {
     const l = this.m.get(e.executionId) ?? [];
     l.push(e);
     this.m.set(e.executionId, l);
   }
-  read(id: string) {
+  async read(id: string) {
     return this.m.get(id) ?? [];
   }
-  readFrom(id: string, f: number) {
-    return this.read(id).filter((e) => e.sequence >= f);
+  async readFrom(id: string, f: number) {
+    return (await this.read(id)).filter((e) => e.sequence >= f);
   }
-  subscribe() {
+  async subscribe() {
     return () => {};
   }
-  nextSequence(id: string) {
-    const l = this.m.get(id);
-    return !l || l.length === 0 ? 0 : (l[l.length - 1]?.sequence ?? -1) + 1;
-  }
-  close() {}
+  async close() {}
 }
 class MemSnapshotStore implements SnapshotStore {
   private m = new Map<string, Snapshot[]>();
-  save(s: Snapshot) {
+  async save(s: Snapshot) {
     const l = this.m.get(s.executionId) ?? [];
     l.push(s);
     this.m.set(s.executionId, l);
   }
-  loadLatest(id: string) {
+  async loadLatest(id: string) {
     const l = this.m.get(id);
     return l?.length ? (l[l.length - 1] ?? null) : null;
   }
-  loadAt(id: string, seq: number) {
+  async loadAt(id: string, seq: number) {
     const l = this.m.get(id);
     if (!l) return null;
     const c = l.filter((s) => s.sequence <= seq);
     return c[c.length - 1] ?? null;
   }
-  loadLatestBefore(id: string, seq: number) {
+  async loadLatestBefore(id: string, seq: number) {
     return this.loadAt(id, seq);
   }
-  close() {}
+  async close() {}
 }
 
 const echoStep = step$({

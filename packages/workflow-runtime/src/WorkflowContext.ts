@@ -1,11 +1,11 @@
 import { createA2UIEmitter } from "@loom/a2ui";
 import type { A2UIEmitter } from "@loom/a2ui";
 import { SuspendError } from "@loom/core";
-import type { EventEnvelope, StepDefinition } from "@loom/core";
+import type { StepDefinition } from "@loom/core";
 import type { EffectRuntime } from "@loom/effect-runtime";
-import type { EventStore } from "@loom/event-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
 import { parallelLimit } from "@loom/scheduler";
+import type { ExecutionJournal } from "./ExecutionJournal";
 import type { SuspendConfig, WorkflowContext } from "./types";
 
 export class WorkflowContextImpl implements WorkflowContext {
@@ -18,9 +18,11 @@ export class WorkflowContextImpl implements WorkflowContext {
     executionId: string,
     workflowId: string,
     private readonly vm: ReplayVM,
-    private readonly eventStore: EventStore,
+    // The per-execution write pipeline: allocates sequences, folds the VM, fires
+    // onEvent, and persists durably. Shared with WorkflowRuntime so sequence
+    // allocation has a single source of truth.
+    private readonly journal: ExecutionJournal,
     private readonly effectRuntime: EffectRuntime,
-    private readonly onEventEmitted: ((event: EventEnvelope) => void) | undefined = undefined,
     // Cooperative cancellation for this execution. Threaded into every effect
     // context so long-running I/O (LLM/tool/A2A) can abort. Undefined = never
     // cancelled (existing behaviour).
@@ -33,20 +35,10 @@ export class WorkflowContextImpl implements WorkflowContext {
     this.ui = createA2UIEmitter((eventType, payload) => this.emit(eventType, payload));
   }
 
+  // Synchronous: the journal allocates a sequence, folds the VM, fires onEvent,
+  // and enqueues the durable write. The async persistence is drained at barriers.
   emit(eventType: string, payload: unknown): void {
-    const sequence = this.eventStore.nextSequence(this.executionId);
-    const envelope: EventEnvelope = {
-      id: `${this.executionId}-${sequence}`,
-      workflowId: this.workflowId,
-      executionId: this.executionId,
-      eventType,
-      sequence,
-      timestamp: Date.now(),
-      payload,
-    };
-    this.eventStore.append(envelope);
-    this.vm.applyEvent(envelope);
-    this.onEventEmitted?.(envelope);
+    this.journal.commit(eventType, payload);
   }
 
   async run<TIn = unknown, TOut = unknown>(

@@ -35,9 +35,9 @@ afterEach(() => {
 });
 
 describe("SqliteSnapshotStore", () => {
-  it("saves and loads the latest snapshot", () => {
+  it("saves and loads the latest snapshot", async () => {
     const state = makeState("exec-1", 5);
-    store.save({
+    await store.save({
       id: "snap-1",
       executionId: "exec-1",
       workflowId: "test-flow",
@@ -45,18 +45,18 @@ describe("SqliteSnapshotStore", () => {
       state,
       createdAt: Date.now(),
     });
-    const loaded = store.loadLatest("exec-1");
+    const loaded = await store.loadLatest("exec-1");
     expect(loaded).not.toBeNull();
     expect(loaded!.sequence).toBe(5);
     expect(loaded!.state).toEqual(state);
   });
 
-  it("returns null for unknown executionId", () => {
-    expect(store.loadLatest("unknown")).toBeNull();
+  it("returns null for unknown executionId", async () => {
+    expect(await store.loadLatest("unknown")).toBeNull();
   });
 
-  it("loadLatest returns the highest sequence snapshot", () => {
-    store.save({
+  it("loadLatest returns the highest sequence snapshot", async () => {
+    await store.save({
       id: "s1",
       executionId: "exec-2",
       workflowId: "f",
@@ -64,7 +64,7 @@ describe("SqliteSnapshotStore", () => {
       state: makeState("exec-2", 2),
       createdAt: 1,
     });
-    store.save({
+    await store.save({
       id: "s2",
       executionId: "exec-2",
       workflowId: "f",
@@ -72,7 +72,7 @@ describe("SqliteSnapshotStore", () => {
       state: makeState("exec-2", 10),
       createdAt: 2,
     });
-    store.save({
+    await store.save({
       id: "s3",
       executionId: "exec-2",
       workflowId: "f",
@@ -80,12 +80,12 @@ describe("SqliteSnapshotStore", () => {
       state: makeState("exec-2", 7),
       createdAt: 3,
     });
-    const latest = store.loadLatest("exec-2");
+    const latest = await store.loadLatest("exec-2");
     expect(latest!.sequence).toBe(10);
   });
 
-  it("loadAt returns snapshot at the exact sequence", () => {
-    store.save({
+  it("loadAt returns snapshot at the exact sequence", async () => {
+    await store.save({
       id: "s4",
       executionId: "exec-3",
       workflowId: "f",
@@ -93,7 +93,7 @@ describe("SqliteSnapshotStore", () => {
       state: makeState("exec-3", 5),
       createdAt: 1,
     });
-    store.save({
+    await store.save({
       id: "s5",
       executionId: "exec-3",
       workflowId: "f",
@@ -101,14 +101,14 @@ describe("SqliteSnapshotStore", () => {
       state: makeState("exec-3", 9),
       createdAt: 2,
     });
-    const snap = store.loadAt("exec-3", 5);
+    const snap = await store.loadAt("exec-3", 5);
     expect(snap!.sequence).toBe(5);
-    expect(store.loadAt("exec-3", 99)).toBeNull();
+    expect(await store.loadAt("exec-3", 99)).toBeNull();
   });
 
-  it("loadLatestBefore returns the greatest snapshot at or below the sequence", () => {
+  it("loadLatestBefore returns the greatest snapshot at or below the sequence", async () => {
     for (const seq of [2, 6, 9]) {
-      store.save({
+      await store.save({
         id: `lb-${seq}`,
         executionId: "exec-lb",
         workflowId: "f",
@@ -118,21 +118,21 @@ describe("SqliteSnapshotStore", () => {
       });
     }
     // Exactly at a snapshot boundary.
-    expect(store.loadLatestBefore("exec-lb", 6)!.sequence).toBe(6);
+    expect((await store.loadLatestBefore("exec-lb", 6))!.sequence).toBe(6);
     // Between snapshots — picks the greatest below.
-    expect(store.loadLatestBefore("exec-lb", 8)!.sequence).toBe(6);
+    expect((await store.loadLatestBefore("exec-lb", 8))!.sequence).toBe(6);
     // Above all — picks the highest.
-    expect(store.loadLatestBefore("exec-lb", 100)!.sequence).toBe(9);
+    expect((await store.loadLatestBefore("exec-lb", 100))!.sequence).toBe(9);
     // Below all — null.
-    expect(store.loadLatestBefore("exec-lb", 1)).toBeNull();
+    expect(await store.loadLatestBefore("exec-lb", 1)).toBeNull();
     // Unknown execution — null.
-    expect(store.loadLatestBefore("nope", 10)).toBeNull();
+    expect(await store.loadLatestBefore("nope", 10)).toBeNull();
   });
 
-  it("round-trips ExecutionState through JSON without data loss", () => {
+  it("round-trips ExecutionState through JSON without data loss", async () => {
     const state = makeState("exec-4", 3);
     state.suspendedOn = { on: "ApprovalGranted", correlationKey: "my-key", timeout: 86400000 };
-    store.save({
+    await store.save({
       id: "s6",
       executionId: "exec-4",
       workflowId: "f",
@@ -140,7 +140,7 @@ describe("SqliteSnapshotStore", () => {
       state,
       createdAt: 1,
     });
-    const loaded = store.loadLatest("exec-4");
+    const loaded = await store.loadLatest("exec-4");
     expect(loaded!.state).toEqual(state);
     expect(loaded!.state.suspendedOn?.on).toBe("ApprovalGranted");
   });

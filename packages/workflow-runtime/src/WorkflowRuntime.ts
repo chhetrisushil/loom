@@ -6,6 +6,7 @@ import type { BranchRegistry, EventStore } from "@loom/event-runtime";
 import { ReplayVM } from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
+import { ExecutionJournal } from "./ExecutionJournal";
 import { WorkflowContextImpl } from "./WorkflowContext";
 import type {
   ExecutionHandle,
@@ -16,6 +17,12 @@ import type {
   ResumeEvent,
   RunOptions,
 } from "./types";
+
+/** An event to commit through the journal before the flow runner starts. */
+interface BootstrapEvent {
+  eventType: string;
+  payload: unknown;
+}
 
 export interface WorkflowRuntimeDeps {
   eventStore: EventStore;
@@ -28,6 +35,13 @@ export interface WorkflowRuntimeDeps {
    * the prefix and seeds the child snapshot — it just skips ref/lineage bookkeeping.
    */
   branchRegistry?: BranchRegistry;
+  /**
+   * Optional observability hook fired when a durable event write rejects (a new
+   * failure mode of the async storage layer). The run is aborted and
+   * waitForCompletion/waitForSuspend reject with a StorageWriteError regardless;
+   * this is purely for logging/metrics.
+   */
+  onStorageError?: (executionId: string, err: unknown) => void;
 }
 
 export class WorkflowRuntime {
@@ -36,6 +50,7 @@ export class WorkflowRuntime {
   private readonly effectRuntime: EffectRuntime;
   private readonly onEvent: ((event: EventEnvelope) => void) | undefined;
   private readonly branchRegistry: BranchRegistry | undefined;
+  private readonly onStorageError: ((executionId: string, err: unknown) => void) | undefined;
   private readonly flows = new Map<string, RegisteredFlow>();
 
   constructor(deps: WorkflowRuntimeDeps) {
@@ -44,6 +59,7 @@ export class WorkflowRuntime {
     this.effectRuntime = deps.effectRuntime;
     this.onEvent = deps.onEvent;
     this.branchRegistry = deps.branchRegistry;
+    this.onStorageError = deps.onStorageError;
   }
 
   register(toolId: string, effect: Effect): void {
@@ -72,28 +88,14 @@ export class WorkflowRuntime {
       throw new Error(`No flow registered for workflowId: "${preloadedState.workflowId}"`);
     }
     const vm = new ReplayVM([], preloadedState);
-    if (resumeEvent) {
-      const envelope: EventEnvelope = {
-        id: `${preloadedState.executionId}-restore-${Date.now()}`,
-        workflowId: preloadedState.workflowId,
-        executionId: preloadedState.executionId,
-        eventType: resumeEvent.eventType,
-        sequence: preloadedState.sequence + 1,
-        timestamp: Date.now(),
-        payload: resumeEvent.payload,
-      };
-      this.eventStore.append(envelope);
-      vm.applyEvent(envelope);
-      this.onEvent?.(envelope);
-    }
     const originalInput = preloadedState.variables._input;
     return this.execute(
       preloadedState.executionId,
       preloadedState.workflowId,
-      preloadedState.workflowVersion,
       vm,
       flow.runner as FlowRunner<unknown, unknown>,
-      originalInput
+      originalInput,
+      resumeEvent ? [{ eventType: resumeEvent.eventType, payload: resumeEvent.payload }] : []
     );
   }
 
@@ -105,19 +107,9 @@ export class WorkflowRuntime {
     const executionId = options?.executionId ?? ulid();
     const { definition, runner } = flow;
 
-    const startEnvelope: EventEnvelope = {
-      id: `${executionId}-0`,
-      workflowId: definition.id,
-      executionId,
-      eventType: "EXECUTION_STARTED",
-      sequence: 0,
-      timestamp: Date.now(),
-      payload: { input },
-    };
-    this.eventStore.append(startEnvelope);
-    this.onEvent?.(startEnvelope);
-
-    const vm = new ReplayVM([startEnvelope], {
+    // Empty VM seeded with identity only; the EXECUTION_STARTED bootstrap event
+    // (committed in execute) is what folds status → "running" at sequence 0.
+    const vm = new ReplayVM([], {
       executionId,
       workflowId: definition.id,
       workflowVersion: definition.version,
@@ -126,15 +118,15 @@ export class WorkflowRuntime {
     return this.execute(
       executionId,
       definition.id,
-      definition.version,
       vm,
       runner as FlowRunner<unknown, unknown>,
-      input
+      input,
+      [{ eventType: "EXECUTION_STARTED", payload: { input } }]
     );
   }
 
   async resume(executionId: string, resumeEvent: ResumeEvent): Promise<ExecutionHandle> {
-    const allEvents = this.eventStore.read(executionId);
+    const allEvents = await this.eventStore.read(executionId);
     if (allEvents.length === 0) {
       throw new Error(`No execution found for id: ${executionId}`);
     }
@@ -149,11 +141,14 @@ export class WorkflowRuntime {
       throw new Error(`No flow registered for workflowId: "${workflowId}"`);
     }
 
-    const snapshot = this.snapshotStore.loadLatest(executionId);
+    const snapshot = await this.snapshotStore.loadLatest(executionId);
     let vm: ReplayVM;
 
     if (snapshot) {
-      const eventsAfterSnapshot = this.eventStore.readFrom(executionId, snapshot.sequence + 1);
+      const eventsAfterSnapshot = await this.eventStore.readFrom(
+        executionId,
+        snapshot.sequence + 1
+      );
       vm = new ReplayVM(eventsAfterSnapshot, snapshot.state);
     } else {
       vm = new ReplayVM(allEvents, {
@@ -163,39 +158,16 @@ export class WorkflowRuntime {
       });
     }
 
-    const resumeEnvelope: EventEnvelope = {
-      id: `${executionId}-resume-${Date.now()}`,
-      workflowId,
-      executionId,
-      eventType: resumeEvent.eventType,
-      sequence: this.eventStore.nextSequence(executionId),
-      timestamp: Date.now(),
-      payload: resumeEvent.payload,
-    };
-    this.eventStore.append(resumeEnvelope);
-    vm.applyEvent(resumeEnvelope);
-    this.onEvent?.(resumeEnvelope);
-
-    const resumedEnvelope: EventEnvelope = {
-      id: `${executionId}-resumed-${Date.now()}`,
-      workflowId,
-      executionId,
-      eventType: "EXECUTION_RESUMED",
-      sequence: this.eventStore.nextSequence(executionId),
-      timestamp: Date.now(),
-      payload: resumeEvent.payload,
-    };
-    this.eventStore.append(resumedEnvelope);
-    vm.applyEvent(resumedEnvelope);
-    this.onEvent?.(resumedEnvelope);
-
     return this.execute(
       executionId,
       workflowId,
-      flow.definition.version,
       vm,
       flow.runner as FlowRunner<unknown, unknown>,
-      originalInput
+      originalInput,
+      [
+        { eventType: resumeEvent.eventType, payload: resumeEvent.payload },
+        { eventType: "EXECUTION_RESUMED", payload: resumeEvent.payload },
+      ]
     );
   }
 
@@ -219,7 +191,7 @@ export class WorkflowRuntime {
     atSequence: number,
     opts?: ForkOptions
   ): Promise<ForkResult> {
-    const parentEvents = this.eventStore.read(parentExecutionId);
+    const parentEvents = await this.eventStore.read(parentExecutionId);
     if (parentEvents.length === 0) {
       throw new Error(`No execution found for id: ${parentExecutionId}`);
     }
@@ -236,7 +208,7 @@ export class WorkflowRuntime {
     const workflowVersion = this.flows.get(workflowId)?.definition.version ?? "";
 
     // 1. Materialize state at the fork point (reusing the nearest prior snapshot).
-    const forkState = this.materializeStateAt(
+    const forkState = await this.materializeStateAt(
       parentExecutionId,
       atSequence,
       parentEvents,
@@ -246,9 +218,10 @@ export class WorkflowRuntime {
     );
 
     // 2. Copy the prefix [0..atSequence] into the child log. Re-stamp id +
-    //    executionId, record provenance in metadata. No synthetic EXECUTION_FORKED
-    //    event — inserting one would perturb sequence numbering and break the
-    //    prefix-identity guarantee the determinism argument relies on.
+    //    executionId, record provenance in metadata. This BYPASSES the journal —
+    //    the envelopes are verbatim, pre-sequenced copies, so they must not be
+    //    re-sequenced. No synthetic EXECUTION_FORKED event either — inserting one
+    //    would perturb sequence numbering and break the prefix-identity guarantee.
     for (const e of parentEvents) {
       if (e.sequence > atSequence) break;
       const copy: EventEnvelope = {
@@ -261,7 +234,7 @@ export class WorkflowRuntime {
           forkSequence: atSequence,
         },
       };
-      this.eventStore.append(copy);
+      await this.eventStore.append(copy);
       this.onEvent?.(copy);
     }
 
@@ -275,19 +248,19 @@ export class WorkflowRuntime {
       state: forkState,
       createdAt: Date.now(),
     };
-    this.snapshotStore.save(seed);
+    await this.snapshotStore.save(seed);
 
     // 4. Record lineage + optional movable ref.
     const branchName = opts?.branchName ?? childId;
     if (this.branchRegistry) {
-      this.branchRegistry.recordLineage({
+      await this.branchRegistry.recordLineage({
         executionId: childId,
         parentExecutionId,
         forkSequence: atSequence,
       });
       if (opts?.branchName !== undefined) {
         const now = Date.now();
-        this.branchRegistry.putRef({
+        await this.branchRegistry.putRef({
           name: opts.branchName,
           executionId: childId,
           tip: atSequence,
@@ -313,15 +286,15 @@ export class WorkflowRuntime {
    * child executionId. Folds from the nearest snapshot at/below the fork point
    * (falling back to a full prefix fold) so long histories don't replay from zero.
    */
-  private materializeStateAt(
+  private async materializeStateAt(
     parentExecutionId: string,
     atSequence: number,
     parentEvents: EventEnvelope[],
     childId: string,
     workflowId: string,
     workflowVersion: string
-  ): ExecutionState {
-    const base = this.snapshotStore.loadLatestBefore(parentExecutionId, atSequence);
+  ): Promise<ExecutionState> {
+    const base = await this.snapshotStore.loadLatestBefore(parentExecutionId, atSequence);
     let vm: ReplayVM;
     if (base) {
       const tail = parentEvents.filter(
@@ -338,23 +311,32 @@ export class WorkflowRuntime {
   private execute(
     executionId: string,
     workflowId: string,
-    _workflowVersion: string,
     vm: ReplayVM,
     runner: FlowRunner<unknown, unknown>,
-    input: unknown
+    input: unknown,
+    bootstrapEvents: BootstrapEvent[]
   ): ExecutionHandle {
     let resolveCompletion!: (state: ReturnType<typeof vm.getState>) => void;
     let rejectCompletion!: (err: unknown) => void;
     let resolveSuspend!: (state: ReturnType<typeof vm.getState>) => void;
+    let rejectSuspend!: (err: unknown) => void;
 
     const completionPromise = new Promise<ReturnType<typeof vm.getState>>((resolve, reject) => {
       resolveCompletion = resolve;
       rejectCompletion = reject;
     });
 
-    const suspendPromise = new Promise<ReturnType<typeof vm.getState>>((resolve) => {
+    const suspendPromise = new Promise<ReturnType<typeof vm.getState>>((resolve, reject) => {
       resolveSuspend = resolve;
+      rejectSuspend = reject;
     });
+
+    // A run has two terminal promises (suspend, completion) but a caller typically
+    // awaits only one. Attach no-op guards so rejecting the un-awaited one (e.g. a
+    // storage failure at the suspend barrier rejects both) is not reported as an
+    // unhandled rejection — real awaiters still receive the error.
+    completionPromise.catch(() => {});
+    suspendPromise.catch(() => {});
 
     // Ephemeral cancellation for this live run. The controller's signal is
     // threaded into every effect context; cancel() aborts it and records a
@@ -363,13 +345,26 @@ export class WorkflowRuntime {
     const controller = new AbortController();
     let cancelled = false;
 
+    // The per-execution write pipeline: sole sequence allocator + the only thing
+    // that calls eventStore.append. A durable-write rejection aborts the run and
+    // is surfaced at the next drain barrier as a StorageWriteError.
+    const journal = new ExecutionJournal(this.eventStore, vm, this.onEvent, (err) => {
+      this.onStorageError?.(executionId, err);
+      if (!cancelled) controller.abort(err);
+    });
+
+    // Commit bootstrap events (EXECUTION_STARTED / resume+RESUMED / restore) so
+    // they flow through the same sequencer + writer as everything else.
+    for (const b of bootstrapEvents) {
+      journal.commit(b.eventType, b.payload);
+    }
+
     const ctx = new WorkflowContextImpl(
       executionId,
       workflowId,
       vm,
-      this.eventStore,
+      journal,
       this.effectRuntime,
-      this.onEvent,
       controller.signal
     );
 
@@ -377,21 +372,11 @@ export class WorkflowRuntime {
       if (cancelled) return;
       cancelled = true;
       controller.abort(reason);
-
-      const seq = this.eventStore.nextSequence(executionId);
-      const cancelledEnvelope: EventEnvelope = {
-        id: `${executionId}-${seq}`,
-        workflowId,
-        executionId,
-        eventType: "EXECUTION_CANCELLED",
-        sequence: seq,
-        timestamp: Date.now(),
-        payload: { ...(reason !== undefined && { reason: String(reason) }) },
-      };
-      this.eventStore.append(cancelledEnvelope);
-      vm.applyEvent(cancelledEnvelope);
-      this.onEvent?.(cancelledEnvelope);
-
+      // Synchronous: enqueue the durable CANCELLED write (drained by run()'s
+      // cancelled branch) and reject the caller immediately.
+      journal.commit("EXECUTION_CANCELLED", {
+        ...(reason !== undefined && { reason: String(reason) }),
+      });
       rejectCompletion(reason instanceof Error ? reason : new Error("Execution cancelled"));
     };
 
@@ -399,36 +384,21 @@ export class WorkflowRuntime {
       try {
         const output = await runner(ctx, input);
 
-        const seq = this.eventStore.nextSequence(executionId);
-        const completedEnvelope: EventEnvelope = {
-          id: `${executionId}-${seq}`,
-          workflowId,
-          executionId,
-          eventType: "EXECUTION_COMPLETED",
-          sequence: seq,
-          timestamp: Date.now(),
-          payload: { output },
-        };
-        this.eventStore.append(completedEnvelope);
-        vm.applyEvent(completedEnvelope);
-        this.onEvent?.(completedEnvelope);
-
+        journal.commit("EXECUTION_COMPLETED", { output });
+        await journal.drain(); // durability barrier
         resolveCompletion(vm.getState());
       } catch (err) {
         if (err instanceof SuspendError) {
-          const suspendEnvelope: EventEnvelope = {
-            id: `${executionId}-suspend-${Date.now()}`,
-            workflowId,
-            executionId,
-            eventType: "EXECUTION_SUSPENDED",
-            sequence: this.eventStore.nextSequence(executionId),
-            timestamp: Date.now(),
-            payload: { condition: err.condition },
-          };
-          this.eventStore.append(suspendEnvelope);
-          vm.applyEvent(suspendEnvelope);
-          this.onEvent?.(suspendEnvelope);
-
+          journal.commit("EXECUTION_SUSPENDED", { condition: err.condition });
+          // MUST drain before snapshotting: a snapshot must never reference
+          // events that are not yet durably in the log.
+          try {
+            await journal.drain();
+          } catch (drainErr) {
+            rejectSuspend(drainErr);
+            rejectCompletion(drainErr);
+            return;
+          }
           const snap: Snapshot = {
             id: ulid(),
             executionId,
@@ -437,32 +407,28 @@ export class WorkflowRuntime {
             state: vm.getState(),
             createdAt: Date.now(),
           };
-          this.snapshotStore.save(snap);
-
+          await this.snapshotStore.save(snap);
           resolveSuspend(vm.getState());
           return;
         }
 
-        // If the run was cancelled, cancel() already recorded EXECUTION_CANCELLED
-        // and rejected completion. The error bubbling up here is the abort itself
-        // (or a downstream effect observing the signal) — don't double-record it
-        // as a failure.
-        if (cancelled) return;
+        // Cancelled: cancel() already committed EXECUTION_CANCELLED and rejected
+        // completion. Drain to make that write durable, then stop.
+        if (cancelled) {
+          await journal.drain().catch(() => {}); // write error already surfaced via onStorageError
+          return;
+        }
 
-        const seq = this.eventStore.nextSequence(executionId);
-        const failedEnvelope: EventEnvelope = {
-          id: `${executionId}-${seq}`,
-          workflowId,
-          executionId,
-          eventType: "EXECUTION_FAILED",
-          sequence: seq,
-          timestamp: Date.now(),
-          payload: { error: String(err) },
-        };
-        this.eventStore.append(failedEnvelope);
-        vm.applyEvent(failedEnvelope);
-        this.onEvent?.(failedEnvelope);
+        // Storage died mid-run (a durable write rejected → the run aborted).
+        // Surface the write failure; do NOT fabricate an EXECUTION_FAILED event
+        // into a log that the store can't accept anyway.
+        if (journal.failed) {
+          await journal.drain().catch((drainErr) => rejectCompletion(drainErr));
+          return;
+        }
 
+        journal.commit("EXECUTION_FAILED", { error: String(err) });
+        await journal.drain().catch(() => {}); // best-effort persist; prefer the original error
         rejectCompletion(err);
       }
     };
