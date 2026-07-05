@@ -30,6 +30,7 @@ loom/
 │   └── playground/               # A2UI patch-stream + trace playground
 ├── examples/                     # Reference applications (see table below)
 │   ├── agent-network/            # headless Node — full agentic pipeline end to end
+│   ├── a2a-mesh/                 # headless Node — bidirectional A2A interop with ADK/LangGraph/CrewAI
 │   ├── cloud-command-center/     # React — durable suspend/approve/resume + streaming AI triage
 │   ├── angular-command-center/   # the same workflow in Angular (runtime is UI-agnostic)
 │   ├── db-command-center/        # React — intent-driven multi-agent DB ops (BYOR + BYOC + fiber)
@@ -73,6 +74,7 @@ loom/
 | ~cloud-command-center~   | React app: suspend/approve/resume workflow + streaming AI triage (A2UI)      |
 | ~angular-command-center~ | The same workflow in Angular — proves the runtime is UI-framework-agnostic   |
 | ~agent-network~          | Node showcase: the full pipeline — intent routing, planner, capabilities, agent memory, MCP + A2A, and a terminal-rendered dashboard |
+| ~a2a-mesh~               | Node showcase: using external agent frameworks (Google ADK, LangGraph, CrewAI) *with* Loom as bidirectional peers over A2A — ~A2APeerClient~ registers a remote agent as a Loom tool (outbound), and ~createA2AServer~ exposes a Loom agent to external callers (inbound). Runs offline against a mock peer; README shows how to point it at a real ADK/LangGraph endpoint |
 | ~db-command-center~      | React app: intent-driven, human-in-the-loop, multi-agent (A2A) DB ops command center — a dynamically planned workflow, long-running domain agents, a near-real-time task list, and an observability dashboard; BYOR + BYOC + render-side fiber |
 | ~db-command-center-wc~   | The *same* command center in vanilla Web Components — no framework at all. Reuses the entire agentic backend and swaps only the render layer, proving Loom's BYOR contract |
 | ~db-command-center-server~ | The *same* command center as a genuine server + client app: the durable runtime runs on a Node server (SQLite); a Web Components client renders it over HTTP + SSE. Demonstrates the isomorphic deployment model (server execution → client render/resume) |
@@ -142,6 +144,16 @@ pnpm --filter @loom/agent-network start
 #+end_src
 
 It configures an LLM provider, discovers tools from an (in-process) MCP server, runs an agent ReAct loop that calls those tools, then exposes a Loom flow over A2A and calls it back as a client. It also builds a ~CapabilityCatalog~ and shows intent routing (~IntentRuntime~), a multi-step plan (~PlannerRuntime~), agent memory recall (~MemoryRuntime~), and a terminal-rendered dashboard (~@loom/renderer-terminal~). Every step prints to the console.
+
+* Running the A2A Mesh Example
+
+The A2A Mesh is a headless Node script showing how to use external agent frameworks — Google ADK, LangGraph, CrewAI, or another Loom service — *with* Loom as bidirectional peers over the open A2A protocol, fully offline:
+
+#+begin_src sh
+pnpm --filter @loom/a2a-mesh start
+#+end_src
+
+*Outbound*, ~A2APeerClient~ discovers a remote agent's ~AgentCard~ and registers it as a first-class Loom tool (the A2A analogue of ~McpClient.registerInto~); a Loom agent then delegates to it mid-ReAct-loop. *Inbound*, ~createA2AServer~ exposes a Loom flow over A2A and an ~createA2AClientEffect~ loopback drives it — standing in for an external framework calling Loom. Because A2A is the wire contract, the Loom-side code is identical whether the peer is ADK (which speaks A2A natively via ~to_a2a(agent)~) or a LangGraph/CrewAI graph behind a thin A2A shim. The example's ~README.md~ shows how to point it at a real endpoint.
 
 * Running the DB Command Center Examples
 

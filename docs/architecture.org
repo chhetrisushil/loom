@@ -91,7 +91,7 @@ Agentic layer (depend on @loom/core + @loom/effect-runtime):
   @loom/llm      LlmProvider, AnthropicProvider, OpenAiProvider, createLlmEffect
   @loom/agent    AgentRunner (ReAct loop), agentStep$, SkillRegistry  → depends on @loom/llm
   @loom/mcp      McpClient, mcpTool$ (Model Context Protocol tool discovery)
-  @loom/a2a      createA2AServer, createA2AClientEffect  → depends on @loom/workflow-runtime
+  @loom/a2a      createA2AServer, createA2AClientEffect, A2APeerClient  → depends on @loom/workflow-runtime
   @loom/a2ui     A2UIPatch protocol, a2uiSurfaceProjection, A2UIRuntime (Agent-to-UI)
   @loom/registry AgentRegistry (AgentDefinition + agent card store)
 
@@ -791,7 +791,9 @@ As a *client*, ~createA2AClientEffect(agentUrl)~ returns an ~A2AEffect~ that POS
 
 The agent card is not hand-authored: an ~agent$~ definition carries optional ~version~, ~capabilities~, and ~skills~ metadata, and ~toAgentCard(agent)~ derives its ~AgentCard~ from that — keeping the card and the agent a single source of truth.
 
-~@loom/registry~ provides ~AgentRegistry~, a store of ~AgentDefinition~ + agent-card pairs that a gateway can use to serve multiple agents.
+*Consuming external frameworks.* Because A2A is an open wire protocol rather than a Loom-specific one, the same two roles make Loom interoperate with external agent frameworks as *bidirectional peers*: Google ADK speaks A2A natively (~to_a2a(agent)~), and a LangGraph or CrewAI graph is exposed with a thin A2A HTTP shim. Inbound (external → Loom) needs nothing beyond ~createA2AServer~. Outbound (Loom → external) is handled by ~A2APeerClient~ — the A2A analogue of ~McpClient.registerInto~: it discovers a remote agent's card, wraps ~createA2AClientEffect~ in a ~{ prompt } → { content }~ adapter, and registers it as a ~kind: "a2a"~ tool so a Loom agent, step, or the planner can call it. Loom stays TypeScript while the peer stays in its own runtime; the only coupling is the three-route contract. The ~examples/a2a-mesh~ showcase runs both directions offline against a mock peer.
+
+~@loom/registry~ provides ~AgentRegistry~, a store of ~AgentDefinition~ + agent-card pairs that a gateway can use to serve multiple agents; ~A2APeerClient.registerInto~ can populate it with discovered remote peers so the intent/planner layer routes to them too.
 
 ** A2UI — the Agent-to-UI protocol (~@loom/a2ui~)
 
