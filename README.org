@@ -56,6 +56,7 @@ loom/
 | ~@loom/planner~            | Planner Runtime — composes ordered multi-step plans      |
 | ~@loom/memory~             | Agent memory — scoped, durable recall (~MemoryRuntime~)  |
 | ~@loom/renderer-terminal~  | Terminal renderer — same blueprint, non-React surface    |
+| ~@loom/scheduler~          | Ephemeral cooperative scheduler — priority lanes, bounded-concurrency ~parallelLimit~, ~yieldControl~, AbortSignal utils (opt-in) |
 
 ** Examples
 
@@ -171,6 +172,9 @@ Loom workflows are defined as a series of steps that can suspend at any point an
 - *Blueprint* — a JSON-serializable description of a UI that the renderer turns into React components.
 - *ProjectionRuntime* — subscribes to workflow events and derives view state that drives the Blueprint renderer.
 
+Loom also ships *opt-in* (default-off, no behavior change unless enabled) performance and responsiveness seams — Fiber principles applied to the async agentic layer, plus render-side hooks that leverage React's *own* fiber:
+
+- *Cooperative scheduling & cancellation* — ~@loom/scheduler~ adds priority lanes, order-preserving bounded concurrency (~parallelLimit~), and ~yieldControl~. ~ExecutionHandle.cancel()~ aborts in-flight effects (via ~EffectContext.signal~ / ~LlmRequest.signal~) and records a durable ~EXECUTION_CANCELLED~ event — live-only, so resume is unchanged. Opt-in, replay-safe concurrency via ~ctx.parallel(pairs, { limit })~ and ~AgentRunner.parallelTools~; planner/intent run at Idle priority.
 #+begin_example
 Flow definition
      │

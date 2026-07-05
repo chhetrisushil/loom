@@ -176,6 +176,30 @@ export const InvestigateIncidentRegisteredFlow = {
 2. *Do not catch ~SuspendError~* — let it propagate to ~WorkflowRuntime~.
 3. *Keep runner logic deterministic* — the same input + event log must always produce the same execution path.
 
+** Bounded-concurrency parallel steps
+
+~ctx.parallel()~ runs several steps at once and returns their results *in input order* — so the shape stays deterministic for replay no matter which step finishes first. By default it is unbounded (behaves like ~Promise.all~). Pass ~{ limit: N }~ to cap how many run concurrently — useful when the steps hit a rate-limited API or you want to avoid a thundering herd of effects.
+
+#+begin_src typescript
+// Unbounded — all pairs start immediately (default).
+const [metrics, logs] = await ctx.parallel([
+  [FetchMetricsStep, { incidentId: input.incidentId }],
+  [FetchLogsStep,    { incidentId: input.incidentId }],
+]);
+
+// Bounded — never more than 2 in flight at once; results still in input order.
+const [metrics, logs, traces] = await ctx.parallel(
+  [
+    [FetchMetricsStep, { incidentId: input.incidentId }],
+    [FetchLogsStep,    { incidentId: input.incidentId }],
+    [FetchTracesStep,  { incidentId: input.incidentId }],
+  ],
+  { limit: 2 },
+);
+#+end_src
+
+Each parallel step is an ordinary ~ctx.run()~ under the hood, so caching, replay, and cancellation all apply exactly as they do for a sequential step.
+
 * Step 4 — Set Up Projections
 
 Projections are pure read models derived from the event stream. Each handler is a ~(state, event) => state~ reducer.
@@ -239,6 +263,16 @@ workflowRuntime.registerFlow(
 );
 #+end_src
 
+** Coalescing projection notifications (streaming bursts)
+
+When a step streams many events in quick succession (token-by-token A2UI patches, a metrics firehose), each event normally notifies every subscriber synchronously — one re-render per event. Opt into ~coalesceNotifications~ to collapse a burst into *one notification per projection key per microtask*: the runtime keeps applying every event (state stays exact), but subscribers are woken once when the microtask drains.
+
+#+begin_src typescript
+const projectionRuntime = new InMemoryProjectionRuntime({ coalesceNotifications: true });
+#+end_src
+
+Off by default. The trade-off: subscriber updates land on a microtask rather than synchronously, so a test that reads state immediately after ~handleEvent()~ should ~await Promise.resolve()~ first. It pairs naturally with the deferred render hooks below (~useDeferredProjection~ / ~useDeferredWidgetValue~) — coalescing cuts the *number* of updates, deferral cuts their *priority*.
+
 For server/production use, replace in-memory stores with SQLite:
 
 #+begin_src typescript
@@ -287,6 +321,41 @@ resumeHandle.waitForCompletion().then(() => {
   console.log("Incident resolved");
 });
 #+end_src
+
+** Cancelling a running execution
+
+Call ~handle.cancel(reason?)~ to abort a live run — for a user "Stop" button, a superseded request, or a timeout. It aborts the ~AbortSignal~ handed to in-flight effects, records a durable ~EXECUTION_CANCELLED~ event, and *rejects* the promise from ~waitForCompletion()~ — so wrap that in try/catch.
+
+#+begin_src typescript
+const handle = await workflowRuntime.start(InvestigateIncidentRegisteredFlow, {
+  incidentId: "cpu-001",
+});
+
+try {
+  const state = await handle.waitForCompletion();
+  console.log("Completed at sequence", state.sequence);
+} catch (err) {
+  // Cancellation surfaces here as a rejection.
+  console.log("Investigation cancelled:", err);
+}
+
+// …elsewhere, e.g. a Stop button handler:
+handle.cancel("superseded by newer incident");
+#+end_src
+
+Cancellation only affects *live* work — already-persisted state and resume semantics are unchanged. The execution moves to the new ~"cancelled"~ status and the log gains an ~EXECUTION_CANCELLED~ event (plus a ~STEP_CANCELLED~ event for any step interrupted mid-flight). ~cancel()~ is idempotent.
+
+For cancellation to actually interrupt an effect, the effect must observe its signal. Each effect receives ~ctx.signal~ (an ~AbortSignal~); long-running or I/O effects should forward it and/or check it at ~await~ points:
+
+#+begin_src typescript
+handler: handler$(async (input, ctx) => {
+  // Forward the signal to fetch — the request aborts the moment cancel() fires.
+  const res = await fetch(`/metrics/${input.incidentId}`, { signal: ctx.signal });
+  return res.json();
+}),
+#+end_src
+
+Effects that don't touch ~ctx.signal~ still run to completion, but the execution is recorded as cancelled and ~waitForCompletion()~ rejects as soon as ~cancel()~ is called.
 
 * Step 7 — Define a Blueprint (optional)
 
@@ -454,6 +523,22 @@ function StatusBanner({ executionId }: { executionId: string }) {
 }
 #+end_src
 
+For a projection that updates very frequently and isn't urgent (a live metrics ticker, a streaming answer), swap in ~useDeferredProjection~ — identical signature, but updates are marked non-urgent React transitions so they never block an interaction:
+
+#+begin_src typescript
+import { useDeferredProjection } from "@loom/renderer-react";
+
+function MetricsTicker({ executionId }: { executionId: string }) {
+  const { projectionRuntime } = useLoom();
+  const metrics = useDeferredProjection<MetricsState>(
+    projectionRuntime,
+    "metrics",
+    executionId,
+  );
+  return <span>CPU {metrics.cpu?.current ?? "—"}%</span>;
+}
+#+end_src
+
 * Testing Flows
 
 Test flows without Vite — ~handler$(fn)~ returns a ~HandlerRef~ at runtime so tests work unmodified.
@@ -618,6 +703,20 @@ const result = await runner.run({ prompt: "Diagnose incident cpu-001" }, ctx);
 #+end_src
 
 The runner emits an ~AGENT_TOOL_CALL~ event for each tool invocation and a single ~AGENT_COMPLETED~ event at the end, so projections and telemetry can observe the agent's reasoning trace exactly like any other workflow events.
+
+When the model asks for several tools in one turn, they run sequentially by default. Set ~parallelTools~ to execute them concurrently — ~true~ runs all of a turn's tool calls at once, or pass a number to cap concurrency. Results, event emission, and the messages fed back to the model are *always* kept in the model's tool-call order regardless of which finishes first, so event-sourced replay stays deterministic.
+
+#+begin_src typescript
+const runner = new AgentRunner({
+  definition: InvestigatorAgent,
+  provider: new AnthropicProvider(),
+  effectRuntime,
+  systemPrompt: "You are an incident investigator. Use the tools to gather evidence.",
+  parallelTools: true,   // or a number, e.g. 3, to cap concurrency
+});
+#+end_src
+
+The agent also honors cancellation: ~AgentRunner.run~ checks ~ctx.signal~ before each model round-trip, so cancelling the execution stops it before the next (expensive) LLM call.
 
 To drop an agent directly into a flow, use ~agentStep$~ — it returns an ordinary ~StepDefinition~ you can pass to ~ctx.run~:
 
@@ -858,6 +957,22 @@ const handle = await intent.run("diagnose the cpu incident", { incidentId: "cpu-
 const smart = new IntentRuntime({ catalog, provider: new AnthropicProvider(), workflowRuntime });
 #+end_src
 
+When routing runs alongside live work, pass a shared ~scheduler~ so the routing LLM call runs at ~Priority.Idle~ and yields to foreground executions. Build one with ~createScheduler({ concurrency })~ from ~@loom/scheduler~ and share the *same* instance across Intent, Planner, and any other background callers — the concurrency cap is what makes the priority lanes take effect.
+
+#+begin_src typescript
+import { createScheduler } from "@loom/scheduler";
+
+// One shared scheduler; the finite cap enables priority ordering.
+const scheduler = createScheduler({ concurrency: 4 });
+
+const smart = new IntentRuntime({
+  catalog,
+  provider: new AnthropicProvider(),
+  workflowRuntime,
+  scheduler,   // routing LLM call is queued at Priority.Idle
+});
+#+end_src
+
 ** Planning multi-step goals
 
 Where the Intent Runtime picks one capability, ~PlannerRuntime~ composes an ordered ~Plan~ of capability ids for a higher-level goal. Every id is validated against the catalog and the plan is truncated to ~maxSteps~ (default 5).
@@ -874,6 +989,21 @@ const plan = await planner.plan("Resolve the CPU incident and notify the on-call
 for (const step of plan.steps) {
   await catalog.invoke(workflowRuntime, step.capabilityId, { incidentId: "cpu-001" });
 }
+#+end_src
+
+Like the Intent Runtime, ~PlannerRuntime~ accepts a shared ~scheduler~ so the planning LLM call runs at ~Priority.Idle~ and yields to live executions. Reuse the same ~createScheduler({ concurrency })~ instance you pass to Intent so all background LLM work shares one concurrency budget:
+
+#+begin_src typescript
+import { createScheduler } from "@loom/scheduler";
+
+const scheduler = createScheduler({ concurrency: 4 });   // share across Intent + Planner
+
+const planner = new PlannerRuntime({
+  catalog,
+  provider: new AnthropicProvider(),
+  maxSteps: 4,
+  scheduler,   // planning LLM call is queued at Priority.Idle
+});
 #+end_src
 
 ** Agent memory

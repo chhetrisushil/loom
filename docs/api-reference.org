@@ -32,8 +32,9 @@ import { flow$, step$, tool$, WorkflowRuntime, ToolEffect } from "@loom/sdk";
 21. [[#planner][~@loom/planner~]] — ~PlannerRuntime~ (~plan~)
 22. [[#memory][~@loom/memory~]] — ~MemoryRuntime~, ~InMemoryMemoryStore~, ~MemoryStore~
 23. [[#renderer-terminal][~@loom/renderer-terminal~]] — ~TerminalRenderer~, ~renderBlueprintToString~
-24. [[#errors][Errors]]
-25. [[#complete-example][Complete Example]]
+24. [[#scheduler][~@loom/scheduler~]] — ~createScheduler~, ~parallelLimit~, ~yieldControl~, ~Priority~, AbortSignal utils
+25. [[#errors][Errors]]
+26. [[#complete-example][Complete Example]]
 
 -----
 
@@ -420,6 +421,21 @@ const [metrics, logs] = await ctx.parallel([
 
 Idempotency works the same as ~ctx.run~ — completed steps return cached results immediately.
 
+Pass an optional second argument for *bounded* concurrency — useful for large fan-outs that would otherwise open too many effects at once:
+
+#+begin_src typescript
+const results = await ctx.parallel(
+  incidentIds.map((id) => [FetchMetricsStep, { incidentId: id }] as const),
+  { limit: 4 },   // at most 4 steps run concurrently
+);
+#+end_src
+
+| Option   | Type     | Default            | Description                                       |
+|----------+----------+--------------------+---------------------------------------------------|
+| ~limit~  | ~number~ | unbounded          | Max steps running at once; ~≤ 0~ means unbounded  |
+
+~limit~ is powered by ~parallelLimit~ from [[#scheduler][~@loom/scheduler~]]. Results are *always* returned in input order regardless of completion order, so replay stays deterministic; the default (no ~options~) is unchanged ~Promise.all~ behaviour. When the execution is cancelled, ~ctx.signal~ is forwarded so queued tasks abort promptly (see [[#execution-handle][cancellation]]).
+
 ** ~ctx.emit(eventType, payload)~
 
 Appends a custom domain event to the event log. Triggers ~onEvent~ on the runtime (which routes to ~ProjectionRuntime~), so UI projections update immediately.
@@ -483,6 +499,7 @@ interface ExecutionHandle {
   waitForSuspend(): Promise<ExecutionState>;
   waitForCompletion(): Promise<ExecutionState>;
   getState(): ExecutionState;
+  cancel(reason?: unknown): void;
 }
 #+end_src
 
@@ -492,6 +509,31 @@ interface ExecutionHandle {
 | ~waitForSuspend()~   | Resolves with ~ExecutionState~ when the flow hits ~ctx.suspend()~        |
 | ~waitForCompletion()~| Resolves with ~ExecutionState~ when the flow returns (or rejects on ~EXECUTION_FAILED~) |
 | ~getState()~         | Synchronous snapshot of the current ~ExecutionState~                     |
+| ~cancel(reason?)~    | Aborts in-flight effects, records a durable ~EXECUTION_CANCELLED~ event, and rejects ~waitForCompletion()~ |
+
+** ~cancel(reason?)~ — cooperative cancellation
+
+Aborts the execution's *live* work. It aborts the ~AbortSignal~ threaded into every in-flight effect (which cooperative effects forward to ~fetch~/providers), appends a durable ~EXECUTION_CANCELLED~ event, and rejects ~waitForCompletion()~ with ~reason~. It is *idempotent* — repeated calls record the event only once.
+
+#+begin_src typescript
+const handle = await runtime.start(InvestigateIncidentFlow, { incidentId: "cpu-001" });
+
+// Later — user navigates away or a newer request supersedes this one:
+handle.cancel(new Error("superseded by newer request"));
+
+await handle.waitForCompletion().catch((err) => {
+  // err === the reason passed to cancel()
+  console.log("cancelled:", err.message);
+});
+handle.getState().status;   // → "cancelled"
+#+end_src
+
+Cancellation touches only *live* work: it does not delete persisted events or snapshots, so a cancelled execution can still be inspected and its resume semantics are unchanged. The runtime emits two new event types:
+
+- ~EXECUTION_CANCELLED~ — sets the execution ~status~ to ~"cancelled"~.
+- ~STEP_CANCELLED~ — set on a frame whose effect was aborted; marks that frame's ~status~ ~"cancelled"~ but leaves the execution status alone. ~ctx.run~ emits this (instead of ~STEP_FAILED~) when the effect rejects because ~ctx.signal~ was aborted.
+
+Both ~ExecutionStatus~ and ~FrameStatus~ gain the ~"cancelled"~ value.
 
 ~waitForSuspend()~ and ~waitForCompletion()~ are independent — await whichever is relevant:
 
@@ -650,7 +692,17 @@ interface EffectContext {
   workflowId: string;
   attempt: number;                                    // 1-based retry count
   emit(eventType: string, payload: unknown): void;   // emit events from within an effect
+  readonly signal?: AbortSignal;                     // cooperative cancellation (see below)
 }
+#+end_src>
+
+~signal~ is an optional ~AbortSignal~ that aborts when the owning execution is cancelled via ~ExecutionHandle.cancel()~. It is *undefined by default*, so non-cancellable effects pay nothing. Long-running / I/O effects (LLM, tool, A2A) should forward it to ~fetch~ (and to ~LlmRequest.signal~ / provider calls) and check it at await points so a cancel takes effect promptly:
+
+#+begin_src typescript
+new ToolEffect(async (input: { url: string }, ctx) => {
+  const res = await fetch(input.url, { signal: ctx.signal });   // aborts on cancel
+  return res.json();
+});
 #+end_src>
 
 -----
@@ -789,6 +841,22 @@ const runtime = new WorkflowRuntime({
   onEvent: (event) => projectionRuntime.handleEvent(event),
 });
 #+end_src
+
+*** Notification coalescing
+
+The constructor accepts an optional ~config~:
+
+#+begin_src typescript
+const projectionRuntime = new InMemoryProjectionRuntime({
+  coalesceNotifications: true,   // default false
+});
+#+end_src
+
+| Option                   | Type      | Default | Description                                                        |
+|--------------------------+-----------+---------+--------------------------------------------------------------------|
+| ~coalesceNotifications~  | ~boolean~ | ~false~ | Batch subscriber notifications and flush once per microtask        |
+
+When ~true~, subscriber notifications produced during a synchronous ~handleEvent~ burst are collected and flushed once per microtask, each subscriber receiving its projection's *latest* state. This collapses O(events) subscriber calls into O(microtask) — valuable for high-frequency streams such as LLM token deltas. State is still updated synchronously (~getState~ is always current); only the *notification* is deferred. Off by default, preserving synchronous notification semantics. Pairs well with ~useDeferredProjection~ / ~useDeferredWidgetValue~ on the React side.
 
 ** Interface
 
@@ -1079,7 +1147,6 @@ createRoot(root).render(
 | ~projectionRuntime~          | ~ProjectionRuntime~   | yes      | The projection runtime instance                           |
 | ~serializedExecutionState~   | ~string~              | no       | JSON string from ~serializeExecution()~ on the server     |
 | ~serializedProjectionState~  | ~string~              | no       | JSON string from ~serializeProjections()~ on the server   |
-
 When ~serializedProjectionState~ is provided, ~LoomProvider~ calls ~projectionRuntime.seedState()~ for each entry in the snapshot *before* the first child render — no empty-state flash.
 
 ** ~useLoom~
@@ -1123,6 +1190,21 @@ function MetricsPanel({ executionId }: { executionId: string }) {
 #+end_src
 
 The hook initialises from ~getState()~ and re-renders on every projection update.
+
+** ~useDeferredProjection~ hook
+
+Like ~useProjection~, but wraps streamed updates in ~startTransition~ so they are treated as *non-urgent*: urgent work (user input, eager-rendered projections) can interrupt a low-priority re-render mid-flight. The initial subscription read is still urgent.
+
+#+begin_src typescript
+import { useDeferredProjection } from "@loom/renderer-react";
+
+function LiveTokens({ executionId }: { executionId: string }) {
+  const stream = useDeferredProjection<StreamState>(projectionRuntime, "answer", executionId);
+  return <pre>{stream.text}</pre>;
+}
+#+end_src
+
+Use *only* for high-frequency, low-urgency projections (streaming text, live metrics); keep urgent projections (an approval result) on ~useProjection~ to avoid momentarily showing stale UI. Pairs well with ~InMemoryProjectionRuntime({ coalesceNotifications: true })~.
 
 -----
 
@@ -1399,6 +1481,7 @@ interface LlmRequest {
   system?: string;
   maxTokens?: number;
   temperature?: number;
+  signal?: AbortSignal;   // forwarded to the underlying fetch; aborts the request
 }
 
 interface LlmToolCall {
@@ -1536,6 +1619,7 @@ interface AgentConfig {
   effectRuntime: EffectRuntime;
   maxIterations?: number;        // default 10
   systemPrompt?: string;
+  parallelTools?: boolean | number;   // run a turn's tool calls concurrently (default false)
 }
 
 class AgentRunner {
@@ -1546,6 +1630,19 @@ class AgentRunner {
 #+end_src
 
 During ~run~, the runner emits an ~AGENT_TOOL_CALL~ event (via ~ctx.emit~) for every tool it invokes and a single ~AGENT_COMPLETED~ event when the loop finishes. ~asEffect()~ returns the same behaviour wrapped as an ~LlmEffect~, ready to register on an ~EffectRuntime~.
+
+*Parallel tool calls.* By default the runner executes a model turn's tool calls sequentially. Set ~parallelTools: true~ to run them all concurrently, or ~parallelTools: <n>~ to cap concurrency at ~n~ (via ~parallelLimit~ from [[#scheduler][~@loom/scheduler~]]). Regardless of setting, tool *results*, the emitted ~AGENT_TOOL_CALL~ events, and the messages fed back to the model are *always* in the model's tool-call order — so replay stays deterministic even though execution interleaves.
+
+*Cancellation.* The runner calls ~throwIfAborted(ctx.signal)~ before each LLM round-trip and before each tool call, and forwards ~ctx.signal~ to ~provider.complete~ (as ~LlmRequest.signal~) and to ~parallelLimit~. So cancelling the owning execution (~ExecutionHandle.cancel()~) stops an agent loop promptly.
+
+#+begin_src typescript
+const runner = new AgentRunner({
+  definition: InvestigatorAgent,
+  provider: new AnthropicProvider(),
+  effectRuntime,
+  parallelTools: 4,   // up to 4 tool calls at once; results still in tool-call order
+});
+#+end_src
 
 ~AgentConfig~ also accepts an optional ~memory?: MemoryRuntime~. When the agent's ~definition.memoryId~ is set and a ~MemoryRuntime~ is supplied, ~run~ recalls prior entries into the prompt and writes the user prompt + assistant answer back afterward; ~AgentInput~ accepts ~memoryScope?: string~ (defaulting to ~ctx.executionId~) to scope recall per conversation. See [[#memory][~@loom/memory~]].
 
@@ -2163,6 +2260,7 @@ interface IntentRuntimeConfig {
   catalog: CapabilityCatalog;
   provider?: LlmProvider;          // omit for deterministic keyword routing
   workflowRuntime?: WorkflowRuntime;  // required only for run()
+  scheduler?: Scheduler;           // from @loom/scheduler — see note below
 }
 #+end_src
 
@@ -2192,6 +2290,8 @@ const handle = await intent.run("diagnose the cpu incident", { incidentId: "cpu-
 // With a model — the provider picks the capability id
 const smart = new IntentRuntime({ catalog, provider: new AnthropicProvider(), workflowRuntime });
 #+end_src
+
+When a ~scheduler~ (from [[#scheduler][~@loom/scheduler~]]) is supplied, the routing LLM call runs at ~Priority.Idle~ so it yields to live agent/workflow work under a shared concurrency cap. This affects only scheduling, not the routing decision.
 
 -----
 
@@ -2223,6 +2323,7 @@ interface PlannerRuntimeConfig {
   catalog: CapabilityCatalog;
   provider?: LlmProvider;   // omit for the heuristic keyword-ranked plan
   maxSteps?: number;        // default 5
+  scheduler?: Scheduler;    // from @loom/scheduler — see note below
 }
 #+end_src
 
@@ -2236,6 +2337,8 @@ class PlannerRuntime {
 #+end_src
 
 ~plan(goal)~ returns an ordered ~Plan~. With a ~provider~ the model composes the plan as JSON; with none, a heuristic keyword-ranked plan is produced. Every ~capabilityId~ is validated against the catalog (unknown ids are dropped) and the plan is truncated to ~maxSteps~.
+
+When a ~scheduler~ (from [[#scheduler][~@loom/scheduler~]]) is supplied, the planning LLM call runs at ~Priority.Idle~ so it yields to live work under a shared concurrency cap. Planning is offline-safe and order-independent, so this has no effect on the resulting plan — only on scheduling.
 
 #+begin_src typescript
 const planner = new PlannerRuntime({ catalog, provider: new AnthropicProvider(), maxSteps: 4 });
@@ -2365,6 +2468,136 @@ console.log(renderer.render(IncidentBlueprint, executionId));
 #+end_src
 
 Because ~traverseBlueprint~ is the same traversal the React ~BlueprintRenderer~ uses, one blueprint definition renders to the web *or* the terminal with no changes.
+
+-----
+
+* ~@loom/scheduler~
+:PROPERTIES:
+:CUSTOM_ID: scheduler
+:END:
+
+An *ephemeral*, dependency-free cooperative scheduler for live in-flight async work. It applies Fiber principles — priority, interruption, incremental progress — to the *async agentic layer*, not to a UI reconciler. It governs three things and nothing else: the *order* queued work acquires a slot (by ~Priority~), *how many* tasks run at once, and *cancellation* via ~AbortSignal~. Import from ~@loom/scheduler~.
+
+#+begin_src typescript
+import {
+  createScheduler, parallelLimit, yieldControl, Priority,
+  throwIfAborted, linkSignals, withTimeout, signalReason, NEVER_SIGNAL,
+  type Scheduler, type SchedulerEvent,
+} from "@loom/scheduler";
+#+end_src
+
+It is deliberately *not durable*: Loom's event-sourcing + ~replay-vm~ already own durable pause/resume (~SuspendError~). The scheduler *complements* that layer for live work — do not persist scheduler state.
+
+** ~Priority~
+
+#+begin_src typescript
+enum Priority {
+  Immediate    = 0,   // must-run-now (a user-triggered cancel/approval)
+  UserBlocking = 1,   // foreground work a user is waiting on (a live agent turn)
+  Normal       = 2,   // default — ordinary flow/effect work
+  Idle         = 3,   // background/pre-fetch that should yield to everything else (planning)
+}
+#+end_src
+
+Priority is *ordering only* — lower numeric value = more urgent (dequeued first). Unlike React's scheduler these lanes do not drive a frame-deadline time-slicer (yielding to a frame budget is meaningless while awaiting a socket); they only decide the order queued tasks acquire a slot when running under a finite concurrency cap.
+
+** ~createScheduler(config?)~
+
+#+begin_src typescript
+function createScheduler(config?: {
+  concurrency?: number;                       // default Infinity — gating disabled
+  onEvent?: (e: SchedulerEvent) => void;      // optional telemetry sink
+}): Scheduler;
+
+interface Scheduler {
+  schedule<T>(
+    task: (signal: AbortSignal) => Promise<T>,
+    opts?: { priority?: Priority; signal?: AbortSignal; label?: string },
+  ): Promise<T>;
+  readonly inFlight: number;   // tasks currently executing
+  readonly pending: number;    // tasks queued waiting for a slot
+}
+#+end_src
+
+The default ~concurrency: Infinity~ *disables gating entirely*: ~schedule~ reduces to ~await task(signal)~ with no queue node, controller, or bookkeeping — *~zero overhead*. Overhead is only paid when a finite cap is explicitly set. Under a finite cap, queued tasks are ordered by ~(priority asc, enqueue order)~; a task's ~signal~ is honoured while it is still queued, so a cancel that arrives before it starts never occupies a slot.
+
+~SchedulerEvent~ (delivered to ~onEvent~) is one of ~{ type: "scheduled" }~, ~{ type: "started" }~, or ~{ type: "settled"; ok: boolean }~, each carrying the task's ~priority~ and optional ~label~.
+
+#+begin_src typescript
+const scheduler = createScheduler({ concurrency: 3 });
+
+// Fan several LLM calls through a shared cap; a live turn preempts background planning.
+const [a, b] = await Promise.all([
+  scheduler.schedule((signal) => provider.complete({ messages, signal }),
+                     { priority: Priority.UserBlocking, label: "live-turn" }),
+  scheduler.schedule((signal) => planner.compose(signal),
+                     { priority: Priority.Idle, label: "prefetch-plan" }),
+]);
+#+end_src
+
+** ~parallelLimit(tasks, opts?)~
+
+Runs ~tasks~ with bounded concurrency, *preserving input order in the result array* — ~results[i]~ always corresponds to ~tasks[i]~ regardless of completion order. This ordering guarantee is load-bearing for Loom's replay determinism (it backs ~ctx.parallel~ and ~AgentRunner~'s ~parallelTools~).
+
+#+begin_src typescript
+function parallelLimit<T>(
+  tasks: Array<(signal: AbortSignal) => Promise<T>>,
+  opts?: { limit?: number; signal?: AbortSignal; failFast?: boolean },
+): Promise<T[]>;
+#+end_src
+
+| Option     | Type          | Default     | Description                                                    |
+|------------+---------------+-------------+----------------------------------------------------------------|
+| ~limit~    | ~number~      | unbounded   | Max tasks running at once; ~≤ 0~ means unbounded               |
+| ~signal~   | ~AbortSignal~ | none        | Caller cancellation, linked into each task's signal            |
+| ~failFast~ | ~boolean~     | ~true~      | Abort siblings on the first rejection and reject with that error |
+
+Degenerates to ~Promise.all~ semantics when ~limit >= tasks.length~. With ~failFast: false~, every task runs to settlement and the first error (by input order) is thrown after all complete.
+
+#+begin_src typescript
+const pages = await parallelLimit(
+  urls.map((u) => (signal) => fetch(u, { signal }).then((r) => r.json())),
+  { limit: 5 },
+);
+// pages[i] corresponds to urls[i]
+#+end_src
+
+** ~yieldControl()~
+
+#+begin_src typescript
+function yieldControl(): Promise<void>;
+#+end_src
+
+Yields the current task back to the host via a *macrotask* boundary (~setTimeout(…, 0)~, unref'd), so the event loop genuinely drains between chunks — higher-priority work (and, in a browser, paint/input) can run before continuing. Use in CPU-bound loops that want to stay responsive, e.g. an interruptible tree walk (~traverseBlueprintAsync~ uses it by default).
+
+** AbortSignal utilities
+
+Small, dependency-free helpers for cooperative cancellation. All are optional-signal-safe: passing ~undefined~ allocates nothing and is a no-op, so the non-cancellable fast path pays zero cost.
+
+#+begin_src typescript
+function throwIfAborted(signal?: AbortSignal): void;
+function linkSignals(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined;
+function withTimeout(ms: number, parent?: AbortSignal): { signal: AbortSignal; dispose(): void };
+function signalReason(signal: AbortSignal): unknown;
+const NEVER_SIGNAL: AbortSignal;
+#+end_src
+
+| Helper            | Description                                                                                     |
+|-------------------+-------------------------------------------------------------------------------------------------|
+| ~throwIfAborted~  | Throws the signal's reason if it is already aborted; no-op when ~undefined~ or not aborted       |
+| ~linkSignals~     | Combines several signals into one that aborts when any input does; ~undefined~ if none supplied, the same signal if exactly one (prefers native ~AbortSignal.any~) |
+| ~withTimeout~     | Derives a signal that aborts after ~ms~ (a ~TimeoutError~) or when ~parent~ aborts; call ~dispose()~ when the work settles to release the timer/listener |
+| ~signalReason~    | Normalises an aborted signal's ~reason~ into a throwable (defaults to an ~AbortError~)           |
+| ~NEVER_SIGNAL~    | A single shared signal that never aborts — handed to a task when the caller supplied none, avoiding a per-call ~AbortController~ allocation |
+
+#+begin_src typescript
+const { signal, dispose } = withTimeout(5_000, ctx.signal);   // 5s budget, honours the parent
+try {
+  return await provider.complete({ messages, signal });
+} finally {
+  dispose();
+}
+#+end_src
 
 -----
 
