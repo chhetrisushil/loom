@@ -24,7 +24,7 @@ import { flow$, step$, tool$, WorkflowRuntime, ToolEffect } from "@loom/sdk";
 13. [[#llm][~@loom/llm~]] — ~LlmProvider~, ~AnthropicProvider~, ~OpenAiProvider~, ~createLlmEffect~
 14. [[#agent][~@loom/agent~]] — ~AgentRunner~, ~agentStep$~, ~SkillRegistry~, ~SkillSelector~
 15. [[#mcp][~@loom/mcp~]] — ~McpClient~, ~mcpTool$~
-16. [[#a2a][~@loom/a2a~]] — ~createA2AClientEffect~, ~createA2AServer~, ~toAgentCard~
+16. [[#a2a][~@loom/a2a~]] — ~createA2AClientEffect~, ~createA2AServer~, ~toAgentCard~, ~A2APeerClient~
 17. [[#registry][~@loom/registry~]] — ~AgentRegistry~, ~globalAgentRegistry~
 18. [[#a2ui][~@loom/a2ui~ — the Agent-to-UI protocol]] — ~A2UIPatch~, ~createA2UIEmitter~, ~a2uiSurfaceProjection~, ~A2UIRuntime~, ~useA2UISurface~
 19. [[#capability][~@loom/capability~]] — ~capability$~, ~CapabilityCatalog~
@@ -1959,10 +1959,16 @@ const hits = await ctx.run(SearchStep, { query: "loom framework" });
 :CUSTOM_ID: a2a
 :END:
 
-Agent-to-Agent interoperability. Expose a Loom flow as an A2A-compatible HTTP agent, and call remote agents from inside a flow via an effect. Import from ~@loom/a2a~.
+Agent-to-Agent interoperability. Expose a Loom flow as an A2A-compatible HTTP agent, call remote agents from inside a flow via an effect, and register an external A2A agent (Google ADK, a LangGraph/CrewAI A2A shim, or another Loom service) as a first-class Loom tool. Import from ~@loom/a2a~.
 
 #+begin_src typescript
-import { createA2AClientEffect, createA2AServer, toAgentCard } from "@loom/a2a";
+import {
+  createA2AClientEffect,
+  createA2AServer,
+  toAgentCard,
+  A2APeerClient,
+  fetchAgentCard,
+} from "@loom/a2a";
 #+end_src
 
 ** Types
@@ -2016,6 +2022,50 @@ function createA2AClientEffect(
 
 effectRuntime.register("remote-analyst", createA2AClientEffect("https://analyst.example.com"));
 #+end_src
+
+** ~fetchAgentCard(url, headers?)~
+
+Fetches a remote agent's ~AgentCard~ from ~GET {url}/.well-known/agent.json~. Discovery building block used by ~A2APeerClient~; call it directly when you only need the card.
+
+#+begin_src typescript
+function fetchAgentCard(url: string, headers?: Record<string, string>): Promise<AgentCard>;
+#+end_src
+
+** ~A2APeerClient~
+
+The outbound registrar — the A2A analogue of ~McpClient.registerInto~. It discovers a remote agent, wraps ~createA2AClientEffect~ in a friendlier ~{ prompt } → { content }~ adapter, and registers it as a ~kind: "a2a"~ Loom tool so agents, steps, and the planner can call it. This is how you consume an external framework (ADK / LangGraph / CrewAI) as a peer: the remote side just has to answer the three A2A routes.
+
+#+begin_src typescript
+interface A2APeerConfig {
+  url: string;                       // base URL of the remote A2A agent
+  headers?: Record<string, string>;  // auth etc.; sent on discovery and every call
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  toolId?: string;                   // defaults to a slug of the card name
+}
+
+interface A2APeerInput  { prompt: string; context?: unknown }
+interface A2APeerOutput { content: string; raw: A2ATaskResult }
+
+class A2APeerClient {
+  constructor(config: A2APeerConfig);
+  discover(): Promise<AgentCard>;                       // fetch + cache the card
+  map(): Promise<MappedA2APeer>;                        // card + ToolDefinition + Effect
+  registerInto(
+    effectRuntime: EffectRuntime,
+    registry?: PeerAgentRegistrar,                      // optional: expose to planner/intent
+  ): Promise<ToolDefinition<A2APeerInput, A2APeerOutput>>;
+}
+#+end_src
+
+#+begin_src typescript
+// Register a remote agent as a Loom tool, then hand it to a local agent.
+const peer = new A2APeerClient({ url: "http://localhost:9999" });
+const tool = await peer.registerInto(effectRuntime, registry);
+const orchestrator = agent$({ id: "orchestrator", name: "Orchestrator", tools: [tool] });
+#+end_src
+
+The optional ~registry~ accepts any object with ~AgentRegistry~'s ~register(definition, card?)~ shape (declared structurally as ~PeerAgentRegistrar~, so ~@loom/a2a~ takes no dependency on ~@loom/registry~). The adapter derives the ~A2ATask~ id from ~executionId:stepId~ so replays stay deterministic. See ~examples/a2a-mesh~ for a runnable bidirectional demo.
 
 ** ~createA2AServer(workflowRuntime, flow, agentCard, options?)~
 

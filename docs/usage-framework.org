@@ -676,6 +676,7 @@ Two runnable examples ship with the framework:
 
 - ~examples/cloud-command-center~ — an end-to-end UI that streams an AI analysis into the A2UI ~"ui"~ surface via patches.
 - ~examples/agent-network~ — the server-side pieces (agents, MCP tools, and A2A). Run it with ~pnpm --filter @loom/agent-network start~.
+- ~examples/a2a-mesh~ — bidirectional A2A interop with external frameworks (ADK / LangGraph / CrewAI) via ~A2APeerClient~. Run it with ~pnpm --filter @loom/a2a-mesh start~.
 
 ** Configuring an LLM provider
 
@@ -910,6 +911,32 @@ const taskResult = await ctx.run(DelegateStep, {
   message: { role: "user", parts: [{ type: "text", text: "Diagnose cpu-001" }] },
 });
 #+end_src
+
+** Using external agent frameworks (ADK, LangGraph, CrewAI) over A2A
+
+A2A is an open protocol, not a Loom-only one, so the two roles above are also how Loom interoperates with external agent frameworks — as *bidirectional peers*. Google ADK exposes agents over A2A natively (~to_a2a(agent)~); a LangGraph or CrewAI graph is wrapped in a thin A2A HTTP server that answers the same three routes. Loom stays TypeScript while the peer stays in its own runtime.
+
+*Inbound* (an external framework calls a Loom agent) needs nothing new: ~createA2AServer~ already fronts a flow, and any A2A client can discover and drive it.
+
+*Outbound* (a Loom agent calls an external framework) uses ~A2APeerClient~ — the A2A analogue of ~McpClient.registerInto~. It discovers the remote agent's card, wraps ~createA2AClientEffect~ in a friendlier ~{ prompt } → { content }~ adapter, and registers it as a ~kind: "a2a"~ tool. Pass a registry to also expose it to the intent/planner layer.
+
+#+begin_src typescript
+import { A2APeerClient } from "@loom/a2a";
+
+// Point at any A2A endpoint: an `adk to_a2a` server, a LangGraph/CrewAI shim,
+// or another Loom createA2AServer. The Loom-side code is identical for all.
+const peer = new A2APeerClient({ url: "http://localhost:8001" });
+const remoteTool = await peer.registerInto(effectRuntime, registry);
+
+// The remote agent is now a normal tool in a local agent's toolbox.
+const orchestrator = agent$({
+  id: "orchestrator",
+  name: "Orchestrator",
+  tools: [remoteTool],
+});
+#+end_src
+
+If you only want an external framework's *model* (not its agent loop), skip A2A and implement ~LlmProvider~ instead (see *Configuring an LLM provider* above). The runnable ~examples/a2a-mesh~ shows both directions end to end offline, with a README covering real ADK/LangGraph wiring.
 
 ** Driving the UI with A2UI (patch/event protocol)
 

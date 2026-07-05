@@ -212,16 +212,17 @@ One call turns an external MCP server into first‑class, replayable Loom effect
 **Expose** a Loom flow as an agent, and **call** remote agents as effects:
 
 ```ts
-// server: any flow becomes an A2A agent endpoint
+// server (inbound): any flow becomes an A2A agent endpoint
 // card derived from the agent$ definition; the server fills in url
 const server = createA2AServer(workflowRuntime, triageFlow, toAgentCard(triageAgent));
 await server.start();  // serves /.well-known/agent.json, /tasks/send, /tasks/:id
 
-// client: call a remote agent from inside a flow
-const remote = createA2AClientEffect("https://partner.example.com/agent");
+// client (outbound): register a REMOTE agent as a first-class Loom tool
+const tool = await new A2APeerClient({ url }).registerInto(effectRuntime, registry);
+const orchestrator = agent$({ id: "orchestrator", tools: [tool] });  // now calls it
 ```
 
-Built on Node `http` + `fetch` — no framework HTTP dependency. Loom services compose into agent meshes.
+Built on Node `http` + `fetch` — no framework HTTP dependency. Because A2A is an **open protocol**, the peer can be **Google ADK** (native `to_a2a`), a **LangGraph/CrewAI** shim, or another Loom service — bidirectional mesh, one contract. See `examples/a2a-mesh`.
 
 ---
 
@@ -368,3 +369,4 @@ agents/  flows/  steps/  tools/  projections/  capabilities/  policies/  memory/
 `code-walkthrough.md` (annotated tour) · `demo-script.md` (runbook)
 
 **Start here:** `pnpm --filter @loom/agent-network start`
+· interop: `pnpm --filter @loom/a2a-mesh start`

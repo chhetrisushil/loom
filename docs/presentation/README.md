@@ -15,8 +15,12 @@ optimize for continuation, not hydration.*
 |------|----------|------------|
 | [`leadership-deck.md`](./leadership-deck.md) | Leadership / execs | The why: platform shift, problems, value, competitive positioning, adoption path |
 | [`engineering-deck.md`](./engineering-deck.md) | Engineers / architects | The how: architecture, primitives, execution model, agentic + intelligence pipeline |
+| [`architecture-deck.md`](./architecture-deck.md) | Engineers / architects | The system design: event sourcing, deterministic replay, isomorphic core, durable suspend/resume, the compiler, resumability — distilled from `architecture.org` |
 | [`code-walkthrough.md`](./code-walkthrough.md) | Engineers | Annotated tour of real files (read‑along) |
 | [`demo-script.md`](./demo-script.md) | Presenter | Live runbook — exact commands, what to show, talking points, timings |
+| [`cloud-command-center-deck.md`](./cloud-command-center-deck.md) | Engineers / architects | Deep dive on the **Cloud Command Center** (React) — event-sourced, durable suspend/approve/resume + streaming AI triage, all in the browser |
+| [`agent-network-deck.md`](./agent-network-deck.md) | Engineers / architects | Deep dive on the **Agent Network** (headless Node) — the whole agentic pipeline: LLM, ReAct agent, MCP, A2A, intent, planner, memory, terminal surface |
+| [`a2a-mesh-deck.md`](./a2a-mesh-deck.md) | Engineers / architects | Deep dive on the **A2A Mesh** (headless Node) — bidirectional interop with Google ADK / LangGraph / CrewAI over A2A via `A2APeerClient` |
 | [`db-command-center-deck.md`](./db-command-center-deck.md) | Engineers / architects | Deep dive on the **agentic DB command center** (React) — intent → planner → A2A → durable human‑in‑the‑loop, BYOR + BYOC + render‑side fiber |
 | [`db-command-center-wc-deck.md`](./db-command-center-wc-deck.md) | Engineers / architects | The **same app in vanilla Web Components** — proof of BYOR: reuse the whole agentic backend, swap only the render layer |
 | [`db-command-center-server-deck.md`](./db-command-center-server-deck.md) | Engineers / architects | The **same app as server + client** — durable runtime on a Node server (SQLite), Web-Components client over HTTP + SSE; Loom's isomorphic deployment model |
@@ -53,6 +57,7 @@ Full runbook: [`demo-script.md`](./demo-script.md). Quick start — **no API key
 pnpm install && pnpm build        # once
 
 pnpm --filter @loom/agent-network start          # Demo 0: whole pipeline, headless (best opener)
+pnpm --filter @loom/a2a-mesh start                # Demo 0b: A2A interop with ADK/LangGraph/CrewAI (headless)
 pnpm --filter @loom/cloud-command-center dev      # Demo 1: durable + streaming UI + approval (React)
 pnpm --filter @loom/playground dev                # Demo 2: A2UI patch stream + Trace tab
 pnpm --filter @loom/angular-command-center dev    # Demo 3: same runtime, Angular UI (optional)
