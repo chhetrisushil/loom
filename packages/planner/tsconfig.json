@@ -9,6 +9,7 @@
   "references": [
     { "path": "../core" },
     { "path": "../llm" },
-    { "path": "../capability" }
+    { "path": "../capability" },
+    { "path": "../scheduler" }
   ]
 }

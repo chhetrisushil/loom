@@ -3,6 +3,7 @@ import type { EffectContext, EffectRuntime } from "@loom/effect-runtime";
 import { LlmEffect } from "@loom/effect-runtime";
 import type { LlmMessage, LlmProvider, LlmToolSpec } from "@loom/llm";
 import type { MemoryRuntime } from "@loom/memory";
+import { parallelLimit, throwIfAborted } from "@loom/scheduler";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
 export interface AgentConfig {
@@ -15,23 +16,33 @@ export interface AgentConfig {
   // and a MemoryRuntime is provided, prior turns are recalled into the prompt
   // and this turn's answer is remembered — scoped by input.memoryScope.
   memory?: MemoryRuntime;
+  // Opt-in parallel tool execution within a single model turn. `false` (default)
+  // keeps the safe sequential behaviour; `true` runs all tool calls at once;
+  // a number caps concurrency. Results, event emission, and message order are
+  // ALWAYS in the model's tool-call order regardless of completion order, so
+  // event-sourced replay stays deterministic.
+  parallelTools?: boolean | number;
 }
 
 export class AgentRunner {
   private readonly maxIterations: number;
+  private readonly parallelTools: boolean | number;
 
   constructor(private readonly config: AgentConfig) {
     this.maxIterations = config.maxIterations ?? 10;
+    this.parallelTools = config.parallelTools ?? false;
   }
 
   async run(input: AgentInput, ctx: EffectContext): Promise<AgentOutput> {
     const { definition, provider, effectRuntime, systemPrompt, memory } = this.config;
 
-    const toolSpecs: LlmToolSpec[] = definition.tools.map((t: AgentDefinition["tools"][number]) => ({
-      name: t.id,
-      description: t.description,
-      inputSchema: {},
-    }));
+    const toolSpecs: LlmToolSpec[] = definition.tools.map(
+      (t: AgentDefinition["tools"][number]) => ({
+        name: t.id,
+        description: t.description,
+        inputSchema: {},
+      })
+    );
 
     const memoryId = definition.memoryId;
     const memoryScope = input.memoryScope ?? ctx.executionId;
@@ -59,12 +70,16 @@ export class AgentRunner {
     let lastContent = "";
 
     while (iterations < this.maxIterations) {
+      // Interruption checkpoint: bail before spending another (expensive) LLM
+      // round-trip if the execution was cancelled.
+      throwIfAborted(ctx.signal);
       iterations++;
 
       const response = await provider.complete({
         messages,
         ...(toolSpecs.length > 0 && { tools: toolSpecs }),
         ...(systemPrompt !== undefined && { system: systemPrompt }),
+        ...(ctx.signal !== undefined && { signal: ctx.signal }),
       });
 
       lastContent = response.content;
@@ -75,13 +90,42 @@ export class AgentRunner {
 
       messages.push({ role: "assistant", content: response.content || "(tool calls)" });
 
-      for (const toolCall of response.toolCalls) {
-        let toolOutput: unknown;
+      const toolCalls = response.toolCalls;
+
+      // Execute a single tool call, swallowing errors into a result object so a
+      // failing tool never rejects the batch (keeps behaviour identical between
+      // sequential and parallel modes).
+      const runToolCall = async (toolCall: (typeof toolCalls)[number]): Promise<unknown> => {
         try {
-          toolOutput = await effectRuntime.execute(toolCall.name, toolCall.input, ctx);
+          return await effectRuntime.execute(toolCall.name, toolCall.input, ctx);
         } catch (err) {
-          toolOutput = { error: String(err) };
+          return { error: String(err) };
         }
+      };
+
+      let toolOutputs: unknown[];
+      if (this.parallelTools !== false) {
+        throwIfAborted(ctx.signal);
+        const limit =
+          typeof this.parallelTools === "number" ? this.parallelTools : toolCalls.length;
+        // parallelLimit preserves input order in the result array.
+        toolOutputs = await parallelLimit(
+          toolCalls.map((tc) => () => runToolCall(tc)),
+          { limit, ...(ctx.signal !== undefined && { signal: ctx.signal }) }
+        );
+      } else {
+        toolOutputs = [];
+        for (const toolCall of toolCalls) {
+          throwIfAborted(ctx.signal);
+          toolOutputs.push(await runToolCall(toolCall));
+        }
+      }
+
+      // Record, emit, and feed results back in the model's tool-call order —
+      // deterministic regardless of which tool finished first.
+      for (let i = 0; i < toolCalls.length; i++) {
+        const toolCall = toolCalls[i]!;
+        const toolOutput = toolOutputs[i];
 
         toolCallLog.push({
           iteration: iterations,
@@ -110,7 +154,11 @@ export class AgentRunner {
       memory.append(memoryId, memoryScope, { role: "assistant", content: lastContent });
     }
 
-    ctx.emit("AGENT_COMPLETED", { content: lastContent, iterations, toolCallCount: toolCallLog.length });
+    ctx.emit("AGENT_COMPLETED", {
+      content: lastContent,
+      iterations,
+      toolCallCount: toolCallLog.length,
+    });
 
     return { content: lastContent, toolCallLog, iterations };
   }

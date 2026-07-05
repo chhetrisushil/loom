@@ -1,5 +1,7 @@
 import type { CapabilityCatalog, CapabilityDefinition } from "@loom/capability";
 import type { LlmProvider } from "@loom/llm";
+import { Priority } from "@loom/scheduler";
+import type { Scheduler } from "@loom/scheduler";
 import type { ExecutionHandle, WorkflowRuntime } from "@loom/workflow-runtime";
 
 export interface IntentRoute {
@@ -15,6 +17,10 @@ export interface IntentRuntimeConfig {
   // Intent Runtime works fully offline.
   provider?: LlmProvider;
   workflowRuntime?: WorkflowRuntime;
+  // Optional shared scheduler. When supplied, the routing LLM call runs at Idle
+  // priority so it yields to live work under a concurrency cap. No effect on the
+  // routing decision.
+  scheduler?: Scheduler;
 }
 
 // The proposal's Intent Runtime: turns a natural-language goal into a concrete
@@ -62,12 +68,21 @@ export class IntentRuntime {
     capabilities: CapabilityDefinition[]
   ): Promise<IntentRoute | null> {
     const menu = capabilities.map((c) => `- ${c.id}: ${c.intent}`).join("\n");
-    const response = await this.config.provider!.complete({
-      system:
-        "You route a user's request to exactly one capability. Reply with ONLY the " +
-        "capability id from the list, or the word NONE if nothing fits.",
-      messages: [{ role: "user", content: `Capabilities:\n${menu}\n\nRequest: ${intentText}` }],
-    });
+    // Guarded by the `provider !== undefined` check at the sole call site.
+    const complete = () =>
+      this.config.provider!.complete({
+        system:
+          "You route a user's request to exactly one capability. Reply with ONLY the " +
+          "capability id from the list, or the word NONE if nothing fits.",
+        messages: [{ role: "user", content: `Capabilities:\n${menu}\n\nRequest: ${intentText}` }],
+      });
+    const response =
+      this.config.scheduler !== undefined
+        ? await this.config.scheduler.schedule(() => complete(), {
+            priority: Priority.Idle,
+            label: "intent.route",
+          })
+        : await complete();
 
     const chosen = response.content.trim().split(/\s+/)[0] ?? "";
     const capability = capabilities.find((c) => c.id === chosen);

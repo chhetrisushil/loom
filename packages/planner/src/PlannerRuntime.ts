@@ -1,5 +1,7 @@
 import type { CapabilityCatalog } from "@loom/capability";
 import type { LlmProvider } from "@loom/llm";
+import { Priority } from "@loom/scheduler";
+import type { Scheduler } from "@loom/scheduler";
 
 export interface PlanStep {
   capabilityId: string;
@@ -18,6 +20,10 @@ export interface PlannerRuntimeConfig {
   // the Planner Runtime works fully offline.
   provider?: LlmProvider;
   maxSteps?: number;
+  // Optional shared scheduler. When supplied, the planning LLM call runs at Idle
+  // priority so it yields to live agent/workflow work under a concurrency cap.
+  // No effect on output — planning is offline-safe and order-independent.
+  scheduler?: Scheduler;
 }
 
 // The proposal's Planner Runtime: given a goal, selects and orders the
@@ -53,13 +59,23 @@ export class PlannerRuntime {
       .map((c) => `- ${c.id}: ${c.intent}`)
       .join("\n");
 
-    const response = await this.config.provider!.complete({
-      system:
-        "You are a planner. Given a goal and a list of capabilities, output an " +
-        "ordered plan as a JSON array of objects { \"capabilityId\": string, " +
-        "\"rationale\": string }. Use only ids from the list. Output JSON only.",
-      messages: [{ role: "user", content: `Goal: ${goal}\n\nCapabilities:\n${menu}` }],
-    });
+    // Guarded by the `provider !== undefined` check at the sole call site.
+    const complete = () =>
+      this.config.provider!.complete({
+        system:
+          "You are a planner. Given a goal and a list of capabilities, output an " +
+          'ordered plan as a JSON array of objects { "capabilityId": string, ' +
+          '"rationale": string }. Use only ids from the list. Output JSON only.',
+        messages: [{ role: "user", content: `Goal: ${goal}\n\nCapabilities:\n${menu}` }],
+      });
+
+    const response =
+      this.config.scheduler !== undefined
+        ? await this.config.scheduler.schedule(() => complete(), {
+            priority: Priority.Idle,
+            label: "planner.plan",
+          })
+        : await complete();
 
     const steps = this.parseSteps(response.content).slice(0, maxSteps);
     return { goal, steps };
