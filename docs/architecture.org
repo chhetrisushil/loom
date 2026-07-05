@@ -12,6 +12,48 @@ Four ideas underpin the whole system:
 3. *Blueprint-driven UI* — the running workflow emits domain events; ~ProjectionRuntime~ folds those events into view models; the React renderer turns a JSON-serializable ~Blueprint~ into live UI widgets bound to those view models.
 4. *Build-time optimization* — ~@loom/compiler~ extracts co-located handler functions into lazy chunks at build time, statically validates flow graphs, and generates resumability metadata that eliminates round-trips to the server on client restore.
 
+* Deployment & Execution Model
+
+Loom is *isomorphic*: it is neither a client-only nor a server-only framework. The execution core is environment-agnostic and runs unchanged in Node or the browser; the *edges* (durable storage, the A2A HTTP server, terminal rendering, the build-time compiler) are the only environment-specific parts, and storage/transports are injected. In production the durable, agentic core is typically *server-side*, while rendering is *client-side and multi-surface* — bridged by an explicit server→client resumability seam.
+
+Think of it as three layers:
+
+#+begin_example
+  ISOMORPHIC CORE  (runs in Node or the browser — no Node/DOM imports; stores & effects injected)
+    core · workflow-runtime · effect-runtime · replay-vm · projection-runtime · blueprint-runtime
+    capability · intent · planner · agent · memory · scheduler · registry · sdk
+    fetch-based I/O: @loom/llm (Anthropic/OpenAI) · @loom/mcp client · @loom/a2a CLIENT
+
+  SERVER-ONLY (Node)                          CLIENT-ONLY (browser)
+    SqliteEventStore     (better-sqlite3)       @loom/renderer-react
+    SqliteSnapshotStore  (better-sqlite3)       (or any BYOR layer: DOM / Web Components)
+    createA2AServer      (node:http)
+    @loom/renderer-terminal (Node TUI)
+    @loom/compiler          (build-time: node:fs / node:path)
+#+end_example
+
+*Isomorphic core.* ~@loom/core~, ~workflow-runtime~, ~effect-runtime~, ~replay-vm~, ~projection-runtime~, ~blueprint-runtime~, and the intelligence packages (~capability~, ~intent~, ~planner~, ~agent~, ~memory~) carry no Node or DOM imports. They receive their ~EventStore~, ~SnapshotStore~, and effects by dependency injection, so *what you inject decides where they run*. Network I/O is ~fetch~-based (the ~@loom/llm~ providers, the ~@loom/mcp~ client, and the ~@loom/a2a~ *client*), which works in both Node ≥ 18 and modern browsers.
+
+*Environment-specific edges (pluggable).* The store interfaces have two shipped implementations each — pick per environment:
+
+| Concern            | Browser / tests            | Server / production                          |
+|--------------------+----------------------------+----------------------------------------------|
+| ~EventStore~       | ~InMemoryEventStore~       | ~SqliteEventStore~ (WAL mode, durable)       |
+| ~SnapshotStore~    | ~InMemorySnapshotStore~    | ~SqliteSnapshotStore~                        |
+| Agent transport    | ~createA2AClientEffect~ (~fetch~) | ~createA2AServer~ (~node:http~)       |
+| Rendering surface  | ~@loom/renderer-react~ / BYOR DOM | ~@loom/renderer-terminal~ (Node TUI)  |
+
+The only runtime Node-only dependencies are therefore the SQLite stores (~better-sqlite3~) and the A2A *server* (~node:http~); ~@loom/compiler~ is Node-only but runs at *build time*, not at runtime.
+
+*Server→client handoff — "continuation, not hydration."* Because storage is injected, an execution can start (and durably suspend) on a server and then continue and render on a client without re-running completed work:
+
+1. Server runs a flow to a checkpoint, then ~serializeExecution(state)~ and ~serializeProjections(...)~ (~@loom/workflow-runtime/resumability~) to plain JSON.
+2. Client ~<LoomProvider serializedExecutionState serializedProjectionState>~ seeds projections synchronously via ~seedState(...)~ (no re-fold, no empty-state flash) and holds the preloaded ~ExecutionState~.
+3. On the next input (e.g. a human approval) ~WorkflowRuntime.restoreFromState(preloaded, resumeEvent)~ builds ~new ReplayVM([], preloadedState)~ and continues; ~vm.hasCompleted(stepId)~ means completed steps are *never re-run*.
+4. ~@loom/compiler~ turns each ~handler$~ into a lazy ~import()~ chunk (recorded in ~loom-manifest.json~) so the client downloads a step's code only when it actually executes.
+
+*Where the examples sit.* The browser reference apps (~cloud-command-center~, ~db-command-center~, ~db-command-center-wc~) inject the in-memory stores and run the *entire* runtime client-side for a self-contained, offline demo. A production topology would instead keep durable execution server-side (SQLite event log, A2A server, MCP, long-running agents) and let the client render and resume from serialized state.
+
 * Package Dependency Graph
 
 #+begin_example
