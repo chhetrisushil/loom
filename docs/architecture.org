@@ -59,6 +59,12 @@ Intelligence pipeline (Intent → Planner → Capabilities):
   @loom/planner           PlannerRuntime (plan — ordered multi-step goals)
   @loom/memory            MemoryRuntime, InMemoryMemoryStore (agent memory)
   @loom/renderer-terminal TerminalRenderer, renderBlueprintToString (non-React surface)
+
+Cooperative scheduling (dependency-free, ephemeral — for live in-flight async work):
+  @loom/scheduler  createScheduler, parallelLimit, yieldControl, Priority,
+                   AbortSignal utils (throwIfAborted/linkSignals/withTimeout)
+                   ← @loom/workflow-runtime, @loom/agent, @loom/planner,
+                     @loom/intent, @loom/blueprint-runtime depend on it
 #+end_example
 
 All packages depend on ~@loom/core~ for shared types. ~@loom/sdk~ is the single entry point for application code — it re-exports everything public, including the agentic layer. ~@loom/compiler~ is a dev-time-only dependency; it transforms source code at build time and is never bundled into the application. ~@loom/telemetry~ is an optional observability package; it depends only on ~@loom/core~ and is framework-agnostic — it can be used in React, Angular, Vue, or plain Node.js applications.
@@ -173,7 +179,19 @@ handle.waitForCompletion().then(() => {
 });
 
 handle.getState(); // current ExecutionState at any time
+
+handle.cancel(reason?); // abort in-flight effects and stop this live run
 #+end_src
+
+*** ~ExecutionHandle.cancel(reason?)~ — live cancellation
+
+~cancel()~ tears down a live run without touching durable state. Each ~start()~ / ~resume()~ / ~restoreFromState()~ creates one ~AbortController~ per run whose ~signal~ is threaded into every ~EffectContext~. Calling ~cancel()~:
+
+- aborts the signal, so in-flight effects (LLM/tool/A2A) that forward it to ~fetch~ reject promptly,
+- records a durable ~EXECUTION_CANCELLED~ event (status → ~"cancelled"~),
+- rejects ~waitForCompletion()~ with the supplied reason.
+
+It is *idempotent* (the event is recorded once) and *live-only*: it affects nothing about the persisted event log or snapshot, so a later ~resume()~ behaves exactly as before. Effects that never observe their ~signal~ simply run to completion; cancellation is cooperative, not preemptive.
 
 * ~WorkflowContext~ — The Flow API
 
@@ -190,8 +208,10 @@ ctx.run(step, input)
   │           emit STEP_COMPLETED  (or STEP_FAILED)
   │           return output
 
-ctx.parallel(pairs)
-  └─ Promise.all(pairs.map(ctx.run)) — steps race concurrently
+ctx.parallel(pairs, { limit? })
+  └─ order-preserving fan-out over pairs.map(ctx.run)
+       no limit  → all steps race concurrently (Promise.all semantics)
+       limit: n  → bounded to n at a time (via @loom/scheduler parallelLimit)
 
 ctx.emit(eventType, payload)
   └─ append to EventStore, applyEvent to ReplayVM, notify onEvent
@@ -201,6 +221,8 @@ ctx.suspend(config)
   │     YES → consume it, return resolved (pass-through)
   └─ Fresh path: throw SuspendError(config)
 #+end_example
+
+~ctx.parallel(pairs, { limit })~ now accepts an optional bounded concurrency cap (default unbounded). Regardless of the cap, results are returned in *input order* — this determinism is load-bearing for replay: a run and its replay reduce fan-out results identically even though execution interleaves. Under the hood it delegates to ~parallelLimit~ from ~@loom/scheduler~.
 
 The idempotency of ~ctx.run()~ is critical. If the process crashes after a step completes but before the workflow finishes, resuming replays all historical events through the VM. ~hasCompleted(stepId)~ returns ~true~ for already-done steps, so their effect is never re-executed — they just return the cached ~output~ from the ~ExecutionFrame~.
 
@@ -250,6 +272,10 @@ On resume, the VM is seeded with either the full event log or a snapshot + tail 
 | ~EXECUTION_RESUMED~    | status → "running", payload stored in ~variables._resumePayload~ |
 | ~EXECUTION_COMPLETED~  | status → "completed"                                         |
 | ~EXECUTION_FAILED~     | status → "failed"                                            |
+| ~STEP_CANCELLED~       | frame[stepId].status → "cancelled"; execution status *unchanged* |
+| ~EXECUTION_CANCELLED~  | status → "cancelled", cancel reason stored in ~variables._cancelReason~ |
+
+~"cancelled"~ is a value of both ~ExecutionStatus~ and ~FrameStatus~. ~STEP_CANCELLED~ marks the in-flight frame only and deliberately does *not* touch the execution status — ~EXECUTION_CANCELLED~ owns that. ~ctx.run()~ emits ~STEP_CANCELLED~ (instead of ~STEP_FAILED~) when an effect rejects while the run's ~signal~ is aborted, so a cancelled step reads as cancelled rather than failed in the log and replayed state.
 
 * ~EffectRuntime~ — Side-Effect Sandbox
 
@@ -274,6 +300,10 @@ EffectRuntime
 | ~LazyEffect~   | ~tool~   | Resolves and caches a ~HandlerSpec~ on first ~execute()~ call  |
 
 ~LlmEffect~ and ~A2AEffect~ have the same wrapper shape as ~ToolEffect~, but the agentic layer packages (~@loom/llm~, ~@loom/a2a~) provide factories that fill them with real protocol behaviour — see [[*Agentic Capabilities][Agentic Capabilities]].
+
+*** ~EffectContext.signal~ — cancellation seam
+
+~EffectContext~ carries an optional ~signal?: AbortSignal~. It is threaded from the owning execution's cancellation controller (see [[*~ExecutionHandle.cancel(reason?)~ — live cancellation][~ExecutionHandle.cancel~]]) and aborts when that run is cancelled. Long-running I/O effects forward it to ~fetch~ (and providers check it at await points), so ~handle.cancel()~ propagates promptly. It is ~undefined~ by default, so non-cancellable effects pay nothing.
 
 ** ~LazyEffect~ — Handler Co-location Bridge
 
@@ -395,6 +425,18 @@ WorkflowRuntime                ProjectionRuntime
                         │
               ◄──────── state updates arrive live
 #+end_example
+
+** Coalesced notifications (opt-in)
+
+By default every ~handleEvent~ notifies subscribers synchronously — one subscriber call per event, preserving strict synchronous semantics. For high-frequency bursts (e.g. LLM token streaming, where one event arrives per token) this is O(events) subscriber calls. ~InMemoryProjectionRuntime~ accepts an opt-in config to collapse them:
+
+#+begin_src typescript
+const projectionRuntime = new InMemoryProjectionRuntime({
+  coalesceNotifications: true,
+});
+#+end_src
+
+With coalescing on, ~handleEvent~ still folds each event immediately (state stays correct) but marks the affected ~projectionId::executionId~ key dirty and schedules a single ~queueMicrotask~ flush. The flush notifies each dirty key's subscribers *once* with the *latest* state, so a synchronous burst of N events yields O(microtask flushes) subscriber calls instead of O(N). Off by default; when off the runtime takes the exact synchronous path it always has.
 
 ** Projection State Key
 
@@ -675,6 +717,8 @@ AgentRunner.run(input, ctx)
   ctx.emit("AGENT_COMPLETED", …)
 #+end_example
 
+By default the ReAct loop executes a turn's tool calls sequentially. ~AgentConfig.parallelTools~ (~boolean | number~, default ~false~) opts into concurrent tool execution within a turn: ~true~ runs them all at once, a number bounds the concurrency. It routes through ~parallelLimit~ from ~@loom/scheduler~, so tool *outputs and events are emitted in the model's requested input order* regardless of completion order — a run and its replay produce byte-identical event logs.
+
 ~agentStep$({ id, agent, provider, effectRuntime })~ packages a runner as an ordinary ~StepDefinition~ (kind ~llm~), so an agent drops into a flow like any other step and inherits suspend/resume and replay.
 
 ** MCP tools (~@loom/mcp~)
@@ -792,11 +836,15 @@ The catalog is the shared vocabulary both the Intent Runtime and the Planner Run
 
 The key property is that the *same* runtime works with or without a model: the deterministic keyword path makes tests and offline demos possible, and adding a provider is a drop-in upgrade to LLM routing.
 
+~IntentRuntime~ also accepts an optional ~scheduler~ (a ~@loom/scheduler~ ~Scheduler~). When supplied, the routing LLM call is submitted at ~Priority.Idle~, so background routing yields the scheduler's slots to foreground agent turns when a shared scheduler runs at a finite concurrency cap.
+
 ** Planner Runtime (~@loom/planner~)
 
 ~PlannerRuntime~ composes an ordered, multi-step ~Plan~ from the catalog rather than choosing a single capability. It takes a ~catalog~, an optional ~provider~, and ~maxSteps~ (default 5).
 
 - ~plan(goal)~ → ~Plan { goal, steps: PlanStep[] }~, each ~PlanStep~ naming a ~capabilityId~ and an optional ~rationale~. With a ~provider~, the model returns an ordered JSON plan; with none, a heuristic keyword-ranked plan is produced. Either way every emitted ~capabilityId~ is validated against the catalog, so a plan can only reference capabilities that actually exist, and it is truncated to ~maxSteps~.
+
+Like ~IntentRuntime~, ~PlannerRuntime~ takes an optional ~scheduler~ and runs its planning LLM call at ~Priority.Idle~ — planning is background work that should defer to live foreground turns under a shared, capped scheduler.
 
 ** Agent Runtime memory (~@loom/memory~)
 
@@ -827,6 +875,59 @@ The proposal's surface layer is deliberately framework-agnostic: ~traverseBluepr
 - ~TerminalRenderer~ — constructed with a ~ProjectionRuntime~; its ~render(blueprint, executionId)~ pulls each of the blueprint's projections' state for that execution and renders them to text.
 
 Because ~traverseBlueprint~ is the shared traversal used by both the React ~BlueprintRenderer~ and the terminal renderer, a single blueprint definition renders to the web *or* the terminal with no changes — the multi-surface delivery the proposal calls for.
+
+* ~@loom/scheduler~ — Cooperative Scheduling & Cancellation
+
+~@loom/scheduler~ is an *ephemeral*, dependency-free cooperative scheduler for live, in-flight async work. It applies Fiber *principles* — priority, interruptibility, incremental progress — to the *async agentic layer*, not to UI reconciliation. Concretely it is an async, priority-ordered semaphore plus ~AbortSignal~ cancellation.
+
+It is deliberately *not* a UI reconciler and *not* durable: Loom's ~SuspendError~ + ~ReplayVM~ already own durable pause/resume across the event log, and this package complements them for the live window *between* events (a running LLM call, an in-flight tool fan-out). Scheduler state is never persisted — on a crash/resume it simply doesn't exist, and the durable log rebuilds the world.
+
+Everything is opt-in and latency-safe. The default ~concurrency: Infinity~ disables gating entirely, so ~schedule~ reduces to ~await task(signal)~ with no queue node, no controller, and no bookkeeping — overhead is paid only when a finite cap is explicitly set (see docs/benchmarks.md). Dependents: ~@loom/workflow-runtime~, ~@loom/agent~, ~@loom/planner~, ~@loom/intent~, and ~@loom/blueprint-runtime~.
+
+** Priority lanes
+
+~Priority~ is *ordering only*. The lanes decide which queued task acquires the next free slot under a finite concurrency cap; they do *not* drive a frame-deadline time-slicer (a frame budget is meaningless while awaiting a socket). Lower numeric value == more urgent (dequeued first).
+
+| Lane                        | Use                                                     |
+|-----------------------------+---------------------------------------------------------|
+| ~Priority.Immediate~ (0)    | Interactive, must-run-now work (a user cancel/approval) |
+| ~Priority.UserBlocking~ (1) | Foreground work a user is waiting on (a live agent turn) |
+| ~Priority.Normal~ (2)       | Default — ordinary flow/effect work                     |
+| ~Priority.Idle~ (3)         | Background work that yields to everything (planning)    |
+
+** ~createScheduler({ concurrency })~
+
+Builds a scheduler around a priority queue in front of a counting semaphore.
+
+#+begin_src typescript
+import { createScheduler, Priority } from "@loom/scheduler";
+
+const scheduler = createScheduler({ concurrency: 4 }); // cap live LLM/tool calls
+
+const result = await scheduler.schedule(
+  (signal) => provider.complete(request, { signal }),
+  { priority: Priority.UserBlocking, label: "agent-turn" }
+);
+#+end_src
+
+~schedule(task, opts?)~ always returns a promise (it never throws synchronously — an already-aborted signal yields a rejected promise). ~inFlight~ and ~pending~ expose live counts. With the default ~concurrency: Infinity~, ~createScheduler~ returns a fast-path implementation with no queue at all; a finite cap switches on the semaphore. Tasks queued behind the cap are dequeued by ~(priority asc, enqueue-order asc)~, and a task whose caller ~signal~ aborts *while still queued* is removed before it ever takes a slot — keeping cancellation latency low under load.
+
+** ~parallelLimit~ — order-preserving structured concurrency
+
+~parallelLimit(tasks, { limit?, signal?, failFast? })~ runs an array of ~(signal) => Promise<T>~ tasks with bounded concurrency and *preserves input order in the result array* — ~results[i]~ always corresponds to ~tasks[i]~ regardless of completion order. This ordering guarantee is load-bearing for replay determinism: callers that fan out work (~ctx.parallel~, ~AgentRunner.parallelTools~) reduce results deterministically even though execution interleaves. With ~failFast~ (default) the first rejection aborts still-pending siblings via a linked signal; with ~failFast: false~ every task settles and the first error by input order is thrown afterward. Unbounded (~limit >= tasks.length~) it degenerates to ~Promise.all~ semantics.
+
+** ~yieldControl~ — cooperative yielding
+
+~yieldControl()~ returns a promise that resolves on a *macrotask* boundary (~setTimeout(0)~, ~unref~'d), so the event loop genuinely drains between chunks — used by CPU-bound loops (e.g. ~traverseBlueprintAsync~) that want to stay responsive. It is a macrotask, not a microtask, precisely so paint/input can interleave in a browser.
+
+** AbortSignal utilities
+
+Small, dependency-free helpers; all are optional-signal-safe (passing ~undefined~ allocates nothing):
+
+- ~throwIfAborted(signal?)~ — throw the signal's reason if already aborted; prefers the platform method when present.
+- ~linkSignals(...signals)~ — combine several signals into one that aborts when any input does; returns ~undefined~ for no signal, the same signal for one, and prefers native ~AbortSignal.any~ otherwise.
+- ~withTimeout(ms, parent?)~ — derive a signal that aborts after ~ms~ (a ~TimeoutError~) or when ~parent~ aborts; call ~dispose()~ when the guarded work settles to release the timer.
+- ~NEVER_SIGNAL~ — a single shared never-aborting signal handed to tasks when the caller supplies none, so task callbacks can always rely on receiving an ~AbortSignal~ without a per-call ~AbortController~ allocation.
 
 * Resumability — Client-Side State Restoration
 
@@ -1039,6 +1140,12 @@ Suspend is implemented as a thrown exception rather than a ~return~ value so tha
 ** Why ~handler$()~ is a no-op at runtime?
 
 Making ~handler$(fn)~ return a ~HandlerRef~ (rather than nothing) means code works correctly without the Vite plugin — development, unit tests, and environments without a build step all work out of the box. The compiler rewrite is a pure optimization, not a correctness requirement.
+
+** Why a cooperative scheduler and not a Fiber reconciler?
+
+Fiber solves a specific problem: a synchronous, CPU-bound render blocking a single UI thread, fixed by slicing work against a frame deadline. That problem does not exist here. Loom's render trees are dashboard-sized — the ~traverseBlueprint~ benchmark walks a 10k-node tree in ~0.47ms, well inside a frame budget (see docs/benchmarks.md) — and where React is the surface, React *already* provides fiber. A second reconciler would duplicate that machinery and add latency for no gain.
+
+The Fiber *principles* — priority, interruptibility, incremental progress — do pay off, but in the *async agentic layer*: cancelling an in-flight LLM call, ordering foreground turns ahead of background planning, bounding tool/effect fan-out. So those principles are implemented as an *ephemeral async scheduler* (~@loom/scheduler~) — a priority-ordered semaphore plus ~AbortSignal~ cancellation — which complements (does not replace) the durable pause/resume already owned by ~SuspendError~ + ~ReplayVM~. On the render side, "useFiber" leverages React's fiber directly, and ~traverseBlueprintAsync~ is the async-traversal seam reserved for future non-React renderers. Every piece is opt-in and default-off; the synchronous fast paths (~traverseBlueprint~, ~schedule~ at ~concurrency: Infinity~, synchronous projection notify) are benched with no regression.
 
 ** Why JSON-serializable Blueprints?
 

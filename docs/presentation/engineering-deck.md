@@ -36,7 +36,7 @@ Intent → Planner → Workflow → Agent → Effect → Event Log
 
 ---
 
-## Package map (23 packages)
+## Package map (24 packages)
 
 **Core runtime** — `core` (builders/types), `workflow-runtime`, `effect-runtime`, `event-runtime`, `snapshot-runtime`, `replay-vm`, `projection-runtime`
 
@@ -46,7 +46,7 @@ Intent → Planner → Workflow → Agent → Effect → Event Log
 
 **Intelligence** — `capability`, `intent`, `planner`, `memory`
 
-**Tooling** — `compiler` (Vite plugin), `telemetry`, `registry`, `sdk` (public surface)
+**Tooling** — `compiler` (Vite plugin), `telemetry`, `registry`, `sdk` (public surface), `scheduler` (opt-in cooperative scheduler)
 
 <!-- Presenter: everything is re-exported from @loom/sdk; apps import from there. -->
 
@@ -285,6 +285,21 @@ Works **offline** (keyword matching) or with an `LlmProvider` (model routing/pla
   - **Terminal** (`renderer-terminal`) — Agent Network dashboard
 
 UI is a **projection**, not a source of truth.
+
+---
+
+## Cooperative scheduling & cancellation — `@loom/scheduler`
+
+**Fiber principles land in the *agentic* layer** — an ephemeral cooperative scheduler, not a UI reconciler. **All opt-in, default-off, latency-safe** (no regression to sync fast paths — `docs/benchmarks.md`).
+
+```ts
+await ctx.parallel(pairs, { limit: 4 });   // order-preserving, replay-safe
+new AgentRunner({ ...cfg, parallelTools: true }); // tool calls, order preserved
+// priority lanes · yieldControl · parallelLimit · AbortSignal utils
+```
+
+- **Cancellation:** `handle.cancel()` aborts in-flight effects via `EffectContext.signal` / `LlmRequest.signal`, and records a durable `EXECUTION_CANCELLED` event — **live-only, so resume is unchanged**.
+- Planner/intent run at **Idle** priority so interactive work stays snappy.
 
 ---
 

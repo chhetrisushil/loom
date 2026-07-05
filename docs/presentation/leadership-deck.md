@@ -105,7 +105,7 @@ Traditional frameworks optimize for **hydration** (rebuild state on every reques
 
 ## It's real — and it's working today
 
-- **23 packages** in a typed monorepo (10 new agentic runtimes)
+- **24 packages** in a typed monorepo (10 new agentic runtimes)
 - **Full test suite green** across every package (~180 tests)
 - **Three runnable reference apps**, all offline (no API key needed):
   - **Cloud Command Center** (React) — durable incident response, streaming AI triage, human approval
@@ -127,6 +127,18 @@ Traditional frameworks optimize for **hydration** (rebuild state on every reques
 
 **For platform teams**
 - Standardization · reusable **capabilities** · centralized policy & governance
+
+---
+
+## New: responsive & high-performance — all opt-in
+
+Recent additions make agentic apps feel faster, without changing anything that already works:
+
+- **Stop runaway work instantly** — long-running agent and workflow tasks can now be cancelled responsively, with a full audit record of the cancellation.
+- **Snappier live UIs** — streaming AI responses and dashboards stay smooth even under heavy update volume.
+- **Pluggable high-performance rendering** — the same app can drive faster, more granular UIs across web and other surfaces.
+
+**Every improvement is opt-in and off by default — zero regression to existing behavior or cost** (verified by benchmarks).
 
 ---
 
