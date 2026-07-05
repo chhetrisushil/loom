@@ -95,6 +95,7 @@ Traditional frameworks optimize for **hydration** (rebuild state on every reques
 |------------|-------------------|
 | **Durable execution** | Suspend/resume across restarts; nothing is re‑run |
 | **Event‑sourced state** | Every action is an auditable, replayable event |
+| **Pluggable storage** | The audit log lives where you trust it — embedded SQLite, or your own Postgres / Redis / DynamoDB; no SaaS lock‑in |
 | **Speculative branching** | Fork an in‑flight task, try alternate plans, keep the winner |
 | **Agents + tools** | ReAct agents, MCP tool discovery, agent memory |
 | **Agent‑to‑Agent (A2A)** | Expose a workflow as an agent; call remote agents |

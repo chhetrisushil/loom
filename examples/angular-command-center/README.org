@@ -14,7 +14,7 @@ A reference application that demonstrates Loom is *frontend-framework agnostic*:
 | Runtime ↔ Angular binding     | ~src/app/loom.service.ts~ (Angular signals + ~zone.run()~) |
 | Signals-driven template       | ~src/app/app.component.ts~ (~computed()~, ~@if~/~@for~)    |
 | Telemetry hook                | ~ConsoleTelemetryAdapter~ + ~createTelemetryHook~ in ~loom.service.ts~ |
-| In-memory durability          | ~src/app/stores.ts~ (~InMemoryEventStore~, ~InMemorySnapshotStore~) |
+| In-memory durability (demo)   | ~src/app/stores.ts~ (~InMemoryEventStore~, ~InMemorySnapshotStore~) — async-first, so swappable for SQLite / a BYO backend |
 
 Framework-agnostic by design: there is *no* ~@loom/renderer-angular~. ~WorkflowRuntime~ emits plain domain events; ~LoomService~ forwards them into a ~ProjectionRuntime~ and exposes the result as Angular ~signal()~s. The only framework coupling is ~zone.run()~, which lets runtime events trigger Angular change detection.
 

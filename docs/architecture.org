@@ -34,14 +34,16 @@ Think of it as three layers:
 
 *Isomorphic core.* ~@loom/core~, ~workflow-runtime~, ~effect-runtime~, ~replay-vm~, ~projection-runtime~, ~blueprint-runtime~, and the intelligence packages (~capability~, ~intent~, ~planner~, ~agent~, ~memory~) carry no Node or DOM imports. They receive their ~EventStore~, ~SnapshotStore~, and effects by dependency injection, so *what you inject decides where they run*. Network I/O is ~fetch~-based (the ~@loom/llm~ providers, the ~@loom/mcp~ client, and the ~@loom/a2a~ *client*), which works in both Node ≥ 18 and modern browsers.
 
-*Environment-specific edges (pluggable).* The store interfaces have two shipped implementations each — pick per environment:
+*Environment-specific edges (pluggable).* The store interfaces are *async-first* (every method returns a ~Promise~), so any backend plugs in — the two shipped implementations are just the endpoints of a spectrum, not the only options:
 
 | Concern            | Browser / tests            | Server / production                          |
 |--------------------+----------------------------+----------------------------------------------|
-| ~EventStore~       | ~InMemoryEventStore~       | ~SqliteEventStore~ (WAL mode, durable)       |
-| ~SnapshotStore~    | ~InMemorySnapshotStore~    | ~SqliteSnapshotStore~                        |
+| ~EventStore~       | ~InMemoryEventStore~       | ~SqliteEventStore~ · or *BYO* Postgres/Redis/DynamoDB |
+| ~SnapshotStore~    | ~InMemorySnapshotStore~    | ~SqliteSnapshotStore~ · or *BYO*             |
 | Agent transport    | ~createA2AClientEffect~ (~fetch~) | ~createA2AServer~ (~node:http~)       |
 | Rendering surface  | ~@loom/renderer-react~ / BYOR DOM | ~@loom/renderer-terminal~ (Node TUI)  |
+
+Because the interfaces are async, a network backend (Postgres via ~LISTEN/NOTIFY~, Redis, DynamoDB) is a first-class citizen — see [[*The durable write pipeline (ExecutionJournal)][the write pipeline]] and [[file:examples/postgres-backend/README.md][the Postgres reference]].
 
 The only runtime Node-only dependencies are therefore the SQLite stores (~better-sqlite3~) and the A2A *server* (~node:http~); ~@loom/compiler~ is Node-only but runs at *build time*, not at runtime.
 

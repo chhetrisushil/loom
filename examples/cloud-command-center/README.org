@@ -1,7 +1,7 @@
 #+title: Cloud Command Center — Example App
 #+author: Sushil Chhetri
 
-A reference application for the Loom framework. It demonstrates a complete durable AI workflow: incident detection → metrics and log collection → human approval gate → automated remediation. The full lifecycle runs in the browser using in-memory stores.
+A reference application for the Loom framework. It demonstrates a complete durable AI workflow: incident detection → metrics and log collection → human approval gate → automated remediation. The full lifecycle runs in the browser using in-memory stores — a demo choice; the store interfaces are async-first, so the same runtime backs onto ~SqliteEventStore~ or a BYO Postgres/Redis backend unchanged (see ~db-command-center-server~).
 
 * What This App Demonstrates
 

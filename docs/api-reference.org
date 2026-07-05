@@ -2723,10 +2723,11 @@ interface MemoryEntry {
   timestamp: number;
 }
 
+// Async-first — so a Redis / DB / vector-store backend is a real implementation.
 interface MemoryStore {
-  append(key: string, entry: MemoryEntry): void;
-  read(key: string): MemoryEntry[];
-  clear(key: string): void;
+  append(key: string, entry: MemoryEntry): Promise<void>;
+  read(key: string): Promise<MemoryEntry[]>;
+  clear(key: string): Promise<void>;
 }
 
 class InMemoryMemoryStore implements MemoryStore { /* … */ }
@@ -2738,9 +2739,9 @@ class InMemoryMemoryStore implements MemoryStore { /* … */ }
 class MemoryRuntime {
   constructor(store?: MemoryStore);   // defaults to InMemoryMemoryStore
   register(definition: MemoryDefinition): this;   // from memory$(); honors ttlMs / maxEntries
-  append(memoryId: string, scope: string, entry: { role?: string; content: unknown; timestamp?: number }): void;
-  read(memoryId: string, scope: string): MemoryEntry[];   // pruned by ttlMs then maxEntries
-  clear(memoryId: string, scope: string): void;
+  append(memoryId: string, scope: string, entry: { role?: string; content: unknown; timestamp?: number }): Promise<void>;
+  read(memoryId: string, scope: string): Promise<MemoryEntry[]>;   // pruned by ttlMs then maxEntries
+  clear(memoryId: string, scope: string): Promise<void>;
 }
 #+end_src
 
