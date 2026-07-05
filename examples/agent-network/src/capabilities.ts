@@ -1,8 +1,15 @@
-import { z } from "zod";
+import {
+  MetricCard,
+  StatusBadge,
+  Timeline,
+  blueprint$,
+  grid,
+  stack,
+} from "@loom/blueprint-runtime";
+import { capability$ } from "@loom/capability";
 import { flow$, handler$, step$ } from "@loom/core";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
-import { capability$ } from "@loom/capability";
-import { blueprint$, grid, stack, MetricCard, StatusBadge, Timeline } from "@loom/blueprint-runtime";
+import { z } from "zod";
 
 // Two tiny capabilities that drive an A2UI "ui" surface as they run, so the same
 // flow can be rendered on any surface (React, terminal, …).
@@ -17,7 +24,10 @@ const investigateStep = step$({
   })),
 });
 
-const investigateRunner: FlowRunner<{ target: string }, { summary: string }> = async (ctx, input) => {
+const investigateRunner: FlowRunner<{ target: string }, { summary: string }> = async (
+  ctx,
+  input
+) => {
   ctx.ui.set("phase", "investigating");
   ctx.ui.set("target", input.target);
   ctx.ui.merge("metrics", { cpu: 87, memoryMb: 14000 });
@@ -91,8 +101,16 @@ export const incidentBlueprint = blueprint$({
       grid({
         columns: 2,
         children: [
-          MetricCard({ title: "CPU", binding: { projectionId: "ui", path: "metrics.cpu" }, unit: "%" }),
-          MetricCard({ title: "Memory", binding: { projectionId: "ui", path: "metrics.memoryMb" }, unit: "MB" }),
+          MetricCard({
+            title: "CPU",
+            binding: { projectionId: "ui", path: "metrics.cpu" },
+            unit: "%",
+          }),
+          MetricCard({
+            title: "Memory",
+            binding: { projectionId: "ui", path: "metrics.memoryMb" },
+            unit: "MB",
+          }),
         ],
       }),
       Timeline({ title: "Timeline", binding: { projectionId: "ui", path: "timeline" } }),

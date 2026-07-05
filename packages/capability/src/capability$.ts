@@ -1,5 +1,5 @@
-import type { ZodSchema } from "zod";
 import type { RegisteredFlow } from "@loom/workflow-runtime";
+import type { ZodSchema } from "zod";
 import type { CapabilityDefinition } from "./types";
 
 export interface CapabilityConfig<TIn, TOut> {

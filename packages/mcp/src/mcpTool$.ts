@@ -1,6 +1,6 @@
-import { z } from "zod";
 import { handler$, step$ } from "@loom/core";
 import type { StepDefinition } from "@loom/core";
+import { z } from "zod";
 import type { McpClient } from "./McpClient";
 
 export function mcpTool$(client: McpClient, toolName: string): StepDefinition<unknown, unknown> {

@@ -1,5 +1,12 @@
+import {
+  MetricCard,
+  StatusBadge,
+  Timeline,
+  blueprint$,
+  grid,
+  stack,
+} from "@loom/blueprint-runtime";
 import { describe, expect, it } from "vitest";
-import { blueprint$, grid, stack, MetricCard, Timeline, StatusBadge } from "@loom/blueprint-runtime";
 import { renderBlueprintToString } from "./renderBlueprint";
 
 const bp = blueprint$({
@@ -11,7 +18,11 @@ const bp = blueprint$({
       grid({
         columns: 2,
         children: [
-          MetricCard({ title: "CPU %", binding: { projectionId: "metrics", path: "cpu" }, unit: "%" }),
+          MetricCard({
+            title: "CPU %",
+            binding: { projectionId: "metrics", path: "cpu" },
+            unit: "%",
+          }),
           MetricCard({ title: "Memory", binding: { projectionId: "metrics", path: "mem" } }),
         ],
       }),

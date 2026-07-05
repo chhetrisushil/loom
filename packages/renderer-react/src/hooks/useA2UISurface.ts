@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
 import type { A2UIRuntime, A2UISurfaceState } from "@loom/a2ui";
 import { DEFAULT_SURFACE } from "@loom/a2ui";
+import { useEffect, useState } from "react";
 
 // Subscribes a React component to an A2UI surface held by a standalone
 // A2UIRuntime, re-rendering as patches arrive. For apps that render blueprints

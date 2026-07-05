@@ -1,5 +1,11 @@
-import { z } from "zod";
-import type { HandlerFn, HandlerRef, HandlerSpec, RetryPolicy, StepDefinition } from "../types/definitions";
+import type { z } from "zod";
+import type {
+  HandlerFn,
+  HandlerRef,
+  HandlerSpec,
+  RetryPolicy,
+  StepDefinition,
+} from "../types/definitions";
 
 export interface StepConfig<TIn, TOut> {
   id: string;

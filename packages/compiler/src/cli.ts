@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import fs from "fs";
-import path from "path";
+import fs from "node:fs";
+import path from "node:path";
 import { buildManifest, printWarnings } from "./manifest";
 import { transformFile } from "./transform";
 import type { PluginState } from "./types";
@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   }
 
   for (const [virtualId, chunk] of state.chunks) {
-    const fileName = virtualId.replace("\0loom:chunk:", "chunks/") + ".js";
+    const fileName = `${virtualId.replace("\0loom:chunk:", "chunks/")}.js`;
     const dest = path.join(outDir, fileName);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, chunk.chunkSource, "utf-8");

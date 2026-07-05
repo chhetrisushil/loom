@@ -1,4 +1,4 @@
-import React from "react";
+import type React from "react";
 import type { WidgetAction, WidgetRendererProps } from "../RendererRegistry";
 
 export const ApprovalCardRenderer: React.FC<WidgetRendererProps> = ({
@@ -13,12 +13,20 @@ export const ApprovalCardRenderer: React.FC<WidgetRendererProps> = ({
   const pending = Boolean(value);
 
   const handleApprove = () => {
-    const action: WidgetAction = { type: "APPROVE", widgetId: widget.id, payload: { approved: true } };
+    const action: WidgetAction = {
+      type: "APPROVE",
+      widgetId: widget.id,
+      payload: { approved: true },
+    };
     onAction?.(action);
   };
 
   const handleReject = () => {
-    const action: WidgetAction = { type: "REJECT", widgetId: widget.id, payload: { approved: false } };
+    const action: WidgetAction = {
+      type: "REJECT",
+      widgetId: widget.id,
+      payload: { approved: false },
+    };
     onAction?.(action);
   };
 
@@ -27,8 +35,12 @@ export const ApprovalCardRenderer: React.FC<WidgetRendererProps> = ({
       {widget.title && <div className="approval-title">{widget.title}</div>}
       {pending && (
         <div className="approval-actions">
-          <button onClick={handleApprove}>{props.approveLabel ?? "Approve"}</button>
-          <button onClick={handleReject}>{props.rejectLabel ?? "Reject"}</button>
+          <button type="button" onClick={handleApprove}>
+            {props.approveLabel ?? "Approve"}
+          </button>
+          <button type="button" onClick={handleReject}>
+            {props.rejectLabel ?? "Reject"}
+          </button>
         </div>
       )}
       {!pending && <div className="approval-resolved">No pending approval</div>}

@@ -1,4 +1,4 @@
-import * as http from "http";
+import * as http from "node:http";
 
 // A tiny in-process MCP server so the showcase can connect to MCP without any
 // external process. It speaks the subset of the JSON-RPC MCP protocol that
@@ -40,7 +40,7 @@ export function startFakeMcpServer(): Promise<{ url: string; close: () => Promis
           ],
         };
       } else if (body.method === "tools/call") {
-        const args = body.params?.["arguments"] as { topic?: string };
+        const args = body.params?.arguments as { topic?: string };
         result = {
           content: [
             {

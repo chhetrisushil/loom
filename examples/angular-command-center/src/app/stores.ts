@@ -12,7 +12,9 @@ export class InMemoryEventStore implements EventStore {
     this.events.set(envelope.executionId, list);
     this.subs.get(envelope.executionId)?.forEach((fn) => fn(envelope));
   }
-  read(id: string): EventEnvelope[] { return this.events.get(id) ?? []; }
+  read(id: string): EventEnvelope[] {
+    return this.events.get(id) ?? [];
+  }
   readFrom(id: string, from: number): EventEnvelope[] {
     return this.read(id).filter((e) => e.sequence >= from);
   }

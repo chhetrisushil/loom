@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
-import * as http from "http";
+import * as http from "node:http";
 import { EffectRuntime } from "@loom/effect-runtime";
+import { afterEach, describe, expect, it } from "vitest";
 import { McpClient } from "./McpClient";
 
 // A tiny fake MCP server that speaks the subset of JSON-RPC McpClient uses.
@@ -28,8 +28,10 @@ function startFakeMcpServer(): Promise<{ url: string; close: () => Promise<void>
           ],
         };
       } else if (body.method === "tools/call") {
-        const args = body.params?.["arguments"] as { q?: string };
-        result = { content: [{ type: "text", text: JSON.stringify({ hits: [`result for ${args.q}`] }) }] };
+        const args = body.params?.arguments as { q?: string };
+        result = {
+          content: [{ type: "text", text: JSON.stringify({ hits: [`result for ${args.q}`] }) }],
+        };
       }
       res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "sess-1" });
       res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }));

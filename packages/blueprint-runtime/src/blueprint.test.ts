@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { blueprint$ } from "./Blueprint";
-import { grid, flex, stack } from "./layout";
-import { AlertCard, ApprovalCard, DataTable, MetricCard, ProgressBar, StatusBadge, Timeline } from "./widgets";
+import { flex, grid, stack } from "./layout";
+import {
+  AlertCard,
+  ApprovalCard,
+  DataTable,
+  MetricCard,
+  ProgressBar,
+  StatusBadge,
+  Timeline,
+} from "./widgets";
 
 const binding = { projectionId: "metrics", path: "cpu.current" };
 
@@ -85,7 +93,10 @@ describe("blueprint$()", () => {
         children: [
           MetricCard({ title: "CPU", binding: { projectionId: "metrics", path: "cpu.current" } }),
           Timeline({ binding: { projectionId: "metrics", path: "timeline" } }),
-          ApprovalCard({ title: "Approve", binding: { projectionId: "incident", path: "pendingApproval" } }),
+          ApprovalCard({
+            title: "Approve",
+            binding: { projectionId: "incident", path: "pendingApproval" },
+          }),
         ],
       }),
       projections: ["metrics", "incident"],
@@ -104,10 +115,7 @@ describe("blueprint$()", () => {
       id: "circular-test",
       title: "Test",
       layout: stack({
-        children: [
-          MetricCard({ title: "A", binding }),
-          MetricCard({ title: "B", binding }),
-        ],
+        children: [MetricCard({ title: "A", binding }), MetricCard({ title: "B", binding })],
       }),
       projections: [],
     });

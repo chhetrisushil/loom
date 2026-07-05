@@ -1,5 +1,5 @@
-import Database from "better-sqlite3";
 import type { EventEnvelope } from "@loom/core";
+import Database from "better-sqlite3";
 import { migrate } from "./schema";
 import type { EventStore } from "./types";
 
@@ -39,7 +39,9 @@ export class SqliteEventStore implements EventStore {
   }
 
   append(envelope: EventEnvelope): void {
-    const stmt = this.db.prepare<[string, string, string, string, number, number, string, string | null]>(`
+    const stmt = this.db.prepare<
+      [string, string, string, string, number, number, string, string | null]
+    >(`
       INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
@@ -60,7 +62,9 @@ export class SqliteEventStore implements EventStore {
 
   read(executionId: string): EventEnvelope[] {
     const rows = this.db
-      .prepare<[string], EventRow>("SELECT * FROM events WHERE execution_id = ? ORDER BY sequence ASC")
+      .prepare<[string], EventRow>(
+        "SELECT * FROM events WHERE execution_id = ? ORDER BY sequence ASC"
+      )
       .all(executionId);
     return rows.map(rowToEnvelope);
   }

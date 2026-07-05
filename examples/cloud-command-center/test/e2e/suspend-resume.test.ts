@@ -1,15 +1,15 @@
-import path from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import path from "node:path";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { SqliteEventStore } from "@loom/event-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { InvestigateIncidentFlow } from "../../src/flows/InvestigateIncident";
 import { IncidentProjection } from "../../src/projections/IncidentProjection";
 import { MetricsProjection } from "../../src/projections/MetricsProjection";
-import { InvestigateIncidentFlow } from "../../src/flows/InvestigateIncident";
 
 const INCIDENT_ID = "cpu-001";
 
@@ -53,10 +53,7 @@ function createRuntimes(dbPath: string, snapshotDbPath: string): Runtimes {
     onEvent: (event) => projectionRuntime.handleEvent(event),
   });
 
-  workflowRuntime.registerFlow(
-    InvestigateIncidentFlow.definition,
-    InvestigateIncidentFlow.runner
-  );
+  workflowRuntime.registerFlow(InvestigateIncidentFlow.definition, InvestigateIncidentFlow.runner);
 
   // The AI-triage step has no co-located handler$ (its effect is provided at
   // wiring time), so register a fast deterministic stub here. This keeps the
@@ -94,7 +91,10 @@ describe("InvestigateIncident — full suspend/resume e2e", () => {
     const metricsSpy = vi.fn().mockResolvedValue(MOCK_METRICS);
     const logsSpy = vi.fn().mockResolvedValue(MOCK_LOGS);
 
-    const { workflowRuntime, eventStore, projectionRuntime } = createRuntimes(dbPath, snapshotDbPath);
+    const { workflowRuntime, eventStore, projectionRuntime } = createRuntimes(
+      dbPath,
+      snapshotDbPath
+    );
     workflowRuntime.register("metrics-tool", new ToolEffect(metricsSpy));
     workflowRuntime.register("logs-tool", new ToolEffect(logsSpy));
 
@@ -134,7 +134,10 @@ describe("InvestigateIncident — full suspend/resume e2e", () => {
     const runtime1 = createRuntimes(dbPath, snapshotDbPath);
     runtime1.workflowRuntime.register("metrics-tool", new ToolEffect(metricsSpy1));
     runtime1.workflowRuntime.register("logs-tool", new ToolEffect(logsSpy1));
-    runtime1.workflowRuntime.register("remediation-tool", new ToolEffect(vi.fn().mockResolvedValue(MOCK_REMEDIATION)));
+    runtime1.workflowRuntime.register(
+      "remediation-tool",
+      new ToolEffect(vi.fn().mockResolvedValue(MOCK_REMEDIATION))
+    );
 
     const handle1 = await runtime1.workflowRuntime.start(InvestigateIncidentFlow, {
       incidentId: INCIDENT_ID,

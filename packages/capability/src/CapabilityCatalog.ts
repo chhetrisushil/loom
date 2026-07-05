@@ -33,15 +33,13 @@ export class CapabilityCatalog {
   // Deterministic keyword scoring over id/name/intent/tags. Used as the offline
   // fallback for intent routing and planning when no LLM provider is supplied.
   find(query: string): CapabilityMatch[] {
-    const terms = query.toLowerCase().split(/\W+/).filter((t) => t.length > 2);
+    const terms = query
+      .toLowerCase()
+      .split(/\W+/)
+      .filter((t) => t.length > 2);
     const matches: CapabilityMatch[] = [];
     for (const capability of this.capabilities.values()) {
-      const haystack = [
-        capability.id,
-        capability.name,
-        capability.intent,
-        ...capability.tags,
-      ]
+      const haystack = [capability.id, capability.name, capability.intent, ...capability.tags]
         .join(" ")
         .toLowerCase();
       let score = 0;

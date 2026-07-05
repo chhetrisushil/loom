@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
+import { useEffect, useState } from "react";
 
 export function useProjection<TState>(
   projectionRuntime: ProjectionRuntime,
@@ -12,10 +12,8 @@ export function useProjection<TState>(
 
   useEffect(() => {
     setState(projectionRuntime.getState<TState>(projectionId, executionId));
-    const unsub = projectionRuntime.subscribe<TState>(
-      projectionId,
-      executionId,
-      (newState) => setState(newState)
+    const unsub = projectionRuntime.subscribe<TState>(projectionId, executionId, (newState) =>
+      setState(newState)
     );
     return unsub;
   }, [projectionRuntime, projectionId, executionId]);

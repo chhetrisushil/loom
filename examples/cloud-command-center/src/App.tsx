@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import { IntentRuntime } from "@loom/intent";
 import {
   ApprovalCardRenderer,
   BlueprintRenderer,
@@ -10,7 +10,8 @@ import {
   useLoom,
 } from "@loom/renderer-react";
 import type { WidgetAction } from "@loom/renderer-react";
-import { IntentRuntime } from "@loom/intent";
+import type React from "react";
+import { useCallback, useMemo, useState } from "react";
 import { IncidentBlueprint } from "./blueprints/IncidentBlueprint";
 import { incidentCatalog } from "./capabilities";
 
@@ -38,8 +39,11 @@ export function App() {
     [workflowRuntime]
   );
 
-  const addLog = (msg: string) =>
-    setLog((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
+  // Stable identity (setLog is stable) so effects/callbacks can list it as a dep.
+  const addLog = useCallback(
+    (msg: string) => setLog((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]),
+    []
+  );
 
   const startInvestigation = useCallback(async () => {
     setPhase("running");
@@ -54,7 +58,7 @@ export function App() {
       setPhase("suspended");
       addLog("Workflow suspended — awaiting approval");
     });
-  }, [intent, intentText]);
+  }, [intent, intentText, addLog]);
 
   const approve = useCallback(async () => {
     if (!executionId) return;
@@ -70,7 +74,7 @@ export function App() {
       setPhase("completed");
       addLog("Workflow completed — incident resolved");
     });
-  }, [workflowRuntime, executionId]);
+  }, [workflowRuntime, executionId, addLog]);
 
   const reset = useCallback(() => {
     setPhase("idle");
@@ -99,18 +103,22 @@ export function App() {
                 placeholder="Describe your intent…"
                 title="Intent Over Routes — routed to a capability by the Intent Runtime"
               />
-              <button style={styles.btn} onClick={() => void startInvestigation()}>
+              <button type="button" style={styles.btn} onClick={() => void startInvestigation()}>
                 Run Intent
               </button>
             </>
           )}
           {phase === "suspended" && (
-            <button style={{ ...styles.btn, ...styles.btnApprove }} onClick={() => void approve()}>
+            <button
+              type="button"
+              style={{ ...styles.btn, ...styles.btnApprove }}
+              onClick={() => void approve()}
+            >
               Approve Remediation
             </button>
           )}
           {phase === "completed" && (
-            <button style={{ ...styles.btn, ...styles.btnReset }} onClick={reset}>
+            <button type="button" style={{ ...styles.btn, ...styles.btnReset }} onClick={reset}>
               Reset
             </button>
           )}

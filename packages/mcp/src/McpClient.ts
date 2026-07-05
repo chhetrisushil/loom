@@ -1,9 +1,9 @@
-import { z } from "zod";
 import { tool$ } from "@loom/core";
 import type { ToolDefinition } from "@loom/core";
 import type { EffectRuntime } from "@loom/effect-runtime";
 import { ToolEffect } from "@loom/effect-runtime";
-import type { McpServerConfig, MappedMcpTool, McpTool } from "./types";
+import { z } from "zod";
+import type { MappedMcpTool, McpServerConfig, McpTool } from "./types";
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -27,7 +27,12 @@ export class McpClient {
 
   private async rpc<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
     const id = this.nextId++;
-    const body: JsonRpcRequest = { jsonrpc: "2.0", method, id, ...(params !== undefined && { params }) };
+    const body: JsonRpcRequest = {
+      jsonrpc: "2.0",
+      method,
+      id,
+      ...(params !== undefined && { params }),
+    };
 
     const headers: Record<string, string> = {
       "content-type": "application/json",

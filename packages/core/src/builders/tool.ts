@@ -1,4 +1,4 @@
-import { z } from "zod";
+import type { z } from "zod";
 import type { EffectKind, ToolDefinition } from "../types/definitions";
 
 export interface ToolConfig<TIn, TOut> {

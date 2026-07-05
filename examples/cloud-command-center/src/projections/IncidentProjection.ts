@@ -41,7 +41,11 @@ export const IncidentProjection = {
       ...state,
       timeline: [
         ...state.timeline,
-        { timestamp: event.timestamp, message: "Analysis complete — awaiting approval", level: "info" },
+        {
+          timestamp: event.timestamp,
+          message: "Analysis complete — awaiting approval",
+          level: "info",
+        },
       ],
     }),
     APPROVAL_REQUESTED: (state: IncidentState, event: EventEnvelope): IncidentState => ({
@@ -59,7 +63,11 @@ export const IncidentProjection = {
       pendingApproval: false,
       timeline: [
         ...state.timeline,
-        { timestamp: event.timestamp, message: "Approval granted — applying remediation", level: "info" },
+        {
+          timestamp: event.timestamp,
+          message: "Approval granted — applying remediation",
+          level: "info",
+        },
       ],
     }),
     INCIDENT_RESOLVED: (state: IncidentState, event: EventEnvelope): IncidentState => {

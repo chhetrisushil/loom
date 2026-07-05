@@ -92,7 +92,7 @@ describe("projection$", () => {
     });
     expect(def._tag).toBe("ProjectionDefinition");
     expect(def.initialState).toEqual({ count: 0 });
-    expect(typeof def.handlers["STEP_COMPLETED"]).toBe("function");
+    expect(typeof def.handlers.STEP_COMPLETED).toBe("function");
   });
 });
 

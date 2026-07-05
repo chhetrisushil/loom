@@ -1,29 +1,54 @@
-import { describe, expect, it } from "vitest";
-import { z } from "zod";
-import { flow$, step$, handler$ } from "@loom/core";
+import { flow$, handler$, step$ } from "@loom/core";
 import type { EventEnvelope } from "@loom/core";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { EffectRuntime } from "@loom/effect-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
-import { capability$ } from "./capability$";
+import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { CapabilityCatalog } from "./CapabilityCatalog";
+import { capability$ } from "./capability$";
 
 class MemEventStore implements EventStore {
   private m = new Map<string, EventEnvelope[]>();
-  append(e: EventEnvelope) { const l = this.m.get(e.executionId) ?? []; l.push(e); this.m.set(e.executionId, l); }
-  read(id: string) { return this.m.get(id) ?? []; }
-  readFrom(id: string, f: number) { return this.read(id).filter((e) => e.sequence >= f); }
-  subscribe() { return () => {}; }
-  nextSequence(id: string) { const l = this.m.get(id); return !l || l.length === 0 ? 0 : (l[l.length - 1]?.sequence ?? -1) + 1; }
+  append(e: EventEnvelope) {
+    const l = this.m.get(e.executionId) ?? [];
+    l.push(e);
+    this.m.set(e.executionId, l);
+  }
+  read(id: string) {
+    return this.m.get(id) ?? [];
+  }
+  readFrom(id: string, f: number) {
+    return this.read(id).filter((e) => e.sequence >= f);
+  }
+  subscribe() {
+    return () => {};
+  }
+  nextSequence(id: string) {
+    const l = this.m.get(id);
+    return !l || l.length === 0 ? 0 : (l[l.length - 1]?.sequence ?? -1) + 1;
+  }
   close() {}
 }
 class MemSnapshotStore implements SnapshotStore {
   private m = new Map<string, Snapshot[]>();
-  save(s: Snapshot) { const l = this.m.get(s.executionId) ?? []; l.push(s); this.m.set(s.executionId, l); }
-  loadLatest(id: string) { const l = this.m.get(id); return l && l.length ? (l[l.length - 1] ?? null) : null; }
-  loadAt(id: string, seq: number) { const l = this.m.get(id); if (!l) return null; const c = l.filter((s) => s.sequence <= seq); return c[c.length - 1] ?? null; }
+  save(s: Snapshot) {
+    const l = this.m.get(s.executionId) ?? [];
+    l.push(s);
+    this.m.set(s.executionId, l);
+  }
+  loadLatest(id: string) {
+    const l = this.m.get(id);
+    return l?.length ? (l[l.length - 1] ?? null) : null;
+  }
+  loadAt(id: string, seq: number) {
+    const l = this.m.get(id);
+    if (!l) return null;
+    const c = l.filter((s) => s.sequence <= seq);
+    return c[c.length - 1] ?? null;
+  }
   close() {}
 }
 

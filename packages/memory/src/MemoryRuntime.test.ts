@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
 import { memory$ } from "@loom/core";
+import { describe, expect, it } from "vitest";
 import { MemoryRuntime } from "./MemoryRuntime";
 
 describe("MemoryRuntime", () => {

@@ -1,12 +1,13 @@
-import { Component, inject, computed } from "@angular/core";
 import { CommonModule } from "@angular/common";
+import { Component, computed, inject } from "@angular/core";
 import { LoomService } from "./loom.service";
 
 @Component({
   selector: "app-root",
   standalone: true,
   imports: [CommonModule],
-  styles: [`
+  styles: [
+    `
     :host { display: block; }
 
     .shell {
@@ -138,7 +139,8 @@ import { LoomService } from "./loom.service";
     .resolved-banner p  { font-size: 13px; color: #8b949e; }
 
     .exec-id { font-size: 11px; color: #484f58; font-family: monospace; }
-  `],
+  `,
+  ],
   template: `
     <div class="shell">
       <header class="header">

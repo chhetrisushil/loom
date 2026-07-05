@@ -1,4 +1,4 @@
-import { z } from "zod";
+import type { z } from "zod";
 import type { FlowDefinition, PolicyDefinition, StepDefinition } from "../types/definitions";
 
 export interface FlowConfig<TIn, TOut> {
