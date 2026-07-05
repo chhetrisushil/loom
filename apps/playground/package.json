@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "description": "Development playground for the Loom framework",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --build && vite build",
