@@ -1,4 +1,4 @@
-import React from "react";
+import type React from "react";
 import type { WidgetRendererProps } from "../RendererRegistry";
 
 export const StreamingTextRenderer: React.FC<WidgetRendererProps> = ({ widget, value }) => {

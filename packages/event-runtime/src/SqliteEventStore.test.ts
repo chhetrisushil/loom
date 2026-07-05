@@ -5,11 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqliteEventStore } from "./SqliteEventStore";
 import type { EventEnvelope } from "./types";
 
-function makeEnvelope(
-  executionId: string,
-  sequence: number,
-  payload: unknown = {}
-): EventEnvelope {
+function makeEnvelope(executionId: string, sequence: number, payload: unknown = {}): EventEnvelope {
   return {
     id: `evt-${executionId}-${sequence}`,
     workflowId: "test-flow",

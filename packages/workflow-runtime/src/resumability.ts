@@ -14,17 +14,14 @@ export function deserializeExecution(serialized: string): ExecutionState {
   if (
     typeof parsed !== "object" ||
     parsed === null ||
-    typeof (parsed as Record<string, unknown>)["executionId"] !== "string"
+    typeof (parsed as Record<string, unknown>).executionId !== "string"
   ) {
     throw new Error("Invalid serialized ExecutionState");
   }
   return parsed as ExecutionState;
 }
 
-export function serializeProjections(
-  states: Record<string, unknown>,
-  executionId: string
-): string {
+export function serializeProjections(states: Record<string, unknown>, executionId: string): string {
   const snapshot: ProjectionSnapshot = { executionId, states };
   return JSON.stringify(snapshot);
 }

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
 import { agent$ } from "@loom/core";
+import { describe, expect, it } from "vitest";
 import { AgentRegistry } from "./index";
 
 const supportAgent = agent$({ id: "support", name: "Support Agent", tools: [] });

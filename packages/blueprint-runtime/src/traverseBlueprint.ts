@@ -1,4 +1,4 @@
-import type { Widget, Layout, WidgetAction, WidgetRendererProps } from "./types";
+import type { Layout, Widget, WidgetAction, WidgetRendererProps } from "./types";
 
 // ── Context types ─────────────────────────────────────────────────────────────
 

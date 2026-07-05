@@ -1,8 +1,9 @@
-import React, { createContext, useContext, useRef } from "react";
 import type { ExecutionState } from "@loom/core";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import type { WorkflowRuntime } from "@loom/workflow-runtime";
 import { deserializeExecution, deserializeProjections } from "@loom/workflow-runtime";
+import type React from "react";
+import { createContext, useContext, useRef } from "react";
 
 interface LoomContextValue {
   projectionRuntime: ProjectionRuntime;
@@ -43,9 +44,7 @@ export function LoomProvider({
     : null;
 
   return (
-    <LoomContext.Provider
-      value={{ projectionRuntime, workflowRuntime, preloadedExecutionState }}
-    >
+    <LoomContext.Provider value={{ projectionRuntime, workflowRuntime, preloadedExecutionState }}>
       {children}
     </LoomContext.Provider>
   );

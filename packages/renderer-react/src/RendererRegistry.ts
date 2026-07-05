@@ -1,11 +1,11 @@
-import type React from "react";
 import { RendererRegistry } from "@loom/blueprint-runtime";
 import type { WidgetRendererProps } from "@loom/blueprint-runtime";
-import { MetricCardRenderer } from "./renderers/MetricCardRenderer";
-import { TimelineRenderer } from "./renderers/TimelineRenderer";
+import type React from "react";
 import { ApprovalCardRenderer } from "./renderers/ApprovalCardRenderer";
+import { MetricCardRenderer } from "./renderers/MetricCardRenderer";
 import { StatusBadgeRenderer } from "./renderers/StatusBadgeRenderer";
 import { StreamingTextRenderer } from "./renderers/StreamingTextRenderer";
+import { TimelineRenderer } from "./renderers/TimelineRenderer";
 
 // React-specific renderer type: a React function component that receives the
 // framework-agnostic WidgetRendererProps defined in @loom/blueprint-runtime.

@@ -21,7 +21,11 @@ export class MemoryRuntime {
     return `${memoryId}::${scope}`;
   }
 
-  append(memoryId: string, scope: string, entry: Omit<MemoryEntry, "timestamp"> & { timestamp?: number }): void {
+  append(
+    memoryId: string,
+    scope: string,
+    entry: Omit<MemoryEntry, "timestamp"> & { timestamp?: number }
+  ): void {
     const key = this.key(memoryId, scope);
     this.store.append(key, { ...entry, timestamp: entry.timestamp ?? Date.now() });
     this.evict(memoryId, key);

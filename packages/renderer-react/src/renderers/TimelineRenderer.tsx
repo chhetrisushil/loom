@@ -1,4 +1,4 @@
-import React from "react";
+import type React from "react";
 import type { WidgetRendererProps } from "../RendererRegistry";
 
 interface TimelineEntry {
@@ -16,9 +16,7 @@ export const TimelineRenderer: React.FC<WidgetRendererProps> = ({ widget, value 
       <ul className="timeline-entries">
         {entries.map((entry, i) => (
           <li key={i} className="timeline-entry" data-level={entry.level}>
-            {entry.timestamp && (
-              <span className="timeline-ts">{String(entry.timestamp)}</span>
-            )}
+            {entry.timestamp && <span className="timeline-ts">{String(entry.timestamp)}</span>}
             <span className="timeline-msg">{entry.message ?? ""}</span>
           </li>
         ))}

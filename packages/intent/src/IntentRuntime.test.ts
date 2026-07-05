@@ -1,9 +1,9 @@
+import { CapabilityCatalog, capability$ } from "@loom/capability";
+import { flow$, handler$, step$ } from "@loom/core";
+import type { LlmProvider } from "@loom/llm";
+import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { flow$, step$, handler$ } from "@loom/core";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
-import { capability$, CapabilityCatalog } from "@loom/capability";
-import type { LlmProvider } from "@loom/llm";
 import { IntentRuntime } from "./IntentRuntime";
 
 const noopStep = step$({

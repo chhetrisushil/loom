@@ -1,16 +1,16 @@
-import { Injectable, signal, NgZone } from "@angular/core";
+import { Injectable, type NgZone, signal } from "@angular/core";
+import type { EventEnvelope } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { ConsoleTelemetryAdapter, createTelemetryHook } from "@loom/telemetry";
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryEventStore, InMemorySnapshotStore } from "./stores";
+import { WorkflowRuntime } from "@loom/workflow-runtime";
 import {
-  InvestigateIncidentFlow,
   type IncidentInput,
+  InvestigateIncidentFlow,
   type LogData,
   type MetricsData,
 } from "./incident.flow";
+import { InMemoryEventStore, InMemorySnapshotStore } from "./stores";
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
@@ -128,10 +128,9 @@ export class LoomService {
     this.incidentState.set(null);
 
     try {
-      const handle = await this.workflowRuntime.start<IncidentInput>(
-        InvestigateIncidentFlow,
-        { incidentId }
-      );
+      const handle = await this.workflowRuntime.start<IncidentInput>(InvestigateIncidentFlow, {
+        incidentId,
+      });
 
       this.zone.run(() => this.executionId.set(handle.executionId));
 

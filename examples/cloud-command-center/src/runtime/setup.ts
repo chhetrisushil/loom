@@ -1,12 +1,12 @@
-import { ToolEffect } from "@loom/effect-runtime";
 import { a2uiSurfaceProjection } from "@loom/a2ui";
+import { ToolEffect } from "@loom/effect-runtime";
+import { EffectRuntime } from "@loom/effect-runtime";
 import { SqliteEventStore } from "@loom/event-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { IncidentProjection } from "../projections/IncidentProjection";
 import { MetricsProjection } from "../projections/MetricsProjection";
-import { EffectRuntime } from "@loom/effect-runtime";
 import { llmProvider, registerAiTriageEffect } from "./aiTriage";
 
 // llmProvider + registerAiTriageEffect live in ./aiTriage (browser-safe, no

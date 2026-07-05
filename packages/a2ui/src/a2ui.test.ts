@@ -1,8 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
 import type { EventEnvelope } from "@loom/core";
+import { describe, expect, it, vi } from "vitest";
+import { A2UIRuntime } from "./A2UIRuntime";
 import { applyA2UIPatch, applyA2UIPatches } from "./applyPatch";
 import { createA2UIEmitter } from "./emitter";
-import { A2UIRuntime } from "./A2UIRuntime";
 import { a2uiSurfaceProjection } from "./surfaceProjection";
 import { A2UI_PATCH } from "./types";
 import type { A2UIPatch, A2UISurfaceState } from "./types";

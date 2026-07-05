@@ -1,15 +1,11 @@
 import { ApprovalCard, MetricCard, Timeline, blueprint$, grid } from "@loom/blueprint-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { render, screen, act } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
 import { BlueprintRenderer } from "./BlueprintRenderer";
-import {
-  ApprovalCardRenderer,
-  MetricCardRenderer,
-  TimelineRenderer,
-} from "./renderers";
 import { defaultRegistry } from "./RendererRegistry";
+import { ApprovalCardRenderer, MetricCardRenderer, TimelineRenderer } from "./renderers";
 
 defaultRegistry.register("MetricCard", MetricCardRenderer);
 defaultRegistry.register("Timeline", TimelineRenderer);
@@ -45,9 +41,18 @@ const incidentBlueprint = blueprint$({
   layout: grid({
     columns: 2,
     children: [
-      MetricCard({ title: "CPU Usage %", binding: { projectionId: "metrics", path: "cpu.current" } }),
-      Timeline({ title: "Event Timeline", binding: { projectionId: "incident", path: "timeline" } }),
-      ApprovalCard({ title: "Approve Fix", binding: { projectionId: "incident", path: "pendingApproval" } }),
+      MetricCard({
+        title: "CPU Usage %",
+        binding: { projectionId: "metrics", path: "cpu.current" },
+      }),
+      Timeline({
+        title: "Event Timeline",
+        binding: { projectionId: "incident", path: "timeline" },
+      }),
+      ApprovalCard({
+        title: "Approve Fix",
+        binding: { projectionId: "incident", path: "pendingApproval" },
+      }),
     ],
   }),
   projections: ["metrics", "incident"],

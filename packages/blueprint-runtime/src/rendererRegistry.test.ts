@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { RendererRegistry } from "./RendererRegistry";
-import { traverseBlueprint } from "./traverseBlueprint";
 import { customWidget$ } from "./customWidget";
 import { grid, stack } from "./layout";
+import { traverseBlueprint } from "./traverseBlueprint";
+import type { Layout, Widget } from "./types";
 import { MetricCard } from "./widgets";
-import type { Widget, Layout } from "./types";
 
 // ── RendererRegistry ──────────────────────────────────────────────────────────
 
@@ -92,7 +92,7 @@ describe("customWidget$()", () => {
     const binding = { projectionId: "metrics", path: "cpu.history" };
     const w = customWidget$({ kind: "Heatmap", binding, props: { buckets: 20 } });
     expect(w.binding).toEqual(binding);
-    expect(w.props["buckets"]).toBe(20);
+    expect(w.props.buckets).toBe(20);
   });
 
   it("accepts an explicit id", () => {
@@ -137,8 +137,7 @@ describe("traverseBlueprint()", () => {
     const layout = grid({ columns: 2, children: [widget] });
     const result = traverseBlueprint<string>(layout, stateMap, {
       renderWidget: ({ widget: w }) => `widget:${w.kind}`,
-      renderContainer: ({ layout: l, children }) =>
-        `${l.type}(${children.join(",")})`,
+      renderContainer: ({ layout: l, children }) => `${l.type}(${children.join(",")})`,
     });
     expect(result).toBe("grid(widget:MetricCard)");
   });

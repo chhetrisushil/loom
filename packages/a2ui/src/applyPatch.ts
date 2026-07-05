@@ -72,8 +72,10 @@ export function applyA2UIPatch(state: A2UISurfaceState, patch: A2UIPatch): A2UIS
         Array.isArray(existing) ? [...existing, patch.value] : [patch.value]
       );
     case "increment":
-      return updateIn(state, parts, (existing) =>
-        (typeof existing === "number" ? existing : 0) + (patch.by ?? 1)
+      return updateIn(
+        state,
+        parts,
+        (existing) => (typeof existing === "number" ? existing : 0) + (patch.by ?? 1)
       );
     case "remove":
       return removeIn(state, parts);

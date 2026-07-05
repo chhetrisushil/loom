@@ -1,8 +1,8 @@
-import type { Plugin, ResolvedConfig } from "vite";
-import path from "path";
+import path from "node:path";
 import ts from "typescript";
-import { transformFile } from "./transform";
+import type { Plugin, ResolvedConfig } from "vite";
 import { buildManifest, printWarnings } from "./manifest";
+import { transformFile } from "./transform";
 import type { PluginState } from "./types";
 
 const VIRTUAL_PREFIX = "\0loom:chunk:";

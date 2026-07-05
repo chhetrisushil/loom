@@ -1,8 +1,8 @@
-import React from "react";
 import type { Blueprint } from "@loom/blueprint-runtime";
 import { traverseBlueprint } from "@loom/blueprint-runtime";
 import type { RendererRegistry } from "@loom/blueprint-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
+import type React from "react";
 import type { WidgetAction, WidgetRenderer } from "./RendererRegistry";
 import { defaultRegistry } from "./RendererRegistry";
 import { useBlueprintProjectionValues } from "./hooks/useBlueprint";

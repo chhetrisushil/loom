@@ -1,10 +1,10 @@
-import { z } from "zod";
 import { flow$ } from "@loom/core";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { z } from "zod";
 import { AiTriageStep } from "../tools/AiTriageTool";
-import { ApplyRemediationStep } from "../tools/RemediationTool";
 import { FetchLogsStep } from "../tools/LogsTool";
 import { FetchMetricsStep } from "../tools/MetricsTool";
+import { ApplyRemediationStep } from "../tools/RemediationTool";
 
 const inputSchema = z.object({ incidentId: z.string() });
 const outputSchema = z.object({ resolved: z.boolean(), summary: z.string() });

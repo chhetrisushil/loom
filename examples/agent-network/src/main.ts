@@ -1,3 +1,18 @@
+import { createA2AClientEffect, createA2AServer } from "@loom/a2a";
+import { a2uiSurfaceProjection } from "@loom/a2ui";
+import { AgentRunner } from "@loom/agent";
+import { CapabilityCatalog } from "@loom/capability";
+import { agent$, flow$, handler$, memory$, step$ } from "@loom/core";
+import { EffectRuntime } from "@loom/effect-runtime";
+import { IntentRuntime } from "@loom/intent";
+import { McpClient } from "@loom/mcp";
+import { MemoryRuntime } from "@loom/memory";
+import { PlannerRuntime } from "@loom/planner";
+import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
+import { AgentRegistry } from "@loom/registry";
+import { TerminalRenderer } from "@loom/renderer-terminal";
+import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { WorkflowRuntime } from "@loom/workflow-runtime";
 /**
  * Agent Network — a server-side showcase of Loom's agentic capabilities.
  *
@@ -14,29 +29,10 @@
  * Run with:  pnpm --filter @loom/agent-network start
  */
 import { z } from "zod";
-import { agent$, flow$, handler$, memory$, step$ } from "@loom/core";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import { EffectRuntime } from "@loom/effect-runtime";
-import { AgentRunner } from "@loom/agent";
-import { McpClient } from "@loom/mcp";
-import { createA2AServer, createA2AClientEffect } from "@loom/a2a";
-import { AgentRegistry } from "@loom/registry";
-import { CapabilityCatalog } from "@loom/capability";
-import { IntentRuntime } from "@loom/intent";
-import { PlannerRuntime } from "@loom/planner";
-import { MemoryRuntime } from "@loom/memory";
-import { TerminalRenderer } from "@loom/renderer-terminal";
-import { a2uiSurfaceProjection } from "@loom/a2ui";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { InMemoryEventStore, InMemorySnapshotStore } from "./stores";
 import { ScriptedLlmProvider } from "./ScriptedLlmProvider";
+import { incidentBlueprint, investigateCapability, scaleCapability } from "./capabilities";
 import { startFakeMcpServer } from "./fakeMcpServer";
-import {
-  incidentBlueprint,
-  investigateCapability,
-  scaleCapability,
-} from "./capabilities";
+import { InMemoryEventStore, InMemorySnapshotStore } from "./stores";
 
 function section(title: string): void {
   console.log(`\n${"─".repeat(64)}\n  ${title}\n${"─".repeat(64)}`);
@@ -73,10 +69,7 @@ async function main(): Promise<void> {
   const mcpClient = new McpClient({ transport: "http", url: mcp.url });
   await mcpClient.connect();
   const mcpDefs = await mcpClient.registerInto(effectRuntime);
-  console.log(
-    `Discovered ${mcpDefs.length} MCP tool(s):`,
-    mcpDefs.map((d) => d.id).join(", ")
-  );
+  console.log(`Discovered ${mcpDefs.length} MCP tool(s):`, mcpDefs.map((d) => d.id).join(", "));
 
   // ══ 2. Bring-your-own agent ═════════════════════════════════════════════════
   // Define an agent over the discovered tools and run the ReAct loop. The agent
@@ -108,7 +101,9 @@ async function main(): Promise<void> {
     { prompt: "The primary database is at 87% CPU and connections are exhausted. What do I do?" },
     { executionId: "demo", stepId: "agent", workflowId: "demo", attempt: 1, emit: () => {} }
   );
-  console.log(`Agent used ${agentOutput.toolCallLog.length} tool call(s) over ${agentOutput.iterations} iteration(s).`);
+  console.log(
+    `Agent used ${agentOutput.toolCallLog.length} tool call(s) over ${agentOutput.iterations} iteration(s).`
+  );
   console.log("Agent answer:", agentOutput.content);
 
   // ══ 4. A2A out of the box ═══════════════════════════════════════════════════
@@ -175,9 +170,7 @@ async function main(): Promise<void> {
   // Build a catalog of capabilities, then let the Intent Runtime route a plain
   // English request to the right one — no routes, no switch statements.
   section("5. Capability catalog + Intent routing");
-  const catalog = new CapabilityCatalog()
-    .register(investigateCapability)
-    .register(scaleCapability);
+  const catalog = new CapabilityCatalog().register(investigateCapability).register(scaleCapability);
 
   const projectionRuntime = new InMemoryProjectionRuntime();
   projectionRuntime.register(a2uiSurfaceProjection("ui"));
@@ -211,7 +204,9 @@ async function main(): Promise<void> {
 
   // ══ 7. Agent memory (recall across turns) ═══════════════════════════════════
   section("7. Agent memory");
-  const memory = new MemoryRuntime().register(memory$({ id: "chat", name: "Chat", maxEntries: 20 }));
+  const memory = new MemoryRuntime().register(
+    memory$({ id: "chat", name: "Chat", maxEntries: 20 })
+  );
   const chatAgent = agent$({ id: "chat-agent", name: "Chat Agent", tools: [], memoryId: "chat" });
   const chatProvider = new ScriptedLlmProvider([
     { content: "Noted — your cluster is prod-postgres.", stopReason: "end_turn" },
@@ -225,7 +220,10 @@ async function main(): Promise<void> {
   });
   const chatCtx = { executionId: "c", stepId: "s", workflowId: "w", attempt: 1, emit: () => {} };
   await chatRunner.run({ prompt: "My cluster is prod-postgres", memoryScope: "user-1" }, chatCtx);
-  const recalled = await chatRunner.run({ prompt: "Which cluster did I mention?", memoryScope: "user-1" }, chatCtx);
+  const recalled = await chatRunner.run(
+    { prompt: "Which cluster did I mention?", memoryScope: "user-1" },
+    chatCtx
+  );
   console.log("Second-turn answer (with recall):", recalled.content);
   console.log("Remembered turns:", memory.read("chat", "user-1").length);
 

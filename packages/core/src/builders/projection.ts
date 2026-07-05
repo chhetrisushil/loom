@@ -8,7 +8,9 @@ export interface ProjectionConfig<TState> {
   handlers: Record<string, (state: TState, payload: unknown) => TState>;
 }
 
-export function projection$<TState>(config: ProjectionConfig<TState>): ProjectionDefinition<TState> {
+export function projection$<TState>(
+  config: ProjectionConfig<TState>
+): ProjectionDefinition<TState> {
   return {
     _tag: "ProjectionDefinition",
     id: config.id,

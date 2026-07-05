@@ -1,9 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import type { FlowTelemetryInfo, StepTelemetryInfo, TelemetryAdapter } from "./types";
 
-export function createTelemetryHook(
-  adapter: TelemetryAdapter
-): (event: EventEnvelope) => void {
+export function createTelemetryHook(adapter: TelemetryAdapter): (event: EventEnvelope) => void {
   const flowState = new Map<string, FlowTelemetryInfo>();
   const stepStarts = new Map<string, number>();
   const stepAttempts = new Map<string, number>();

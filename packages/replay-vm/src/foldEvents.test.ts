@@ -1,7 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import { describe, expect, it } from "vitest";
-import { foldEvents } from "./foldEvents";
 import { ReplayVM } from "./ReplayVM";
+import { foldEvents } from "./foldEvents";
 
 function makeEvent(
   executionId: string,
@@ -69,7 +69,7 @@ describe("foldEvents", () => {
     const state = foldEvents(events, INITIAL);
     expect(state.status).toBe("running");
     expect(state.suspendedOn).toBeUndefined();
-    expect(state.variables["_resumePayload"]).toEqual({ approved: true });
+    expect(state.variables._resumePayload).toEqual({ approved: true });
   });
 
   it("reaches completed status on EXECUTION_COMPLETED", () => {
@@ -106,14 +106,28 @@ describe("foldEvents", () => {
   it("handles full 10-event lifecycle", () => {
     const events: EventEnvelope[] = [
       makeEvent(EXECUTION_ID, 0, "EXECUTION_STARTED", { input: { incidentId: "cpu-001" } }),
-      makeEvent(EXECUTION_ID, 1, "STEP_STARTED", { stepId: "fetch-metrics", input: { incidentId: "cpu-001" } }),
-      makeEvent(EXECUTION_ID, 2, "STEP_COMPLETED", { stepId: "fetch-metrics", output: { cpu: 87 } }),
-      makeEvent(EXECUTION_ID, 3, "STEP_STARTED", { stepId: "fetch-logs", input: { incidentId: "cpu-001" } }),
+      makeEvent(EXECUTION_ID, 1, "STEP_STARTED", {
+        stepId: "fetch-metrics",
+        input: { incidentId: "cpu-001" },
+      }),
+      makeEvent(EXECUTION_ID, 2, "STEP_COMPLETED", {
+        stepId: "fetch-metrics",
+        output: { cpu: 87 },
+      }),
+      makeEvent(EXECUTION_ID, 3, "STEP_STARTED", {
+        stepId: "fetch-logs",
+        input: { incidentId: "cpu-001" },
+      }),
       makeEvent(EXECUTION_ID, 4, "STEP_COMPLETED", { stepId: "fetch-logs", output: { logs: [] } }),
       makeEvent(EXECUTION_ID, 5, "STEP_STARTED", { stepId: "request-approval" }),
-      makeEvent(EXECUTION_ID, 6, "EXECUTION_SUSPENDED", { condition: { on: "ApprovalGranted", correlationKey: "cpu-001" } }),
+      makeEvent(EXECUTION_ID, 6, "EXECUTION_SUSPENDED", {
+        condition: { on: "ApprovalGranted", correlationKey: "cpu-001" },
+      }),
       makeEvent(EXECUTION_ID, 7, "EXECUTION_RESUMED", { approved: true, approver: "alice" }),
-      makeEvent(EXECUTION_ID, 8, "STEP_COMPLETED", { stepId: "request-approval", output: { approved: true } }),
+      makeEvent(EXECUTION_ID, 8, "STEP_COMPLETED", {
+        stepId: "request-approval",
+        output: { approved: true },
+      }),
       makeEvent(EXECUTION_ID, 9, "EXECUTION_COMPLETED", { output: { resolved: true } }),
     ];
 

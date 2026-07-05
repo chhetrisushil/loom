@@ -31,7 +31,9 @@ export function customWidget$(config: CustomWidgetConfig): Widget {
   const propsRecord = config.props ?? {};
   return {
     _tag: "Widget",
-    id: config.id ?? stableId(config.kind, { title: config.title, binding: config.binding, ...propsRecord }),
+    id:
+      config.id ??
+      stableId(config.kind, { title: config.title, binding: config.binding, ...propsRecord }),
     kind: config.kind,
     ...(config.title !== undefined && { title: config.title }),
     props: propsRecord,

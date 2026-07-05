@@ -1,5 +1,5 @@
-import ts from "typescript";
 import MagicString from "magic-string";
+import ts from "typescript";
 import { shortHash } from "./hash";
 import type { ExtractedChunk, FlowEntry, PluginState, StepEntry } from "./types";
 
@@ -12,12 +12,7 @@ export function transformFile(
 ): { code: string; map: string } | null {
   if (!sourceText.includes("step$") && !sourceText.includes("flow$")) return null;
 
-  const sourceFile = ts.createSourceFile(
-    absolutePath,
-    sourceText,
-    ts.ScriptTarget.ESNext,
-    true
-  );
+  const sourceFile = ts.createSourceFile(absolutePath, sourceText, ts.ScriptTarget.ESNext, true);
 
   const ms = new MagicString(sourceText);
   const importLines = collectImportLines(sourceFile, sourceText);
@@ -54,7 +49,12 @@ function tryProcessStep(
 
   if (ts.isVariableStatement(node)) {
     const decl = node.declarationList.declarations[0];
-    if (decl && ts.isIdentifier(decl.name) && decl.initializer && ts.isCallExpression(decl.initializer)) {
+    if (
+      decl &&
+      ts.isIdentifier(decl.name) &&
+      decl.initializer &&
+      ts.isCallExpression(decl.initializer)
+    ) {
       varName = decl.name.text;
       callNode = decl.initializer;
     }
@@ -151,7 +151,11 @@ function collectFlows(
         if (!flowId) return;
 
         const stepIds: string[] = [];
-        if (stepsProp && ts.isPropertyAssignment(stepsProp) && ts.isArrayLiteralExpression(stepsProp.initializer)) {
+        if (
+          stepsProp &&
+          ts.isPropertyAssignment(stepsProp) &&
+          ts.isArrayLiteralExpression(stepsProp.initializer)
+        ) {
           for (const el of stepsProp.initializer.elements) {
             if (ts.isIdentifier(el)) {
               const resolvedId = pluginState.stepsByVarName.get(el.text);
@@ -232,11 +236,7 @@ function findProperty(
   name: string
 ): ts.PropertyAssignment | undefined {
   for (const prop of obj.properties) {
-    if (
-      ts.isPropertyAssignment(prop) &&
-      ts.isIdentifier(prop.name) &&
-      prop.name.text === name
-    ) {
+    if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name) && prop.name.text === name) {
       return prop;
     }
   }

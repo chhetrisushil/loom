@@ -23,7 +23,9 @@ export function buildManifest(state: PluginState, outDir = "."): LoomManifest {
     for (const stepId of flow.stepIds) {
       const step: StepEntry | undefined = state.steps.get(stepId);
       if (!step) {
-        warnings.push(`Step "${stepId}" is referenced in flow "${flowId}" but not found in analysis.`);
+        warnings.push(
+          `Step "${stepId}" is referenced in flow "${flowId}" but not found in analysis.`
+        );
         continue;
       }
       if (step.chunkVirtualId !== undefined) {
@@ -54,7 +56,9 @@ export function printWarnings(manifest: LoomManifest): void {
       console.warn(`[loom-compiler] ⚠  ${warning}`);
     }
     if (flow.warnings.length === 0) {
-      console.info(`[loom-compiler] ✓  flow "${flowId}" — ${flow.steps.length} step(s), ${Object.keys(flow.chunkMap).length} lazy chunk(s)`);
+      console.info(
+        `[loom-compiler] ✓  flow "${flowId}" — ${flow.steps.length} step(s), ${Object.keys(flow.chunkMap).length} lazy chunk(s)`
+      );
     }
   }
 }

@@ -16,7 +16,9 @@ function formatValue(value: unknown): string {
     return value
       .map((item) =>
         typeof item === "object" && item !== null
-          ? `• ${Object.values(item as Record<string, unknown>).map(String).join(" · ")}`
+          ? `• ${Object.values(item as Record<string, unknown>)
+              .map(String)
+              .join(" · ")}`
           : `• ${String(item)}`
       )
       .join("\n");

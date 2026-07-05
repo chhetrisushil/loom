@@ -1,5 +1,5 @@
-import Database from "better-sqlite3";
 import type { ExecutionState } from "@loom/core";
+import Database from "better-sqlite3";
 import { migrate } from "./schema";
 import type { Snapshot, SnapshotStore } from "./types";
 
