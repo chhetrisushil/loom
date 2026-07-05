@@ -6,6 +6,7 @@ export { ApprovalCardRenderer } from "./renderers/ApprovalCardRenderer";
 export { StatusBadgeRenderer } from "./renderers/StatusBadgeRenderer";
 export { StreamingTextRenderer } from "./renderers/StreamingTextRenderer";
 export { useProjection } from "./hooks/useProjection";
+export { useDeferredProjection } from "./hooks/useDeferredProjection";
 export { useA2UISurface } from "./hooks/useA2UISurface";
 export { LoomProvider, useLoom } from "./LoomProvider";
 export type { WidgetAction, WidgetRenderer, WidgetRendererProps } from "./RendererRegistry";
