@@ -17,6 +17,8 @@ optimize for continuation, not hydration.*
 | [`engineering-deck.md`](./engineering-deck.md) | Engineers / architects | The how: architecture, primitives, execution model, agentic + intelligence pipeline |
 | [`code-walkthrough.md`](./code-walkthrough.md) | Engineers | Annotated tour of real files (read‑along) |
 | [`demo-script.md`](./demo-script.md) | Presenter | Live runbook — exact commands, what to show, talking points, timings |
+| [`db-command-center-deck.md`](./db-command-center-deck.md) | Engineers / architects | Deep dive on the **agentic DB command center** (React) — intent → planner → A2A → durable human‑in‑the‑loop, BYOR + BYOC + render‑side fiber |
+| [`db-command-center-wc-deck.md`](./db-command-center-wc-deck.md) | Engineers / architects | The **same app in vanilla Web Components** — proof of BYOR: reuse the whole agentic backend, swap only the render layer |
 
 Suggested order: **leadership deck → live demo (Demo 0 + 1) → engineering deck → walkthrough** as
 depth requires. The demo script has 5 / 15 / 30‑minute variants.
@@ -53,6 +55,8 @@ pnpm --filter @loom/agent-network start          # Demo 0: whole pipeline, headl
 pnpm --filter @loom/cloud-command-center dev      # Demo 1: durable + streaming UI + approval (React)
 pnpm --filter @loom/playground dev                # Demo 2: A2UI patch stream + Trace tab
 pnpm --filter @loom/angular-command-center dev    # Demo 3: same runtime, Angular UI (optional)
+pnpm --filter @loom/db-command-center dev         # Demo 4: agentic DB command center — planner + A2A + HITL + fiber (React)
+pnpm --filter @loom/db-command-center-wc dev      # Demo 5: the same app in vanilla Web Components (no framework)
 ```
 
 **Prerequisites:** Node ≥ 20, pnpm ≥ 9. Use `vite dev` (not `vite build`) for the browser apps.
