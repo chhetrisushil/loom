@@ -12,6 +12,10 @@ This is the example built to show off Loom's most distinctive and least-demonstr
 **git-style branching for durable executions** (`WorkflowRuntime.fork()` + `BranchRegistry` +
 `promote()`), branch-only, **no merge**.
 
+> **Sibling example:** [`schema-migration-planner`](../schema-migration-planner/README.md) applies the
+> *same* fork/simulate/promote seam to a different domain (choosing a schema-migration strategy),
+> reusing the `BranchOrchestrator` and branch UI verbatim — plus live per-branch simulation progress.
+
 ```
 pnpm --filter @loom/incident-war-room dev     # client :5173  +  server :8787
 # then open http://localhost:5173

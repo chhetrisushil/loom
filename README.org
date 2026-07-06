@@ -19,7 +19,7 @@ On top of these, Loom ships an *intelligence pipeline* that turns intents and go
 - *Planner Runtime* — composes an ordered, multi-step plan of capabilities for a higher-level goal (~PlannerRuntime.plan~).
 - *Capabilities Over APIs* — ~capability$~ wraps a flow with intent-facing metadata; a ~CapabilityCatalog~ makes it discoverable and invocable.
 - *Agent memory* — ~MemoryRuntime~ gives agents scoped, durable recall across turns (honoring ~ttlMs~ / ~maxEntries~).
-- *Speculative branching* — fork an execution at any point into an independent branch to try alternate plans, then keep the winner (~WorkflowRuntime.fork~ + a git-style ~BranchRegistry~). Copy-on-write over the event log, branch-only (no merge); the parent stays intact. See the ~incident-war-room~ example for the full fork → simulate → compare → promote loop.
+- *Speculative branching* — fork an execution at any point into an independent branch to try alternate plans, then keep the winner (~WorkflowRuntime.fork~ + a git-style ~BranchRegistry~). Copy-on-write over the event log, branch-only (no merge); the parent stays intact. See the ~incident-war-room~ and ~schema-migration-planner~ examples for the full fork → simulate → compare → promote loop.
 - *Bring your own storage* — the ~EventStore~ / ~SnapshotStore~ / ~BranchRegistry~ / ~MemoryStore~ interfaces are *async-first*, so any backend plugs in: SQLite and in-memory ship in the box, and async/network backends (Postgres, Redis, DynamoDB) are first-class — the runtime ~await~s the store. The synchronous ~ctx.emit~ / ~ctx.ui~ API is preserved by a per-execution write pipeline (see [[file:docs/architecture.org][architecture]]).
 - *Multi-surface delivery* — the same blueprint renders to React *or* the terminal (~@loom/renderer-terminal~), because ~traverseBlueprint~ is framework-agnostic.
 
@@ -38,7 +38,8 @@ loom/
 │   ├── db-command-center/        # React — intent-driven multi-agent DB ops (BYOR + BYOC + fiber)
 │   ├── db-command-center-wc/     # the same app in vanilla Web Components (no framework)
 │   ├── db-command-center-server/ # the same app as server + client (durable Node server + WC client)
-│   └── incident-war-room/        # git-style branching: fork → simulate → compare → promote (no merge)
+│   ├── incident-war-room/        # git-style branching: fork → simulate → compare → promote (no merge)
+│   └── schema-migration-planner/ # git-style branching for schema migrations (+ live per-branch progress)
 └── docs/                         # architecture, API reference, usage guides, presentation kit
 #+end_example
 
@@ -82,6 +83,7 @@ loom/
 | ~db-command-center-wc~   | The *same* command center in vanilla Web Components — no framework at all. Reuses the entire agentic backend and swaps only the render layer, proving Loom's BYOR contract |
 | ~db-command-center-server~ | The *same* command center as a genuine server + client app: the durable runtime runs on a Node server (SQLite); a Web Components client renders it over HTTP + SSE. Demonstrates the isomorphic deployment model (server execution → client render/resume) |
 | ~incident-war-room~      | Git-style branching, made a live experience: at a high-risk approval gate an SRE *forks* the durable execution into mutually-exclusive candidate remediations, *simulates* each speculatively (concurrently, via ~parallelLimit~), compares a git-graph diff, and *promotes* the winner — which applies for real. Branch-only, *no merge*; losing branches survive as immutable lineage. Durable Node server (SQLite ~BranchRegistry~) + WC client over SSE |
+| ~schema-migration-planner~ | The same git-style branching on a *different* domain — choosing a large-table schema-migration strategy (online-DDL vs shadow-copy vs dual-write). Proves the fork/simulate/promote seam is domain-agnostic (reused verbatim), and adds *live per-branch simulation progress*: three shadow-migrations backfilling concurrently, streaming progress over SSE. Compares lock time / duration / reversibility / risk, then promotes one — *no merge* |
 
 * Prerequisites
 
@@ -189,6 +191,13 @@ A fourth variant, ~incident-war-room~, reuses that same server + client topology
 #+begin_src sh
 pnpm --filter @loom/incident-war-room dev         # client :5173 + durable server :8787
 pnpm --filter @loom/incident-war-room demo:fork   # narrated headless fork → simulate → promote
+#+end_src
+
+A fifth variant, ~schema-migration-planner~, applies the *same* git-style branching to a different real-world decision: which strategy to use to add a ~NOT NULL~ column to a 40M-row table (online-DDL vs shadow-copy vs dual-write). It proves the fork/simulate/promote seam is domain-agnostic — the ~BranchOrchestrator~ and branch UI are reused verbatim; only the domain changes — and adds *live per-branch simulation progress*: each speculative branch runs against a shadow schema and streams its backfill percentage, so three migrations advance concurrently in the UI before you promote one.
+
+#+begin_src sh
+pnpm --filter @loom/schema-migration-planner dev         # client :5173 + durable server :8787
+pnpm --filter @loom/schema-migration-planner demo:fork   # narrated headless fork → simulate → promote
 #+end_src
 
 * Agentic Capabilities
