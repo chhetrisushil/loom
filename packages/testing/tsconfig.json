@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"],
+  "references": [
+    { "path": "../app" },
+    { "path": "../core" },
+    { "path": "../event-runtime" },
+    { "path": "../llm" },
+    { "path": "../projection-runtime" },
+    { "path": "../workflow-runtime" }
+  ]
+}

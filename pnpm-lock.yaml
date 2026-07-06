@@ -656,6 +656,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@loom/testing':
+        specifier: workspace:*
+        version: link:../../packages/testing
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -1583,6 +1586,43 @@ importers:
       typescript:
         specifier: ^5.6.3
         version: 5.9.3
+
+  packages/testing:
+    dependencies:
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../app
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../event-runtime
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../llm
+      '@loom/projection-runtime':
+        specifier: workspace:*
+        version: link:../projection-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../workflow-runtime
+    devDependencies:
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../effect-runtime
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
 
   packages/worker-runtime:
     dependencies:
