@@ -73,9 +73,7 @@ export function startMockExternalAgent(): Promise<MockExternalAgent> {
         return;
       }
       // A real ADK/LangGraph agent would run its own reasoning graph here.
-      const diagnosis =
-        `Diagnosis for "${task.promptText}": connection-pool exhaustion. ` +
-        `Recycle the pool and raise its ceiling; scale replicas only if CPU stays high.`;
+      const diagnosis = `Diagnosis for "${task.promptText}": connection-pool exhaustion. Recycle the pool and raise its ceiling; scale replicas only if CPU stays high.`;
       send(200, {
         id,
         status: "completed",

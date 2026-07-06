@@ -1,8 +1,8 @@
 import { agent$, tool$ } from "@loom/core";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import type { AgentCard } from "./types";
 import { toAgentCard } from "./toAgentCard";
+import type { AgentCard } from "./types";
 
 const MetricsTool = tool$({
   id: "db-metrics",
@@ -69,7 +69,10 @@ describe("toAgentCard", () => {
   });
 
   it("prefers definition metadata over option fallbacks", () => {
-    const card = toAgentCard(DiagnosticsAgent, { version: "9.9.9", capabilities: { streaming: false } });
+    const card = toAgentCard(DiagnosticsAgent, {
+      version: "9.9.9",
+      capabilities: { streaming: false },
+    });
     expect(card.version).toBe("1.0.0");
     expect(card.capabilities).toEqual({ streaming: true });
   });

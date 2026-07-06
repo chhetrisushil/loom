@@ -9,7 +9,7 @@
 
 import type { EventEnvelope } from "@loom/core";
 import type { EventStore } from "@loom/event-runtime";
-import { Pool, type PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 interface EventRow {
   id: string;

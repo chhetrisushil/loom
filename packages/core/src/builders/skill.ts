@@ -1,6 +1,6 @@
 import type {
-  InstructionsRef,
   InstructionsLoader,
+  InstructionsRef,
   InstructionsSpec,
   SkillDefinition,
   ToolDefinition,

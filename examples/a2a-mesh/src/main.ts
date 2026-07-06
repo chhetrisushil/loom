@@ -110,7 +110,9 @@ async function main(): Promise<void> {
 
   const remoteCall = agentOutput.toolCallLog.find((c) => c.toolName === "remote-diagnostics");
   console.log("\nRemote agent replied:");
-  console.log(`  ${(remoteCall?.toolOutput as { content?: string } | undefined)?.content ?? "(none)"}`);
+  console.log(
+    `  ${(remoteCall?.toolOutput as { content?: string } | undefined)?.content ?? "(none)"}`
+  );
   console.log("\nLoom agent's final answer:");
   console.log(`  ${agentOutput.content}`);
 
@@ -171,7 +173,13 @@ async function main(): Promise<void> {
       id: "task-in-1",
       message: { role: "user", parts: [{ type: "text", text: "connection-pool exhaustion" }] },
     },
-    { executionId: "mesh-demo", stepId: "call-in", workflowId: "mesh-demo", attempt: 1, emit: () => {} }
+    {
+      executionId: "mesh-demo",
+      stepId: "call-in",
+      workflowId: "mesh-demo",
+      attempt: 1,
+      emit: () => {},
+    }
   );
   console.log(`Inbound A2A task status: ${result.status}`);
   console.log(`Loom replied: ${result.artifacts?.[0]?.parts[0]?.text}`);

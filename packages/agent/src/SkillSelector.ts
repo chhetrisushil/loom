@@ -36,10 +36,7 @@ export function llmSkillSelector(provider: LlmProvider, maxSkills = 3): SkillSel
       if (skills.length === 0) return [];
       const menu = skills.map((s) => `- ${s.id}: ${s.description}`).join("\n");
       const response = await provider.complete({
-        system:
-          `You select the skills relevant to a request. Reply with a comma-separated ` +
-          `list of at most ${maxSkills} skill ids from the list, or the word NONE if none fit. ` +
-          `Reply with ids only — no prose.`,
+        system: `You select the skills relevant to a request. Reply with a comma-separated list of at most ${maxSkills} skill ids from the list, or the word NONE if none fit. Reply with ids only — no prose.`,
         messages: [{ role: "user", content: `Skills:\n${menu}\n\nRequest: ${queryOf(input)}` }],
       });
       const known = new Set(registry.ids());

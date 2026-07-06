@@ -23,8 +23,24 @@ const restartTool = tool$({
 describe("SkillRegistry.find", () => {
   it("scores over id/name/description/tags with stable, id-broken ties", () => {
     const reg = new SkillRegistry();
-    reg.register(skill$({ id: "diagnose-cpu", name: "CPU", description: "diagnose cpu saturation", tags: ["cpu"], instructions: instructions$("a") }));
-    reg.register(skill$({ id: "diagnose-disk", name: "Disk", description: "diagnose disk pressure", tags: ["disk"], instructions: instructions$("b") }));
+    reg.register(
+      skill$({
+        id: "diagnose-cpu",
+        name: "CPU",
+        description: "diagnose cpu saturation",
+        tags: ["cpu"],
+        instructions: instructions$("a"),
+      })
+    );
+    reg.register(
+      skill$({
+        id: "diagnose-disk",
+        name: "Disk",
+        description: "diagnose disk pressure",
+        tags: ["disk"],
+        instructions: instructions$("b"),
+      })
+    );
     const matches = reg.find("cpu is saturated");
     expect(matches[0]?.skill.id).toBe("diagnose-cpu");
     // "cpu" only matches the cpu skill.
@@ -35,8 +51,24 @@ describe("SkillRegistry.find", () => {
 describe("deterministicSkillSelector", () => {
   it("is stable across calls for the same input (replay-safe)", async () => {
     const reg = new SkillRegistry();
-    reg.register(skill$({ id: "diagnose-cpu", name: "CPU", description: "diagnose cpu saturation", tags: ["cpu"], instructions: instructions$("a") }));
-    reg.register(skill$({ id: "diagnose-disk", name: "Disk", description: "diagnose disk pressure", tags: ["disk"], instructions: instructions$("b") }));
+    reg.register(
+      skill$({
+        id: "diagnose-cpu",
+        name: "CPU",
+        description: "diagnose cpu saturation",
+        tags: ["cpu"],
+        instructions: instructions$("a"),
+      })
+    );
+    reg.register(
+      skill$({
+        id: "diagnose-disk",
+        name: "Disk",
+        description: "diagnose disk pressure",
+        tags: ["disk"],
+        instructions: instructions$("b"),
+      })
+    );
     const selector = deterministicSkillSelector();
     const a = await selector.select({ prompt: "cpu is saturated" }, reg);
     const b = await selector.select({ prompt: "cpu is saturated" }, reg);

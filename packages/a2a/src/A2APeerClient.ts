@@ -1,9 +1,9 @@
 import { tool$ } from "@loom/core";
 import type { AgentDefinition, ToolDefinition } from "@loom/core";
+import { agent$ } from "@loom/core";
 import { A2AEffect } from "@loom/effect-runtime";
 import type { Effect, EffectContext, EffectRuntime } from "@loom/effect-runtime";
 import { z } from "zod";
-import { agent$ } from "@loom/core";
 import { createA2AClientEffect } from "./A2AClientEffect";
 import type { A2AClientOptions } from "./A2AClientEffect";
 import type { A2ATask, A2ATaskResult, AgentCard } from "./types";
@@ -154,7 +154,9 @@ export class A2APeerClient {
     const clientOptions: A2AClientOptions = {
       ...(this.config.headers !== undefined && { headers: this.config.headers }),
       ...(this.config.timeoutMs !== undefined && { timeoutMs: this.config.timeoutMs }),
-      ...(this.config.pollIntervalMs !== undefined && { pollIntervalMs: this.config.pollIntervalMs }),
+      ...(this.config.pollIntervalMs !== undefined && {
+        pollIntervalMs: this.config.pollIntervalMs,
+      }),
     };
     const client = createA2AClientEffect(this.config.url, clientOptions);
 

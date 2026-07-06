@@ -14,6 +14,7 @@ function childKeys(el: ReactElement): Array<string | null> {
 
 describe("renderReactContainer keys children", () => {
   // Three UNKEYED children — the exact shape that triggered the warning.
+  // biome-ignore lint/correctness/useJsxKeyInIterable: intentionally unkeyed — this is the input the code under test is supposed to assign keys to
   const unkeyed = [<div>a</div>, <div>b</div>, <div>c</div>];
 
   it.each([
@@ -29,6 +30,7 @@ describe("renderReactContainer keys children", () => {
 
   it("preserves an existing key rather than dropping it", () => {
     const keys = childKeys(
+      // biome-ignore lint/correctness/useJsxKeyInIterable: intentionally mixed keyed/unkeyed input to verify an existing key is preserved
       renderReactContainer(stack({ children: [] }), [<div key="widget-1">a</div>, <div>b</div>])
     );
     expect(keys.every((k) => k != null)).toBe(true);

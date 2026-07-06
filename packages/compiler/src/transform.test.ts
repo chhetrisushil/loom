@@ -61,6 +61,6 @@ describe("compiler — skill instruction extraction", () => {
     transformFile(src, "/abs/inline.ts", state);
     expect(state.skills.get("s1")?.chunkVirtualId).toBeUndefined();
     const manifest = buildManifest(state, "dist");
-    expect(manifest.skills["s1"]?.chunk).toBe("");
+    expect(manifest.skills.s1?.chunk).toBe("");
   });
 });
