@@ -1,0 +1,68 @@
+import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+
+/** A statically-imported module namespace that may export RegisteredFlows. */
+export type FlowModule = Record<string, unknown>;
+
+function isRegisteredFlow(value: unknown): value is RegisteredFlow {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as { definition?: { id?: unknown }; runner?: unknown };
+  return (
+    typeof v.definition === "object" &&
+    v.definition !== null &&
+    typeof v.definition.id === "string" &&
+    typeof v.runner === "function"
+  );
+}
+
+/**
+ * Register every `RegisteredFlow`-shaped export found in the given modules.
+ *
+ * This is the replay-safe alternative to "auto-wire from a manifest by dynamic
+ * import": the app imports its flow modules **statically** (so the set of flows
+ * is fixed at build time and identical on every resume / remote worker), then
+ * hands the namespace objects here. Discovery is by shape, so it also captures
+ * flows built via helpers (whose ids the compiler can't read statically).
+ *
+ * Idempotent: a flow whose id is already registered is skipped. Returns the ids
+ * newly registered.
+ */
+export function registerFlowsFrom(runtime: WorkflowRuntime, ...modules: FlowModule[]): string[] {
+  const registered: string[] = [];
+  for (const mod of modules) {
+    for (const value of Object.values(mod)) {
+      if (!isRegisteredFlow(value)) continue;
+      const id = value.definition.id;
+      if (runtime.getFlow(id) !== undefined) continue;
+      runtime.registerFlow(value.definition, value.runner);
+      registered.push(id);
+    }
+  }
+  return registered;
+}
+
+/** Minimal view of the compiler manifest needed for the cross-check. */
+export interface ManifestView {
+  flows: Record<string, { warnings?: string[] }>;
+}
+
+/**
+ * Cross-check the compiler manifest against what actually got registered, so a
+ * flow the compiler saw but nobody wired shows up loudly at boot instead of as a
+ * "No flow registered" error at dispatch time. Also surfaces the compiler's own
+ * per-flow warnings. Pure — returns the messages; the caller decides how to log.
+ */
+export function manifestWarnings(
+  manifest: ManifestView,
+  isRegistered: (flowId: string) => boolean
+): string[] {
+  const out: string[] = [];
+  for (const [flowId, flow] of Object.entries(manifest.flows)) {
+    if (!isRegistered(flowId)) {
+      out.push(`flow "${flowId}" is in the manifest but was not registered at boot`);
+    }
+    for (const w of flow.warnings ?? []) {
+      out.push(`flow "${flowId}": ${w}`);
+    }
+  }
+  return out;
+}
