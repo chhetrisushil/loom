@@ -19,7 +19,7 @@ On top of these, Loom ships an *intelligence pipeline* that turns intents and go
 - *Planner Runtime* — composes an ordered, multi-step plan of capabilities for a higher-level goal (~PlannerRuntime.plan~).
 - *Capabilities Over APIs* — ~capability$~ wraps a flow with intent-facing metadata; a ~CapabilityCatalog~ makes it discoverable and invocable.
 - *Agent memory* — ~MemoryRuntime~ gives agents scoped, durable recall across turns (honoring ~ttlMs~ / ~maxEntries~).
-- *Speculative branching* — fork an execution at any point into an independent branch to try alternate plans, then keep the winner (~WorkflowRuntime.fork~ + a git-style ~BranchRegistry~). Copy-on-write over the event log, branch-only (no merge); the parent stays intact.
+- *Speculative branching* — fork an execution at any point into an independent branch to try alternate plans, then keep the winner (~WorkflowRuntime.fork~ + a git-style ~BranchRegistry~). Copy-on-write over the event log, branch-only (no merge); the parent stays intact. See the ~incident-war-room~ example for the full fork → simulate → compare → promote loop.
 - *Bring your own storage* — the ~EventStore~ / ~SnapshotStore~ / ~BranchRegistry~ / ~MemoryStore~ interfaces are *async-first*, so any backend plugs in: SQLite and in-memory ship in the box, and async/network backends (Postgres, Redis, DynamoDB) are first-class — the runtime ~await~s the store. The synchronous ~ctx.emit~ / ~ctx.ui~ API is preserved by a per-execution write pipeline (see [[file:docs/architecture.org][architecture]]).
 - *Multi-surface delivery* — the same blueprint renders to React *or* the terminal (~@loom/renderer-terminal~), because ~traverseBlueprint~ is framework-agnostic.
 
@@ -37,7 +37,8 @@ loom/
 │   ├── angular-command-center/   # the same workflow in Angular (runtime is UI-agnostic)
 │   ├── db-command-center/        # React — intent-driven multi-agent DB ops (BYOR + BYOC + fiber)
 │   ├── db-command-center-wc/     # the same app in vanilla Web Components (no framework)
-│   └── db-command-center-server/ # the same app as server + client (durable Node server + WC client)
+│   ├── db-command-center-server/ # the same app as server + client (durable Node server + WC client)
+│   └── incident-war-room/        # git-style branching: fork → simulate → compare → promote (no merge)
 └── docs/                         # architecture, API reference, usage guides, presentation kit
 #+end_example
 
@@ -80,6 +81,7 @@ loom/
 | ~db-command-center~      | React app: intent-driven, human-in-the-loop, multi-agent (A2A) DB ops command center — a dynamically planned workflow, long-running domain agents, a near-real-time task list, and an observability dashboard; BYOR + BYOC + render-side fiber |
 | ~db-command-center-wc~   | The *same* command center in vanilla Web Components — no framework at all. Reuses the entire agentic backend and swaps only the render layer, proving Loom's BYOR contract |
 | ~db-command-center-server~ | The *same* command center as a genuine server + client app: the durable runtime runs on a Node server (SQLite); a Web Components client renders it over HTTP + SSE. Demonstrates the isomorphic deployment model (server execution → client render/resume) |
+| ~incident-war-room~      | Git-style branching, made a live experience: at a high-risk approval gate an SRE *forks* the durable execution into mutually-exclusive candidate remediations, *simulates* each speculatively (concurrently, via ~parallelLimit~), compares a git-graph diff, and *promotes* the winner — which applies for real. Branch-only, *no merge*; losing branches survive as immutable lineage. Durable Node server (SQLite ~BranchRegistry~) + WC client over SSE |
 
 * Prerequisites
 
@@ -180,6 +182,13 @@ A third variant, ~db-command-center-server~, splits the *same* app into a genuin
 
 #+begin_src sh
 pnpm --filter @loom/db-command-center-server dev   # client :5173 + durable server :8787
+#+end_src
+
+A fourth variant, ~incident-war-room~, reuses that same server + client topology but makes Loom's *git-style branching* the centerpiece. When the replica-lag remediation reaches its approval gate, the fixes are *mutually exclusive* (you can't both fail over the primary /and/ scale its replicas), so instead of a single approve/reject the operator *forks* the suspended execution once per candidate strategy, *simulates* each speculatively (concurrently via ~@loom/scheduler~'s ~parallelLimit~) to preview projected outcomes, compares them in a git-graph diff, and *promotes* the winner — which then applies for real. Branch-only, *no merge*: the losing branches remain immutable lineage (the "alternatives considered" audit trail). Run it, or drive the headless walkthrough:
+
+#+begin_src sh
+pnpm --filter @loom/incident-war-room dev         # client :5173 + durable server :8787
+pnpm --filter @loom/incident-war-room demo:fork   # narrated headless fork → simulate → promote
 #+end_src
 
 * Agentic Capabilities

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { blueprint$ } from "./Blueprint";
 import { flex, grid, stack } from "./layout";
+import { resolveWidgetValue } from "./traverseBlueprint";
 import {
   AlertCard,
   ApprovalCard,
@@ -120,5 +121,28 @@ describe("blueprint$()", () => {
       projections: [],
     });
     expect(() => JSON.stringify(bp)).not.toThrow();
+  });
+});
+
+describe("resolveWidgetValue — binding path resolution", () => {
+  const surface = { phase: "prepared", nested: { count: 3 }, items: [1, 2] };
+  const state = new Map<string, unknown>([["s", surface]]);
+
+  it("resolves a nested dotted path", () => {
+    const w = MetricCard({ title: "n", binding: { projectionId: "s", path: "nested.count" } });
+    expect(resolveWidgetValue(w, state)).toBe(3);
+  });
+
+  it("binds an EMPTY path to the whole projection surface (root)", () => {
+    // Regression: `"".split(".")` is `[""]`, which used to dereference a
+    // non-existent "" key and return undefined — breaking widgets that render
+    // from an entire surface (e.g. a branch graph over the whole BranchSurface).
+    const w = MetricCard({ title: "all", binding: { projectionId: "s", path: "" } });
+    expect(resolveWidgetValue(w, state)).toBe(surface);
+  });
+
+  it("returns undefined for a missing nested field", () => {
+    const w = MetricCard({ title: "m", binding: { projectionId: "s", path: "nested.missing" } });
+    expect(resolveWidgetValue(w, state)).toBeUndefined();
   });
 });

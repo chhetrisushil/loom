@@ -1,0 +1,44 @@
+{
+  "name": "@loom/incident-war-room",
+  "version": "0.0.1",
+  "description": "Incident War Room: at a high-risk approval gate, fork the durable execution into mutually-exclusive candidate remediations, simulate each speculatively, compare a git-graph diff, and promote the winner (branch-only, no merge). Demonstrates Loom's git-style branching end-to-end on a durable server (SQLite) with a Web Components client over SSE.",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "demo:fork": "tsx src/scripts/speculativeFork.ts",
+    "dev:server": "tsx watch src/server/main.ts",
+    "dev:client": "vite",
+    "build": "tsc --build",
+    "build:ui": "tsc --build && vite build",
+    "start": "vite build && tsx src/server/main.ts",
+    "test": "vitest run",
+    "clean": "rm -rf dist .data tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/a2a": "workspace:*",
+    "@loom/a2ui": "workspace:*",
+    "@loom/agent": "workspace:*",
+    "@loom/blueprint-runtime": "workspace:*",
+    "@loom/capability": "workspace:*",
+    "@loom/core": "workspace:*",
+    "@loom/effect-runtime": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
+    "@loom/intent": "workspace:*",
+    "@loom/llm": "workspace:*",
+    "@loom/planner": "workspace:*",
+    "@loom/projection-runtime": "workspace:*",
+    "@loom/registry": "workspace:*",
+    "@loom/scheduler": "workspace:*",
+    "@loom/sdk": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vitest": "^2.1.8"
+  }
+}

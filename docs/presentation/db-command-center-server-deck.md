@@ -174,9 +174,10 @@ scale-read-replicas task → SUSPENDED @ seq 1 (awaiting approval)
 
 - Wired via `branchRegistry: new SqliteBranchRegistry("branches.db")` in `server/app.ts`.
 - Copy-on-write over the event log; **no merge** — `promote()` is a pointer move. Source: `src/scripts/speculativeFork.ts`.
+- **Interactive version:** the `incident-war-room` example builds this out fully — "Explore branches" + `POST /branches` / `POST /promote` routes + a live branch graph/diff (its own deck).
 
 <!--
-Presenter: an interactive "Try alternate plan" button + POST /fork /promote routes are the natural next step but not wired yet — task-level events fold locally, only mission-level A2UI patches stream today (see the example README "not built"). The demo:fork script proves the mechanics end to end.
+Presenter: this demo:fork script proves the branching mechanics headlessly. The interactive product experience — "Explore branches", the /branches + /promote routes, and a live branch graph — is fully built out in the incident-war-room example. Point people there.
 -->
 
 ---

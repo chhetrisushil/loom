@@ -10,6 +10,10 @@ export interface ContainerContext<TNode> {
 // ── Value resolution ──────────────────────────────────────────────────────────
 
 function getNestedValue(obj: unknown, path: string): unknown {
+  // An empty path binds the widget to the whole projection surface (the root),
+  // not a nested field — otherwise `"".split(".")` yields `[""]` and dereferences
+  // a non-existent "" key, silently returning undefined.
+  if (path === "") return obj;
   const parts = path.split(".");
   let current: unknown = obj;
   for (const part of parts) {

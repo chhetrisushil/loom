@@ -117,13 +117,31 @@ pnpm --filter @loom/cloud-command-center exec vitest run test/e2e/suspend-resume
 
 ---
 
+## Demo 5 — Git‑style branching: fork → simulate → promote (3 min) ⭐ the "wow"
+
+```bash
+pnpm --filter @loom/incident-war-room demo:fork      # headless, narrated (best for a talk)
+# …or the live UI:
+pnpm --filter @loom/incident-war-room dev            # run the replica goal → "Explore branches" → "Promote"
+```
+
+**What to show** — a replica‑lag remediation runs to its approval gate and **suspends** at sequence 1. Instead of a blind approve/reject, it **forks** the suspended execution into three *mutually‑exclusive* candidate strategies (scale replicas / fail over / throttle), **simulates** each (concurrently) to preview projected lag/ETA/downtime/cost, shows the **parent still suspended and untouched**, then **promotes** the winner — which applies for real. In the UI: the **War Room** tab's branch graph + side‑by‑side diff fill in live, then **Promote**.
+
+**Talking points**
+- "Every other demo moved execution *forward*. This one branches it *sideways* — explore several futures, commit one."
+- "Fork is copy‑on‑write over the event log: the parent's prefix is copied verbatim, so the branch re‑derives byte‑identical pre‑fork state and the parent never moves."
+- "`parallelLimit` runs the speculative branches concurrently but returns them in input order — deterministic for replay."
+- "There's deliberately **no merge**: two divergent executions have no principled join, so `promote()` is a pointer move and the losers stay as immutable lineage — your audit trail of alternatives considered."
+
+---
+
 ## Suggested timings
 
 | Slot | Sequence |
 |------|----------|
 | **5 min** | Demo 0 → Demo 1 |
 | **15 min** | Demo 0 → Demo 1 → Demo 2 |
-| **30 min** | Engineering deck (skim) → Demos 0–2 → Demo 4 → 2–3 walkthrough excerpts |
+| **30 min** | Engineering deck (skim) → Demos 0–2 → Demo 4 → Demo 5 → 2–3 walkthrough excerpts |
 
 ---
 
