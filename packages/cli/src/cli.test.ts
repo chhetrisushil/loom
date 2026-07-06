@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { step$ } from "@loom/core";
@@ -11,6 +11,7 @@ import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
+import { cmdGen, cmdNew, discoverFlows } from "./gen";
 import { describeState, evaluateGoldens, foldAt, formatLog, parseArgs } from "./index";
 
 // ── record a real run into a temp SQLite store ────────────────────────────────
@@ -140,6 +141,46 @@ describe("loom CLI", () => {
       ]);
       expect(report.ok).toBe(false);
       expect(report.results[0]?.failures.some((f) => f.includes('"b"'))).toBe(true);
+    });
+  });
+
+  describe("loom new + gen (folder convention)", () => {
+    it("scaffolds a flow file, discovers it, and generates loom.gen.ts", () => {
+      const appDir = join(dir, "app");
+      // loom new flow greet
+      const created = cmdNew("flow", "greet", appDir);
+      expect(created.created).toBe(true);
+      expect(created.path).toBe(join(appDir, "flows/greet/flow.ts"));
+      expect(readFileSync(created.path, "utf-8")).toContain("export const GreetFlow");
+
+      // loom new flow report
+      cmdNew("flow", "report", appDir);
+
+      // discovery finds both, sorted
+      expect(discoverFlows(appDir)).toEqual(["./flows/greet/flow", "./flows/report/flow"]);
+
+      // loom gen writes a static registration module
+      const { out, count } = cmdGen(appDir);
+      expect(count).toBe(2);
+      const gen = readFileSync(out, "utf-8");
+      expect(gen).toContain('import * as _f0 from "./flows/greet/flow";');
+      expect(gen).toContain("export const flowModules = [_f0, _f1];");
+    });
+
+    it("does not overwrite an existing file", () => {
+      const appDir = join(dir, "app");
+      expect(cmdNew("tool", "lookup", appDir).created).toBe(true);
+      expect(cmdNew("tool", "lookup", appDir).created).toBe(false);
+    });
+
+    it("rejects an unknown kind", () => {
+      expect(() => cmdNew("widget", "x", join(dir, "app"))).toThrow(/unknown kind/);
+    });
+
+    it("gen on an empty app yields an empty flowModules array", () => {
+      const { count, out } = cmdGen(join(dir, "empty-app"));
+      expect(count).toBe(0);
+      expect(readFileSync(out, "utf-8")).toContain("export const flowModules = [];");
     });
   });
 });
