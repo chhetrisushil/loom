@@ -110,7 +110,7 @@ await branchRegistry.promote("commit", "main");                    // main = the
 
 > The agentic pattern isn't "merge divergent branches," it's "**pick the winning
 > branch**." The losers remain immutable lineage — the *alternatives-considered* audit
-> trail regulated changes require. (See `architecture.org` → "Why branching, not merge/rebase?")
+> trail regulated changes require. (See `architecture.md` → "Why branching, not merge/rebase?")
 
 ---
 

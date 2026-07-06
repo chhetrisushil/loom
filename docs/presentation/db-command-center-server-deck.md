@@ -190,6 +190,6 @@ Presenter: this demo:fork script proves the branching mechanics headlessly. The 
 
 - The isomorphic core doesn't care whether it runs in a browser or a server.
 - `blueprint$` + projections render from **streamed server state** exactly as they do locally.
-- This is the deployment model in `docs/architecture.org` → "Deployment & Execution Model," realized.
+- This is the deployment model in `docs/architecture.md` → "Deployment & Execution Model," realized.
 
 > Trio: `db-command-center-deck` (React) · `db-command-center-wc-deck` (Web Components) · **this**.

@@ -1,0 +1,453 @@
+# Loom — Architecture
+
+> **Mission**
+>
+> **Make intelligent, long-running, human-in-the-loop software as durable, inspectable, and reproducible as a database transaction — without giving up the flexibility of code.**
+>
+> Loom treats an agentic workflow as a *process* that unfolds over time, not a request that returns once. Every decision it makes is recorded as an immutable fact, so any execution can be paused for a human, resumed on another machine, replayed bit-for-bit for debugging, forked to explore alternatives, and evaluated against its own history. The intelligence is yours to write in plain TypeScript; Loom provides the durable spine that makes it trustworthy in production.
+
+---
+
+## Table of contents
+
+1. [The problem](#1-the-problem)
+2. [Core principles](#2-core-principles)
+3. [The big picture](#3-the-big-picture)
+4. [The execution model](#4-the-execution-model)
+5. [Subsystems](#5-subsystems)
+6. [Package map](#6-package-map)
+7. [Decision records — reasoning & advantages](#7-decision-records--reasoning--advantages)
+8. [Trade-offs & non-goals](#8-trade-offs--non-goals)
+
+---
+
+## 1. The problem
+
+Modern applications increasingly embed *intelligence* — LLM calls, tool use, multi-agent coordination — inside flows that:
+
+- **run for a long time** (seconds to days), often pausing for a human to approve a risky action;
+- **call non-deterministic, expensive, and fallible services** (models, APIs, other agents);
+- **must survive process restarts, deploys, and crashes** without losing or double-executing work;
+- **need to be explained** after the fact ("*why* did the agent do that?");
+- **want to explore alternatives** ("what if we tried the other remediation?").
+
+The dominant tools force a bad trade. A **request/response framework** is easy to write but forgets everything the moment a process dies and cannot pause for a human. A **heavyweight workflow engine** is durable but pushes you into a restrictive DSL, an external server, and a deployment model that fights your UI. Neither gives you deterministic *replay* — the ability to reconstruct exactly what happened — which is precisely what you need when an AI does something surprising.
+
+Loom's thesis: **the durable event log is the moat.** If every meaningful thing that happens is appended to an ordered, immutable log, then durability, resumability, replay, branching, evaluation, and time-travel debugging are all just *different lenses on the same log*. Build that spine well, keep the authoring surface plain TypeScript, and everything else composes.
+
+```mermaid
+mindmap
+  root((Durable event log))
+    Durability
+      survive crashes
+      survive deploys
+    Resumability
+      pause for humans
+      resume anywhere
+    Replay
+      deterministic reconstruction
+      time-travel debug
+    Branching
+      fork / simulate / promote
+    Evaluation
+      log-as-fixture evals
+      deploy simulation
+    Distribution
+      run on any compute
+```
+
+---
+
+## 2. Core principles
+
+These are the non-negotiable rules the whole codebase is designed around. Every architectural decision in §7 traces back to one or more of them.
+
+### P1 — The log is the source of truth (event sourcing)
+
+Execution state is never stored directly. It is **derived** by folding an append-only sequence of events. The current state of any execution is `fold(events)`. This makes state reconstructable, auditable, and diffable, and it is what unlocks replay, resume, and fork.
+
+### P2 — Replay is deterministic and pure
+
+Reconstructing state from events is a **pure fold** — the same events always produce the same state, with no side effects, no clock, no randomness. Determinism is a hard constraint, not a nicety: a resume on a fresh machine, a fork, and a replay-for-debugging must all reconstruct *identical* state. This is why the replay engine is a pure function and why library code avoids `Date.now()`/`Math.random()` on paths that must be reproducible (hashing is used instead).
+
+### P3 — Suspension is a first-class, normal outcome
+
+A workflow pausing to wait for a human (or a timer, or an external signal) is not an error or a special mode — it is an ordinary result of running. `ctx.suspend()` writes a durable checkpoint and returns control to the caller; a later `resume()` continues from exactly that point. The runtime is built so that "suspended" is as routine as "completed."
+
+### P4 — The intelligence stays as plain code
+
+Loom does **not** invent a workflow DSL. A flow's orchestration is an ordinary `async` TypeScript function (`(ctx, input) => …`) that calls `ctx.run(step)`, `ctx.suspend()`, and `ctx.parallel()`. Your business logic, prompts, and agent loops are just functions. Loom wraps them with durability; it does not replace them. *Sugar, not a cage.*
+
+### P5 — Wiring is static and replay-safe
+
+Everything that determines *what runs* — flow registration, effect registration, middleware, surfaces — is wired **statically at build/boot time**, from explicit imports. No runtime filesystem globbing, no environment-conditional registration. A resume, a remote worker, or a replay must be able to reconstruct an identical set of flows and effects, which is only possible if wiring is deterministic. (Folder conventions are honored via **build-time codegen**, not runtime discovery.)
+
+### P6 — Composition over inheritance; sugar over replacement
+
+Reusable abstractions are **functions and small objects you compose**, never base classes you must `extends`. Every helper returns or consumes the same primitives the core already produces (`WorkflowRuntime`, `EventStore`, `defineConfig`). You can always drop down a layer. Nothing hides the thing that makes your app valuable.
+
+### P7 — Pure cores, thin edges
+
+Each capability is a **pure, unit-testable core** (a fold, a format, a validate, a codegen, a plan) wrapped by a thin I/O shell (CLI argv, HTTP handler, filesystem). This keeps logic testable without spawning processes and keeps the surface area honest.
+
+### P8 — The core is isomorphic; the edges are pluggable
+
+The durable runtime has **no environment assumptions**. Storage, compute placement, LLM providers, and renderers are all interfaces (`EventStore`, `WorkerRuntime`, `LlmProvider`, renderers). The same flow runs in-process in a test, in a browser tab, on a Node server with SQLite, or on Cloud Run — because the core depends only on interfaces, and adapters supply the edges.
+
+---
+
+## 3. The big picture
+
+At the coarsest level, Loom is three concentric rings: **authoring** (what you write), the **durable core** (the spine), and **pluggable edges** (where it runs, what it talks to, how it renders).
+
+```mermaid
+flowchart TB
+  subgraph Authoring["✍️  Authoring — plain TypeScript"]
+    A1["step$ / handler$ — units of work"]
+    A2["flow$ + runner — orchestration (async fn)"]
+    A3["agent$ / tool$ / projection$ — agentic + UI"]
+  end
+
+  subgraph Core["🧵  Durable core (isomorphic, deterministic)"]
+    C1["WorkflowRuntime<br/>start · resume · fork"]
+    C2["ExecutionJournal<br/>sole sequencer + writer"]
+    C3["ReplayVM + foldEvents<br/>pure state reconstruction"]
+    C4["EffectRuntime + middleware<br/>isolate side effects"]
+  end
+
+  subgraph Edges["🔌  Pluggable edges"]
+    E1["EventStore / SnapshotStore<br/>(memory · SQLite · Postgres…)"]
+    E2["ProjectionRuntime + A2UI<br/>→ React / WebComponents / terminal"]
+    E3["Dispatcher + WorkerRuntime<br/>(in-process · HTTP · Cloud Run)"]
+    E4["LLM · MCP · A2A · agents"]
+  end
+
+  Authoring --> Core
+  Core --> Edges
+  C2 --> E1
+  C2 --> E2
+  C1 --> E3
+  C4 --> E4
+```
+
+**Reading the diagram:** you author flows/steps/agents as functions. `WorkflowRuntime` runs them; the `ExecutionJournal` turns every meaningful moment into a sequenced, durably-written event; the `ReplayVM` folds those events into state. Side effects are quarantined behind `EffectRuntime`. Everything below the core is an interface with swappable adapters — that's what makes the same code run in a test, a browser, or the cloud.
+
+---
+
+## 4. The execution model
+
+### 4.1 One event log per execution
+
+Every execution is an ordered list of **events** (`EventEnvelope`), each with a monotonically increasing `sequence`. The current state is `foldEvents(events)`:
+
+```mermaid
+flowchart LR
+  E0["#0 EXECUTION_STARTED"] --> E1["#1 STEP_STARTED"] --> E2["#2 STEP_COMPLETED"] --> E3["#3 EXECUTION_SUSPENDED"] --> E4["#4 EXECUTION_RESUMED"] --> E5["#5 STEP_COMPLETED"] --> E6["#6 EXECUTION_COMPLETED"]
+  E6 --> F["foldEvents(events) → ExecutionState<br/>{ status, frames, variables, sequence }"]
+```
+
+The fold is a pure, deterministic left-fold: each event type has a handler `(state, event) => state`. Nothing else defines state. (For performance, the fold uses copy-on-write structural sharing — see [ADR 0015](adr/0015-dsa-performance-optimizations.md).)
+
+### 4.2 The durable write pipeline
+
+The **`ExecutionJournal`** is the single most important invariant in the system: it is the *sole* sequence allocator and the *only* thing that appends to the store. This is what guarantees a per-execution total order with no multi-writer races.
+
+```mermaid
+sequenceDiagram
+  participant Flow as Flow runner (your async fn)
+  participant Ctx as WorkflowContext
+  participant J as ExecutionJournal
+  participant VM as ReplayVM (in-memory)
+  participant Store as EventStore (durable)
+
+  Flow->>Ctx: ctx.run(step, input)
+  Ctx->>J: commit("STEP_STARTED", …)
+  J->>J: ++sequence  (sole allocator)
+  J->>VM: applyEvent  (synchronous, authoritative)
+  J-->>Store: append  (async, order-preserving tail)
+  Ctx->>Ctx: run the effect (via EffectRuntime)
+  Ctx->>J: commit("STEP_COMPLETED", output)
+  J->>VM: applyEvent
+  J-->>Store: append
+  Ctx-->>Flow: return output
+```
+
+Key properties:
+- **Synchronous fold, async durable write.** The in-memory `ReplayVM` is updated synchronously so the flow always sees authoritative state; the durable append is chained on an order-preserving promise tail. A write rejection aborts the run and surfaces at the next barrier.
+- **Single allocator.** Because only the journal allocates sequences and appends, there is never a gap or a duplicate — the foundation of replay correctness.
+
+### 4.3 Suspend & resume
+
+When a flow calls `ctx.suspend({ on, correlationKey, timeout })`, the runtime commits `EXECUTION_SUSPENDED`, persists a snapshot, and returns control to the caller. The execution now lives entirely in durable storage. A later `resume(executionId, { eventType, payload })` reloads state and continues **from the checkpoint** — the payload becomes the return value of the original `suspend()` call.
+
+```mermaid
+stateDiagram-v2
+  [*] --> running: start()
+  running --> suspended: ctx.suspend()  (writes checkpoint + snapshot)
+  suspended --> running: resume(id, event)  (payload → suspend() return)
+  running --> completed: return
+  running --> failed: throw
+  suspended --> [*]: (durable — may outlive the process)
+  completed --> [*]
+```
+
+Crucially, on resume the flow function **re-runs from the top**, but every already-completed step is served from the log (its `STEP_COMPLETED` event is replayed, the effect is *not* re-executed) — so effects happen exactly once and the suspend point is reached deterministically. This is P2 (deterministic replay) doing the heavy lifting.
+
+### 4.4 Recovery & snapshots
+
+A crash mid-flight is just another resume. On redispatch the worker folds the durable state and decides idempotently: still `running` → resume; already `completed`/`suspended` → return as-is. No step re-runs.
+
+To keep replay cheap on long executions, snapshots checkpoint the folded state so a resume folds only the *tail* after the latest snapshot instead of the whole log. Snapshots are written at suspend and fork, and — when configured with `snapshotEvery: N` — every *N* committed events, bounding recovery to `O(N)` regardless of log length ([ADR 0015](adr/0015-dsa-performance-optimizations.md)).
+
+### 4.5 Branching (fork / simulate / promote)
+
+Because state is `fold(events)`, a **fork** is just copying the event prefix `[0..sequence]` into a new execution id and resuming it differently. The parent is untouched; branches are independent executions that can run concurrently. Promotion is a **pointer move** in a `BranchRegistry` (git-style refs) — there is no merge.
+
+```mermaid
+flowchart LR
+  P["parent execution<br/>… suspended at #k (gate)"]
+  P -->|fork @k| B1["branch: strategy A<br/>resume(simulate:true)"]
+  P -->|fork @k| B2["branch: strategy B<br/>resume(simulate:true)"]
+  P -->|fork @k| B3["branch: strategy C<br/>resume(simulate:true)"]
+  B1 --> C{compare projected outcomes}
+  B2 --> C
+  B3 --> C
+  C -->|promote winner| M["fork @k → resume(simulate:false)<br/>ref 'main' → committed"]
+  B1 -.losing branches kept as audit trail.-> AUD[(immutable history)]
+  B2 -.-> AUD
+```
+
+This is the same mechanism behind time-travel debugging and deploy-simulation: replay a prefix, then diverge.
+
+---
+
+## 5. Subsystems
+
+### 5.1 Core runtime (`@loom/core`, `@loom/workflow-runtime`, `@loom/replay-vm`, `@loom/event-runtime`, `@loom/snapshot-runtime`)
+
+- **`@loom/core`** — the authoring builders (`step$`, `handler$`, `flow$`, `tool$`, `agent$`, `projection$`, …) and shared types. Pure declarations, no runtime.
+- **`@loom/workflow-runtime`** — `WorkflowRuntime` (`start`/`resume`/`fork`/`loadState`), the `ExecutionJournal`, and `WorkflowContext` (`ctx.run`/`suspend`/`parallel`/`emit`/`ui`).
+- **`@loom/replay-vm`** — `foldEvents` + `ReplayVM`: the pure, deterministic state reconstruction engine (P2).
+- **`@loom/event-runtime`** — the `EventStore` interface + in-memory and SQLite implementations, plus the `BranchRegistry` for git-style refs.
+- **`@loom/snapshot-runtime`** — the `SnapshotStore` interface + implementations for bounded-tail replay.
+
+### 5.2 Effects & middleware (`@loom/effect-runtime`, `@loom/middleware`)
+
+All side effects — tool calls, LLM calls, human waits, agent-to-agent calls — go through the **`EffectRuntime`**, keyed by `toolId`. This is the isolation boundary that makes replay possible: during replay, completed effects are served from the log, not re-executed.
+
+**Middleware** wraps effect execution with cross-cutting concerns (retries with backoff, and later logging/idempotency/tracing) as a composable `(ctx, input, next) => …` chain — the same shape as HTTP middleware, applied to effects ([ADR 0006](adr/0006-config-and-effect-middleware.md)).
+
+```mermaid
+flowchart LR
+  Call["ctx.run(step)"] --> M1["retryMiddleware"] --> M2["…middleware…"] --> Eff["Effect.execute<br/>(tool / llm / human / a2a)"]
+```
+
+### 5.3 Projections & UI (`@loom/projection-runtime`, `@loom/a2ui`, `@loom/blueprint-runtime`, renderers)
+
+State for humans is a **read model**, folded from the same events by the `ProjectionRuntime` — completely decoupled from durability. Flows push UI updates via `ctx.ui.set/merge/append` (the **A2UI** patch protocol), which fold into **surfaces**. Surfaces render through pluggable renderers (React, Web Components, terminal) — **bring-your-own-renderer**. The durable log never depends on the UI.
+
+```mermaid
+flowchart LR
+  Ev["event log"] --> PR["ProjectionRuntime<br/>(fold events → surfaces)"]
+  Ui["ctx.ui.append('timeline', …)"] --> PR
+  PR --> R1["React renderer"]
+  PR --> R2["Web Components"]
+  PR --> R3["terminal"]
+```
+
+### 5.4 Agentic layer (`@loom/agent`, `@loom/a2a`, `@loom/llm`, `@loom/mcp`, `@loom/capability`, `@loom/intent`, `@loom/planner`, `@loom/memory`)
+
+The intelligence pipeline, all composable and all running *inside* durable flows:
+- **`@loom/llm`** — provider-agnostic model abstraction (`LlmProvider`).
+- **`@loom/agent`** — a ReAct-style tool-using loop.
+- **`@loom/mcp`** — Model Context Protocol client for external tools.
+- **`@loom/a2a`** — Agent-to-Agent protocol (client + server): call external agents (ADK, LangGraph, CrewAI) and expose Loom flows to them; `LoomAgentExecutor` adapts a flow into a stateless A2A task ([ADR 0007](adr/0007-manifest-and-a2a-adapter.md)).
+- **`@loom/capability`** — flows exposed as intent-addressable capabilities.
+- **`@loom/intent`** — routes natural-language intent to a capability.
+- **`@loom/planner`** — turns a goal into an ordered capability plan.
+- **`@loom/memory`** — scoped, TTL/size-bounded agent memory.
+- **`@loom/orchestrator`** — composable `decideApproval` (risk gate) + `dispatchPlan` primitives ([ADR 0013](adr/0013-orchestrator-primitives.md)).
+
+### 5.5 Compute & distribution (`@loom/dispatcher`, `@loom/worker-runtime*`, `@loom/worker-server`, `@loom/platform-cloudrun`, `@loom/graph-executor`, `@loom/scheduler`)
+
+Placement is a seam between the orchestrator and the runtime, so executions can run **anywhere** without touching the core ([ADRs 0001–0005](adr/)):
+
+```mermaid
+flowchart LR
+  Orq["orchestrator"] --> D["ExecutionDispatcher<br/>(where does it run?)"]
+  D --> W1["worker-runtime-local<br/>in-process"]
+  D --> W2["worker-runtime-remote<br/>HTTP → worker-server"]
+  D --> W3["platform-cloudrun<br/>CloudRunWorkerRuntime"]
+  W1 --> RT["WorkflowRuntime (shared stores)"]
+  W2 --> RT
+  W3 --> RT
+```
+
+- An **`ExecutionPackage`** carries *resume coordinates* (identity + sequence), never code or closures — the worker ships its own code bundle. Because code can't be serialized, workers reference flows/effects *by id* from a statically-wired registry (P5).
+- **`@loom/graph-executor`** fans a graph of nodes into **per-node executions** (one writer each), joined via the `BranchRegistry` — never multi-writer on one execution ([ADR 0005](adr/0005-distributed-graph-fork-join.md)).
+- **`@loom/scheduler`** is an *ephemeral* cooperative scheduler (priority, bounded concurrency, cancellation) for the agentic layer — replay-safe and not part of durable state.
+
+### 5.6 DX tooling (`@loom/cli`, `@loom/eval`, `@loom/deploy-sim`, `@loom/testing`, `@loom/scaffold`, `@loom/compiler`)
+
+Every one of these is *a different lens on the durable log*:
+- **`@loom/eval`** — replay a recorded log as a test fixture; diff/score runs ([ADR 0008](adr/0008-evals-and-deploy-simulation.md)).
+- **`@loom/deploy-sim`** — replay historical logs against *new* flow definitions to catch breaking changes before promoting.
+- **`@loom/testing`** — `createTestApp`, `waitForPhase`, `captureGolden`, and a VCR LLM provider ([ADR 0009](adr/0009-testing-kit.md)).
+- **`@loom/cli`** (`loom`) — `logs` (tail the log), `debug` (time-travel to any sequence), `eval`, `check`, `gen`/`new` (build-time codegen), `deploy check`, `inspect` (web timeline + slider) ([ADRs 0010–0014](adr/)).
+- **`@loom/compiler`** — optional Vite plugin/CLI: `handler$` extraction, flow-graph analysis, resumability metadata.
+
+---
+
+## 6. Package map
+
+```mermaid
+flowchart TB
+  core["@loom/core (builders + types)"]
+  replay["@loom/replay-vm"]
+  events["@loom/event-runtime"]
+  snap["@loom/snapshot-runtime"]
+  effects["@loom/effect-runtime"]
+  wrt["@loom/workflow-runtime"]
+  app["@loom/app (defineConfig)"]
+
+  core --> wrt
+  replay --> wrt
+  events --> wrt
+  snap --> wrt
+  effects --> wrt
+  wrt --> app
+  events --> app
+  snap --> app
+  effects --> app
+  mw["@loom/middleware"] --> app
+  proj["@loom/projection-runtime"] --> app
+  a2a["@loom/a2a"] --> app
+
+  app --> examples["examples / your app"]
+  cli["@loom/cli"] --> examples
+  testing["@loom/testing"] --> examples
+  disp["@loom/dispatcher + worker-runtime*"] --> app
+```
+
+| Group | Packages |
+|---|---|
+| **Core runtime** | `core`, `workflow-runtime`, `replay-vm`, `event-runtime`, `snapshot-runtime` |
+| **Composition** | `app` (`defineConfig`), `registry` |
+| **Effects** | `effect-runtime`, `middleware` |
+| **Projection / UI** | `projection-runtime`, `a2ui`, `blueprint-runtime`, `renderer-react`, `renderer-terminal` |
+| **Agentic** | `agent`, `a2a`, `llm`, `mcp`, `capability`, `intent`, `planner`, `memory`, `orchestrator` |
+| **Compute / distribution** | `dispatcher`, `worker-runtime`, `worker-runtime-local`, `worker-runtime-remote`, `worker-server`, `platform-cloudrun`, `graph-executor`, `scheduler` |
+| **DX / tooling** | `cli`, `eval`, `deploy-sim`, `testing`, `scaffold`, `compiler`, `telemetry` |
+
+---
+
+## 7. Decision records — reasoning & advantages
+
+Each subsection is a decision, *why* it was made, and what it buys you. The distributed-compute and DX decisions are captured in full in [`docs/adr/`](adr/); this section explains the *foundational* choices and links the ADRs.
+
+### D1 — Event sourcing as the substrate
+
+- **Context.** Long-running, human-in-the-loop, non-deterministic AI flows must survive crashes and be explainable.
+- **Decision.** Never store execution state directly; store an append-only log of events and derive state by folding (P1).
+- **Reasoning.** A single source of truth that is immutable and ordered turns hard problems (durability, audit, resume, replay) into consequences of one design. State-in-place storage would require bespoke solutions for each.
+- **Advantages.** Free audit trail; time-travel to any point; resume from any checkpoint; the *same* log powers evals, deploy-sim, and debugging. Storage is append-only, which is cheap and contention-free.
+
+### D2 — Deterministic, pure replay
+
+- **Context.** A resume, a fork, and a debug-replay must reconstruct identical state; AI outputs are non-deterministic.
+- **Decision.** The fold is a pure function; effects are quarantined behind `EffectRuntime` and served from the log during replay (P2).
+- **Reasoning.** If reconstruction had side effects or read a clock, two replays could diverge and the whole model would collapse. Purity is what makes "replay" trustworthy.
+- **Advantages.** Exactly-once effects across resumes/crashes; reproducible debugging ("run it again, get the same thing"); logs become deterministic test fixtures ([ADR 0008](adr/0008-evals-and-deploy-simulation.md)).
+
+### D3 — The `ExecutionJournal` is the sole sequencer/writer
+
+- **Context.** Concurrent commits could race on sequence numbers and corrupt order.
+- **Decision.** One journal per execution owns sequence allocation and is the only appender; the in-memory fold is synchronous, the durable write is an async ordered tail.
+- **Reasoning.** A single allocator makes gaps/duplicates structurally impossible; separating the sync fold from the async write keeps the flow fast while preserving order and surfacing storage failures at barriers.
+- **Advantages.** Correct order with no locks; a backend never needs a read-then-write to allocate a sequence (so network stores like Postgres plug in cleanly); write failures abort deterministically.
+
+### D4 — Orchestration is a plain async function, not a DSL (P4)
+
+- **Context.** Workflow engines usually impose a graph DSL or decorators.
+- **Decision.** A flow's runner is `(ctx, input) => Promise` using ordinary control flow; `ctx.run`/`suspend`/`parallel` are the only durability touch-points.
+- **Reasoning.** Developers already know `async`/`await`, `if`, `for`. A DSL adds a learning curve, limits expressiveness, and fights the type system. Loom adds durability *around* normal code instead of replacing it.
+- **Advantages.** Full language power and type inference; trivial to test as functions; near-zero conceptual overhead; your logic isn't trapped in a proprietary format.
+
+### D5 — Static, build-time wiring; conventions via codegen (P5)
+
+- **Context.** Convenience features (folder routing, auto-registration) tempt you toward runtime discovery.
+- **Decision.** All registration is static from explicit imports; the folder convention is honored by **`loom gen`** emitting a static `loom.gen.ts`, not by runtime globbing ([ADR 0011](adr/0011-folder-convention-codegen.md)).
+- **Reasoning.** A remote worker or a replay must reconstruct an *identical* set of flows/effects. Runtime discovery makes that environment-dependent and breaks determinism.
+- **Advantages.** Replay-safe distribution; no "works on my machine" registration drift; codegen output is inspectable and diffable.
+
+### D6 — `defineConfig` as the composition root; middleware seam
+
+- **Context.** Wiring a runtime, effects, projections, and A2A transport was ~35 lines copy-pasted per app.
+- **Decision.** `defineConfig(LoomConfig): LoomApp` assembles everything from a static config; effects gain a composable middleware chain ([ADR 0006](adr/0006-config-and-effect-middleware.md)).
+- **Reasoning.** One declarative root removes boilerplate without hiding the primitives (it *returns* the runtime/stores). Middleware is the idiomatic place for retries/logging/idempotency.
+- **Advantages.** Apps shrink dramatically; cross-cutting concerns are opt-in and testable; the empty-middleware case is byte-identical to before (no behavior change).
+
+### D7 — Projections decoupled from durability; bring-your-own-renderer
+
+- **Context.** UI concerns tend to leak into persistence.
+- **Decision.** Read models are folded independently by the `ProjectionRuntime`; flows emit UI via the A2UI patch protocol; renderers (React/WC/terminal) are pluggable (P8).
+- **Reasoning.** The durable log must not depend on how (or whether) anything is rendered. Separating projection from persistence lets the same backend drive any front end — proven by the same app rendered in React, Web Components, and Angular.
+- **Advantages.** UI-framework independence; headless operation; live surfaces without coupling; the log stays clean.
+
+### D8 — Pluggable compute via a placement seam
+
+- **Context.** Executions should be able to run in-process, over HTTP, or on Cloud Run without changing the core.
+- **Decision.** Insert `ExecutionDispatcher` + `WorkerRuntime` SPI between orchestrator and runtime; an `ExecutionPackage` carries resume coordinates (never code); workers reference flows by id ([ADRs 0001–0004](adr/)).
+- **Reasoning.** Closures can't be serialized, and the core must stay cloud-agnostic. Shipping *coordinates* (not code) and resolving flows by id from a static registry keeps the public SDK unchanged while enabling remote execution. Suspension is a normal outcome across a network boundary.
+- **Advantages.** The same flow runs locally or on Cloud Run; stateless workers recover from crashes by folding shared stores; the public SDK is untouched.
+
+### D9 — Distributed fan-out via per-branch executions
+
+- **Context.** Parallel graph nodes must not violate the single-writer invariant (D3).
+- **Decision.** `graph-executor` gives each node its **own** `executionId` (one writer each) and joins lineage through the `BranchRegistry` ([ADR 0005](adr/0005-distributed-graph-fork-join.md)).
+- **Reasoning.** Multiple writers on one execution would break sequence ordering. Per-node executions preserve D3 while still enabling concurrency.
+- **Advantages.** Safe distributed fan-out/join; each node independently durable, resumable, and replayable.
+
+### D10 — Git-style branching (fork/simulate/promote), no merge
+
+- **Context.** Teams want to explore alternative agent decisions and compare outcomes.
+- **Decision.** Fork = copy the event prefix into a new execution and resume differently; promote = a ref pointer move; **no merge** ([ADR 0005](adr/), examples `incident-war-room`, `schema-migration-planner`).
+- **Reasoning.** Because state is `fold(events)`, branching is nearly free and needs no new persistence model. Merging divergent AI executions has no sound semantics, so it's deliberately omitted; promotion is a decision, recorded.
+- **Advantages.** Cheap "what-if" exploration; losing branches kept as an immutable audit trail; the winning path is committed for real via one more fork with `simulate:false`.
+
+### D11 — Tooling is lenses on the log, not new infrastructure
+
+- **Context.** Evals, deploy-safety, logs, and time-travel debugging are usually separate systems.
+- **Decision.** Build them all as pure functions over the event log: `eval` replays it, `deploy-sim` diffs it against new flows, `logs` tails it, `debug`/`inspect` fold it at any sequence ([ADRs 0008, 0010–0014](adr/)).
+- **Reasoning.** The log already contains everything. A pure fold at a chosen sequence *is* time-travel; replaying a stored log *is* an eval. Reusing one engine (`foldAt`) keeps them consistent.
+- **Advantages.** Minimal new surface area; all tools agree because they share the fold; CI gates (eval, deploy check) fall out for free.
+
+### D12 — Algorithms tuned on the hot paths, contract unchanged
+
+- **Context.** The fold runs on every commit/resume; a few tooling paths were quadratic.
+- **Decision.** Copy-on-write fold, periodic snapshots, bulk fork copy, and O(N) tooling passes — with the public SDK untouched ([ADR 0015](adr/0015-dsa-performance-optimizations.md)).
+- **Reasoning.** The most-executed operation deserves the tightest constant; correctness is pinned by tests for each invariant.
+- **Advantages.** ~7.7× faster wide-flow folds, bounded recovery, no JS re-serialization on fork, and no breaking changes.
+
+---
+
+## 8. Trade-offs & non-goals
+
+Being honest about the edges:
+
+- **Not a general job queue.** Loom optimizes long-lived, stateful, human-in-the-loop *processes*. For fire-and-forget high-throughput jobs, a queue is simpler.
+- **No branch *merge*.** Branching is fork/simulate/promote by design (D10). Merging divergent executions is intentionally out of scope.
+- **Determinism constrains the core.** Library code on replay paths avoids wall-clock/randomness; non-determinism belongs *inside effects* (which are logged), not in orchestration.
+- **Static wiring over dynamic discovery.** You register flows/effects explicitly (or via `loom gen`). This is a deliberate cost paid for replay-safety (P5).
+- **Compiler is optional.** `handler$` extraction and resumability metadata are a build-time *enhancement*; the runtime works without it.
+- **Snapshots trade writes for replay speed.** `snapshotEvery` is a knob: smaller N = faster recovery, more writes.
+
+---
+
+### See also
+
+- **[Getting Started](getting-started.md)** — from zero to a running, suspend/resume flow in minutes.
+- **[Usage](usage.md)** — build a real app step by step.
+- **[User Guide](user-guide.md)** — every feature area with examples.
+- **[ADRs](adr/)** — the full decision history (0001–0015).
+- **[Presentation](presentation/loom-deck.md)** — the deck.

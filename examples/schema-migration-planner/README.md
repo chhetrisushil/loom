@@ -53,7 +53,7 @@ metadata-only and **auto-applies without branching**.
 You can apply only **one** of these migrations. Branching lets you *explore* several and *commit* one; the
 DAG of what you rejected is a first-class artifact (`BranchRegistry` lineage), not a lost draft. Two
 divergent `ExecutionState`s have no principled join, so `promote()` is a pointer move — the entire "merge"
-replacement. (See `docs/architecture.org` → "Why branching, not merge/rebase?")
+replacement. (See `docs/architecture.md` → "Why branching, not merge/rebase?")
 
 ## What's reused vs. new (sibling of incident-war-room)
 
