@@ -24,6 +24,7 @@ optimize for continuation, not hydration.*
 | [`db-command-center-deck.md`](./db-command-center-deck.md) | Engineers / architects | Deep dive on the **agentic DB command center** (React) — intent → planner → A2A → durable human‑in‑the‑loop, BYOR + BYOC + render‑side fiber |
 | [`db-command-center-wc-deck.md`](./db-command-center-wc-deck.md) | Engineers / architects | The **same app in vanilla Web Components** — proof of BYOR: reuse the whole agentic backend, swap only the render layer |
 | [`db-command-center-server-deck.md`](./db-command-center-server-deck.md) | Engineers / architects | The **same app as server + client** — durable runtime on a Node server (SQLite), Web-Components client over HTTP + SSE; Loom's isomorphic deployment model |
+| [`incident-war-room-deck.md`](./incident-war-room-deck.md) | Engineers / architects | **Git-style branching**, made a live experience — fork the durable execution at a gate into mutually-exclusive remediations, simulate each (concurrently), compare, and **promote** the winner. Branch-only, no merge |
 
 Suggested order: **leadership deck → live demo (Demo 0 + 1) → engineering deck → walkthrough** as
 depth requires. The demo script has 5 / 15 / 30‑minute variants.
@@ -64,6 +65,8 @@ pnpm --filter @loom/angular-command-center dev    # Demo 3: same runtime, Angula
 pnpm --filter @loom/db-command-center dev         # Demo 4: agentic DB command center — planner + A2A + HITL + fiber (React)
 pnpm --filter @loom/db-command-center-wc dev      # Demo 5: the same app in vanilla Web Components (no framework)
 pnpm --filter @loom/db-command-center-server dev  # Demo 6: the same app as server + client (durable Node server + WC client over SSE)
+pnpm --filter @loom/incident-war-room demo:fork   # Demo 7: git-style branching — fork → simulate → compare → promote (headless)
+pnpm --filter @loom/incident-war-room dev         #         …or the live War Room UI (branch graph + diff + promote)
 ```
 
 **Prerequisites:** Node ≥ 20, pnpm ≥ 9. Use `vite dev` (not `vite build`) for the browser apps.

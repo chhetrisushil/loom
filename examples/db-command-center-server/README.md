@@ -111,7 +111,7 @@ shows the parent still suspended, then promotes the winner onto `main`. Source: 
   rehydrated on a full process restart.
 - **Cross-process A2A.** The domain agents run in-process on the server via `InProcessA2ABus`; exposing
   each as its own A2A HTTP service (`createA2AServer`) would be the next step.
-- **Interactive fork UI + HTTP routes.** Speculative branching is exercised via the `demo:fork` script and
-  the `fork()`/registry APIs; a "Try alternate plan" widget, `POST /api/missions/:id/fork` + `/promote`
-  routes, and surfacing branch heads over SSE are the natural next step but are not wired here. (Task-level
-  execution events are folded locally, not broadcast — only mission-level `A2UI_PATCH`es stream today.)
+- **Interactive fork UI + HTTP routes.** Here, speculative branching is exercised only via the `demo:fork`
+  script and the `fork()`/registry APIs. The **interactive** version — an "Explore branches" control,
+  `POST /api/missions/:id/branches` + `/promote` routes, and a live branch graph/diff over SSE — is built
+  out fully in the sibling [`examples/incident-war-room`](../incident-war-room/README.md) example.

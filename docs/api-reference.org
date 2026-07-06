@@ -1134,6 +1134,8 @@ type DataBinding = {
 };
 #+end_src
 
+An *empty* ~path~ (~""~) binds the widget to the *whole* projection surface (the root state object), not a nested field — use it for a widget that renders across several keys of one surface at once (e.g. a control panel or a git-style branch graph reading ~phase~, ~branches~, and ~refs~ together). Any non-empty ~path~ is resolved as a normal dot-path; a missing segment yields ~undefined~.
+
 | Builder       | Key props                                                        | Bound value shape         |
 |---------------+------------------------------------------------------------------+---------------------------|
 | ~MetricCard~  | ~title, unit?, format?~                                          | ~number \vert string~     |

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Incident War Room — git-style branching on Loom</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      :root {
+        --bg: #0b0f17; --panel: #141a24; --panel2: #0f1620; --line: #232c3b;
+        --text: #e2e8f0; --muted: #93a2b8; --dim: #6b7d95; --accent: #9ecbff;
+        --blue: #2b6cb0; --green: #276749; --amber: #b7791f; --red: #9b2c2c;
+      }
+      body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+      #app { padding: 20px; max-width: 1180px; margin: 0 auto; }
+      button { font-family: inherit; cursor: pointer; }
+
+      .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 14px; margin-bottom: 16px; }
+      .title { font-size: 22px; font-weight: 800; color: var(--accent); }
+      .subtitle { font-size: 12px; color: var(--dim); margin-top: 2px; }
+      .fiber-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+
+      .intent-bar { display: flex; gap: 10px; margin-bottom: 10px; }
+      .intent-bar input { flex: 1; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); font-size: 14px; }
+      .btn { padding: 10px 20px; border-radius: 8px; border: none; background: var(--blue); color: #fff; font-weight: 700; font-size: 14px; }
+      .btn.green { background: #38a169; } .btn.grey { background: #4a5568; }
+      .btn:disabled { opacity: .5; cursor: default; }
+
+      .examples { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+      .examples .lbl { font-size: 12px; color: var(--dim); }
+      .chip { padding: 5px 10px; border-radius: 14px; border: 1px solid #2b3546; background: var(--panel); color: #a9b7c9; font-size: 11px; text-align: left; max-width: 460px; }
+
+      .approval-bar { display: flex; align-items: center; gap: 14px; padding: 12px 16px; margin-bottom: 16px; border-radius: 10px; background: #2b210e; border: 1px solid var(--amber); }
+      .approval-bar .title { font-size: 14px; color: #f0e6d2; display: flex; align-items: center; gap: 8px; }
+      .approval-bar .rationale { font-size: 12px; color: #c9b892; margin-top: 3px; }
+
+      .tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+      .tab { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--muted); font-size: 13px; font-weight: 600; }
+      .tab.active { background: #1c2635; color: var(--accent); border-color: var(--blue); }
+
+      .bp { display: block; }
+      .bp > h1 { font-size: 15px; color: var(--dim); font-weight: 700; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+      .container-stack { display: flex; flex-direction: column; }
+      .container-flex { display: flex; }
+      .container-grid { display: grid; }
+
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+      .card-title { font-size: 12px; font-weight: 700; color: #7a8aa0; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+      .empty { color: #5b6b82; font-size: 13px; }
+
+      .pill { color: #fff; border-radius: 10px; padding: 2px 9px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+
+      .task-row { display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px; background: var(--panel2); border-radius: 8px; margin-bottom: 8px; }
+      .task-main { flex: 1; min-width: 0; }
+      .task-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+      .task-title { font-weight: 700; font-size: 13px; color: #e6ecf5; }
+      .task-agent { font-size: 11px; color: #5f7a99; }
+      .task-detail { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+      .plan { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+      .plan-step { padding: 6px 11px; border-radius: 8px; font-size: 12px; font-weight: 600; background: var(--panel2); border: 1px solid var(--line); color: #cdd8e6; }
+      .plan-arrow { color: #3d4a5c; }
+      .plan-dot { margin-right: 6px; }
+
+      .gauge-value { font-size: 28px; font-weight: 800; }
+      .gauge-unit { font-size: 13px; color: #7a8aa0; }
+      .gauge-track { height: 8px; background: var(--panel2); border-radius: 4px; overflow: hidden; margin-top: 8px; }
+      .gauge-fill { height: 100%; transition: width .4s; }
+
+      .spark-head { display: flex; justify-content: space-between; align-items: baseline; }
+      .spark-val { font-size: 16px; font-weight: 700; color: #cdd8e6; }
+
+      .fleet-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+      .fleet-dot { width: 9px; height: 9px; border-radius: 50%; }
+      .fleet-name { flex: 1; font-size: 13px; color: #cdd8e6; }
+      .fleet-meta { font-size: 11px; color: #7a8aa0; }
+
+      .console { max-height: 220px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; line-height: 1.7; }
+      .console .orch { color: #7f9cf5; }
+
+      .metric-value { font-size: 28px; font-weight: 800; color: #cdd8e6; }
+      .metric-unit { font-size: 13px; color: #7a8aa0; margin-left: 4px; }
+
+      .bars { display: flex; align-items: flex-end; gap: 4px; height: 80px; }
+      .bar { flex: 1; background: #4299e1; border-radius: 2px; }
+
+      /* War Room — branch graph, diff, controls */
+      .branch-graph { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 13px; }
+      .branch-trunk, .branch-line { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+      .branch-line { padding-left: 8px; }
+      .graph-dot { font-size: 14px; }
+      .graph-dot.main { color: #9ecbff; }
+      .graph-connector { color: #3d4a5c; }
+      .graph-label { color: #cdd8e6; }
+      .branch-note { font-size: 11px; color: #6b7d95; margin-top: 10px; font-style: italic; }
+
+      .diff { display: flex; flex-direction: column; gap: 4px; }
+      .diff-row { display: grid; grid-template-columns: 1.4fr repeat(4, 1fr) 0.8fr; gap: 6px; align-items: center; padding: 8px; border-radius: 8px; background: var(--panel2); font-size: 12px; }
+      .diff-head { background: transparent; color: #7a8aa0; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; font-size: 10px; }
+      .diff-row.winner { background: #12261a; border: 1px solid #276749; }
+      .diff-cell { color: #cdd8e6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .diff-strat { display: flex; align-items: center; gap: 6px; font-weight: 700; }
+
+      .branch-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+      .branch-committed { color: #7ee2a8; font-size: 13px; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/client/main.ts"></script>
+  </body>
+</html>
