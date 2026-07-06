@@ -24,6 +24,7 @@
     "@loom/event-runtime": "workspace:*",
     "@loom/intent": "workspace:*",
     "@loom/llm": "workspace:*",
+    "@loom/orchestrator": "workspace:*",
     "@loom/planner": "workspace:*",
     "@loom/projection-runtime": "workspace:*",
     "@loom/registry": "workspace:*",
