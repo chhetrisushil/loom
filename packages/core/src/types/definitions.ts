@@ -81,7 +81,7 @@ export interface FlowDefinition<TIn = unknown, TOut = unknown> {
   description?: string;
   inputSchema: ZodSchema<TIn>;
   outputSchema: ZodSchema<TOut>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: a flow's steps are heterogeneous — each step has its own input/output types, so the array element type must erase them
   steps: StepDefinition<any, any>[];
   policies?: PolicyDefinition[];
 }

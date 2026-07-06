@@ -12,7 +12,7 @@ export interface CapabilityMatch {
 export class CapabilityCatalog {
   private readonly capabilities = new Map<string, CapabilityDefinition>();
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: capabilities have heterogeneous in/out types; the registry stores them type-erased and re-narrows on lookup
   register(capability: CapabilityDefinition<any, any>): this {
     this.capabilities.set(capability.id, capability as CapabilityDefinition);
     return this;
