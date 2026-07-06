@@ -1,5 +1,6 @@
 import { createA2UIEmitter } from "@loom/a2ui";
 import type { A2UIEmitter } from "@loom/a2ui";
+import type { ApprovalDecision, InProcessA2ABus } from "@loom/app";
 import type { CapabilityCatalog } from "@loom/capability";
 import type { EventEnvelope } from "@loom/core";
 import type { BranchRegistry } from "@loom/event-runtime";
@@ -7,8 +8,6 @@ import { IntentRuntime } from "@loom/intent";
 import { PlannerRuntime } from "@loom/planner";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import type { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { InProcessA2ABus } from "../a2a/InProcessA2ABus";
-import type { ApprovalDecision } from "../a2a/InProcessA2ABus";
 import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "../agents/definitions";
 import { BranchOrchestrator } from "../branching/BranchOrchestrator";
 import type {
