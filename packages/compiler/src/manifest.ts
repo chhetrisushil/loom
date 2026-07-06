@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import type { PluginState, StepEntry } from "./types";
 
 export interface ManifestFlow {
@@ -6,6 +7,14 @@ export interface ManifestFlow {
   chunkMap: Record<string, string>;
   suspendPoints: string[];
   warnings: string[];
+  /**
+   * The source module that declared this flow (relative to the project root).
+   * Enables tooling and `@loom/app`'s manifest cross-check to know where a flow
+   * lives. Registration itself stays a static import (see `registerFlowsFrom`) —
+   * this is metadata, never a dynamic-import target, so wiring stays
+   * deterministic/replay-safe.
+   */
+  module: string;
 }
 
 // A skill's lazy-loaded instruction body — the progressive-disclosure analog of
@@ -19,11 +28,24 @@ export interface LoomManifest {
   version: "1";
   flows: Record<string, ManifestFlow>;
   skills: Record<string, ManifestSkill>;
+  /** Deduplicated, sorted list of source modules that declare flows. */
+  flowModules: string[];
 }
 
-export function buildManifest(state: PluginState, outDir = "."): LoomManifest {
+function relModule(sourceFile: string, root: string): string {
+  if (!sourceFile) return sourceFile;
+  const rel = path.isAbsolute(sourceFile) ? path.relative(root, sourceFile) : sourceFile;
+  return rel.split(path.sep).join("/");
+}
+
+export function buildManifest(
+  state: PluginState,
+  outDir = ".",
+  root: string = process.cwd()
+): LoomManifest {
   const flows: Record<string, ManifestFlow> = {};
   const skills: Record<string, ManifestSkill> = {};
+  const flowModuleSet = new Set<string>();
 
   for (const [flowId, flow] of state.flows) {
     const chunkMap: Record<string, string> = {};
@@ -47,12 +69,16 @@ export function buildManifest(state: PluginState, outDir = "."): LoomManifest {
       }
     }
 
+    const module = relModule(flow.sourceFile, root);
+    if (module) flowModuleSet.add(module);
+
     flows[flowId] = {
       version: flow.version,
       steps: flow.stepIds,
       chunkMap,
       suspendPoints: flow.suspendPoints,
       warnings,
+      module,
     };
   }
 
@@ -62,7 +88,7 @@ export function buildManifest(state: PluginState, outDir = "."): LoomManifest {
     };
   }
 
-  return { version: "1", flows, skills };
+  return { version: "1", flows, skills, flowModules: [...flowModuleSet].sort() };
 }
 
 export function printWarnings(manifest: LoomManifest): void {

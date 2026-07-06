@@ -9,6 +9,7 @@
     { "path": "packages/workflow-runtime" },
     { "path": "packages/middleware" },
     { "path": "packages/app" },
+    { "path": "tools/create-loom-app" },
     { "path": "packages/worker-runtime" },
     { "path": "packages/worker-runtime-local" },
     { "path": "packages/worker-runtime-remote" },
