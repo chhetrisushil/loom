@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@loom/core": "workspace:*",
+    "@loom/deploy-sim": "workspace:*",
     "@loom/eval": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/replay-vm": "workspace:*",

@@ -9,6 +9,7 @@
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
   "references": [
     { "path": "../core" },
+    { "path": "../deploy-sim" },
     { "path": "../eval" },
     { "path": "../event-runtime" },
     { "path": "../replay-vm" },
