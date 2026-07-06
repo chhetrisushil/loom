@@ -11,6 +11,7 @@
     { "path": "../core" },
     { "path": "../eval" },
     { "path": "../event-runtime" },
-    { "path": "../replay-vm" }
+    { "path": "../replay-vm" },
+    { "path": "../scaffold" }
   ]
 }
