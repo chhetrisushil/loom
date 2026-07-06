@@ -1,18 +1,13 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { a2uiSurfaceProjection } from "@loom/a2ui";
+import type { AgentCard } from "@loom/a2a";
+import { BroadcastingProjectionRuntime, defineConfig } from "@loom/app";
 import type { EventEnvelope } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import { SqliteBranchRegistry, SqliteEventStore } from "@loom/event-runtime";
-import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import { InProcessA2ABus } from "../a2a/InProcessA2ABus";
+import type { BranchRegistry } from "@loom/event-runtime";
+import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "../agents/definitions";
 import { buildCatalog } from "../capabilities/catalog";
 import { RemediateLagFlow } from "../capabilities/flows";
 import { Orchestrator } from "../orchestrator/Orchestrator";
 import { MISSION_ID, type ServerFrame } from "../wire";
-import { BroadcastingProjectionRuntime } from "./BroadcastingProjectionRuntime";
 
 const SURFACES = ["mission", "telemetry", "branch"];
 
@@ -24,7 +19,7 @@ export interface ServerApp {
   // from a task execution (missionRuntime.fork) and driven independently.
   readonly missionRuntime: WorkflowRuntime;
   // Git-style branch registry: movable refs + fork lineage for speculation.
-  readonly branchRegistry: SqliteBranchRegistry;
+  readonly branchRegistry: BranchRegistry;
   // A serialized ProjectionSnapshot of the mission + telemetry surfaces.
   snapshot(): string;
   // Observe the A2UI patch frames the server would push to SSE clients.
@@ -32,60 +27,43 @@ export interface ServerApp {
   close(): void;
 }
 
-// Builds the entire durable, server-side agentic backend for one mission — the
-// SQLite stores, the WorkflowRuntime, the A2A bus + agents, and the Orchestrator,
-// wired to a broadcasting projection runtime. Kept transport-free so it can be
-// driven headlessly in tests and wrapped by the HTTP server in main.ts.
+// Builds the entire durable, server-side agentic backend for one mission. The
+// composition root (stores, WorkflowRuntime, effect runtime, A2A bus + agents) is
+// now assembled by `defineConfig`; this file only adds the app-specific pieces:
+// the broadcasting projection runtime (SSE) and the Orchestrator. Kept
+// transport-free so it can be driven headlessly in tests and wrapped by main.ts.
 export function createApp(opts: { dataDir: string; missionId?: string }): ServerApp {
   const missionId = opts.missionId ?? MISSION_ID;
-  fs.mkdirSync(opts.dataDir, { recursive: true });
-
-  const eventStore = new SqliteEventStore(path.join(opts.dataDir, "events.db"));
-  const snapshotStore = new SqliteSnapshotStore(path.join(opts.dataDir, "snapshots.db"));
-  // The branch registry gets its own DB file so its writes never contend with
-  // the busy event-log write lock (the `refs`/`lineage` tables are independent).
-  const branchRegistry = new SqliteBranchRegistry(path.join(opts.dataDir, "branches.db"));
-  const effectRuntime = new EffectRuntime();
 
   const observers = new Set<(frame: ServerFrame) => void>();
   const emitPatch = (envelope: EventEnvelope): void => {
     for (const cb of observers) cb({ kind: "patch", envelope });
   };
-
   const projectionRuntime = new BroadcastingProjectionRuntime(missionId, SURFACES, emitPatch);
-  projectionRuntime.register(a2uiSurfaceProjection("mission"));
-  projectionRuntime.register(a2uiSurfaceProjection("telemetry"));
-  projectionRuntime.register(a2uiSurfaceProjection("branch"));
-
-  const missionRuntime = new WorkflowRuntime({
-    eventStore,
-    snapshotStore,
-    effectRuntime,
-    branchRegistry,
-    onEvent: (e: EventEnvelope) => projectionRuntime.handleEvent(e),
-  });
 
   const catalog = buildCatalog();
-  catalog.registerInto(missionRuntime);
-  // The branchable remediation flow isn't planner-routed — the War Room drives it
-  // directly — so register it on the runtime explicitly.
-  missionRuntime.registerFlow(RemediateLagFlow.definition, RemediateLagFlow.runner);
+  const app = defineConfig({
+    storage: { kind: "sqlite", dir: opts.dataDir, branching: true },
+    projectionRuntime,
+    surfaces: SURFACES,
+    catalog,
+    // The branchable remediation flow isn't planner-routed — the War Room drives
+    // it directly — so register it explicitly.
+    flows: [RemediateLagFlow as RegisteredFlow],
+    agents: FLEET.map((a) => AGENT_CARDS[a.id]).filter((c): c is AgentCard => c !== undefined),
+    capabilityAgents: CAPABILITY_AGENT,
+  });
 
-  const bus = new InProcessA2ABus(missionRuntime);
-  for (const agent of FLEET) {
-    const card = AGENT_CARDS[agent.id];
-    if (card) bus.registerAgent(card);
+  if (!app.stores.branchRegistry) {
+    throw new Error("branch registry required for the War Room");
   }
-  for (const [capabilityId, agentId] of Object.entries(CAPABILITY_AGENT)) {
-    const cap = catalog.get(capabilityId);
-    if (cap) bus.registerCapability(capabilityId, agentId, cap.flow);
-  }
+  const branchRegistry = app.stores.branchRegistry;
 
   const orchestrator = new Orchestrator({
     projectionRuntime,
-    missionRuntime,
+    missionRuntime: app.runtime,
     catalog,
-    bus,
+    bus: app.bus,
     branchRegistry,
     missionId,
   });
@@ -94,7 +72,7 @@ export function createApp(opts: { dataDir: string; missionId?: string }): Server
     missionId,
     orchestrator,
     projectionRuntime,
-    missionRuntime,
+    missionRuntime: app.runtime,
     branchRegistry,
     snapshot: () => projectionRuntime.snapshot(),
     subscribeBroadcast(cb) {
@@ -102,9 +80,7 @@ export function createApp(opts: { dataDir: string; missionId?: string }): Server
       return () => observers.delete(cb);
     },
     close() {
-      eventStore.close();
-      snapshotStore.close();
-      branchRegistry.close();
+      void app.close();
     },
   };
 }

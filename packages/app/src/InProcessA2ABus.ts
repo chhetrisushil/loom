@@ -3,7 +3,7 @@ import { LocalDispatcher } from "@loom/dispatcher";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
 import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
 import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
-import { progressHub } from "../runtime/progressHub";
+import { progressHub } from "./progressHub";
 
 // ── InProcessA2ABus — a bring-your-own A2A transport ──────────────────────────
 //
