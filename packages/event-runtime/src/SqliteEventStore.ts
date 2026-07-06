@@ -78,6 +78,31 @@ export class SqliteEventStore implements EventStore {
     return rows.map(rowToEnvelope);
   }
 
+  async copyPrefix(
+    fromExecutionId: string,
+    toExecutionId: string,
+    throughSequence: number,
+    metadata: Record<string, unknown>
+  ): Promise<void> {
+    // Copy the prefix entirely inside SQLite — payload stays as stored TEXT (no
+    // JS parse/stringify), id/execution_id are re-stamped, and provenance metadata
+    // is merged via json_patch (JSON1). O(P) rows, zero JS serialization.
+    this.db
+      .prepare<[string, string, string, string, number]>(
+        `INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
+         SELECT ? || '-' || sequence, workflow_id, ?, event_type, sequence, timestamp, payload,
+                json_patch(COALESCE(metadata, '{}'), json(?))
+         FROM events WHERE execution_id = ? AND sequence <= ?`
+      )
+      .run(
+        toExecutionId,
+        toExecutionId,
+        JSON.stringify(metadata),
+        fromExecutionId,
+        throughSequence
+      );
+  }
+
   async subscribe(
     executionId: string,
     handler: (event: EventEnvelope) => void

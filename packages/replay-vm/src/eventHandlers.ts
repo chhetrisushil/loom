@@ -3,12 +3,16 @@ import type { ExecutionFrame, ExecutionState } from "@loom/core";
 
 type Handler = (state: ExecutionState, event: EventEnvelope) => ExecutionState;
 
-function cloneFrames(frames: Record<string, ExecutionFrame>): Record<string, ExecutionFrame> {
-  const result: Record<string, ExecutionFrame> = {};
-  for (const [k, v] of Object.entries(frames)) {
-    result[k] = { ...v };
-  }
-  return result;
+// Copy-on-write a single frame: a shallow spread of the frames container (S key
+// references, untouched frames shared) plus the one new frame — O(S) refs + 1
+// allocation, instead of deep-cloning all S frames on every step event. Safe
+// because handlers never mutate a frame in place; they always write a new object.
+function withFrame(
+  frames: Record<string, ExecutionFrame>,
+  stepId: string,
+  frame: ExecutionFrame
+): Record<string, ExecutionFrame> {
+  return { ...frames, [stepId]: frame };
 }
 
 const handlers: Record<string, Handler> = {
@@ -27,22 +31,25 @@ const handlers: Record<string, Handler> = {
 
   STEP_STARTED: (state, event) => {
     const payload = event.payload as { stepId: string; input?: unknown };
-    const frames = cloneFrames(state.frames);
-    frames[payload.stepId] = {
+    const existing = state.frames[payload.stepId];
+    const frame: ExecutionFrame = {
       stepId: payload.stepId,
       status: "running",
-      attempts: (frames[payload.stepId]?.attempts ?? 0) + 1,
+      attempts: (existing?.attempts ?? 0) + 1,
       startedAt: event.timestamp,
       ...(payload.input !== undefined && { input: payload.input }),
     };
-    return { ...state, frames, updatedAt: event.timestamp };
+    return {
+      ...state,
+      frames: withFrame(state.frames, payload.stepId, frame),
+      updatedAt: event.timestamp,
+    };
   },
 
   STEP_COMPLETED: (state, event) => {
     const payload = event.payload as { stepId: string; output?: unknown };
-    const frames = cloneFrames(state.frames);
-    const existing = frames[payload.stepId];
-    frames[payload.stepId] = {
+    const existing = state.frames[payload.stepId];
+    const frame: ExecutionFrame = {
       stepId: payload.stepId,
       status: "completed",
       attempts: existing?.attempts ?? 1,
@@ -51,14 +58,17 @@ const handlers: Record<string, Handler> = {
       ...(existing?.input !== undefined && { input: existing.input }),
       ...(payload.output !== undefined && { output: payload.output }),
     };
-    return { ...state, frames, updatedAt: event.timestamp };
+    return {
+      ...state,
+      frames: withFrame(state.frames, payload.stepId, frame),
+      updatedAt: event.timestamp,
+    };
   },
 
   STEP_FAILED: (state, event) => {
     const payload = event.payload as { stepId: string; error?: unknown };
-    const frames = cloneFrames(state.frames);
-    const existing = frames[payload.stepId];
-    frames[payload.stepId] = {
+    const existing = state.frames[payload.stepId];
+    const frame: ExecutionFrame = {
       stepId: payload.stepId,
       status: "failed",
       attempts: existing?.attempts ?? 1,
@@ -66,7 +76,12 @@ const handlers: Record<string, Handler> = {
       ...(existing?.input !== undefined && { input: existing.input }),
       ...(payload.error !== undefined && { error: payload.error }),
     };
-    return { ...state, status: "failed", frames, updatedAt: event.timestamp };
+    return {
+      ...state,
+      status: "failed",
+      frames: withFrame(state.frames, payload.stepId, frame),
+      updatedAt: event.timestamp,
+    };
   },
 
   STEP_CANCELLED: (state, event) => {
@@ -74,34 +89,42 @@ const handlers: Record<string, Handler> = {
     // the surrounding EXECUTION_CANCELLED event owns the execution-level status,
     // and this must not overwrite it back to a failure/other state.
     const payload = event.payload as { stepId: string };
-    const frames = cloneFrames(state.frames);
-    const existing = frames[payload.stepId];
-    frames[payload.stepId] = {
+    const existing = state.frames[payload.stepId];
+    const frame: ExecutionFrame = {
       stepId: payload.stepId,
       status: "cancelled",
       attempts: existing?.attempts ?? 1,
       ...(existing?.startedAt !== undefined && { startedAt: existing.startedAt }),
       ...(existing?.input !== undefined && { input: existing.input }),
     };
-    return { ...state, frames, updatedAt: event.timestamp };
+    return {
+      ...state,
+      frames: withFrame(state.frames, payload.stepId, frame),
+      updatedAt: event.timestamp,
+    };
   },
 
   STEP_RETRYING: (state, event) => {
     const payload = event.payload as { stepId: string; attempt: number };
-    const frames = cloneFrames(state.frames);
-    const existing = frames[payload.stepId];
-    frames[payload.stepId] = {
+    const existing = state.frames[payload.stepId];
+    const frame: ExecutionFrame = {
       stepId: payload.stepId,
       status: "pending",
       attempts: payload.attempt,
       ...(existing?.input !== undefined && { input: existing.input }),
     };
-    return { ...state, frames, updatedAt: event.timestamp };
+    return {
+      ...state,
+      frames: withFrame(state.frames, payload.stepId, frame),
+      updatedAt: event.timestamp,
+    };
   },
 
   PARALLEL_STARTED: (state, event) => {
     const payload = event.payload as { stepIds: string[] };
-    const frames = cloneFrames(state.frames);
+    // One fresh container, then write each new frame into it (the container is
+    // not shared, so in-place writes are safe).
+    const frames = { ...state.frames };
     for (const stepId of payload.stepIds) {
       frames[stepId] = {
         stepId,

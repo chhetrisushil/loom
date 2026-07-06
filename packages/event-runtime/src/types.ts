@@ -17,6 +17,19 @@ export interface EventStore {
   read(executionId: string): Promise<EventEnvelope[]>;
   readFrom(executionId: string, fromSequence: number): Promise<EventEnvelope[]>;
   subscribe(executionId: string, handler: (event: EventEnvelope) => void): Promise<() => void>;
+  /**
+   * OPTIONAL bulk copy of the prefix `[0..throughSequence]` of one execution's log
+   * into another `executionId`, re-stamping `id` + `executionId` and merging
+   * `metadata` into each copied event — WITHOUT round-tripping payloads through JS
+   * (de)serialization. Used by `fork()`; a store that omits it falls back to a
+   * per-event `append` loop, so this is purely a performance fast-path.
+   */
+  copyPrefix?(
+    fromExecutionId: string,
+    toExecutionId: string,
+    throughSequence: number,
+    metadata: Record<string, unknown>
+  ): Promise<void>;
   close(): Promise<void>;
 }
 

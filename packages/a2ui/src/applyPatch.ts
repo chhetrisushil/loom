@@ -60,7 +60,17 @@ function removeIn(state: A2UISurfaceState, parts: string[]): A2UISurfaceState {
 
 // Applies one patch to the surface, returning a new state. Pure and total: an
 // unknown op is a no-op so forward-compatible producers never crash a consumer.
-export function applyA2UIPatch(state: A2UISurfaceState, patch: A2UIPatch): A2UISurfaceState {
+//
+// `owned` tracks arrays *created during the current batch*. Appending to a
+// batch-owned array mutates it in place (O(1)) instead of copying it — so a batch
+// with k appends to one list is O(k) not O(k²). This is safe: the input state's
+// arrays are never in `owned`, so previous states are never mutated (cross-batch
+// immutability is preserved); only arrays this batch just created are pushed to.
+function applyOne(
+  state: A2UISurfaceState,
+  patch: A2UIPatch,
+  owned: WeakSet<object>
+): A2UISurfaceState {
   const parts = splitPath(patch.path);
   switch (patch.op) {
     case "set":
@@ -68,9 +78,15 @@ export function applyA2UIPatch(state: A2UISurfaceState, patch: A2UIPatch): A2UIS
     case "merge":
       return updateIn(state, parts, (existing) => ({ ...asRecord(existing), ...patch.value }));
     case "append":
-      return updateIn(state, parts, (existing) =>
-        Array.isArray(existing) ? [...existing, patch.value] : [patch.value]
-      );
+      return updateIn(state, parts, (existing) => {
+        if (Array.isArray(existing) && owned.has(existing)) {
+          existing.push(patch.value);
+          return existing;
+        }
+        const next = Array.isArray(existing) ? [...existing, patch.value] : [patch.value];
+        owned.add(next);
+        return next;
+      });
     case "increment":
       return updateIn(
         state,
@@ -84,11 +100,18 @@ export function applyA2UIPatch(state: A2UISurfaceState, patch: A2UIPatch): A2UIS
   }
 }
 
+export function applyA2UIPatch(state: A2UISurfaceState, patch: A2UIPatch): A2UISurfaceState {
+  return applyOne(state, patch, new WeakSet());
+}
+
 export function applyA2UIPatches(
   state: A2UISurfaceState,
   patches: readonly A2UIPatch[]
 ): A2UISurfaceState {
-  return patches.reduce(applyA2UIPatch, state);
+  const owned = new WeakSet<object>();
+  let next = state;
+  for (const patch of patches) next = applyOne(next, patch, owned);
+  return next;
 }
 
 export { getIn as getSurfaceValue };

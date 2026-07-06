@@ -35,6 +35,26 @@ describe("applyA2UIPatch", () => {
     expect(s).toEqual({ log: ["a", "b"] });
   });
 
+  it("batch multi-append is correct and never mutates the input state", () => {
+    const before: A2UISurfaceState = { log: ["x"] };
+    const after = applyA2UIPatches(before, [
+      { op: "append", path: "log", value: "a" },
+      { op: "append", path: "log", value: "b" },
+      { op: "append", path: "log", value: "c" },
+    ]);
+    expect(after).toEqual({ log: ["x", "a", "b", "c"] });
+    expect(before).toEqual({ log: ["x"] }); // input untouched
+    expect(after.log).not.toBe(before.log);
+  });
+
+  it("a later batch does not mutate an earlier batch's array", () => {
+    const first = applyA2UIPatches({}, [{ op: "append", path: "log", value: "a" }]);
+    const second = applyA2UIPatches(first, [{ op: "append", path: "log", value: "b" }]);
+    expect(first).toEqual({ log: ["a"] }); // earlier state unchanged
+    expect(second).toEqual({ log: ["a", "b"] });
+    expect(second.log).not.toBe(first.log);
+  });
+
   it("increment adds to a number (default 1, default base 0)", () => {
     let s: A2UISurfaceState = {};
     s = applyA2UIPatch(s, { op: "increment", path: "n" });

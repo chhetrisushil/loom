@@ -14,6 +14,9 @@ export function foldEvents(
   events: EventEnvelope[],
   initial?: Partial<ExecutionState>
 ): ExecutionState {
+  // `state` is always an object this function created (the seed below, or a fresh
+  // handler result) — never the caller's `initial` — so setting `sequence` in
+  // place is safe and avoids a full-state spread per event.
   let state: ExecutionState = {
     executionId: initial?.executionId ?? "",
     workflowId: initial?.workflowId ?? "",
@@ -27,7 +30,7 @@ export function foldEvents(
     if (handler) {
       state = handler(state, event);
     }
-    state = { ...state, sequence: event.sequence };
+    state.sequence = event.sequence;
   }
 
   return state;
