@@ -7,6 +7,8 @@
     { "path": "packages/effect-runtime" },
     { "path": "packages/snapshot-runtime" },
     { "path": "packages/workflow-runtime" },
+    { "path": "packages/middleware" },
+    { "path": "packages/app" },
     { "path": "packages/worker-runtime" },
     { "path": "packages/worker-runtime-local" },
     { "path": "packages/worker-runtime-remote" },

@@ -1,10 +1,10 @@
+import { progressHub } from "@loom/app";
 import { flow$, handler$, step$ } from "@loom/core";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { z } from "zod";
 import { runDiagnosticsAgent } from "../agents/diagnosticsRunner";
 import { fetchReplicaStatus, restartPool, scaleReplicas, sleep } from "../agents/tools";
 import type { Diagnosis, RemediationAssessment } from "../domain";
-import { progressHub } from "../runtime/progressHub";
 import { llm } from "../runtime/services";
 import {
   type RemediationDecision,
