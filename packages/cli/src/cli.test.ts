@@ -10,6 +10,7 @@ import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
+import { checkManifest } from "./check";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { cmdGen, cmdNew, discoverFlows } from "./gen";
 import { describeState, evaluateGoldens, foldAt, formatLog, parseArgs } from "./index";
@@ -181,6 +182,20 @@ describe("loom CLI", () => {
       const { count, out } = cmdGen(join(dir, "empty-app"));
       expect(count).toBe(0);
       expect(readFileSync(out, "utf-8")).toContain("export const flowModules = [];");
+    });
+  });
+
+  describe("loom check (manifest)", () => {
+    it("collects per-flow compiler warnings and reports ok/not-ok", () => {
+      const clean = checkManifest({ flows: { a: { warnings: [] } } });
+      expect(clean.ok).toBe(true);
+      expect(clean.issues).toEqual([]);
+
+      const dirty = checkManifest({
+        flows: { a: { warnings: ["step 'x' has neither handler nor toolId"] } },
+      });
+      expect(dirty.ok).toBe(false);
+      expect(dirty.issues[0]).toContain('flow "a"');
     });
   });
 });
