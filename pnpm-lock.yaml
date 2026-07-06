@@ -358,6 +358,9 @@ importers:
       '@loom/agent':
         specifier: workspace:*
         version: link:../../packages/agent
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../../packages/app
       '@loom/blueprint-runtime':
         specifier: workspace:*
         version: link:../../packages/blueprint-runtime
@@ -452,6 +455,9 @@ importers:
       '@loom/agent':
         specifier: workspace:*
         version: link:../../packages/agent
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../../packages/app
       '@loom/blueprint-runtime':
         specifier: workspace:*
         version: link:../../packages/blueprint-runtime
@@ -528,6 +534,9 @@ importers:
       '@loom/agent':
         specifier: workspace:*
         version: link:../../packages/agent
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../../packages/app
       '@loom/blueprint-runtime':
         specifier: workspace:*
         version: link:../../packages/blueprint-runtime
@@ -686,6 +695,9 @@ importers:
       '@loom/agent':
         specifier: workspace:*
         version: link:../../packages/agent
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../../packages/app
       '@loom/blueprint-runtime':
         specifier: workspace:*
         version: link:../../packages/blueprint-runtime
