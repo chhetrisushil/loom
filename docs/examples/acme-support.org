@@ -1,0 +1,149 @@
+#+TITLE: Acme Support — an end-to-end Loom walkthrough
+#+OPTIONS: toc:2
+
+* What this is
+
+A single, realistic app — "Acme Support" — that a developer builds with the ten
+files below, wired together by ~one =defineConfig= call. It exercises every
+interesting path: an A2UI form suspension, a worker crash mid-effect (only that
+one effect is re-paid), a remote agent as an A2A child run, a long human-approval
+suspension with a deploy in the middle, and an idempotency-protected refund.
+
+Scaffold the skeleton with:
+
+#+begin_src sh
+pnpm --filter @loom/create-loom-app build
+node tools/create-loom-app/dist/index.js acme-support
+#+end_src
+
+Everything below maps to a real API shipped in the repo. Where a capability is on
+the roadmap (evals, deploy-simulation) it is marked *(Tier 3)*.
+
+* The ten files
+
+| File            | Builder / API                    | Role                                   |
+|-----------------+----------------------------------+----------------------------------------|
+| =config.ts=     | =defineConfig= (@loom/app)       | the whole app, declared once           |
+| =agent.ts=      | =agent$= / =toAgentCard=         | the support agent + its card           |
+| =tools.ts= (×2) | =tool$=                          | =lookup-customer=, =issue-refund=      |
+| =steps.ts= (×2) | =step$= + =handler$=             | durable units with recorded outputs    |
+| =flow.ts=       | =flow$=                          | the resolve-ticket flow                |
+| =ui.ts=         | =a2uiSurfaceProjection=          | the A2UI surface catalog               |
+| =middleware.ts= | =retryMiddleware= (@loom/middleware) | cross-cutting effect concerns      |
+| =eval.test.ts=  | =@loom/eval= *(Tier 3)*          | log-as-fixture regression + scoring    |
+
+* config.ts — the composition root, in ~10 lines
+
+=defineConfig= is static sugar over the runtime's dependency injection: it builds
+the stores, an =EffectRuntime= wired with your middleware, the projection
+surfaces, telemetry, the =WorkflowRuntime=, your flows, and the in-process A2A
+bus — and returns them. It never builds your conductor logic.
+
+#+begin_src ts
+import { defineConfig } from "@loom/app";
+import { retryMiddleware } from "@loom/middleware";
+import { ResolveTicketFlow } from "./flow";
+import { catalog } from "./agent";
+
+export const app = defineConfig({
+  storage: { kind: "sqlite", dir: ".data", branching: true },
+  surfaces: ["ticket", "form"],
+  flows: [ResolveTicketFlow],
+  catalog,
+  effectMiddleware: [retryMiddleware({ maxRetries: 3 })],
+  telemetry: [/* your adapters */],
+});
+#+end_src
+
+Two invariants keep this honest and are enforced by design:
+- *Static & deterministic.* No env-conditional wiring — a resume, and a remote
+  Cloud Run worker, must reconstruct the *same* flows/effects/middleware, or
+  replay diverges.
+- *Sugar, not replacement.* Everything returned is exactly what you'd hand-build;
+  the DI path still works, so tests can wire a bespoke runtime.
+
+Storage stays behind =EventStore=/=SnapshotStore= — the log is always *yours*,
+which is what makes evals and deploy-simulation *(Tier 3)* possible.
+
+* flow.ts + steps.ts — durable work, recorded once
+
+A step's handler runs inside the durable runtime. Its output is written to the
+event log as =STEP_COMPLETED=; on any later replay/resume the output is read back,
+never recomputed. That is why a crash re-pays only the *one* in-flight effect.
+
+#+begin_src ts
+const runner = async (ctx, input) => {
+  const customer = await ctx.run(LookupStep, { id: input.customerId });
+  // A2UI form suspension: the flow pauses until the agent fills the form.
+  const form = await ctx.suspend({ on: "FormSubmitted", correlationKey: input.ticketId });
+  return ctx.run(RefundStep, { customerId: customer.id, amount: form.amount });
+};
+#+end_src
+
+** The interesting runtime paths
+
+- *A2UI form suspension.* =ctx.suspend= throws a =SuspendError=; the runtime
+  snapshots and returns. The =form= surface renders; when the operator submits,
+  =runtime.resume(executionId, { eventType: "FormSubmitted", payload })= folds the
+  reply in and continues.
+- *Worker crash mid-effect.* If the process dies while =RefundStep= is running,
+  recovery redispatches and =WorkflowContext.run= skips every completed step
+  (=vm.hasCompleted=), re-running only =RefundStep=. Wrap it in =retryMiddleware=
+  for transient failures — retries are in-memory and never touch a completed step,
+  a suspend, or a cancellation, so the log stays deterministic.
+- *A2A child run.* Calling Acme's remote "legal review" agent is one effect. The
+  entire A2A layer is a single adapter, =LoomAgentExecutor= (@loom/a2a): its task
+  lifecycle maps one-to-one onto Loom states — submit→=start=, input-required→a
+  suspend, provideInput→=resume=, completed/failed→terminal. The server is a thin,
+  *stateless* transport (it rebuilds status from the log via =loadState=), so it
+  scales horizontally and survives restarts mid-task.
+- *48-hour approval with a deploy in the middle.* The approval is just a suspend;
+  the execution is durable. Ship new code while it waits — before promoting, run
+  =simulateDeploy= *(Tier 3)* over the in-flight suspended executions to prove they
+  still resume on the new flow definitions (no removed/renamed steps, no moved
+  suspend point, no =workflowVersion= break).
+- *Idempotent refund.* Model the idempotency guard as an emitted event, not a
+  hidden external write — then it replays with the log and shows up in your evals.
+
+* middleware.ts — cross-cutting, replay-safe
+
+Effect middleware wraps =EffectRuntime.execute=, the single chokepoint every
+tool/LLM/human/a2a effect flows through. It runs only when an effect actually
+executes (completed steps short-circuit before it), so it is replay-safe by
+construction. Order is static (=middleware[0]= outermost) ⇒ deterministic.
+
+#+begin_src ts
+export const middleware = [
+  retryMiddleware({ maxRetries: 3 }),
+  // loggingMiddleware(), tracingMiddleware(), idempotencyMiddleware() — same shape
+];
+#+end_src
+
+Prefer middleware that *emits durable events* over ones that do hidden external
+side effects: the former survive replay and become part of the log-as-fixture and
+deploy-simulation stories.
+
+* eval.test.ts — the log is the fixture *(Tier 3)*
+
+Because effect outputs live in the log, a recorded run replays deterministically
+with no live LLM/tool calls:
+
+#+begin_src ts
+import { replayAsFixture, goldenFixture, scoreRun } from "@loom/eval";
+// replay a captured run and assert it reaches the recorded outputs;
+// diff against a golden log; score the folded state for quality.
+#+end_src
+
+This is the pay-off for keeping the log in-house: the same durable journal is your
+runtime, your regression fixtures, and your pre-deploy compatibility check.
+
+* Where each concern lives
+
+| Concern              | Home                                                   |
+|----------------------+--------------------------------------------------------|
+| composition          | =defineConfig= (@loom/app)                             |
+| retries/logging/etc. | effect middleware (@loom/middleware)                   |
+| remote agents        | =LoomAgentExecutor= (@loom/a2a)                        |
+| durability / resume  | event log + snapshots (the runtime)                    |
+| regression / scoring | =@loom/eval= *(Tier 3)*                                |
+| safe deploys         | =simulateDeploy= *(Tier 3)*                            |

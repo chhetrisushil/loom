@@ -21,6 +21,12 @@ import type { TelemetryAdapter } from "@loom/telemetry";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { RegisteredFlow } from "@loom/workflow-runtime";
 import { InProcessA2ABus } from "./InProcessA2ABus";
+import {
+  type FlowModule,
+  type ManifestView,
+  manifestWarnings,
+  registerFlowsFrom,
+} from "./registerFlows";
 
 /** Structural view of a CapabilityCatalog — avoids a hard `@loom/capability` dep. */
 export interface CatalogLike {
@@ -51,6 +57,21 @@ export interface LoomConfig {
   surfaces?: string[];
   /** Flows registered directly (in addition to any from `catalog`). */
   flows?: RegisteredFlow[];
+  /**
+   * Statically-imported flow modules — every `RegisteredFlow`-shaped export is
+   * registered (see {@link registerFlowsFrom}). Lets an app do
+   * `import * as flows from "./flows"` instead of listing each flow, while
+   * staying deterministic (static imports, not manifest dynamic-import).
+   */
+  flowModules?: FlowModule[];
+  /**
+   * Optional compiler manifest to cross-check against — any flow the compiler saw
+   * but that isn't registered (or that carries a compiler warning) is reported
+   * via `onWarn` at boot rather than failing at dispatch.
+   */
+  manifest?: ManifestView;
+  /** Sink for boot-time warnings (manifest cross-check). Default `console.warn`. */
+  onWarn?: (message: string) => void;
   /** Capability catalog registered into the runtime + wired to agents. */
   catalog?: CatalogLike;
   /** Agent cards advertised on the in-process A2A bus. */
@@ -145,6 +166,19 @@ export function defineConfig(config: LoomConfig): LoomApp {
   config.catalog?.registerInto(runtime);
   for (const flow of config.flows ?? []) {
     runtime.registerFlow(flow.definition, flow.runner);
+  }
+  if (config.flowModules && config.flowModules.length > 0) {
+    registerFlowsFrom(runtime, ...config.flowModules);
+  }
+
+  if (config.manifest) {
+    const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+    for (const message of manifestWarnings(
+      config.manifest,
+      (id) => runtime.getFlow(id) !== undefined
+    )) {
+      warn(message);
+    }
   }
 
   const bus = new InProcessA2ABus(runtime, config.dispatcher);
