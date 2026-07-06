@@ -20,3 +20,9 @@ export {
   type FlowModule,
   type ManifestView,
 } from "./registerFlows";
+export {
+  validateFlowGraph,
+  type FlowGraphFlow,
+  type FlowGraphInput,
+  type FlowGraphIssue,
+} from "./validate";
