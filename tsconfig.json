@@ -15,6 +15,7 @@
     { "path": "packages/testing" },
     { "path": "packages/cli" },
     { "path": "packages/scaffold" },
+    { "path": "packages/orchestrator" },
     { "path": "packages/worker-runtime" },
     { "path": "packages/worker-runtime-local" },
     { "path": "packages/worker-runtime-remote" },

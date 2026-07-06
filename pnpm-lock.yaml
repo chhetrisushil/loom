@@ -385,6 +385,9 @@ importers:
       '@loom/llm':
         specifier: workspace:*
         version: link:../../packages/llm
+      '@loom/orchestrator':
+        specifier: workspace:*
+        version: link:../../packages/orchestrator
       '@loom/planner':
         specifier: workspace:*
         version: link:../../packages/planner
@@ -1309,6 +1312,18 @@ importers:
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../effect-runtime
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  packages/orchestrator:
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
