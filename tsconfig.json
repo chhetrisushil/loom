@@ -10,6 +10,8 @@
     { "path": "packages/middleware" },
     { "path": "packages/app" },
     { "path": "tools/create-loom-app" },
+    { "path": "packages/eval" },
+    { "path": "packages/deploy-sim" },
     { "path": "packages/worker-runtime" },
     { "path": "packages/worker-runtime-local" },
     { "path": "packages/worker-runtime-remote" },
