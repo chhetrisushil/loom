@@ -1,10 +1,10 @@
 import { createA2UIEmitter } from "@loom/a2ui";
 import type { A2UIEmitter } from "@loom/a2ui";
-import type { InProcessA2ABus } from "@loom/app";
-import type { ApprovalDecision } from "@loom/app";
+import type { ApprovalDecision, InProcessA2ABus } from "@loom/app";
 import type { CapabilityCatalog } from "@loom/capability";
 import type { EventEnvelope } from "@loom/core";
 import { IntentRuntime } from "@loom/intent";
+import { decideApproval } from "@loom/orchestrator";
 import { PlannerRuntime } from "@loom/planner";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import type { WorkflowRuntime } from "@loom/workflow-runtime";
@@ -224,32 +224,38 @@ export class Orchestrator {
     const risk: RiskLevel = ctx.assessment?.riskLevel ?? "medium";
     const action = ctx.assessment?.action ?? entry.title;
     const rationale = ctx.assessment?.rationale ?? "";
-    // The goal itself encodes the policy: "…fix it if remediation is low risk".
-    const autoAllowed = /low risk|automatically|auto[- ]?fix|auto/i.test(ctx.goal);
 
-    if (risk === "low" && autoAllowed) {
-      this.log(`Risk is LOW — auto-applying "${action}" under the risk policy.`);
-      return Promise.resolve({ approved: true, approvedBy: "risk-policy" });
-    }
-
-    // Manual approval required → surface it and wait for the operator.
-    this.log(`Risk is ${risk.toUpperCase()} — pausing for operator approval.`);
-    this.patchTask(taskId, { status: "awaiting-approval", detail: `Awaiting approval: ${action}` });
-    this.setPhase("awaiting-approval");
-    const pending: PendingApproval = {
-      taskId,
-      agentId: entry.agentId,
-      title: entry.title,
-      action,
-      risk,
-      rationale,
-    };
-    this.model.pendingApproval = pending;
-    this.mission.set("pendingApproval", pending);
-
-    return new Promise<ApprovalDecision>((resolve) => {
-      this.approvalResolver = resolve;
-    });
+    // The auto-approve-if-low-risk policy is the shared primitive; the surface
+    // effects (log, pending-approval render, resolver wiring) stay app-specific.
+    return decideApproval(
+      { goal: ctx.goal, riskLevel: risk },
+      {
+        onAutoApprove: () =>
+          this.log(`Risk is LOW — auto-applying "${action}" under the risk policy.`),
+        onManualRequired: () => {
+          this.log(`Risk is ${risk.toUpperCase()} — pausing for operator approval.`);
+          this.patchTask(taskId, {
+            status: "awaiting-approval",
+            detail: `Awaiting approval: ${action}`,
+          });
+          this.setPhase("awaiting-approval");
+          const pending: PendingApproval = {
+            taskId,
+            agentId: entry.agentId,
+            title: entry.title,
+            action,
+            risk,
+            rationale,
+          };
+          this.model.pendingApproval = pending;
+          this.mission.set("pendingApproval", pending);
+        },
+        waitForManual: () =>
+          new Promise<ApprovalDecision>((resolve) => {
+            this.approvalResolver = resolve;
+          }),
+      }
+    );
   }
 
   // ── Artifact → surface folding ──────────────────────────────────────────────
