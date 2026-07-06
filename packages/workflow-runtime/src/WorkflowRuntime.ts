@@ -89,6 +89,11 @@ export class WorkflowRuntime {
     return this.flows.get(flowId);
   }
 
+  /** All registered flow ids — used by tooling (e.g. boot-time flow-graph validation). */
+  getFlowIds(): string[] {
+    return [...this.flows.keys()];
+  }
+
   async restoreFromState(
     preloadedState: ExecutionState,
     resumeEvent?: ResumeEvent
