@@ -367,6 +367,9 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../../packages/dispatcher
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../../packages/effect-runtime
@@ -397,6 +400,9 @@ importers:
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime
+      '@loom/worker-runtime-local':
+        specifier: workspace:*
+        version: link:../../packages/worker-runtime-local
       '@loom/workflow-runtime':
         specifier: workspace:*
         version: link:../../packages/workflow-runtime
@@ -455,6 +461,9 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../../packages/dispatcher
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../../packages/effect-runtime
@@ -482,6 +491,9 @@ importers:
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime
+      '@loom/worker-runtime-local':
+        specifier: workspace:*
+        version: link:../../packages/worker-runtime-local
       '@loom/workflow-runtime':
         specifier: workspace:*
         version: link:../../packages/workflow-runtime
@@ -525,6 +537,9 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../../packages/dispatcher
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../../packages/effect-runtime
@@ -552,6 +567,9 @@ importers:
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime
+      '@loom/worker-runtime-local':
+        specifier: workspace:*
+        version: link:../../packages/worker-runtime-local
       '@loom/workflow-runtime':
         specifier: workspace:*
         version: link:../../packages/workflow-runtime
@@ -592,6 +610,9 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../../packages/dispatcher
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../../packages/effect-runtime
@@ -622,6 +643,9 @@ importers:
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime
+      '@loom/worker-runtime-local':
+        specifier: workspace:*
+        version: link:../../packages/worker-runtime-local
       '@loom/workflow-runtime':
         specifier: workspace:*
         version: link:../../packages/workflow-runtime
@@ -665,6 +689,9 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../../packages/dispatcher
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../../packages/effect-runtime
@@ -695,6 +722,9 @@ importers:
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime
+      '@loom/worker-runtime-local':
+        specifier: workspace:*
+        version: link:../../packages/worker-runtime-local
       '@loom/workflow-runtime':
         specifier: workspace:*
         version: link:../../packages/workflow-runtime
@@ -887,6 +917,25 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
+  packages/dispatcher:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
+      '@loom/worker-runtime':
+        specifier: workspace:*
+        version: link:../worker-runtime
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   packages/effect-runtime:
     dependencies:
       '@loom/core':
@@ -930,6 +979,55 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  packages/graph-executor:
+    dependencies:
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../dispatcher
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../event-runtime
+      '@loom/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
+      '@loom/worker-runtime':
+        specifier: workspace:*
+        version: link:../worker-runtime
+    devDependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../effect-runtime
+      '@loom/platform-cloudrun':
+        specifier: workspace:*
+        version: link:../platform-cloudrun
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../snapshot-runtime
+      '@loom/worker-runtime-local':
+        specifier: workspace:*
+        version: link:../worker-runtime-local
+      '@loom/worker-server':
+        specifier: workspace:*
+        version: link:../worker-server
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../workflow-runtime
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
 
   packages/intent:
     dependencies:
@@ -1043,6 +1141,52 @@ importers:
         specifier: workspace:*
         version: link:../scheduler
     devDependencies:
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../workflow-runtime
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+
+  packages/platform-cloudrun:
+    dependencies:
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../dispatcher
+      '@loom/worker-runtime':
+        specifier: workspace:*
+        version: link:../worker-runtime
+      '@loom/worker-runtime-remote':
+        specifier: workspace:*
+        version: link:../worker-runtime-remote
+    devDependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../event-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../snapshot-runtime
+      '@loom/worker-runtime-local':
+        specifier: workspace:*
+        version: link:../worker-runtime-local
+      '@loom/worker-server':
+        specifier: workspace:*
+        version: link:../worker-server
       '@loom/workflow-runtime':
         specifier: workspace:*
         version: link:../workflow-runtime
@@ -1297,6 +1441,115 @@ importers:
       typescript:
         specifier: ^5.6.3
         version: 5.9.3
+
+  packages/worker-runtime:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  packages/worker-runtime-local:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
+      '@loom/worker-runtime':
+        specifier: workspace:*
+        version: link:../worker-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../workflow-runtime
+    devDependencies:
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../event-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../snapshot-runtime
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+
+  packages/worker-runtime-remote:
+    dependencies:
+      '@loom/worker-runtime':
+        specifier: workspace:*
+        version: link:../worker-runtime
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  packages/worker-server:
+    dependencies:
+      '@loom/worker-runtime':
+        specifier: workspace:*
+        version: link:../worker-runtime
+    devDependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../dispatcher
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../event-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../snapshot-runtime
+      '@loom/worker-runtime-local':
+        specifier: workspace:*
+        version: link:../worker-runtime-local
+      '@loom/worker-runtime-remote':
+        specifier: workspace:*
+        version: link:../worker-runtime-remote
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../workflow-runtime
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
 
   packages/workflow-runtime:
     dependencies:

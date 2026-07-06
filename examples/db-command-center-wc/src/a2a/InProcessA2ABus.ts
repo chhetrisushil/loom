@@ -1,5 +1,8 @@
 import type { A2ATask, A2ATaskResult, A2ATaskStatus, AgentCard } from "@loom/a2a";
-import type { ExecutionHandle, RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+import { LocalDispatcher } from "@loom/dispatcher";
+import type { ExecutionDispatcher } from "@loom/dispatcher";
+import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
+import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 import { progressHub } from "../runtime/progressHub";
 
 // ── InProcessA2ABus — a bring-your-own A2A transport ──────────────────────────
@@ -14,6 +17,13 @@ import { progressHub } from "../runtime/progressHub";
 // Beyond the base protocol it adds two ergonomic hooks the base HTTP client
 // approximates by polling: onProgress (live narration from the agent) and
 // onApproval (a human-in-the-loop gate that resumes a durably-suspended flow).
+//
+// Placement note: the bus no longer calls the WorkflowRuntime directly. It hands
+// each execution to an ExecutionDispatcher, which decides *where* the fiber runs
+// (in-process here, Cloud Run later) and returns an ExecutionResult. A durable
+// human-in-the-loop suspend comes back as `status: "suspended"`; we collect the
+// approval decision and continue with a *fresh resume dispatch*, so the worker
+// stays disposable across the gate.
 
 // A capability an agent exposes, backed by a durable Loom flow.
 interface Registration {
@@ -63,8 +73,17 @@ export class InProcessA2ABus {
   private readonly cards = new Map<string, AgentCard>();
   private readonly capabilities = new Map<string, Registration>();
   private readonly tasks = new Map<string, A2ATaskResult>();
+  private readonly dispatcher: ExecutionDispatcher;
 
-  constructor(private readonly runtime: WorkflowRuntime) {}
+  constructor(
+    runtime: WorkflowRuntime,
+    // Placement is pluggable: default to running the fiber in-process on the
+    // local runtime. Inject a remote/Cloud Run dispatcher to move it off-box
+    // without touching this transport.
+    dispatcher?: ExecutionDispatcher
+  ) {
+    this.dispatcher = dispatcher ?? new LocalDispatcher(new LocalWorkerRuntime(runtime));
+  }
 
   registerAgent(card: AgentCard): this {
     this.cards.set(card.name, card);
@@ -100,6 +119,7 @@ export class InProcessA2ABus {
     }
 
     const executionId = options.executionId ?? `task-${capabilityId}-${this.tasks.size}`;
+    const flowId = reg.flow.definition.id;
     // The A2A task envelope that would travel over the wire to the agent. In this
     // in-process transport we hand its input straight to the agent's flow.
     const task: A2ATask = {
@@ -120,11 +140,31 @@ export class InProcessA2ABus {
 
     try {
       setStatus("working");
-      const handle = await this.runtime.start(reg.flow, input, { executionId });
 
-      const state = await this.awaitTerminal(handle, executionId, options);
-      const status = executionStatusToA2A(state.status);
-      const artifact = state.variables._output;
+      // Run the fiber to suspend-or-complete. A durable human-in-the-loop gate
+      // returns status:"suspended"; resolve the decision and resume with a fresh
+      // dispatch. The loop tolerates multiple gates.
+      let result = await this.dispatcher.dispatch({
+        executionId,
+        workflowId: flowId,
+        flowId,
+        input,
+      });
+
+      while (result.status === "suspended") {
+        const decision: ApprovalDecision = options.onApproval
+          ? await options.onApproval()
+          : { approved: true, approvedBy: "auto" };
+        result = await this.dispatcher.dispatch({
+          executionId,
+          workflowId: flowId,
+          flowId,
+          resumeEvent: { eventType: "ApprovalGranted", payload: decision },
+        });
+      }
+
+      const status = executionStatusToA2A(result.state.status);
+      const artifact = result.state.variables._output;
 
       this.tasks.set(executionId, {
         id: executionId,
@@ -142,43 +182,12 @@ export class InProcessA2ABus {
                 },
               ],
             }
-          : { error: String(state.variables._error ?? "failed") }),
+          : { error: String(result.state.variables._error ?? "failed") }),
       });
       options.onStatus?.(status);
       return { taskId: executionId, status, artifact };
     } finally {
       unsub();
     }
-  }
-
-  // Drives one dispatch to a terminal state, resuming through any durable
-  // suspend checkpoint via the caller's approval hook.
-  private async awaitTerminal(
-    handle: ExecutionHandle,
-    executionId: string,
-    options: DispatchOptions
-  ): Promise<ReturnType<ExecutionHandle["getState"]>> {
-    // waitForCompletion stays pending on suspend; waitForSuspend stays pending
-    // when the flow never suspends — so this race resolves on whichever the flow
-    // actually does.
-    const outcome = await Promise.race([
-      handle.waitForSuspend().then(() => ({ kind: "suspended" as const })),
-      handle.waitForCompletion().then((state) => ({ kind: "completed" as const, state })),
-    ]);
-
-    if (outcome.kind === "completed") {
-      return outcome.state;
-    }
-
-    // Durable human-in-the-loop checkpoint reached.
-    const decision: ApprovalDecision = options.onApproval
-      ? await options.onApproval()
-      : { approved: true, approvedBy: "auto" };
-
-    const resumed = await this.runtime.resume(executionId, {
-      eventType: "ApprovalGranted",
-      payload: decision,
-    });
-    return resumed.waitForCompletion();
   }
 }

@@ -79,6 +79,16 @@ export class WorkflowRuntime {
     }
   }
 
+  /**
+   * Resolve a registered flow by its definition id. This is the "code by id"
+   * lookup a worker uses to run an {@link ExecutionPackage} whose `flowId`
+   * references a flow the worker was booted with — `start()` needs the concrete
+   * RegisteredFlow, while `resume()` already resolves it internally.
+   */
+  getFlow(flowId: string): RegisteredFlow | undefined {
+    return this.flows.get(flowId);
+  }
+
   async restoreFromState(
     preloadedState: ExecutionState,
     resumeEvent?: ResumeEvent
@@ -169,6 +179,33 @@ export class WorkflowRuntime {
         { eventType: "EXECUTION_RESUMED", payload: resumeEvent.payload },
       ]
     );
+  }
+
+  /**
+   * Fold the current durable state of an execution WITHOUT running it. Returns
+   * `null` if no events exist for the id. Used by workers to make redispatch
+   * idempotent: on a recovery dispatch they inspect the persisted status and
+   * decide whether to resume (crashed mid-flight → "running") or return the
+   * state as-is (already "completed"/"failed"/"suspended") — no re-run, no
+   * duplicate effects, no restart.
+   */
+  async loadState(executionId: string): Promise<ExecutionState | null> {
+    const allEvents = await this.eventStore.read(executionId);
+    if (allEvents.length === 0) {
+      return null;
+    }
+    const snapshot = await this.snapshotStore.loadLatest(executionId);
+    if (snapshot) {
+      const tail = await this.eventStore.readFrom(executionId, snapshot.sequence + 1);
+      return new ReplayVM(tail, snapshot.state).getState();
+    }
+    const workflowId = allEvents[0]!.workflowId;
+    const flow = this.flows.get(workflowId);
+    return new ReplayVM(allEvents, {
+      executionId,
+      workflowId,
+      workflowVersion: flow?.definition.version ?? "",
+    }).getState();
   }
 
   /**

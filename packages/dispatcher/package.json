@@ -1,0 +1,29 @@
+{
+  "name": "@loom/dispatcher",
+  "version": "0.0.1",
+  "description": "Execution dispatcher for Loom — decides WHERE an execution runs and owns worker allocation, retries, timeout and result collection, sitting between the orchestrator and a WorkerRuntime",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/core": "workspace:*",
+    "@loom/worker-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
