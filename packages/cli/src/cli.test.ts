@@ -12,8 +12,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { checkManifest } from "./check";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
+import { loadLogs, runDeployCheck } from "./deploy";
 import { cmdGen, cmdNew, discoverFlows } from "./gen";
 import { describeState, evaluateGoldens, foldAt, formatLog, parseArgs } from "./index";
+import { serveInspector } from "./inspector";
+import { buildTrace } from "./trace";
 
 // ── record a real run into a temp SQLite store ────────────────────────────────
 const io = { inputSchema: z.object({}), outputSchema: z.object({}) };
@@ -196,6 +199,60 @@ describe("loom CLI", () => {
       });
       expect(dirty.ok).toBe(false);
       expect(dirty.issues[0]).toContain('flow "a"');
+    });
+  });
+
+  describe("buildTrace (inspector render model)", () => {
+    it("produces a timeline + folded status per sequence", () => {
+      const trace = buildTrace(log);
+      expect(trace.executionId).toBe(executionId);
+      expect(trace.finalStatus).toBe("suspended");
+      expect(trace.timeline.some((e) => e.suspend)).toBe(true);
+      // status at sequence 0 is running; final frame is suspended.
+      expect(trace.frames[0]?.status).toBe("running");
+      expect(trace.frames.at(-1)?.status).toBe("suspended");
+    });
+  });
+
+  describe("loom deploy check", () => {
+    it("loadLogs reads stored EventEnvelope[] json files", () => {
+      writeFileSync(join(dir, "run1.json"), JSON.stringify(log));
+      expect(loadLogs(dir)).toHaveLength(1);
+      expect(loadLogs(dir)[0]).toHaveLength(log.length);
+    });
+
+    it("runDeployCheck passes an identical deploy and flags a removed flow", () => {
+      const resolver = {
+        getFlow: () => ({ definition: { version: "1.0.0", steps: [{ id: "a" }, { id: "b" }] } }),
+      };
+      expect(runDeployCheck([log], resolver).ok).toBe(true);
+      const removed = { getFlow: () => undefined };
+      const report = runDeployCheck([log], removed);
+      expect(report.ok).toBe(false);
+      expect(report.issues[0]?.kind).toBe("flow-missing");
+    });
+  });
+
+  describe("serveInspector", () => {
+    it("serves the page, the trace, and the folded state at a sequence", async () => {
+      const store = new SqliteEventStore(dbPath);
+      const server = serveInspector(store);
+      await server.start();
+      try {
+        const page = await fetch(`${server.url}/`);
+        expect(await page.text()).toContain("loom inspector");
+
+        const trace = await (await fetch(`${server.url}/api/trace/${executionId}`)).json();
+        expect(trace.finalStatus).toBe("suspended");
+
+        const state = await (await fetch(`${server.url}/api/state/${executionId}/0`)).text();
+        expect(state).toContain("status: running");
+
+        expect((await fetch(`${server.url}/api/trace/nope`)).status).toBe(404);
+      } finally {
+        await server.stop();
+        await store.close();
+      }
     });
   });
 });

@@ -1,7 +1,10 @@
 #!/usr/bin/env node
+import { SqliteEventStore } from "@loom/event-runtime";
 import { cmdCheck } from "./check";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
+import { cmdDeployCheck } from "./deploy";
 import { cmdGen, cmdNew } from "./gen";
+import { serveInspector } from "./inspector";
 
 interface Parsed {
   command: string | undefined;
@@ -39,6 +42,8 @@ const USAGE = `loom — project-local commands for a Loom app
   loom logs  --db <path> <executionId>            print the event timeline
   loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
   loom eval  --dir <path>                         replay golden logs vs expectations
+  loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
+  loom inspect --db <path> [--port N]             web inspector (timeline + slider)
 
 New project?  →  npm create loom-app
 `;
@@ -86,6 +91,28 @@ async function main(argv: string[]): Promise<number> {
       const { path: dest, created } = cmdNew(kind, name, dir);
       console.log(created ? `created ${dest}` : `skipped ${dest} (already exists)`);
       return created ? 0 : 1;
+    }
+    case "deploy": {
+      if (positionals[0] !== "check") {
+        throw new Error("usage: loom deploy check --logs <dir> --config <module>");
+      }
+      requireFlag(flags, "logs");
+      requireFlag(flags, "config");
+      const { text, report } = cmdDeployCheck(flags.logs!, flags.config!);
+      console.log(text);
+      return report.ok ? 0 : 1;
+    }
+    case "inspect":
+    case "dev": {
+      requireFlag(flags, "db");
+      const store = new SqliteEventStore(flags.db!);
+      const server = serveInspector(
+        store,
+        flags.port !== undefined ? { port: Number.parseInt(flags.port, 10) } : {}
+      );
+      await server.start();
+      console.log(`loom inspector on ${server.url}  (Ctrl-C to stop)`);
+      return 0; // the listening socket keeps the process alive
     }
     case undefined:
     case "help":
