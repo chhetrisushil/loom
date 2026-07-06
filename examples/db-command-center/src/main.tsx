@@ -1,4 +1,5 @@
 import { a2uiSurfaceProjection } from "@loom/a2ui";
+import { InProcessA2ABus } from "@loom/app";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { AgentRegistry } from "@loom/registry";
@@ -6,7 +7,6 @@ import { LoomProvider } from "@loom/renderer-react";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
-import { InProcessA2ABus } from "./a2a/InProcessA2ABus";
 import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "./agents/definitions";
 import { buildCatalog } from "./capabilities/catalog";
 import { Orchestrator } from "./orchestrator/Orchestrator";

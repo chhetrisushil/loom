@@ -1,17 +1,17 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { a2uiSurfaceProjection } from "@loom/a2ui";
+import { InProcessA2ABus } from "@loom/app";
+import { BroadcastingProjectionRuntime } from "@loom/app";
 import type { EventEnvelope } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { SqliteBranchRegistry, SqliteEventStore } from "@loom/event-runtime";
 import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
-import { InProcessA2ABus } from "../a2a/InProcessA2ABus";
 import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "../agents/definitions";
 import { buildCatalog } from "../capabilities/catalog";
 import { Orchestrator } from "../orchestrator/Orchestrator";
 import { MISSION_ID, type ServerFrame } from "../wire";
-import { BroadcastingProjectionRuntime } from "./BroadcastingProjectionRuntime";
 
 const SURFACES = ["mission", "telemetry"];
 

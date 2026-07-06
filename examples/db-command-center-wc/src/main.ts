@@ -1,10 +1,10 @@
 import { a2uiSurfaceProjection } from "@loom/a2ui";
+import { InProcessA2ABus } from "@loom/app";
 import type { WidgetAction } from "@loom/blueprint-runtime";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { AgentRegistry } from "@loom/registry";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
-import { InProcessA2ABus } from "./a2a/InProcessA2ABus";
 import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "./agents/definitions";
 import { MissionControlBlueprint } from "./blueprints/MissionControlBlueprint";
 import { ObservabilityBlueprint } from "./blueprints/ObservabilityBlueprint";

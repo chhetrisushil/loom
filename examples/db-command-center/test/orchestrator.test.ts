@@ -1,9 +1,9 @@
 import { a2uiSurfaceProjection } from "@loom/a2ui";
+import { InProcessA2ABus } from "@loom/app";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
-import { InProcessA2ABus } from "../src/a2a/InProcessA2ABus";
 import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "../src/agents/definitions";
 import { buildCatalog } from "../src/capabilities/catalog";
 import type { AgentTask, PlanEntry } from "../src/domain";
