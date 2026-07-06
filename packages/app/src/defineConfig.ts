@@ -27,6 +27,7 @@ import {
   manifestWarnings,
   registerFlowsFrom,
 } from "./registerFlows";
+import { type FlowGraphFlow, validateFlowGraph } from "./validate";
 
 /** Structural view of a CapabilityCatalog — avoids a hard `@loom/capability` dep. */
 export interface CatalogLike {
@@ -70,8 +71,14 @@ export interface LoomConfig {
    * via `onWarn` at boot rather than failing at dispatch.
    */
   manifest?: ManifestView;
-  /** Sink for boot-time warnings (manifest cross-check). Default `console.warn`. */
+  /** Sink for boot-time warnings (manifest cross-check + validation). Default `console.warn`. */
   onWarn?: (message: string) => void;
+  /**
+   * Run structural flow-graph validation at boot (missing effects, dangling
+   * capability→agent maps). `true`/`"warn"` reports via `onWarn`; `"error"`
+   * throws on the first error. See {@link validateFlowGraph}.
+   */
+  validate?: boolean | "warn" | "error";
   /** Capability catalog registered into the runtime + wired to agents. */
   catalog?: CatalogLike;
   /** Agent cards advertised on the in-process A2A bus. */
@@ -188,6 +195,29 @@ export function defineConfig(config: LoomConfig): LoomApp {
   for (const [capabilityId, agentId] of Object.entries(config.capabilityAgents ?? {})) {
     const cap = config.catalog?.get(capabilityId);
     if (cap) bus.registerCapability(capabilityId, agentId, cap.flow);
+  }
+
+  if (config.validate) {
+    const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+    const flows = runtime.getFlowIds().map((id) => {
+      const def = runtime.getFlow(id)?.definition;
+      return { id, steps: (def?.steps ?? []) as FlowGraphFlow["steps"] };
+    });
+    const issues = validateFlowGraph({
+      flows,
+      hasEffect: (toolId) => effectRuntime.has(toolId),
+      ...(config.capabilityAgents !== undefined && { capabilityAgents: config.capabilityAgents }),
+      ...(config.catalog !== undefined && {
+        hasCapability: (id: string) => config.catalog?.get(id) !== undefined,
+      }),
+    });
+    for (const issue of issues) {
+      const message = `${issue.severity}: ${issue.detail}`;
+      if (config.validate === "error" && issue.severity === "error") {
+        throw new Error(`[loom] flow-graph validation failed — ${message}`);
+      }
+      warn(message);
+    }
   }
 
   return {

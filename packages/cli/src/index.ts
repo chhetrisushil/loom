@@ -10,4 +10,5 @@ export {
 } from "./core";
 export { cmdLogs, cmdDebug, cmdEval, loadGoldens } from "./commands";
 export { discoverFlows, cmdGen, cmdNew } from "./gen";
+export { checkManifest, cmdCheck, type CheckManifest, type CheckResult } from "./check";
 export { parseArgs } from "./cli";
