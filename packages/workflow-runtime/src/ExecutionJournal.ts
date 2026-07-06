@@ -30,7 +30,10 @@ export class ExecutionJournal {
     private readonly onEvent: ((event: EventEnvelope) => void) | undefined,
     // Fired once, on the first durable-write rejection — used to abort in-flight
     // effects so the run stops promptly rather than pressing on against a dead store.
-    private readonly onWriteError: (err: unknown) => void
+    private readonly onWriteError: (err: unknown) => void,
+    // Fired synchronously after each commit with the new sequence — used for
+    // snapshot cadence (bounding the replay tail on long-running executions).
+    private readonly onCommit?: (sequence: number) => void
   ) {
     // Seed from the folded VM tip: -1 for a fresh start (first commit → seq 0),
     // or the last applied sequence on resume/restore (next commit continues).
@@ -61,6 +64,7 @@ export class ExecutionJournal {
     this.vm.applyEvent(envelope); // in-memory fold — synchronous, authoritative
     this.onEvent?.(envelope); // live projection fold — synchronous, durability-independent
     this.enqueue(envelope); // durable write — async, order-preserving
+    this.onCommit?.(sequence); // snapshot cadence hook
     return envelope;
   }
 

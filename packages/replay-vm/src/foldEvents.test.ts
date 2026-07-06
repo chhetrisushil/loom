@@ -163,4 +163,32 @@ describe("ReplayVM", () => {
     const vm = new ReplayVM(events, INITIAL);
     expect(vm.getOutput("s1")).toEqual({ result: "done" });
   });
+
+  // ── copy-on-write correctness (perf optimization) ──────────────────────────
+  it("shares untouched frames by reference and never mutates a prior state", () => {
+    const base = foldEvents(
+      [
+        makeEvent(EXECUTION_ID, 0, "EXECUTION_STARTED"),
+        makeEvent(EXECUTION_ID, 1, "STEP_STARTED", { stepId: "a" }),
+        makeEvent(EXECUTION_ID, 2, "STEP_COMPLETED", { stepId: "a", output: 1 }),
+        makeEvent(EXECUTION_ID, 3, "STEP_STARTED", { stepId: "b" }),
+      ],
+      INITIAL
+    );
+    const frameABefore = base.frames.a;
+    const seqBefore = base.sequence;
+
+    // Fold one more event that only touches frame "b".
+    const next = foldEvents(
+      [makeEvent(EXECUTION_ID, 4, "STEP_COMPLETED", { stepId: "b", output: 2 })],
+      base
+    );
+
+    // Untouched frame "a" is shared by reference (copy-on-write, no deep clone).
+    expect(next.frames.a).toBe(frameABefore);
+    // The prior state is not mutated (no in-place sequence bleed onto the caller's state).
+    expect(base.sequence).toBe(seqBefore);
+    expect(base.frames.b?.status).toBe("running");
+    expect(next.frames.b?.status).toBe("completed");
+  });
 });

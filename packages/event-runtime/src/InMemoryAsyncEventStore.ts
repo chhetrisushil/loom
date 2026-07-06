@@ -61,6 +61,28 @@ export class InMemoryAsyncEventStore implements EventStore {
     return all.filter((e) => e.sequence >= fromSequence);
   }
 
+  async copyPrefix(
+    fromExecutionId: string,
+    toExecutionId: string,
+    throughSequence: number,
+    metadata: Record<string, unknown>
+  ): Promise<void> {
+    await this.tick();
+    const src = this.log.get(fromExecutionId) ?? [];
+    const dst = this.log.get(toExecutionId) ?? [];
+    for (const e of src) {
+      if (e.sequence > throughSequence) continue;
+      // Re-stamp only; no payload (de)serialization.
+      dst.push({
+        ...e,
+        executionId: toExecutionId,
+        id: `${toExecutionId}-${e.sequence}`,
+        metadata: { ...e.metadata, ...metadata },
+      });
+    }
+    this.log.set(toExecutionId, dst);
+  }
+
   async subscribe(
     executionId: string,
     handler: (event: EventEnvelope) => void

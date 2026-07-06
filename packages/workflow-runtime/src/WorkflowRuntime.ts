@@ -42,6 +42,13 @@ export interface WorkflowRuntimeDeps {
    * this is purely for logging/metrics.
    */
   onStorageError?: (executionId: string, err: unknown) => void;
+  /**
+   * Take a mid-run snapshot every N committed events, bounding the replay tail so
+   * a resume/recovery folds only ~N events instead of the whole log. Omit (or 0)
+   * to keep the default cadence (snapshots only at suspend + fork). A larger N
+   * means fewer writes but a longer worst-case replay.
+   */
+  snapshotEvery?: number;
 }
 
 export class WorkflowRuntime {
@@ -51,6 +58,7 @@ export class WorkflowRuntime {
   private readonly onEvent: ((event: EventEnvelope) => void) | undefined;
   private readonly branchRegistry: BranchRegistry | undefined;
   private readonly onStorageError: ((executionId: string, err: unknown) => void) | undefined;
+  private readonly snapshotEvery: number | undefined;
   private readonly flows = new Map<string, RegisteredFlow>();
 
   constructor(deps: WorkflowRuntimeDeps) {
@@ -60,6 +68,7 @@ export class WorkflowRuntime {
     this.onEvent = deps.onEvent;
     this.branchRegistry = deps.branchRegistry;
     this.onStorageError = deps.onStorageError;
+    this.snapshotEvery = deps.snapshotEvery;
   }
 
   register(toolId: string, effect: Effect): void {
@@ -264,20 +273,31 @@ export class WorkflowRuntime {
     //    the envelopes are verbatim, pre-sequenced copies, so they must not be
     //    re-sequenced. No synthetic EXECUTION_FORKED event either — inserting one
     //    would perturb sequence numbering and break the prefix-identity guarantee.
-    for (const e of parentEvents) {
-      if (e.sequence > atSequence) break;
-      const copy: EventEnvelope = {
-        ...e,
-        executionId: childId,
-        id: `${childId}-${e.sequence}`,
-        metadata: {
-          ...e.metadata,
-          forkedFrom: parentExecutionId,
-          forkSequence: atSequence,
-        },
-      };
-      await this.eventStore.append(copy);
-      this.onEvent?.(copy);
+    const forkMeta = { forkedFrom: parentExecutionId, forkSequence: atSequence };
+    const restamp = (e: EventEnvelope): EventEnvelope => ({
+      ...e,
+      executionId: childId,
+      id: `${childId}-${e.sequence}`,
+      metadata: { ...e.metadata, ...forkMeta },
+    });
+
+    if (this.eventStore.copyPrefix) {
+      // Fast path: bulk-copy the prefix in the store (no per-event JS re-serialize).
+      await this.eventStore.copyPrefix(parentExecutionId, childId, atSequence, forkMeta);
+      // Fire live projections from the in-memory prefix we already read.
+      if (this.onEvent) {
+        for (const e of parentEvents) {
+          if (e.sequence > atSequence) break;
+          this.onEvent(restamp(e));
+        }
+      }
+    } else {
+      for (const e of parentEvents) {
+        if (e.sequence > atSequence) break;
+        const copy = restamp(e);
+        await this.eventStore.append(copy);
+        this.onEvent?.(copy);
+      }
     }
 
     // 3. Seed the child snapshot at the fork point so resume(child) folds an
@@ -390,10 +410,36 @@ export class WorkflowRuntime {
     // The per-execution write pipeline: sole sequence allocator + the only thing
     // that calls eventStore.append. A durable-write rejection aborts the run and
     // is surfaced at the next drain barrier as a StorageWriteError.
-    const journal = new ExecutionJournal(this.eventStore, vm, this.onEvent, (err) => {
-      this.onStorageError?.(executionId, err);
-      if (!cancelled) controller.abort(err);
-    });
+    // Snapshot cadence: every `snapshotEvery` committed events, checkpoint the
+    // folded state so a later resume/recovery folds only a bounded tail instead of
+    // the whole log (O(K·S) instead of O(N·S)). At most one save is in flight at a
+    // time; if the cadence fires while a save is pending it is skipped and caught
+    // by the next tick. Fire-and-forget — a failed checkpoint only means a longer
+    // replay, so it is reported (onStorageError) but never aborts the run.
+    let snapshotInFlight = false;
+    const maybeSnapshot = (sequence: number): void => {
+      const every = this.snapshotEvery;
+      if (!every || sequence <= 0 || sequence % every !== 0 || snapshotInFlight) return;
+      snapshotInFlight = true;
+      const state = vm.getState(); // stable: copy-on-write folds never mutate a prior state
+      void this.snapshotStore
+        .save({ id: ulid(), executionId, workflowId, sequence, state, createdAt: Date.now() })
+        .catch((err: unknown) => this.onStorageError?.(executionId, err))
+        .finally(() => {
+          snapshotInFlight = false;
+        });
+    };
+
+    const journal = new ExecutionJournal(
+      this.eventStore,
+      vm,
+      this.onEvent,
+      (err) => {
+        this.onStorageError?.(executionId, err);
+        if (!cancelled) controller.abort(err);
+      },
+      maybeSnapshot
+    );
 
     // Commit bootstrap events (EXECUTION_STARTED / resume+RESUMED / restore) so
     // they flow through the same sequencer + writer as everything else.

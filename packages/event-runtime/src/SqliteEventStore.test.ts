@@ -49,6 +49,31 @@ describe("SqliteEventStore", () => {
       expect(event?.payload).toEqual(payload);
     });
 
+    it("copyPrefix bulk-copies a re-stamped, metadata-merged prefix (no JS re-serialize)", async () => {
+      // Parent log: 5 events, one with existing metadata.
+      for (let i = 0; i < 5; i++) {
+        await store.append({
+          ...makeEnvelope("parent", i, { index: i }),
+          ...(i === 2 && { metadata: { keep: "yes" } }),
+        });
+      }
+      // Copy [0..3] into "child", merging fork provenance.
+      await store.copyPrefix("parent", "child", 3, { forkedFrom: "parent", forkSequence: 3 });
+
+      const child = await store.read("child");
+      expect(child).toHaveLength(4); // sequences 0..3, not 4
+      expect(child.map((e) => e.sequence)).toEqual([0, 1, 2, 3]);
+      // Re-stamped id + executionId, payload preserved.
+      expect(child[0]?.executionId).toBe("child");
+      expect(child[0]?.id).toBe("child-0");
+      expect(child[3]?.payload).toEqual({ index: 3 });
+      // Metadata merged: provenance added, existing keys kept.
+      expect(child[0]?.metadata).toMatchObject({ forkedFrom: "parent", forkSequence: 3 });
+      expect(child[2]?.metadata).toMatchObject({ keep: "yes", forkedFrom: "parent" });
+      // Parent untouched.
+      expect(await store.read("parent")).toHaveLength(5);
+    });
+
     it("preserves metadata when provided", async () => {
       const envelope = { ...makeEnvelope("exec-3", 0), metadata: { traceId: "abc123" } };
       await store.append(envelope);

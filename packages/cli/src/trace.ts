@@ -1,5 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
-import { foldAt } from "./core";
+import { ReplayVM } from "@loom/replay-vm";
 
 export interface TraceEvent {
   sequence: number;
@@ -26,18 +26,28 @@ export interface Trace {
  */
 export function buildTrace(events: EventEnvelope[]): Trace {
   const first = events[0];
-  return {
-    executionId: first?.executionId ?? "",
-    workflowId: first?.workflowId ?? "",
-    timeline: events.map((e) => ({
+  // Single incremental fold: apply each event once, capturing the status at each
+  // sequence — O(N) total, not a fresh prefix-fold per event (which was O(N²)).
+  const vm = new ReplayVM(
+    [],
+    first ? { executionId: first.executionId, workflowId: first.workflowId } : undefined
+  );
+  const timeline: TraceEvent[] = [];
+  const frames: TraceFrame[] = [];
+  for (const e of events) {
+    vm.applyEvent(e);
+    timeline.push({
       sequence: e.sequence,
       eventType: e.eventType,
       suspend: e.eventType === "EXECUTION_SUSPENDED",
-    })),
-    frames: events.map((e) => ({
-      sequence: e.sequence,
-      status: foldAt(events, e.sequence).status,
-    })),
-    finalStatus: events.length > 0 ? foldAt(events).status : "unknown",
+    });
+    frames.push({ sequence: e.sequence, status: vm.getState().status });
+  }
+  return {
+    executionId: first?.executionId ?? "",
+    workflowId: first?.workflowId ?? "",
+    timeline,
+    frames,
+    finalStatus: events.length > 0 ? vm.getState().status : "unknown",
   };
 }

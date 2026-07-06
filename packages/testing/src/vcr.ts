@@ -41,13 +41,17 @@ function fnv1a(input: string): string {
  * {@link replayingProvider} for deterministic, offline reruns.
  */
 export function recordingProvider(real: LlmProvider, cassette: LlmCassette): LlmProvider {
+  // Index by key once (O(n)) so each lookup is O(1) — recording N calls is O(n),
+  // not O(n²). The entries array stays the serialized source of truth.
+  const index = new Map(cassette.entries.map((e) => [e.key, e.response]));
   return {
     async complete(request: LlmRequest): Promise<LlmResponse> {
       const key = hashRequest(request);
-      const hit = cassette.entries.find((e) => e.key === key);
-      if (hit) return hit.response;
+      const hit = index.get(key);
+      if (hit !== undefined) return hit;
       const response = await real.complete(request);
       cassette.entries.push({ key, response });
+      index.set(key, response);
       return response;
     },
   };
@@ -55,14 +59,15 @@ export function recordingProvider(real: LlmProvider, cassette: LlmCassette): Llm
 
 /** Replay LLM responses from a cassette; a request with no recorded entry throws. */
 export function replayingProvider(cassette: LlmCassette): LlmProvider {
+  const index = new Map(cassette.entries.map((e) => [e.key, e.response]));
   return {
     async complete(request: LlmRequest): Promise<LlmResponse> {
       const key = hashRequest(request);
-      const hit = cassette.entries.find((e) => e.key === key);
-      if (!hit) {
+      const hit = index.get(key);
+      if (hit === undefined) {
         throw new Error(`replayingProvider: no cassette entry for request (key ${key})`);
       }
-      return hit.response;
+      return hit;
     },
   };
 }
