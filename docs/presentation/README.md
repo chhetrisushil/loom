@@ -15,7 +15,7 @@ optimize for continuation, not hydration.*
 |------|----------|------------|
 | [`leadership-deck.md`](./leadership-deck.md) | Leadership / execs | The why: platform shift, problems, value, competitive positioning, adoption path |
 | [`engineering-deck.md`](./engineering-deck.md) | Engineers / architects | The how: architecture, primitives, execution model, agentic + intelligence pipeline |
-| [`architecture-deck.md`](./architecture-deck.md) | Engineers / architects | The system design: event sourcing, deterministic replay, isomorphic core, durable suspend/resume, the compiler, resumability — distilled from `architecture.org` |
+| [`architecture-deck.md`](./architecture-deck.md) | Engineers / architects | The system design: event sourcing, deterministic replay, isomorphic core, durable suspend/resume, the compiler, resumability — distilled from `architecture.md` |
 | [`code-walkthrough.md`](./code-walkthrough.md) | Engineers | Annotated tour of real files (read‑along) |
 | [`demo-script.md`](./demo-script.md) | Presenter | Live runbook — exact commands, what to show, talking points, timings |
 | [`cloud-command-center-deck.md`](./cloud-command-center-deck.md) | Engineers / architects | Deep dive on the **Cloud Command Center** (React) — event-sourced, durable suspend/approve/resume + streaming AI triage, all in the browser |
@@ -89,8 +89,8 @@ pnpm --filter @loom/schema-migration-planner dev        #         …or the live
 
 ## Deeper references (in `docs/`)
 
-- [`../architecture.org`](../architecture.org) — system design, event sourcing, replay, package graph
+- [`../architecture.md`](../architecture.md) — system design, event sourcing, replay, package graph
 - [`../api-reference.org`](../api-reference.org) — full API for every package
-- [`../usage-framework.org`](../usage-framework.org) — step‑by‑step build guide
+- [`../usage.md`](../usage.md) — step‑by‑step build guide
 - [`../usage-compiler.org`](../usage-compiler.org) — the `@loom/compiler` Vite plugin
 - [`../../README.org`](../../README.org) — repo overview & package list

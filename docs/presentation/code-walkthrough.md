@@ -299,4 +299,4 @@ expect(remediationSpy2).toHaveBeenCalledTimes(1); // only the post-approval step
 ## Where to go next
 
 - **Run it:** `docs/presentation/demo-script.md`
-- **Reference:** `docs/api-reference.org` · **Architecture:** `docs/architecture.org` · **Guide:** `docs/usage-framework.org`
+- **Reference:** `docs/api-reference.org` · **Architecture:** `docs/architecture.md` · **Guide:** `docs/usage.md`

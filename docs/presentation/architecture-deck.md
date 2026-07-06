@@ -13,7 +13,7 @@ title: "Loom — Architecture"
 
 **Event sourcing · deterministic replay · isomorphic core · durable suspend/resume · build-time optimization**
 
-`docs/architecture.org` — the long form
+`docs/architecture.md` — the long form
 
 <!--
 Presenter: "This deck is the system architecture — how a workflow suspends,

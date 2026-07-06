@@ -375,7 +375,7 @@ agents/  flows/  steps/  tools/  projections/  capabilities/  policies/  memory/
 - Import everything from **`@loom/sdk`**.
 - Start with **one flow** (an approval/ops process) → add a **blueprint** → expose it as a **capability** → route by **intent**.
 
-**Docs:** `docs/architecture.org` · `docs/api-reference.org` · `docs/usage-framework.org`
+**Docs:** `docs/architecture.md` · `docs/api-reference.org` · `docs/usage.md`
 
 ---
 
