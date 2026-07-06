@@ -24,7 +24,8 @@
     "@loom/core": "workspace:*",
     "@loom/eval": "workspace:*",
     "@loom/event-runtime": "workspace:*",
-    "@loom/replay-vm": "workspace:*"
+    "@loom/replay-vm": "workspace:*",
+    "@loom/scaffold": "workspace:*"
   },
   "devDependencies": {
     "@loom/effect-runtime": "workspace:*",

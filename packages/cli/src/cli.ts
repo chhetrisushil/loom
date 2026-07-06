@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
+import { cmdGen, cmdNew } from "./gen";
 
 interface Parsed {
   command: string | undefined;
@@ -29,8 +30,10 @@ export function parseArgs(argv: string[]): Parsed {
   return { command, positionals, flags };
 }
 
-const USAGE = `loom — project-local commands over the durable event log
+const USAGE = `loom — project-local commands for a Loom app
 
+  loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
+  loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
   loom logs  --db <path> <executionId>            print the event timeline
   loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
   loom eval  --dir <path>                         replay golden logs vs expectations
@@ -60,6 +63,21 @@ async function main(argv: string[]): Promise<number> {
       const { text, report } = cmdEval(flags.dir!);
       console.log(text);
       return report.ok ? 0 : 1;
+    }
+    case "gen": {
+      const dir = flags.dir ?? "app";
+      const { out, count } = cmdGen(dir);
+      console.log(`wrote ${out} (${count} flow${count === 1 ? "" : "s"})`);
+      return 0;
+    }
+    case "new": {
+      const kind = requirePositional(positionals, "kind");
+      const name = positionals[1];
+      if (name === undefined) throw new Error("missing required <name>");
+      const dir = flags.dir ?? "app";
+      const { path: dest, created } = cmdNew(kind, name, dir);
+      console.log(created ? `created ${dest}` : `skipped ${dest} (already exists)`);
+      return created ? 0 : 1;
     }
     case undefined:
     case "help":
