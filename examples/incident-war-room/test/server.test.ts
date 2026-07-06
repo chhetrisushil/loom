@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { waitForPhase } from "@loom/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ServerApp, createApp } from "../src/server/app";
 import { STRATEGIES } from "../src/warroom/strategies";
@@ -8,7 +9,6 @@ import { STRATEGIES } from "../src/warroom/strategies";
 const CPU_GOAL = "Why is CPU utilization high? Fix it if remediation is low risk.";
 const REPLICA_GOAL =
   "Investigate the read-replica lag issue and fix it if remediation is low risk, else wait for my approval.";
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("incident war room (durable, headless)", () => {
   let dataDir: string;
@@ -26,15 +26,18 @@ describe("incident war room (durable, headless)", () => {
   const mission = () => app.projectionRuntime.getState<{ phase?: string }>("mission", "m-test");
   const telemetry = () =>
     app.projectionRuntime.getState<{ metrics: Record<string, number> }>("telemetry", "m-test");
-  const waitFor = async (pred: () => boolean, tries = 400): Promise<void> => {
-    for (let i = 0; i < tries && !pred(); i++) await sleep(25);
-  };
+  // Reach a mission phase, failing loudly on timeout (vs the old silent poll loop).
+  const reachPhase = (phase: string) =>
+    waitForPhase(app.projectionRuntime, "mission", "m-test", phase, {
+      timeoutMs: 10000,
+      intervalMs: 25,
+    });
 
   it("forks the gate into candidate branches, simulates each, promotes a winner (no merge)", async () => {
     void app.orchestrator.run(REPLICA_GOAL);
 
     // The replica remediation reaches the gate and opens the War Room.
-    await waitFor(() => mission().phase === "awaiting-branches");
+    await reachPhase("awaiting-branches");
     expect(mission().phase).toBe("awaiting-branches");
 
     const prepared = app.orchestrator.branchSurface();
@@ -73,7 +76,7 @@ describe("incident war room (durable, headless)", () => {
 
     // Phase 3 — promote the winner and apply it for real.
     await app.orchestrator.promoteBranch("scale-replicas");
-    await waitFor(() => mission().phase === "resolved");
+    await reachPhase("resolved");
     expect(mission().phase).toBe("resolved");
 
     const committed = app.orchestrator.branchSurface();
