@@ -18,6 +18,7 @@
     "@loom/a2a": "workspace:*",
     "@loom/a2ui": "workspace:*",
     "@loom/agent": "workspace:*",
+    "@loom/app": "workspace:*",
     "@loom/blueprint-runtime": "workspace:*",
     "@loom/capability": "workspace:*",
     "@loom/core": "workspace:*",
