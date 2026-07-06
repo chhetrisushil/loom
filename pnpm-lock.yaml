@@ -695,9 +695,6 @@ importers:
       '@loom/agent':
         specifier: workspace:*
         version: link:../../packages/agent
-      '@loom/app':
-        specifier: workspace:*
-        version: link:../../packages/app
       '@loom/blueprint-runtime':
         specifier: workspace:*
         version: link:../../packages/blueprint-runtime
@@ -936,6 +933,43 @@ importers:
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+
+  packages/cli:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
+      '@loom/eval':
+        specifier: workspace:*
+        version: link:../eval
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../event-runtime
+      '@loom/replay-vm':
+        specifier: workspace:*
+        version: link:../replay-vm
+    devDependencies:
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../effect-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../snapshot-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../workflow-runtime
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
