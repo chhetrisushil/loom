@@ -133,6 +133,12 @@ pnpm --filter @loom/incident-war-room dev            # run the replica goal → 
 - "`parallelLimit` runs the speculative branches concurrently but returns them in input order — deterministic for replay."
 - "There's deliberately **no merge**: two divergent executions have no principled join, so `promote()` is a pointer move and the losers stay as immutable lineage — your audit trail of alternatives considered."
 
+**Second domain (optional, +1 min)** — to prove the seam is *domain‑agnostic*, run the same branching on a schema migration. The `BranchOrchestrator` and branch UI are reused verbatim; only the domain changes. It also streams **live per‑branch backfill progress** — three shadow‑migrations advancing at once.
+
+```bash
+pnpm --filter @loom/schema-migration-planner demo:fork   # add a NOT NULL column to a 40M‑row table: online‑DDL vs shadow‑copy vs dual‑write
+```
+
 ---
 
 ## Suggested timings

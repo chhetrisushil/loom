@@ -25,6 +25,7 @@ optimize for continuation, not hydration.*
 | [`db-command-center-wc-deck.md`](./db-command-center-wc-deck.md) | Engineers / architects | The **same app in vanilla Web Components** — proof of BYOR: reuse the whole agentic backend, swap only the render layer |
 | [`db-command-center-server-deck.md`](./db-command-center-server-deck.md) | Engineers / architects | The **same app as server + client** — durable runtime on a Node server (SQLite), Web-Components client over HTTP + SSE; Loom's isomorphic deployment model |
 | [`incident-war-room-deck.md`](./incident-war-room-deck.md) | Engineers / architects | **Git-style branching**, made a live experience — fork the durable execution at a gate into mutually-exclusive remediations, simulate each (concurrently), compare, and **promote** the winner. Branch-only, no merge |
+| [`schema-migration-planner-deck.md`](./schema-migration-planner-deck.md) | Engineers / architects | The **same branching seam on a second domain** — choosing a schema-migration strategy — proving it's domain-agnostic, plus **live per-branch simulation progress** (three shadow-migrations backfilling at once) |
 
 Suggested order: **leadership deck → live demo (Demo 0 + 1) → engineering deck → walkthrough** as
 depth requires. The demo script has 5 / 15 / 30‑minute variants.
@@ -67,6 +68,8 @@ pnpm --filter @loom/db-command-center-wc dev      # Demo 5: the same app in vani
 pnpm --filter @loom/db-command-center-server dev  # Demo 6: the same app as server + client (durable Node server + WC client over SSE)
 pnpm --filter @loom/incident-war-room demo:fork   # Demo 7: git-style branching — fork → simulate → compare → promote (headless)
 pnpm --filter @loom/incident-war-room dev         #         …or the live War Room UI (branch graph + diff + promote)
+pnpm --filter @loom/schema-migration-planner demo:fork  # Demo 8: same branching, second domain + live sim progress (headless)
+pnpm --filter @loom/schema-migration-planner dev        #         …or the live Migration Board UI (3 progress bars → promote)
 ```
 
 **Prerequisites:** Node ≥ 20, pnpm ≥ 9. Use `vite dev` (not `vite build`) for the browser apps.

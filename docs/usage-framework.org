@@ -425,7 +425,7 @@ branchRegistry.moveTip("spec/scale-replicas", preview.sequence);
 branchRegistry.promote("spec/scale-replicas", "main");
 #+end_src
 
-The parent's log is never modified by a fork, so it remains independently resumable; the losing branch likewise stays in the store. See the ~examples/incident-war-room~ example for the full fork → simulate → compare → promote loop as a live product experience (~pnpm --filter @loom/incident-war-room demo:fork~ for the narrated headless walkthrough, or ~… dev~ for the interactive War Room UI).
+The parent's log is never modified by a fork, so it remains independently resumable; the losing branch likewise stays in the store. See the ~examples/incident-war-room~ example for the full fork → simulate → compare → promote loop as a live product experience (~pnpm --filter @loom/incident-war-room demo:fork~ for the narrated headless walkthrough, or ~… dev~ for the interactive War Room UI), and ~examples/schema-migration-planner~ for the same seam on a different domain (choosing a schema-migration strategy) with live per-branch simulation progress.
 
 * Step 7 — Define a Blueprint (optional)
 
