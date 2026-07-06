@@ -21,6 +21,7 @@
     "@loom/blueprint-runtime": "workspace:*",
     "@loom/capability": "workspace:*",
     "@loom/core": "workspace:*",
+    "@loom/dispatcher": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/intent": "workspace:*",
@@ -30,6 +31,7 @@
     "@loom/registry": "workspace:*",
     "@loom/sdk": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
+    "@loom/worker-runtime-local": "workspace:*",
     "@loom/workflow-runtime": "workspace:*",
     "zod": "^3.23.8"
   },

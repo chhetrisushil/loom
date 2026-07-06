@@ -1,0 +1,37 @@
+{
+  "name": "@loom/worker-server",
+  "version": "0.0.1",
+  "description": "Stateless Loom worker HTTP endpoint — POST /execute runs one ExecutionPackage on an injected WorkerRuntime and returns the ExecutionResult. The container entrypoint for remote/Cloud Run execution",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/worker-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@loom/core": "workspace:*",
+    "@loom/dispatcher": "workspace:*",
+    "@loom/effect-runtime": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/worker-runtime-local": "workspace:*",
+    "@loom/worker-runtime-remote": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8",
+    "zod": "^3.23.8"
+  }
+}

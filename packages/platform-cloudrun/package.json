@@ -1,0 +1,38 @@
+{
+  "name": "@loom/platform-cloudrun",
+  "version": "0.0.1",
+  "description": "Cloud Run platform adapter for Loom — CloudRunWorkerRuntime maps DispatchMetadata to a Cloud Run sizing config, resolves a service endpoint, and invokes the stateless worker. Cloud specifics stay behind the CloudRunPlatform SPI",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/dispatcher": "workspace:*",
+    "@loom/worker-runtime": "workspace:*",
+    "@loom/worker-runtime-remote": "workspace:*"
+  },
+  "devDependencies": {
+    "@loom/core": "workspace:*",
+    "@loom/effect-runtime": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/worker-runtime-local": "workspace:*",
+    "@loom/worker-server": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8",
+    "zod": "^3.23.8"
+  }
+}
