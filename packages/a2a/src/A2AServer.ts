@@ -1,6 +1,7 @@
 import * as http from "node:http";
-import type { ExecutionHandle, RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
-import type { A2ATask, A2ATaskResult, A2ATaskStatus, AgentCard } from "./types";
+import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+import { LoomAgentExecutor } from "./AgentExecutor";
+import type { A2ATask, AgentCard } from "./types";
 
 export interface A2AServerOptions {
   port?: number;
@@ -10,20 +11,6 @@ export interface A2AServer {
   start(): Promise<void>;
   stop(): Promise<void>;
   readonly url: string;
-}
-
-function executionStatusToA2A(status: string): A2ATaskStatus {
-  switch (status) {
-    case "completed":
-      return "completed";
-    case "failed":
-      return "failed";
-    case "running":
-    case "suspended":
-      return "working";
-    default:
-      return "submitted";
-  }
 }
 
 function parseBody(req: http.IncomingMessage): Promise<unknown> {
@@ -57,7 +44,8 @@ export function createA2AServer(
   const port = options.port ?? 3001;
   let resolvedUrl = `http://localhost:${port}`;
 
-  const handles = new Map<string, ExecutionHandle>();
+  // The whole A2A layer is this one adapter; the server just moves bytes to it.
+  const executor = new LoomAgentExecutor(workflowRuntime, flow);
 
   const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse): void => {
     void (async () => {
@@ -72,10 +60,8 @@ export function createA2AServer(
 
         if (method === "POST" && url === "/tasks/send") {
           const task = (await parseBody(req)) as A2ATask;
-          const prompt = task.message.parts.map((p) => p.text).join("\n");
-          const handle = await workflowRuntime.start(flow, { prompt });
-          handles.set(handle.executionId, handle);
-          json(res, 202, { id: handle.executionId });
+          const { id } = await executor.submit(task);
+          json(res, 202, { id });
           return;
         }
 
@@ -86,33 +72,11 @@ export function createA2AServer(
             json(res, 400, { error: "missing task id" });
             return;
           }
-
-          const handle = handles.get(taskId);
-          if (handle === undefined) {
+          const result = await executor.get(taskId);
+          if (result === null) {
             json(res, 404, { error: `task ${taskId} not found` });
             return;
           }
-
-          const execState = handle.getState();
-          const a2aStatus = executionStatusToA2A(execState.status);
-          const result: A2ATaskResult = { id: taskId, status: a2aStatus };
-
-          if (a2aStatus === "completed") {
-            const output = execState.variables._output;
-            result.artifacts = [
-              {
-                parts: [
-                  {
-                    type: "text",
-                    text: typeof output === "string" ? output : JSON.stringify(output),
-                  },
-                ],
-              },
-            ];
-          } else if (a2aStatus === "failed") {
-            result.error = String(execState.variables._error ?? "unknown error");
-          }
-
           json(res, 200, result);
           return;
         }

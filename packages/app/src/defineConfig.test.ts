@@ -57,6 +57,31 @@ function registerToolEffects(rt: EffectRuntime, metrics: () => Promise<unknown>)
   rt.register("remediation-tool", new ToolEffect(async () => ({ fixed: true })));
 }
 
+describe("defineConfig — flowModules + manifest cross-check", () => {
+  it("registers flows from statically-imported modules and warns on manifest gaps", async () => {
+    const warnings: string[] = [];
+    // A statically-imported module namespace (what `import * as flows` yields).
+    const flowsModule = { Gated: gatedFlow() };
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flowModules: [flowsModule],
+      manifest: { flows: { gated: { warnings: [] }, missing: { warnings: [] } } },
+      onWarn: (m) => warnings.push(m),
+    });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+
+    // The module's flow is registered and runnable.
+    expect(app.runtime.getFlow("gated")).toBeDefined();
+    const handle = await app.runtime.start(gatedFlow(), { incidentId: "i1" });
+    expect((await handle.waitForSuspend()).status).toBe("suspended");
+
+    // The manifest flow with no matching registration is flagged.
+    expect(warnings.some((w) => w.includes("missing") && w.includes("not registered"))).toBe(true);
+    expect(warnings.some((w) => w.includes('"gated"'))).toBe(false);
+    await app.close();
+  });
+});
+
 describe("defineConfig", () => {
   it("assembles a runtime that runs a flow start → suspend → resume", async () => {
     const app = defineConfig({ storage: { kind: "memory" }, flows: [gatedFlow()] });

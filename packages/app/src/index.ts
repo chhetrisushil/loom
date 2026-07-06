@@ -14,3 +14,9 @@ export {
 } from "./InProcessA2ABus";
 export { BroadcastingProjectionRuntime } from "./BroadcastingProjectionRuntime";
 export { progressHub } from "./progressHub";
+export {
+  registerFlowsFrom,
+  manifestWarnings,
+  type FlowModule,
+  type ManifestView,
+} from "./registerFlows";
