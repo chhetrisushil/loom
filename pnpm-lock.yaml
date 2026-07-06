@@ -954,6 +954,9 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../core
+      '@loom/deploy-sim':
+        specifier: workspace:*
+        version: link:../deploy-sim
       '@loom/eval':
         specifier: workspace:*
         version: link:../eval
