@@ -96,23 +96,26 @@ Traditional frameworks optimize for **hydration** (rebuild state on every reques
 | **Durable execution** | Suspend/resume across restarts; nothing is re‑run |
 | **Event‑sourced state** | Every action is an auditable, replayable event |
 | **Pluggable storage** | The audit log lives where you trust it — embedded SQLite, or your own Postgres / Redis / DynamoDB; no SaaS lock‑in |
+| **Pluggable compute** | Run in-process, on your own servers, or Cloud Run — the *same* app, no lock-in |
 | **Speculative branching** | Fork an in‑flight task, try alternate plans, keep the winner |
 | **Agents + tools** | ReAct agents, MCP tool discovery, agent memory |
 | **Agent‑to‑Agent (A2A)** | Expose a workflow as an agent; call remote agents |
 | **Generated UI (A2UI)** | Agents drive live UIs via durable patches |
 | **Intent → Plan → Capability** | Users express goals; Loom routes & plans |
 | **Multi‑surface** | Same app renders to web, Angular, terminal, … |
+| **Safe releases** | Simulate a deploy against real history + replayable evals gate CI *before* you promote |
 
 ---
 
 ## It's real — and it's working today
 
 - **~40 packages** in a typed monorepo (durable core, agentic runtimes, pluggable compute, DX tooling)
-- **Full test suite green** across every package (~180 tests)
-- **Three runnable reference apps**, all offline (no API key needed):
-  - **Cloud Command Center** (React) — durable incident response, streaming AI triage, human approval
-  - **Angular Command Center** — the *same runtime*, different UI framework
+- **Full test suite green** across every package — with a testing kit, replayable evals, and deploy-simulation as CI gates
+- **Ten runnable reference apps**, all offline (no API key needed). Highlights:
+  - **loom-starter** — the quickstart: one small app wiring the whole toolchain (`defineConfig`, folder convention, testing, evals, deploy-sim)
+  - **Cloud Command Center** (React) — durable incident response, streaming AI triage, human approval — *the same runtime* also runs in **Angular** and **Web Components**
   - **Agent Network** (headless) — LLM → agent → MCP → A2A → intent → planner → memory → terminal, end to end
+  - **Incident War Room / Schema Migration Planner** — git-style branching: fork → simulate → compare → **promote**
 
 *Live demo follows the deck.*
 
