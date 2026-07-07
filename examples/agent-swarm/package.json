@@ -1,0 +1,34 @@
+{
+  "name": "@loom/agent-swarm",
+  "version": "0.0.1",
+  "description": "A dynamic agent-swarm wired from a user's intent: a release-audit swarm where IntentRuntime + PlannerRuntime compose a pipeline from a goal, dispatched to a fleet of agent$ agents over the A2A bus, with a DURABLE plan record, a parallel executeGraph fan-out (join), and durable human-in-the-loop sign-off.",
+  "private": true,
+  "scripts": {
+    "build": "tsc --build",
+    "start": "tsx src/main.ts",
+    "test": "vitest run",
+    "clean": "rm -rf dist .data tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/a2a": "workspace:*",
+    "@loom/app": "workspace:*",
+    "@loom/capability": "workspace:*",
+    "@loom/core": "workspace:*",
+    "@loom/dispatcher": "workspace:*",
+    "@loom/graph-executor": "workspace:*",
+    "@loom/intent": "workspace:*",
+    "@loom/llm": "workspace:*",
+    "@loom/orchestrator": "workspace:*",
+    "@loom/planner": "workspace:*",
+    "@loom/worker-runtime-local": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@loom/testing": "workspace:*",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

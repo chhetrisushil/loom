@@ -213,6 +213,64 @@ importers:
         specifier: ^5.6.3
         version: 5.9.3
 
+  examples/agent-swarm:
+    dependencies:
+      '@loom/a2a':
+        specifier: workspace:*
+        version: link:../../packages/a2a
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../../packages/app
+      '@loom/capability':
+        specifier: workspace:*
+        version: link:../../packages/capability
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../../packages/dispatcher
+      '@loom/graph-executor':
+        specifier: workspace:*
+        version: link:../../packages/graph-executor
+      '@loom/intent':
+        specifier: workspace:*
+        version: link:../../packages/intent
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../../packages/llm
+      '@loom/orchestrator':
+        specifier: workspace:*
+        version: link:../../packages/orchestrator
+      '@loom/planner':
+        specifier: workspace:*
+        version: link:../../packages/planner
+      '@loom/worker-runtime-local':
+        specifier: workspace:*
+        version: link:../../packages/worker-runtime-local
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@loom/testing':
+        specifier: workspace:*
+        version: link:../../packages/testing
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   examples/angular-command-center:
     dependencies:
       '@angular/common':
