@@ -8,6 +8,10 @@
     ".": {
       "require": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./memory": {
+      "types": "./memory.d.ts",
+      "require": "./memory.js"
     }
   },
   "scripts": {

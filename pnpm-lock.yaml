@@ -224,6 +224,9 @@ importers:
       '@angular/platform-browser':
         specifier: ^20.0.0
         version: 20.3.25(@angular/common@20.3.25(@angular/core@20.3.25(@angular/compiler@20.3.25)(rxjs@7.8.2)(zone.js@0.15.1))(rxjs@7.8.2))(@angular/core@20.3.25(@angular/compiler@20.3.25)(rxjs@7.8.2)(zone.js@0.15.1))
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../../packages/app
       '@loom/core':
         specifier: workspace:*
         version: link:../../packages/core
