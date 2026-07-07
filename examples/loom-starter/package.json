@@ -1,0 +1,37 @@
+{
+  "name": "@loom/loom-starter",
+  "version": "0.0.1",
+  "description": "The canonical new-architecture Loom example: defineConfig + folder convention (loom gen) + effect middleware (retry) + @loom/testing + log-as-fixture evals + deploy-simulation + a pluggable compute seam. A compact release-approval workflow that assesses risk, pauses for human approval, and resumes.",
+  "private": true,
+  "scripts": {
+    "gen": "loom gen --dir app",
+    "build": "tsc --build",
+    "start": "tsx src/main.ts",
+    "record:golden": "tsx src/record-golden.ts",
+    "eval": "loom eval --dir evals",
+    "deploy:check": "loom deploy check --logs .data/logs --config dist/src/deploy.config.js",
+    "test": "vitest run",
+    "clean": "rm -rf dist .data tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/app": "workspace:*",
+    "@loom/core": "workspace:*",
+    "@loom/dispatcher": "workspace:*",
+    "@loom/effect-runtime": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
+    "@loom/middleware": "workspace:*",
+    "@loom/projection-runtime": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/worker-runtime-local": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@loom/cli": "workspace:*",
+    "@loom/testing": "workspace:*",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
