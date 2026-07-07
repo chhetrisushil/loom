@@ -1,35 +1,30 @@
-import { a2uiSurfaceProjection } from "@loom/a2ui";
-import { EffectRuntime } from "@loom/effect-runtime";
 import { IntentRuntime } from "@loom/intent";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { createTestApp } from "@loom/testing";
+import type { RegisteredFlow } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { incidentCatalog } from "../src/capabilities";
 import { InvestigateIncidentFlow } from "../src/flows/InvestigateIncident";
 import { IncidentProjection } from "../src/projections/IncidentProjection";
 import { MetricsProjection } from "../src/projections/MetricsProjection";
 import { registerAiTriageEffect } from "../src/runtime/aiTriage";
-import { InMemoryEventStore, InMemorySnapshotStore } from "../src/runtime/browserStores";
 
 // Reproduces exactly what main.tsx + App.tsx do, headlessly, so a missing effect
 // registration (the "No effect registered for toolId: ai-triage-tool" bug) is
-// caught by CI instead of only in the browser.
+// caught by CI instead of only in the browser. Uses `createTestApp` — the same
+// `defineConfig` wiring production uses, defaulted to in-memory storage.
 function wireRuntime() {
-  const effectRuntime = new EffectRuntime();
   const projectionRuntime = new InMemoryProjectionRuntime();
   projectionRuntime.register(MetricsProjection);
   projectionRuntime.register(IncidentProjection);
-  projectionRuntime.register(a2uiSurfaceProjection("ui"));
 
-  const workflowRuntime = new WorkflowRuntime({
-    eventStore: new InMemoryEventStore(),
-    snapshotStore: new InMemorySnapshotStore(),
-    effectRuntime,
-    onEvent: (e) => projectionRuntime.handleEvent(e),
+  const app = createTestApp({
+    projectionRuntime,
+    surfaces: ["ui"],
+    flows: [InvestigateIncidentFlow as RegisteredFlow],
   });
-  workflowRuntime.registerFlow(InvestigateIncidentFlow.definition, InvestigateIncidentFlow.runner);
-  registerAiTriageEffect(effectRuntime);
-  return { workflowRuntime, projectionRuntime };
+  registerAiTriageEffect(app.effectRuntime);
+  return { workflowRuntime: app.runtime, projectionRuntime };
 }
 
 describe("cloud-command-center: intent → capability → flow", () => {

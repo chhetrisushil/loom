@@ -23,6 +23,9 @@ importers:
       '@loom/a2ui':
         specifier: workspace:*
         version: link:../../packages/a2ui
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../../packages/app
       '@loom/blueprint-runtime':
         specifier: workspace:*
         version: link:../../packages/blueprint-runtime
@@ -99,6 +102,9 @@ importers:
       '@loom/agent':
         specifier: workspace:*
         version: link:../../packages/agent
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../../packages/app
       '@loom/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -145,6 +151,9 @@ importers:
       '@loom/agent':
         specifier: workspace:*
         version: link:../../packages/agent
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../../packages/app
       '@loom/blueprint-runtime':
         specifier: workspace:*
         version: link:../../packages/blueprint-runtime
@@ -276,6 +285,9 @@ importers:
       '@loom/agent':
         specifier: workspace:*
         version: link:../../packages/agent
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../../packages/app
       '@loom/blueprint-runtime':
         specifier: workspace:*
         version: link:../../packages/blueprint-runtime
@@ -325,6 +337,9 @@ importers:
       '@loom/compiler':
         specifier: workspace:*
         version: link:../../packages/compiler
+      '@loom/testing':
+        specifier: workspace:*
+        version: link:../../packages/testing
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -425,6 +440,9 @@ importers:
       '@loom/compiler':
         specifier: workspace:*
         version: link:../../packages/compiler
+      '@loom/testing':
+        specifier: workspace:*
+        version: link:../../packages/testing
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -510,6 +528,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@loom/testing':
+        specifier: workspace:*
+        version: link:../../packages/testing
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -589,6 +610,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@loom/testing':
+        specifier: workspace:*
+        version: link:../../packages/testing
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -753,6 +777,9 @@ importers:
       '@loom/agent':
         specifier: workspace:*
         version: link:../../packages/agent
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../../packages/app
       '@loom/blueprint-runtime':
         specifier: workspace:*
         version: link:../../packages/blueprint-runtime
@@ -805,6 +832,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@loom/testing':
+        specifier: workspace:*
+        version: link:../../packages/testing
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

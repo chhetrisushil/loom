@@ -13,6 +13,8 @@ optimize for continuation, not hydration.*
 
 | File | Audience | Use it for |
 |------|----------|------------|
+| [`loom-deck.md`](./loom-deck.md) | Everyone (start here) | **The flagship overview** — mission, the problem, the thesis, core principles, the runtime model, branching, tooling, run-anywhere. The single deck to present Loom |
+| [`platform-and-dx-deck.md`](./platform-and-dx-deck.md) | Engineers / architects | **Platform & DX** — `defineConfig`, the `loom` CLI, pluggable compute (dispatcher/Cloud Run), `@loom/testing`, evals & deploy-sim, orchestration primitives, perf. Everything built on top of the durable core |
 | [`leadership-deck.md`](./leadership-deck.md) | Leadership / execs | The why: platform shift, problems, value, competitive positioning, adoption path |
 | [`engineering-deck.md`](./engineering-deck.md) | Engineers / architects | The how: architecture, primitives, execution model, agentic + intelligence pipeline |
 | [`architecture-deck.md`](./architecture-deck.md) | Engineers / architects | The system design: event sourcing, deterministic replay, isomorphic core, durable suspend/resume, the compiler, resumability — distilled from `architecture.md` |

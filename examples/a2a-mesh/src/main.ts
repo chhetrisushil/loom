@@ -1,14 +1,13 @@
 import { A2APeerClient, createA2AClientEffect, createA2AServer, toAgentCard } from "@loom/a2a";
 import { AgentRunner } from "@loom/agent";
+import { defineConfig } from "@loom/app";
 import { agent$, flow$, handler$, step$ } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
 import { AgentRegistry } from "@loom/registry";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { z } from "zod";
 import { startMockExternalAgent } from "./mockExternalAgent";
-import { InMemoryEventStore, InMemorySnapshotStore } from "./stores";
 
 /**
  * A2A Mesh — using external agent frameworks (Google ADK, LangGraph, CrewAI, …)
@@ -144,12 +143,14 @@ async function main(): Promise<void> {
     runner: remediateRunner as FlowRunner<unknown, unknown>,
   };
 
-  const serverRuntime = new WorkflowRuntime({
-    eventStore: new InMemoryEventStore(),
-    snapshotStore: new InMemorySnapshotStore(),
-    effectRuntime: new EffectRuntime(),
+  // Composition root for the inbound A2A server: defineConfig assembles the
+  // in-memory stores, EffectRuntime, projection runtime, and WorkflowRuntime,
+  // and registers the remediation flow. The outbound EffectRuntime above is a
+  // separate concern (it backs the AgentRunner, not a WorkflowRuntime).
+  const app = defineConfig({
+    storage: { kind: "memory" },
+    flows: [remediateFlow],
   });
-  serverRuntime.registerFlow(remediateFlow.definition, remediateFlow.runner);
 
   const remediateAgent = agent$({
     id: "remediation-agent",
@@ -160,7 +161,7 @@ async function main(): Promise<void> {
     capabilities: { streaming: false },
     skills: [{ id: "remediate", name: "Remediate" }],
   });
-  const server = createA2AServer(serverRuntime, remediateFlow, toAgentCard(remediateAgent), {
+  const server = createA2AServer(app.runtime, remediateFlow, toAgentCard(remediateAgent), {
     port: 0,
   });
   await server.start();
@@ -187,6 +188,7 @@ async function main(): Promise<void> {
   // ── Cleanup ─────────────────────────────────────────────────────────────────
   await server.stop();
   await external.close();
+  await app.close();
   section("Done — bidirectional A2A mesh demonstrated offline.");
 }
 

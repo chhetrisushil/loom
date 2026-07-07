@@ -36,7 +36,7 @@ Intent → Planner → Workflow → Agent → Effect → Event Log
 
 ---
 
-## Package map (24 packages)
+## Package map (~40 packages)
 
 **Core runtime** — `core` (builders/types), `workflow-runtime`, `effect-runtime`, `event-runtime`, `snapshot-runtime`, `replay-vm`, `projection-runtime`
 

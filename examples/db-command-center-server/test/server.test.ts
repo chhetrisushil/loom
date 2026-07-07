@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { waitFor, waitForPhase } from "@loom/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ServerApp, createApp } from "../src/server/app";
 import type { ServerFrame } from "../src/wire";
@@ -8,7 +9,6 @@ import type { ServerFrame } from "../src/wire";
 const CPU_GOAL = "Why is CPU utilization high? Fix it if remediation is low risk.";
 const REPLICA_GOAL =
   "Investigate the read-replica lag issue and fix it if remediation is low risk, else wait for my approval.";
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("server app (durable, headless)", () => {
   let dataDir: string;
@@ -22,6 +22,13 @@ describe("server app (durable, headless)", () => {
     app.close();
     rmSync(dataDir, { recursive: true, force: true });
   });
+
+  // Reach a mission phase, failing loudly on timeout (vs the old silent poll loop).
+  const reachPhase = (phase: string) =>
+    waitForPhase(app.projectionRuntime, "mission", "m-test", phase, {
+      timeoutMs: 10000,
+      intervalMs: 25,
+    });
 
   it("runs a mission on SQLite, streams patches, and resolves after HTTP-style approval", async () => {
     const frames: ServerFrame[] = [];
@@ -38,7 +45,7 @@ describe("server app (durable, headless)", () => {
     void app.orchestrator.run(REPLICA_GOAL);
 
     // The medium-risk replica fix pauses for approval.
-    for (let i = 0; i < 200 && mission().pendingApproval == null; i++) await sleep(25);
+    await waitFor(() => mission().pendingApproval != null, { timeoutMs: 10000, intervalMs: 25 });
     expect(mission().pendingApproval).not.toBeNull();
     expect(mission().phase).toBe("awaiting-approval");
 
@@ -55,7 +62,7 @@ describe("server app (durable, headless)", () => {
 
     // Operator approves (what POST /approve does) → durable flow resumes.
     app.orchestrator.resolveApproval(true);
-    for (let i = 0; i < 200 && mission().phase !== "resolved"; i++) await sleep(25);
+    await reachPhase("resolved");
 
     expect(mission().phase).toBe("resolved");
     expect(telemetry().metrics.lagMs).toBe(180);
@@ -79,13 +86,13 @@ describe("server app (durable, headless)", () => {
     const second = app.orchestrator.run(REPLICA_GOAL).catch((e) => {
       rejected = e;
     });
-    for (let i = 0; i < 200 && mission().phase !== "awaiting-approval"; i++) await sleep(25);
+    await reachPhase("awaiting-approval");
     expect(rejected).toBeNull();
     expect(mission().phase).toBe("awaiting-approval");
 
     app.orchestrator.resolveApproval(true);
     await second;
-    for (let i = 0; i < 200 && mission().phase !== "resolved"; i++) await sleep(25);
+    await reachPhase("resolved");
     expect(rejected).toBeNull();
     expect(mission().phase).toBe("resolved");
   }, 30000);

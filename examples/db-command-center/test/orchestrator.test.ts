@@ -1,56 +1,35 @@
-import { a2uiSurfaceProjection } from "@loom/a2ui";
-import { InProcessA2ABus } from "@loom/app";
-import { EffectRuntime } from "@loom/effect-runtime";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
+import type { ProjectionRuntime } from "@loom/projection-runtime";
+import { createTestApp, waitFor } from "@loom/testing";
 import { describe, expect, it } from "vitest";
-import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "../src/agents/definitions";
+import { AGENT_CARDS, CAPABILITY_AGENT } from "../src/agents/definitions";
 import { buildCatalog } from "../src/capabilities/catalog";
 import type { AgentTask, PlanEntry } from "../src/domain";
 import { Orchestrator } from "../src/orchestrator/Orchestrator";
-import { InMemoryEventStore, InMemorySnapshotStore } from "../src/runtime/browserStores";
 
 const CPU_GOAL = "Why is CPU utilization high? Fix it if remediation is low risk.";
 const REPLICA_GOAL =
   "Investigate the read-replica lag issue and fix it if remediation is low risk, else wait for my approval.";
 
 function wire(missionId: string) {
-  const effectRuntime = new EffectRuntime();
-  const projectionRuntime = new InMemoryProjectionRuntime();
-  projectionRuntime.register(a2uiSurfaceProjection("mission"));
-  projectionRuntime.register(a2uiSurfaceProjection("telemetry"));
-
-  const missionRuntime = new WorkflowRuntime({
-    eventStore: new InMemoryEventStore(),
-    snapshotStore: new InMemorySnapshotStore(),
-    effectRuntime,
-    onEvent: (e) => projectionRuntime.handleEvent(e),
-  });
-
   const catalog = buildCatalog();
-  catalog.registerInto(missionRuntime);
-
-  const bus = new InProcessA2ABus(missionRuntime);
-  for (const agent of FLEET) {
-    const card = AGENT_CARDS[agent.id];
-    if (card) bus.registerAgent(card);
-  }
-  for (const [capabilityId, agentId] of Object.entries(CAPABILITY_AGENT)) {
-    const cap = catalog.get(capabilityId);
-    if (cap) bus.registerCapability(capabilityId, agentId, cap.flow);
-  }
+  const app = createTestApp({
+    surfaces: ["mission", "telemetry"],
+    catalog,
+    agents: Object.values(AGENT_CARDS),
+    capabilityAgents: CAPABILITY_AGENT,
+  });
 
   const orchestrator = new Orchestrator({
-    projectionRuntime,
-    missionRuntime,
+    projectionRuntime: app.projectionRuntime,
+    missionRuntime: app.runtime,
     catalog,
-    bus,
+    bus: app.bus,
     missionId,
   });
-  return { orchestrator, projectionRuntime };
+  return { orchestrator, projectionRuntime: app.projectionRuntime };
 }
 
-const mission = (pr: InMemoryProjectionRuntime, id: string) =>
+const mission = (pr: ProjectionRuntime, id: string) =>
   pr.getState<{
     phase: string;
     plan: PlanEntry[];
@@ -58,10 +37,8 @@ const mission = (pr: InMemoryProjectionRuntime, id: string) =>
     pendingApproval: unknown;
     summary: string;
   }>("mission", id);
-const telemetry = (pr: InMemoryProjectionRuntime, id: string) =>
+const telemetry = (pr: ProjectionRuntime, id: string) =>
   pr.getState<{ metrics: Record<string, number> }>("telemetry", id);
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("DB Command Center orchestration", () => {
   it("auto-remediates a low-risk CPU incident end to end", async () => {
@@ -93,9 +70,10 @@ describe("DB Command Center orchestration", () => {
     const done = orchestrator.run(REPLICA_GOAL);
 
     // Wait until the risk gate surfaces the approval.
-    for (let i = 0; i < 200 && mission(projectionRuntime, id).pendingApproval === null; i++) {
-      await sleep(25);
-    }
+    await waitFor(() => mission(projectionRuntime, id).pendingApproval !== null, {
+      timeoutMs: 5000,
+      intervalMs: 25,
+    });
     const paused = mission(projectionRuntime, id);
     expect(paused.pendingApproval).not.toBeNull();
     expect(paused.phase).toBe("awaiting-approval");
@@ -121,9 +99,10 @@ describe("DB Command Center orchestration", () => {
     const { orchestrator, projectionRuntime } = wire(id);
 
     const done = orchestrator.run(REPLICA_GOAL);
-    for (let i = 0; i < 200 && mission(projectionRuntime, id).pendingApproval === null; i++) {
-      await sleep(25);
-    }
+    await waitFor(() => mission(projectionRuntime, id).pendingApproval !== null, {
+      timeoutMs: 5000,
+      intervalMs: 25,
+    });
     orchestrator.resolveApproval(false);
     await done;
 

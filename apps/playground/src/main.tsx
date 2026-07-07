@@ -1,21 +1,19 @@
-import { A2UI_PATCH, a2uiSurfaceProjection } from "@loom/a2ui";
+import { A2UI_PATCH } from "@loom/a2ui";
 import type { A2UIPatch, A2UIPatchPayload, A2UISurfaceState } from "@loom/a2ui";
+import { defineConfig } from "@loom/app";
 import { CapabilityCatalog, capability$ } from "@loom/capability";
 import type { EventEnvelope } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
 import { IntentRuntime } from "@loom/intent";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { LoomProvider, useLoom } from "@loom/renderer-react";
-import { ConsoleTelemetryAdapter, composeAdapters, createTelemetryHook } from "@loom/telemetry";
+import { ConsoleTelemetryAdapter } from "@loom/telemetry";
 import type { FlowTelemetryInfo, StepTelemetryInfo, TelemetryAdapter } from "@loom/telemetry";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type React from "react";
 import { useCallback, useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { z } from "zod";
 import { RegisteredTaskFlow, type TaskInput } from "./flow";
 import { TaskProjection, type TaskState } from "./projection";
-import { InMemoryEventStore, InMemorySnapshotStore } from "./stores";
 
 // ── Telemetry accumulator (module-level, polled by React) ─────────────────────
 
@@ -62,28 +60,11 @@ const ReactAdapter: TelemetryAdapter = {
   },
 };
 
-const telemetryHook = createTelemetryHook(composeAdapters(ConsoleTelemetryAdapter, ReactAdapter));
-
-// ── Runtime setup ─────────────────────────────────────────────────────────────
-
-const eventStore = new InMemoryEventStore();
-const effectRuntime = new EffectRuntime();
+// ── Runtime setup (defineConfig) ──────────────────────────────────────────────
+// A projection runtime that also folds the domain TaskProjection. defineConfig
+// registers the A2UI "ui" surface for us and wires onEvent → handleEvent.
 const projectionRuntime = new InMemoryProjectionRuntime();
 projectionRuntime.register(TaskProjection);
-// A2UI: register the "ui" surface so ctx.ui.* patches fold into a projection.
-projectionRuntime.register(a2uiSurfaceProjection("ui"));
-
-const workflowRuntime = new WorkflowRuntime({
-  eventStore,
-  snapshotStore: new InMemorySnapshotStore(),
-  effectRuntime,
-  onEvent: (e: EventEnvelope) => {
-    projectionRuntime.handleEvent(e);
-    telemetryHook(e);
-  },
-});
-
-workflowRuntime.registerFlow(RegisteredTaskFlow.definition, RegisteredTaskFlow.runner);
 
 // ── Capabilities + Intent (Intent Over Routes) ────────────────────────────────
 // Register the flow as an intent-addressable capability, then let the Intent
@@ -97,6 +78,20 @@ const catalog = new CapabilityCatalog().register(
     flow: RegisteredTaskFlow,
   })
 );
+
+// defineConfig assembles the stores, EffectRuntime, projection wiring, telemetry
+// (Console + React adapters composed and fired after projection), the
+// WorkflowRuntime, and registers the catalog's flow(s) into it.
+const app = defineConfig({
+  storage: { kind: "memory" },
+  projectionRuntime,
+  surfaces: ["ui"],
+  catalog,
+  telemetry: [ConsoleTelemetryAdapter, ReactAdapter],
+});
+
+const eventStore = app.stores.eventStore;
+const workflowRuntime = app.runtime;
 const intentRuntime = new IntentRuntime({ catalog, workflowRuntime });
 
 // ── Types ─────────────────────────────────────────────────────────────────────

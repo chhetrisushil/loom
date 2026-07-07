@@ -11,6 +11,7 @@
   "dependencies": {
     "@loom/a2a": "workspace:*",
     "@loom/agent": "workspace:*",
+    "@loom/app": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
     "@loom/event-runtime": "workspace:*",

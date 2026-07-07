@@ -1,10 +1,7 @@
 // @vitest-environment jsdom
-import { a2uiSurfaceProjection } from "@loom/a2ui";
-import { InProcessA2ABus } from "@loom/app";
+import type { AgentCard } from "@loom/a2a";
 import type { WidgetAction } from "@loom/blueprint-runtime";
-import { EffectRuntime } from "@loom/effect-runtime";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { createTestApp } from "@loom/testing";
 import { describe, expect, it } from "vitest";
 import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "../src/agents/definitions";
 import { MissionControlBlueprint } from "../src/blueprints/MissionControlBlueprint";
@@ -12,41 +9,26 @@ import { buildCatalog } from "../src/capabilities/catalog";
 import { mountBlueprint } from "../src/dom/BlueprintDom";
 import { defineWidgetElements } from "../src/dom/elements";
 import { Orchestrator } from "../src/orchestrator/Orchestrator";
-import { InMemoryEventStore, InMemorySnapshotStore } from "../src/runtime/browserStores";
 
 const REPLICA_GOAL =
   "Investigate the read-replica lag issue and fix it if remediation is low risk, else wait for my approval.";
 
 function wire(missionId: string) {
-  const effectRuntime = new EffectRuntime();
-  const projectionRuntime = new InMemoryProjectionRuntime();
-  projectionRuntime.register(a2uiSurfaceProjection("mission"));
-  projectionRuntime.register(a2uiSurfaceProjection("telemetry"));
-  const missionRuntime = new WorkflowRuntime({
-    eventStore: new InMemoryEventStore(),
-    snapshotStore: new InMemorySnapshotStore(),
-    effectRuntime,
-    onEvent: (e) => projectionRuntime.handleEvent(e),
-  });
   const catalog = buildCatalog();
-  catalog.registerInto(missionRuntime);
-  const bus = new InProcessA2ABus(missionRuntime);
-  for (const agent of FLEET) {
-    const card = AGENT_CARDS[agent.id];
-    if (card) bus.registerAgent(card);
-  }
-  for (const [capabilityId, agentId] of Object.entries(CAPABILITY_AGENT)) {
-    const cap = catalog.get(capabilityId);
-    if (cap) bus.registerCapability(capabilityId, agentId, cap.flow);
-  }
-  const orchestrator = new Orchestrator({
-    projectionRuntime,
-    missionRuntime,
+  const app = createTestApp({
+    surfaces: ["mission", "telemetry"],
     catalog,
-    bus,
+    agents: FLEET.map((a) => AGENT_CARDS[a.id]).filter((c): c is AgentCard => c !== undefined),
+    capabilityAgents: CAPABILITY_AGENT,
+  });
+  const orchestrator = new Orchestrator({
+    projectionRuntime: app.projectionRuntime,
+    missionRuntime: app.runtime,
+    catalog,
+    bus: app.bus,
     missionId,
   });
-  return { orchestrator, projectionRuntime };
+  return { orchestrator, projectionRuntime: app.projectionRuntime };
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
