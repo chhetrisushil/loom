@@ -313,7 +313,11 @@ The full stack in action: [`examples/db-command-center`](../examples/db-command-
 
 ```ts
 interface LoomConfig {
-  storage: { kind: "sqlite" | "memory"; dir?: string; branching?: boolean };
+  storage:
+    | { kind: "memory" }
+    | { kind: "sqlite"; dir?: string; branching?: boolean }
+    // Bring your own backend — Postgres/Redis/DynamoDB, used verbatim:
+    | { kind: "custom"; eventStore; snapshotStore; branchRegistry? };
   surfaces?: string[];
   flows?: RegisteredFlow[];
   flowModules?: FlowModule[];          // from `loom gen` (static discovery)

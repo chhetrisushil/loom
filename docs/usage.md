@@ -114,7 +114,7 @@ const app = defineConfig({
 
 | Field | What it does |
 |---|---|
-| `storage` | `{ kind: "memory" }` or `{ kind: "sqlite", dir, branching }` |
+| `storage` | `{ kind: "memory" }`, `{ kind: "sqlite", dir, branching }`, or `{ kind: "custom", eventStore, snapshotStore, branchRegistry? }` (bring your own backend — Postgres/Redis/…) |
 | `surfaces` | A2UI surface ids to project |
 | `flows` / `flowModules` | flows to register (explicit, or via `loom gen` modules) |
 | `effectMiddleware` | cross-cutting effect wrappers (retries, logging…) |

@@ -36,13 +36,24 @@ export interface CatalogLike {
   get(capabilityId: string): { flow: RegisteredFlow } | undefined;
 }
 
-export interface StorageConfig {
-  kind: "sqlite" | "memory";
-  /** Directory for the SQLite DB files. Default ".loom". Ignored for "memory". */
-  dir?: string;
-  /** Provision a branch registry (fork/branch support). SQLite only. */
-  branching?: boolean;
-}
+export type StorageConfig =
+  /** Ephemeral in-memory stores — great for tests, demos, and browser apps. */
+  | { kind: "memory" }
+  /** Embedded SQLite (lazily loaded — Node only). `dir` holds the DB files. */
+  | { kind: "sqlite"; dir?: string; branching?: boolean }
+  /**
+   * Bring your own storage backend. The runtime is storage-agnostic, so supply
+   * any `EventStore` + `SnapshotStore` (and an optional `BranchRegistry` for
+   * fork/branch) — e.g. Postgres / Redis / DynamoDB. `defineConfig` uses them
+   * verbatim, so a network-backed app gets the same composition root as everyone
+   * else instead of hand-wiring `new WorkflowRuntime(...)`.
+   */
+  | {
+      kind: "custom";
+      eventStore: EventStore;
+      snapshotStore: SnapshotStore;
+      branchRegistry?: BranchRegistry;
+    };
 
 /**
  * The single, static description of a Loom app. It is deliberately declarative
@@ -128,6 +139,14 @@ function loadNodeModule<T>(id: string): T {
 }
 
 function buildStores(storage: StorageConfig): LoomStores {
+  if (storage.kind === "custom") {
+    // Bring your own backend — used verbatim (Postgres/Redis/DynamoDB, …).
+    return {
+      eventStore: storage.eventStore,
+      snapshotStore: storage.snapshotStore,
+      ...(storage.branchRegistry !== undefined && { branchRegistry: storage.branchRegistry }),
+    };
+  }
   if (storage.kind === "sqlite") {
     const fs = loadNodeModule<typeof import("node:fs")>("node:fs");
     const path = loadNodeModule<typeof import("node:path")>("node:path");
@@ -148,9 +167,7 @@ function buildStores(storage: StorageConfig): LoomStores {
     }
     return stores;
   }
-  if (storage.branching) {
-    throw new Error("in-memory storage does not support branching; use storage.kind='sqlite'");
-  }
+  // storage.kind === "memory"
   return {
     eventStore: new InMemoryAsyncEventStore(),
     snapshotStore: new InMemoryAsyncSnapshotStore(),
