@@ -40,15 +40,17 @@ Intent → Planner → Workflow → Agent → Effect → Event Log
 
 **Core runtime** — `core` (builders/types), `workflow-runtime`, `effect-runtime`, `event-runtime`, `snapshot-runtime`, `replay-vm`, `projection-runtime`
 
-**UI** — `blueprint-runtime`, `renderer-react`, `renderer-terminal`
+**Composition & effects** — `app` (**`defineConfig`**), `middleware` (retry/logging), `registry`
 
-**Agentic** — `llm`, `agent`, `mcp`, `a2a`, `a2ui`
+**UI** — `blueprint-runtime`, `renderer-react`, `renderer-terminal`, `a2ui`
 
-**Intelligence** — `capability`, `intent`, `planner`, `memory`
+**Agentic** — `llm`, `agent`, `mcp`, `a2a` · **Intelligence** — `capability`, `intent`, `planner`, `memory`, `orchestrator`
 
-**Tooling** — `compiler` (Vite plugin), `telemetry`, `registry`, `sdk` (public surface), `scheduler` (opt-in cooperative scheduler)
+**Compute / distribution** — `dispatcher`, `worker-runtime` (`-local`/`-remote`), `worker-server`, `platform-cloudrun`, `graph-executor`, `scheduler`
 
-<!-- Presenter: everything is re-exported from @loom/sdk; apps import from there. -->
+**DX / tooling** — `cli` (`loom`), `testing`, `eval`, `deploy-sim`, `scaffold`, `compiler`, `telemetry`, `sdk`
+
+<!-- Presenter: everything is re-exported from @loom/sdk; apps import from there. The compute + DX groups are the newest additions. -->
 
 ---
 
@@ -103,6 +105,31 @@ onEvent → ProjectionRuntime → UI
 
 - `WorkflowRuntime` (`packages/workflow-runtime`) orchestrates; `EffectRuntime` isolates side effects; `ReplayVM` (`packages/replay-vm`) folds events → state.
 - Event store + snapshot store persist everything — **async-first** interfaces, so in-memory + SQLite ship in the box and Postgres/Redis/DynamoDB plug in as first-class backends (a per-execution `ExecutionJournal` keeps `ctx.emit`/`ctx.ui` synchronous).
+
+---
+
+## Composition root — `defineConfig`
+
+You don't hand-wire that pipeline. One static config assembles it — and returns the same primitives, so nothing is hidden:
+
+```ts
+import { defineConfig } from "@loom/app";
+import { retryMiddleware } from "@loom/middleware";
+
+const app = defineConfig({
+  storage: { kind: "sqlite", dir: ".loom", branching: true },
+  surfaces: ["mission"],
+  flowModules,                                   // from `loom gen` (folder convention)
+  effectMiddleware: [retryMiddleware({ maxRetries: 3 })],  // (ctx, input, next) chain
+  agents, capabilityAgents,                      // A2A routing
+  validate: "warn",                              // static flow-graph checks at boot
+});
+// → { runtime, effectRuntime, projectionRuntime, bus, stores, close }
+```
+
+- **Sugar, not a cage** — every field maps to the manual DI; empty middleware ⇒ byte-identical behavior. *(ADR 0006)*
+- **`loom gen`** turns the folder convention (`app/flows/**`) into a **static** `loom.gen.ts` — build-time codegen, not runtime globbing, so the flow set is identical on every resume/worker. *(ADR 0011)*
+- Reference app wiring it all: `examples/loom-starter`.
 
 ---
 
@@ -170,6 +197,8 @@ interface Effect<TIn, TOut> {
 - `A2AEffect` — delegate to a remote agent
 
 Same execution + replay semantics for all four. **AI calls are just effects** — so they're durable too.
+
+**Middleware** wraps every effect as a composable `(ctx, input, next) => …` chain (the HTTP-middleware model): `retryMiddleware` (`@loom/middleware`) adds exponential backoff + **deterministic** jitter and never retries a suspension. Wire it once via `defineConfig({ effectMiddleware })`.
 
 ---
 
@@ -340,6 +369,45 @@ All opt-in; existing renderers behave exactly as before.
 
 ---
 
+## Run anywhere — pluggable compute
+
+A placement seam between orchestration and the runtime lets the **same flows** run in-process, over HTTP, or on Cloud Run — the core stays cloud-agnostic:
+
+```
+defineConfig({ dispatcher })
+   └─ ExecutionDispatcher ─┬─ local     (@loom/worker-runtime-local, in-process)
+                           ├─ remote    (HTTP → @loom/worker-server)
+                           └─ Cloud Run (@loom/platform-cloudrun)
+```
+
+- An **`ExecutionPackage`** carries resume coordinates (identity + sequence) — **never code**. Workers ship their own bundle and resolve flows **by id** from a static registry; suspension is a normal outcome across the wire.
+- **Crash recovery:** a stateless worker folds durable state and resumes — completed steps aren't re-run.
+- **Distributed fan-out:** `@loom/graph-executor` runs graph nodes as **per-node executions** (one writer each), joined via lineage — never multi-writer on one execution.
+- Public SDK unchanged whether you run local or in the cloud. *(ADRs 0001–0005)*
+
+---
+
+## Operate it — the `loom` CLI, testing, evals
+
+Every one is a **pure function over the durable log**:
+
+```
+loom logs / debug --at N / inspect   tail · time-travel · web timeline+slider
+loom eval  --dir evals/              replay golden logs vs expectations (CI gate)
+loom deploy check --logs L --config C simulate a deploy vs NEW flow defs
+loom check · gen · new                flow-graph validation · folder-convention codegen
+```
+
+```ts
+import { createTestApp, waitForPhase, captureGolden } from "@loom/testing";
+const app = createTestApp({ surfaces: ["mission"], flows: [myFlow] }); // in-memory
+```
+
+- **`@loom/testing`** — `createTestApp`, `waitForPhase`, `captureGolden`, VCR LLM provider (record once, replay deterministically). *(ADR 0009)*
+- **`@loom/eval`** replays a recorded log as a fixture; **`@loom/deploy-sim`** replays history against your *new* flow defs to catch resume-breaking changes before promoting. The log *is* the fixture. *(ADRs 0008, 0010–0014)*
+
+---
+
 ## Build‑time & observability
 
 **`@loom/compiler`** (Vite plugin + CLI)
@@ -356,9 +424,9 @@ All opt-in; existing renderers behave exactly as before.
 
 - **Monorepo:** pnpm workspaces + Turborepo
 - **Language:** TypeScript → CommonJS (`tsc --build`)
-- **Tests:** Vitest — **green across every package** (~180 tests)
+- **Tests:** Vitest — **green across every package** (`@loom/testing` kit + log-as-fixture evals)
 - **Lint/format:** Biome
-- **Commands:** `pnpm build` · `pnpm test` · `pnpm typecheck` · `pnpm dev`
+- **Commands:** `pnpm build` · `pnpm test` · `pnpm typecheck` · `pnpm dev` · the **`loom`** CLI (`logs`/`debug`/`eval`/`deploy check`/`gen`/`inspect`)
 
 <!-- Presenter caveat: `vite dev` for the browser examples; `vite build` (prod bundle) has a known Rollup CJS interop issue, unrelated to the framework. -->
 
@@ -366,16 +434,18 @@ All opt-in; existing renderers behave exactly as before.
 
 ## Adopt it in your codebase
 
-Recommended repository layout:
+The folder convention (`loom new` scaffolds, `loom gen` wires):
 
 ```
-agents/  flows/  steps/  tools/  projections/  capabilities/  policies/  memory/
+app/flows/<name>/flow.ts   agents/  tools/  surfaces/   → loom gen → loom.gen.ts
 ```
 
-- Import everything from **`@loom/sdk`**.
+- Wire it with **`defineConfig({ storage, surfaces, flowModules, effectMiddleware })`** — one composition root; import builders from **`@loom/core`**/**`@loom/sdk`**.
 - Start with **one flow** (an approval/ops process) → add a **blueprint** → expose it as a **capability** → route by **intent**.
+- Test with **`@loom/testing`**; gate CI with **`loom eval`** + **`loom deploy check`**.
+- Copy from **`examples/loom-starter`** — the canonical new-architecture app.
 
-**Docs:** `docs/architecture.md` · `docs/api-reference.org` · `docs/usage.md`
+**Docs:** `docs/getting-started.md` · `docs/usage.md` · `docs/user-guide.md` · `docs/architecture.md`
 
 ---
 
