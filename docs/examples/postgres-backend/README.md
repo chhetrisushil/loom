@@ -9,14 +9,36 @@ pnpm add pg @types/pg
 psql "$DATABASE_URL" -f schema.sql
 ```
 
+**Recommended — through `defineConfig`** (`storage: { kind: "custom" }`): bring your own backend and still get the one-line composition root everyone else uses.
+
 ```ts
 import { Pool } from "pg";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import { EffectRuntime } from "@loom/effect-runtime";
+import { defineConfig } from "@loom/app";
 import { PgEventStore } from "./PgEventStore";
 import { PgSnapshotStore } from "./PgSnapshotStore";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+const app = defineConfig({
+  storage: {
+    kind: "custom",
+    eventStore: new PgEventStore(pool),          // ← your network backend
+    snapshotStore: new PgSnapshotStore(pool),
+    // branchRegistry: new PgBranchRegistry(pool), // optional — for fork()/branching
+  },
+  surfaces: ["mission"],
+  flows: [/* … */],
+});
+// → app.runtime · app.effectRuntime · app.projectionRuntime · app.bus · app.stores · close()
+```
+
+The stores are used verbatim (`app.stores.eventStore` is the `PgEventStore` you passed), and `app.close()` closes them. You get effect middleware, projections, the A2A bus, and boot-time validation for free — the same as a SQLite or in-memory app.
+
+**Or hand-wire `WorkflowRuntime`** directly, if you don't want the composition root:
+
+```ts
+import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { EffectRuntime } from "@loom/effect-runtime";
 
 const runtime = new WorkflowRuntime({
   eventStore: new PgEventStore(pool),      // ← your network backend
@@ -25,7 +47,7 @@ const runtime = new WorkflowRuntime({
 });
 ```
 
-That's the whole integration. Everything else — `start` / `resume` / `fork`, suspend/resume, projections — is unchanged, because the runtime already `await`s the store.
+Either way, that's the whole integration. Everything else — `start` / `resume` / `fork`, suspend/resume, projections — is unchanged, because the runtime already `await`s the store.
 
 ## Why this works (and didn't, before)
 

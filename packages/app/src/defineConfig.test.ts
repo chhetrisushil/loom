@@ -2,6 +2,7 @@ import { step$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectMiddleware } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import type { BranchRegistry } from "@loom/event-runtime";
 import { retryMiddleware } from "@loom/middleware";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
@@ -207,5 +208,46 @@ describe("defineConfig", () => {
     });
     expect(shape(cfgState)).toEqual(shape(handState));
     await app.close();
+  });
+});
+
+describe("defineConfig — custom storage (bring your own backend)", () => {
+  it("uses the injected EventStore/SnapshotStore verbatim and writes to them", async () => {
+    // Any EventStore/SnapshotStore works — here in-memory stands in for a real
+    // network backend (Postgres/Redis/DynamoDB) to prove they're used as-is.
+    const eventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const appendSpy = vi.spyOn(eventStore, "append");
+    const closeSpy = vi.spyOn(eventStore, "close");
+
+    const app = defineConfig({
+      storage: { kind: "custom", eventStore, snapshotStore },
+      flows: [gatedFlow()],
+    });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+
+    // The exact instances are threaded through — not copied or re-created.
+    expect(app.stores.eventStore).toBe(eventStore);
+    expect(app.stores.snapshotStore).toBe(snapshotStore);
+
+    // A real run writes to the injected store (gatedFlow suspends → events committed).
+    await (await app.runtime.start(gatedFlow(), { incidentId: "i1" })).waitForSuspend();
+    expect(appendSpy).toHaveBeenCalled();
+
+    await app.close();
+    expect(closeSpy).toHaveBeenCalled();
+  });
+
+  it("threads an injected BranchRegistry through to app.stores (custom + branching)", () => {
+    const branchRegistry = { name: "byo-branch-registry" } as unknown as BranchRegistry;
+    const app = defineConfig({
+      storage: {
+        kind: "custom",
+        eventStore: new InMemoryAsyncEventStore(),
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        branchRegistry,
+      },
+    });
+    expect(app.stores.branchRegistry).toBe(branchRegistry);
   });
 });
