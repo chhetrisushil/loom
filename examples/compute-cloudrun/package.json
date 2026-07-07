@@ -1,0 +1,32 @@
+{
+  "name": "@loom/compute-cloudrun",
+  "version": "0.0.1",
+  "description": "Compute pluggability: the SAME durable flow runs unchanged on three interchangeable backends — in-process, a remote HTTP worker (worker-server + RemoteWorkerRuntime), and Cloud Run (CloudRunWorkerRuntime + StaticCloudRunPlatform) — by swapping only the dispatcher's WorkerRuntime. Runs fully offline (no GCP).",
+  "private": true,
+  "scripts": {
+    "build": "tsc --build",
+    "start": "tsx src/main.ts",
+    "test": "vitest run",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/core": "workspace:*",
+    "@loom/dispatcher": "workspace:*",
+    "@loom/effect-runtime": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
+    "@loom/platform-cloudrun": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/worker-runtime": "workspace:*",
+    "@loom/worker-runtime-local": "workspace:*",
+    "@loom/worker-runtime-remote": "workspace:*",
+    "@loom/worker-server": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
