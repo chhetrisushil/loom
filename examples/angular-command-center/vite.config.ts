@@ -8,6 +8,7 @@ import { defineConfig } from "vite";
 // with "step$ is not exported by dist/index.js". transformMixedEsModules lets
 // the CommonJS plugin resolve those named exports.
 const loomPackages = [
+  "@loom/app",
   "@loom/core",
   "@loom/effect-runtime",
   "@loom/event-runtime",

@@ -123,19 +123,17 @@ export interface LoomApp {
 }
 
 /**
- * Load a Node-only module lazily, opaque to bundlers. The `eval("require")`
- * indirection means Vite/Rollup do NOT follow this into the module graph, so a
- * browser app using in-memory storage never bundles better-sqlite3 / node:fs. It
- * is only ever reached on the `kind:"sqlite"` path (never in a browser). Types
- * come from `typeof import(...)` (erased at build time — no runtime import). The
- * `typeof import(...)` queries are erased by the compiler and never bundled.
+ * Load a Node-only module lazily, opaque to bundlers. Resolving through this
+ * module's own CommonJS `require` — reached via the `module` object, with the
+ * specifier arriving as a variable (never a literal) — means Vite/Rollup cannot
+ * trace it into the graph, so a browser app using in-memory storage never bundles
+ * better-sqlite3 / node:fs. It is only ever reached on the `kind:"sqlite"` path
+ * (never in a browser). Types come from `typeof import(...)` (erased at build
+ * time — no runtime import), so the queries are never bundled either.
  */
 function loadNodeModule<T>(id: string): T {
-  // A bundler-opaque require: keeps native SQLite deps out of browser bundles while
-  // defineConfig stays synchronous (a dynamic import() would force it to be async).
-  // biome-ignore lint/security/noGlobalEval: intentional bundler-opaque require (see above)
-  const req = eval("require") as (moduleId: string) => unknown;
-  return req(id) as T;
+  const cjs = module as { require(moduleId: string): unknown };
+  return cjs.require.bind(module)(id) as T;
 }
 
 function buildStores(storage: StorageConfig): LoomStores {

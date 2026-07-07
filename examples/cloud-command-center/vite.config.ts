@@ -12,6 +12,7 @@ export default defineConfig({
   resolve: { conditions: ["require", "default"] },
   optimizeDeps: {
     include: [
+      "@loom/app",
       "@loom/a2ui",
       "@loom/agent",
       "@loom/blueprint-runtime",
