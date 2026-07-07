@@ -10,31 +10,32 @@ import { flow$, step$, tool$, WorkflowRuntime, ToolEffect } from "@loom/sdk";
 * Table of Contents
 
 1.  [[#builders][Builders]] — ~flow$~, ~step$~, ~handler$~, ~tool$~, ~projection$~, ~agent$~, ~skill$~, ~instructions$~, ~memory$~, ~policy$~
-2.  [[#workflow-runtime][WorkflowRuntime]] — ~start~, ~resume~, ~restoreFromState~, ~fork~, ~registerFlow~, ~register~
-3.  [[#workflow-context][WorkflowContext — the flow API]] — ~ctx.run~, ~ctx.parallel~, ~ctx.emit~, ~ctx.ui~, ~ctx.suspend~
-4.  [[#execution-handle][ExecutionHandle]]
-5.  [[#effect-runtime][EffectRuntime & Effects]] — ~ToolEffect~, ~LlmEffect~, ~HumanEffect~, ~A2AEffect~, ~LazyEffect~
-6.  [[#event-store][EventStore]] & [[#branch-registry][BranchRegistry]] — event log + git-style refs/lineage
-7.  [[#snapshot-store][SnapshotStore]] — ~loadLatest~, ~loadAt~, ~loadLatestBefore~
-8.  [[#projection-runtime][ProjectionRuntime]] — ~register~, ~getState~, ~subscribe~, ~handleEvent~, ~seedState~
-9.  [[#blueprint-system][Blueprint System]]
-10. [[#react-renderer][React Renderer]] — ~BlueprintRenderer~, ~LoomProvider~, ~useLoom~, ~useProjection~
-11. [[#compiler][~@loom/compiler~]] — Vite plugin, CLI, serialization utilities
-12. [[#telemetry][~@loom/telemetry~]] — ~createTelemetryHook~, ~TelemetryAdapter~, ~ConsoleTelemetryAdapter~, ~composeAdapters~
-13. [[#llm][~@loom/llm~]] — ~LlmProvider~, ~AnthropicProvider~, ~OpenAiProvider~, ~createLlmEffect~
-14. [[#agent][~@loom/agent~]] — ~AgentRunner~, ~agentStep$~, ~SkillRegistry~, ~SkillSelector~
-15. [[#mcp][~@loom/mcp~]] — ~McpClient~, ~mcpTool$~
-16. [[#a2a][~@loom/a2a~]] — ~createA2AClientEffect~, ~createA2AServer~, ~toAgentCard~, ~A2APeerClient~
-17. [[#registry][~@loom/registry~]] — ~AgentRegistry~, ~globalAgentRegistry~
-18. [[#a2ui][~@loom/a2ui~ — the Agent-to-UI protocol]] — ~A2UIPatch~, ~createA2UIEmitter~, ~a2uiSurfaceProjection~, ~A2UIRuntime~, ~useA2UISurface~
-19. [[#capability][~@loom/capability~]] — ~capability$~, ~CapabilityCatalog~
-20. [[#intent][~@loom/intent~]] — ~IntentRuntime~ (~route~, ~run~)
-21. [[#planner][~@loom/planner~]] — ~PlannerRuntime~ (~plan~)
-22. [[#memory][~@loom/memory~]] — ~MemoryRuntime~, ~InMemoryMemoryStore~, ~MemoryStore~
-23. [[#renderer-terminal][~@loom/renderer-terminal~]] — ~TerminalRenderer~, ~renderBlueprintToString~
-24. [[#scheduler][~@loom/scheduler~]] — ~createScheduler~, ~parallelLimit~, ~yieldControl~, ~Priority~, AbortSignal utils
-25. [[#errors][Errors]]
-26. [[#complete-example][Complete Example]]
+2.  [[#app][~defineConfig~ (@loom/app)]] — the composition root; ~storage~ (memory / sqlite / *custom*), effect middleware, surfaces, ~validate~; plus the ~loom~ CLI, ~@loom/testing~, evals, deploy-sim, and the pluggable compute seam
+3.  [[#workflow-runtime][WorkflowRuntime]] — ~start~, ~resume~, ~restoreFromState~, ~fork~, ~registerFlow~, ~register~
+4.  [[#workflow-context][WorkflowContext — the flow API]] — ~ctx.run~, ~ctx.parallel~, ~ctx.emit~, ~ctx.ui~, ~ctx.suspend~
+5.  [[#execution-handle][ExecutionHandle]]
+6.  [[#effect-runtime][EffectRuntime & Effects]] — ~ToolEffect~, ~LlmEffect~, ~HumanEffect~, ~A2AEffect~, ~LazyEffect~
+7.  [[#event-store][EventStore]] & [[#branch-registry][BranchRegistry]] — event log + git-style refs/lineage
+8.  [[#snapshot-store][SnapshotStore]] — ~loadLatest~, ~loadAt~, ~loadLatestBefore~
+9.  [[#projection-runtime][ProjectionRuntime]] — ~register~, ~getState~, ~subscribe~, ~handleEvent~, ~seedState~
+10.  [[#blueprint-system][Blueprint System]]
+11. [[#react-renderer][React Renderer]] — ~BlueprintRenderer~, ~LoomProvider~, ~useLoom~, ~useProjection~
+12. [[#compiler][~@loom/compiler~]] — Vite plugin, CLI, serialization utilities
+13. [[#telemetry][~@loom/telemetry~]] — ~createTelemetryHook~, ~TelemetryAdapter~, ~ConsoleTelemetryAdapter~, ~composeAdapters~
+14. [[#llm][~@loom/llm~]] — ~LlmProvider~, ~AnthropicProvider~, ~OpenAiProvider~, ~createLlmEffect~
+15. [[#agent][~@loom/agent~]] — ~AgentRunner~, ~agentStep$~, ~SkillRegistry~, ~SkillSelector~
+16. [[#mcp][~@loom/mcp~]] — ~McpClient~, ~mcpTool$~
+17. [[#a2a][~@loom/a2a~]] — ~createA2AClientEffect~, ~createA2AServer~, ~toAgentCard~, ~A2APeerClient~
+18. [[#registry][~@loom/registry~]] — ~AgentRegistry~, ~globalAgentRegistry~
+19. [[#a2ui][~@loom/a2ui~ — the Agent-to-UI protocol]] — ~A2UIPatch~, ~createA2UIEmitter~, ~a2uiSurfaceProjection~, ~A2UIRuntime~, ~useA2UISurface~
+20. [[#capability][~@loom/capability~]] — ~capability$~, ~CapabilityCatalog~
+21. [[#intent][~@loom/intent~]] — ~IntentRuntime~ (~route~, ~run~)
+22. [[#planner][~@loom/planner~]] — ~PlannerRuntime~ (~plan~)
+23. [[#memory][~@loom/memory~]] — ~MemoryRuntime~, ~InMemoryMemoryStore~, ~MemoryStore~
+24. [[#renderer-terminal][~@loom/renderer-terminal~]] — ~TerminalRenderer~, ~renderBlueprintToString~
+25. [[#scheduler][~@loom/scheduler~]] — ~createScheduler~, ~parallelLimit~, ~yieldControl~, ~Priority~, AbortSignal utils
+26. [[#errors][Errors]]
+27. [[#complete-example][Complete Example]]
 
 -----
 
@@ -298,6 +299,86 @@ const RateLimitPolicy = policy$({
   rules: { requestsPerMinute: 60, burstAllowance: 10 },
 });
 #+end_src
+
+-----
+
+* ~defineConfig~ (@loom/app)
+:PROPERTIES:
+:CUSTOM_ID: app
+:END:
+
+The composition root. ~defineConfig~ assembles the runtime, stores, effect middleware, projection runtime, telemetry, and the in-process A2A bus from one static config, and returns the same primitives you would otherwise hand-wire — so nothing is hidden and you can always drop a level.
+
+#+begin_src typescript
+import { defineConfig } from "@loom/app";
+
+const app = defineConfig({
+  storage: { kind: "sqlite", dir: ".loom", branching: true },
+  surfaces: ["mission"],
+  flows: [myFlow],                 // or flowModules from `loom gen`
+  effectMiddleware: [retryMiddleware({ maxRetries: 3 })],
+  agents, capabilityAgents,        // A2A routing
+  validate: "warn",               // static flow-graph checks at boot
+});
+// → { runtime, effectRuntime, projectionRuntime, bus, stores, close }
+const handle = await app.runtime.start(myFlow, input);
+#+end_src
+
+** ~LoomConfig~
+
+| Field                | Type                                                   | Notes |
+|----------------------+--------------------------------------------------------+-------|
+| ~storage~            | ~StorageConfig~ (see below)                            | required |
+| ~surfaces~           | ~string[]~                                             | A2UI surfaces to register |
+| ~flows~              | ~RegisteredFlow[]~                                     | flows to register |
+| ~flowModules~        | ~FlowModule[]~                                         | static modules from ~loom gen~ (every ~RegisteredFlow~-shaped export is registered) |
+| ~effectMiddleware~   | ~EffectMiddleware[]~                                   | ~(ctx, input, next)~ chain (retries, logging, …) |
+| ~validate~           | ~boolean \vert "warn" \vert "error"~                   | boot-time flow-graph validation |
+| ~projectionRuntime~  | ~ProjectionRuntime~                                    | bring a custom one (coalescing / broadcasting) |
+| ~catalog~            | ~CatalogLike~                                          | capability catalog registered into the runtime |
+| ~agents~             | ~AgentCard[]~                                          | advertised on the A2A bus |
+| ~capabilityAgents~   | ~Record<string,string>~                                | capabilityId → agentId routing |
+| ~telemetry~          | ~TelemetryAdapter[]~                                   | composed + wired to the event stream |
+| ~dispatcher~         | ~ExecutionDispatcher~                                  | placement (in-process / remote / Cloud Run) |
+| ~onEvent~            | ~(e: EventEnvelope) => void~                           | extra observer, after projection + telemetry |
+| ~onWarn~             | ~(message: string) => void~                            | sink for boot warnings |
+
+** ~StorageConfig~ — including Bring-Your-Own backend
+
+#+begin_src typescript
+type StorageConfig =
+  | { kind: "memory" }                                           // ephemeral (tests / browser)
+  | { kind: "sqlite"; dir?: string; branching?: boolean }        // embedded, lazily loaded (Node)
+  | { kind: "custom";                                            // bring your own backend
+      eventStore: EventStore; snapshotStore: SnapshotStore; branchRegistry?: BranchRegistry };
+#+end_src
+
+~kind: "custom"~ takes any async-first ~EventStore~/~SnapshotStore~ (+ optional ~BranchRegistry~) — Postgres, Redis, DynamoDB — used verbatim, so a network-backed app gets the same composition root as everyone else (see [[file:examples/postgres-backend/README.md][the Postgres reference]]). The SQLite stores are lazily loaded, so ~kind: "memory"~ never pulls ~better-sqlite3~/~node:fs~ into a browser bundle.
+
+** ~LoomApp~ (return value)
+
+#+begin_src typescript
+interface LoomApp {
+  runtime: WorkflowRuntime;
+  effectRuntime: EffectRuntime;
+  projectionRuntime: ProjectionRuntime;
+  bus: InProcessA2ABus;
+  stores: { eventStore: EventStore; snapshotStore: SnapshotStore; branchRegistry?: BranchRegistry };
+  close(): Promise<void>;
+}
+#+end_src
+
+** DX & operations (built on the durable log)
+
+Each of these is a separate package; all are lenses on the same event log.
+
+- *~@loom/testing~* — ~createTestApp(config?)~ (in-memory ~LoomApp~), ~waitFor~/~waitForPhase~, ~getSurfaceState~, ~driveToSuspend~/~resumeWith~, ~captureGolden~, and a VCR LLM provider (~recordingProvider~/~replayingProvider~).
+- *~@loom/eval~* — replay a recorded log as a fixture; ~diffRuns~/~scoreRun~. Driven by ~loom eval --dir evals/~.
+- *~@loom/deploy-sim~* — ~simulateDeploy(logs, resolver)~ replays history against new flow definitions to catch resume-breaking changes. Driven by ~loom deploy check~.
+- *The ~loom~ CLI* (~@loom/cli~) — ~logs~ / ~debug --at N~ (time-travel) / ~inspect~ (web timeline + slider) / ~eval~ / ~deploy check~ / ~check~ / ~gen~ / ~new~.
+- *~@loom/middleware~* — ~retryMiddleware(options)~: exponential backoff with *deterministic* jitter; never retries a suspension.
+- *Compute* — ~@loom/dispatcher~ (~ExecutionDispatcher~ / ~LocalDispatcher~), ~@loom/worker-runtime~ (SPI + ~ExecutionPackage~), ~-local~/~-remote~, ~@loom/worker-server~ (~POST /execute~), ~@loom/platform-cloudrun~ (~CloudRunWorkerRuntime~), ~@loom/graph-executor~ (~executeGraph~).
+- *~@loom/orchestrator~* — ~decideApproval(policy, handlers)~ (risk gate) + ~dispatchPlan~.
 
 -----
 

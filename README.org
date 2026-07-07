@@ -20,8 +20,18 @@ On top of these, Loom ships an *intelligence pipeline* that turns intents and go
 - *Capabilities Over APIs* — ~capability$~ wraps a flow with intent-facing metadata; a ~CapabilityCatalog~ makes it discoverable and invocable.
 - *Agent memory* — ~MemoryRuntime~ gives agents scoped, durable recall across turns (honoring ~ttlMs~ / ~maxEntries~).
 - *Speculative branching* — fork an execution at any point into an independent branch to try alternate plans, then keep the winner (~WorkflowRuntime.fork~ + a git-style ~BranchRegistry~). Copy-on-write over the event log, branch-only (no merge); the parent stays intact. See the ~incident-war-room~ and ~schema-migration-planner~ examples for the full fork → simulate → compare → promote loop.
-- *Bring your own storage* — the ~EventStore~ / ~SnapshotStore~ / ~BranchRegistry~ / ~MemoryStore~ interfaces are *async-first*, so any backend plugs in: SQLite and in-memory ship in the box, and async/network backends (Postgres, Redis, DynamoDB) are first-class — the runtime ~await~s the store. The synchronous ~ctx.emit~ / ~ctx.ui~ API is preserved by a per-execution write pipeline (see [[file:docs/architecture.md][architecture]]).
-- *Multi-surface delivery* — the same blueprint renders to React *or* the terminal (~@loom/renderer-terminal~), because ~traverseBlueprint~ is framework-agnostic.
+- *Bring your own storage* — the ~EventStore~ / ~SnapshotStore~ / ~BranchRegistry~ / ~MemoryStore~ interfaces are *async-first*, so any backend plugs in: SQLite and in-memory ship in the box, and async/network backends (Postgres, Redis, DynamoDB) are first-class — the runtime ~await~s the store. ~defineConfig~ exposes this directly via ~storage: { kind: "custom", eventStore, snapshotStore }~. The synchronous ~ctx.emit~ / ~ctx.ui~ API is preserved by a per-execution write pipeline (see [[file:docs/architecture.md][architecture]]).
+- *Multi-surface delivery* — the same blueprint renders to React, Angular, Web Components, *or* the terminal (~@loom/renderer-terminal~), because ~traverseBlueprint~ is framework-agnostic (bring-your-own-renderer / component).
+
+And a *platform* around the core — the composition root and the tooling to build, test, and ship:
+
+- *One composition root* — ~defineConfig~ (~@loom/app~) assembles the runtime, stores, effect middleware, projections, and A2A bus from one static config and returns ~{ runtime, effectRuntime, projectionRuntime, bus, stores, close }~ — the same primitives you'd hand-wire, so nothing is hidden. A folder convention (~loom gen~) discovers flows into a static ~loom.gen.ts~.
+- *The ~loom~ CLI* — ~logs~ / ~debug~ (time-travel to any sequence) / ~inspect~ (web timeline + slider) / ~eval~ (replay golden logs) / ~deploy check~ (simulate a deploy vs new flow defs) / ~gen~ / ~new~ / ~check~ — each a lens on the durable event log.
+- *Testing & CI gates* — ~@loom/testing~ (~createTestApp~ / ~waitForPhase~ / a VCR LLM provider), log-as-fixture evals (~@loom/eval~), and deploy-simulation (~@loom/deploy-sim~) that catches resume-breaking changes before you promote.
+- *Run anywhere* — a pluggable compute seam (~@loom/dispatcher~ + worker runtimes) runs the *same* flows in-process, over HTTP, or on Cloud Run (~@loom/platform-cloudrun~); ~@loom/graph-executor~ fans out distributed graphs. An ~ExecutionPackage~ carries resume coordinates, never code.
+- *Effect middleware* — cross-cutting concerns as a composable ~(ctx, input, next)~ chain; ~retryMiddleware~ (~@loom/middleware~) adds deterministic backoff.
+
+Start from [[file:examples/loom-starter][~examples/loom-starter~]] — the canonical app wiring all of the above.
 
 * Repository Layout
 
@@ -70,6 +80,21 @@ loom/
 | ~@loom/memory~             | Agent memory — scoped, durable recall (~MemoryRuntime~)  |
 | ~@loom/renderer-terminal~  | Terminal renderer — same blueprint, non-React surface    |
 | ~@loom/scheduler~          | Ephemeral cooperative scheduler — priority lanes, bounded-concurrency ~parallelLimit~, ~yieldControl~, AbortSignal utils (opt-in) |
+| ~@loom/app~                | *Composition root* — ~defineConfig~ assembles the runtime, stores, middleware, projections, and A2A bus from a static config |
+| ~@loom/middleware~         | Effect middleware — ~retryMiddleware~ (deterministic backoff); the ~(ctx, input, next)~ chain |
+| ~@loom/compiler~           | Vite plugin + CLI — ~handler$~ extraction into lazy chunks, flow-graph validation, resumability metadata |
+| ~@loom/dispatcher~         | Execution placement — decides *where* a flow runs; owns worker allocation + retries |
+| ~@loom/worker-runtime~     | Platform-agnostic worker SPI + ~ExecutionPackage~ (resume coordinates, never code) |
+| ~@loom/worker-runtime-local~ / ~-remote~ | In-process and HTTP ~WorkerRuntime~ implementations |
+| ~@loom/worker-server~      | Stateless worker HTTP endpoint — ~POST /execute~ runs one ~ExecutionPackage~ |
+| ~@loom/platform-cloudrun~  | Cloud Run adapter — ~CloudRunWorkerRuntime~ + sizing policy |
+| ~@loom/graph-executor~     | Distributed execution graph — per-node executions (one writer each), joined via lineage |
+| ~@loom/cli~                | The ~loom~ CLI — ~logs~/~debug~/~inspect~/~eval~/~deploy check~/~gen~/~new~/~check~ |
+| ~@loom/testing~            | Testing kit — ~createTestApp~, ~waitForPhase~, ~captureGolden~, VCR LLM provider |
+| ~@loom/eval~               | Log-as-fixture evals — replay recorded logs, diff/score runs |
+| ~@loom/deploy-sim~         | Deploy simulation — replay history vs new flow defs to catch resume-breaking changes |
+| ~@loom/scaffold~           | Shared code templates + registration codegen (~loom gen~/~new~) |
+| ~@loom/orchestrator~       | Composable approval (~decideApproval~) + plan-dispatch primitives |
 
 ** Examples
 
@@ -241,11 +266,13 @@ const remote = createA2AClientEffect("https://partner.example.com/agent");
 
 Loom workflows are defined as a series of steps that can suspend at any point and resume later — even across process restarts. The key concepts:
 
+- *defineConfig* — the one-line composition root (~@loom/app~) that assembles everything below from a static config and returns ~{ runtime, effectRuntime, projectionRuntime, bus, stores, close }~. It's sugar over the DI — you can still hand-wire ~new WorkflowRuntime({...})~.
 - *Flow* — a TypeScript function that describes the steps of a workflow. Steps are serializable and replayable.
-- *EffectRuntime* — sandboxes side effects (tool calls, LLM calls, human approvals) so they can be replayed deterministically.
-- *EventStore / SnapshotStore* — persist execution state so workflows survive crashes.
-- *Blueprint* — a JSON-serializable description of a UI that the renderer turns into React components.
+- *EffectRuntime* — sandboxes side effects (tool calls, LLM calls, human approvals) so they can be replayed deterministically; effect *middleware* wraps them (retries, logging).
+- *EventStore / SnapshotStore* — persist execution state so workflows survive crashes (in-memory / SQLite / your own backend).
+- *Blueprint* — a JSON-serializable description of a UI that the renderer turns into React (or Angular / Web Components / terminal) components.
 - *ProjectionRuntime* — subscribes to workflow events and derives view state that drives the Blueprint renderer.
+- *The ~loom~ CLI + compute seam* — inspect the log (~logs~/~debug~/~inspect~), gate CI (~eval~/~deploy check~), and run the same flows in-process or on Cloud Run — all off the same durable event log.
 
 Loom also ships *opt-in* (default-off, no behavior change unless enabled) performance and responsiveness seams — Fiber principles applied to the async agentic layer, plus render-side hooks that leverage React's *own* fiber:
 
