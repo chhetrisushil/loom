@@ -107,7 +107,7 @@ Traditional frameworks optimize for **hydration** (rebuild state on every reques
 
 ## It's real — and it's working today
 
-- **24 packages** in a typed monorepo (10 new agentic runtimes)
+- **~40 packages** in a typed monorepo (durable core, agentic runtimes, pluggable compute, DX tooling)
 - **Full test suite green** across every package (~180 tests)
 - **Three runnable reference apps**, all offline (no API key needed):
   - **Cloud Command Center** (React) — durable incident response, streaming AI triage, human approval

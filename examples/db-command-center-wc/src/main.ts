@@ -1,10 +1,7 @@
-import { a2uiSurfaceProjection } from "@loom/a2ui";
-import { InProcessA2ABus } from "@loom/app";
+import type { AgentCard } from "@loom/a2a";
+import { defineConfig } from "@loom/app";
 import type { WidgetAction } from "@loom/blueprint-runtime";
-import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { AgentRegistry } from "@loom/registry";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "./agents/definitions";
 import { MissionControlBlueprint } from "./blueprints/MissionControlBlueprint";
 import { ObservabilityBlueprint } from "./blueprints/ObservabilityBlueprint";
@@ -13,7 +10,6 @@ import { type MountedBlueprint, mountBlueprint } from "./dom/BlueprintDom";
 import { defineWidgetElements } from "./dom/elements";
 import type { PendingApproval } from "./domain";
 import { Orchestrator } from "./orchestrator/Orchestrator";
-import { InMemoryEventStore, InMemorySnapshotStore } from "./runtime/browserStores";
 
 const MISSION_ID = "mission-1";
 const EXAMPLE_GOALS = [
@@ -22,40 +18,27 @@ const EXAMPLE_GOALS = [
 ];
 
 // ── Wiring (identical agentic backend to the React example) ───────────────────
-const effectRuntime = new EffectRuntime();
+// The composition root — stores, the WorkflowRuntime, the effect runtime, and the
+// A2A bus with its agent/capability routes — is assembled by `defineConfig`. We
+// bring our own coalescing projection runtime (defineConfig registers the A2UI
+// surfaces on it and wires onEvent → handleEvent).
 const projectionRuntime = new InMemoryProjectionRuntime({ coalesceNotifications: true });
-projectionRuntime.register(a2uiSurfaceProjection("mission"));
-projectionRuntime.register(a2uiSurfaceProjection("telemetry"));
-
-const missionRuntime = new WorkflowRuntime({
-  eventStore: new InMemoryEventStore(),
-  snapshotStore: new InMemorySnapshotStore(),
-  effectRuntime,
-  onEvent: (e) => projectionRuntime.handleEvent(e),
-});
-
 const catalog = buildCatalog();
-catalog.registerInto(missionRuntime);
 
-const bus = new InProcessA2ABus(missionRuntime);
-const registry = new AgentRegistry();
-for (const agent of FLEET) {
-  const card = AGENT_CARDS[agent.id];
-  if (card) {
-    bus.registerAgent(card);
-    registry.register(agent, { name: card.name, version: card.version, skills: card.skills });
-  }
-}
-for (const [capabilityId, agentId] of Object.entries(CAPABILITY_AGENT)) {
-  const cap = catalog.get(capabilityId);
-  if (cap) bus.registerCapability(capabilityId, agentId, cap.flow);
-}
+const loomApp = defineConfig({
+  storage: { kind: "memory" },
+  projectionRuntime,
+  surfaces: ["mission", "telemetry"],
+  catalog,
+  agents: FLEET.map((a) => AGENT_CARDS[a.id]).filter((c): c is AgentCard => c !== undefined),
+  capabilityAgents: CAPABILITY_AGENT,
+});
 
 const orchestrator = new Orchestrator({
   projectionRuntime,
-  missionRuntime,
+  missionRuntime: loomApp.runtime,
   catalog,
-  bus,
+  bus: loomApp.bus,
   missionId: MISSION_ID,
 });
 
@@ -90,7 +73,7 @@ headLeft.appendChild(
   el(
     "div",
     "subtitle",
-    `Web Components · granular per-widget updates · ${bus.agentCards().length} agents over A2A`
+    `Web Components · granular per-widget updates · ${loomApp.bus.agentCards().length} agents over A2A`
   )
 );
 header.append(headLeft, el("div", "fiber-toggle", "no framework — native custom elements"));

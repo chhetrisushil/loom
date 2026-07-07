@@ -1,52 +1,33 @@
 // @vitest-environment jsdom
-import { a2uiSurfaceProjection } from "@loom/a2ui";
-import { InProcessA2ABus } from "@loom/app";
-import { EffectRuntime } from "@loom/effect-runtime";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { createTestApp } from "@loom/testing";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { act } from "react-dom/test-utils";
 import { describe, expect, it } from "vitest";
 import { App } from "../src/App";
-import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "../src/agents/definitions";
+import { AGENT_CARDS, CAPABILITY_AGENT } from "../src/agents/definitions";
 import { buildCatalog } from "../src/capabilities/catalog";
 import { Orchestrator } from "../src/orchestrator/Orchestrator";
-import { InMemoryEventStore, InMemorySnapshotStore } from "../src/runtime/browserStores";
 import { buildRegistry } from "../src/widgets/registry";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 function wire(missionId: string) {
-  const effectRuntime = new EffectRuntime();
-  const projectionRuntime = new InMemoryProjectionRuntime();
-  projectionRuntime.register(a2uiSurfaceProjection("mission"));
-  projectionRuntime.register(a2uiSurfaceProjection("telemetry"));
-  const missionRuntime = new WorkflowRuntime({
-    eventStore: new InMemoryEventStore(),
-    snapshotStore: new InMemorySnapshotStore(),
-    effectRuntime,
-    onEvent: (e) => projectionRuntime.handleEvent(e),
-  });
   const catalog = buildCatalog();
-  catalog.registerInto(missionRuntime);
-  const bus = new InProcessA2ABus(missionRuntime);
-  for (const agent of FLEET) {
-    const card = AGENT_CARDS[agent.id];
-    if (card) bus.registerAgent(card);
-  }
-  for (const [capabilityId, agentId] of Object.entries(CAPABILITY_AGENT)) {
-    const cap = catalog.get(capabilityId);
-    if (cap) bus.registerCapability(capabilityId, agentId, cap.flow);
-  }
-  const orchestrator = new Orchestrator({
-    projectionRuntime,
-    missionRuntime,
+  const app = createTestApp({
+    surfaces: ["mission", "telemetry"],
     catalog,
-    bus,
+    agents: Object.values(AGENT_CARDS),
+    capabilityAgents: CAPABILITY_AGENT,
+  });
+  const orchestrator = new Orchestrator({
+    projectionRuntime: app.projectionRuntime,
+    missionRuntime: app.runtime,
+    catalog,
+    bus: app.bus,
     missionId,
   });
-  return { orchestrator, projectionRuntime, bus };
+  return { orchestrator, projectionRuntime: app.projectionRuntime, bus: app.bus };
 }
 
 const buttons = (root: HTMLElement): HTMLButtonElement[] =>

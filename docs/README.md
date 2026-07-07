@@ -24,4 +24,9 @@ A Loom workflow is an ordinary `async` TypeScript function whose every meaningfu
 
 ## Runnable examples
 
-See [`../examples`](../examples): `agent-network` (full agentic pipeline), `db-command-center` (intent → planner → A2A → durable approval), `incident-war-room` & `schema-migration-planner` (git-style branching), plus React / Web Components / Angular render variants.
+See [`../examples`](../examples):
+
+- **[`loom-starter`](../examples/loom-starter)** — **start here.** The canonical new-architecture example: `defineConfig` + folder convention (`loom gen`) + effect middleware + `@loom/testing` + evals + deploy-sim + the compute seam, in one compact release-approval app.
+- `agent-network` — the full agentic pipeline (LLM, ReAct agent, MCP, A2A, intent, planner, memory).
+- `db-command-center` — intent → planner → A2A dispatch → durable human approval (same backend rendered in React, Web Components, and Angular).
+- `incident-war-room` & `schema-migration-planner` — git-style branching (fork → simulate → compare → promote).

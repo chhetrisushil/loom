@@ -16,6 +16,7 @@
   "dependencies": {
     "@loom/a2ui": "workspace:*",
     "@loom/agent": "workspace:*",
+    "@loom/app": "workspace:*",
     "@loom/blueprint-runtime": "workspace:*",
     "@loom/capability": "workspace:*",
     "@loom/intent": "workspace:*",
@@ -34,6 +35,7 @@
   },
   "devDependencies": {
     "@loom/compiler": "workspace:*",
+    "@loom/testing": "workspace:*",
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",

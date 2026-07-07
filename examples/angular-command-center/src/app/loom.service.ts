@@ -16,6 +16,16 @@ import {
 } from "./incident.flow";
 import { InMemoryEventStore, InMemorySnapshotStore } from "./stores";
 
+// NOTE: this composition root is deliberately NOT migrated to `defineConfig`
+// from @loom/app. `defineConfig` statically imports @loom/event-runtime's
+// `SqliteEventStore`/`SqliteBranchRegistry` (→ native `better-sqlite3`) plus
+// `node:fs`/`node:path` at module top level. Even with `storage.kind:"memory"`
+// those eager imports get pulled into this browser (Vite) bundle, bloating it
+// and emitting `fs`/`path` "externalized for browser compatibility" warnings —
+// a regression for an example whose whole point is a clean, framework-agnostic
+// browser app. So we keep the honest manual wiring below, using the tiny
+// browser-safe in-memory stores in ./stores.
+
 // ── Domain types ──────────────────────────────────────────────────────────────
 
 export type Phase = "idle" | "running" | "suspended" | "completed" | "failed";

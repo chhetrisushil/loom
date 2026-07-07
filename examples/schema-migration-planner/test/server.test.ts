@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { waitForPhase } from "@loom/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ServerApp, createApp } from "../src/server/app";
 import { STRATEGIES } from "../src/warroom/strategies";
@@ -8,7 +9,6 @@ import { STRATEGIES } from "../src/warroom/strategies";
 const COMPLEX_GOAL = "Add a NOT NULL region column to the 40M-row orders table.";
 const SIMPLE_GOAL =
   "Add a nullable notes column to the orders table (metadata-only); apply automatically if low risk.";
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("schema migration planner (durable, headless)", () => {
   let dataDir: string;
@@ -26,15 +26,18 @@ describe("schema migration planner (durable, headless)", () => {
   const mission = () => app.projectionRuntime.getState<{ phase?: string }>("mission", "m-test");
   const telemetry = () =>
     app.projectionRuntime.getState<{ metrics: Record<string, number> }>("telemetry", "m-test");
-  const waitFor = async (pred: () => boolean, tries = 400): Promise<void> => {
-    for (let i = 0; i < tries && !pred(); i++) await sleep(25);
-  };
+  // Reach a mission phase, failing loudly on timeout (vs the old silent poll loop).
+  const reachPhase = (phase: string) =>
+    waitForPhase(app.projectionRuntime, "mission", "m-test", phase, {
+      timeoutMs: 10000,
+      intervalMs: 25,
+    });
 
   it("forks the gate into candidate strategies, simulates each, promotes a winner (no merge)", async () => {
     void app.orchestrator.run(COMPLEX_GOAL);
 
     // The complex migration reaches the gate and opens the Migration Board.
-    await waitFor(() => mission().phase === "awaiting-branches");
+    await reachPhase("awaiting-branches");
     expect(mission().phase).toBe("awaiting-branches");
 
     const prepared = app.orchestrator.branchSurface();
@@ -74,7 +77,7 @@ describe("schema migration planner (durable, headless)", () => {
 
     // Phase 3 — promote the winner and apply it for real.
     await app.orchestrator.promoteBranch("online-ddl");
-    await waitFor(() => mission().phase === "resolved");
+    await reachPhase("resolved");
     expect(mission().phase).toBe("resolved");
 
     const committed = app.orchestrator.branchSurface();

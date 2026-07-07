@@ -1,6 +1,6 @@
 import { createA2AClientEffect, createA2AServer, toAgentCard } from "@loom/a2a";
-import { a2uiSurfaceProjection } from "@loom/a2ui";
 import { AgentRunner, SkillRegistry } from "@loom/agent";
+import { defineConfig } from "@loom/app";
 import { CapabilityCatalog } from "@loom/capability";
 import { agent$, flow$, handler$, instructions$, memory$, skill$, step$ } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
@@ -8,11 +8,9 @@ import { IntentRuntime } from "@loom/intent";
 import { McpClient } from "@loom/mcp";
 import { MemoryRuntime } from "@loom/memory";
 import { PlannerRuntime } from "@loom/planner";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { AgentRegistry } from "@loom/registry";
 import { TerminalRenderer } from "@loom/renderer-terminal";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
 /**
  * Agent Network — a server-side showcase of Loom's agentic capabilities.
  *
@@ -32,13 +30,15 @@ import { z } from "zod";
 import { ScriptedLlmProvider } from "./ScriptedLlmProvider";
 import { incidentBlueprint, investigateCapability, scaleCapability } from "./capabilities";
 import { startFakeMcpServer } from "./fakeMcpServer";
-import { InMemoryEventStore, InMemorySnapshotStore } from "./stores";
 
 function section(title: string): void {
   console.log(`\n${"─".repeat(64)}\n  ${title}\n${"─".repeat(64)}`);
 }
 
 async function main(): Promise<void> {
+  // Effect substrate for the AgentRunner ReAct loop (MCP tools + agent memory).
+  // This backs the agents, not a WorkflowRuntime, so it stays a plain
+  // EffectRuntime; the durable composition roots below use defineConfig.
   const effectRuntime = new EffectRuntime();
 
   // ══ 1. Configurable LLM ═════════════════════════════════════════════════════
@@ -169,12 +169,13 @@ async function main(): Promise<void> {
     runner: triageRunner as FlowRunner<unknown, unknown>,
   };
 
-  const serverRuntime = new WorkflowRuntime({
-    eventStore: new InMemoryEventStore(),
-    snapshotStore: new InMemorySnapshotStore(),
-    effectRuntime: new EffectRuntime(),
+  // Composition root for the A2A-fronted service: defineConfig assembles the
+  // in-memory stores, an EffectRuntime, a projection runtime, and the
+  // WorkflowRuntime, and registers the triage flow declaratively.
+  const serverApp = defineConfig({
+    storage: { kind: "memory" },
+    flows: [triageFlow],
   });
-  serverRuntime.registerFlow(triageFlow.definition, triageFlow.runner);
 
   // The A2A-fronted agent is a first-class agent$ too; toAgentCard derives its
   // card and createA2AServer overwrites url with the bound address.
@@ -187,7 +188,9 @@ async function main(): Promise<void> {
     capabilities: { streaming: false },
     skills: [{ id: "triage", name: "Incident Triage" }],
   });
-  const server = createA2AServer(serverRuntime, triageFlow, toAgentCard(triageAgent), { port: 0 });
+  const server = createA2AServer(serverApp.runtime, triageFlow, toAgentCard(triageAgent), {
+    port: 0,
+  });
   await server.start();
   console.log(`A2A agent card: ${server.url}/.well-known/agent.json`);
 
@@ -206,18 +209,17 @@ async function main(): Promise<void> {
   section("5. Capability catalog + Intent routing");
   const catalog = new CapabilityCatalog().register(investigateCapability).register(scaleCapability);
 
-  const projectionRuntime = new InMemoryProjectionRuntime();
-  projectionRuntime.register(a2uiSurfaceProjection("ui"));
-  const appRuntime = new WorkflowRuntime({
-    eventStore: new InMemoryEventStore(),
-    snapshotStore: new InMemorySnapshotStore(),
-    effectRuntime: new EffectRuntime(),
-    onEvent: (e) => projectionRuntime.handleEvent(e),
+  // Composition root for the app: defineConfig registers the catalog's flows,
+  // stands up the "ui" A2UI surface on its projection runtime, and wires
+  // onEvent → projection folding for us (no manual handleEvent plumbing).
+  const app = defineConfig({
+    storage: { kind: "memory" },
+    catalog,
+    surfaces: ["ui"],
   });
-  catalog.registerInto(appRuntime);
 
   // No provider passed → deterministic keyword routing (works fully offline).
-  const intent = new IntentRuntime({ catalog, workflowRuntime: appRuntime });
+  const intent = new IntentRuntime({ catalog, workflowRuntime: app.runtime });
   const request = "the prod-postgres database has high CPU, please investigate";
   const route = await intent.route(request);
   console.log(`Request: "${request}"`);
@@ -263,13 +265,15 @@ async function main(): Promise<void> {
 
   // ══ 8. Multi-surface (render the same blueprint to the terminal) ════════════
   section("8. Terminal surface");
-  const terminal = new TerminalRenderer(projectionRuntime);
+  const terminal = new TerminalRenderer(app.projectionRuntime);
   console.log(terminal.render(incidentBlueprint, handle.executionId));
 
   // ══ Cleanup ═════════════════════════════════════════════════════════════════
   await server.stop();
   await mcpClient.disconnect();
   await mcp.close();
+  await serverApp.close();
+  await app.close();
   section("Done — full agentic pipeline demonstrated offline.");
 }
 

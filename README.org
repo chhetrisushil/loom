@@ -75,6 +75,7 @@ loom/
 
 | Example                  | Description                                                                  |
 |--------------------------+------------------------------------------------------------------------------|
+| ~loom-starter~           | *Start here.* The canonical new-architecture example: ~defineConfig~ + folder convention (~loom gen~) + effect middleware + ~@loom/testing~ + evals + deploy-sim + the compute seam, in one compact release-approval app |
 | ~cloud-command-center~   | React app: suspend/approve/resume workflow + streaming AI triage (A2UI)      |
 | ~angular-command-center~ | The same workflow in Angular — proves the runtime is UI-framework-agnostic   |
 | ~agent-network~          | Node showcase: the full pipeline — intent routing, planner, capabilities, agent memory, MCP + A2A, and a terminal-rendered dashboard |

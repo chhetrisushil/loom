@@ -1,11 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { SqliteEventStore } from "@loom/event-runtime";
+import type { LoomApp } from "@loom/app";
+import { ToolEffect } from "@loom/effect-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { createTestApp } from "@loom/testing";
+import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InvestigateIncidentFlow } from "../../src/flows/InvestigateIncident";
 import { IncidentProjection } from "../../src/projections/IncidentProjection";
@@ -33,50 +33,43 @@ const MOCK_REMEDIATION = {
 };
 
 interface Runtimes {
+  app: LoomApp;
   workflowRuntime: WorkflowRuntime;
   projectionRuntime: InMemoryProjectionRuntime;
-  eventStore: SqliteEventStore;
 }
 
-function createRuntimes(dbPath: string, snapshotDbPath: string): Runtimes {
-  const eventStore = new SqliteEventStore(dbPath);
-  const snapshotStore = new SqliteSnapshotStore(snapshotDbPath);
+// `createTestApp` is the same `defineConfig` wiring production uses; a SQLite
+// `dir` gives durable stores so a fresh app instance can resume a suspended
+// execution (the whole point of this e2e).
+function createRuntimes(dir: string): Runtimes {
   const projectionRuntime = new InMemoryProjectionRuntime();
-
   projectionRuntime.register(MetricsProjection);
   projectionRuntime.register(IncidentProjection);
 
-  const workflowRuntime = new WorkflowRuntime({
-    eventStore,
-    snapshotStore,
-    effectRuntime: new EffectRuntime(),
-    onEvent: (event) => projectionRuntime.handleEvent(event),
+  const app = createTestApp({
+    storage: { kind: "sqlite", dir },
+    projectionRuntime,
+    flows: [InvestigateIncidentFlow as RegisteredFlow],
   });
-
-  workflowRuntime.registerFlow(InvestigateIncidentFlow.definition, InvestigateIncidentFlow.runner);
 
   // The AI-triage step has no co-located handler$ (its effect is provided at
   // wiring time), so register a fast deterministic stub here. This keeps the
   // suspend/resume e2e focused and quick — no LLM streaming delay.
-  workflowRuntime.register(
+  app.runtime.register(
     "ai-triage-tool",
     new ToolEffect(async () => ({
       analysis: "Root cause: connection-pool starvation. Restart the pod.",
     }))
   );
 
-  return { workflowRuntime, projectionRuntime, eventStore };
+  return { app, workflowRuntime: app.runtime, projectionRuntime };
 }
 
 describe("InvestigateIncident — full suspend/resume e2e", () => {
   let tmpDir: string;
-  let dbPath: string;
-  let snapshotDbPath: string;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(path.join(os.tmpdir(), "loom-e2e-"));
-    dbPath = path.join(tmpDir, "events.db");
-    snapshotDbPath = path.join(tmpDir, "snapshots.db");
   });
 
   afterEach(() => {
@@ -91,10 +84,8 @@ describe("InvestigateIncident — full suspend/resume e2e", () => {
     const metricsSpy = vi.fn().mockResolvedValue(MOCK_METRICS);
     const logsSpy = vi.fn().mockResolvedValue(MOCK_LOGS);
 
-    const { workflowRuntime, eventStore, projectionRuntime } = createRuntimes(
-      dbPath,
-      snapshotDbPath
-    );
+    const { app, workflowRuntime, projectionRuntime } = createRuntimes(tmpDir);
+    const eventStore = app.stores.eventStore;
     workflowRuntime.register("metrics-tool", new ToolEffect(metricsSpy));
     workflowRuntime.register("logs-tool", new ToolEffect(logsSpy));
 
@@ -131,7 +122,7 @@ describe("InvestigateIncident — full suspend/resume e2e", () => {
     const metricsSpy1 = vi.fn().mockResolvedValue(MOCK_METRICS);
     const logsSpy1 = vi.fn().mockResolvedValue(MOCK_LOGS);
 
-    const runtime1 = createRuntimes(dbPath, snapshotDbPath);
+    const runtime1 = createRuntimes(tmpDir);
     runtime1.workflowRuntime.register("metrics-tool", new ToolEffect(metricsSpy1));
     runtime1.workflowRuntime.register("logs-tool", new ToolEffect(logsSpy1));
     runtime1.workflowRuntime.register(
@@ -145,13 +136,13 @@ describe("InvestigateIncident — full suspend/resume e2e", () => {
     await handle1.waitForSuspend();
     const executionId = handle1.executionId;
 
-    runtime1.eventStore.close();
+    await runtime1.app.close();
 
     const metricsSpy2 = vi.fn().mockResolvedValue(MOCK_METRICS);
     const logsSpy2 = vi.fn().mockResolvedValue(MOCK_LOGS);
     const remediationSpy2 = vi.fn().mockResolvedValue(MOCK_REMEDIATION);
 
-    const runtime2 = createRuntimes(dbPath, snapshotDbPath);
+    const runtime2 = createRuntimes(tmpDir);
     runtime2.workflowRuntime.register("metrics-tool", new ToolEffect(metricsSpy2));
     runtime2.workflowRuntime.register("logs-tool", new ToolEffect(logsSpy2));
     runtime2.workflowRuntime.register("remediation-tool", new ToolEffect(remediationSpy2));
@@ -176,6 +167,6 @@ describe("InvestigateIncident — full suspend/resume e2e", () => {
     expect(incidentState.status).toBe("resolved");
     expect(incidentState.summary).toContain("CPU normalized");
 
-    runtime2.eventStore.close();
+    await runtime2.app.close();
   }, 15000);
 });
