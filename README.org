@@ -1,309 +1,256 @@
-#+title: Loom Framework
+#+title: Loom
 #+author: Sushil Chhetri
 
-A TypeScript framework for building durable, event-sourced *agentic* AI workflows with schema-driven UIs.
+*The framework for durable, event-sourced agentic applications.*
 
-Loom provides the plumbing for workflows that can suspend mid-execution, survive process restarts, and resume from exactly where they left off — with a React renderer that turns declarative blueprints into live UIs.
+Loom treats an intelligent workflow as a *process that unfolds over time*, not a request that returns once. Every decision it makes is appended to an immutable event log — so any execution can *pause for a human, resume on another machine, replay bit-for-bit for debugging, fork to explore alternatives,* and be *evaluated against its own history*. You write the intelligence in plain TypeScript; Loom provides the durable spine that makes it trustworthy in production.
 
-It ships first-class support for the four things every agentic application needs:
+#+begin_quote
+*The durable event log is the moat.* Durability, resumability, deterministic replay, branching, evals, and time-travel debugging are all just different lenses on one append-only log.
+#+end_quote
 
-- *Configurable LLM* — pick your model provider (Anthropic, OpenAI, or your own) via a single ~LlmProvider~ interface. Nothing is hard-coded.
-- *Bring-your-own agent* — define agents with ~agent$()~ and run a ReAct tool-calling loop with ~AgentRunner~.
-- *MCP servers/tools* — connect to Model Context Protocol servers, discover their tools, and register them as effects automatically.
-- *A2A out of the box* — expose any Loom flow as an Agent-to-Agent endpoint, and call remote agents as effects.
-- *A2UI* — a patch/event-based Agent-to-UI protocol. Agents drive the UI with durable, replayable patches (~ctx.ui.set/merge/append/increment~); the client folds them into a UI surface that any renderer binds to.
+- ⏸️  *Durable suspend / resume* — a flow can wait days for a human, survive a restart, and continue from exactly where it left off. Completed steps are never re-run.
+- 🔁  *Deterministic replay* — state is a pure fold of the event log; the same events always reconstruct the same state.
+- 🌱  *Git-style branching* — fork an in-flight execution, simulate alternatives concurrently, and promote a winner. Branch-only, no merge.
+- 🤖  *Agentic, end to end* — LLMs, ReAct agents, MCP tools, and agent-to-agent calls are all durable, replayable *effects*.
+- 🎨  *Bring your own renderer* — the same backend renders in React, Angular, Web Components, or the terminal.
+- 🧩  *One composition root* — ~defineConfig~ wires an app from a static config; the ~loom~ CLI, testing kit, evals, deploy-simulation, and a pluggable-compute seam surround it.
 
-On top of these, Loom ships an *intelligence pipeline* that turns intents and goals into runnable work:
+-----
 
-- *Intent Runtime* — routes a natural-language intent to a capability (~IntentRuntime.route/run~). Works fully offline with keyword matching, or uses an ~LlmProvider~ to pick the capability.
-- *Planner Runtime* — composes an ordered, multi-step plan of capabilities for a higher-level goal (~PlannerRuntime.plan~).
-- *Capabilities Over APIs* — ~capability$~ wraps a flow with intent-facing metadata; a ~CapabilityCatalog~ makes it discoverable and invocable.
-- *Agent memory* — ~MemoryRuntime~ gives agents scoped, durable recall across turns (honoring ~ttlMs~ / ~maxEntries~).
-- *Speculative branching* — fork an execution at any point into an independent branch to try alternate plans, then keep the winner (~WorkflowRuntime.fork~ + a git-style ~BranchRegistry~). Copy-on-write over the event log, branch-only (no merge); the parent stays intact. See the ~incident-war-room~ and ~schema-migration-planner~ examples for the full fork → simulate → compare → promote loop.
-- *Bring your own storage* — the ~EventStore~ / ~SnapshotStore~ / ~BranchRegistry~ / ~MemoryStore~ interfaces are *async-first*, so any backend plugs in: SQLite and in-memory ship in the box, and async/network backends (Postgres, Redis, DynamoDB) are first-class — the runtime ~await~s the store. ~defineConfig~ exposes this directly via ~storage: { kind: "custom", eventStore, snapshotStore }~. The synchronous ~ctx.emit~ / ~ctx.ui~ API is preserved by a per-execution write pipeline (see [[file:docs/architecture.md][architecture]]).
-- *Multi-surface delivery* — the same blueprint renders to React, Angular, Web Components, *or* the terminal (~@loom/renderer-terminal~), because ~traverseBlueprint~ is framework-agnostic (bring-your-own-renderer / component).
+* Quick start
 
-And a *platform* around the core — the composition root and the tooling to build, test, and ship:
+#+begin_src sh
+npm create loom-app@latest my-app && cd my-app && pnpm install
+#+end_src
 
-- *One composition root* — ~defineConfig~ (~@loom/app~) assembles the runtime, stores, effect middleware, projections, and A2A bus from one static config and returns ~{ runtime, effectRuntime, projectionRuntime, bus, stores, close }~ — the same primitives you'd hand-wire, so nothing is hidden. A folder convention (~loom gen~) discovers flows into a static ~loom.gen.ts~.
-- *The ~loom~ CLI* — ~logs~ / ~debug~ (time-travel to any sequence) / ~inspect~ (web timeline + slider) / ~eval~ (replay golden logs) / ~deploy check~ (simulate a deploy vs new flow defs) / ~gen~ / ~new~ / ~check~ — each a lens on the durable event log.
-- *Testing & CI gates* — ~@loom/testing~ (~createTestApp~ / ~waitForPhase~ / a VCR LLM provider), log-as-fixture evals (~@loom/eval~), and deploy-simulation (~@loom/deploy-sim~) that catches resume-breaking changes before you promote.
-- *Run anywhere* — a pluggable compute seam (~@loom/dispatcher~ + worker runtimes) runs the *same* flows in-process, over HTTP, or on Cloud Run (~@loom/platform-cloudrun~); ~@loom/graph-executor~ fans out distributed graphs. An ~ExecutionPackage~ carries resume coordinates, never code.
-- *Effect middleware* — cross-cutting concerns as a composable ~(ctx, input, next)~ chain; ~retryMiddleware~ (~@loom/middleware~) adds deterministic backoff.
+Define a flow — schema-checked steps plus an ordinary ~async~ runner:
 
-Start from [[file:examples/loom-starter][~examples/loom-starter~]] — the canonical app wiring all of the above.
+#+begin_src ts
+import { z } from "zod";
+import { step$, handler$, flow$ } from "@loom/core";
+import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 
-* Repository Layout
+const greet = step$({
+  id: "greet",
+  inputSchema: z.object({ name: z.string() }),
+  outputSchema: z.object({ message: z.string() }),
+  handler: handler$(async (input) => ({ message: `Hello, ${input.name}!` })),
+});
+
+const runner: FlowRunner<{ name: string }, { message: string }> = (ctx, input) =>
+  ctx.run(greet, input);
+
+export const helloFlow = {
+  definition: flow$({
+    id: "hello", name: "Hello", version: "1.0.0",
+    inputSchema: z.object({ name: z.string() }),
+    outputSchema: z.object({ message: z.string() }),
+    steps: [greet],
+  }),
+  runner,
+} as RegisteredFlow;
+#+end_src
+
+Wire it with ~defineConfig~ and run it:
+
+#+begin_src ts
+import { defineConfig } from "@loom/app";
+import { helloFlow } from "./hello";
+
+const app = defineConfig({ storage: { kind: "memory" }, flows: [helloFlow] });
+const state = await (await app.runtime.start(helloFlow, { name: "Ada" })).waitForCompletion();
+console.log(state.variables._output); // { message: "Hello, Ada!" }
+await app.close();
+#+end_src
+
+*The three moves to remember:*
+1. ~ctx.run(step, input)~ — do a unit of work (recorded, replay-safe, exactly-once).
+2. ~ctx.suspend({ on })~ — pause durably for a human or an external signal.
+3. ~runtime.fork(id, sequence)~ — branch from any point to explore alternatives.
+
+*Pause for a human, then resume* — even across a process restart:
+
+#+begin_src ts
+const decision = (await ctx.suspend({ on: "ApprovalGranted", correlationKey: input.target }))
+  as { approved: boolean };
+// …later, possibly in a new process:
+await app.runtime.resume(executionId, { eventType: "ApprovalGranted", payload: { approved: true } });
+#+end_src
+
+→ New to Loom? Read [[file:docs/getting-started.md][Getting Started]] (5 minutes), then study [[file:examples/loom-starter][~examples/loom-starter~]] — the canonical app wiring ~defineConfig~, the folder convention, effect middleware, testing, evals, and deploy-simulation.
+
+-----
+
+* Core ideas
+
+- *Event sourcing* — execution state is never stored directly; it's derived by folding an append-only log of ~EventEnvelope~ s. State ~= fold(events)~.
+- *Deterministic replay* — the fold is a pure function, and side effects are quarantined behind the ~EffectRuntime~, so a resume, a fork, and a debug-replay all reconstruct identical state.
+- *Suspension is first-class* — pausing for a human is a normal outcome, not an error. ~ctx.suspend()~ writes a durable checkpoint; ~resume()~ continues from it.
+- *Plain code, not a DSL* — a flow's orchestration is an ordinary ~async~ function using ~ctx.run~ / ~ctx.suspend~ / ~ctx.parallel~. Loom adds durability around your code; it doesn't replace it.
+- *Static, replay-safe wiring* — flows and effects are registered statically (the folder convention is honored by build-time codegen, not runtime globbing), so a remote worker or a replay reconstructs an identical graph.
+- *Isomorphic core, pluggable edges* — storage, compute placement, LLM providers, and renderers are all interfaces. The same flow runs in a test, a browser tab, a Node server, or on Cloud Run.
+
+** How it works
+
+Every execution is an ordered list of events; the current state is a pure fold of them. Side effects run once and are memoized; a resume replays the log (serving completed steps from it) until it reaches the suspend point, then continues.
 
 #+begin_example
-loom/
-├── packages/                     # Core framework packages (see table below)
-├── apps/
-│   └── playground/               # A2UI patch-stream + trace playground
-├── examples/                     # Reference applications (see table below)
-│   ├── agent-network/            # headless Node — full agentic pipeline end to end
-│   ├── a2a-mesh/                 # headless Node — bidirectional A2A interop with ADK/LangGraph/CrewAI
-│   ├── cloud-command-center/     # React — durable suspend/approve/resume + streaming AI triage
-│   ├── angular-command-center/   # the same workflow in Angular (runtime is UI-agnostic)
-│   ├── db-command-center/        # React — intent-driven multi-agent DB ops (BYOR + BYOC + fiber)
-│   ├── db-command-center-wc/     # the same app in vanilla Web Components (no framework)
-│   ├── db-command-center-server/ # the same app as server + client (durable Node server + WC client)
-│   ├── incident-war-room/        # git-style branching: fork → simulate → compare → promote (no merge)
-│   └── schema-migration-planner/ # git-style branching for schema migrations (+ live per-branch progress)
-└── docs/                         # architecture, API reference, usage guides, presentation kit
+  defineConfig(config)                     ← one static composition root
+       │  { runtime, effectRuntime, projectionRuntime, bus, stores, close }
+       ▼
+  runtime.start(flow, input)
+       │  ctx.run(step)  →  EffectRuntime (tool / llm / human / a2a)  +  middleware
+       ▼
+  ExecutionJournal ──► ReplayVM (fold, in-memory)      state = fold(events)
+       │  (sole sequencer + writer)
+       └──────────────► EventStore  (memory · SQLite · your own backend)
+                              │
+                        ProjectionRuntime ──► React / Angular / Web Components / terminal
+                              │
+                    loom logs · debug · inspect · eval · deploy check
 #+end_example
 
-** Packages
+*Bring your own everything.* Storage (~storage: { kind: "custom", eventStore, snapshotStore }~ — Postgres/Redis/DynamoDB), renderer (React/Angular/WC/terminal/DOM), and components (custom widgets in the renderer registry) are all swappable — the durable log never depends on them.
 
-| Package                | Description                                                  |
-|------------------------+--------------------------------------------------------------|
-| ~@loom/core~           | Core types, builders, and SDK primitives                     |
-| ~@loom/sdk~            | Public re-export surface (start here for most use cases)     |
-| ~@loom/workflow-runtime~   | Durable workflow execution with suspend, resume, and speculative ~fork~ |
-| ~@loom/effect-runtime~     | Effect isolation layer for tool, LLM, human, and A2A effects |
-| ~@loom/event-runtime~      | Append-only event store + git-style ~BranchRegistry~ (refs + fork lineage) |
-| ~@loom/snapshot-runtime~   | Snapshot serialization and storage for execution state   |
-| ~@loom/projection-runtime~ | Event-to-projection transformation with live subscriptions |
-| ~@loom/blueprint-runtime~  | Schema-driven, JSON-serializable UI blueprint types      |
-| ~@loom/renderer-react~     | React renderer for Loom blueprints                       |
-| ~@loom/registry~           | Agent registry (~AgentDefinition~ + agent card store)    |
-| ~@loom/replay-vm~          | Deterministic replay engine                              |
-| ~@loom/telemetry~          | Zero-overhead telemetry adapters and hooks               |
-| ~@loom/llm~                | Provider-agnostic LLM abstraction (Anthropic, OpenAI, custom) |
-| ~@loom/agent~              | ReAct-style agent loop over your tools                   |
-| ~@loom/mcp~                | MCP (Model Context Protocol) client and tool discovery   |
-| ~@loom/a2a~                | Agent-to-Agent protocol client and server                |
-| ~@loom/a2ui~               | Agent-to-UI protocol — patch/event-based UI updates      |
-| ~@loom/capability~         | Capabilities Over APIs — ~capability$~ + ~CapabilityCatalog~ |
-| ~@loom/intent~             | Intent Runtime — routes natural-language intent to a capability |
-| ~@loom/planner~            | Planner Runtime — composes ordered multi-step plans      |
-| ~@loom/memory~             | Agent memory — scoped, durable recall (~MemoryRuntime~)  |
-| ~@loom/renderer-terminal~  | Terminal renderer — same blueprint, non-React surface    |
-| ~@loom/scheduler~          | Ephemeral cooperative scheduler — priority lanes, bounded-concurrency ~parallelLimit~, ~yieldControl~, AbortSignal utils (opt-in) |
-| ~@loom/app~                | *Composition root* — ~defineConfig~ assembles the runtime, stores, middleware, projections, and A2A bus from a static config |
+-----
+
+* Packages
+
+*Core runtime*
+
+| Package                    | Description |
+|----------------------------+-------------|
+| ~@loom/core~               | Authoring builders (~flow$~, ~step$~, ~handler$~, ~tool$~, ~agent$~, ~projection$~, …) + shared types |
+| ~@loom/workflow-runtime~   | Durable execution — ~start~ / ~resume~ / ~fork~ / ~loadState~, the ~ExecutionJournal~, ~WorkflowContext~ |
+| ~@loom/replay-vm~          | Deterministic replay — ~foldEvents~ / ~ReplayVM~ (pure state reconstruction) |
+| ~@loom/event-runtime~      | Append-only ~EventStore~ (memory / SQLite) + git-style ~BranchRegistry~ |
+| ~@loom/snapshot-runtime~   | ~SnapshotStore~ — bounded-tail replay |
+| ~@loom/effect-runtime~     | Effect isolation for tool / LLM / human / A2A effects |
+| ~@loom/sdk~                | Public re-export surface |
+
+*Composition & effects*
+
+| ~@loom/app~                | *Composition root* — ~defineConfig~ assembles the runtime, stores, middleware, projections, and A2A bus from one static config |
 | ~@loom/middleware~         | Effect middleware — ~retryMiddleware~ (deterministic backoff); the ~(ctx, input, next)~ chain |
-| ~@loom/compiler~           | Vite plugin + CLI — ~handler$~ extraction into lazy chunks, flow-graph validation, resumability metadata |
+| ~@loom/registry~           | Workflow / agent registry |
+
+*Projection & UI*
+
+| ~@loom/projection-runtime~ | Event → projection folding with live subscriptions |
+| ~@loom/a2ui~               | Agent-to-UI protocol — durable patch/event UI updates (~ctx.ui.set/merge/append~) |
+| ~@loom/blueprint-runtime~  | Schema-driven, JSON-serializable UI blueprints |
+| ~@loom/renderer-react~     | React renderer (with opt-in render-side fiber) |
+| ~@loom/renderer-terminal~  | Terminal renderer — same blueprint, non-React surface |
+
+*Agentic*
+
+| ~@loom/llm~                | Provider-agnostic LLM abstraction (Anthropic, OpenAI, custom) |
+| ~@loom/agent~              | ReAct-style agent loop over your tools |
+| ~@loom/mcp~                | Model Context Protocol client + tool discovery |
+| ~@loom/a2a~                | Agent-to-Agent protocol client + server |
+| ~@loom/capability~         | Flows as intent-addressable capabilities (~capability$~ + ~CapabilityCatalog~) |
+| ~@loom/intent~             | Routes natural-language intent to a capability |
+| ~@loom/planner~            | Composes an ordered, multi-step plan from a goal |
+| ~@loom/memory~             | Scoped, TTL/size-bounded agent memory |
+| ~@loom/orchestrator~       | Composable approval (~decideApproval~) + plan-dispatch primitives |
+
+*Compute & distribution*
+
 | ~@loom/dispatcher~         | Execution placement — decides *where* a flow runs; owns worker allocation + retries |
-| ~@loom/worker-runtime~     | Platform-agnostic worker SPI + ~ExecutionPackage~ (resume coordinates, never code) |
-| ~@loom/worker-runtime-local~ / ~-remote~ | In-process and HTTP ~WorkerRuntime~ implementations |
-| ~@loom/worker-server~      | Stateless worker HTTP endpoint — ~POST /execute~ runs one ~ExecutionPackage~ |
+| ~@loom/worker-runtime~ (~-local~ / ~-remote~) | Worker SPI + ~ExecutionPackage~ (resume coordinates, never code); in-process + HTTP impls |
+| ~@loom/worker-server~      | Stateless worker HTTP endpoint — ~POST /execute~ |
 | ~@loom/platform-cloudrun~  | Cloud Run adapter — ~CloudRunWorkerRuntime~ + sizing policy |
-| ~@loom/graph-executor~     | Distributed execution graph — per-node executions (one writer each), joined via lineage |
-| ~@loom/cli~                | The ~loom~ CLI — ~logs~/~debug~/~inspect~/~eval~/~deploy check~/~gen~/~new~/~check~ |
+| ~@loom/graph-executor~     | Distributed fan-out — per-node executions (one writer each), joined via lineage |
+| ~@loom/scheduler~          | Ephemeral cooperative scheduler — priority lanes, ~parallelLimit~, cancellation (opt-in) |
+
+*DX & tooling*
+
+| ~@loom/cli~                | The ~loom~ CLI — ~logs~ / ~debug~ / ~inspect~ / ~eval~ / ~deploy check~ / ~gen~ / ~new~ / ~check~ |
 | ~@loom/testing~            | Testing kit — ~createTestApp~, ~waitForPhase~, ~captureGolden~, VCR LLM provider |
 | ~@loom/eval~               | Log-as-fixture evals — replay recorded logs, diff/score runs |
 | ~@loom/deploy-sim~         | Deploy simulation — replay history vs new flow defs to catch resume-breaking changes |
-| ~@loom/scaffold~           | Shared code templates + registration codegen (~loom gen~/~new~) |
-| ~@loom/orchestrator~       | Composable approval (~decideApproval~) + plan-dispatch primitives |
+| ~@loom/scaffold~           | Code templates + registration codegen (~loom gen~ / ~new~) |
+| ~@loom/compiler~           | Vite plugin + CLI — ~handler$~ extraction, flow-graph validation, resumability metadata |
+| ~@loom/telemetry~          | Zero-overhead telemetry adapters + hooks |
 
-** Examples
+-----
 
-| Example                  | Description                                                                  |
-|--------------------------+------------------------------------------------------------------------------|
-| ~loom-starter~           | *Start here.* The canonical new-architecture example: ~defineConfig~ + folder convention (~loom gen~) + effect middleware + ~@loom/testing~ + evals + deploy-sim + the compute seam, in one compact release-approval app |
-| ~cloud-command-center~   | React app: suspend/approve/resume workflow + streaming AI triage (A2UI)      |
-| ~angular-command-center~ | The same workflow in Angular — proves the runtime is UI-framework-agnostic   |
-| ~agent-network~          | Node showcase: the full pipeline — intent routing, planner, capabilities, agent memory, MCP + A2A, and a terminal-rendered dashboard |
-| ~a2a-mesh~               | Node showcase: using external agent frameworks (Google ADK, LangGraph, CrewAI) *with* Loom as bidirectional peers over A2A — ~A2APeerClient~ registers a remote agent as a Loom tool (outbound), and ~createA2AServer~ exposes a Loom agent to external callers (inbound). Runs offline against a mock peer; README shows how to point it at a real ADK/LangGraph endpoint |
-| ~db-command-center~      | React app: intent-driven, human-in-the-loop, multi-agent (A2A) DB ops command center — a dynamically planned workflow, long-running domain agents, a near-real-time task list, and an observability dashboard; BYOR + BYOC + render-side fiber |
-| ~db-command-center-wc~   | The *same* command center in vanilla Web Components — no framework at all. Reuses the entire agentic backend and swaps only the render layer, proving Loom's BYOR contract |
-| ~db-command-center-server~ | The *same* command center as a genuine server + client app: the durable runtime runs on a Node server (SQLite); a Web Components client renders it over HTTP + SSE. Demonstrates the isomorphic deployment model (server execution → client render/resume) |
-| ~incident-war-room~      | Git-style branching, made a live experience: at a high-risk approval gate an SRE *forks* the durable execution into mutually-exclusive candidate remediations, *simulates* each speculatively (concurrently, via ~parallelLimit~), compares a git-graph diff, and *promotes* the winner — which applies for real. Branch-only, *no merge*; losing branches survive as immutable lineage. Durable Node server (SQLite ~BranchRegistry~) + WC client over SSE |
-| ~schema-migration-planner~ | The same git-style branching on a *different* domain — choosing a large-table schema-migration strategy (online-DDL vs shadow-copy vs dual-write). Proves the fork/simulate/promote seam is domain-agnostic (reused verbatim), and adds *live per-branch simulation progress*: three shadow-migrations backfilling concurrently, streaming progress over SSE. Compares lock time / duration / reversibility / risk, then promotes one — *no merge* |
+* Examples
 
-* Prerequisites
+Every example is offline-first (no API key needed — a deterministic mock LLM ships by default).
 
-- Node.js ≥ 20
-- pnpm ≥ 9 (~npm install -g pnpm~)
+| Example                    | What it shows |
+|----------------------------+---------------|
+| [[file:examples/loom-starter][~loom-starter~]] | *Start here.* The canonical app: ~defineConfig~ + folder convention (~loom gen~) + effect middleware + ~@loom/testing~ + evals + deploy-sim + the compute seam, in one compact release-approval flow |
+| [[file:examples/agent-network][~agent-network~]] | Headless Node — the whole agentic pipeline end to end: LLM → ReAct agent → MCP → A2A → intent → planner → memory → terminal surface |
+| [[file:examples/a2a-mesh][~a2a-mesh~]] | Headless Node — bidirectional interop with Google ADK / LangGraph / CrewAI over the open A2A protocol |
+| [[file:examples/cloud-command-center][~cloud-command-center~]] | React — durable incident response: suspend / approve / resume + streaming AI triage |
+| [[file:examples/angular-command-center][~angular-command-center~]] | The *same* workflow in Angular — the runtime carries zero framework imports (bring-your-own-renderer) |
+| [[file:examples/db-command-center][~db-command-center~]] | React — intent → planner → A2A dispatch → durable human approval, with custom widgets + render-side fiber (BYOR + BYOC) |
+| [[file:examples/db-command-center-wc][~db-command-center-wc~]] | The *same* app in vanilla Web Components — reuse the whole backend, swap only the render layer |
+| [[file:examples/db-command-center-server][~db-command-center-server~]] | The *same* app as server + client — durable runtime on a Node server (SQLite), WC client over HTTP + SSE (isomorphic deployment) |
+| [[file:examples/incident-war-room][~incident-war-room~]] | Git-style branching, live — fork the durable execution at a gate → simulate strategies concurrently → compare → *promote* the winner. Branch-only, no merge |
+| [[file:examples/schema-migration-planner][~schema-migration-planner~]] | The same branching on a second domain (schema migrations) + live per-branch simulation progress — proving the seam is domain-agnostic |
 
-* Setup
-
-#+begin_src sh
-# Install all workspace dependencies
-pnpm install
-
-# Build all packages (respects the dependency graph via Turbo)
-pnpm build
-#+end_src
-
-* Development
+** Running them
 
 #+begin_src sh
-# Run tests across all packages
-pnpm test
-
-# Type-check all packages
-pnpm typecheck
-
-# Lint
-pnpm lint
-
-# Auto-format
-pnpm format
-
-# Watch mode — rebuilds packages as you edit
-pnpm dev
-#+end_src
-
-* Running the Cloud Command Center Example
-
-The Cloud Command Center is a browser app that demonstrates a durable incident-response workflow.
-
-#+begin_src sh
-# From the repo root
-pnpm --filter @loom/cloud-command-center dev
-#+end_src
-
-Then open http://localhost:5173 (or the next available port) in your browser.
-
-** Using the App
-
-1. Click *Simulate Incident* — starts an ~InvestigateIncident~ workflow that collects metrics and error logs, then suspends waiting for human approval.
-2. Review the metric cards and timeline rendered by the Blueprint renderer.
-3. Click *Approve Remediation* — resumes the workflow, applies the remediation, and marks the incident resolved.
-4. Click *Reset* to run the simulation again.
-
-The *Event Log* panel at the bottom shows each workflow lifecycle event in real time.
-
-After metrics and logs are collected, an *AI Root-Cause Analysis* panel streams a live, token-by-token explanation from the configured LLM provider (a deterministic ~MockLlmProvider~ by default, so it runs with no API key). This is the *A2UI* pattern: the flow calls ~ctx.emit("AI_ANALYSIS_TOKEN", …)~, a projection folds the deltas, and the ~StreamingText~ widget re-renders live. Swap in ~AnthropicProvider~ in ~src/runtime/setup.ts~ to run it against a real model.
-
-* Running the Agent Network Example
-
-The Agent Network is a headless Node script that demonstrates the full intelligence pipeline end to end, fully offline:
-
-#+begin_src sh
+# Headless (prints to the console)
 pnpm --filter @loom/agent-network start
-#+end_src
-
-It configures an LLM provider, discovers tools from an (in-process) MCP server, runs an agent ReAct loop that calls those tools, then exposes a Loom flow over A2A and calls it back as a client. It also builds a ~CapabilityCatalog~ and shows intent routing (~IntentRuntime~), a multi-step plan (~PlannerRuntime~), agent memory recall (~MemoryRuntime~), and a terminal-rendered dashboard (~@loom/renderer-terminal~). Every step prints to the console.
-
-* Running the A2A Mesh Example
-
-The A2A Mesh is a headless Node script showing how to use external agent frameworks — Google ADK, LangGraph, CrewAI, or another Loom service — *with* Loom as bidirectional peers over the open A2A protocol, fully offline:
-
-#+begin_src sh
 pnpm --filter @loom/a2a-mesh start
+
+# Browser UIs (open the printed http://localhost:5173)
+pnpm --filter @loom/cloud-command-center dev
+pnpm --filter @loom/db-command-center dev        # or -wc for Web Components
+
+# Server + client topologies (client :5173 + durable server :8787)
+pnpm --filter @loom/db-command-center-server dev
+pnpm --filter @loom/incident-war-room dev
+pnpm --filter @loom/incident-war-room demo:fork  # narrated headless fork → simulate → promote
+pnpm --filter @loom/schema-migration-planner dev
 #+end_src
 
-*Outbound*, ~A2APeerClient~ discovers a remote agent's ~AgentCard~ and registers it as a first-class Loom tool (the A2A analogue of ~McpClient.registerInto~); a Loom agent then delegates to it mid-ReAct-loop. *Inbound*, ~createA2AServer~ exposes a Loom flow over A2A and an ~createA2AClientEffect~ loopback drives it — standing in for an external framework calling Loom. Because A2A is the wire contract, the Loom-side code is identical whether the peer is ADK (which speaks A2A natively via ~to_a2a(agent)~) or a LangGraph/CrewAI graph behind a thin A2A shim. The example's ~README.md~ shows how to point it at a real endpoint.
-
-* Running the DB Command Center Examples
-
-The DB Command Center is an agentic, intent-driven operations console for a database fleet. You state a goal in plain English; the *Planner Runtime* composes a workflow from it; a fleet of long-running domain agents (Diagnostics, Remediation, Capacity) executes the steps over *A2A*; low-risk remediations auto-apply under policy while riskier ones *suspend for human approval* and resume from the durable event log. A Mission Control view lists the agent tasks in near-real-time and an Observability dashboard tracks the fleet.
+Inspect any run's durable log with the CLI (for apps using SQLite storage):
 
 #+begin_src sh
-# React surface — BYOR + BYOC custom widgets + opt-in render-side fiber
-pnpm --filter @loom/db-command-center dev
-
-# The SAME app in vanilla Web Components — no framework
-pnpm --filter @loom/db-command-center-wc dev
+loom logs    --db .loom/events.db <executionId>        # tail the event timeline
+loom debug   --db .loom/events.db <executionId> --at 5 # time-travel: state at sequence 5
+loom inspect --db .loom/events.db <executionId>        # web timeline + slider
 #+end_src
 
-Then open http://localhost:5173 (or the next free port). Try either built-in goal:
+-----
 
-1. /"Why is CPU utilization high? Fix it if remediation is low risk."/ — diagnosed, assessed *low risk*, and *auto-remediated* under policy.
-2. /"Investigate the read-replica lag issue and fix it if remediation is low risk, else wait for my approval."/ — diagnosed, assessed *medium risk*, so it *pauses for your approval* before scaling replicas.
+* Getting set up
 
-The two examples share one agentic backend (intent, planner, capabilities, durable flows, the in-process A2A bus, and the orchestrator) verbatim — only the render layer differs. The React app uses ~@loom/renderer-react~ with a custom ~RendererRegistry~ and opt-in fiber (~granular updates / suspense / deferred streaming~); the Web Components app renders the same ~blueprint$~ definitions with native Custom Elements via ~traverseBlueprint<HTMLElement>~, subscribing each widget to only its own projection slice for the same granular, near-real-time updates. This is Loom's *bring-your-own-renderer* contract in its starkest form.
-
-A third variant, ~db-command-center-server~, splits the *same* app into a genuine *server + client* topology — the durable runtime (SQLite event/snapshot stores, orchestrator, agents, durable ~ctx.suspend~/~resume~) runs on a Node server, and the Web Components client renders and drives it over HTTP + SSE (server pushes a ~serializeProjections~ snapshot on connect, then one A2UI patch per update; the client seeds and folds them into its own projection runtime). It demonstrates Loom's isomorphic deployment model — server-side execution, client-side rendering:
+*Prerequisites:* Node.js ≥ 20 and pnpm ≥ 9 (~corepack enable~, or ~npm install -g pnpm~).
 
 #+begin_src sh
-pnpm --filter @loom/db-command-center-server dev   # client :5173 + durable server :8787
+pnpm install     # install the workspace
+pnpm build       # build all packages (Turbo respects the dependency graph)
+pnpm test        # run every package's test suite
+pnpm typecheck   # type-check everything
+pnpm lint        # Biome lint
+pnpm format      # Biome format
+pnpm dev         # watch mode — rebuild packages as you edit
 #+end_src
 
-A fourth variant, ~incident-war-room~, reuses that same server + client topology but makes Loom's *git-style branching* the centerpiece. When the replica-lag remediation reaches its approval gate, the fixes are *mutually exclusive* (you can't both fail over the primary /and/ scale its replicas), so instead of a single approve/reject the operator *forks* the suspended execution once per candidate strategy, *simulates* each speculatively (concurrently via ~@loom/scheduler~'s ~parallelLimit~) to preview projected outcomes, compares them in a git-graph diff, and *promotes* the winner — which then applies for real. Branch-only, *no merge*: the losing branches remain immutable lineage (the "alternatives considered" audit trail). Run it, or drive the headless walkthrough:
+-----
 
-#+begin_src sh
-pnpm --filter @loom/incident-war-room dev         # client :5173 + durable server :8787
-pnpm --filter @loom/incident-war-room demo:fork   # narrated headless fork → simulate → promote
-#+end_src
+* Documentation
 
-A fifth variant, ~schema-migration-planner~, applies the *same* git-style branching to a different real-world decision: which strategy to use to add a ~NOT NULL~ column to a 40M-row table (online-DDL vs shadow-copy vs dual-write). It proves the fork/simulate/promote seam is domain-agnostic — the ~BranchOrchestrator~ and branch UI are reused verbatim; only the domain changes — and adds *live per-branch simulation progress*: each speculative branch runs against a shadow schema and streams its backfill percentage, so three migrations advance concurrently in the UI before you promote one.
+Start at [[file:docs/README.md][docs/README.md]] (the index), then:
 
-#+begin_src sh
-pnpm --filter @loom/schema-migration-planner dev         # client :5173 + durable server :8787
-pnpm --filter @loom/schema-migration-planner demo:fork   # narrated headless fork → simulate → promote
-#+end_src
-
-* Agentic Capabilities
-
-Loom treats LLMs, agents, MCP tools, and remote agents as *effects* — the same durable, replayable primitive as any other step.
-
-#+begin_src ts
-import { AnthropicProvider, createLlmEffect } from "@loom/llm";
-import { agent$, tool$ } from "@loom/core";
-import { AgentRunner } from "@loom/agent";
-import { McpClient } from "@loom/mcp";
-import { createA2AServer, createA2AClientEffect } from "@loom/a2a";
-
-// 1. Configurable LLM — choose any provider.
-const provider = new AnthropicProvider({ model: "claude-opus-4-8" });
-
-// 2. Bring-your-own agent — a ReAct loop over your tools.
-const agent = agent$({ id: "ops", name: "Ops Agent", tools: [/* … */] });
-const runner = new AgentRunner({ definition: agent, provider, effectRuntime });
-
-// 3. MCP — discover tools from an MCP server and register them.
-const mcp = new McpClient({ transport: "http", url: "http://localhost:9000/mcp" });
-await mcp.connect();
-await mcp.registerInto(effectRuntime);
-
-// 4. A2A — expose a flow as an agent, and call remote agents.
-const server = createA2AServer(workflowRuntime, myFlow, agentCard);
-const remote = createA2AClientEffect("https://partner.example.com/agent");
-#+end_src
-
-*Documentation.* Start at [[file:docs/README.md][docs/README.md]] (index), then:
-- [[file:docs/getting-started.md][Getting Started]] — zero to a running suspend/resume flow in minutes
+- [[file:docs/getting-started.md][Getting Started]] — zero to a running suspend/resume flow in ~5 minutes
 - [[file:docs/usage.md][Usage Guide]] — build a real app step by step
-- [[file:docs/user-guide.md][User Guide]] — every feature area with examples
+- [[file:docs/user-guide.md][User Guide]] — every feature area with runnable examples
 - [[file:docs/architecture.md][Architecture]] — mission, core principles, and the reasoning behind each decision
 - [[file:docs/api-reference.org][API Reference]] — exhaustive per-package API
-- [[file:docs/presentation/loom-deck.md][Presentation]] — the flagship deck
+- [[file:docs/adr/][ADRs]] — the decision history (0001–0015)
+- [[file:docs/presentation/loom-deck.md][Presentation]] — the flagship deck (Marp)
 
-* How It Works
+-----
 
-Loom workflows are defined as a series of steps that can suspend at any point and resume later — even across process restarts. The key concepts:
+* Tech stack
 
-- *defineConfig* — the one-line composition root (~@loom/app~) that assembles everything below from a static config and returns ~{ runtime, effectRuntime, projectionRuntime, bus, stores, close }~. It's sugar over the DI — you can still hand-wire ~new WorkflowRuntime({...})~.
-- *Flow* — a TypeScript function that describes the steps of a workflow. Steps are serializable and replayable.
-- *EffectRuntime* — sandboxes side effects (tool calls, LLM calls, human approvals) so they can be replayed deterministically; effect *middleware* wraps them (retries, logging).
-- *EventStore / SnapshotStore* — persist execution state so workflows survive crashes (in-memory / SQLite / your own backend).
-- *Blueprint* — a JSON-serializable description of a UI that the renderer turns into React (or Angular / Web Components / terminal) components.
-- *ProjectionRuntime* — subscribes to workflow events and derives view state that drives the Blueprint renderer.
-- *The ~loom~ CLI + compute seam* — inspect the log (~logs~/~debug~/~inspect~), gate CI (~eval~/~deploy check~), and run the same flows in-process or on Cloud Run — all off the same durable event log.
-
-Loom also ships *opt-in* (default-off, no behavior change unless enabled) performance and responsiveness seams — Fiber principles applied to the async agentic layer, plus render-side hooks that leverage React's *own* fiber:
-
-- *Cooperative scheduling & cancellation* — ~@loom/scheduler~ adds priority lanes, order-preserving bounded concurrency (~parallelLimit~), and ~yieldControl~. ~ExecutionHandle.cancel()~ aborts in-flight effects (via ~EffectContext.signal~ / ~LlmRequest.signal~) and records a durable ~EXECUTION_CANCELLED~ event — live-only, so resume is unchanged. Opt-in, replay-safe concurrency via ~ctx.parallel(pairs, { limit })~ and ~AgentRunner.parallelTools~; planner/intent run at Idle priority.
-- *Render-side ~useFiber~ (React)* — ~<BlueprintRenderer fiber={...} />~ gives per-widget, path-granular re-render, per-widget Suspense for async BYOC components, and startTransition-deferred streaming — no second reconciler. ~traverseBlueprintAsync~ + ~IncrementalRenderer~ expose an interruptible incremental-commit seam for future scheduler-less BYOR renderers (canvas/DOM/native). Projection notifications can coalesce (~new InMemoryProjectionRuntime({ coalesceNotifications: true })~) and defer with ~useDeferredProjection~.
-
-#+begin_example
-Flow definition
-     │
-     ▼
-WorkflowRuntime.start()
-     │
-     ├─ emits events → EventStore
-     │                     │
-     │              ProjectionRuntime
-     │                     │
-     │               BlueprintRenderer → React UI
-     │
-     └─ suspends → waitForSuspend()
-                       │
-                  human approves
-                       │
-              WorkflowRuntime.resume()
-                       │
-                  completes → waitForCompletion()
-#+end_example
-
-* Tech Stack
-
-- *Language:* TypeScript (compiled to CommonJS via ~tsc~)
-- *Monorepo:* pnpm workspaces + Turborepo
-- *Testing:* Vitest
-- *Linting / Formatting:* Biome
-- *Example UI:* React 18 + Vite
+TypeScript (compiled to CommonJS via ~tsc~) · pnpm workspaces + Turborepo · Vitest · Biome · Zod · React 18 + Vite (example UIs).
