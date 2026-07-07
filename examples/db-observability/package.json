@@ -1,0 +1,25 @@
+{
+  "name": "@loom/db-observability",
+  "version": "0.0.1",
+  "description": "A dynamic database-observability dashboard: a user's natural-language question is analysed by an agent, categorised into a topic + a WHAT (the direct answer) and WHY (the supporting explanation), and a Loom blueprint UI is GENERATED DYNAMICALLY from an available widget catalogue bound to live telemetry projections. Rendered headlessly via renderer-terminal.",
+  "private": true,
+  "scripts": {
+    "build": "tsc --build",
+    "start": "tsx src/main.ts",
+    "test": "vitest run",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/blueprint-runtime": "workspace:*",
+    "@loom/llm": "workspace:*",
+    "@loom/projection-runtime": "workspace:*",
+    "@loom/renderer-terminal": "workspace:*",
+    "@loom/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
