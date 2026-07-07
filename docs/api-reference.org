@@ -1,363 +1,202 @@
-#+title: Loom Framework — API Reference
+#+title: Loom — API Reference
 #+author: Sushil Chhetri
 
-Developer reference for building agentic applications with Loom. All public APIs are re-exported from ~@loom/sdk~ — import from there unless you need a specific sub-package.
+Exhaustive per-package reference. Signatures are quoted from source; types owned by another package are cross-referenced, not repeated. Most apps import everything from ~@loom/sdk~ (the public barrel) or the individual ~@loom/*~ packages shown here.
 
-#+begin_src typescript
-import { flow$, step$, tool$, WorkflowRuntime, ToolEffect } from "@loom/sdk";
-#+end_src
+New to Loom? Start with [[file:getting-started.md][Getting Started]] and the [[file:user-guide.md][User Guide]]; this document is the lookup reference.
 
 * Table of Contents
 
-1.  [[#builders][Builders]] — ~flow$~, ~step$~, ~handler$~, ~tool$~, ~projection$~, ~agent$~, ~skill$~, ~instructions$~, ~memory$~, ~policy$~
-2.  [[#app][~defineConfig~ (@loom/app)]] — the composition root; ~storage~ (memory / sqlite / *custom*), effect middleware, surfaces, ~validate~; plus the ~loom~ CLI, ~@loom/testing~, evals, deploy-sim, and the pluggable compute seam
-3.  [[#workflow-runtime][WorkflowRuntime]] — ~start~, ~resume~, ~restoreFromState~, ~fork~, ~registerFlow~, ~register~
-4.  [[#workflow-context][WorkflowContext — the flow API]] — ~ctx.run~, ~ctx.parallel~, ~ctx.emit~, ~ctx.ui~, ~ctx.suspend~
-5.  [[#execution-handle][ExecutionHandle]]
-6.  [[#effect-runtime][EffectRuntime & Effects]] — ~ToolEffect~, ~LlmEffect~, ~HumanEffect~, ~A2AEffect~, ~LazyEffect~
-7.  [[#event-store][EventStore]] & [[#branch-registry][BranchRegistry]] — event log + git-style refs/lineage
-8.  [[#snapshot-store][SnapshotStore]] — ~loadLatest~, ~loadAt~, ~loadLatestBefore~
-9.  [[#projection-runtime][ProjectionRuntime]] — ~register~, ~getState~, ~subscribe~, ~handleEvent~, ~seedState~
-10.  [[#blueprint-system][Blueprint System]]
-11. [[#react-renderer][React Renderer]] — ~BlueprintRenderer~, ~LoomProvider~, ~useLoom~, ~useProjection~
-12. [[#compiler][~@loom/compiler~]] — Vite plugin, CLI, serialization utilities
-13. [[#telemetry][~@loom/telemetry~]] — ~createTelemetryHook~, ~TelemetryAdapter~, ~ConsoleTelemetryAdapter~, ~composeAdapters~
-14. [[#llm][~@loom/llm~]] — ~LlmProvider~, ~AnthropicProvider~, ~OpenAiProvider~, ~createLlmEffect~
-15. [[#agent][~@loom/agent~]] — ~AgentRunner~, ~agentStep$~, ~SkillRegistry~, ~SkillSelector~
-16. [[#mcp][~@loom/mcp~]] — ~McpClient~, ~mcpTool$~
-17. [[#a2a][~@loom/a2a~]] — ~createA2AClientEffect~, ~createA2AServer~, ~toAgentCard~, ~A2APeerClient~
-18. [[#registry][~@loom/registry~]] — ~AgentRegistry~, ~globalAgentRegistry~
-19. [[#a2ui][~@loom/a2ui~ — the Agent-to-UI protocol]] — ~A2UIPatch~, ~createA2UIEmitter~, ~a2uiSurfaceProjection~, ~A2UIRuntime~, ~useA2UISurface~
-20. [[#capability][~@loom/capability~]] — ~capability$~, ~CapabilityCatalog~
-21. [[#intent][~@loom/intent~]] — ~IntentRuntime~ (~route~, ~run~)
-22. [[#planner][~@loom/planner~]] — ~PlannerRuntime~ (~plan~)
-23. [[#memory][~@loom/memory~]] — ~MemoryRuntime~, ~InMemoryMemoryStore~, ~MemoryStore~
-24. [[#renderer-terminal][~@loom/renderer-terminal~]] — ~TerminalRenderer~, ~renderBlueprintToString~
-25. [[#scheduler][~@loom/scheduler~]] — ~createScheduler~, ~parallelLimit~, ~yieldControl~, ~Priority~, AbortSignal utils
-26. [[#errors][Errors]]
-27. [[#complete-example][Complete Example]]
+1.  [[#authoring][Authoring builders]] (~@loom/core~) — ~flow$~, ~step$~, ~handler$~, ~tool$~, ~agent$~, ~skill$~, ~projection$~, ~memory$~, ~policy$~ + shared types
+2.  [[#app][Composition]] (~@loom/app~, ~@loom/middleware~, ~@loom/registry~) — ~defineConfig~, storage, effect middleware, the A2A bus
+3.  [[#workflow-runtime][WorkflowRuntime]] — ~start~ / ~resume~ / ~fork~ / ~loadState~ + ~WorkflowContext~ + ~ExecutionHandle~
+4.  [[#replay-storage][Replay & storage]] — ~@loom/replay-vm~, ~@loom/event-runtime~, ~@loom/snapshot-runtime~
+5.  [[#effects][Effects]] (~@loom/effect-runtime~) — ~Effect~, ~EffectRuntime~, middleware, the four effect kinds
+6.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/a2ui~, ~@loom/blueprint-runtime~, ~@loom/renderer-react~, ~@loom/renderer-terminal~
+7.  [[#agentic][Agentic]] — ~@loom/llm~, ~@loom/agent~, ~@loom/mcp~, ~@loom/a2a~, ~@loom/capability~, ~@loom/intent~, ~@loom/planner~, ~@loom/memory~, ~@loom/orchestrator~
+8.  [[#compute][Compute & distribution]] — ~@loom/dispatcher~, ~@loom/worker-runtime~ (+ ~-local~/~-remote~), ~@loom/worker-server~, ~@loom/platform-cloudrun~, ~@loom/graph-executor~, ~@loom/scheduler~
+9.  [[#dx][DX & tooling]] — ~@loom/cli~, ~@loom/testing~, ~@loom/eval~, ~@loom/deploy-sim~, ~@loom/scaffold~, ~@loom/compiler~, ~@loom/telemetry~
+10. [[#errors][Errors]]
 
 -----
 
-* Builders
+* Authoring builders — ~@loom/core~
 :PROPERTIES:
-:CUSTOM_ID: builders
+:CUSTOM_ID: authoring
 :END:
 
-Builders are factory functions (suffixed with ~$~) that produce typed definition objects. Definitions are plain data — they carry no runtime state and can be serialized, stored, or sent over the wire.
+Declarative ~$~ builders produce plain, serializable definition objects (each tagged with a ~_tag~). They have no runtime behavior on their own — the runtime interprets them.
 
-** ~flow$~
-
-Defines a workflow. A flow has an id, version, I/O schemas, and the steps it may execute.
+** Builders
 
 #+begin_src typescript
-import { flow$ } from "@loom/sdk";
-import { z } from "zod";
-
-const MyFlow = flow$({
-  id: "my-flow",          // unique identifier — used for registration and resume
-  name: "My Flow",        // human-readable label
-  version: "1.0.0",       // semver — included in every EventEnvelope
-  description: "...",     // optional
-  inputSchema: z.object({ userId: z.string() }),
-  outputSchema: z.object({ done: z.boolean() }),
-  steps: [FetchStep, ProcessStep],  // StepDefinition[]
-  policies: [RateLimitPolicy],      // optional PolicyDefinition[]
-});
+flow$<TIn, TOut>(config: FlowConfig<TIn, TOut>): FlowDefinition<TIn, TOut>
+step$<TIn, TOut>(config: StepConfig<TIn, TOut>): StepDefinition<TIn, TOut>
+handler$<TIn, TOut>(fn: HandlerFn<TIn, TOut>): HandlerRef<TIn, TOut>
+tool$<TIn, TOut>(config: ToolConfig<TIn, TOut>): ToolDefinition<TIn, TOut>
+agent$(config: AgentConfig): AgentDefinition
+skill$(config: SkillConfig): SkillDefinition
+instructions$(text: string): InstructionsRef
+projection$<TState>(config: ProjectionConfig<TState>): ProjectionDefinition<TState>
+memory$(config: MemoryConfig): MemoryDefinition
+policy$(config: PolicyConfig): PolicyDefinition
+loadInstructions(spec: InstructionsSpec): Promise<string>   // resolve inline or lazy-chunked text
 #+end_src
 
-| Field          | Type                     | Required | Description                                     |
-|----------------+--------------------------+----------+-------------------------------------------------|
-| ~id~           | ~string~                 | yes      | Stable identifier; must be unique in the registry |
-| ~name~         | ~string~                 | yes      | Display name                                    |
-| ~version~      | ~string~                 | yes      | Stamped on every event emitted by this flow     |
-| ~description~  | ~string~                 | no       | Optional documentation string                   |
-| ~inputSchema~  | ~ZodSchema<TIn>~         | yes      | Validates ~start()~ input                       |
-| ~outputSchema~ | ~ZodSchema<TOut>~        | yes      | Declares the shape of the runner's return value |
-| ~steps~        | ~StepDefinition[]~       | yes      | All steps the runner may call                   |
-| ~policies~     | ~PolicyDefinition[]~     | no       | Governance rules                                |
-
-** ~step$~
-
-Defines an individual unit of work within a flow. A step links to an effect via ~toolId~ (or co-locates the implementation with ~handler$~) and declares its own I/O schemas and retry policy.
+*Config shapes:*
 
 #+begin_src typescript
-import { step$, handler$ } from "@loom/sdk";
-import { z } from "zod";
+interface FlowConfig<TIn, TOut> {
+  id: string; name: string; version: string; description?: string;
+  inputSchema: z.ZodSchema<TIn>; outputSchema: z.ZodSchema<TOut>;
+  steps: StepDefinition<any, any>[]; policies?: PolicyDefinition[];
+}
 
-// Option A: co-located handler (recommended — no separate registration needed)
-const FetchMetricsStep = step$({
-  id: "fetch-metrics",
-  toolId: "metrics-tool",
-  inputSchema: z.object({ incidentId: z.string() }),
-  outputSchema: z.object({
-    cpu: z.object({ current: z.number(), threshold: z.number() }),
-    memory: z.object({ usedMb: z.number(), totalMb: z.number() }),
-  }),
-  handler: handler$(async (input, ctx) => {
-    const data = await fetchMetrics(input.incidentId);
-    return data;
-  }),
-  retry: { maxAttempts: 3, backoffMs: 500, backoffMultiplier: 2 },
-  timeoutMs: 10_000,
-});
+interface StepConfig<TIn, TOut> {
+  id: string; name?: string;
+  toolId?: string;                 // resolve to a registered effect …
+  handler?: HandlerSpec<TIn, TOut>; // … or carry a co-located handler (handler$)
+  inputSchema: z.ZodSchema<TIn>; outputSchema: z.ZodSchema<TOut>;
+  retry?: RetryPolicy; timeoutMs?: number;
+}
 
-// Option B: toolId only (register effect separately via effectRuntime.register)
-const ApplyStep = step$({
-  id: "apply-fix",
-  toolId: "fix-tool",
-  inputSchema: z.object({ ticketId: z.string() }),
-  outputSchema: z.object({ applied: z.boolean() }),
-});
+interface ToolConfig<TIn, TOut> {
+  id: string; name: string; description: string;
+  kind?: EffectKind;               // default "tool"
+  inputSchema: z.ZodSchema<TIn>; outputSchema: z.ZodSchema<TOut>;
+}
+
+interface AgentConfig {
+  id: string; name: string; description?: string;
+  tools: ToolDefinition[]; policies?: PolicyDefinition[];
+  memoryId?: string;               // links an @loom/memory MemoryRuntime
+  version?: string; capabilities?: { streaming?: boolean }; skills?: AgentSkillDef[];
+}
+
+interface SkillConfig {
+  id: string; name: string; description: string; tags?: string[];
+  instructions: InstructionsSpec;  // instructions$("…") or a lazy loader
+  tools?: ToolDefinition[];
+}
+
+interface ProjectionConfig<TState> {
+  id: string; name: string; sourceFlowId?: string;
+  initialState: TState;
+  handlers: Record<string, (state: TState, payload: unknown) => TState>;
+}
+
+interface MemoryConfig { id: string; name: string; ttlMs?: number; maxEntries?: number; }
+interface PolicyConfig { id: string; name: string; rules: Record<string, unknown>; }
 #+end_src
 
-| Field          | Type              | Required | Description                                                      |
-|----------------+-------------------+----------+------------------------------------------------------------------|
-| ~id~           | ~string~          | yes      | Unique within the flow; used to key ~ExecutionFrame~             |
-| ~name~         | ~string~          | no       | Display name; defaults to ~id~                                   |
-| ~toolId~       | ~string~          | no       | Effect registry key; defaults to ~id~ if omitted                 |
-| ~handler~      | ~HandlerSpec~     | no       | Co-located implementation via ~handler$()~ — auto-registered by ~registerFlow~ |
-| ~inputSchema~  | ~ZodSchema~       | yes      | Input shape                                                      |
-| ~outputSchema~ | ~ZodSchema~       | yes      | Output shape                                                     |
-| ~retry~        | ~RetryPolicy~     | no       | ~{ maxAttempts, backoffMs?, backoffMultiplier? }~                |
-| ~timeoutMs~    | ~number~          | no       | Per-attempt timeout in milliseconds                              |
-
-** ~handler$~
-
-Co-locates a step's handler implementation with its definition. At runtime, returns a ~HandlerRef~ (called directly by ~LazyEffect~). At build time, ~@loom/compiler~ rewrites it to a dynamic import thunk.
+** Definition & handler types
 
 #+begin_src typescript
-import { handler$ } from "@loom/sdk";
-
-const myHandler = handler$(async (input: { id: string }, ctx) => {
-  // ctx: { executionId, stepId, workflowId, attempt, emit }
-  const result = await fetchData(input.id);
-  ctx.emit("DATA_FETCHED", result);
-  return result;
-});
-
-// Use inside step$:
-const MyStep = step$({
-  id: "my-step",
-  handler: myHandler,
-  inputSchema: ..., outputSchema: ...,
-});
-#+end_src
-
-| Signature | ~handler$<TIn, TOut>(fn: HandlerFn<TIn, TOut>): HandlerRef<TIn, TOut>~ |
-|-----------+------------------------------------------------------------------------|
-| Runtime   | Returns ~{ _loomHandlerRef: true, fn }~ — zero overhead               |
-| Build     | Compiler replaces with ~() => import("\0loom:chunk:<id>_<hash>")~     |
-
-~HandlerFn~ signature:
-
-#+begin_src typescript
-type HandlerFn<TIn, TOut> = (input: TIn, ctx: StepHandlerContext) => Promise<TOut>;
+type EffectKind = "tool" | "llm" | "human" | "a2a";
 
 interface StepHandlerContext {
-  executionId: string;
-  stepId: string;
-  workflowId: string;
-  attempt: number;           // 1-based retry count
+  executionId: string; stepId: string; workflowId: string; attempt: number;
   emit(eventType: string, payload: unknown): void;
+}
+type HandlerFn<TIn, TOut> = (input: TIn, ctx: StepHandlerContext) => Promise<TOut>;
+interface HandlerRef<TIn, TOut> { readonly _loomHandlerRef: true; readonly fn: HandlerFn<TIn, TOut>; }
+type HandlerLoader<TIn, TOut> = () => Promise<{ default: HandlerFn<TIn, TOut> }>; // compiler-emitted
+type HandlerSpec<TIn, TOut> = HandlerRef<TIn, TOut> | HandlerLoader<TIn, TOut>;
+
+interface RetryPolicy { maxAttempts: number; backoffMs?: number; backoffMultiplier?: number; }
+
+interface StepDefinition<TIn, TOut> {
+  readonly _tag: "StepDefinition"; id: string; name: string;
+  toolId?: string; handler?: HandlerSpec<TIn, TOut>;
+  inputSchema: ZodSchema<TIn>; outputSchema: ZodSchema<TOut>; retry?: RetryPolicy; timeoutMs?: number;
+}
+interface FlowDefinition<TIn, TOut> {
+  readonly _tag: "FlowDefinition"; id: string; name: string; version: string; description?: string;
+  inputSchema: ZodSchema<TIn>; outputSchema: ZodSchema<TOut>;
+  steps: StepDefinition<any, any>[]; policies?: PolicyDefinition[];
+}
+interface ToolDefinition<TIn, TOut> {
+  readonly _tag: "ToolDefinition"; id: string; name: string; description: string;
+  kind: EffectKind; inputSchema: ZodSchema<TIn>; outputSchema: ZodSchema<TOut>;
+}
+interface AgentDefinition {
+  readonly _tag: "AgentDefinition"; id: string; name: string; description?: string;
+  tools: ToolDefinition[]; policies?: PolicyDefinition[]; memoryId?: string;
+  version?: string; capabilities?: { streaming?: boolean }; skills?: AgentSkillDef[];
+}
+// Also: SkillDefinition, ProjectionDefinition, MemoryDefinition, PolicyDefinition, InstructionsRef/Spec/Loader.
+#+end_src
+
+** Shared runtime types
+
+These flow through the whole system.
+
+#+begin_src typescript
+interface EventEnvelope {
+  id: string; workflowId: string; executionId: string;
+  eventType: string; sequence: number; timestamp: number;
+  payload: unknown; metadata?: Record<string, unknown>;
+}
+
+type ExecutionStatus = "pending" | "running" | "suspended" | "completed" | "failed" | "cancelled";
+type FrameStatus     = "pending" | "running" | "completed" | "failed" | "skipped" | "cancelled";
+
+interface ExecutionFrame {
+  stepId: string; status: FrameStatus;
+  input?: unknown; output?: unknown; error?: unknown;
+  startedAt?: number; completedAt?: number; attempts: number;
+}
+interface SuspendCondition { on: string; timeout?: number; correlationKey?: string; }
+
+interface ExecutionState {
+  executionId: string; workflowId: string; workflowVersion: string;
+  status: ExecutionStatus;
+  frames: Record<string, ExecutionFrame>;   // one per step (keyed by stepId)
+  variables: Record<string, unknown>;       // holds _input / _output / _error / _resumePayload …
+  sequence: number; suspendedOn?: SuspendCondition; startedAt: number; updatedAt: number;
 }
 #+end_src
 
-** ~tool$~
-
-Defines tool metadata. Use this when you want to describe a tool as a first-class definition separate from its implementation.
-
-#+begin_src typescript
-import { tool$ } from "@loom/sdk";
-
-const MetricsTool = tool$({
-  id: "metrics-tool",
-  name: "Metrics Tool",
-  description: "Fetches database performance metrics",
-  kind: "tool",   // "tool" | "llm" | "human" | "a2a" — defaults to "tool"
-  inputSchema: z.object({ incidentId: z.string() }),
-  outputSchema: z.object({ cpu: z.number() }),
-});
-#+end_src
-
-| Field         | Type         | Required | Description                               |
-|---------------+--------------+----------+-------------------------------------------|
-| ~id~          | ~string~     | yes      | Matches ~toolId~ on ~StepDefinition~      |
-| ~name~        | ~string~     | yes      | Display name                              |
-| ~description~ | ~string~     | yes      | Used by LLM tool-selection prompts        |
-| ~kind~        | ~EffectKind~ | no       | ~"tool" \vert "llm" \vert "human" \vert "a2a"~; defaults to ~"tool"~ |
-| ~inputSchema~ | ~ZodSchema~  | yes      | Input shape                               |
-| ~outputSchema~| ~ZodSchema~  | yes      | Output shape                              |
-
-** ~projection$~
-
-Defines a read model that is derived by folding workflow events. Each handler is a pure reducer ~(state, event) => state~.
-
-#+begin_src typescript
-import { projection$ } from "@loom/sdk";
-import type { EventEnvelope } from "@loom/sdk";
-
-const MetricsProjection = projection$({
-  id: "metrics",
-  name: "Metrics Projection",
-  sourceFlowId: "investigate-incident",  // optional — documentation only
-  initialState: { cpu: null as number | null, memory: null as number | null },
-  handlers: {
-    INCIDENT_ANALYSIS_COMPLETE: (state, event: EventEnvelope) => {
-      const payload = event.payload as { metrics: { cpu: number; memory: number } };
-      return { cpu: payload.metrics.cpu, memory: payload.metrics.memory };
-    },
-  },
-});
-#+end_src
-
-| Field          | Type                                          | Required | Description                                   |
-|----------------+-----------------------------------------------+----------+-----------------------------------------------|
-| ~id~           | ~string~                                      | yes      | Referenced in Blueprint ~DataBinding~ and ~BlueprintRenderer~ |
-| ~name~         | ~string~                                      | yes      | Display name                                  |
-| ~sourceFlowId~ | ~string~                                      | no       | Documentation — which flow produces this projection's events |
-| ~initialState~ | ~TState~                                      | yes      | Starting value before any events are applied  |
-| ~handlers~     | ~Record<string, (state, event) => state>~     | yes      | One entry per event type this projection handles |
-
-** ~agent$~
-
-Groups tools and policies into an agent definition. Agents are composable units for multi-agent architectures.
-
-#+begin_src typescript
-import { agent$ } from "@loom/sdk";
-
-const InvestigatorAgent = agent$({
-  id: "investigator",
-  name: "Investigator Agent",
-  description: "Gathers incident evidence",
-  tools: [MetricsTool, LogsTool],
-  policies: [RateLimitPolicy],
-  memoryId: "incident-memory",   // optional — links to a MemoryDefinition
-  // optional A2A AgentCard metadata — read by toAgentCard() (see @loom/a2a)
-  version: "1.0.0",
-  capabilities: { streaming: true },
-  skills: [{ id: "investigate", name: "Investigate incident" }],
-});
-#+end_src
-
-The optional ~version~, ~capabilities~, and ~skills~ fields describe how the agent is advertised over A2A. Co-locating them on the definition lets ~toAgentCard(agent)~ derive the agent's ~AgentCard~ instead of hand-authoring a parallel object (~skills~ is a ~AgentSkillDef[]~).
-
-** ~skill$~ / ~instructions$~
-
-Declares a *Skill*: a progressively-disclosed bundle of authored instructions (and an optional tool subset) an agent loads on demand. The ~description~ is cheap metadata always available for selection; the ~instructions$~ body is lazy — the compiler extracts it into its own chunk exactly as it does for ~handler$~, so only *selected* skills are ever pulled into context. This is the instruction/know-how axis, distinct from ~tool$~ (a function) and ~capability$~ (a runnable flow).
-
-#+begin_src typescript
-import { skill$, instructions$ } from "@loom/sdk";
-
-const CpuRunbook = skill$({
-  id: "diagnose-cpu",
-  name: "Diagnose CPU saturation",
-  description: "Root-cause CPU saturation and connection-pool exhaustion",
-  tags: ["cpu", "pool"],
-  instructions: instructions$(`
-    1. Confirm CPU% and pool utilisation via the metrics tool before acting.
-    2. If the pool is exhausted, recycle it and raise the ceiling — graceful and reversible.
-    3. Only scale replicas if CPU stays high after the pool recovers.
-  `),
-  tools: [RestartPoolTool],   // optional — surfaced to the model when this skill is selected
-});
-#+end_src
-
-| Builder | Purpose |
-|---------+---------|
-| ~skill$(config)~ | Produces a ~SkillDefinition~ (~{ id, name, description, tags?, instructions, tools? }~) |
-| ~instructions$(text)~ | Marks the instruction body. Runtime: ~{ _loomInstructionsRef: true, text }~. Build: compiler rewrites to ~() => import("\0loom:chunk:<id>_<hash>")~ |
-| ~loadInstructions(spec)~ | Resolves either form to its text (inline ref or compiler loader) |
-
-Skills are not hung on ~agent$~; they are grouped in a ~SkillRegistry~ and passed to ~AgentRunner~ (see [[#agent][~@loom/agent~]]). Note: distinct from the A2A ~AgentSkillDef~ metadata on an agent card — that advertises a capability; a ~SkillDefinition~ injects runtime instruction context.
-
-** ~memory$~
-
-Declares a scoped memory store for an agent. The framework registers the definition; you supply the runtime implementation.
-
-#+begin_src typescript
-import { memory$ } from "@loom/sdk";
-
-const IncidentMemory = memory$({
-  id: "incident-memory",
-  name: "Incident Memory",
-  ttlMs: 60 * 60 * 1000,   // 1 hour
-  maxEntries: 500,
-});
-#+end_src
-
-** ~policy$~
-
-Declares a governance policy with arbitrary rules. Policies are attached to flows or agents; enforcement is application-level.
-
-#+begin_src typescript
-import { policy$ } from "@loom/sdk";
-
-const RateLimitPolicy = policy$({
-  id: "rate-limit",
-  name: "Rate Limit",
-  rules: { requestsPerMinute: 60, burstAllowance: 10 },
-});
-#+end_src
+*State is a pure fold of the event log* — see [[#replay-storage][~foldEvents~]].
 
 -----
 
-* ~defineConfig~ (@loom/app)
+* Composition — ~@loom/app~, ~@loom/middleware~, ~@loom/registry~
 :PROPERTIES:
 :CUSTOM_ID: app
 :END:
 
-The composition root. ~defineConfig~ assembles the runtime, stores, effect middleware, projection runtime, telemetry, and the in-process A2A bus from one static config, and returns the same primitives you would otherwise hand-wire — so nothing is hidden and you can always drop a level.
+** ~defineConfig~ (@loom/app)
+
+The composition root: turns one static config into the same runtime + transport you would otherwise hand-assemble.
 
 #+begin_src typescript
-import { defineConfig } from "@loom/app";
+function defineConfig(config: LoomConfig): LoomApp
 
-const app = defineConfig({
-  storage: { kind: "sqlite", dir: ".loom", branching: true },
-  surfaces: ["mission"],
-  flows: [myFlow],                 // or flowModules from `loom gen`
-  effectMiddleware: [retryMiddleware({ maxRetries: 3 })],
-  agents, capabilityAgents,        // A2A routing
-  validate: "warn",               // static flow-graph checks at boot
-});
-// → { runtime, effectRuntime, projectionRuntime, bus, stores, close }
-const handle = await app.runtime.start(myFlow, input);
-#+end_src
-
-** ~LoomConfig~
-
-| Field                | Type                                                   | Notes |
-|----------------------+--------------------------------------------------------+-------|
-| ~storage~            | ~StorageConfig~ (see below)                            | required |
-| ~surfaces~           | ~string[]~                                             | A2UI surfaces to register |
-| ~flows~              | ~RegisteredFlow[]~                                     | flows to register |
-| ~flowModules~        | ~FlowModule[]~                                         | static modules from ~loom gen~ (every ~RegisteredFlow~-shaped export is registered) |
-| ~effectMiddleware~   | ~EffectMiddleware[]~                                   | ~(ctx, input, next)~ chain (retries, logging, …) |
-| ~validate~           | ~boolean \vert "warn" \vert "error"~                   | boot-time flow-graph validation |
-| ~projectionRuntime~  | ~ProjectionRuntime~                                    | bring a custom one (coalescing / broadcasting) |
-| ~catalog~            | ~CatalogLike~                                          | capability catalog registered into the runtime |
-| ~agents~             | ~AgentCard[]~                                          | advertised on the A2A bus |
-| ~capabilityAgents~   | ~Record<string,string>~                                | capabilityId → agentId routing |
-| ~telemetry~          | ~TelemetryAdapter[]~                                   | composed + wired to the event stream |
-| ~dispatcher~         | ~ExecutionDispatcher~                                  | placement (in-process / remote / Cloud Run) |
-| ~onEvent~            | ~(e: EventEnvelope) => void~                           | extra observer, after projection + telemetry |
-| ~onWarn~             | ~(message: string) => void~                            | sink for boot warnings |
-
-** ~StorageConfig~ — including Bring-Your-Own backend
-
-#+begin_src typescript
 type StorageConfig =
-  | { kind: "memory" }                                           // ephemeral (tests / browser)
-  | { kind: "sqlite"; dir?: string; branching?: boolean }        // embedded, lazily loaded (Node)
-  | { kind: "custom";                                            // bring your own backend
+  | { kind: "memory" }                                            // ephemeral (tests / browser)
+  | { kind: "sqlite"; dir?: string; branching?: boolean }         // embedded, lazily loaded (Node)
+  | { kind: "custom";                                             // BRING YOUR OWN backend
       eventStore: EventStore; snapshotStore: SnapshotStore; branchRegistry?: BranchRegistry };
-#+end_src
 
-~kind: "custom"~ takes any async-first ~EventStore~/~SnapshotStore~ (+ optional ~BranchRegistry~) — Postgres, Redis, DynamoDB — used verbatim, so a network-backed app gets the same composition root as everyone else (see [[file:examples/postgres-backend/README.md][the Postgres reference]]). The SQLite stores are lazily loaded, so ~kind: "memory"~ never pulls ~better-sqlite3~/~node:fs~ into a browser bundle.
+interface LoomConfig {
+  storage: StorageConfig;                       // required
+  projectionRuntime?: ProjectionRuntime;        // default in-memory
+  surfaces?: string[];                          // A2UI surfaces to register
+  flows?: RegisteredFlow[];
+  flowModules?: FlowModule[];                    // every RegisteredFlow-shaped export is registered
+  manifest?: ManifestView;                       // cross-check vs compiler manifest
+  onWarn?: (message: string) => void;            // default console.warn
+  validate?: boolean | "warn" | "error";         // boot-time flow-graph validation
+  catalog?: CatalogLike;                         // capability catalog
+  agents?: AgentCard[];                          // advertised on the A2A bus
+  capabilityAgents?: Record<string, string>;     // capabilityId → agentId
+  effectMiddleware?: EffectMiddleware[];
+  telemetry?: TelemetryAdapter[];
+  dispatcher?: ExecutionDispatcher;              // placement (default: in-process)
+  onEvent?: (event: EventEnvelope) => void;      // fired after projection + telemetry
+}
 
-** ~LoomApp~ (return value)
-
-#+begin_src typescript
 interface LoomApp {
   runtime: WorkflowRuntime;
   effectRuntime: EffectRuntime;
@@ -368,17 +207,78 @@ interface LoomApp {
 }
 #+end_src
 
-** DX & operations (built on the durable log)
+*Bring your own storage:* ~kind: "custom"~ uses any async-first ~EventStore~/~SnapshotStore~ (+ optional ~BranchRegistry~) verbatim — Postgres/Redis/DynamoDB (see [[file:examples/postgres-backend/README.md][the Postgres reference]]). The SQLite stores are lazily loaded, so ~kind: "memory"~ never pulls ~better-sqlite3~/~node:fs~ into a browser bundle.
 
-Each of these is a separate package; all are lenses on the same event log.
+** Flow registration & validation (@loom/app)
 
-- *~@loom/testing~* — ~createTestApp(config?)~ (in-memory ~LoomApp~), ~waitFor~/~waitForPhase~, ~getSurfaceState~, ~driveToSuspend~/~resumeWith~, ~captureGolden~, and a VCR LLM provider (~recordingProvider~/~replayingProvider~).
-- *~@loom/eval~* — replay a recorded log as a fixture; ~diffRuns~/~scoreRun~. Driven by ~loom eval --dir evals/~.
-- *~@loom/deploy-sim~* — ~simulateDeploy(logs, resolver)~ replays history against new flow definitions to catch resume-breaking changes. Driven by ~loom deploy check~.
-- *The ~loom~ CLI* (~@loom/cli~) — ~logs~ / ~debug --at N~ (time-travel) / ~inspect~ (web timeline + slider) / ~eval~ / ~deploy check~ / ~check~ / ~gen~ / ~new~.
-- *~@loom/middleware~* — ~retryMiddleware(options)~: exponential backoff with *deterministic* jitter; never retries a suspension.
-- *Compute* — ~@loom/dispatcher~ (~ExecutionDispatcher~ / ~LocalDispatcher~), ~@loom/worker-runtime~ (SPI + ~ExecutionPackage~), ~-local~/~-remote~, ~@loom/worker-server~ (~POST /execute~), ~@loom/platform-cloudrun~ (~CloudRunWorkerRuntime~), ~@loom/graph-executor~ (~executeGraph~).
-- *~@loom/orchestrator~* — ~decideApproval(policy, handlers)~ (risk gate) + ~dispatchPlan~.
+#+begin_src typescript
+type FlowModule = Record<string, unknown>;
+function registerFlowsFrom(runtime: WorkflowRuntime, ...modules: FlowModule[]): string[]  // ids newly registered
+function manifestWarnings(manifest: ManifestView, isRegistered: (id: string) => boolean): string[]
+
+interface FlowGraphIssue { severity: "error" | "warning"; kind: "missing-effect" | "dangling-capability-agent"; detail: string; flowId?: string; }
+function validateFlowGraph(input: {
+  flows: Array<{ id: string; steps: Array<{ id: string; toolId?: string; handler?: unknown }> }>;
+  hasEffect: (toolId: string) => boolean;
+  capabilityAgents?: Record<string, string>;
+  hasCapability?: (id: string) => boolean;
+}): FlowGraphIssue[]
+#+end_src
+
+** ~InProcessA2ABus~ (@loom/app)
+
+The in-process transport ~defineConfig~ builds (~app.bus~); dispatches a capability to its owning agent with streaming callbacks.
+
+#+begin_src typescript
+class InProcessA2ABus {
+  constructor(runtime: WorkflowRuntime, dispatcher?: ExecutionDispatcher)
+  registerAgent(card: AgentCard): this
+  registerCapability(capabilityId: string, agentId: string, flow: RegisteredFlow): this
+  agentCards(): AgentCard[]
+  getTask(taskId: string): A2ATaskResult | undefined
+  dispatch(capabilityId: string, input: unknown, prompt: string, options?: DispatchOptions): Promise<DispatchResult>
+}
+interface DispatchOptions {
+  onProgress?: (line: string) => void;
+  onStatus?: (status: A2ATaskStatus) => void;
+  onApproval?: () => Promise<ApprovalDecision>;   // absent ⇒ auto-approve
+  executionId?: string;
+}
+interface DispatchResult { taskId: string; status: A2ATaskStatus; artifact: unknown; }
+interface ApprovalDecision { approved: boolean; approvedBy: string; }
+#+end_src
+
+Also exported: ~BroadcastingProjectionRuntime~ (a ~ProjectionRuntime~ decorator that emits each ~A2UI_PATCH~ to an SSE sink, with ~snapshot()~), and ~progressHub~.
+
+** ~@loom/middleware~ — effect middleware
+
+#+begin_src typescript
+function retryMiddleware(options?: RetryOptions): EffectMiddleware
+interface RetryOptions {
+  maxRetries?: number;      // default 2 (⇒ up to 3 tries)
+  baseDelayMs?: number;     // default 100
+  factor?: number;          // default 2
+  maxDelayMs?: number;      // default 30_000
+  jitter?: boolean;         // default true — DETERMINISTIC full-jitter (no Math.random)
+  isRetryable?: (err: unknown) => boolean;
+  onRetry?: (info: { ctx: EffectContext; attempt: number; delayMs: number; err: unknown }) => void;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;   // injectable, for tests
+}
+#+end_src
+
+Never retries a ~SuspendError~ or a cancelled (aborted-signal) execution.
+
+** ~@loom/registry~ — agent registry
+
+#+begin_src typescript
+class AgentRegistry {
+  register(definition: AgentDefinition, card?: RegisteredAgentCard): this
+  get(id: string): RegisteredAgent | undefined
+  has(id: string): boolean
+  all(): RegisteredAgent[]; ids(): string[];
+}
+const globalAgentRegistry: AgentRegistry;
+#+end_src
 
 -----
 
@@ -387,481 +287,97 @@ Each of these is a separate package; all are lenses on the same event log.
 :CUSTOM_ID: workflow-runtime
 :END:
 
-~WorkflowRuntime~ orchestrates flow execution. Construct one instance per application; it is safe to share across concurrent flow executions.
+The durable execution engine (~@loom/workflow-runtime~). ~defineConfig~ returns one as ~app.runtime~; you can also construct it directly.
 
 #+begin_src typescript
-import { WorkflowRuntime } from "@loom/sdk";
-import { SqliteEventStore } from "@loom/event-runtime";
-import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+interface WorkflowRuntimeDeps {
+  eventStore: EventStore; snapshotStore: SnapshotStore; effectRuntime: EffectRuntime;
+  onEvent?: (event: EventEnvelope) => void;
+  branchRegistry?: BranchRegistry;
+  onStorageError?: (executionId: string, err: unknown) => void;
+  snapshotEvery?: number;   // mid-run snapshot every N committed events (bounds replay); omit = only at suspend/fork
+}
 
-const effectRuntime = new EffectRuntime();
-const eventStore = new SqliteEventStore("./data/events.db");
-const snapshotStore = new SqliteSnapshotStore("./data/snapshots.db");
-
-const runtime = new WorkflowRuntime({
-  eventStore,
-  snapshotStore,
-  effectRuntime,
-  onEvent: (event) => projectionRuntime.handleEvent(event),  // optional
-});
+class WorkflowRuntime {
+  constructor(deps: WorkflowRuntimeDeps)
+  register(toolId: string, effect: Effect): void
+  registerFlow<TIn, TOut>(definition: FlowDefinition<TIn, TOut>, runner: FlowRunner<TIn, TOut>): void
+  getFlow(flowId: string): RegisteredFlow | undefined
+  getFlowIds(): string[]
+  start<TIn, TOut>(flow: RegisteredFlow<TIn, TOut>, input: TIn, options?: RunOptions): Promise<ExecutionHandle>
+  resume(executionId: string, resumeEvent: ResumeEvent): Promise<ExecutionHandle>
+  restoreFromState(preloadedState: ExecutionState, resumeEvent?: ResumeEvent): Promise<ExecutionHandle>
+  loadState(executionId: string): Promise<ExecutionState | null>   // fold durable state WITHOUT running
+  fork(parentExecutionId: string, atSequence: number, opts?: ForkOptions): Promise<ForkResult>
+}
 #+end_src
 
-** Constructor options
+** ~WorkflowContext~ — the flow API
 
-| Option          | Type                                  | Required | Description                                               |
-|-----------------+---------------------------------------+----------+-----------------------------------------------------------|
-| ~eventStore~    | ~EventStore~                          | yes      | Where events are persisted                                |
-| ~snapshotStore~ | ~SnapshotStore~                       | yes      | Where suspend-point snapshots are stored                  |
-| ~effectRuntime~ | ~EffectRuntime~                       | yes      | Registry of effect handlers                               |
-| ~onEvent~       | ~(event: EventEnvelope) => void~      | no       | Called synchronously after every event is folded — wire to ProjectionRuntime |
-| ~branchRegistry~ | ~BranchRegistry~                     | no       | Enables ~fork()~ to record lineage + refs (see [[#branch-registry][BranchRegistry]]) |
-| ~onStorageError~ | ~(executionId, err) => void~         | no       | Observability hook for a durable-write rejection (the async storage failure mode). The run aborts and ~waitForCompletion~/~waitForSuspend~ reject with a ~StorageWriteError~ regardless. |
-
-** ~registerFlow(definition, runner)~
-
-Registers a flow so it can be found during ~resume()~. Call before any ~start()~ or ~resume()~ for that flow.
+The ~ctx~ handed to every runner. Every call is durable, ordered, and replayable.
 
 #+begin_src typescript
-runtime.registerFlow(
-  InvestigateIncidentFlow.definition,
-  InvestigateIncidentFlow.runner
-);
+interface WorkflowContext {
+  readonly executionId: string;
+  readonly workflowId: string;
+  run<TIn, TOut>(step: StepDefinition<TIn, TOut>, input: TIn): Promise<TOut>;         // memoized on replay
+  parallel<T extends unknown[]>(
+    pairs: { [K in keyof T]: [StepDefinition<unknown, T[K]>, unknown] },
+    options?: { limit?: number }
+  ): Promise<T>;                                                                       // results ALWAYS in input order
+  suspend(config: { on: string; timeout?: number; correlationKey?: string }): Promise<never>;
+  emit(eventType: string, payload: unknown): void;                                     // durable domain event
+  stream(eventType: string, delta: string, done?: boolean): void;                      // token streaming
+  readonly ui: A2UIEmitter;                                                            // ctx.ui.set/merge/append …
+}
 #+end_src
 
-Both ~definition~ (~FlowDefinition~) and ~runner~ (~FlowRunner~) must be provided. The runtime looks up registered flows by ~definition.id~ when resuming a suspended execution.
-
-** ~start(flow, input, options?)~
-
-Starts a new execution. Returns an ~ExecutionHandle~ immediately (the flow runs asynchronously in the background).
-
-#+begin_src typescript
-const handle = await runtime.start(
-  InvestigateIncidentFlow,        // RegisteredFlow
-  { incidentId: "cpu-001" },      // TIn — must satisfy inputSchema
-  { executionId: "exec-abc" }     // optional RunOptions
-);
-#+end_src
-
-| Option        | Type     | Description                                                |
-|---------------+----------+------------------------------------------------------------|
-| ~executionId~ | ~string~ | Pin the execution to a specific id; auto-generated (ULID) if omitted |
-
-** ~resume(executionId, resumeEvent)~
-
-Resumes a suspended execution. Appends the resume event, loads the latest snapshot, and re-runs the flow runner from the beginning (with previously completed steps replayed from cache).
-
-#+begin_src typescript
-const handle = await runtime.resume("exec-abc", {
-  eventType: "ApprovalGranted",
-  payload: { approved: true, approvedBy: "operator@example.com" },
-});
-#+end_src
-
-| Field       | Type      | Description                                              |
-|-------------+-----------+----------------------------------------------------------|
-| ~eventType~ | ~string~  | The event type the flow was waiting for in ~ctx.suspend()~ |
-| ~payload~   | ~unknown~ | Data delivered to the flow after the suspend point       |
-
-Throws ~WorkflowNotFoundError~ if ~executionId~ has no recorded events.
-
-** ~restoreFromState(preloadedState, resumeEvent?)~
-
-Client-side restoration path. Accepts a pre-deserialized ~ExecutionState~ (produced server-side by ~serializeExecution~) and reconstructs an execution without reading the EventStore. Optionally delivers a resume event atomically.
-
-#+begin_src typescript
-import { deserializeExecution } from "@loom/workflow-runtime";
-
-// On client, after receiving serialized state from server
-const preloadedState = deserializeExecution(serializedString);
-
-const handle = await runtime.restoreFromState(preloadedState, {
-  eventType: "ApprovalGranted",
-  payload: { approved: true },
-});
-
-handle.waitForCompletion().then(() => console.log("Done"));
-#+end_src
-
-| Parameter       | Type             | Required | Description                                             |
-|-----------------+------------------+----------+---------------------------------------------------------|
-| ~preloadedState~| ~ExecutionState~ | yes      | Deserialized snapshot from ~deserializeExecution~       |
-| ~resumeEvent~   | ~ResumeEvent~    | no       | Optional event to append before re-running the flow    |
-
-The corresponding flow must already be registered via ~registerFlow()~ before calling ~restoreFromState~.
-
-** ~fork(parentExecutionId, atSequence, opts?)~
-
-Forks an execution at ~atSequence~ into an independent branch for speculative work. Copy-on-write over the event log: the parent's events ~[0..atSequence]~ are copied into a new child ~executionId~ and a seed snapshot is written at the fork point, so the child re-derives the identical pre-fork state (cached step outputs are *not* re-run) and the parent log is never touched. Returns a ~ForkResult~ — it does *not* start execution; drive the branch with ~resume()~ or ~restoreFromState()~. Branch-only: there is no merge — pick a winner with ~branchRegistry.promote()~.
-
-#+begin_src typescript
-// Fork a suspended task at its approval gate.
-const branch = await runtime.fork("task-abc", 7, {
-  branchName: "spec/scale-replicas",
-});
-
-// Drive the branch down an alternate path...
-await runtime.resume(branch.executionId, {
-  eventType: "ApprovalGranted",
-  payload: { approved: true, approvedBy: "operator" },
-});
-
-// ...then keep the winner (a pointer move, not a merge):
-branchRegistry.promote("spec/scale-replicas", "main");
-#+end_src
-
-| Parameter          | Type          | Required | Description                                                    |
-|--------------------+---------------+----------+----------------------------------------------------------------|
-| ~parentExecutionId~ | ~string~     | yes      | The execution to branch from                                   |
-| ~atSequence~       | ~number~      | yes      | Fork point; must be in ~0..tip~ (throws otherwise)             |
-| ~opts.branchName~  | ~string~      | no       | Registers a movable ref for the branch (needs ~branchRegistry~) |
-| ~opts.executionId~ | ~string~      | no       | Pin the child id; auto-generated (ULID) if omitted             |
-
-Returns ~ForkResult~: ~{ executionId, parentExecutionId, forkSequence, branchName, state }~, where ~state~ is the materialized ~ExecutionState~ at the fork point (already stamped with the child id). Forking records lineage/ref bookkeeping only when a ~branchRegistry~ was supplied to the runtime, and introduces *no new event type* — provenance lives in event ~metadata~.
-
-** ~register(toolId, effect)~
-
-Convenience proxy that forwards to the underlying ~EffectRuntime~. Equivalent to calling ~effectRuntime.register()~ directly.
-
-#+begin_src typescript
-runtime.register("metrics-tool", new ToolEffect(async (input) => ({
-  cpu: { current: 87, threshold: 80 },
-})));
-#+end_src
-
------
-
-* WorkflowContext — the flow API
-:PROPERTIES:
-:CUSTOM_ID: workflow-context
-:END:
-
-~WorkflowContext~ is the object injected as the first argument to every ~FlowRunner~ function. It is the complete API available inside a flow.
-
-#+begin_src typescript
-type FlowRunner<TIn, TOut> = (ctx: WorkflowContext, input: TIn) => Promise<TOut>;
-#+end_src
-
-** ~ctx.run(step, input)~
-
-Executes a step. If the step already completed in a previous run (detected via ~ReplayVM~), returns the cached output without calling the effect again. This is the primary idempotency guarantee.
-
-#+begin_src typescript
-const metrics = await ctx.run(FetchMetricsStep, { incidentId: input.incidentId });
-// metrics: { cpu: { current: 87, ... }, memory: { ... } }
-#+end_src
-
-- Emits ~STEP_STARTED~ before execution and ~STEP_COMPLETED~ (or ~STEP_FAILED~) after.
-- On failure, re-throws the error after emitting ~STEP_FAILED~.
-- The ~toolId~ on the ~StepDefinition~ determines which registered effect is called; falls back to ~step.id~ if ~toolId~ is not set.
-
-** ~ctx.parallel(pairs)~
-
-Runs multiple steps concurrently with ~Promise.all~. Each pair is ~[StepDefinition, input]~. Returns a tuple of outputs in the same order.
-
-#+begin_src typescript
-const [metrics, logs] = await ctx.parallel([
-  [FetchMetricsStep, { incidentId: input.incidentId }],
-  [FetchLogsStep,    { incidentId: input.incidentId }],
-]);
-#+end_src>
-
-Idempotency works the same as ~ctx.run~ — completed steps return cached results immediately.
-
-Pass an optional second argument for *bounded* concurrency — useful for large fan-outs that would otherwise open too many effects at once:
-
-#+begin_src typescript
-const results = await ctx.parallel(
-  incidentIds.map((id) => [FetchMetricsStep, { incidentId: id }] as const),
-  { limit: 4 },   // at most 4 steps run concurrently
-);
-#+end_src
-
-| Option   | Type     | Default            | Description                                       |
-|----------+----------+--------------------+---------------------------------------------------|
-| ~limit~  | ~number~ | unbounded          | Max steps running at once; ~≤ 0~ means unbounded  |
-
-~limit~ is powered by ~parallelLimit~ from [[#scheduler][~@loom/scheduler~]]. Results are *always* returned in input order regardless of completion order, so replay stays deterministic; the default (no ~options~) is unchanged ~Promise.all~ behaviour. When the execution is cancelled, ~ctx.signal~ is forwarded so queued tasks abort promptly (see [[#execution-handle][cancellation]]).
-
-** ~ctx.emit(eventType, payload)~
-
-Appends a custom domain event to the event log. Triggers ~onEvent~ on the runtime (which routes to ~ProjectionRuntime~), so UI projections update immediately.
-
-#+begin_src typescript
-ctx.emit("INCIDENT_ANALYSIS_COMPLETE", { metrics, logs, timestamp: Date.now() });
-#+end_src
-
-Use ~ctx.emit~ to push domain-meaningful events that projections can react to. Structural events (~STEP_STARTED~, ~EXECUTION_SUSPENDED~, etc.) are emitted automatically.
-
-** ~ctx.ui~ — the A2UI emitter
-
-Every ~WorkflowContext~ carries a pre-wired ~ui: A2UIEmitter~ (from ~@loom/a2ui~) bound to the default ~"ui"~ surface. Each call emits one ~A2UI_PATCH~ event through the normal ~ctx.emit~ pipeline, so UI updates are durable and replay deterministically — the surface rebuilds itself by folding the same patch events on resume.
-
-#+begin_src typescript
-// Address surface state by dot-notation path ("" is the root)
-ctx.ui.set("phase", "analyzing");
-ctx.ui.merge("metrics", { cpu: 87 });
-ctx.ui.append("log", "fetched metrics");     // push onto an array
-ctx.ui.increment("progress", 10);            // numeric bump (default +1)
-ctx.ui.set("done", true);
-#+end_src
-
-See [[#a2ui][~@loom/a2ui~]] for the full emitter, patch, and consumer API. ~ctx.stream(eventType, delta, done?)~ remains as low-level sugar over ~ctx.emit~ for pushing ~{ delta, done }~ payloads.
-
-** ~ctx.suspend(config)~
-
-Suspends the workflow. On a fresh run, throws ~SuspendError~ (caught by ~WorkflowRuntime~, which saves a snapshot and resolves ~waitForSuspend()~). On resume replay, passes through transparently so the runner continues past the suspend point.
-
-#+begin_src typescript
-await ctx.suspend({
-  on: "ApprovalGranted",              // event type that resumes this execution
-  correlationKey: input.incidentId,   // optional — for routing in multi-instance setups
-  timeout: 24 * 60 * 60 * 1000,      // optional — milliseconds
-});
-// Code here runs only after resume
-#+end_src
-
-| Field            | Type     | Required | Description                                               |
-|------------------+----------+----------+-----------------------------------------------------------|
-| ~on~             | ~string~ | yes      | The ~eventType~ expected in ~runtime.resume()~           |
-| ~correlationKey~ | ~string~ | no       | Scopes the resume to a specific entity                    |
-| ~timeout~        | ~number~ | no       | How long to wait before failing (enforcement is app-level)|
-
-** ~ctx.executionId~ / ~ctx.workflowId~
-
-Read-only strings identifying the current execution and its parent workflow.
-
------
-
-* ExecutionHandle
-:PROPERTIES:
-:CUSTOM_ID: execution-handle
-:END:
-
-Both ~start()~ and ~resume()~ return an ~ExecutionHandle~ synchronously. Set up listeners before the async runner fires.
+** ~ExecutionHandle~ & related types
 
 #+begin_src typescript
 interface ExecutionHandle {
   executionId: string;
-  waitForSuspend(): Promise<ExecutionState>;
   waitForCompletion(): Promise<ExecutionState>;
+  waitForSuspend(): Promise<ExecutionState>;
   getState(): ExecutionState;
-  cancel(reason?: unknown): void;
+  cancel(reason?: unknown): void;   // live-only — aborts in-flight effects, records EXECUTION_CANCELLED
 }
+
+type FlowRunner<TIn, TOut> = (ctx: WorkflowContext, input: TIn) => Promise<TOut>;
+interface RegisteredFlow<TIn, TOut> { definition: FlowDefinition<TIn, TOut>; runner: FlowRunner<TIn, TOut>; }
+interface RunOptions   { executionId?: string; }
+interface ResumeEvent  { eventType: string; payload: unknown; }
+interface ForkOptions  { branchName?: string; executionId?: string; }
+interface ForkResult   { executionId: string; parentExecutionId: string; forkSequence: number; branchName: string; state: ExecutionState; }
 #+end_src
 
-| Member               | Description                                                              |
-|----------------------+--------------------------------------------------------------------------|
-| ~executionId~        | The unique id for this execution                                         |
-| ~waitForSuspend()~   | Resolves with ~ExecutionState~ when the flow hits ~ctx.suspend()~        |
-| ~waitForCompletion()~| Resolves with ~ExecutionState~ when the flow returns (or rejects on ~EXECUTION_FAILED~) |
-| ~getState()~         | Synchronous snapshot of the current ~ExecutionState~                     |
-| ~cancel(reason?)~    | Aborts in-flight effects, records a durable ~EXECUTION_CANCELLED~ event, and rejects ~waitForCompletion()~ |
-
-** ~cancel(reason?)~ — cooperative cancellation
-
-Aborts the execution's *live* work. It aborts the ~AbortSignal~ threaded into every in-flight effect (which cooperative effects forward to ~fetch~/providers), appends a durable ~EXECUTION_CANCELLED~ event, and rejects ~waitForCompletion()~ with ~reason~. It is *idempotent* — repeated calls record the event only once.
-
-#+begin_src typescript
-const handle = await runtime.start(InvestigateIncidentFlow, { incidentId: "cpu-001" });
-
-// Later — user navigates away or a newer request supersedes this one:
-handle.cancel(new Error("superseded by newer request"));
-
-await handle.waitForCompletion().catch((err) => {
-  // err === the reason passed to cancel()
-  console.log("cancelled:", err.message);
-});
-handle.getState().status;   // → "cancelled"
-#+end_src
-
-Cancellation touches only *live* work: it does not delete persisted events or snapshots, so a cancelled execution can still be inspected and its resume semantics are unchanged. The runtime emits two new event types:
-
-- ~EXECUTION_CANCELLED~ — sets the execution ~status~ to ~"cancelled"~.
-- ~STEP_CANCELLED~ — set on a frame whose effect was aborted; marks that frame's ~status~ ~"cancelled"~ but leaves the execution status alone. ~ctx.run~ emits this (instead of ~STEP_FAILED~) when the effect rejects because ~ctx.signal~ was aborted.
-
-Both ~ExecutionStatus~ and ~FrameStatus~ gain the ~"cancelled"~ value.
-
-~waitForSuspend()~ and ~waitForCompletion()~ are independent — await whichever is relevant:
-
-#+begin_src typescript
-const handle = await runtime.start(MyFlow, input);
-
-// Wait for first suspend
-handle.waitForSuspend().then((state) => {
-  console.log("Suspended at sequence", state.sequence);
-  showApprovalUI();
-});
-
-// Always log completion
-handle.waitForCompletion()
-  .then(() => console.log("Done"))
-  .catch((err) => console.error("Failed", err));
-#+end_src
+Also exported (resumability, for server→client handoff): ~serializeExecution~ / ~deserializeExecution~, ~serializeProjections~ / ~deserializeProjections~, and ~ProjectionSnapshot~.
 
 -----
 
-* EffectRuntime & Effects
+* Replay & storage
 :PROPERTIES:
-:CUSTOM_ID: effect-runtime
+:CUSTOM_ID: replay-storage
 :END:
 
-~EffectRuntime~ is a registry that maps ~toolId~ strings to ~Effect~ implementations. Every side effect a flow executes must be registered here.
-
-** ~EffectRuntime~
+** ~@loom/replay-vm~ — deterministic replay
 
 #+begin_src typescript
-import { EffectRuntime } from "@loom/effect-runtime";
+function foldEvents(events: EventEnvelope[], initial?: Partial<ExecutionState>): ExecutionState
 
-const effectRuntime = new EffectRuntime();
-effectRuntime.register("my-tool", myEffect);
-effectRuntime.has("my-tool");  // → true
-#+end_src
-
-| Method                            | Description                                               |
-|-----------------------------------+-----------------------------------------------------------|
-| ~register(toolId, effect)~        | Adds an effect to the registry                            |
-| ~execute(toolId, input, ctx)~     | Dispatches to the registered effect; throws if not found  |
-| ~has(toolId)~                     | Returns ~true~ if the toolId is registered                |
-
-** ~ToolEffect~
-
-Wraps a plain async function. Use for HTTP calls, database queries, file I/O, or any deterministic external call.
-
-#+begin_src typescript
-import { ToolEffect } from "@loom/effect-runtime";
-
-effectRuntime.register(
-  "metrics-tool",
-  new ToolEffect(async (input: { incidentId: string }, ctx) => {
-    const data = await fetchMetrics(input.incidentId);
-    ctx.emit("METRICS_FETCHED", data);   // optional — emit from within the effect
-    return data;
-  })
-);
-#+end_src
-
-The function receives ~(input: TIn, ctx: EffectContext)~.
-
-** ~LlmEffect~
-
-Same shape as ~ToolEffect~, semantically tagged as an LLM call. Use for prompting a language model.
-
-#+begin_src typescript
-import { LlmEffect } from "@loom/effect-runtime";
-
-effectRuntime.register(
-  "summarize-logs",
-  new LlmEffect(async (input: { logs: string[] }) => {
-    const summary = await llmClient.complete({
-      prompt: `Summarize these logs:\n${input.logs.join("\n")}`,
-    });
-    return { summary };
-  })
-);
-#+end_src
-
-** ~HumanEffect~
-
-Immediately suspends the workflow to wait for human input. No async work is performed — the suspension itself is the effect. The workflow resumes when the application calls ~runtime.resume()~ with the matching ~eventType~.
-
-#+begin_src typescript
-import { HumanEffect } from "@loom/effect-runtime";
-
-effectRuntime.register(
-  "approval-gate",
-  new HumanEffect({
-    on: "ApprovalGranted",                    // event type to wait for
-    timeout: 24 * 60 * 60 * 1000,            // optional
-    correlationKey: (input) => input.incidentId,  // optional scoping
-  })
-);
-#+end_src
-
-Pair with a ~StepDefinition~ whose ~toolId~ points to this key:
-
-#+begin_src typescript
-const ApprovalStep = step$({
-  id: "wait-for-approval",
-  toolId: "approval-gate",
-  inputSchema: z.object({ incidentId: z.string() }),
-  outputSchema: z.unknown(),
-});
-#+end_src
-
-** ~A2AEffect~
-
-Agent-to-agent delegation. Structurally identical to ~ToolEffect~ — use it to call another Loom workflow or an external agent.
-
-#+begin_src typescript
-import { A2AEffect } from "@loom/effect-runtime";
-
-effectRuntime.register(
-  "sub-agent",
-  new A2AEffect(async (input, ctx) => {
-    const handle = await agentRuntime.start(SubAgentFlow, input);
-    return handle.waitForCompletion();
-  })
-);
-#+end_src
-
-** ~LazyEffect~
-
-The bridge between ~handler$()~ and the effect runtime. Accepts a ~HandlerSpec~ (either a ~HandlerRef~ or a ~HandlerLoader~), resolves the underlying function on the first ~execute()~ call, and caches it for subsequent calls.
-
-You do not normally instantiate ~LazyEffect~ directly — ~WorkflowRuntime.registerFlow()~ creates one automatically for every step with a ~handler~ field.
-
-#+begin_src typescript
-import { LazyEffect } from "@loom/effect-runtime";
-
-// HandlerRef path (runtime — handler$ without compiler)
-const ref = handler$(async (input, ctx) => ({ done: true }));
-effectRuntime.register("my-step", new LazyEffect(ref));
-
-// HandlerLoader path (build time — compiler output)
-const loader = () => import("./chunks/my-step_abc123");
-effectRuntime.register("my-step", new LazyEffect(loader));
-#+end_src
-
-| Path          | When used                          | Resolution                                    |
-|---------------+------------------------------------+-----------------------------------------------|
-| ~HandlerRef~  | Runtime / tests / ts-node          | Calls ~ref.fn~ directly (zero overhead)       |
-| ~HandlerLoader~ | After compiler transform         | ~await loader()~ on first call, caches result |
-
-** ~EffectContext~
-
-Passed as the second argument to every effect function.
-
-#+begin_src typescript
-interface EffectContext {
-  executionId: string;
-  stepId: string;
-  workflowId: string;
-  attempt: number;                                    // 1-based retry count
-  emit(eventType: string, payload: unknown): void;   // emit events from within an effect
-  readonly signal?: AbortSignal;                     // cooperative cancellation (see below)
+class ReplayVM {
+  constructor(events: EventEnvelope[], initial?: Partial<ExecutionState>)
+  applyEvent(event: EventEnvelope): void
+  getState(): ExecutionState
+  hasCompleted(stepId: string): boolean
+  hasFailed(stepId: string): boolean
+  getOutput(stepId: string): unknown
 }
-#+end_src>
+#+end_src
 
-~signal~ is an optional ~AbortSignal~ that aborts when the owning execution is cancelled via ~ExecutionHandle.cancel()~. It is *undefined by default*, so non-cancellable effects pay nothing. Long-running / I/O effects (LLM, tool, A2A) should forward it to ~fetch~ (and to ~LlmRequest.signal~ / provider calls) and check it at await points so a cancel takes effect promptly:
+~foldEvents~ is a pure left-fold — the entire basis of durability, resume, and fork. (It uses copy-on-write structural sharing; see [[file:adr/0015-dsa-performance-optimizations.md][ADR 0015]].)
 
-#+begin_src typescript
-new ToolEffect(async (input: { url: string }, ctx) => {
-  const res = await fetch(input.url, { signal: ctx.signal });   // aborts on cancel
-  return res.json();
-});
-#+end_src>
-
------
-
-* EventStore
-:PROPERTIES:
-:CUSTOM_ID: event-store
-:END:
-
-~EventStore~ is the append-only log of all workflow events. It is *async-first* — every method returns a ~Promise~, so any backend plugs in (sync stores just mark methods ~async~; async/network stores return real Promises). The runtime ~await~s the store.
-
-** Interface
+** ~@loom/event-runtime~ — the durable log
 
 #+begin_src typescript
 interface EventStore {
@@ -869,2168 +385,542 @@ interface EventStore {
   read(executionId: string): Promise<EventEnvelope[]>;
   readFrom(executionId: string, fromSequence: number): Promise<EventEnvelope[]>;
   subscribe(executionId: string, handler: (event: EventEnvelope) => void): Promise<() => void>;
+  copyPrefix?(from: string, to: string, throughSequence: number, metadata: Record<string, unknown>): Promise<void>; // fork fast-path (optional)
   close(): Promise<void>;
 }
+
+class InMemoryAsyncEventStore { constructor(options?: { latencyMs?: number; failAppendWhen?: (e: EventEnvelope) => boolean | string | Error }) }
+class SqliteEventStore       { constructor(dbPath: string) }
 #+end_src
 
-| Method              | Description                                                                |
-|---------------------+----------------------------------------------------------------------------|
-| ~append~            | Appends one event; rejects on duplicate ~(executionId, sequence)~          |
-| ~read~              | Returns all events for an execution, ordered by sequence ascending         |
-| ~readFrom~          | Returns events from ~fromSequence~ inclusive                               |
-| ~subscribe~         | Calls ~handler~ after each ~append~; resolves to an unsubscribe fn (async so network stores can set up ~LISTEN~) |
-| ~close~             | Releases the underlying resource (SQLite connection, etc.)                 |
-
-There is no ~nextSequence~: sequence allocation is owned by the runtime's per-execution ~ExecutionJournal~, so a backend never does a read-then-write round-trip. ~SqliteEventStore~ and ~SqliteSnapshotStore~ are exported from ~@loom/sdk~. ~InMemoryAsyncEventStore~ / ~InMemoryAsyncSnapshotStore~ are reference async backends (with latency/failure injection) — a starting point for a real network store and used in the async test suite. See [[file:examples/postgres-backend/README.md][the Postgres reference]].
-
-** ~SqliteEventStore~
-
-Durable, WAL-mode SQLite store for server/production use.
+*Git-style branching* — the ~BranchRegistry~:
 
 #+begin_src typescript
-import { SqliteEventStore } from "@loom/event-runtime";
+interface BranchRef      { name: string; executionId: string; tip: number; parentExecutionId?: string; forkSequence?: number; createdAt: number; updatedAt: number; }
+interface LineageRecord  { executionId: string; parentExecutionId: string; forkSequence: number; createdAt: number; }
 
-const eventStore = new SqliteEventStore("./data/events.db");
-// ...
-eventStore.close();
-#+end_src
-
-** ~InMemoryEventStore~ (browser/testing)
-
-Exists in the browser bundles and test setups. Not exported from ~@loom/event-runtime~ — instantiate via the example's ~browserStores~ or write your own:
-
-#+begin_src typescript
-// Minimal in-memory implementation for tests
-class InMemoryEventStore implements EventStore {
-  private log: EventEnvelope[] = [];
-  append(e: EventEnvelope) { this.log.push(e); }
-  read(id: string) { return this.log.filter(e => e.executionId === id); }
-  // ...
-}
-#+end_src
-
-** ~EventEnvelope~ shape
-
-#+begin_src typescript
-interface EventEnvelope {
-  id: string;           // globally unique (executionId + sequence)
-  workflowId: string;
-  executionId: string;
-  eventType: string;    // e.g. "STEP_COMPLETED", "APPROVAL_REQUESTED"
-  sequence: number;     // monotonically increasing per execution
-  timestamp: number;    // Date.now() at append time
-  payload: unknown;     // event-specific data
-  metadata?: Record<string, unknown>;
-}
-#+end_src
-
------
-
-* BranchRegistry
-:PROPERTIES:
-:CUSTOM_ID: branch-registry
-:END:
-
-~BranchRegistry~ (in ~@loom/event-runtime~) holds git-style *movable refs* + immutable *fork lineage* for speculative branching. Pass one to ~WorkflowRuntime~ to enable [[#workflow-runtime][~fork()~]]; ~promote()~ picks a winner. Branch-only — there is no merge (two divergent ~ExecutionState~s have no principled join).
-
-** Interface
-
-#+begin_src typescript
-// Async-first, like the other stores — every method returns a Promise.
 interface BranchRegistry {
-  putRef(ref: BranchRef): Promise<void>;          // create OR move (upsert by name)
+  putRef(ref: BranchRef): Promise<void>;
   getRef(name: string): Promise<BranchRef | null>;
   listRefs(): Promise<BranchRef[]>;
-  moveTip(name: string, tip: number): Promise<void>;      // advance a head as it grows
-  promote(fromName: string, toName: string): Promise<void>; // pick-a-winner (pointer move)
+  moveTip(name: string, tip: number): Promise<void>;
+  promote(fromName: string, toName: string): Promise<void>;   // pointer move — the whole "merge" replacement
   deleteRef(name: string): Promise<void>;
-
   recordLineage(rec: Omit<LineageRecord, "createdAt">): Promise<void>;
   getLineage(executionId: string): Promise<LineageRecord | null>;
-  children(executionId: string): Promise<LineageRecord[]>;  // direct forks of an execution
+  children(executionId: string): Promise<LineageRecord[]>;
   close(): Promise<void>;
 }
-
-interface BranchRef {
-  name: string;                 // "main", "spec/scale-replicas"
-  executionId: string;          // the execution this ref points at
-  tip: number;                  // latest known sequence on that head
-  parentExecutionId?: string;   // if created by a fork
-  forkSequence?: number;        // if created by a fork
-  createdAt: number;
-  updatedAt: number;
-}
-
-interface LineageRecord {
-  executionId: string;          // the child (forked) execution
-  parentExecutionId: string;
-  forkSequence: number;
-  createdAt: number;
-}
+class SqliteBranchRegistry { constructor(dbPath: string) }
 #+end_src
 
-~promote("spec/x", "main")~ copies ~spec/x~'s ~(executionId, tip)~ onto ~main~ — a pointer move, no history rewrite. The losing branch stays an immutable, independently resumable execution.
+*Browser-safe subpath:* ~import { InMemoryAsyncEventStore } from "@loom/event-runtime/memory"~ imports only the in-memory store — no ~better-sqlite3~.
 
-** ~SqliteBranchRegistry~
-
-#+begin_src typescript
-import { SqliteBranchRegistry } from "@loom/event-runtime";
-
-// Its own DB file — the refs/lineage tables are independent of the event log,
-// so its writes never contend with the busy event-store write lock.
-const branchRegistry = new SqliteBranchRegistry("./data/branches.db");
-
-const runtime = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime, branchRegistry });
-// ...
-branchRegistry.close();
-#+end_src
-
------
-
-* SnapshotStore
-:PROPERTIES:
-:CUSTOM_ID: snapshot-store
-:END:
-
-~SnapshotStore~ caches ~ExecutionState~ at suspension points to avoid replaying the full event log on every resume.
-
-** Interface
+** ~@loom/snapshot-runtime~ — bounded-tail replay
 
 #+begin_src typescript
-// Async-first, like EventStore.
+interface Snapshot { id: string; executionId: string; workflowId: string; sequence: number; state: ExecutionState; createdAt: number; }
+
 interface SnapshotStore {
   save(snapshot: Snapshot): Promise<void>;
   loadLatest(executionId: string): Promise<Snapshot | null>;
   loadAt(executionId: string, sequence: number): Promise<Snapshot | null>;
-  // Greatest snapshot AT OR BELOW `sequence` — used by WorkflowRuntime.fork()
-  // to materialize state at a fork point without folding the log from zero.
-  loadLatestBefore(executionId: string, sequence: number): Promise<Snapshot | null>;
+  loadLatestBefore(executionId: string, sequence: number): Promise<Snapshot | null>;   // used by fork()
   close(): Promise<void>;
 }
+class InMemoryAsyncSnapshotStore { constructor(options?: { latencyMs?: number }) }
+class SqliteSnapshotStore        { constructor(dbPath: string) }
+#+end_src
 
-interface Snapshot {
-  id: string;
-  executionId: string;
-  workflowId: string;
-  sequence: number;     // the event sequence at the time of the snapshot
-  state: ExecutionState;
-  createdAt: number;
+Browser-safe subpath: ~@loom/snapshot-runtime/memory~.
+
+-----
+
+* Effects — ~@loom/effect-runtime~
+:PROPERTIES:
+:CUSTOM_ID: effects
+:END:
+
+All side effects (tool / LLM / human / A2A) run through the ~EffectRuntime~, keyed by ~toolId~. On replay a completed effect is served from the log, never re-executed.
+
+#+begin_src typescript
+interface EffectContext {
+  executionId: string; stepId: string; workflowId: string; attempt: number;
+  emit(eventType: string, payload: unknown): void;
+  readonly signal?: AbortSignal;   // cancellation
+}
+interface Effect<TIn, TOut> { kind: EffectKind; execute(input: TIn, ctx: EffectContext): Promise<TOut>; }
+
+type EffectNext = () => Promise<unknown>;
+type EffectMiddleware = (ctx: EffectContext, input: unknown, next: EffectNext) => Promise<unknown>; // middleware[0] outermost
+
+class EffectRuntime {
+  constructor(middleware?: readonly EffectMiddleware[])
+  register(toolId: string, effect: Effect): void
+  execute<TIn, TOut>(toolId: string, input: TIn, ctx: EffectContext): Promise<TOut>
+  has(toolId: string): boolean
 }
 #+end_src
 
-~WorkflowRuntime~ calls ~save~ automatically on every suspend and ~loadLatest~ on every resume. You do not need to call these directly under normal usage. ~loadLatestBefore~ is used internally by ~fork()~.
-
-** ~SqliteSnapshotStore~
+*Effect implementations* (each ~implements Effect~):
 
 #+begin_src typescript
-import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
-
-const snapshotStore = new SqliteSnapshotStore("./data/snapshots.db");
-// ...
-snapshotStore.close();
+new ToolEffect((input, ctx) => Promise<TOut>)    // kind "tool" — any async work
+new LlmEffect((input, ctx) => Promise<TOut>)     // kind "llm"  — a model call
+new A2AEffect((input, ctx) => Promise<TOut>)     // kind "a2a"  — delegate to a remote agent
+new HumanEffect({ on: string; timeout?: number; correlationKey?: (input) => string })  // kind "human" — throws SuspendError
+new LazyEffect(spec: HandlerSpec)                // kind "tool" — resolves an inline/lazy handler on first execute
 #+end_src
 
 -----
 
-* ProjectionRuntime
+* Projection & UI
 :PROPERTIES:
-:CUSTOM_ID: projection-runtime
+:CUSTOM_ID: projection-ui
 :END:
 
-~ProjectionRuntime~ maintains live read models derived from the event stream. Wire it to ~WorkflowRuntime.onEvent~ and it stays up to date automatically.
+** ~@loom/projection-runtime~
 
-** ~InMemoryProjectionRuntime~
-
-#+begin_src typescript
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-
-const projectionRuntime = new InMemoryProjectionRuntime();
-projectionRuntime.register(MetricsProjection);
-projectionRuntime.register(IncidentProjection);
-
-const runtime = new WorkflowRuntime({
-  // ...
-  onEvent: (event) => projectionRuntime.handleEvent(event),
-});
-#+end_src
-
-*** Notification coalescing
-
-The constructor accepts an optional ~config~:
-
-#+begin_src typescript
-const projectionRuntime = new InMemoryProjectionRuntime({
-  coalesceNotifications: true,   // default false
-});
-#+end_src
-
-| Option                   | Type      | Default | Description                                                        |
-|--------------------------+-----------+---------+--------------------------------------------------------------------|
-| ~coalesceNotifications~  | ~boolean~ | ~false~ | Batch subscriber notifications and flush once per microtask        |
-
-When ~true~, subscriber notifications produced during a synchronous ~handleEvent~ burst are collected and flushed once per microtask, each subscriber receiving its projection's *latest* state. This collapses O(events) subscriber calls into O(microtask) — valuable for high-frequency streams such as LLM token deltas. State is still updated synchronously (~getState~ is always current); only the *notification* is deferred. Off by default, preserving synchronous notification semantics. Pairs well with ~useDeferredProjection~ / ~useDeferredWidgetValue~ on the React side.
-
-** Interface
-
-#+begin_src typescript
-interface ProjectionRuntime {
-  register<TState>(projection: Projection<TState>): void;
-  getState<TState>(projectionId: string, executionId: string): TState;
-  subscribe<TState>(
-    projectionId: string,
-    executionId: string,
-    handler: (state: TState) => void
-  ): () => void;         // returns unsubscribe function
-  handleEvent(event: EventEnvelope): void;
-  seedState(projectionId: string, executionId: string, state: unknown): void;
-}
-#+end_src
-
-| Method        | Description                                                                      |
-|---------------+----------------------------------------------------------------------------------|
-| ~register~    | Adds a projection; must be called before the first event that triggers a handler |
-| ~getState~    | Synchronous read of current state; returns ~initialState~ if no events yet       |
-| ~subscribe~   | Registers a live listener; called synchronously after every matching event       |
-| ~handleEvent~ | Routes an event to all registered projections; call from ~onEvent~              |
-| ~seedState~   | Populates state directly without processing events — used by ~LoomProvider~ for client-side restore |
-
-** ~seedState(projectionId, executionId, state)~
-
-Directly sets projection state for a given ~(projectionId, executionId)~ pair, bypassing event processing. Used by ~LoomProvider~ to restore server-serialized projection state synchronously before the first render.
-
-#+begin_src typescript
-// Manual usage (LoomProvider does this automatically from serializedProjectionState)
-const snapshot = deserializeProjections(serializedString);
-for (const [projId, state] of Object.entries(snapshot.states)) {
-  projectionRuntime.seedState(projId, snapshot.executionId, state);
-}
-#+end_src
-
-** ~Projection~ shape
+Read models folded from events, decoupled from durability.
 
 #+begin_src typescript
 interface Projection<TState> {
-  id: string;
-  initialState: TState;
-  handlers: {
-    [eventType: string]: (state: TState, event: EventEnvelope) => TState;
-  };
+  id: string; initialState: TState;
+  handlers: { [eventType: string]: (state: TState, event: EventEnvelope) => TState };
+}
+interface ProjectionRuntime {
+  register<TState>(projection: Projection<TState>): void;
+  getState<TState>(projectionId: string, executionId: string): TState;
+  subscribe<TState>(projectionId: string, executionId: string, handler: (state: TState) => void): () => void;
+  handleEvent(event: EventEnvelope): void;
+  seedState(projectionId: string, executionId: string, state: unknown): void;
+}
+class InMemoryProjectionRuntime {
+  constructor(config?: { coalesceNotifications?: boolean })   // true = flush once per microtask with latest state
 }
 #+end_src
 
-State keys are scoped to ~projectionId::executionId~, so concurrent executions of the same flow maintain separate state.
+** ~@loom/a2ui~ — the Agent-to-UI protocol
 
-** Using ~projection$~ builder
+Flows drive the UI with typed, durable patches that fold into named *surfaces*.
 
 #+begin_src typescript
-import { projection$ } from "@loom/sdk";
+const A2UI_PATCH = "A2UI_PATCH";
+const DEFAULT_SURFACE = "ui";                    // the surface ctx.ui.* targets
 
-const IncidentProjection = projection$({
-  id: "incident",
-  name: "Incident Projection",
-  initialState: {
-    timeline: [] as { message: string; timestamp: number }[],
-    pendingApproval: false,
-  },
-  handlers: {
-    INCIDENT_INVESTIGATION_STARTED: (state, event) => ({
-      ...state,
-      timeline: [...state.timeline, { message: "Investigation started", timestamp: event.timestamp }],
-    }),
-    APPROVAL_REQUESTED: (state) => ({
-      ...state,
-      pendingApproval: true,
-    }),
-    INCIDENT_RESOLVED: (state, event) => ({
-      ...state,
-      pendingApproval: false,
-      timeline: [...state.timeline, { message: (event.payload as any).summary, timestamp: event.timestamp }],
-    }),
-  },
-});
-#+end_src
-
------
-
-* Blueprint System
-:PROPERTIES:
-:CUSTOM_ID: blueprint-system
-:END:
-
-Blueprints are JSON-serializable UI descriptions. They carry no React imports and can be generated server-side, stored in a database, or versioned in git.
-
-** ~blueprint$~
-
-#+begin_src typescript
-import { blueprint$, grid, MetricCard, Timeline, ApprovalCard } from "@loom/blueprint-runtime";
-
-const IncidentBlueprint = blueprint$({
-  id: "incident-dashboard",
-  title: "Incident Investigation",
-  layout: grid({
-    columns: 2,
-    gap: 16,
-    children: [
-      MetricCard({
-        title: "CPU Usage %",
-        binding: { projectionId: "metrics", path: "cpu.current" },
-        unit: "%",
-      }),
-      Timeline({
-        title: "Event Timeline",
-        binding: { projectionId: "incident", path: "timeline" },
-      }),
-      ApprovalCard({
-        title: "Approve Remediation",
-        binding: { projectionId: "incident", path: "pendingApproval" },
-        approveLabel: "Apply Fix",
-        rejectLabel: "Cancel",
-      }),
-    ],
-  }),
-  projections: ["metrics", "incident"],   // all projectionIds referenced by bindings
-});
-#+end_src
-
-~projections~ must list every ~projectionId~ used in any widget's ~binding~. The renderer subscribes to exactly these projections.
-
-** Layout builders
-
-| Function  | Options                                         | Description                              |
-|-----------+-------------------------------------------------+------------------------------------------|
-| ~grid~    | ~{ columns, gap?, children }~                   | CSS grid — equal-width columns           |
-| ~flex~    | ~{ direction?, gap?, children }~                | CSS flex; ~direction~ defaults to ~"row"~ |
-| ~stack~   | ~{ gap?, children }~                            | Vertical flex (shorthand for column flex) |
-
-Layouts can be nested: children of any layout can be other layouts or widgets.
-
-** Widget builders
-
-All widgets share a ~binding~ field that resolves a dot-path in a projection's state.
-
-#+begin_src typescript
-type DataBinding = {
-  projectionId: string;  // matches a registered Projection id
-  path: string;          // dot-separated path into the projection state, e.g. "cpu.current"
-};
-#+end_src
-
-An *empty* ~path~ (~""~) binds the widget to the *whole* projection surface (the root state object), not a nested field — use it for a widget that renders across several keys of one surface at once (e.g. a control panel or a git-style branch graph reading ~phase~, ~branches~, and ~refs~ together). Any non-empty ~path~ is resolved as a normal dot-path; a missing segment yields ~undefined~.
-
-| Builder       | Key props                                                        | Bound value shape         |
-|---------------+------------------------------------------------------------------+---------------------------|
-| ~MetricCard~  | ~title, unit?, format?~                                          | ~number \vert string~     |
-| ~Timeline~    | ~title?, maxItems?~                                              | ~{ message, timestamp, level? }[]~ |
-| ~ApprovalCard~| ~title, approveLabel?, rejectLabel?~                             | ~boolean~ (truthy shows buttons) |
-| ~StatusBadge~ | ~title?~                                                         | ~string~ (used as CSS class suffix) |
-| ~ProgressBar~ | ~title?, max?~                                                   | ~number~                  |
-| ~DataTable~   | ~title?, columns?~                                               | ~Record<string, unknown>[]~ |
-| ~AlertCard~   | ~title?, severity?: "info" \vert "warning" \vert "error" \vert "critical"~ | ~string~ (alert message) |
-
-Widget ids are deterministically hashed from ~(kind, props)~, so blueprints are stable across re-renders without explicit keys.
-
-** ~traverseBlueprint~ vs ~traverseBlueprintAsync~
-
-The synchronous ~traverseBlueprint~ is a *pull* traversal: it assembles the whole node tree bottom-up and hands it back. It is the default for renderers that need the complete tree (React, string/SSR) and is *unchanged*.
-
-~traverseBlueprintAsync~ is an interruptible, incremental-commit (*push*) counterpart for scheduler-less BYOR renderers that mutate a target as the tree resolves (direct DOM, canvas, native). It creates each node top-down, appends children as they resolve, cooperatively yields against a budget, and honours an ~AbortSignal~ at every node — so a stale render can be interrupted and a large tree stays responsive.
-
-#+begin_src typescript
-import { traverseBlueprintAsync } from "@loom/blueprint-runtime";
-import type { IncrementalRenderer } from "@loom/blueprint-runtime";
-
-async function traverseBlueprintAsync<TNode>(
-  node: Layout | Widget,
-  stateMap: Map<string, unknown>,
-  options: {
-    renderer: IncrementalRenderer<TNode>;
-    onAction?: (action: WidgetAction) => void;
-    signal?: AbortSignal;                        // checked at every node
-    shouldYield?: (nodesSinceYield: number) => boolean;   // default: every 64 nodes
-    yieldTo?: () => Promise<void>;               // default: @loom/scheduler yieldControl
-  },
-): Promise<TNode>;
-
-interface IncrementalRenderer<TNode> {
-  createContainer(layout: Layout): TNode;
-  createWidget(ctx: WidgetRendererProps): TNode;
-  appendChild(parent: TNode, child: TNode): void;
-}
-#+end_src
-
-#+begin_src typescript
-// A minimal DOM IncrementalRenderer (no React, no virtual tree)
-const domRenderer: IncrementalRenderer<HTMLElement> = {
-  createContainer: (layout) => document.createElement("div"),
-  createWidget: ({ widget, value }) => {
-    const el = document.createElement("div");
-    el.dataset.widgetKind = widget.kind;
-    el.textContent = String(value ?? "");
-    return el;
-  },
-  appendChild: (parent, child) => parent.appendChild(child),
-};
-
-const controller = new AbortController();
-const root = await traverseBlueprintAsync(blueprint.layout, stateMap, {
-  renderer: domRenderer,
-  signal: controller.signal,
-});
-document.body.appendChild(root);
-#+end_src
-
-Yielding is counter-based (deterministic, clock-free) and uses ~yieldControl~ from [[#scheduler][~@loom/scheduler~]] (a macrotask) by default. No production renderer ships against this yet — all current renderers are pull-model — so it is the validated BYOR extension point rather than a supported target.
-
------
-
-* React Renderer
-:PROPERTIES:
-:CUSTOM_ID: react-renderer
-:END:
-
-** ~BlueprintRenderer~
-
-Renders a ~Blueprint~ as live React UI, subscribing to all referenced projections.
-
-#+begin_src typescript
-import { BlueprintRenderer } from "@loom/renderer-react";
-
-function Dashboard({ executionId }: { executionId: string }) {
-  const handleAction = (action: WidgetAction) => {
-    if (action.type === "APPROVE") {
-      runtime.resume(executionId, {
-        eventType: "ApprovalGranted",
-        payload: { approved: true },
-      });
-    }
-  };
-
-  return (
-    <BlueprintRenderer
-      blueprint={IncidentBlueprint}
-      projectionRuntime={projectionRuntime}
-      executionId={executionId}
-      onAction={handleAction}
-    />
-  );
-}
-#+end_src
-
-| Prop                | Type                               | Required | Description                                            |
-|---------------------+------------------------------------+----------+--------------------------------------------------------|
-| ~blueprint~         | ~Blueprint~                        | yes      | The blueprint to render                                |
-| ~projectionRuntime~ | ~ProjectionRuntime~                | yes      | Live projection state source                           |
-| ~executionId~       | ~string~                           | yes      | Scopes all projection state to this execution          |
-| ~onAction~          | ~(action: WidgetAction) => void~   | no       | Called when a widget dispatches an action (e.g. approval button click) |
-| ~fiber~             | ~FiberConfig~                      | no       | Opt-in render-side fiber capabilities; default off (see below)         |
-
-** ~fiber~ — opt-in render capabilities
-
-These capabilities leverage React's *own* fiber scheduler (they mark intent — priority, suspension, granular subscription); Loom does not add a second reconciler. All are *off by default*: when ~fiber~ is falsy the renderer takes the exact current code path (byte-identical output).
-
-#+begin_src typescript
-type FiberConfig = boolean | {
-  granularUpdates?: boolean;   // each widget subscribes to its own binding path;
-                               // only the changed widget re-renders (vs whole tree)
-  suspense?: boolean;          // per-widget <React.Suspense> boundary so an async
-                               // BYOC component can suspend without blanking siblings
-  deferStreaming?: boolean;    // streaming widgets update via startTransition
-};
-// `true` enables all three.
-#+end_src
-
-~suspense~'s fallback is the widget placeholder or skeleton; ~deferStreaming~ applies to widgets of kind ~"StreamingText"~ or with ~props.defer === true~. Enabling any capability implies per-widget mounting (fiber mode), which inherently gives granular subscription.
-
-#+begin_src typescript
-// Turn everything on for one renderer:
-<BlueprintRenderer blueprint={bp} projectionRuntime={rt} executionId={id} fiber />
-
-// Or opt into individual capabilities:
-<BlueprintRenderer
-  blueprint={bp}
-  projectionRuntime={rt}
-  executionId={id}
-  fiber={{ granularUpdates: true, deferStreaming: true }}
-/>
-#+end_src
-
-~fiber~ can also be set as a default on ~LoomProvider~ (~<LoomProvider fiber={…}>~); a ~BlueprintRenderer~ ~fiber~ prop overrides the provider default.
-
-** ~WidgetAction~
-
-#+begin_src typescript
-interface WidgetAction {
-  type: string;       // "APPROVE" | "REJECT" | custom
-  widgetId: string;   // id of the widget that fired the action
-  payload?: unknown;  // action-specific data
-}
-#+end_src
-
-** ~RendererRegistry~ / ~defaultRegistry~
-
-Maps widget ~kind~ strings to React components. Register your own components for custom widget types.
-
-#+begin_src typescript
-import { defaultRegistry } from "@loom/renderer-react";
-
-// Register built-in renderers
-defaultRegistry.register("MetricCard", MetricCardRenderer);
-defaultRegistry.register("Timeline", TimelineRenderer);
-defaultRegistry.register("ApprovalCard", ApprovalCardRenderer);
-defaultRegistry.register("StatusBadge", StatusBadgeRenderer);
-
-// Register a custom renderer
-defaultRegistry.register("HeatMap", HeatMapRenderer);
-#+end_src
-
-Rendering falls back to ~[No renderer for <Kind>]~ when a kind is not registered.
-
-** Writing a custom renderer
-
-A renderer is a standard React functional component:
-
-#+begin_src typescript
-import type { WidgetRendererProps } from "@loom/renderer-react";
-
-const HeatMapRenderer: React.FC<WidgetRendererProps> = ({ widget, value, onAction }) => {
-  const data = value as number[][];  // shape determined by your binding
-  return (
-    <div data-widget-kind="HeatMap" data-widget-id={widget.id}>
-      <h3>{widget.title}</h3>
-      {/* render heat map cells */}
-    </div>
-  );
-};
-
-defaultRegistry.register("HeatMap", HeatMapRenderer);
-#+end_src
-
-~WidgetRendererProps~:
-
-| Prop       | Type                               | Description                                         |
-|------------+------------------------------------+-----------------------------------------------------|
-| ~widget~   | ~Widget~                           | Full widget definition including ~props~ and ~binding~ |
-| ~value~    | ~unknown~                          | Resolved value from the projection binding          |
-| ~onAction~ | ~(action: WidgetAction) => void~   | Dispatch an action to the host application          |
-
-** ~LoomProvider~
-
-Context provider that shares ~workflowRuntime~ and ~projectionRuntime~ with all descendant components via ~useLoom()~. Optionally restores projection state from a server-side serialized snapshot synchronously on mount.
-
-#+begin_src typescript
-import { LoomProvider } from "@loom/renderer-react";
-
-// Minimal — share runtimes via context
-createRoot(root).render(
-  <LoomProvider workflowRuntime={workflowRuntime} projectionRuntime={projectionRuntime}>
-    <App />
-  </LoomProvider>
-);
-
-// Full — restore from server-serialized state (no EventStore round-trip on client)
-createRoot(root).render(
-  <LoomProvider
-    workflowRuntime={workflowRuntime}
-    projectionRuntime={projectionRuntime}
-    serializedExecutionState={window.__LOOM_EXEC__}
-    serializedProjectionState={window.__LOOM_PROJ__}
-  >
-    <App />
-  </LoomProvider>
-);
-#+end_src
-
-| Prop                         | Type                  | Required | Description                                               |
-|------------------------------+-----------------------+----------+-----------------------------------------------------------|
-| ~workflowRuntime~            | ~WorkflowRuntime~     | yes      | The workflow runtime instance                             |
-| ~projectionRuntime~          | ~ProjectionRuntime~   | yes      | The projection runtime instance                           |
-| ~serializedExecutionState~   | ~string~              | no       | JSON string from ~serializeExecution()~ on the server     |
-| ~serializedProjectionState~  | ~string~              | no       | JSON string from ~serializeProjections()~ on the server   |
-| ~fiber~                      | ~FiberConfig~         | no       | Default render-side fiber config for descendant ~BlueprintRenderer~s; a renderer's own ~fiber~ prop overrides it (see [[#react-renderer][fiber capabilities]]) |
-
-When ~serializedProjectionState~ is provided, ~LoomProvider~ calls ~projectionRuntime.seedState()~ for each entry in the snapshot *before* the first child render — no empty-state flash.
-
-** ~useLoom~
-
-Accesses the ~LoomProvider~ context from any descendant component. Throws if called outside a ~<LoomProvider>~.
-
-#+begin_src typescript
-import { useLoom } from "@loom/renderer-react";
-
-function MyComponent() {
-  const { workflowRuntime, projectionRuntime, preloadedExecutionState } = useLoom();
-
-  const start = () => workflowRuntime.start(MyFlow, input);
-
-  return <button onClick={start}>Start</button>;
-}
-#+end_src
-
-| Field                    | Type                    | Description                                                    |
-|--------------------------+-------------------------+----------------------------------------------------------------|
-| ~workflowRuntime~        | ~WorkflowRuntime~       | Shared runtime from provider                                   |
-| ~projectionRuntime~      | ~ProjectionRuntime~     | Shared runtime from provider                                   |
-| ~preloadedExecutionState~| ~ExecutionState \| null~ | Deserialized from ~serializedExecutionState~, or null         |
-
-** ~useProjection~ hook
-
-Subscribe to a single projection in any React component:
-
-#+begin_src typescript
-import { useProjection } from "@loom/renderer-react";
-
-function MetricsPanel({ executionId }: { executionId: string }) {
-  const metrics = useProjection<MetricsState>(
-    projectionRuntime,
-    "metrics",
-    executionId
-  );
-
-  return <div>CPU: {metrics.cpu?.current ?? "—"}</div>;
-}
-#+end_src
-
-The hook initialises from ~getState()~ and re-renders on every projection update.
-
-** ~useDeferredProjection~ hook
-
-Like ~useProjection~, but wraps streamed updates in ~startTransition~ so they are treated as *non-urgent*: urgent work (user input, eager-rendered projections) can interrupt a low-priority re-render mid-flight. The initial subscription read is still urgent.
-
-#+begin_src typescript
-import { useDeferredProjection } from "@loom/renderer-react";
-
-function LiveTokens({ executionId }: { executionId: string }) {
-  const stream = useDeferredProjection<StreamState>(projectionRuntime, "answer", executionId);
-  return <pre>{stream.text}</pre>;
-}
-#+end_src
-
-Use *only* for high-frequency, low-urgency projections (streaming text, live metrics); keep urgent projections (an approval result) on ~useProjection~ to avoid momentarily showing stale UI. Pairs well with ~InMemoryProjectionRuntime({ coalesceNotifications: true })~.
-
-** ~useWidgetValue~ hook
-
-Tear-free, *path-granular* selector for a single widget, built on ~useSyncExternalStore~. It subscribes to the widget's bound projection but re-renders only when the widget's own slice (~binding.path~) actually changes — so a projection update re-renders only the widgets whose values changed, not the whole blueprint. This is the subscription primitive behind ~fiber={{ granularUpdates: true }}~.
-
-#+begin_src typescript
-import { useWidgetValue } from "@loom/renderer-react";
-
-function Cell({ widget, executionId }: { widget: Widget; executionId: string }) {
-  const value = useWidgetValue<number>(projectionRuntime, widget, executionId);
-  return <span>{value ?? "—"}</span>;
-}
-#+end_src
-
-| Parameter     | Type                      | Description                                                     |
-|---------------+---------------------------+-----------------------------------------------------------------|
-| ~runtime~     | ~ProjectionRuntime~       | Projection state source                                         |
-| ~widget~      | ~Widget~                  | Widget whose ~binding~ slice is selected                        |
-| ~executionId~ | ~string~                  | Scopes projection state to this execution                       |
-| ~isEqual~     | ~(a, b) => boolean~       | Optional equality for the resolved slice; defaults to ~Object.is~ |
-
-** ~useDeferredWidgetValue~ hook
-
-The ~startTransition~-based variant of ~useWidgetValue~ for high-frequency streaming widgets — path-granular, but subsequent updates are deferred so they never block urgent work. (~startTransition~ cannot be layered on ~useSyncExternalStore~, so this is a separate ~useState~-based implementation with its own ~Object.is~ slice guard.)
-
-#+begin_src typescript
-import { useDeferredWidgetValue } from "@loom/renderer-react";
-
-function StreamingCell({ widget, executionId }: { widget: Widget; executionId: string }) {
-  const text = useDeferredWidgetValue<string>(projectionRuntime, widget, executionId);
-  return <p>{text}</p>;
-}
-#+end_src
-
-Same trade-off as ~useDeferredProjection~: deferred updates can momentarily tear relative to eager widgets, so reserve it for high-frequency, low-urgency widgets.
-
------
-
-* ~@loom/compiler~
-:PROPERTIES:
-:CUSTOM_ID: compiler
-:END:
-
-Build-time optimization package. Install as a dev dependency; no compiler code is included in the production bundle.
-
-#+begin_src bash
-pnpm add -D @loom/compiler
-#+end_src
-
-** ~loomPlugin()~ — Vite Plugin
-
-#+begin_src typescript
-import { loomPlugin } from "@loom/compiler";
-import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
-
-export default defineConfig({
-  plugins: [loomPlugin(), react()],  // loomPlugin must be first
-});
-#+end_src
-
-The plugin runs on all ~.ts~/.tsx~ files and applies three transforms:
-1. Rewrites ~handler$(fn)~ → ~() => import("\0loom:chunk:<id>_<hash>")~
-2. Serves virtual chunks via ~resolveId~ + ~load~ hooks
-3. Emits ~loom-manifest.json~ in ~generateBundle~
-
-** ~transformFile(source, path, state)~
-
-Programmatic transform — applies the same AST rewrite as the Vite plugin.
-
-#+begin_src typescript
-import { transformFile } from "@loom/compiler";
-import type { PluginState } from "@loom/compiler";
-
-const state: PluginState = {
-  chunks: new Map(), steps: new Map(),
-  stepsByVarName: new Map(), flows: new Map(),
-};
-
-const result = transformFile(sourceCode, "/abs/path/file.ts", state);
-// result: { code: string, map: string } | null (null if no handler$ found)
-#+end_src
-
-** ~buildManifest(state, outDir?)~
-
-Generates the ~LoomManifest~ object from the accumulated plugin state.
-
-#+begin_src typescript
-import { buildManifest, printWarnings } from "@loom/compiler";
-
-const manifest = buildManifest(state, "dist");
-printWarnings(manifest);
-// → { version: "1", flows: { "my-flow": { steps, chunkMap, warnings } } }
-#+end_src
-
-** Serialization Utilities (re-exported from ~@loom/workflow-runtime~)
-
-#+begin_src typescript
-import {
-  serializeExecution,
-  deserializeExecution,
-  serializeProjections,
-  deserializeProjections,
-} from "@loom/workflow-runtime";
-#+end_src
-
-| Function                  | Signature                                                           | Description                                     |
-|---------------------------+---------------------------------------------------------------------+-------------------------------------------------|
-| ~serializeExecution~      | ~(state: ExecutionState) => string~                                 | JSON-serializes full execution state            |
-| ~deserializeExecution~    | ~(s: string) => ExecutionState~                                     | Parses and validates; throws on bad input       |
-| ~serializeProjections~    | ~(states: Record<string, unknown>, executionId: string) => string~  | Bundles all projection states into one snapshot |
-| ~deserializeProjections~  | ~(s: string) => { executionId: string; states: Record<string, unknown> }~ | Parses the projection snapshot           |
-
-** CLI — ~loom-compile~
-
-#+begin_src bash
-# Transform src/ → dist-loom/
-npx loom-compile src/ dist-loom/
-#+end_src
-
-Walks ~.ts~/.tsx~ files, applies transforms, writes output + chunks + ~loom-manifest.json~. Equivalent to a Vite build without the bundler step.
-
-** ~LoomManifest~ shape
-
-#+begin_src typescript
-interface LoomManifest {
-  version: "1";
-  flows: Record<string, {
-    version: string;
-    steps: string[];
-    chunkMap: Record<string, string>;  // stepId → output file path
-    suspendPoints: string[];
-    warnings: string[];
-  }>;
-}
-#+end_src
-
------
-
-* ~@loom/telemetry~
-:PROPERTIES:
-:CUSTOM_ID: telemetry
-:END:
-
-Structured observability for Loom workflows. Import from ~@loom/telemetry~; this package is not re-exported from ~@loom/sdk~ because it is optional.
-
-#+begin_src typescript
-import {
-  createTelemetryHook,
-  ConsoleTelemetryAdapter,
-  composeAdapters,
-  type TelemetryAdapter,
-  type FlowTelemetryInfo,
-  type StepTelemetryInfo,
-} from "@loom/telemetry";
-#+end_src
-
-** ~createTelemetryHook(adapter)~
-
-#+begin_src typescript
-function createTelemetryHook(adapter: TelemetryAdapter): (event: EventEnvelope) => void
-#+end_src
-
-Returns a synchronous event handler that translates raw ~EventEnvelope~ objects into structured telemetry calls on ~adapter~. Pass the returned function as ~WorkflowRuntimeDeps.onEvent~ (composing with any existing handler using a simple closure):
-
-#+begin_src typescript
-const telemetryHook = createTelemetryHook(ConsoleTelemetryAdapter);
-
-const runtime = new WorkflowRuntime({
-  eventStore,
-  snapshotStore,
-  effectRuntime,
-  onEvent: (e) => {
-    projectionRuntime.handleEvent(e);
-    telemetryHook(e);
-  },
-});
-#+end_src
-
-The hook tracks per-execution state internally (flow info, step start times, attempt counters). Multiple hooks from separate ~createTelemetryHook~ calls do not share state — create one per ~WorkflowRuntime~ instance.
-
-** ~TelemetryAdapter~
-
-#+begin_src typescript
-interface TelemetryAdapter {
-  onFlowStart?(info: FlowTelemetryInfo): void;
-  onFlowComplete?(info: FlowTelemetryInfo): void;
-  onFlowFail?(info: FlowTelemetryInfo): void;
-  onFlowSuspend?(info: FlowTelemetryInfo): void;
-  onFlowResume?(info: FlowTelemetryInfo): void;
-  onStepStart?(info: StepTelemetryInfo): void;
-  onStepComplete?(info: StepTelemetryInfo): void;
-  onStepFail?(info: StepTelemetryInfo): void;
-  onStepRetry?(info: StepTelemetryInfo): void;
-}
-#+end_src
-
-All methods are optional. Implement only the events you need. The adapter is a plain object, not a class.
-
-** ~FlowTelemetryInfo~
-
-#+begin_src typescript
-interface FlowTelemetryInfo {
-  executionId: string;
-  workflowId: string;
-  startedAt: number;        // Unix ms
-  completedAt?: number;     // present on complete/fail/suspend
-  durationMs?: number;      // computed — completedAt - startedAt
-  status: "running" | "completed" | "failed" | "suspended";
-  stepCount: number;        // incremented on first attempt of each step
-  suspendCount: number;     // incremented on each EXECUTION_SUSPENDED
-}
-#+end_src
-
-~durationMs~ is computed by the hook so adapters do not need to do their own timestamp arithmetic. On ~EXECUTION_RESUMED~, ~completedAt~ and ~durationMs~ are cleared and ~status~ resets to ~"running"~, ensuring that the reported duration always reflects total wall-clock time across all suspend legs.
-
-** ~StepTelemetryInfo~
-
-#+begin_src typescript
-interface StepTelemetryInfo {
-  executionId: string;
-  workflowId: string;
-  stepId: string;
-  attempt: number;          // 1-based; incremented on each retry
-  startedAt: number;
-  completedAt?: number;
-  durationMs?: number;
-  status: "running" | "completed" | "failed" | "retrying";
-  input?: unknown;          // from STEP_STARTED payload
-  output?: unknown;         // from STEP_COMPLETED payload
-  error?: unknown;          // from STEP_FAILED payload
-}
-#+end_src
-
-** ~ConsoleTelemetryAdapter~
-
-A zero-dependency adapter that writes structured, column-aligned output to ~console.log~. Suitable for development and CLI workflows. No configuration required — use it directly as an adapter:
-
-#+begin_src typescript
-import { ConsoleTelemetryAdapter, createTelemetryHook } from "@loom/telemetry";
-
-const hook = createTelemetryHook(ConsoleTelemetryAdapter);
-#+end_src
-
-Sample output:
-
-#+begin_example
-[loom] FLOW_START      exec=01JNXXX  workflow=investigate-incident
-[loom] STEP_START      exec=01JNXXX  step=fetch-metrics   attempt=1
-[loom] STEP_DONE       exec=01JNXXX  step=fetch-metrics   duration=687ms  attempt=1
-[loom] FLOW_SUSPEND    exec=01JNXXX  workflow=investigate-incident  duration=1204ms  suspend#=1
-[loom] STEP_DONE       exec=01JNXXX  step=apply-remediation  duration=615ms  attempt=1
-[loom] FLOW_DONE       exec=01JNXXX  workflow=investigate-incident  duration=1841ms  steps=3
-#+end_example
-
-** ~composeAdapters(...adapters)~
-
-#+begin_src typescript
-function composeAdapters(...adapters: TelemetryAdapter[]): TelemetryAdapter
-#+end_src
-
-Returns a new ~TelemetryAdapter~ that forwards all method calls to every adapter in the argument list. Use to send telemetry to multiple sinks simultaneously:
-
-#+begin_src typescript
-const hook = createTelemetryHook(
-  composeAdapters(ConsoleTelemetryAdapter, datadogAdapter, otelAdapter)
-);
-#+end_src
-
------
-
-* ~@loom/llm~
-:PROPERTIES:
-:CUSTOM_ID: llm
-:END:
-
-Provider-agnostic LLM access. A ~LlmProvider~ is the single seam between Loom and any language-model backend; the shipped providers speak to their HTTP APIs through the global ~fetch~, so no vendor SDK is pulled into your bundle. Import from ~@loom/llm~.
-
-#+begin_src typescript
-import {
-  AnthropicProvider,
-  OpenAiProvider,
-  createLlmEffect,
-  type LlmProvider,
-  type LlmRequest,
-  type LlmResponse,
-} from "@loom/llm";
-#+end_src
-
-** Message & request types
-
-The wire-level types are provider-independent. A provider maps them to and from its own API shape.
-
-#+begin_src typescript
-interface LlmMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
-}
-
-interface LlmToolSpec {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;   // raw JSON Schema
-}
-
-interface LlmRequest {
-  messages: LlmMessage[];
-  tools?: LlmToolSpec[];
-  system?: string;
-  maxTokens?: number;
-  temperature?: number;
-  signal?: AbortSignal;   // forwarded to the underlying fetch; aborts the request
-}
-
-interface LlmToolCall {
-  id: string;
-  name: string;
-  input: unknown;
-}
-
-interface LlmResponse {
-  content: string;
-  toolCalls?: LlmToolCall[];
-  stopReason: "end_turn" | "tool_use" | "max_tokens";
-  usage?: { inputTokens: number; outputTokens: number };
-}
-
-interface LlmStreamChunk {
-  delta: string;
-  done: boolean;
-}
-#+end_src
-
-** ~LlmProvider~
-
-The interface every backend implements. ~complete~ is required; ~stream~ is optional and yields incremental text deltas.
-
-#+begin_src typescript
-interface LlmProvider {
-  complete(request: LlmRequest): Promise<LlmResponse>;
-  stream?(request: LlmRequest): AsyncIterable<LlmStreamChunk>;
-}
-#+end_src
-
-** ~AnthropicProvider~
-
-Calls the Anthropic Messages API over the global ~fetch~ — no SDK dependency.
-
-#+begin_src typescript
-class AnthropicProvider implements LlmProvider {
-  constructor(config?: { apiKey?: string; model?: string; baseUrl?: string });
-}
-
-const provider = new AnthropicProvider();   // model "claude-opus-4-8", apiKey from env
-#+end_src
-
-| Option    | Type     | Default                          | Description                       |
-|-----------+----------+----------------------------------+-----------------------------------|
-| ~apiKey~  | ~string~ | ~process.env.ANTHROPIC_API_KEY~  | API credential                    |
-| ~model~   | ~string~ | ~"claude-opus-4-8"~              | Model id                          |
-| ~baseUrl~ | ~string~ | Anthropic API endpoint           | Override for proxies / gateways   |
-
-** ~OpenAiProvider~
-
-Calls the OpenAI Chat Completions API, also via the global ~fetch~. Swapping providers is a one-line change — anywhere a ~LlmProvider~ is accepted, drop in ~OpenAiProvider~ instead.
-
-#+begin_src typescript
-class OpenAiProvider implements LlmProvider {
-  constructor(config?: { apiKey?: string; model?: string; baseUrl?: string });
-}
-
-const provider = new OpenAiProvider();   // model "gpt-4o", apiKey from env
-#+end_src
-
-| Option    | Type     | Default                       | Description                     |
-|-----------+----------+-------------------------------+---------------------------------|
-| ~apiKey~  | ~string~ | ~process.env.OPENAI_API_KEY~  | API credential                  |
-| ~model~   | ~string~ | ~"gpt-4o"~                    | Model id                        |
-| ~baseUrl~ | ~string~ | OpenAI API endpoint           | Override for proxies / gateways |
-
-** ~createLlmEffect(options)~
-
-Wraps a provider as a registrable ~LlmEffect~. You supply ~buildRequest~ to turn the step input into an ~LlmRequest~; ~parseResponse~ maps the response back into your step's output shape (defaults to returning ~response.content~).
-
-#+begin_src typescript
-function createLlmEffect<TIn = string, TOut = string>(options: {
-  provider: LlmProvider;
-  buildRequest: (input: TIn, ctx: EffectContext) => LlmRequest;
-  parseResponse?: (response: LlmResponse, input: TIn) => TOut;   // default: r => r.content
-}): LlmEffect<TIn, TOut>;
-#+end_src
-
-#+begin_src typescript
-const summarize = createLlmEffect<{ logs: string[] }, { summary: string }>({
-  provider: new AnthropicProvider(),
-  buildRequest: (input) => ({
-    messages: [{ role: "user", content: `Summarize:\n${input.logs.join("\n")}` }],
-    maxTokens: 512,
-  }),
-  parseResponse: (res) => ({ summary: res.content }),
-});
-
-effectRuntime.register("summarize-logs", summarize);
-#+end_src
-
------
-
-* ~@loom/agent~
-:PROPERTIES:
-:CUSTOM_ID: agent
-:END:
-
-Runs an ~AgentDefinition~ (built with ~agent$~) as a tool-using loop: the provider is prompted with the agent's tools; while it returns ~stopReason: "tool_use"~ the runner executes each requested tool through the ~EffectRuntime~, appends the results, and re-prompts — until the model replies ~"end_turn"~ or ~maxIterations~ is reached. Import from ~@loom/agent~.
-
-#+begin_src typescript
-import { AgentRunner, agentStep$, SkillRegistry, deterministicSkillSelector } from "@loom/agent";
-#+end_src
-
-** I/O types
-
-#+begin_src typescript
-interface AgentInput {
-  prompt: string;
-  context?: unknown;
-}
-
-interface AgentStep {
-  iteration: number;
-  toolName: string;
-  toolInput: unknown;
-  toolOutput: unknown;
-}
-
-interface AgentOutput {
-  content: string;
-  toolCallLog: AgentStep[];
-  iterations: number;
-}
-#+end_src
-
-** ~AgentRunner~
-
-#+begin_src typescript
-interface AgentConfig {
-  definition: AgentDefinition;   // from @loom/core, made via agent$()
-  provider: LlmProvider;
-  effectRuntime: EffectRuntime;
-  maxIterations?: number;        // default 10
-  systemPrompt?: string;
-  parallelTools?: boolean | number;   // run a turn's tool calls concurrently (default false)
-  skills?: SkillRegistry;             // progressively-disclosed expertise (optional)
-  skillSelector?: SkillSelector;      // defaults to deterministicSkillSelector()
-}
-
-class AgentRunner {
-  constructor(config: AgentConfig);
-  run(input: AgentInput, ctx: EffectContext): Promise<AgentOutput>;
-  asEffect(): LlmEffect<AgentInput, AgentOutput>;
-}
-#+end_src
-
-During ~run~, the runner emits an ~AGENT_TOOL_CALL~ event (via ~ctx.emit~) for every tool it invokes and a single ~AGENT_COMPLETED~ event when the loop finishes. ~asEffect()~ returns the same behaviour wrapped as an ~LlmEffect~, ready to register on an ~EffectRuntime~.
-
-*Parallel tool calls.* By default the runner executes a model turn's tool calls sequentially. Set ~parallelTools: true~ to run them all concurrently, or ~parallelTools: <n>~ to cap concurrency at ~n~ (via ~parallelLimit~ from [[#scheduler][~@loom/scheduler~]]). Regardless of setting, tool *results*, the emitted ~AGENT_TOOL_CALL~ events, and the messages fed back to the model are *always* in the model's tool-call order — so replay stays deterministic even though execution interleaves.
-
-*Cancellation.* The runner calls ~throwIfAborted(ctx.signal)~ before each LLM round-trip and before each tool call, and forwards ~ctx.signal~ to ~provider.complete~ (as ~LlmRequest.signal~) and to ~parallelLimit~. So cancelling the owning execution (~ExecutionHandle.cancel()~) stops an agent loop promptly.
-
-#+begin_src typescript
-const runner = new AgentRunner({
-  definition: InvestigatorAgent,
-  provider: new AnthropicProvider(),
-  effectRuntime,
-  parallelTools: 4,   // up to 4 tool calls at once; results still in tool-call order
-});
-#+end_src
-
-~AgentConfig~ also accepts an optional ~memory?: MemoryRuntime~. When the agent's ~definition.memoryId~ is set and a ~MemoryRuntime~ is supplied, ~run~ recalls prior entries into the prompt and writes the user prompt + assistant answer back afterward; ~AgentInput~ accepts ~memoryScope?: string~ (defaulting to ~ctx.executionId~) to scope recall per conversation. See [[#memory][~@loom/memory~]].
-
-#+begin_src typescript
-const runner = new AgentRunner({
-  definition: InvestigatorAgent,
-  provider: new AnthropicProvider(),
-  effectRuntime,
-  maxIterations: 8,
-  systemPrompt: "You are an incident investigator.",
-});
-
-const result = await runner.run({ prompt: "Diagnose incident cpu-001" }, ctx);
-// result: { content, toolCallLog: AgentStep[], iterations }
-#+end_src
-
-** ~agentStep$(config)~
-
-Wraps an agent as an ordinary ~StepDefinition~ (of kind ~"llm"~) so it can be dropped into any flow and called with ~ctx.run~.
-
-#+begin_src typescript
-function agentStep$(config: {
-  id: string;
-  name?: string;
-  agent: AgentDefinition;
-  provider: LlmProvider;
-  effectRuntime: EffectRuntime;
-  maxIterations?: number;
-  systemPrompt?: string;
-}): StepDefinition<AgentInput, AgentOutput>;
-#+end_src
-
-#+begin_src typescript
-const InvestigateStep = agentStep$({
-  id: "investigate",
-  agent: InvestigatorAgent,
-  provider: new AnthropicProvider(),
-  effectRuntime,
-});
-
-// In a runner:
-const report = await ctx.run(InvestigateStep, { prompt: "Diagnose incident cpu-001" });
-#+end_src
-
-** Skills — ~SkillRegistry~ / ~SkillSelector~
-
-When ~AgentConfig.skills~ is supplied, ~run~ selects the skills relevant to the turn *before* the loop, emits a ~SKILLS_SELECTED~ event, lazy-loads only those instruction bodies, appends them to the system prompt, and adds their tools to the model's menu (the agent's own tools win on id collision). Skills are defined with [[#builders][~skill$~]] and grouped in a registry.
-
-#+begin_src typescript
-const skills = new SkillRegistry()
-  .register(CpuRunbook)
-  .register(ReplicaLagRunbook);
-
-const runner = new AgentRunner({
-  definition: InvestigatorAgent,
-  provider,
-  effectRuntime,
-  systemPrompt: "You are an SRE.",
-  skills,                                   // selection is deterministic by default
-  // skillSelector: llmSkillSelector(provider),  // opt-in model-driven selection
-});
-#+end_src
-
-| Symbol | Purpose |
-|--------+---------|
-| ~SkillRegistry~ | Holds ~SkillDefinition~s; ~register~ / ~get~ / ~all~ / ~ids~ / ~find(query)~ (keyword scorer over id/name/description/tags) |
-| ~SkillSelector~ | ~select(input, registry): Promise<string[]>~ — returns the relevant skill ids |
-| ~deterministicSkillSelector(max?)~ | Default. Top-N by ~find()~ score — stable for the same input, so a replayed run reconstructs the same prompt |
-| ~llmSkillSelector(provider, max?)~ | Opt-in. The model picks ids from the description menu. Same non-determinism as the ReAct loop; the ~SKILLS_SELECTED~ event is the audit/record hook |
-
-*Replay note.* Because Loom re-executes the agent loop on replay and does not record the LLM's outputs, *which* skills load must be replay-stable — hence the deterministic default. The emitted ~SKILLS_SELECTED~ event records the choice for observability and a future record/replay path.
-
------
-
-* ~@loom/mcp~
-:PROPERTIES:
-:CUSTOM_ID: mcp
-:END:
-
-Client for the Model Context Protocol. Connect to an MCP server over HTTP, discover its tools, and register them into an ~EffectRuntime~ so agents and flows can call them like any other tool. Import from ~@loom/mcp~.
-
-#+begin_src typescript
-import { McpClient, mcpTool$ } from "@loom/mcp";
-#+end_src
-
-** Types
-
-#+begin_src typescript
-interface McpServerConfig {
-  transport: "http";
-  url: string;
-  headers?: Record<string, string>;
-}
-
-interface McpTool {
-  name: string;
-  description?: string;
-  inputSchema: Record<string, unknown>;
-}
-
-interface MappedMcpTool {
-  definition: ToolDefinition;
-  effect: ToolEffect;
-  jsonInputSchema: Record<string, unknown>;
-}
-#+end_src
-
-MCP tools validate their own inputs, so each mapped ~ToolDefinition~ uses ~z.unknown()~ as its input schema; the raw JSON Schema advertised by the server is preserved on ~MappedMcpTool.jsonInputSchema~ (useful when forwarding tool specs to an LLM).
-
-** ~McpClient~
-
-#+begin_src typescript
-class McpClient {
-  constructor(config: McpServerConfig);
-  connect(): Promise<void>;                                  // JSON-RPC "initialize" handshake
-  listTools(): Promise<MappedMcpTool[]>;                     // JSON-RPC "tools/list"
-  registerInto(effectRuntime: EffectRuntime): Promise<ToolDefinition[]>;  // registers each as a ToolEffect
-  callTool(name: string, input: unknown): Promise<unknown>;  // JSON-RPC "tools/call"
-  disconnect(): Promise<void>;
-}
-#+end_src
-
-| Method          | Description                                                                   |
-|-----------------+-------------------------------------------------------------------------------|
-| ~connect~       | Performs the JSON-RPC ~initialize~ handshake                                  |
-| ~listTools~     | Lists server tools (~tools/list~) mapped to ~MappedMcpTool~                   |
-| ~registerInto~  | Registers each tool as a ~ToolEffect~; returns the resulting ~ToolDefinition[]~ |
-| ~callTool~      | Invokes a tool directly (~tools/call~)                                        |
-| ~disconnect~    | Closes the connection                                                         |
-
-#+begin_src typescript
-const client = new McpClient({ transport: "http", url: "https://tools.example.com/mcp" });
-await client.connect();
-const toolDefs = await client.registerInto(effectRuntime);
-
-// Hand the discovered tools to an agent:
-const ResearchAgent = agent$({ id: "researcher", name: "Researcher", tools: toolDefs });
-#+end_src
-
-** ~mcpTool$(client, toolName)~
-
-Builds a ~StepDefinition~ that calls a single MCP tool through the client. Because MCP tools self-validate, the step's schemas are ~unknown~.
-
-#+begin_src typescript
-function mcpTool$(client: McpClient, toolName: string): StepDefinition<unknown, unknown>;
-
-const SearchStep = mcpTool$(client, "web_search");
-const hits = await ctx.run(SearchStep, { query: "loom framework" });
-#+end_src
-
------
-
-* ~@loom/a2a~
-:PROPERTIES:
-:CUSTOM_ID: a2a
-:END:
-
-Agent-to-Agent interoperability. Expose a Loom flow as an A2A-compatible HTTP agent, call remote agents from inside a flow via an effect, and register an external A2A agent (Google ADK, a LangGraph/CrewAI A2A shim, or another Loom service) as a first-class Loom tool. Import from ~@loom/a2a~.
-
-#+begin_src typescript
-import {
-  createA2AClientEffect,
-  createA2AServer,
-  toAgentCard,
-  A2APeerClient,
-  fetchAgentCard,
-} from "@loom/a2a";
-#+end_src
-
-** Types
-
-#+begin_src typescript
-interface AgentSkill {
-  id: string;
-  name: string;
-  description?: string;
-  inputModes?: string[];
-  outputModes?: string[];
-}
-
-interface AgentCard {
-  name: string;
-  description?: string;
-  url: string;
-  version: string;
-  capabilities: { streaming?: boolean };
-  skills: AgentSkill[];
-}
-
-interface A2AMessagePart { type: "text"; text: string; }
-interface A2AMessage { role: "user" | "agent"; parts: A2AMessagePart[]; }
-
-interface A2ATask {
-  id: string;
-  message: A2AMessage;
-  metadata?: Record<string, unknown>;
-}
-
-type A2ATaskStatus = "submitted" | "working" | "completed" | "failed";
-
-interface A2ATaskResult {
-  id: string;
-  status: A2ATaskStatus;
-  artifacts?: Array<{ name?: string; parts: A2AMessagePart[] }>;
-  error?: string;
-}
-#+end_src
-
-** ~createA2AClientEffect(agentUrl, options?)~
-
-Returns an ~A2AEffect~ that submits a task to a remote agent (~POST {agentUrl}/tasks/send~) and polls ~GET {agentUrl}/tasks/{id}~ until the task is ~completed~ or ~failed~. Uses the global ~fetch~.
-
-#+begin_src typescript
-function createA2AClientEffect(
-  agentUrl: string,
-  options?: { timeoutMs?: number; headers?: Record<string, string>; pollIntervalMs?: number }
-): A2AEffect<A2ATask, A2ATaskResult>;
-
-effectRuntime.register("remote-analyst", createA2AClientEffect("https://analyst.example.com"));
-#+end_src
-
-** ~fetchAgentCard(url, headers?)~
-
-Fetches a remote agent's ~AgentCard~ from ~GET {url}/.well-known/agent.json~. Discovery building block used by ~A2APeerClient~; call it directly when you only need the card.
-
-#+begin_src typescript
-function fetchAgentCard(url: string, headers?: Record<string, string>): Promise<AgentCard>;
-#+end_src
-
-** ~A2APeerClient~
-
-The outbound registrar — the A2A analogue of ~McpClient.registerInto~. It discovers a remote agent, wraps ~createA2AClientEffect~ in a friendlier ~{ prompt } → { content }~ adapter, and registers it as a ~kind: "a2a"~ Loom tool so agents, steps, and the planner can call it. This is how you consume an external framework (ADK / LangGraph / CrewAI) as a peer: the remote side just has to answer the three A2A routes.
-
-#+begin_src typescript
-interface A2APeerConfig {
-  url: string;                       // base URL of the remote A2A agent
-  headers?: Record<string, string>;  // auth etc.; sent on discovery and every call
-  timeoutMs?: number;
-  pollIntervalMs?: number;
-  toolId?: string;                   // defaults to a slug of the card name
-}
-
-interface A2APeerInput  { prompt: string; context?: unknown }
-interface A2APeerOutput { content: string; raw: A2ATaskResult }
-
-class A2APeerClient {
-  constructor(config: A2APeerConfig);
-  discover(): Promise<AgentCard>;                       // fetch + cache the card
-  map(): Promise<MappedA2APeer>;                        // card + ToolDefinition + Effect
-  registerInto(
-    effectRuntime: EffectRuntime,
-    registry?: PeerAgentRegistrar,                      // optional: expose to planner/intent
-  ): Promise<ToolDefinition<A2APeerInput, A2APeerOutput>>;
-}
-#+end_src
-
-#+begin_src typescript
-// Register a remote agent as a Loom tool, then hand it to a local agent.
-const peer = new A2APeerClient({ url: "http://localhost:9999" });
-const tool = await peer.registerInto(effectRuntime, registry);
-const orchestrator = agent$({ id: "orchestrator", name: "Orchestrator", tools: [tool] });
-#+end_src
-
-The optional ~registry~ accepts any object with ~AgentRegistry~'s ~register(definition, card?)~ shape (declared structurally as ~PeerAgentRegistrar~, so ~@loom/a2a~ takes no dependency on ~@loom/registry~). The adapter derives the ~A2ATask~ id from ~executionId:stepId~ so replays stay deterministic. See ~examples/a2a-mesh~ for a runnable bidirectional demo.
-
-** ~createA2AServer(workflowRuntime, flow, agentCard, options?)~
-
-Starts a Node ~http.Server~ that fronts a registered flow as an A2A agent. The ~agentCard~ omits ~url~ (the server fills it in from its bound address).
-
-#+begin_src typescript
-function createA2AServer(
-  workflowRuntime: WorkflowRuntime,
-  flow: RegisteredFlow,
-  agentCard: Omit<AgentCard, "url">,
-  options?: { port?: number }
-): { start(): Promise<void>; stop(): Promise<void>; readonly url: string };
-#+end_src
-
-| Route                          | Method | Description                                                     |
-|--------------------------------+--------+-----------------------------------------------------------------|
-| ~/.well-known/agent.json~      | GET    | Returns the ~AgentCard~ (with ~url~ populated)                  |
-| ~/tasks/send~                  | POST   | Starts the flow with the task; returns ~{ id }~                 |
-| ~/tasks/:id~                   | GET    | Maps ~ExecutionStatus~ → ~A2ATaskStatus~ and returns the result |
-
-#+begin_src typescript
-const server = createA2AServer(
-  workflowRuntime,
-  InvestigateIncidentRegisteredFlow,
-  {
-    name: "Incident Investigator",
-    version: "1.0.0",
-    capabilities: { streaming: false },
-    skills: [{ id: "investigate", name: "Investigate incident" }],
-  },
-  { port: 4100 }
-);
-
-await server.start();
-console.log("A2A agent listening at", server.url);
-#+end_src
-
-** ~toAgentCard(agent, options?)~
-
-Derives an ~AgentCard~ from an ~agent$~ definition, so the card is not hand-authored alongside the agent. ~name~/~description~ come from the definition; ~version~, ~capabilities~, and ~skills~ come from the (optional) card metadata on the agent, falling back to ~options~ then to defaults (~version~ ~"1.0.0"~, ~capabilities~ ~{ streaming: false }~, ~skills~ ~[]~). ~url~ defaults to ~loom+inproc://{agent.id}~ and is overridable — an ~createA2AServer~ replaces it with the bound address at request time regardless.
-
-#+begin_src typescript
-function toAgentCard(
-  agent: AgentDefinition,
-  options?: { url?: string; version?: string; capabilities?: { streaming?: boolean } }
-): AgentCard;
-
-// Register a fleet's cards straight from their definitions — one source of truth.
-const AGENT_CARDS = Object.fromEntries(
-  FLEET.map((agent) => [agent.id, toAgentCard(agent)])
-);
-#+end_src
-
-Definition metadata takes precedence over ~options~; ~options~ only supply fallbacks and the deployment ~url~.
-
------
-
-* ~@loom/registry~
-:PROPERTIES:
-:CUSTOM_ID: registry
-:END:
-
-An in-process directory of agent definitions and their optional cards. Useful for discovery in multi-agent systems and for advertising agents over A2A. Import from ~@loom/registry~.
-
-#+begin_src typescript
-import { AgentRegistry, globalAgentRegistry } from "@loom/registry";
-#+end_src
-
-** Types
-
-#+begin_src typescript
-interface RegisteredAgentCard {
-  name: string;
-  description?: string;
-  url?: string;
-  version: string;
-  capabilities?: { streaming?: boolean };
-  skills?: Array<{ id: string; name: string; description?: string }>;
-}
-
-interface RegisteredAgent {
-  definition: AgentDefinition;
-  card?: RegisteredAgentCard;
-}
-#+end_src
-
-** ~AgentRegistry~
-
-#+begin_src typescript
-class AgentRegistry {
-  register(definition: AgentDefinition, card?: RegisteredAgentCard): this;
-  get(id: string): RegisteredAgent | undefined;
-  has(id: string): boolean;
-  all(): RegisteredAgent[];
-  ids(): string[];
-}
-#+end_src
-
-| Method       | Description                                                        |
-|--------------+--------------------------------------------------------------------|
-| ~register~   | Adds an agent (with optional card); returns ~this~ for chaining    |
-| ~get~        | Looks up a ~RegisteredAgent~ by definition id                     |
-| ~has~        | Returns ~true~ if an agent with that id is registered              |
-| ~all~        | Returns every registered agent                                     |
-| ~ids~        | Returns all registered agent ids                                   |
-
-** ~globalAgentRegistry~
-
-A shared ~AgentRegistry~ singleton for applications that want one process-wide directory.
-
-#+begin_src typescript
-import { globalAgentRegistry } from "@loom/registry";
-
-globalAgentRegistry
-  .register(InvestigatorAgent, { name: "Investigator", version: "1.0.0" })
-  .register(RemediatorAgent, { name: "Remediator", version: "1.0.0" });
-
-globalAgentRegistry.ids();   // → ["investigator", "remediator"]
-#+end_src
-
------
-
-* ~@loom/a2ui~ — the Agent-to-UI protocol
-:PROPERTIES:
-:CUSTOM_ID: a2ui
-:END:
-
-A2UI (Agent-to-UI) is a first-class protocol for patch/event-based UI updates. Instead of the ad-hoc "emit a token, accumulate in a projection" pattern, an agent or flow drives a named *surface* by emitting declarative *patches*. A patch is a single addressed mutation; patches travel as ordinary ~A2UI_PATCH~ events through the normal event pipeline, so every UI update is durable, ordered, and replays deterministically. Import from ~@loom/a2ui~.
-
-#+begin_src typescript
-import {
-  A2UI_PATCH, DEFAULT_SURFACE,
-  applyA2UIPatch, applyA2UIPatches, getSurfaceValue,
-  createA2UIEmitter, a2uiSurfaceProjection, A2UIRuntime,
-  type A2UIPatch, type A2UIPatchPayload, type A2UISurfaceState, type A2UIEmitter,
-} from "@loom/a2ui";
-#+end_src
-
-** Protocol constants
-
-#+begin_src typescript
-const A2UI_PATCH = "A2UI_PATCH";   // the single event type carrying UI updates
-const DEFAULT_SURFACE = "ui";      // default surface id
-#+end_src
-
-All A2UI updates ride on a single event type, ~A2UI_PATCH~. A surface is just a keyed bag of state (~A2UISurfaceState = Record<string, unknown>~); the default surface id is ~"ui"~. Multiple surfaces can coexist under one execution by giving each a distinct id.
-
-** ~A2UIPatch~ — the five ops
-
-A patch is one declarative mutation, addressed by a dot-notation ~path~ (~""~ = the surface root).
-
-#+begin_src typescript
 type A2UIPatch =
   | { op: "set";       path: string; value: unknown }
   | { op: "merge";     path: string; value: Record<string, unknown> }
   | { op: "append";    path: string; value: unknown }
   | { op: "remove";    path: string }
   | { op: "increment"; path: string; by?: number };
-#+end_src
 
-| Op          | Fields             | Effect                                                        |
-|-------------+--------------------+--------------------------------------------------------------|
-| ~set~       | ~path, value~      | Replaces the value at ~path~                                  |
-| ~merge~     | ~path, value~      | Shallow-merges an object into the object at ~path~           |
-| ~append~    | ~path, value~      | Pushes ~value~ onto the array at ~path~ (tokens/logs/timelines) |
-| ~remove~    | ~path~             | Deletes the key/entry at ~path~                              |
-| ~increment~ | ~path, by?~        | Adds ~by~ to the number at ~path~; ~by~ defaults to ~1~      |
-
-** ~A2UIPatchPayload~ & ~A2UISurfaceState~
-
-#+begin_src typescript
-interface A2UIPatchPayload {
-  surface?: string;        // defaults to DEFAULT_SURFACE ("ui")
-  patches: A2UIPatch[];    // applied in order, atomically per event
+interface A2UIEmitter {
+  set(path: string, value: unknown): void;
+  merge(path: string, value: Record<string, unknown>): void;
+  append(path: string, value: unknown): void;
+  remove(path: string): void;
+  increment(path: string, by?: number): void;
+  patch(patches: A2UIPatch[]): void;
 }
-
-type A2UISurfaceState = Record<string, unknown>;
+function createA2UIEmitter(emit: (eventType: string, payload: unknown) => void, surface?: string): A2UIEmitter
+function a2uiSurfaceProjection(surfaceId?: string): Projection<A2UISurfaceState>   // register on a ProjectionRuntime
+function applyA2UIPatch(state: A2UISurfaceState, patch: A2UIPatch): A2UISurfaceState        // pure, total
+function applyA2UIPatches(state: A2UISurfaceState, patches: readonly A2UIPatch[]): A2UISurfaceState
+// getSurfaceValue(state, parts: string[]): unknown ;  class A2UIRuntime { handleEvent/getSurface/seed/subscribe }
 #+end_src
 
-The payload of every ~A2UI_PATCH~ event is an ~A2UIPatchPayload~: the target ~surface~ plus the ordered list of ~patches~ to apply.
-
-** Pure reducers
-
-The reducers are pure and immutable — they never mutate the input state, so they are safe to use inside projections, tests, and time-travel tooling.
+** ~@loom/blueprint-runtime~ — declarative UI
 
 #+begin_src typescript
-// Apply one patch, returning a new state
-function applyA2UIPatch(state: A2UISurfaceState, patch: A2UIPatch): A2UISurfaceState;
+function blueprint$(config: { id: string; title: string; layout: Layout; projections: string[] }): Blueprint
 
-// Fold a batch of patches left-to-right
-function applyA2UIPatches(state: A2UISurfaceState, patches: readonly A2UIPatch[]): A2UISurfaceState;
+// Layout helpers
+grid({ columns: number; gap?: number; children: Array<Widget | Layout> }): GridLayout
+flex({ direction?: "row" | "column"; gap?: number; children }): FlexLayout
+stack({ gap?: number; children }): StackLayout
 
-// Resolve a dot-path (already split into parts) against a surface
-function getSurfaceValue(state: A2UISurfaceState, parts: string[]): unknown;
+// Widget factories → Widget (each binds via { projectionId, path })
+MetricCard, Timeline, ApprovalCard, StatusBadge, ProgressBar, DataTable, AlertCard, StreamingText
+customWidget$({ kind: string; title?; binding?; props?; id? })   // bring-your-own widget kind
+
+interface DataBinding { projectionId: string; path: string; }
+
+// Framework-agnostic traversal (renderers are built on this)
+function traverseBlueprint<TNode>(node: Layout | Widget, stateMap: Map<string, unknown>, options: {
+  renderWidget: (ctx: WidgetRendererProps) => TNode;
+  renderContainer: (ctx: { layout: Layout; children: TNode[] }) => TNode;
+  onAction?: (action: WidgetAction) => void;
+}): TNode
+function traverseBlueprintAsync<TNode>(node, stateMap, options): Promise<TNode>   // interruptible, for BYOR renderers
+function resolveWidgetValue(widget: Widget, stateMap: Map<string, unknown>): unknown
+class RendererRegistry<TRenderer> { register(kind, renderer): this; get(kind); has(kind); kinds(); merge(other) }
 #+end_src
+
+** ~@loom/renderer-react~
 
 #+begin_src typescript
-let s: A2UISurfaceState = {};
-s = applyA2UIPatch(s, { op: "set", path: "phase", value: "analyzing" });
-s = applyA2UIPatches(s, [
-  { op: "append", path: "log", value: "started" },
-  { op: "increment", path: "progress", by: 25 },
-]);
-getSurfaceValue(s, ["progress"]);   // → 25
+function BlueprintRenderer(props: {
+  blueprint: Blueprint; projectionRuntime: ProjectionRuntime; executionId: string;
+  registry?: RendererRegistry<WidgetRenderer>; onAction?: (a: WidgetAction) => void;
+  fiber?: FiberConfig;   // opt-in render-side fiber; default off
+}): JSX.Element
+
+function LoomProvider(props: {
+  projectionRuntime: ProjectionRuntime; workflowRuntime: WorkflowRuntime;
+  serializedExecutionState?: string; serializedProjectionState?: string;
+  fiber?: FiberConfig; children: React.ReactNode;
+}): JSX.Element
+function useLoom(): { projectionRuntime; workflowRuntime; preloadedExecutionState; fiber? }
+
+function useProjection<TState>(pr: ProjectionRuntime, projectionId: string, executionId: string): TState
+function useDeferredProjection<TState>(pr, projectionId, executionId): TState   // marks streamed updates non-urgent
+function useA2UISurface(runtime: A2UIRuntime, executionId: string, surface?: string): A2UISurfaceState
+
+type FiberConfig = boolean | { granularUpdates?: boolean; suspense?: boolean; deferStreaming?: boolean }; // all default off
+const defaultRegistry: RendererRegistry<WidgetRenderer>;  // MetricCard/Timeline/ApprovalCard/StatusBadge/StreamingText
 #+end_src
 
-** ~createA2UIEmitter(emit, surface?)~ — the producer
+Built-in React renderers: ~MetricCardRenderer~, ~TimelineRenderer~, ~ApprovalCardRenderer~, ~StatusBadgeRenderer~, ~StreamingTextRenderer~. (~ProgressBar~ / ~DataTable~ / ~AlertCard~ widget factories exist but ship no default React renderer — bring your own.)
 
-Wraps any ~emit~ function into an ~A2UIEmitter~. Each method emits exactly one ~A2UI_PATCH~ event carrying a single-patch payload (except ~patch()~, which sends an arbitrary batch atomically as one event).
+** ~@loom/renderer-terminal~
 
 #+begin_src typescript
-function createA2UIEmitter(
-  emit: (eventType: string, payload: unknown) => void,
-  surface?: string,   // defaults to "ui"
-): A2UIEmitter;
+function renderBlueprintToString(blueprint: Blueprint, stateMap: Map<string, unknown>): string
+class TerminalRenderer { constructor(projectionRuntime: ProjectionRuntime); render(blueprint: Blueprint, executionId: string): string }
 #+end_src
-
-Any context that can emit events — a flow's ~ctx~, a step's ~EffectContext~, an agent — can build one:
-
-#+begin_src typescript
-// Inside a step handler or effect (EffectContext has emit)
-const ui = createA2UIEmitter((type, payload) => ctx.emit(type, payload));
-ui.set("status", "working");
-#+end_src
-
-Inside a flow runner you do not need to build one — ~ctx.ui~ is already an ~A2UIEmitter~ bound to the ~"ui"~ surface (see [[#workflow-context][WorkflowContext]]).
-
-| Method                      | Emits                                        | Description                                |
-|-----------------------------+----------------------------------------------+--------------------------------------------|
-| ~set(path, value)~          | one ~set~ patch                              | Replace the value at ~path~                |
-| ~merge(path, value)~        | one ~merge~ patch                            | Shallow-merge an object at ~path~          |
-| ~append(path, value)~       | one ~append~ patch                           | Push onto the array at ~path~              |
-| ~remove(path)~              | one ~remove~ patch                           | Delete at ~path~                           |
-| ~increment(path, by?)~      | one ~increment~ patch                        | Bump the number at ~path~ (~by~ default 1) |
-| ~patch(patches)~            | one event with all ~patches~                 | Apply an arbitrary batch atomically        |
-
-** ~a2uiSurfaceProjection(surfaceId?)~ — consumer 1 (projection bridge)
-
-Returns a ~Projection<A2UISurfaceState>~ whose ~id~ equals ~surfaceId~ (default ~"ui"~) and which folds ~A2UI_PATCH~ events into surface state. Register it in an existing ~ProjectionRuntime~ and the A2UI surface becomes an ordinary projection — no other changes required.
-
-#+begin_src typescript
-function a2uiSurfaceProjection(surfaceId?: string): Projection<A2UISurfaceState>;
-
-projectionRuntime.register(a2uiSurfaceProjection("ui"));
-#+end_src
-
-Bind any widget to it with the ordinary ~DataBinding~ — the ~projectionId~ is the surface id, and ~path~ is a dot-path into the surface. ~BlueprintRenderer~ needs no changes:
-
-#+begin_src typescript
-MetricCard({ title: "Progress", binding: { projectionId: "ui", path: "progress" } });
-StatusBadge({ title: "Phase",   binding: { projectionId: "ui", path: "phase" } });
-#+end_src
-
-** ~A2UIRuntime~ — consumer 2 (standalone surface store)
-
-A framework-agnostic store for apps that do not have a ~ProjectionRuntime~. Feed it events and it maintains one surface state per ~(surface, executionId)~ pair; ignores any event whose type is not ~A2UI_PATCH~.
-
-#+begin_src typescript
-class A2UIRuntime {
-  handleEvent(event: EventEnvelope): void;   // ignores non-A2UI_PATCH events
-  getSurface(surface: string, executionId: string): A2UISurfaceState;
-  seed(surface: string, executionId: string, state: A2UISurfaceState): void;
-  subscribe(
-    surface: string,
-    executionId: string,
-    handler: (state: A2UISurfaceState) => void,
-  ): () => void;                             // returns an unsubscribe function
-}
-#+end_src
-
-| Method        | Description                                                                  |
-|---------------+------------------------------------------------------------------------------|
-| ~handleEvent~ | Applies an ~A2UI_PATCH~ event to its surface; skips all other event types    |
-| ~getSurface~  | Synchronous read of the current surface state (empty object if none yet)     |
-| ~seed~        | Populates a surface directly (server-side restore) without processing events |
-| ~subscribe~   | Registers a live listener; called after each matching event; returns unsubscribe |
-
-#+begin_src typescript
-const a2ui = new A2UIRuntime();
-
-const runtime = new WorkflowRuntime({
-  eventStore, snapshotStore, effectRuntime,
-  onEvent: (event) => a2ui.handleEvent(event),
-});
-
-const off = a2ui.subscribe("ui", executionId, (state) => render(state));
-#+end_src
-
-** ~useA2UISurface(runtime, executionId, surface?)~ — ~@loom/renderer-react~
-
-React hook that subscribes a component to an ~A2UIRuntime~ surface. Initialises from ~getSurface()~ and re-renders on every patch.
-
-#+begin_src typescript
-import { useA2UISurface } from "@loom/renderer-react";
-
-function LiveSurface({ executionId }: { executionId: string }) {
-  const surface = useA2UISurface(a2ui, executionId, "ui");   // surface defaults to "ui"
-  return <pre>{JSON.stringify(surface, null, 2)}</pre>;
-}
-#+end_src
-
-** ~StreamingText~ / ~StreamingTextRenderer~ — growing-string convenience
-
-The ~StreamingText~ widget (from ~@loom/blueprint-runtime~) and its pre-registered ~StreamingTextRenderer~ (from ~@loom/renderer-react~) still exist as a convenience for binding to a growing string inside a surface — for example a value you keep extending with ~ctx.ui.append("answer", delta)~ or ~ctx.stream~.
-
-#+begin_src typescript
-import { StreamingText } from "@loom/blueprint-runtime";
-
-StreamingText({
-  title: "Answer",
-  binding: { projectionId: "ui", path: "answer" },
-  placeholder: "Thinking…",
-  id: "answer-stream",   // optional
-});
-#+end_src
-
-| Prop          | Type           | Required | Description                                  |
-|---------------+----------------+----------+----------------------------------------------|
-| ~title~       | ~string~       | no       | Widget heading                               |
-| ~binding~     | ~DataBinding~  | yes      | Surface/projection path holding the text     |
-| ~placeholder~ | ~string~       | no       | Shown before any content arrives             |
-| ~id~          | ~string~       | no       | Explicit widget id (otherwise hashed)        |
-
-~StreamingTextRenderer~ is already registered in ~defaultRegistry~ under ~"StreamingText"~, so ~BlueprintRenderer~ renders it out of the box:
-
-#+begin_src typescript
-import { defaultRegistry, StreamingTextRenderer } from "@loom/renderer-react";
-
-// Register manually only if you build a fresh registry:
-defaultRegistry.register("StreamingText", StreamingTextRenderer);
-#+end_src
-
-The ~examples/cloud-command-center~ app streams an AI analysis into the ~"ui"~ surface via patches and drives a phase ~StatusBadge~ with ~ctx.ui.set~; the ~apps/playground~ "A2UI" tab shows the live surface next to the raw patch stream.
 
 -----
 
-* ~@loom/capability~
+* Agentic
 :PROPERTIES:
-:CUSTOM_ID: capability
+:CUSTOM_ID: agentic
 :END:
 
-"Capabilities Over APIs". A *capability* wraps a runnable flow with intent-facing metadata so the same unit of work can be exposed as an API, a UI action, an A2A endpoint, or a workflow node. ~CapabilityCatalog~ is the registry the Intent and Planner runtimes route over. Import from ~@loom/capability~ (re-exported from ~@loom/sdk~).
+** ~@loom/llm~ — provider-agnostic models
 
 #+begin_src typescript
-import { capability$, CapabilityCatalog } from "@loom/capability";
+interface LlmRequest { messages: LlmMessage[]; tools?: LlmToolSpec[]; system?: string; maxTokens?: number; temperature?: number; signal?: AbortSignal; }
+interface LlmResponse { content: string; toolCalls?: LlmToolCall[]; stopReason: "end_turn" | "tool_use" | "max_tokens"; usage?: { inputTokens: number; outputTokens: number }; }
+interface LlmProvider { complete(request: LlmRequest): Promise<LlmResponse>; stream?(request: LlmRequest): AsyncIterable<LlmStreamChunk>; }
+
+class AnthropicProvider { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string }) }  // model default "claude-opus-4-8"
+class OpenAiProvider    { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string }) }  // model default "gpt-4o"
+
+function createLlmEffect<TIn = string, TOut = string>(options: {
+  provider: LlmProvider;
+  buildRequest: (input: TIn, ctx: EffectContext) => LlmRequest;
+  parseResponse?: (response: LlmResponse, input: TIn) => TOut;   // default: response.content
+}): LlmEffect<TIn, TOut>
 #+end_src
 
-** ~CapabilityDefinition~
+Providers talk to vendor HTTP APIs over ~fetch~ — no vendor SDK dependency. In tests, use the VCR providers from [[#dx][~@loom/testing~]].
+
+** ~@loom/agent~ — ReAct loop
 
 #+begin_src typescript
-interface CapabilityDefinition<TIn, TOut> {
-  _tag: "CapabilityDefinition";
-  id: string;
-  name: string;
-  intent: string;        // natural-language description of the goal it fulfils
-  tags: string[];
-  inputSchema: ZodSchema<TIn>;
-  flow: RegisteredFlow<TIn, TOut>;
+class AgentRunner {
+  constructor(config: {
+    definition: AgentDefinition; provider: LlmProvider; effectRuntime: EffectRuntime;
+    maxIterations?: number;         // default 10
+    systemPrompt?: string; memory?: MemoryRuntime;
+    parallelTools?: boolean | number;  // default false; true = all, number = cap
+    skills?: SkillRegistry; skillSelector?: SkillSelector;
+  })
+  run(input: AgentInput, ctx: EffectContext): Promise<AgentOutput>
+  asEffect(): LlmEffect<AgentInput, AgentOutput>
 }
+interface AgentInput  { prompt: string; context?: unknown; memoryScope?: string; }
+interface AgentOutput { content: string; toolCallLog: AgentStep[]; iterations: number; }
+
+function agentStep$(config: { id: string; name?: string; agent: AgentDefinition; provider: LlmProvider; effectRuntime: EffectRuntime; maxIterations?: number; systemPrompt?: string }): StepDefinition<AgentInput, AgentOutput>
+
+class SkillRegistry { register(skill): this; get(id); all(); ids(); find(query): SkillMatch[] }   // deterministic keyword scoring
+function deterministicSkillSelector(maxSkills?: number): SkillSelector
+function llmSkillSelector(provider: LlmProvider, maxSkills?: number): SkillSelector
 #+end_src
 
-** ~capability$(config)~
+Emits ~SKILLS_SELECTED~ / ~AGENT_TOOL_CALL~ / ~AGENT_COMPLETED~ events via ~ctx.emit~.
 
-Builds a ~CapabilityDefinition~. ~name~ defaults to ~id~ and ~tags~ defaults to ~[]~.
+** ~@loom/mcp~ — Model Context Protocol
 
 #+begin_src typescript
-function capability$(config: {
-  id: string;
-  name?: string;
-  intent: string;
-  tags?: string[];
-  inputSchema: ZodSchema;
-  flow: RegisteredFlow;
-}): CapabilityDefinition;
-
-const InvestigateCapability = capability$({
-  id: "investigate-incident",
-  name: "Investigate Incident",
-  intent: "Diagnose a production incident from metrics and logs",
-  tags: ["ops", "incident", "diagnosis"],
-  inputSchema: z.object({ incidentId: z.string() }),
-  flow: InvestigateIncidentRegisteredFlow,
-});
+class McpClient {
+  constructor(config: { transport: "http"; url: string; headers?: Record<string, string> })
+  connect(): Promise<void>
+  listTools(): Promise<MappedMcpTool[]>
+  registerInto(effectRuntime: EffectRuntime): Promise<ToolDefinition[]>   // discover + register as effects
+  callTool(name: string, input: unknown): Promise<unknown>
+  disconnect(): Promise<void>
+}
+function mcpTool$(client: McpClient, toolName: string): StepDefinition<unknown, unknown>
 #+end_src
 
-** ~CapabilityCatalog~
+** ~@loom/a2a~ — Agent-to-Agent
 
 #+begin_src typescript
+// Outbound: register a REMOTE agent as a Loom tool
+class A2APeerClient {
+  constructor(config: { url: string; headers?; timeoutMs?; pollIntervalMs?; toolId? })
+  discover(): Promise<AgentCard>
+  map(): Promise<MappedA2APeer>
+  registerInto(effectRuntime: EffectRuntime, registry?: PeerAgentRegistrar): Promise<ToolDefinition<A2APeerInput, A2APeerOutput>>
+}
+function createA2AClientEffect(agentUrl: string, options?: { timeoutMs?; headers?; pollIntervalMs? }): A2AEffect<A2ATask, A2ATaskResult>
+
+// Inbound: expose a Loom flow as an A2A agent
+function createA2AServer(workflowRuntime: WorkflowRuntime, flow: RegisteredFlow, agentCard: Omit<AgentCard, "url">, options?: { port?: number }): A2AServer
+function toAgentCard(agent: AgentDefinition, opts?: { url?; version?; capabilities? }): AgentCard
+class LoomAgentExecutor { constructor(runtime: WorkflowRuntime, flow: RegisteredFlow) /* submit / get / provideInput */ }
+
+interface AgentCard { name: string; description?: string; url: string; version: string; capabilities: { streaming?: boolean }; skills: AgentSkill[]; }
+type A2ATaskStatus = "submitted" | "working" | "completed" | "failed";
+interface A2ATaskResult { id: string; status: A2ATaskStatus; artifacts?: Array<{ name?: string; parts: A2AMessagePart[] }>; error?: string; }
+#+end_src
+
+Browser-safe subpath ~@loom/a2a/cards~ exports only ~toAgentCard~ (no ~node:http~).
+
+** ~@loom/capability~ / ~@loom/intent~ / ~@loom/planner~
+
+#+begin_src typescript
+function capability$<TIn, TOut>(config: { id: string; name?: string; intent: string; tags?: string[]; inputSchema: ZodSchema<TIn>; flow: RegisteredFlow<TIn, TOut> }): CapabilityDefinition<TIn, TOut>
 class CapabilityCatalog {
-  register(capability: CapabilityDefinition): this;
-  get(id: string): CapabilityDefinition | undefined;
-  all(): CapabilityDefinition[];
-  ids(): string[];
-  find(query: string): { capability: CapabilityDefinition; score: number }[];
+  register(capability): this; get(id); all(); ids(); find(query): CapabilityMatch[];
   registerInto(workflowRuntime: WorkflowRuntime): void;
-  invoke(
-    workflowRuntime: WorkflowRuntime,
-    capabilityId: string,
-    input: unknown,
-  ): Promise<ExecutionHandle>;
-}
-#+end_src
-
-| Method          | Description                                                                        |
-|-----------------+------------------------------------------------------------------------------------|
-| ~register~      | Adds a capability; returns ~this~ for chaining                                     |
-| ~get~           | Looks up a capability by id (or ~undefined~)                                       |
-| ~all~           | Returns every registered capability                                                |
-| ~ids~           | Returns all registered capability ids                                              |
-| ~find~          | Deterministic keyword scoring over ~id~/~name~/~intent~/~tags~; ranked high-to-low |
-| ~registerInto~  | Registers every capability's flow with a ~WorkflowRuntime~                         |
-| ~invoke~        | Starts a capability's flow and returns its ~ExecutionHandle~                       |
-
-#+begin_src typescript
-const catalog = new CapabilityCatalog()
-  .register(InvestigateCapability)
-  .register(RemediateCapability);
-
-catalog.registerInto(workflowRuntime);         // wire every flow into the runtime
-catalog.find("diagnose incident");             // → [{ capability, score }, …]
-const handle = await catalog.invoke(workflowRuntime, "investigate-incident", { incidentId: "cpu-001" });
-#+end_src
-
------
-
-* ~@loom/intent~
-:PROPERTIES:
-:CUSTOM_ID: intent
-:END:
-
-Intent Runtime — "Intent Over Routes". Maps a natural-language intent to a capability in the catalog. Works fully offline via keyword matching, or uses an ~LlmProvider~ to let the model pick the capability id. Import from ~@loom/intent~.
-
-#+begin_src typescript
-import { IntentRuntime } from "@loom/intent";
-#+end_src
-
-** Types
-
-#+begin_src typescript
-interface IntentRoute {
-  capability: CapabilityDefinition;
-  confidence: number;
-  rationale?: string;
+  invoke<TIn>(workflowRuntime: WorkflowRuntime, capabilityId: string, input: TIn): Promise<ExecutionHandle>;
 }
 
-interface IntentRuntimeConfig {
-  catalog: CapabilityCatalog;
-  provider?: LlmProvider;          // omit for deterministic keyword routing
-  workflowRuntime?: WorkflowRuntime;  // required only for run()
-  scheduler?: Scheduler;           // from @loom/scheduler — see note below
-}
-#+end_src
-
-** ~IntentRuntime~
-
-#+begin_src typescript
 class IntentRuntime {
-  constructor(config: IntentRuntimeConfig);
-  route(intentText: string): Promise<IntentRoute | null>;
-  run(intentText: string, input: unknown): Promise<ExecutionHandle>;
+  constructor(config: { catalog: CapabilityCatalog; provider?: LlmProvider; workflowRuntime?: WorkflowRuntime; scheduler?: Scheduler })
+  route(intentText: string): Promise<IntentRoute | null>    // { capability, confidence, rationale? }
+  run(intentText: string, input: unknown): Promise<ExecutionHandle>
 }
-#+end_src
-
-| Method   | Description                                                                                       |
-|----------+---------------------------------------------------------------------------------------------------|
-| ~route~  | Returns the best-matching ~IntentRoute~ (or ~null~). LLM routing if ~provider~ set, else ~catalog.find()~ keyword match |
-| ~run~    | Routes, then ~workflowRuntime.start()~ on the matched capability's flow; needs ~workflowRuntime~ in the config |
-
-#+begin_src typescript
-// Offline — deterministic keyword routing, no provider
-const intent = new IntentRuntime({ catalog, workflowRuntime });
-const route = await intent.route("diagnose the cpu incident");
-// route: { capability, confidence, rationale? } | null
-
-const handle = await intent.run("diagnose the cpu incident", { incidentId: "cpu-001" });
-
-// With a model — the provider picks the capability id
-const smart = new IntentRuntime({ catalog, provider: new AnthropicProvider(), workflowRuntime });
-#+end_src
-
-When a ~scheduler~ (from [[#scheduler][~@loom/scheduler~]]) is supplied, the routing LLM call runs at ~Priority.Idle~ so it yields to live agent/workflow work under a shared concurrency cap. This affects only scheduling, not the routing decision.
-
------
-
-* ~@loom/planner~
-:PROPERTIES:
-:CUSTOM_ID: planner
-:END:
-
-Planner Runtime. Composes an ordered, multi-step plan of capability ids from the catalog for a high-level goal. Uses an ~LlmProvider~ when supplied, otherwise a deterministic heuristic. Import from ~@loom/planner~.
-
-#+begin_src typescript
-import { PlannerRuntime } from "@loom/planner";
-#+end_src
-
-** Types
-
-#+begin_src typescript
-interface PlanStep {
-  capabilityId: string;
-  rationale?: string;
-}
-
-interface Plan {
-  goal: string;
-  steps: PlanStep[];
-}
-
-interface PlannerRuntimeConfig {
-  catalog: CapabilityCatalog;
-  provider?: LlmProvider;   // omit for the heuristic keyword-ranked plan
-  maxSteps?: number;        // default 5
-  scheduler?: Scheduler;    // from @loom/scheduler — see note below
-}
-#+end_src
-
-** ~PlannerRuntime~
-
-#+begin_src typescript
 class PlannerRuntime {
-  constructor(config: PlannerRuntimeConfig);
-  plan(goal: string): Promise<Plan>;
+  constructor(config: { catalog: CapabilityCatalog; provider?: LlmProvider; maxSteps?: number; scheduler?: Scheduler })
+  plan(goal: string): Promise<{ goal: string; steps: Array<{ capabilityId: string; rationale? }> }>
 }
 #+end_src
 
-~plan(goal)~ returns an ordered ~Plan~. With a ~provider~ the model composes the plan as JSON; with none, a heuristic keyword-ranked plan is produced. Every ~capabilityId~ is validated against the catalog (unknown ids are dropped) and the plan is truncated to ~maxSteps~.
+Both work fully offline (deterministic keyword routing) or with an ~LlmProvider~.
 
-When a ~scheduler~ (from [[#scheduler][~@loom/scheduler~]]) is supplied, the planning LLM call runs at ~Priority.Idle~ so it yields to live work under a shared concurrency cap. Planning is offline-safe and order-independent, so this has no effect on the resulting plan — only on scheduling.
-
-#+begin_src typescript
-const planner = new PlannerRuntime({ catalog, provider: new AnthropicProvider(), maxSteps: 4 });
-const plan = await planner.plan("Resolve the CPU incident and notify the on-call engineer");
-// plan: { goal, steps: [{ capabilityId, rationale? }, …] }
-
-for (const step of plan.steps) {
-  await catalog.invoke(workflowRuntime, step.capabilityId, input);
-}
-#+end_src
-
------
-
-* ~@loom/memory~
-:PROPERTIES:
-:CUSTOM_ID: memory
-:END:
-
-Agent Runtime memory. Durable, scoped recall for agents, honoring the ~ttlMs~ and ~maxEntries~ declared by ~memory$()~. Import from ~@loom/memory~.
-
-#+begin_src typescript
-import { MemoryRuntime, InMemoryMemoryStore } from "@loom/memory";
-#+end_src
-
-** Types
-
-#+begin_src typescript
-interface MemoryEntry {
-  role?: string;
-  content: unknown;
-  timestamp: number;
-}
-
-// Async-first — so a Redis / DB / vector-store backend is a real implementation.
-interface MemoryStore {
-  append(key: string, entry: MemoryEntry): Promise<void>;
-  read(key: string): Promise<MemoryEntry[]>;
-  clear(key: string): Promise<void>;
-}
-
-class InMemoryMemoryStore implements MemoryStore { /* … */ }
-#+end_src
-
-** ~MemoryRuntime~
+** ~@loom/memory~ — agent memory
 
 #+begin_src typescript
 class MemoryRuntime {
-  constructor(store?: MemoryStore);   // defaults to InMemoryMemoryStore
-  register(definition: MemoryDefinition): this;   // from memory$(); honors ttlMs / maxEntries
-  append(memoryId: string, scope: string, entry: { role?: string; content: unknown; timestamp?: number }): Promise<void>;
-  read(memoryId: string, scope: string): Promise<MemoryEntry[]>;   // pruned by ttlMs then maxEntries
-  clear(memoryId: string, scope: string): Promise<void>;
+  constructor(store?: MemoryStore)                 // default InMemoryMemoryStore
+  register(definition: MemoryDefinition): this      // enforces ttlMs / maxEntries
+  append(memoryId: string, scope: string, entry: { role?: string; content: unknown; timestamp?: number }): Promise<void>
+  read(memoryId: string, scope: string): Promise<MemoryEntry[]>
+  clear(memoryId: string, scope: string): Promise<void>
 }
+interface MemoryStore { append(key, entry): Promise<void>; read(key): Promise<MemoryEntry[]>; clear(key): Promise<void>; }
+class InMemoryMemoryStore implements MemoryStore {}
 #+end_src
 
-| Method     | Description                                                                          |
-|------------+--------------------------------------------------------------------------------------|
-| ~register~ | Registers a ~MemoryDefinition~ (from ~memory$~); honors its ~ttlMs~ and ~maxEntries~ |
-| ~append~   | Appends an entry under ~(memoryId, scope)~; ~timestamp~ defaults to now              |
-| ~read~     | Returns entries for ~(memoryId, scope)~, pruned by ~ttlMs~ then trimmed to ~maxEntries~ |
-| ~clear~    | Removes all entries for ~(memoryId, scope)~                                          |
+** ~@loom/orchestrator~ — composable orchestration
 
 #+begin_src typescript
-const memory = new MemoryRuntime();
-memory.register(IncidentMemory);   // from memory$({ id: "incident-memory", ttlMs, maxEntries })
+function decideApproval(
+  input: { goal: string; riskLevel: string },        // riskLevel e.g. "low" | "medium" | "high"
+  handlers: { onAutoApprove?: () => void; onManualRequired?: () => void; waitForManual: () => Promise<ApprovalDecision> }
+): Promise<ApprovalDecision>                          // auto-approves when riskLevel==="low" + goal matches the policy
+function autoApprovalAllowed(goal: string): boolean
 
-memory.append("incident-memory", "user-42", { role: "user", content: "What was the CPU peak?" });
-const history = memory.read("incident-memory", "user-42");   // MemoryEntry[]
-#+end_src
-
-*** Agent integration
-
-~AgentConfig~ (see [[#agent][~@loom/agent~]]) accepts an optional ~memory?: MemoryRuntime~. When the agent's ~definition.memoryId~ is set and a ~MemoryRuntime~ is provided, ~AgentRunner.run~ recalls prior entries into the prompt and writes the user prompt + assistant answer back afterward. ~AgentInput~ accepts ~memoryScope?: string~ (defaulting to ~ctx.executionId~) to scope recall per conversation or user.
-
-#+begin_src typescript
-const runner = new AgentRunner({
-  definition: InvestigatorAgent,   // agent$({ …, memoryId: "incident-memory" })
-  provider: new AnthropicProvider(),
-  effectRuntime,
-  memory,
-});
-
-await runner.run({ prompt: "Any updates?", memoryScope: "user-42" }, ctx);
+function dispatchPlan<TStep>(config: {
+  goal: string;
+  route?: (goal: string) => Promise<unknown>;
+  plan: (goal: string) => Promise<{ steps: TStep[] }>;
+  dispatch: (step: TStep, index: number) => Promise<{ status: string; artifact: unknown }>;
+  onRouted?; onPlanned?; onResult?; isTerminal?: () => boolean;
+}): Promise<TStep[]>
 #+end_src
 
 -----
 
-* ~@loom/renderer-terminal~
+* Compute & distribution
 :PROPERTIES:
-:CUSTOM_ID: renderer-terminal
+:CUSTOM_ID: compute
 :END:
 
-Multi-surface delivery. Renders the *same* ~Blueprint~ + projection state to plain text instead of React, using the framework-agnostic ~traverseBlueprint~. Import from ~@loom/renderer-terminal~.
+The same flows run in-process, over HTTP, or on Cloud Run — the ~ExecutionPackage~ carries resume coordinates, never code. Swapping placement is a constructor change.
+
+** ~@loom/worker-runtime~ — the SPI
 
 #+begin_src typescript
-import { TerminalRenderer, renderBlueprintToString } from "@loom/renderer-terminal";
-#+end_src
-
-** ~renderBlueprintToString(blueprint, stateMap)~
-
-Folds a blueprint and a ~Map<string, unknown>~ of projection state into a string via ~traverseBlueprint<string>~.
-
-#+begin_src typescript
-function renderBlueprintToString(blueprint: Blueprint, stateMap: Map<string, unknown>): string;
-
-const stateMap = new Map<string, unknown>([
-  ["metrics", { cpu: { current: 87 } }],
-  ["incident", { timeline: [] }],
-]);
-const text = renderBlueprintToString(IncidentBlueprint, stateMap);
-console.log(text);
-#+end_src
-
-** ~TerminalRenderer~
-
-#+begin_src typescript
-class TerminalRenderer {
-  constructor(projectionRuntime: ProjectionRuntime);
-  render(blueprint: Blueprint, executionId: string): string;
+interface WorkerRuntime {
+  allocate(request: WorkerRequest): Promise<WorkerLease>;
+  execute(lease: WorkerLease, pkg: ExecutionPackage): Promise<ExecutionResult>;
+  release(lease: WorkerLease): Promise<void>;
 }
+interface ExecutionPackage {
+  executionId: string; workflowId: string; flowId: string;
+  input?: unknown; resumeEvent?: { eventType: string; payload: unknown };
+  snapshotId?: string; fromSequence?: number; metadata?: Record<string, unknown>;
+}
+type ExecutionOutcome = "completed" | "suspended" | "failed";
+interface ExecutionResult { executionId: string; status: ExecutionOutcome; state: ExecutionState; output?: unknown; error?: unknown; suspendedOn?: SuspendCondition; lastSequence: number; }
+interface WorkerRequest { executionId: string; metadata?: Record<string, unknown>; }
+interface WorkerLease   { leaseId: string; metadata?: Record<string, unknown>; }
 #+end_src
 
-~render~ pulls each of the blueprint's referenced projections' state for the given ~executionId~ from the ~ProjectionRuntime~ and renders them to text — the terminal equivalent of ~BlueprintRenderer~.
+Implementations: ~new LocalWorkerRuntime(runtime: WorkflowRuntime)~ (in-process), ~new RemoteWorkerRuntime(baseUrl: string, { fetchImpl? })~ (HTTP → ~POST {baseUrl}/execute~).
+
+** ~@loom/dispatcher~ — placement
 
 #+begin_src typescript
-const renderer = new TerminalRenderer(projectionRuntime);
-console.log(renderer.render(IncidentBlueprint, executionId));
+interface ExecutionDispatcher {
+  dispatch(pkg: ExecutionPackage, meta?: DispatchMetadata): Promise<ExecutionResult>;
+  cancel(executionId: string): Promise<void>;
+  health(): Promise<DispatcherHealth>;
+}
+interface DispatchMetadata { lane?: string; priority?: number; estimatedCpu?: number; estimatedMemory?: number; estimatedDuration?: number; }
+class LocalDispatcher { constructor(worker: WorkerRuntime, options?: { maxAttempts?: number; executeTimeoutMs?: number }) }
 #+end_src
 
-Because ~traverseBlueprint~ is the same traversal the React ~BlueprintRenderer~ uses, one blueprint definition renders to the web *or* the terminal with no changes.
+** ~@loom/worker-server~ — the stateless HTTP worker
+
+#+begin_src typescript
+function createWorkerServer(worker: WorkerRuntime, options?: { port?: number }): WorkerServer   // POST /execute, GET /health
+function startWorkerServer(worker: WorkerRuntime, options?: { port?: number }): Promise<WorkerServer>  // port ← env.PORT ?? 8080
+interface WorkerServer { start(): Promise<void>; stop(): Promise<void>; readonly url: string; readonly port: number; }
+#+end_src
+
+** ~@loom/platform-cloudrun~
+
+#+begin_src typescript
+class CloudRunWorkerRuntime {
+  constructor(platform: CloudRunPlatform, options?: { sizing?: SizingPolicy; requestTimeoutMs?: number; fetchImpl? })
+}
+interface CloudRunPlatform {
+  resolveEndpoint(config: CloudRunConfig): Promise<string>;   // load-bearing
+  release?(endpoint: string): Promise<void>;
+  secrets?: SecretProvider; identity?: IdentityProvider; logs?: LogSink; metrics?: MetricSink;
+}
+interface CloudRunConfig { cpu: number; memoryMb: number; concurrency?: number; }
+type SizingPolicy = (meta?: DispatchMetadata) => CloudRunConfig;   // defaultSizingPolicy exported
+class StaticCloudRunPlatform { constructor(endpoint: string, options?: { secrets?; identity?; logs?; metrics? }) }
+#+end_src
+
+See [[file:../packages/platform-cloudrun/deploy.md][the Cloud Run deploy guide]].
+
+** ~@loom/graph-executor~ — distributed fan-out
+
+#+begin_src typescript
+function executeGraph(dispatcher: ExecutionDispatcher, nodes: GraphNode[], options?: {
+  parentExecutionId?: string; limit?: number;
+  branchRegistry?: BranchRegistry;                 // records parent→child lineage
+  executionIdFor?: (node: GraphNode) => string;
+}): Promise<GraphExecution>
+interface GraphNode   { id: string; flowId: string; input?: unknown; metadata?: DispatchMetadata; }
+interface GraphExecution { nodes: GraphNodeResult[]; byId: Record<string, ExecutionResult>; completed: boolean; }
+#+end_src
+
+Each node becomes its *own* execution (one writer per log), fanned out via ~parallelLimit~ and joined via lineage.
+
+** ~@loom/scheduler~ — ephemeral cooperative scheduler
+
+#+begin_src typescript
+enum Priority { Immediate = 0, UserBlocking = 1, Normal = 2, Idle = 3 }   // lower = more urgent
+function createScheduler(config?: { concurrency?: number; onEvent?: (e: SchedulerEvent) => void }): Scheduler
+interface Scheduler { schedule<T>(task: (signal: AbortSignal) => Promise<T>, opts?: { priority?: Priority; signal?; label? }): Promise<T>; readonly inFlight: number; readonly pending: number; }
+
+function parallelLimit<T>(tasks: ReadonlyArray<(signal: AbortSignal) => Promise<T>>, opts?: { limit?: number; signal?; failFast?: boolean }): Promise<T[]>  // input-order-preserving
+function yieldControl(): Promise<void>
+// AbortSignal utils: NEVER_SIGNAL, signalReason, throwIfAborted, linkSignals, withTimeout(ms, parent?) => { signal, dispose() }
+#+end_src
 
 -----
 
-* ~@loom/scheduler~
+* DX & tooling
 :PROPERTIES:
-:CUSTOM_ID: scheduler
+:CUSTOM_ID: dx
 :END:
 
-An *ephemeral*, dependency-free cooperative scheduler for live in-flight async work. It applies Fiber principles — priority, interruption, incremental progress — to the *async agentic layer*, not to a UI reconciler. It governs three things and nothing else: the *order* queued work acquires a slot (by ~Priority~), *how many* tasks run at once, and *cancellation* via ~AbortSignal~. Import from ~@loom/scheduler~.
+Each of these is a lens on the durable event log; all are exposed both as libraries and (for the log tools) via the ~loom~ CLI.
+
+** ~@loom/cli~ — the ~loom~ command
+
+#+begin_example
+loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
+loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
+loom check --manifest <path>                    static flow-graph checks (compiler manifest)
+loom logs  --db <path> <executionId>            print the event timeline
+loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
+loom eval  --dir <path>                         replay golden logs vs expectations
+loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
+loom inspect --db <path> [--port N]             web inspector (timeline + slider)
+#+end_example
+
+Every command has a pure, testable core exported from ~@loom/cli~: ~foldAt(events, sequence?)~, ~formatLog(events)~, ~describeState(state)~, ~evaluateGoldens(goldens)~, ~buildTrace(events)~, ~checkManifest(manifest)~, ~discoverFlows(dir)~ / ~cmdGen(dir)~ / ~cmdNew(kind, name, dir)~, ~loadLogs(dir)~ / ~runDeployCheck(logs, resolver)~, ~serveInspector(eventStore, { port? })~, ~parseArgs(argv)~.
+
+** ~@loom/testing~ — the testing kit
 
 #+begin_src typescript
-import {
-  createScheduler, parallelLimit, yieldControl, Priority,
-  throwIfAborted, linkSignals, withTimeout, signalReason, NEVER_SIGNAL,
-  type Scheduler, type SchedulerEvent,
-} from "@loom/scheduler";
+type TestAppConfig = Omit<LoomConfig, "storage"> & Partial<Pick<LoomConfig, "storage">>;
+function createTestApp(config?: TestAppConfig): LoomApp                      // defaults storage to in-memory
+
+function waitFor(pred: () => boolean | Promise<boolean>, options?: { timeoutMs?: number; intervalMs?: number }): Promise<void>
+function waitForPhase(pr: ProjectionRuntime, surface: string, executionId: string, phase: string, options?): Promise<void>
+function getSurfaceState<T>(pr: ProjectionRuntime, surface: string, executionId: string): T
+function driveToSuspend(handle: ExecutionHandle): Promise<unknown>
+function resumeWith(runtime: WorkflowRuntime, executionId: string, event?: ResumeEvent): Promise<ExecutionHandle>
+function captureGolden(eventStore: EventStore, executionId: string): Promise<EventEnvelope[]>
+
+// VCR LLM provider — record once, replay deterministically (no live calls)
+interface LlmCassette { entries: Array<{ key: string; response: LlmResponse }>; }
+function emptyCassette(): LlmCassette
+function hashRequest(request: LlmRequest): string
+function recordingProvider(real: LlmProvider, cassette: LlmCassette): LlmProvider
+function replayingProvider(cassette: LlmCassette): LlmProvider
 #+end_src
 
-It is deliberately *not durable*: Loom's event-sourcing + ~replay-vm~ already own durable pause/resume (~SuspendError~). The scheduler *complements* that layer for live work — do not persist scheduler state.
-
-** ~Priority~
+** ~@loom/eval~ — log-as-fixture evals
 
 #+begin_src typescript
-enum Priority {
-  Immediate    = 0,   // must-run-now (a user-triggered cancel/approval)
-  UserBlocking = 1,   // foreground work a user is waiting on (a live agent turn)
-  Normal       = 2,   // default — ordinary flow/effect work
-  Idle         = 3,   // background/pre-fetch that should yield to everything else (planning)
-}
+function replayAsFixture(log: EventEnvelope[]): ExecutionState
+function recordedStepOutputs(log: EventEnvelope[]): Record<string, unknown>
+function diffRuns(golden: EventEnvelope[], candidate: EventEnvelope[]): RunDiff[]
+function scoreRun(state: ExecutionState, scorers: Array<(state: ExecutionState) => ScoreResult>): ScoreResult[]
 #+end_src
 
-Priority is *ordering only* — lower numeric value = more urgent (dequeued first). Unlike React's scheduler these lanes do not drive a frame-deadline time-slicer (yielding to a frame budget is meaningless while awaiting a socket); they only decide the order queued tasks acquire a slot when running under a finite concurrency cap.
-
-** ~createScheduler(config?)~
+** ~@loom/deploy-sim~ — deploy simulation
 
 #+begin_src typescript
-function createScheduler(config?: {
-  concurrency?: number;                       // default Infinity — gating disabled
-  onEvent?: (e: SchedulerEvent) => void;      // optional telemetry sink
-}): Scheduler;
-
-interface Scheduler {
-  schedule<T>(
-    task: (signal: AbortSignal) => Promise<T>,
-    opts?: { priority?: Priority; signal?: AbortSignal; label?: string },
-  ): Promise<T>;
-  readonly inFlight: number;   // tasks currently executing
-  readonly pending: number;    // tasks queued waiting for a slot
-}
+function simulateDeploy(logs: EventEnvelope[][], next: FlowResolver): CompatibilityReport
+interface FlowResolver { getFlow(flowId: string): { definition: { version: string; steps: Array<{ id: string }> } } | undefined; }  // a booted WorkflowRuntime satisfies this
+interface CompatibilityIssue { executionId: string; workflowId: string; severity: "breaking" | "warning" | "info"; kind: "flow-missing" | "step-removed" | "suspended-carryover"; detail: string; }
+interface CompatibilityReport { checked: number; issues: CompatibilityIssue[]; ok: boolean; }
 #+end_src
 
-The default ~concurrency: Infinity~ *disables gating entirely*: ~schedule~ reduces to ~await task(signal)~ with no queue node, controller, or bookkeeping — *~zero overhead*. Overhead is only paid when a finite cap is explicitly set. Under a finite cap, queued tasks are ordered by ~(priority asc, enqueue order)~; a task's ~signal~ is honoured while it is still queued, so a cancel that arrives before it starts never occupies a slot.
-
-~SchedulerEvent~ (delivered to ~onEvent~) is one of ~{ type: "scheduled" }~, ~{ type: "started" }~, or ~{ type: "settled"; ok: boolean }~, each carrying the task's ~priority~ and optional ~label~.
+** ~@loom/scaffold~ — codegen & templates
 
 #+begin_src typescript
-const scheduler = createScheduler({ concurrency: 3 });
-
-// Fan several LLM calls through a shared cap; a live turn preempts background planning.
-const [a, b] = await Promise.all([
-  scheduler.schedule((signal) => provider.complete({ messages, signal }),
-                     { priority: Priority.UserBlocking, label: "live-turn" }),
-  scheduler.schedule((signal) => planner.compose(signal),
-                     { priority: Priority.Idle, label: "prefetch-plan" }),
-]);
+function pascal(name: string): string
+function generateRegistration(importPaths: string[]): string    // → the text of loom.gen.ts (static flowModules)
+function newFile(kind: "flow" | "agent" | "tool", name: string): { path: string; content: string }
+function appFiles(appName: string): Record<string, string>      // used by create-loom-app
+// plus flowFile / toolFile / agentFile
 #+end_src
 
-** ~parallelLimit(tasks, opts?)~
-
-Runs ~tasks~ with bounded concurrency, *preserving input order in the result array* — ~results[i]~ always corresponds to ~tasks[i]~ regardless of completion order. This ordering guarantee is load-bearing for Loom's replay determinism (it backs ~ctx.parallel~ and ~AgentRunner~'s ~parallelTools~).
+** ~@loom/compiler~ — build-time enhancement (optional)
 
 #+begin_src typescript
-function parallelLimit<T>(
-  tasks: Array<(signal: AbortSignal) => Promise<T>>,
-  opts?: { limit?: number; signal?: AbortSignal; failFast?: boolean },
-): Promise<T[]>;
+function loomPlugin(): Plugin                                    // Vite plugin: handler$ extraction, flow-graph analysis
+function buildManifest(state: PluginState, outDir?: string, root?: string): LoomManifest
+interface LoomManifest { version: "1"; flows: Record<string, ManifestFlow>; skills: Record<string, ManifestSkill>; flowModules: string[]; }
+// Serialization utils: fnv1a32(input) / shortHash(input).  CLI bin: `loom-compile`.
 #+end_src
 
-| Option     | Type          | Default     | Description                                                    |
-|------------+---------------+-------------+----------------------------------------------------------------|
-| ~limit~    | ~number~      | unbounded   | Max tasks running at once; ~≤ 0~ means unbounded               |
-| ~signal~   | ~AbortSignal~ | none        | Caller cancellation, linked into each task's signal            |
-| ~failFast~ | ~boolean~     | ~true~      | Abort siblings on the first rejection and reject with that error |
-
-Degenerates to ~Promise.all~ semantics when ~limit >= tasks.length~. With ~failFast: false~, every task runs to settlement and the first error (by input order) is thrown after all complete.
+** ~@loom/telemetry~
 
 #+begin_src typescript
-const pages = await parallelLimit(
-  urls.map((u) => (signal) => fetch(u, { signal }).then((r) => r.json())),
-  { limit: 5 },
-);
-// pages[i] corresponds to urls[i]
-#+end_src
+function createTelemetryHook(adapter: TelemetryAdapter): (event: EventEnvelope) => void   // wire on onEvent
+function composeAdapters(...adapters: TelemetryAdapter[]): TelemetryAdapter
+const ConsoleTelemetryAdapter: TelemetryAdapter;
 
-** ~yieldControl()~
-
-#+begin_src typescript
-function yieldControl(): Promise<void>;
-#+end_src
-
-Yields the current task back to the host via a *macrotask* boundary (~setTimeout(…, 0)~, unref'd), so the event loop genuinely drains between chunks — higher-priority work (and, in a browser, paint/input) can run before continuing. Use in CPU-bound loops that want to stay responsive, e.g. an interruptible tree walk (~traverseBlueprintAsync~ uses it by default).
-
-** AbortSignal utilities
-
-Small, dependency-free helpers for cooperative cancellation. All are optional-signal-safe: passing ~undefined~ allocates nothing and is a no-op, so the non-cancellable fast path pays zero cost.
-
-#+begin_src typescript
-function throwIfAborted(signal?: AbortSignal): void;
-function linkSignals(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined;
-function withTimeout(ms: number, parent?: AbortSignal): { signal: AbortSignal; dispose(): void };
-function signalReason(signal: AbortSignal): unknown;
-const NEVER_SIGNAL: AbortSignal;
-#+end_src
-
-| Helper            | Description                                                                                     |
-|-------------------+-------------------------------------------------------------------------------------------------|
-| ~throwIfAborted~  | Throws the signal's reason if it is already aborted; no-op when ~undefined~ or not aborted       |
-| ~linkSignals~     | Combines several signals into one that aborts when any input does; ~undefined~ if none supplied, the same signal if exactly one (prefers native ~AbortSignal.any~) |
-| ~withTimeout~     | Derives a signal that aborts after ~ms~ (a ~TimeoutError~) or when ~parent~ aborts; call ~dispose()~ when the work settles to release the timer/listener |
-| ~signalReason~    | Normalises an aborted signal's ~reason~ into a throwable (defaults to an ~AbortError~)           |
-| ~NEVER_SIGNAL~    | A single shared signal that never aborts — handed to a task when the caller supplied none, avoiding a per-call ~AbortController~ allocation |
-
-#+begin_src typescript
-const { signal, dispose } = withTimeout(5_000, ctx.signal);   // 5s budget, honours the parent
-try {
-  return await provider.complete({ messages, signal });
-} finally {
-  dispose();
+interface TelemetryAdapter {   // all methods optional
+  onFlowStart?(info: FlowTelemetryInfo): void;  onFlowComplete?; onFlowFail?; onFlowSuspend?; onFlowResume?;
+  onStepStart?(info: StepTelemetryInfo): void;  onStepComplete?; onStepFail?; onStepRetry?;
 }
 #+end_src
 
@@ -3041,171 +931,19 @@ try {
 :CUSTOM_ID: errors
 :END:
 
-| Class                  | When thrown                                                          |
-|------------------------+----------------------------------------------------------------------|
-| ~SuspendError~         | By ~HumanEffect~ or ~ctx.suspend()~; caught internally by ~WorkflowRuntime~ — do not catch in flow code |
-| ~StepError~            | Wraps a step's underlying error with ~stepId~ context                |
-| ~ReplayError~          | Indicates an invalid event sequence during replay                    |
-| ~WorkflowNotFoundError~| ~resume()~ called with an unknown ~executionId~                      |
-| ~StorageWriteError~    | A durable event write (async ~EventStore.append~) rejected; surfaced at the next flush barrier so ~waitForCompletion~/~waitForSuspend~ reject with it. Carries ~cause~. |
+Exported from ~@loom/core~:
 
-~SuspendError~ carries a ~condition: SuspendCondition~ field. It should never be caught in flow runner code — let ~WorkflowRuntime~ handle it.
+#+begin_src typescript
+class SuspendError extends Error         { readonly condition: SuspendCondition; constructor(condition: SuspendCondition); }
+class StepError extends Error            { constructor(stepId: string, cause: unknown); }
+class ReplayError extends Error          { constructor(message: string); }
+class WorkflowNotFoundError extends Error{ constructor(executionId: string); }
+class StorageWriteError extends Error    { constructor(cause: unknown); }
+#+end_src
+
+- ~SuspendError~ is thrown by ~HumanEffect~ / ~ctx.suspend~ to pause an execution — it is a *control-flow signal*, not a failure (never retried by middleware).
+- ~StorageWriteError~ surfaces a durable-write rejection at the next barrier.
 
 -----
 
-* Complete Example
-:PROPERTIES:
-:CUSTOM_ID: complete-example
-:END:
-
-A minimal agentic application: a flow that fetches data, waits for human approval, then applies a fix.
-
-#+begin_src typescript
-import {
-  flow$, step$, handler$, projection$,
-  WorkflowRuntime,
-  EffectRuntime,
-  type FlowRunner,
-} from "@loom/sdk";
-import { SqliteEventStore } from "@loom/event-runtime";
-import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import {
-  blueprint$, grid, MetricCard, ApprovalCard,
-} from "@loom/blueprint-runtime";
-import { z } from "zod";
-
-// ── 1. Define steps with co-located handlers ──────────────────────────────────
-// handler$ auto-registers LazyEffect via registerFlow — no manual effectRuntime.register needed
-
-const AnalyzeStep = step$({
-  id: "analyze",
-  inputSchema: z.object({ ticketId: z.string() }),
-  outputSchema: z.object({ severity: z.number(), summary: z.string() }),
-  handler: handler$(async (input) => ({
-    severity: 4,
-    summary: `High CPU spike detected for ticket ${input.ticketId}`,
-  })),
-});
-
-// No handler$ for suspension steps — ctx.suspend() in runner handles it
-const ApprovalStep = step$({
-  id: "approval-gate",
-  inputSchema: z.object({ ticketId: z.string() }),
-  outputSchema: z.unknown(),
-});
-
-const FixStep = step$({
-  id: "apply-fix",
-  inputSchema: z.object({ ticketId: z.string() }),
-  outputSchema: z.object({ applied: z.boolean() }),
-  handler: handler$(async (_input) => ({ applied: true })),
-  retry: { maxAttempts: 2, backoffMs: 1000 },
-});
-
-// ── 2. Define flow ────────────────────────────────────────────────────────────
-
-const TicketFlow = flow$({
-  id: "ticket-resolution",
-  name: "Ticket Resolution",
-  version: "1.0.0",
-  inputSchema: z.object({ ticketId: z.string() }),
-  outputSchema: z.object({ resolved: z.boolean() }),
-  steps: [AnalyzeStep, ApprovalStep, FixStep],
-});
-
-// ── 3. Write the runner ───────────────────────────────────────────────────────
-
-const ticketRunner: FlowRunner<{ ticketId: string }, { resolved: boolean }> = async (ctx, input) => {
-  ctx.emit("TICKET_STARTED", { ticketId: input.ticketId });
-
-  const analysis = await ctx.run(AnalyzeStep, { ticketId: input.ticketId });
-  ctx.emit("ANALYSIS_COMPLETE", analysis);
-
-  if (analysis.severity >= 3) {
-    ctx.emit("APPROVAL_REQUIRED", { ticketId: input.ticketId, ...analysis });
-    // Suspend until a "TicketApproved" event arrives via runtime.resume()
-    await ctx.suspend({ on: "TicketApproved", correlationKey: input.ticketId });
-  }
-
-  const result = await ctx.run(FixStep, { ticketId: input.ticketId });
-  ctx.emit("TICKET_RESOLVED", { ticketId: input.ticketId });
-
-  return { resolved: result.applied };
-};
-
-const RegisteredTicketFlow = { definition: TicketFlow, runner: ticketRunner };
-
-// ── 4. Wire up projections ───────────────────────────────────────────────────
-
-const TicketProjection = projection$({
-  id: "ticket",
-  name: "Ticket State",
-  initialState: { severity: null as number | null, awaitingApproval: false },
-  handlers: {
-    ANALYSIS_COMPLETE: (state, event) => ({
-      ...state,
-      severity: (event.payload as { severity: number }).severity,
-    }),
-    APPROVAL_REQUIRED: (state) => ({ ...state, awaitingApproval: true }),
-    TICKET_RESOLVED: (state) => ({ ...state, awaitingApproval: false }),
-  },
-});
-
-// ── 5. Define blueprint ───────────────────────────────────────────────────────
-
-const TicketBlueprint = blueprint$({
-  id: "ticket-dashboard",
-  title: "Ticket Resolution",
-  layout: grid({
-    columns: 2,
-    gap: 16,
-    children: [
-      MetricCard({
-        title: "Severity",
-        binding: { projectionId: "ticket", path: "severity" },
-      }),
-      ApprovalCard({
-        title: "Approve Fix",
-        binding: { projectionId: "ticket", path: "awaitingApproval" },
-        approveLabel: "Apply Fix",
-      }),
-    ],
-  }),
-  projections: ["ticket"],
-});
-
-// ── 6. Bootstrap runtime ──────────────────────────────────────────────────────
-
-const effectRuntime = new EffectRuntime();
-const projectionRuntime = new InMemoryProjectionRuntime();
-projectionRuntime.register(TicketProjection);
-
-const runtime = new WorkflowRuntime({
-  eventStore: new SqliteEventStore("./data/events.db"),
-  snapshotStore: new SqliteSnapshotStore("./data/snapshots.db"),
-  effectRuntime,
-  onEvent: (event) => projectionRuntime.handleEvent(event),
-});
-
-// registerFlow auto-wires LazyEffect for AnalyzeStep and FixStep (both have handler$)
-runtime.registerFlow(RegisteredTicketFlow.definition, RegisteredTicketFlow.runner);
-
-// ── 7. Start and interact ─────────────────────────────────────────────────────
-
-const handle = await runtime.start(RegisteredTicketFlow, { ticketId: "TICK-001" });
-
-handle.waitForSuspend().then(async () => {
-  console.log("Workflow suspended — awaiting approval");
-
-  setTimeout(async () => {
-    const resumeHandle = await runtime.resume(handle.executionId, {
-      eventType: "TicketApproved",
-      payload: { approvedBy: "ops-team" },
-    });
-    resumeHandle.waitForCompletion().then(() => {
-      console.log("Ticket resolved");
-    });
-  }, 2000);
-});
-#+end_src
+*See also:* [[file:architecture.md][Architecture]] · [[file:usage.md][Usage]] · [[file:user-guide.md][User Guide]] · [[file:adr/][ADRs]]
