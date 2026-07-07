@@ -34,6 +34,7 @@ export default defineConfig({
       "@loom/event-runtime",
       "@loom/intent",
       "@loom/llm",
+      "@loom/orchestrator",
       "@loom/planner",
       "@loom/projection-runtime",
       "@loom/registry",
