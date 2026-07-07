@@ -2,7 +2,8 @@
 // token, and a type-only import is erased at runtime, so Angular's dev transform
 // can't build the factory ("constructor was not compatible with Dependency
 // Injection"). AOT hides this because ngtsc resolves the token statically.
-import { Injectable, type NgZone, signal } from "@angular/core";
+// biome-ignore lint/style/useImportType: NgZone is a runtime Angular DI token — a type-only import erases it and breaks DI.
+import { Injectable, NgZone, signal } from "@angular/core";
 import { defineConfig } from "@loom/app";
 import type { EventEnvelope } from "@loom/core";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
