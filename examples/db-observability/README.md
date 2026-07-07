@@ -10,8 +10,10 @@ things:
   causal signals: pool saturation, slow queries, CPU trend…).
 
 The dashboard is a Loom **blueprint assembled at runtime** from an **available widget
-catalogue**, bound to live telemetry projections and rendered headlessly to the terminal.
-No dashboard is hand-authored — the UI is a function of *intent × catalogue × telemetry*.
+catalogue**, bound to live telemetry projections. No dashboard is hand-authored — the UI
+is a function of *intent × catalogue × telemetry*. The same blueprint renders on **two
+surfaces**: a headless terminal (text) and a **React dashboard where the WHAT/WHY metrics
+are drawn as visualisations** (a radial gauge, an area chart, a saturation bar, a table).
 
 ```
  question ─▶ agent.classifyIntent ─▶ { topic, kind }
@@ -52,30 +54,47 @@ different dashboard than a `connections` one, all from the same catalogue.
 
 ## Run it
 
+**Visual dashboard (browser):**
+
 ```bash
-pnpm --filter @loom/db-observability start   # asks 4 questions, prints a generated dashboard for each
-pnpm --filter @loom/db-observability test    # classification, dynamic assembly, and rendered output
+pnpm --filter @loom/db-observability dev       # http://localhost:5173 — ask a question, watch the charts
+pnpm --filter @loom/db-observability build:ui  # production bundle (dist/ui)
 ```
 
-Example (`Why is the CPU utilization high?`) renders a dashboard whose **WHAT** is the CPU
-metric (91%, saturated) and whose **WHY** surfaces the connection-pool saturation, the top
-slow queries, and the CPU trend — the causal story behind the number.
+Ask *"Why is the CPU utilization high?"* and the **WHAT** renders as a radial **gauge**
+(91 %, red zone) and the **WHY** as an area **chart** (CPU trend), a saturation **bar**
+(98/100 pool), and a **table** of the top slow queries — the causal story, visualised.
+Different questions generate different charts from the one catalogue. Toggle **Live** to
+push deterministic samples so the gauge/area animate.
 
-## Going visual
+**Headless (terminal):**
 
-The composer emits a framework-agnostic `Blueprint`. This example renders it with
-`@loom/renderer-terminal`; point `@loom/renderer-react`'s `BlueprintRenderer` at the same
-blueprint + projection runtime to get a live web dashboard — the composition logic is
-identical.
+```bash
+pnpm --filter @loom/db-observability start   # asks 4 questions, prints a generated dashboard for each
+pnpm --filter @loom/db-observability test    # classification, dynamic assembly, rendered output, registry
+```
+
+## One blueprint, two surfaces
+
+The composer emits a **framework-agnostic `Blueprint`** — the intent→WHAT/WHY brain
+(`agent`/`topics`/`catalogue`/`composer`) is shared verbatim. Only the *rendering* differs:
+- **terminal** (`@loom/renderer-terminal`) prints each widget as `title: value`.
+- **browser** (`@loom/renderer-react`) renders the *same* blueprint with a custom
+  `RendererRegistry`: our Recharts renderers (`src/browser/renderers.tsx`) are registered
+  under the standard widget-kind names and merged over the built-ins, so `MetricCard` →
+  gauge, `Timeline` → area chart, `ProgressBar` → bar, `DataTable` → table. No catalogue
+  change — the surface is a swap of the registry.
 
 ## Files
 
 | Path | Purpose |
 |------|---------|
-| `src/telemetry.ts` | Telemetry + answer projections, the seeded scenario, snapshot reader |
+| `src/telemetry.ts` | Telemetry + answer projections, seeded scenario, live-sample helpers |
 | `src/catalogue.ts` | The available widget catalogue (the palette) |
 | `src/topics.ts` | Per-topic WHAT/WHY causal models |
 | `src/agent.ts` | Offline intent classifier (`LlmProvider`) |
 | `src/composer.ts` | Classify → reason → assemble the blueprint dynamically |
-| `src/app.ts` / `src/main.ts` | Wiring + headless driver |
-| `test/observability.test.ts` | Classification, dynamic assembly, rendered output |
+| `src/wiring.ts` | `buildCore` — surface-agnostic projections + composer (terminal-free) |
+| `src/app.ts` / `src/main.ts` | Terminal wiring + headless driver |
+| `src/browser/` | React dashboard: `renderers.tsx` (Recharts), `registry.ts`, `App.tsx`, `main.tsx` |
+| `test/` | Classification, dynamic assembly, rendered output, browser registry |
