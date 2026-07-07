@@ -3,28 +3,22 @@
 // can't build the factory ("constructor was not compatible with Dependency
 // Injection"). AOT hides this because ngtsc resolves the token statically.
 import { Injectable, type NgZone, signal } from "@angular/core";
+import { defineConfig } from "@loom/app";
 import type { EventEnvelope } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { ConsoleTelemetryAdapter, createTelemetryHook } from "@loom/telemetry";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { ConsoleTelemetryAdapter } from "@loom/telemetry";
+import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 import {
   type IncidentInput,
   InvestigateIncidentFlow,
   type LogData,
   type MetricsData,
 } from "./incident.flow";
-import { InMemoryEventStore, InMemorySnapshotStore } from "./stores";
 
-// NOTE: this composition root is deliberately NOT migrated to `defineConfig`
-// from @loom/app. `defineConfig` statically imports @loom/event-runtime's
-// `SqliteEventStore`/`SqliteBranchRegistry` (→ native `better-sqlite3`) plus
-// `node:fs`/`node:path` at module top level. Even with `storage.kind:"memory"`
-// those eager imports get pulled into this browser (Vite) bundle, bloating it
-// and emitting `fs`/`path` "externalized for browser compatibility" warnings —
-// a regression for an example whose whole point is a clean, framework-agnostic
-// browser app. So we keep the honest manual wiring below, using the tiny
-// browser-safe in-memory stores in ./stores.
+// This composition root uses `defineConfig` from @loom/app. @loom/app lazy-loads
+// the SQLite stores (behind an opaque require + the `/memory` subpath), so
+// `storage.kind:"memory"` pulls NO better-sqlite3 / node:fs into this browser
+// bundle — the same reason the React / Web-Components examples stay clean.
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
@@ -90,11 +84,8 @@ const IncidentProjection = {
 @Injectable({ providedIn: "root" })
 export class LoomService {
   // ── Runtimes (private — framework code never touches these) ───────────────
-  private readonly eventStore = new InMemoryEventStore();
-  private readonly effectRuntime = new EffectRuntime();
   private readonly projectionRuntime = new InMemoryProjectionRuntime();
   private readonly workflowRuntime: WorkflowRuntime;
-  private readonly telemetryHook = createTelemetryHook(ConsoleTelemetryAdapter);
 
   // ── Angular signals — reactive state exposed to the template ──────────────
   readonly phase = signal<Phase>("idle");
@@ -105,16 +96,18 @@ export class LoomService {
   constructor(private readonly zone: NgZone) {
     this.projectionRuntime.register(IncidentProjection);
 
-    this.workflowRuntime = new WorkflowRuntime({
-      eventStore: this.eventStore,
-      snapshotStore: new InMemorySnapshotStore(),
-      effectRuntime: this.effectRuntime,
+    // defineConfig assembles the stores (in-memory), EffectRuntime, projection
+    // wiring (onEvent → handleEvent), telemetry, and the WorkflowRuntime, and
+    // registers the flow. We keep the custom projection runtime + an extra
+    // onEvent observer to push folded state into Angular signals inside the zone.
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      projectionRuntime: this.projectionRuntime,
+      telemetry: [ConsoleTelemetryAdapter],
+      flows: [InvestigateIncidentFlow as RegisteredFlow],
       onEvent: (e: EventEnvelope) => {
-        // Run inside Angular zone so signal updates trigger change detection
+        // Run inside Angular zone so signal updates trigger change detection.
         this.zone.run(() => {
-          this.projectionRuntime.handleEvent(e);
-          this.telemetryHook(e);
-
           const execId = this.executionId();
           if (execId) {
             const st = this.projectionRuntime.getState<IncidentState>("incident", execId);
@@ -134,10 +127,7 @@ export class LoomService {
       },
     });
 
-    this.workflowRuntime.registerFlow(
-      InvestigateIncidentFlow.definition,
-      InvestigateIncidentFlow.runner
-    );
+    this.workflowRuntime = app.runtime;
   }
 
   async startInvestigation(incidentId: string): Promise<void> {

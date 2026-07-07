@@ -1,21 +1,22 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
 import type { AgentCard } from "@loom/a2a";
 import { a2uiSurfaceProjection } from "@loom/a2ui";
 import type { EventEnvelope } from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
 import { EffectRuntime } from "@loom/effect-runtime";
 import type { EffectMiddleware } from "@loom/effect-runtime";
-import {
-  InMemoryAsyncEventStore,
-  SqliteBranchRegistry,
-  SqliteEventStore,
-} from "@loom/event-runtime";
 import type { BranchRegistry, EventStore } from "@loom/event-runtime";
+// Only the in-memory stores are imported statically — they are pure JS. We import
+// them from the browser-safe `/memory` SUBPATH rather than the package barrel: the
+// barrel also re-exports the SQLite stores (which `import "better-sqlite3"`), and
+// these packages compile to CommonJS — which bundlers cannot tree-shake. The subpath
+// keeps better-sqlite3 / node:fs out of browser bundles. The SQLite stores +
+// node:fs/path are loaded lazily on the `kind:"sqlite"` path only (see
+// `loadNodeModule`), so a browser app using in-memory storage stays clean.
+import { InMemoryAsyncEventStore } from "@loom/event-runtime/memory";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
-import { InMemoryAsyncSnapshotStore, SqliteSnapshotStore } from "@loom/snapshot-runtime";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime/memory";
 import { composeAdapters, createTelemetryHook } from "@loom/telemetry";
 import type { TelemetryAdapter } from "@loom/telemetry";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
@@ -110,8 +111,31 @@ export interface LoomApp {
   close(): Promise<void>;
 }
 
+/**
+ * Load a Node-only module lazily, opaque to bundlers. The `eval("require")`
+ * indirection means Vite/Rollup do NOT follow this into the module graph, so a
+ * browser app using in-memory storage never bundles better-sqlite3 / node:fs. It
+ * is only ever reached on the `kind:"sqlite"` path (never in a browser). Types
+ * come from `typeof import(...)` (erased at build time — no runtime import). The
+ * `typeof import(...)` queries are erased by the compiler and never bundled.
+ */
+function loadNodeModule<T>(id: string): T {
+  // A bundler-opaque require: keeps native SQLite deps out of browser bundles while
+  // defineConfig stays synchronous (a dynamic import() would force it to be async).
+  // biome-ignore lint/security/noGlobalEval: intentional bundler-opaque require (see above)
+  const req = eval("require") as (moduleId: string) => unknown;
+  return req(id) as T;
+}
+
 function buildStores(storage: StorageConfig): LoomStores {
   if (storage.kind === "sqlite") {
+    const fs = loadNodeModule<typeof import("node:fs")>("node:fs");
+    const path = loadNodeModule<typeof import("node:path")>("node:path");
+    const { SqliteEventStore, SqliteBranchRegistry } =
+      loadNodeModule<typeof import("@loom/event-runtime")>("@loom/event-runtime");
+    const { SqliteSnapshotStore } =
+      loadNodeModule<typeof import("@loom/snapshot-runtime")>("@loom/snapshot-runtime");
+
     const dir = storage.dir ?? ".loom";
     fs.mkdirSync(dir, { recursive: true });
     const stores: LoomStores = {
