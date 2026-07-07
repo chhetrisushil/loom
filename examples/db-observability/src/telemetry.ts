@@ -48,11 +48,14 @@ export interface TelemetrySnapshot {
 
 // A generic "replace state from the event payload" fold — enough for a demo where we
 // seed a scenario; a real deployment would fold incremental METRIC_SAMPLED events.
+// Each projection listens on its own `<id>.sample` event so a live update can target
+// one projection (handleEvent applies an event to EVERY projection with a handler for
+// that type).
 function replace<T>(id: string, initialState: T): Projection<T> {
   return {
     id,
     initialState,
-    handlers: { SAMPLE: (_state: T, event: EventEnvelope) => event.payload as T },
+    handlers: { [`${id}.sample`]: (_state: T, event: EventEnvelope) => event.payload as T },
   };
 }
 
@@ -121,5 +124,44 @@ export function readTelemetry(pr: ProjectionRuntime, executionId: string): Telem
     connections: pr.getState<ConnectionsState>("connections", executionId),
     replication: pr.getState<ReplicationState>("replication", executionId),
     queries: pr.getState<QueriesState>("queries", executionId),
+  };
+}
+
+// ── Live telemetry (browser "Live" toggle) ────────────────────────────────────
+// Deterministic oscillation (sine of a tick, NOT Math.random) so the gauge/area
+// animate. handleEvent fires subscribers → bound widgets re-render.
+let seq = 1;
+export function sampleEvent(
+  projectionId: string,
+  executionId: string,
+  payload: unknown
+): EventEnvelope {
+  return {
+    id: `${projectionId}-${seq}`,
+    workflowId: "observability",
+    executionId,
+    eventType: `${projectionId}.sample`,
+    sequence: seq++,
+    timestamp: 0,
+    payload,
+  };
+}
+
+export function nextCpuSample(prev: CpuState, tick: number): CpuState {
+  const current = Math.round(88 + Math.sin(tick / 2) * 6); // 82–94, deterministic
+  return {
+    current,
+    status: current >= 85 ? "saturated" : "elevated",
+    history: [...prev.history.slice(-11), current],
+  };
+}
+
+export function nextConnectionsSample(prev: ConnectionsState, tick: number): ConnectionsState {
+  const active = Math.min(prev.limit, Math.round(94 + Math.sin(tick / 2 + 1) * 5)); // 89–99
+  return {
+    ...prev,
+    active,
+    waiting: Math.max(0, active - 88),
+    status: active >= 95 ? "critical" : "warning",
   };
 }

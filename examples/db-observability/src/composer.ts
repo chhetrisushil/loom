@@ -1,5 +1,5 @@
-import { StatusBadge, blueprint$, stack } from "@loom/blueprint-runtime";
-import type { Blueprint, Widget } from "@loom/blueprint-runtime";
+import { StatusBadge, blueprint$, grid, stack } from "@loom/blueprint-runtime";
+import type { Blueprint, Layout, Widget } from "@loom/blueprint-runtime";
 import type { LlmProvider } from "@loom/llm";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import { type Classification, classifyIntent } from "./agent";
@@ -69,20 +69,21 @@ export class DashboardComposer {
     primaryWidget: string,
     whyWidgets: string[]
   ): Blueprint {
-    const children: Widget[] = [
+    // A WHAT section (the direct answer + its primary widget) then a WHY section (the
+    // explanation + the causal widgets in a grid). The terminal renderer ignores `gap`
+    // and flattens the grid; the browser renders it as a real 2-column dashboard.
+    const children: Array<Widget | Layout> = [
       StatusBadge({ title: "You asked", binding: { projectionId: "answer", path: "question" } }),
-      // WHAT — the direct answer + the primary metric widget.
       StatusBadge({ title: "▶ WHAT", binding: { projectionId: "answer", path: "what" } }),
       catalogueEntry(primaryWidget).build(),
-      // WHY — the supporting explanation + the causal widgets.
       StatusBadge({ title: "▶ WHY", binding: { projectionId: "answer", path: "why" } }),
-      ...whyWidgets.map((id) => catalogueEntry(id).build()),
+      grid({ columns: 2, gap: 16, children: whyWidgets.map((id) => catalogueEntry(id).build()) }),
     ];
 
     return blueprint$({
       id: `observability-${classification.topic}`,
       title: `DB Observability — ${TOPIC_MODELS[classification.topic].label}`,
-      layout: stack({ gap: 1, children }),
+      layout: stack({ gap: 16, children }),
       projections: ALL_PROJECTIONS,
     });
   }

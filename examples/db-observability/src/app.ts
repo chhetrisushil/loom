@@ -1,9 +1,7 @@
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import { TerminalRenderer } from "@loom/renderer-terminal";
-import { ObservabilityLlmProvider } from "./agent";
-import { DashboardComposer } from "./composer";
-import { TELEMETRY_PROJECTIONS, answerProjection, seedScenario } from "./telemetry";
+import type { DashboardComposer } from "./composer";
+import { buildCore } from "./wiring";
 
 export interface ObservabilityApp {
   projectionRuntime: ProjectionRuntime;
@@ -13,21 +11,12 @@ export interface ObservabilityApp {
 }
 
 /**
- * Wire the projection runtime (telemetry + answer read-models), seed the demo
- * scenario, and build the composer + terminal renderer. Swap the provider for a live
- * model, or the renderer for @loom/renderer-react, without touching the composer.
+ * Terminal wiring: the surface-agnostic core (src/wiring.ts) plus a TerminalRenderer.
+ * The browser UI (src/browser) reuses `buildCore` directly and renders the same
+ * blueprint with React instead — one brain, two surfaces.
  */
 export function buildApp(executionId = "session-1"): ObservabilityApp {
-  const projectionRuntime = new InMemoryProjectionRuntime();
-  for (const projection of TELEMETRY_PROJECTIONS) projectionRuntime.register(projection);
-  projectionRuntime.register(answerProjection);
-  seedScenario(projectionRuntime, executionId);
-
-  const composer = new DashboardComposer(
-    projectionRuntime,
-    new ObservabilityLlmProvider(),
-    executionId
-  );
-  const renderer = new TerminalRenderer(projectionRuntime);
-  return { projectionRuntime, composer, renderer, executionId };
+  const core = buildCore(executionId);
+  const renderer = new TerminalRenderer(core.projectionRuntime);
+  return { ...core, renderer };
 }
