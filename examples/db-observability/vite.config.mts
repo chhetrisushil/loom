@@ -8,11 +8,14 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react()],
   resolve: { conditions: ["require", "default"] },
+  // Pre-bundle the CJS @loom packages the browser imports as runtime values. Only
+  // packages declared in this example's package.json are listed — @loom/effect-runtime
+  // is a transitive dep of @loom/llm (imported type-only here), so it must NOT be an
+  // explicit entry or Vite fails to resolve it from the example root.
   optimizeDeps: {
     include: [
       "@loom/blueprint-runtime",
       "@loom/core",
-      "@loom/effect-runtime",
       "@loom/llm",
       "@loom/projection-runtime",
       "@loom/renderer-react",
