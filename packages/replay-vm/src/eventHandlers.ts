@@ -217,6 +217,48 @@ const handlers: Record<string, Handler> = {
     };
   },
 
+  // Loom 2.0 (K3) — accumulate metered resource usage (tokens / cost / wall-time)
+  // into a reserved `_resources` running total. Emitted by accounting middleware
+  // when an effect actually runs, so the total is deterministic on replay.
+  RESOURCE_METERED: (state, event) => {
+    const p = event.payload as { tokens?: number; costUsd?: number; ms?: number };
+    const r = (state.variables._resources as
+      | { tokens: number; costUsd: number; ms: number; count: number; exceeded?: boolean }
+      | undefined) ?? { tokens: 0, costUsd: 0, ms: 0, count: 0 };
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _resources: {
+          tokens: r.tokens + (p.tokens ?? 0),
+          costUsd: r.costUsd + (p.costUsd ?? 0),
+          ms: r.ms + (p.ms ?? 0),
+          count: r.count + 1,
+          ...(r.exceeded === true && { exceeded: true }),
+        },
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
+  // A quota admission-control denial: the execution exceeded its budget, so the
+  // effect was refused. Marks `_resources.exceeded` (the STEP_FAILED that follows
+  // fails the step). Pure audit.
+  QUOTA_EXCEEDED: (state, event) => {
+    const p = event.payload as { reason?: string };
+    const r = (state.variables._resources as
+      | { tokens: number; costUsd: number; ms: number; count: number; exceeded?: boolean }
+      | undefined) ?? { tokens: 0, costUsd: 0, ms: 0, count: 0 };
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _resources: { ...r, exceeded: true, ...(p.reason !== undefined && { reason: p.reason }) },
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
   EXECUTION_COMPLETED: (state, event) => {
     const payload = event.payload as { output?: unknown };
     return {

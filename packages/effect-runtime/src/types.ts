@@ -2,6 +2,21 @@ import type { EffectKind } from "@loom/core";
 
 export type { EffectKind };
 
+/**
+ * Running resource totals for the owning execution (Loom 2.0 K3). Threaded into
+ * each effect's context so accounting/quota middleware can meter usage and enforce
+ * budgets. Accumulated durably in `variables._resources` via RESOURCE_METERED, so
+ * the snapshot is deterministic on replay.
+ */
+export interface ResourceSnapshot {
+  tokens: number;
+  costUsd: number;
+  ms: number;
+  count: number;
+  /** Set once a quota has been exceeded. */
+  exceeded?: boolean;
+}
+
 export interface EffectContext {
   executionId: string;
   stepId: string;
@@ -15,6 +30,11 @@ export interface EffectContext {
    * default, so non-cancellable effects pay nothing.
    */
   readonly signal?: AbortSignal;
+  /**
+   * Running resource totals for this execution BEFORE this effect (K3). Undefined
+   * when accounting is not wired, so effects/middleware that don't meter pay nothing.
+   */
+  readonly resources?: ResourceSnapshot;
 }
 
 export interface Effect<TIn = unknown, TOut = unknown> {

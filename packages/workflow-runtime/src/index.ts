@@ -13,6 +13,8 @@ export type {
   SuspendConfig,
   WorkflowContext,
 } from "./types";
+export { KERNEL_ABI, KERNEL_ABI_VERSION, KERNEL_SYSCALLS } from "./abi";
+export type { KernelAbi, KernelSyscall, SyscallKind } from "./abi";
 export {
   serializeExecution,
   deserializeExecution,

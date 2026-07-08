@@ -10,6 +10,7 @@ export type {
   EffectKind,
   EffectMiddleware,
   EffectNext,
+  ResourceSnapshot,
 } from "./types";
 export { CapabilityDeniedError, GrantTable } from "./authz";
 export type {
