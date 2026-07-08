@@ -9,3 +9,17 @@ export {
   type Pricing,
   type ResourceDelta,
 } from "./metering";
+export {
+  safetyMiddleware,
+  SafetyViolationError,
+  denyPatterns,
+  piiValidator,
+  schemaValidator,
+  killSwitch,
+  type SafetyPhase,
+  type SafetyCheckInfo,
+  type SafetyVerdict,
+  type SafetyValidator,
+  type SafetyOptions,
+  type SchemaLike,
+} from "./safety";

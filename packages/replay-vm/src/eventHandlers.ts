@@ -217,6 +217,39 @@ const handlers: Record<string, Handler> = {
     };
   },
 
+  // Loom 2.0 (K6) — a behavioral-safety block: a safety validator refused an
+  // effect's input or output. Recorded as a durable audit fact in a reserved
+  // `_safety` list (the step itself still fails via the STEP_FAILED that follows).
+  // Pure audit — it does not change frame/execution status, so a blocked run
+  // reconstructs its safety verdict exactly on replay.
+  SAFETY_BLOCKED: (state, event) => {
+    const p = event.payload as {
+      validatorId: string;
+      stepId?: string;
+      phase?: string;
+      reason?: string;
+      category?: string;
+    };
+    const existing = (state.variables._safety as unknown[] | undefined) ?? [];
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _safety: [
+          ...existing,
+          {
+            validatorId: p.validatorId,
+            ...(p.stepId !== undefined && { stepId: p.stepId }),
+            ...(p.phase !== undefined && { phase: p.phase }),
+            ...(p.reason !== undefined && { reason: p.reason }),
+            ...(p.category !== undefined && { category: p.category }),
+          },
+        ],
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
   // Loom 2.0 (K3) — accumulate metered resource usage (tokens / cost / wall-time)
   // into a reserved `_resources` running total. Emitted by accounting middleware
   // when an effect actually runs, so the total is deterministic on replay.
@@ -308,7 +341,7 @@ export function getHandler(eventType: string): Handler | undefined {
 // Governance: adding an event type is additive (bump MINOR, update the pinned list);
 // removing or repurposing one changes how historical logs fold and is a MAJOR break
 // that must be deliberate — the conformance test pins `knownEventTypes()`.
-export const EVENT_SCHEMA_VERSION = "1.0.0";
+export const EVENT_SCHEMA_VERSION = "1.1.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
