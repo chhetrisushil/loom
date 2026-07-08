@@ -5,12 +5,17 @@
 // Explicit re-exports compile to detectable named exports and fix that.
 export type { EventEnvelope } from "./types/event";
 export type {
+  Execution,
   ExecutionFrame,
+  ExecutionFromStateOpts,
+  ExecutionPolicy,
+  ExecutionResources,
   ExecutionState,
   ExecutionStatus,
   FrameStatus,
   SuspendCondition,
 } from "./types/execution";
+export { executionFromState } from "./types/execution";
 export {
   ReplayError,
   StepError,
@@ -37,6 +42,9 @@ export type {
   SkillDefinition,
   StepDefinition,
   StepHandlerContext,
+  ExecutableTask,
+  TaskDefinition,
+  TaskKind,
   ToolDefinition,
 } from "./types/definitions";
 export {

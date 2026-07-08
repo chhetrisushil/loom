@@ -1,7 +1,7 @@
 import { createA2UIEmitter } from "@loom/a2ui";
 import type { A2UIEmitter } from "@loom/a2ui";
 import { SuspendError } from "@loom/core";
-import type { StepDefinition } from "@loom/core";
+import type { ExecutableTask, StepDefinition } from "@loom/core";
 import type { EffectRuntime } from "@loom/effect-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
 import { parallelLimit } from "@loom/scheduler";
@@ -41,26 +41,31 @@ export class WorkflowContextImpl implements WorkflowContext {
     this.journal.commit(eventType, payload);
   }
 
-  async run<TIn = unknown, TOut = unknown>(
-    step: StepDefinition<TIn, TOut>,
+  // Loom 2.0 — the generalized durable primitive. `run` is now a thin alias that
+  // forwards a StepDefinition (the 'step' task kind) here. All task kinds resolve
+  // through the EffectRuntime by toolId, and the wire events stay STEP_* so
+  // existing logs replay byte-identically.
+  async execute<TIn = unknown, TOut = unknown>(
+    task: ExecutableTask<TIn, TOut>,
     input: TIn
   ): Promise<TOut> {
-    if (this.vm.hasCompleted(step.id)) {
-      return this.vm.getOutput(step.id) as TOut;
+    const id = task.id;
+    if (this.vm.hasCompleted(id)) {
+      return this.vm.getOutput(id) as TOut;
     }
 
-    this.emit("STEP_STARTED", { stepId: step.id, input });
+    this.emit("STEP_STARTED", { stepId: id, input });
 
     const effectCtx = {
       executionId: this.executionId,
-      stepId: step.id,
+      stepId: id,
       workflowId: this.workflowId,
-      attempt: this.vm.getState().frames[step.id]?.attempts ?? 1,
+      attempt: this.vm.getState().frames[id]?.attempts ?? 1,
       emit: (eventType: string, payload: unknown) => this.emit(eventType, payload),
       ...(this.signal !== undefined && { signal: this.signal }),
     };
 
-    const toolId = step.toolId ?? step.id;
+    const toolId = task.toolId ?? id;
 
     let output: TOut;
     try {
@@ -73,15 +78,19 @@ export class WorkflowContextImpl implements WorkflowContext {
       // a cancelled step (not a failure) so the event log and replayed state stay
       // truthful; EXECUTION_CANCELLED owns the execution-level status.
       if (this.signal?.aborted === true) {
-        this.emit("STEP_CANCELLED", { stepId: step.id });
+        this.emit("STEP_CANCELLED", { stepId: id });
         throw err;
       }
-      this.emit("STEP_FAILED", { stepId: step.id, error: String(err) });
+      this.emit("STEP_FAILED", { stepId: id, error: String(err) });
       throw err;
     }
 
-    this.emit("STEP_COMPLETED", { stepId: step.id, output });
+    this.emit("STEP_COMPLETED", { stepId: id, output });
     return output;
+  }
+
+  run<TIn = unknown, TOut = unknown>(step: StepDefinition<TIn, TOut>, input: TIn): Promise<TOut> {
+    return this.execute<TIn, TOut>(step, input);
   }
 
   async parallel<TResults extends unknown[]>(

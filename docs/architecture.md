@@ -94,6 +94,14 @@ Each capability is a **pure, unit-testable core** (a fold, a format, a validate,
 
 The durable runtime has **no environment assumptions**. Storage, compute placement, LLM providers, and renderers are all interfaces (`EventStore`, `WorkerRuntime`, `LlmProvider`, renderers). The same flow runs in-process in a test, in a browser tab, on a Node server with SQLite, or on Cloud Run — because the core depends only on interfaces, and adapters supply the edges.
 
+### P9 — Non-determinism is allowed, but only when logged *(Loom 2.0)*
+
+A runtime may route between models, elevate to a stronger one, learn, or optimize — but every such choice is emitted as a durable decision event (`DECISION_RECORDED`) and served from the log on replay, exactly as completed effects are. Replay therefore stays a pure fold (**P2 is untouched**): a given execution reconstructs bit-for-bit forever, even as *outcomes improve run-to-run*. This evolves P2 to admit intelligence without regressing determinism. See [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
+
+### P10 — Minimal kernel; intelligence lives in an advisory plane *(Loom 2.0)*
+
+The durable core stays small and boring (execution + event log + determinism + effect isolation). Everything "smart" — scheduling, reasoning, memory, prediction, optimization — is an **optional, composable module** in an ephemeral advisory plane that can affect *outcomes* only through logged decisions (P9) or *latency* only through off-log warming, and is **never a hidden input to the fold**. You never pay for a runtime you did not opt into; the simple path (`ctx.run`) stays a one-liner and the zero-overhead default is preserved. See [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
+
 ---
 
 ## 3. The big picture
