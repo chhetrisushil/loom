@@ -1353,6 +1353,9 @@ importers:
       '@loom/replay-vm':
         specifier: workspace:*
         version: link:../replay-vm
+      '@loom/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
