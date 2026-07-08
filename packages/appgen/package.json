@@ -1,0 +1,26 @@
+{
+  "name": "@loom/appgen",
+  "version": "0.0.1",
+  "description": "AI-native DX for Loom — turn a natural-language intent into a structured AppSpec, then emit plain, static, inspectable TypeScript you own (flows, steps, capabilities, defineConfig). Codegen, never a runtime NL interpreter.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
