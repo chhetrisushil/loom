@@ -13,10 +13,14 @@ New to Loom? Start with [[file:getting-started.md][Getting Started]] and the [[f
 4.  [[#replay-storage][Replay & storage]] — ~@loom/replay-vm~, ~@loom/event-runtime~, ~@loom/snapshot-runtime~
 5.  [[#effects][Effects]] (~@loom/effect-runtime~) — ~Effect~, ~EffectRuntime~, middleware, the four effect kinds
 6.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/a2ui~, ~@loom/blueprint-runtime~, ~@loom/renderer-react~, ~@loom/renderer-terminal~
-7.  [[#agentic][Agentic]] — ~@loom/llm~, ~@loom/agent~, ~@loom/mcp~, ~@loom/a2a~, ~@loom/capability~, ~@loom/intent~, ~@loom/planner~, ~@loom/memory~, ~@loom/orchestrator~
-8.  [[#compute][Compute & distribution]] — ~@loom/dispatcher~, ~@loom/worker-runtime~ (+ ~-local~/~-remote~), ~@loom/worker-server~, ~@loom/platform-cloudrun~, ~@loom/graph-executor~, ~@loom/scheduler~
-9.  [[#dx][DX & tooling]] — ~@loom/cli~, ~@loom/testing~, ~@loom/eval~, ~@loom/deploy-sim~, ~@loom/scaffold~, ~@loom/compiler~, ~@loom/telemetry~
+7.  [[#agentic][Agentic]] — ~@loom/llm~, ~@loom/reasoning~, ~@loom/agent~, ~@loom/mcp~, ~@loom/a2a~, ~@loom/capability~, ~@loom/intent~, ~@loom/planner~, ~@loom/memory~, ~@loom/orchestrator~
+8.  [[#compute][Compute & distribution]] — ~@loom/dispatcher~, ~@loom/worker-runtime~ (+ ~-local~/~-remote~), ~@loom/worker-server~, ~@loom/platform-cloudrun~, ~@loom/store-postgres~, ~@loom/graph-executor~, ~@loom/scheduler~
+9.  [[#dx][DX & tooling]] — ~@loom/analytics~, ~@loom/appgen~, ~@loom/cli~, ~@loom/testing~, ~@loom/eval~, ~@loom/deploy-sim~, ~@loom/scaffold~, ~@loom/compiler~, ~@loom/telemetry~
 10. [[#errors][Errors]]
+
+#+begin_quote
+*Loom 2.0.* Entries new or extended in the execution-kernel evolution are marked *(2.0)* inline. New packages: ~@loom/reasoning~, ~@loom/store-postgres~, ~@loom/analytics~, ~@loom/appgen~. For data structures, algorithms, and diagrams see [[file:loom-2.0/00-overview.md][docs/loom-2.0/]].
+#+end_quote
 
 -----
 
@@ -157,6 +161,31 @@ interface ExecutionState {
 }
 #+end_src
 
+*Reserved ~variables~ keys (2.0):* ~_decisions~ (logged ~ctx.decide~ choices, P9), ~_denials~ (capability ~EFFECT_DENIED~ audit, K2), and ~_resources~ (metered totals ~{ tokens, costUsd, ms, count, exceeded? }~, K3). See the [[file:loom-2.0/10-event-schema-reference.md][event-schema reference]].
+
+*Tasks & the process-control-block (2.0).* A step generalizes to a *task*; the minimal ~Execution~ PCB and its out-of-core ~ExecutionPolicy~ sidecar carry scheduling/compute/memory intent without bloating the core.
+
+#+begin_src typescript
+type TaskKind = "step" | "llm" | "agent" | "tool" | "ui" | "memory" | "human" | "plan";
+interface TaskDefinition<TIn, TOut> {
+  readonly _tag: "TaskDefinition"; kind: TaskKind; id: string; name?: string;
+  toolId?: string; inputSchema?: ZodSchema<TIn>; outputSchema?: ZodSchema<TOut>;
+  retry?: RetryPolicy; timeoutMs?: number;
+}
+type ExecutableTask<TIn, TOut> = StepDefinition<TIn, TOut> | TaskDefinition<TIn, TOut>;
+
+interface Execution {                         // minimal PCB — a projection of ExecutionState
+  id: string; status: ExecutionStatus; frames: Record<string, ExecutionFrame>;
+  sequence: number; parent?: string; children?: string[]; tags?: string[];
+}
+interface ExecutionPolicy {                   // opt-in sidecar (owned by scheduler/compute/reasoning)
+  executionId?: string; priority?: number;
+  resources?: { cpu?: number; memoryMb?: number; gpu?: boolean };
+  computeTarget?: string; memoryScope?: string; affinity?: string; retryPolicy?: RetryPolicy; tags?: string[];
+}
+function executionFromState(state: ExecutionState, opts?: { parent?: string; children?: string[]; tags?: string[] }): Execution;
+#+end_src
+
 *State is a pure fold of the event log* — see [[#replay-storage][~foldEvents~]].
 
 -----
@@ -268,6 +297,20 @@ interface RetryOptions {
 
 Never retries a ~SuspendError~ or a cancelled (aborted-signal) execution.
 
+*Resource accounting & quotas (2.0, K3).* ~meteringMiddleware~ meters every effect onto the log and enforces a budget by admission control.
+
+#+begin_src typescript
+function meteringMiddleware(options: MeteringOptions): EffectMiddleware
+interface MeteringOptions { pricing: Pricing; budget?: Budget; clock?: () => number; }
+type Pricing = (info: { stepId: string; input: unknown; result: unknown; ms: number }) => ResourceDelta;
+interface ResourceDelta { tokens?: number; costUsd?: number; ms?: number; }
+interface Budget { maxTokens?: number; maxCostUsd?: number; }        // over-budget ⇒ QUOTA_EXCEEDED + QuotaExceededError
+function llmUsageTokens(result: unknown): number;                    // reads { usage: { inputTokens, outputTokens } }
+class QuotaExceededError extends Error { readonly reason: string; }
+#+end_src
+
+Emits ~RESOURCE_METERED~ (folds into ~variables._resources~); replay-safe (metered facts live on the log).
+
 ** ~@loom/registry~ — agent registry
 
 #+begin_src typescript
@@ -312,15 +355,20 @@ class WorkflowRuntime {
 }
 #+end_src
 
-** ~WorkflowContext~ — the flow API
+~WorkflowRuntime~ is also exported as *~ExecutionRuntime~ (2.0)* — the same class, renamed for the execution-kernel framing.
 
-The ~ctx~ handed to every runner. Every call is durable, ordered, and replayable.
+** ~ExecutionContext~ — the flow API *(2.0; ~WorkflowContext~ is an alias)*
+
+The ~ctx~ handed to every runner. Every call is durable, ordered, and replayable — and is the kernel's *versioned syscall surface* (K1).
 
 #+begin_src typescript
-interface WorkflowContext {
+interface ExecutionContext {
   readonly executionId: string;
   readonly workflowId: string;
-  run<TIn, TOut>(step: StepDefinition<TIn, TOut>, input: TIn): Promise<TOut>;         // memoized on replay
+  execute<TIn, TOut>(task: ExecutableTask<TIn, TOut>, input: TIn): Promise<TOut>;      // (2.0) generalized primitive
+  run<TIn, TOut>(step: StepDefinition<TIn, TOut>, input: TIn): Promise<TOut>;          // thin alias; memoized on replay
+  decide<T>(id: string, decider: () => T | Promise<T>,
+            opts?: { rationale?: unknown; source?: string }): Promise<T>;              // (2.0, P9) log an optimizer choice
   parallel<T extends unknown[]>(
     pairs: { [K in keyof T]: [StepDefinition<unknown, T[K]>, unknown] },
     options?: { limit?: number }
@@ -330,6 +378,15 @@ interface WorkflowContext {
   stream(eventType: string, delta: string, done?: boolean): void;                      // token streaming
   readonly ui: A2UIEmitter;                                                            // ctx.ui.set/merge/append …
 }
+#+end_src
+
+*The kernel ABI (2.0, K1).* The syscall surface is named and versioned; a conformance test pins it.
+
+#+begin_src typescript
+const KERNEL_ABI_VERSION: string;   // semver, e.g. "1.0.0"
+const KERNEL_SYSCALLS: readonly { name: string; kind: "call" | "accessor"; since: string; summary: string }[];
+const KERNEL_ABI: { version: string; syscalls: typeof KERNEL_SYSCALLS };
+// syscalls: execute · run · decide · parallel · suspend · emit · stream · ui
 #+end_src
 
 ** ~ExecutionHandle~ & related types
@@ -376,6 +433,13 @@ class ReplayVM {
 #+end_src
 
 ~foldEvents~ is a pure left-fold — the entire basis of durability, resume, and fork. (It uses copy-on-write structural sharing; see [[file:adr/0015-dsa-performance-optimizations.md][ADR 0015]].)
+
+*Event-schema ABI (2.0, K5).* The event log is the kernel's on-disk ABI; the handled event set is versioned and pinned.
+
+#+begin_src typescript
+const EVENT_SCHEMA_VERSION: string;      // semver
+function knownEventTypes(): string[];    // the sorted set the fold understands (pinned by a governance test)
+#+end_src
 
 ** ~@loom/event-runtime~ — the durable log
 
@@ -434,6 +498,20 @@ class SqliteSnapshotStore        { constructor(dbPath: string) }
 
 Browser-safe subpath: ~@loom/snapshot-runtime/memory~.
 
+** ~@loom/store-postgres~ — scale-out storage *(2.0)*
+
+Postgres implementations of the three store interfaces above — the horizontal-scale backend. Same contracts as the SQLite stores (JSONB payloads, server-side ~copyPrefix~), plus *cross-node live subscribe* via ~LISTEN/NOTIFY~.
+
+#+begin_src typescript
+type PgConfig = string | PoolConfig | Pool;   // connection string, pg config, or a shared Pool
+class PostgresEventStore    implements EventStore     { constructor(config: PgConfig) }   // subscribe() fans across nodes
+class PostgresSnapshotStore implements SnapshotStore  { constructor(config: PgConfig) }
+class PostgresBranchRegistry implements BranchRegistry { constructor(config: PgConfig, opts?: { now?: () => number }) }
+function migratePostgresStores(pool: Pool): Promise<void>;   // idempotent DDL for all tables
+#+end_src
+
+Drop-in via ~defineConfig({ storage: { kind: "postgres", url, branching? } })~ (lazy-loaded, so ~pg~ never reaches browser bundles), or the ~custom~ storage kind. Single-writer-per-execution (D3) stays the lock-free shard model. See [[file:loom-2.0/03-compute-scheduling-storage.md][compute/scheduling/storage]].
+
 -----
 
 * Effects — ~@loom/effect-runtime~
@@ -447,20 +525,43 @@ All side effects (tool / LLM / human / A2A) run through the ~EffectRuntime~, key
 interface EffectContext {
   executionId: string; stepId: string; workflowId: string; attempt: number;
   emit(eventType: string, payload: unknown): void;
-  readonly signal?: AbortSignal;   // cancellation
+  readonly signal?: AbortSignal;      // cancellation
+  readonly resources?: ResourceSnapshot;  // (2.0, K3) running totals BEFORE this effect
+  readonly priority?: number;             // (2.0, M6) @loom/scheduler Priority when scheduled
 }
+interface ResourceSnapshot { tokens: number; costUsd: number; ms: number; count: number; exceeded?: boolean; }
 interface Effect<TIn, TOut> { kind: EffectKind; execute(input: TIn, ctx: EffectContext): Promise<TOut>; }
 
 type EffectNext = () => Promise<unknown>;
 type EffectMiddleware = (ctx: EffectContext, input: unknown, next: EffectNext) => Promise<unknown>; // middleware[0] outermost
 
 class EffectRuntime {
-  constructor(middleware?: readonly EffectMiddleware[])
+  constructor(middleware?: readonly EffectMiddleware[], options?: EffectRuntimeOptions)  // (2.0) options
   register(toolId: string, effect: Effect): void
-  execute<TIn, TOut>(toolId: string, input: TIn, ctx: EffectContext): Promise<TOut>
+  execute<TIn, TOut>(toolId: string, input: TIn, ctx: EffectContext): Promise<TOut>       // authorize → warm → schedule → middleware → effect
   has(toolId: string): boolean
 }
 #+end_src
+
+*The protection ring, accounting context & scheduling (2.0, K2/K3/M6).*
+
+#+begin_src typescript
+interface EffectRuntimeOptions {
+  authorizer?: CapabilityAuthorizer;   // K2 — deny ungranted effects (least-privilege)
+  scheduler?: Scheduler;               // M6 — route effects through it (bounded concurrency + priority)
+  warmer?: Warmer;                     // M6 — advisory pre-warm, off-log (latency only)
+}
+interface CapabilityAuthorizer { authorize(req: CapabilityRequest): CapabilityDecision; }
+interface CapabilityRequest  { toolId: string; executionId: string; workflowId: string; stepId: string; }
+interface CapabilityDecision { allowed: boolean; reason?: string; }
+class CapabilityDeniedError extends Error { readonly toolId: string; readonly reason: string; }
+class GrantTable implements CapabilityAuthorizer {   // least-privilege: principal → granted effect ids ("*" = all)
+  constructor(grants: Record<string, readonly string[]>, options?: { principal?: (req: CapabilityRequest) => string })
+}
+interface Warmer { warm(toolId: string): void; }
+#+end_src
+
+A denied effect never runs: it emits ~EFFECT_DENIED~ (folds into ~variables._denials~) and throws ~CapabilityDeniedError~, failing the step. All three options are opt-in — omit them and ~execute~ is the unchanged zero-overhead path.
 
 *Effect implementations* (each ~implements Effect~):
 
@@ -616,12 +717,40 @@ function createLlmEffect<TIn = string, TOut = string>(options: {
 
 Providers talk to vendor HTTP APIs over ~fetch~ — no vendor SDK dependency. In tests, use the VCR providers from [[#dx][~@loom/testing~]].
 
+** ~@loom/reasoning~ — model routing & elevation *(2.0)*
+
+Routes across a registry of models and *elevates* to a stronger one when confidence is low; every route/elevation is logged via the decision seam (P9) when a ~DecideFn~ is passed.
+
+#+begin_src typescript
+interface ModelRoute { id: string; provider: LlmProvider; tier: number; tags?: string[]; }   // tier 0 = cheapest
+interface ReasoningRequest { messages: LlmMessage[]; system?: string; strategy?: string; tools?: LlmToolSpec[]; maxTokens?: number; temperature?: number; signal?: AbortSignal; maxTier?: number; }
+interface ReasoningResult  { content: string; toolCalls?: LlmToolCall[]; stopReason: LlmResponse["stopReason"]; usage?; modelId: string; confidence: number; elevated: boolean; trace: Array<{ modelId: string; tier: number; confidence: number; elevated: boolean }>; }
+type DecideFn = <T>(decisionId: string, decider: () => T | Promise<T>) => Promise<T>;          // pass ctx.decide
+
+interface ReasoningRuntimeConfig { routes: ModelRoute[]; router?: Router; confidence?: ConfidenceSignal; elevateThreshold?: number; cache?: ReasoningCache; }  // elevateThreshold default 0.5
+class ReasoningRuntime {
+  constructor(config: ReasoningRuntimeConfig)
+  reason(req: ReasoningRequest, opts?: { decide?: DecideFn; signal?: AbortSignal; decisionKey?: string }): Promise<ReasoningResult>
+  get availableRoutes(): readonly ModelRoute[]
+}
+
+// Routers (pick a route): tagRouter (cheap-first, default) · fixedRouter(id) · rankedRouter(rankings)  // rankedRouter = M10 learned
+// Confidence signals (pluggable, NOT a magic number): stopReasonConfidence (default) · validatorConfidence(fn) · constantConfidence(n)
+interface ConfidenceSignal { score(req: ReasoningRequest, res: LlmResponse): number | Promise<number>; }
+interface Router { select(req: ReasoningRequest, routes: ModelRoute[]): ModelRoute; }
+#+end_src
+
+~ReasoningResult~ is a superset of ~LlmResponse~, so it is a drop-in for ~provider.complete~ callers. ~@loom/intent~ and ~@loom/planner~ accept an optional ~reasoning~ and prefer it. See [[file:loom-2.0/02-reasoning-and-memory.md][reasoning & memory]].
+
 ** ~@loom/agent~ — ReAct loop
 
 #+begin_src typescript
 class AgentRunner {
   constructor(config: {
-    definition: AgentDefinition; provider: LlmProvider; effectRuntime: EffectRuntime;
+    definition: AgentDefinition;
+    provider?: LlmProvider;         // (2.0) provider OR reasoning — one is required
+    reasoning?: ReasoningRuntime;   // (2.0) prefer routing/elevation; routes logged (DECISION_RECORDED source:"agent")
+    effectRuntime: EffectRuntime;
     maxIterations?: number;         // default 10
     systemPrompt?: string; memory?: MemoryRuntime;
     parallelTools?: boolean | number;  // default false; true = all, number = cap
@@ -683,25 +812,35 @@ Browser-safe subpath ~@loom/a2a/cards~ exports only ~toAgentCard~ (no ~node:http
 ** ~@loom/capability~ / ~@loom/intent~ / ~@loom/planner~
 
 #+begin_src typescript
-function capability$<TIn, TOut>(config: { id: string; name?: string; intent: string; tags?: string[]; inputSchema: ZodSchema<TIn>; flow: RegisteredFlow<TIn, TOut> }): CapabilityDefinition<TIn, TOut>
+function capability$<TIn, TOut>(config: {
+  id: string; name?: string; intent: string; tags?: string[];
+  inputSchema: ZodSchema<TIn>; flow: RegisteredFlow<TIn, TOut>;
+  version?: string; dependencies?: string[];       // (2.0) governance metadata
+}): CapabilityDefinition<TIn, TOut>
+
 class CapabilityCatalog {
+  constructor(options?: { authorizer?: CapabilityInvokeAuthorizer })   // (2.0) invoke authorization
   register(capability): this; get(id); all(); ids(); find(query): CapabilityMatch[];
+  resolve(id: string): CapabilityDefinition[];       // (2.0) transitive deps, dependency-first; throws on missing/cycle
   registerInto(workflowRuntime: WorkflowRuntime): void;
-  invoke<TIn>(workflowRuntime: WorkflowRuntime, capabilityId: string, input: TIn): Promise<ExecutionHandle>;
+  invoke<TIn>(workflowRuntime: WorkflowRuntime, capabilityId: string, input: TIn, opts?: { principal?: string }): Promise<ExecutionHandle>;
 }
+// (2.0) — governs who may INVOKE a capability (distinct from the K2 effect protection ring)
+interface CapabilityInvokeAuthorizer { authorize(req: { capabilityId: string; principal?: string; input?: unknown }): { allowed: boolean; reason?: string }; }
+class CapabilityInvokeDeniedError extends Error { readonly capabilityId: string; readonly reason: string; }
 
 class IntentRuntime {
-  constructor(config: { catalog: CapabilityCatalog; provider?: LlmProvider; workflowRuntime?: WorkflowRuntime; scheduler?: Scheduler })
+  constructor(config: { catalog: CapabilityCatalog; provider?: LlmProvider; reasoning?: ReasoningRuntime; workflowRuntime?: WorkflowRuntime; scheduler?: Scheduler })  // (2.0) reasoning
   route(intentText: string): Promise<IntentRoute | null>    // { capability, confidence, rationale? }
   run(intentText: string, input: unknown): Promise<ExecutionHandle>
 }
 class PlannerRuntime {
-  constructor(config: { catalog: CapabilityCatalog; provider?: LlmProvider; maxSteps?: number; scheduler?: Scheduler })
+  constructor(config: { catalog: CapabilityCatalog; provider?: LlmProvider; reasoning?: ReasoningRuntime; maxSteps?: number; scheduler?: Scheduler })  // (2.0) reasoning
   plan(goal: string): Promise<{ goal: string; steps: Array<{ capabilityId: string; rationale? }> }>
 }
 #+end_src
 
-Both work fully offline (deterministic keyword routing) or with an ~LlmProvider~.
+Both work fully offline (deterministic keyword routing), with an ~LlmProvider~, or — preferred (2.0) — with a ~ReasoningRuntime~ (routing/elevation).
 
 ** ~@loom/memory~ — agent memory
 
@@ -715,6 +854,23 @@ class MemoryRuntime {
 }
 interface MemoryStore { append(key, entry): Promise<void>; read(key): Promise<MemoryEntry[]>; clear(key): Promise<void>; }
 class InMemoryMemoryStore implements MemoryStore {}
+#+end_src
+
+*Tiered memory (2.0).* Named tiers over the scoped store, each with an eviction *or* summarization policy, plus promotion. Outcome-affecting recall can be *logged* (replay-safe).
+
+#+begin_src typescript
+interface TierPolicy { ttlMs?: number; maxEntries?: number; summarizeAfter?: number; }   // eviction OR summarization
+type Summarizer = (entries: MemoryEntry[]) => Promise<unknown> | unknown;
+const DEFAULT_TIERS: Record<string, TierPolicy>;   // working / episodic / semantic / procedural
+
+class TieredMemory {
+  constructor(config: { tiers: Record<string, TierPolicy>; store?: MemoryStore; summarizer?: Summarizer; now?: () => number })
+  remember(tier: string, scope: string, entry: { role?; content; timestamp? }): Promise<void>   // auto-summarizes bounded tiers
+  recall(tier: string, scope: string, opts?: { limit?: number; decide?: DecideFn; decisionKey?: string }): Promise<MemoryEntry[]>  // pass ctx.decide ⇒ replay-safe
+  promote(from: string, to: string, scope: string, opts?: { filter?: (e: MemoryEntry) => boolean; move?: boolean }): Promise<number>
+  summarize(tier: string, scope: string, opts?: { keep?: number }): Promise<boolean>
+  clear(tier: string, scope: string): Promise<void>
+}
 #+end_src
 
 ** ~@loom/orchestrator~ — composable orchestration
@@ -773,8 +929,29 @@ interface ExecutionDispatcher {
   cancel(executionId: string): Promise<void>;
   health(): Promise<DispatcherHealth>;
 }
-interface DispatchMetadata { lane?: string; priority?: number; estimatedCpu?: number; estimatedMemory?: number; estimatedDuration?: number; }
+interface DispatchMetadata { lane?: string; priority?: number; estimatedCpu?: number; estimatedMemory?: number; estimatedDuration?: number; target?: string; }  // (2.0) target
 class LocalDispatcher { constructor(worker: WorkerRuntime, options?: { maxAttempts?: number; executeTimeoutMs?: number }) }
+#+end_src
+
+*Policy-driven placement (2.0, M4).* Route each dispatch to a named target dispatcher by an ~ExecutionPolicy~.
+
+#+begin_src typescript
+type PlacementPolicy = (pkg: ExecutionPackage, meta: DispatchMetadata | undefined, targets: readonly string[]) => string;
+function dispatchMetadataFromPolicy(policy: ExecutionPolicy): DispatchMetadata;   // computeTarget→target, priority, resources→estimated*, affinity→lane
+function defaultPlacementPolicy(defaultTarget: string): PlacementPolicy;
+class PlacementDispatcher implements ExecutionDispatcher {
+  constructor(options: { targets: Record<string, ExecutionDispatcher>; default: string; policy?: PlacementPolicy })
+}
+#+end_src
+
+*Fault supervision (2.0, K4).* Restart/backoff + a per-key circuit breaker around any child dispatcher.
+
+#+begin_src typescript
+interface SupervisionPolicy { maxRestarts?: number; backoffMs?: number; backoffFactor?: number; circuit?: { threshold: number; cooldownMs: number; key?: (pkg: ExecutionPackage) => string }; }
+class SupervisingDispatcher implements ExecutionDispatcher {
+  constructor(child: ExecutionDispatcher, options?: { policy?: SupervisionPolicy; now?: () => number; sleep?: (ms: number) => Promise<void> })
+}
+class CircuitOpenError extends Error { readonly key: string; }
 #+end_src
 
 ** ~@loom/worker-server~ — the stateless HTTP worker
@@ -837,6 +1014,43 @@ function yieldControl(): Promise<void>
 :END:
 
 Each of these is a lens on the durable event log; all are exposed both as libraries and (for the log tools) via the ~loom~ CLI.
+
+** ~@loom/analytics~ — event intelligence *(2.0)*
+
+Pure, *read-only* analyzers over the log (never a writer), plus an advisory runtime-intelligence report. Mines the facts M1–K3 write (~RESOURCE_METERED~, ~DECISION_RECORDED~, ~EFFECT_DENIED~, ~QUOTA_EXCEEDED~, ~STEP_*~).
+
+#+begin_src typescript
+function analyze(events: EventEnvelope[]): Analytics;   // { execution, cost, reasoning, failure }
+function executionAnalytics(events): { steps; completed; failed; cancelledSteps; suspended; resumes; status? }
+function costAnalytics(events):      { tokens; costUsd; ms; meteredCalls; quotaExceeded }
+function reasoningAnalytics(events): { decisions; routes: Record<string, number>; elevations; bySource: Record<string, number> }
+function failureAnalytics(events):   { failures; denials; quotaExceeded; failedSteps: string[]; deniedTools: string[] }
+
+// M10 self-optimization (mining) — feed rankModels() into @loom/reasoning rankedRouter()
+function rankModels(events: EventEnvelope[]): Record<string, number>;    // model-route frequency
+function hotFailures(events: EventEnvelope[], limit?: number): string[];  // flakiest steps, most-frequent first
+
+// M11 runtime intelligence — an ADVISORY report; never mutates the fold
+function runtimeIntelligence(events: EventEnvelope[], options?: { budgetHeadroom?: number; failureLimit?: number }): {
+  analytics: Analytics;
+  recommendations: { modelRankings: Record<string, number>; hotFailures: string[]; suggestedBudgetUsd?: number };
+}
+#+end_src
+
+** ~@loom/appgen~ — AI-native codegen *(2.0)*
+
+Natural language → a structured spec → *plain, static, inspectable TypeScript you own*. No runtime interpretation of NL.
+
+#+begin_src typescript
+function parseIntent(nl: string): AppSpec;                 // deterministic, offline directive parser
+function generateApp(spec: AppSpec): GeneratedFile[];      // pure, template-based codegen
+interface GeneratedFile { path: string; contents: string; }
+
+interface AppSpec { name: string; capabilities: CapabilitySpec[]; compute?: { target?: string }; }
+interface CapabilitySpec { id: string; name: string; intent: string; steps: string[]; reasoning?: { baseModel?: string; elevateTo?: string[] }; approval?: boolean; ui?: boolean; }
+#+end_src
+
+Grammar: "create a <name>" · "use <model> first" · "elevate to <model>" · "(pause|wait) for approval" · "generate ui" · "(add )?step <name>" · "deploy on <target>". See [[file:loom-2.0/05-capabilities-agents-intelligence-dx.md][the DX deep-dive]].
 
 ** ~@loom/cli~ — the ~loom~ command
 
@@ -944,6 +1158,15 @@ class StorageWriteError extends Error    { constructor(cause: unknown); }
 - ~SuspendError~ is thrown by ~HumanEffect~ / ~ctx.suspend~ to pause an execution — it is a *control-flow signal*, not a failure (never retried by middleware).
 - ~StorageWriteError~ surfaces a durable-write rejection at the next barrier.
 
+*Loom 2.0 errors* (each fails the offending step; see the linked packages):
+
+#+begin_src typescript
+class CapabilityDeniedError extends Error        { readonly toolId: string; readonly reason: string; }       // K2 — @loom/effect-runtime
+class QuotaExceededError extends Error           { readonly reason: string; }                                // K3 — @loom/middleware
+class CircuitOpenError extends Error             { readonly key: string; }                                   // K4 — @loom/dispatcher
+class CapabilityInvokeDeniedError extends Error  { readonly capabilityId: string; readonly reason: string; } // M7 — @loom/capability
+#+end_src
+
 -----
 
-*See also:* [[file:architecture.md][Architecture]] · [[file:usage.md][Usage]] · [[file:user-guide.md][User Guide]] · [[file:adr/][ADRs]]
+*See also:* [[file:architecture.md][Architecture]] · [[file:loom-2.0/00-overview.md][Loom 2.0 deep-dives]] · [[file:usage.md][Usage]] · [[file:user-guide.md][User Guide]] · [[file:adr/][ADRs]]
