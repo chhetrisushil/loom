@@ -6,6 +6,7 @@ import {
   rankFailedSteps,
   reasoningAnalytics,
 } from "./analyze";
+import { rankFromOutcomes } from "./outcomes";
 
 // ── Self-optimization (M10) ──────────────────────────────────────────────────
 //
@@ -31,6 +32,8 @@ export function hotFailures(events: EventEnvelope[], limit = 5): string[] {
 // the past.
 export interface RuntimeRecommendations {
   modelRankings: Record<string, number>;
+  /** Outcome-driven rankings (key → mean success/score), the learning-seam signal. */
+  outcomeRankings: Record<string, number>;
   hotFailures: string[];
   /** Suggested budget with headroom over observed spend (undefined if nothing metered). */
   suggestedBudgetUsd?: number;
@@ -56,6 +59,7 @@ export function runtimeIntelligence(
   const headroom = options.budgetHeadroom ?? 1.5;
   const recommendations: RuntimeRecommendations = {
     modelRankings: analytics.reasoning.routes,
+    outcomeRankings: rankFromOutcomes(events),
     // Reuse the failedSteps already collected by `analyze` — no extra log pass.
     hotFailures: rankFailedSteps(analytics.failure.failedSteps, options.failureLimit ?? 5),
     ...(analytics.cost.costUsd > 0 && {
