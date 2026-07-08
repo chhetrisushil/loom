@@ -63,6 +63,11 @@ export class WorkflowContextImpl implements WorkflowContext {
       attempt: this.vm.getState().frames[id]?.attempts ?? 1,
       emit: (eventType: string, payload: unknown) => this.emit(eventType, payload),
       ...(this.signal !== undefined && { signal: this.signal }),
+      // K3 — running resource totals (from the durable fold) so accounting/quota
+      // middleware can meter and enforce budgets deterministically.
+      resources: (this.vm.getState().variables._resources as
+        | { tokens: number; costUsd: number; ms: number; count: number; exceeded?: boolean }
+        | undefined) ?? { tokens: 0, costUsd: 0, ms: 0, count: 0 },
     };
 
     const toolId = task.toolId ?? id;

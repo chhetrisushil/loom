@@ -28,6 +28,7 @@
     "ulid": "^2.3.0"
   },
   "devDependencies": {
+    "@loom/middleware": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
