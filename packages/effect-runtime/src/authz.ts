@@ -74,7 +74,18 @@ export class GrantTable implements CapabilityAuthorizer {
   }
 }
 
+import type { Scheduler } from "@loom/scheduler";
+import type { Warmer } from "./types";
+
 export interface EffectRuntimeOptions {
-  /** When set, every effect is authorized against it; ungranted effects are denied. */
+  /** When set, every effect is authorized against it; ungranted effects are denied (K2). */
   authorizer?: CapabilityAuthorizer;
+  /**
+   * When set, effects run through this scheduler (M6) — bounded concurrency + priority
+   * ordering across all of a runtime's effects (admission control). Omit for the
+   * zero-overhead direct path.
+   */
+  scheduler?: Scheduler;
+  /** Advisory pre-warm hook, invoked off-log before each effect (M6). */
+  warmer?: Warmer;
 }

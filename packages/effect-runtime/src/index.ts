@@ -11,6 +11,7 @@ export type {
   EffectMiddleware,
   EffectNext,
   ResourceSnapshot,
+  Warmer,
 } from "./types";
 export { CapabilityDeniedError, GrantTable } from "./authz";
 export type {

@@ -35,6 +35,22 @@ export interface EffectContext {
    * when accounting is not wired, so effects/middleware that don't meter pay nothing.
    */
   readonly resources?: ResourceSnapshot;
+  /**
+   * Scheduling priority for this effect (M6), used when the EffectRuntime routes
+   * effects through a Scheduler with a finite concurrency cap. A `@loom/scheduler`
+   * Priority value (0 = Immediate … 3 = Idle). Undefined ⇒ Normal.
+   */
+  readonly priority?: number;
+}
+
+/**
+ * Advisory pre-warm hook (M6). Called off the durable path before an effect runs so a
+ * backend can keep a model/connection/cache hot. It is latency-only — it MUST NOT emit
+ * events or influence outcomes (P10 advisory plane). A failed/absent warm just means a
+ * cold call.
+ */
+export interface Warmer {
+  warm(toolId: string): void;
 }
 
 export interface Effect<TIn = unknown, TOut = unknown> {

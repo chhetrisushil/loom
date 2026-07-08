@@ -6,5 +6,10 @@
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
-  "references": [{ "path": "../core" }, { "path": "../event-runtime" }, { "path": "../replay-vm" }]
+  "references": [
+    { "path": "../core" },
+    { "path": "../event-runtime" },
+    { "path": "../replay-vm" },
+    { "path": "../scheduler" }
+  ]
 }
