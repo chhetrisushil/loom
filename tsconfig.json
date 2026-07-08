@@ -3,6 +3,7 @@
   "references": [
     { "path": "packages/core" },
     { "path": "packages/event-runtime" },
+    { "path": "packages/store-postgres" },
     { "path": "packages/replay-vm" },
     { "path": "packages/effect-runtime" },
     { "path": "packages/snapshot-runtime" },
