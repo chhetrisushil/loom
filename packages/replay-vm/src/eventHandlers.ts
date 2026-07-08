@@ -193,6 +193,30 @@ const handlers: Record<string, Handler> = {
     };
   },
 
+  // Loom 2.0 (K2) — a capability denial: the EffectRuntime refused an ungranted
+  // effect. Recorded as a durable audit fact in a reserved `_denials` list (the
+  // step itself still fails via the STEP_FAILED that follows). Pure audit — it does
+  // not change frame/execution status.
+  EFFECT_DENIED: (state, event) => {
+    const payload = event.payload as { toolId: string; stepId?: string; reason?: string };
+    const existing = (state.variables._denials as unknown[] | undefined) ?? [];
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _denials: [
+          ...existing,
+          {
+            toolId: payload.toolId,
+            ...(payload.stepId !== undefined && { stepId: payload.stepId }),
+            ...(payload.reason !== undefined && { reason: payload.reason }),
+          },
+        ],
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
   EXECUTION_COMPLETED: (state, event) => {
     const payload = event.payload as { output?: unknown };
     return {

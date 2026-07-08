@@ -3,7 +3,7 @@ import { a2uiSurfaceProjection } from "@loom/a2ui";
 import type { EventEnvelope } from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
 import { EffectRuntime } from "@loom/effect-runtime";
-import type { EffectMiddleware } from "@loom/effect-runtime";
+import type { CapabilityAuthorizer, EffectMiddleware } from "@loom/effect-runtime";
 import type { BranchRegistry, EventStore } from "@loom/event-runtime";
 // Only the in-memory stores are imported statically — they are pure JS. We import
 // them from the browser-safe `/memory` SUBPATH rather than the package barrel: the
@@ -106,6 +106,12 @@ export interface LoomConfig {
   capabilityAgents?: Record<string, string>;
   /** Static, ordered effect middleware (retries, logging, …). */
   effectMiddleware?: EffectMiddleware[];
+  /**
+   * Capability protection ring (K2). When set, every effect is authorized against
+   * it and ungranted effects are denied (least-privilege). Omit for permissive.
+   * e.g. `new GrantTable({ "my-flow": ["metrics-tool", "logs-tool"] })`.
+   */
+  authorizer?: CapabilityAuthorizer;
   /** Telemetry adapters, composed and wired to the event stream. */
   telemetry?: TelemetryAdapter[];
   /** Placement dispatcher for the bus (default: in-process). e.g. Cloud Run. */
@@ -204,7 +210,10 @@ function buildStores(storage: StorageConfig): LoomStores {
  */
 export function defineConfig(config: LoomConfig): LoomApp {
   const stores = buildStores(config.storage);
-  const effectRuntime = new EffectRuntime(config.effectMiddleware ?? []);
+  const effectRuntime = new EffectRuntime(
+    config.effectMiddleware ?? [],
+    config.authorizer !== undefined ? { authorizer: config.authorizer } : {}
+  );
 
   const projectionRuntime = config.projectionRuntime ?? new InMemoryProjectionRuntime();
   for (const surface of config.surfaces ?? []) {

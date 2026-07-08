@@ -11,3 +11,11 @@ export type {
   EffectMiddleware,
   EffectNext,
 } from "./types";
+export { CapabilityDeniedError, GrantTable } from "./authz";
+export type {
+  CapabilityAuthorizer,
+  CapabilityDecision,
+  CapabilityRequest,
+  EffectRuntimeOptions,
+  GrantTableOptions,
+} from "./authz";
