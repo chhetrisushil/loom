@@ -1083,6 +1083,9 @@ importers:
       '@loom/memory':
         specifier: workspace:*
         version: link:../memory
+      '@loom/reasoning':
+        specifier: workspace:*
+        version: link:../reasoning
       '@loom/scheduler':
         specifier: workspace:*
         version: link:../scheduler

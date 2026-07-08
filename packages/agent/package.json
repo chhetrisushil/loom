@@ -22,6 +22,7 @@
     "@loom/effect-runtime": "workspace:*",
     "@loom/llm": "workspace:*",
     "@loom/memory": "workspace:*",
+    "@loom/reasoning": "workspace:*",
     "@loom/scheduler": "workspace:*"
   },
   "devDependencies": {

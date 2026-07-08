@@ -12,6 +12,7 @@
     { "path": "../effect-runtime" },
     { "path": "../llm" },
     { "path": "../memory" },
+    { "path": "../reasoning" },
     { "path": "../scheduler" }
   ]
 }
