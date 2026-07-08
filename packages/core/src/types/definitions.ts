@@ -73,6 +73,36 @@ export interface StepDefinition<TIn = unknown, TOut = unknown> {
   timeoutMs?: number;
 }
 
+// ── Tasks (ctx.execute) — the generalized unit of durable work (Loom 2.0) ─────
+//
+// A "task" generalizes a step. Every durable unit an execution runs — a step
+// today, and later an llm/agent/tool/ui/memory/human/plan call — is a task. A
+// StepDefinition IS the canonical 'step' task, so `ctx.run(step)` is exactly
+// `ctx.execute(step)` with zero behaviour change. All kinds still resolve through
+// the EffectRuntime by toolId; `kind` is advisory metadata for scheduling,
+// reasoning and observability. Additive by design: the wire events stay STEP_*.
+export type TaskKind = "step" | "llm" | "agent" | "tool" | "ui" | "memory" | "human" | "plan";
+
+export interface TaskDefinition<TIn = unknown, TOut = unknown> {
+  readonly _tag: "TaskDefinition";
+  kind: TaskKind;
+  id: string;
+  name?: string;
+  // Effect to resolve for this task; defaults to `id` when omitted (same rule as steps).
+  toolId?: string;
+  inputSchema?: ZodSchema<TIn>;
+  outputSchema?: ZodSchema<TOut>;
+  retry?: RetryPolicy;
+  timeoutMs?: number;
+}
+
+// The argument accepted by ctx.execute: a StepDefinition (the 'step' kind,
+// unchanged) or a generalized TaskDefinition. Both expose the `id` + optional
+// `toolId` the runtime needs, so execute treats them uniformly.
+export type ExecutableTask<TIn = unknown, TOut = unknown> =
+  | StepDefinition<TIn, TOut>
+  | TaskDefinition<TIn, TOut>;
+
 export interface FlowDefinition<TIn = unknown, TOut = unknown> {
   readonly _tag: "FlowDefinition";
   id: string;

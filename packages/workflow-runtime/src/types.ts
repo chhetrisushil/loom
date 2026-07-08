@@ -1,5 +1,5 @@
 import type { A2UIEmitter } from "@loom/a2ui";
-import type { ExecutionState, FlowDefinition, StepDefinition } from "@loom/core";
+import type { ExecutableTask, ExecutionState, FlowDefinition, StepDefinition } from "@loom/core";
 
 export interface SuspendConfig {
   on: string;
@@ -7,9 +7,20 @@ export interface SuspendConfig {
   correlationKey?: string;
 }
 
-export interface WorkflowContext {
+// Loom 2.0: the execution-facing context. `execute` is the generalized durable
+// primitive (any task kind); `run` is the step-shaped alias kept for source
+// compatibility and the simplest path. `WorkflowContext` remains an alias below.
+export interface ExecutionContext {
   readonly executionId: string;
   readonly workflowId: string;
+
+  // Run any task to durable completion. Records STEP_STARTED/STEP_COMPLETED and
+  // serves completed tasks from the log on replay (deterministic). A StepDefinition
+  // is a valid task (the 'step' kind), so execute(step, input) === run(step, input).
+  execute<TIn = unknown, TOut = unknown>(
+    task: ExecutableTask<TIn, TOut>,
+    input: TIn
+  ): Promise<TOut>;
 
   run<TIn = unknown, TOut = unknown>(step: StepDefinition<TIn, TOut>, input: TIn): Promise<TOut>;
 
@@ -31,6 +42,10 @@ export interface WorkflowContext {
   // ctx.ui.set(path, value) / append / merge / increment / remove / patch.
   readonly ui: A2UIEmitter;
 }
+
+// Back-compat alias. Existing code importing `WorkflowContext` keeps working; the
+// two are identical types. New code should prefer `ExecutionContext`.
+export type WorkflowContext = ExecutionContext;
 
 export interface RunOptions {
   executionId?: string;
