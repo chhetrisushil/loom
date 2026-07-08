@@ -23,7 +23,7 @@ existing apps compile and replay unchanged. The full decision record is
 | [01 — Execution & Decision seams](01-execution-and-decision-seams.md) | M1 `ctx.execute` + `Execution` PCB · M2 `ctx.decide` + `DECISION_RECORDED` · K1 kernel ABI |
 | [02 — Reasoning & Memory](02-reasoning-and-memory.md) | M3 model routing / confidence elevation · M5 tiered memory + logged recall |
 | [03 — Compute, Scheduling & Storage](03-compute-scheduling-storage.md) | M4 placement · M6 scheduler-in-hot-path · K4 supervision · M3.5 Postgres scale-out |
-| [04 — Kernel hardening](04-kernel-hardening.md) | K1 ABI · K2 protection · K3 accounting/quotas · K4 supervision · K5 event-schema ABI |
+| [04 — Kernel hardening](04-kernel-hardening.md) | K1 ABI · K2 protection · K3 accounting/quotas · K4 supervision · K5 event-schema ABI · K6 behavioral-safety ring |
 | [05 — Capabilities, Agents, Intelligence & DX](05-capabilities-agents-intelligence-dx.md) | M7 capabilities · M8 agents · M9–M11 intelligence · P11 NL→codegen |
 | [10 — Event-schema reference](10-event-schema-reference.md) | The complete on-disk event ABI: every event type, payload, and fold |
 
@@ -146,12 +146,13 @@ flowchart TB
   M10 --> M11["M11 Runtime intelligence"]
   M7["M7 Capability deepening"]
   DX["P11 AI-native DX (NL→codegen)"]
-  subgraph K["Kernel-hardening (K1–K5)"]
+  subgraph K["Kernel-hardening (K1–K6)"]
     K1["K1 syscall ABI"]
     K2["K2 protection ring"]
     K3["K3 accounting/quotas"]
     K4["K4 fault supervision"]
     K5["K5 event-schema ABI"]
+    K6["K6 behavioral-safety ring"]
   end
 ```
 
@@ -173,6 +174,8 @@ flowchart TB
 | K3 accounting/quotas | `middleware`, `effect-runtime` | [04](04-kernel-hardening.md) |
 | K4 fault supervision | `dispatcher` | [03](03-compute-scheduling-storage.md) / [04](04-kernel-hardening.md) |
 | K5 event-schema ABI | `replay-vm` | [04](04-kernel-hardening.md) / [10](10-event-schema-reference.md) |
+| K6 behavioral-safety ring | `middleware`, `replay-vm` | [04](04-kernel-hardening.md) / [ADR 0017](../adr/0017-k6-behavioral-safety-ring.md) |
+| M12 learning seam | `analytics`, `reasoning`, `replay-vm` | [ADR 0018](../adr/0018-learning-seam-outcome-recorded.md) |
 
 ## 6. Does it earn "kernel"? — the readiness scorecard
 
@@ -193,7 +196,9 @@ rings:
 | **Resource accounting & quotas** | `meteringMiddleware` (tokens/$/latency + admission) | **K3** |
 | **Fault supervision** | `SupervisingDispatcher` (restart/backoff + circuit breaker) | **K4** |
 | **On-disk ABI governance** | `EVENT_SCHEMA_VERSION` + pinned `knownEventTypes()` | **K5** |
+| **Behavioral / output safety** | `safetyMiddleware` validates effect input/output; a block is a durable `SAFETY_BLOCKED` fact | **K6** |
 | Observability | the log as the substrate; analytics/runtime intelligence | M9–M11 |
+| Learning (closed loop) | `OUTCOME_RECORDED` → `rankFromOutcomes` → `rankedRouter`; outcomes feed back into routing (all logged, P9) | M12 |
 
 ## 7. Package map (2.0)
 
