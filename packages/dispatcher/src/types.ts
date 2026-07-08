@@ -12,7 +12,25 @@ export interface DispatchMetadata {
   estimatedCpu?: number;
   estimatedMemory?: number;
   estimatedDuration?: number;
+  /**
+   * Named compute placement target (e.g. "local" | "cloudrun"). Advisory: a
+   * {@link PlacementDispatcher} routes to the matching target, falling back to its
+   * default when absent/unknown. Derived from `ExecutionPolicy.computeTarget` (M4).
+   */
+  target?: string;
 }
+
+/**
+ * Chooses which named target handles a dispatch. Pure and synchronous so placement
+ * is deterministic and cheap. Given the package, its advisory metadata, and the set
+ * of registered target names, return the chosen name (a PlacementDispatcher falls
+ * back to its default if the returned name is not registered).
+ */
+export type PlacementPolicy = (
+  pkg: ExecutionPackage,
+  meta: DispatchMetadata | undefined,
+  targets: readonly string[]
+) => string;
 
 /** A snapshot of dispatcher liveness for health checks / observability. */
 export interface DispatcherHealth {
