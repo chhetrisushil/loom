@@ -2,10 +2,12 @@
 
 A **topic-by-topic reference** with runnable examples. Unlike the sequential [Usage](usage.md) tutorial, jump to any section. For the *why* behind these designs, see [Architecture](architecture.md).
 
+> **Loom 2.0.** Sections 1–14 are the durable core (unchanged and always valid). Sections **15–20** cover the execution-kernel evolution — the Reasoning Runtime, tiered memory, the kernel-hardening rings (grants / quotas / supervision), event intelligence, AI-native codegen, and capability governance. Everything in 2.0 is **additive and opt-in**. Full data-structure/algorithm/diagram detail lives in [`loom-2.0/`](loom-2.0/00-overview.md).
+
 ## Contents
 
 - [1. Flows, steps & handlers](#1-flows-steps--handlers)
-- [2. The WorkflowContext](#2-the-workflowcontext)
+- [2. The ExecutionContext (`ctx.execute` / `ctx.decide`)](#2-the-executioncontext)
 - [3. Effects & middleware](#3-effects--middleware)
 - [4. Suspend & resume](#4-suspend--resume)
 - [5. Branching: fork / simulate / promote](#5-branching-fork--simulate--promote)
@@ -18,6 +20,13 @@ A **topic-by-topic reference** with runnable examples. Unlike the sequential [Us
 - [12. Evals & deploy simulation](#12-evals--deploy-simulation)
 - [13. Where executions run (compute)](#13-where-executions-run-compute)
 - [14. Determinism rules & pitfalls](#14-determinism-rules--pitfalls)
+- **Loom 2.0:**
+- [15. Reasoning Runtime — routing & elevation](#15-reasoning-runtime--routing--elevation)
+- [16. Tiered memory](#16-tiered-memory)
+- [17. Kernel: grants, quotas & supervision](#17-kernel-grants-quotas--supervision)
+- [18. Event intelligence & self-optimization](#18-event-intelligence--self-optimization)
+- [19. AI-native codegen (`appgen`)](#19-ai-native-codegen-appgen)
+- [20. Capabilities: versioning, dependencies & authorization](#20-capabilities-versioning-dependencies--authorization)
 
 ---
 
@@ -74,16 +83,23 @@ const handle = await runtime.start(myFlow, input, { executionId: "opt-custom-id"
 
 ---
 
-## 2. The WorkflowContext
+<a id="2-the-executioncontext"></a>
+## 2. The ExecutionContext
 
-The `ctx` passed to a runner is the only durability touch-point. Everything else is plain code.
+The `ctx` passed to a runner is the only durability touch-point. Everything else is plain code. In Loom 2.0 the interface is named `ExecutionContext` (`WorkflowContext` remains an alias) and its methods are the **kernel's versioned syscall surface** (K1).
 
 ```ts
-interface WorkflowContext {
+interface ExecutionContext {
   readonly executionId: string;
   readonly workflowId: string;
 
+  // Loom 2.0: the generalized durable primitive. A step is one task kind; `run` is a thin alias.
+  execute<TIn, TOut>(task: ExecutableTask<TIn, TOut>, input: TIn): Promise<TOut>;
   run<TIn, TOut>(step: StepDefinition<TIn, TOut>, input: TIn): Promise<TOut>;
+
+  // Loom 2.0 (P9): record an advisory/optimizer choice durably; served on replay.
+  decide<T>(id: string, decider: () => T | Promise<T>, opts?: { rationale?: unknown; source?: string }): Promise<T>;
+
   parallel<T extends unknown[]>(
     pairs: { [K in keyof T]: [StepDefinition<unknown, T[K]>, unknown] },
     options?: { limit?: number }
@@ -93,6 +109,16 @@ interface WorkflowContext {
   stream(eventType: string, delta: string, done?: boolean): void;
   readonly ui: A2UIEmitter; // .set / .merge / .append
 }
+```
+
+**`ctx.execute` — the generalized primitive.** A `StepDefinition` is a valid task (the `'step'` kind), so `ctx.run(step, input)` *is* `ctx.execute(step, input)`. Other task kinds (`llm` / `agent` / `tool` / `ui` / `memory` / `human` / `plan`) route through the same effect resolution and record the same `STEP_*` events, so existing logs replay byte-identically.
+
+**`ctx.decide` — log an optimizer's choice (P9).** Wrap any non-deterministic decision (a model route, a memory recall, a learned ranking). On the first run the `decider` is consulted and its choice recorded as `DECISION_RECORDED`; on replay/resume the recorded choice is returned and the decider is **never called** — the twin of how a completed step is served from the log.
+
+```ts
+const model = await ctx.decide("route:triage", () =>
+  reasoning.route(task, { budget }), { source: "triage-flow" });
+// replay serves "model" from the log — no re-routing, deterministic run
 ```
 
 **Parallel steps**, order-preserving and concurrency-bounded:
@@ -446,6 +472,7 @@ Workers reference flows/effects **by id** from a statically-wired registry — s
 Determinism is what makes resume, fork, and replay trustworthy. Keep these in mind:
 
 - **Put non-determinism inside effects, not orchestration.** Wall-clock reads, randomness, and I/O belong in a `handler`/Effect (whose result is logged), *not* in the runner's control flow. A runner must reach the same suspend/step sequence on replay.
+- **For advisory/orchestration-level non-determinism, use `ctx.decide` (P9).** A model route, a memory recall, or a learned ranking that affects *what runs* should be wrapped in `ctx.decide(id, …)` so the choice is recorded and served on replay. This is the 2.0 escape hatch: the runtime may improve run-to-run, but any single run stays reproducible. Memory recall that affects outcomes: pass `ctx.decide` to `TieredMemory.recall({ decide })` (§16).
 - **Don't branch orchestration on unlogged external state.** If the runner does `if (Date.now() % 2)` it may diverge on replay. Fetch the value in a step, then branch on the step's (logged) output.
 - **Effects run once; replays serve from the log.** Don't rely on a side effect happening again during resume — it won't.
 - **Keep wiring static.** Register flows/effects explicitly (or via `loom gen`). No runtime globbing or env-conditional registration, or a remote worker/replay can't reconstruct the same graph (P5).
@@ -454,7 +481,185 @@ Determinism is what makes resume, fork, and replay trustworthy. Keep these in mi
 
 ---
 
+## 15. Reasoning Runtime — routing & elevation
+
+*(Loom 2.0, M3 — `@loom/reasoning`.)* Instead of a single `LlmProvider.complete()`, the Reasoning Runtime routes across a registry of models and **elevates** to a stronger one when confidence is low.
+
+```ts
+import { ReasoningRuntime, validatorConfidence } from "@loom/reasoning";
+
+const reasoning = new ReasoningRuntime({
+  routes: [
+    { id: "gemma", provider: gemma, tier: 0 },          // cheap-first
+    { id: "flash", provider: flash, tier: 1 },
+    { id: "opus",  provider: opus,  tier: 2 },
+  ],
+  // Confidence is a pluggable signal — NOT a magic number. Default: stop-reason.
+  confidence: validatorConfidence((c) => c.trim().startsWith("{")), // e.g. "did it produce JSON?"
+  elevateThreshold: 0.5,
+});
+
+const res = await reasoning.reason(
+  { messages: [{ role: "user", content: prompt }], strategy: "planning", maxTier: 2 },
+  { decide: ctx.decide },   // ← routes/elevations logged (P9), replay-safe & auditable
+);
+res.modelId;   // which model finally answered
+res.elevated;  // did it climb the ladder?
+res.trace;     // [{ modelId, tier, confidence, elevated }, …]
+```
+
+- **Cheap-first + elevation ladder.** `tagRouter` (default) picks the lowest-tier route whose tags match the `strategy`, then elevation climbs tiers while `confidence < threshold` and `tier ≤ maxTier`.
+- **Confidence signals.** `stopReasonConfidence` (default), `validatorConfidence(fn)`, `constantConfidence(n)`, or your own.
+- **Logged routes.** Pass `ctx.decide` and each route/elevation becomes a durable `DECISION_RECORDED` fact — observable and replay-safe.
+- **`intent`/`planner` re-based.** Give `IntentRuntime`/`PlannerRuntime` a `reasoning` and they route through it; the offline keyword/heuristic fallback stays deterministic.
+
+See [`loom-2.0/02-reasoning-and-memory.md`](loom-2.0/02-reasoning-and-memory.md) for the full pipeline and diagrams.
+
+---
+
+## 16. Tiered memory
+
+*(Loom 2.0, M5 — `@loom/memory`.)* `TieredMemory` composes named tiers over the scoped `MemoryRuntime`, each with an eviction *or* summarization policy, plus promotion between tiers.
+
+```ts
+import { TieredMemory, DEFAULT_TIERS } from "@loom/memory";
+
+const mem = new TieredMemory({ tiers: DEFAULT_TIERS }); // working / episodic / semantic / procedural
+
+await mem.remember("working", scope, { role: "note", content: "primary is CPU-saturated" });
+await mem.promote("working", "semantic", scope, { filter: (e) => e.role === "note", move: true });
+
+// Outcome-affecting recall MUST be logged, or replay diverges:
+const context = await mem.recall("semantic", scope, { limit: 10, decide: ctx.decide });
+```
+
+- **Tiers + policies.** `TierPolicy` = `{ ttlMs?, maxEntries? }` (eviction) **or** `{ summarizeAfter? }` (summarization — folds the oldest entries into a summary, auto-run on `remember`, with a pluggable `Summarizer`).
+- **Logged recall (the determinism fix).** Passing `ctx.decide` records the recalled set so replay serves the **same** entries even if the store later changed — non-deterministic recall can no longer break P2.
+- **Promotion.** Lift salient entries between tiers (`copy` or `move`).
+
+---
+
+## 17. Kernel: grants, quotas & supervision
+
+*(Loom 2.0 kernel-hardening — K2 / K3 / K4.)* All opt-in; omit them and behavior is unchanged.
+
+### Capability grants (protection ring, K2)
+
+The `EffectRuntime` is the authority boundary. Give it a least-privilege `GrantTable` and an ungranted effect is **denied** (the denial is logged as `EFFECT_DENIED`; the step fails).
+
+```ts
+import { EffectRuntime, GrantTable } from "@loom/effect-runtime";
+
+const effectRuntime = new EffectRuntime([], {
+  authorizer: new GrantTable({ "incident-flow": ["metrics-tool", "logs-tool"] }), // grant only these
+});
+// …or via defineConfig({ authorizer: new GrantTable({ … }) }).
+// Any other toolId this flow invokes → CapabilityDeniedError, EFFECT_DENIED logged.
+```
+
+### Resource accounting & quotas (K3)
+
+`meteringMiddleware` meters each effect (tokens/$/latency) onto the log and enforces a budget by admission control.
+
+```ts
+import { meteringMiddleware, llmUsageTokens } from "@loom/middleware";
+
+const metering = meteringMiddleware({
+  pricing: ({ result, ms }) => ({ tokens: llmUsageTokens(result), costUsd: llmUsageTokens(result) * 3e-6, ms }),
+  budget: { maxCostUsd: 5 },   // once spent, the next effect is denied (QUOTA_EXCEEDED)
+});
+const effectRuntime = new EffectRuntime([metering]);
+// Running totals live in state.variables._resources (tokens / costUsd / ms / count / exceeded).
+```
+
+### Fault supervision (K4)
+
+Wrap any dispatcher with `SupervisingDispatcher` for restart/backoff + a **circuit breaker** that fails fast when a target is consistently down.
+
+```ts
+import { SupervisingDispatcher } from "@loom/dispatcher";
+
+const dispatcher = new SupervisingDispatcher(childDispatcher, {
+  policy: { maxRestarts: 2, backoffMs: 200, circuit: { threshold: 5, cooldownMs: 30_000 } },
+});
+```
+
+Full treatment: [`loom-2.0/04-kernel-hardening.md`](loom-2.0/04-kernel-hardening.md).
+
+---
+
+## 18. Event intelligence & self-optimization
+
+*(Loom 2.0, M9–M11 — `@loom/analytics`.)* Pure, **read-only** analyzers over the durable log — never a writer.
+
+```ts
+import { analyze, runtimeIntelligence } from "@loom/analytics";
+import { rankModels } from "@loom/analytics";
+import { rankedRouter } from "@loom/reasoning";
+
+const events = await eventStore.read(executionId);
+const a = analyze(events);   // { execution, cost, reasoning, failure }
+a.cost.costUsd;              // total metered spend
+a.reasoning.routes;         // { gemma: 3, opus: 1, … } model-route frequency
+a.failure.failedSteps;      // which steps failed
+
+// Self-optimization (opt-in, LOGGED, auditable): rank models from history, feed a learned router.
+const rankings = rankModels(historicalEvents);
+const reasoning = new ReasoningRuntime({ routes, router: rankedRouter(rankings) });
+// …its choices still flow through ctx.decide → DECISION_RECORDED, so nothing is silently autonomous.
+
+// Runtime intelligence: an advisory report (never mutates the fold).
+const report = runtimeIntelligence(events);
+report.recommendations; // { modelRankings, hotFailures, suggestedBudgetUsd }
+```
+
+---
+
+## 19. AI-native codegen (`appgen`)
+
+*(Loom 2.0, P11 — `@loom/appgen`.)* Turn a natural-language intent into a structured spec, then emit **plain, static, inspectable TypeScript you own** — there is no runtime interpretation of NL.
+
+```ts
+import { parseIntent, generateApp } from "@loom/appgen";
+
+const spec = parseIntent(
+  "Create a planner. Use Gemma first. Elevate to Gemini. Pause for approval. Generate UI."
+);
+// spec: { name: "planner", capabilities: [{ id, reasoning:{baseModel,elevateTo}, approval, ui, … }], … }
+
+const files = generateApp(spec); // GeneratedFile[] — src/planner.ts (flow$/step$/capability$ + ctx.suspend gate + ctx.ui) + src/app.ts (defineConfig)
+// A CLI/editor writes them; the output is ordinary Loom code with TODO handlers to fill in.
+```
+
+The only "understanding" is the deterministic, offline directive parser producing the `AppSpec`; codegen is pure and template-based (P4/P5 preserved).
+
+---
+
+## 20. Capabilities: versioning, dependencies & authorization
+
+*(Loom 2.0, M7 — `@loom/capability`.)* Capabilities gain governance metadata and access control.
+
+```ts
+import { capability$, CapabilityCatalog } from "@loom/capability";
+
+const triage = capability$({ id: "triage", intent: "Triage an incident", inputSchema, flow,
+  version: "2.1.0", dependencies: ["fetch-metrics", "fetch-logs"] });
+
+const catalog = new CapabilityCatalog({
+  authorizer: { authorize: (req) => req.principal === "oncall" ? { allowed: true } : { allowed: false, reason: "oncall only" } },
+});
+catalog.register(triage)/* … */;
+
+catalog.resolve("triage");          // transitive deps, dependency-first order; throws on missing dep or cycle
+await catalog.invoke(runtime, "triage", input, { principal: "oncall" }); // denied → CapabilityInvokeDeniedError
+```
+
+> `CapabilityInvokeAuthorizer` governs who may *invoke* a capability — distinct from the K2 effect **protection ring** (§17), which governs which *effects* a running execution may perform.
+
+---
+
 ### See also
 
 - **[Getting Started](getting-started.md)** · **[Usage tutorial](usage.md)** · **[Architecture](architecture.md)** · **[ADRs](adr/)**
+- **Loom 2.0 deep-dives:** [`loom-2.0/`](loom-2.0/00-overview.md) — data structures, algorithms, and diagrams for every subsystem, plus the [event-schema reference](loom-2.0/10-event-schema-reference.md).
 - Runnable apps: [`examples/`](../examples) — `agent-network`, `db-command-center`, `incident-war-room`, `schema-migration-planner`.
