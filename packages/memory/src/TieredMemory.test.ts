@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { MemoryEntry } from "./types";
 import { DEFAULT_TIERS, TieredMemory } from "./TieredMemory";
+import type { MemoryEntry } from "./types";
 
 // A monotonic clock so timestamps are deterministic across the test.
 function clock() {
@@ -89,7 +89,7 @@ describe("TieredMemory — logged recall is replay-deterministic (P9)", () => {
 
     // First run: a recording decide captures the recalled set.
     const recorded: Record<string, unknown> = {};
-    const recordingDecide = async <T,>(id: string, fn: () => T | Promise<T>): Promise<T> => {
+    const recordingDecide = async <T>(id: string, fn: () => T | Promise<T>): Promise<T> => {
       const v = await fn();
       recorded[id] = v;
       return v;
@@ -101,7 +101,7 @@ describe("TieredMemory — logged recall is replay-deterministic (P9)", () => {
     await mem.remember("semantic", "s", { content: "second" });
 
     // Replay: a decide that returns the recorded value never re-reads the store.
-    const replayDecide = async <T,>(id: string, fn: () => T | Promise<T>): Promise<T> =>
+    const replayDecide = async <T>(id: string, fn: () => T | Promise<T>): Promise<T> =>
       id in recorded ? (recorded[id] as T) : fn();
     const replayed = await mem.recall("semantic", "s", { decide: replayDecide });
 

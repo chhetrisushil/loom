@@ -74,7 +74,9 @@ export class PlacementDispatcher implements ExecutionDispatcher {
       return;
     }
     // Placement unknown (never dispatched here, or restarted): ask every target.
-    await Promise.all(this.names.map((n) => (this.targets[n] as ExecutionDispatcher).cancel(executionId)));
+    await Promise.all(
+      this.names.map((n) => (this.targets[n] as ExecutionDispatcher).cancel(executionId))
+    );
   }
 
   async health(): Promise<DispatcherHealth> {

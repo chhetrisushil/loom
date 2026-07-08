@@ -12,7 +12,15 @@ import { hotFailures, rankModels, runtimeIntelligence } from "./intelligence";
 let seq = 0;
 function ev(eventType: string, payload: unknown = {}): EventEnvelope {
   seq += 1;
-  return { id: `x-${seq}`, workflowId: "wf", executionId: "x", eventType, sequence: seq, timestamp: seq, payload };
+  return {
+    id: `x-${seq}`,
+    workflowId: "wf",
+    executionId: "x",
+    eventType,
+    sequence: seq,
+    timestamp: seq,
+    payload,
+  };
 }
 
 // A representative enriched log spanning M1–K3 event types.
@@ -21,8 +29,16 @@ function makeLog(): EventEnvelope[] {
   return [
     ev("EXECUTION_STARTED", { input: {} }),
     ev("STEP_STARTED", { stepId: "diagnose" }),
-    ev("DECISION_RECORDED", { decisionId: "reason:agent:route", choice: "gemma", source: "reasoning" }),
-    ev("DECISION_RECORDED", { decisionId: "reason:agent:elevate:1", choice: "opus", source: "reasoning" }),
+    ev("DECISION_RECORDED", {
+      decisionId: "reason:agent:route",
+      choice: "gemma",
+      source: "reasoning",
+    }),
+    ev("DECISION_RECORDED", {
+      decisionId: "reason:agent:elevate:1",
+      choice: "opus",
+      source: "reasoning",
+    }),
     ev("RESOURCE_METERED", { tokens: 100, costUsd: 0.5, ms: 20 }),
     ev("STEP_COMPLETED", { stepId: "diagnose", output: { ok: true } }),
     ev("STEP_STARTED", { stepId: "remediate" }),
@@ -37,7 +53,14 @@ function makeLog(): EventEnvelope[] {
 describe("analytics (M9)", () => {
   it("summarizes execution", () => {
     const a = executionAnalytics(makeLog());
-    expect(a).toMatchObject({ steps: 2, completed: 1, failed: 1, suspended: false, resumes: 0, status: "failed" });
+    expect(a).toMatchObject({
+      steps: 2,
+      completed: 1,
+      failed: 1,
+      suspended: false,
+      resumes: 0,
+      status: "failed",
+    });
   });
 
   it("summarizes cost from RESOURCE_METERED / QUOTA_EXCEEDED", () => {
@@ -84,7 +107,11 @@ describe("self-optimization (M10) + runtime intelligence (M11)", () => {
   });
 
   it("hotFailures ranks the flakiest steps first", () => {
-    const log = [ev("STEP_FAILED", { stepId: "a" }), ev("STEP_FAILED", { stepId: "b" }), ev("STEP_FAILED", { stepId: "a" })];
+    const log = [
+      ev("STEP_FAILED", { stepId: "a" }),
+      ev("STEP_FAILED", { stepId: "b" }),
+      ev("STEP_FAILED", { stepId: "a" }),
+    ];
     expect(hotFailures(log)).toEqual(["a", "b"]);
   });
 

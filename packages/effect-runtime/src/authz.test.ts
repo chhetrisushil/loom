@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { CapabilityDeniedError, GrantTable } from "./authz";
 import { EffectRuntime } from "./EffectRuntime";
+import { CapabilityDeniedError, GrantTable } from "./authz";
 import { ToolEffect } from "./effects/ToolEffect";
 import type { EffectContext } from "./types";
 
@@ -59,7 +59,9 @@ describe("EffectRuntime — capability enforcement (K2)", () => {
     const rt = new EffectRuntime([], { authorizer: new GrantTable({ wf: ["ok"] }) });
     rt.register("danger", new ToolEffect(async () => ({ done: true })));
     const emit = vi.fn();
-    await expect(rt.execute("danger", {}, ctx({ emit }))).rejects.toBeInstanceOf(CapabilityDeniedError);
+    await expect(rt.execute("danger", {}, ctx({ emit }))).rejects.toBeInstanceOf(
+      CapabilityDeniedError
+    );
     expect(emit).toHaveBeenCalledWith(
       "EFFECT_DENIED",
       expect.objectContaining({ toolId: "danger", stepId: "s1" })

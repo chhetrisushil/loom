@@ -5,7 +5,14 @@ import { ToolEffect } from "./effects/ToolEffect";
 import type { EffectContext, Warmer } from "./types";
 
 function ctx(overrides: Partial<EffectContext> = {}): EffectContext {
-  return { executionId: "e", workflowId: "wf", stepId: "s", attempt: 1, emit: vi.fn(), ...overrides };
+  return {
+    executionId: "e",
+    workflowId: "wf",
+    stepId: "s",
+    attempt: 1,
+    emit: vi.fn(),
+    ...overrides,
+  };
 }
 
 const deferred = () => {
@@ -25,13 +32,16 @@ describe("EffectRuntime — scheduler in the hot path (M6)", () => {
     let maxActive = 0;
     const gates = [deferred(), deferred(), deferred()];
     gates.forEach((g, i) => {
-      rt.register(`t${i}`, new ToolEffect(async () => {
-        active++;
-        maxActive = Math.max(maxActive, active);
-        await g.promise;
-        active--;
-        return i;
-      }));
+      rt.register(
+        `t${i}`,
+        new ToolEffect(async () => {
+          active++;
+          maxActive = Math.max(maxActive, active);
+          await g.promise;
+          active--;
+          return i;
+        })
+      );
     });
 
     const runs = [0, 1, 2].map((i) => rt.execute(`t${i}`, {}, ctx()));
@@ -48,18 +58,24 @@ describe("EffectRuntime — scheduler in the hot path (M6)", () => {
     const rt = new EffectRuntime([], { scheduler });
     const order: string[] = [];
     for (const id of ["blocker", "idle", "urgent"]) {
-      rt.register(id, new ToolEffect(async () => {
-        order.push(id);
-        return id;
-      }));
+      rt.register(
+        id,
+        new ToolEffect(async () => {
+          order.push(id);
+          return id;
+        })
+      );
     }
 
     // Occupy the single slot so the next two queue, then release.
     const gate = deferred();
-    rt.register("blocker", new ToolEffect(async () => {
-      order.push("blocker");
-      await gate.promise;
-    }));
+    rt.register(
+      "blocker",
+      new ToolEffect(async () => {
+        order.push("blocker");
+        await gate.promise;
+      })
+    );
 
     const p0 = rt.execute("blocker", {}, ctx());
     await Promise.resolve();

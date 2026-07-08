@@ -27,14 +27,44 @@ export interface KernelSyscall {
 
 // The syscall table. Order is not significant; names are the contract.
 export const KERNEL_SYSCALLS: readonly KernelSyscall[] = [
-  { name: "execute", kind: "call", since: "1.0.0", summary: "run any task to durable completion (the generalized primitive)" },
-  { name: "run", kind: "call", since: "1.0.0", summary: "run a step — the 'step' task alias of execute" },
-  { name: "decide", kind: "call", since: "1.0.0", summary: "record an advisory/optimizer choice durably; served on replay (P9)" },
-  { name: "parallel", kind: "call", since: "1.0.0", summary: "run tasks concurrently, input-order-preserving" },
-  { name: "suspend", kind: "call", since: "1.0.0", summary: "pause durably until an external signal, then resume from here" },
+  {
+    name: "execute",
+    kind: "call",
+    since: "1.0.0",
+    summary: "run any task to durable completion (the generalized primitive)",
+  },
+  {
+    name: "run",
+    kind: "call",
+    since: "1.0.0",
+    summary: "run a step — the 'step' task alias of execute",
+  },
+  {
+    name: "decide",
+    kind: "call",
+    since: "1.0.0",
+    summary: "record an advisory/optimizer choice durably; served on replay (P9)",
+  },
+  {
+    name: "parallel",
+    kind: "call",
+    since: "1.0.0",
+    summary: "run tasks concurrently, input-order-preserving",
+  },
+  {
+    name: "suspend",
+    kind: "call",
+    since: "1.0.0",
+    summary: "pause durably until an external signal, then resume from here",
+  },
   { name: "emit", kind: "call", since: "1.0.0", summary: "append a durable domain event" },
   { name: "stream", kind: "call", since: "1.0.0", summary: "emit an incremental delta event" },
-  { name: "ui", kind: "accessor", since: "1.0.0", summary: "drive durable, replayable UI surfaces (A2UI)" },
+  {
+    name: "ui",
+    kind: "accessor",
+    since: "1.0.0",
+    summary: "drive durable, replayable UI surfaces (A2UI)",
+  },
 ] as const;
 
 export interface KernelAbi {

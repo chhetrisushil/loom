@@ -3,10 +3,10 @@ import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it, vi } from "vitest";
-import { KERNEL_ABI, KERNEL_ABI_VERSION, KERNEL_SYSCALLS } from "./abi";
-import { WorkflowRuntime } from "./WorkflowRuntime";
-import type { ExecutionContext, FlowRunner, RegisteredFlow } from "./types";
 import { z } from "zod";
+import { WorkflowRuntime } from "./WorkflowRuntime";
+import { KERNEL_ABI, KERNEL_ABI_VERSION, KERNEL_SYSCALLS } from "./abi";
+import type { ExecutionContext, FlowRunner, RegisteredFlow } from "./types";
 
 // K1 conformance: the live ExecutionContext must expose exactly the declared syscall
 // surface. Removing/renaming a syscall (a MAJOR ABI break) fails this test, so the
@@ -74,8 +74,15 @@ describe("Kernel ABI (K1)", () => {
   });
 
   it("pins the syscall set (guards against silent MAJOR breaks)", () => {
-    expect([...KERNEL_SYSCALLS].map((s) => s.name).sort()).toEqual(
-      ["decide", "emit", "execute", "parallel", "run", "stream", "suspend", "ui"]
-    );
+    expect([...KERNEL_SYSCALLS].map((s) => s.name).sort()).toEqual([
+      "decide",
+      "emit",
+      "execute",
+      "parallel",
+      "run",
+      "stream",
+      "suspend",
+      "ui",
+    ]);
   });
 });
