@@ -1,7 +1,7 @@
 #+title: Loom
 #+author: Sushil Chhetri
 
-*The framework for durable, event-sourced agentic applications.*
+*The execution kernel for intelligent software — durable, event-sourced, deterministic.*
 
 Loom treats an intelligent workflow as a *process that unfolds over time*, not a request that returns once. Every decision it makes is appended to an immutable event log — so any execution can *pause for a human, resume on another machine, replay bit-for-bit for debugging, fork to explore alternatives,* and be *evaluated against its own history*. You write the intelligence in plain TypeScript; Loom provides the durable spine that makes it trustworthy in production.
 
@@ -9,10 +9,16 @@ Loom treats an intelligent workflow as a *process that unfolds over time*, not a
 *The durable event log is the moat.* Durability, resumability, deterministic replay, branching, evals, and time-travel debugging are all just different lenses on one append-only log.
 #+end_quote
 
+#+begin_quote
+🧵 *Loom 2.0* evolves the runtime into the *execution kernel for intelligent software* — a stable syscall ABI, an enforced authority boundary, metered resources, model routing/elevation, tiered memory, and horizontal scale-out — all additive and opt-in. See [[file:docs/loom-2.0/00-overview.md][docs/loom-2.0/]] and [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][ADR 0016]].
+#+end_quote
+
 - ⏸️  *Durable suspend / resume* — a flow can wait days for a human, survive a restart, and continue from exactly where it left off. Completed steps are never re-run.
-- 🔁  *Deterministic replay* — state is a pure fold of the event log; the same events always reconstruct the same state.
+- 🔁  *Deterministic replay* — state is a pure fold of the event log; the same events always reconstruct the same state. *Non-determinism is allowed only when logged* (P9) — so routing/optimizing still replays bit-for-bit.
 - 🌱  *Git-style branching* — fork an in-flight execution, simulate alternatives concurrently, and promote a winner. Branch-only, no merge.
-- 🤖  *Agentic, end to end* — LLMs, ReAct agents, MCP tools, and agent-to-agent calls are all durable, replayable *effects*.
+- 🤖  *Agentic, end to end* — LLMs, ReAct agents, MCP tools, and agent-to-agent calls are all durable, replayable *effects*. *Reasoning* adds cheap-first model routing with confidence-based elevation; *tiered memory* adds working/semantic/procedural recall.
+- 🛡️  *A real kernel* — a versioned syscall ABI, a capability *protection ring* (ungranted effects are denied), *resource accounting + quotas* (tokens/$/latency), and *fault supervision* (circuit breakers).
+- 📈  *Scale out* — the same interfaces on single-node SQLite or a network Postgres store with cross-node live subscribe (~LISTEN/NOTIFY~).
 - 🎨  *Bring your own renderer* — the same backend renders in React, Angular, Web Components, or the terminal.
 - 🧩  *One composition root* — ~defineConfig~ wires an app from a static config; the ~loom~ CLI, testing kit, evals, deploy-simulation, and a pluggable-compute seam surround it.
 
@@ -65,9 +71,11 @@ await app.close();
 #+end_src
 
 *The three moves to remember:*
-1. ~ctx.run(step, input)~ — do a unit of work (recorded, replay-safe, exactly-once).
+1. ~ctx.run(step, input)~ — do a unit of work (recorded, replay-safe, exactly-once). In 2.0 this is a thin alias for ~ctx.execute(task)~, the generalized primitive.
 2. ~ctx.suspend({ on })~ — pause durably for a human or an external signal.
 3. ~runtime.fork(id, sequence)~ — branch from any point to explore alternatives.
+
+*One more, for intelligence:* ~ctx.decide(id, optimizer)~ — record an advisory/optimizer choice (a model route, a recall, a ranking) as a durable fact. On replay the recorded choice is served and the optimizer is never re-run — so outcomes improve run-to-run while any single run stays reproducible (P9).
 
 *Pause for a human, then resume* — even across a process restart:
 
@@ -90,6 +98,8 @@ await app.runtime.resume(executionId, { eventType: "ApprovalGranted", payload: {
 - *Plain code, not a DSL* — a flow's orchestration is an ordinary ~async~ function using ~ctx.run~ / ~ctx.suspend~ / ~ctx.parallel~. Loom adds durability around your code; it doesn't replace it.
 - *Static, replay-safe wiring* — flows and effects are registered statically (the folder convention is honored by build-time codegen, not runtime globbing), so a remote worker or a replay reconstructs an identical graph.
 - *Isomorphic core, pluggable edges* — storage, compute placement, LLM providers, and renderers are all interfaces. The same flow runs in a test, a browser tab, a Node server, or on Cloud Run.
+- *Non-determinism only when logged* (P9, 2.0) — a runtime may route models, elevate, learn, or optimize, but every such choice becomes a durable ~DECISION_RECORDED~ event. Replay stays a pure fold; outcomes improve run-to-run.
+- *Minimal kernel, advisory plane* (P10, 2.0) — the durable core stays small; all "intelligence" is an optional module that shapes latency (off-log) or outcomes (logged), never a hidden input to the fold. You never pay for a runtime you didn't opt into.
 
 ** How it works
 
@@ -115,6 +125,40 @@ Every execution is an ordered list of events; the current state is a pure fold o
 
 -----
 
+* Loom 2.0 — the execution kernel
+
+Loom 2.0 generalizes the durable workflow runtime into an *execution kernel for intelligent software*: the layer that is to AI applications what an OS kernel is to programs. It is delivered as *additive, opt-in* modules over the same deterministic core — existing apps compile and replay unchanged.
+
+*Two new seams* everything hangs off:
+
+- *Execution seam* — ~ctx.run(step)~ generalizes to ~ctx.execute(task)~ (a step is one *task kind*; others: ~llm~ / ~agent~ / ~tool~ / ~ui~ / ~memory~ / ~human~ / ~plan~). A minimal ~Execution~ process-control-block carries identity/status/frames/lineage; scheduling, compute, and memory concerns live in an out-of-core ~ExecutionPolicy~ sidecar.
+- *Decision seam* — ~ctx.decide(id, optimizer)~ + the ~DECISION_RECORDED~ event: the substrate for reasoning routing, memory recall, and self-optimization, all replay-safe by construction (P9).
+
+*The runtimes* (each opt-in):
+
+| Runtime | What it adds |
+|---------+--------------|
+| *Reasoning* (~@loom/reasoning~) | Cheap-first model routing + confidence-based elevation (Gemma → Flash → Pro → Opus); routes logged via the decision seam |
+| *Memory* (~@loom/memory~) | First-class tiers (working / episodic / semantic / procedural) with eviction/summarization/promotion + replay-safe *logged recall* |
+| *Compute placement* (~@loom/dispatcher~) | ~PlacementDispatcher~ routes each execution to a named target (local / remote-HTTP / Cloud Run) by policy |
+| *Scheduler* (~@loom/scheduler~ in the effect path) | Bounded concurrency + priority admission control; zero-overhead when unconfigured |
+| *Scale-out storage* (~@loom/store-postgres~) | Postgres event/snapshot/branch stores + cross-node live subscribe (~LISTEN/NOTIFY~) |
+| *Intelligence* (~@loom/analytics~) | Read-only analytics over the log + an opt-in, *logged* self-optimizing router + an advisory runtime-intelligence report |
+
+*The kernel-hardening rings* — what makes it genuinely a kernel:
+
+- *K1 — Syscall ABI.* ~ctx.*~ is a versioned, conformance-pinned surface (~execute~ / ~run~ / ~decide~ / ~parallel~ / ~suspend~ / ~emit~ / ~stream~ / ~ui~).
+- *K2 — Protection ring.* The ~EffectRuntime~ authorizes every effect against a least-privilege ~GrantTable~; ungranted effects are *denied* and the denial is logged.
+- *K3 — Resource accounting.* ~meteringMiddleware~ meters tokens/$/latency onto the log and enforces *budgets* by admission control.
+- *K4 — Fault supervision.* ~SupervisingDispatcher~ adds restart/backoff + a *circuit breaker* for flaky models/tools.
+- *K5 — Event-schema ABI.* The on-disk event set is versioned and pinned; ~deploy-sim~ is the CI gate.
+
+*AI-native DX* — ~@loom/appgen~ turns a natural-language intent into a structured spec, then emits *plain, static, inspectable TypeScript you own* (no runtime NL interpretation).
+
+→ Full detail — data structures, algorithms, and diagrams — in [[file:docs/loom-2.0/00-overview.md][docs/loom-2.0/]]; the 25-slide story in [[file:docs/presentation/loom-2.0-deck.md][the Loom 2.0 deck]].
+
+-----
+
 * Packages
 
 *Core runtime*
@@ -122,17 +166,17 @@ Every execution is an ordered list of events; the current state is a pure fold o
 | Package                    | Description |
 |----------------------------+-------------|
 | ~@loom/core~               | Authoring builders (~flow$~, ~step$~, ~handler$~, ~tool$~, ~agent$~, ~projection$~, …) + shared types |
-| ~@loom/workflow-runtime~   | Durable execution — ~start~ / ~resume~ / ~fork~ / ~loadState~, the ~ExecutionJournal~, ~WorkflowContext~ |
-| ~@loom/replay-vm~          | Deterministic replay — ~foldEvents~ / ~ReplayVM~ (pure state reconstruction) |
+| ~@loom/workflow-runtime~   | Durable execution — ~start~ / ~resume~ / ~fork~ / ~loadState~, the ~ExecutionJournal~, ~ExecutionContext~ (~ctx.execute~ / ~ctx.run~ / ~ctx.decide~), and the versioned kernel ABI (~KERNEL_SYSCALLS~, K1) |
+| ~@loom/replay-vm~          | Deterministic replay — ~foldEvents~ / ~ReplayVM~ (pure state reconstruction) + the pinned on-disk event-schema ABI (~EVENT_SCHEMA_VERSION~, K5) |
 | ~@loom/event-runtime~      | Append-only ~EventStore~ (memory / SQLite) + git-style ~BranchRegistry~ |
 | ~@loom/snapshot-runtime~   | ~SnapshotStore~ — bounded-tail replay |
-| ~@loom/effect-runtime~     | Effect isolation for tool / LLM / human / A2A effects |
+| ~@loom/effect-runtime~     | Effect isolation for tool / LLM / human / A2A effects — plus the capability *protection ring* (~GrantTable~, K2), resource-accounting context (K3), and optional scheduler/warmer wiring (M6) |
 | ~@loom/sdk~                | Public re-export surface |
 
 *Composition & effects*
 
 | ~@loom/app~                | *Composition root* — ~defineConfig~ assembles the runtime, stores, middleware, projections, and A2A bus from one static config |
-| ~@loom/middleware~         | Effect middleware — ~retryMiddleware~ (deterministic backoff); the ~(ctx, input, next)~ chain |
+| ~@loom/middleware~         | Effect middleware — ~retryMiddleware~ (deterministic backoff) + ~meteringMiddleware~ (tokens/$/latency accounting + budget admission control, K3); the ~(ctx, input, next)~ chain |
 | ~@loom/registry~           | Workflow / agent registry |
 
 *Projection & UI*
@@ -146,26 +190,30 @@ Every execution is an ordered list of events; the current state is a pure fold o
 *Agentic*
 
 | ~@loom/llm~                | Provider-agnostic LLM abstraction (Anthropic, OpenAI, custom) |
-| ~@loom/agent~              | ReAct-style agent loop over your tools |
+| ~@loom/reasoning~          | *Reasoning Runtime* — model-route registry, cheap-first ~tagRouter~, pluggable confidence signals, confidence-based *elevation*; routes logged via the decision seam (~rankedRouter~ for learned routing) |
+| ~@loom/agent~              | ReAct-style agent loop over your tools — re-based to compose the Reasoning Runtime (routing/elevation), with routes logged |
 | ~@loom/mcp~                | Model Context Protocol client + tool discovery |
 | ~@loom/a2a~                | Agent-to-Agent protocol client + server |
-| ~@loom/capability~         | Flows as intent-addressable capabilities (~capability$~ + ~CapabilityCatalog~) |
-| ~@loom/intent~             | Routes natural-language intent to a capability |
-| ~@loom/planner~            | Composes an ordered, multi-step plan from a goal |
-| ~@loom/memory~             | Scoped, TTL/size-bounded agent memory |
+| ~@loom/capability~         | Flows as intent-addressable capabilities (~capability$~ + ~CapabilityCatalog~) — with ~version~, ~dependencies~ (transitive ~resolve~), and optional invoke authorization |
+| ~@loom/intent~             | Routes natural-language intent to a capability (prefers the Reasoning Runtime when supplied) |
+| ~@loom/planner~            | Composes an ordered, multi-step plan from a goal (prefers the Reasoning Runtime when supplied) |
+| ~@loom/memory~             | Scoped agent memory + ~TieredMemory~ — working / episodic / semantic / procedural tiers with eviction/summarization/promotion and replay-safe *logged recall* |
 | ~@loom/orchestrator~       | Composable approval (~decideApproval~) + plan-dispatch primitives |
 
 *Compute & distribution*
 
-| ~@loom/dispatcher~         | Execution placement — decides *where* a flow runs; owns worker allocation + retries |
+| ~@loom/dispatcher~         | Execution placement — ~LocalDispatcher~ + ~PlacementDispatcher~ (route to named targets by ~ExecutionPolicy~) + ~SupervisingDispatcher~ (restart/backoff + circuit breaker, K4) |
 | ~@loom/worker-runtime~ (~-local~ / ~-remote~) | Worker SPI + ~ExecutionPackage~ (resume coordinates, never code); in-process + HTTP impls |
 | ~@loom/worker-server~      | Stateless worker HTTP endpoint — ~POST /execute~ |
 | ~@loom/platform-cloudrun~  | Cloud Run adapter — ~CloudRunWorkerRuntime~ + sizing policy |
+| ~@loom/store-postgres~     | *Scale-out storage* — Postgres event / snapshot / branch stores behind the same interfaces, with cross-node live subscribe (~LISTEN/NOTIFY~); ~defineConfig({ storage: { kind: "postgres", url } })~ |
 | ~@loom/graph-executor~     | Distributed fan-out — per-node executions (one writer each), joined via lineage |
-| ~@loom/scheduler~          | Ephemeral cooperative scheduler — priority lanes, ~parallelLimit~, cancellation (opt-in) |
+| ~@loom/scheduler~          | Ephemeral cooperative scheduler — priority lanes, ~parallelLimit~, cancellation; can sit in the effect path for bounded-concurrency admission control (M6) |
 
 *DX & tooling*
 
+| ~@loom/analytics~          | *Event intelligence* — read-only analyzers over the log (execution / cost / reasoning / failure) + ~runtimeIntelligence~ advisory report (rankings, hot failures, budget suggestion) |
+| ~@loom/appgen~             | *AI-native DX* — ~parseIntent~ (NL → structured ~AppSpec~) + ~generateApp~ (→ plain, static, inspectable TypeScript you own); codegen, not a runtime NL interpreter |
 | ~@loom/cli~                | The ~loom~ CLI — ~logs~ / ~debug~ / ~inspect~ / ~eval~ / ~deploy check~ / ~gen~ / ~new~ / ~check~ |
 | ~@loom/testing~            | Testing kit — ~createTestApp~, ~waitForPhase~, ~captureGolden~, VCR LLM provider |
 | ~@loom/eval~               | Log-as-fixture evals — replay recorded logs, diff/score runs |
@@ -244,13 +292,14 @@ Start at [[file:docs/README.md][docs/README.md]] (the index), then:
 - [[file:docs/getting-started.md][Getting Started]] — zero to a running suspend/resume flow in ~5 minutes
 - [[file:docs/usage.md][Usage Guide]] — build a real app step by step
 - [[file:docs/user-guide.md][User Guide]] — every feature area with runnable examples
-- [[file:docs/architecture.md][Architecture]] — mission, core principles, and the reasoning behind each decision
+- [[file:docs/architecture.md][Architecture]] — mission, core principles (P1–P10), and the reasoning behind each decision
+- [[file:docs/loom-2.0/00-overview.md][Loom 2.0 deep-dives]] — the execution-kernel evolution in full: data structures, algorithms, and diagrams for every subsystem, plus the [[file:docs/loom-2.0/10-event-schema-reference.md][event-schema reference]]
 - [[file:docs/api-reference.org][API Reference]] — exhaustive per-package API
-- [[file:docs/adr/][ADRs]] — the decision history (0001–0015)
-- [[file:docs/presentation/loom-deck.md][Presentation]] — the flagship deck (Marp)
+- [[file:docs/adr/][ADRs]] — the decision history (0001–0016; [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][ADR 0016]] records Loom 2.0)
+- [[file:docs/presentation/loom-deck.md][Presentation]] — the flagship deck, plus the [[file:docs/presentation/loom-2.0-deck.md][Loom 2.0 deck]] (Marp)
 
 -----
 
 * Tech stack
 
-TypeScript (compiled to CommonJS via ~tsc~) · pnpm workspaces + Turborepo · Vitest · Biome · Zod · React 18 + Vite (example UIs).
+TypeScript (compiled to CommonJS via ~tsc~) · pnpm workspaces + Turborepo · Vitest · Biome · Zod · ~better-sqlite3~ (embedded) / ~pg~ (optional Postgres scale-out) · React 18 + Vite (example UIs).
