@@ -1,5 +1,11 @@
 import type { EventEnvelope } from "@loom/core";
-import { type Analytics, analyze, failureAnalytics, reasoningAnalytics } from "./analyze";
+import {
+  type Analytics,
+  analyze,
+  failureAnalytics,
+  rankFailedSteps,
+  reasoningAnalytics,
+} from "./analyze";
 
 // ── Self-optimization (M10) ──────────────────────────────────────────────────
 //
@@ -13,14 +19,7 @@ export function rankModels(events: EventEnvelope[]): Record<string, number> {
 
 // Most-failing steps, most-frequent first — the "what's-flaky" mining lens.
 export function hotFailures(events: EventEnvelope[], limit = 5): string[] {
-  const counts = new Map<string, number>();
-  for (const stepId of failureAnalytics(events).failedSteps) {
-    counts.set(stepId, (counts.get(stepId) ?? 0) + 1);
-  }
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit)
-    .map(([stepId]) => stepId);
+  return rankFailedSteps(failureAnalytics(events).failedSteps, limit);
 }
 
 // ── Runtime intelligence (M11) ───────────────────────────────────────────────
@@ -57,7 +56,8 @@ export function runtimeIntelligence(
   const headroom = options.budgetHeadroom ?? 1.5;
   const recommendations: RuntimeRecommendations = {
     modelRankings: analytics.reasoning.routes,
-    hotFailures: hotFailures(events, options.failureLimit ?? 5),
+    // Reuse the failedSteps already collected by `analyze` — no extra log pass.
+    hotFailures: rankFailedSteps(analytics.failure.failedSteps, options.failureLimit ?? 5),
     ...(analytics.cost.costUsd > 0 && {
       suggestedBudgetUsd: Math.round(analytics.cost.costUsd * headroom * 100) / 100,
     }),

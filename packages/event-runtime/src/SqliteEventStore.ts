@@ -78,6 +78,20 @@ export class SqliteEventStore implements EventStore {
     return rows.map(rowToEnvelope);
   }
 
+  async readRange(
+    executionId: string,
+    fromSequence: number,
+    toSequence: number
+  ): Promise<EventEnvelope[]> {
+    if (toSequence < fromSequence) return [];
+    const rows = this.db
+      .prepare<[string, number, number], EventRow>(
+        "SELECT * FROM events WHERE execution_id = ? AND sequence >= ? AND sequence <= ? ORDER BY sequence ASC"
+      )
+      .all(executionId, fromSequence, toSequence);
+    return rows.map(rowToEnvelope);
+  }
+
   async copyPrefix(
     fromExecutionId: string,
     toExecutionId: string,

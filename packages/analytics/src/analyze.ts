@@ -146,10 +146,115 @@ export function failureAnalytics(events: EventEnvelope[]): FailureAnalytics {
 }
 
 export function analyze(events: EventEnvelope[]): Analytics {
-  return {
-    execution: executionAnalytics(events),
-    cost: costAnalytics(events),
-    reasoning: reasoningAnalytics(events),
-    failure: failureAnalytics(events),
+  // Single pass over the log building all four lenses at once. The standalone
+  // `executionAnalytics`/`costAnalytics`/… helpers above are kept for callers that
+  // want one lens; `analyze` deliberately does NOT call them (that would be four
+  // passes) but folds the same accumulation logic in one loop.
+  const execution: ExecutionAnalytics = {
+    steps: 0,
+    completed: 0,
+    failed: 0,
+    cancelledSteps: 0,
+    suspended: false,
+    resumes: 0,
   };
+  const cost: CostAnalytics = {
+    tokens: 0,
+    costUsd: 0,
+    ms: 0,
+    meteredCalls: 0,
+    quotaExceeded: false,
+  };
+  const reasoning: ReasoningAnalytics = { decisions: 0, routes: {}, elevations: 0, bySource: {} };
+  const failedSteps: string[] = [];
+  const deniedTools: string[] = [];
+  let quotaExceeded = 0;
+
+  for (const e of events) {
+    switch (e.eventType) {
+      case "STEP_STARTED":
+        execution.steps++;
+        break;
+      case "STEP_COMPLETED":
+        execution.completed++;
+        break;
+      case "STEP_FAILED": {
+        execution.failed++;
+        const p = e.payload as { stepId?: string };
+        if (p.stepId !== undefined) failedSteps.push(p.stepId);
+        break;
+      }
+      case "STEP_CANCELLED":
+        execution.cancelledSteps++;
+        break;
+      case "EXECUTION_SUSPENDED":
+        execution.suspended = true;
+        break;
+      case "EXECUTION_RESUMED":
+        execution.resumes++;
+        break;
+      case "EXECUTION_COMPLETED":
+        execution.status = "completed";
+        break;
+      case "EXECUTION_FAILED":
+        execution.status = "failed";
+        break;
+      case "EXECUTION_CANCELLED":
+        execution.status = "cancelled";
+        break;
+      case "RESOURCE_METERED": {
+        const p = e.payload as { tokens?: number; costUsd?: number; ms?: number };
+        cost.tokens += p.tokens ?? 0;
+        cost.costUsd += p.costUsd ?? 0;
+        cost.ms += p.ms ?? 0;
+        cost.meteredCalls++;
+        break;
+      }
+      case "QUOTA_EXCEEDED":
+        cost.quotaExceeded = true;
+        quotaExceeded++;
+        break;
+      case "DECISION_RECORDED": {
+        const p = e.payload as { decisionId?: string; choice?: unknown; source?: string };
+        reasoning.decisions++;
+        if (typeof p.choice === "string")
+          reasoning.routes[p.choice] = (reasoning.routes[p.choice] ?? 0) + 1;
+        if (typeof p.decisionId === "string" && p.decisionId.includes("elevate"))
+          reasoning.elevations++;
+        if (typeof p.source === "string")
+          reasoning.bySource[p.source] = (reasoning.bySource[p.source] ?? 0) + 1;
+        break;
+      }
+      case "EFFECT_DENIED": {
+        const p = e.payload as { toolId?: string };
+        if (p.toolId !== undefined) deniedTools.push(p.toolId);
+        break;
+      }
+    }
+  }
+
+  return {
+    execution,
+    cost,
+    reasoning,
+    failure: {
+      failures: failedSteps.length,
+      denials: deniedTools.length,
+      quotaExceeded,
+      failedSteps,
+      deniedTools,
+    },
+  };
+}
+
+// Rank step ids by failure frequency, most-frequent first. Shared by
+// `hotFailures` (which mines the raw log) and `runtimeIntelligence` (which reuses
+// the `failedSteps` already collected by `analyze`, avoiding a second pass).
+export function rankFailedSteps(failedSteps: string[], limit: number): string[] {
+  const counts = new Map<string, number>();
+  for (const stepId of failedSteps) counts.set(stepId, (counts.get(stepId) ?? 0) + 1);
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([stepId]) => stepId);
 }
