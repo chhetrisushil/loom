@@ -16,6 +16,7 @@
     { "path": "../event-runtime" },
     { "path": "../projection-runtime" },
     { "path": "../snapshot-runtime" },
+    { "path": "../store-postgres" },
     { "path": "../telemetry" },
     { "path": "../worker-runtime-local" },
     { "path": "../workflow-runtime" }

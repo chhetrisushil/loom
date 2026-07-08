@@ -42,6 +42,13 @@ export type StorageConfig =
   /** Embedded SQLite (lazily loaded — Node only). `dir` holds the DB files. */
   | { kind: "sqlite"; dir?: string; branching?: boolean }
   /**
+   * Network-backed Postgres (lazily loaded — Node only) via `@loom/store-postgres`.
+   * The horizontal-scale backend: many workers on many machines share one durable
+   * log, with cross-node live `subscribe` over LISTEN/NOTIFY. `url` is a standard
+   * `postgres://…` connection string.
+   */
+  | { kind: "postgres"; url: string; branching?: boolean }
+  /**
    * Bring your own storage backend. The runtime is storage-agnostic, so supply
    * any `EventStore` + `SnapshotStore` (and an optional `BranchRegistry` for
    * fork/branch) — e.g. Postgres / Redis / DynamoDB. `defineConfig` uses them
@@ -162,6 +169,20 @@ function buildStores(storage: StorageConfig): LoomStores {
     if (storage.branching) {
       // Own DB file so branch writes never contend with the event-log write lock.
       stores.branchRegistry = new SqliteBranchRegistry(path.join(dir, "branches.db"));
+    }
+    return stores;
+  }
+  if (storage.kind === "postgres") {
+    // Same opaque lazy-require as sqlite: keeps `pg` out of browser bundles; only
+    // ever reached on this Node-only path.
+    const { PostgresEventStore, PostgresSnapshotStore, PostgresBranchRegistry } =
+      loadNodeModule<typeof import("@loom/store-postgres")>("@loom/store-postgres");
+    const stores: LoomStores = {
+      eventStore: new PostgresEventStore(storage.url),
+      snapshotStore: new PostgresSnapshotStore(storage.url),
+    };
+    if (storage.branching) {
+      stores.branchRegistry = new PostgresBranchRegistry(storage.url);
     }
     return stores;
   }

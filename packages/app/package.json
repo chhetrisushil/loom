@@ -26,6 +26,7 @@
     "@loom/event-runtime": "workspace:*",
     "@loom/projection-runtime": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
+    "@loom/store-postgres": "workspace:*",
     "@loom/telemetry": "workspace:*",
     "@loom/worker-runtime-local": "workspace:*",
     "@loom/workflow-runtime": "workspace:*"
