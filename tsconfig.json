@@ -29,6 +29,7 @@
     { "path": "packages/compiler" },
     { "path": "packages/registry" },
     { "path": "packages/llm" },
+    { "path": "packages/reasoning" },
     { "path": "packages/agent" },
     { "path": "packages/mcp" },
     { "path": "packages/a2a" },

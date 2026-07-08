@@ -14,6 +14,7 @@
     { "path": "../blueprint-runtime" },
     { "path": "../projection-runtime" },
     { "path": "../llm" },
+    { "path": "../reasoning" },
     { "path": "../agent" },
     { "path": "../mcp" },
     { "path": "../a2a" },

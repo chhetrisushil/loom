@@ -1474,6 +1474,9 @@ importers:
       '@loom/llm':
         specifier: workspace:*
         version: link:../llm
+      '@loom/reasoning':
+        specifier: workspace:*
+        version: link:../reasoning
       '@loom/scheduler':
         specifier: workspace:*
         version: link:../scheduler
@@ -1602,6 +1605,9 @@ importers:
       '@loom/llm':
         specifier: workspace:*
         version: link:../llm
+      '@loom/reasoning':
+        specifier: workspace:*
+        version: link:../reasoning
       '@loom/scheduler':
         specifier: workspace:*
         version: link:../scheduler
@@ -1676,6 +1682,22 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  packages/reasoning:
+    dependencies:
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../llm
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -1858,6 +1880,9 @@ importers:
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../projection-runtime
+      '@loom/reasoning':
+        specifier: workspace:*
+        version: link:../reasoning
       '@loom/registry':
         specifier: workspace:*
         version: link:../registry
