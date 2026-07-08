@@ -1,9 +1,18 @@
 import type { ExecutionHandle, WorkflowRuntime } from "@loom/workflow-runtime";
-import type { CapabilityDefinition } from "./types";
+import {
+  type CapabilityDefinition,
+  type CapabilityInvokeAuthorizer,
+  CapabilityInvokeDeniedError,
+} from "./types";
 
 export interface CapabilityMatch {
   capability: CapabilityDefinition;
   score: number;
+}
+
+export interface CapabilityCatalogOptions {
+  /** Optional invoke authorization (M7). When set, `invoke` denies unauthorized calls. */
+  authorizer?: CapabilityInvokeAuthorizer;
 }
 
 // The "catalog/" of the proposal: a registry of capabilities that can be listed,
@@ -11,11 +20,45 @@ export interface CapabilityMatch {
 // into a WorkflowRuntime, and invoked by id.
 export class CapabilityCatalog {
   private readonly capabilities = new Map<string, CapabilityDefinition>();
+  private readonly authorizer: CapabilityInvokeAuthorizer | undefined;
+
+  constructor(options: CapabilityCatalogOptions = {}) {
+    this.authorizer = options.authorizer;
+  }
 
   // biome-ignore lint/suspicious/noExplicitAny: capabilities have heterogeneous in/out types; the registry stores them type-erased and re-narrows on lookup
   register(capability: CapabilityDefinition<any, any>): this {
     this.capabilities.set(capability.id, capability as CapabilityDefinition);
     return this;
+  }
+
+  /**
+   * Resolve a capability's transitive dependencies (M7) into dependency-first
+   * (topological) order, with the capability itself last. Throws on a missing
+   * dependency or a dependency cycle.
+   */
+  resolve(id: string): CapabilityDefinition[] {
+    const order: CapabilityDefinition[] = [];
+    const done = new Set<string>();
+    const stack = new Set<string>();
+    const visit = (cid: string, path: string[]): void => {
+      if (done.has(cid)) return;
+      if (stack.has(cid)) {
+        throw new Error(`Capability dependency cycle: ${[...path, cid].join(" -> ")}`);
+      }
+      const cap = this.capabilities.get(cid);
+      if (cap === undefined) {
+        const via = path.length > 0 ? ` (needed by "${path[path.length - 1]}")` : "";
+        throw new Error(`Missing capability dependency: "${cid}"${via}`);
+      }
+      stack.add(cid);
+      for (const dep of cap.dependencies ?? []) visit(dep, [...path, cid]);
+      stack.delete(cid);
+      done.add(cid);
+      order.push(cap);
+    };
+    visit(id, []);
+    return order;
   }
 
   get(id: string): CapabilityDefinition | undefined {
@@ -59,14 +102,26 @@ export class CapabilityCatalog {
   }
 
   // Invoke a capability by id — capability-as-API / capability-as-workflow-node.
+  // When an authorizer is configured (M7), an unauthorized invoke is denied.
   async invoke<TIn = unknown>(
     workflowRuntime: WorkflowRuntime,
     capabilityId: string,
-    input: TIn
+    input: TIn,
+    opts?: { principal?: string }
   ): Promise<ExecutionHandle> {
     const capability = this.capabilities.get(capabilityId);
     if (!capability) {
       throw new Error(`No capability registered with id "${capabilityId}"`);
+    }
+    if (this.authorizer !== undefined) {
+      const decision = this.authorizer.authorize({
+        capabilityId,
+        ...(opts?.principal !== undefined && { principal: opts.principal }),
+        input,
+      });
+      if (!decision.allowed) {
+        throw new CapabilityInvokeDeniedError(capabilityId, decision.reason ?? "not authorized");
+      }
     }
     return workflowRuntime.start(capability.flow, input);
   }

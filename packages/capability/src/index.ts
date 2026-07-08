@@ -1,5 +1,11 @@
 export { capability$ } from "./capability$";
 export type { CapabilityConfig } from "./capability$";
 export { CapabilityCatalog } from "./CapabilityCatalog";
-export type { CapabilityMatch } from "./CapabilityCatalog";
-export type { CapabilityDefinition } from "./types";
+export type { CapabilityCatalogOptions, CapabilityMatch } from "./CapabilityCatalog";
+export { CapabilityInvokeDeniedError } from "./types";
+export type {
+  CapabilityDefinition,
+  CapabilityInvokeAuthorizer,
+  CapabilityInvokeDecision,
+  CapabilityInvokeRequest,
+} from "./types";
