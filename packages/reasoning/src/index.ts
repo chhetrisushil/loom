@@ -1,5 +1,5 @@
 export { ReasoningRuntime } from "./ReasoningRuntime";
-export { tagRouter, fixedRouter } from "./router";
+export { tagRouter, fixedRouter, rankedRouter } from "./router";
 export { stopReasonConfidence, validatorConfidence, constantConfidence } from "./confidence";
 export type {
   ConfidenceSignal,
