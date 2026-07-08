@@ -2,7 +2,7 @@
 
 > **Why "kernel" is not a metaphor**
 >
-> Loom 1.x was a *framework*: it gave you durability, replay, and suspension around plain TypeScript. Loom 2.0 goes further and earns the word **kernel** — the thing a platform is *built on*. A kernel is not defined by being "the core"; it is defined by the **enforcement rings** it provides: a stable syscall ABI, an authority boundary, resource accounting, fault supervision, and governed on-disk formats. This document walks the five hardening seams (**K1–K5**) that make Loom an execution kernel rather than a library, reading the actual source for each.
+> Loom 1.x was a *framework*: it gave you durability, replay, and suspension around plain TypeScript. Loom 2.0 goes further and earns the word **kernel** — the thing a platform is *built on*. A kernel is not defined by being "the core"; it is defined by the **enforcement rings** it provides: a stable syscall ABI, an authority boundary, resource accounting, fault supervision, and governed on-disk formats. This document walks the hardening seams (**K1–K6**) that make Loom an execution kernel rather than a library, reading the actual source for each. K1–K5 are the rings *ordinary* durable software needs; **K6** adds the one guarantee unique to running *autonomous intelligent* work — that a non-deterministic action or output is **safe**, not merely authorized (K2) and metered (K3).
 
 ---
 
@@ -14,7 +14,8 @@
 4. [K3 — Resource accounting & quotas](#k3--resource-accounting--quotas)
 5. [K4 — Fault supervision](#k4--fault-supervision)
 6. [K5 — Event-schema ABI governance](#k5--event-schema-abi-governance)
-7. [Tying it together](#7-tying-it-together)
+7. [K6 — Behavioral safety ring](#k6--behavioral-safety-ring)
+8. [Tying it together](#8-tying-it-together)
 
 ---
 
@@ -39,6 +40,7 @@ Loom 2.0 provides each of these for *intelligent, long-running software*. The ma
 | **K3** | Resource accounting & quotas | `meteringMiddleware(pricing, budget?)` meters every effect (`RESOURCE_METERED`) and admission-controls over-budget work (`QUOTA_EXCEEDED`) | `@loom/middleware` — [`metering.ts`](../../packages/middleware/src/metering.ts) | Budgeted execution |
 | **K4** | Fault supervision | `SupervisingDispatcher` — restart/backoff + per-key circuit breaker | `@loom/dispatcher` — [`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts) | Named supervision seam |
 | **K5** | On-disk ABI governance | `EVENT_SCHEMA_VERSION` + `knownEventTypes()`, pinned by a governance test; `@loom/deploy-sim` gates it at the flow level | `@loom/replay-vm` — [`eventHandlers.ts`](../../packages/replay-vm/src/eventHandlers.ts) | Governed event log |
+| **K6** | Behavioral-safety ring | `safetyMiddleware(validators)` validates an effect's input/output; a block is a durable `SAFETY_BLOCKED` fact + `SafetyViolationError` (fails the step) | `@loom/middleware` — [`safety.ts`](../../packages/middleware/src/safety.ts) | Governed action/output safety |
 
 Two properties of the durable core underwrite all five: **[P2 — deterministic, pure replay](../architecture.md#p2--replay-is-deterministic-and-pure)** (every ring's decision is reproducible because it is a function of logged facts) and **[P9 — non-determinism only when logged](../architecture.md#p9--non-determinism-is-allowed-but-only-when-logged-loom-20)** (a denial, a metered cost, or a quota trip is a durable event, so it replays exactly). The rings *enforce*; the log *remembers*.
 
@@ -263,19 +265,19 @@ The governance rule mirrors K1 ([`eventHandlers.ts:303`](../../packages/replay-v
 - **Adding an event type → additive (MINOR bump).** Old logs still fold; new logs use the new type.
 - **Removing or repurposing one → MAJOR break.** It changes how *historical* logs fold, so it must be deliberate.
 
-### The governance test pinning the ~17 event types
+### The governance test pinning the ~19 event types
 
-[`eventSchema.test.ts`](../../packages/replay-vm/src/eventSchema.test.ts) pins the exact set of 17 event types the fold understands and fails CI if `knownEventTypes()` differs ([`eventSchema.test.ts:33`](../../packages/replay-vm/src/eventSchema.test.ts)). The pinned set is the union of the durable core's events and the Loom 2.0 kernel-ring events:
+[`eventSchema.test.ts`](../../packages/replay-vm/src/eventSchema.test.ts) pins the exact set of 19 event types the fold understands and fails CI if `knownEventTypes()` differs ([`eventSchema.test.ts:33`](../../packages/replay-vm/src/eventSchema.test.ts)). The pinned set is the union of the durable core's events and the Loom 2.0/2.1 kernel-ring events:
 
 | Category | Event types |
 |---|---|
 | Execution lifecycle | `EXECUTION_STARTED`, `EXECUTION_SUSPENDED`, `EXECUTION_RESUMED`, `EXECUTION_COMPLETED`, `EXECUTION_FAILED`, `EXECUTION_CANCELLED` |
 | Step lifecycle | `STEP_STARTED`, `STEP_COMPLETED`, `STEP_FAILED`, `STEP_CANCELLED`, `STEP_RETRYING` |
 | Parallelism | `PARALLEL_STARTED`, `PARALLEL_COMPLETED` |
-| Advisory plane (P9) | `DECISION_RECORDED` |
-| **Kernel rings (K2/K3)** | `EFFECT_DENIED` (K2), `RESOURCE_METERED` (K3), `QUOTA_EXCEEDED` (K3) |
+| Advisory plane (P9) | `DECISION_RECORDED`, `OUTCOME_RECORDED` |
+| **Kernel rings (K2/K3/K6)** | `EFFECT_DENIED` (K2), `RESOURCE_METERED` (K3), `QUOTA_EXCEEDED` (K3), `SAFETY_BLOCKED` (K6) |
 
-The three ring events — `EFFECT_DENIED`, `RESOURCE_METERED`, `QUOTA_EXCEEDED` — are governed exactly like every other event: they have pinned fold handlers ([`eventHandlers.ts:200`](../../packages/replay-vm/src/eventHandlers.ts), [`eventHandlers.ts:223`](../../packages/replay-vm/src/eventHandlers.ts), [`eventHandlers.ts:247`](../../packages/replay-vm/src/eventHandlers.ts)), so a stored log carrying a denial or a metered cost replays identically forever. That is what makes the enforcement in K2/K3 durable rather than incidental.
+The ring events — `EFFECT_DENIED`, `RESOURCE_METERED`, `QUOTA_EXCEEDED`, `SAFETY_BLOCKED` — are governed exactly like every other event: they have pinned fold handlers, so a stored log carrying a denial, a metered cost, or a safety block replays identically forever. That is what makes the enforcement in K2/K3/K6 durable rather than incidental. Each schema addition is additive (MINOR): `SAFETY_BLOCKED` shipped in 1.1.0, `OUTCOME_RECORDED` in 1.2.0.
 
 ### Two gates, two levels
 
@@ -286,7 +288,60 @@ The three ring events — `EFFECT_DENIED`, `RESOURCE_METERED`, `QUOTA_EXCEEDED` 
 
 ---
 
-## 7. Tying it together
+## K6 — Behavioral safety ring
+
+K2 governs *who may act*; K3 governs *how much it costs*. Neither governs *whether the
+action or its output is safe* — the guarantee an autonomous intelligent system most needs.
+An OS kernel can trust userspace with the MMU because a fault is *contained*; a kernel that
+runs LLM-driven work must likewise contain what that work *emits and does* — hallucinated
+instructions, prompt-injection, PII, a schema-violating result, or simply behaviour that
+must be halted now. K6 turns the same chokepoint K2/K3 use — the effect path — into a
+**behavioral-safety ring**.
+
+### `safetyMiddleware({ validators })`
+
+The safety middleware is an ordinary effect middleware — the same `(ctx, input, next)` shape
+as metering — so it composes into the existing chain ([`safety.ts`](../../packages/middleware/src/safety.ts)).
+A `SafetyValidator` runs in one of two phases:
+
+- **input** validators run *before* `next()` — an unsafe *action* is refused before it
+  happens (admission control, exactly like K3);
+- **output** validators run *after* `next()` against the `result` — an unsafe *result* is
+  stopped from propagating.
+
+On a failed verdict the middleware emits a durable **`SAFETY_BLOCKED`** fact and throws
+`SafetyViolationError`, which fails the step via the normal `STEP_FAILED` path — identical to
+a K3 quota trip. Built-in validators cover the common hazards: `schemaValidator(schema)`
+(runtime-enforce an output schema that was declared-but-unchecked), `denyPatterns(regexes)`
+(jailbreak/policy), `piiValidator()`, and `killSwitch(isTripped)` — a real emergency stop,
+distinct from K4's *fault* breaker.
+
+```mermaid
+flowchart TD
+  A["effect enters safetyMiddleware"] --> B{input validators pass?}
+  B -->|no| D["emit SAFETY_BLOCKED (phase:input)<br/>throw SafetyViolationError<br/>(effect never runs → STEP_FAILED)"]
+  B -->|yes| E["run effect: next()"]
+  E --> F{output validators pass?}
+  F -->|no| G["emit SAFETY_BLOCKED (phase:output)<br/>throw (result never propagates)"]
+  F -->|yes| H["return result"]
+```
+
+### Replay-safety & opt-in
+
+`SAFETY_BLOCKED` is governed under K5: a pinned fold handler appends it to a reserved
+`variables._safety` audit list (mirroring `EFFECT_DENIED`'s `_denials`) — a pure audit fact
+that does not itself change status. So a blocked run reconstructs its safety verdict exactly
+on replay; the validator is served from the log, never re-invoked (P9). And like every ring
+it is **opt-in** — no `safetyMiddleware` ⇒ effects run byte-identically to before (P10). The
+kernel provides the ring; the *policies* (which patterns, which schemas, when to trip the
+kill-switch) live in the platform layer above it. See [ADR 0017](../adr/0017-k6-behavioral-safety-ring.md).
+
+> **Scope:** K6 is the *behavioral/output* half of safety. Data-plane isolation — sandboxing
+> untrusted tool code (WASM/process) and egress control — deepens K2 and is tracked separately.
+
+---
+
+## 8. Tying it together
 
 Loom 2.0 earns the word *kernel* because it provides the enforcement rings a real kernel has, each mapped to the scarce realities of intelligent software rather than to CPU and memory:
 
@@ -295,9 +350,10 @@ Loom 2.0 earns the word *kernel* because it provides the enforcement rings a rea
 - **K3** meters the actual scarce resource — **tokens, dollars, latency** — and admission-controls work that exceeds its budget.
 - **K4** supervises faults with **restart/backoff and circuit breaking**, isolating flaky subsystems.
 - **K5** governs the **on-disk ABI** so durable logs replay across deploys.
+- **K6** validates the **safety of an action or output** — refusing an unsafe input before it runs and an unsafe result before it propagates, with a real kill-switch — the guarantee unique to running autonomous intelligent work.
 
-None of these would be trustworthy without the durable core beneath them. **[P2 — deterministic, pure replay](../architecture.md#p2--replay-is-deterministic-and-pure)** is what makes each ring's verdict *reproducible*: a denial, a metered cost, and a quota trip are all pure functions of logged facts, so a resume on a fresh machine reaches the identical decision. **[P9](../architecture.md#p9--non-determinism-is-allowed-but-only-when-logged-loom-20)** is what lets those verdicts be *durable*: they are events, folded like any other.
+None of these would be trustworthy without the durable core beneath them. **[P2 — deterministic, pure replay](../architecture.md#p2--replay-is-deterministic-and-pure)** is what makes each ring's verdict *reproducible*: a denial, a metered cost, a quota trip, and a safety block are all pure functions of logged facts, so a resume on a fresh machine reaches the identical decision. **[P9](../architecture.md#p9--non-determinism-is-allowed-but-only-when-logged-loom-20)** is what lets those verdicts be *durable*: they are events, folded like any other.
 
-And every ring honours **[P10 — minimal kernel, advisory plane](../architecture.md#p10--minimal-kernel-intelligence-lives-in-an-advisory-plane-loom-20)**: each is opt-in, and each is byte-identical to Loom 1.x when unwired. No authorizer ⇒ permissive; no metering middleware ⇒ no accounting; no supervising dispatcher ⇒ plain dispatch. You turn on exactly the rings your platform needs and pay for nothing else. That combination — a small, deterministic, boring core plus opt-in enforcement rings and an advisory plane for intelligence — is what makes Loom an **execution kernel a platform can be built on**, not merely a framework you call.
+And every ring honours **[P10 — minimal kernel, advisory plane](../architecture.md#p10--minimal-kernel-intelligence-lives-in-an-advisory-plane-loom-20)**: each is opt-in, and each is byte-identical to Loom 1.x when unwired. No authorizer ⇒ permissive; no metering middleware ⇒ no accounting; no supervising dispatcher ⇒ plain dispatch; no safety middleware ⇒ no validation. You turn on exactly the rings your platform needs and pay for nothing else. That combination — a small, deterministic, boring core plus opt-in enforcement rings and an advisory plane for intelligence — is what makes Loom an **execution kernel a platform can be built on**, not merely a framework you call.
 
 > **Start here:** for the Loom 2.0 story end-to-end, see the **[00 — Overview](00-overview.md)**. For the durable spine these rings sit on, see the **[Architecture reference](../architecture.md)**.

@@ -626,7 +626,7 @@ log on replay; nothing "smart" is ever a hidden input to the fold (P10).
 
 ### See also
 
-- **[00-overview.md](00-overview.md)** — the Loom 2.0 milestone map (M1–M2, K1–K5, P9–P10).
+- **[00-overview.md](00-overview.md)** — the Loom 2.0 milestone map (M1–M2, K1–K6, P9–P10).
 - **[10-event-schema-reference.md](10-event-schema-reference.md)** — the complete on-disk
   event-schema ABI: every event type, its payload, the state fields it folds into, and the
   governance rule.

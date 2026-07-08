@@ -305,15 +305,26 @@ export function rankedRouter(rankings: Record<string, number>): Router {
 
 Crucially, `rankedRouter` is used *inside* `ReasoningRuntime` where its `select(...)` is wrapped by `ctx.decide` (the route is emitted as `DECISION_RECORDED`, [`ReasoningRuntime.ts:55`](../../packages/reasoning/src/ReasoningRuntime.ts)). So the "learned" preference is **auditable and override-able, never silently autonomous** (P10): you can see exactly which model it picked and why, replay serves the same choice, and a human or a `fixedRouter` can override it. Optimization changes *future outcomes*; it never rewrites the past.
 
+#### The learning seam — closing the loop (M12)
+
+`rankModels` ranks by *how often* a model was chosen — a proxy for trust, but blind to whether choosing it actually *worked*. The **learning seam** ([ADR 0018](../adr/0018-learning-seam-outcome-recorded.md)) adds the missing half. `recordOutcome(sink, { key, success?, score? })` ([`packages/analytics/src/outcomes.ts`](../../packages/analytics/src/outcomes.ts)) emits a durable **`OUTCOME_RECORDED`** fact — the symmetric counterpart to `DECISION_RECORDED` ("what was chosen" ↔ "how it turned out"). **`rankFromOutcomes(events)`** then mines per-key mean success/score into a ranking you feed straight into the same `rankedRouter`:
+
+```ts
+const router = rankedRouter(rankFromOutcomes(log)); // route toward what actually worked
+```
+
+This closes the P9 loop operationally: outcomes feed back into routing, so the system improves run-to-run — yet every future route is still a logged `DECISION_RECORDED`, so replay stays deterministic and the improvement is auditable. It composes with the existing router (no new dependency), and `outcomeRankings` is surfaced alongside `modelRankings` in `runtimeIntelligence`. The `{ key, success?, score? }` shape generalizes past model routing to capability, tool, and planner-step selection.
+
 ### 3.3 M11 — `runtimeIntelligence`: one advisory report
 
 `runtimeIntelligence(events, options?)` ([`intelligence.ts:52`](../../packages/analytics/src/intelligence.ts)) composes M9 analytics + M10 optimizers into a single **advisory** `RuntimeIntelligenceReport`:
 
 ```ts
 export interface RuntimeRecommendations {
-  modelRankings: Record<string, number>;   // = analytics.reasoning.routes
+  modelRankings: Record<string, number>;    // = analytics.reasoning.routes (frequency chosen)
+  outcomeRankings: Record<string, number>;  // = rankFromOutcomes(events) (how well it worked)
   hotFailures: string[];
-  suggestedBudgetUsd?: number;              // round(observed cost × headroom), only if metered
+  suggestedBudgetUsd?: number;               // round(observed cost × headroom), only if metered
 }
 export interface RuntimeIntelligenceReport {
   analytics: Analytics;

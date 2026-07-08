@@ -72,6 +72,8 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._decisions` | `DECISION_RECORDED` | `Record<decisionId, { choice, rationale?, source? }>` |
 | `variables._denials` | `EFFECT_DENIED` | `Array<{ toolId, stepId?, reason? }>` |
 | `variables._resources` | `RESOURCE_METERED` / `QUOTA_EXCEEDED` | `{ tokens, costUsd, ms, count, exceeded? }` |
+| `variables._safety` | `SAFETY_BLOCKED` | `Array<{ validatorId, stepId?, phase?, reason?, category? }>` |
+| `variables._outcomes` | `OUTCOME_RECORDED` | `Array<{ key, success?, score?, decisionId? }>` |
 
 ---
 
@@ -209,8 +211,8 @@ generalization.
 
 These are the genuinely new event types. All are **purely additive** and fold into reserved
 `variables` keys; none changes how a pre-existing event folds, and none changes frame or
-execution `status` (except via the ordinary `STEP_FAILED` that a denial/quota breach triggers
-downstream).
+execution `status` (except via the ordinary `STEP_FAILED` that a denial / quota / safety breach
+triggers downstream).
 
 #### `DECISION_RECORDED`
 - **Introduced:** Loom 2.0 — P9, the Decision seam.
@@ -249,6 +251,24 @@ downstream).
 - **Folds into:** marks `variables._resources.exceeded = true` (and records `reason?`), preserving
   the running totals. **Pure audit** — the step fails via the `STEP_FAILED` that follows.
 - Handler: `eventHandlers.ts:247`.
+
+#### `SAFETY_BLOCKED`
+- **Introduced:** Loom 2.1 — K6, the behavioral-safety ring ([ADR 0017](../adr/0017-k6-behavioral-safety-ring.md)).
+  A `safetyMiddleware` validator refused an effect's input (before it ran) or its output (before
+  it propagated).
+- **Payload:** `{ validatorId: string; stepId?: string; phase?: "input" | "output"; reason?: string; category?: string }`
+- **Folds into:** appends the block to `variables._safety`. **Pure audit** — it does not change
+  frame/execution status; the step fails via the `STEP_FAILED` that follows (from the thrown
+  `SafetyViolationError`). Served from the log on replay, so a blocked run reconstructs identically.
+
+#### `OUTCOME_RECORDED`
+- **Introduced:** Loom 2.1 — the learning seam ([ADR 0018](../adr/0018-learning-seam-outcome-recorded.md)).
+  Records *how a prior choice turned out* — the symmetric counterpart to `DECISION_RECORDED`.
+  Emitted via `recordOutcome(sink, …)` (`@loom/analytics`).
+- **Payload:** `{ key: string; success?: boolean; score?: number; decisionId?: string }`
+- **Folds into:** appends the outcome to `variables._outcomes`. **Pure audit.** Mined by
+  `rankFromOutcomes(events)` into a ranking fed to `rankedRouter` (@loom/reasoning), closing the
+  loop while every future route stays a logged `DECISION_RECORDED`.
 
 ---
 
@@ -338,7 +358,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts:311`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.0.0";
+export const EVENT_SCHEMA_VERSION = "1.2.0"; // 1.1.0 added SAFETY_BLOCKED (K6); 1.2.0 added OUTCOME_RECORDED
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
@@ -354,13 +374,14 @@ export function knownEventTypes(): string[] {
   that must be deliberate. A conformance test pins `knownEventTypes()` so the set cannot drift
   silently.
 
-The complete pinned set (the 17 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
+The complete pinned set (the 19 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
 returns them):
 
 `DECISION_RECORDED`, `EFFECT_DENIED`, `EXECUTION_CANCELLED`, `EXECUTION_COMPLETED`,
 `EXECUTION_FAILED`, `EXECUTION_RESUMED`, `EXECUTION_STARTED`, `EXECUTION_SUSPENDED`,
-`PARALLEL_COMPLETED`, `PARALLEL_STARTED`, `QUOTA_EXCEEDED`, `RESOURCE_METERED`, `STEP_CANCELLED`,
-`STEP_COMPLETED`, `STEP_FAILED`, `STEP_RETRYING`, `STEP_STARTED`.
+`OUTCOME_RECORDED`, `PARALLEL_COMPLETED`, `PARALLEL_STARTED`, `QUOTA_EXCEEDED`, `RESOURCE_METERED`,
+`SAFETY_BLOCKED`, `STEP_CANCELLED`, `STEP_COMPLETED`, `STEP_FAILED`, `STEP_RETRYING`,
+`STEP_STARTED`.
 
 This mirrors the kernel-ABI guarantee (K1): just as `KERNEL_SYSCALLS` pins the syscall surface,
 `knownEventTypes()` pins the on-disk event surface — same additive-MINOR / breaking-MAJOR

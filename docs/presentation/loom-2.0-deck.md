@@ -165,7 +165,7 @@ Logged recall → replay serves the **same** recalled set even if the store late
 
 ---
 
-## Does it earn "kernel"? — the five rings (K1–K5)
+## Does it earn "kernel"? — the six rings (K1–K6)
 
 A framework becomes a kernel when it adds the enforcement rings a real kernel has:
 
@@ -274,7 +274,7 @@ Each evolves independently. Anything that's a marketplace or an interface is **n
 | The two spines + ABI | `docs/loom-2.0/01-execution-and-decision-seams.md` |
 | Reasoning & memory | `docs/loom-2.0/02-reasoning-and-memory.md` |
 | Compute · scheduling · storage | `docs/loom-2.0/03-compute-scheduling-storage.md` |
-| The kernel rings (K1–K5) | `docs/loom-2.0/04-kernel-hardening.md` |
+| The kernel rings (K1–K6) | `docs/loom-2.0/04-kernel-hardening.md` |
 | Capabilities · agents · intelligence · DX | `docs/loom-2.0/05-capabilities-agents-intelligence-dx.md` |
 | The on-disk event ABI | `docs/loom-2.0/10-event-schema-reference.md` |
 | The decision record | `docs/adr/0016-…md` |

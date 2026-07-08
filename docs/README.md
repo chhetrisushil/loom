@@ -22,7 +22,7 @@ Loom 2.0 evolves the durable workflow runtime into the **execution kernel for in
 | [Execution & Decision seams](loom-2.0/01-execution-and-decision-seams.md) | `ctx.execute` + `Execution` PCB · `ctx.decide` + `DECISION_RECORDED` · kernel ABI (K1) |
 | [Reasoning & Memory](loom-2.0/02-reasoning-and-memory.md) | Model routing/elevation (M3) · tiered memory + logged recall (M5) |
 | [Compute, Scheduling & Storage](loom-2.0/03-compute-scheduling-storage.md) | Placement (M4) · scheduler-in-hot-path (M6) · supervision (K4) · Postgres scale-out (M3.5) |
-| [Kernel hardening](loom-2.0/04-kernel-hardening.md) | ABI (K1) · protection ring (K2) · accounting/quotas (K3) · supervision (K4) · event-schema ABI (K5) |
+| [Kernel hardening](loom-2.0/04-kernel-hardening.md) | ABI (K1) · protection ring (K2) · accounting/quotas (K3) · supervision (K4) · event-schema ABI (K5) · behavioral-safety ring (K6) |
 | [Capabilities, Agents, Intelligence & DX](loom-2.0/05-capabilities-agents-intelligence-dx.md) | Capabilities (M7) · agents (M8) · analytics/self-opt (M9–M11) · NL→codegen (P11) |
 | [Event-schema reference](loom-2.0/10-event-schema-reference.md) | The complete on-disk event ABI: every event, payload, and fold |
 
