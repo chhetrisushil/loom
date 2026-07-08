@@ -93,6 +93,31 @@ export class WorkflowContextImpl implements WorkflowContext {
     return this.execute<TIn, TOut>(step, input);
   }
 
+  // Loom 2.0 (P9) — the Decision seam. Twin of `execute`'s replay short-circuit:
+  // a recorded decision is served from the log; otherwise the decider runs once and
+  // its choice is committed as DECISION_RECORDED. Optimizers therefore change
+  // outcomes across runs, but a given run always replays the same choice.
+  async decide<T = unknown>(
+    decisionId: string,
+    decider: () => T | Promise<T>,
+    opts?: { rationale?: unknown; source?: string }
+  ): Promise<T> {
+    if (this.vm.hasDecision(decisionId)) {
+      return this.vm.getDecision(decisionId) as T;
+    }
+
+    const choice = await decider();
+
+    this.emit("DECISION_RECORDED", {
+      decisionId,
+      choice,
+      ...(opts?.rationale !== undefined && { rationale: opts.rationale }),
+      ...(opts?.source !== undefined && { source: opts.source }),
+    });
+
+    return choice;
+  }
+
   async parallel<TResults extends unknown[]>(
     pairs: { [K in keyof TResults]: [StepDefinition<unknown, TResults[K]>, unknown] },
     options?: { limit?: number }

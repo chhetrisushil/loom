@@ -165,6 +165,34 @@ const handlers: Record<string, Handler> = {
     };
   },
 
+  // Loom 2.0 (P9) — a durable record of an advisory/optimizer choice. Stored in a
+  // reserved `_decisions` map keyed by decisionId so replay serves the recorded
+  // choice instead of re-consulting the optimizer, keeping the fold pure (P2).
+  DECISION_RECORDED: (state, event) => {
+    const payload = event.payload as {
+      decisionId: string;
+      choice: unknown;
+      rationale?: unknown;
+      source?: string;
+    };
+    const existing = (state.variables._decisions as Record<string, unknown> | undefined) ?? {};
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _decisions: {
+          ...existing,
+          [payload.decisionId]: {
+            choice: payload.choice,
+            ...(payload.rationale !== undefined && { rationale: payload.rationale }),
+            ...(payload.source !== undefined && { source: payload.source }),
+          },
+        },
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
   EXECUTION_COMPLETED: (state, event) => {
     const payload = event.payload as { output?: unknown };
     return {
