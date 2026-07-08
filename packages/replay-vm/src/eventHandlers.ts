@@ -217,6 +217,38 @@ const handlers: Record<string, Handler> = {
     };
   },
 
+  // Loom 2.0 (learning seam) — an OUTCOME_RECORDED fact: how a prior choice (a
+  // route/capability/tool, by `key`) actually turned out. The symmetric counterpart
+  // to DECISION_RECORDED ("what was chosen"): this records "how it went", so
+  // @loom/analytics can mine it into a ranking fed back to the router — closing the
+  // loop while keeping every future route a logged decision (P9). Folded into a
+  // reserved `_outcomes` audit list; pure audit, does not change status.
+  OUTCOME_RECORDED: (state, event) => {
+    const p = event.payload as {
+      key: string;
+      success?: boolean;
+      score?: number;
+      decisionId?: string;
+    };
+    const existing = (state.variables._outcomes as unknown[] | undefined) ?? [];
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _outcomes: [
+          ...existing,
+          {
+            key: p.key,
+            ...(p.success !== undefined && { success: p.success }),
+            ...(p.score !== undefined && { score: p.score }),
+            ...(p.decisionId !== undefined && { decisionId: p.decisionId }),
+          },
+        ],
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
   // Loom 2.0 (K6) — a behavioral-safety block: a safety validator refused an
   // effect's input or output. Recorded as a durable audit fact in a reserved
   // `_safety` list (the step itself still fails via the STEP_FAILED that follows).
@@ -341,7 +373,7 @@ export function getHandler(eventType: string): Handler | undefined {
 // Governance: adding an event type is additive (bump MINOR, update the pinned list);
 // removing or repurposing one changes how historical logs fold and is a MAJOR break
 // that must be deliberate — the conformance test pins `knownEventTypes()`.
-export const EVENT_SCHEMA_VERSION = "1.1.0";
+export const EVENT_SCHEMA_VERSION = "1.2.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

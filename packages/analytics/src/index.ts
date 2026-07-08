@@ -18,3 +18,5 @@ export type {
   RuntimeIntelligenceOptions,
   RuntimeRecommendations,
 } from "./intelligence";
+export { recordOutcome, outcomeAnalytics, rankFromOutcomes } from "./outcomes";
+export type { Outcome, OutcomeSink, OutcomeStats } from "./outcomes";
