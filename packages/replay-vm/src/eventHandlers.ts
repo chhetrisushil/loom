@@ -299,3 +299,17 @@ const handlers: Record<string, Handler> = {
 export function getHandler(eventType: string): Handler | undefined {
   return handlers[eventType];
 }
+
+// ── Event-schema ABI governance (Loom 2.0 K5) ────────────────────────────────
+//
+// The event log is the kernel's on-disk ABI: state is `fold(events)`, and stored
+// logs must replay across deploys (this is what `@loom/deploy-sim` guards at the
+// flow level). This names and versions the *set of event types the fold understands*.
+// Governance: adding an event type is additive (bump MINOR, update the pinned list);
+// removing or repurposing one changes how historical logs fold and is a MAJOR break
+// that must be deliberate — the conformance test pins `knownEventTypes()`.
+export const EVENT_SCHEMA_VERSION = "1.0.0";
+
+export function knownEventTypes(): string[] {
+  return Object.keys(handlers).sort();
+}
