@@ -32,6 +32,7 @@
     { "path": "packages/llm" },
     { "path": "packages/reasoning" },
     { "path": "packages/analytics" },
+    { "path": "packages/appgen" },
     { "path": "packages/agent" },
     { "path": "packages/mcp" },
     { "path": "packages/a2a" },
