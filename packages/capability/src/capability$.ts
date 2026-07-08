@@ -9,6 +9,10 @@ export interface CapabilityConfig<TIn, TOut> {
   tags?: string[];
   inputSchema: ZodSchema<TIn>;
   flow: RegisteredFlow<TIn, TOut>;
+  /** Semver of this capability (M7). */
+  version?: string;
+  /** Ids of capabilities this one depends on (M7). */
+  dependencies?: string[];
 }
 
 // Wraps a RegisteredFlow as an intent-addressable capability.
@@ -23,5 +27,7 @@ export function capability$<TIn = unknown, TOut = unknown>(
     tags: config.tags ?? [],
     inputSchema: config.inputSchema,
     flow: config.flow,
+    ...(config.version !== undefined && { version: config.version }),
+    ...(config.dependencies !== undefined && { dependencies: config.dependencies }),
   };
 }
