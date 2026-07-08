@@ -1,24 +1,29 @@
+import { Priority, type Scheduler } from "@loom/scheduler";
 import { type CapabilityAuthorizer, CapabilityDeniedError, type EffectRuntimeOptions } from "./authz";
-import type { Effect, EffectContext, EffectMiddleware, EffectNext } from "./types";
+import type { Effect, EffectContext, EffectMiddleware, EffectNext, Warmer } from "./types";
 
 export class EffectRuntime {
   private readonly registry = new Map<string, Effect>();
   private readonly middleware: readonly EffectMiddleware[];
   private readonly authorizer: CapabilityAuthorizer | undefined;
+  private readonly scheduler: Scheduler | undefined;
+  private readonly warmer: Warmer | undefined;
 
   /**
    * @param middleware Cross-cutting middleware applied around every effect
    * execution, in order — `middleware[0]` is outermost. The list is fixed here
    * (static ⇒ deterministic across replay). An empty list (the default) makes
    * `execute` behave identically to a bare effect call.
-   * @param options Optional capability `authorizer` — the protection ring (K2).
-   * When set, every effect is authorized before it runs; ungranted effects are
-   * denied (EFFECT_DENIED emitted, then a CapabilityDeniedError thrown). Omit for
-   * today's permissive behaviour.
+   * @param options Optional `authorizer` (K2 protection ring), `scheduler` (M6 —
+   * route effects through it for bounded concurrency + priority), and `warmer` (M6 —
+   * advisory off-log pre-warm). All omittable; the empty case is the zero-overhead
+   * direct path with today's behaviour.
    */
   constructor(middleware: readonly EffectMiddleware[] = [], options: EffectRuntimeOptions = {}) {
     this.middleware = middleware;
     this.authorizer = options.authorizer;
+    this.scheduler = options.scheduler;
+    this.warmer = options.warmer;
   }
 
   register(toolId: string, effect: Effect): void {
@@ -52,19 +57,29 @@ export class EffectRuntime {
       throw new Error(`No effect registered for toolId: "${toolId}"`);
     }
 
-    if (this.middleware.length === 0) {
-      return effect.execute(input, ctx) as Promise<TOut>;
-    }
-
-    // Fold the chain right-to-left over the base effect call so middleware[0]
-    // ends up outermost (its `next` runs middleware[1], … the effect last).
-    let next: EffectNext = () => effect.execute(input, ctx);
+    // Build the effect+middleware chain as a single thunk. Fold right-to-left so
+    // middleware[0] ends up outermost (its `next` runs middleware[1], … the effect last).
+    let chain: EffectNext = () => effect.execute(input, ctx);
     for (let i = this.middleware.length - 1; i >= 0; i--) {
       const mw = this.middleware[i]!;
-      const downstream = next;
-      next = () => mw(ctx, input, downstream);
+      const downstream = chain;
+      chain = () => mw(ctx, input, downstream);
     }
-    return next() as Promise<TOut>;
+
+    // Advisory pre-warm (M6) — off the durable path, fire-and-forget, no event.
+    this.warmer?.warm(toolId);
+
+    // M6 — route through the scheduler for bounded concurrency + priority ordering
+    // when configured; otherwise the zero-overhead direct path (unchanged).
+    if (this.scheduler !== undefined) {
+      const priority = (ctx.priority ?? Priority.Normal) as Priority;
+      return this.scheduler.schedule(() => chain(), {
+        priority,
+        label: toolId,
+        ...(ctx.signal !== undefined && { signal: ctx.signal }),
+      }) as Promise<TOut>;
+    }
+    return chain() as Promise<TOut>;
   }
 
   has(toolId: string): boolean {

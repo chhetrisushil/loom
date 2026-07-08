@@ -20,7 +20,8 @@
   "dependencies": {
     "@loom/core": "workspace:*",
     "@loom/event-runtime": "workspace:*",
-    "@loom/replay-vm": "workspace:*"
+    "@loom/replay-vm": "workspace:*",
+    "@loom/scheduler": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
