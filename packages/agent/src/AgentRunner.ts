@@ -2,8 +2,9 @@ import type { AgentDefinition, ToolDefinition } from "@loom/core";
 import { loadInstructions } from "@loom/core";
 import type { EffectContext, EffectRuntime } from "@loom/effect-runtime";
 import { LlmEffect } from "@loom/effect-runtime";
-import type { LlmMessage, LlmProvider, LlmToolSpec } from "@loom/llm";
+import type { LlmMessage, LlmProvider, LlmResponse, LlmToolCall, LlmToolSpec } from "@loom/llm";
 import type { MemoryRuntime } from "@loom/memory";
+import type { ReasoningRuntime } from "@loom/reasoning";
 import { parallelLimit, throwIfAborted } from "@loom/scheduler";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
@@ -11,7 +12,13 @@ import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
 export interface AgentConfig {
   definition: AgentDefinition;
-  provider: LlmProvider;
+  // The model access. Provide a bare `provider` OR a `reasoning` runtime (preferred):
+  // when `reasoning` is set the agent's model calls are routed/elevated by the
+  // Reasoning Runtime and the chosen route is logged as a durable decision (P9) — the
+  // agent stays thin while the runtime does the model heavy-lifting (M8). At least
+  // one must be supplied.
+  provider?: LlmProvider;
+  reasoning?: ReasoningRuntime;
   effectRuntime: EffectRuntime;
   maxIterations?: number;
   systemPrompt?: string;
@@ -38,12 +45,15 @@ export class AgentRunner {
   private readonly parallelTools: boolean | number;
 
   constructor(private readonly config: AgentConfig) {
+    if (config.provider === undefined && config.reasoning === undefined) {
+      throw new Error("AgentRunner requires a `provider` or a `reasoning` runtime");
+    }
     this.maxIterations = config.maxIterations ?? 10;
     this.parallelTools = config.parallelTools ?? false;
   }
 
   async run(input: AgentInput, ctx: EffectContext): Promise<AgentOutput> {
-    const { definition, provider, effectRuntime, systemPrompt, memory, skills } = this.config;
+    const { definition, effectRuntime, systemPrompt, memory, skills } = this.config;
 
     // Resolve skills first: choose the relevant ones, record the choice for
     // replay, then lazy-load only those instruction bodies and their tools.
@@ -113,12 +123,16 @@ export class AgentRunner {
       throwIfAborted(ctx.signal);
       iterations++;
 
-      const response = await provider.complete({
-        messages,
-        ...(toolSpecs.length > 0 && { tools: toolSpecs }),
-        ...(effectiveSystem !== undefined && { system: effectiveSystem }),
-        ...(ctx.signal !== undefined && { signal: ctx.signal }),
-      });
+      const response = await this.complete(
+        {
+          messages,
+          toolSpecs,
+          ...(effectiveSystem !== undefined && { system: effectiveSystem }),
+          ...(ctx.signal !== undefined && { signal: ctx.signal }),
+        },
+        ctx,
+        iterations
+      );
 
       lastContent = response.content;
 
@@ -199,6 +213,54 @@ export class AgentRunner {
     });
 
     return { content: lastContent, toolCallLog, iterations };
+  }
+
+  // The model call, re-based onto the Reasoning Runtime when configured (M8). With
+  // `reasoning`, route/elevation is decided by the runtime and the chosen model is
+  // recorded as a durable DECISION_RECORDED fact (P9) via the effect's emit — no
+  // short-circuit needed, since the whole agent step is served from the log on replay.
+  // With only a `provider`, the original bare-provider path is preserved exactly.
+  private async complete(
+    args: {
+      messages: LlmMessage[];
+      toolSpecs: LlmToolSpec[];
+      system?: string;
+      signal?: AbortSignal;
+    },
+    ctx: EffectContext,
+    iteration: number
+  ): Promise<Pick<LlmResponse, "content" | "stopReason"> & { toolCalls?: LlmToolCall[] }> {
+    const request = {
+      messages: args.messages,
+      ...(args.toolSpecs.length > 0 && { tools: args.toolSpecs }),
+      ...(args.system !== undefined && { system: args.system }),
+      ...(args.signal !== undefined && { signal: args.signal }),
+    };
+
+    if (this.config.reasoning !== undefined) {
+      const decide = async <T>(id: string, decider: () => T | Promise<T>): Promise<T> => {
+        const choice = await decider();
+        ctx.emit("DECISION_RECORDED", { decisionId: id, choice, source: "agent" });
+        return choice;
+      };
+      const res = await this.config.reasoning.reason(
+        { ...request, strategy: "agent" },
+        { decide, decisionKey: `agent:turn:${iteration}` }
+      );
+      return {
+        content: res.content,
+        stopReason: res.stopReason,
+        ...(res.toolCalls !== undefined && { toolCalls: res.toolCalls }),
+      };
+    }
+
+    // Guarded by the constructor: provider is defined when reasoning is not.
+    const res = await (this.config.provider as LlmProvider).complete(request);
+    return {
+      content: res.content,
+      stopReason: res.stopReason,
+      ...(res.toolCalls !== undefined && { toolCalls: res.toolCalls }),
+    };
   }
 
   asEffect(): LlmEffect<AgentInput, AgentOutput> {
