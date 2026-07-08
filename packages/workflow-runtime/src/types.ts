@@ -24,6 +24,18 @@ export interface ExecutionContext {
 
   run<TIn = unknown, TOut = unknown>(step: StepDefinition<TIn, TOut>, input: TIn): Promise<TOut>;
 
+  // Loom 2.0 (P9) — record an advisory/optimizer choice durably. On the first run
+  // the `decider` is consulted and its result recorded as DECISION_RECORDED; on
+  // replay/resume the recorded choice is returned and `decider` is NEVER called.
+  // This is the seam that lets routing/elevation/optimization change outcomes
+  // run-to-run while keeping any single run's replay pure (P2). The choice must be
+  // JSON-serializable (same constraint as a step output).
+  decide<T = unknown>(
+    decisionId: string,
+    decider: () => T | Promise<T>,
+    opts?: { rationale?: unknown; source?: string }
+  ): Promise<T>;
+
   parallel<TResults extends unknown[]>(
     pairs: { [K in keyof TResults]: [StepDefinition<unknown, TResults[K]>, unknown] },
     // Optional bounded concurrency. Omit for the current unbounded behaviour.
