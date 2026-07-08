@@ -14,6 +14,7 @@ export type { SnapshotStore, Snapshot } from "@loom/snapshot-runtime";
 
 // ── Agentic capabilities ─────────────────────────────────────────────────────
 export * from "@loom/llm";
+export * from "@loom/reasoning";
 export * from "@loom/agent";
 export * from "@loom/mcp";
 export * from "@loom/a2a";

@@ -1,5 +1,6 @@
 import type { CapabilityCatalog } from "@loom/capability";
 import type { LlmProvider } from "@loom/llm";
+import type { ReasoningRuntime } from "@loom/reasoning";
 import { Priority } from "@loom/scheduler";
 import type { Scheduler } from "@loom/scheduler";
 
@@ -19,6 +20,10 @@ export interface PlannerRuntimeConfig {
   // otherwise a deterministic heuristic (keyword-ranked capabilities) is used so
   // the Planner Runtime works fully offline.
   provider?: LlmProvider;
+  // Preferred over `provider`: routes planning through the Reasoning Runtime for
+  // model routing + confidence-based elevation. Falls back to `provider`, then the
+  // offline heuristic.
+  reasoning?: ReasoningRuntime;
   maxSteps?: number;
   // Optional shared scheduler. When supplied, the planning LLM call runs at Idle
   // priority so it yields to live agent/workflow work under a concurrency cap.
@@ -35,7 +40,7 @@ export class PlannerRuntime {
   async plan(goal: string): Promise<Plan> {
     const maxSteps = this.config.maxSteps ?? 5;
 
-    if (this.config.provider !== undefined) {
+    if (this.config.reasoning !== undefined || this.config.provider !== undefined) {
       const llmPlan = await this.planWithLlm(goal, maxSteps);
       if (llmPlan.steps.length > 0) return llmPlan;
     }
@@ -59,26 +64,41 @@ export class PlannerRuntime {
       .map((c) => `- ${c.id}: ${c.intent}`)
       .join("\n");
 
-    // Guarded by the `provider !== undefined` check at the sole call site.
-    const complete = () =>
-      this.config.provider!.complete({
-        system:
-          "You are a planner. Given a goal and a list of capabilities, output an " +
-          'ordered plan as a JSON array of objects { "capabilityId": string, ' +
-          '"rationale": string }. Use only ids from the list. Output JSON only.',
-        messages: [{ role: "user", content: `Goal: ${goal}\n\nCapabilities:\n${menu}` }],
-      });
+    const system =
+      "You are a planner. Given a goal and a list of capabilities, output an " +
+      'ordered plan as a JSON array of objects { "capabilityId": string, ' +
+      '"rationale": string }. Use only ids from the list. Output JSON only.';
+    const userContent = `Goal: ${goal}\n\nCapabilities:\n${menu}`;
+    const content = await this.complete(system, userContent);
 
-    const response =
-      this.config.scheduler !== undefined
-        ? await this.config.scheduler.schedule(() => complete(), {
-            priority: Priority.Idle,
-            label: "planner.plan",
-          })
-        : await complete();
-
-    const steps = this.parseSteps(response.content).slice(0, maxSteps);
+    const steps = this.parseSteps(content).slice(0, maxSteps);
     return { goal, steps };
+  }
+
+  // Prefer the Reasoning Runtime (routing + elevation); fall back to a bare provider.
+  // Guarded by the reasoning/provider check at the sole call site.
+  private async complete(system: string, userContent: string): Promise<string> {
+    const call: () => Promise<string> =
+      this.config.reasoning !== undefined
+        ? async () =>
+            (
+              await this.config.reasoning!.reason({
+                system,
+                strategy: "planning",
+                messages: [{ role: "user", content: userContent }],
+              })
+            ).content
+        : async () =>
+            (
+              await this.config.provider!.complete({
+                system,
+                messages: [{ role: "user", content: userContent }],
+              })
+            ).content;
+
+    return this.config.scheduler !== undefined
+      ? this.config.scheduler.schedule(() => call(), { priority: Priority.Idle, label: "planner.plan" })
+      : call();
   }
 
   private parseSteps(content: string): PlanStep[] {

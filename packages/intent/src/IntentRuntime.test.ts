@@ -1,6 +1,7 @@
 import { CapabilityCatalog, capability$ } from "@loom/capability";
 import { flow$, handler$, step$ } from "@loom/core";
 import type { LlmProvider } from "@loom/llm";
+import { ReasoningRuntime } from "@loom/reasoning";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -80,5 +81,37 @@ describe("IntentRuntime", () => {
   it("returns null when nothing matches", async () => {
     const rt = new IntentRuntime({ catalog: makeCatalog() });
     expect(await rt.route("xyzzy plugh")).toBeNull();
+  });
+
+  it("routes through the Reasoning Runtime when supplied", async () => {
+    const provider: LlmProvider = {
+      complete: async () => ({ content: "issue-refund", stopReason: "end_turn" }),
+    };
+    const reasoning = new ReasoningRuntime({ routes: [{ id: "primary", provider, tier: 0 }] });
+    const rt = new IntentRuntime({ catalog: makeCatalog(), reasoning });
+    const route = await rt.route("refund this order please");
+    expect(route?.capability.id).toBe("issue-refund");
+    expect(route?.rationale).toBe("model routed");
+  });
+
+  it("elevates inside reasoning when the cheap model is low-confidence", async () => {
+    // Cheap model truncates (low confidence) → reasoning elevates to the stronger
+    // model, whose answer is a valid capability id.
+    const weak: LlmProvider = {
+      complete: async () => ({ content: "unsure…", stopReason: "max_tokens" }),
+    };
+    const strong: LlmProvider = {
+      complete: async () => ({ content: "investigate-incident", stopReason: "end_turn" }),
+    };
+    const reasoning = new ReasoningRuntime({
+      routes: [
+        { id: "gemma", provider: weak, tier: 0 },
+        { id: "opus", provider: strong, tier: 1 },
+      ],
+    });
+    const rt = new IntentRuntime({ catalog: makeCatalog(), reasoning });
+    const route = await rt.route("we have a production incident");
+    expect(route?.capability.id).toBe("investigate-incident");
+    expect(route?.rationale).toBe("model routed");
   });
 });

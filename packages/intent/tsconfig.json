@@ -15,6 +15,7 @@
     { "path": "../a2ui" },
     { "path": "../workflow-runtime" },
     { "path": "../llm" },
+    { "path": "../reasoning" },
     { "path": "../capability" },
     { "path": "../scheduler" }
   ]
