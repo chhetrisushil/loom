@@ -12,6 +12,10 @@
     "./memory": {
       "types": "./memory.d.ts",
       "require": "./memory.js"
+    },
+    "./sequence": {
+      "types": "./sequence.d.ts",
+      "require": "./sequence.js"
     }
   },
   "scripts": {

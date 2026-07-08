@@ -22,13 +22,17 @@ export default defineConfig({
       "@loom/capability",
       "@loom/core",
       "@loom/effect-runtime",
-      "@loom/event-runtime",
+      // Browser-safe subpaths only — the package barrels eagerly re-export the
+      // SQLite stores (better-sqlite3 / node:fs), which must never enter a browser
+      // bundle. The in-memory storage + pure sequence helpers are all this app uses.
+      "@loom/event-runtime/memory",
+      "@loom/event-runtime/sequence",
       "@loom/intent",
       "@loom/llm",
       "@loom/planner",
       "@loom/projection-runtime",
       "@loom/registry",
-      "@loom/snapshot-runtime",
+      "@loom/snapshot-runtime/memory",
       "@loom/workflow-runtime",
     ],
   },

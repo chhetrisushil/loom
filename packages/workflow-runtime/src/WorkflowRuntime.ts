@@ -2,7 +2,11 @@ import { SuspendError } from "@loom/core";
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import { LazyEffect } from "@loom/effect-runtime";
 import type { Effect, EffectRuntime } from "@loom/effect-runtime";
-import { type BranchRegistry, type EventStore, sliceBySequence } from "@loom/event-runtime";
+import type { BranchRegistry, EventStore } from "@loom/event-runtime";
+// Import the pure sequence helper from the browser-safe subpath, not the barrel:
+// the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
+// would otherwise leak into every browser app that builds on the WorkflowRuntime.
+import { sliceBySequence } from "@loom/event-runtime/sequence";
 import { ReplayVM } from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
