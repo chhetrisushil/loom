@@ -7,9 +7,26 @@ Start here. The docs are a progressive funnel — read top to bottom, or jump to
 | **[Getting Started](getting-started.md)** | Go from zero to a running, suspend/resume flow in ~5 minutes. |
 | **[Usage Guide](usage.md)** | Build a realistic app step by step (steps → flow → config → suspend/resume → agents → branching → ship). |
 | **[User Guide](user-guide.md)** | Look up a specific feature: fork, A2A, middleware, projections, testing, CLI, compute… |
-| **[Architecture](architecture.md)** | Understand the mission, core principles, the runtime model, and *why* each decision was made. |
+| **[Architecture](architecture.md)** | Understand the mission, core principles (P1–P10), the runtime model, and *why* each decision was made. |
+| **[Loom 2.0 deep-dives](loom-2.0/00-overview.md)** | The execution-kernel evolution in full detail: data structures, algorithms, and diagrams for every subsystem. |
 | **[Presentation](presentation/loom-deck.md)** | Present Loom — the flagship deck (Marp). More decks in [`presentation/`](presentation/). |
-| **[ADRs](adr/)** | Read the full decision history (0001–0015), one record per decision. |
+| **[ADRs](adr/)** | Read the full decision history (0001–0016), one record per decision. |
+
+## Loom 2.0 — the execution kernel
+
+Loom 2.0 evolves the durable workflow runtime into the **execution kernel for intelligent software**. Everything is additive and opt-in, so the guides above stay valid. The deep-dive set lives in [`loom-2.0/`](loom-2.0/00-overview.md):
+
+| Doc | Covers |
+|---|---|
+| [Overview](loom-2.0/00-overview.md) | Big picture, principles P9/P10, the two spines, milestone map, kernel scorecard, package map |
+| [Execution & Decision seams](loom-2.0/01-execution-and-decision-seams.md) | `ctx.execute` + `Execution` PCB · `ctx.decide` + `DECISION_RECORDED` · kernel ABI (K1) |
+| [Reasoning & Memory](loom-2.0/02-reasoning-and-memory.md) | Model routing/elevation (M3) · tiered memory + logged recall (M5) |
+| [Compute, Scheduling & Storage](loom-2.0/03-compute-scheduling-storage.md) | Placement (M4) · scheduler-in-hot-path (M6) · supervision (K4) · Postgres scale-out (M3.5) |
+| [Kernel hardening](loom-2.0/04-kernel-hardening.md) | ABI (K1) · protection ring (K2) · accounting/quotas (K3) · supervision (K4) · event-schema ABI (K5) |
+| [Capabilities, Agents, Intelligence & DX](loom-2.0/05-capabilities-agents-intelligence-dx.md) | Capabilities (M7) · agents (M8) · analytics/self-opt (M9–M11) · NL→codegen (P11) |
+| [Event-schema reference](loom-2.0/10-event-schema-reference.md) | The complete on-disk event ABI: every event, payload, and fold |
+
+The complete decision record is [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
 
 ## The one-paragraph version
 
