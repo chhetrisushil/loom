@@ -105,6 +105,20 @@ export class PostgresEventStore implements EventStore {
     return rows.map(rowToEnvelope);
   }
 
+  async readRange(
+    executionId: string,
+    fromSequence: number,
+    toSequence: number
+  ): Promise<EventEnvelope[]> {
+    if (toSequence < fromSequence) return [];
+    await this.ready;
+    const { rows } = await this.pool.query<EventRow>(
+      "SELECT * FROM events WHERE execution_id = $1 AND sequence >= $2 AND sequence <= $3 ORDER BY sequence ASC",
+      [executionId, fromSequence, toSequence]
+    );
+    return rows.map(rowToEnvelope);
+  }
+
   async copyPrefix(
     fromExecutionId: string,
     toExecutionId: string,

@@ -3,14 +3,17 @@ import type { ModelRoute, ReasoningRequest, Router } from "./types";
 // Default routing policy: the lowest-tier route whose tags include the request's
 // strategy, else the lowest-tier route overall. This implements "use the cheap
 // model first; elevate only when confidence is low" (the P3 elevation ladder).
+//
+// Contract: `routes` are expected tier-ascending. ReasoningRuntime owns the sort
+// (once, at construction) and always passes its sorted `routes`, so this router
+// takes the first tag/overall match without re-sorting on every call.
 export const tagRouter: Router = {
   select(req: ReasoningRequest, routes: ModelRoute[]): ModelRoute {
-    const sorted = [...routes].sort((a, b) => a.tier - b.tier);
     if (req.strategy !== undefined) {
-      const tagged = sorted.find((r) => r.tags?.includes(req.strategy as string));
+      const tagged = routes.find((r) => r.tags?.includes(req.strategy as string));
       if (tagged !== undefined) return tagged;
     }
-    const first = sorted[0];
+    const first = routes[0];
     if (first === undefined) {
       throw new Error("ReasoningRuntime: no routes configured");
     }

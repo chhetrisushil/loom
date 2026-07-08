@@ -28,17 +28,35 @@ export class ReasoningRuntime {
   private readonly confidence: ConfidenceSignal;
   private readonly threshold: number;
   private readonly cache: ReasoningCache | undefined;
+  // id → position in the tier-sorted `routes`, so `byId` is O(1) not a linear scan.
+  private readonly indexById: Map<string, number>;
+  // For each route index, the index of the next route with a strictly higher tier
+  // (or -1). Precomputed once so elevation is an O(1) hop instead of an O(n) scan.
+  private readonly nextHigherIndex: number[];
 
   constructor(config: ReasoningRuntimeConfig) {
     if (config.routes.length === 0) {
       throw new Error("ReasoningRuntime requires at least one route");
     }
-    // Sorted by tier once so elevation is a simple forward scan.
+    // Sorted by tier once so elevation is a simple forward hop.
     this.routes = [...config.routes].sort((a, b) => a.tier - b.tier);
     this.router = config.router ?? tagRouter;
     this.confidence = config.confidence ?? stopReasonConfidence;
     this.threshold = config.elevateThreshold ?? 0.5;
     this.cache = config.cache;
+
+    const n = this.routes.length;
+    this.indexById = new Map(this.routes.map((r, i) => [r.id, i]));
+    // Right-to-left pass (O(n)): the next strictly-higher tier for i is either its
+    // neighbour i+1 (if that neighbour's tier is greater) or, when i+1 shares i's
+    // tier, whatever the next-higher of i+1 already resolved to.
+    this.nextHigherIndex = new Array(n).fill(-1);
+    for (let i = n - 2; i >= 0; i--) {
+      this.nextHigherIndex[i] =
+        (this.routes[i + 1] as ModelRoute).tier > (this.routes[i] as ModelRoute).tier
+          ? i + 1
+          : (this.nextHigherIndex[i + 1] as number);
+    }
   }
 
   get availableRoutes(): ReadonlyArray<ModelRoute> {
@@ -56,7 +74,8 @@ export class ReasoningRuntime {
       `reason:${key}:route`,
       () => this.router.select(req, this.routes).id
     );
-    let current = this.byId(initialId);
+    let currentIdx = this.indexOf(initialId);
+    let current = this.routes[currentIdx] as ModelRoute;
     const trace: ReasoningTraceEntry[] = [];
 
     let res = await this.call(current, req, signal);
@@ -66,11 +85,14 @@ export class ReasoningRuntime {
     // Stage 2 — elevate while low-confidence and a higher tier is within budget.
     let step = 0;
     while (confidence < this.threshold) {
-      const next = this.routes.find((r) => r.tier > current.tier && r.tier <= maxTier);
-      if (next === undefined) break;
+      const nextIdx = this.nextHigherIndex[currentIdx] as number;
+      if (nextIdx === -1) break;
+      const next = this.routes[nextIdx] as ModelRoute;
+      if (next.tier > maxTier) break;
       step += 1;
       const chosenId = await decide(`reason:${key}:elevate:${step}`, () => next.id);
-      current = this.byId(chosenId);
+      currentIdx = this.indexOf(chosenId);
+      current = this.routes[currentIdx] as ModelRoute;
       res = await this.call(current, req, signal);
       confidence = await this.confidence.score(req, res);
       trace.push({ modelId: current.id, tier: current.tier, confidence, elevated: true });
@@ -88,12 +110,12 @@ export class ReasoningRuntime {
     };
   }
 
-  private byId(id: string): ModelRoute {
-    const route = this.routes.find((r) => r.id === id);
-    if (route === undefined) {
+  private indexOf(id: string): number {
+    const idx = this.indexById.get(id);
+    if (idx === undefined) {
       throw new Error(`ReasoningRuntime: unknown route "${id}"`);
     }
-    return route;
+    return idx;
   }
 
   private async call(

@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
+import { lowerBoundBySequence, sliceBySequence } from "./sequenceRange";
 import type { EventStore } from "./types";
 
 export interface InMemoryAsyncEventStoreOptions {
@@ -45,7 +46,17 @@ export class InMemoryAsyncEventStore implements EventStore {
         : new Error(typeof verdict === "string" ? verdict : `append rejected: ${envelope.id}`);
     }
     const list = this.log.get(envelope.executionId) ?? [];
-    list.push(envelope);
+    // Keep each execution's log sorted by sequence so reads can binary-search.
+    // Appends are normally monotonic (a plain end-push); only an out-of-order
+    // arrival triggers an insertion.
+    if (
+      list.length === 0 ||
+      (list[list.length - 1] as EventEnvelope).sequence <= envelope.sequence
+    ) {
+      list.push(envelope);
+    } else {
+      list.splice(lowerBoundBySequence(list, envelope.sequence), 0, envelope);
+    }
     this.log.set(envelope.executionId, list);
     const handlers = this.subscribers.get(envelope.executionId);
     if (handlers) for (const h of handlers) h(envelope);
@@ -53,12 +64,23 @@ export class InMemoryAsyncEventStore implements EventStore {
 
   async read(executionId: string): Promise<EventEnvelope[]> {
     await this.tick();
-    return [...(this.log.get(executionId) ?? [])].sort((a, b) => a.sequence - b.sequence);
+    // Already sorted by the append invariant — return a defensive copy, no re-sort.
+    return [...(this.log.get(executionId) ?? [])];
   }
 
   async readFrom(executionId: string, fromSequence: number): Promise<EventEnvelope[]> {
-    const all = await this.read(executionId);
-    return all.filter((e) => e.sequence >= fromSequence);
+    await this.tick();
+    const list = this.log.get(executionId) ?? [];
+    return list.slice(lowerBoundBySequence(list, fromSequence));
+  }
+
+  async readRange(
+    executionId: string,
+    fromSequence: number,
+    toSequence: number
+  ): Promise<EventEnvelope[]> {
+    await this.tick();
+    return sliceBySequence(this.log.get(executionId) ?? [], fromSequence, toSequence);
   }
 
   async copyPrefix(

@@ -16,6 +16,18 @@ export interface EventStore {
   append(envelope: EventEnvelope): Promise<void>;
   read(executionId: string): Promise<EventEnvelope[]>;
   readFrom(executionId: string, fromSequence: number): Promise<EventEnvelope[]>;
+  /**
+   * OPTIONAL bounded read of `[fromSequence..toSequence]` (both inclusive) for one
+   * execution, ordered by sequence. Backends push the bound into the query (indexed
+   * range) instead of loading the whole log and filtering in JS. A store that omits
+   * it falls back to `readFrom` + filter, so callers must tolerate its absence — use
+   * {@link readRangeOf}. Empty when `toSequence < fromSequence`.
+   */
+  readRange?(
+    executionId: string,
+    fromSequence: number,
+    toSequence: number
+  ): Promise<EventEnvelope[]>;
   subscribe(executionId: string, handler: (event: EventEnvelope) => void): Promise<() => void>;
   /**
    * OPTIONAL bulk copy of the prefix `[0..throughSequence]` of one execution's log
@@ -35,4 +47,22 @@ export interface EventStore {
 
 export interface EventStoreOptions {
   dbPath: string;
+}
+
+/**
+ * Read `[fromSequence..toSequence]` from a store that may or may not implement the
+ * optional `readRange` fast-path. Uses the native indexed range when available,
+ * else falls back to `readFrom` + a bounded slice — so every caller gets the
+ * range without having to branch on the capability.
+ */
+export async function readRangeOf(
+  store: EventStore,
+  executionId: string,
+  fromSequence: number,
+  toSequence: number
+): Promise<EventEnvelope[]> {
+  if (toSequence < fromSequence) return [];
+  if (store.readRange) return store.readRange(executionId, fromSequence, toSequence);
+  const from = await store.readFrom(executionId, fromSequence);
+  return from.filter((e) => e.sequence <= toSequence);
 }

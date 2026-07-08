@@ -2,7 +2,7 @@ import { SuspendError } from "@loom/core";
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import { LazyEffect } from "@loom/effect-runtime";
 import type { Effect, EffectRuntime } from "@loom/effect-runtime";
-import type { BranchRegistry, EventStore } from "@loom/event-runtime";
+import { type BranchRegistry, type EventStore, sliceBySequence } from "@loom/event-runtime";
 import { ReplayVM } from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
@@ -359,15 +359,16 @@ export class WorkflowRuntime {
     const base = await this.snapshotStore.loadLatestBefore(parentExecutionId, atSequence);
     let vm: ReplayVM;
     if (base) {
-      const tail = parentEvents.filter(
-        (e) => e.sequence > base.sequence && e.sequence <= atSequence
-      );
+      // parentEvents is sorted by sequence — binary-search the [base+1..at] tail
+      // instead of scanning the whole (possibly huge) log.
+      const tail = sliceBySequence(parentEvents, base.sequence + 1, atSequence);
       vm = new ReplayVM(tail, base.state);
     } else {
-      const prefix = parentEvents.filter((e) => e.sequence <= atSequence);
+      const prefix = sliceBySequence(parentEvents, 0, atSequence);
       vm = new ReplayVM(prefix, { executionId: childId, workflowId, workflowVersion });
     }
-    return { ...vm.getState(), executionId: childId };
+    const state = vm.getState();
+    return { ...state, executionId: childId };
   }
 
   private execute(
@@ -487,16 +488,17 @@ export class WorkflowRuntime {
             rejectCompletion(drainErr);
             return;
           }
+          const state = vm.getState();
           const snap: Snapshot = {
             id: ulid(),
             executionId,
             workflowId,
-            sequence: vm.getState().sequence,
-            state: vm.getState(),
+            sequence: state.sequence,
+            state,
             createdAt: Date.now(),
           };
           await this.snapshotStore.save(snap);
-          resolveSuspend(vm.getState());
+          resolveSuspend(state);
           return;
         }
 

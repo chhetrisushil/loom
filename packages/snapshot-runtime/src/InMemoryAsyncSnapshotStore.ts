@@ -1,5 +1,30 @@
 import type { Snapshot, SnapshotStore } from "./types";
 
+// Binary-search bounds over a snapshot list kept sorted ascending by `sequence`.
+// `lowerBound` = first index with sequence >= seq; `upperBound` = first index with
+// sequence > seq.
+function lowerBound(list: readonly Snapshot[], seq: number): number {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if ((list[mid] as Snapshot).sequence < seq) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function upperBound(list: readonly Snapshot[], seq: number): number {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if ((list[mid] as Snapshot).sequence <= seq) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 export interface InMemoryAsyncSnapshotStoreOptions {
   /** Artificial per-operation delay (ms) to model network latency. Default 0. */
   latencyMs?: number;
@@ -26,7 +51,15 @@ export class InMemoryAsyncSnapshotStore implements SnapshotStore {
   async save(snapshot: Snapshot): Promise<void> {
     await this.tick();
     const list = this.snapshots.get(snapshot.executionId) ?? [];
-    list.push(snapshot);
+    // Keep each execution's snapshots sorted by sequence with STABLE insertion
+    // (a new snapshot goes after any existing ones sharing its sequence). This
+    // preserves the old reduce/find tie-break — "last-inserted among equals wins" —
+    // while making the reads O(1) / O(log n) instead of O(n).
+    if (list.length === 0 || (list[list.length - 1] as Snapshot).sequence <= snapshot.sequence) {
+      list.push(snapshot);
+    } else {
+      list.splice(upperBound(list, snapshot.sequence), 0, snapshot);
+    }
     this.snapshots.set(snapshot.executionId, list);
   }
 
@@ -34,21 +67,26 @@ export class InMemoryAsyncSnapshotStore implements SnapshotStore {
     await this.tick();
     const list = this.snapshots.get(executionId);
     if (!list || list.length === 0) return null;
-    return list.reduce((a, b) => (b.sequence >= a.sequence ? b : a));
+    return list[list.length - 1] as Snapshot; // greatest sequence, last-inserted on ties
   }
 
   async loadAt(executionId: string, sequence: number): Promise<Snapshot | null> {
     await this.tick();
-    return this.snapshots.get(executionId)?.find((s) => s.sequence === sequence) ?? null;
+    const list = this.snapshots.get(executionId);
+    if (!list) return null;
+    // First element with this exact sequence (matches the old `find` semantics).
+    const idx = lowerBound(list, sequence);
+    const hit = list[idx];
+    return hit !== undefined && hit.sequence === sequence ? hit : null;
   }
 
   async loadLatestBefore(executionId: string, sequence: number): Promise<Snapshot | null> {
     await this.tick();
-    const candidates = (this.snapshots.get(executionId) ?? []).filter(
-      (s) => s.sequence <= sequence
-    );
-    if (candidates.length === 0) return null;
-    return candidates.reduce((a, b) => (b.sequence >= a.sequence ? b : a));
+    const list = this.snapshots.get(executionId);
+    if (!list || list.length === 0) return null;
+    // Rightmost snapshot with sequence <= target: (first index > target) - 1.
+    const idx = upperBound(list, sequence) - 1;
+    return idx >= 0 ? (list[idx] as Snapshot) : null;
   }
 
   async close(): Promise<void> {
