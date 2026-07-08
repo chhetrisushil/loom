@@ -343,9 +343,11 @@ flowchart TB
 | **Composition** | `app` (`defineConfig`), `registry` |
 | **Effects** | `effect-runtime`, `middleware` |
 | **Projection / UI** | `projection-runtime`, `a2ui`, `blueprint-runtime`, `renderer-react`, `renderer-terminal` |
-| **Agentic** | `agent`, `a2a`, `llm`, `mcp`, `capability`, `intent`, `planner`, `memory`, `orchestrator` |
-| **Compute / distribution** | `dispatcher`, `worker-runtime`, `worker-runtime-local`, `worker-runtime-remote`, `worker-server`, `platform-cloudrun`, `graph-executor`, `scheduler` |
-| **DX / tooling** | `cli`, `eval`, `deploy-sim`, `testing`, `scaffold`, `compiler`, `telemetry` |
+| **Agentic** | `agent`, `a2a`, `llm`, `reasoning`, `mcp`, `capability`, `intent`, `planner`, `memory`, `orchestrator` |
+| **Compute / distribution** | `dispatcher`, `worker-runtime`, `worker-runtime-local`, `worker-runtime-remote`, `worker-server`, `platform-cloudrun`, `graph-executor`, `scheduler`, `store-postgres` |
+| **Intelligence / DX** | `analytics`, `appgen`, `cli`, `eval`, `deploy-sim`, `testing`, `scaffold`, `compiler`, `telemetry` |
+
+> **Loom 2.0.** The packages in **bold-new** groups above — `reasoning`, `store-postgres`, `analytics`, `appgen` — plus deepenings of `workflow-runtime`, `effect-runtime`, `middleware`, `dispatcher`, `memory`, `capability`, and `agent`, constitute the **execution-kernel evolution**. Its full data structures, algorithms, and diagrams live in [`docs/loom-2.0/`](loom-2.0/00-overview.md); the decision record is [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
 
 ---
 
