@@ -10,6 +10,13 @@ export {
   type PlacementDispatcherOptions,
 } from "./PlacementDispatcher";
 export { dispatchMetadataFromPolicy, defaultPlacementPolicy } from "./placement";
+export {
+  SupervisingDispatcher,
+  CircuitOpenError,
+  type SupervisionPolicy,
+  type CircuitPolicy,
+  type SupervisingDispatcherOptions,
+} from "./SupervisingDispatcher";
 // Re-export the transport contract so consumers can import package + dispatcher
 // types from one place.
 export type {
