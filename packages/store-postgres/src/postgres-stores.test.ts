@@ -181,7 +181,14 @@ suite("@loom/store-postgres", () => {
         startedAt: 1,
         updatedAt: sequence,
       };
-      return { id: `snap-${sequence}`, executionId: "s1", workflowId: "wf", sequence, state, createdAt: sequence };
+      return {
+        id: `snap-${sequence}`,
+        executionId: "s1",
+        workflowId: "wf",
+        sequence,
+        state,
+        createdAt: sequence,
+      };
     }
 
     it("saves and loads the latest / at / latest-before", async () => {
@@ -211,7 +218,15 @@ suite("@loom/store-postgres", () => {
 
     it("upserts refs, moves tips, and promotes (pick-a-winner)", async () => {
       await reg.putRef({ name: "main", executionId: "x1", tip: 5, createdAt: 1, updatedAt: 1 });
-      await reg.putRef({ name: "spec", executionId: "x2", tip: 8, parentExecutionId: "x1", forkSequence: 5, createdAt: 2, updatedAt: 2 });
+      await reg.putRef({
+        name: "spec",
+        executionId: "x2",
+        tip: 8,
+        parentExecutionId: "x1",
+        forkSequence: 5,
+        createdAt: 2,
+        updatedAt: 2,
+      });
 
       expect((await reg.getRef("main"))?.executionId).toBe("x1");
       expect((await reg.listRefs()).map((r) => r.name)).toEqual(["main", "spec"]);
@@ -245,11 +260,51 @@ suite("@loom/store-postgres", () => {
   describe("replay parity — Postgres vs SQLite", () => {
     it("folds a workflow-shaped event stream to identical state on both backends", async () => {
       const stream: EventEnvelope[] = [
-        { id: "x-0", workflowId: "wf", executionId: "x", eventType: "EXECUTION_STARTED", sequence: 0, timestamp: 1, payload: { input: { incidentId: "i1" } } },
-        { id: "x-1", workflowId: "wf", executionId: "x", eventType: "STEP_STARTED", sequence: 1, timestamp: 2, payload: { stepId: "diagnose", input: { incidentId: "i1" } } },
-        { id: "x-2", workflowId: "wf", executionId: "x", eventType: "STEP_COMPLETED", sequence: 2, timestamp: 3, payload: { stepId: "diagnose", output: { cpu: 87, notes: ["OOM", "spike"] } } },
-        { id: "x-3", workflowId: "wf", executionId: "x", eventType: "DECISION_RECORDED", sequence: 3, timestamp: 4, payload: { decisionId: "route:model", choice: "opus", source: "reasoning" } },
-        { id: "x-4", workflowId: "wf", executionId: "x", eventType: "EXECUTION_COMPLETED", sequence: 4, timestamp: 5, payload: { output: { resolved: true } } },
+        {
+          id: "x-0",
+          workflowId: "wf",
+          executionId: "x",
+          eventType: "EXECUTION_STARTED",
+          sequence: 0,
+          timestamp: 1,
+          payload: { input: { incidentId: "i1" } },
+        },
+        {
+          id: "x-1",
+          workflowId: "wf",
+          executionId: "x",
+          eventType: "STEP_STARTED",
+          sequence: 1,
+          timestamp: 2,
+          payload: { stepId: "diagnose", input: { incidentId: "i1" } },
+        },
+        {
+          id: "x-2",
+          workflowId: "wf",
+          executionId: "x",
+          eventType: "STEP_COMPLETED",
+          sequence: 2,
+          timestamp: 3,
+          payload: { stepId: "diagnose", output: { cpu: 87, notes: ["OOM", "spike"] } },
+        },
+        {
+          id: "x-3",
+          workflowId: "wf",
+          executionId: "x",
+          eventType: "DECISION_RECORDED",
+          sequence: 3,
+          timestamp: 4,
+          payload: { decisionId: "route:model", choice: "opus", source: "reasoning" },
+        },
+        {
+          id: "x-4",
+          workflowId: "wf",
+          executionId: "x",
+          eventType: "EXECUTION_COMPLETED",
+          sequence: 4,
+          timestamp: 5,
+          payload: { output: { resolved: true } },
+        },
       ];
 
       const pg = new PostgresEventStore(PG_URL as string);
@@ -270,7 +325,9 @@ suite("@loom/store-postgres", () => {
         expect(pgState).toEqual(sqliteState);
         expect(pgState.status).toBe("completed");
         expect(pgState.frames.diagnose?.output).toEqual({ cpu: 87, notes: ["OOM", "spike"] });
-        expect((pgState.variables._decisions as Record<string, unknown>)["route:model"]).toMatchObject({ choice: "opus" });
+        expect(
+          (pgState.variables._decisions as Record<string, unknown>)["route:model"]
+        ).toMatchObject({ choice: "opus" });
       } finally {
         await pg.close();
         sqlite.close();

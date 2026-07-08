@@ -6,8 +6,8 @@ import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { capability$ } from "./capability$";
 import { CapabilityCatalog } from "./CapabilityCatalog";
+import { capability$ } from "./capability$";
 import { CapabilityInvokeDeniedError } from "./types";
 
 function noopFlow(id: string): RegisteredFlow<Record<string, never>, { ok: boolean }> {
@@ -104,11 +104,13 @@ describe("Capability deepening (M7) — invoke authorization", () => {
       .register(cap("open"));
     const runtime = makeRuntime(catalog);
 
-    await expect(catalog.invoke(runtime, "secret", {}, { principal: "guest" })).rejects.toBeInstanceOf(
-      CapabilityInvokeDeniedError
-    );
+    await expect(
+      catalog.invoke(runtime, "secret", {}, { principal: "guest" })
+    ).rejects.toBeInstanceOf(CapabilityInvokeDeniedError);
     // Authorized principal and unrestricted capability both pass.
-    await expect(catalog.invoke(runtime, "secret", {}, { principal: "admin" })).resolves.toBeDefined();
+    await expect(
+      catalog.invoke(runtime, "secret", {}, { principal: "admin" })
+    ).resolves.toBeDefined();
     await expect(catalog.invoke(runtime, "open", {})).resolves.toBeDefined();
   });
 });

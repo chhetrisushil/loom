@@ -5,8 +5,8 @@ import { meteringMiddleware } from "@loom/middleware";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import type { FlowRunner, RegisteredFlow } from "./types";
 import { WorkflowRuntime } from "./WorkflowRuntime";
+import type { FlowRunner, RegisteredFlow } from "./types";
 
 // K3 integration: resource accounting accumulates across a flow's effects, and a
 // budget denies further effects once spent (admission control) — all durably folded
@@ -40,7 +40,11 @@ function makeFlow(runner: FlowRunner<Record<string, never>, unknown>): Registere
 function makeRuntime(budgetUsd: number) {
   const effectRuntime = new EffectRuntime([
     // Each effect costs $1; clock fixed so ms is deterministic.
-    meteringMiddleware({ pricing: () => ({ costUsd: 1 }), budget: { maxCostUsd: budgetUsd }, clock: () => 0 }),
+    meteringMiddleware({
+      pricing: () => ({ costUsd: 1 }),
+      budget: { maxCostUsd: budgetUsd },
+      clock: () => 0,
+    }),
   ]);
   for (const id of ["a", "b", "c"]) {
     effectRuntime.register(`${id}-tool`, new ToolEffect(async () => ({ ok: true })));

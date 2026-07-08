@@ -75,7 +75,10 @@ describe("ReasoningRuntime — routing + elevation", () => {
         { id: "coder", provider: coder, tier: 1, tags: ["coding"] },
       ],
     });
-    const r = await runtime.reason({ messages: [{ role: "user", content: "x" }], strategy: "coding" });
+    const r = await runtime.reason({
+      messages: [{ role: "user", content: "x" }],
+      strategy: "coding",
+    });
 
     expect(r.modelId).toBe("coder");
     expect(coder.calls).toBe(1);
@@ -103,7 +106,7 @@ describe("ReasoningRuntime — decision logging (P9)", () => {
   it("records route and elevation choices through the decide sink", async () => {
     const { runtime } = makeRuntime();
     const decisions: Array<{ id: string; choice: unknown }> = [];
-    const decide = async <T,>(id: string, decider: () => T | Promise<T>): Promise<T> => {
+    const decide = async <T>(id: string, decider: () => T | Promise<T>): Promise<T> => {
       const choice = await decider();
       decisions.push({ id, choice });
       return choice;
@@ -124,7 +127,7 @@ describe("ReasoningRuntime — decision logging (P9)", () => {
     const { runtime, gemma, opus } = makeRuntime();
     // Simulate replay: the log already recorded that this decision chose "opus".
     const recorded: Record<string, unknown> = { "reason:default:route": "opus" };
-    const decide = async <T,>(id: string, decider: () => T | Promise<T>): Promise<T> => {
+    const decide = async <T>(id: string, decider: () => T | Promise<T>): Promise<T> => {
       if (id in recorded) return recorded[id] as T;
       return decider();
     };

@@ -97,7 +97,6 @@ export function parseIntent(nl: string): AppSpec {
     const deploy = s.match(/deploy\s+on\s+([a-z0-9-]+)/);
     if (deploy?.[1] !== undefined) {
       compute.target = deploy[1];
-      continue;
     }
   }
 

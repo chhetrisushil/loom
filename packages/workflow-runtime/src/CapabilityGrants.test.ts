@@ -51,9 +51,7 @@ function makeRuntime(authorized: boolean) {
   const snapshotStore = new InMemoryAsyncSnapshotStore();
   // Grant only the allowed tool to this flow (least-privilege).
   const authorizer = new GrantTable({ [FLOW_ID]: ["allowed-tool"] });
-  const effectRuntime = authorized
-    ? new EffectRuntime([], { authorizer })
-    : new EffectRuntime();
+  const effectRuntime = authorized ? new EffectRuntime([], { authorizer }) : new EffectRuntime();
   const allowedBody = vi.fn(async () => ({ ok: true }));
   const forbiddenBody = vi.fn(async () => ({ ok: true }));
   effectRuntime.register("allowed-tool", new ToolEffect(allowedBody));

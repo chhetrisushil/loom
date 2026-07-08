@@ -97,7 +97,10 @@ export class PlannerRuntime {
             ).content;
 
     return this.config.scheduler !== undefined
-      ? this.config.scheduler.schedule(() => call(), { priority: Priority.Idle, label: "planner.plan" })
+      ? this.config.scheduler.schedule(() => call(), {
+          priority: Priority.Idle,
+          label: "planner.plan",
+        })
       : call();
   }
 

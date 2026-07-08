@@ -1,5 +1,9 @@
 import { Priority, type Scheduler } from "@loom/scheduler";
-import { type CapabilityAuthorizer, CapabilityDeniedError, type EffectRuntimeOptions } from "./authz";
+import {
+  type CapabilityAuthorizer,
+  CapabilityDeniedError,
+  type EffectRuntimeOptions,
+} from "./authz";
 import type { Effect, EffectContext, EffectMiddleware, EffectNext, Warmer } from "./types";
 
 export class EffectRuntime {

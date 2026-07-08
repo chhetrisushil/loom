@@ -15,7 +15,9 @@ const bareAgent = agent$({ id: "a", name: "A", tools: [] });
 describe("AgentRunner — reasoning re-base (M8)", () => {
   it("routes the model call through the Reasoning Runtime, elevating and logging the route", async () => {
     // Cheap model is low-confidence (truncated) → reasoning elevates to the strong one.
-    const weak: LlmProvider = { complete: async () => ({ content: "weak", stopReason: "max_tokens" }) };
+    const weak: LlmProvider = {
+      complete: async () => ({ content: "weak", stopReason: "max_tokens" }),
+    };
     const strong: LlmProvider = {
       complete: async () => ({ content: "strong answer", stopReason: "end_turn" }),
     };
@@ -47,7 +49,11 @@ describe("AgentRunner — reasoning re-base (M8)", () => {
     const provider: LlmProvider = {
       complete: async () => ({ content: "hello", stopReason: "end_turn" }),
     };
-    const runner = new AgentRunner({ definition: bareAgent, provider, effectRuntime: new EffectRuntime() });
+    const runner = new AgentRunner({
+      definition: bareAgent,
+      provider,
+      effectRuntime: new EffectRuntime(),
+    });
     const out = await runner.run({ prompt: "hi" }, ctx());
     expect(out.content).toBe("hello");
   });

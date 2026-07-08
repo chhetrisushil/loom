@@ -11,7 +11,10 @@ function ctx(resources: ResourceSnapshot = zero, emit = vi.fn()): EffectContext 
 describe("meteringMiddleware", () => {
   it("meters an effect: emits RESOURCE_METERED with the priced delta", async () => {
     const emit = vi.fn();
-    const mw = meteringMiddleware({ pricing: () => ({ tokens: 100, costUsd: 0.5 }), clock: () => 0 });
+    const mw = meteringMiddleware({
+      pricing: () => ({ tokens: 100, costUsd: 0.5 }),
+      clock: () => 0,
+    });
     const result = await mw(ctx(zero, emit), { q: 1 }, async () => ({ answer: 42 }));
     expect(result).toEqual({ answer: 42 });
     expect(emit).toHaveBeenCalledWith(
