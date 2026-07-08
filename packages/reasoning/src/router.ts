@@ -18,6 +18,25 @@ export const tagRouter: Router = {
   },
 };
 
+// M10 self-optimization — a "learned" router. Given a ranking (e.g. from
+// @loom/analytics `rankModels`, mined from historical logs), prefer the
+// highest-ranked route that exists, falling back to cheap-first (`tagRouter`) for
+// unranked requests. Used inside ReasoningRuntime with `ctx.decide`, its choice is
+// recorded as a durable decision (P9) — auditable and override-able, never silently
+// autonomous (P10).
+export function rankedRouter(rankings: Record<string, number>): Router {
+  return {
+    select(req: ReasoningRequest, routes: ModelRoute[]): ModelRoute {
+      const ranked = routes
+        .filter((r) => rankings[r.id] !== undefined)
+        .sort((a, b) => (rankings[b.id] ?? 0) - (rankings[a.id] ?? 0));
+      const top = ranked[0];
+      if (top !== undefined) return top;
+      return tagRouter.select(req, routes);
+    },
+  };
+}
+
 // A fixed router that always selects a specific model id — handy for tests and for
 // pinning a strategy to one model.
 export function fixedRouter(modelId: string): Router {
