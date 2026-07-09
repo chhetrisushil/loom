@@ -282,6 +282,39 @@ const handlers: Record<string, Handler> = {
     };
   },
 
+  // Loom 2.1 (K9) — an in-doubt effect: recovery found a tool declared
+  // `idempotent: false` whose prior attempt is in an UNKNOWN state (STEP_STARTED
+  // with no terminal step event) and refused to silently re-run it. Recorded in a
+  // reserved `_indoubt` audit list; the EXECUTION_SUSPENDED that follows owns the
+  // status change. Pure audit — replay reconstructs the parking exactly, and the
+  // list length per step is the durable epoch for fresh idempotency keys after a
+  // "retry-fresh" verdict.
+  EFFECT_INDOUBT: (state, event) => {
+    const p = event.payload as {
+      stepId: string;
+      toolId?: string;
+      attempts?: number;
+      idempotencyKey?: string;
+    };
+    const existing = (state.variables._indoubt as unknown[] | undefined) ?? [];
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _indoubt: [
+          ...existing,
+          {
+            stepId: p.stepId,
+            ...(p.toolId !== undefined && { toolId: p.toolId }),
+            ...(p.attempts !== undefined && { attempts: p.attempts }),
+            ...(p.idempotencyKey !== undefined && { idempotencyKey: p.idempotencyKey }),
+          },
+        ],
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
   // Loom 2.0 (K3) — accumulate metered resource usage (tokens / cost / wall-time)
   // into a reserved `_resources` running total. Emitted by accounting middleware
   // when an effect actually runs, so the total is deterministic on replay.
@@ -373,7 +406,7 @@ export function getHandler(eventType: string): Handler | undefined {
 // Governance: adding an event type is additive (bump MINOR, update the pinned list);
 // removing or repurposing one changes how historical logs fold and is a MAJOR break
 // that must be deliberate — the conformance test pins `knownEventTypes()`.
-export const EVENT_SCHEMA_VERSION = "1.2.0";
+export const EVENT_SCHEMA_VERSION = "1.3.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

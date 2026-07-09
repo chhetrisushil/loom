@@ -15,3 +15,8 @@ export {
   emptyCassette,
   type LlmCassette,
 } from "./vcr";
+export {
+  crashingEventStore,
+  type CrashingEventStore,
+  type CrashingEventStoreOptions,
+} from "./crash";

@@ -6,7 +6,8 @@ import type { EffectRuntime } from "@loom/effect-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
 import { parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
-import type { SuspendConfig, WorkflowContext } from "./types";
+import { EFFECT_INDOUBT_RESOLVED } from "./types";
+import type { EffectInDoubtResolution, SuspendConfig, WorkflowContext } from "./types";
 
 export class WorkflowContextImpl implements WorkflowContext {
   readonly executionId: string;
@@ -54,6 +55,51 @@ export class WorkflowContextImpl implements WorkflowContext {
       return this.vm.getOutput(id) as TOut;
     }
 
+    const toolId = task.toolId ?? id;
+
+    // K9.3 — in-doubt guard. A frame left "running" by a previous process run
+    // means the prior attempt's effect is in an UNKNOWN state (STEP_STARTED,
+    // never a terminal step event). For tools explicitly declared
+    // `idempotent: false`, refuse the silent re-run: record EFFECT_INDOUBT and
+    // suspend for an operator verdict. Undeclared tools keep the legacy
+    // at-least-once re-run byte-identically (G2).
+    const priorFrame = this.vm.getState().frames[id];
+    if (
+      priorFrame?.status === "running" &&
+      this.effectRuntime.declaredIdempotence(toolId) === false
+    ) {
+      const verdict = this.readInDoubtVerdict(id);
+      if (verdict === undefined) {
+        // Park once per unknown attempt: a re-dispatch of an already-parked
+        // execution re-suspends without appending a duplicate audit fact.
+        if (this.lastInDoubtFor(id)?.attempts !== priorFrame.attempts) {
+          this.emit("EFFECT_INDOUBT", {
+            stepId: id,
+            toolId,
+            attempts: priorFrame.attempts,
+            idempotencyKey: this.idempotencyKeyFor(id),
+          });
+        }
+        throw new SuspendError({ on: EFFECT_INDOUBT_RESOLVED, correlationKey: id });
+      }
+      if (verdict.resolution === "completed-with-result") {
+        // The operator confirmed the prior attempt's effect took place: adopt
+        // its result durably without re-running the tool.
+        this.emit("STEP_COMPLETED", { stepId: id, output: verdict.output });
+        return verdict.output as TOut;
+      }
+      if (verdict.resolution === "fail") {
+        const error = String(
+          verdict.error ?? `effect in doubt: step "${id}" settled as failed by operator verdict`
+        );
+        this.emit("STEP_FAILED", { stepId: id, error });
+        throw new Error(error);
+      }
+      // "retry-fresh" — fall through to a normal run. The EFFECT_INDOUBT fact
+      // that parked us advanced the durable key epoch, so the provider sees a
+      // NEW logical attempt (fresh idempotency key).
+    }
+
     this.emit("STEP_STARTED", { stepId: id, input });
 
     const effectCtx = {
@@ -63,14 +109,17 @@ export class WorkflowContextImpl implements WorkflowContext {
       attempt: this.vm.getState().frames[id]?.attempts ?? 1,
       emit: (eventType: string, payload: unknown) => this.emit(eventType, payload),
       ...(this.signal !== undefined && { signal: this.signal }),
+      // K9.2 — deterministic idempotency key (`executionId:stepId`, plus a
+      // durable epoch after an in-doubt "retry-fresh") so tool authors can
+      // deduplicate at the provider: crash-recovery re-runs of the same logical
+      // attempt carry the SAME key.
+      idempotencyKey: this.idempotencyKeyFor(id),
       // K3 — running resource totals (from the durable fold) so accounting/quota
       // middleware can meter and enforce budgets deterministically.
       resources: (this.vm.getState().variables._resources as
         | { tokens: number; costUsd: number; ms: number; count: number; exceeded?: boolean }
         | undefined) ?? { tokens: 0, costUsd: 0, ms: 0, count: 0 },
     };
-
-    const toolId = task.toolId ?? id;
 
     let output: TOut;
     try {
@@ -157,5 +206,64 @@ export class WorkflowContextImpl implements WorkflowContext {
       return Promise.resolve(state.variables._resumePayload) as unknown as Promise<never>;
     }
     throw new SuspendError(_config);
+  }
+
+  // ── K9 helpers ──────────────────────────────────────────────────────────────
+
+  /**
+   * The deterministic idempotency key for a step: `executionId:stepId`, suffixed
+   * with `:rN` once N EFFECT_INDOUBT facts exist for the step (each "retry-fresh"
+   * verdict is a durable new-logical-attempt boundary). Derived purely from the
+   * fold, so recovery replays of the same logical attempt compute the same key.
+   */
+  private idempotencyKeyFor(stepId: string): string {
+    const indoubt = this.vm.getState().variables._indoubt as
+      | Array<{ stepId?: string }>
+      | undefined;
+    if (indoubt === undefined) {
+      return `${this.executionId}:${stepId}`;
+    }
+    let epoch = 0;
+    for (const entry of indoubt) {
+      if (entry.stepId === stepId) epoch++;
+    }
+    return epoch === 0
+      ? `${this.executionId}:${stepId}`
+      : `${this.executionId}:${stepId}:r${epoch}`;
+  }
+
+  /** The most recent EFFECT_INDOUBT audit entry for a step, if any. */
+  private lastInDoubtFor(stepId: string): { stepId?: string; attempts?: number } | undefined {
+    const indoubt = this.vm.getState().variables._indoubt as
+      | Array<{ stepId?: string; attempts?: number }>
+      | undefined;
+    if (indoubt === undefined) return undefined;
+    for (let i = indoubt.length - 1; i >= 0; i--) {
+      if (indoubt[i]?.stepId === stepId) return indoubt[i];
+    }
+    return undefined;
+  }
+
+  /**
+   * An in-doubt verdict is a resume payload that names THIS step and carries a
+   * valid resolution. Matching on shape (not mere payload presence) keeps
+   * ordinary resumes — approvals, EXECUTION_RECOVERED's empty payload — from
+   * being mistaken for verdicts; a parked execution resumed without a matching
+   * verdict simply re-parks. Verdicts are durable (the resume event is in the
+   * log), so replay re-applies them deterministically.
+   */
+  private readInDoubtVerdict(stepId: string): EffectInDoubtResolution | undefined {
+    const vars = this.vm.getState().variables;
+    if (!("_resumePayload" in vars)) return undefined;
+    const p = vars._resumePayload as Partial<EffectInDoubtResolution> | null;
+    if (p === null || typeof p !== "object" || p.stepId !== stepId) return undefined;
+    if (
+      p.resolution !== "completed-with-result" &&
+      p.resolution !== "retry-fresh" &&
+      p.resolution !== "fail"
+    ) {
+      return undefined;
+    }
+    return p as EffectInDoubtResolution;
   }
 }

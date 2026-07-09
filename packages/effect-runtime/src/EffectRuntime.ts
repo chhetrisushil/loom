@@ -89,4 +89,15 @@ export class EffectRuntime {
   has(toolId: string): boolean {
     return this.registry.has(toolId);
   }
+
+  /**
+   * K9.3 — a registered effect's declared delivery semantic
+   * (`new ToolEffect(fn, { idempotent })` / `tool$({ idempotent })`). `false`
+   * means recovery must not silently re-run an attempt in an unknown state;
+   * `undefined` (undeclared, or no such effect) keeps the legacy at-least-once
+   * re-run. Pure/synchronous so the recovery decision is deterministic.
+   */
+  declaredIdempotence(toolId: string): boolean | undefined {
+    return this.registry.get(toolId)?.idempotent;
+  }
 }
