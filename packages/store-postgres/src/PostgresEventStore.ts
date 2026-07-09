@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
+import { StaleFenceError, fenceOf } from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import { Client, type Notification, Pool, type PoolConfig } from "pg";
 import { type PgConfig, nextSenderId, toPool } from "./pool";
@@ -61,9 +62,14 @@ export class PostgresEventStore implements EventStore {
 
   async append(envelope: EventEnvelope): Promise<void> {
     await this.ready;
-    await this.pool.query(
+    // K9.4 — fence-guarded insert, atomic in one statement: the row lands only if
+    // the execution has no fence, or the envelope's token (0 when absent) is at
+    // least the current one. A conditional zero-row insert means a zombie write.
+    const fence = fenceOf(envelope) ?? 0;
+    const result = await this.pool.query(
       `INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
+       SELECT $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb
+       WHERE COALESCE((SELECT fence FROM fences WHERE execution_id = $3), $9::bigint) <= $9::bigint`,
       [
         envelope.id,
         envelope.workflowId,
@@ -73,8 +79,20 @@ export class PostgresEventStore implements EventStore {
         envelope.timestamp,
         JSON.stringify(envelope.payload),
         envelope.metadata !== undefined ? JSON.stringify(envelope.metadata) : null,
+        fence,
       ]
     );
+    if (result.rowCount === 0) {
+      const { rows } = await this.pool.query<{ fence: string }>(
+        "SELECT fence FROM fences WHERE execution_id = $1",
+        [envelope.executionId]
+      );
+      throw new StaleFenceError(
+        envelope.executionId,
+        fenceOf(envelope),
+        Number(rows[0]?.fence ?? 0)
+      );
+    }
 
     // Same-process subscribers fire synchronously (matches the SQLite contract).
     this.notifyLocal(envelope.executionId, envelope);
@@ -137,6 +155,19 @@ export class PostgresEventStore implements EventStore {
        FROM events WHERE execution_id = $4 AND sequence <= $5`,
       [toExecutionId, toExecutionId, JSON.stringify(metadata), fromExecutionId, throughSequence]
     );
+  }
+
+  async acquireFence(executionId: string): Promise<number> {
+    await this.ready;
+    // Atomic increment-and-return; the upsert makes concurrent acquirers strictly
+    // ordered, so two nodes can never hold the same token.
+    const { rows } = await this.pool.query<{ fence: string }>(
+      `INSERT INTO fences (execution_id, fence) VALUES ($1, 1)
+       ON CONFLICT (execution_id) DO UPDATE SET fence = fences.fence + 1
+       RETURNING fence`,
+      [executionId]
+    );
+    return Number(rows[0]?.fence ?? 1);
   }
 
   async subscribe(

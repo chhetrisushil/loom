@@ -33,7 +33,10 @@ export class ExecutionJournal {
     private readonly onWriteError: (err: unknown) => void,
     // Fired synchronously after each commit with the new sequence — used for
     // snapshot cadence (bounding the replay tail on long-running executions).
-    private readonly onCommit?: (sequence: number) => void
+    private readonly onCommit?: (sequence: number) => void,
+    // K9.4 — the fencing token this run holds; stamped onto every envelope's
+    // metadata so a fencing store can reject a zombie predecessor's writes.
+    private readonly fence?: number
   ) {
     // Seed from the folded VM tip: -1 for a fresh start (first commit → seq 0),
     // or the last applied sequence on resume/restore (next commit continues).
@@ -51,6 +54,10 @@ export class ExecutionJournal {
   ): EventEnvelope {
     const sequence = ++this.seq;
     const state = this.vm.getState();
+    const metadata =
+      opts?.metadata !== undefined || this.fence !== undefined
+        ? { ...opts?.metadata, ...(this.fence !== undefined && { fence: this.fence }) }
+        : undefined;
     const envelope: EventEnvelope = {
       id: opts?.id ?? `${state.executionId}-${sequence}`,
       workflowId: state.workflowId,
@@ -59,7 +66,7 @@ export class ExecutionJournal {
       sequence,
       timestamp: opts?.timestamp ?? Date.now(),
       payload,
-      ...(opts?.metadata !== undefined && { metadata: opts.metadata }),
+      ...(metadata !== undefined && { metadata }),
     };
     this.vm.applyEvent(envelope); // in-memory fold — synchronous, authoritative
     this.onEvent?.(envelope); // live projection fold — synchronous, durability-independent

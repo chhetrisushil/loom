@@ -47,6 +47,14 @@ export async function migrate(pool: Pool): Promise<void> {
       created_at BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_lineage_parent ON lineage (parent_execution_id);
+
+    -- K9.4 fencing: the current monotonic fence token per execution. A row exists
+    -- only once a dispatcher/worker acquires a fence; executions that never fence
+    -- pay nothing. Appends carrying a stale/missing token are rejected in append().
+    CREATE TABLE IF NOT EXISTS fences (
+      execution_id TEXT NOT NULL PRIMARY KEY,
+      fence BIGINT NOT NULL
+    );
   `);
 }
 

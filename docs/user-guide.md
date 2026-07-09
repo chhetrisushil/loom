@@ -626,6 +626,16 @@ Undeclared tools keep the legacy automatic re-run byte-identically. Prove your t
 in CI with the crash-injection harness — `crashingEventStore` in `@loom/testing` kills the
 execution exactly between the effect and its completion append.
 
+**3. Fencing tokens (K9.4).** On a multi-node store, a re-dispatched execution must be safe
+from its *zombie* predecessor — a partitioned worker that wakes up and writes after the
+execution moved elsewhere. Fencing stores (in-memory, Postgres) expose
+`acquireFence(executionId)` — a monotonic token the worker's lease carries and every appended
+event is stamped with; the **store append rejects** a stale or missing token
+(`StaleFenceError`), so exactly one version of history can land. `LocalWorkerRuntime.allocate`
+acquires it automatically; hand-driven runs pass `{ fence }` via `RunOptions`. Executions that
+never fence — and single-node SQLite, where the process is the failure domain — are entirely
+untouched (G2).
+
 ---
 
 ## 18. Event intelligence & self-optimization

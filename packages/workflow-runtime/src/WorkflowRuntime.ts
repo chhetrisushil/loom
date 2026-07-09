@@ -107,9 +107,21 @@ export class WorkflowRuntime {
     return [...this.flows.keys()];
   }
 
+  /**
+   * K9.4 — acquire the next monotonic fencing token for an execution, when the
+   * event store supports fencing. Returns `undefined` on a non-fencing store
+   * (e.g. single-node SQLite), so callers can thread it opportunistically:
+   * `start(flow, input, { fence: await runtime.acquireFence(id) ?? undefined })`.
+   */
+  async acquireFence(executionId: string): Promise<number | undefined> {
+    if (this.eventStore.acquireFence === undefined) return undefined;
+    return this.eventStore.acquireFence(executionId);
+  }
+
   async restoreFromState(
     preloadedState: ExecutionState,
-    resumeEvent?: ResumeEvent
+    resumeEvent?: ResumeEvent,
+    options?: RunOptions
   ): Promise<ExecutionHandle> {
     const flow = this.flows.get(preloadedState.workflowId);
     if (!flow) {
@@ -123,7 +135,8 @@ export class WorkflowRuntime {
       vm,
       flow.runner as FlowRunner<unknown, unknown>,
       originalInput,
-      resumeEvent ? [{ eventType: resumeEvent.eventType, payload: resumeEvent.payload }] : []
+      resumeEvent ? [{ eventType: resumeEvent.eventType, payload: resumeEvent.payload }] : [],
+      options?.fence
     );
   }
 
@@ -149,11 +162,16 @@ export class WorkflowRuntime {
       vm,
       runner as FlowRunner<unknown, unknown>,
       input,
-      [{ eventType: "EXECUTION_STARTED", payload: { input } }]
+      [{ eventType: "EXECUTION_STARTED", payload: { input } }],
+      options?.fence
     );
   }
 
-  async resume(executionId: string, resumeEvent: ResumeEvent): Promise<ExecutionHandle> {
+  async resume(
+    executionId: string,
+    resumeEvent: ResumeEvent,
+    options?: RunOptions
+  ): Promise<ExecutionHandle> {
     const allEvents = await this.eventStore.read(executionId);
     if (allEvents.length === 0) {
       throw new Error(`No execution found for id: ${executionId}`);
@@ -195,7 +213,8 @@ export class WorkflowRuntime {
       [
         { eventType: resumeEvent.eventType, payload: resumeEvent.payload },
         { eventType: "EXECUTION_RESUMED", payload: resumeEvent.payload },
-      ]
+      ],
+      options?.fence
     );
   }
 
@@ -381,7 +400,8 @@ export class WorkflowRuntime {
     vm: ReplayVM,
     runner: FlowRunner<unknown, unknown>,
     input: unknown,
-    bootstrapEvents: BootstrapEvent[]
+    bootstrapEvents: BootstrapEvent[],
+    fence?: number
   ): ExecutionHandle {
     let resolveCompletion!: (state: ReturnType<typeof vm.getState>) => void;
     let rejectCompletion!: (err: unknown) => void;
@@ -425,6 +445,9 @@ export class WorkflowRuntime {
     const maybeSnapshot = (sequence: number): void => {
       const every = this.snapshotEvery;
       if (!every || sequence <= 0 || sequence % every !== 0 || snapshotInFlight) return;
+      // Never checkpoint state whose events failed to persist (e.g. a fenced
+      // zombie, K9.4): a snapshot must only ever reference durable events.
+      if (journal.failed) return;
       snapshotInFlight = true;
       const state = vm.getState(); // stable: copy-on-write folds never mutate a prior state
       void this.snapshotStore
@@ -443,7 +466,8 @@ export class WorkflowRuntime {
         this.onStorageError?.(executionId, err);
         if (!cancelled) controller.abort(err);
       },
-      maybeSnapshot
+      maybeSnapshot,
+      fence
     );
 
     // Commit bootstrap events (EXECUTION_STARTED / resume+RESUMED / restore) so

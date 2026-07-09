@@ -61,6 +61,14 @@ export type WorkflowContext = ExecutionContext;
 
 export interface RunOptions {
   executionId?: string;
+  /**
+   * K9.4 — the monotonic fencing token this dispatch holds (from
+   * `EventStore.acquireFence` / `WorkflowRuntime.acquireFence`). Every event the
+   * run appends carries it in `metadata.fence`; a fencing store rejects appends
+   * from an older token, so a zombie predecessor of a re-dispatched execution
+   * cannot write. Omit (or run against a non-fencing store) for today's behavior.
+   */
+  fence?: number;
 }
 
 export interface ExecutionHandle {

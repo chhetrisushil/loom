@@ -43,7 +43,7 @@ suite("@loom/store-postgres", () => {
   });
 
   beforeEach(async () => {
-    await admin.query("TRUNCATE events, snapshots, refs, lineage");
+    await admin.query("TRUNCATE events, snapshots, refs, lineage, fences");
   });
 
   describe("PostgresEventStore", () => {
@@ -78,6 +78,25 @@ suite("@loom/store-postgres", () => {
     it("rejects duplicate (executionId, sequence) pairs", async () => {
       await store.append(makeEnvelope("e4", 0));
       await expect(store.append(makeEnvelope("e4", 0))).rejects.toThrow();
+    });
+
+    it("fencing (K9.4): acquireFence is monotonic; stale/unfenced appends are rejected", async () => {
+      const one = await store.acquireFence("ef");
+      const two = await store.acquireFence("ef");
+      expect(one).toBe(1);
+      expect(two).toBe(2);
+
+      // Current token lands; stale token and missing token are zombie writes.
+      await store.append({ ...makeEnvelope("ef", 0), metadata: { fence: two } });
+      await expect(
+        store.append({ ...makeEnvelope("ef", 1), metadata: { fence: one } })
+      ).rejects.toThrow(/stale fence/);
+      await expect(store.append(makeEnvelope("ef", 1))).rejects.toThrow(/stale fence/);
+      expect(await store.read("ef")).toHaveLength(1);
+
+      // Executions that never acquired a fence are untouched (G2).
+      await store.append(makeEnvelope("unfenced", 0));
+      expect(await store.read("unfenced")).toHaveLength(1);
     });
 
     it("reads from a given sequence inclusive", async () => {

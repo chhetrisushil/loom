@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
+import { StaleFenceError, fenceOf } from "./fencing";
 import { lowerBoundBySequence, sliceBySequence } from "./sequenceRange";
 import type { EventStore } from "./types";
 
@@ -22,6 +23,7 @@ export interface InMemoryAsyncEventStoreOptions {
 export class InMemoryAsyncEventStore implements EventStore {
   private readonly log = new Map<string, EventEnvelope[]>();
   private readonly subscribers = new Map<string, Set<(e: EventEnvelope) => void>>();
+  private readonly fences = new Map<string, number>();
   private readonly latencyMs: number;
   private readonly failAppendWhen:
     | ((envelope: EventEnvelope) => boolean | string | Error)
@@ -39,6 +41,15 @@ export class InMemoryAsyncEventStore implements EventStore {
 
   async append(envelope: EventEnvelope): Promise<void> {
     await this.tick();
+    // K9.4 — fencing: once a token has been acquired for this execution, an
+    // append missing the current token is a zombie write and is rejected.
+    const currentFence = this.fences.get(envelope.executionId);
+    if (currentFence !== undefined) {
+      const fence = fenceOf(envelope);
+      if (fence === undefined || fence < currentFence) {
+        throw new StaleFenceError(envelope.executionId, fence, currentFence);
+      }
+    }
     const verdict = this.failAppendWhen?.(envelope);
     if (verdict) {
       throw verdict instanceof Error
@@ -103,6 +114,13 @@ export class InMemoryAsyncEventStore implements EventStore {
       });
     }
     this.log.set(toExecutionId, dst);
+  }
+
+  async acquireFence(executionId: string): Promise<number> {
+    await this.tick();
+    const next = (this.fences.get(executionId) ?? 0) + 1;
+    this.fences.set(executionId, next);
+    return next;
   }
 
   async subscribe(
