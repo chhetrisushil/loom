@@ -6,7 +6,7 @@ import type { EffectRuntime } from "@loom/effect-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
 import { parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
-import { EFFECT_INDOUBT_RESOLVED } from "./types";
+import { EFFECT_INDOUBT_RESOLVED, StepTimeoutError } from "./types";
 import type { EffectInDoubtResolution, SuspendConfig, WorkflowContext } from "./types";
 
 export class WorkflowContextImpl implements WorkflowContext {
@@ -55,6 +55,10 @@ export class WorkflowContextImpl implements WorkflowContext {
       return this.vm.getOutput(id) as TOut;
     }
 
+    // K8 — a cancelled execution starts no further steps: bail before the
+    // STEP_STARTED is even logged (EXECUTION_CANCELLED owns the outcome).
+    this.throwIfCancelled();
+
     const toolId = task.toolId ?? id;
 
     // K9.3 — in-doubt guard. A frame left "running" by a previous process run
@@ -102,13 +106,55 @@ export class WorkflowContextImpl implements WorkflowContext {
 
     this.emit("STEP_STARTED", { stepId: id, input });
 
+    // K8.3 — declared step deadline (`timeoutMs`), anchored to the step's FIRST
+    // logged start so a crash-recovery re-run resumes the countdown rather than
+    // resetting it. Enforcement is kernel-side: the step signal aborts (for
+    // cooperative effects) AND the await is raced (for effects that ignore it —
+    // settlement truth is the durable STEP_FAILED, not physical termination).
+    const timeoutMs = task.timeoutMs;
+    let stepSignal = this.signal;
+    let deadline: { promise: Promise<never>; cleanup: () => void } | undefined;
+    if (timeoutMs !== undefined) {
+      const frame = this.vm.getState().frames[id];
+      const anchor = frame?.firstStartedAt ?? frame?.startedAt ?? Date.now();
+      const remaining = timeoutMs - (Date.now() - anchor);
+      if (remaining <= 0) {
+        const timeoutErr = new StepTimeoutError(id, timeoutMs);
+        this.emit("STEP_FAILED", { stepId: id, error: String(timeoutErr) });
+        throw timeoutErr;
+      }
+      const controller = new AbortController();
+      const onParentAbort = (): void => controller.abort(this.signal?.reason);
+      if (this.signal !== undefined) {
+        if (this.signal.aborted) controller.abort(this.signal.reason);
+        else this.signal.addEventListener("abort", onParentAbort, { once: true });
+      }
+      let timer!: ReturnType<typeof setTimeout>;
+      const promise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          const timeoutErr = new StepTimeoutError(id, timeoutMs);
+          controller.abort(timeoutErr);
+          reject(timeoutErr);
+        }, remaining);
+      });
+      promise.catch(() => {}); // un-awaited when the effect settles first
+      deadline = {
+        promise,
+        cleanup: () => {
+          clearTimeout(timer);
+          this.signal?.removeEventListener("abort", onParentAbort);
+        },
+      };
+      stepSignal = controller.signal;
+    }
+
     const effectCtx = {
       executionId: this.executionId,
       stepId: id,
       workflowId: this.workflowId,
       attempt: this.vm.getState().frames[id]?.attempts ?? 1,
       emit: (eventType: string, payload: unknown) => this.emit(eventType, payload),
-      ...(this.signal !== undefined && { signal: this.signal }),
+      ...(stepSignal !== undefined && { signal: stepSignal }),
       // K9.2 — deterministic idempotency key (`executionId:stepId`, plus a
       // durable epoch after an in-doubt "retry-fresh") so tool authors can
       // deduplicate at the provider: crash-recovery re-runs of the same logical
@@ -123,20 +169,30 @@ export class WorkflowContextImpl implements WorkflowContext {
 
     let output: TOut;
     try {
-      output = await this.effectRuntime.execute<TIn, TOut>(toolId, input, effectCtx);
+      const effectPromise = this.effectRuntime.execute<TIn, TOut>(toolId, input, effectCtx);
+      if (deadline !== undefined) {
+        effectPromise.catch(() => {}); // a late rejection after the deadline won is settled
+        output = await Promise.race([effectPromise, deadline.promise]);
+      } else {
+        output = await effectPromise;
+      }
     } catch (err) {
       if (err instanceof SuspendError) {
         throw err;
       }
       // A cancelled execution surfaces here as an effect rejection. Record it as
       // a cancelled step (not a failure) so the event log and replayed state stay
-      // truthful; EXECUTION_CANCELLED owns the execution-level status.
+      // truthful; EXECUTION_CANCELLED owns the execution-level status. (A step
+      // timeout is NOT a cancellation — this.signal stays quiet — so it falls to
+      // the ordinary STEP_FAILED below.)
       if (this.signal?.aborted === true) {
         this.emit("STEP_CANCELLED", { stepId: id });
         throw err;
       }
       this.emit("STEP_FAILED", { stepId: id, error: String(err) });
       throw err;
+    } finally {
+      deadline?.cleanup();
     }
 
     this.emit("STEP_COMPLETED", { stepId: id, output });
@@ -206,6 +262,16 @@ export class WorkflowContextImpl implements WorkflowContext {
       return Promise.resolve(state.variables._resumePayload) as unknown as Promise<never>;
     }
     throw new SuspendError(_config);
+  }
+
+  // K8 — abort fast when the owning execution has been cancelled. Scoped to a
+  // helper so the signal narrowing doesn't leak into callers (the signal flips
+  // asynchronously; call sites must re-check it each time).
+  private throwIfCancelled(): void {
+    const signal = this.signal;
+    if (signal !== undefined && signal.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new Error("execution cancelled");
+    }
   }
 
   // ── K9 helpers ──────────────────────────────────────────────────────────────

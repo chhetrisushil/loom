@@ -64,6 +64,10 @@ export class WorkflowRuntime {
   private readonly onStorageError: ((executionId: string, err: unknown) => void) | undefined;
   private readonly snapshotEvery: number | undefined;
   private readonly flows = new Map<string, RegisteredFlow>();
+  // K8.2 — live executions this runtime instance is currently driving, so
+  // cancel() can reach an in-flight run by id. Entries are removed when the run
+  // settles (completes / suspends / fails / cancels).
+  private readonly liveHandles = new Map<string, ExecutionHandle>();
 
   constructor(deps: WorkflowRuntimeDeps) {
     this.eventStore = deps.eventStore;
@@ -118,6 +122,51 @@ export class WorkflowRuntime {
     return this.eventStore.acquireFence(executionId);
   }
 
+  /**
+   * K8.2 — cancel an execution BY ID, wherever it stands:
+   *
+   *  - **live in this runtime** → abort the in-flight effect (signal) and record
+   *    the durable `EXECUTION_CANCELLED`, exactly like `handle.cancel()`;
+   *  - **not live here** (suspended, or running on a presumed-dead node) →
+   *    **fence-then-cancel**: acquire a newer fencing token first (on a fencing
+   *    store, K9.4) so a partitioned worker still driving this execution can no
+   *    longer write, then append `EXECUTION_CANCELLED` durably. The status folds
+   *    to terminal `cancelled`; a later `resume()` refuses.
+   *
+   * Returns `true` if a cancellation was performed, `false` if the execution was
+   * already terminal (completed / failed / cancelled). Throws if the id is
+   * unknown. Replay reconstructs the cancellation at the same sequence (G1).
+   */
+  async cancel(executionId: string, reason?: unknown): Promise<boolean> {
+    const live = this.liveHandles.get(executionId);
+    if (live !== undefined) {
+      live.cancel(reason);
+      return true;
+    }
+    const state = await this.loadState(executionId);
+    if (state === null) {
+      throw new Error(`No execution found for id: ${executionId}`);
+    }
+    if (state.status === "completed" || state.status === "failed" || state.status === "cancelled") {
+      return false;
+    }
+    const fence = await this.acquireFence(executionId);
+    const sequence = state.sequence + 1;
+    const envelope: EventEnvelope = {
+      id: `${executionId}-${sequence}`,
+      workflowId: state.workflowId,
+      executionId,
+      eventType: "EXECUTION_CANCELLED",
+      sequence,
+      timestamp: Date.now(),
+      payload: { ...(reason !== undefined && { reason: String(reason) }) },
+      ...(fence !== undefined && { metadata: { fence } }),
+    };
+    await this.eventStore.append(envelope);
+    this.onEvent?.(envelope);
+    return true;
+  }
+
   async restoreFromState(
     preloadedState: ExecutionState,
     resumeEvent?: ResumeEvent,
@@ -136,7 +185,8 @@ export class WorkflowRuntime {
       flow.runner as FlowRunner<unknown, unknown>,
       originalInput,
       resumeEvent ? [{ eventType: resumeEvent.eventType, payload: resumeEvent.payload }] : [],
-      options?.fence
+      options?.fence,
+      options?.deadlineMs ?? flow.definition.deadlineMs
     );
   }
 
@@ -163,7 +213,8 @@ export class WorkflowRuntime {
       runner as FlowRunner<unknown, unknown>,
       input,
       [{ eventType: "EXECUTION_STARTED", payload: { input } }],
-      options?.fence
+      options?.fence,
+      options?.deadlineMs ?? definition.deadlineMs
     );
   }
 
@@ -204,6 +255,12 @@ export class WorkflowRuntime {
       });
     }
 
+    // K8.2 — cancelled is TERMINAL: a cancel-by-id of a suspended/detached
+    // execution must not be undone by a later resume.
+    if (vm.getState().status === "cancelled") {
+      throw new Error(`Execution ${executionId} was cancelled; resume refused (terminal status)`);
+    }
+
     return this.execute(
       executionId,
       workflowId,
@@ -214,7 +271,8 @@ export class WorkflowRuntime {
         { eventType: resumeEvent.eventType, payload: resumeEvent.payload },
         { eventType: "EXECUTION_RESUMED", payload: resumeEvent.payload },
       ],
-      options?.fence
+      options?.fence,
+      options?.deadlineMs ?? flow.definition.deadlineMs
     );
   }
 
@@ -401,7 +459,8 @@ export class WorkflowRuntime {
     runner: FlowRunner<unknown, unknown>,
     input: unknown,
     bootstrapEvents: BootstrapEvent[],
-    fence?: number
+    fence?: number,
+    deadlineMs?: number
   ): ExecutionHandle {
     let resolveCompletion!: (state: ReturnType<typeof vm.getState>) => void;
     let rejectCompletion!: (err: unknown) => void;
@@ -497,6 +556,21 @@ export class WorkflowRuntime {
       rejectCompletion(reason instanceof Error ? reason : new Error("Execution cancelled"));
     };
 
+    // K8.3 — execution deadline, anchored to the LOGGED EXECUTION_STARTED
+    // timestamp (already folded from the bootstrap above on a fresh start, or
+    // from the original log on resume) — a crash/resume never resets the clock,
+    // and resuming past the deadline cancels immediately. Breach is a
+    // kernel-driven cancel: durable EXECUTION_CANCELLED, in-flight effect aborted.
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    if (deadlineMs !== undefined) {
+      const startedAt = vm.getState().startedAt || Date.now();
+      const remaining = deadlineMs - (Date.now() - startedAt);
+      const breach = () =>
+        cancel(new Error(`execution deadline exceeded (deadlineMs=${deadlineMs})`));
+      if (remaining <= 0) breach();
+      else deadlineTimer = setTimeout(breach, remaining);
+    }
+
     const run = async () => {
       try {
         const output = await runner(ctx, input);
@@ -551,14 +625,21 @@ export class WorkflowRuntime {
       }
     };
 
-    void run();
-
-    return {
+    const handle: ExecutionHandle = {
       executionId,
       waitForCompletion: () => completionPromise,
       waitForSuspend: () => suspendPromise,
       getState: () => vm.getState(),
       cancel,
     };
+
+    // K8.2 — reachable by id while live; released when the run settles (any path).
+    this.liveHandles.set(executionId, handle);
+    void run().finally(() => {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+      this.liveHandles.delete(executionId);
+    });
+
+    return handle;
   }
 }

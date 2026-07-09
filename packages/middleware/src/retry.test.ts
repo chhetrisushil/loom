@@ -61,7 +61,7 @@ describe("retryMiddleware", () => {
     expect(delays).toHaveLength(0);
   });
 
-  it("does not retry when the execution is already cancelled", async () => {
+  it("fails fast when the execution is ALREADY cancelled — the effect never starts (K8)", async () => {
     const { sleep } = fakeSleep();
     const controller = new AbortController();
     controller.abort();
@@ -70,8 +70,26 @@ describe("retryMiddleware", () => {
     const runtime = new EffectRuntime([retryMiddleware({ maxRetries: 3, sleep })]);
     runtime.register("t", new ToolEffect(fn));
 
+    // The kernel's pre-flight check rejects with the abort reason before the
+    // middleware chain runs; a cancelled execution starts no further effects.
+    await expect(runtime.execute("t", {}, ctx)).rejects.toThrow(/aborted/i);
+    expect(fn).toHaveBeenCalledTimes(0);
+  });
+
+  it("does not retry when the execution is cancelled MID-attempt (abort is terminal)", async () => {
+    const { sleep, delays } = fakeSleep();
+    const controller = new AbortController();
+    const ctx: EffectContext = { ...baseCtx, signal: controller.signal };
+    const fn = vi.fn(async () => {
+      controller.abort(); // cancellation lands while the attempt is in flight
+      throw new Error("boom");
+    });
+    const runtime = new EffectRuntime([retryMiddleware({ maxRetries: 3, sleep })]);
+    runtime.register("t", new ToolEffect(fn));
+
     await expect(runtime.execute("t", {}, ctx)).rejects.toThrow("boom");
-    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledTimes(1); // no re-attempt, no backoff
+    expect(delays).toHaveLength(0);
   });
 
   it("honors isRetryable to skip non-retryable errors", async () => {

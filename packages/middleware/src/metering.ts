@@ -19,9 +19,16 @@ export interface ResourceDelta {
 export interface MeterInfo {
   stepId: string;
   input: unknown;
+  /** The effect's result — `undefined` when metering an aborted effect (K8). */
   result: unknown;
   /** Measured wall-time of the effect, in ms. */
   ms: number;
+  /**
+   * K8 — true when the effect was severed mid-flight (cancellation/deadline).
+   * The wall-time up to the abort is still metered so cancel-before-completion
+   * cannot evade budgets; pricing may add provider-reported partial usage.
+   */
+  aborted?: boolean;
 }
 
 /** Compute the resource delta for one effect call — e.g. tokens×rate for an LLM. */
@@ -80,7 +87,32 @@ export function meteringMiddleware(options: MeteringOptions): EffectMiddleware {
     }
 
     const start = now();
-    const result = await next();
+    let result: unknown;
+    try {
+      result = await next();
+    } catch (err) {
+      // K8 — meter an aborted effect before rethrowing. Metering normally runs
+      // after next(), so a severed call would never be seen and
+      // start-expensive-effect → cancel → repeat could evade the budget forever.
+      // Only aborts are metered here; an ordinary failure keeps today's
+      // unmetered semantics.
+      if (ctx.signal?.aborted === true) {
+        const ms = now() - start;
+        const delta = options.pricing({
+          stepId: ctx.stepId,
+          input,
+          result: undefined,
+          ms,
+          aborted: true,
+        });
+        ctx.emit("RESOURCE_METERED", {
+          ...(delta.tokens !== undefined && { tokens: delta.tokens }),
+          ...(delta.costUsd !== undefined && { costUsd: delta.costUsd }),
+          ms: delta.ms ?? ms,
+        });
+      }
+      throw err;
+    }
     const ms = now() - start;
 
     const delta = options.pricing({ stepId: ctx.stepId, input, result, ms });

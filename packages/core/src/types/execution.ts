@@ -18,6 +18,13 @@ export interface ExecutionFrame {
   error?: unknown;
   startedAt?: number;
   completedAt?: number;
+  /**
+   * K8.3 — the LOGGED timestamp of this step's FIRST attempt (`startedAt`
+   * tracks the latest). Deadlines anchor here, so a crash-recovery re-run
+   * never resets the clock. Optional/additive: absent on legacy folds;
+   * callers fall back to `startedAt`.
+   */
+  firstStartedAt?: number;
   attempts: number;
 }
 

@@ -53,4 +53,46 @@ describe("createLlmEffect", () => {
     });
     expect(effect.kind).toBe("llm");
   });
+
+  // K8.1 — the effect's cancellation signal reaches the provider so a
+  // cancelled/timed-out execution severs the in-flight HTTP call.
+  it("forwards ctx.signal to the provider request (K8.1)", async () => {
+    const seen: Array<AbortSignal | undefined> = [];
+    const provider: LlmProvider = {
+      complete: async (request) => {
+        seen.push(request.signal);
+        return { content: "", stopReason: "end_turn" };
+      },
+    };
+    const effect = createLlmEffect<string, string>({
+      provider,
+      buildRequest: (input) => ({ messages: [{ role: "user", content: input }] }),
+    });
+
+    const controller = new AbortController();
+    await effect.execute("hi", { ...makeCtx(), signal: controller.signal });
+    expect(seen[0]).toBe(controller.signal);
+  });
+
+  it("a signal set by buildRequest wins over ctx.signal", async () => {
+    const seen: Array<AbortSignal | undefined> = [];
+    const provider: LlmProvider = {
+      complete: async (request) => {
+        seen.push(request.signal);
+        return { content: "", stopReason: "end_turn" };
+      },
+    };
+    const explicit = new AbortController();
+    const effect = createLlmEffect<string, string>({
+      provider,
+      buildRequest: (input) => ({
+        messages: [{ role: "user", content: input }],
+        signal: explicit.signal,
+      }),
+    });
+
+    const ctxController = new AbortController();
+    await effect.execute("hi", { ...makeCtx(), signal: ctxController.signal });
+    expect(seen[0]).toBe(explicit.signal);
+  });
 });

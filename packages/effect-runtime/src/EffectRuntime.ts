@@ -61,6 +61,15 @@ export class EffectRuntime {
       throw new Error(`No effect registered for toolId: "${toolId}"`);
     }
 
+    // K8 — a cancelled/deadline-breached execution never starts another effect:
+    // fail fast before the middleware chain rather than relying on every effect
+    // body to check the signal.
+    if (ctx.signal?.aborted === true) {
+      throw ctx.signal.reason instanceof Error
+        ? ctx.signal.reason
+        : new Error(`effect "${toolId}" aborted before start`);
+    }
+
     // Build the effect+middleware chain as a single thunk. Fold right-to-left so
     // middleware[0] ends up outermost (its `next` runs middleware[1], … the effect last).
     let chain: EffectNext = () => effect.execute(input, ctx);

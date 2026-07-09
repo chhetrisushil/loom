@@ -37,6 +37,9 @@ const handlers: Record<string, Handler> = {
       status: "running",
       attempts: (existing?.attempts ?? 0) + 1,
       startedAt: event.timestamp,
+      // K8.3 — the first attempt's logged start survives re-runs, so deadlines
+      // anchored here are never reset by crash recovery.
+      firstStartedAt: existing?.firstStartedAt ?? existing?.startedAt ?? event.timestamp,
       ...(payload.input !== undefined && { input: payload.input }),
     };
     return {
@@ -55,6 +58,7 @@ const handlers: Record<string, Handler> = {
       attempts: existing?.attempts ?? 1,
       completedAt: event.timestamp,
       ...(existing?.startedAt !== undefined && { startedAt: existing.startedAt }),
+      ...(existing?.firstStartedAt !== undefined && { firstStartedAt: existing.firstStartedAt }),
       ...(existing?.input !== undefined && { input: existing.input }),
       ...(payload.output !== undefined && { output: payload.output }),
     };
@@ -73,6 +77,7 @@ const handlers: Record<string, Handler> = {
       status: "failed",
       attempts: existing?.attempts ?? 1,
       ...(existing?.startedAt !== undefined && { startedAt: existing.startedAt }),
+      ...(existing?.firstStartedAt !== undefined && { firstStartedAt: existing.firstStartedAt }),
       ...(existing?.input !== undefined && { input: existing.input }),
       ...(payload.error !== undefined && { error: payload.error }),
     };
@@ -95,6 +100,7 @@ const handlers: Record<string, Handler> = {
       status: "cancelled",
       attempts: existing?.attempts ?? 1,
       ...(existing?.startedAt !== undefined && { startedAt: existing.startedAt }),
+      ...(existing?.firstStartedAt !== undefined && { firstStartedAt: existing.firstStartedAt }),
       ...(existing?.input !== undefined && { input: existing.input }),
     };
     return {
