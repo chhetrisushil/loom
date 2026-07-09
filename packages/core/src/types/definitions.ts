@@ -124,6 +124,12 @@ export interface FlowDefinition<TIn = unknown, TOut = unknown> {
   // biome-ignore lint/suspicious/noExplicitAny: a flow's steps are heterogeneous — each step has its own input/output types, so the array element type must erase them
   steps: StepDefinition<any, any>[];
   policies?: PolicyDefinition[];
+  /**
+   * K8.3 — declarative wall-clock deadline for a live run, anchored to the
+   * logged EXECUTION_STARTED timestamp (never reset by recovery); breach is a
+   * kernel-driven EXECUTION_CANCELLED. See `FlowConfig.deadlineMs` (flow$).
+   */
+  deadlineMs?: number;
 }
 
 export interface ProjectionDefinition<TState = unknown> {

@@ -541,7 +541,7 @@ const context = await mem.recall("semantic", scope, { limit: 10, decide: ctx.dec
 
 ## 17. Kernel: grants, quotas & supervision
 
-*(Loom 2.0 kernel-hardening — K2 / K3 / K4 / K9.)* All opt-in; omit them and behavior is unchanged.
+*(Loom 2.0 kernel-hardening — K2 / K3 / K4 / K8 / K9.)* All opt-in; omit them and behavior is unchanged.
 
 ### Capability grants (protection ring, K2)
 
@@ -583,6 +583,35 @@ const dispatcher = new SupervisingDispatcher(childDispatcher, {
   policy: { maxRestarts: 2, backoffMs: 200, circuit: { threshold: 5, cooldownMs: 30_000 } },
 });
 ```
+
+### Cancellation & deadlines (K8)
+
+The kernel can reclaim running work — cooperatively where effects honor the signal, and by
+durable settlement everywhere else (the guarantee is the logged fact, not physical
+termination of third-party I/O).
+
+```ts
+// Kill an execution BY ID, wherever it stands:
+await runtime.cancel(executionId, "operator kill");
+// - live in this runtime → aborts the in-flight effect + durable EXECUTION_CANCELLED
+// - suspended / on a presumed-dead node → FENCE-THEN-CANCEL: acquires a newer fence
+//   token first (K9.4), so a zombie worker can no longer write, then appends the fact.
+// Cancelled is terminal: resume() refuses, a second cancel returns false.
+
+// Declarative deadlines — enforced by the kernel, anchored to LOGGED timestamps
+// (a crash/recovery never resets the clock):
+step$({ id: "call-api", …, timeoutMs: 30_000 });       // per step, anchored to its first STEP_STARTED
+flow$({ id: "audit", …, deadlineMs: 10 * 60_000 });    // per run, anchored to EXECUTION_STARTED
+await runtime.start(flow, input, { deadlineMs: 5_000 }); // per-dispatch override
+```
+
+A step timeout fails the step (`STEP_FAILED`, retriable by your flow logic); an execution
+deadline cancels the run (`EXECUTION_CANCELLED`). Effects receive the abort via `ctx.signal`
+(LLM effects forward it to the provider's HTTP call automatically); effects that ignore it
+are settled durably anyway. Aborted effects are still **metered** (wall-time at minimum), so
+cancel-before-completion cannot evade a K3 budget, and the retry middleware treats abort as
+terminally non-retryable. Deadlines fire while a process is actively running the execution;
+durable firing across idle suspension arrives with T1's timer service.
 
 ### Effect delivery: at-least-once & idempotency (K9)
 

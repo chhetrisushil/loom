@@ -128,8 +128,10 @@ generalization.
 - **Emitted by:** `ctx.execute` before running the effect (`WorkflowContext.ts:57`).
 - **Payload:** `{ stepId: string; input?: unknown }`
 - **Folds into:** `frames[stepId]` = a fresh frame `{ stepId, status: "running", attempts:
-  (existing.attempts ?? 0) + 1, startedAt: event.timestamp, input? }`. The `attempts` increment
-  is what makes a retry observable.
+  (existing.attempts ?? 0) + 1, startedAt: event.timestamp, firstStartedAt, input? }`. The
+  `attempts` increment is what makes a retry observable. `firstStartedAt` (K8.3, additive)
+  preserves the FIRST attempt's logged start across re-runs — step deadlines (`timeoutMs`)
+  anchor to it, so crash recovery never resets a step's clock.
 - Handler: `eventHandlers.ts:32`.
 
 #### `STEP_COMPLETED`

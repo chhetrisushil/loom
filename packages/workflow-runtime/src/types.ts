@@ -69,6 +69,33 @@ export interface RunOptions {
    * cannot write. Omit (or run against a non-fencing store) for today's behavior.
    */
   fence?: number;
+  /**
+   * K8.3 — wall-clock deadline for this run, anchored to the LOGGED
+   * `EXECUTION_STARTED` timestamp — so recovery/resume never resets the clock,
+   * and resuming an execution whose deadline already passed cancels it
+   * immediately. Breach = kernel-driven `cancel()` (durable
+   * `EXECUTION_CANCELLED`). Overrides the flow's declarative
+   * `flow$({ deadlineMs })`. Enforced while a process actively runs the
+   * execution; durable firing across idle suspension arrives with T1's timers.
+   */
+  deadlineMs?: number;
+}
+
+/**
+ * K8.3 — a step exceeded its declared `timeoutMs`. The deadline is anchored to
+ * the step's first LOGGED `STEP_STARTED` (frame.firstStartedAt), so a
+ * crash-recovery re-run resumes the countdown instead of restarting it. Fails
+ * the step via the ordinary STEP_FAILED path.
+ */
+export class StepTimeoutError extends Error {
+  constructor(
+    readonly stepId: string,
+    readonly timeoutMs: number
+  ) {
+    super(`step "${stepId}" exceeded its deadline (timeoutMs=${timeoutMs})`);
+    this.name = "StepTimeoutError";
+    Object.setPrototypeOf(this, StepTimeoutError.prototype);
+  }
 }
 
 export interface ExecutionHandle {

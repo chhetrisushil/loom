@@ -14,6 +14,12 @@ export function createLlmEffect<TIn = string, TOut = string>(
   const parse = options.parseResponse ?? ((r: LlmResponse) => r.content as unknown as TOut);
   return new LlmEffect<TIn, TOut>(async (input: TIn, ctx: EffectContext) => {
     const request = options.buildRequest(input, ctx);
+    // K8.1 — forward the effect's cooperative-cancellation signal to the
+    // provider (unless buildRequest already set one), so a cancelled/timed-out
+    // execution severs the in-flight HTTP call instead of orphaning it.
+    if (request.signal === undefined && ctx.signal !== undefined) {
+      request.signal = ctx.signal;
+    }
     const response = await options.provider.complete(request);
     return parse(response, input);
   });
