@@ -66,6 +66,14 @@ export interface WorkerRequest {
  */
 export interface WorkerLease {
   leaseId: string;
+  /**
+   * K9.4 — the monotonic fencing token this dispatch holds (acquired from a
+   * fencing event store at allocate time). Every event the run appends carries
+   * it, so after a re-dispatch acquires a newer token, this lease's holder can
+   * no longer write — a partitioned "zombie" worker is fenced out at the store.
+   * Absent on non-fencing stores (e.g. single-node SQLite): correlation only.
+   */
+  fence?: number;
   metadata?: Record<string, unknown>;
 }
 

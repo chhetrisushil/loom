@@ -30,15 +30,19 @@ export class LocalWorkerRuntime implements WorkerRuntime {
 
   async allocate(request: WorkerRequest): Promise<WorkerLease> {
     // In-process capacity is unbounded here (the scheduler/dispatcher already
-    // owns concurrency limits), so a lease is just a correlation token.
+    // owns concurrency limits), so a lease is a correlation token — plus, on a
+    // fencing store (K9.4), the monotonic token that makes this dispatch the
+    // execution's sole legitimate writer until someone allocates a newer one.
+    const fence = await this.runtime.acquireFence(request.executionId);
     return {
       leaseId: `local-${request.executionId}-${++this.leaseCounter}`,
+      ...(fence !== undefined && { fence }),
       ...(request.metadata !== undefined && { metadata: request.metadata }),
     };
   }
 
-  async execute(_lease: WorkerLease, pkg: ExecutionPackage): Promise<ExecutionResult> {
-    const handle = await this.resolveHandle(pkg);
+  async execute(lease: WorkerLease, pkg: ExecutionPackage): Promise<ExecutionResult> {
+    const handle = await this.resolveHandle(pkg, lease.fence);
     // A recovery of an already-terminal/suspended execution short-circuits to the
     // folded state (no handle, no re-run) — see resolveHandle.
     if (handle === null) {
@@ -69,19 +73,21 @@ export class LocalWorkerRuntime implements WorkerRuntime {
    *    the caller to return the folded state untouched (a redispatched "lost
    *    response" must not re-run or restart).
    */
-  private async resolveHandle(pkg: ExecutionPackage) {
+  private async resolveHandle(pkg: ExecutionPackage, fence?: number) {
+    const runOpts = fence !== undefined ? { fence } : undefined;
     if (pkg.resumeEvent) {
-      return this.runtime.resume(pkg.executionId, pkg.resumeEvent);
+      return this.runtime.resume(pkg.executionId, pkg.resumeEvent, runOpts);
     }
     const existing = await this.runtime.loadState(pkg.executionId);
     if (!existing) {
-      return this.startFresh(pkg);
+      return this.startFresh(pkg, runOpts);
     }
     if (existing.status === "running" || existing.status === "pending") {
-      return this.runtime.resume(pkg.executionId, {
-        eventType: "EXECUTION_RECOVERED",
-        payload: {},
-      });
+      return this.runtime.resume(
+        pkg.executionId,
+        { eventType: "EXECUTION_RECOVERED", payload: {} },
+        runOpts
+      );
     }
     return null;
   }
@@ -90,12 +96,12 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     // No-op: nothing to reclaim in-process.
   }
 
-  private async startFresh(pkg: ExecutionPackage) {
+  private async startFresh(pkg: ExecutionPackage, runOpts?: { fence?: number }) {
     const flow = this.runtime.getFlow(pkg.flowId);
     if (!flow) {
       throw new Error(`No flow registered for flowId: "${pkg.flowId}"`);
     }
-    return this.runtime.start(flow, pkg.input, { executionId: pkg.executionId });
+    return this.runtime.start(flow, pkg.input, { executionId: pkg.executionId, ...runOpts });
   }
 }
 

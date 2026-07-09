@@ -30,6 +30,19 @@ export interface EventStore {
   ): Promise<EventEnvelope[]>;
   subscribe(executionId: string, handler: (event: EventEnvelope) => void): Promise<() => void>;
   /**
+   * OPTIONAL fencing (K9.4). Atomically increment and return the execution's
+   * monotonic fencing token (first call → 1). A dispatcher/worker acquires a
+   * fence per dispatch; every envelope the run appends carries it in
+   * `metadata.fence`. Once an execution has a fence, a store that implements
+   * fencing MUST reject appends whose token is missing or lower than the
+   * current one (throw {@link StaleFenceError}) — a re-dispatched execution's
+   * zombie predecessor can no longer write. Executions that never acquire a
+   * fence are entirely unaffected (zero overhead, G2); a store that omits this
+   * method performs no fencing (e.g. single-node SQLite, where the process is
+   * the failure domain).
+   */
+  acquireFence?(executionId: string): Promise<number>;
+  /**
    * OPTIONAL bulk copy of the prefix `[0..throughSequence]` of one execution's log
    * into another `executionId`, re-stamping `id` + `executionId` and merging
    * `metadata` into each copied event — WITHOUT round-tripping payloads through JS
