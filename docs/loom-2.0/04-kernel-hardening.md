@@ -357,3 +357,35 @@ None of these would be trustworthy without the durable core beneath them. **[P2 
 And every ring honours **[P10 — minimal kernel, advisory plane](../architecture.md#p10--minimal-kernel-intelligence-lives-in-an-advisory-plane-loom-20)**: each is opt-in, and each is byte-identical to Loom 1.x when unwired. No authorizer ⇒ permissive; no metering middleware ⇒ no accounting; no supervising dispatcher ⇒ plain dispatch; no safety middleware ⇒ no validation. You turn on exactly the rings your platform needs and pay for nothing else. That combination — a small, deterministic, boring core plus opt-in enforcement rings and an advisory plane for intelligence — is what makes Loom an **execution kernel a platform can be built on**, not merely a framework you call.
 
 > **Start here:** for the Loom 2.0 story end-to-end, see the **[00 — Overview](00-overview.md)**. For the durable spine these rings sit on, see the **[Architecture reference](../architecture.md)**.
+
+---
+
+## 9. What's next — K7–K12, T1–T2 (proposed)
+
+K1–K6 are implemented. The next hardening series is recorded as a requirements proposal —
+**[Kernel-Hardening Requirements K7–K12, T1–T2](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md)** —
+critically evaluated against the codebase and the four non-negotiables (kernel genericity,
+DX-first, performance ROI, real security) in the
+**[evaluation & amendments](../requirements/2026-07-10-kernel-hardening-evaluation.md)**
+(verdict: all eight **accepted with amendments**), with one proposal ADR per item carrying
+its amendments:
+
+| Item | Closes | ADR | Priority |
+|---|---|---|---|
+| **K7** | Data-plane isolation & egress control (the gap ADR 0017 deferred) | [0019](../adr/0019-k7-data-plane-isolation-and-egress-control.md) | P1 |
+| **K8** | Cancellation, deadlines & bounded effects (a kill path for in-flight work) | [0020](../adr/0020-k8-cancellation-deadlines-bounded-effects.md) | P0 |
+| **K9** | Effect delivery contract: idempotency keys, in-doubt parking, fencing tokens | [0021](../adr/0021-k9-effect-delivery-contract-idempotency-fencing.md) | P0 |
+| **K10** | Log lifecycle: retention, crypto-shredding, redaction, compaction | [0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md) | P2 |
+| **K11** | Flow-code versioning for in-flight executions (pin / migrate, never silent) | [0023](../adr/0023-k11-flow-code-versioning-in-flight-executions.md) | P1 |
+| **K12** | Identity, tenancy & delegated authority | [0024](../adr/0024-k12-identity-tenancy-delegated-authority.md) | P2 |
+| **T1** | Durable timers & scheduled executions (kernel service) | [0025](../adr/0025-t1-durable-timers-and-scheduled-executions.md) | P1 |
+| **T2** | Wire-level kernel ABI (language neutrality) | [0026](../adr/0026-t2-wire-level-kernel-abi.md) | P3 |
+
+Every item inherits **G1** (preserve P2/P9) and **G2** (additive, opt-in per P10 — unwired
+means byte-identical), and its definition of done includes pinned conformance tests,
+zero-overhead benchmarks when unwired, and fold-reference updates for each new durable fact:
+`EGRESS_DENIED` (K7), `EFFECT_INDOUBT` (K9), `PAYLOAD_SHREDDED` (K10), `EXECUTION_MIGRATED`
+(K11), `APPROVAL_GRANTED` (K12), `TIMER_FIRED` (T1). (This list is the
+[corrected one](../requirements/2026-07-10-kernel-hardening-evaluation.md#corrected-new-facts-list-replaces-the-requirements-dod-list):
+`EXECUTION_CANCELLED` is *not* new — it is already pinned in schema 1.2.0; K8 adds
+producers, not the type.)

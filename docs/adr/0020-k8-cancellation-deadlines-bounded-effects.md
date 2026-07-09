@@ -1,0 +1,84 @@
+# ADR 0020 — K8: cancellation, deadlines & bounded effects
+
+- Status: Proposed (amended 2026-07-10 — see [Amendments](#amendments-code-grounded-evaluation-2026-07-10))
+- Date: 2026-07-10
+- Requirements: [K8 in the kernel-hardening requirements](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md#k8--cancellation-deadlines--bounded-effects) — priority **P0**
+
+## Context
+
+Every existing enforcement point is admission control: the scheduler gates *entry*, K3
+budgets deny the *next* effect, K4 circuit-breaks a *target* for future dispatches.
+**Correction to the requirement's premise** (code-grounded evaluation): a local kill path
+partially exists — `ExecutionHandle.cancel(reason)` emits `EXECUTION_CANCELLED`
+(`WorkflowRuntime.ts:464-472`), `STEP_CANCELLED` is emitted when the abort signal trips, and
+`EffectContext` already carries `signal?: AbortSignal`. What is actually missing: built-in
+effects do not forward the signal to providers (provider interfaces accept none),
+cancellation is not addressable by `executionId` across processes, declared deadlines
+(`step$` already has a `timeoutMs` field) are not enforced, budgets have no mid-flight hook,
+and cancellation does not propagate across the dispatch seam. A kernel must be able to
+reclaim a running process wherever it runs; autonomy without a complete kill path is not
+deployable.
+
+## Decision
+
+Give the kernel a real kill path, end to end:
+
+- Every effect invocation carries an `AbortSignal` (or equivalent) through `EffectContext`;
+  the built-in effects (`LlmEffect`, `ToolEffect`, `A2AEffect`) honor it (K8.1).
+- `ExecutionRuntime.cancel(executionId, reason)` aborts the in-flight effect, appends a
+  durable `EXECUTION_CANCELLED` fact, and transitions the PCB to a terminal `cancelled`
+  status; replay of a cancelled run reconstructs the cancellation at the same sequence,
+  preserving G1 (K8.2).
+- Declarative deadlines (`ExecutionPolicy.deadlineMs`, per-step `timeoutMs`) are enforced
+  *by the kernel* via the same abort/cancel machinery, not by convention in userland (K8.3).
+- K3 gains a mid-flight enforcement hook: a streaming LLM effect that crosses its token
+  budget is aborted mid-stream with a `QUOTA_EXCEEDED` fact, not merely denied its successor
+  (K8.4).
+- Cancellation propagates across the dispatch seam: cancelling on the orchestrator cancels
+  the effect on a remote `WorkerRuntime` — best-effort delivery, durable-fact settlement
+  (K8.5).
+
+## Acceptance criteria
+
+A test effect that sleeps 10 min is cancelled in <1 s locally and across an HTTP worker; the
+log shows `EXECUTION_CANCELLED`; replay reproduces the cancelled state bit-for-bit; an
+over-budget streaming call is severed mid-stream with a `QUOTA_EXCEEDED` fact.
+
+## Consequences
+
+- The kernel can reclaim running work — the prerequisite for deploying autonomous executions
+  at all, and a prerequisite for K3's mid-flight budget enforcement.
+- `EffectContext` grows an abort surface; existing effects must be audited for signal
+  handling. Unwired (no cancel called, no deadline set), behavior is byte-identical (G2).
+- Sequenced **P0** together with K9 ([ADR 0021](0021-k9-effect-delivery-contract-idempotency-fencing.md)):
+  cancellation creates exactly the "effect in unknown state" cases K9's in-doubt semantics
+  resolve.
+
+## Amendments (code-grounded evaluation, 2026-07-10)
+
+Adopted per the [K8 evaluation](../requirements/2026-07-10-kernel-hardening-evaluation.md#k8--cancellation-deadlines--bounded-effects--accept-with-amendments)
+(verdict: **Accept with amendments**):
+
+- **A1 — scope corrected** (applied in Context above): K8 *completes* an existing seam —
+  provider signal forwarding (additive optional `{ signal }` argument), cross-process
+  `cancel(executionId)`, kernel-enforced deadlines, mid-flight budget, cross-seam
+  propagation.
+- **A2 — metering on abort (closes a K3 loophole)**: metering emits after `next()`, so an
+  aborted effect is never metered — start-expensive-call → cancel → repeat evades budgets
+  forever. On abort/deadline the kernel meters partial or estimated cost (at minimum
+  wall-time) before rethrowing.
+- **A3 — retry × abort**: the retry middleware treats abort as terminally non-retryable and
+  checks `signal.aborted` before re-attempts and during backoff — else an app-configured
+  `isRetryable` makes cancel a no-op.
+- **A4 — deadline base time**: remaining time after recovery is computed from the *logged*
+  `STEP_STARTED` timestamp, never wall clock at re-run (else every crash resets the
+  deadline).
+- **A5 — K8.4 is conditional**: no streaming effects exist today; mid-stream budget
+  enforcement binds when they land and cannot be middleware (middleware can't observe
+  stream progress) — it needs a usage-reporter hook on `EffectContext` or the provider
+  stream adapter.
+- **A6 — ordering**: K8.5 lands after K9.4 — fence the lease, *then* append
+  `EXECUTION_CANCELLED`, or a zombie's late `STEP_COMPLETED` races the cancel fact.
+- **A7 — settlement truth**: provider forwarding is best-effort; the kernel guarantee is
+  durable-fact settlement. The "<1 s" acceptance criterion binds for built-in effects, not
+  arbitrary third-party providers that ignore the signal.
