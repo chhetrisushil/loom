@@ -74,6 +74,7 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._resources` | `RESOURCE_METERED` / `QUOTA_EXCEEDED` | `{ tokens, costUsd, ms, count, exceeded? }` |
 | `variables._safety` | `SAFETY_BLOCKED` | `Array<{ validatorId, stepId?, phase?, reason?, category? }>` |
 | `variables._outcomes` | `OUTCOME_RECORDED` | `Array<{ key, success?, score?, decisionId? }>` |
+| `variables._indoubt` | `EFFECT_INDOUBT` | `Array<{ stepId, toolId?, attempts?, idempotencyKey? }>` |
 
 ---
 
@@ -270,6 +271,23 @@ triggers downstream).
   `rankFromOutcomes(events)` into a ranking fed to `rankedRouter` (@loom/reasoning), closing the
   loop while every future route stays a logged `DECISION_RECORDED`.
 
+#### `EFFECT_INDOUBT`
+- **Introduced:** Loom 2.1 — K9, the effect delivery contract ([ADR 0021](../adr/0021-k9-effect-delivery-contract-idempotency-fencing.md)).
+  Recovery found a tool declared `idempotent: false` whose prior attempt is in an **unknown
+  state** (a `STEP_STARTED` with no terminal step event — the process died between the effect
+  and its completion append) and refused to silently re-run it; the execution parks for an
+  operator verdict.
+- **Emitted by:** `ctx.execute`'s in-doubt guard on recovery (`WorkflowContext.ts`); the
+  `EXECUTION_SUSPENDED { condition: { on: "EffectInDoubtResolved", correlationKey: stepId } }`
+  that follows owns the status change. Resolution is a standard
+  `resume(executionId, { eventType: "EffectInDoubtResolved", payload })` with an
+  `EffectInDoubtResolution` payload (`completed-with-result` / `retry-fresh` / `fail`).
+- **Payload:** `{ stepId: string; toolId?: string; attempts?: number; idempotencyKey?: string }`
+- **Folds into:** appends to `variables._indoubt`. **Pure audit** — the per-step entry count is
+  also the durable **key epoch**: after a `retry-fresh` verdict the re-run carries a fresh
+  idempotency key (`executionId:stepId:rN`), so the provider sees a deliberate new logical
+  attempt, never an accidental replay.
+
 ---
 
 ## 3. Execution status transitions
@@ -358,7 +376,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts:311`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.2.0"; // 1.1.0 added SAFETY_BLOCKED (K6); 1.2.0 added OUTCOME_RECORDED
+export const EVENT_SCHEMA_VERSION = "1.3.0"; // 1.1.0 added SAFETY_BLOCKED (K6); 1.2.0 added OUTCOME_RECORDED; 1.3.0 added EFFECT_INDOUBT (K9)
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
@@ -374,14 +392,14 @@ export function knownEventTypes(): string[] {
   that must be deliberate. A conformance test pins `knownEventTypes()` so the set cannot drift
   silently.
 
-The complete pinned set (the 19 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
+The complete pinned set (the 20 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
 returns them):
 
-`DECISION_RECORDED`, `EFFECT_DENIED`, `EXECUTION_CANCELLED`, `EXECUTION_COMPLETED`,
-`EXECUTION_FAILED`, `EXECUTION_RESUMED`, `EXECUTION_STARTED`, `EXECUTION_SUSPENDED`,
-`OUTCOME_RECORDED`, `PARALLEL_COMPLETED`, `PARALLEL_STARTED`, `QUOTA_EXCEEDED`, `RESOURCE_METERED`,
-`SAFETY_BLOCKED`, `STEP_CANCELLED`, `STEP_COMPLETED`, `STEP_FAILED`, `STEP_RETRYING`,
-`STEP_STARTED`.
+`DECISION_RECORDED`, `EFFECT_DENIED`, `EFFECT_INDOUBT`, `EXECUTION_CANCELLED`,
+`EXECUTION_COMPLETED`, `EXECUTION_FAILED`, `EXECUTION_RESUMED`, `EXECUTION_STARTED`,
+`EXECUTION_SUSPENDED`, `OUTCOME_RECORDED`, `PARALLEL_COMPLETED`, `PARALLEL_STARTED`,
+`QUOTA_EXCEEDED`, `RESOURCE_METERED`, `SAFETY_BLOCKED`, `STEP_CANCELLED`, `STEP_COMPLETED`,
+`STEP_FAILED`, `STEP_RETRYING`, `STEP_STARTED`.
 
 This mirrors the kernel-ABI guarantee (K1): just as `KERNEL_SYSCALLS` pins the syscall surface,
 `knownEventTypes()` pins the on-disk event surface — same additive-MINOR / breaking-MAJOR

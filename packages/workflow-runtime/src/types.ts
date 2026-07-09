@@ -89,6 +89,35 @@ export interface ResumeEvent {
   payload: unknown;
 }
 
+// ── K9 — effect delivery: in-doubt parking & operator resolution ─────────────
+//
+// Effects are at-least-once: a crash between an effect and its STEP_COMPLETED
+// append re-runs the effect on recovery. For a tool declared `idempotent: false`
+// recovery refuses the silent re-run — it records EFFECT_INDOUBT and suspends
+// with `on: EFFECT_INDOUBT_RESOLVED`. An operator settles it with a standard
+// resume carrying an {@link EffectInDoubtResolution} payload.
+
+/** The resume eventType that resolves an EFFECT_INDOUBT parking. */
+export const EFFECT_INDOUBT_RESOLVED = "EffectInDoubtResolved";
+
+/**
+ * Operator verdict for a parked, in-doubt effect — the payload of a
+ * `resume(executionId, { eventType: EFFECT_INDOUBT_RESOLVED, payload })` call.
+ *
+ * - `"completed-with-result"` — the prior attempt's side effect DID happen;
+ *   adopt `output` as the step result without re-running the tool.
+ * - `"retry-fresh"` — the prior attempt did NOT happen (or was compensated);
+ *   re-run the tool as a new logical attempt with a fresh idempotency key.
+ * - `"fail"` — settle the step (and execution) as failed with `error`.
+ */
+export interface EffectInDoubtResolution {
+  /** Must match the parked step id (recorded in the EFFECT_INDOUBT fact). */
+  stepId: string;
+  resolution: "completed-with-result" | "retry-fresh" | "fail";
+  output?: unknown;
+  error?: unknown;
+}
+
 export interface ForkOptions {
   /** Optional branch name to register a movable ref for the new branch. */
   branchName?: string;

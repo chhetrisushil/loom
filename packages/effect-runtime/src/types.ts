@@ -36,6 +36,16 @@ export interface EffectContext {
    */
   readonly resources?: ResourceSnapshot;
   /**
+   * K9.2 — deterministic idempotency key for this effect invocation:
+   * `executionId:stepId` (no attempt component — the folded attempt counter
+   * advances on crash-recovery re-execution, which is exactly when the key must
+   * stay stable). Recovery re-runs of the same logical attempt therefore carry
+   * the SAME key, so tool authors can deduplicate at the provider. A fresh key
+   * (`executionId:stepId:rN`) is minted only by a durable new-logical-attempt
+   * fact — an EFFECT_INDOUBT "retry-fresh" verdict.
+   */
+  readonly idempotencyKey?: string;
+  /**
    * Scheduling priority for this effect (M6), used when the EffectRuntime routes
    * effects through a Scheduler with a finite concurrency cap. A `@loom/scheduler`
    * Priority value (0 = Immediate … 3 = Idle). Undefined ⇒ Normal.
@@ -55,6 +65,15 @@ export interface Warmer {
 
 export interface Effect<TIn = unknown, TOut = unknown> {
   kind: EffectKind;
+  /**
+   * K9.3 — the effect's declared delivery semantic. `false` marks a mutating,
+   * non-idempotent effect: recovery refuses to silently re-run an attempt in an
+   * unknown state (it parks the execution at EFFECT_INDOUBT for an operator
+   * verdict). `true` asserts re-runs are safe (dedupe at the provider via
+   * `EffectContext.idempotencyKey`). Undeclared (`undefined`) keeps the legacy
+   * at-least-once re-run — existing effects behave byte-identically (G2).
+   */
+  readonly idempotent?: boolean;
   execute(input: TIn, ctx: EffectContext): Promise<TOut>;
 }
 

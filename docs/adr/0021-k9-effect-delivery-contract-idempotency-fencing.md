@@ -1,6 +1,8 @@
 # ADR 0021 — K9: effect delivery contract — idempotency & fencing
 
-- Status: Proposed (amended 2026-07-10 — see [Amendments](#amendments-code-grounded-evaluation-2026-07-10))
+- Status: Accepted (partially implemented 2026-07-10 — K9.1 contract, K9.2 `idempotencyKey`,
+  K9.3 `idempotent` declaration + `EFFECT_INDOUBT` parking/resolution, K9.5 `crashingEventStore`
+  harness; event schema 1.3.0. **K9.4 fencing tokens pending.** Amendments below applied.)
 - Date: 2026-07-10
 - Requirements: [K9 in the kernel-hardening requirements](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md#k9--effect-delivery-contract-idempotency--fencing) — priority **P0**
 

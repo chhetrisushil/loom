@@ -2036,6 +2036,9 @@ importers:
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../effect-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../snapshot-runtime
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

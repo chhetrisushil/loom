@@ -59,6 +59,16 @@ export interface ToolDefinition<TIn = unknown, TOut = unknown> {
   kind: EffectKind;
   inputSchema: ZodSchema<TIn>;
   outputSchema: ZodSchema<TOut>;
+  /**
+   * K9 — the tool's declared delivery semantic. Effects are at-least-once (a
+   * crash between the effect and its STEP_COMPLETED append re-runs it on
+   * recovery). `idempotent: true` asserts a re-run is safe (dedupe at the
+   * provider with `EffectContext.idempotencyKey`). `idempotent: false` marks a
+   * mutating, non-idempotent tool: recovery refuses to silently re-run an
+   * attempt in an unknown state and parks the execution at EFFECT_INDOUBT for
+   * an operator verdict. Undeclared keeps the legacy at-least-once re-run.
+   */
+  idempotent?: boolean;
 }
 
 export interface StepDefinition<TIn = unknown, TOut = unknown> {

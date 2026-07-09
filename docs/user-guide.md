@@ -541,7 +541,7 @@ const context = await mem.recall("semantic", scope, { limit: 10, decide: ctx.dec
 
 ## 17. Kernel: grants, quotas & supervision
 
-*(Loom 2.0 kernel-hardening — K2 / K3 / K4.)* All opt-in; omit them and behavior is unchanged.
+*(Loom 2.0 kernel-hardening — K2 / K3 / K4 / K9.)* All opt-in; omit them and behavior is unchanged.
 
 ### Capability grants (protection ring, K2)
 
@@ -584,7 +584,47 @@ const dispatcher = new SupervisingDispatcher(childDispatcher, {
 });
 ```
 
-Full treatment: [`loom-2.0/04-kernel-hardening.md`](loom-2.0/04-kernel-hardening.md).
+### Effect delivery: at-least-once & idempotency (K9)
+
+**The contract:** *effects are at-least-once; steps are exactly-once only with respect to the
+log.* If a worker crashes after performing a side effect but before its `STEP_COMPLETED`
+reaches the log, recovery re-executes the in-flight step — completed steps never re-run, but
+the one in-flight effect can. (Metered `RESOURCE_METERED` facts are at-least-once too: budgets
+may over-count after a crash — they never under-count.)
+
+Two opt-in tools manage this window:
+
+**1. Idempotency key (K9.2).** Every effect invocation receives a deterministic
+`ctx.idempotencyKey` — `executionId:stepId` — that is **stable across crash-recovery re-runs
+of the same logical attempt**. Pass it to your provider so a re-run deduplicates:
+
+```ts
+const charge = new ToolEffect(async (input, ctx) => {
+  return stripe.charges.create({ amount: input.amountUsd }, { idempotencyKey: ctx.idempotencyKey });
+});
+```
+
+**2. In-doubt parking (K9.3).** A mutating tool that **cannot** be made idempotent declares
+it, and recovery refuses to silently re-run an attempt in an unknown state — it records a
+durable `EFFECT_INDOUBT` fact and suspends for an operator verdict:
+
+```ts
+const wireTransfer = new ToolEffect(sendWire, { idempotent: false }); // park, never silently re-run
+// (declare the same on the definition: tool$({ id: "wire", …, idempotent: false }))
+
+// The execution suspends with { on: "EffectInDoubtResolved", correlationKey: stepId }.
+// An operator checks the provider, then settles it with a standard resume:
+await runtime.resume(executionId, {
+  eventType: EFFECT_INDOUBT_RESOLVED, // from @loom/workflow-runtime
+  payload: { stepId: "wire", resolution: "completed-with-result", output: { txId: "…" } },
+  // or { stepId: "wire", resolution: "retry-fresh" }   → re-run as a NEW logical attempt (fresh key `…:r1`)
+  // or { stepId: "wire", resolution: "fail", error: "…" } → settle the step as failed
+});
+```
+
+Undeclared tools keep the legacy automatic re-run byte-identically. Prove your tools' semantics
+in CI with the crash-injection harness — `crashingEventStore` in `@loom/testing` kills the
+execution exactly between the effect and its completion append.
 
 ---
 
