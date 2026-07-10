@@ -79,6 +79,41 @@ export interface RunOptions {
    * execution; durable firing across idle suspension arrives with T1's timers.
    */
   deadlineMs?: number;
+  /**
+   * K11.1 — explicit operator acknowledgement to resume across a flow-code
+   * mismatch (the recorded `flowHash` differs from the registered flow's).
+   * The refusal is never silent and never silently overridden: this is the
+   * primitive "operator-ack" escape hatch until K11.3's `resumeAs` migration
+   * verdict API lands. Prefer pinning the original flow code instead.
+   */
+  allowFlowCodeMismatch?: boolean;
+}
+
+/**
+ * K11.1 — an in-flight execution's log was recorded under different flow code
+ * than what is registered now (a deploy changed the flow's fold-relevant
+ * structure while the execution was suspended/running). Resuming would fold
+ * the log with code that never wrote it, so the kernel refuses rather than
+ * proceeding silently.
+ */
+export class FlowCodeMismatchError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly workflowId: string,
+    readonly recordedHash: string,
+    readonly registeredHash: string
+  ) {
+    super(
+      `flow code changed under in-flight execution "${executionId}" (flow "${workflowId}"): ` +
+        `log was recorded under ${recordedHash}, registered code is ${registeredHash}. ` +
+        `Exits: (1) PIN — deploy/register the original flow code and resume on it; ` +
+        `(2) MIGRATE — resume with { allowFlowCodeMismatch: true } after verifying ` +
+        `fold-compatibility (loom deploy check / @loom/deploy-sim); ` +
+        `(3) DRAIN — cancel() the execution and restart it on the new code.`
+    );
+    this.name = "FlowCodeMismatchError";
+    Object.setPrototypeOf(this, FlowCodeMismatchError.prototype);
+  }
 }
 
 /**

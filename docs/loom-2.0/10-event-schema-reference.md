@@ -75,6 +75,7 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._safety` | `SAFETY_BLOCKED` | `Array<{ validatorId, stepId?, phase?, reason?, category? }>` |
 | `variables._outcomes` | `OUTCOME_RECORDED` | `Array<{ key, success?, score?, decisionId? }>` |
 | `variables._indoubt` | `EFFECT_INDOUBT` | `Array<{ stepId, toolId?, attempts?, idempotencyKey? }>` |
+| `variables._flowHash` | `EXECUTION_STARTED` | the flow-code content hash this execution started under (K11.1) |
 
 ---
 
@@ -87,11 +88,16 @@ capability/authority, K3 = resource metering, P9 = the Decision seam).
 ### 2.1 Execution-lifecycle events
 
 #### `EXECUTION_STARTED`
-- **Introduced:** 1.x core.
+- **Introduced:** 1.x core; `flowHash` payload field added in 1.4.0 (K11.1, additive — folds
+  treat absence as legacy, per the K5 payload-extension rule).
 - **Emitted by:** `WorkflowRuntime.start()` as the sequence-0 bootstrap event (`WorkflowRuntime.ts:148`).
-- **Payload:** `{ input?: unknown }`
+- **Payload:** `{ input?: unknown; flowHash?: string }`
 - **Folds into:** `status → "running"`; `startedAt = event.timestamp`; if `input` is present,
-  `variables._input = input`.
+  `variables._input = input`; if `flowHash` is present, `variables._flowHash = flowHash` —
+  the content hash of the flow code this execution started under (`flowContentHash`,
+  @loom/core). Resume/recovery compares it against the registered flow and refuses a
+  mismatch (`FlowCodeMismatchError`) instead of silently folding the log with changed code;
+  logs without a recorded hash resume unchecked (G2).
 - Handler: `eventHandlers.ts:19`.
 
 #### `EXECUTION_COMPLETED`
@@ -378,7 +384,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts:311`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.3.0"; // 1.1.0 added SAFETY_BLOCKED (K6); 1.2.0 added OUTCOME_RECORDED; 1.3.0 added EFFECT_INDOUBT (K9)
+export const EVENT_SCHEMA_VERSION = "1.4.0"; // 1.1.0 added SAFETY_BLOCKED (K6); 1.2.0 added OUTCOME_RECORDED; 1.3.0 added EFFECT_INDOUBT (K9); 1.4.0 added EXECUTION_STARTED.flowHash (K11.1)
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

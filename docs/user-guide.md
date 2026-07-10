@@ -541,7 +541,7 @@ const context = await mem.recall("semantic", scope, { limit: 10, decide: ctx.dec
 
 ## 17. Kernel: grants, quotas & supervision
 
-*(Loom 2.0 kernel-hardening — K2 / K3 / K4 / K8 / K9.)* All opt-in; omit them and behavior is unchanged.
+*(Loom 2.0 kernel-hardening — K2 / K3 / K4 / K8 / K9 / K11.)* All opt-in; omit them and behavior is unchanged.
 
 ### Capability grants (protection ring, K2)
 
@@ -662,6 +662,25 @@ await runtime.resume(executionId, {
 Undeclared tools keep the legacy automatic re-run byte-identically. Prove your tools' semantics
 in CI with the crash-injection harness — `crashingEventStore` in `@loom/testing` kills the
 execution exactly between the effect and its completion append.
+
+### Flow-code versioning (K11.1)
+
+Long-lived executions outlive deploys. Every execution records the **content hash** of the
+flow code it started under (`flowContentHash` — the fold-relevant structure: step graph,
+effect bindings, durable policies; cosmetic renames and rebuilds don't change it). On
+resume — **and on crash-recovery, which needs no operator action** — the kernel compares the
+recorded hash against the registered flow and refuses a mismatch loudly:
+
+```text
+FlowCodeMismatchError: flow code changed under in-flight execution "…":
+Exits: (1) PIN — deploy/register the original flow code and resume on it;
+       (2) MIGRATE — resume with { allowFlowCodeMismatch: true } after verifying
+           fold-compatibility (loom deploy check / @loom/deploy-sim);
+       (3) DRAIN — cancel() the execution and restart it on the new code.
+```
+
+Logs that predate hashing resume exactly as before (G2). The version-aware registry
+(pinned resumption) and the `resumeAs` replay-check migration API are the K11 follow-ups.
 
 **3. Fencing tokens (K9.4).** On a multi-node store, a re-dispatched execution must be safe
 from its *zombie* predecessor — a partitioned worker that wakes up and writes after the

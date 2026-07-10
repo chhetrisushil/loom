@@ -1,4 +1,4 @@
-import { SuspendError } from "@loom/core";
+import { SuspendError, flowContentHash } from "@loom/core";
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import { LazyEffect } from "@loom/effect-runtime";
 import type { Effect, EffectRuntime } from "@loom/effect-runtime";
@@ -12,6 +12,7 @@ import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { WorkflowContextImpl } from "./WorkflowContext";
+import { FlowCodeMismatchError } from "./types";
 import type {
   ExecutionHandle,
   FlowRunner,
@@ -64,6 +65,8 @@ export class WorkflowRuntime {
   private readonly onStorageError: ((executionId: string, err: unknown) => void) | undefined;
   private readonly snapshotEvery: number | undefined;
   private readonly flows = new Map<string, RegisteredFlow>();
+  // K11.1 — content hash of each registered flow's fold-relevant structure.
+  private readonly flowHashes = new Map<string, string>();
   // K8.2 — live executions this runtime instance is currently driving, so
   // cancel() can reach an in-flight run by id. Entries are removed when the run
   // settles (completes / suspends / fails / cancels).
@@ -88,6 +91,9 @@ export class WorkflowRuntime {
     runner: FlowRunner<TIn, TOut>
   ): void {
     this.flows.set(definition.id, { definition, runner } as RegisteredFlow);
+    // K11.1 — fingerprint the flow's fold-relevant structure once at
+    // registration; recorded on EXECUTION_STARTED, compared on resume/recovery.
+    this.flowHashes.set(definition.id, flowContentHash(definition));
     for (const step of definition.steps) {
       const toolId = step.toolId ?? step.id;
       if (step.handler !== undefined && !this.effectRuntime.has(toolId)) {
@@ -109,6 +115,24 @@ export class WorkflowRuntime {
   /** All registered flow ids — used by tooling (e.g. boot-time flow-graph validation). */
   getFlowIds(): string[] {
     return [...this.flows.keys()];
+  }
+
+  // K11.1 — refuse to fold a log under flow code it wasn't recorded with. Only
+  // executions whose log recorded a `flowHash` are checked (legacy logs resume
+  // exactly as before, G2); `allowFlowCodeMismatch` is the explicit operator-ack.
+  private checkFlowCode(
+    executionId: string,
+    workflowId: string,
+    state: ExecutionState,
+    options: RunOptions | undefined
+  ): void {
+    if (options?.allowFlowCodeMismatch === true) return;
+    const recorded = state.variables._flowHash;
+    if (typeof recorded !== "string") return;
+    const registered = this.flowHashes.get(workflowId);
+    if (registered !== undefined && registered !== recorded) {
+      throw new FlowCodeMismatchError(executionId, workflowId, recorded, registered);
+    }
   }
 
   /**
@@ -176,6 +200,14 @@ export class WorkflowRuntime {
     if (!flow) {
       throw new Error(`No flow registered for workflowId: "${preloadedState.workflowId}"`);
     }
+    // K11.1 — the preloaded state carries the recorded flow-code fingerprint;
+    // restoring onto changed code is refused exactly like a resume.
+    this.checkFlowCode(
+      preloadedState.executionId,
+      preloadedState.workflowId,
+      preloadedState,
+      options
+    );
     const vm = new ReplayVM([], preloadedState);
     const originalInput = preloadedState.variables._input;
     return this.execute(
@@ -206,13 +238,21 @@ export class WorkflowRuntime {
       workflowVersion: definition.version,
     });
 
+    // K11.1 — record the flow-code fingerprint this execution starts under
+    // (additive payload field; legacy logs without it resume unchecked).
+    const flowHash = this.flowHashes.get(definition.id);
     return this.execute(
       executionId,
       definition.id,
       vm,
       runner as FlowRunner<unknown, unknown>,
       input,
-      [{ eventType: "EXECUTION_STARTED", payload: { input } }],
+      [
+        {
+          eventType: "EXECUTION_STARTED",
+          payload: { input, ...(flowHash !== undefined && { flowHash }) },
+        },
+      ],
       options?.fence,
       options?.deadlineMs ?? definition.deadlineMs
     );
@@ -260,6 +300,10 @@ export class WorkflowRuntime {
     if (vm.getState().status === "cancelled") {
       throw new Error(`Execution ${executionId} was cancelled; resume refused (terminal status)`);
     }
+
+    // K11.1 — never silently fold an in-flight log with flow code it wasn't
+    // recorded under. Applies only when the log recorded a hash (legacy = G2).
+    this.checkFlowCode(executionId, workflowId, vm.getState(), options);
 
     return this.execute(
       executionId,
