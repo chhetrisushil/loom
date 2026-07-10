@@ -7,7 +7,12 @@ import type { ReplayVM } from "@loom/replay-vm";
 import { parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
 import { EFFECT_INDOUBT_RESOLVED, StepTimeoutError, TIMER_FIRED } from "./types";
-import type { EffectInDoubtResolution, SuspendConfig, WorkflowContext } from "./types";
+import type {
+  EffectInDoubtResolution,
+  ResourceDimension,
+  SuspendConfig,
+  WorkflowContext,
+} from "./types";
 
 export class WorkflowContextImpl implements WorkflowContext {
   readonly executionId: string;
@@ -251,6 +256,36 @@ export class WorkflowContextImpl implements WorkflowContext {
     });
 
     return choice;
+  }
+
+  // ADR 0032 (R2) — bounded, logged budget negotiation. The grant is resolved through
+  // the decision seam, so it is recorded once and served identically on replay (P9). It
+  // is advisory: it hands the flow a durable number, but never enforces (metering owns
+  // QUOTA_EXCEEDED). `grant = min(request, ceiling − spent)` when a ceiling is given.
+  negotiateBudget(
+    dimension: ResourceDimension,
+    request: number,
+    opts?: { id?: string; ceiling?: number; rationale?: unknown }
+  ): Promise<number> {
+    const id = opts?.id ?? `negotiate:${dimension}`;
+    return this.decide<number>(
+      id,
+      () => {
+        const spent = this.currentResource(dimension);
+        const remaining = opts?.ceiling !== undefined ? Math.max(0, opts.ceiling - spent) : request;
+        return Math.min(request, remaining);
+      },
+      {
+        source: "negotiate",
+        ...(opts?.rationale !== undefined && { rationale: opts.rationale }),
+      }
+    );
+  }
+
+  /** Current spend for a dimension, read from the deterministic `_resources` fold (0 if unset). */
+  private currentResource(dimension: ResourceDimension): number {
+    const r = this.vm.getState().variables._resources as Record<string, number> | undefined;
+    return r?.[dimension] ?? 0;
   }
 
   async parallel<TResults extends unknown[]>(

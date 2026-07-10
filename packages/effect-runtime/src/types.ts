@@ -14,6 +14,10 @@ export interface ResourceSnapshot {
   costUsd: number;
   ms: number;
   count: number;
+  // ADR 0032 (R1) — additional dimensions; present only once something meters them.
+  memBytes?: number;
+  wallMs?: number;
+  netBytes?: number;
   /** Set once a quota has been exceeded. */
   exceeded?: boolean;
 }

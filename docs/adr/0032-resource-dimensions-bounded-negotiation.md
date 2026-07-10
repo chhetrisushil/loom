@@ -1,6 +1,6 @@
 # ADR 0032 — Resource dimensions + bounded negotiation
 
-- Status: Proposed (2026-07-10) — accepted item #5 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md)
+- Status: Accepted (2026-07-10) — accepted item #5 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: R1 memBytes/wallMs/netBytes on `ResourceDelta`/`Budget`/`ResourceSnapshot` + fold (EVENT_SCHEMA_VERSION 1.10.0 → 1.11.0, byte-identical when unused) + `nestedBudget`; R2 `ctx.negotiateBudget(dimension, request, opts?)` via the decision seam. "Energy budget" dropped.
 - Date: 2026-07-10
 - Builds on: [ADR 0016](0016-loom-2.0-execution-runtime-and-decision-seam.md) (K3 metering), `@loom/middleware` (`meteringMiddleware`, `nestedBudget`), M2 decision seam
 

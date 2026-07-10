@@ -16,6 +16,10 @@ import { type Budget, type Pricing, QuotaExceededError, type ResourceDelta } fro
 export interface ScopeSpend {
   tokens: number;
   costUsd: number;
+  // ADR 0032 (R1) — additional dimensions, accumulated additively across a scope.
+  memBytes?: number;
+  wallMs?: number;
+  netBytes?: number;
 }
 
 /**
@@ -30,9 +34,15 @@ export class BudgetLedger {
 
   add(scopeKey: string, delta: ResourceDelta): void {
     const cur = this.spend.get(scopeKey) ?? { tokens: 0, costUsd: 0 };
+    const memBytes = (cur.memBytes ?? 0) + (delta.memBytes ?? 0);
+    const wallMs = (cur.wallMs ?? 0) + (delta.wallMs ?? 0);
+    const netBytes = (cur.netBytes ?? 0) + (delta.netBytes ?? 0);
     this.spend.set(scopeKey, {
       tokens: cur.tokens + (delta.tokens ?? 0),
       costUsd: cur.costUsd + (delta.costUsd ?? 0),
+      ...(memBytes > 0 && { memBytes }),
+      ...(wallMs > 0 && { wallMs }),
+      ...(netBytes > 0 && { netBytes }),
     });
   }
 
@@ -42,10 +52,19 @@ export class BudgetLedger {
 
   /** Fold a RESOURCE_METERED event into the given scope keys (from an onEvent hook). */
   applyMetered(scopeKeys: readonly string[], payload: unknown): void {
-    const p = payload as { tokens?: number; costUsd?: number };
+    const p = payload as {
+      tokens?: number;
+      costUsd?: number;
+      memBytes?: number;
+      wallMs?: number;
+      netBytes?: number;
+    };
     const delta: ResourceDelta = {
       ...(p.tokens !== undefined && { tokens: p.tokens }),
       ...(p.costUsd !== undefined && { costUsd: p.costUsd }),
+      ...(p.memBytes !== undefined && { memBytes: p.memBytes }),
+      ...(p.wallMs !== undefined && { wallMs: p.wallMs }),
+      ...(p.netBytes !== undefined && { netBytes: p.netBytes }),
     };
     for (const key of scopeKeys) this.add(key, delta);
   }
@@ -75,10 +94,13 @@ export interface NestedBudgetOptions {
   clock?: () => number;
 }
 
-function over(spent: { tokens: number; costUsd: number }, b: Budget): boolean {
+function over(spent: ScopeSpend, b: Budget): boolean {
   return (
     (b.maxCostUsd !== undefined && spent.costUsd >= b.maxCostUsd) ||
-    (b.maxTokens !== undefined && spent.tokens >= b.maxTokens)
+    (b.maxTokens !== undefined && spent.tokens >= b.maxTokens) ||
+    (b.maxMemBytes !== undefined && (spent.memBytes ?? 0) >= b.maxMemBytes) ||
+    (b.maxWallMs !== undefined && (spent.wallMs ?? 0) >= b.maxWallMs) ||
+    (b.maxNetBytes !== undefined && (spent.netBytes ?? 0) >= b.maxNetBytes)
   );
 }
 
@@ -100,9 +122,15 @@ export function nestedBudgetMiddleware(options: NestedBudgetOptions): EffectMidd
 
     // Admission control — most-restrictive wins, attributed to its level.
     for (const scope of scopes) {
-      const spent =
+      const spent: ScopeSpend =
         scope.level === "execution"
-          ? { tokens: ctx.resources?.tokens ?? 0, costUsd: ctx.resources?.costUsd ?? 0 }
+          ? {
+              tokens: ctx.resources?.tokens ?? 0,
+              costUsd: ctx.resources?.costUsd ?? 0,
+              ...(ctx.resources?.memBytes !== undefined && { memBytes: ctx.resources.memBytes }),
+              ...(ctx.resources?.wallMs !== undefined && { wallMs: ctx.resources.wallMs }),
+              ...(ctx.resources?.netBytes !== undefined && { netBytes: ctx.resources.netBytes }),
+            }
           : options.ledger.spent(scope.key);
       if (over(spent, scope.budget)) {
         const reason = `${scope.level} budget exceeded (${scope.key || ctx.executionId})`;

@@ -490,10 +490,32 @@ const handlers: Record<string, Handler> = {
   // into a reserved `_resources` running total. Emitted by accounting middleware
   // when an effect actually runs, so the total is deterministic on replay.
   RESOURCE_METERED: (state, event) => {
-    const p = event.payload as { tokens?: number; costUsd?: number; ms?: number };
+    const p = event.payload as {
+      tokens?: number;
+      costUsd?: number;
+      ms?: number;
+      // ADR 0032 (R1) — additional dimensions, folded additively.
+      memBytes?: number;
+      wallMs?: number;
+      netBytes?: number;
+    };
     const r = (state.variables._resources as
-      | { tokens: number; costUsd: number; ms: number; count: number; exceeded?: boolean }
+      | {
+          tokens: number;
+          costUsd: number;
+          ms: number;
+          count: number;
+          memBytes?: number;
+          wallMs?: number;
+          netBytes?: number;
+          exceeded?: boolean;
+        }
       | undefined) ?? { tokens: 0, costUsd: 0, ms: 0, count: 0 };
+    // The new dimensions are included only when non-zero, so a log that never meters
+    // them folds to exactly the pre-0032 `_resources` shape (byte-identical replay).
+    const memBytes = (r.memBytes ?? 0) + (p.memBytes ?? 0);
+    const wallMs = (r.wallMs ?? 0) + (p.wallMs ?? 0);
+    const netBytes = (r.netBytes ?? 0) + (p.netBytes ?? 0);
     return {
       ...state,
       variables: {
@@ -503,6 +525,9 @@ const handlers: Record<string, Handler> = {
           costUsd: r.costUsd + (p.costUsd ?? 0),
           ms: r.ms + (p.ms ?? 0),
           count: r.count + 1,
+          ...(memBytes > 0 && { memBytes }),
+          ...(wallMs > 0 && { wallMs }),
+          ...(netBytes > 0 && { netBytes }),
           ...(r.exceeded === true && { exceeded: true }),
         },
       },
@@ -588,7 +613,10 @@ export function getHandler(eventType: string): Handler | undefined {
 //   `estimatedCostUsd`, `estimatedLatencyMs`, `confidence` (ADR 0030 D1 — decision
 //   materialization). Descriptive only; `getDecision` still returns just `choice`, so
 //   folds treat absence as legacy and replay is byte-identical.
-export const EVENT_SCHEMA_VERSION = "1.10.0";
+// 1.11.0: additive optional RESOURCE_METERED payload fields `memBytes`, `wallMs`,
+//   `netBytes` (ADR 0032 R1 — resource dimensions). Folded into `_resources` only when
+//   non-zero, so a log that never meters them replays byte-identically.
+export const EVENT_SCHEMA_VERSION = "1.11.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

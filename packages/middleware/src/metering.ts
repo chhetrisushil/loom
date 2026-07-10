@@ -14,6 +14,15 @@ export interface ResourceDelta {
   tokens?: number;
   costUsd?: number;
   ms?: number;
+  // ADR 0032 (R1) — additional dimensions, metered only where an effect can measure
+  // them (e.g. a K7 isolated child reports peak RSS). All optional and additive;
+  // an effect that doesn't report a dimension leaves it undefined (no false zeros).
+  /** Peak resident memory attributable to the effect, in bytes. */
+  memBytes?: number;
+  /** Wall-clock time, in ms (distinct from `ms` when the effect runs off-thread). */
+  wallMs?: number;
+  /** Network bytes transferred by the effect. */
+  netBytes?: number;
 }
 
 export interface MeterInfo {
@@ -37,6 +46,10 @@ export type Pricing = (info: MeterInfo) => ResourceDelta;
 export interface Budget {
   maxTokens?: number;
   maxCostUsd?: number;
+  // ADR 0032 (R1) — ceilings for the additional dimensions. Only enforced when set.
+  maxMemBytes?: number;
+  maxWallMs?: number;
+  maxNetBytes?: number;
 }
 
 export interface MeteringOptions {
@@ -63,7 +76,28 @@ function overBudget(r: ResourceSnapshot, b: Budget): string | null {
   if (b.maxTokens !== undefined && r.tokens >= b.maxTokens) {
     return `tokens ${r.tokens} >= budget ${b.maxTokens}`;
   }
+  if (b.maxMemBytes !== undefined && (r.memBytes ?? 0) >= b.maxMemBytes) {
+    return `memBytes ${r.memBytes ?? 0} >= budget ${b.maxMemBytes}`;
+  }
+  if (b.maxWallMs !== undefined && (r.wallMs ?? 0) >= b.maxWallMs) {
+    return `wallMs ${r.wallMs ?? 0} >= budget ${b.maxWallMs}`;
+  }
+  if (b.maxNetBytes !== undefined && (r.netBytes ?? 0) >= b.maxNetBytes) {
+    return `netBytes ${r.netBytes ?? 0} >= budget ${b.maxNetBytes}`;
+  }
   return null;
+}
+
+/** The RESOURCE_METERED payload for a delta — only dimensions the pricing reported. */
+export function meteredPayload(delta: ResourceDelta, ms: number): Record<string, number> {
+  return {
+    ...(delta.tokens !== undefined && { tokens: delta.tokens }),
+    ...(delta.costUsd !== undefined && { costUsd: delta.costUsd }),
+    ...(delta.memBytes !== undefined && { memBytes: delta.memBytes }),
+    ...(delta.wallMs !== undefined && { wallMs: delta.wallMs }),
+    ...(delta.netBytes !== undefined && { netBytes: delta.netBytes }),
+    ms: delta.ms ?? ms,
+  };
 }
 
 /** Read token usage from an LlmResponse-shaped result (`{ usage: { inputTokens, outputTokens } }`). */
@@ -105,22 +139,14 @@ export function meteringMiddleware(options: MeteringOptions): EffectMiddleware {
           ms,
           aborted: true,
         });
-        ctx.emit("RESOURCE_METERED", {
-          ...(delta.tokens !== undefined && { tokens: delta.tokens }),
-          ...(delta.costUsd !== undefined && { costUsd: delta.costUsd }),
-          ms: delta.ms ?? ms,
-        });
+        ctx.emit("RESOURCE_METERED", meteredPayload(delta, ms));
       }
       throw err;
     }
     const ms = now() - start;
 
     const delta = options.pricing({ stepId: ctx.stepId, input, result, ms });
-    ctx.emit("RESOURCE_METERED", {
-      ...(delta.tokens !== undefined && { tokens: delta.tokens }),
-      ...(delta.costUsd !== undefined && { costUsd: delta.costUsd }),
-      ms: delta.ms ?? ms,
-    });
+    ctx.emit("RESOURCE_METERED", meteredPayload(delta, ms));
     return result;
   };
 }
