@@ -2,7 +2,7 @@ import { createA2UIEmitter } from "@loom/a2ui";
 import type { A2UIEmitter } from "@loom/a2ui";
 import { SuspendError } from "@loom/core";
 import type { ExecutableTask, StepDefinition } from "@loom/core";
-import type { EffectRuntime } from "@loom/effect-runtime";
+import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
 import { parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
@@ -27,7 +27,10 @@ export class WorkflowContextImpl implements WorkflowContext {
     // Cooperative cancellation for this execution. Threaded into every effect
     // context so long-running I/O (LLM/tool/A2A) can abort. Undefined = never
     // cancelled (existing behaviour).
-    private readonly signal: AbortSignal | undefined = undefined
+    private readonly signal: AbortSignal | undefined = undefined,
+    // K12.1 — the execution's authenticated principal chain, threaded opaquely
+    // into every effect's authorization. Undefined = no principal.
+    private readonly principal: PrincipalChain | undefined = undefined
   ) {
     this.executionId = executionId;
     this.workflowId = workflowId;
@@ -155,6 +158,8 @@ export class WorkflowContextImpl implements WorkflowContext {
       attempt: this.vm.getState().frames[id]?.attempts ?? 1,
       emit: (eventType: string, payload: unknown) => this.emit(eventType, payload),
       ...(stepSignal !== undefined && { signal: stepSignal }),
+      // K12.1 — the principal chain flows to the K2 authorizer (carried opaque).
+      ...(this.principal !== undefined && { principal: this.principal }),
       // K9.2 — deterministic idempotency key (`executionId:stepId`, plus a
       // durable epoch after an in-doubt "retry-fresh") so tool authors can
       // deduplicate at the provider: crash-recovery re-runs of the same logical

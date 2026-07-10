@@ -541,7 +541,7 @@ const context = await mem.recall("semantic", scope, { limit: 10, decide: ctx.dec
 
 ## 17. Kernel: grants, quotas & supervision
 
-*(Loom 2.0 kernel-hardening — K2 / K3 / K4 / K7 / K8 / K9 / K10 / K11 / T1.)* All opt-in; omit them and behavior is unchanged.
+*(Loom 2.0 kernel-hardening — K2 / K3 / K4 / K7 / K8 / K9 / K10 / K11 / K12 / T1.)* All opt-in; omit them and behavior is unchanged.
 
 ### Capability grants (protection ring, K2)
 
@@ -853,6 +853,39 @@ Both run over optional store SPI (`deleteExecution` / `truncatePrefix`, on in-me
 and Postgres); a store that omits them can't be swept. Redaction markers that keep secrets
 out of the log entirely (K10.3) and store-file encryption-at-rest guidance (K10.5) are the
 K10 follow-ups.
+
+### Identity & delegated authority (K12)
+
+Grants keyed on `workflowId` and an unverified `approvedBy` string aren't enough for a
+platform kernel. K12 adds an authenticated **principal chain**, **verified** approvals, and
+**verifiable** delegation — all opt-in, all carried *opaquely* by the kernel (authorizers
+interpret them, so Loom stays generic).
+
+```ts
+// K12.1 — establish a principal at the trust boundary (start / resume API); it
+// flows into every effect's K2 authorization, carried opaquely:
+await runtime.start(flow, input, { principal: { tenant: "acme", actor: "alice" } });
+// your CapabilityAuthorizer reads req.principal.tenant / .actor to decide.
+
+// K12.2 — verify approvals so "who approved" is evidence, not a claim:
+new WorkflowRuntime({ …, resumeAuthenticator: {
+  verify: (event) => event.eventType === "ApprovalGranted" && isValid(event)
+    ? { status: "verified", actor: event.payload.approvedBy, verifiedBy: "sso.acme" }
+    : { status: "rejected", reason: "unverified approval" },
+}});
+// a rejected/forged approval REFUSES the resume (ApprovalRejectedError); a verified
+// one records a durable APPROVAL_GRANTED { actor, verifiedBy } fact.
+
+// K12.4 — verifiable attenuated delegation (macaroon-lite), checked at the callee:
+import { signDelegation, DelegationAuthorizer } from "@loom/effect-runtime";
+const token = signDelegation(secret, "callee-flow", ["deploy"]); // delegator confers a subset
+const authorizer = new DelegationAuthorizer({ secret, base: calleeOwnGrants });
+// principal.delegation = token → authorized only for effects in BOTH the VERIFIED
+// delegation AND the callee's own grants (no ambient escalation); a forged token is
+// denied outright, and attenuation can only narrow.
+```
+
+Multi-tenant budget nesting (K12.3) and tenant-scoped stores (K12.5) are the K12 follow-ups.
 
 ---
 

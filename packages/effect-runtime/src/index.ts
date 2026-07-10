@@ -13,11 +13,21 @@ export type {
   ResourceSnapshot,
   Warmer,
 } from "./types";
-export { CapabilityDeniedError, GrantTable } from "./authz";
+export {
+  CapabilityDeniedError,
+  GrantTable,
+  DelegationAuthorizer,
+  signDelegation,
+  verifyDelegation,
+  attenuateDelegation,
+} from "./authz";
 export type {
   CapabilityAuthorizer,
   CapabilityDecision,
   CapabilityRequest,
+  DelegatedGrant,
+  DelegationAuthorizerOptions,
   EffectRuntimeOptions,
   GrantTableOptions,
+  PrincipalChain,
 } from "./authz";
