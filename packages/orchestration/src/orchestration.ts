@@ -1,0 +1,140 @@
+import type { EventEnvelope } from "@loom/core";
+import type { ExecutionContext, RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+
+// ── Cross-execution orchestration (child workflows) ───────────────────────────
+//
+// Spawn a child workflow from a parent and durably await its result — WITHOUT a new
+// syscall. The primitive is composed from ones that already exist:
+//   • `ctx.decide` durably (and replay-safely) fixes the child's id + spec;
+//   • `ctx.suspend({ on: CHILD_DONE, correlationKey: childId })` parks the parent;
+//   • a supervisor starts the child, and on the child's completion `resume`s the parent
+//     with the child's output.
+// Because `_resumePayload` is a single slot, this builds on ONE suspend/resume cycle
+// per parent: spawn a child, suspend once, resume once with its result. (Fan-out over
+// many children in one suspend is a documented follow-up.)
+//
+// No new event type: CHILD_DONE is a resume SIGNAL name (like TIMER_FIRED delivery),
+// and the spec rides in the DECISION_RECORDED the supervisor already sees via onEvent.
+
+/** The resume signal a completed child delivers to its waiting parent. */
+export const CHILD_DONE = "CHILD_DONE";
+
+const SEP = "::";
+
+/** Deterministic child execution id — `<parentId>::<key>` (stable across replay). */
+export function childIdFor(parentId: string, key: string): string {
+  return `${parentId}${SEP}${key}`;
+}
+
+/** The parent id embedded in a child id, or undefined if it is not a child id. */
+export function parentOf(childId: string): string | undefined {
+  const i = childId.lastIndexOf(SEP);
+  return i < 0 ? undefined : childId.slice(0, i);
+}
+
+/** Marker + spec recorded by `awaitChild` and read by the supervisor. */
+interface SpawnChoice {
+  __orchestration: true;
+  childId: string;
+  flowId: string;
+  input: unknown;
+}
+
+function asSpawnChoice(value: unknown): SpawnChoice | undefined {
+  const c = value as Partial<SpawnChoice> | null;
+  return c !== null &&
+    c.__orchestration === true &&
+    typeof c.childId === "string" &&
+    typeof c.flowId === "string"
+    ? (c as SpawnChoice)
+    : undefined;
+}
+
+/**
+ * From inside a parent flow: spawn `flowId(input)` as a child execution and suspend
+ * until it completes, returning its output. Replay-safe — the spawn is fixed by
+ * `ctx.decide`, so a resume/recovery re-run never starts a second child.
+ */
+export async function awaitChild<TOut = unknown>(
+  ctx: Pick<ExecutionContext, "executionId" | "decide" | "suspend">,
+  spec: { key: string; flowId: string; input: unknown }
+): Promise<TOut> {
+  const childId = childIdFor(ctx.executionId, spec.key);
+  await ctx.decide(`orchestration:spawn:${spec.key}`, () => ({
+    __orchestration: true as const,
+    childId,
+    flowId: spec.flowId,
+    input: spec.input,
+  }));
+  const resumed = (await ctx.suspend({ on: CHILD_DONE, correlationKey: childId })) as unknown as {
+    output: TOut;
+  };
+  return resumed.output;
+}
+
+export interface SupervisorDeps {
+  runtime: WorkflowRuntime;
+  /** Child flows by id, so the supervisor can start them by the recorded flowId. */
+  flows: Record<string, RegisteredFlow>;
+  /** Fired on a supervision failure (start/resume rejection). */
+  onError?: (err: unknown) => void;
+}
+
+export interface ChildSupervisor {
+  /** Wire this into `WorkflowRuntimeDeps.onEvent` (it sees every execution's events). */
+  onEvent(event: EventEnvelope): void;
+}
+
+/**
+ * The supervisor that turns spawn intents into running children and their completions
+ * into parent resumes. It correlates purely from the events it observes via `onEvent`
+ * (no store read → no read-after-commit race): the spawn spec comes from the parent's
+ * `DECISION_RECORDED`, and the child id embeds the parent id.
+ */
+export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
+  // childId → spec, learned from DECISION_RECORDED before the parent's suspend lands.
+  const specs = new Map<string, { flowId: string; input: unknown }>();
+  // childIds already started this process (idempotency within the runtime).
+  const started = new Set<string>();
+
+  const fail = (err: unknown): void => deps.onError?.(err);
+
+  return {
+    onEvent(event: EventEnvelope): void {
+      if (event.eventType === "DECISION_RECORDED") {
+        const choice = asSpawnChoice((event.payload as { choice?: unknown }).choice);
+        if (choice !== undefined)
+          specs.set(choice.childId, { flowId: choice.flowId, input: choice.input });
+        return;
+      }
+
+      if (event.eventType === "EXECUTION_SUSPENDED") {
+        const condition = (
+          event.payload as { condition?: { on?: string; correlationKey?: string } }
+        ).condition;
+        if (condition?.on !== CHILD_DONE) return;
+        const childId = condition.correlationKey;
+        if (childId === undefined || started.has(childId)) return;
+        const spec = specs.get(childId);
+        if (spec === undefined) return;
+        const flow = deps.flows[spec.flowId];
+        if (flow === undefined) {
+          fail(new Error(`orchestration: no flow registered for "${spec.flowId}"`));
+          return;
+        }
+        started.add(childId);
+        void deps.runtime.start(flow, spec.input, { executionId: childId }).catch(fail);
+        return;
+      }
+
+      if (event.eventType === "EXECUTION_COMPLETED") {
+        const parentId = parentOf(event.executionId);
+        if (parentId === undefined || !started.has(event.executionId)) return;
+        const output = (event.payload as { output?: unknown }).output;
+        void deps.runtime
+          .resume(parentId, { eventType: CHILD_DONE, payload: { output } })
+          .catch(fail);
+      }
+    },
+  };
+}

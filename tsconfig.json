@@ -49,6 +49,8 @@
     { "path": "packages/dst" },
     { "path": "packages/audit-chain" },
     { "path": "packages/fair-scheduler" },
+    { "path": "packages/live-query" },
+    { "path": "packages/orchestration" },
     { "path": "apps/playground" },
     { "path": "examples/cloud-command-center" }
   ]
