@@ -8,11 +8,33 @@
 // never runs; the denial is emitted as a durable EFFECT_DENIED fact (P9) and fails
 // the step. Enforcement is opt-in: no authorizer ⇒ today's permissive behaviour.
 
+/**
+ * K12.1 — an authenticated principal chain, populated at the trust boundary
+ * (A2A server / resume API) and propagated immutably through dispatch. The
+ * KERNEL CARRIES IT OPAQUELY and never interprets it — authorizers, budget
+ * scopes, and stores do. Keeping the kernel free of a tenant model is what keeps
+ * Loom a generic execution kernel (P10). Extra fields are allowed; a
+ * `delegation` (K12.4) rides here.
+ */
+export interface PrincipalChain {
+  /** The tenant boundary — an opaque, pseudonymous id (never human PII; see K10). */
+  tenant?: string;
+  /** The acting identity. */
+  actor?: string;
+  /** The identity this action is performed on behalf of (delegation origin). */
+  onBehalfOf?: string;
+  /** K12.4 — a verifiable attenuated-delegation token, checked at the callee. */
+  delegation?: DelegatedGrant;
+  [key: string]: unknown;
+}
+
 export interface CapabilityRequest {
   toolId: string;
   executionId: string;
   workflowId: string;
   stepId: string;
+  /** K12.1 — the authenticated principal chain, if one was established. */
+  principal?: PrincipalChain;
 }
 
 export interface CapabilityDecision {
@@ -72,6 +94,120 @@ export class GrantTable implements CapabilityAuthorizer {
     }
     return { allowed: false, reason: `effect "${req.toolId}" not granted to "${principal}"` };
   }
+}
+
+export interface DelegationAuthorizerOptions {
+  /** Shared secret used to verify delegation signatures at this trust boundary. */
+  secret: string;
+  /**
+   * The callee's OWN authority — an effect is allowed only if it is in BOTH the
+   * verified delegated set AND the callee's own grants (never ambient
+   * escalation). Omit to allow the full verified delegated set (the callee
+   * delegates all of its authority decisions upstream).
+   */
+  base?: CapabilityAuthorizer;
+}
+
+/**
+ * K12.4 — authorizes an effect against a VERIFIED attenuated delegation carried
+ * in `req.principal.delegation`. The token's signature is checked first (a
+ * forged or tampered delegation is denied outright), then the effect must be in
+ * the **intersection** of the delegated grants and the callee's own authority
+ * (`base`) — a delegate can never invoke an effect the delegator lacked, nor one
+ * the callee itself lacks. No delegation present ⇒ falls through to `base`
+ * (or denied when there is no base).
+ */
+export class DelegationAuthorizer implements CapabilityAuthorizer {
+  constructor(private readonly options: DelegationAuthorizerOptions) {}
+
+  authorize(req: CapabilityRequest): CapabilityDecision {
+    const token = req.principal?.delegation;
+    if (token === undefined) {
+      return (
+        this.options.base?.authorize(req) ?? {
+          allowed: false,
+          reason: "no delegation and no base authority",
+        }
+      );
+    }
+    if (!verifyDelegation(this.options.secret, token)) {
+      return { allowed: false, reason: "delegation signature invalid (forged or tampered)" };
+    }
+    const delegated = new Set(token.grants);
+    const inDelegated = delegated.has("*") || delegated.has(req.toolId);
+    if (!inDelegated) {
+      return { allowed: false, reason: `effect "${req.toolId}" not in the delegated grant set` };
+    }
+    // Intersection: the callee must ALSO hold the authority (no ambient escalation).
+    if (this.options.base !== undefined) {
+      const baseDecision = this.options.base.authorize(req);
+      if (!baseDecision.allowed) {
+        return {
+          allowed: false,
+          reason: `delegated, but the callee itself lacks "${req.toolId}": ${baseDecision.reason ?? ""}`,
+        };
+      }
+    }
+    return { allowed: true };
+  }
+}
+
+// ── K12.4 — verifiable attenuated delegation (macaroon-lite) ─────────────────
+//
+// The evaluation's amendment: "an attenuated grant set carried as a plain
+// request field is forgeable by any caller or middlebox." So a delegation is
+// SIGNED (HMAC) by the delegator and VERIFIED at the callee's trust boundary
+// before its grants are honored. Attenuation can only NARROW: a holder derives
+// a more-restricted token, never a broader one, because the delegated grant set
+// is bound into the signature. The intersection is computed from the VERIFIED
+// set, never a forgeable field.
+
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+/** A signed delegation: the grant subset a delegator conferred, HMAC-bound. */
+export interface DelegatedGrant {
+  /** The delegated capability ids (effect ids the callee may invoke on the caller's behalf). */
+  grants: string[];
+  /** The principal this token was issued to (bound into the signature). */
+  issuedTo: string;
+  /** HMAC-SHA256 over `${issuedTo}\n${sorted grants}` with the shared delegation secret. */
+  sig: string;
+}
+
+function delegationPayload(issuedTo: string, grants: readonly string[]): string {
+  return `${issuedTo}\n${[...grants].sort().join(",")}`;
+}
+
+/** Mint a delegation token: the delegator signs the subset it confers on `issuedTo`. */
+export function signDelegation(secret: string, issuedTo: string, grants: string[]): DelegatedGrant {
+  const sig = createHmac("sha256", secret).update(delegationPayload(issuedTo, grants)).digest("hex");
+  return { grants: [...grants], issuedTo, sig };
+}
+
+/** Verify a delegation's signature (constant-time). A forged/tampered token fails. */
+export function verifyDelegation(secret: string, token: DelegatedGrant): boolean {
+  const expected = createHmac("sha256", secret)
+    .update(delegationPayload(token.issuedTo, token.grants))
+    .digest("hex");
+  const a = Buffer.from(expected, "hex");
+  const b = Buffer.from(token.sig, "hex");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * Attenuate a VERIFIED delegation to a narrower subset, re-signed for a new
+ * holder — only capabilities already in the token survive (never broadening).
+ * Requires the shared secret (the delegator/mint authority performs it); a
+ * pure-holder chained-HMAC variant is a future option.
+ */
+export function attenuateDelegation(
+  secret: string,
+  token: DelegatedGrant,
+  issuedTo: string,
+  subset: string[]
+): DelegatedGrant {
+  const narrowed = subset.filter((g) => token.grants.includes(g));
+  return signDelegation(secret, issuedTo, narrowed);
 }
 
 import type { Scheduler } from "@loom/scheduler";

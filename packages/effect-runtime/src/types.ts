@@ -1,4 +1,5 @@
 import type { EffectKind } from "@loom/core";
+import type { PrincipalChain } from "./authz";
 
 export type { EffectKind };
 
@@ -51,6 +52,12 @@ export interface EffectContext {
    * Priority value (0 = Immediate … 3 = Idle). Undefined ⇒ Normal.
    */
   readonly priority?: number;
+  /**
+   * K12.1 — the authenticated principal chain for the owning execution, carried
+   * opaquely and handed to the K2 authorizer. Set at the trust boundary
+   * (start/resume). Undefined ⇒ no principal (today's behavior).
+   */
+  readonly principal?: PrincipalChain;
 }
 
 /**

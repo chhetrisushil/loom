@@ -1,6 +1,16 @@
 # ADR 0024 — K12: identity, tenancy & delegated authority
 
-- Status: Proposed (amended 2026-07-10 — see [Amendments](#amendments-code-grounded-evaluation-2026-07-10))
+- Status: Accepted (authority core implemented 2026-07-10 — K12.1 `CapabilityRequest.principal`
+  (`PrincipalChain`, carried opaquely; threaded start→resume via `RunOptions.principal` →
+  `EffectContext` → authorizer, A1); K12.2 `ResumeAuthenticator` + durable `APPROVAL_GRANTED`
+  fact (event schema 1.9.0, folds `variables._approvals`), a rejected/forged approval refuses
+  the resume (`ApprovalRejectedError`, A6); K12.4 verifiable attenuated delegation —
+  `signDelegation`/`verifyDelegation`/`attenuateDelegation` (HMAC-bound) + `DelegationAuthorizer`
+  that verifies at the callee and authorizes only the intersection of the verified delegation
+  and the callee's own grants (A2 — forged tokens denied outright). **Pending (tenancy
+  follow-up on #44):** K12.3 nested budgets (tenant→workflow→execution, as a projection, A5),
+  K12.5 tenant-scoped stores (key-prefixing default per A7) + fork cross-tenant guard.
+  Amendments below applied.)
 - Date: 2026-07-10
 - Requirements: [K12 in the kernel-hardening requirements](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md#k12--identity-tenancy--delegated-authority) — priority **P2**
 

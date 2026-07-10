@@ -1,5 +1,6 @@
 import type { A2UIEmitter } from "@loom/a2ui";
 import type { ExecutableTask, ExecutionState, FlowDefinition, StepDefinition } from "@loom/core";
+import type { PrincipalChain } from "@loom/effect-runtime";
 
 export interface SuspendConfig {
   on: string;
@@ -105,6 +106,42 @@ export interface RunOptions {
    * verdict API lands. Prefer pinning the original flow code instead.
    */
   allowFlowCodeMismatch?: boolean;
+  /**
+   * K12.1 — the authenticated principal chain for this run, established at the
+   * trust boundary (start / resume API / A2A server) and threaded opaquely into
+   * every effect's authorization (K2). Undefined ⇒ no principal.
+   */
+  principal?: PrincipalChain;
+}
+
+/**
+ * K12.2 — verifies a resume event that gates authority (an approval), so
+ * "who approved" is EVIDENCE, not an unverified claim. Pluggable at the trust
+ * boundary. `verify` returns:
+ *  - `verified` → an `APPROVAL_GRANTED { actor, verifiedBy }` fact is recorded
+ *    and the resume proceeds;
+ *  - `rejected` → the resume is REFUSED (a forged approval does not resume);
+ *  - `not-applicable` → an ordinary resume, no approval semantics.
+ */
+export interface ResumeAuthenticator {
+  verify(event: ResumeEvent): ResumeVerdict;
+}
+
+export type ResumeVerdict =
+  | { status: "verified"; actor: string; verifiedBy: string }
+  | { status: "rejected"; reason: string }
+  | { status: "not-applicable" };
+
+/** K12.2 — thrown when a `ResumeAuthenticator` rejects an approval as unverified/forged. */
+export class ApprovalRejectedError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly reason: string
+  ) {
+    super(`resume of "${executionId}" refused: approval not verified — ${reason}`);
+    this.name = "ApprovalRejectedError";
+    Object.setPrototypeOf(this, ApprovalRejectedError.prototype);
+  }
 }
 
 /**

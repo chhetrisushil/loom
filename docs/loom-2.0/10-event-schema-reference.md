@@ -81,6 +81,7 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._timers` | `TIMER_FIRED` | `Array<{ firedAt, wakeAt?, scheduleId?, occurrence? }>` — durable-timer wakes (T1) |
 | `variables._egress` | `EGRESS_DENIED` | `Array<{ toolId?, stepId?, target?, reason? }>` — kernel-side egress denials (K7) |
 | `variables._shredded` | `PAYLOAD_SHREDDED` | `{ subjectId?, reason?, at }` — crypto-shred tombstone (K10) |
+| `variables._approvals` | `APPROVAL_GRANTED` | `Array<{ actor?, verifiedBy?, on?, at }>` — verified approvals (K12) |
 
 ---
 
@@ -297,6 +298,16 @@ triggers downstream).
   accompanying resume events own the lifecycle. Replay re-applies the same verdict at the
   same sequence (G1).
 
+#### `APPROVAL_GRANTED`
+- **Introduced:** Loom 2.1 — K12, identity & delegated authority ([ADR 0024](../adr/0024-k12-identity-tenancy-delegated-authority.md)).
+  A `ResumeAuthenticator` *verified* the identity behind an authority-gating resume (an
+  approval), so "who approved" is durable evidence, not an unverified `approvedBy` string. A
+  rejected approval never reaches the log — the resume is refused (`ApprovalRejectedError`)
+  before any event commits.
+- **Payload:** `{ actor: string; verifiedBy: string; on: string }` (`on` = the approval event type)
+- **Folds into:** appends to `variables._approvals`. **Pure audit** — the accompanying
+  `EXECUTION_RESUMED` owns the lifecycle.
+
 #### `PAYLOAD_SHREDDED`
 - **Introduced:** Loom 2.1 — K10, crypto-shredding ([ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md)).
   A subject's encryption key was destroyed (`shredSubject`, `@loom/store-crypto`), so this
@@ -436,7 +447,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts:311`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.8.0"; // …1.5.0 EXECUTION_MIGRATED (K11.3); 1.6.0 TIMER_FIRED (T1); 1.7.0 EGRESS_DENIED (K7); 1.8.0 PAYLOAD_SHREDDED (K10)
+export const EVENT_SCHEMA_VERSION = "1.9.0"; // …1.6.0 TIMER_FIRED (T1); 1.7.0 EGRESS_DENIED (K7); 1.8.0 PAYLOAD_SHREDDED (K10); 1.9.0 APPROVAL_GRANTED (K12)
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
@@ -452,10 +463,10 @@ export function knownEventTypes(): string[] {
   that must be deliberate. A conformance test pins `knownEventTypes()` so the set cannot drift
   silently.
 
-The complete pinned set (the 24 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
+The complete pinned set (the 25 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
 returns them):
 
-`DECISION_RECORDED`, `EFFECT_DENIED`, `EFFECT_INDOUBT`, `EGRESS_DENIED`,
+`APPROVAL_GRANTED`, `DECISION_RECORDED`, `EFFECT_DENIED`, `EFFECT_INDOUBT`, `EGRESS_DENIED`,
 `EXECUTION_CANCELLED`, `EXECUTION_COMPLETED`, `EXECUTION_FAILED`, `EXECUTION_MIGRATED`,
 `EXECUTION_RESUMED`, `EXECUTION_STARTED`, `EXECUTION_SUSPENDED`, `OUTCOME_RECORDED`,
 `PARALLEL_COMPLETED`, `PARALLEL_STARTED`, `PAYLOAD_SHREDDED`, `QUOTA_EXCEEDED`,

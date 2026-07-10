@@ -6,6 +6,7 @@ import { EVENT_SCHEMA_VERSION, knownEventTypes } from "./eventHandlers";
 // logs replay) can't happen silently. Adding one is additive — bump the version and
 // update this list in the same, reviewed change.
 const PINNED_EVENT_TYPES = [
+  "APPROVAL_GRANTED",
   "DECISION_RECORDED",
   "EFFECT_DENIED",
   "EFFECT_INDOUBT",

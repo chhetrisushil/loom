@@ -365,6 +365,33 @@ const handlers: Record<string, Handler> = {
     };
   },
 
+  // Loom 2.1 (K12) — a VERIFIED approval: a ResumeAuthenticator confirmed the
+  // identity behind an authority-gating resume, so "who approved" is durable
+  // evidence, not an unverified claim. Folded into a reserved `_approvals`
+  // audit list. Pure audit — the accompanying EXECUTION_RESUMED owns the
+  // lifecycle; a REJECTED approval never reaches the log (the resume is refused
+  // before any event is committed).
+  APPROVAL_GRANTED: (state, event) => {
+    const p = event.payload as { actor?: string; verifiedBy?: string; on?: string };
+    const existing = (state.variables._approvals as unknown[] | undefined) ?? [];
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _approvals: [
+          ...existing,
+          {
+            ...(p.actor !== undefined && { actor: p.actor }),
+            ...(p.verifiedBy !== undefined && { verifiedBy: p.verifiedBy }),
+            ...(p.on !== undefined && { on: p.on }),
+            at: event.timestamp,
+          },
+        ],
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
   // Loom 2.1 (K10) — a crypto-shred tombstone: the subject's encryption key was
   // destroyed, so this execution's sensitive payload fields are permanently
   // unrecoverable (GDPR erasure of an append-only log). Written AT SHRED TIME by
@@ -542,7 +569,8 @@ export function getHandler(eventType: string): Handler | undefined {
 // 1.6.0: added TIMER_FIRED (T1 — durable timers).
 // 1.7.0: added EGRESS_DENIED (K7 — data-plane isolation & egress control).
 // 1.8.0: added PAYLOAD_SHREDDED (K10 — crypto-shredding).
-export const EVENT_SCHEMA_VERSION = "1.8.0";
+// 1.9.0: added APPROVAL_GRANTED (K12 — verified approvals).
+export const EVENT_SCHEMA_VERSION = "1.9.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

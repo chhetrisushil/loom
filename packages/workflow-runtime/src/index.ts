@@ -2,6 +2,7 @@
 // remains an alias for source compatibility.
 export { WorkflowRuntime, WorkflowRuntime as ExecutionRuntime } from "./WorkflowRuntime";
 export {
+  ApprovalRejectedError,
   EFFECT_INDOUBT_RESOLVED,
   FlowCodeMismatchError,
   FlowMigrationCheckError,
@@ -24,7 +25,9 @@ export type {
   ForkResult,
   FlowRunner,
   RegisteredFlow,
+  ResumeAuthenticator,
   ResumeEvent,
+  ResumeVerdict,
   RunOptions,
   SuspendConfig,
   WorkflowContext,

@@ -48,6 +48,7 @@ export class EffectRuntime {
         executionId: ctx.executionId,
         workflowId: ctx.workflowId,
         stepId: ctx.stepId,
+        ...(ctx.principal !== undefined && { principal: ctx.principal }),
       });
       if (!decision.allowed) {
         const reason = decision.reason ?? "not authorized";

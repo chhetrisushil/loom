@@ -1,7 +1,7 @@
 import { SuspendError, flowContentHash } from "@loom/core";
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import { LazyEffect } from "@loom/effect-runtime";
-import type { Effect, EffectRuntime } from "@loom/effect-runtime";
+import type { Effect, EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
 import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
 // Import the pure sequence helper from the browser-safe subpath, not the barrel:
 // the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
@@ -12,13 +12,14 @@ import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { WorkflowContextImpl } from "./WorkflowContext";
-import { FlowCodeMismatchError, FlowMigrationCheckError } from "./types";
+import { ApprovalRejectedError, FlowCodeMismatchError, FlowMigrationCheckError } from "./types";
 import type {
   ExecutionHandle,
   FlowRunner,
   ForkOptions,
   ForkResult,
   RegisteredFlow,
+  ResumeAuthenticator,
   ResumeEvent,
   RunOptions,
 } from "./types";
@@ -55,6 +56,12 @@ export interface WorkflowRuntimeDeps {
    */
   snapshotEvery?: number;
   /**
+   * K12.2 — verifies approval-type resume events. When set, a resume whose
+   * event the authenticator rejects is REFUSED (a forged approval never
+   * resumes); a verified approval records a durable `APPROVAL_GRANTED` fact.
+   */
+  resumeAuthenticator?: ResumeAuthenticator;
+  /**
    * T1 — durable timer storage. When wired, a suspension carrying `wakeAt`
    * (`ctx.sleep`/`ctx.sleepUntil`) — or a `suspend({ timeout })`, whose wake
    * time is then derived and recorded durably — schedules a timer row AFTER the
@@ -74,6 +81,7 @@ export class WorkflowRuntime {
   private readonly onStorageError: ((executionId: string, err: unknown) => void) | undefined;
   private readonly snapshotEvery: number | undefined;
   private readonly timerStore: TimerStore | undefined;
+  private readonly resumeAuthenticator: ResumeAuthenticator | undefined;
   private readonly flows = new Map<string, RegisteredFlow>();
   // K11.1 — content hash of each flow id's CURRENT (most recently registered) version.
   private readonly flowHashes = new Map<string, string>();
@@ -95,6 +103,7 @@ export class WorkflowRuntime {
     this.branchRegistry = deps.branchRegistry;
     this.onStorageError = deps.onStorageError;
     this.snapshotEvery = deps.snapshotEvery;
+    this.resumeAuthenticator = deps.resumeAuthenticator;
     this.timerStore = deps.timerStore;
   }
 
@@ -149,6 +158,25 @@ export class WorkflowRuntime {
   /** All registered flow ids — used by tooling (e.g. boot-time flow-graph validation). */
   getFlowIds(): string[] {
     return [...this.flows.keys()];
+  }
+
+  // K12.2 — verify an approval-gating resume event. Returns an APPROVAL_GRANTED
+  // bootstrap event to record when verified; `undefined` for an ordinary resume;
+  // throws ApprovalRejectedError when the authenticator rejects it (forged).
+  private verifyApproval(
+    executionId: string,
+    resumeEvent: ResumeEvent
+  ): { eventType: string; payload: unknown } | undefined {
+    if (this.resumeAuthenticator === undefined) return undefined;
+    const verdict = this.resumeAuthenticator.verify(resumeEvent);
+    if (verdict.status === "not-applicable") return undefined;
+    if (verdict.status === "rejected") {
+      throw new ApprovalRejectedError(executionId, verdict.reason);
+    }
+    return {
+      eventType: "APPROVAL_GRANTED",
+      payload: { actor: verdict.actor, verifiedBy: verdict.verifiedBy, on: resumeEvent.eventType },
+    };
   }
 
   // K11.1/.2 — resolve the flow CODE an execution must resume on:
@@ -271,7 +299,8 @@ export class WorkflowRuntime {
       originalInput,
       resumeEvent ? [{ eventType: resumeEvent.eventType, payload: resumeEvent.payload }] : [],
       options?.fence,
-      options?.deadlineMs ?? flow.definition.deadlineMs
+      options?.deadlineMs ?? flow.definition.deadlineMs,
+      options?.principal
     );
   }
 
@@ -307,7 +336,8 @@ export class WorkflowRuntime {
         },
       ],
       options?.fence,
-      options?.deadlineMs ?? definition.deadlineMs
+      options?.deadlineMs ?? definition.deadlineMs,
+      options?.principal
     );
   }
 
@@ -360,6 +390,11 @@ export class WorkflowRuntime {
     // a loud refusal — never a silent fold with changed code (legacy logs = G2).
     const resolved = this.resolveFlowFor(executionId, workflowId, vm.getState(), options);
 
+    // K12.2 — verify an approval that gates authority. A rejected (forged/
+    // unverified) approval REFUSES the resume; a verified one records a durable
+    // APPROVAL_GRANTED fact so "who approved" is evidence, not a claim.
+    const approval = this.verifyApproval(executionId, resumeEvent);
+
     return this.execute(
       executionId,
       workflowId,
@@ -367,11 +402,13 @@ export class WorkflowRuntime {
       resolved.runner as FlowRunner<unknown, unknown>,
       originalInput,
       [
+        ...(approval !== undefined ? [approval] : []),
         { eventType: resumeEvent.eventType, payload: resumeEvent.payload },
         { eventType: "EXECUTION_RESUMED", payload: resumeEvent.payload },
       ],
       options?.fence,
-      options?.deadlineMs ?? resolved.definition.deadlineMs
+      options?.deadlineMs ?? resolved.definition.deadlineMs,
+      options?.principal
     );
   }
 
@@ -461,7 +498,8 @@ export class WorkflowRuntime {
         { eventType: "EXECUTION_RESUMED", payload: resumeEvent.payload },
       ],
       options.fence,
-      options.deadlineMs ?? target.definition.deadlineMs
+      options.deadlineMs ?? target.definition.deadlineMs,
+      options.principal
     );
   }
 
@@ -649,7 +687,8 @@ export class WorkflowRuntime {
     input: unknown,
     bootstrapEvents: BootstrapEvent[],
     fence?: number,
-    deadlineMs?: number
+    deadlineMs?: number,
+    principal?: PrincipalChain
   ): ExecutionHandle {
     let resolveCompletion!: (state: ReturnType<typeof vm.getState>) => void;
     let rejectCompletion!: (err: unknown) => void;
@@ -730,7 +769,8 @@ export class WorkflowRuntime {
       vm,
       journal,
       this.effectRuntime,
-      controller.signal
+      controller.signal,
+      principal
     );
 
     const cancel = (reason?: unknown): void => {
