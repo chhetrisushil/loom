@@ -71,6 +71,7 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._resumePayload` | `EXECUTION_RESUMED` | resume payload (consumed by `ctx.suspend` passthrough) |
 | `variables._decisions` | `DECISION_RECORDED` | `Record<decisionId, { choice, rationale?, source? }>` |
 | `variables._denials` | `EFFECT_DENIED` | `Array<{ toolId, stepId?, reason? }>` |
+| `variables._executionDenials` | `EXECUTION_DENIED` | `Array<{ op, reason?, actor? }>` — refused lifecycle ops (C.1) |
 | `variables._resources` | `RESOURCE_METERED` / `QUOTA_EXCEEDED` | `{ tokens, costUsd, ms, count, exceeded? }` |
 | `variables._safety` | `SAFETY_BLOCKED` | `Array<{ validatorId, stepId?, phase?, reason?, category? }>` |
 | `variables._outcomes` | `OUTCOME_RECORDED` | `Array<{ key, success?, score?, decisionId? }>` |
@@ -128,6 +129,17 @@ capability/authority, K3 = resource metering, P9 = the Decision seam).
 - **Payload:** `{ reason?: unknown }` (a `String(reason)` in practice)
 - **Folds into:** `status → "cancelled"`; if `reason` is present, `variables._cancelReason = reason`.
 - Handler: `eventHandlers.ts:286`.
+
+#### `EXECUTION_DENIED`
+- **Introduced:** 1.12.0 (C.1 — execution-lifecycle authorization, ADR 0039).
+- **Emitted by:** `WorkflowRuntime.recordExecutionDenied` when an `ExecutionAuthorizer` refuses a
+  `resume`/`cancel` on an existing execution (a denied `start`/`query` throws without a record).
+  Appended **without a fence** so it can never disrupt a running execution; consecutive identical
+  denials (same op+actor) are deduped.
+- **Payload:** `{ op: "resume" | "cancel", reason?: string, actor?: string }`
+- **Folds into:** appends to `variables._executionDenials` (mirroring `EFFECT_DENIED`'s `_denials`).
+  **Pure audit** — does not change execution/frame status, so a log that never denies replays
+  byte-identically.
 
 ### 2.2 Task (step) lifecycle events
 
@@ -447,7 +459,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts:311`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.9.0"; // …1.6.0 TIMER_FIRED (T1); 1.7.0 EGRESS_DENIED (K7); 1.8.0 PAYLOAD_SHREDDED (K10); 1.9.0 APPROVAL_GRANTED (K12)
+export const EVENT_SCHEMA_VERSION = "1.12.0"; // …1.9.0 APPROVAL_GRANTED (K12); 1.10.0 DECISION_RECORDED fields (ADR 0030); 1.11.0 RESOURCE_METERED dimensions (ADR 0032); 1.12.0 EXECUTION_DENIED (C.1, ADR 0039)
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
