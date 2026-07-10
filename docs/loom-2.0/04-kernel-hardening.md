@@ -2,7 +2,7 @@
 
 > **Why "kernel" is not a metaphor**
 >
-> Loom 1.x was a *framework*: it gave you durability, replay, and suspension around plain TypeScript. Loom 2.0 goes further and earns the word **kernel** — the thing a platform is *built on*. A kernel is not defined by being "the core"; it is defined by the **enforcement rings** it provides: a stable syscall ABI, an authority boundary, resource accounting, fault supervision, and governed on-disk formats. This document walks the hardening seams (**K1–K6**) that make Loom an execution kernel rather than a library, reading the actual source for each. K1–K5 are the rings *ordinary* durable software needs; **K6** adds the one guarantee unique to running *autonomous intelligent* work — that a non-deterministic action or output is **safe**, not merely authorized (K2) and metered (K3).
+> Loom 1.x was a *framework*: it gave you durability, replay, and suspension around plain TypeScript. Loom 2.0 goes further and earns the word **kernel** — the thing a platform is *built on*. A kernel is not defined by being "the core"; it is defined by the **enforcement rings** it provides: a stable syscall ABI, an authority boundary, resource accounting, fault supervision, and governed on-disk formats. This document walks the hardening seams (**K1–K6**) that make Loom an execution kernel rather than a library, reading the actual source for each. K1–K5 are the rings *ordinary* durable software needs; **K6** adds the one guarantee unique to running *autonomous intelligent* work — that a non-deterministic action or output is **safe**, not merely authorized (K2) and metered (K3). A [second hardening series (§9)](#9-the-second-hardening-series--k7k12-t1t2-implemented) — **K7–K12, T1–T2** — is also implemented, extending the kernel with data-plane isolation, cancellation, delivery guarantees, log lifecycle, flow versioning, identity/tenancy, durable timers, and a wire-level ABI.
 
 ---
 
@@ -260,16 +260,16 @@ If K1 is the *in-memory* ABI (the syscall surface), **the event log is the kerne
 
 ### `EVENT_SCHEMA_VERSION` and `knownEventTypes()`
 
-`EVENT_SCHEMA_VERSION` is the semver of the on-disk schema (`"1.0.0"`), and `knownEventTypes()` returns the sorted list of every event type that has a fold handler ([`eventHandlers.ts:311`](../../packages/replay-vm/src/eventHandlers.ts)) — it is derived directly from the `handlers` map, so the *declared* schema can never diverge from what the fold *actually* handles.
+`EVENT_SCHEMA_VERSION` is the semver of the on-disk schema (`"1.9.0"`), and `knownEventTypes()` returns the sorted list of every event type that has a fold handler ([`eventHandlers.ts:311`](../../packages/replay-vm/src/eventHandlers.ts)) — it is derived directly from the `handlers` map, so the *declared* schema can never diverge from what the fold *actually* handles.
 
 The governance rule mirrors K1 ([`eventHandlers.ts:303`](../../packages/replay-vm/src/eventHandlers.ts)):
 
 - **Adding an event type → additive (MINOR bump).** Old logs still fold; new logs use the new type.
 - **Removing or repurposing one → MAJOR break.** It changes how *historical* logs fold, so it must be deliberate.
 
-### The governance test pinning the ~19 event types
+### The governance test pinning the 25 event types
 
-[`eventSchema.test.ts`](../../packages/replay-vm/src/eventSchema.test.ts) pins the exact set of 19 event types the fold understands and fails CI if `knownEventTypes()` differs ([`eventSchema.test.ts:33`](../../packages/replay-vm/src/eventSchema.test.ts)). The pinned set is the union of the durable core's events and the Loom 2.0/2.1 kernel-ring events:
+[`eventSchema.test.ts`](../../packages/replay-vm/src/eventSchema.test.ts) pins the exact set of 25 event types the fold understands and fails CI if `knownEventTypes()` differs ([`eventSchema.test.ts:33`](../../packages/replay-vm/src/eventSchema.test.ts)). The pinned set is the union of the durable core's events and the Loom 2.0/2.1 kernel-ring events:
 
 | Category | Event types |
 |---|---|
@@ -278,8 +278,9 @@ The governance rule mirrors K1 ([`eventHandlers.ts:303`](../../packages/replay-v
 | Parallelism | `PARALLEL_STARTED`, `PARALLEL_COMPLETED` |
 | Advisory plane (P9) | `DECISION_RECORDED`, `OUTCOME_RECORDED` |
 | **Kernel rings (K2/K3/K6)** | `EFFECT_DENIED` (K2), `RESOURCE_METERED` (K3), `QUOTA_EXCEEDED` (K3), `SAFETY_BLOCKED` (K6) |
+| **Second hardening series (K7–K12, T1)** | `EGRESS_DENIED` (K7), `EFFECT_INDOUBT` (K9), `PAYLOAD_SHREDDED` (K10), `EXECUTION_MIGRATED` (K11), `APPROVAL_GRANTED` (K12), `TIMER_FIRED` (T1) |
 
-The ring events — `EFFECT_DENIED`, `RESOURCE_METERED`, `QUOTA_EXCEEDED`, `SAFETY_BLOCKED` — are governed exactly like every other event: they have pinned fold handlers, so a stored log carrying a denial, a metered cost, or a safety block replays identically forever. That is what makes the enforcement in K2/K3/K6 durable rather than incidental. Each schema addition is additive (MINOR): `SAFETY_BLOCKED` shipped in 1.1.0, `OUTCOME_RECORDED` in 1.2.0.
+The ring events — `EFFECT_DENIED`, `RESOURCE_METERED`, `QUOTA_EXCEEDED`, `SAFETY_BLOCKED`, and the second-series facts above — are governed exactly like every other event: they have pinned fold handlers, so a stored log carrying a denial, a metered cost, a safety block, an in-doubt effect, or a shredded payload replays identically forever. That is what makes the enforcement in K2–K12 durable rather than incidental. Each schema addition is additive (MINOR): `SAFETY_BLOCKED` shipped in 1.1.0, `OUTCOME_RECORDED` in 1.2.0, and the K7–K12/T1 facts landed across 1.3.0–1.9.0.
 
 ### Two gates, two levels
 

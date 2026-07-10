@@ -10,7 +10,7 @@ Start here. The docs are a progressive funnel — read top to bottom, or jump to
 | **[Architecture](architecture.md)** | Understand the mission, core principles (P1–P10), the runtime model, and *why* each decision was made. |
 | **[Loom 2.0 deep-dives](loom-2.0/00-overview.md)** | The execution-kernel evolution in full detail: data structures, algorithms, and diagrams for every subsystem. |
 | **[Presentation](presentation/loom-deck.md)** | Present Loom — the flagship deck (Marp). More decks in [`presentation/`](presentation/). |
-| **[ADRs](adr/)** | Read the full decision history (0001–0026, all accepted), one record per decision. |
+| **[ADRs](adr/)** | Read the full decision history (0001–0027, all accepted), one record per decision. |
 | **[Requirements](requirements/)** | Recorded requirement sets — the kernel-hardening series [K7–K12, T1–T2](requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md) and its code-grounded [evaluation & amendments](requirements/2026-07-10-kernel-hardening-evaluation.md) (all eight accepted with amendments, all implemented). |
 
 ## Loom 2.0 — the execution kernel
@@ -28,7 +28,7 @@ Loom 2.0 evolves the durable workflow runtime into the **execution kernel for in
 | [Event-schema reference](loom-2.0/10-event-schema-reference.md) | The complete on-disk event ABI: every event, payload, and fold |
 | [Encryption at rest](loom-2.0/11-encryption-at-rest.md) | K10.5 — encrypting the store files (SQLite/Postgres) and how it layers with field-level crypto + redaction |
 
-The foundational decision record is [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md); the second kernel-hardening series (K7–K12, T1–T2) is recorded in [ADRs 0019–0026](adr/) with its [evaluation & amendments](requirements/2026-07-10-kernel-hardening-evaluation.md).
+The foundational decision record is [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md); the second kernel-hardening series (K7–K12, T1–T2) is recorded in [ADRs 0019–0026](adr/) with its [evaluation & amendments](requirements/2026-07-10-kernel-hardening-evaluation.md). Two follow-ups then landed on `main`: a second DS&A optimization pass ([ADR 0015 amendment](adr/0015-dsa-performance-optimizations.md#amendments-second-dsa-pass-pr-63-2026-07-10)) and off-log advisory pre-warming ([ADR 0027](adr/0027-advisory-pre-warming.md)).
 
 ## The one-paragraph version
 

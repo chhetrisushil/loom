@@ -102,6 +102,10 @@ A runtime may route between models, elevate to a stronger one, learn, or optimiz
 
 The durable core stays small and boring (execution + event log + determinism + effect isolation). Everything "smart" — scheduling, reasoning, memory, prediction, optimization — is an **optional, composable module** in an ephemeral advisory plane that can affect *outcomes* only through logged decisions (P9) or *latency* only through off-log warming, and is **never a hidden input to the fold**. You never pay for a runtime you did not opt into; the simple path (`ctx.run`) stays a one-liner and the zero-overhead default is preserved. See [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
 
+### P11 — AI-native DX: natural language compiles to code, not runtime *(Loom 2.0)*
+
+Natural language is a **build-time** convenience, never a runtime input. `@loom/appgen` turns an intent into a structured `AppSpec` via a deterministic, offline directive parser (`parseIntent`), then emits **plain, static, inspectable TypeScript you own** (`generateApp`) — ordinary `flow$`/`step$`/`capability$` wired through `defineConfig`. There is no runtime interpretation of NL: the only "understanding" step is the swappable parser producing a spec, and codegen is pure and template-based, so the generated app is statically wired like any hand-written Loom code (**P4/P5 preserved**). See [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
+
 ---
 
 ## 3. The big picture
@@ -304,6 +308,16 @@ Every one of these is *a different lens on the durable log*:
 - **`@loom/cli`** (`loom`) — `logs` (tail the log), `debug` (time-travel to any sequence), `eval`, `check`, `gen`/`new` (build-time codegen), `deploy check`, `inspect` (web timeline + slider) ([ADRs 0010–0014](adr/)).
 - **`@loom/compiler`** — optional Vite plugin/CLI: `handler$` extraction, flow-graph analysis, resumability metadata.
 
+### 5.7 Kernel-hardening rings (K1–K12, T1–T2)
+
+The rings noted inline above (K2/K3/K6) are part of a larger set that makes Loom *earn* the word "kernel." Each ring is opt-in and byte-identical to Loom 1.x when unwired (P10), and each new durable verdict is folded like any other event (P9). The full set is implemented:
+
+- **K1** — versioned syscall ABI (`KERNEL_ABI`, `packages/workflow-runtime/src/abi.ts`); **K2** — capability grants / authority ring (`EFFECT_DENIED`); **K3** — resource metering & quotas (`RESOURCE_METERED`/`QUOTA_EXCEEDED`); **K4** — fault supervision (`SupervisingDispatcher`, restart/backoff + circuit breaker); **K5** — event-schema ABI governance (`EVENT_SCHEMA_VERSION`, `knownEventTypes()`); **K6** — behavioral safety (`safetyMiddleware`, `SAFETY_BLOCKED`).
+- **K7** — data-plane isolation & brokered egress (`@loom/isolate`, child-process boundary, `EGRESS_DENIED`); **K8** — cancellation, deadlines & bounded effects; **K9** — effect-delivery contract: idempotency keys, in-doubt parking (`EFFECT_INDOUBT`), fencing; **K10** — log lifecycle: retention, crypto-shredding (`PAYLOAD_SHREDDED`), redaction & at-rest encryption (`@loom/store-crypto`); **K11** — flow-code versioning for in-flight executions (`flowContentHash`, `EXECUTION_MIGRATED`); **K12** — identity, tenancy & delegated authority (`APPROVAL_GRANTED`).
+- **T1** — durable timers & scheduled executions (`ctx.sleep`/`sleepUntil`, `TIMER_FIRED`, `schedule$` cron); **T2** — wire-level kernel ABI (`@loom/wire-abi`, a JSON-RPC projection of K1 for language neutrality).
+
+See **[04 — Kernel Hardening](loom-2.0/04-kernel-hardening.md)** for the ring-by-ring detail and [ADRs 0016–0026](adr/).
+
 ---
 
 ## 6. Package map
@@ -459,5 +473,5 @@ Being honest about the edges:
 - **[Getting Started](getting-started.md)** — from zero to a running, suspend/resume flow in minutes.
 - **[Usage](usage.md)** — build a real app step by step.
 - **[User Guide](user-guide.md)** — every feature area with examples.
-- **[ADRs](adr/)** — the full decision history (0001–0015).
+- **[ADRs](adr/)** — the full decision history (0001–0027; 0016–0026 cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series).
 - **[Presentation](presentation/loom-deck.md)** — the deck.

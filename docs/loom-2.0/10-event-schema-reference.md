@@ -304,7 +304,7 @@ triggers downstream).
   approval), so "who approved" is durable evidence, not an unverified `approvedBy` string. A
   rejected approval never reaches the log — the resume is refused (`ApprovalRejectedError`)
   before any event commits.
-- **Payload:** `{ actor: string; verifiedBy: string; on: string }` (`on` = the approval event type)
+- **Payload:** `{ actor?: string; verifiedBy?: string; on?: string }` (all optional; `on` = the approval event type)
 - **Folds into:** appends to `variables._approvals`. **Pure audit** — the accompanying
   `EXECUTION_RESUMED` owns the lifecycle.
 

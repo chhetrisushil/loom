@@ -532,8 +532,8 @@ guaranteed boundary between userspace (flows, agents) and the durable kernel. `p
 **names and versions** that boundary so apps can depend on it and CI can catch drift.
 
 ```ts
-// packages/workflow-runtime/src/abi.ts:14
-export const KERNEL_ABI_VERSION = "1.0.0";
+// packages/workflow-runtime/src/abi.ts:15
+export const KERNEL_ABI_VERSION = "1.1.0";
 ```
 
 ### 5.1 Compatibility guarantee
@@ -567,6 +567,8 @@ the contract**.
 | `decide` | call | 1.0.0 | record an advisory/optimizer choice durably; served on replay (P9) |
 | `parallel` | call | 1.0.0 | run tasks concurrently, input-order-preserving |
 | `suspend` | call | 1.0.0 | pause durably until an external signal, then resume from here |
+| `sleep` | call | 1.1.0 | suspend durably for a duration; the wake is a logged `TIMER_FIRED` fact (T1) |
+| `sleepUntil` | call | 1.1.0 | suspend durably until an absolute time recorded in the log (T1) |
 | `emit` | call | 1.0.0 | append a durable domain event |
 | `stream` | call | 1.0.0 | emit an incremental delta event |
 | `ui` | accessor | 1.0.0 | drive durable, replayable UI surfaces (A2UI) |
@@ -576,6 +578,9 @@ _(Source of truth: `KERNEL_SYSCALLS` at `packages/workflow-runtime/src/abi.ts:29
 Two syscalls are new in Loom 2.0's conceptual model but ship at ABI `1.0.0`: `execute` (the
 generalization `run` now aliases) and `decide` (the Decision seam). Because `run` is preserved
 and the wire events stay `STEP_*`, no existing flow or log is affected — the ABI is a superset.
+
+The durable-timer seam (T1) then added `sleep` and `sleepUntil` as a clean **MINOR** bump to
+`1.1.0` — additive syscalls, so every 1.0.0 flow keeps working unchanged.
 
 ---
 
@@ -626,7 +631,7 @@ log on replay; nothing "smart" is ever a hidden input to the fold (P10).
 
 ### See also
 
-- **[00-overview.md](00-overview.md)** — the Loom 2.0 milestone map (M1–M2, K1–K6, P9–P10).
+- **[00-overview.md](00-overview.md)** — the Loom 2.0 milestone map (M1–M2, K1–K12, T1–T2, P9–P11).
 - **[10-event-schema-reference.md](10-event-schema-reference.md)** — the complete on-disk
   event-schema ABI: every event type, its payload, the state fields it folds into, and the
   governance rule.
