@@ -280,6 +280,27 @@ const handlers: Record<string, Handler> = {
     };
   },
 
+  // C.1 (execution-lifecycle authz) — an EXECUTION_DENIED fact: an ExecutionAuthorizer
+  // refused a lifecycle operation (resume/cancel) on an existing execution. Recorded as
+  // a durable audit fact in a reserved `_executionDenials` list, symmetric to
+  // EFFECT_DENIED (which gates effects). Pure audit — the op is refused by a thrown
+  // error; this fold does not change frame/execution status.
+  EXECUTION_DENIED: (state, event) => {
+    const payload = event.payload as { op: string; reason?: string; actor?: string };
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _executionDenials: appendAudit(state.variables._executionDenials as unknown[] | undefined, {
+          op: payload.op,
+          ...(payload.reason !== undefined && { reason: payload.reason }),
+          ...(payload.actor !== undefined && { actor: payload.actor }),
+        }),
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
   // Loom 2.0 (learning seam) — an OUTCOME_RECORDED fact: how a prior choice (a
   // route/capability/tool, by `key`) actually turned out. The symmetric counterpart
   // to DECISION_RECORDED ("what was chosen"): this records "how it went", so
@@ -622,7 +643,9 @@ export function getHandler(eventType: string): Handler | undefined {
 // 1.11.0: additive optional RESOURCE_METERED payload fields `memBytes`, `wallMs`,
 //   `netBytes` (ADR 0032 R1 — resource dimensions). Folded into `_resources` only when
 //   non-zero, so a log that never meters them replays byte-identically.
-export const EVENT_SCHEMA_VERSION = "1.11.0";
+// 1.12.0: added EXECUTION_DENIED (C.1 — execution-lifecycle authz). Pure audit into
+//   `_executionDenials`; a log that never denies replays byte-identically.
+export const EVENT_SCHEMA_VERSION = "1.12.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

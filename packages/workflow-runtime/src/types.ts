@@ -148,6 +148,52 @@ export interface RunOptions {
   principal?: PrincipalChain;
 }
 
+// ── C.1 — execution-lifecycle authorization ──────────────────────────────────
+//
+// K2's CapabilityAuthorizer gates EFFECTS inside a running execution. This gates the
+// execution LIFECYCLE itself — who may start / resume / cancel / query an execution —
+// one level up, using the principal already threaded from the trust boundary
+// (RunOptions.principal). It is pluggable and OPT-IN: unset ⇒ every operation is
+// permitted, byte-identically (G2). A denied resume/cancel additionally records a
+// durable EXECUTION_DENIED audit fact (symmetric to EFFECT_DENIED); a denied
+// start/query has no execution to append to and only throws.
+
+/** The execution-lifecycle operations an {@link ExecutionAuthorizer} can gate. */
+export type ExecutionOp = "start" | "resume" | "cancel" | "query";
+
+export interface ExecutionAuthzRequest {
+  op: ExecutionOp;
+  executionId: string;
+  workflowId: string;
+  principal?: PrincipalChain;
+}
+
+export type ExecutionAuthzVerdict = { allowed: true } | { allowed: false; reason?: string };
+
+/**
+ * Gates execution-lifecycle operations. Consulted (when configured) at the entry of
+ * `start`/`resume`/`cancel` and the public `loadState` (query). The policy decides how
+ * to treat a missing principal.
+ */
+export interface ExecutionAuthorizer {
+  authorize(request: ExecutionAuthzRequest): ExecutionAuthzVerdict;
+}
+
+/** Thrown when an {@link ExecutionAuthorizer} refuses a lifecycle operation. */
+export class ExecutionDeniedError extends Error {
+  constructor(
+    readonly op: ExecutionOp,
+    readonly executionId: string,
+    readonly reason?: string
+  ) {
+    super(
+      `execution operation "${op}" on "${executionId}" denied${reason !== undefined ? `: ${reason}` : ""}`
+    );
+    this.name = "ExecutionDeniedError";
+    Object.setPrototypeOf(this, ExecutionDeniedError.prototype);
+  }
+}
+
 /**
  * K12.2 — verifies a resume event that gates authority (an approval), so
  * "who approved" is EVIDENCE, not an unverified claim. Pluggable at the trust

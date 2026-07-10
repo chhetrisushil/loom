@@ -184,6 +184,18 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "Implements the existing Scheduler interface (drops into any consumer); L4 via its Infinity-fast-path bench. Not L5 — the scheduler is ephemeral, not a durable/wire contract.",
   },
   {
+    id: "execution-authz",
+    title: "Execution-Lifecycle Authorization",
+    package: "@loom/workflow-runtime",
+    level: "L2",
+    summary:
+      "Pluggable ExecutionAuthorizer gating start/resume/cancel/query at the trust boundary; denied resume/cancel record a durable EXECUTION_DENIED audit fact.",
+    evidence: {
+      conformanceTest: "packages/workflow-runtime/src/c1-lifecycle-authz.test.ts",
+    },
+    note: "L2 (tested; opt-in, byte-identical when unwired). Enforced only when a call carries a principal (trust-boundary model) — a boundary check, not a syscall, so no KERNEL_ABI change; adds EXECUTION_DENIED (EVENT_SCHEMA 1.12.0).",
+  },
+  {
     id: "scheduler",
     title: "Cooperative Scheduler",
     package: "@loom/scheduler",

@@ -4,6 +4,7 @@ export { WorkflowRuntime, WorkflowRuntime as ExecutionRuntime } from "./Workflow
 export {
   ApprovalRejectedError,
   EFFECT_INDOUBT_RESOLVED,
+  ExecutionDeniedError,
   FlowCodeMismatchError,
   FlowMigrationCheckError,
   StepTimeoutError,
@@ -20,8 +21,12 @@ export { parseCron, nextOccurrence, type CronSpec } from "./cron";
 export type {
   DecideOptions,
   EffectInDoubtResolution,
+  ExecutionAuthorizer,
+  ExecutionAuthzRequest,
+  ExecutionAuthzVerdict,
   ExecutionContext,
   ExecutionHandle,
+  ExecutionOp,
   ForkOptions,
   ForkResult,
   FlowRunner,
