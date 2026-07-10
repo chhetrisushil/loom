@@ -7,6 +7,8 @@ export { readRangeOf } from "./types";
 export { StaleFenceError, fenceOf } from "./fencing";
 export { lowerBoundBySequence, sliceBySequence } from "./sequenceRange";
 export { SqliteBranchRegistry } from "./SqliteBranchRegistry";
+export { InMemoryBranchRegistry } from "./InMemoryBranchRegistry";
+export type { InMemoryBranchRegistryOptions } from "./InMemoryBranchRegistry";
 export { InMemoryTimerStore } from "./timers";
 export type { TimerRecord, TimerStore } from "./timers";
 export { SqliteTimerStore } from "./SqliteTimerStore";

@@ -13,6 +13,7 @@
     { "path": "../event-runtime" },
     { "path": "../llm" },
     { "path": "../projection-runtime" },
+    { "path": "../snapshot-runtime" },
     { "path": "../workflow-runtime" }
   ]
 }
