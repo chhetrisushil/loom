@@ -26,8 +26,6 @@ export function createLlmEffect<TIn = string, TOut = string>(
     },
     // Wire pre-warm to the provider's own warm hook (connection/model cache),
     // only when the provider implements one.
-    options.provider.warm !== undefined
-      ? { warm: () => options.provider.warm?.() }
-      : {}
+    options.provider.warm !== undefined ? { warm: () => options.provider.warm?.() } : {}
   );
 }

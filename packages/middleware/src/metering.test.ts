@@ -65,7 +65,13 @@ describe("meteringMiddleware", () => {
     const controller = new AbortController();
     let t = 0;
     const pricing = vi.fn(() => ({ costUsd: 0.25 }));
-    const mw = meteringMiddleware({ pricing, clock: () => (t += 40) });
+    const mw = meteringMiddleware({
+      pricing,
+      clock: () => {
+        t += 40;
+        return t;
+      },
+    });
 
     const abortedCtx = { ...ctx(zero, emit), signal: controller.signal };
     const next = () =>

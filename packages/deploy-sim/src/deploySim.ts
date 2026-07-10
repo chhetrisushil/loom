@@ -119,10 +119,7 @@ export function simulateDeploy(logs: EventEnvelope[][], next: FlowResolver): Com
           workflowId,
           severity: "breaking",
           kind: "flow-code-drift",
-          detail:
-            `live execution was recorded under flow code ${recorded}; the new deployment is ` +
-            `${nextHash} — drain it, keep the original version registered (pinned resumption), ` +
-            `or migrate explicitly via resumeAs`,
+          detail: `live execution was recorded under flow code ${recorded}; the new deployment is ${nextHash} — drain it, keep the original version registered (pinned resumption), or migrate explicitly via resumeAs`,
         });
       }
     }

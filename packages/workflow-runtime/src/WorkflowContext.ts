@@ -328,7 +328,7 @@ export class WorkflowContextImpl implements WorkflowContext {
   // asynchronously; call sites must re-check it each time).
   private throwIfCancelled(): void {
     const signal = this.signal;
-    if (signal !== undefined && signal.aborted) {
+    if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error("execution cancelled");
     }
   }

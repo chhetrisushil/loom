@@ -12,7 +12,9 @@ describe("T2.1/T2.2 — the wire ABI is a projection of the K1 syscalls", () => 
   });
 
   it("partitions syscalls into unary vs channel (stream/ui are channels)", () => {
-    const channels = WIRE_METHODS.filter((m) => m.semantics === "channel").map((m) => m.syscall).sort();
+    const channels = WIRE_METHODS.filter((m) => m.semantics === "channel")
+      .map((m) => m.syscall)
+      .sort();
     expect(channels).toEqual(["stream", "ui"]);
     // execute/emit/etc. are unary.
     expect(WIRE_METHODS.find((m) => m.syscall === "execute")?.semantics).toBe("unary");
@@ -43,7 +45,9 @@ describe("T2.3 — language-agnostic fold conformance vectors", () => {
   });
 
   it("a broken fold is caught (a mutated expectation fails loudly)", () => {
-    const broken = [{ ...FOLD_VECTORS[0]!, expected: { ...FOLD_VECTORS[0]!.expected, status: "failed" } }];
+    const broken = [
+      { ...FOLD_VECTORS[0]!, expected: { ...FOLD_VECTORS[0]!.expected, status: "failed" } },
+    ];
     expect(runFoldVectors(broken)[0]?.passed).toBe(false);
   });
 });

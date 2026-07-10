@@ -75,12 +75,16 @@ async function deepResolve(value: unknown, resolver: SecretResolver): Promise<un
   return value;
 }
 
-function getPath(root: unknown, path: string): { parent: Record<string, unknown>; leaf: string } | undefined {
+function getPath(
+  root: unknown,
+  path: string
+): { parent: Record<string, unknown>; leaf: string } | undefined {
   const segs = path.split(".");
   let cursor = root as Record<string, unknown> | undefined;
   for (let i = 0; i < segs.length - 1; i++) {
     const next = cursor?.[segs[i] as string];
-    cursor = typeof next === "object" && next !== null ? (next as Record<string, unknown>) : undefined;
+    cursor =
+      typeof next === "object" && next !== null ? (next as Record<string, unknown>) : undefined;
     if (cursor === undefined) return undefined;
   }
   const leaf = segs[segs.length - 1] as string;

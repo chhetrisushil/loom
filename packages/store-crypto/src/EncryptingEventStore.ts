@@ -71,10 +71,7 @@ export class EncryptingEventStore implements EventStore {
     return this.inner.append({ ...envelope, payload });
   }
 
-  private async decryptAll(
-    executionId: string,
-    events: EventEnvelope[]
-  ): Promise<EventEnvelope[]> {
+  private async decryptAll(executionId: string, events: EventEnvelope[]): Promise<EventEnvelope[]> {
     // Single walk: compute the per-event envelope flag ONCE (was walked twice —
     // an all-events `.some()` fast-path check plus a second `hasEnvelope` inside
     // the map). Fast path: no marked event carries ciphertext → verbatim.

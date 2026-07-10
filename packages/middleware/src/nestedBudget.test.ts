@@ -33,11 +33,18 @@ function scopes(ctx: EffectContext): BudgetScope[] {
 describe("K12.3 — nested budgets (tenant → workflow → execution)", () => {
   it("meters an effect and records the delta into the broader scopes' projection", async () => {
     const ledger = new BudgetLedger();
-    const mw = nestedBudgetMiddleware({ ledger, scopesOf: scopes, pricing: () => ({ costUsd: 1 }) });
+    const mw = nestedBudgetMiddleware({
+      ledger,
+      scopesOf: scopes,
+      pricing: () => ({ costUsd: 1 }),
+    });
     const c = ctx();
     await mw(c, {}, async () => "ok");
 
-    expect(c.emit).toHaveBeenCalledWith("RESOURCE_METERED", expect.objectContaining({ costUsd: 1 }));
+    expect(c.emit).toHaveBeenCalledWith(
+      "RESOURCE_METERED",
+      expect.objectContaining({ costUsd: 1 })
+    );
     expect(ledger.spent("tenant:acme").costUsd).toBe(1);
     expect(ledger.spent("workflow:audit").costUsd).toBe(1);
   });
@@ -77,7 +84,13 @@ describe("K12.3 — nested budgets (tenant → workflow → execution)", () => {
     ledger.add("workflow:audit", { costUsd: 5 }); // workflow also over
     const mw = nestedBudgetMiddleware({ ledger, scopesOf: scopes, pricing: () => ({}) });
     const c = ctx();
-    await expect(mw(c, {}, vi.fn(async () => "ok"))).rejects.toBeInstanceOf(QuotaExceededError);
+    await expect(
+      mw(
+        c,
+        {},
+        vi.fn(async () => "ok")
+      )
+    ).rejects.toBeInstanceOf(QuotaExceededError);
     // Scopes are checked outermost-first, so the tenant trip is recorded.
     expect(c.emit).toHaveBeenCalledWith(
       "QUOTA_EXCEEDED",

@@ -87,7 +87,9 @@ describe("createLlmEffect", () => {
   });
 
   it("has no warm() when the provider does not implement one", () => {
-    const provider: LlmProvider = { complete: async () => ({ content: "", stopReason: "end_turn" }) };
+    const provider: LlmProvider = {
+      complete: async () => ({ content: "", stopReason: "end_turn" }),
+    };
     const effect = createLlmEffect({ provider, buildRequest: () => ({ messages: [] }) });
     expect(effect.warm).toBeUndefined();
   });

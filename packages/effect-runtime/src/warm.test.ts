@@ -4,7 +4,13 @@ import { LlmEffect } from "./effects/LlmEffect";
 import { ToolEffect } from "./effects/ToolEffect";
 import type { Effect, EffectContext, Warmer } from "./types";
 
-const ctx: EffectContext = { executionId: "e", workflowId: "wf", stepId: "s", attempt: 1, emit: vi.fn() };
+const ctx: EffectContext = {
+  executionId: "e",
+  workflowId: "wf",
+  stepId: "s",
+  attempt: 1,
+  emit: vi.fn(),
+};
 
 describe("EffectRuntime.warm — advisory pre-warm (latency-only)", () => {
   it("calls a registered effect's warm() hook", () => {

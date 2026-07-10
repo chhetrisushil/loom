@@ -76,7 +76,10 @@ function bootRuntime() {
   return { runtime, eventStore, snapshotStore, effects };
 }
 
-function sharedRuntime(stores: { eventStore: InMemoryAsyncEventStore; snapshotStore: InMemoryAsyncSnapshotStore }) {
+function sharedRuntime(stores: {
+  eventStore: InMemoryAsyncEventStore;
+  snapshotStore: InMemoryAsyncSnapshotStore;
+}) {
   const effects = new EffectRuntime();
   for (const id of ["collect-tool", "collect-tool-v2", "publish-tool"]) {
     effects.register(id, new ToolEffect(async () => ({ done: false })));
@@ -139,9 +142,9 @@ describe("K11.2 — version-aware registry", () => {
     const v2 = gatedFlow("2.0.0", [collectV2], {});
     b.registerFlow(v2.definition, v2.runner);
 
-    await expect(
-      b.resume("pin-2", { eventType: "Approval", payload: {} })
-    ).rejects.toBeInstanceOf(FlowCodeMismatchError);
+    await expect(b.resume("pin-2", { eventType: "Approval", payload: {} })).rejects.toBeInstanceOf(
+      FlowCodeMismatchError
+    );
   });
 });
 
@@ -164,9 +167,14 @@ describe("K11.3 — resumeAs migration verdicts", () => {
     const v2 = gatedFlow("2.0.0", [collectV2, publishV2], marker);
     b.registerFlow(v2.definition, v2.runner);
 
-    const handle = await b.resumeAs("mig-1", FLOW, { eventType: "Approval", payload: {} }, {
-      strategy: "replay-check",
-    });
+    const handle = await b.resumeAs(
+      "mig-1",
+      FLOW,
+      { eventType: "Approval", payload: {} },
+      {
+        strategy: "replay-check",
+      }
+    );
     const state = await handle.waitForCompletion();
     expect(state.status).toBe("completed");
     expect(marker.ranOn).toBe("2.0.0"); // the NEW code drove the resume
@@ -217,9 +225,14 @@ describe("K11.3 — resumeAs migration verdicts", () => {
     const v2 = gatedFlow("2.0.0", [renamed], marker);
     b.registerFlow(v2.definition, v2.runner);
 
-    const handle = await b.resumeAs("mig-1", FLOW, { eventType: "Approval", payload: {} }, {
-      strategy: "operator-ack",
-    });
+    const handle = await b.resumeAs(
+      "mig-1",
+      FLOW,
+      { eventType: "Approval", payload: {} },
+      {
+        strategy: "operator-ack",
+      }
+    );
     const state = await handle.waitForCompletion();
     expect(state.status).toBe("completed");
     expect(marker.ranOn).toBe("2.0.0");
@@ -232,9 +245,14 @@ describe("K11.3 — resumeAs migration verdicts", () => {
     b.registerFlow(v2.definition, v2.runner);
 
     const v1Hash = (await b.loadState("mig-1"))?.variables._flowHash;
-    const handle = await b.resumeAs("mig-1", FLOW, { eventType: "Approval", payload: {} }, {
-      strategy: "replay-check",
-    });
+    const handle = await b.resumeAs(
+      "mig-1",
+      FLOW,
+      { eventType: "Approval", payload: {} },
+      {
+        strategy: "replay-check",
+      }
+    );
     await handle.waitForCompletion();
 
     // EXECUTION_MIGRATED folded `_flowHash` to v2's hash — the durable pointer
@@ -278,14 +296,24 @@ describe("K11.3 — resumeAs migration verdicts", () => {
     const b = sharedRuntime(a);
     b.registerFlow(definition, adhocRunner);
     await expect(
-      b.resumeAs("mig-2", FLOW, { eventType: "Approval", payload: {} }, {
-        strategy: "replay-check",
-      })
+      b.resumeAs(
+        "mig-2",
+        FLOW,
+        { eventType: "Approval", payload: {} },
+        {
+          strategy: "replay-check",
+        }
+      )
     ).rejects.toBeInstanceOf(FlowMigrationCheckError); // "adhoc-probe" not in steps
 
-    const acked = await b.resumeAs("mig-2", FLOW, { eventType: "Approval", payload: {} }, {
-      strategy: "operator-ack",
-    });
+    const acked = await b.resumeAs(
+      "mig-2",
+      FLOW,
+      { eventType: "Approval", payload: {} },
+      {
+        strategy: "operator-ack",
+      }
+    );
     const state = await acked.waitForCompletion();
     expect(state.status).toBe("completed");
   });

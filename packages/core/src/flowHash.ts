@@ -30,12 +30,9 @@ function canonicalRetry(retry: RetryPolicy | undefined): string {
 }
 
 function canonicalStep(step: StepDefinition): string {
-  return [
-    step.id,
-    step.toolId ?? step.id,
-    step.timeoutMs ?? "",
-    canonicalRetry(step.retry),
-  ].join("|");
+  return [step.id, step.toolId ?? step.id, step.timeoutMs ?? "", canonicalRetry(step.retry)].join(
+    "|"
+  );
 }
 
 /** FNV-1a over the canonical structure — stable, dependency-free, fast. */

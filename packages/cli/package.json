@@ -29,6 +29,7 @@
     "@loom/event-runtime": "workspace:*",
     "@loom/replay-vm": "workspace:*",
     "@loom/scaffold": "workspace:*",
+    "@loom/spec": "workspace:*",
     "@loom/verify": "workspace:*"
   },
   "devDependencies": {

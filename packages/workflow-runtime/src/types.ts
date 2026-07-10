@@ -199,9 +199,7 @@ export class FlowMigrationCheckError extends Error {
     readonly orphanedStepIds: string[]
   ) {
     super(
-      `migration of execution "${executionId}" to flow "${toFlowId}" refused (replay-check): ` +
-        `recorded step(s) [${orphanedStepIds.join(", ")}] do not exist in the target flow — ` +
-        `their durable outputs would be orphaned and re-run live`
+      `migration of execution "${executionId}" to flow "${toFlowId}" refused (replay-check): recorded step(s) [${orphanedStepIds.join(", ")}] do not exist in the target flow — their durable outputs would be orphaned and re-run live`
     );
     this.name = "FlowMigrationCheckError";
     Object.setPrototypeOf(this, FlowMigrationCheckError.prototype);
@@ -216,12 +214,7 @@ export class FlowCodeMismatchError extends Error {
     readonly registeredHash: string
   ) {
     super(
-      `flow code changed under in-flight execution "${executionId}" (flow "${workflowId}"): ` +
-        `log was recorded under ${recordedHash}, registered code is ${registeredHash}. ` +
-        `Exits: (1) PIN — deploy/register the original flow code and resume on it; ` +
-        `(2) MIGRATE — resume with { allowFlowCodeMismatch: true } after verifying ` +
-        `fold-compatibility (loom deploy check / @loom/deploy-sim); ` +
-        `(3) DRAIN — cancel() the execution and restart it on the new code.`
+      `flow code changed under in-flight execution "${executionId}" (flow "${workflowId}"): log was recorded under ${recordedHash}, registered code is ${registeredHash}. Exits: (1) PIN — deploy/register the original flow code and resume on it; (2) MIGRATE — resume with { allowFlowCodeMismatch: true } after verifying fold-compatibility (loom deploy check / @loom/deploy-sim); (3) DRAIN — cancel() the execution and restart it on the new code.`
     );
     this.name = "FlowCodeMismatchError";
     Object.setPrototypeOf(this, FlowCodeMismatchError.prototype);

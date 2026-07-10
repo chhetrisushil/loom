@@ -66,7 +66,9 @@ describe("K12.1 — principal chain threaded to the authorizer (carried opaquely
       authorize: (r) => {
         seen.push(r.principal);
         // A tenant-scoped decision the KERNEL never made — the authorizer does.
-        return r.principal?.tenant === "acme" ? { allowed: true } : { allowed: false, reason: "wrong tenant" };
+        return r.principal?.tenant === "acme"
+          ? { allowed: true }
+          : { allowed: false, reason: "wrong tenant" };
       },
     };
     const app = boot({ authorizer });
@@ -84,7 +86,10 @@ describe("K12.1 — principal chain threaded to the authorizer (carried opaquely
 
   it("a wrong-tenant principal is denied (the authorizer interprets; the kernel just carries)", async () => {
     const authorizer: CapabilityAuthorizer = {
-      authorize: (r) => (r.principal?.tenant === "acme" ? { allowed: true } : { allowed: false, reason: "wrong tenant" }),
+      authorize: (r) =>
+        r.principal?.tenant === "acme"
+          ? { allowed: true }
+          : { allowed: false, reason: "wrong tenant" },
     };
     const app = boot({ authorizer });
     const handle = await app.runtime.start(
@@ -100,7 +105,14 @@ describe("K12.1 — principal chain threaded to the authorizer (carried opaquely
 
   it("no principal ⇒ today's behavior (undefined reaches the authorizer)", async () => {
     const seen: Array<CapabilityRequest["principal"]> = [];
-    const app = boot({ authorizer: { authorize: (r) => (seen.push(r.principal), { allowed: true }) } });
+    const app = boot({
+      authorizer: {
+        authorize: (r) => {
+          seen.push(r.principal);
+          return { allowed: true };
+        },
+      },
+    });
     const handle = await app.runtime.start(app.flow, {}, { executionId: "p-3" });
     await handle.waitForCompletion();
     expect(seen[0]).toBeUndefined();
@@ -133,7 +145,11 @@ describe("K12.2 — verified approvals (APPROVAL_GRANTED)", () => {
 
     const events = await app.eventStore.read("a-1");
     const granted = events.find((e: EventEnvelope) => e.eventType === "APPROVAL_GRANTED");
-    expect(granted?.payload).toMatchObject({ actor: "alice", verifiedBy: "sso.acme", on: "ApprovalGranted" });
+    expect(granted?.payload).toMatchObject({
+      actor: "alice",
+      verifiedBy: "sso.acme",
+      on: "ApprovalGranted",
+    });
     // Folded as durable evidence.
     const state = await app.runtime.loadState("a-1");
     expect((state?.variables._approvals as Array<{ actor?: string }>)[0]?.actor).toBe("alice");

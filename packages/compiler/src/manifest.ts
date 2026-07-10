@@ -1,6 +1,9 @@
 import * as path from "node:path";
 import type { PluginState, StepEntry } from "./types";
 
+/** The compiler manifest schema version (not semver — a monotonic integer string). */
+export const COMPILER_MANIFEST_VERSION = "1";
+
 export interface ManifestFlow {
   version: string;
   steps: string[];
@@ -88,7 +91,12 @@ export function buildManifest(
     };
   }
 
-  return { version: "1", flows, skills, flowModules: [...flowModuleSet].sort() };
+  return {
+    version: COMPILER_MANIFEST_VERSION,
+    flows,
+    skills,
+    flowModules: [...flowModuleSet].sort(),
+  };
 }
 
 export function printWarnings(manifest: LoomManifest): void {

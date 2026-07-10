@@ -1,11 +1,6 @@
 import type { EffectContext } from "@loom/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
-import {
-  InMemorySecretResolver,
-  isSecretRef,
-  redactionMiddleware,
-  secretRef,
-} from "./redaction";
+import { InMemorySecretResolver, isSecretRef, redactionMiddleware, secretRef } from "./redaction";
 
 function ctx(emit = vi.fn()): EffectContext {
   return { executionId: "e1", workflowId: "wf", stepId: "charge", attempt: 1, emit };
@@ -35,7 +30,10 @@ describe("K10.3 — redaction markers (secrets never enter the log)", () => {
 
   it("resolves references nested in arrays/objects", async () => {
     const resolver = new InMemorySecretResolver(
-      new Map([["a", "secretA"], ["b", "secretB"]])
+      new Map([
+        ["a", "secretA"],
+        ["b", "secretB"],
+      ])
     );
     const mw = redactionMiddleware({ resolver });
     let seen: unknown;

@@ -61,7 +61,8 @@ export async function brokeredFetch(
 
   // Resolve-and-pin: connect to the address resolved NOW, not whatever the
   // name resolves to at connect time.
-  const pinnedHost = isIP(parsed.hostname) !== 0 ? parsed.hostname : (await lookup(parsed.hostname)).address;
+  const pinnedHost =
+    isIP(parsed.hostname) !== 0 ? parsed.hostname : (await lookup(parsed.hostname)).address;
 
   const client = parsed.protocol === "https:" ? https : http;
   return new Promise<BrokeredResponse>((resolve, reject) => {

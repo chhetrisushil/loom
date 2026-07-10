@@ -6,6 +6,7 @@ import { cmdDeployCheck } from "./deploy";
 import { cmdGen, cmdNew } from "./gen";
 import { serveInspector } from "./inspector";
 import { cmdIntrospect } from "./introspect";
+import { cmdCompat, cmdKernelManifest } from "./kernel";
 import { cmdOptimize } from "./optimize";
 import { cmdProfile } from "./profile";
 import { cmdVerify } from "./verify";
@@ -48,6 +49,8 @@ const USAGE = `loom — project-local commands for a Loom app
   loom profile --db <path> <executionId>          flame graph + latency breakdown
   loom introspect --db <path> <executionId> [--graph N]  execution/task/decision/resource graphs
   loom optimize --db <path> <executionId>         advisory optimization report (recommendations)
+  loom kernel-manifest [--json] [--emit-docs <dir>]  kernel version + maturity manifest
+  loom compat --abi <v> --event-schema <v> [...]  validate a deployment's contract versions
   loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
   loom eval  --dir <path>                         replay golden logs vs expectations
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
@@ -108,6 +111,20 @@ async function main(argv: string[]): Promise<number> {
       const executionId = requirePositional(positionals, "executionId");
       console.log(await cmdOptimize(flags.db!, executionId));
       return 0;
+    }
+    case "kernel-manifest": {
+      console.log(
+        cmdKernelManifest({
+          json: flags.json === "true",
+          ...(flags["emit-docs"] !== undefined && { emitDocs: flags["emit-docs"] }),
+        })
+      );
+      return 0;
+    }
+    case "compat": {
+      const { text, ok } = cmdCompat(flags);
+      console.log(text);
+      return ok ? 0 : 1;
     }
     case "gen": {
       const dir = flags.dir ?? "app";

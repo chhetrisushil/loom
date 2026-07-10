@@ -40,7 +40,9 @@ describe("K10.2 — field-level crypto-shredding (events)", () => {
   it("encrypts only marked fields at rest; reads decrypt back to identical plaintext", async () => {
     const { inner, store } = setup();
     await store.append(ev("e1", 0, "EXECUTION_STARTED", { input: { name: "Ann" } }));
-    await store.append(ev("e1", 1, "STEP_COMPLETED", { stepId: "s", output: { ssn: "123-45-6789", ok: true } }));
+    await store.append(
+      ev("e1", 1, "STEP_COMPLETED", { stepId: "s", output: { ssn: "123-45-6789", ok: true } })
+    );
 
     // On disk (inner store): the marked field is an opaque envelope…
     const raw = await inner.read("e1");
@@ -109,7 +111,14 @@ describe("K10.2 / A1 — shredding covers snapshots (no erasure theater)", () =>
       startedAt: 0,
       updatedAt: 0,
     } as unknown as ExecutionState;
-    await snaps.save({ id: "s1", executionId: "e1", workflowId: "wf", sequence: 0, state, createdAt: 0 });
+    await snaps.save({
+      id: "s1",
+      executionId: "e1",
+      workflowId: "wf",
+      sequence: 0,
+      state,
+      createdAt: 0,
+    });
 
     // The snapshot decrypts before shredding…
     const before = await snaps.loadLatest("e1");

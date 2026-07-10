@@ -138,9 +138,9 @@ describe("worker fencing (K9.4)", () => {
     expect(completions.length).toBe(1);
     const fenced = completions[0]?.metadata as { fence?: number };
     expect(fenced.fence).toBe(2);
-    expect(
-      events.filter((e: EventEnvelope) => e.eventType === "EXECUTION_COMPLETED").length
-    ).toBe(1);
+    expect(events.filter((e: EventEnvelope) => e.eventType === "EXECUTION_COMPLETED").length).toBe(
+      1
+    );
   });
 
   it("keeps working with no fencing involved on a non-fencing store (G2)", async () => {

@@ -11,9 +11,7 @@ export class PayloadShreddedError extends Error {
     readonly executionId?: string
   ) {
     super(
-      `payload for subject "${subjectId}"${executionId ? ` (execution "${executionId}")` : ""} ` +
-        "was crypto-shredded: the encryption key is destroyed, so the sensitive fields are " +
-        "unrecoverable and replay cannot proceed"
+      `payload for subject "${subjectId}"${executionId ? ` (execution "${executionId}")` : ""} was crypto-shredded: the encryption key is destroyed, so the sensitive fields are unrecoverable and replay cannot proceed`
     );
     this.name = "PayloadShreddedError";
     Object.setPrototypeOf(this, PayloadShreddedError.prototype);

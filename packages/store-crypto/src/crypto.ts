@@ -19,9 +19,7 @@ interface EncEnvelope {
 
 function isEnvelope(v: unknown): v is EncEnvelope {
   return (
-    typeof v === "object" &&
-    v !== null &&
-    (v as { __loomEnc?: unknown }).__loomEnc === ENC_TAG
+    typeof v === "object" && v !== null && (v as { __loomEnc?: unknown }).__loomEnc === ENC_TAG
   );
 }
 
