@@ -486,3 +486,5 @@ discipline, one for what userspace calls, one for what the kernel persists.
   `ctx.decide`, and the kernel ABI (K1) that emit these events.
 - **[../architecture.md](../architecture.md)** — the durable core, the fold (P1/P2), the
   `ExecutionJournal`, and the subsystems.
+- **[11-encryption-at-rest.md](11-encryption-at-rest.md)** — K10.5: encrypting the store
+  files at rest (SQLite / Postgres) and how it layers with the app-level crypto (K10.2/K10.3).

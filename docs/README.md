@@ -26,6 +26,7 @@ Loom 2.0 evolves the durable workflow runtime into the **execution kernel for in
 | [Kernel hardening](loom-2.0/04-kernel-hardening.md) | Rings K1–K6 (ABI · authority · quotas · supervision · event-schema · safety) **plus the second series K7–K12 + T1–T2** (isolation/egress · cancellation · idempotency/fencing · log lifecycle · flow versioning · identity/tenancy · durable timers · wire ABI) |
 | [Capabilities, Agents, Intelligence & DX](loom-2.0/05-capabilities-agents-intelligence-dx.md) | Capabilities (M7) · agents (M8) · analytics/self-opt (M9–M11) · NL→codegen (P11) |
 | [Event-schema reference](loom-2.0/10-event-schema-reference.md) | The complete on-disk event ABI: every event, payload, and fold |
+| [Encryption at rest](loom-2.0/11-encryption-at-rest.md) | K10.5 — encrypting the store files (SQLite/Postgres) and how it layers with field-level crypto + redaction |
 
 The foundational decision record is [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md); the second kernel-hardening series (K7–K12, T1–T2) is recorded in [ADRs 0019–0026](adr/) with its [evaluation & amendments](requirements/2026-07-10-kernel-hardening-evaluation.md).
 

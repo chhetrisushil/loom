@@ -868,7 +868,13 @@ await ctx.run(chargeStep, { amount, apiKey: secretRef("stripe-key") });
 // secrets a tool RETURNS (replaced by a deterministic ref before STEP_COMPLETED).
 ```
 
-Store-file encryption-at-rest guidance (K10.5) is the remaining K10 follow-up.
+**Encryption at rest (K10.5).** The two seams above are *application-layer* (Loom encrypts
+fields / keeps secrets out of the log). Encrypting the store **files** themselves — against a
+stolen disk or leaked backup — is a storage-layer concern: volume encryption
+(FileVault/LUKS/encrypted-EBS for SQLite; managed-DB storage encryption or LUKS for Postgres),
+or SQLCipher/TDE for per-file/per-cluster keys. All three layers stack; see
+**[Encryption at rest](loom-2.0/11-encryption-at-rest.md)** for the SQLite and Postgres
+configuration and when to use which.
 
 ### Identity & delegated authority (K12)
 
