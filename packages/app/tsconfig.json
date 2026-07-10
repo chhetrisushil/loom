@@ -15,9 +15,11 @@
     { "path": "../effect-runtime" },
     { "path": "../event-runtime" },
     { "path": "../projection-runtime" },
+    { "path": "../replay-vm" },
     { "path": "../snapshot-runtime" },
     { "path": "../store-postgres" },
     { "path": "../telemetry" },
+    { "path": "../verify" },
     { "path": "../worker-runtime-local" },
     { "path": "../workflow-runtime" }
   ]

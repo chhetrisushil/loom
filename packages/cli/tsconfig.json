@@ -8,11 +8,13 @@
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
   "references": [
+    { "path": "../app" },
     { "path": "../core" },
     { "path": "../deploy-sim" },
     { "path": "../eval" },
     { "path": "../event-runtime" },
     { "path": "../replay-vm" },
-    { "path": "../scaffold" }
+    { "path": "../scaffold" },
+    { "path": "../verify" }
   ]
 }

@@ -21,12 +21,14 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@loom/app": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/deploy-sim": "workspace:*",
     "@loom/eval": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/replay-vm": "workspace:*",
-    "@loom/scaffold": "workspace:*"
+    "@loom/scaffold": "workspace:*",
+    "@loom/verify": "workspace:*"
   },
   "devDependencies": {
     "@loom/effect-runtime": "workspace:*",

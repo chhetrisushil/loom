@@ -1142,6 +1142,9 @@ importers:
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../projection-runtime
+      '@loom/replay-vm':
+        specifier: workspace:*
+        version: link:../replay-vm
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
@@ -1151,6 +1154,9 @@ importers:
       '@loom/telemetry':
         specifier: workspace:*
         version: link:../telemetry
+      '@loom/verify':
+        specifier: workspace:*
+        version: link:../verify
       '@loom/worker-runtime-local':
         specifier: workspace:*
         version: link:../worker-runtime-local
@@ -1238,6 +1244,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../app
       '@loom/core':
         specifier: workspace:*
         version: link:../core
@@ -1256,6 +1265,9 @@ importers:
       '@loom/scaffold':
         specifier: workspace:*
         version: link:../scaffold
+      '@loom/verify':
+        specifier: workspace:*
+        version: link:../verify
     devDependencies:
       '@loom/effect-runtime':
         specifier: workspace:*

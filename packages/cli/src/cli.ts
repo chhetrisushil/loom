@@ -5,6 +5,7 @@ import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { cmdDeployCheck } from "./deploy";
 import { cmdGen, cmdNew } from "./gen";
 import { serveInspector } from "./inspector";
+import { cmdVerify } from "./verify";
 
 interface Parsed {
   command: string | undefined;
@@ -39,6 +40,7 @@ const USAGE = `loom — project-local commands for a Loom app
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
   loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
+  loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
   loom logs  --db <path> <executionId>            print the event timeline
   loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
   loom eval  --dir <path>                         replay golden logs vs expectations
@@ -74,6 +76,12 @@ async function main(argv: string[]): Promise<number> {
     case "check": {
       requireFlag(flags, "manifest");
       const { text, result } = cmdCheck(flags.manifest!);
+      console.log(text);
+      return result.ok ? 0 : 1;
+    }
+    case "verify": {
+      requireFlag(flags, "config");
+      const { text, result } = await cmdVerify(flags.config!);
       console.log(text);
       return result.ok ? 0 : 1;
     }

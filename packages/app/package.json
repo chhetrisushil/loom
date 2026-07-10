@@ -25,9 +25,11 @@
     "@loom/effect-runtime": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/projection-runtime": "workspace:*",
+    "@loom/replay-vm": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@loom/store-postgres": "workspace:*",
     "@loom/telemetry": "workspace:*",
+    "@loom/verify": "workspace:*",
     "@loom/worker-runtime-local": "workspace:*",
     "@loom/workflow-runtime": "workspace:*"
   },
