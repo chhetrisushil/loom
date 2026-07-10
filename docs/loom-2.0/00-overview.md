@@ -146,13 +146,23 @@ flowchart TB
   M10 --> M11["M11 Runtime intelligence"]
   M7["M7 Capability deepening"]
   DX["P11 AI-native DX (NL→codegen)"]
-  subgraph K["Kernel-hardening (K1–K6)"]
+  subgraph K["Kernel-hardening — first series (K1–K6)"]
     K1["K1 syscall ABI"]
     K2["K2 protection ring"]
     K3["K3 accounting/quotas"]
     K4["K4 fault supervision"]
     K5["K5 event-schema ABI"]
     K6["K6 behavioral-safety ring"]
+  end
+  subgraph K2S["Kernel-hardening — second series (K7–K12, T1–T2)"]
+    K7["K7 data-plane isolation / egress"]
+    K8["K8 cancellation & deadlines"]
+    K9["K9 idempotency & fencing"]
+    K10["K10 log lifecycle / crypto-shred"]
+    K11["K11 flow-code versioning"]
+    K12["K12 identity & tenancy"]
+    T1["T1 durable timers"]
+    T2["T2 wire-level ABI"]
   end
 ```
 
@@ -175,6 +185,14 @@ flowchart TB
 | K4 fault supervision | `dispatcher` | [03](03-compute-scheduling-storage.md) / [04](04-kernel-hardening.md) |
 | K5 event-schema ABI | `replay-vm` | [04](04-kernel-hardening.md) / [10](10-event-schema-reference.md) |
 | K6 behavioral-safety ring | `middleware`, `replay-vm` | [04](04-kernel-hardening.md) / [ADR 0017](../adr/0017-k6-behavioral-safety-ring.md) |
+| K7 data-plane isolation & egress | `isolate` | [04 §9](04-kernel-hardening.md#9-the-second-hardening-series--k7k12-t1t2-implemented) / [ADR 0019](../adr/0019-k7-data-plane-isolation-and-egress-control.md) |
+| K8 cancellation & deadlines | `effect-runtime`, `workflow-runtime` | [ADR 0020](../adr/0020-k8-cancellation-deadlines-bounded-effects.md) |
+| K9 idempotency & fencing | `effect-runtime`, `replay-vm` | [ADR 0021](../adr/0021-k9-effect-delivery-contract-idempotency-fencing.md) |
+| K10 log lifecycle / crypto-shred | `store-crypto` | [11](11-encryption-at-rest.md) / [ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md) |
+| K11 flow-code versioning | `compiler`, `workflow-runtime` | [ADR 0023](../adr/0023-k11-flow-code-versioning-in-flight-executions.md) |
+| K12 identity & tenancy | `effect-runtime`, `workflow-runtime` | [ADR 0024](../adr/0024-k12-identity-tenancy-delegated-authority.md) |
+| T1 durable timers | `workflow-runtime` | [ADR 0025](../adr/0025-t1-durable-timers-and-scheduled-executions.md) |
+| T2 wire-level ABI | `wire-abi` | [ADR 0026](../adr/0026-t2-wire-level-kernel-abi.md) |
 | M12 learning seam | `analytics`, `reasoning`, `replay-vm` | [ADR 0018](../adr/0018-learning-seam-outcome-recorded.md) |
 
 ## 6. Does it earn "kernel"? — the readiness scorecard
@@ -197,6 +215,15 @@ rings:
 | **Fault supervision** | `SupervisingDispatcher` (restart/backoff + circuit breaker) | **K4** |
 | **On-disk ABI governance** | `EVENT_SCHEMA_VERSION` + pinned `knownEventTypes()` | **K5** |
 | **Behavioral / output safety** | `safetyMiddleware` validates effect input/output; a block is a durable `SAFETY_BLOCKED` fact | **K6** |
+| **Data-plane isolation** | `@loom/isolate` runs untrusted tool code behind a child-process boundary with brokered egress (`EGRESS_DENIED`) | **K7** |
+| **Preemption / bounded work** | cancellation, enforced deadlines & bounded effects (a non-cooperative kill path) | **K8** |
+| **Exactly-enough delivery** | idempotency keys, in-doubt parking (`EFFECT_INDOUBT`), fencing tokens | **K9** |
+| **Data lifecycle / erasure** | retention, crypto-shredding (`PAYLOAD_SHREDDED`), redaction & at-rest encryption | **K10** |
+| **Code/version isolation** | `flowContentHash` pins or migrates in-flight executions (`EXECUTION_MIGRATED`), never silently | **K11** |
+| **Identity & tenancy** | principal chain, verified approvals (`APPROVAL_GRANTED`), delegated authority, tenant-scoped stores | **K12** |
+| **Timer service** | durable `ctx.sleep`/`sleepUntil` + scheduled executions (`TIMER_FIRED`, `schedule$` cron) | **T1** |
+| **Language neutrality** | `@loom/wire-abi` — a versioned JSON-RPC projection of the K1 syscall surface | **T2** |
+| **Latency (advisory)** | off-log pre-warming of cold resources (K7 child, LLM connection, scheduled flows) — never a fold input (P10) | M6 / [pre-warm](../adr/0027-advisory-pre-warming.md) |
 | Observability | the log as the substrate; analytics/runtime intelligence | M9–M11 |
 | Learning (closed loop) | `OUTCOME_RECORDED` → `rankFromOutcomes` → `rankedRouter`; outcomes feed back into routing (all logged, P9) | M12 |
 

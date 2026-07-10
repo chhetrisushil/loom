@@ -165,17 +165,37 @@ Logged recall → replay serves the **same** recalled set even if the store late
 
 ---
 
-## Does it earn "kernel"? — the six rings (K1–K6)
+## Does it earn "kernel"? — the first six rings (K1–K6)
 
 A framework becomes a kernel when it adds the enforcement rings a real kernel has:
 
 | Ring | Mechanism |
 |---|---|
-| **K1 Syscall ABI** | `KERNEL_SYSCALLS` — versioned, conformance-pinned (`execute/run/decide/parallel/suspend/emit/stream/ui`) |
+| **K1 Syscall ABI** | `KERNEL_SYSCALLS` — versioned, conformance-pinned (`execute/run/decide/parallel/suspend/sleep/sleepUntil/emit/stream/ui`) |
 | **K2 Protection** | `EffectRuntime` denies ungranted effects (`GrantTable`, least-privilege); denials logged |
 | **K3 Accounting** | `meteringMiddleware` — tokens/$/latency metered + budget **admission control** |
 | **K4 Supervision** | `SupervisingDispatcher` — restart/backoff + **circuit breaker** |
 | **K5 Event-schema ABI** | pinned on-disk event set + version; `deploy-sim` as the flow gate |
+| **K6 Behavioral safety** | `safetyMiddleware` validates effect input/output; a block is a durable `SAFETY_BLOCKED` fact |
+
+---
+
+## The second hardening series — K7–K12, T1–T2 (all implemented)
+
+The first six rings governed *who/how-much/what's-safe*. The second series closes the gaps a production kernel needs:
+
+| Ring | Mechanism |
+|---|---|
+| **K7 Data-plane isolation** | `@loom/isolate` — untrusted tool code behind a child-process boundary + **brokered egress** (`EGRESS_DENIED`) |
+| **K8 Cancellation & deadlines** | non-cooperative kill path; enforced deadlines; bounded in-flight effects |
+| **K9 Delivery contract** | idempotency keys, in-doubt parking (`EFFECT_INDOUBT`), fencing tokens |
+| **K10 Log lifecycle** | retention, **crypto-shredding** (`PAYLOAD_SHREDDED`), redaction & at-rest encryption (`@loom/store-crypto`) |
+| **K11 Flow-code versioning** | `flowContentHash` pins or migrates in-flight executions (`EXECUTION_MIGRATED`) — never silent |
+| **K12 Identity & tenancy** | principal chain · verified approvals (`APPROVAL_GRANTED`) · delegated authority · tenant-scoped stores |
+| **T1 Durable timers** | `ctx.sleep`/`sleepUntil` + scheduled executions (`TIMER_FIRED`, `schedule$` cron) |
+| **T2 Wire-level ABI** | `@loom/wire-abi` — a versioned JSON-RPC projection of K1 for language neutrality |
+
+> Each is **opt-in** and **byte-identical to Loom 1.x when unwired** (P10); every verdict is a folded event (P9). One ADR per item ([0019–0026](../adr/)).
 
 ---
 
@@ -192,6 +212,15 @@ A framework becomes a kernel when it adds the enforcement rings a real kernel ha
 | **Resource accounting & quotas** | K3 | ✅ |
 | **Fault supervision** | K4 | ✅ |
 | **On-disk ABI governance** | K5 | ✅ |
+| **Behavioral / output safety** | K6 | ✅ |
+| **Data-plane isolation** | K7 | ✅ |
+| **Cancellation / bounded work** | K8 | ✅ |
+| **Exactly-enough delivery** | K9 | ✅ |
+| **Data lifecycle / erasure** | K10 | ✅ |
+| **Code/version isolation** | K11 | ✅ |
+| **Identity & tenancy** | K12 | ✅ |
+| **Timer service** | T1 | ✅ |
+| **Language neutrality (wire ABI)** | T2 | ✅ |
 
 The part a kernel *cannot fake* — a privileged, unbypassable, deterministic core — was Loom's from day one.
 
@@ -257,9 +286,9 @@ Each evolves independently. Anything that's a marketplace or an interface is **n
 ## Proof it holds together
 
 - **Everything additive & opt-in** — existing apps compile and replay unchanged
-- **94 / 94** test tasks green across every milestone
-- **Benchmarks within committed baselines** throughout — the zero-overhead default is preserved
-- **13 milestone commits**; full decision record in **ADR 0016**
+- **Full suite green** across every milestone *and* both kernel-hardening series (**681** tests passing)
+- **Benchmarks within committed baselines** throughout — the zero-overhead default is preserved; a later DS&A pass + off-log pre-warming only *widened* the margin
+- Decision record: **ADR 0016** (2.0 core) + **0017–0027** (K6, learning seam, K7–K12/T1–T2, pre-warming)
 - Verified against a **live Postgres 17** for the scale-out path
 
 <!-- The discipline: every milestone re-ran the full suite + benches. No milestone shipped that could break determinism. -->
@@ -274,7 +303,7 @@ Each evolves independently. Anything that's a marketplace or an interface is **n
 | The two spines + ABI | `docs/loom-2.0/01-execution-and-decision-seams.md` |
 | Reasoning & memory | `docs/loom-2.0/02-reasoning-and-memory.md` |
 | Compute · scheduling · storage | `docs/loom-2.0/03-compute-scheduling-storage.md` |
-| The kernel rings (K1–K6) | `docs/loom-2.0/04-kernel-hardening.md` |
+| The kernel rings (K1–K12, T1–T2) | `docs/loom-2.0/04-kernel-hardening.md` |
 | Capabilities · agents · intelligence · DX | `docs/loom-2.0/05-capabilities-agents-intelligence-dx.md` |
 | The on-disk event ABI | `docs/loom-2.0/10-event-schema-reference.md` |
 | The decision record | `docs/adr/0016-…md` |

@@ -46,3 +46,33 @@ One `handleEvent` per streamed token; subscriber fires once per event today.
 
 Phase 4 coalescing target: keep wall time flat or better while collapsing
 subscriber calls from O(events) → O(microtask flushes).
+
+## DS&A hot-path optimizations (PR #63)
+
+Algorithmic wins on paths that are hit per-tick or per-append. Each is a strict
+complexity improvement with identical outputs — no behavior change, so they only
+*widen* the no-regression margin. See [ADR 0015](adr/0015-dsa-performance-optimizations.md#amendments).
+
+| Path | Before | After |
+|------|--------|-------|
+| `nextOccurrence` cron matching (`workflow-runtime/src/cron.ts`) | minute-by-minute scan | **field-jumping** — advance directly to the next matching field |
+| Reasoning model routing (`reasoning/src/router.ts`) | linear scan of routes per call | **prebuilt index** — O(1) tag lookup |
+| Crypto field walks (`store-crypto/src/crypto.ts`) | repeated full-object traversal | single-pass walk over marked paths |
+| `deploy-sim` census | re-derived per flow | hoisted/linearized |
+
+These sit off the render fast-path and within the >~2% regression gate above.
+
+## Advisory pre-warming — cold-start hidden (PR #64)
+
+Off-log, opt-in warming of cold resources (P10 advisory plane; latency-only, never a
+fold input). Measured on the K7 isolated-executor boundary — the largest cold start:
+
+| K7 isolated tool — first-call latency | ms |
+|---|---|
+| cold (lazy fork + module require on first `execute`) | ~54.2 |
+| warm (child pre-spawned at boot via `warm()` / `spec.warm`) | ~2.0 |
+| **cold start hidden by pre-warm** | **~52** |
+
+Pre-warming boosts *latency, not throughput*, and only pays off at genuine I/O /
+cold-start boundaries (K7 child, LLM connection, scheduled fires) — so it is scoped
+there and nowhere else. See [ADR 0027](adr/0027-advisory-pre-warming.md).

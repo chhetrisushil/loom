@@ -1,6 +1,6 @@
 # ADR 0015 — Data-structure & algorithm optimizations on the hot paths
 
-- Status: Accepted (performance)
+- Status: Accepted (performance; **amended 2026-07-10** — see [Amendments](#amendments-second-dsa-pass-pr-63-2026-07-10))
 - Date: 2026-07-07
 - Builds on: [ADR 0014](0014-deploy-check-and-inspector.md)
 
@@ -80,3 +80,29 @@ surface is inherent to immutable folding and out of scope here.)
 - End-to-end: the `incident-war-room` fork/simulate/promote demo passes over the new
   SQLite `copyPrefix` path.
 - Full repo: build + typecheck clean, 82/82 test tasks green, biome clean (560).
+
+## Amendments (second DS&A pass, PR #63, 2026-07-10)
+
+The original audit (above) judged `cron`, the reasoning router, the crypto field
+walks, and `deploy-sim` as "already linear … explicitly left alone." A later,
+finer-grained pass over the *newer* Loom 2.0 / kernel-hardening code found that while
+those paths were linear in the input, they carried avoidable per-call constant factors
+or re-derivation on paths now hit per-tick or per-append. Four additive optimizations
+landed (identical outputs, strict complexity/constant wins; within the no-regression
+gate — they only widen the margin):
+
+- **`nextOccurrence` field-jumping** (`@loom/workflow-runtime`, `cron.ts`) — the cron
+  matcher advanced minute-by-minute; it now jumps directly to the next matching field
+  value. Matters because `TimerService` (T1) evaluates it on every tick.
+- **Router tag index** (`@loom/reasoning`, `router.ts`) — the model router scanned its
+  route list per call; a prebuilt index makes tag→route an O(1) lookup.
+- **Crypto single-pass walk** (`@loom/store-crypto`, `crypto.ts`) — marked-field
+  redaction/encryption traversed the object repeatedly; collapsed to one pass over the
+  marked paths. On the append hot path when K10 is wired.
+- **`deploy-sim` linearization** (`@loom/deploy-sim`) — hoisted per-flow re-derivation
+  out of the census loop.
+
+This does **not** revise A1–B3; it supplements them. See the
+[benchmarks](../benchmarks.md#dsa-hot-path-optimizations-pr-63) for the path table.
+Separately, **PR #64** added off-log advisory pre-warming (latency-only, P10) —
+recorded in its own [ADR 0027](0027-advisory-pre-warming.md), not here.

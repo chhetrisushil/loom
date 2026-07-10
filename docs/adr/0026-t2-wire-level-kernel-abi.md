@@ -66,8 +66,11 @@ Adopted per the [T2 evaluation](../requirements/2026-07-10-kernel-hardening-eval
   pinned TS surface from a wire spec would churn a stable ABI and degrade the hand-written
   `ctx` DX for zero user benefit.
 - **A2 — syscall semantics partition**: before choosing JSON-RPC vs gRPC, the spec
-  partitions the eight syscalls into unary (`execute/run/decide/parallel/suspend/emit`) vs
-  **channel** (`stream`, `ui`) semantics — the channel pair drives the transport decision.
+  partitions the syscalls into unary (`execute/run/decide/parallel/suspend/sleep/sleepUntil/emit`)
+  vs **channel** (`stream`, `ui`) semantics — the channel pair drives the transport decision.
+  (`deriveWireMethods` generates the table from `KERNEL_SYSCALLS`, so when T1 added
+  `sleep`/`sleepUntil` the wire surface picked them up as unary automatically — ten methods now,
+  never a hand-maintained list that could drift.)
 - **A3 — who re-drives**: the spec must define resumption ownership for wire clients — the
   kernel folds and stays authoritative for state; the *client* re-drives flow logic after
   resume, so suspended wire executions need a client-reconnect contract, and a resume with
