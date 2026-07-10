@@ -80,6 +80,7 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._migrations` | `EXECUTION_MIGRATED` | `Array<{ toFlowId, toHash?, fromHash?, strategy? }>` — migration audit trail |
 | `variables._timers` | `TIMER_FIRED` | `Array<{ firedAt, wakeAt?, scheduleId?, occurrence? }>` — durable-timer wakes (T1) |
 | `variables._egress` | `EGRESS_DENIED` | `Array<{ toolId?, stepId?, target?, reason? }>` — kernel-side egress denials (K7) |
+| `variables._shredded` | `PAYLOAD_SHREDDED` | `{ subjectId?, reason?, at }` — crypto-shred tombstone (K10) |
 
 ---
 
@@ -296,6 +297,18 @@ triggers downstream).
   accompanying resume events own the lifecycle. Replay re-applies the same verdict at the
   same sequence (G1).
 
+#### `PAYLOAD_SHREDDED`
+- **Introduced:** Loom 2.1 — K10, crypto-shredding ([ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md)).
+  A subject's encryption key was destroyed (`shredSubject`, `@loom/store-crypto`), so this
+  execution's sensitive payload fields are permanently unrecoverable. Written AT SHRED TIME
+  by the lifecycle service (A3) — never at replay — so replay stays a pure read and
+  deterministically encounters the erasure.
+- **Payload:** `{ subjectId?: string; reason?: string }`
+- **Folds into:** `variables._shredded = { subjectId?, reason?, at }`. **Pure audit.** The
+  loud failure is enforced by the encrypting store: a decrypting read of a shredded subject
+  throws `PayloadShreddedError` rather than folding ciphertext or a default (never a silent
+  third behavior).
+
 #### `EGRESS_DENIED`
 - **Introduced:** Loom 2.1 — K7, data-plane isolation ([ADR 0019](../adr/0019-k7-data-plane-isolation-and-egress-control.md)).
   The kernel-side egress broker refused an isolated tool's network target: not in the tool's
@@ -423,7 +436,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts:311`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.7.0"; // …1.4.0 EXECUTION_STARTED.flowHash (K11.1); 1.5.0 EXECUTION_MIGRATED (K11.3); 1.6.0 TIMER_FIRED (T1); 1.7.0 EGRESS_DENIED (K7)
+export const EVENT_SCHEMA_VERSION = "1.8.0"; // …1.5.0 EXECUTION_MIGRATED (K11.3); 1.6.0 TIMER_FIRED (T1); 1.7.0 EGRESS_DENIED (K7); 1.8.0 PAYLOAD_SHREDDED (K10)
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
@@ -439,15 +452,15 @@ export function knownEventTypes(): string[] {
   that must be deliberate. A conformance test pins `knownEventTypes()` so the set cannot drift
   silently.
 
-The complete pinned set (the 23 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
+The complete pinned set (the 24 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
 returns them):
 
 `DECISION_RECORDED`, `EFFECT_DENIED`, `EFFECT_INDOUBT`, `EGRESS_DENIED`,
 `EXECUTION_CANCELLED`, `EXECUTION_COMPLETED`, `EXECUTION_FAILED`, `EXECUTION_MIGRATED`,
 `EXECUTION_RESUMED`, `EXECUTION_STARTED`, `EXECUTION_SUSPENDED`, `OUTCOME_RECORDED`,
-`PARALLEL_COMPLETED`, `PARALLEL_STARTED`, `QUOTA_EXCEEDED`, `RESOURCE_METERED`,
-`SAFETY_BLOCKED`, `STEP_CANCELLED`, `STEP_COMPLETED`, `STEP_FAILED`, `STEP_RETRYING`,
-`STEP_STARTED`, `TIMER_FIRED`.
+`PARALLEL_COMPLETED`, `PARALLEL_STARTED`, `PAYLOAD_SHREDDED`, `QUOTA_EXCEEDED`,
+`RESOURCE_METERED`, `SAFETY_BLOCKED`, `STEP_CANCELLED`, `STEP_COMPLETED`, `STEP_FAILED`,
+`STEP_RETRYING`, `STEP_STARTED`, `TIMER_FIRED`.
 
 This mirrors the kernel-ABI guarantee (K1): just as `KERNEL_SYSCALLS` pins the syscall surface,
 `knownEventTypes()` pins the on-disk event surface — same additive-MINOR / breaking-MAJOR

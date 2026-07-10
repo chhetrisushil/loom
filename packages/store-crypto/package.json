@@ -1,0 +1,31 @@
+{
+  "name": "@loom/store-crypto",
+  "version": "0.0.1",
+  "description": "K10 crypto-shredding — field-level payload encryption wrappers over any EventStore/SnapshotStore, with per-subject keys and GDPR-erasure by key destruction (PAYLOAD_SHREDDED)",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/core": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@loom/replay-vm": "workspace:*",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
