@@ -75,8 +75,11 @@ export class EncryptingEventStore implements EventStore {
     executionId: string,
     events: EventEnvelope[]
   ): Promise<EventEnvelope[]> {
-    // Fast path: nothing encrypted (no marked events ever appended) → verbatim.
-    if (!events.some((e) => hasEnvelope(e.payload))) return events;
+    // Single walk: compute the per-event envelope flag ONCE (was walked twice —
+    // an all-events `.some()` fast-path check plus a second `hasEnvelope` inside
+    // the map). Fast path: no marked event carries ciphertext → verbatim.
+    const encrypted = events.map((e) => hasEnvelope(e.payload));
+    if (!encrypted.some(Boolean)) return events;
     const subjectId = this.subjectOf({ executionId, workflowId: events[0]?.workflowId ?? "" });
     const key = await this.keys.get(subjectId);
     if (key === null) {
@@ -84,9 +87,9 @@ export class EncryptingEventStore implements EventStore {
       // or DESTROYED. Fail loudly (K10.2): the tombstone is already in the log.
       throw new PayloadShreddedError(subjectId, executionId);
     }
-    return events.map((e) => {
+    return events.map((e, i) => {
       const paths = this.sensitive[e.eventType];
-      if (paths === undefined || !hasEnvelope(e.payload)) return e;
+      if (paths === undefined || !encrypted[i]) return e;
       return { ...e, payload: mapPaths(e.payload, paths, (v) => decryptValue(key, v)) };
     });
   }

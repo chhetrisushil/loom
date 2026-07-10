@@ -73,17 +73,6 @@ export function parseCron(expr: string): CronSpec {
   return { minutes, hours, daysOfMonth, months, daysOfWeek };
 }
 
-function matches(spec: CronSpec, ms: number): boolean {
-  const d = new Date(ms);
-  return (
-    spec.minutes.has(d.getUTCMinutes()) &&
-    spec.hours.has(d.getUTCHours()) &&
-    spec.daysOfMonth.has(d.getUTCDate()) &&
-    spec.months.has(d.getUTCMonth() + 1) &&
-    spec.daysOfWeek.has(d.getUTCDay())
-  );
-}
-
 const MINUTE_MS = 60_000;
 /** Safety bound: a valid 5-field expression always matches within 5 years. */
 const MAX_SCAN_MINUTES = 5 * 366 * 24 * 60;
@@ -92,12 +81,45 @@ const MAX_SCAN_MINUTES = 5 * 366 * 24 * 60;
  * The first occurrence of `spec` STRICTLY AFTER `afterMs`, in epoch ms (UTC,
  * minute granularity). Pure and deterministic — every node computes the same
  * occurrence for the same expression and instant.
+ *
+ * Field-jumping, not minute-stepping: when a coarser field (month/day/hour)
+ * fails, every finer instant within it provably fails too, so we jump straight
+ * to the start of the next candidate month/day/hour instead of testing each of
+ * its (up to ~44 000) minutes. This yields the SAME instant a minute-by-minute
+ * scan would — every skipped minute is one that cannot match — while turning a
+ * worst case of ~2.6M `Date` allocations (e.g. a leap-day cron, or a daily job
+ * polled once a minute past its time) into at most a few thousand.
  */
 export function nextOccurrence(spec: CronSpec, afterMs: number): number {
-  // Start at the next whole minute after `afterMs`.
-  let t = (Math.floor(afterMs / MINUTE_MS) + 1) * MINUTE_MS;
-  for (let i = 0; i < MAX_SCAN_MINUTES; i++, t += MINUTE_MS) {
-    if (matches(spec, t)) return t;
+  const startMs = (Math.floor(afterMs / MINUTE_MS) + 1) * MINUTE_MS;
+  const limitMs = startMs + MAX_SCAN_MINUTES * MINUTE_MS;
+  let t = startMs;
+  while (t < limitMs) {
+    const d = new Date(t);
+    const year = d.getUTCFullYear();
+    const month0 = d.getUTCMonth(); // 0-indexed for Date.UTC
+    if (!spec.months.has(month0 + 1)) {
+      // Whole month excluded → jump to 00:00 of the 1st of the next month.
+      t = Date.UTC(year, month0 + 1, 1, 0, 0, 0);
+      continue;
+    }
+    const date = d.getUTCDate();
+    if (!(spec.daysOfMonth.has(date) && spec.daysOfWeek.has(d.getUTCDay()))) {
+      // Whole day excluded → jump to 00:00 of the next day.
+      t = Date.UTC(year, month0, date + 1, 0, 0, 0);
+      continue;
+    }
+    const hour = d.getUTCHours();
+    if (!spec.hours.has(hour)) {
+      // Whole hour excluded → jump to :00 of the next hour.
+      t = Date.UTC(year, month0, date, hour + 1, 0, 0);
+      continue;
+    }
+    if (!spec.minutes.has(d.getUTCMinutes())) {
+      t += MINUTE_MS; // this minute excluded → the next one
+      continue;
+    }
+    return t; // all five fields match
   }
   throw new Error("cron expression never matches (scanned 5 years)");
 }

@@ -53,6 +53,9 @@ export interface CompatibilityReport {
  */
 export function simulateDeploy(logs: EventEnvelope[][], next: FlowResolver): CompatibilityReport {
   const issues: CompatibilityIssue[] = [];
+  // K11.4 — a deploy corpus has many logs but few unique flows; hash each flow
+  // definition once, not once per log.
+  const hashCache = new Map<string, string>();
 
   for (const log of logs) {
     if (log.length === 0) continue;
@@ -105,7 +108,11 @@ export function simulateDeploy(logs: EventEnvelope[][], next: FlowResolver): Com
     const recorded = state.variables._flowHash;
     const def = flow.definition as Partial<FlowDefinition>;
     if (live && typeof recorded === "string" && def._tag === "FlowDefinition") {
-      const nextHash = flowContentHash(def as FlowDefinition);
+      let nextHash = hashCache.get(workflowId);
+      if (nextHash === undefined) {
+        nextHash = flowContentHash(def as FlowDefinition);
+        hashCache.set(workflowId, nextHash);
+      }
       if (nextHash !== recorded) {
         issues.push({
           executionId,

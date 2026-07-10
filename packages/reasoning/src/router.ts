@@ -28,14 +28,24 @@ export const tagRouter: Router = {
 // recorded as a durable decision (P9) — auditable and override-able, never silently
 // autonomous (P10).
 export function rankedRouter(rankings: Record<string, number>): Router {
+  // Index the ranking once at construction; each select is then a single O(R)
+  // max-scan instead of an O(R log R) filter+sort per call (routing decisions
+  // are on the reasoning hot path). Ties keep the tier-ascending order the
+  // caller passes — the first route holding the max rank wins, which is exactly
+  // what a stable sort's `[0]` yielded.
+  const rank = new Map(Object.entries(rankings));
   return {
     select(req: ReasoningRequest, routes: ModelRoute[]): ModelRoute {
-      const ranked = routes
-        .filter((r) => rankings[r.id] !== undefined)
-        .sort((a, b) => (rankings[b.id] ?? 0) - (rankings[a.id] ?? 0));
-      const top = ranked[0];
-      if (top !== undefined) return top;
-      return tagRouter.select(req, routes);
+      let best: ModelRoute | undefined;
+      let bestRank = Number.NEGATIVE_INFINITY;
+      for (const r of routes) {
+        const value = rank.get(r.id);
+        if (value !== undefined && value > bestRank) {
+          bestRank = value;
+          best = r;
+        }
+      }
+      return best ?? tagRouter.select(req, routes);
     },
   };
 }
