@@ -365,6 +365,28 @@ const handlers: Record<string, Handler> = {
     };
   },
 
+  // Loom 2.1 (K10) — a crypto-shred tombstone: the subject's encryption key was
+  // destroyed, so this execution's sensitive payload fields are permanently
+  // unrecoverable (GDPR erasure of an append-only log). Written AT SHRED TIME by
+  // the lifecycle service (never at replay). Marks `variables._shredded` so the
+  // folded state records the erasure; a decrypting store read of the affected
+  // fields fails loudly with PayloadShreddedError (the erasure is not silent).
+  PAYLOAD_SHREDDED: (state, event) => {
+    const p = event.payload as { subjectId?: string; reason?: string };
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _shredded: {
+          ...(p.subjectId !== undefined && { subjectId: p.subjectId }),
+          ...(p.reason !== undefined && { reason: p.reason }),
+          at: event.timestamp,
+        },
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
   // Loom 2.1 (K7) — an egress denial: the kernel-side broker refused an
   // isolated tool's network target (not in its static allowlist), BEFORE any
   // connection was opened. Folded into a reserved `_egress` audit list,
@@ -519,7 +541,8 @@ export function getHandler(eventType: string): Handler | undefined {
 // 1.5.0: added EXECUTION_MIGRATED (K11.3).
 // 1.6.0: added TIMER_FIRED (T1 — durable timers).
 // 1.7.0: added EGRESS_DENIED (K7 — data-plane isolation & egress control).
-export const EVENT_SCHEMA_VERSION = "1.7.0";
+// 1.8.0: added PAYLOAD_SHREDDED (K10 — crypto-shredding).
+export const EVENT_SCHEMA_VERSION = "1.8.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
