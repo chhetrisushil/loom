@@ -75,6 +75,16 @@ describe("resolveVerifyInput adapter", () => {
     });
     expect(input.grants).toBeUndefined();
   });
+
+  it("feeds nonDeterministicByFlow into the flow's determinism input (#82)", () => {
+    const app = defineConfig({ storage: { kind: "memory" }, flows: [flow()] });
+    const input = resolveVerifyInput(app.runtime, {
+      nonDeterministicByFlow: { gated: [{ callee: "Date.now", insideDecide: false }] },
+    });
+    expect(input.flows[0]?.nonDeterministicCalls).toEqual([
+      { callee: "Date.now", insideDecide: false },
+    ]);
+  });
 });
 
 describe("defineConfig({ verify }) boot gate", () => {

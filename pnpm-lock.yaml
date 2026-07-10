@@ -2079,6 +2079,9 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../core
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../dispatcher
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
@@ -2091,6 +2094,9 @@ importers:
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
+      '@loom/worker-runtime':
+        specifier: workspace:*
+        version: link:../worker-runtime
       '@loom/workflow-runtime':
         specifier: workspace:*
         version: link:../workflow-runtime

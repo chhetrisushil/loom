@@ -1,5 +1,11 @@
 import type { ExecutionState } from "@loom/core";
 
+/**
+ * SPI version for the {@link SnapshotStore} contract (ADR 0033). Pinned by
+ * `runSnapshotStoreConformance` in `@loom/testing`.
+ */
+export const SNAPSHOT_STORE_SPI_VERSION = "1.0.0";
+
 export interface Snapshot {
   id: string;
   executionId: string;

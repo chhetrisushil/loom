@@ -36,6 +36,8 @@ export type {
   DecisionEdgeKind,
   DecisionGraph,
 } from "./decisions";
+export { replayCost, schedulerSnapshot } from "./replay";
+export type { ReplayCost, SchedulerCounters } from "./replay";
 export { advisoryPipeline, formatAdvisory } from "./advisory";
 export type {
   RecommendationKind,

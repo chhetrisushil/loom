@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
+import { type ReplayCost, replayCost } from "./replay";
 
 // ── Runtime observability / profiler (ADR 0029) ──────────────────────────────
 //
@@ -304,15 +305,17 @@ export interface ExecutionProfile {
   executionId: string;
   flame: FlameNode;
   latency: LatencyBreakdown;
+  replay: ReplayCost;
 }
 
-/** Combined per-execution profile: flame graph + latency breakdown for one run. */
+/** Combined per-execution profile: flame graph + latency breakdown + replay cost for one run. */
 export function profile(events: EventEnvelope[], executionId: string): ExecutionProfile {
   const scoped = events.filter((e) => e.executionId === executionId);
   return {
     executionId,
     flame: flameGraph(scoped, executionId),
     latency: latencyBreakdown(scoped),
+    replay: replayCost(scoped),
   };
 }
 
@@ -336,6 +339,12 @@ export function formatProfile(p: ExecutionProfile): string {
     "latency:",
     `  wall ${l.wallMs}ms · busy ${l.busyMs}ms · suspended ${l.suspendedMs}ms`,
     `  steps ${l.stepCount} (mean ${Math.round(l.steps.meanMs)}ms, max ${l.steps.maxMs}ms) · suspends ${l.suspends} · resumes ${l.resumes} · decisions ${l.decisions}`
+  );
+  const rc = p.replay;
+  lines.push(
+    "",
+    "replay cost:",
+    `  ${rc.folds} fold(s) · ${rc.frameAllocations} frame alloc(s) · ${rc.auditAppends} audit append(s)`
   );
   return lines.join("\n");
 }

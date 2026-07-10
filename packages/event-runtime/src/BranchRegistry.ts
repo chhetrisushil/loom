@@ -9,6 +9,12 @@
  * divergent ExecutionStates have no principled join, so we don't fake one.
  */
 
+/**
+ * SPI version for the {@link BranchRegistry} contract (ADR 0033). Pinned by
+ * `runBranchRegistryConformance` in `@loom/testing`.
+ */
+export const BRANCH_REGISTRY_SPI_VERSION = "1.0.0";
+
 /** A named, movable pointer to an execution head. */
 export interface BranchRef {
   /** Branch name, e.g. "main" or "spec/scale-replicas". Unique. */
