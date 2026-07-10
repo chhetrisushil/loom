@@ -1,6 +1,6 @@
 # ADR 0033 — SPI consolidation + conformance contracts
 
-- Status: Proposed (2026-07-10) — accepted item #6 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md)
+- Status: Accepted (2026-07-10) — accepted item #6 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: C1 the [SPI map](../loom-2.0/12-extension-seams.md); C2 `runEventStoreConformance` / `runSnapshotStoreConformance` / `runBranchRegistryConformance` in `@loom/testing`, self-tested against in-memory + SQLite backends. Added a reference `InMemoryBranchRegistry`.
 - Date: 2026-07-10
 - Builds on: [ADR 0016](0016-loom-2.0-execution-runtime-and-decision-seam.md) (K1 kernel ABI + conformance test, K5 event-schema governance), the existing store / dispatcher / worker / effect / scheduler SPIs
 

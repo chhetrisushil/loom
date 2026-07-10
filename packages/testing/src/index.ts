@@ -20,3 +20,8 @@ export {
   type CrashingEventStore,
   type CrashingEventStoreOptions,
 } from "./crash";
+export {
+  runEventStoreConformance,
+  runSnapshotStoreConformance,
+  runBranchRegistryConformance,
+} from "./conformance";
