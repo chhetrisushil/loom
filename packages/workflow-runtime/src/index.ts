@@ -18,6 +18,7 @@ export {
 } from "./LogLifecycle";
 export { parseCron, nextOccurrence, type CronSpec } from "./cron";
 export type {
+  DecideOptions,
   EffectInDoubtResolution,
   ExecutionContext,
   ExecutionHandle,
@@ -25,6 +26,7 @@ export type {
   ForkResult,
   FlowRunner,
   RegisteredFlow,
+  ResourceDimension,
   ResumeAuthenticator,
   ResumeEvent,
   ResumeVerdict,

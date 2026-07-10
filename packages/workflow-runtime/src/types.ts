@@ -17,6 +17,25 @@ export interface SuspendConfig {
 /** T1 — the resume eventType a durable timer fires with (a governed kernel fact). */
 export const TIMER_FIRED = "TIMER_FIRED";
 
+/**
+ * Options for {@link ExecutionContext.decide}. Shared by the interface and the impl so
+ * the two cannot drift. `rationale`/`source` are provenance; the rest are the ADR 0030
+ * D1 materialization fields — DESCRIPTIVE metadata recorded alongside the choice but
+ * never read back on replay (getDecision returns just `choice`), so P9 is untouched.
+ */
+export interface DecideOptions {
+  rationale?: unknown;
+  source?: string;
+  /** The other choices considered, for "why did it pick X over Y" explainability. */
+  alternatives?: unknown;
+  /** Advisory predicted cost of the chosen alternative, in USD. */
+  estimatedCostUsd?: number;
+  /** Advisory predicted latency of the chosen alternative, in ms. */
+  estimatedLatencyMs?: number;
+  /** Confidence in the choice (convention: 0–1). */
+  confidence?: number;
+}
+
 // Loom 2.0: the execution-facing context. `execute` is the generalized durable
 // primitive (any task kind); `run` is the step-shaped alias kept for source
 // compatibility and the simplest path. `WorkflowContext` remains an alias below.
@@ -43,7 +62,7 @@ export interface ExecutionContext {
   decide<T = unknown>(
     decisionId: string,
     decider: () => T | Promise<T>,
-    opts?: { rationale?: unknown; source?: string }
+    opts?: DecideOptions
   ): Promise<T>;
 
   // ADR 0032 (R2) — bounded, logged budget negotiation. Resolves the grant through the

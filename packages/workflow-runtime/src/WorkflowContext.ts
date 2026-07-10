@@ -8,6 +8,7 @@ import { parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
 import { EFFECT_INDOUBT_RESOLVED, StepTimeoutError, TIMER_FIRED } from "./types";
 import type {
+  DecideOptions,
   EffectInDoubtResolution,
   ResourceDimension,
   SuspendConfig,
@@ -220,21 +221,7 @@ export class WorkflowContextImpl implements WorkflowContext {
   async decide<T = unknown>(
     decisionId: string,
     decider: () => T | Promise<T>,
-    opts?: {
-      rationale?: unknown;
-      source?: string;
-      // D1 (ADR 0030) — descriptive materialization fields. Explainability metadata only:
-      // they are recorded alongside the choice but NEVER read back on replay (getDecision
-      // returns just `choice`), so determinism (P9) is untouched. All optional and additive.
-      /** The other choices considered, for "why did it pick X over Y" explainability. */
-      alternatives?: unknown;
-      /** Advisory predicted cost of the chosen alternative, in USD. */
-      estimatedCostUsd?: number;
-      /** Advisory predicted latency of the chosen alternative, in ms. */
-      estimatedLatencyMs?: number;
-      /** Confidence in the choice (convention: 0–1). */
-      confidence?: number;
-    }
+    opts?: DecideOptions
   ): Promise<T> {
     if (this.vm.hasDecision(decisionId)) {
       return this.vm.getDecision(decisionId) as T;
