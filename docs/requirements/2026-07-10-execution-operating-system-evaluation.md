@@ -2,6 +2,10 @@
 
 > **Status:** Adopted — this evaluation amends the [recorded requirements](2026-07-10-execution-operating-system.md)
 > and drives ADRs [0028](../adr/0028-runtime-verification.md)–[0033](../adr/0033-spi-conformance-contracts.md).
+> **Follow-up:** the *affirmative* counterpart — "what should Loom add over 5–10 years?" — is
+> evaluated as an acceptance record in
+> [execution-kernel-forward-requirements-evaluation](2026-07-10-execution-kernel-forward-requirements-evaluation.md)
+> (it re-derives this accepted scope; 7 of 8 already shipped, plus ADR 0034).
 > **Date:** 2026-07-10
 > **Stance:** strict gatekeeper — the minimal-kernel (P10) and deterministic-replay (P2/P9)
 > invariants are defended hard; items that revive deliberately-dropped designs or restate

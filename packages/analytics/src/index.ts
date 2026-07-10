@@ -36,6 +36,15 @@ export type {
   DecisionEdgeKind,
   DecisionGraph,
 } from "./decisions";
+export { advisoryPipeline, formatAdvisory } from "./advisory";
+export type {
+  RecommendationKind,
+  Recommendation,
+  RecommendationOutcome,
+  AdvisoryObserve,
+  AdvisoryReport,
+  AdvisoryOptions,
+} from "./advisory";
 export { flameGraph, latencyBreakdown, profile, formatProfile } from "./profile";
 export type {
   FlameKind,
