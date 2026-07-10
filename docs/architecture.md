@@ -350,6 +350,55 @@ flowchart TB
 
 Each ring is a distinct plane — *authority* (K2/K12), *resource* (K3), *behavior* (K6), *data* (K7/K10), and *lifecycle* (K8/K9/K11) — and each verdict is an ordinary folded event, so the log is the audit trail with no extra machinery. See **[04 — Kernel Hardening](loom-2.0/04-kernel-hardening.md)** for the ring-by-ring detail, the **[API reference → Kernel hardening & security](api-reference.org#kernel-hardening)** for each ring's export surface, and [ADRs 0016–0026](adr/).
 
+### 5.8 The three-direction arc — simulation testing, coordination, multi-tenant isolation
+
+Three frontiers built as opt-in packages over the stable syscall surface (ADRs 0036–0041). The
+throughline is **P10**: only ONE of the six touched a kernel contract — an additive
+`EXECUTION_DENIED` event (`EVENT_SCHEMA_VERSION 1.12.0`); `KERNEL_ABI` is unchanged at 1.1.0. Two
+plan-proposed kernel changes (a `CHILD_COMPLETED` event and a `ctx.compensate` syscall) were found
+**unnecessary** and dropped — the work composes from existing primitives.
+
+- **Deterministic Simulation Testing** — `@loom/dst`: a seeded virtual clock + fault-injecting store
+  (generalizing `crashingEventStore`: crash / appendReject / msgLoss / msgDup, explore→record /
+  replay modes) drive the real kernel under adversarial schedules; five invariants + `checkProperty`
+  search→shrink→`replaySchedule`. Test/dev-only ⇒ zero production overhead by construction.
+- **Multi-tenant isolation** — `@loom/audit-chain` (fold-invisible hash chain + optional HMAC, tamper
+  detection via `verifyChain`), `@loom/fair-scheduler` (weighted round-robin across tenants behind
+  the concurrency cap; drop-in `Scheduler`), and **execution-lifecycle authorization** (a pluggable
+  `ExecutionAuthorizer` gating start/resume/cancel/query at the trust boundary → durable
+  `EXECUTION_DENIED`).
+- **Coordination primitives** — `@loom/live-query` (loadState + `EventStore.subscribe`),
+  `@loom/orchestration` (spawn a child workflow and durably await it via decide/suspend/resume + a
+  completion-correlating supervisor), and `@loom/saga` (register compensators, run them in reverse on
+  failure as replay-safe `ctx.run` steps).
+
+```mermaid
+flowchart TB
+  Sys["Stable syscall surface — KERNEL_ABI 1.1.0 (unchanged)<br/>execute · run · decide · parallel · suspend · sleep · emit"]
+
+  subgraph Iso["Multi-tenant isolation (Direction C)"]
+    AZ["execution-lifecycle authz → EXECUTION_DENIED (only schema touch: 1.12.0)"]
+    FS["@loom/fair-scheduler — per-tenant weighted RR"]
+    AC["@loom/audit-chain — hash chain + HMAC (fold-invisible)"]
+  end
+
+  subgraph Coord["Coordination primitives (Direction B)"]
+    LQ["@loom/live-query — push state on each event"]
+    OR["@loom/orchestration — child spawn + await (no new syscall)"]
+    SG["@loom/saga — reverse-order compensation (ctx.run steps)"]
+  end
+
+  DST["@loom/dst — Deterministic Simulation Testing (test/dev-only)<br/>seeded clock + fault store · invariants · shrink · replay"]
+
+  Sys --> Iso
+  Sys --> Coord
+  DST -.validates.-> Iso
+  DST -.validates.-> Coord
+  DST -.validates.-> Sys
+```
+
+DST is the throughline the other two lean on: audit-chain integrity, and saga's no-double-compensation, are each proven by a DST property under seeded crashes. See [ADRs 0036–0041](adr/) and the maturity badges in **[docs/spec/maturity.md](spec/maturity.md)**.
+
 ---
 
 ## 6. Package map
@@ -385,6 +434,13 @@ flowchart TB
   cli["@loom/cli"] --> examples
   testing["@loom/testing"] --> examples
   disp["@loom/dispatcher + worker-runtime*"] --> app
+
+  audit["@loom/audit-chain"] -. wraps .-> events
+  fair["@loom/fair-scheduler"] -. "drop-in Scheduler" .-> disp
+  lq["@loom/live-query"] --> wrt
+  orch["@loom/orchestration"] --> wrt
+  saga["@loom/saga"] --> wrt
+  dst["@loom/dst (test/dev)"] -. drives .-> wrt
 ```
 
 | Group | Packages |
@@ -397,6 +453,7 @@ flowchart TB
 | **Compute / distribution** | `dispatcher`, `worker-runtime`, `worker-runtime-local`, `worker-runtime-remote`, `worker-server`, `platform-cloudrun`, `graph-executor`, `scheduler`, `store-postgres` |
 | **Kernel hardening / security** | `effect-runtime` (K2 authz + K12 delegation), `middleware` (K3 metering, K6 safety, K10 redaction, K12 nested budgets), `isolate` (K7 data-plane isolation & egress), `store-crypto` (K10 encryption & crypto-shredding), `event-runtime`/`snapshot-runtime` (K12 tenant scoping), `wire-abi` (T2), `telemetry` |
 | **Intelligence / DX** | `analytics`, `appgen`, `cli`, `eval`, `deploy-sim`, `testing`, `scaffold`, `compiler`, `telemetry` |
+| **Three-direction arc** | `dst` (simulation testing), `audit-chain` + `fair-scheduler` + execution-authz in `workflow-runtime` (multi-tenant isolation), `live-query` + `orchestration` + `saga` (coordination) — ADRs 0036–0041 |
 
 > **Loom 2.0.** The packages in **bold-new** groups above — `reasoning`, `store-postgres`, `analytics`, `appgen` — plus deepenings of `workflow-runtime`, `effect-runtime`, `middleware`, `dispatcher`, `memory`, `capability`, and `agent`, constitute the **execution-kernel evolution**. Its full data structures, algorithms, and diagrams live in [`docs/loom-2.0/`](loom-2.0/00-overview.md); the decision record is [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
 
