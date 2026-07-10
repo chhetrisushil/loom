@@ -219,7 +219,7 @@ npx loom debug --db .loom/events.db <executionId> --at 3
 npx loom inspect --db .loom/events.db <executionId>
 ```
 
-Every command is just a different **lens on the same event log** — see the [architecture overview](architecture.md#56-dx-tooling-loomcli-loomeval-loomdeploy-sim-loomtesting-loomscaffold-loomcompiler).
+Every command is just a different **lens on the same event log** — the full command reference is the **[CLI Usage Guide](usage-cli.md)**, and the [architecture overview](architecture.md#56-dx-tooling-loomcli-loomeval-loomdeploy-sim-loomtesting-loomscaffold-loomcompiler) explains where it fits.
 
 ---
 

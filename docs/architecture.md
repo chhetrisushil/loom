@@ -124,7 +124,7 @@ flowchart TB
     C1["WorkflowRuntime<br/>start · resume · fork"]
     C2["ExecutionJournal<br/>sole sequencer + writer"]
     C3["ReplayVM + foldEvents<br/>pure state reconstruction"]
-    C4["EffectRuntime + middleware<br/>isolate side effects"]
+    C4["EffectRuntime + middleware<br/>isolate side effects · protection ring (K2–K12)"]
   end
 
   subgraph Edges["🔌  Pluggable edges"]
@@ -251,8 +251,16 @@ All side effects — tool calls, LLM calls, human waits, agent-to-agent calls �
 
 ```mermaid
 flowchart LR
-  Call["ctx.run(step)"] --> M1["retryMiddleware"] --> M2["…middleware…"] --> Eff["Effect.execute<br/>(tool / llm / human / a2a)"]
+  Call["ctx.run(step)"] --> Auth{"CapabilityAuthorizer<br/>(K2 — granted?)"}
+  Auth -->|denied| Deny["EFFECT_DENIED<br/>CapabilityDeniedError → step fails"]
+  Auth -->|allowed| M1["retryMiddleware"]
+  M1 --> M2["meteringMiddleware<br/>(K3 — budget → QUOTA_EXCEEDED)"]
+  M2 --> M3["safetyMiddleware<br/>(K6 — validate in/out → SAFETY_BLOCKED)"]
+  M3 --> M4["redactionMiddleware<br/>(K10 — resolve secretRefs)"]
+  M4 --> Eff["Effect.execute<br/>tool · llm · human · a2a<br/>(K7 IsolatedToolEffect for untrusted tools)"]
 ```
+
+Every middleware after `retryMiddleware` is opt-in; the authorizer, metering, safety, and redaction rings are each *omittable* and byte-identical to the permissive path when unwired (P10). The full ring set is catalogued in §5.7.
 
 ### 5.3 Projections & UI (`@loom/projection-runtime`, `@loom/a2ui`, `@loom/blueprint-runtime`, renderers)
 
@@ -316,7 +324,31 @@ The rings noted inline above (K2/K3/K6) are part of a larger set that makes Loom
 - **K7** — data-plane isolation & brokered egress (`@loom/isolate`, child-process boundary, `EGRESS_DENIED`); **K8** — cancellation, deadlines & bounded effects; **K9** — effect-delivery contract: idempotency keys, in-doubt parking (`EFFECT_INDOUBT`), fencing; **K10** — log lifecycle: retention, crypto-shredding (`PAYLOAD_SHREDDED`), redaction & at-rest encryption (`@loom/store-crypto`); **K11** — flow-code versioning for in-flight executions (`flowContentHash`, `EXECUTION_MIGRATED`); **K12** — identity, tenancy & delegated authority (`APPROVAL_GRANTED`).
 - **T1** — durable timers & scheduled executions (`ctx.sleep`/`sleepUntil`, `TIMER_FIRED`, `schedule$` cron); **T2** — wire-level kernel ABI (`@loom/wire-abi`, a JSON-RPC projection of K1 for language neutrality).
 
-See **[04 — Kernel Hardening](loom-2.0/04-kernel-hardening.md)** for the ring-by-ring detail and [ADRs 0016–0026](adr/).
+```mermaid
+flowchart TB
+  Sys["Minimal kernel — K1 syscall ABI · K5 event-schema governance<br/>execute · run · decide · parallel · suspend · sleep · emit"]
+
+  subgraph Rings["Enforcement rings — opt-in, byte-identical when unwired (P10)"]
+    K2["K2 authority → EFFECT_DENIED"]
+    K3["K3 quotas → QUOTA_EXCEEDED"]
+    K6["K6 safety → SAFETY_BLOCKED"]
+    K7["K7 isolation / egress → EGRESS_DENIED"]
+    K8["K8 cancel / deadline → EXECUTION_CANCELLED"]
+    K9["K9 delivery / fencing → EFFECT_INDOUBT"]
+    K10["K10 log lifecycle / crypto → PAYLOAD_SHREDDED"]
+    K11["K11 flow versioning → EXECUTION_MIGRATED"]
+    K12["K12 identity / tenancy → APPROVAL_GRANTED"]
+  end
+
+  Svc["Kernel services — T1 durable timers (TIMER_FIRED) · T2 wire ABI (JSON-RPC projection of K1)"]
+
+  Sys --> Rings
+  Sys --> Svc
+  Rings --> Log[("event log — every verdict folds as a durable fact (P9)")]
+  Svc --> Log
+```
+
+Each ring is a distinct plane — *authority* (K2/K12), *resource* (K3), *behavior* (K6), *data* (K7/K10), and *lifecycle* (K8/K9/K11) — and each verdict is an ordinary folded event, so the log is the audit trail with no extra machinery. See **[04 — Kernel Hardening](loom-2.0/04-kernel-hardening.md)** for the ring-by-ring detail, the **[API reference → Kernel hardening & security](api-reference.org#kernel-hardening)** for each ring's export surface, and [ADRs 0016–0026](adr/).
 
 ---
 
@@ -341,9 +373,13 @@ flowchart TB
   events --> app
   snap --> app
   effects --> app
-  mw["@loom/middleware"] --> app
+  mw["@loom/middleware<br/>(K3/K6/K10/K12)"] --> app
   proj["@loom/projection-runtime"] --> app
   a2a["@loom/a2a"] --> app
+  iso["@loom/isolate (K7)"] --> effects
+  crypto["@loom/store-crypto (K10)"] --> events
+  crypto --> snap
+  wire["@loom/wire-abi (T2)"] -. "projects K1 ABI" .-> wrt
 
   app --> examples["examples / your app"]
   cli["@loom/cli"] --> examples
@@ -359,6 +395,7 @@ flowchart TB
 | **Projection / UI** | `projection-runtime`, `a2ui`, `blueprint-runtime`, `renderer-react`, `renderer-terminal` |
 | **Agentic** | `agent`, `a2a`, `llm`, `reasoning`, `mcp`, `capability`, `intent`, `planner`, `memory`, `orchestrator` |
 | **Compute / distribution** | `dispatcher`, `worker-runtime`, `worker-runtime-local`, `worker-runtime-remote`, `worker-server`, `platform-cloudrun`, `graph-executor`, `scheduler`, `store-postgres` |
+| **Kernel hardening / security** | `effect-runtime` (K2 authz + K12 delegation), `middleware` (K3 metering, K6 safety, K10 redaction, K12 nested budgets), `isolate` (K7 data-plane isolation & egress), `store-crypto` (K10 encryption & crypto-shredding), `event-runtime`/`snapshot-runtime` (K12 tenant scoping), `wire-abi` (T2), `telemetry` |
 | **Intelligence / DX** | `analytics`, `appgen`, `cli`, `eval`, `deploy-sim`, `testing`, `scaffold`, `compiler`, `telemetry` |
 
 > **Loom 2.0.** The packages in **bold-new** groups above — `reasoning`, `store-postgres`, `analytics`, `appgen` — plus deepenings of `workflow-runtime`, `effect-runtime`, `middleware`, `dispatcher`, `memory`, `capability`, and `agent`, constitute the **execution-kernel evolution**. Its full data structures, algorithms, and diagrams live in [`docs/loom-2.0/`](loom-2.0/00-overview.md); the decision record is [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).

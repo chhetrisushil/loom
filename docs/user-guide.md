@@ -429,6 +429,8 @@ loom inspect --db <path> [--port N]             web inspector (timeline + slider
 - **`gen` / `new`** implement the folder convention via **build-time codegen** (a static `loom.gen.ts`), not runtime globbing ([ADR 0011](adr/0011-folder-convention-codegen.md)).
 - **`eval` / `deploy check` / `check`** are CI gates (§12).
 
+For a command-by-command walkthrough with flags, exit codes, and example output, see the **[CLI Usage Guide](usage-cli.md)**.
+
 ---
 
 ## 12. Evals & deploy simulation

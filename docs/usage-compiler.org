@@ -123,6 +123,22 @@ workflowRuntime.registerFlow(MyFlow.definition, MyFlow.runner);
 // ↑ automatically wires LazyEffect("fetch-metrics") and LazyEffect("fetch-logs")
 #+end_src
 
+** ~skill$~ / ~instructions$~ extraction (progressive disclosure)
+
+The same extraction applies to a skill's ~instructions$()~ body — the progressive-disclosure analog of a step handler. An agent bundle ships lean; each skill's (often large) instruction text is a lazy chunk loaded only when that skill is selected:
+
+#+begin_src typescript
+import { skill$, instructions$ } from "@loom/core";
+
+export const DiagnoseCpu = skill$({
+  id: "diagnose-cpu",
+  // extracted to \0loom:chunk:diagnose-cpu_<hash>, loaded on first use
+  instructions: instructions$(`You are a CPU diagnostics expert. Given the metrics…`),
+});
+#+end_src
+
+The compiler tracks skills in ~state.skills~ / ~state.skillsByVarName~ and records each in the manifest's ~skills~ map (see Feature 2). A ~skill$~ authored with a plain inline string (no ~instructions$~ marker) stays inline — its manifest ~chunk~ is empty. Because ~skill$~ triggers the transform, it is part of the fast-path check alongside ~step$~ and ~flow$~.
+
 * Feature 2 — Flow Graph Analysis + ~loom-manifest.json~
 
 At the end of every build, the plugin emits a ~loom-manifest.json~ file into your ~dist/~ directory.
@@ -143,14 +159,18 @@ At the end of every build, the plugin emits a ~loom-manifest.json~ file into you
       "suspendPoints": [],
       "warnings": [
         "Step \"apply-remediation\" in flow \"investigate-incident\" has neither a handler$ nor a toolId — it must be registered manually."
-      ]
+      ],
+      "module": "src/flows/investigate-incident.ts"
     }
   },
   "skills": {
     "diagnose-cpu": { "chunk": "dist/chunks/diagnose-cpu_9c1f0a7e.js" }
-  }
+  },
+  "flowModules": ["src/flows/investigate-incident.ts"]
 }
 #+end_src
+
+Each flow carries a ~module~ — its source path relative to the project ~root~ — and the top-level ~flowModules~ is the deduplicated, sorted list of those paths. Both are *metadata*: ~@loom/app~'s ~registerFlowsFrom~ still registers flows by static import (never a dynamic-import target), so wiring stays deterministic and replay-safe (P5).
 
 The ~skills~ map mirrors a flow's ~chunkMap~ for ~skill$~ instruction bodies: each entry points at the lazy chunk holding that skill's ~instructions$~ text (empty ~chunk~ when the skill uses inline instructions with no ~instructions$~ marker).
 
@@ -274,20 +294,24 @@ The CLI:
 4. Writes extracted handler chunks to ~<outDir>/chunks/~.
 5. Writes ~loom-manifest.json~ to ~<outDir>/~.
 6. Prints per-flow summaries and warnings.
+7. Finishes with ~[loom-compiler] Done. Processed N source files.~ (exits non-zero on a fatal error).
 
 * Programmatic API
 
 Import and use the compiler transforms directly in your own build scripts:
 
 #+begin_src typescript
-import { transformFile, buildManifest, loomPlugin } from "@loom/compiler";
+import { transformFile, buildManifest, printWarnings, loomPlugin } from "@loom/compiler";
 import type { PluginState } from "@loom/compiler";
 
+// A fresh, mutable state the transform accumulates into (all six maps required).
 const state: PluginState = {
-  chunks: new Map(),
-  steps: new Map(),
-  stepsByVarName: new Map(),
-  flows: new Map(),
+  chunks: new Map(),           // "\0loom:chunk:<id>_<hash>" → ExtractedChunk (step + skill bodies)
+  steps: new Map(),            // stepId → StepEntry
+  stepsByVarName: new Map(),   // local var name → stepId (for flow$ step resolution)
+  flows: new Map(),            // flowId → FlowEntry
+  skills: new Map(),           // skillId → SkillEntry
+  skillsByVarName: new Map(),  // local var name → skillId
 };
 
 const sourceCode = fs.readFileSync("src/flows/MyFlow.ts", "utf-8");
@@ -298,9 +322,14 @@ if (result) {
   console.log(result.map);    // source map JSON string
 }
 
-const manifest = buildManifest(state);
+// buildManifest(state, outDir?, root?) — outDir prefixes chunkMap paths (default "."),
+// root makes each flow's `module` path relative (default process.cwd()).
+const manifest = buildManifest(state, "dist", process.cwd());
+printWarnings(manifest);      // logs every flow's advisory warnings to the console
 console.log(JSON.stringify(manifest, null, 2));
 #+end_src
+
+Everything exported from ~@loom/compiler~: functions ~loomPlugin~, ~transformFile~, ~buildManifest~, ~printWarnings~, ~shortHash~, ~fnv1a32~; and types ~LoomManifest~, ~ManifestFlow~, ~ExtractedChunk~, ~FlowEntry~, ~StepEntry~, ~PluginState~.
 
 * How the AST Transform Works
 
@@ -308,7 +337,7 @@ The compiler uses TypeScript's compiler API (~ts.createSourceFile~) for parsing 
 
 #+begin_example
 For each .ts/.tsx file:
-  1. Fast path: skip if source contains neither "step$" nor "flow$"
+  1. Fast path: skip if source contains none of "step$", "flow$", "skill$"
   2. Parse: ts.createSourceFile(path, source, ESNext)
   3. Walk top-level statements
      For each VariableStatement:
@@ -321,6 +350,10 @@ For each .ts/.tsx file:
            - Store chunk in state.chunks["\0loom:chunk:<id>_<hash>"]
            - Overwrite handler$(fn) with () => import("virtual-id")
          Register step in state.steps, varName in state.stepsByVarName
+       If initializer is CallExpression to skill$():
+         If instructions is instructions$(text):
+           - Extract to a lazy chunk exactly as handler$ (same hash + import rewrite)
+         Register skill in state.skills, varName in state.skillsByVarName
        If initializer is CallExpression to flow$():
          Extract id, version, steps array
          Resolve step variable names → step ids via state.stepsByVarName
@@ -346,6 +379,8 @@ file:   "dist/chunks/fetch-metrics_2f936a0b.js"
 #+end_example
 
 The hash is stable across builds as long as the file path and step id do not change. Renaming a step id or moving a file invalidates the hash — existing cached chunks are not loaded.
+
+Both hash primitives are exported for custom tooling: ~fnv1a32(input): number~ (the raw 32-bit hash) and ~shortHash(input): string~ (the 8-hex-char id used for chunk names).
 
 * Environment Compatibility
 
