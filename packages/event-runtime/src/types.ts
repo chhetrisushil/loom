@@ -55,6 +55,22 @@ export interface EventStore {
     throughSequence: number,
     metadata: Record<string, unknown>
   ): Promise<void>;
+  /**
+   * OPTIONAL (K10.1 retention). Delete ALL events for an execution. Used by the
+   * retention sweep after a terminal execution's retention window elapses
+   * (archive-before-delete is the sweep's responsibility, not the store's). A
+   * store that omits it cannot be swept — retention is opt-in per backend.
+   */
+  deleteExecution?(executionId: string): Promise<void>;
+  /**
+   * OPTIONAL (K10.4 compaction). Delete the prefix `(0..throughSequence]` of an
+   * execution's log — **sequence 0 (the EXECUTION_STARTED bootstrap) is always
+   * preserved** as the execution's metadata anchor (resume reads input/workflowId
+   * from it). The caller MUST ensure a snapshot at a sequence
+   * `>= throughSequence` exists first, so the invariant
+   * `fold(snapshot, suffix) === fold(events)` holds — the store only truncates.
+   */
+  truncatePrefix?(executionId: string, throughSequence: number): Promise<void>;
   close(): Promise<void>;
 }
 

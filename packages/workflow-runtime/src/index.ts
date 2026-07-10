@@ -9,6 +9,12 @@ export {
   TIMER_FIRED,
 } from "./types";
 export { TimerService, type TimerServiceOptions } from "./TimerService";
+export {
+  LogLifecycle,
+  type RetentionPolicy,
+  type ArchiveStores,
+  type RetentionOutcome,
+} from "./LogLifecycle";
 export { parseCron, nextOccurrence, type CronSpec } from "./cron";
 export type {
   EffectInDoubtResolution,

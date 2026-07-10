@@ -123,6 +123,23 @@ export class InMemoryAsyncEventStore implements EventStore {
     return next;
   }
 
+  async deleteExecution(executionId: string): Promise<void> {
+    await this.tick();
+    this.log.delete(executionId);
+    this.fences.delete(executionId);
+  }
+
+  async truncatePrefix(executionId: string, throughSequence: number): Promise<void> {
+    await this.tick();
+    const list = this.log.get(executionId);
+    if (list === undefined) return;
+    // Preserve sequence 0 (bootstrap anchor); drop (0..throughSequence].
+    this.log.set(
+      executionId,
+      list.filter((e) => e.sequence === 0 || e.sequence > throughSequence)
+    );
+  }
+
   async subscribe(
     executionId: string,
     handler: (event: EventEnvelope) => void

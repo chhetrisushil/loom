@@ -24,5 +24,10 @@ export interface SnapshotStore {
    * snapshot at or before `sequence` exists.
    */
   loadLatestBefore(executionId: string, sequence: number): Promise<Snapshot | null>;
+  /**
+   * OPTIONAL (K10.1 retention). Delete ALL snapshots for an execution — the
+   * snapshot half of a retention sweep, alongside `EventStore.deleteExecution`.
+   */
+  deleteExecution?(executionId: string): Promise<void>;
   close(): Promise<void>;
 }

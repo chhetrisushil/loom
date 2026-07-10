@@ -76,6 +76,10 @@ export class SqliteSnapshotStore implements SnapshotStore {
     return row ? rowToSnapshot(row) : null;
   }
 
+  async deleteExecution(executionId: string): Promise<void> {
+    this.db.prepare<[string]>("DELETE FROM snapshots WHERE execution_id = ?").run(executionId);
+  }
+
   async close(): Promise<void> {
     this.db.close();
   }

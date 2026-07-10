@@ -89,6 +89,11 @@ export class InMemoryAsyncSnapshotStore implements SnapshotStore {
     return idx >= 0 ? (list[idx] as Snapshot) : null;
   }
 
+  async deleteExecution(executionId: string): Promise<void> {
+    await this.tick();
+    this.snapshots.delete(executionId);
+  }
+
   async close(): Promise<void> {
     this.snapshots.clear();
   }

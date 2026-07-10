@@ -1,15 +1,18 @@
 # ADR 0022 — K10: log lifecycle — retention, redaction & encryption
 
-- Status: Accepted (K10.2 implemented 2026-07-10 — `@loom/store-crypto`:
+- Status: Accepted (implemented 2026-07-10 — K10.2 `@loom/store-crypto`:
   `EncryptingEventStore` + `EncryptingSnapshotStore` (field-level AES-256-GCM under
   per-subject keys, A4/A1), `shredSubject` destroys the key and tombstones `PAYLOAD_SHREDDED`
   at shred time (A3; event schema 1.8.0), reads of a shredded subject throw
-  `PayloadShreddedError` — the loud failure — and the fold records `variables._shredded`;
-  fork key-lineage via `subjectOf` (A2). Decoupled seam (A5) = the wrapper composes over any
-  store, no K7 dependency. **Pending (follow-up on #43):** K10.1 terminal-execution retention
-  (archive-before-delete), K10.3 `SecretResolver` redaction markers, K10.4 compaction
-  (`fold(snapshot, suffix) === fold(events)` conformance), K10.5 encryption-at-rest docs.
-  Amendments below applied.)
+  `PayloadShreddedError` and the fold records `variables._shredded`; fork key-lineage via
+  `subjectOf` (A2); decoupled seam (A5). K10.1 retention + K10.4 compaction: `LogLifecycle`
+  (`@loom/workflow-runtime`) with `EventStore.deleteExecution`/`truncatePrefix` +
+  `SnapshotStore.deleteExecution` optional SPI (in-memory / SQLite / Postgres);
+  `applyRetention` reclaims terminal-and-aged executions **archive-before-delete** (A6);
+  `compact` checkpoints then truncates the prefix (sequence 0 preserved) with
+  `fold(snapshot, suffix) === fold(events)` conformance-tested. **Pending (follow-up on #43):**
+  K10.3 `SecretResolver` redaction markers (keep secrets out of the log entirely), K10.5
+  encryption-at-rest configuration docs for SQLite/Postgres. Amendments below applied.)
 - Date: 2026-07-10
 - Requirements: [K10 in the kernel-hardening requirements](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md#k10--log-lifecycle-retention-redaction--encryption) — priority **P2**
 
