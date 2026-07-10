@@ -1,6 +1,15 @@
 # ADR 0026 — T2: wire-level kernel ABI (language neutrality)
 
-- Status: Proposed (amended 2026-07-10 — see [Amendments](#amendments-code-grounded-evaluation-2026-07-10))
+- Status: Accepted (implemented 2026-07-10 — `@loom/wire-abi`: `WIRE_ABI` is a versioned
+  JSON-RPC **projection** of the K1 syscalls, *generated from* `KERNEL_SYSCALLS` (T2.1 — the
+  TS surface stays authoritative, no inversion), partitioned unary vs channel (`stream`/`ui`)
+  per T2.2; a pure `handleRpc(runtime, request)` carrier drives executions
+  (`execution.start`/`resume`/`getState`/`cancel`) with all rings running kernel-side of the
+  wire; language-agnostic fold-conformance vectors (`FOLD_VECTORS` + `runFoldVectors`, plain
+  JSON any client can run) extend the K1/K5 pins (T2.3); the acceptance test drives a
+  suspend/resume/replay from a raw-JSON HTTP client with the fold byte-identical to an
+  in-process run. Staged as its own carrier; A2A/worker-server mounting is a follow-up (T2.4).
+  Amendments below applied.)
 - Date: 2026-07-10
 - Requirements: [T2 in the kernel-hardening requirements](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md#t2--wire-level-kernel-abi-language-neutrality) — priority **P3**
 
