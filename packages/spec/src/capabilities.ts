@@ -171,6 +171,19 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "L2 (stable + tested, incl. a DST crash/recovery integrity property) — not yet wired into a shipped example/defineConfig path, so not L3; no version constant (a composable wrapper, not a wire contract).",
   },
   {
+    id: "fair-scheduler",
+    title: "Per-Tenant Fair Scheduler",
+    package: "@loom/fair-scheduler",
+    level: "L4",
+    summary:
+      "Drop-in Scheduler with weighted round-robin across tenants behind a concurrency cap; no tenant can starve another. Zero-overhead Infinity fast path.",
+    evidence: {
+      conformanceTest: "packages/fair-scheduler/src/fairScheduler.test.ts",
+      bench: "packages/fair-scheduler/src/fairScheduler.bench.ts",
+    },
+    note: "Implements the existing Scheduler interface (drops into any consumer); L4 via its Infinity-fast-path bench. Not L5 — the scheduler is ephemeral, not a durable/wire contract.",
+  },
+  {
     id: "scheduler",
     title: "Cooperative Scheduler",
     package: "@loom/scheduler",
