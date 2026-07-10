@@ -32,6 +32,14 @@ export interface SuspendCondition {
   on: string;
   timeout?: number;
   correlationKey?: string;
+  /**
+   * T1 — the absolute wall-clock time (epoch ms) a durable timer should wake
+   * this execution. Recorded ONCE in the EXECUTION_SUSPENDED payload — the only
+   * place wall clock enters the log (P9); replay serves the wake from the log
+   * and never recomputes it. Set by `ctx.sleep`/`ctx.sleepUntil`, or derived
+   * from `timeout` when a timer service is wired.
+   */
+  wakeAt?: number;
 }
 
 export interface ExecutionState {

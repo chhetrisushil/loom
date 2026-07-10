@@ -52,7 +52,7 @@ A framework becomes a kernel when userspace can depend on a **narrow, versioned 
 
 ### The syscall table
 
-`KERNEL_ABI_VERSION` is a semver string (`"1.0.0"`), and `KERNEL_SYSCALLS` is the pinned table of calls the kernel exposes ([`abi.ts:14`](../../packages/workflow-runtime/src/abi.ts), [`abi.ts:29`](../../packages/workflow-runtime/src/abi.ts)):
+`KERNEL_ABI_VERSION` is a semver string (`"1.1.0"` — 1.1.0 added the T1 timer syscalls, an additive MINOR bump exactly as the compatibility rule prescribes), and `KERNEL_SYSCALLS` is the pinned table of calls the kernel exposes ([`abi.ts:14`](../../packages/workflow-runtime/src/abi.ts), [`abi.ts:29`](../../packages/workflow-runtime/src/abi.ts)):
 
 | Syscall | Kind | Since | Summary |
 |---|---|---|---|
@@ -61,6 +61,8 @@ A framework becomes a kernel when userspace can depend on a **narrow, versioned 
 | `decide` | call | 1.0.0 | record an advisory/optimizer choice durably; served on replay ([P9](../architecture.md#p9--non-determinism-is-allowed-but-only-when-logged-loom-20)) |
 | `parallel` | call | 1.0.0 | run tasks concurrently, input-order-preserving |
 | `suspend` | call | 1.0.0 | pause durably until an external signal, then resume from here |
+| `sleep` | call | 1.1.0 | suspend durably for a duration; the wake is a logged `TIMER_FIRED` fact (T1) |
+| `sleepUntil` | call | 1.1.0 | suspend durably until an absolute time recorded in the log (T1) |
 | `emit` | call | 1.0.0 | append a durable domain event |
 | `stream` | call | 1.0.0 | emit an incremental delta event |
 | `ui` | accessor | 1.0.0 | drive durable, replayable UI surfaces (A2UI) |
@@ -74,7 +76,7 @@ The versioning rule is the same contract a syscall ABI makes ([`abi.ts:6`](../..
 - **Adding a syscall → MINOR bump.** Existing userspace is untouched; new code opts into the new call.
 - **Removing or renaming a syscall, or changing its meaning → MAJOR break.** This must be deliberate — it cannot happen by accident.
 
-Everything *below* the syscall boundary (the event schema, the stores, the scheduler) is the kernel's own concern; everything *above* builds only against these eight calls.
+Everything *below* the syscall boundary (the event schema, the stores, the scheduler) is the kernel's own concern; everything *above* builds only against these calls.
 
 ### The conformance test that pins it
 
@@ -378,7 +380,7 @@ its amendments:
 | **K10** | Log lifecycle: retention, crypto-shredding, redaction, compaction | [0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md) | P2 |
 | **K11** | Flow-code versioning for in-flight executions (pin / migrate, never silent) | [0023](../adr/0023-k11-flow-code-versioning-in-flight-executions.md) | P1 — **implemented** (hash, pinned resumption, `resumeAs`, deploy census) |
 | **K12** | Identity, tenancy & delegated authority | [0024](../adr/0024-k12-identity-tenancy-delegated-authority.md) | P2 |
-| **T1** | Durable timers & scheduled executions (kernel service) | [0025](../adr/0025-t1-durable-timers-and-scheduled-executions.md) | P1 |
+| **T1** | Durable timers & scheduled executions (kernel service) | [0025](../adr/0025-t1-durable-timers-and-scheduled-executions.md) | P1 — **T1.1 implemented** (`ctx.sleep`/`sleepUntil`, `TIMER_FIRED`, TimerService/stores, timeout unification; cron registry pending) |
 | **T2** | Wire-level kernel ABI (language neutrality) | [0026](../adr/0026-t2-wire-level-kernel-abi.md) | P3 |
 
 Every item inherits **G1** (preserve P2/P9) and **G2** (additive, opt-in per P10 — unwired

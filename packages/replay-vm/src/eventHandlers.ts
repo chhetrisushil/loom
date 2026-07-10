@@ -365,6 +365,33 @@ const handlers: Record<string, Handler> = {
     };
   },
 
+  // Loom 2.1 (T1) — a durable timer fired: the wake that ends a
+  // `ctx.sleep`/`sleepUntil` (or a timer-service-backed `suspend({ timeout })`).
+  // Pure audit into the reserved `_timers` list — the EXECUTION_RESUMED that
+  // accompanies it owns the status change. `wakeAt` is the SCHEDULED time (from
+  // the log); `firedAt` (event timestamp) records actual delivery, so drift is
+  // observable but never enters control flow.
+  TIMER_FIRED: (state, event) => {
+    const p = event.payload as { wakeAt?: number; scheduleId?: string; occurrence?: number };
+    const existing = (state.variables._timers as unknown[] | undefined) ?? [];
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _timers: [
+          ...existing,
+          {
+            firedAt: event.timestamp,
+            ...(p.wakeAt !== undefined && { wakeAt: p.wakeAt }),
+            ...(p.scheduleId !== undefined && { scheduleId: p.scheduleId }),
+            ...(p.occurrence !== undefined && { occurrence: p.occurrence }),
+          },
+        ],
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
   // Loom 2.0 (K3) — accumulate metered resource usage (tokens / cost / wall-time)
   // into a reserved `_resources` running total. Emitted by accounting middleware
   // when an effect actually runs, so the total is deterministic on replay.
@@ -459,7 +486,8 @@ export function getHandler(eventType: string): Handler | undefined {
 // 1.4.0: additive optional `flowHash` payload field on EXECUTION_STARTED (K11.1) —
 // per the K5 payload-extension rule, folds treat absence as legacy.
 // 1.5.0: added EXECUTION_MIGRATED (K11.3).
-export const EVENT_SCHEMA_VERSION = "1.5.0";
+// 1.6.0: added TIMER_FIRED (T1 — durable timers).
+export const EVENT_SCHEMA_VERSION = "1.6.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

@@ -5,7 +5,16 @@ export interface SuspendConfig {
   on: string;
   timeout?: number;
   correlationKey?: string;
+  /**
+   * T1 — absolute wake time (epoch ms) for a durable timer. Recorded in the
+   * EXECUTION_SUSPENDED condition (the one place wall clock enters the log,
+   * P9); a wired TimerService fires the wake. Set by `ctx.sleep`/`sleepUntil`.
+   */
+  wakeAt?: number;
 }
+
+/** T1 — the resume eventType a durable timer fires with (a governed kernel fact). */
+export const TIMER_FIRED = "TIMER_FIRED";
 
 // Loom 2.0: the execution-facing context. `execute` is the generalized durable
 // primitive (any task kind); `run` is the step-shaped alias kept for source
@@ -45,6 +54,15 @@ export interface ExecutionContext {
   ): Promise<TResults>;
 
   suspend(config: SuspendConfig): Promise<never>;
+
+  // T1 — durable sleep (ABI 1.1.0). The execution suspends with the absolute
+  // wake time recorded in the log; a wired TimerService fires the wake as a
+  // durable TIMER_FIRED resume, surviving restarts and replaying
+  // deterministically (the scheduled time is in the log — wall-clock drift
+  // never enters the fold). Without a timer service the suspension is still
+  // durable and can be resumed manually (or by any node's service).
+  sleep(ms: number): Promise<void>;
+  sleepUntil(wakeAt: number): Promise<void>;
 
   emit(eventType: string, payload: unknown): void;
 

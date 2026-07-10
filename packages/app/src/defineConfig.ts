@@ -4,7 +4,7 @@ import type { EventEnvelope } from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
 import { EffectRuntime } from "@loom/effect-runtime";
 import type { CapabilityAuthorizer, EffectMiddleware } from "@loom/effect-runtime";
-import type { BranchRegistry, EventStore } from "@loom/event-runtime";
+import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
 // Only the in-memory stores are imported statically — they are pure JS. We import
 // them from the browser-safe `/memory` SUBPATH rather than the package barrel: the
 // barrel also re-exports the SQLite stores (which `import "better-sqlite3"`), and
@@ -19,7 +19,7 @@ import type { SnapshotStore } from "@loom/snapshot-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime/memory";
 import { composeAdapters, createTelemetryHook } from "@loom/telemetry";
 import type { TelemetryAdapter } from "@loom/telemetry";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { TimerService, WorkflowRuntime } from "@loom/workflow-runtime";
 import type { RegisteredFlow } from "@loom/workflow-runtime";
 import { InProcessA2ABus } from "./InProcessA2ABus";
 import {
@@ -118,6 +118,14 @@ export interface LoomConfig {
   dispatcher?: ExecutionDispatcher;
   /** Extra event observer, fired after projection + telemetry. */
   onEvent?: (event: EventEnvelope) => void;
+  /**
+   * T1 — durable timers. Wire a {@link TimerStore} (`InMemoryTimerStore`,
+   * `SqliteTimerStore` beside your event store) and the app runs a
+   * {@link TimerService}: `ctx.sleep`/`ctx.sleepUntil` — and `suspend({ timeout })`
+   * — get durable, restart-surviving wakes fired as `TIMER_FIRED`. Omit for
+   * today's behavior (suspensions wake only on explicit resume).
+   */
+  timers?: { store: TimerStore; pollMs?: number };
 }
 
 export interface LoomStores {
@@ -237,7 +245,17 @@ export function defineConfig(config: LoomConfig): LoomApp {
     effectRuntime,
     onEvent,
     ...(stores.branchRegistry !== undefined && { branchRegistry: stores.branchRegistry }),
+    ...(config.timers !== undefined && { timerStore: config.timers.store }),
   });
+
+  // T1 — durable-timer firing service (opt-in; stopped on close()).
+  let timerService: TimerService | undefined;
+  if (config.timers !== undefined) {
+    timerService = new TimerService(runtime, config.timers.store, {
+      ...(config.timers.pollMs !== undefined && { pollMs: config.timers.pollMs }),
+    });
+    timerService.start();
+  }
 
   config.catalog?.registerInto(runtime);
   for (const flow of config.flows ?? []) {
@@ -296,6 +314,8 @@ export function defineConfig(config: LoomConfig): LoomApp {
     bus,
     stores,
     async close() {
+      timerService?.stop();
+      await config.timers?.store.close();
       await stores.eventStore.close();
       await stores.snapshotStore.close();
       await stores.branchRegistry?.close();
