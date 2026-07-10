@@ -166,9 +166,7 @@ describe("T1.1 — ctx.sleep / ctx.sleepUntil record the wake in the log", () =>
 
     const events = await app.eventStore.read("t1-4");
     expect(events.filter((e: EventEnvelope) => e.eventType === "TIMER_FIRED").length).toBe(1);
-    expect(
-      events.filter((e: EventEnvelope) => e.eventType === "EXECUTION_RESUMED").length
-    ).toBe(1);
+    expect(events.filter((e: EventEnvelope) => e.eventType === "EXECUTION_RESUMED").length).toBe(1);
   });
 
   it("a manual resume beats the timer: the stale timer retires without firing (idempotent)", async () => {

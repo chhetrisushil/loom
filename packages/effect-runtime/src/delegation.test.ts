@@ -11,7 +11,13 @@ import type { CapabilityRequest } from "./authz";
 const SECRET = "shared-delegation-secret";
 
 function req(toolId: string, principal: CapabilityRequest["principal"]): CapabilityRequest {
-  return { toolId, executionId: "e", workflowId: "callee-flow", stepId: "s", ...(principal && { principal }) };
+  return {
+    toolId,
+    executionId: "e",
+    workflowId: "callee-flow",
+    stepId: "s",
+    ...(principal && { principal }),
+  };
 }
 
 describe("K12.4 — verifiable attenuated delegation", () => {

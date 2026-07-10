@@ -1,0 +1,34 @@
+{
+  "name": "@loom/spec",
+  "version": "0.0.1",
+  "description": "The Loom kernel manifest — the single machine-readable source of truth aggregating every kernel/SPI version constant, the capability maturity registry, and a deployment compatibility validator. Read-only; imports the real exported constants so it can never drift.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/compiler": "workspace:*",
+    "@loom/dispatcher": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
+    "@loom/replay-vm": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/wire-abi": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

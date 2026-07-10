@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: build + test
+    name: build + typecheck + lint + test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -32,6 +32,12 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
 
       - name: Test
         run: pnpm test

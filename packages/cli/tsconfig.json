@@ -16,6 +16,7 @@
     { "path": "../event-runtime" },
     { "path": "../replay-vm" },
     { "path": "../scaffold" },
+    { "path": "../spec" },
     { "path": "../verify" }
   ]
 }

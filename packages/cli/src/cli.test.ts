@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { step$ } from "@loom/core";
@@ -17,6 +17,7 @@ import { cmdGen, cmdNew, discoverFlows } from "./gen";
 import { describeState, evaluateGoldens, foldAt, formatLog, parseArgs } from "./index";
 import { serveInspector } from "./inspector";
 import { cmdIntrospect } from "./introspect";
+import { cmdCompat, cmdKernelManifest } from "./kernel";
 import { cmdOptimize } from "./optimize";
 import { cmdProfile } from "./profile";
 import { buildTrace } from "./trace";
@@ -333,6 +334,28 @@ describe("loom CLI", () => {
     it("throws when the module does not export a LoomApp", async () => {
       const p = writeConfig("bad.js", "module.exports = { default: {} };");
       await expect(cmdVerify(p)).rejects.toThrow(/LoomApp/);
+    });
+  });
+
+  describe("loom kernel-manifest / compat", () => {
+    it("prints the manifest text and valid JSON", () => {
+      expect(cmdKernelManifest({})).toContain("kernel ABI");
+      const json = JSON.parse(cmdKernelManifest({ json: true }));
+      expect(json.kernelAbi.version).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(json.eventSchema.eventTypes.length).toBeGreaterThan(0);
+    });
+    it("emits the compatibility-matrix + maturity docs", () => {
+      const out = join(dir, "spec");
+      const msg = cmdKernelManifest({ emitDocs: out });
+      expect(msg).toContain("compatibility-matrix.md");
+      expect(existsSync(join(out, "compatibility-matrix.md"))).toBe(true);
+      expect(existsSync(join(out, "maturity.md"))).toBe(true);
+    });
+    it("compat passes same-major and fails major mismatch (exit code)", () => {
+      expect(cmdCompat({ abi: "1.9.0" }).ok).toBe(true);
+      const bad = cmdCompat({ abi: "2.0.0" });
+      expect(bad.ok).toBe(false);
+      expect(bad.text).toContain("kernelAbi");
     });
   });
 

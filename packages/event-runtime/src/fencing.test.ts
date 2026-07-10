@@ -3,11 +3,7 @@ import { describe, expect, it } from "vitest";
 import { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";
 import { StaleFenceError } from "./fencing";
 
-function makeEnvelope(
-  executionId: string,
-  sequence: number,
-  fence?: number
-): EventEnvelope {
+function makeEnvelope(executionId: string, sequence: number, fence?: number): EventEnvelope {
   return {
     id: `${executionId}-${sequence}${fence !== undefined ? `-f${fence}` : ""}`,
     workflowId: "wf",

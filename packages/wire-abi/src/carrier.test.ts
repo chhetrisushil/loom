@@ -56,11 +56,17 @@ function rawClient(url: string) {
   return async (method: string, params: unknown): Promise<unknown> => {
     const body = JSON.stringify({ jsonrpc: "2.0", id: nextId++, method, params });
     const res = await new Promise<{ status: number; text: string }>((resolve, reject) => {
-      const req = http.request(url, { method: "POST", headers: { "content-type": "application/json" } }, (r) => {
-        const chunks: Buffer[] = [];
-        r.on("data", (c: Buffer) => chunks.push(c));
-        r.on("end", () => resolve({ status: r.statusCode ?? 0, text: Buffer.concat(chunks).toString("utf-8") }));
-      });
+      const req = http.request(
+        url,
+        { method: "POST", headers: { "content-type": "application/json" } },
+        (r) => {
+          const chunks: Buffer[] = [];
+          r.on("data", (c: Buffer) => chunks.push(c));
+          r.on("end", () =>
+            resolve({ status: r.statusCode ?? 0, text: Buffer.concat(chunks).toString("utf-8") })
+          );
+        }
+      );
       req.on("error", reject);
       req.end(body);
     });
@@ -179,7 +185,9 @@ describe("T2.4 — a non-TS client starts, suspends, resumes, and replays over J
     const server = await serve(wire.runtime);
     servers.push(server);
     const call = rawClient(server.url);
-    await expect(call("ctx.emit", { eventType: "X", payload: {} })).rejects.toThrow(/kernel-internal/);
+    await expect(call("ctx.emit", { eventType: "X", payload: {} })).rejects.toThrow(
+      /kernel-internal/
+    );
   });
 
   it("advertises the wire ABI (abi.describe)", async () => {

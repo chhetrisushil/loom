@@ -107,10 +107,19 @@ export function runFoldVectors(vectors: readonly FoldVector[] = FOLD_VECTORS): A
     for (const [k, f] of Object.entries(state.frames)) {
       framesView[k] = { status: f.status, attempts: f.attempts };
     }
-    const actual = { status: state.status, sequence: state.sequence, variables: state.variables, frames: framesView };
+    const actual = {
+      status: state.status,
+      sequence: state.sequence,
+      variables: state.variables,
+      frames: framesView,
+    };
     const passed = JSON.stringify(actual) === JSON.stringify(v.expected);
     return passed
       ? { name: v.name, passed }
-      : { name: v.name, passed, detail: `expected ${JSON.stringify(v.expected)} got ${JSON.stringify(actual)}` };
+      : {
+          name: v.name,
+          passed,
+          detail: `expected ${JSON.stringify(v.expected)} got ${JSON.stringify(actual)}`,
+        };
   });
 }

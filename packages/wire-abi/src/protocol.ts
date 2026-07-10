@@ -42,7 +42,9 @@ const CHANNEL_SYSCALLS = new Set(["stream", "ui"]);
  * ABI (T2.1). `ui` is a K1 accessor (a property object) — on the wire it is a
  * channel namespace whose sub-operations stream UI patches.
  */
-export function deriveWireMethods(syscalls: readonly KernelSyscall[] = KERNEL_SYSCALLS): WireMethod[] {
+export function deriveWireMethods(
+  syscalls: readonly KernelSyscall[] = KERNEL_SYSCALLS
+): WireMethod[] {
   return syscalls.map((s) => ({
     method: `ctx.${s.name}`,
     syscall: s.name,

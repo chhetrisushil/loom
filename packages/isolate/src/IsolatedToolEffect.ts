@@ -160,9 +160,7 @@ export class IsolatedToolEffect implements Effect {
         timer = setTimeout(
           () =>
             kill(
-              new Error(
-                `isolated tool "${this.spec.id}" exceeded timeoutMs=${this.spec.timeoutMs}`
-              )
+              new Error(`isolated tool "${this.spec.id}" exceeded timeoutMs=${this.spec.timeoutMs}`)
             ),
           this.spec.timeoutMs
         );

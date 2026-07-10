@@ -71,8 +71,7 @@ async function run(msg: Extract<ParentToChild, { type: "run" }>): Promise<void> 
     const fn = msg.exportName !== undefined ? mod[msg.exportName] : (mod.default ?? mod);
     if (typeof fn !== "function") {
       throw new Error(
-        `isolated tool module "${msg.modulePath}" does not export a function` +
-          (msg.exportName !== undefined ? ` named "${msg.exportName}"` : "")
+        `isolated tool module "${msg.modulePath}" does not export a function${msg.exportName !== undefined ? ` named "${msg.exportName}"` : ""}`
       );
     }
     const ctx: IsolatedToolContext = {

@@ -239,9 +239,9 @@ describe("K7.3 — kernel-side egress broker", () => {
 
   it("no egress list means no egress at all", async () => {
     const effect = track(makeEffect({ modulePath: fixture("fetcher.cjs") }));
-    await expect(
-      effect.execute({ url: "http://anywhere.example:80/" }, makeCtx())
-    ).rejects.toThrow(/egress denied/);
+    await expect(effect.execute({ url: "http://anywhere.example:80/" }, makeCtx())).rejects.toThrow(
+      /egress denied/
+    );
   });
 
   it("brokeredFetch rejects non-http(s) protocols and malformed URLs pre-connection", async () => {

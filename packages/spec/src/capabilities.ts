@@ -1,0 +1,248 @@
+// ── Capability Maturity Model ────────────────────────────────────────────────
+//
+// A maturity level per kernel subsystem. Crucially, levels are NOT self-assessed — each
+// capability declares the EVIDENCE that backs its level, and `spec.test.ts` asserts that
+// evidence actually exists (the named version constant is exported; the named conformance
+// test / bench file is present). So a badge can never claim more than the code proves — the
+// maturity model is itself a fitness function.
+//
+// Level ladder (the reviewer's meanings), with the OBJECTIVE bar each requires:
+//   L0 Concept accepted        — an ADR accepts it; may have no package yet.
+//   L1 Experimental            — a package exists and builds.
+//   L2 Stable implementation   — has a passing test suite.
+//   L3 Production-ready        — tested AND exercised by an example/integration.
+//   L4 Verified & benchmarked  — L3 + a committed bench (perf is measured, not assumed).
+//   L5 ABI guaranteed          — a versioned contract (`*_VERSION`) pinned by a conformance test.
+
+export type MaturityLevel = "L0" | "L1" | "L2" | "L3" | "L4" | "L5";
+
+export const MATURITY_MEANINGS: Record<MaturityLevel, string> = {
+  L0: "Concept accepted",
+  L1: "Experimental implementation",
+  L2: "Stable implementation",
+  L3: "Production-ready",
+  L4: "Verified & benchmarked",
+  L5: "ABI guaranteed",
+};
+
+export interface CapabilityEvidence {
+  /** Name of the exported `*_VERSION` constant that backs an ABI/SPI guarantee (required for L5). */
+  versionConstant?: string;
+  /** Repo-relative path to the conformance / pinning test proving the contract. */
+  conformanceTest?: string;
+  /** Repo-relative path to a committed bench proving performance (required for L4). */
+  bench?: string;
+  /** Free-text pointer to where it's exercised (example / integration) — for L3. */
+  usedIn?: string;
+}
+
+export interface Capability {
+  /** Stable id (kebab). */
+  id: string;
+  title: string;
+  /** Owning package, or "—" for a concept with no package yet. */
+  package: string;
+  level: MaturityLevel;
+  summary: string;
+  evidence: CapabilityEvidence;
+  /** Optional note — e.g. why a level differs from an intuitive guess. */
+  note?: string;
+}
+
+/**
+ * The registry. Levels are grounded in the evidence fields (validated by spec.test.ts).
+ * Where an intuitive/proposed level over-claims, the honest evidence-derived level is used
+ * and the delta is noted (e.g. "GPU Worker" has no package → L0, not L1).
+ */
+export const CAPABILITIES: readonly Capability[] = [
+  {
+    id: "workflow-runtime",
+    title: "Workflow Runtime",
+    package: "@loom/workflow-runtime",
+    level: "L5",
+    summary: "Execution model + the K1 kernel syscall ABI.",
+    evidence: {
+      versionConstant: "KERNEL_ABI_VERSION",
+      conformanceTest: "packages/workflow-runtime/src/abi.test.ts",
+    },
+  },
+  {
+    id: "replay-vm",
+    title: "Replay VM",
+    package: "@loom/replay-vm",
+    level: "L5",
+    summary: "Deterministic fold + the K5 on-disk event-schema ABI.",
+    evidence: {
+      versionConstant: "EVENT_SCHEMA_VERSION",
+      conformanceTest: "packages/replay-vm/src/eventSchema.test.ts",
+    },
+  },
+  {
+    id: "wire-abi",
+    title: "Wire ABI",
+    package: "@loom/wire-abi",
+    level: "L5",
+    summary: "T2 wire-protocol projection of the K1 syscalls + fold-vector conformance.",
+    evidence: {
+      versionConstant: "WIRE_ABI_VERSION",
+      conformanceTest: "packages/wire-abi/src/wire-abi.test.ts",
+    },
+  },
+  {
+    id: "event-store",
+    title: "Event Store SPI",
+    package: "@loom/event-runtime",
+    level: "L5",
+    summary: "Durable append-only log SPI (in-memory / SQLite / Postgres).",
+    evidence: {
+      versionConstant: "EVENT_STORE_SPI_VERSION",
+      conformanceTest: "packages/testing/src/conformance.test.ts",
+      bench: "packages/event-runtime/src/sequenceRange.bench.ts",
+    },
+  },
+  {
+    id: "snapshot-store",
+    title: "Snapshot Store SPI",
+    package: "@loom/snapshot-runtime",
+    level: "L5",
+    summary: "Point/latest/before snapshot SPI, bounding replay tail.",
+    evidence: {
+      versionConstant: "SNAPSHOT_STORE_SPI_VERSION",
+      conformanceTest: "packages/testing/src/conformance.test.ts",
+    },
+  },
+  {
+    id: "branch-registry",
+    title: "Branch Registry SPI",
+    package: "@loom/event-runtime",
+    level: "L5",
+    summary: "Fork/promote lineage DAG SPI (no merge, by design).",
+    evidence: {
+      versionConstant: "BRANCH_REGISTRY_SPI_VERSION",
+      conformanceTest: "packages/testing/src/conformance.test.ts",
+    },
+  },
+  {
+    id: "dispatcher",
+    title: "Execution Dispatcher SPI",
+    package: "@loom/dispatcher",
+    level: "L5",
+    summary: "Placement-agnostic dispatch/cancel/health SPI.",
+    evidence: {
+      versionConstant: "DISPATCHER_SPI_VERSION",
+      conformanceTest: "packages/testing/src/conformance.test.ts",
+    },
+  },
+  {
+    id: "verification",
+    title: "Runtime Verification",
+    package: "@loom/verify",
+    level: "L4",
+    summary: "Pre-flight determinism/replay/capability/placement/resource checks.",
+    evidence: {
+      conformanceTest: "packages/verify/src/verify.test.ts",
+      bench: "packages/verify/src/verify.bench.ts",
+    },
+    note: "No ABI version constant (it is a tool, not a wire contract) → cannot be L5; L4 via its zero-overhead bench.",
+  },
+  {
+    id: "scheduler",
+    title: "Cooperative Scheduler",
+    package: "@loom/scheduler",
+    level: "L4",
+    summary: "Bounded concurrency + priority; zero-overhead-when-unwired.",
+    evidence: {
+      conformanceTest: "packages/scheduler/src/scheduler.test.ts",
+      bench: "packages/scheduler/src/scheduler.bench.ts",
+    },
+  },
+  {
+    id: "reasoning-router",
+    title: "Reasoning Router",
+    package: "@loom/reasoning",
+    level: "L4",
+    summary: "M3 model routing/elevation with O(1) ranked selection.",
+    evidence: {
+      conformanceTest: "packages/reasoning/src/ReasoningRuntime.test.ts",
+      bench: "packages/reasoning/src/routing.bench.ts",
+    },
+  },
+  {
+    id: "projection-runtime",
+    title: "Projection Runtime",
+    package: "@loom/projection-runtime",
+    level: "L4",
+    summary: "Fold events into read-model surfaces; coalescing + bounded retention.",
+    evidence: {
+      conformanceTest: "packages/projection-runtime/src/InMemoryProjectionRuntime.test.ts",
+      bench: "packages/projection-runtime/src/projectionStorm.bench.ts",
+    },
+  },
+  {
+    id: "analytics",
+    title: "Analytics & Observability",
+    package: "@loom/analytics",
+    level: "L4",
+    summary: "Read-only lenses: analyze / profile / introspect / decision graph / advisory.",
+    evidence: {
+      conformanceTest: "packages/analytics/src/analytics.test.ts",
+      bench: "packages/analytics/src/analyze.bench.ts",
+    },
+  },
+  {
+    id: "decision-materialization",
+    title: "Decision Materialization",
+    package: "@loom/analytics",
+    level: "L3",
+    summary: "DecisionStore / DecisionGraph read-models over the log (ADR 0030).",
+    evidence: {
+      conformanceTest: "packages/analytics/src/decisions.test.ts",
+      usedIn: "advisoryPipeline + loom introspect",
+    },
+    note: "Proposed as L4, but has no dedicated bench → evidence-derived L3.",
+  },
+  {
+    id: "compiler",
+    title: "Compiler",
+    package: "@loom/compiler",
+    level: "L3",
+    summary: "handler$ extraction, flow-graph + non-determinism analysis, manifest.",
+    evidence: {
+      versionConstant: "COMPILER_MANIFEST_VERSION",
+      conformanceTest: "packages/compiler/src/transform.test.ts",
+      usedIn: "loom-starter, examples/*",
+    },
+    note: "Manifest schema is versioned but not conformance-PINNED like the semver ABIs → L3, not L5.",
+  },
+  {
+    id: "memory",
+    title: "Tiered Memory",
+    package: "@loom/memory",
+    level: "L3",
+    summary: "M5 working/episodic/semantic/procedural tiers with deterministic recall.",
+    evidence: {
+      conformanceTest: "packages/memory/src/TieredMemory.test.ts",
+      usedIn: "examples/db-command-center",
+    },
+  },
+  {
+    id: "placement-adapters",
+    title: "Placement Adapters",
+    package: "@loom/dispatcher + workers",
+    level: "L2",
+    summary: "WorkerRuntime SPI + local/remote/CloudRun adapters.",
+    evidence: {
+      conformanceTest: "packages/testing/src/conformance.test.ts",
+    },
+    note: "SPI is L5, but only local/remote/CloudRun adapters exist; K8s/Lambda/GPU are demand-driven (#72) → the adapter set is L2.",
+  },
+  {
+    id: "gpu-worker",
+    title: "GPU Worker",
+    package: "—",
+    level: "L0",
+    summary: "A GPU-backed WorkerRuntime adapter.",
+    evidence: {},
+    note: "Concept only — there is NO gpu-worker package. Demand-driven (#72). A hand-assigned 'L1' would be a badge that lies; evidence-derived it is L0.",
+  },
+];

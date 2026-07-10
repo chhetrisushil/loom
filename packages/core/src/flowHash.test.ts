@@ -4,7 +4,10 @@ import { flow$ } from "./builders/flow";
 import { step$ } from "./builders/step";
 import { flowContentHash } from "./flowHash";
 
-const io = { inputSchema: z.object({ n: z.number() }), outputSchema: z.object({ ok: z.boolean() }) };
+const io = {
+  inputSchema: z.object({ n: z.number() }),
+  outputSchema: z.object({ ok: z.boolean() }),
+};
 
 function makeFlow(overrides: Partial<Parameters<typeof flow$>[0]> = {}) {
   return flow$({

@@ -188,7 +188,9 @@ describe("K11.1 — resume/recovery across a deploy", () => {
     });
     await eventStore.append(seed(0, "EXECUTION_STARTED", { input: { n: 1 } }));
     await eventStore.append(seed(1, "STEP_STARTED", { stepId: "collect", input: { n: 1 } }));
-    await eventStore.append(seed(2, "STEP_COMPLETED", { stepId: "collect", output: { done: false } }));
+    await eventStore.append(
+      seed(2, "STEP_COMPLETED", { stepId: "collect", output: { done: false } })
+    );
     await eventStore.append(seed(3, "EXECUTION_SUSPENDED", { condition: { on: "Approval" } }));
 
     // Changed code (v2) — but the log predates hashing, so no check applies.

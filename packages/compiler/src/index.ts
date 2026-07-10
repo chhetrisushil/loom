@@ -1,5 +1,5 @@
 export { loomPlugin } from "./plugin";
-export { buildManifest, printWarnings } from "./manifest";
+export { buildManifest, printWarnings, COMPILER_MANIFEST_VERSION } from "./manifest";
 export { transformFile } from "./transform";
 export { shortHash, fnv1a32 } from "./hash";
 export { analyzeNonDeterminism, analyzeNode } from "./nondeterminism";

@@ -157,9 +157,7 @@ describe("K8.2 — cancel by executionId", () => {
     const stalled = new Promise<Out>((resolve) => {
       releaseA = () => resolve({ done: true });
     });
-    const flow = makeFlow("fence-cancel", hangStep, async (ctx, input) =>
-      ctx.run(hangStep, input)
-    );
+    const flow = makeFlow("fence-cancel", hangStep, async (ctx, input) => ctx.run(hangStep, input));
     const a = boot({ "hang-tool": new ToolEffect(() => stalled) }, flow);
     const fenceA = await a.runtime.acquireFence("fc-1");
     const handleA = await a.runtime.start(flow, { n: 1 }, { executionId: "fc-1", fence: fenceA });
