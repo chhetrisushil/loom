@@ -330,6 +330,41 @@ const handlers: Record<string, Handler> = {
     };
   },
 
+  // Loom 2.1 (K11.3) — a durable migration verdict: the execution was explicitly
+  // resumed on DIFFERENT flow code (resumeAs, replay-check or operator-ack).
+  // Re-points the recorded flow-code fingerprint (`_flowHash`) and the flow
+  // resolution pointer (`_migratedTo` — the flow id this execution now resolves
+  // to; unconditional so the fold never depends on seed identity), and appends
+  // an audit entry to the reserved `_migrations` list. Replay re-applies the
+  // same verdict at the same sequence (G1).
+  EXECUTION_MIGRATED: (state, event) => {
+    const p = event.payload as {
+      toFlowId: string;
+      toHash?: string;
+      fromHash?: string;
+      strategy?: string;
+    };
+    const existing = (state.variables._migrations as unknown[] | undefined) ?? [];
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        ...(p.toHash !== undefined && { _flowHash: p.toHash }),
+        _migratedTo: p.toFlowId,
+        _migrations: [
+          ...existing,
+          {
+            toFlowId: p.toFlowId,
+            ...(p.toHash !== undefined && { toHash: p.toHash }),
+            ...(p.fromHash !== undefined && { fromHash: p.fromHash }),
+            ...(p.strategy !== undefined && { strategy: p.strategy }),
+          },
+        ],
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
   // Loom 2.0 (K3) — accumulate metered resource usage (tokens / cost / wall-time)
   // into a reserved `_resources` running total. Emitted by accounting middleware
   // when an effect actually runs, so the total is deterministic on replay.
@@ -423,7 +458,8 @@ export function getHandler(eventType: string): Handler | undefined {
 // that must be deliberate — the conformance test pins `knownEventTypes()`.
 // 1.4.0: additive optional `flowHash` payload field on EXECUTION_STARTED (K11.1) —
 // per the K5 payload-extension rule, folds treat absence as legacy.
-export const EVENT_SCHEMA_VERSION = "1.4.0";
+// 1.5.0: added EXECUTION_MIGRATED (K11.3).
+export const EVENT_SCHEMA_VERSION = "1.5.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

@@ -109,4 +109,9 @@ export class EffectRuntime {
   declaredIdempotence(toolId: string): boolean | undefined {
     return this.registry.get(toolId)?.idempotent;
   }
+
+  /** The registered effect's kind (`tool` / `llm` / `human` / `a2a`), for tooling. */
+  kindOf(toolId: string): Effect["kind"] | undefined {
+    return this.registry.get(toolId)?.kind;
+  }
 }

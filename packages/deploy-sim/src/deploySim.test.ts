@@ -94,4 +94,44 @@ describe("simulateDeploy", () => {
     const carry = report.issues.find((i) => i.kind === "suspended-carryover");
     expect(carry?.detail).toContain("Approved");
   });
+
+  // K11.4 — the census: live executions whose recorded flow-code hash would
+  // change under the new deployment make the gate CI-enforceable ("drain or
+  // pin before deploy").
+  describe("flow-code drift (K11.4)", () => {
+    it("flags a LIVE execution whose recorded hash differs from the new deployment", async () => {
+      const log = await record(gatedRunner); // suspended = live
+      const report = simulateDeploy([log], resolver(def("2.0.0"))); // structural change
+      expect(report.ok).toBe(false);
+      const drift = report.issues.find((i) => i.kind === "flow-code-drift");
+      expect(drift?.severity).toBe("breaking");
+      expect(drift?.detail).toMatch(/drain|pin|resumeAs/);
+    });
+
+    it("ignores drift on terminal executions (they never resume)", async () => {
+      const log = await record(straightRunner); // completed
+      const report = simulateDeploy([log], resolver(def("2.0.0")));
+      expect(report.issues.filter((i) => i.kind === "flow-code-drift")).toEqual([]);
+    });
+
+    it("skips legacy logs that recorded no hash (G2)", async () => {
+      const log = await record(gatedRunner);
+      const legacy = log.map((e) =>
+        e.eventType === "EXECUTION_STARTED"
+          ? { ...e, payload: { input: (e.payload as { input?: unknown }).input } }
+          : e
+      );
+      const report = simulateDeploy([legacy], resolver(def("2.0.0")));
+      expect(report.issues.filter((i) => i.kind === "flow-code-drift")).toEqual([]);
+    });
+
+    it("skips resolvers that supply only a minimal structural view (no _tag)", async () => {
+      const log = await record(gatedRunner);
+      const minimal: FlowResolver = {
+        getFlow: () => ({ definition: { version: "9.9.9", steps: [{ id: "a" }, { id: "b" }] } }),
+      };
+      const report = simulateDeploy([log], minimal);
+      expect(report.issues.filter((i) => i.kind === "flow-code-drift")).toEqual([]);
+    });
+  });
 });

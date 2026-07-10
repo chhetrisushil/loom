@@ -1,4 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
+import { flowContentHash } from "@loom/core";
+import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { replayAsFixture } from "@loom/eval";
 
 /** The minimal view of a new flow definition needed to check compatibility. */
@@ -22,7 +23,7 @@ export interface CompatibilityIssue {
   executionId: string;
   workflowId: string;
   severity: Severity;
-  kind: "flow-missing" | "step-removed" | "suspended-carryover";
+  kind: "flow-missing" | "step-removed" | "suspended-carryover" | "flow-code-drift";
   detail: string;
 }
 
@@ -93,6 +94,30 @@ export function simulateDeploy(logs: EventEnvelope[][], next: FlowResolver): Com
         kind: "suspended-carryover",
         detail: `in-flight execution suspended on "${on}" must resume on the new code`,
       });
+    }
+
+    // K11.4 — the census that makes "drain or pin before deploy" CI-enforceable:
+    // a LIVE execution whose recorded flow-code hash differs from the new
+    // deployment's would refuse to resume (FlowCodeMismatchError). Checked only
+    // when the log recorded a hash AND the resolver supplied a full definition
+    // (a minimal structural test view can't be hashed meaningfully).
+    const live = state.status === "suspended" || state.status === "running";
+    const recorded = state.variables._flowHash;
+    const def = flow.definition as Partial<FlowDefinition>;
+    if (live && typeof recorded === "string" && def._tag === "FlowDefinition") {
+      const nextHash = flowContentHash(def as FlowDefinition);
+      if (nextHash !== recorded) {
+        issues.push({
+          executionId,
+          workflowId,
+          severity: "breaking",
+          kind: "flow-code-drift",
+          detail:
+            `live execution was recorded under flow code ${recorded}; the new deployment is ` +
+            `${nextHash} — drain it, keep the original version registered (pinned resumption), ` +
+            `or migrate explicitly via resumeAs`,
+        });
+      }
     }
   }
 

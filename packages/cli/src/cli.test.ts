@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { checkManifest } from "./check";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
-import { loadLogs, runDeployCheck } from "./deploy";
+import { idempotencyAdvisory, loadLogs, runDeployCheck } from "./deploy";
 import { cmdGen, cmdNew, discoverFlows } from "./gen";
 import { describeState, evaluateGoldens, foldAt, formatLog, parseArgs } from "./index";
 import { serveInspector } from "./inspector";
@@ -230,6 +230,29 @@ describe("loom CLI", () => {
       const report = runDeployCheck([log], removed);
       expect(report.ok).toBe(false);
       expect(report.issues[0]?.kind).toBe("flow-missing");
+    });
+
+    it("idempotencyAdvisory lists tool effects with no idempotent declaration (K9)", () => {
+      const resolver = {
+        getFlowIds: () => ["f"],
+        getFlow: () => ({
+          definition: {
+            version: "1.0.0",
+            steps: [
+              { id: "pay", toolId: "pay-tool" }, // tool, undeclared → advisory
+              { id: "wire", toolId: "wire-tool" }, // tool, declared → fine
+              { id: "ask", toolId: "ask-llm" }, // not a tool → skipped
+            ],
+          },
+        }),
+      };
+      const effects = {
+        kindOf: (toolId: string) => (toolId === "ask-llm" ? "llm" : "tool"),
+        declaredIdempotence: (toolId: string) => (toolId === "wire-tool" ? false : undefined),
+      };
+      expect(idempotencyAdvisory(resolver, effects)).toEqual(["pay-tool"]);
+      // No enumeration capability → no advisory (never a hard failure).
+      expect(idempotencyAdvisory({ getFlow: () => undefined }, effects)).toEqual([]);
     });
   });
 

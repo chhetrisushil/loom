@@ -679,8 +679,30 @@ Exits: (1) PIN — deploy/register the original flow code and resume on it;
        (3) DRAIN — cancel() the execution and restart it on the new code.
 ```
 
-Logs that predate hashing resume exactly as before (G2). The version-aware registry
-(pinned resumption) and the `resumeAs` replay-check migration API are the K11 follow-ups.
+Logs that predate hashing resume exactly as before (G2). The full K11 toolkit:
+
+```ts
+// PINNED RESUMPTION (K11.2): register BOTH versions — the registry is
+// version-aware, and an in-flight execution automatically resumes on the
+// version whose hash matches its recorded one. Register the live version last.
+runtime.registerFlow(flowV1.definition, flowV1.runner); // pinned for in-flight runs
+runtime.registerFlow(flowV2.definition, flowV2.runner); // current for new starts
+// Same id+version re-registered with different content is a hard error (bump the
+// version); identical content is idempotent (dev watch-mode stays quiet).
+
+// EXPLICIT MIGRATION (K11.3): move an execution onto new code, durably.
+await runtime.resumeAs(executionId, "my-flow", { eventType: "Approval", payload }, {
+  strategy: "replay-check", // proves every recorded step still exists in the target
+  // strategy: "operator-ack" — you vouch (e.g. after renaming steps deliberately)
+});
+// Records EXECUTION_MIGRATED: audit trail + re-points the execution's recorded
+// hash, so all later resumes check against the NEW code.
+
+// CI GATE (K11.4): `loom deploy check` now reports breaking `flow-code-drift`
+// for LIVE executions whose recorded hash the new deployment would change —
+// "drain or pin before deploy" is enforceable. Export your EffectRuntime from
+// the check config to also get the K9 idempotency advisory (undeclared tools).
+```
 
 **3. Fencing tokens (K9.4).** On a multi-node store, a re-dispatched execution must be safe
 from its *zombie* predecessor — a partitioned worker that wakes up and writes after the

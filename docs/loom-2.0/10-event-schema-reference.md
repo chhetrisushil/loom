@@ -75,7 +75,9 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._safety` | `SAFETY_BLOCKED` | `Array<{ validatorId, stepId?, phase?, reason?, category? }>` |
 | `variables._outcomes` | `OUTCOME_RECORDED` | `Array<{ key, success?, score?, decisionId? }>` |
 | `variables._indoubt` | `EFFECT_INDOUBT` | `Array<{ stepId, toolId?, attempts?, idempotencyKey? }>` |
-| `variables._flowHash` | `EXECUTION_STARTED` | the flow-code content hash this execution started under (K11.1) |
+| `variables._flowHash` | `EXECUTION_STARTED` / `EXECUTION_MIGRATED` | the flow-code content hash this execution currently resolves against (K11.1/.3) |
+| `variables._migratedTo` | `EXECUTION_MIGRATED` | the flow id this execution now resolves to after a migration (K11.3) |
+| `variables._migrations` | `EXECUTION_MIGRATED` | `Array<{ toFlowId, toHash?, fromHash?, strategy? }>` — migration audit trail |
 
 ---
 
@@ -279,6 +281,19 @@ triggers downstream).
   `rankFromOutcomes(events)` into a ranking fed to `rankedRouter` (@loom/reasoning), closing the
   loop while every future route stays a logged `DECISION_RECORDED`.
 
+#### `EXECUTION_MIGRATED`
+- **Introduced:** Loom 2.1 — K11.3, flow-code versioning ([ADR 0023](../adr/0023-k11-flow-code-versioning-in-flight-executions.md)).
+  A durable migration verdict: the execution was explicitly resumed on DIFFERENT flow code
+  via `resumeAs(executionId, flowId, event, { strategy })` — `"replay-check"` (proven
+  fold-compatible first: every recorded step still exists in the target flow, deploy-sim's
+  step-orphan rule) or `"operator-ack"`.
+- **Payload:** `{ toFlowId: string; toHash?: string; fromHash?: string; strategy?: string }`
+- **Folds into:** re-points `variables._flowHash = toHash` and
+  `variables._migratedTo = toFlowId` (subsequent resumes resolve and check against the NEW
+  code), and appends the verdict to `variables._migrations`. Status untouched — the
+  accompanying resume events own the lifecycle. Replay re-applies the same verdict at the
+  same sequence (G1).
+
 #### `EFFECT_INDOUBT`
 - **Introduced:** Loom 2.1 — K9, the effect delivery contract ([ADR 0021](../adr/0021-k9-effect-delivery-contract-idempotency-fencing.md)).
   Recovery found a tool declared `idempotent: false` whose prior attempt is in an **unknown
@@ -384,7 +399,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts:311`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.4.0"; // 1.1.0 added SAFETY_BLOCKED (K6); 1.2.0 added OUTCOME_RECORDED; 1.3.0 added EFFECT_INDOUBT (K9); 1.4.0 added EXECUTION_STARTED.flowHash (K11.1)
+export const EVENT_SCHEMA_VERSION = "1.5.0"; // 1.1.0 added SAFETY_BLOCKED (K6); 1.2.0 added OUTCOME_RECORDED; 1.3.0 added EFFECT_INDOUBT (K9); 1.4.0 added EXECUTION_STARTED.flowHash (K11.1); 1.5.0 added EXECUTION_MIGRATED (K11.3)
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
@@ -400,14 +415,14 @@ export function knownEventTypes(): string[] {
   that must be deliberate. A conformance test pins `knownEventTypes()` so the set cannot drift
   silently.
 
-The complete pinned set (the 20 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
+The complete pinned set (the 21 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
 returns them):
 
 `DECISION_RECORDED`, `EFFECT_DENIED`, `EFFECT_INDOUBT`, `EXECUTION_CANCELLED`,
-`EXECUTION_COMPLETED`, `EXECUTION_FAILED`, `EXECUTION_RESUMED`, `EXECUTION_STARTED`,
-`EXECUTION_SUSPENDED`, `OUTCOME_RECORDED`, `PARALLEL_COMPLETED`, `PARALLEL_STARTED`,
-`QUOTA_EXCEEDED`, `RESOURCE_METERED`, `SAFETY_BLOCKED`, `STEP_CANCELLED`, `STEP_COMPLETED`,
-`STEP_FAILED`, `STEP_RETRYING`, `STEP_STARTED`.
+`EXECUTION_COMPLETED`, `EXECUTION_FAILED`, `EXECUTION_MIGRATED`, `EXECUTION_RESUMED`,
+`EXECUTION_STARTED`, `EXECUTION_SUSPENDED`, `OUTCOME_RECORDED`, `PARALLEL_COMPLETED`,
+`PARALLEL_STARTED`, `QUOTA_EXCEEDED`, `RESOURCE_METERED`, `SAFETY_BLOCKED`, `STEP_CANCELLED`,
+`STEP_COMPLETED`, `STEP_FAILED`, `STEP_RETRYING`, `STEP_STARTED`.
 
 This mirrors the kernel-ABI guarantee (K1): just as `KERNEL_SYSCALLS` pins the syscall surface,
 `knownEventTypes()` pins the on-disk event surface — same additive-MINOR / breaking-MAJOR

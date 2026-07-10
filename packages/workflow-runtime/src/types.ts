@@ -96,6 +96,29 @@ export interface RunOptions {
  * the log with code that never wrote it, so the kernel refuses rather than
  * proceeding silently.
  */
+/**
+ * K11.3 — a `resumeAs(…, { strategy: "replay-check" })` migration was refused:
+ * steps recorded in the execution's log no longer exist in the target flow, so
+ * their durable outputs would be orphaned and re-executed live. Rename the steps
+ * back, migrate to a compatible flow, or use `strategy: "operator-ack"` after a
+ * manual review.
+ */
+export class FlowMigrationCheckError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly toFlowId: string,
+    readonly orphanedStepIds: string[]
+  ) {
+    super(
+      `migration of execution "${executionId}" to flow "${toFlowId}" refused (replay-check): ` +
+        `recorded step(s) [${orphanedStepIds.join(", ")}] do not exist in the target flow — ` +
+        `their durable outputs would be orphaned and re-run live`
+    );
+    this.name = "FlowMigrationCheckError";
+    Object.setPrototypeOf(this, FlowMigrationCheckError.prototype);
+  }
+}
+
 export class FlowCodeMismatchError extends Error {
   constructor(
     readonly executionId: string,
