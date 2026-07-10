@@ -365,6 +365,37 @@ const handlers: Record<string, Handler> = {
     };
   },
 
+  // Loom 2.1 (K7) — an egress denial: the kernel-side broker refused an
+  // isolated tool's network target (not in its static allowlist), BEFORE any
+  // connection was opened. Folded into a reserved `_egress` audit list,
+  // mirroring EFFECT_DENIED's `_denials`. Pure audit — whether the step fails
+  // is the tool's error path (an uncaught denial fails via STEP_FAILED).
+  EGRESS_DENIED: (state, event) => {
+    const p = event.payload as {
+      toolId?: string;
+      stepId?: string;
+      target?: string;
+      reason?: string;
+    };
+    const existing = (state.variables._egress as unknown[] | undefined) ?? [];
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _egress: [
+          ...existing,
+          {
+            ...(p.toolId !== undefined && { toolId: p.toolId }),
+            ...(p.stepId !== undefined && { stepId: p.stepId }),
+            ...(p.target !== undefined && { target: p.target }),
+            ...(p.reason !== undefined && { reason: p.reason }),
+          },
+        ],
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
   // Loom 2.1 (T1) — a durable timer fired: the wake that ends a
   // `ctx.sleep`/`sleepUntil` (or a timer-service-backed `suspend({ timeout })`).
   // Pure audit into the reserved `_timers` list — the EXECUTION_RESUMED that
@@ -487,7 +518,8 @@ export function getHandler(eventType: string): Handler | undefined {
 // per the K5 payload-extension rule, folds treat absence as legacy.
 // 1.5.0: added EXECUTION_MIGRATED (K11.3).
 // 1.6.0: added TIMER_FIRED (T1 — durable timers).
-export const EVENT_SCHEMA_VERSION = "1.6.0";
+// 1.7.0: added EGRESS_DENIED (K7 — data-plane isolation & egress control).
+export const EVENT_SCHEMA_VERSION = "1.7.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

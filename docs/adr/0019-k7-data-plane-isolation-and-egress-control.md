@@ -1,6 +1,15 @@
 # ADR 0019 — K7: data-plane isolation & egress control
 
-- Status: Proposed (amended 2026-07-10 — see [Amendments](#amendments-code-grounded-evaluation-2026-07-10))
+- Status: Accepted (implemented 2026-07-10 — `@loom/isolate`: `IsolatedToolEffect` runs a
+  tool in a pooled child process AT the effect position (the chain's innermost link, so
+  K2/K3/K6 stay kernel-side, per amendment A1); scrubbed per-tool env (K7.2/K7.4); network
+  only via the marshaled `ctx.fetch`, brokered kernel-side with a static allowlist checked
+  BEFORE connection + resolve-and-pin dispatch + durable `EGRESS_DENIED` (schema 1.7.0);
+  runner-level ambient-network module deny-list as defense-in-depth; `ctx` shim = ordered
+  IPC (emits land before results, A3); abort/timeout → SIGKILL — the kernel's
+  non-cooperative kill path (A5). **Honest boundary note:** the deny-list raises the bar
+  but hostile-code-grade network confinement additionally needs OS-layer sandboxing
+  (netns/seccomp/container egress) — consistent with this ADR's malicious-host non-goal.)
 - Date: 2026-07-10
 - Requirements: [K7 in the kernel-hardening requirements](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md#k7--data-plane-isolation--egress-control) — priority **P1**
 
