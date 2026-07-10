@@ -84,6 +84,12 @@ export interface WorkflowRuntimeDeps {
    * a `principal` (the trust-boundary model: the edge attaches the authenticated
    * principal; principal-less kernel-internal calls — TimerService, recovery — are
    * unaffected, byte-identically (G2)). A denied op throws {@link ExecutionDeniedError}.
+   *
+   * SECURITY CONTRACT: because principal-less calls bypass the gate by design (so the
+   * kernel's own machinery keeps working), the INTEGRATOR is responsible for attaching
+   * an authenticated principal to EVERY externally-originated call. Never expose these
+   * runtime methods to untrusted callers without a principal — the authorizer is an
+   * edge-enforced policy, not a substitute for authenticating the caller.
    */
   executionAuthorizer?: ExecutionAuthorizer;
   /**
@@ -201,6 +207,19 @@ export class WorkflowRuntime {
     afterSequence: number
   ): Promise<void> {
     const actor = principal?.actor;
+    // Dedup consecutive identical denials so a flood of denied attempts can't bloat the
+    // log (a DoS via write-amplification): if the tail is already an EXECUTION_DENIED
+    // for the same op+actor, record nothing more. The throw still enforces every call.
+    try {
+      const tail = await this.eventStore.readFrom(executionId, afterSequence);
+      const last = tail[tail.length - 1];
+      if (last?.eventType === "EXECUTION_DENIED") {
+        const p = last.payload as { op?: string; actor?: string };
+        if (p.op === op && p.actor === actor) return;
+      }
+    } catch {
+      // Read failure — fall through and attempt the record anyway.
+    }
     const sequence = afterSequence + 1;
     const envelope: EventEnvelope = {
       id: `${executionId}-${sequence}-denied`,
@@ -538,15 +557,14 @@ export class WorkflowRuntime {
     const resumeDenial = this.authzDenial("resume", executionId, workflowId, options?.principal);
     if (resumeDenial !== undefined) {
       const lastSeq = (allEvents[allEvents.length - 1] as EventEnvelope).sequence;
-      const alreadyDenied =
-        (allEvents[allEvents.length - 1] as EventEnvelope).eventType === "EXECUTION_DENIED";
+      // recordExecutionDenied dedups consecutive identical denials internally.
       await this.denyOp(
         "resume",
         executionId,
         workflowId,
         options?.principal,
         resumeDenial.reason,
-        alreadyDenied ? undefined : lastSeq
+        lastSeq
       );
     }
 
