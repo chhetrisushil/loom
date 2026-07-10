@@ -215,7 +215,21 @@ export class WorkflowContextImpl implements WorkflowContext {
   async decide<T = unknown>(
     decisionId: string,
     decider: () => T | Promise<T>,
-    opts?: { rationale?: unknown; source?: string }
+    opts?: {
+      rationale?: unknown;
+      source?: string;
+      // D1 (ADR 0030) — descriptive materialization fields. Explainability metadata only:
+      // they are recorded alongside the choice but NEVER read back on replay (getDecision
+      // returns just `choice`), so determinism (P9) is untouched. All optional and additive.
+      /** The other choices considered, for "why did it pick X over Y" explainability. */
+      alternatives?: unknown;
+      /** Advisory predicted cost of the chosen alternative, in USD. */
+      estimatedCostUsd?: number;
+      /** Advisory predicted latency of the chosen alternative, in ms. */
+      estimatedLatencyMs?: number;
+      /** Confidence in the choice (convention: 0–1). */
+      confidence?: number;
+    }
   ): Promise<T> {
     if (this.vm.hasDecision(decisionId)) {
       return this.vm.getDecision(decisionId) as T;
@@ -228,6 +242,12 @@ export class WorkflowContextImpl implements WorkflowContext {
       choice,
       ...(opts?.rationale !== undefined && { rationale: opts.rationale }),
       ...(opts?.source !== undefined && { source: opts.source }),
+      ...(opts?.alternatives !== undefined && { alternatives: opts.alternatives }),
+      ...(opts?.estimatedCostUsd !== undefined && { estimatedCostUsd: opts.estimatedCostUsd }),
+      ...(opts?.estimatedLatencyMs !== undefined && {
+        estimatedLatencyMs: opts.estimatedLatencyMs,
+      }),
+      ...(opts?.confidence !== undefined && { confidence: opts.confidence }),
     });
 
     return choice;
@@ -300,9 +320,7 @@ export class WorkflowContextImpl implements WorkflowContext {
    * fold, so recovery replays of the same logical attempt compute the same key.
    */
   private idempotencyKeyFor(stepId: string): string {
-    const indoubt = this.vm.getState().variables._indoubt as
-      | Array<{ stepId?: string }>
-      | undefined;
+    const indoubt = this.vm.getState().variables._indoubt as Array<{ stepId?: string }> | undefined;
     if (indoubt === undefined) {
       return `${this.executionId}:${stepId}`;
     }

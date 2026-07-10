@@ -1,6 +1,6 @@
 # ADR 0030 — Decision materialization (`DecisionStore` / `DecisionGraph`)
 
-- Status: Proposed (2026-07-10) — accepted item #3 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md)
+- Status: Accepted (2026-07-10) — accepted item #3 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: D1 richer `DECISION_RECORDED` payload (EVENT_SCHEMA_VERSION 1.9.0 → 1.10.0), D2 `decisionStore`, D3 `decisionGraph` in `@loom/analytics`. `getDecision` still returns only `choice` (P9 untouched).
 - Date: 2026-07-10
 - Builds on: [ADR 0016](0016-loom-2.0-execution-runtime-and-decision-seam.md) (M2 `ctx.decide` / `DECISION_RECORDED`), [ADR 0018](0018-learning-seam-outcome-recorded.md) (`OUTCOME_RECORDED`), `@loom/analytics`, `@loom/reasoning` (`rankedRouter`)
 

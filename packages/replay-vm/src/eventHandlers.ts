@@ -189,6 +189,12 @@ const handlers: Record<string, Handler> = {
       choice: unknown;
       rationale?: unknown;
       source?: string;
+      // D1 (ADR 0030) — descriptive materialization fields; folded verbatim but NEVER
+      // read by getDecision, so `choice` remains the sole replay input (P9). Absence = legacy.
+      alternatives?: unknown;
+      estimatedCostUsd?: number;
+      estimatedLatencyMs?: number;
+      confidence?: number;
     };
     const existing = (state.variables._decisions as Record<string, unknown> | undefined) ?? {};
     return {
@@ -201,6 +207,14 @@ const handlers: Record<string, Handler> = {
             choice: payload.choice,
             ...(payload.rationale !== undefined && { rationale: payload.rationale }),
             ...(payload.source !== undefined && { source: payload.source }),
+            ...(payload.alternatives !== undefined && { alternatives: payload.alternatives }),
+            ...(payload.estimatedCostUsd !== undefined && {
+              estimatedCostUsd: payload.estimatedCostUsd,
+            }),
+            ...(payload.estimatedLatencyMs !== undefined && {
+              estimatedLatencyMs: payload.estimatedLatencyMs,
+            }),
+            ...(payload.confidence !== undefined && { confidence: payload.confidence }),
           },
         },
       },
@@ -570,7 +584,11 @@ export function getHandler(eventType: string): Handler | undefined {
 // 1.7.0: added EGRESS_DENIED (K7 — data-plane isolation & egress control).
 // 1.8.0: added PAYLOAD_SHREDDED (K10 — crypto-shredding).
 // 1.9.0: added APPROVAL_GRANTED (K12 — verified approvals).
-export const EVENT_SCHEMA_VERSION = "1.9.0";
+// 1.10.0: additive optional DECISION_RECORDED payload fields `alternatives`,
+//   `estimatedCostUsd`, `estimatedLatencyMs`, `confidence` (ADR 0030 D1 — decision
+//   materialization). Descriptive only; `getDecision` still returns just `choice`, so
+//   folds treat absence as legacy and replay is byte-identical.
+export const EVENT_SCHEMA_VERSION = "1.10.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

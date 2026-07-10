@@ -5,6 +5,7 @@ import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { cmdDeployCheck } from "./deploy";
 import { cmdGen, cmdNew } from "./gen";
 import { serveInspector } from "./inspector";
+import { cmdProfile } from "./profile";
 import { cmdVerify } from "./verify";
 
 interface Parsed {
@@ -42,6 +43,7 @@ const USAGE = `loom — project-local commands for a Loom app
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
   loom logs  --db <path> <executionId>            print the event timeline
+  loom profile --db <path> <executionId>          flame graph + latency breakdown
   loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
   loom eval  --dir <path>                         replay golden logs vs expectations
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
@@ -84,6 +86,12 @@ async function main(argv: string[]): Promise<number> {
       const { text, result } = await cmdVerify(flags.config!);
       console.log(text);
       return result.ok ? 0 : 1;
+    }
+    case "profile": {
+      requireFlag(flags, "db");
+      const executionId = requirePositional(positionals, "executionId");
+      console.log(await cmdProfile(flags.db!, executionId));
+      return 0;
     }
     case "gen": {
       const dir = flags.dir ?? "app";

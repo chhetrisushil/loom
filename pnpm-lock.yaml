@@ -1244,6 +1244,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@loom/analytics':
+        specifier: workspace:*
+        version: link:../analytics
       '@loom/app':
         specifier: workspace:*
         version: link:../app
