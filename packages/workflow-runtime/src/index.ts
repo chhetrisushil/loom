@@ -1,7 +1,7 @@
 // `ExecutionRuntime` is the Loom 2.0 name for the durable runtime; `WorkflowRuntime`
 // remains an alias for source compatibility.
 export { WorkflowRuntime, WorkflowRuntime as ExecutionRuntime } from "./WorkflowRuntime";
-export { EFFECT_INDOUBT_RESOLVED, StepTimeoutError } from "./types";
+export { EFFECT_INDOUBT_RESOLVED, FlowCodeMismatchError, StepTimeoutError } from "./types";
 export type {
   EffectInDoubtResolution,
   ExecutionContext,

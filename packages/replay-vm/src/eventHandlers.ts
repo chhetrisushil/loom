@@ -17,14 +17,23 @@ function withFrame(
 
 const handlers: Record<string, Handler> = {
   EXECUTION_STARTED: (state, event) => {
-    const payload = event.payload as { input?: unknown };
+    // `flowHash` (K11.1, additive — absent on legacy logs) is the content hash
+    // of the flow code this execution started under; resume/recovery compares
+    // it against the registered flow so changed code never silently folds an
+    // in-flight log. Reserved fold key: `variables._flowHash`.
+    const payload = event.payload as { input?: unknown; flowHash?: string };
+    const hasVars = payload.input !== undefined || payload.flowHash !== undefined;
     return {
       ...state,
       status: "running",
       startedAt: event.timestamp,
       updatedAt: event.timestamp,
-      ...(payload.input !== undefined && {
-        variables: { ...state.variables, _input: payload.input },
+      ...(hasVars && {
+        variables: {
+          ...state.variables,
+          ...(payload.input !== undefined && { _input: payload.input }),
+          ...(payload.flowHash !== undefined && { _flowHash: payload.flowHash }),
+        },
       }),
     };
   },
@@ -412,7 +421,9 @@ export function getHandler(eventType: string): Handler | undefined {
 // Governance: adding an event type is additive (bump MINOR, update the pinned list);
 // removing or repurposing one changes how historical logs fold and is a MAJOR break
 // that must be deliberate — the conformance test pins `knownEventTypes()`.
-export const EVENT_SCHEMA_VERSION = "1.3.0";
+// 1.4.0: additive optional `flowHash` payload field on EXECUTION_STARTED (K11.1) —
+// per the K5 payload-extension rule, folds treat absence as legacy.
+export const EVENT_SCHEMA_VERSION = "1.4.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

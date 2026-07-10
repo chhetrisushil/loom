@@ -1,6 +1,12 @@
 # ADR 0023 — K11: flow-code versioning for in-flight executions
 
-- Status: Proposed (amended 2026-07-10 — see [Amendments](#amendments-code-grounded-evaluation-2026-07-10))
+- Status: Accepted (K11.1 implemented 2026-07-10 — `flowContentHash` over the fold-relevant
+  structure, recorded as additive `flowHash` on `EXECUTION_STARTED` (schema 1.4.0), folded
+  into `variables._flowHash`; resume/recovery/restore refuse a mismatch with
+  `FlowCodeMismatchError` naming the three exits; `allowFlowCodeMismatch` = primitive
+  operator-ack; legacy logs unchecked (G2). **Pending:** K11.2 version-aware registry
+  (+ compiler chunk-hash enrichment), K11.3 `resumeAs` replay-check migration, K11.4
+  deploy-check census. Amendments below applied.)
 - Date: 2026-07-10
 - Requirements: [K11 in the kernel-hardening requirements](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md#k11--flow-code-versioning-for-in-flight-executions) — priority **P1**
 

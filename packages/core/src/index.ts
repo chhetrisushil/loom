@@ -16,6 +16,7 @@ export type {
   SuspendCondition,
 } from "./types/execution";
 export { executionFromState } from "./types/execution";
+export { flowContentHash } from "./flowHash";
 export {
   ReplayError,
   StepError,
