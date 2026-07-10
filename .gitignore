@@ -12,3 +12,6 @@ coverage/
 tsconfig.tsbuildinfo
 **/*.js.map
 **/*.d.ts.map
+
+# Generated docs (rebuild with scripts/build-architecture-pdf.sh)
+docs/pdf/*.pdf
