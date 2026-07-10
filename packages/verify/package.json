@@ -1,0 +1,26 @@
+{
+  "name": "@loom/verify",
+  "version": "0.0.1",
+  "description": "Pre-flight runtime verification for Loom — pure, read-only, off-log checks (determinism, replay-safety, suspension-safety, capability/placement/resource compatibility) that run before an execution starts. Advises; never a new enforcement ring.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "bench": "vitest bench --run",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

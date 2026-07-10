@@ -44,6 +44,7 @@
     { "path": "packages/renderer-terminal" },
     { "path": "packages/sdk" },
     { "path": "packages/telemetry" },
+    { "path": "packages/verify" },
     { "path": "apps/playground" },
     { "path": "examples/cloud-command-center" }
   ]

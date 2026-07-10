@@ -1,0 +1,82 @@
+# ADR 0028 — Runtime Verification (`@loom/verify`)
+
+- Status: Proposed (2026-07-10) — accepted item #1 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md); implementation started (`packages/verify`)
+- Date: 2026-07-10
+- Builds on: [ADR 0016](0016-loom-2.0-execution-runtime-and-decision-seam.md) (kernel ABI, P9/P10), [ADR 0021](0021-k9-effect-delivery-contract-idempotency-fencing.md) (K9), [ADR 0023](0023-k11-flow-code-versioning-in-flight-executions.md) (K11 flow hash), the compiler's flow-graph analysis (`@loom/compiler`)
+
+## Context
+
+Loom 2.0 enforces its invariants (P2 pure replay, P9 log-only non-determinism, K2 authority,
+K11 versioning) at *runtime*, and violations surface as a failed execution, a denied effect, or
+— worst case — a replay that silently diverges. There is today **no pre-flight check**: nothing
+inspects a configured app and says "this flow calls `Date.now()` outside `ctx.decide`, so its
+replay will diverge," or "this flow targets compute lane `gpu` but no such dispatcher target is
+registered," *before* the first `EXECUTION_STARTED`.
+
+The requirements doc's "Runtime Verification" item (P3) asked for exactly this. Of all the
+proposed items it is the clearest net-new win: it fits the kernel, raises safety, and its rules
+are executable specifications of the invariants every *other* accepted item must not break.
+
+## Decision
+
+Add an opt-in package **`@loom/verify`** exposing a pure, read-only, **off-log** function
+`verify(config): VerificationReport` that runs *before* execution and never emits a durable
+event. Two non-negotiables carry over: **G1** (preserve P2/P9) and **G2** (byte-identical when
+unwired — default is `off`).
+
+**V1 — Rules.** Each check is a small, independent rule returning `{ rule, severity, findings[] }`:
+
+- **determinism** — reuse `@loom/compiler` flow-graph analysis to flag non-deterministic calls
+  (`Date.now`, `Math.random`, bare `fetch`/`crypto.randomUUID`, wall-clock reads) reachable in
+  flow/step bodies **outside** a `ctx.decide`/`ctx.execute` boundary.
+- **replay-safety** — a flow content hash (K11 `flowHash`) is present and the app's
+  `EVENT_SCHEMA_VERSION` (K5) is compatible with any prior log it may resume.
+- **suspension-safety** — every `suspend()` declares a `correlationKey` (and `wakeAt` for timed
+  suspends); if any flow uses approval/resume, a `ResumeAuthenticator` (K12) is wired.
+- **capability-compat** — every declared tool/effect resolves to a matching `GrantTable` grant
+  (K2); an effect requiring an ungranted capability is a hard finding.
+- **placement-compat** — `ExecutionPolicy.computeTarget` resolves to a registered
+  `PlacementDispatcher` target, and that target's worker supports the required effect kinds.
+- **resource-compat** — every budget dimension a flow declares is actually metered by the wired
+  `meteringMiddleware`; a ceiling is present where a budget is declared.
+
+(Note: **migration-safety** from the requirements list collapses into replay-safety — in the
+stateless-worker model resume *is* migration, so there is nothing extra to check.)
+
+**V2 — DX surface.** The bar is loom-starter's ~10-line wiring:
+
+- `loom verify` CLI command — runs all rules against the resolved `defineConfig`, prints a report,
+  exits non-zero on any `error`-severity finding (CI gate).
+- `defineConfig({ verify: "off" | "warn" | "error" })` — default `"off"` (G2). `"warn"` logs the
+  report at startup; `"error"` throws `VerificationError` before the first execution starts.
+
+**V3 — Purity.** `verify()` reads only static config + compiler manifest. It runs no effect,
+starts no execution, opens no store connection it must mutate, and emits no event. A rule that
+cannot decide statically returns an `info` finding ("could not verify X"), never a false `error`.
+
+## Consequences
+
+- **Shifts failures left.** Determinism/placement/capability mistakes become a CI failure or a
+  startup error instead of a diverged replay or a mid-run `CapabilityDeniedError`.
+- **Determinism untouched (G1).** No event type added; `EVENT_SCHEMA_VERSION` unchanged. `verify`
+  is not on the durable path.
+- **Zero-overhead when unwired (G2).** `verify:"off"` and no `loom verify` call ⇒ byte-identical
+  to today. Ships an unwired-vs-wired bench.
+- **Rules are the spec.** The determinism and replay-safety rules double as the guardrails the
+  other accepted Execution-OS items (0029–0033) are checked against.
+
+## Verification
+
+- One spec per rule with a passing and a failing fixture (e.g. a flow with `Date.now()` outside
+  `ctx.decide` → determinism finding; a `computeTarget` with no registered target → placement
+  finding).
+- `verify:"error"` throws before `EXECUTION_STARTED`; `verify:"warn"` logs and proceeds;
+  `verify:"off"` is a no-op (bench-proven zero overhead).
+- `loom verify` exits non-zero iff any `error` finding exists.
+
+## Amendments (from the Execution-OS evaluation)
+
+- Promoted from **P3 → P0** (highest ROI net-new item).
+- **migration-safety** dropped as a distinct rule — folded into replay-safety (resume = migration).
+- Scope is **static pre-flight only**; runtime enforcement stays where it already lives (K2/K9/K11).
+  `verify` advises; it does not become a new enforcement ring.
