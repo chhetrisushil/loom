@@ -1,6 +1,13 @@
 # ADR 0025 — T1: durable timers & scheduled executions (kernel service)
 
-- Status: Proposed (amended 2026-07-10 — see [Amendments](#amendments-code-grounded-evaluation-2026-07-10))
+- Status: Accepted (T1.1 implemented 2026-07-10 — `ctx.sleep`/`ctx.sleepUntil` syscalls
+  (kernel ABI 1.0.0 → 1.1.0), `wakeAt` recorded once in the `EXECUTION_SUSPENDED` condition
+  (A1), governed `TIMER_FIRED` fact (event schema 1.6.0, folds to `variables._timers`),
+  `TimerStore` (in-memory + SQLite beside the event store) + `TimerService` poller with
+  at-least-once, idempotent, exactly-once-effective wakes, `suspend({ timeout })` unification
+  gated on wiring (A3), `defineConfig({ timers })`. **Pending:** T1.2 `schedule$` cron
+  registry (+ deterministic occurrence executionIds), Postgres timer store + cross-node
+  lease/fencing (T1.3 hardening). Amendments below applied.)
 - Date: 2026-07-10
 - Requirements: [T1 in the kernel-hardening requirements](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md#t1--durable-timers--scheduled-executions-kernel-service) — priority **P1**
 

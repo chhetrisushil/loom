@@ -27,6 +27,7 @@ const PINNED_EVENT_TYPES = [
   "STEP_FAILED",
   "STEP_RETRYING",
   "STEP_STARTED",
+  "TIMER_FIRED",
 ];
 
 describe("Event-schema ABI (K5)", () => {

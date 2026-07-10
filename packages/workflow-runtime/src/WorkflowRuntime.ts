@@ -2,7 +2,7 @@ import { SuspendError, flowContentHash } from "@loom/core";
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import { LazyEffect } from "@loom/effect-runtime";
 import type { Effect, EffectRuntime } from "@loom/effect-runtime";
-import type { BranchRegistry, EventStore } from "@loom/event-runtime";
+import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
 // Import the pure sequence helper from the browser-safe subpath, not the barrel:
 // the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
 // would otherwise leak into every browser app that builds on the WorkflowRuntime.
@@ -54,6 +54,15 @@ export interface WorkflowRuntimeDeps {
    * means fewer writes but a longer worst-case replay.
    */
   snapshotEvery?: number;
+  /**
+   * T1 — durable timer storage. When wired, a suspension carrying `wakeAt`
+   * (`ctx.sleep`/`ctx.sleepUntil`) — or a `suspend({ timeout })`, whose wake
+   * time is then derived and recorded durably — schedules a timer row AFTER the
+   * suspension is durable, so a {@link TimerService} can fire it across
+   * restarts. Unwired: no timers are scheduled and `timeout` stays the
+   * historical no-fire metadata, byte-identically (G2).
+   */
+  timerStore?: TimerStore;
 }
 
 export class WorkflowRuntime {
@@ -64,6 +73,7 @@ export class WorkflowRuntime {
   private readonly branchRegistry: BranchRegistry | undefined;
   private readonly onStorageError: ((executionId: string, err: unknown) => void) | undefined;
   private readonly snapshotEvery: number | undefined;
+  private readonly timerStore: TimerStore | undefined;
   private readonly flows = new Map<string, RegisteredFlow>();
   // K11.1 — content hash of each flow id's CURRENT (most recently registered) version.
   private readonly flowHashes = new Map<string, string>();
@@ -85,6 +95,7 @@ export class WorkflowRuntime {
     this.branchRegistry = deps.branchRegistry;
     this.onStorageError = deps.onStorageError;
     this.snapshotEvery = deps.snapshotEvery;
+    this.timerStore = deps.timerStore;
   }
 
   register(toolId: string, effect: Effect): void {
@@ -758,7 +769,27 @@ export class WorkflowRuntime {
         resolveCompletion(vm.getState());
       } catch (err) {
         if (err instanceof SuspendError) {
-          journal.commit("EXECUTION_SUSPENDED", { condition: err.condition });
+          // T1 — when a timer store is wired, a wake time becomes part of the
+          // durable condition: explicit (`ctx.sleep`'s wakeAt) or derived ONCE
+          // from `suspend({ timeout })` (this is the only place wall clock
+          // enters the log — replay serves the recorded value, P9). Unwired,
+          // the condition is committed byte-identically to before (G2).
+          const condition = err.condition as {
+            on: string;
+            timeout?: number;
+            correlationKey?: string;
+            wakeAt?: number;
+          };
+          const wakeAt =
+            this.timerStore !== undefined
+              ? (condition.wakeAt ??
+                (condition.timeout !== undefined ? Date.now() + condition.timeout : undefined))
+              : condition.wakeAt;
+          const committedCondition =
+            wakeAt !== undefined && condition.wakeAt === undefined
+              ? { ...condition, wakeAt }
+              : condition;
+          journal.commit("EXECUTION_SUSPENDED", { condition: committedCondition });
           // MUST drain before snapshotting: a snapshot must never reference
           // events that are not yet durably in the log.
           try {
@@ -778,6 +809,16 @@ export class WorkflowRuntime {
             createdAt: Date.now(),
           };
           await this.snapshotStore.save(snap);
+          // T1 — schedule the durable wake ONLY after the suspension (and its
+          // snapshot) are durable, so a timer can never fire into a log that
+          // doesn't yet record the suspend.
+          if (this.timerStore !== undefined && wakeAt !== undefined) {
+            try {
+              await this.timerStore.schedule({ executionId, wakeAt });
+            } catch (timerErr) {
+              this.onStorageError?.(executionId, timerErr);
+            }
+          }
           resolveSuspend(state);
           return;
         }

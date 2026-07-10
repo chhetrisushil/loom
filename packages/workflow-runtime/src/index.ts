@@ -6,7 +6,9 @@ export {
   FlowCodeMismatchError,
   FlowMigrationCheckError,
   StepTimeoutError,
+  TIMER_FIRED,
 } from "./types";
+export { TimerService, type TimerServiceOptions } from "./TimerService";
 export type {
   EffectInDoubtResolution,
   ExecutionContext,

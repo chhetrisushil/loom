@@ -541,7 +541,7 @@ const context = await mem.recall("semantic", scope, { limit: 10, decide: ctx.dec
 
 ## 17. Kernel: grants, quotas & supervision
 
-*(Loom 2.0 kernel-hardening — K2 / K3 / K4 / K8 / K9 / K11.)* All opt-in; omit them and behavior is unchanged.
+*(Loom 2.0 kernel-hardening — K2 / K3 / K4 / K8 / K9 / K11 / T1.)* All opt-in; omit them and behavior is unchanged.
 
 ### Capability grants (protection ring, K2)
 
@@ -663,6 +663,16 @@ Undeclared tools keep the legacy automatic re-run byte-identically. Prove your t
 in CI with the crash-injection harness — `crashingEventStore` in `@loom/testing` kills the
 execution exactly between the effect and its completion append.
 
+**3. Fencing tokens (K9.4).** On a multi-node store, a re-dispatched execution must be safe
+from its *zombie* predecessor — a partitioned worker that wakes up and writes after the
+execution moved elsewhere. Fencing stores (in-memory, Postgres) expose
+`acquireFence(executionId)` — a monotonic token the worker's lease carries and every appended
+event is stamped with; the **store append rejects** a stale or missing token
+(`StaleFenceError`), so exactly one version of history can land. `LocalWorkerRuntime.allocate`
+acquires it automatically; hand-driven runs pass `{ fence }` via `RunOptions`. Executions that
+never fence — and single-node SQLite, where the process is the failure domain — are entirely
+untouched (G2).
+
 ### Flow-code versioning (K11.1)
 
 Long-lived executions outlive deploys. Every execution records the **content hash** of the
@@ -704,15 +714,32 @@ await runtime.resumeAs(executionId, "my-flow", { eventType: "Approval", payload 
 // the check config to also get the K9 idempotency advisory (undeclared tools).
 ```
 
-**3. Fencing tokens (K9.4).** On a multi-node store, a re-dispatched execution must be safe
-from its *zombie* predecessor — a partitioned worker that wakes up and writes after the
-execution moved elsewhere. Fencing stores (in-memory, Postgres) expose
-`acquireFence(executionId)` — a monotonic token the worker's lease carries and every appended
-event is stamped with; the **store append rejects** a stale or missing token
-(`StaleFenceError`), so exactly one version of history can land. `LocalWorkerRuntime.allocate`
-acquires it automatically; hand-driven runs pass `{ fence }` via `RunOptions`. Executions that
-never fence — and single-node SQLite, where the process is the failure domain — are entirely
-untouched (G2).
+### Durable timers (T1)
+
+`ctx.sleep(ms)` / `ctx.sleepUntil(ts)` are **durable** suspensions: the absolute wake time is
+recorded once in the log (the only place wall clock enters the fold, P9), survives restarts
+and store failover, and wakes exactly once as a governed `TIMER_FIRED` fact — replay is
+bit-identical whenever it happens.
+
+```ts
+// Flow code — new kernel syscalls (ABI 1.1.0):
+await ctx.sleep(48 * 60 * 60 * 1000);          // wake in 48h, even across process kills
+await ctx.sleepUntil(Date.parse("2026-08-01")); // or at an absolute time
+
+// Wiring — one config key (timer rows live beside your event store, so one
+// backup captures the full kernel state):
+const app = defineConfig({
+  storage: { kind: "sqlite", dir: ".loom" },
+  timers: { store: new SqliteTimerStore(".loom/events.db") }, // or InMemoryTimerStore
+});
+// suspend({ on, timeout }) is unified too: with timers wired, the timeout becomes
+// a durable wake (fired as TIMER_FIRED); unwired it stays no-fire metadata (G2).
+```
+
+Firing mirrors K9's delivery contract: at-least-once delivery, idempotent wakes (a timer only
+fires while its execution is still suspended on exactly that `wakeAt` — a manual resume just
+retires it), so the effective wake is exactly-once. The cron-style `schedule$` registry and
+cross-node firing hardening arrive with T1.2.
 
 ---
 

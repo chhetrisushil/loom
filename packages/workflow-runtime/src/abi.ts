@@ -11,7 +11,8 @@
 // Everything below the syscall boundary (event schema, stores, scheduler) is the
 // kernel's own concern; everything above builds only against these calls.
 
-export const KERNEL_ABI_VERSION = "1.0.0";
+// 1.1.0: added `sleep` / `sleepUntil` (T1 — durable timers). Additive = MINOR.
+export const KERNEL_ABI_VERSION = "1.1.0";
 
 export type SyscallKind = "call" | "accessor";
 
@@ -56,6 +57,18 @@ export const KERNEL_SYSCALLS: readonly KernelSyscall[] = [
     kind: "call",
     since: "1.0.0",
     summary: "pause durably until an external signal, then resume from here",
+  },
+  {
+    name: "sleep",
+    kind: "call",
+    since: "1.1.0",
+    summary: "suspend durably for a duration; the wake is a logged TIMER_FIRED fact (T1)",
+  },
+  {
+    name: "sleepUntil",
+    kind: "call",
+    since: "1.1.0",
+    summary: "suspend durably until an absolute time recorded in the log (T1)",
   },
   { name: "emit", kind: "call", since: "1.0.0", summary: "append a durable domain event" },
   { name: "stream", kind: "call", since: "1.0.0", summary: "emit an incremental delta event" },

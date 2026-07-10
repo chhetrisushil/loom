@@ -6,7 +6,7 @@ import type { EffectRuntime } from "@loom/effect-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
 import { parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
-import { EFFECT_INDOUBT_RESOLVED, StepTimeoutError } from "./types";
+import { EFFECT_INDOUBT_RESOLVED, StepTimeoutError, TIMER_FIRED } from "./types";
 import type { EffectInDoubtResolution, SuspendConfig, WorkflowContext } from "./types";
 
 export class WorkflowContextImpl implements WorkflowContext {
@@ -262,6 +262,18 @@ export class WorkflowContextImpl implements WorkflowContext {
       return Promise.resolve(state.variables._resumePayload) as unknown as Promise<never>;
     }
     throw new SuspendError(_config);
+  }
+
+  // T1 — durable sleep. The absolute wake time is computed ONCE on the live
+  // call and recorded in the EXECUTION_SUSPENDED condition (P9 — wall clock
+  // enters the log exactly once); on resume replay the suspend passthrough
+  // returns before this recomputes anything, so the fold never sees drift.
+  async sleep(ms: number): Promise<void> {
+    await this.sleepUntil(Date.now() + ms);
+  }
+
+  async sleepUntil(wakeAt: number): Promise<void> {
+    await this.suspend({ on: TIMER_FIRED, wakeAt });
   }
 
   // K8 — abort fast when the owning execution has been cancelled. Scoped to a

@@ -80,6 +80,8 @@ describe("Kernel ABI (K1)", () => {
       "execute",
       "parallel",
       "run",
+      "sleep",
+      "sleepUntil",
       "stream",
       "suspend",
       "ui",

@@ -78,6 +78,7 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._flowHash` | `EXECUTION_STARTED` / `EXECUTION_MIGRATED` | the flow-code content hash this execution currently resolves against (K11.1/.3) |
 | `variables._migratedTo` | `EXECUTION_MIGRATED` | the flow id this execution now resolves to after a migration (K11.3) |
 | `variables._migrations` | `EXECUTION_MIGRATED` | `Array<{ toFlowId, toHash?, fromHash?, strategy? }>` — migration audit trail |
+| `variables._timers` | `TIMER_FIRED` | `Array<{ firedAt, wakeAt?, scheduleId?, occurrence? }>` — durable-timer wakes (T1) |
 
 ---
 
@@ -294,6 +295,18 @@ triggers downstream).
   accompanying resume events own the lifecycle. Replay re-applies the same verdict at the
   same sequence (G1).
 
+#### `TIMER_FIRED`
+- **Introduced:** Loom 2.1 — T1, durable timers ([ADR 0025](../adr/0025-t1-durable-timers-and-scheduled-executions.md)).
+  The wake that ends a `ctx.sleep`/`ctx.sleepUntil` (or a timer-service-backed
+  `suspend({ timeout })`), fired by the `TimerService` as the resume event.
+- **Payload:** `{ wakeAt?: number; scheduleId?: string; occurrence?: number }`
+- **Folds into:** appends `{ firedAt: event.timestamp, wakeAt?, … }` to `variables._timers`.
+  **Pure audit** — the accompanying `EXECUTION_RESUMED` owns the status change. `wakeAt` is
+  the *scheduled* time (recorded once in the suspend condition — the only place wall clock
+  enters the log, P9); `firedAt` records actual delivery, so drift is observable but never
+  enters control flow. Replay of a timer-bearing execution is bit-identical regardless of
+  when it replays.
+
 #### `EFFECT_INDOUBT`
 - **Introduced:** Loom 2.1 — K9, the effect delivery contract ([ADR 0021](../adr/0021-k9-effect-delivery-contract-idempotency-fencing.md)).
   Recovery found a tool declared `idempotent: false` whose prior attempt is in an **unknown
@@ -399,7 +412,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts:311`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.5.0"; // 1.1.0 added SAFETY_BLOCKED (K6); 1.2.0 added OUTCOME_RECORDED; 1.3.0 added EFFECT_INDOUBT (K9); 1.4.0 added EXECUTION_STARTED.flowHash (K11.1); 1.5.0 added EXECUTION_MIGRATED (K11.3)
+export const EVENT_SCHEMA_VERSION = "1.6.0"; // …1.3.0 EFFECT_INDOUBT (K9); 1.4.0 EXECUTION_STARTED.flowHash (K11.1); 1.5.0 EXECUTION_MIGRATED (K11.3); 1.6.0 TIMER_FIRED (T1)
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
@@ -415,14 +428,14 @@ export function knownEventTypes(): string[] {
   that must be deliberate. A conformance test pins `knownEventTypes()` so the set cannot drift
   silently.
 
-The complete pinned set (the 21 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
+The complete pinned set (the 22 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
 returns them):
 
 `DECISION_RECORDED`, `EFFECT_DENIED`, `EFFECT_INDOUBT`, `EXECUTION_CANCELLED`,
 `EXECUTION_COMPLETED`, `EXECUTION_FAILED`, `EXECUTION_MIGRATED`, `EXECUTION_RESUMED`,
 `EXECUTION_STARTED`, `EXECUTION_SUSPENDED`, `OUTCOME_RECORDED`, `PARALLEL_COMPLETED`,
 `PARALLEL_STARTED`, `QUOTA_EXCEEDED`, `RESOURCE_METERED`, `SAFETY_BLOCKED`, `STEP_CANCELLED`,
-`STEP_COMPLETED`, `STEP_FAILED`, `STEP_RETRYING`, `STEP_STARTED`.
+`STEP_COMPLETED`, `STEP_FAILED`, `STEP_RETRYING`, `STEP_STARTED`, `TIMER_FIRED`.
 
 This mirrors the kernel-ABI guarantee (K1): just as `KERNEL_SYSCALLS` pins the syscall surface,
 `knownEventTypes()` pins the on-disk event surface — same additive-MINOR / breaking-MAJOR
