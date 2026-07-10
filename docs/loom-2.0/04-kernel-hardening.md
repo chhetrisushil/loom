@@ -379,7 +379,7 @@ its amendments:
 | **K9** | Effect delivery contract: idempotency keys, in-doubt parking, fencing tokens | [0021](../adr/0021-k9-effect-delivery-contract-idempotency-fencing.md) | P0 — **implemented** |
 | **K10** | Log lifecycle: retention, crypto-shredding, redaction, compaction | [0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md) | P2 — **implemented** (crypto-shredding, retention, compaction; redaction markers + at-rest docs pending) |
 | **K11** | Flow-code versioning for in-flight executions (pin / migrate, never silent) | [0023](../adr/0023-k11-flow-code-versioning-in-flight-executions.md) | P1 — **implemented** (hash, pinned resumption, `resumeAs`, deploy census) |
-| **K12** | Identity, tenancy & delegated authority | [0024](../adr/0024-k12-identity-tenancy-delegated-authority.md) | P2 — **authority core implemented** (principal chain, verified approvals, verifiable delegation; tenancy pending) |
+| **K12** | Identity, tenancy & delegated authority | [0024](../adr/0024-k12-identity-tenancy-delegated-authority.md) | P2 — **implemented** (principal chain, verified approvals, verifiable delegation, tenant-scoped stores, nested budgets) |
 | **T1** | Durable timers & scheduled executions (kernel service) | [0025](../adr/0025-t1-durable-timers-and-scheduled-executions.md) | P1 — **implemented** (`ctx.sleep`/`sleepUntil`, `TIMER_FIRED`, stores ×3, `schedule$` cron, fenced firing) |
 | **T2** | Wire-level kernel ABI (language neutrality) | [0026](../adr/0026-t2-wire-level-kernel-abi.md) | P3 |
 

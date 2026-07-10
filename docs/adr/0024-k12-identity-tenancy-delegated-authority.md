@@ -1,16 +1,20 @@
 # ADR 0024 — K12: identity, tenancy & delegated authority
 
-- Status: Accepted (authority core implemented 2026-07-10 — K12.1 `CapabilityRequest.principal`
+- Status: Accepted (implemented 2026-07-10 — K12.1 `CapabilityRequest.principal`
   (`PrincipalChain`, carried opaquely; threaded start→resume via `RunOptions.principal` →
   `EffectContext` → authorizer, A1); K12.2 `ResumeAuthenticator` + durable `APPROVAL_GRANTED`
   fact (event schema 1.9.0, folds `variables._approvals`), a rejected/forged approval refuses
   the resume (`ApprovalRejectedError`, A6); K12.4 verifiable attenuated delegation —
   `signDelegation`/`verifyDelegation`/`attenuateDelegation` (HMAC-bound) + `DelegationAuthorizer`
   that verifies at the callee and authorizes only the intersection of the verified delegation
-  and the callee's own grants (A2 — forged tokens denied outright). **Pending (tenancy
-  follow-up on #44):** K12.3 nested budgets (tenant→workflow→execution, as a projection, A5),
-  K12.5 tenant-scoped stores (key-prefixing default per A7) + fork cross-tenant guard.
-  Amendments below applied.)
+  and the callee's own grants (A2 — forged tokens denied outright); K12.5 `TenantScopedEventStore`
+  + `TenantScopedSnapshotStore` — key-prefixing wrappers (default per A7) with cross-tenant
+  isolation **by construction** (a tenant store can only address its own keys; fork stays
+  in-tenant); K12.3 `nestedBudgetMiddleware` + `BudgetLedger` — tenant→workflow→execution
+  admission control where the broader levels read a cross-execution **projection** and the
+  execution level reads the pure fold, most-restrictive wins, `QUOTA_EXCEEDED` attributed to
+  its `level` (A5 — the projection/fold category difference stated explicitly). Amendments
+  below applied.)
 - Date: 2026-07-10
 - Requirements: [K12 in the kernel-hardening requirements](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md#k12--identity-tenancy--delegated-authority) — priority **P2**
 
