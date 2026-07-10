@@ -53,10 +53,23 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     // waitForCompletion stays pending on suspend; waitForSuspend stays pending
     // when the flow never suspends — so this race resolves on whichever the flow
     // actually does. getState() is then authoritative for the outcome.
-    await Promise.race([
-      handle.waitForSuspend().then(() => undefined),
-      handle.waitForCompletion().then(() => undefined),
-    ]);
+    try {
+      await Promise.race([
+        handle.waitForSuspend().then(() => undefined),
+        handle.waitForCompletion().then(() => undefined),
+      ]);
+    } catch (err) {
+      // K8.5 — a cancellation rejects the completion promise, but it is a normal
+      // TERMINAL outcome, not a dispatch failure: settle with the folded state
+      // (the in-memory fold already applied EXECUTION_CANCELLED synchronously)
+      // so the caller gets a result instead of a retryable error — redispatching
+      // a cancelled execution would be wrong.
+      const state = handle.getState();
+      if (state.status === "cancelled") {
+        return toResult(state);
+      }
+      throw err;
+    }
 
     const state = handle.getState();
     return toResult(state);
@@ -94,6 +107,21 @@ export class LocalWorkerRuntime implements WorkerRuntime {
 
   async release(_lease: WorkerLease): Promise<void> {
     // No-op: nothing to reclaim in-process.
+  }
+
+  /**
+   * K8.5 — best-effort worker-side cancel: forwards to the runtime's
+   * cancel-by-id (live → abort in-flight effect + durable fact; detached →
+   * fence-then-cancel). An execution unknown to this worker is `false`, not an
+   * error — the best-effort delivery contract; durable settlement belongs to
+   * the caller's own store-side cancel.
+   */
+  async cancel(executionId: string, reason?: string): Promise<boolean> {
+    try {
+      return await this.runtime.cancel(executionId, reason);
+    } catch {
+      return false;
+    }
   }
 
   private async startFresh(pkg: ExecutionPackage, runOpts?: { fence?: number }) {

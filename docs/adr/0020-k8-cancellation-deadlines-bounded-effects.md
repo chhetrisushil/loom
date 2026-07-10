@@ -1,12 +1,15 @@
 # ADR 0020 — K8: cancellation, deadlines & bounded effects
 
-- Status: Accepted (core implemented 2026-07-10 — K8.1 provider signal forwarding +
-  pre-flight abort check, K8.2 `ExecutionRuntime.cancel(executionId)` with fence-then-cancel
-  for detached executions and resume-refusal of cancelled ones, K8.3 step `timeoutMs`
+- Status: Accepted (implemented 2026-07-10 — K8.1 provider signal forwarding + pre-flight
+  abort check, K8.2 `ExecutionRuntime.cancel(executionId)` with fence-then-cancel for
+  detached executions and resume-refusal of cancelled ones, K8.3 step `timeoutMs`
   enforcement anchored to `frame.firstStartedAt` + execution `deadlineMs` (flow$/RunOptions)
-  anchored to the logged `EXECUTION_STARTED`, metering-on-abort (A2), retry×abort (A3).
-  **Pending:** K8.5 cross-seam propagation (follow-up PR); K8.4 mid-stream budget stays
-  conditional on streaming effects existing. Amendments below applied.)
+  anchored to the logged `EXECUTION_STARTED`, metering-on-abort (A2), retry×abort (A3),
+  K8.5 cross-seam propagation (`WorkerRuntime.cancel?` SPI, worker-server `POST /cancel`,
+  `RemoteWorkerRuntime.cancel`, dispatcher forwarding — best-effort delivery, durable-fact
+  settlement). **K8.4 mid-stream budget remains conditional on streaming effects existing**
+  (none do; binds when they land, via a usage-reporter hook, not middleware). Amendments
+  below applied.)
 - Date: 2026-07-10
 - Requirements: [K8 in the kernel-hardening requirements](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md#k8--cancellation-deadlines--bounded-effects) — priority **P0**
 

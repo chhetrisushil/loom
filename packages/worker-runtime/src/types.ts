@@ -88,4 +88,16 @@ export interface WorkerRuntime {
   allocate(request: WorkerRequest): Promise<WorkerLease>;
   execute(lease: WorkerLease, pkg: ExecutionPackage): Promise<ExecutionResult>;
   release(lease: WorkerLease): Promise<void>;
+  /**
+   * OPTIONAL (K8.5) — best-effort cancellation of an execution this worker may
+   * be driving: aborts its in-flight effect and records the durable
+   * `EXECUTION_CANCELLED`. Returns whether a cancellation was performed here
+   * (`false` when the execution is unknown to this worker or already terminal).
+   * Delivery is best-effort by contract: the caller's durable settlement — the
+   * orchestrator's `ExecutionRuntime.cancel()` fence-then-cancel against the
+   * shared store — never depends on this call reaching the worker; this exists
+   * so a live remote effect is severed promptly instead of running to fenced
+   * rejection.
+   */
+  cancel?(executionId: string, reason?: string): Promise<boolean>;
 }

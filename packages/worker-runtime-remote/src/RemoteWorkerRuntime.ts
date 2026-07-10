@@ -77,4 +77,26 @@ export class RemoteWorkerRuntime implements WorkerRuntime {
   async release(_lease: WorkerLease): Promise<void> {
     // Nothing to reclaim client-side; the worker owns its own lifecycle.
   }
+
+  /**
+   * K8.5 — deliver a cancel to the remote worker (`POST /cancel`). Best-effort
+   * by contract: an unreachable worker, a worker without cancel support (501),
+   * or an unknown execution all return `false` — never throw — because the
+   * caller's durable settlement (fence-then-cancel against the shared store)
+   * does not depend on delivery; this only severs a live remote effect promptly.
+   */
+  async cancel(executionId: string, reason?: string): Promise<boolean> {
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}/cancel`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ executionId, ...(reason !== undefined && { reason }) }),
+      });
+      if (!res.ok) return false;
+      const body = (await res.json()) as { cancelled?: boolean };
+      return body.cancelled === true;
+    } catch {
+      return false;
+    }
+  }
 }
