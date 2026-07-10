@@ -885,7 +885,37 @@ const authorizer = new DelegationAuthorizer({ secret, base: calleeOwnGrants });
 // denied outright, and attenuation can only narrow.
 ```
 
-Multi-tenant budget nesting (K12.3) and tenant-scoped stores (K12.5) are the K12 follow-ups.
+**Tenant isolation (K12.5).** Wrap a shared store so each tenant physically can't address
+another's data — cross-tenant reads/subscriptions are impossible *by construction*, not by a
+filter:
+
+```ts
+import { TenantScopedEventStore } from "@loom/event-runtime";
+import { TenantScopedSnapshotStore } from "@loom/snapshot-runtime";
+const eventStore = new TenantScopedEventStore(sharedEvents, tenantId);      // key-prefixed
+const snapshotStore = new TenantScopedSnapshotStore(sharedSnaps, tenantId); // fork stays in-tenant
+// (Postgres row-level security is an optional hardening layer on top of prefixing, not a replacement.)
+```
+
+**Nested budgets (K12.3).** Tenant → workflow → execution admission control, most-restrictive
+wins:
+
+```ts
+import { nestedBudgetMiddleware, BudgetLedger } from "@loom/middleware";
+const ledger = new BudgetLedger(); // a cross-execution projection, fed from RESOURCE_METERED
+new EffectRuntime([nestedBudgetMiddleware({
+  ledger, pricing,
+  scopesOf: (ctx) => [
+    { level: "tenant",    key: `tenant:${ctx.principal?.tenant}`, budget: { maxCostUsd: 100 } },
+    { level: "workflow",  key: `workflow:${ctx.workflowId}`,      budget: { maxCostUsd: 20 } },
+    { level: "execution", key: "",                                budget: { maxCostUsd: 2 } }, // pure fold
+  ],
+})]);
+```
+
+The tenant/workflow totals are an eventually-consistent **projection** (not a replay-pure
+fold — a deliberate category difference the amendment states), so a trip is `QUOTA_EXCEEDED`
+attributed to its `level`; the execution level still reads the pure per-execution fold (K3).
 
 ---
 

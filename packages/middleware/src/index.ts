@@ -10,6 +10,13 @@ export {
   type ResourceDelta,
 } from "./metering";
 export {
+  nestedBudgetMiddleware,
+  BudgetLedger,
+  type BudgetScope,
+  type NestedBudgetOptions,
+  type ScopeSpend,
+} from "./nestedBudget";
+export {
   safetyMiddleware,
   SafetyViolationError,
   denyPatterns,

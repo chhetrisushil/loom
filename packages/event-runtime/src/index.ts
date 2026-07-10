@@ -1,4 +1,5 @@
 export { SqliteEventStore } from "./SqliteEventStore";
+export { TenantScopedEventStore } from "./TenantScopedEventStore";
 export { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";
 export type { InMemoryAsyncEventStoreOptions } from "./InMemoryAsyncEventStore";
 export type { EventStore, EventStoreOptions } from "./types";
