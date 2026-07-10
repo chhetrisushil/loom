@@ -40,4 +40,11 @@ export interface LlmStreamChunk {
 export interface LlmProvider {
   complete(request: LlmRequest): Promise<LlmResponse>;
   stream?(request: LlmRequest): AsyncIterable<LlmStreamChunk>;
+  /**
+   * Advisory pre-warm (latency-only): keep a connection / HTTP-2 session / model
+   * cache hot so the next `complete` skips the cold handshake. Called via the
+   * effect's `warm()` (which the kernel invokes ahead of use). MUST NOT change
+   * outputs; a failure is a silent no-op → the next call runs cold.
+   */
+  warm?(): void | Promise<void>;
 }

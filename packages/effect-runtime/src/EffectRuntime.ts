@@ -105,6 +105,27 @@ export class EffectRuntime {
   }
 
   /**
+   * Advisory pre-warm for a capability, ahead of when it's needed (latency-only,
+   * off the durable path). Spins up the registered effect's own cold resource
+   * (`Effect.warm` — e.g. a K7 child process or an LLM connection) AND fires the
+   * configured {@link Warmer} seam. Never throws: an unregistered toolId is a
+   * no-op and a warm failure is swallowed (the real call just runs cold). Does
+   * NOT authorize, meter, emit, or touch the fold — warming a capability is not
+   * invoking it (P10).
+   */
+  warm(toolId: string): void {
+    const effect = this.registry.get(toolId);
+    if (effect?.warm !== undefined) {
+      try {
+        void Promise.resolve(effect.warm()).catch(() => {});
+      } catch {
+        // advisory — a synchronous warm failure is a silent no-op
+      }
+    }
+    this.warmer?.warm(toolId);
+  }
+
+  /**
    * K9.3 — a registered effect's declared delivery semantic
    * (`new ToolEffect(fn, { idempotent })` / `tool$({ idempotent })`). `false`
    * means recovery must not silently re-run an attempt in an unknown state;

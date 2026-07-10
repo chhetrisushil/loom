@@ -121,6 +121,42 @@ describe("K7 — isolated execution (child-process boundary)", () => {
     expect(makeEffect({ modulePath: fixture("echo.cjs") }).idempotent).toBeUndefined();
   });
 
+  it("pre-warm spawns the child before the first execute (no first-call cold start)", async () => {
+    const effect = track(makeEffect({ modulePath: fixture("echo.cjs") }));
+    // Lazily: no child yet.
+    // biome-ignore lint/suspicious/noExplicitAny: reach into the private child for the test
+    expect((effect as any).child).toBeUndefined();
+
+    effect.warm();
+    // biome-ignore lint/suspicious/noExplicitAny: private field probe
+    const warmed = (effect as any).child;
+    expect(warmed).toBeDefined(); // child is up before any execute
+
+    // The first execute reuses the SAME warm child (no re-fork).
+    await effect.execute({ n: 1 }, makeCtx());
+    // biome-ignore lint/suspicious/noExplicitAny: private field probe
+    expect((effect as any).child).toBe(warmed);
+  });
+
+  it("warm: true in the spec spawns eagerly at construction and the tool still runs", async () => {
+    const effect = track(makeEffect({ modulePath: fixture("echo.cjs"), warm: true }));
+    // biome-ignore lint/suspicious/noExplicitAny: private field probe
+    expect((effect as any).child).toBeDefined();
+    const out = (await effect.execute({ n: 5 }, makeCtx())) as { echoed: unknown };
+    expect(out.echoed).toEqual({ n: 5 });
+  });
+
+  it("warm() is idempotent — repeated calls reuse the one live child", () => {
+    const effect = track(makeEffect({ modulePath: fixture("echo.cjs") }));
+    effect.warm();
+    // biome-ignore lint/suspicious/noExplicitAny: private field probe
+    const first = (effect as any).child;
+    effect.warm();
+    effect.warm();
+    // biome-ignore lint/suspicious/noExplicitAny: private field probe
+    expect((effect as any).child).toBe(first);
+  });
+
   it("K7.5 — middleware wraps the boundary: the chain runs kernel-side", async () => {
     const order: string[] = [];
     const runtime = new EffectRuntime([
