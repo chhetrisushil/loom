@@ -1,0 +1,161 @@
+import type { EventEnvelope } from "@loom/core";
+import type { EventStore } from "@loom/event-runtime";
+import type { Rng } from "./rng";
+
+// ── Fault-injecting event store ───────────────────────────────────────────────
+//
+// The generalization of `@loom/testing`'s single-point `crashingEventStore`: instead
+// of one hard-coded crash predicate, faults are DRAWN from a seeded stream at each
+// append/delivery point, and every decision is RECORDED as a `FaultDraw`. That gives
+// two modes over the same code:
+//   • explore — sample faults from an `Rng` + `FaultModel`, recording each draw;
+//   • replay  — apply exactly a recorded `FaultDraw[]`, no rng, fully deterministic.
+// Replay is what makes a failing simulation reproducible and shrinkable: drop a
+// subset of the recorded draws and replay to see if the failure survives.
+//
+// Modeled faults map to real durability/transport failure shapes:
+//   crash        — this append + all later appends are swallowed (the process died
+//                  after a side effect but before the write landed; crash.ts window).
+//   appendReject — this append throws (a transient store write error).
+//   msgLoss      — a subscriber delivery is dropped (the write landed but the
+//                  LISTEN/NOTIFY fan-out to a watcher was lost).
+//   msgDup       — a subscriber delivery is duplicated (at-least-once transport).
+
+export type FaultKind = "crash" | "appendReject" | "msgLoss" | "msgDup";
+
+/** Per-point fault probabilities, each sampled independently from the stream. */
+export interface FaultModel {
+  /** P(this append triggers a crash — it and every later append are swallowed). */
+  crashBeforeAppend?: number;
+  /** P(this append throws instead of persisting). */
+  appendReject?: number;
+  /** P(a subscriber delivery is lost). */
+  msgLoss?: number;
+  /** P(a subscriber delivery is duplicated). */
+  msgDup?: number;
+}
+
+const MODEL_KEY: Record<FaultKind, keyof FaultModel> = {
+  crash: "crashBeforeAppend",
+  appendReject: "appendReject",
+  msgLoss: "msgLoss",
+  msgDup: "msgDup",
+};
+
+/** A recorded fault decision — the replayable, shrinkable unit of a schedule. */
+export interface FaultDraw {
+  /** Monotonic decision index (append/delivery order). */
+  tick: number;
+  kind: FaultKind;
+  /** The envelope the fault applied to (for evidence + readable schedules). */
+  envelopeId: string;
+  sequence: number;
+  eventType: string;
+}
+
+export type FaultSource =
+  | { mode: "explore"; rng: Rng; model: FaultModel }
+  | { mode: "replay"; draws: readonly FaultDraw[] };
+
+export interface FaultInjectingStore {
+  /** The wrapped store to hand to the runtime under test. */
+  store: EventStore;
+  /** True once a crash fault has been triggered (all later appends swallowed). */
+  readonly crashed: boolean;
+  /** Every fault applied so far, in order — the replayable schedule. */
+  readonly draws: FaultDraw[];
+  /** Envelopes swallowed by a crash (for assertions). */
+  readonly dropped: EventEnvelope[];
+  /** "Reboot": stop swallowing appends so a recovery run persists normally. */
+  restore(): void;
+}
+
+/**
+ * Wrap an {@link EventStore} so appends and subscriber deliveries are subject to a
+ * seeded {@link FaultModel} (explore) or a recorded {@link FaultDraw} list (replay).
+ * Optional store methods are forwarded exactly as `crashingEventStore` does, so a
+ * capability probe (`if (store.copyPrefix)`) behaves identically to the inner store.
+ */
+export function faultInjectingStore(inner: EventStore, source: FaultSource): FaultInjectingStore {
+  const draws: FaultDraw[] = [];
+  const dropped: EventEnvelope[] = [];
+  let crashed = false;
+  let restored = false;
+  let tick = 0;
+
+  // Replay lookup: `${tick}:${kind}` → applies. Built once for O(1) checks.
+  const replayIndex = new Set<string>();
+  if (source.mode === "replay") {
+    for (const d of source.draws) replayIndex.add(`${d.tick}:${d.kind}`);
+  }
+
+  const shouldFault = (kind: FaultKind, at: number): boolean => {
+    if (restored) return false;
+    if (source.mode === "replay") return replayIndex.has(`${at}:${kind}`);
+    const p = source.model[MODEL_KEY[kind]];
+    return p !== undefined && source.rng.bool(p);
+  };
+
+  const record = (kind: FaultKind, e: EventEnvelope, at: number): void => {
+    draws.push({ tick: at, kind, envelopeId: e.id, sequence: e.sequence, eventType: e.eventType });
+  };
+
+  const store: EventStore = {
+    async append(envelope: EventEnvelope): Promise<void> {
+      const at = tick++;
+      if (crashed && !restored) {
+        dropped.push(envelope);
+        return; // already crashed: swallow the tail
+      }
+      if (shouldFault("crash", at)) {
+        crashed = true;
+        record("crash", envelope, at);
+        dropped.push(envelope);
+        return;
+      }
+      if (shouldFault("appendReject", at)) {
+        record("appendReject", envelope, at);
+        throw new Error(`dst: injected append rejection for ${envelope.id}`);
+      }
+      await inner.append(envelope);
+    },
+    read: (executionId) => inner.read(executionId),
+    readFrom: (executionId, fromSequence) => inner.readFrom(executionId, fromSequence),
+    subscribe: (executionId, handler): Promise<() => void> =>
+      // Wrap delivery so msgLoss/msgDup faults apply per delivered event.
+      inner.subscribe(executionId, (e: EventEnvelope) => {
+        const at = tick++;
+        if (shouldFault("msgLoss", at)) {
+          record("msgLoss", e, at);
+          return; // delivery lost
+        }
+        if (shouldFault("msgDup", at)) {
+          record("msgDup", e, at);
+          handler(e); // deliver twice
+        }
+        handler(e);
+      }),
+    close: () => inner.close(),
+    ...(inner.readRange !== undefined && { readRange: inner.readRange.bind(inner) }),
+    ...(inner.acquireFence !== undefined && { acquireFence: inner.acquireFence.bind(inner) }),
+    ...(inner.copyPrefix !== undefined && { copyPrefix: inner.copyPrefix.bind(inner) }),
+    ...(inner.deleteExecution !== undefined && {
+      deleteExecution: inner.deleteExecution.bind(inner),
+    }),
+    ...(inner.truncatePrefix !== undefined && {
+      truncatePrefix: inner.truncatePrefix.bind(inner),
+    }),
+  };
+
+  return {
+    store,
+    get crashed() {
+      return crashed;
+    },
+    draws,
+    dropped,
+    restore() {
+      restored = true;
+    },
+  };
+}

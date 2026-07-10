@@ -46,6 +46,7 @@
     { "path": "packages/telemetry" },
     { "path": "packages/spec" },
     { "path": "packages/verify" },
+    { "path": "packages/dst" },
     { "path": "apps/playground" },
     { "path": "examples/cloud-command-center" }
   ]

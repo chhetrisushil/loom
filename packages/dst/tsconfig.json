@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.bench.ts"],
+  "references": [
+    { "path": "../core" },
+    { "path": "../effect-runtime" },
+    { "path": "../event-runtime" },
+    { "path": "../snapshot-runtime" },
+    { "path": "../workflow-runtime" }
+  ]
+}
