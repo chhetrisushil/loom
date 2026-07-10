@@ -80,9 +80,12 @@ export class LocalDispatcher implements ExecutionDispatcher {
   }
 
   /**
-   * Best-effort cancellation. In Step 1 this releases any lease held for the
-   * execution and marks it cancelled; true mid-flight interruption (aborting a
-   * running worker) is wired in Step 4 alongside timeout + failure redispatch.
+   * Best-effort cancellation. Releases any lease held for the execution, and
+   * (K8.5) forwards the kill to the worker when it supports mid-flight
+   * interruption — in-process this aborts the in-flight effect and records the
+   * durable EXECUTION_CANCELLED; over HTTP it reaches the remote worker's
+   * `POST /cancel`. Delivery stays best-effort: durable settlement belongs to
+   * the store-side cancel (fence-then-cancel), never to this call landing.
    */
   async cancel(executionId: string): Promise<void> {
     this.cancelled.add(executionId);
@@ -91,6 +94,7 @@ export class LocalDispatcher implements ExecutionDispatcher {
       this.leases.delete(executionId);
       await this.worker.release(lease);
     }
+    await this.worker.cancel?.(executionId);
   }
 
   async health(): Promise<DispatcherHealth> {

@@ -68,4 +68,40 @@ describe("RemoteWorkerRuntime", () => {
       worker.execute(lease, { executionId: "e1", workflowId: "wf", flowId: "wf", input: {} })
     ).rejects.toThrow(/500 boom/);
   });
+
+  // K8.5 — cross-seam cancel delivery is best-effort by contract: it reports
+  // whether the remote performed a cancellation, and NEVER throws (the caller's
+  // durable settlement doesn't depend on delivery).
+  describe("cancel (K8.5)", () => {
+    it("POSTs to {baseUrl}/cancel and returns the worker's verdict", async () => {
+      const fetchImpl = vi.fn(async () => okResponse({ cancelled: true }));
+      const worker = new RemoteWorkerRuntime("http://worker.local", { fetchImpl });
+
+      await expect(worker.cancel("e1", "operator kill")).resolves.toBe(true);
+      expect(fetchImpl).toHaveBeenCalledWith("http://worker.local/cancel", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ executionId: "e1", reason: "operator kill" }),
+      });
+    });
+
+    it("returns false on a worker without cancel support (501)", async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: false,
+        status: 501,
+        text: async () => "worker does not support cancel",
+        json: async () => ({}),
+      }));
+      const worker = new RemoteWorkerRuntime("http://worker.local", { fetchImpl });
+      await expect(worker.cancel("e1")).resolves.toBe(false);
+    });
+
+    it("returns false when the worker is unreachable — never throws", async () => {
+      const fetchImpl = vi.fn(async () => {
+        throw new Error("ECONNREFUSED");
+      });
+      const worker = new RemoteWorkerRuntime("http://worker.local", { fetchImpl });
+      await expect(worker.cancel("e1")).resolves.toBe(false);
+    });
+  });
 });

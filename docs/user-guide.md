@@ -613,6 +613,14 @@ cancel-before-completion cannot evade a K3 budget, and the retry middleware trea
 terminally non-retryable. Deadlines fire while a process is actively running the execution;
 durable firing across idle suspension arrives with T1's timer service.
 
+**Across the compute seam (K8.5):** cancellation follows the execution wherever it runs —
+`dispatcher.cancel(executionId)` forwards the kill through the placement seam, and a remote
+HTTP worker exposes `POST /cancel` (`RemoteWorkerRuntime.cancel`). Delivery is best-effort by
+contract (an unreachable worker returns `false`, never throws); the *settlement* is durable
+either way — the orchestrator's own `runtime.cancel()` fences-then-appends on the shared
+store, so even an undeliverable zombie ends fenced out with `EXECUTION_CANCELLED` on the log.
+A cancelled dispatch settles as a normal terminal result, never a retryable transport error.
+
 ### Effect delivery: at-least-once & idempotency (K9)
 
 **The contract:** *effects are at-least-once; steps are exactly-once only with respect to the

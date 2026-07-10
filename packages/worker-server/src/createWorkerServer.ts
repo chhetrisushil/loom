@@ -43,6 +43,7 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
  * snapshot stores the injected runtime points at.
  *
  *   POST /execute   { "executionPackage": { ... } }  →  ExecutionResult
+ *   POST /cancel    { "executionId", "reason"? }     →  { cancelled: boolean }   (K8.5)
  *   GET  /health                                     →  { healthy: true }
  *
  * This is the container entrypoint for Step 3 (Cloud Run): the same process,
@@ -83,6 +84,24 @@ export function createWorkerServer(
           } finally {
             await worker.release(lease);
           }
+          return;
+        }
+
+        if (method === "POST" && url === "/cancel") {
+          // K8.5 — cross-seam cancellation: the orchestrator reaches an
+          // execution running on THIS worker. Best-effort by contract; the
+          // caller's durable settlement never depends on this request landing.
+          const body = (await parseBody(req)) as { executionId?: string; reason?: string };
+          if (typeof body.executionId !== "string") {
+            json(res, 400, { error: "invalid executionId" });
+            return;
+          }
+          if (worker.cancel === undefined) {
+            json(res, 501, { error: "worker does not support cancel" });
+            return;
+          }
+          const cancelled = await worker.cancel(body.executionId, body.reason);
+          json(res, 200, { cancelled });
           return;
         }
 
