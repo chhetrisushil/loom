@@ -850,9 +850,25 @@ await life.compact(executionId);
 ```
 
 Both run over optional store SPI (`deleteExecution` / `truncatePrefix`, on in-memory, SQLite,
-and Postgres); a store that omits them can't be swept. Redaction markers that keep secrets
-out of the log entirely (K10.3) and store-file encryption-at-rest guidance (K10.5) are the
-K10 follow-ups.
+and Postgres); a store that omits them can't be swept.
+
+**Redaction markers (K10.3).** Where crypto-shredding stores an *encrypted* secret in the log,
+redaction keeps a secret **out of the log entirely** — a step carries a deterministic
+reference, resolved to the real value only at effect execution:
+
+```ts
+import { redactionMiddleware, secretRef, InMemorySecretResolver } from "@loom/middleware";
+const resolver = new InMemorySecretResolver(/* vault/KMS in production */);
+new EffectRuntime([redactionMiddleware({ resolver })]);
+
+// flow code passes a REFERENCE — STEP_STARTED logs the ref, never the secret:
+await ctx.run(chargeStep, { amount, apiKey: secretRef("stripe-key") });
+// the middleware resolves it into the value the TOOL sees; the durable log only
+// ever contains { __loomSecret: "stripe-key" }. redactOutput does the same for
+// secrets a tool RETURNS (replaced by a deterministic ref before STEP_COMPLETED).
+```
+
+Store-file encryption-at-rest guidance (K10.5) is the remaining K10 follow-up.
 
 ### Identity & delegated authority (K12)
 

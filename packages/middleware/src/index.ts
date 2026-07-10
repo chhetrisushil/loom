@@ -10,6 +10,15 @@ export {
   type ResourceDelta,
 } from "./metering";
 export {
+  redactionMiddleware,
+  secretRef,
+  isSecretRef,
+  InMemorySecretResolver,
+  type SecretRef,
+  type SecretResolver,
+  type RedactionOptions,
+} from "./redaction";
+export {
   nestedBudgetMiddleware,
   BudgetLedger,
   type BudgetScope,

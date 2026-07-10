@@ -27,6 +27,7 @@
   },
   "devDependencies": {
     "@loom/effect-runtime": "workspace:*",
+    "@loom/middleware": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",

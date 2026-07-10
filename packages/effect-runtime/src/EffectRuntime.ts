@@ -73,11 +73,15 @@ export class EffectRuntime {
 
     // Build the effect+middleware chain as a single thunk. Fold right-to-left so
     // middleware[0] ends up outermost (its `next` runs middleware[1], … the effect last).
-    let chain: EffectNext = () => effect.execute(input, ctx);
+    // `next(override?)` threads an optional transformed input down the chain
+    // (K10.3 redaction resolves secret references into the value the effect sees);
+    // middleware that pass their received input unchanged just call `next()`.
+    let chain: EffectNext = (inp: unknown = input) => effect.execute(inp, ctx);
     for (let i = this.middleware.length - 1; i >= 0; i--) {
       const mw = this.middleware[i]!;
       const downstream = chain;
-      chain = () => mw(ctx, input, downstream);
+      chain = (inp: unknown = input) =>
+        mw(ctx, inp, (override?: unknown) => downstream(override ?? inp));
     }
 
     // Advisory pre-warm (M6) — off the durable path, fire-and-forget, no event.
