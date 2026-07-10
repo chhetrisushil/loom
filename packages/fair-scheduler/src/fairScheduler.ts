@@ -150,13 +150,22 @@ export function createFairScheduler(config: FairSchedulerConfig = {}): FairSched
 
   // Pick the next non-empty lane in weighted round-robin order, advancing the cursor
   // past it so the following pick moves on (fairness), not re-serving the same tenant.
+  // A lane that drains to empty is EVICTED (and the rotation rebuilt), which keeps both
+  // `lanes` and `rotation` bounded to CURRENTLY-ACTIVE tenants — so the map can't grow
+  // by one entry per all-time tenant, and this scan stays O(active tenants), not
+  // O(all-time tenants). An evicted tenant is re-created cheaply on its next task.
   const nextItem = (): QueueItem | undefined => {
     for (let scanned = 0; scanned < rotation.length; scanned++) {
       const tenant = rotation[(cursor + scanned) % rotation.length] as string;
       const lane = lanes.get(tenant);
       if (lane !== undefined && lane.queue.length > 0) {
+        const item = lane.queue.shift();
         cursor = (cursor + scanned + 1) % rotation.length;
-        return lane.queue.shift();
+        if (lane.queue.length === 0) {
+          lanes.delete(tenant);
+          rebuildRotation();
+        }
+        return item;
       }
     }
     return undefined;
@@ -250,6 +259,11 @@ export function createFairScheduler(config: FairSchedulerConfig = {}): FairSched
             cleanup();
             emit("settled", false);
             reject(signalReason(callerSignal));
+            // Reclaim a lane emptied by cancellation, keeping the map bounded.
+            if (lane.queue.length === 0 && lanes.get(tenant) === lane) {
+              lanes.delete(tenant);
+              rebuildRotation();
+            }
           }
         };
         callerSignal.addEventListener("abort", onAbort, { once: true });

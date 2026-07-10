@@ -23,6 +23,13 @@ const SEP = "::";
 
 /** Deterministic child execution id — `<parentId>::<key>` (stable across replay). */
 export function childIdFor(parentId: string, key: string): string {
+  // The key must not contain the separator, or `parentOf` (which peels the LAST
+  // separator) would resolve the wrong parent and a child completion could resume a
+  // different execution. (parentId itself MAY contain the separator — that is exactly
+  // how nested children work: parentOf yields the immediate parent.)
+  if (key.includes(SEP)) {
+    throw new Error(`orchestration: child key must not contain "${SEP}" (got "${key}")`);
+  }
   return `${parentId}${SEP}${key}`;
 }
 
@@ -127,13 +134,25 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         return;
       }
 
-      if (event.eventType === "EXECUTION_COMPLETED") {
-        const parentId = parentOf(event.executionId);
-        if (parentId === undefined || !started.has(event.executionId)) return;
-        const output = (event.payload as { output?: unknown }).output;
-        void deps.runtime
-          .resume(parentId, { eventType: CHILD_DONE, payload: { output } })
-          .catch(fail);
+      if (
+        event.eventType === "EXECUTION_COMPLETED" ||
+        event.eventType === "EXECUTION_FAILED" ||
+        event.eventType === "EXECUTION_CANCELLED"
+      ) {
+        const childId = event.executionId;
+        if (!started.has(childId)) return;
+        const parentId = parentOf(childId);
+        if (event.eventType === "EXECUTION_COMPLETED" && parentId !== undefined) {
+          const output = (event.payload as { output?: unknown }).output;
+          void deps.runtime
+            .resume(parentId, { eventType: CHILD_DONE, payload: { output } })
+            .catch(fail);
+        }
+        // Bound the supervisor's maps: once a child is terminal it needs no more
+        // bookkeeping. (A failed/cancelled child leaves its parent suspended — failure
+        // propagation is a documented follow-up — but the maps are still reclaimed.)
+        specs.delete(childId);
+        started.delete(childId);
       }
     },
   };

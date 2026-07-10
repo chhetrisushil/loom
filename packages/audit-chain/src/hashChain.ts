@@ -78,9 +78,16 @@ function chainablePayload(e: EventEnvelope): string {
   });
 }
 
+// SHA-256 hex digests are exactly 64 lowercase hex chars.
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
 function hashEvent(prevHash: string, e: EventEnvelope): string {
+  const payload = chainablePayload(e);
+  // Length-prefix each field so the (prevHash, payload) boundary is UNAMBIGUOUS —
+  // no crafted payload can shift where prevHash ends and the canonical form begins,
+  // even though prevHash is already fixed-format hex. Belt and suspenders.
   return createHash("sha256")
-    .update(`${prevHash}\n${chainablePayload(e)}`)
+    .update(`${prevHash.length}:${prevHash}|${payload.length}:${payload}`)
     .digest("hex");
 }
 
@@ -89,6 +96,10 @@ function signHash(secret: string, hash: string): string {
 }
 
 function hmacMatches(secret: string, hash: string, sig: string): boolean {
+  // Reject a malformed signature outright — otherwise `Buffer.from(sig, "hex")`
+  // silently truncates at the first invalid nibble, which would compare a short
+  // buffer against the full HMAC. A valid HMAC-SHA256 sig is 64 hex chars.
+  if (!SHA256_HEX.test(sig)) return false;
   const expected = Buffer.from(signHash(secret, hash), "hex");
   const actual = Buffer.from(sig, "hex");
   return expected.length === actual.length && timingSafeEqual(expected, actual);
@@ -96,6 +107,11 @@ function hmacMatches(secret: string, hash: string, sig: string): boolean {
 
 const chainOf = (e: EventEnvelope): ChainMetadata | undefined =>
   (e.metadata as { auditChain?: ChainMetadata } | undefined)?.auditChain;
+
+// A terminal event ends an execution's write stream — its cached chain head can be
+// dropped to bound the per-execution cache. A rare post-terminal append (a late audit
+// fact) just cold-reads the tail again, which is correct, only slower.
+const TERMINAL_EVENTS = new Set(["EXECUTION_COMPLETED", "EXECUTION_FAILED", "EXECUTION_CANCELLED"]);
 
 /** Wrap a store so every append is hash-chained (and optionally HMAC-signed). */
 export function hashChainedEventStore(
@@ -132,8 +148,12 @@ export function hashChainedEventStore(
       };
       await inner.append(stamped);
       // Only advance the chain head after a durable append succeeds — a rejected
-      // append (e.g. stale fence) must not poison the next event's prevHash.
-      lastHash.set(envelope.executionId, hash);
+      // append (e.g. stale fence) must not poison the next event's prevHash. Drop the
+      // cache entry once the execution reaches a terminal event so the map stays
+      // bounded to in-flight executions (a long-lived writer would otherwise grow it
+      // by one entry per execution, forever).
+      if (TERMINAL_EVENTS.has(envelope.eventType)) lastHash.delete(envelope.executionId);
+      else lastHash.set(envelope.executionId, hash);
     },
     read: (executionId) => inner.read(executionId),
     readFrom: (executionId, fromSequence) => inner.readFrom(executionId, fromSequence),
@@ -187,7 +207,10 @@ export function hashChainedEventStore(
     ...(inner.acquireFence !== undefined && { acquireFence: inner.acquireFence.bind(inner) }),
     ...(inner.copyPrefix !== undefined && { copyPrefix: inner.copyPrefix.bind(inner) }),
     ...(inner.deleteExecution !== undefined && {
-      deleteExecution: inner.deleteExecution.bind(inner),
+      deleteExecution: async (executionId: string): Promise<void> => {
+        lastHash.delete(executionId); // drop the cache entry with the log
+        await (inner.deleteExecution as (id: string) => Promise<void>)(executionId);
+      },
     }),
     ...(inner.truncatePrefix !== undefined && { truncatePrefix: inner.truncatePrefix.bind(inner) }),
   };

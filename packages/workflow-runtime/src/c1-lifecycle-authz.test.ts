@@ -121,6 +121,22 @@ describe("C.1 — authorizer wired, principal present", () => {
     expect((await ok.waitForCompletion()).status).toBe("completed");
   });
 
+  it("dedups a flood of identical denials to bound log growth (DoS guard)", async () => {
+    const { runtime, eventStore } = build(acmeOnly);
+    await (
+      await runtime.start(flow, { n: 7 }, { executionId: "e1", principal: alice })
+    ).waitForSuspend();
+
+    // Five denied resumes by the same actor → at most one EXECUTION_DENIED recorded.
+    for (let i = 0; i < 5; i++) {
+      await runtime
+        .resume("e1", { eventType: "GO", payload: {} }, { principal: mallory })
+        .catch(() => {});
+    }
+    const denied = (await eventStore.read("e1")).filter((e) => e.eventType === "EXECUTION_DENIED");
+    expect(denied.length).toBe(1);
+  });
+
   it("denies cancel and query for an unpermitted principal", async () => {
     const denials: ExecutionAuthzRequest[] = [];
     const { runtime } = build(acmeOnly, (r) => denials.push(r));

@@ -143,4 +143,28 @@ describe("hashChainedEventStore", () => {
     expect(typeof chained.readRange).toBe("function");
     expect(typeof chained.acquireFence).toBe("function");
   });
+
+  it("rejects a signature that is not valid hex (no silent truncation)", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const chained = hashChainedEventStore(inner, { hmacSecret: "s3cret" });
+    await appendChain(chained, "e1", 2);
+
+    // Corrupt a stored signature to a non-hex value.
+    const events = await inner.read("e1");
+    (events[1]?.metadata as { auditChain: { sig: string } }).auditChain.sig = "not-hex!!";
+
+    const v = await chained.verifyChain("e1");
+    expect(v.ok).toBe(false);
+    expect(v.reason).toContain("signature");
+  });
+
+  it("chains transparently across a terminal event (cache eviction is invisible)", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const chained = hashChainedEventStore(inner);
+    await chained.append(ev("e1", 0));
+    await chained.append({ ...ev("e1", 1), eventType: "EXECUTION_COMPLETED" }); // terminal → cache dropped
+    // A late audit fact after the terminal must still chain (via a cold tail read).
+    await chained.append({ ...ev("e1", 2), eventType: "EXECUTION_DENIED" });
+    expect((await chained.verifyChain("e1")).ok).toBe(true);
+  });
 });

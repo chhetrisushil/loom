@@ -94,6 +94,12 @@ describe("orchestration — id helpers", () => {
     expect(parentOf(c)).toBe("P");
     expect(parentOf("no-separator")).toBeUndefined();
   });
+
+  it("rejects a key containing the separator (prevents parent-resolution hijack)", () => {
+    expect(() => childIdFor("P", "c1::evil")).toThrow(/must not contain/);
+    // A nested parent id (which legitimately contains the separator) is fine.
+    expect(parentOf(childIdFor("P::c1", "c2"))).toBe("P::c1");
+  });
 });
 
 describe("orchestration — spawn + await a child", () => {
