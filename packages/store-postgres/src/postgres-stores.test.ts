@@ -43,7 +43,7 @@ suite("@loom/store-postgres", () => {
   });
 
   beforeEach(async () => {
-    await admin.query("TRUNCATE events, snapshots, refs, lineage, fences");
+    await admin.query("TRUNCATE events, snapshots, refs, lineage, fences, timers");
   });
 
   describe("PostgresEventStore", () => {
@@ -78,6 +78,24 @@ suite("@loom/store-postgres", () => {
     it("rejects duplicate (executionId, sequence) pairs", async () => {
       await store.append(makeEnvelope("e4", 0));
       await expect(store.append(makeEnvelope("e4", 0))).rejects.toThrow();
+    });
+
+    it("timers (T1.3): schedule is idempotent; due orders soonest-first; complete retires", async () => {
+      const { PostgresTimerStore } = await import("./PostgresTimerStore");
+      const timers = new PostgresTimerStore(PG_URL as string);
+      try {
+        await timers.schedule({ executionId: "b", wakeAt: 200 });
+        await timers.schedule({ executionId: "a", wakeAt: 100 });
+        await timers.schedule({ executionId: "a", wakeAt: 100 }); // idempotent
+        expect(await timers.due(500)).toEqual([
+          { executionId: "a", wakeAt: 100 },
+          { executionId: "b", wakeAt: 200 },
+        ]);
+        await timers.complete("a", 100);
+        expect(await timers.due(500)).toEqual([{ executionId: "b", wakeAt: 200 }]);
+      } finally {
+        await timers.close();
+      }
     });
 
     it("fencing (K9.4): acquireFence is monotonic; stale/unfenced appends are rejected", async () => {

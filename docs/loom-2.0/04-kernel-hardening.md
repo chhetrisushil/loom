@@ -380,7 +380,7 @@ its amendments:
 | **K10** | Log lifecycle: retention, crypto-shredding, redaction, compaction | [0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md) | P2 |
 | **K11** | Flow-code versioning for in-flight executions (pin / migrate, never silent) | [0023](../adr/0023-k11-flow-code-versioning-in-flight-executions.md) | P1 — **implemented** (hash, pinned resumption, `resumeAs`, deploy census) |
 | **K12** | Identity, tenancy & delegated authority | [0024](../adr/0024-k12-identity-tenancy-delegated-authority.md) | P2 |
-| **T1** | Durable timers & scheduled executions (kernel service) | [0025](../adr/0025-t1-durable-timers-and-scheduled-executions.md) | P1 — **T1.1 implemented** (`ctx.sleep`/`sleepUntil`, `TIMER_FIRED`, TimerService/stores, timeout unification; cron registry pending) |
+| **T1** | Durable timers & scheduled executions (kernel service) | [0025](../adr/0025-t1-durable-timers-and-scheduled-executions.md) | P1 — **implemented** (`ctx.sleep`/`sleepUntil`, `TIMER_FIRED`, stores ×3, `schedule$` cron, fenced firing) |
 | **T2** | Wire-level kernel ABI (language neutrality) | [0026](../adr/0026-t2-wire-level-kernel-abi.md) | P3 |
 
 Every item inherits **G1** (preserve P2/P9) and **G2** (additive, opt-in per P10 — unwired

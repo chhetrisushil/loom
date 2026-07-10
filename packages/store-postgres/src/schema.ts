@@ -55,6 +55,15 @@ export async function migrate(pool: Pool): Promise<void> {
       execution_id TEXT NOT NULL PRIMARY KEY,
       fence BIGINT NOT NULL
     );
+
+    -- T1 durable timers: pending wakes for suspended executions, in the same
+    -- database as the event log so one backup captures the full kernel state.
+    CREATE TABLE IF NOT EXISTS timers (
+      execution_id TEXT NOT NULL,
+      wake_at BIGINT NOT NULL,
+      PRIMARY KEY (execution_id, wake_at)
+    );
+    CREATE INDEX IF NOT EXISTS idx_timers_wake ON timers (wake_at ASC);
   `);
 }
 
