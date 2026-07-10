@@ -12,7 +12,7 @@ import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { WorkflowContextImpl } from "./WorkflowContext";
-import { FlowCodeMismatchError } from "./types";
+import { FlowCodeMismatchError, FlowMigrationCheckError } from "./types";
 import type {
   ExecutionHandle,
   FlowRunner,
@@ -65,8 +65,13 @@ export class WorkflowRuntime {
   private readonly onStorageError: ((executionId: string, err: unknown) => void) | undefined;
   private readonly snapshotEvery: number | undefined;
   private readonly flows = new Map<string, RegisteredFlow>();
-  // K11.1 — content hash of each registered flow's fold-relevant structure.
+  // K11.1 — content hash of each flow id's CURRENT (most recently registered) version.
   private readonly flowHashes = new Map<string, string>();
+  // K11.2 — every registered version per flow id, for pinned resumption.
+  private readonly flowVersions = new Map<
+    string,
+    Map<string, { flow: RegisteredFlow; hash: string }>
+  >();
   // K8.2 — live executions this runtime instance is currently driving, so
   // cancel() can reach an in-flight run by id. Entries are removed when the run
   // settles (completes / suspends / fails / cancels).
@@ -90,10 +95,28 @@ export class WorkflowRuntime {
     definition: RegisteredFlow<TIn, TOut>["definition"],
     runner: FlowRunner<TIn, TOut>
   ): void {
-    this.flows.set(definition.id, { definition, runner } as RegisteredFlow);
-    // K11.1 — fingerprint the flow's fold-relevant structure once at
-    // registration; recorded on EXECUTION_STARTED, compared on resume/recovery.
-    this.flowHashes.set(definition.id, flowContentHash(definition));
+    // K11.1/.2 — fingerprint the flow's fold-relevant structure and keep every
+    // registered version (pinned resumption resolves an in-flight execution's
+    // recorded hash to the version it started under). Re-registering the SAME
+    // id+version+hash is idempotent (dev watch-mode must not error); the same
+    // id+version with DIFFERENT content is a hard error — bump the version.
+    const hash = flowContentHash(definition);
+    const versions = this.flowVersions.get(definition.id) ?? new Map();
+    const existing = versions.get(definition.version);
+    if (existing !== undefined && existing.hash !== hash) {
+      throw new Error(
+        `flow "${definition.id}" version "${definition.version}" re-registered with different ` +
+          `content (${existing.hash} → ${hash}); bump the flow version or revert the change`
+      );
+    }
+    const registered = { definition, runner } as RegisteredFlow;
+    versions.set(definition.version, { flow: registered, hash });
+    this.flowVersions.set(definition.id, versions);
+    // The most recently registered version is the CURRENT one (used by start()
+    // and as the resume default) — register the live version last, or rely on
+    // pinned resumption to serve older in-flight executions.
+    this.flows.set(definition.id, registered);
+    this.flowHashes.set(definition.id, hash);
     for (const step of definition.steps) {
       const toolId = step.toolId ?? step.id;
       if (step.handler !== undefined && !this.effectRuntime.has(toolId)) {
@@ -117,22 +140,44 @@ export class WorkflowRuntime {
     return [...this.flows.keys()];
   }
 
-  // K11.1 — refuse to fold a log under flow code it wasn't recorded with. Only
-  // executions whose log recorded a `flowHash` are checked (legacy logs resume
-  // exactly as before, G2); `allowFlowCodeMismatch` is the explicit operator-ack.
-  private checkFlowCode(
+  // K11.1/.2 — resolve the flow CODE an execution must resume on:
+  //  1. follow a durable migration pointer (`_migratedTo`, K11.3) if present;
+  //  2. the current version when its hash matches the recorded one (or the log
+  //     recorded none — legacy, G2 — or the operator explicitly acked);
+  //  3. PINNED RESUMPTION: any other registered version whose hash matches the
+  //     recorded one — the execution resumes on the code it started under;
+  //  4. otherwise refuse loudly (never silently fold with changed code).
+  private resolveFlowFor(
     executionId: string,
     workflowId: string,
     state: ExecutionState,
     options: RunOptions | undefined
-  ): void {
-    if (options?.allowFlowCodeMismatch === true) return;
-    const recorded = state.variables._flowHash;
-    if (typeof recorded !== "string") return;
-    const registered = this.flowHashes.get(workflowId);
-    if (registered !== undefined && registered !== recorded) {
-      throw new FlowCodeMismatchError(executionId, workflowId, recorded, registered);
+  ): RegisteredFlow {
+    const targetId =
+      typeof state.variables._migratedTo === "string" ? state.variables._migratedTo : workflowId;
+    const current = this.flows.get(targetId);
+    if (!current) {
+      throw new Error(`No flow registered for workflowId: "${targetId}"`);
     }
+    const recorded = state.variables._flowHash;
+    if (typeof recorded !== "string" || options?.allowFlowCodeMismatch === true) {
+      return current;
+    }
+    if (this.flowHashes.get(targetId) === recorded) {
+      return current;
+    }
+    const versions = this.flowVersions.get(targetId);
+    if (versions !== undefined) {
+      for (const v of versions.values()) {
+        if (v.hash === recorded) return v.flow;
+      }
+    }
+    throw new FlowCodeMismatchError(
+      executionId,
+      targetId,
+      recorded,
+      this.flowHashes.get(targetId) ?? "unregistered"
+    );
   }
 
   /**
@@ -196,13 +241,10 @@ export class WorkflowRuntime {
     resumeEvent?: ResumeEvent,
     options?: RunOptions
   ): Promise<ExecutionHandle> {
-    const flow = this.flows.get(preloadedState.workflowId);
-    if (!flow) {
-      throw new Error(`No flow registered for workflowId: "${preloadedState.workflowId}"`);
-    }
-    // K11.1 — the preloaded state carries the recorded flow-code fingerprint;
-    // restoring onto changed code is refused exactly like a resume.
-    this.checkFlowCode(
+    // K11 — the preloaded state carries the recorded flow-code fingerprint;
+    // restore resolves the same way a resume does: current code, a pinned
+    // version matching the recorded hash, or a loud refusal.
+    const flow = this.resolveFlowFor(
       preloadedState.executionId,
       preloadedState.workflowId,
       preloadedState,
@@ -273,10 +315,11 @@ export class WorkflowRuntime {
     const originalInput = startPayload.input;
 
     const workflowId = firstEvent.workflowId;
+    // NOTE: the runner/deadline come from resolveFlowFor below (current, pinned
+    // version, or migrated target) — this lookup only seeds identity metadata,
+    // and may legitimately be undefined when a migrated execution's ORIGINAL
+    // flow id is no longer registered.
     const flow = this.flows.get(workflowId);
-    if (!flow) {
-      throw new Error(`No flow registered for workflowId: "${workflowId}"`);
-    }
 
     const snapshot = await this.snapshotStore.loadLatest(executionId);
     let vm: ReplayVM;
@@ -290,8 +333,8 @@ export class WorkflowRuntime {
     } else {
       vm = new ReplayVM(allEvents, {
         executionId,
-        workflowId: flow.definition.id,
-        workflowVersion: flow.definition.version,
+        workflowId,
+        workflowVersion: flow?.definition.version ?? "",
       });
     }
 
@@ -301,22 +344,113 @@ export class WorkflowRuntime {
       throw new Error(`Execution ${executionId} was cancelled; resume refused (terminal status)`);
     }
 
-    // K11.1 — never silently fold an in-flight log with flow code it wasn't
-    // recorded under. Applies only when the log recorded a hash (legacy = G2).
-    this.checkFlowCode(executionId, workflowId, vm.getState(), options);
+    // K11 — resolve the CODE to resume on: the current version, a PINNED older
+    // version whose hash matches the recorded one, a migrated target (K11.3), or
+    // a loud refusal — never a silent fold with changed code (legacy logs = G2).
+    const resolved = this.resolveFlowFor(executionId, workflowId, vm.getState(), options);
 
     return this.execute(
       executionId,
       workflowId,
       vm,
-      flow.runner as FlowRunner<unknown, unknown>,
+      resolved.runner as FlowRunner<unknown, unknown>,
       originalInput,
       [
         { eventType: resumeEvent.eventType, payload: resumeEvent.payload },
         { eventType: "EXECUTION_RESUMED", payload: resumeEvent.payload },
       ],
       options?.fence,
-      options?.deadlineMs ?? flow.definition.deadlineMs
+      options?.deadlineMs ?? resolved.definition.deadlineMs
+    );
+  }
+
+  /**
+   * K11.3 — resume an execution ON DIFFERENT FLOW CODE, recording the migration
+   * as a durable `EXECUTION_MIGRATED` fact (which also re-points the execution's
+   * recorded `_flowHash`/`_migratedTo`, so subsequent resumes check against the
+   * NEW code). Strategies:
+   *
+   *  - `"replay-check"` — prove fold-compatibility first: every step recorded in
+   *    the log must still exist in the new flow (the same rule `@loom/deploy-sim`
+   *    enforces as `step-removed`); an orphaned recorded step refuses the
+   *    migration with {@link FlowMigrationCheckError}.
+   *  - `"operator-ack"` — the operator vouches; no check.
+   *
+   * The migration is itself durable and replay-deterministic: replaying the log
+   * re-applies the same verdict at the same sequence (G1).
+   */
+  async resumeAs(
+    executionId: string,
+    newFlowId: string,
+    resumeEvent: ResumeEvent,
+    options: { strategy: "replay-check" | "operator-ack" } & Omit<
+      RunOptions,
+      "executionId" | "allowFlowCodeMismatch"
+    >
+  ): Promise<ExecutionHandle> {
+    const allEvents = await this.eventStore.read(executionId);
+    if (allEvents.length === 0) {
+      throw new Error(`No execution found for id: ${executionId}`);
+    }
+    const firstEvent = allEvents[0]!;
+    const originalInput = (firstEvent.payload as { input?: unknown }).input;
+    const workflowId = firstEvent.workflowId;
+
+    const target = this.flows.get(newFlowId);
+    if (!target) {
+      throw new Error(`No flow registered for workflowId: "${newFlowId}"`);
+    }
+    const toHash = this.flowHashes.get(newFlowId);
+
+    const snapshot = await this.snapshotStore.loadLatest(executionId);
+    let vm: ReplayVM;
+    if (snapshot) {
+      const tail = await this.eventStore.readFrom(executionId, snapshot.sequence + 1);
+      vm = new ReplayVM(tail, snapshot.state);
+    } else {
+      vm = new ReplayVM(allEvents, {
+        executionId,
+        workflowId,
+        workflowVersion: target.definition.version,
+      });
+    }
+    const state = vm.getState();
+    if (state.status === "cancelled") {
+      throw new Error(`Execution ${executionId} was cancelled; resume refused (terminal status)`);
+    }
+
+    if (options.strategy === "replay-check") {
+      // Fold-compatibility: a recorded step missing from the new flow means its
+      // durable output is orphaned and the new runner would re-execute it live.
+      const newStepIds = new Set(target.definition.steps.map((s) => s.id));
+      const orphaned = Object.keys(state.frames).filter((stepId) => !newStepIds.has(stepId));
+      if (orphaned.length > 0) {
+        throw new FlowMigrationCheckError(executionId, newFlowId, orphaned);
+      }
+    }
+
+    const recorded = state.variables._flowHash;
+    return this.execute(
+      executionId,
+      workflowId,
+      vm,
+      target.runner as FlowRunner<unknown, unknown>,
+      originalInput,
+      [
+        {
+          eventType: "EXECUTION_MIGRATED",
+          payload: {
+            toFlowId: newFlowId,
+            strategy: options.strategy,
+            ...(toHash !== undefined && { toHash }),
+            ...(typeof recorded === "string" && { fromHash: recorded }),
+          },
+        },
+        { eventType: resumeEvent.eventType, payload: resumeEvent.payload },
+        { eventType: "EXECUTION_RESUMED", payload: resumeEvent.payload },
+      ],
+      options.fence,
+      options.deadlineMs ?? target.definition.deadlineMs
     );
   }
 
