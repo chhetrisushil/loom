@@ -20,10 +20,12 @@
   "dependencies": {
     "@loom/app": "workspace:*",
     "@loom/core": "workspace:*",
+    "@loom/dispatcher": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/llm": "workspace:*",
     "@loom/projection-runtime": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
+    "@loom/worker-runtime": "workspace:*",
     "@loom/workflow-runtime": "workspace:*",
     "vitest": "^2.1.8"
   },

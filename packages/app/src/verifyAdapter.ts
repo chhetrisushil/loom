@@ -7,6 +7,7 @@ import { EVENT_SCHEMA_VERSION } from "@loom/replay-vm";
 import type {
   FlowSpec,
   GrantSpec,
+  NonDeterministicCall,
   PlacementSpec,
   RuleName,
   VerifyInput,
@@ -50,6 +51,13 @@ export interface VerifyAdapterInputs {
   readonly authorizer?: CapabilityAuthorizer;
   readonly dispatcher?: ExecutionDispatcher;
   readonly meteredDimensions?: readonly string[];
+  /**
+   * Per-flow non-deterministic calls, feeding the determinism rule (issue #82). Produce these
+   * from `@loom/compiler`'s `analyzeNonDeterminism(runnerSource, flowId)` over the flow runner /
+   * orchestration source — NOT step `handler$` bodies, which are memoized (their output is logged
+   * and served on replay, so non-determinism inside them is already safe).
+   */
+  readonly nonDeterministicByFlow?: Readonly<Record<string, readonly NonDeterministicCall[]>>;
 }
 
 /**
@@ -65,9 +73,9 @@ export interface VerifyAdapterInputs {
  * - **placement** — only when the dispatcher is a `PlacementDispatcher` (its `targetNames`).
  * - **eventSchemaVersion** — the app's `EVENT_SCHEMA_VERSION`.
  *
- * Not derivable from the definition today (documented gaps, so their rules stay inert here):
- * non-deterministic-call analysis (the compiler emits none yet — determinism rule),
- * suspend-point `correlationKey`/`wakeAt` detail, per-flow `computeTarget`, and budgets.
+ * Non-determinism analysis is fed via `inputs.nonDeterministicByFlow` (from
+ * `@loom/compiler`'s `analyzeNonDeterminism`, issue #82). Still not derivable from the
+ * definition: suspend-point `correlationKey`/`wakeAt` detail, per-flow `computeTarget`, budgets.
  */
 export function resolveVerifyInput(
   runtime: WorkflowRuntime,
@@ -80,10 +88,12 @@ export function resolveVerifyInput(
     const effects = def.steps
       .filter((s): s is typeof s & { toolId: string } => s.toolId !== undefined)
       .map((s) => ({ toolId: s.toolId, capability: s.toolId, kind: "step" as const }));
+    const nonDet = inputs.nonDeterministicByFlow?.[def.id];
     flows.push({
       id: def.id,
       flowHash: flowContentHash(def),
       ...(effects.length > 0 && { effects }),
+      ...(nonDet !== undefined && nonDet.length > 0 && { nonDeterministicCalls: nonDet }),
     });
   }
 

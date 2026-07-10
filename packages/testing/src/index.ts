@@ -24,4 +24,5 @@ export {
   runEventStoreConformance,
   runSnapshotStoreConformance,
   runBranchRegistryConformance,
+  runExecutionDispatcherConformance,
 } from "./conformance";

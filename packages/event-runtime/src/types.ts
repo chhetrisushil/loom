@@ -3,6 +3,13 @@ import type { EventEnvelope } from "@loom/core";
 export type { EventEnvelope };
 
 /**
+ * SPI version for the {@link EventStore} contract (ADR 0033). Bump MINOR when adding an
+ * optional method, MAJOR when changing a required method's contract. Pinned by
+ * `runEventStoreConformance` in `@loom/testing`.
+ */
+export const EVENT_STORE_SPI_VERSION = "1.0.0";
+
+/**
  * Durable, append-only event log. Async-first so any backend plugs in —
  * synchronous stores (SQLite, in-memory) satisfy this trivially by marking
  * methods `async`; async/network stores (Postgres, Redis, DynamoDB) return

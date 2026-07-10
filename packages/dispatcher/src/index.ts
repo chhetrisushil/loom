@@ -4,6 +4,7 @@ export type {
   ExecutionDispatcher,
   PlacementPolicy,
 } from "./types";
+export { DISPATCHER_SPI_VERSION } from "./types";
 export { LocalDispatcher, type LocalDispatcherOptions } from "./LocalDispatcher";
 export {
   PlacementDispatcher,

@@ -10,10 +10,12 @@
   "references": [
     { "path": "../app" },
     { "path": "../core" },
+    { "path": "../dispatcher" },
     { "path": "../event-runtime" },
     { "path": "../llm" },
     { "path": "../projection-runtime" },
     { "path": "../snapshot-runtime" },
+    { "path": "../worker-runtime" },
     { "path": "../workflow-runtime" }
   ]
 }

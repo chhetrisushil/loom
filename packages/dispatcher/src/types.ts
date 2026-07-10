@@ -1,6 +1,12 @@
 import type { ExecutionPackage, ExecutionResult } from "@loom/worker-runtime";
 
 /**
+ * SPI version for the {@link ExecutionDispatcher} contract (ADR 0033). Pinned by
+ * `runExecutionDispatcherConformance` in `@loom/testing`.
+ */
+export const DISPATCHER_SPI_VERSION = "1.0.0";
+
+/**
  * Placement hints the scheduler/orchestrator attaches to a dispatch. The
  * Dispatcher maps these to a concrete placement decision (e.g. Cloud Run CPU/
  * memory in Step 3). Everything is optional and advisory — correctness never

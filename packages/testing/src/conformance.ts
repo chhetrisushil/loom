@@ -1,7 +1,9 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
+import type { ExecutionDispatcher } from "@loom/dispatcher";
 import type { BranchRef, BranchRegistry, EventStore } from "@loom/event-runtime";
 import { readRangeOf } from "@loom/event-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
+import type { ExecutionPackage } from "@loom/worker-runtime";
 import { describe, expect, it } from "vitest";
 
 // ── SPI conformance kits (ADR 0033) ──────────────────────────────────────────
@@ -214,6 +216,41 @@ export function runBranchRegistryConformance(
         "child2",
       ]);
       await reg.close();
+    });
+  });
+}
+
+function pkg(executionId: string): ExecutionPackage {
+  return { executionId, workflowId: "wf", flowId: "f", input: {} };
+}
+
+/**
+ * The ExecutionDispatcher contract (`@loom/dispatcher`): dispatch a package to a terminal
+ * result, report health, and accept a cancel without throwing.
+ */
+export function runExecutionDispatcherConformance(
+  factory: () => ExecutionDispatcher,
+  label = "ExecutionDispatcher"
+): void {
+  describe(`${label} conformance (ExecutionDispatcher SPI)`, () => {
+    it("dispatch runs a package to a terminal result for the same executionId", async () => {
+      const d = factory();
+      const result = await d.dispatch(pkg("exec-1"));
+      expect(result.executionId).toBe("exec-1");
+      expect(["completed", "suspended", "failed"]).toContain(result.status);
+      expect(typeof result.lastSequence).toBe("number");
+    });
+
+    it("health reports liveness and an in-flight count", async () => {
+      const d = factory();
+      const h = await d.health();
+      expect(typeof h.healthy).toBe("boolean");
+      expect(typeof h.inFlight).toBe("number");
+    });
+
+    it("cancel of an unknown execution is safe (no throw)", async () => {
+      const d = factory();
+      await expect(d.cancel("nope")).resolves.toBeUndefined();
     });
   });
 }

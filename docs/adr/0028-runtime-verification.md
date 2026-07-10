@@ -87,3 +87,27 @@ Landed and green:
 - **migration-safety** dropped as a distinct rule — folded into replay-safety (resume = migration).
 - Scope is **static pre-flight only**; runtime enforcement stays where it already lives (K2/K9/K11).
   `verify` advises; it does not become a new enforcement ring.
+
+## Amendments (delta follow-ups, issue #82)
+
+The forward-requirements acceptance record (Requirement 1) noted three sub-checks. Resolved:
+
+- **Dynamic verification** — the requirement's *"runtime performs dynamic verification where
+  required"* is satisfied by the **existing enforcement rings**, not a new `verify` runtime hook:
+  **K2** (capability authority) denies ungranted effects mid-run, **K9** (delivery contract /
+  fencing / in-doubt) guards effect execution, **K11** (flow-hash pinning) refuses folding an
+  in-flight execution under changed code. `verify` is deliberately the *static/pre-flight* half;
+  these rings are the *dynamic* half. No new runtime verifier is added.
+- **ABI compatibility** — kept as a **build-time conformance test** (`abi.test.ts` pins
+  `KERNEL_SYSCALLS`; `eventSchema.test.ts` pins `knownEventTypes()`), **not** a per-execution
+  `verify` rule. A stored log's schema compatibility is already covered by the replay-safety rule
+  (K5 `EVENT_SCHEMA_VERSION`); a separate per-execution ABI-compat rule would add nothing.
+- **Determinism rule feed** — `@loom/compiler` now provides `analyzeNonDeterminism(source, flowId)`
+  (AST-based: flags `Date.now`/`Math.random`/`crypto.randomUUID`/`performance.now`/bare `fetch`/
+  `new Date()`, with `insideDecide` when inside a `ctx.decide`/`ctx.execute` boundary). Its output
+  feeds the determinism rule via `resolveVerifyInput({ nonDeterministicByFlow })`. **Important
+  correctness note:** analyze the **flow runner / orchestration source**, not step `handler$`
+  bodies — a handler's `STEP_COMPLETED` output is logged and served on replay, so non-determinism
+  *inside* a handler is already safe; only orchestration code that re-executes on replay can
+  diverge. Auto-extraction of runner bodies into the manifest is a further follow-up; the analyzer
+  + feed path are in place.
