@@ -220,6 +220,18 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "Composed from existing primitives — NO new syscall or event type (P10 win; the plan's CHILD_COMPLETED governed event proved unnecessary). L2; single-child await today (fan-out is a follow-up).",
   },
   {
+    id: "saga",
+    title: "Saga / Compensation",
+    package: "@loom/saga",
+    level: "L2",
+    summary:
+      "Register compensators as a flow progresses; run them in reverse on failure. Compensators are ordinary ctx.run steps, so rollback is replay-safe.",
+    evidence: {
+      conformanceTest: "packages/saga/src/saga.test.ts",
+    },
+    note: "NO new syscall/event type/fold change (P10 win; the plan's ctx.compensate syscall + COMPENSATION_* events proved unnecessary — compensators run as replay-guarded ctx.run steps). KERNEL_ABI stays 1.1.0. Verified crash-safe by a DST no-double-compensation property.",
+  },
+  {
     id: "scheduler",
     title: "Cooperative Scheduler",
     package: "@loom/scheduler",

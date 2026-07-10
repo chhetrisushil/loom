@@ -51,6 +51,7 @@
     { "path": "packages/fair-scheduler" },
     { "path": "packages/live-query" },
     { "path": "packages/orchestration" },
+    { "path": "packages/saga" },
     { "path": "apps/playground" },
     { "path": "examples/cloud-command-center" }
   ]
