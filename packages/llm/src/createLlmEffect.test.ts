@@ -74,6 +74,24 @@ describe("createLlmEffect", () => {
     expect(seen[0]).toBe(controller.signal);
   });
 
+  it("wires the effect's warm() to the provider's warm hook (pre-warm)", async () => {
+    const providerWarm = vi.fn();
+    const provider: LlmProvider = {
+      complete: async () => ({ content: "", stopReason: "end_turn" }),
+      warm: providerWarm,
+    };
+    const effect = createLlmEffect({ provider, buildRequest: () => ({ messages: [] }) });
+    expect(effect.warm).toBeDefined();
+    await effect.warm?.();
+    expect(providerWarm).toHaveBeenCalledTimes(1);
+  });
+
+  it("has no warm() when the provider does not implement one", () => {
+    const provider: LlmProvider = { complete: async () => ({ content: "", stopReason: "end_turn" }) };
+    const effect = createLlmEffect({ provider, buildRequest: () => ({ messages: [] }) });
+    expect(effect.warm).toBeUndefined();
+  });
+
   it("a signal set by buildRequest wins over ctx.signal", async () => {
     const seen: Array<AbortSignal | undefined> = [];
     const provider: LlmProvider = {

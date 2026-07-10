@@ -81,6 +81,16 @@ export interface Effect<TIn = unknown, TOut = unknown> {
    * at-least-once re-run — existing effects behave byte-identically (G2).
    */
   readonly idempotent?: boolean;
+  /**
+   * Advisory pre-warm (latency-only, off the durable path). If present, the
+   * kernel may call it BEFORE the effect is needed to spin up a cold resource
+   * the effect depends on — a K7 isolated child process, an LLM provider
+   * connection/model cache, a remote worker. Like the {@link Warmer} seam it is
+   * strictly latency: it MUST NOT emit events or influence outcomes (P10), and a
+   * failure is a silent no-op → the first real call just runs cold. Idempotent
+   * and safe to call repeatedly.
+   */
+  warm?(): void | Promise<void>;
   execute(input: TIn, ctx: EffectContext): Promise<TOut>;
 }
 

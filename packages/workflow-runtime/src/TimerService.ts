@@ -23,6 +23,14 @@ export interface TimerServiceOptions {
    */
   schedules?: ScheduleDefinition[];
   /**
+   * Advisory pre-warm lead time (ms). When > 0, the service warms a scheduled
+   * flow's first-step effect (`runtime.warmFlow`) up to `warmLeadMs` BEFORE its
+   * next occurrence fires — hiding cold-start (K7 child spawn, LLM connection)
+   * behind the wait we already know is coming (the occurrence time is
+   * deterministic). Off by default; latency-only, never affects the fire itself.
+   */
+  warmLeadMs?: number;
+  /**
    * T1.2/K9.4 — acquire a fencing token per fire/start (on a fencing store),
    * so a duplicate cross-node fire loses at the store instead of double-
    * writing. Enable in multi-node deployments where dispatches are fenced
@@ -55,7 +63,13 @@ export class TimerService {
   private readonly batch: number;
   private readonly onError: ((executionId: string, err: unknown) => void) | undefined;
   private readonly fenced: boolean;
-  private readonly schedules: Array<{ def: ScheduleDefinition; spec: CronSpec; cursor: number }>;
+  private readonly warmLeadMs: number;
+  private readonly schedules: Array<{
+    def: ScheduleDefinition;
+    spec: CronSpec;
+    cursor: number;
+    warmed?: number; // the occurrence already pre-warmed (dedupe across polls)
+  }>;
   private timer: ReturnType<typeof setInterval> | undefined;
   private ticking = false;
 
@@ -68,6 +82,7 @@ export class TimerService {
     this.batch = options.batch ?? 100;
     this.onError = options.onError;
     this.fenced = options.fenced ?? false;
+    this.warmLeadMs = options.warmLeadMs ?? 0;
     // Cron cursors start at construction time: no catch-up of occurrences that
     // passed while nothing was running (documented; a durable catch-up policy
     // can layer on later without changing the firing contract).
@@ -104,10 +119,26 @@ export class TimerService {
       }
       for (const schedule of this.schedules) {
         await this.fireDueOccurrences(schedule, now);
+        this.maybeWarm(schedule, now);
       }
     } finally {
       this.ticking = false;
     }
+  }
+
+  // Advisory: pre-warm a schedule's flow when its NEXT (not-yet-due) occurrence
+  // is within `warmLeadMs`. Deduped per occurrence so it warms once, not every
+  // poll. Off the fire path — a warm never gates or delays the start.
+  private maybeWarm(
+    schedule: { def: ScheduleDefinition; spec: CronSpec; cursor: number; warmed?: number },
+    now: number
+  ): void {
+    if (this.warmLeadMs <= 0) return;
+    const upcoming = nextOccurrence(schedule.spec, schedule.cursor);
+    if (upcoming <= now || upcoming - now > this.warmLeadMs) return;
+    if (schedule.warmed === upcoming) return; // already warmed for this occurrence
+    schedule.warmed = upcoming;
+    this.runtime.warmFlow(schedule.def.flowId);
   }
 
   private async fireDueOccurrences(

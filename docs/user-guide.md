@@ -656,6 +656,37 @@ brokered `ctx.fetch`: the allowlist is enforced **before any connection** (durab
 (`require("http")` throws) as defense-in-depth — for hostile-code-grade confinement add
 OS-layer sandboxing (netns/seccomp/container egress) around the worker.
 
+### Pre-warming (latency, advisory)
+
+Cold starts live at I/O boundaries — a K7 child-process fork (~50ms), an LLM provider's
+first HTTPS handshake, a Cloud Run cold instance. Pre-warming spins those up *before* the
+call, strictly in the **advisory plane**: it is latency-only, never emits or touches the
+fold (P10), and a failed warm silently falls back to a cold call. It cannot change what
+happens — only how fast.
+
+```ts
+// K7 — pre-spawn the isolated child at boot so the first call skips the fork:
+new IsolatedToolEffect({ id: "fetch-metrics", modulePath, warm: true }); // ~54ms → ~2ms first call
+// or call effect.warm() / runtime's effectRuntime.warm(toolId) at boot.
+
+// LLM — keep the provider connection/model cache hot (provider implements warm()):
+const provider = { async complete(req) { … }, async warm() { await this.keepAlive(); } };
+// createLlmEffect wires effect.warm() → provider.warm().
+
+// Scheduled flows — the occurrence time is deterministic, so warm the flow's first
+// step just before it fires (hides cold-start behind the wait you already know is coming):
+defineConfig({
+  timers: { store, schedules: [nightlyAudit], warmLeadMs: 10_000 }, // warm 10s ahead
+});
+```
+
+Use it only where the hidden latency is large and real (K7 children, LLM/remote connections,
+cloud workers) — warming the in-process hot paths (the fold, local stores, middleware) buys
+nothing. Mispredicted warming spends resources (an idle child, a needless connection), so it
+is **opt-in** and belongs on high-probability boundaries: a scheduled fire, or a tool you know
+every request hits. Loom deliberately keeps speculation out of the durable core — pre-warming
+rides the advisory `Warmer`/`Effect.warm()` seam, never the log.
+
 ### Effect delivery: at-least-once & idempotency (K9)
 
 **The contract:** *effects are at-least-once; steps are exactly-once only with respect to the

@@ -30,6 +30,14 @@ export interface IsolatedToolSpec {
   timeoutMs?: number;
   /** K9.3 delivery semantic, same as ToolEffect's. */
   idempotent?: boolean;
+  /**
+   * Pre-warm at construction: spawn the persistent child process eagerly so the
+   * FIRST `execute` doesn't pay the fork + tool-module-load cold start
+   * (~50–200ms). Opt-in — omit for lazy spawn on first use (a warm child that is
+   * never invoked just idles until `close()` or process exit). Advisory, so a
+   * failed warm falls back to lazy spawn.
+   */
+  warm?: boolean;
 }
 
 /** The response shape the brokered `ctx.fetch` returns inside the child. */

@@ -42,6 +42,19 @@ export class IsolatedToolEffect implements Effect {
       this.idempotent = spec.idempotent;
     }
     this.allowlist = new Set(spec.egress ?? []);
+    // Pre-warm at construction when opted in — the child is up before the first
+    // execute, so no run pays the fork + module-load cold start (A4).
+    if (spec.warm === true) this.warm();
+  }
+
+  /**
+   * Advisory pre-warm (A4): spawn the persistent child NOW so the first
+   * `execute` doesn't pay the ~fork + `require(tool)` cold start. Idempotent —
+   * a live child is reused; a dead one respawns. Off the durable path, no
+   * effect on outcomes. Call at boot/registration, or ahead of a scheduled run.
+   */
+  warm(): void {
+    this.ensureChild();
   }
 
   execute(input: unknown, ctx: EffectContext): Promise<unknown> {

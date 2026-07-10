@@ -132,6 +132,8 @@ export interface LoomConfig {
     pollMs?: number;
     schedules?: ScheduleDefinition[];
     fenced?: boolean;
+    /** Advisory: pre-warm a scheduled flow's first effect this many ms before it fires. */
+    warmLeadMs?: number;
   };
 }
 
@@ -262,6 +264,7 @@ export function defineConfig(config: LoomConfig): LoomApp {
       ...(config.timers.pollMs !== undefined && { pollMs: config.timers.pollMs }),
       ...(config.timers.schedules !== undefined && { schedules: config.timers.schedules }),
       ...(config.timers.fenced !== undefined && { fenced: config.timers.fenced }),
+      ...(config.timers.warmLeadMs !== undefined && { warmLeadMs: config.timers.warmLeadMs }),
     });
     timerService.start();
   }

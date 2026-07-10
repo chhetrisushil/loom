@@ -160,6 +160,22 @@ export class WorkflowRuntime {
     return [...this.flows.keys()];
   }
 
+  /**
+   * Advisory pre-warm (latency-only, off the durable path): spin up the cold
+   * resources a flow's FIRST step will need — a K7 isolated child process, an
+   * LLM provider connection — ahead of the run, so the initial latency the
+   * caller waits on is hidden. Used by the {@link TimerService} to warm a
+   * scheduled flow just before its (deterministic) fire time. No-op for an
+   * unknown flow or one whose first effect has no warm hook; never authorizes,
+   * meters, emits, or affects the fold (warming is not invoking, P10).
+   */
+  warmFlow(flowId: string): void {
+    const flow = this.flows.get(flowId);
+    const first = flow?.definition.steps[0];
+    if (first === undefined) return;
+    this.effectRuntime.warm(first.toolId ?? first.id);
+  }
+
   // K12.2 — verify an approval-gating resume event. Returns an APPROVAL_GRANTED
   // bootstrap event to record when verified; `undefined` for an ordinary resume;
   // throws ApprovalRejectedError when the authenticator rejects it (forged).
