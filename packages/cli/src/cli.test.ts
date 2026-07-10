@@ -16,6 +16,7 @@ import { idempotencyAdvisory, loadLogs, runDeployCheck } from "./deploy";
 import { cmdGen, cmdNew, discoverFlows } from "./gen";
 import { describeState, evaluateGoldens, foldAt, formatLog, parseArgs } from "./index";
 import { serveInspector } from "./inspector";
+import { cmdIntrospect } from "./introspect";
 import { cmdProfile } from "./profile";
 import { buildTrace } from "./trace";
 import { cmdVerify } from "./verify";
@@ -126,6 +127,20 @@ describe("loom CLI", () => {
     });
     it("loom profile on an unknown execution is graceful", async () => {
       expect(await cmdProfile(dbPath, "nope")).toContain("no execution");
+    });
+    it("loom introspect prints the execution/task/decision/resource graphs", async () => {
+      const text = await cmdIntrospect(dbPath, executionId);
+      expect(text).toContain("executions:");
+      expect(text).toContain("tasks:");
+      expect(text).toContain("a — completed");
+    });
+    it("loom introspect --graph selects one graph", async () => {
+      const text = await cmdIntrospect(dbPath, executionId, "tasks");
+      expect(text).toContain("tasks:");
+      expect(text).not.toContain("resources:");
+    });
+    it("loom introspect on an unknown execution is graceful", async () => {
+      expect(await cmdIntrospect(dbPath, "nope")).toContain("no execution");
     });
   });
 

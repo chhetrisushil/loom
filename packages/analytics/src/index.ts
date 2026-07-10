@@ -44,3 +44,26 @@ export type {
   LatencyBreakdown,
   ExecutionProfile,
 } from "./profile";
+export {
+  introspect,
+  executionNodes,
+  taskGraph,
+  resourceGraph,
+  dependencyGraph,
+  formatIntrospection,
+} from "./introspect";
+export type {
+  ExecutionStatus,
+  ExecutionNode,
+  TaskNode,
+  TaskEdge,
+  TaskGraph,
+  ResourceNode,
+  ResourceGraph,
+  PlacementGraph,
+  DependencyEdge,
+  DependencyGraph,
+  IntrospectOptions,
+  RuntimeIntrospection,
+  GraphName,
+} from "./introspect";
