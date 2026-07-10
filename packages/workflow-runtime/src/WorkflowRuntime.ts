@@ -12,9 +12,17 @@ import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { WorkflowContextImpl } from "./WorkflowContext";
-import { ApprovalRejectedError, FlowCodeMismatchError, FlowMigrationCheckError } from "./types";
+import {
+  ApprovalRejectedError,
+  ExecutionDeniedError,
+  FlowCodeMismatchError,
+  FlowMigrationCheckError,
+} from "./types";
 import type {
+  ExecutionAuthorizer,
+  ExecutionAuthzRequest,
   ExecutionHandle,
+  ExecutionOp,
   FlowRunner,
   ForkOptions,
   ForkResult,
@@ -70,6 +78,20 @@ export interface WorkflowRuntimeDeps {
    * historical no-fire metadata, byte-identically (G2).
    */
   timerStore?: TimerStore;
+  /**
+   * C.1 — execution-lifecycle authorization. When set, `start`/`resume`/`cancel`
+   * and the public `loadState` (query) consult it — but ONLY when the call carries
+   * a `principal` (the trust-boundary model: the edge attaches the authenticated
+   * principal; principal-less kernel-internal calls — TimerService, recovery — are
+   * unaffected, byte-identically (G2)). A denied op throws {@link ExecutionDeniedError}.
+   */
+  executionAuthorizer?: ExecutionAuthorizer;
+  /**
+   * C.1 — fired whenever an {@link ExecutionAuthorizer} refuses a lifecycle op, for
+   * audit/telemetry. Independent of the durable EXECUTION_DENIED fact (which the
+   * kernel best-effort records for denied resume/cancel on non-fencing stores).
+   */
+  onExecutionDenied?: (request: ExecutionAuthzRequest, reason?: string) => void;
 }
 
 export class WorkflowRuntime {
@@ -82,6 +104,10 @@ export class WorkflowRuntime {
   private readonly snapshotEvery: number | undefined;
   private readonly timerStore: TimerStore | undefined;
   private readonly resumeAuthenticator: ResumeAuthenticator | undefined;
+  private readonly executionAuthorizer: ExecutionAuthorizer | undefined;
+  private readonly onExecutionDenied:
+    | ((request: ExecutionAuthzRequest, reason?: string) => void)
+    | undefined;
   private readonly flows = new Map<string, RegisteredFlow>();
   // K11.1 — content hash of each flow id's CURRENT (most recently registered) version.
   private readonly flowHashes = new Map<string, string>();
@@ -105,6 +131,97 @@ export class WorkflowRuntime {
     this.snapshotEvery = deps.snapshotEvery;
     this.resumeAuthenticator = deps.resumeAuthenticator;
     this.timerStore = deps.timerStore;
+    this.executionAuthorizer = deps.executionAuthorizer;
+    this.onExecutionDenied = deps.onExecutionDenied;
+  }
+
+  // ── C.1 — execution-lifecycle authorization helpers ────────────────────────
+  //
+  // The authorizer is consulted only when configured AND a principal is present on
+  // the call (the trust-boundary model). A denial fires the audit callback and, for
+  // resume/cancel, BEST-EFFORT records a durable EXECUTION_DENIED fact — WITHOUT
+  // acquiring a fence, so it can never fence-out (disrupt) a running execution. On a
+  // fencing store with an active fence the append is rejected and silently skipped;
+  // enforcement is the thrown error, which never depends on the record.
+
+  /** Returns a denial reason if the op is refused, else undefined (allowed / not gated). */
+  private authzDenial(
+    op: ExecutionOp,
+    executionId: string,
+    workflowId: string,
+    principal: PrincipalChain | undefined
+  ): { reason?: string } | undefined {
+    if (this.executionAuthorizer === undefined || principal === undefined) return undefined;
+    const verdict = this.executionAuthorizer.authorize({ op, executionId, workflowId, principal });
+    if (verdict.allowed) return undefined;
+    return verdict.reason !== undefined ? { reason: verdict.reason } : {};
+  }
+
+  /** Fire the audit callback, best-effort record (resume/cancel), and throw. */
+  private async denyOp(
+    op: ExecutionOp,
+    executionId: string,
+    workflowId: string,
+    principal: PrincipalChain | undefined,
+    reason: string | undefined,
+    recordAfterSequence: number | undefined
+  ): Promise<never> {
+    const request: ExecutionAuthzRequest = {
+      op,
+      executionId,
+      workflowId,
+      ...(principal !== undefined && { principal }),
+    };
+    this.onExecutionDenied?.(request, reason);
+    if (recordAfterSequence !== undefined) {
+      await this.recordExecutionDenied(
+        op,
+        executionId,
+        workflowId,
+        principal,
+        reason,
+        recordAfterSequence
+      );
+    }
+    throw new ExecutionDeniedError(op, executionId, reason);
+  }
+
+  /**
+   * Best-effort durable EXECUTION_DENIED audit fact. Appends WITHOUT a fence (never
+   * disrupts a running execution) at `afterSequence + 1`; any rejection (stale fence,
+   * sequence race) is swallowed — the record is audit, the throw is the enforcement.
+   * Consecutive identical denials are deduped to bound write-amplification.
+   */
+  private async recordExecutionDenied(
+    op: ExecutionOp,
+    executionId: string,
+    workflowId: string,
+    principal: PrincipalChain | undefined,
+    reason: string | undefined,
+    afterSequence: number
+  ): Promise<void> {
+    const actor = principal?.actor;
+    const sequence = afterSequence + 1;
+    const envelope: EventEnvelope = {
+      id: `${executionId}-${sequence}-denied`,
+      workflowId,
+      executionId,
+      eventType: "EXECUTION_DENIED",
+      sequence,
+      timestamp: Date.now(),
+      payload: {
+        op,
+        ...(reason !== undefined && { reason }),
+        ...(actor !== undefined && { actor }),
+      },
+    };
+    try {
+      await this.eventStore.append(envelope);
+      this.onEvent?.(envelope);
+    } catch {
+      // Fencing store with an active fence, or a sequence race — skip the record.
+      // Enforcement already happened via the thrown ExecutionDeniedError.
+    }
   }
 
   register(toolId: string, effect: Effect): void {
@@ -261,13 +378,44 @@ export class WorkflowRuntime {
    * already terminal (completed / failed / cancelled). Throws if the id is
    * unknown. Replay reconstructs the cancellation at the same sequence (G1).
    */
-  async cancel(executionId: string, reason?: unknown): Promise<boolean> {
+  async cancel(
+    executionId: string,
+    reason?: unknown,
+    options?: { principal?: PrincipalChain }
+  ): Promise<boolean> {
     const live = this.liveHandles.get(executionId);
+
+    // C.1 — gate the cancel (only when configured AND a principal is present). Use the
+    // live handle's state when running here, else fold; a denial is best-effort
+    // recorded WITHOUT a fence (never disrupts the still-running execution).
+    if (this.executionAuthorizer !== undefined && options?.principal !== undefined) {
+      const gate = live?.getState() ?? (await this.foldState(executionId));
+      if (gate === null || gate === undefined) {
+        throw new Error(`No execution found for id: ${executionId}`);
+      }
+      const cancelDenial = this.authzDenial(
+        "cancel",
+        executionId,
+        gate.workflowId,
+        options.principal
+      );
+      if (cancelDenial !== undefined) {
+        await this.denyOp(
+          "cancel",
+          executionId,
+          gate.workflowId,
+          options.principal,
+          cancelDenial.reason,
+          gate.sequence
+        );
+      }
+    }
+
     if (live !== undefined) {
       live.cancel(reason);
       return true;
     }
-    const state = await this.loadState(executionId);
+    const state = await this.foldState(executionId);
     if (state === null) {
       throw new Error(`No execution found for id: ${executionId}`);
     }
@@ -328,6 +476,19 @@ export class WorkflowRuntime {
     const executionId = options?.executionId ?? ulid();
     const { definition, runner } = flow;
 
+    // C.1 — gate the start (no execution exists yet, so no durable record).
+    const startDenial = this.authzDenial("start", executionId, definition.id, options?.principal);
+    if (startDenial !== undefined) {
+      await this.denyOp(
+        "start",
+        executionId,
+        definition.id,
+        options?.principal,
+        startDenial.reason,
+        undefined
+      );
+    }
+
     // Empty VM seeded with identity only; the EXECUTION_STARTED bootstrap event
     // (committed in execute) is what folds status → "running" at sequence 0.
     const vm = new ReplayVM([], {
@@ -372,6 +533,23 @@ export class WorkflowRuntime {
     const originalInput = startPayload.input;
 
     const workflowId = firstEvent.workflowId;
+
+    // C.1 — gate the resume; the execution exists, so best-effort record the denial.
+    const resumeDenial = this.authzDenial("resume", executionId, workflowId, options?.principal);
+    if (resumeDenial !== undefined) {
+      const lastSeq = (allEvents[allEvents.length - 1] as EventEnvelope).sequence;
+      const alreadyDenied =
+        (allEvents[allEvents.length - 1] as EventEnvelope).eventType === "EXECUTION_DENIED";
+      await this.denyOp(
+        "resume",
+        executionId,
+        workflowId,
+        options?.principal,
+        resumeDenial.reason,
+        alreadyDenied ? undefined : lastSeq
+      );
+    }
+
     // NOTE: the runner/deadline come from resolveFlowFor below (current, pinned
     // version, or migrated target) — this lookup only seeds identity metadata,
     // and may legitimately be undefined when a migrated execution's ORIGINAL
@@ -527,7 +705,24 @@ export class WorkflowRuntime {
    * state as-is (already "completed"/"failed"/"suspended") — no re-run, no
    * duplicate effects, no restart.
    */
-  async loadState(executionId: string): Promise<ExecutionState | null> {
+  async loadState(
+    executionId: string,
+    options?: { principal?: PrincipalChain }
+  ): Promise<ExecutionState | null> {
+    const state = await this.foldState(executionId);
+    if (state === null) return null;
+    // C.1 — gate the query. Folding is pure (no side effects), so authorizing AFTER
+    // is safe: on a denial we simply withhold the data (no durable record — a read
+    // must never write). Kernel-internal callers use `foldState` and bypass this.
+    const denial = this.authzDenial("query", executionId, state.workflowId, options?.principal);
+    if (denial !== undefined) {
+      throw new ExecutionDeniedError("query", executionId, denial.reason);
+    }
+    return state;
+  }
+
+  /** The un-authorized fold used by the kernel internally (cancel, timers, recovery). */
+  private async foldState(executionId: string): Promise<ExecutionState | null> {
     const allEvents = await this.eventStore.read(executionId);
     if (allEvents.length === 0) {
       return null;
