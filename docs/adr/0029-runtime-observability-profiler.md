@@ -1,6 +1,6 @@
 # ADR 0029 — Runtime Observability / profiler
 
-- Status: Proposed (2026-07-10) — accepted item #2 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md)
+- Status: Accepted (2026-07-10) — accepted item #2 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: `flameGraph` / `latencyBreakdown` / `profile` / `formatProfile` lenses in `@loom/analytics` + `loom profile --db <path> <executionId>` CLI. P3 ratios (`cacheHitRatio`/`predictionAccuracy`) present as `null` (inert until those seams land).
 - Date: 2026-07-10
 - Builds on: `@loom/analytics` (M9 read-only lenses), `@loom/telemetry` (`TelemetryAdapter`), `@loom/cli` (`buildTrace`, `loom inspect`)
 

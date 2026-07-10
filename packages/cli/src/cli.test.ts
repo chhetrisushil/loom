@@ -16,6 +16,7 @@ import { idempotencyAdvisory, loadLogs, runDeployCheck } from "./deploy";
 import { cmdGen, cmdNew, discoverFlows } from "./gen";
 import { describeState, evaluateGoldens, foldAt, formatLog, parseArgs } from "./index";
 import { serveInspector } from "./inspector";
+import { cmdProfile } from "./profile";
 import { buildTrace } from "./trace";
 import { cmdVerify } from "./verify";
 
@@ -115,6 +116,16 @@ describe("loom CLI", () => {
     });
     it("loom debug on an unknown execution is graceful", async () => {
       expect(await cmdDebug(dbPath, "nope")).toContain("no execution");
+    });
+    it("loom profile prints a flame graph + latency breakdown", async () => {
+      const text = await cmdProfile(dbPath, executionId);
+      expect(text).toContain(`profile ${executionId}`);
+      expect(text).toContain("flame graph:");
+      expect(text).toContain("latency:");
+      expect(text).toContain("a —"); // the completed step appears in the flame tree
+    });
+    it("loom profile on an unknown execution is graceful", async () => {
+      expect(await cmdProfile(dbPath, "nope")).toContain("no execution");
     });
   });
 

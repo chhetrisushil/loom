@@ -20,3 +20,27 @@ export type {
 } from "./intelligence";
 export { recordOutcome, outcomeAnalytics, rankFromOutcomes } from "./outcomes";
 export type { Outcome, OutcomeSink, OutcomeStats } from "./outcomes";
+export {
+  decisionRecords,
+  outcomeRecords,
+  decisionStore,
+  decisionGraph,
+} from "./decisions";
+export type {
+  DecisionRecord,
+  OutcomeRecord,
+  DecisionQuery,
+  DecisionStore,
+  DecisionNode,
+  DecisionEdge,
+  DecisionEdgeKind,
+  DecisionGraph,
+} from "./decisions";
+export { flameGraph, latencyBreakdown, profile, formatProfile } from "./profile";
+export type {
+  FlameKind,
+  FlameNode,
+  StepLatency,
+  LatencyBreakdown,
+  ExecutionProfile,
+} from "./profile";
