@@ -917,6 +917,27 @@ The tenant/workflow totals are an eventually-consistent **projection** (not a re
 fold — a deliberate category difference the amendment states), so a trip is `QUOTA_EXCEEDED`
 attributed to its `level`; the execution level still reads the pure per-execution fold (K3).
 
+### Wire-level ABI (T2)
+
+`@loom/wire-abi` lets a **non-TypeScript client** (any language, even a shell script) drive
+executions over JSON-RPC. The wire protocol is a versioned *projection* of the K1 syscalls —
+generated from `KERNEL_SYSCALLS`, so the hand-written `ctx` surface stays authoritative:
+
+```ts
+import { handleRpc, WIRE_ABI, FOLD_VECTORS, runFoldVectors } from "@loom/wire-abi";
+
+// Mount the carrier on any transport (node:http, the A2A server, worker-server):
+const response = await handleRpc(runtime, jsonRpcRequest);
+// methods: execution.start / execution.resume / execution.getState / execution.cancel
+// A wire client starts/resumes/reads; the KERNEL folds and runs every ring (K2/K3/K6/K7/K12)
+// on its side of the wire — a wire client gains no bypass. The returned fold is
+// byte-identical to an in-process run.
+```
+
+Cross-language conformance is executable: `FOLD_VECTORS` are plain-JSON event-log → expected-
+fold fixtures any implementation can run (`runFoldVectors` is the TS reference), extending the
+K1/K5 pins from "the fold understands these types" to "the fold produces exactly this state".
+
 ---
 
 ## 18. Event intelligence & self-optimization

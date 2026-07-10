@@ -362,15 +362,14 @@ And every ring honours **[P10 — minimal kernel, advisory plane](../architectur
 
 ---
 
-## 9. What's next — K7–K12, T1–T2 (proposed)
+## 9. The second hardening series — K7–K12, T1–T2 (implemented)
 
-K1–K6 are implemented. The next hardening series is recorded as a requirements proposal —
-**[Kernel-Hardening Requirements K7–K12, T1–T2](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md)** —
-critically evaluated against the codebase and the four non-negotiables (kernel genericity,
-DX-first, performance ROI, real security) in the
+K1–K6 were the first hardening ring set. The second series — recorded as
+**[Kernel-Hardening Requirements K7–K12, T1–T2](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md)**,
+critically evaluated against the four non-negotiables (kernel genericity, DX-first,
+performance ROI, real security) in the
 **[evaluation & amendments](../requirements/2026-07-10-kernel-hardening-evaluation.md)**
-(verdict: all eight **accepted with amendments**), with one proposal ADR per item carrying
-its amendments:
+(all eight **accepted with amendments**) — is now **fully implemented**, one ADR per item:
 
 | Item | Closes | ADR | Priority |
 |---|---|---|---|
@@ -381,7 +380,7 @@ its amendments:
 | **K11** | Flow-code versioning for in-flight executions (pin / migrate, never silent) | [0023](../adr/0023-k11-flow-code-versioning-in-flight-executions.md) | P1 — **implemented** (hash, pinned resumption, `resumeAs`, deploy census) |
 | **K12** | Identity, tenancy & delegated authority | [0024](../adr/0024-k12-identity-tenancy-delegated-authority.md) | P2 — **implemented** (principal chain, verified approvals, verifiable delegation, tenant-scoped stores, nested budgets) |
 | **T1** | Durable timers & scheduled executions (kernel service) | [0025](../adr/0025-t1-durable-timers-and-scheduled-executions.md) | P1 — **implemented** (`ctx.sleep`/`sleepUntil`, `TIMER_FIRED`, stores ×3, `schedule$` cron, fenced firing) |
-| **T2** | Wire-level kernel ABI (language neutrality) | [0026](../adr/0026-t2-wire-level-kernel-abi.md) | P3 |
+| **T2** | Wire-level kernel ABI (language neutrality) | [0026](../adr/0026-t2-wire-level-kernel-abi.md) | P3 — **implemented** (`@loom/wire-abi`: JSON-RPC projection of K1, carrier, fold conformance vectors) |
 
 Every item inherits **G1** (preserve P2/P9) and **G2** (additive, opt-in per P10 — unwired
 means byte-identical), and its definition of done includes pinned conformance tests,
