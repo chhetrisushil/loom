@@ -26,3 +26,10 @@ export {
   type FlowGraphInput,
   type FlowGraphIssue,
 } from "./validate";
+export {
+  resolveVerifyInput,
+  normalizeVerify,
+  type VerifyConfig,
+  type NormalizedVerify,
+  type VerifyAdapterInputs,
+} from "./verifyAdapter";

@@ -17,6 +17,7 @@ import { cmdGen, cmdNew, discoverFlows } from "./gen";
 import { describeState, evaluateGoldens, foldAt, formatLog, parseArgs } from "./index";
 import { serveInspector } from "./inspector";
 import { buildTrace } from "./trace";
+import { cmdVerify } from "./verify";
 
 // ── record a real run into a temp SQLite store ────────────────────────────────
 const io = { inputSchema: z.object({}), outputSchema: z.object({}) };
@@ -253,6 +254,50 @@ describe("loom CLI", () => {
       expect(idempotencyAdvisory(resolver, effects)).toEqual(["pay-tool"]);
       // No enumeration capability → no advisory (never a hard failure).
       expect(idempotencyAdvisory({ getFlow: () => undefined }, effects)).toEqual([]);
+    });
+  });
+
+  describe("loom verify", () => {
+    /** A fixture config module exporting a LoomApp-shaped object with verify(). */
+    function writeConfig(name: string, body: string): string {
+      const p = join(dir, name);
+      writeFileSync(p, body);
+      return p;
+    }
+
+    it("prints the report and returns ok when a config passes", async () => {
+      const p = writeConfig(
+        "pass.js",
+        `module.exports = { default: {
+           verify: () => ({ ok: true, findings: [], checked: ["capability-compat"] }),
+           close: async () => {},
+         } };`
+      );
+      const { text, result } = await cmdVerify(p);
+      expect(result.ok).toBe(true);
+      expect(text).toContain("no findings");
+    });
+
+    it("surfaces error findings (exit non-zero) when a config fails", async () => {
+      const p = writeConfig(
+        "fail.js",
+        `module.exports = { default: {
+           verify: () => ({
+             ok: false,
+             findings: [{ rule: "capability-compat", severity: "error", message: "effect x not granted" }],
+             checked: ["capability-compat"],
+           }),
+           close: async () => {},
+         } };`
+      );
+      const { text, result } = await cmdVerify(p);
+      expect(result.ok).toBe(false);
+      expect(text).toContain("capability-compat");
+    });
+
+    it("throws when the module does not export a LoomApp", async () => {
+      const p = writeConfig("bad.js", "module.exports = { default: {} };");
+      await expect(cmdVerify(p)).rejects.toThrow(/LoomApp/);
     });
   });
 

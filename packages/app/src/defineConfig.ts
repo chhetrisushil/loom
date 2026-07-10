@@ -19,6 +19,7 @@ import type { SnapshotStore } from "@loom/snapshot-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime/memory";
 import { composeAdapters, createTelemetryHook } from "@loom/telemetry";
 import type { TelemetryAdapter } from "@loom/telemetry";
+import { type VerificationReport, runVerification, verify as runVerify } from "@loom/verify";
 import { TimerService, WorkflowRuntime } from "@loom/workflow-runtime";
 import type { RegisteredFlow } from "@loom/workflow-runtime";
 import { InProcessA2ABus } from "./InProcessA2ABus";
@@ -29,6 +30,7 @@ import {
   registerFlowsFrom,
 } from "./registerFlows";
 import { type FlowGraphFlow, validateFlowGraph } from "./validate";
+import { type VerifyConfig, normalizeVerify, resolveVerifyInput } from "./verifyAdapter";
 
 /** Structural view of a CapabilityCatalog — avoids a hard `@loom/capability` dep. */
 export interface CatalogLike {
@@ -135,6 +137,16 @@ export interface LoomConfig {
     /** Advisory: pre-warm a scheduled flow's first effect this many ms before it fires. */
     warmLeadMs?: number;
   };
+  /**
+   * Pre-flight runtime verification (`@loom/verify`). Runs read-only, off-log checks over
+   * the resolved app **at boot, before any execution starts**. `"error"` throws on an
+   * error-severity finding; `"warn"` reports via {@link onWarn}; `"off"` (the default)
+   * is byte-identical to not wiring verify (G2). Use the object form to declare the
+   * metered resource dimensions or restrict the rule set. The strongest check today is
+   * capability-compat (a step's effect must be granted in the K2 `GrantTable`).
+   * `app.verify()` re-runs the same checks on demand (used by `loom verify`).
+   */
+  verify?: VerifyConfig;
 }
 
 export interface LoomStores {
@@ -149,6 +161,12 @@ export interface LoomApp {
   projectionRuntime: ProjectionRuntime;
   bus: InProcessA2ABus;
   stores: LoomStores;
+  /**
+   * Re-run pre-flight verification on demand (read-only, off-log). Returns the report;
+   * the caller decides what to do with it (the CLI exits non-zero on `!ok`). Available
+   * regardless of the `verify` config key. See `@loom/verify`.
+   */
+  verify(): VerificationReport;
   close(): Promise<void>;
 }
 
@@ -319,12 +337,34 @@ export function defineConfig(config: LoomConfig): LoomApp {
     }
   }
 
+  // Pre-flight verification (opt-in, G2). Built lazily so an unwired app pays nothing:
+  // with no `verify` key and no `app.verify()` call, `resolveInput` never runs.
+  const verifyCfg = normalizeVerify(config.verify);
+  const resolveInput = () =>
+    resolveVerifyInput(runtime, {
+      ...(config.authorizer !== undefined && { authorizer: config.authorizer }),
+      ...(config.dispatcher !== undefined && { dispatcher: config.dispatcher }),
+      ...(verifyCfg?.meteredDimensions !== undefined && {
+        meteredDimensions: verifyCfg.meteredDimensions,
+      }),
+    });
+  const verifyOptions = verifyCfg?.rules !== undefined ? { rules: verifyCfg.rules } : undefined;
+
+  if (verifyCfg !== undefined && verifyCfg.mode !== "off") {
+    const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+    // "error" throws VerificationError before the app is returned (boot fails, like validate).
+    runVerification(verifyCfg.mode, resolveInput, verifyOptions, warn);
+  }
+
   return {
     runtime,
     effectRuntime,
     projectionRuntime,
     bus,
     stores,
+    verify() {
+      return runVerify(resolveInput(), verifyOptions);
+    },
     async close() {
       timerService?.stop();
       await config.timers?.store.close();

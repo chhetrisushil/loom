@@ -94,6 +94,19 @@ export class GrantTable implements CapabilityAuthorizer {
     }
     return { allowed: false, reason: `effect "${req.toolId}" not granted to "${principal}"` };
   }
+
+  /**
+   * A read-only projection of the static grants — principal → granted effect ids,
+   * or `"*"` when all effects are granted. For pre-flight tooling (e.g. `@loom/verify`)
+   * that needs to inspect authority without a live {@link CapabilityRequest}.
+   */
+  view(): Record<string, readonly string[] | "*"> {
+    const out: Record<string, readonly string[] | "*"> = {};
+    for (const [principal, set] of this.grants) {
+      out[principal] = set.has("*") ? "*" : [...set];
+    }
+    return out;
+  }
 }
 
 export interface DelegationAuthorizerOptions {
@@ -180,7 +193,9 @@ function delegationPayload(issuedTo: string, grants: readonly string[]): string 
 
 /** Mint a delegation token: the delegator signs the subset it confers on `issuedTo`. */
 export function signDelegation(secret: string, issuedTo: string, grants: string[]): DelegatedGrant {
-  const sig = createHmac("sha256", secret).update(delegationPayload(issuedTo, grants)).digest("hex");
+  const sig = createHmac("sha256", secret)
+    .update(delegationPayload(issuedTo, grants))
+    .digest("hex");
   return { grants: [...grants], issuedTo, sig };
 }
 

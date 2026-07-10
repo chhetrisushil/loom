@@ -26,25 +26,52 @@ model, resume *is* migration.)
 
 ## Usage
 
+### Wired (the two real surfaces)
+
+```ts
+// 1. defineConfig — runs at boot, before any execution starts.
+const app = defineConfig({
+  storage: { kind: "memory" },
+  flows,
+  authorizer: new GrantTable({ "my-flow": ["metrics-tool"] }),
+  verify: "error", // "off" (default) | "warn" | "error"
+  //  or the object form to declare metered dimensions / restrict rules:
+  //  verify: { mode: "warn", meteredDimensions: ["tokens", "costUsd", "ms"] },
+});
+
+// 2. On demand — app.verify() re-runs the same checks (this is what `loom verify` calls).
+const report = app.verify();
+if (!report.ok) process.exitCode = 1;
+```
+
+```sh
+loom verify --config ./dist/loom.config.js   # exits non-zero on any error finding
+```
+
+`defineConfig` maps the resolved app → `VerifyInput` via the `@loom/app` adapter
+(`resolveVerifyInput`): flows + `flowContentHash` + each step's effect capability, the
+`GrantTable` projection, and `PlacementDispatcher` targets. `"off"` never even builds the
+input (G2).
+
+### Direct (engine)
+
 ```ts
 import { verify, runVerification } from "@loom/verify";
 
-// Direct, for a `loom verify` CLI or a test:
-const report = verify(input); // input: a structural projection of your resolved config
+const report = verify(input); // input: a structural VerifyInput
 if (!report.ok) console.error(report.findings);
 
-// Wired at startup via defineConfig({ verify: "off" | "warn" | "error" }):
-runVerification(mode, () => buildInputFromConfig(config));
-//  "off"   → returns null, never even builds the input (byte-identical to unwired, G2)
-//  "warn"  → logs the report if there are findings
-//  "error" → throws VerificationError before the first EXECUTION_STARTED
+runVerification(mode, () => buildInput()); // "off" skips buildInput entirely
 ```
 
-`VerifyInput` is a **structural projection** of a resolved `defineConfig(...)` plus the
-`@loom/compiler` manifest (flow hashes + non-deterministic-call analysis). The engine is
-dependency-free on purpose; a thin adapter maps real config → `VerifyInput`, so the rules stay
-pure and testable. Wiring the `loom verify` CLI command and the `defineConfig` key is the
-remaining adapter step (tracked in the accepted-scope issue).
+`VerifyInput` is a **structural projection** of a resolved config. The engine is
+dependency-free on purpose so the rules stay pure and testable; the config→`VerifyInput`
+adapter lives in `@loom/app`.
+
+**Known feed gaps (documented, not silent):** the `@loom/compiler` manifest emits no
+non-deterministic-call analysis yet, so the `determinism` rule is inert when fed from config;
+suspend-point `correlationKey`/`wakeAt`, per-flow `computeTarget`, and budgets aren't in the
+`FlowDefinition` today either. The load-bearing check from config is **capability-compat**.
 
 ## Guarantees
 

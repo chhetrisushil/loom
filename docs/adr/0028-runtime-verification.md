@@ -1,6 +1,6 @@
 # ADR 0028 — Runtime Verification (`@loom/verify`)
 
-- Status: Proposed (2026-07-10) — accepted item #1 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md); implementation started (`packages/verify`)
+- Status: Accepted (2026-07-10) — accepted item #1 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: `@loom/verify` engine + `defineConfig({ verify })` boot gate + `app.verify()` + `loom verify --config` CLI.
 - Date: 2026-07-10
 - Builds on: [ADR 0016](0016-loom-2.0-execution-runtime-and-decision-seam.md) (kernel ABI, P9/P10), [ADR 0021](0021-k9-effect-delivery-contract-idempotency-fencing.md) (K9), [ADR 0023](0023-k11-flow-code-versioning-in-flight-executions.md) (K11 flow hash), the compiler's flow-graph analysis (`@loom/compiler`)
 
@@ -43,12 +43,15 @@ unwired — default is `off`).
 (Note: **migration-safety** from the requirements list collapses into replay-safety — in the
 stateless-worker model resume *is* migration, so there is nothing extra to check.)
 
-**V2 — DX surface.** The bar is loom-starter's ~10-line wiring:
+**V2 — DX surface.** The bar is loom-starter's ~10-line wiring (both landed):
 
-- `loom verify` CLI command — runs all rules against the resolved `defineConfig`, prints a report,
-  exits non-zero on any `error`-severity finding (CI gate).
+- `loom verify --config <module>` — loads a `defineConfig(...)` app, calls `app.verify()`, prints
+  the report, exits non-zero on any `error`-severity finding (CI gate).
 - `defineConfig({ verify: "off" | "warn" | "error" })` — default `"off"` (G2). `"warn"` logs the
-  report at startup; `"error"` throws `VerificationError` before the first execution starts.
+  report via `onWarn` at boot; `"error"` throws `VerificationError` before the first execution
+  starts. Object form (`{ mode, meteredDimensions, rules }`) declares metered dimensions / narrows
+  rules. `app.verify()` re-runs on demand. The config→`VerifyInput` adapter is `resolveVerifyInput`
+  in `@loom/app`; a `GrantTable.view()` projection exposes grants without reflection.
 
 **V3 — Purity.** `verify()` reads only static config + compiler manifest. It runs no effect,
 starts no execution, opens no store connection it must mutate, and emits no event. A rule that
@@ -67,12 +70,16 @@ cannot decide statically returns an `info` finding ("could not verify X"), never
 
 ## Verification
 
-- One spec per rule with a passing and a failing fixture (e.g. a flow with `Date.now()` outside
-  `ctx.decide` → determinism finding; a `computeTarget` with no registered target → placement
-  finding).
-- `verify:"error"` throws before `EXECUTION_STARTED`; `verify:"warn"` logs and proceeds;
-  `verify:"off"` is a no-op (bench-proven zero overhead).
-- `loom verify` exits non-zero iff any `error` finding exists.
+Landed and green:
+
+- `@loom/verify`: one spec per rule (pass + fail fixture) + the mode gate; an unwired-vs-wired
+  bench shows `mode=off` ~1820× faster (input never built). 24 tests.
+- `@loom/app`: `resolveVerifyInput` projects flows/hash/effects/grants/targets; `verify:"error"`
+  throws at boot on an ungranted step effect (capability-compat); `"warn"` reports via `onWarn`;
+  `"off"`/unset is a no-op yet `app.verify()` still works on demand. 7 tests.
+- `@loom/cli`: `loom verify --config` prints the report and exits non-zero on error findings;
+  errors when the module is not a `LoomApp`. 3 tests.
+- `GrantTable.view()` projects grants (incl. `"*"`) without reflection.
 
 ## Amendments (from the Execution-OS evaluation)
 
