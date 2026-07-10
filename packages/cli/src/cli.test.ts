@@ -17,6 +17,7 @@ import { cmdGen, cmdNew, discoverFlows } from "./gen";
 import { describeState, evaluateGoldens, foldAt, formatLog, parseArgs } from "./index";
 import { serveInspector } from "./inspector";
 import { cmdIntrospect } from "./introspect";
+import { cmdOptimize } from "./optimize";
 import { cmdProfile } from "./profile";
 import { buildTrace } from "./trace";
 import { cmdVerify } from "./verify";
@@ -141,6 +142,14 @@ describe("loom CLI", () => {
     });
     it("loom introspect on an unknown execution is graceful", async () => {
       expect(await cmdIntrospect(dbPath, "nope")).toContain("no execution");
+    });
+    it("loom optimize prints the advisory report", async () => {
+      const text = await cmdOptimize(dbPath, executionId);
+      expect(text).toContain("advisory optimization report");
+      expect(text).toContain("recommendations:");
+    });
+    it("loom optimize on an unknown execution is graceful", async () => {
+      expect(await cmdOptimize(dbPath, "nope")).toContain("no execution");
     });
   });
 
