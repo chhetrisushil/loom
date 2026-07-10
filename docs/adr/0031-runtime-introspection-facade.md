@@ -1,6 +1,6 @@
 # ADR 0031 — Runtime Introspection facade
 
-- Status: Proposed (2026-07-10) — accepted item #4 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md)
+- Status: Accepted (2026-07-10) — accepted item #4 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: `introspect()` + `executionNodes`/`taskGraph`/`resourceGraph`/`dependencyGraph`/`formatIntrospection` in `@loom/analytics` + `loom introspect --db <path> <executionId> [--graph N]` CLI. Reuses `decisionGraph` (ADR 0030). Log-derived graphs from events; placement/dependency graphs from optional app projections.
 - Date: 2026-07-10
 - Builds on: `@loom/event-runtime` (`BranchRegistry`), `@loom/replay-vm` (`foldAt`), `@loom/analytics`, `@loom/dispatcher`, `@loom/cli`
 

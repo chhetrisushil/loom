@@ -5,6 +5,7 @@ import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { cmdDeployCheck } from "./deploy";
 import { cmdGen, cmdNew } from "./gen";
 import { serveInspector } from "./inspector";
+import { cmdIntrospect } from "./introspect";
 import { cmdProfile } from "./profile";
 import { cmdVerify } from "./verify";
 
@@ -44,6 +45,7 @@ const USAGE = `loom — project-local commands for a Loom app
   loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
   loom logs  --db <path> <executionId>            print the event timeline
   loom profile --db <path> <executionId>          flame graph + latency breakdown
+  loom introspect --db <path> <executionId> [--graph N]  execution/task/decision/resource graphs
   loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
   loom eval  --dir <path>                         replay golden logs vs expectations
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
@@ -91,6 +93,12 @@ async function main(argv: string[]): Promise<number> {
       requireFlag(flags, "db");
       const executionId = requirePositional(positionals, "executionId");
       console.log(await cmdProfile(flags.db!, executionId));
+      return 0;
+    }
+    case "introspect": {
+      requireFlag(flags, "db");
+      const executionId = requirePositional(positionals, "executionId");
+      console.log(await cmdIntrospect(flags.db!, executionId, flags.graph));
       return 0;
     }
     case "gen": {
