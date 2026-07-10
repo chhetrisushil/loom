@@ -7,6 +7,7 @@ Start here. The docs are a progressive funnel — read top to bottom, or jump to
 | **[Getting Started](getting-started.md)** | Go from zero to a running, suspend/resume flow in ~5 minutes. |
 | **[Usage Guide](usage.md)** | Build a realistic app step by step (steps → flow → config → suspend/resume → agents → branching → ship). |
 | **[User Guide](user-guide.md)** | Look up a specific feature: fork, A2A, middleware, projections, testing, CLI, compute… |
+| **[CLI Usage Guide](usage-cli.md)** | Drive the `loom` command: scaffold (`new`/`gen`), validate (`check`), observe (`logs`/`debug`/`inspect`), and gate a deploy (`eval`/`deploy check`). |
 | **[Architecture](architecture.md)** | Understand the mission, core principles (P1–P10), the runtime model, and *why* each decision was made. |
 | **[Loom 2.0 deep-dives](loom-2.0/00-overview.md)** | The execution-kernel evolution in full detail: data structures, algorithms, and diagrams for every subsystem. |
 | **[Presentation](presentation/loom-deck.md)** | Present Loom — the flagship deck (Marp). More decks in [`presentation/`](presentation/). |

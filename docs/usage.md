@@ -1,6 +1,6 @@
 # Loom — Usage Guide
 
-A hands-on, **build-it-in-order** tutorial. By the end you'll have assembled a realistic incident-remediation app that plans work, calls an agent, streams progress to a UI, pauses for human approval, resumes, and can be forked to explore alternatives — using the same primitives the `examples/` apps use.
+A hands-on, **build-it-in-order** tutorial. By the end you'll have assembled a realistic incident-remediation app that plans work, calls an agent, streams progress to a UI, pauses for human approval, resumes, can be forked to explore alternatives, and is hardened with capability grants, quotas, safety and isolation — using the same primitives the `examples/` apps use.
 
 If you just want the 5-minute version, read **[Getting Started](getting-started.md)** first. For a topic-by-topic reference, see the **[User Guide](user-guide.md)**.
 
@@ -16,8 +16,9 @@ If you just want the 5-minute version, read **[Getting Started](getting-started.
 8. [Route & plan with intent + planner](#step-8--route--plan-with-intent--planner)
 9. [Human-in-the-loop approval gates](#step-9--human-in-the-loop-approval-gates)
 10. [Branch: fork / simulate / promote](#step-10--branch-fork--simulate--promote)
-11. [Test it](#step-11--test-it)
-12. [Inspect, eval, and ship](#step-12--inspect-eval-and-ship)
+11. [Harden it: grants, quotas, safety, secrets & isolation](#step-11--harden-it-grants-quotas-safety-secrets--isolation)
+12. [Test it](#step-12--test-it)
+13. [Inspect, eval, and ship](#step-13--inspect-eval-and-ship)
 
 ---
 
@@ -114,10 +115,12 @@ const app = defineConfig({
 
 | Field | What it does |
 |---|---|
-| `storage` | `{ kind: "memory" }`, `{ kind: "sqlite", dir, branching }`, or `{ kind: "custom", eventStore, snapshotStore, branchRegistry? }` (bring your own backend — Postgres/Redis/…) |
+| `storage` | `{ kind: "memory" }`, `{ kind: "sqlite", dir, branching }`, `{ kind: "postgres", url, branching }`, or `{ kind: "custom", eventStore, snapshotStore, branchRegistry? }` (bring your own backend) |
 | `surfaces` | A2UI surface ids to project |
 | `flows` / `flowModules` | flows to register (explicit, or via `loom gen` modules) |
-| `effectMiddleware` | cross-cutting effect wrappers (retries, logging…) |
+| `effectMiddleware` | cross-cutting effect wrappers (retries, metering, safety, redaction… — see Step 11) |
+| `authorizer` | capability protection ring — deny ungranted effects (K2; see Step 11) |
+| `timers` | durable timers + `schedule$` cron occurrences (T1; see Step 11) |
 | `validate` | `false \| "warn" \| "error"` — boot-time flow-graph validation |
 | `agents` / `capabilityAgents` | A2A agent cards + capability→agent routing |
 | `dispatcher` | where executions run (in-process / remote / Cloud Run) |
@@ -206,7 +209,7 @@ const app = defineConfig({
 });
 ```
 
-Middleware is `(ctx, input, next) => Promise` — the same mental model as HTTP middleware, applied to effects. Write your own for logging, idempotency, or tracing.
+Middleware is `(ctx, input, next) => Promise` — the same mental model as HTTP middleware, applied to effects. Write your own for logging, idempotency, or tracing. The kernel-hardening middleware — `meteringMiddleware` (quotas), `safetyMiddleware` (validation), `redactionMiddleware` (secrets) — compose in this same ordered array; **Step 11** wires them.
 
 ---
 
@@ -214,7 +217,7 @@ Middleware is `(ctx, input, next) => Promise` — the same mental model as HTTP 
 
 Everything intelligent runs *inside* durable flows, so it inherits replay and resume.
 
-**LLM (provider-agnostic).** Wrap a provider in an `LlmEffect` and call it from a step. In tests, swap the real provider for the VCR provider (Step 11) so runs are deterministic and offline.
+**LLM (provider-agnostic).** Wrap a provider in an `LlmEffect` and call it from a step. In tests, swap the real provider for the VCR provider (Step 12) so runs are deterministic and offline. Because every LLM call is a metered effect, `meteringMiddleware` can enforce token/cost budgets on it (`QUOTA_EXCEEDED`) — see Step 11.
 
 ```ts
 import { LlmEffect } from "@loom/effect-runtime";
@@ -244,11 +247,17 @@ const result = await app.bus.dispatch(capabilityId, input, prompt, {
 For "type a goal, do the right thing" UX, compose two stateless services:
 
 ```ts
-// Route a natural-language goal to the primary capability.
-const route = await intent.route(goal);   // @loom/intent
+import { IntentRuntime } from "@loom/intent";
+import { PlannerRuntime } from "@loom/planner";
+
+const intent = new IntentRuntime({ catalog, provider });   // provider optional — omit for offline keyword routing
+const planner = new PlannerRuntime({ catalog, provider });
+
+// Route a natural-language goal to the primary capability (null if nothing matches).
+const route = await intent.route(goal);
 
 // Compose an ordered, multi-step capability plan from the goal.
-const plan = await planner.plan(goal);     // @loom/planner
+const plan = await planner.plan(goal);
 for (const stepPlan of plan.steps) {
   const agentId = CAPABILITY_AGENT[stepPlan.capabilityId];
   await app.bus.dispatch(stepPlan.capabilityId, /* … */);
@@ -332,7 +341,95 @@ The parent and losing branches remain immutable — a full audit trail of what w
 
 ---
 
-## Step 11 — Test it
+## Step 11 — Harden it: grants, quotas, safety, secrets & isolation
+
+Everything so far is the happy path. The **kernel-hardening rings (K1–K12, T1–T2)** add the guardrails that make a flow safe to run against real systems and real tenants. Every ring is **opt-in and byte-identical to the un-hardened path when unwired** — you add exactly the ones you need, and each verdict lands on the log as a durable, replayable fact (audit for free). Full API in the [reference](api-reference.org#kernel-hardening); the reasoning is in [Kernel Hardening](loom-2.0/04-kernel-hardening.md).
+
+**Capability grants (K2)** — least-privilege authority. A `GrantTable` maps a principal to the effect ids it may invoke; an ungranted effect never runs — it records `EFFECT_DENIED` and fails the step.
+
+```ts
+import { GrantTable } from "@loom/effect-runtime";
+
+const app = defineConfig({
+  storage: { kind: "sqlite", dir: ".loom" },
+  flows: [investigateFlow],
+  authorizer: new GrantTable({ "*": ["lookup-metrics", "triage-llm"] }), // "*" principal; list = allowed effects
+});
+```
+
+**Quotas & budgets (K3)** — meter every effect onto the log and stop over-budget runs (`RESOURCE_METERED`, then `QUOTA_EXCEEDED`). Compose it in `effectMiddleware`:
+
+```ts
+import { meteringMiddleware, llmUsageTokens } from "@loom/middleware";
+
+meteringMiddleware({
+  pricing: ({ result }) => ({ tokens: llmUsageTokens(result) }),
+  budget: { maxTokens: 100_000 }, // over-budget ⇒ QUOTA_EXCEEDED + QuotaExceededError
+});
+```
+
+**Behavioral safety (K6)** — validate effect input/output; a violation blocks the effect and records `SAFETY_BLOCKED`.
+
+```ts
+import { safetyMiddleware, piiValidator, denyPatterns, killSwitch } from "@loom/middleware";
+
+safetyMiddleware({ validators: [piiValidator(), denyPatterns([/DROP TABLE/i]), killSwitch(() => paused)] });
+```
+
+**Secrets & redaction (K10)** — pass secrets as `secretRef("db-password")` placeholders; `redactionMiddleware` resolves them just-in-time so plaintext never enters the log. Pair with **encryption-at-rest**: wrap the store in `EncryptingEventStore` (marked fields encrypted under a per-subject key), and erase a subject with `shredSubject(...)` — crypto-shredding appends `PAYLOAD_SHREDDED` and makes later reads fail *loudly*.
+
+```ts
+import { EncryptingEventStore, InMemoryKeyStore } from "@loom/store-crypto";
+
+const events = new EncryptingEventStore(inner, new InMemoryKeyStore(), {
+  sensitive: { STEP_COMPLETED: ["output.ssn", "output.email"] },
+});
+// later, on erasure request: await shredSubject(keys, inner, executionId);
+```
+
+**Data-plane isolation & egress (K7)** — run an untrusted tool in a scrubbed child process whose network is restricted to a static allowlist (a target off the list is denied kernel-side with `EGRESS_DENIED`, before any connection):
+
+```ts
+import { IsolatedToolEffect } from "@loom/isolate";
+
+app.effectRuntime.register("enrich", new IsolatedToolEffect({
+  id: "enrich",
+  modulePath: "/abs/path/to/enrich.js",   // the child loads this module — never a parent closure
+  egress: ["api.internal:443"],           // only these host:port pairs; omit = no network at all
+  env: { API_TOKEN: process.env.ENRICH_TOKEN! }, // only THIS tool's credentials
+  timeoutMs: 5_000,                        // exceed ⇒ SIGKILL
+}));
+```
+
+**Cancellation & deadlines (K8)** — bound a single effect with a step's `timeoutMs`, or a whole run with a flow's `deadlineMs` (anchored to `EXECUTION_STARTED`, never reset by recovery). Breach — or `handle.cancel()` — aborts in-flight effects via `ctx.signal` and records `EXECUTION_CANCELLED`.
+
+**Tenancy (K12)** — scope a shared store per tenant so cross-tenant reads are impossible *by construction*, and honor signed, attenuated delegations across an A2A boundary:
+
+```ts
+import { TenantScopedEventStore } from "@loom/event-runtime";
+import { DelegationAuthorizer, signDelegation } from "@loom/effect-runtime";
+
+const tenantEvents = new TenantScopedEventStore(sharedEvents, "acme"); // only ever addresses tenant "acme"
+const token = signDelegation(secret, "worker-agent", ["lookup-metrics"]); // narrowable, never broadenable
+```
+
+**Durable timers & schedules (T1)** — `await ctx.sleep(60_000)` (or `ctx.sleepUntil(ts)`) suspends durably and wakes via a logged `TIMER_FIRED`; declare cron starts with `schedule$` and wire the `timers` slot in `defineConfig`:
+
+```ts
+import { schedule$ } from "@loom/core";
+
+defineConfig({
+  storage: { kind: "sqlite", dir: ".loom" },
+  flows: [reconcileFlow],
+  timers: { store: timerStore, schedules: [schedule$({ id: "nightly", cron: "0 3 * * *", flowId: "reconcile" })] },
+});
+```
+
+Each ring emits its own durable fact (`EFFECT_DENIED`, `QUOTA_EXCEEDED`, `SAFETY_BLOCKED`, `EGRESS_DENIED`, `PAYLOAD_SHREDDED`, `EXECUTION_CANCELLED`, `EXECUTION_MIGRATED`, …) so the log *is* the audit trail — inspectable with the same `loom logs` tooling from Step 13.
+
+---
+
+## Step 12 — Test it
 
 `@loom/testing` removes the boilerplate: an in-memory app, phase-waiters, golden capture, and a VCR LLM provider.
 
@@ -354,7 +451,7 @@ For deterministic LLMs, wrap your provider with `recordingProvider(real, cassett
 
 ---
 
-## Step 12 — Inspect, eval, and ship
+## Step 13 — Inspect, eval, and ship
 
 With SQLite storage, the `loom` CLI turns the log into tooling (each command is a lens on the same log):
 
@@ -367,6 +464,8 @@ loom deploy check --logs logs/ --config dist/app.js  # simulate a deploy vs new 
 loom check  --manifest loom-manifest.json      # static flow-graph checks
 loom gen                                        # regenerate loom.gen.ts from app/flows
 ```
+
+For the full command reference — every flag, exit code, and output shape — see the **[CLI Usage Guide](usage-cli.md)**.
 
 **Deploy safety.** `loom deploy check` replays historical logs against your *new* flow definitions and fails on breaking changes (a removed step, a missing flow) before you promote — catching resume-incompatibility that types can't.
 

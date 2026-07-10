@@ -391,3 +391,69 @@ zero-overhead benchmarks when unwired, and fold-reference updates for each new d
 [corrected one](../requirements/2026-07-10-kernel-hardening-evaluation.md#corrected-new-facts-list-replaces-the-requirements-dod-list):
 `EXECUTION_CANCELLED` is *not* new — it is already pinned in schema 1.2.0; K8 adds
 producers, not the type.)
+
+### The second series by plane
+
+K1–K6 govern a *single effect invocation*. K7–K12 widen the reach to the **process, the execution lifecycle, the log, and the tenant** — different planes, each still folding an ordinary durable verdict (G1). T1/T2 add kernel *services* rather than guards.
+
+```mermaid
+flowchart TB
+  subgraph Identity["👤 Identity plane — K12"]
+    P["PrincipalChain<br/>tenant · actor · onBehalfOf · signed delegation"]
+    P --> TSS["tenant-scoped stores<br/>(cross-tenant read impossible by construction)"]
+    P --> NB["nested budgets<br/>tenant / workflow / execution"]
+  end
+
+  subgraph Effect["⚙️ Effect path — K7 · K9"]
+    E0["effect invoked"] --> K7["K7 isolate: child process + scrubbed env<br/>brokered egress (allowlist, resolve-and-pin)<br/>→ EGRESS_DENIED"]
+    K7 --> K9["K9 delivery: idempotencyKey · at-least-once<br/>fencing token on every append<br/>→ EFFECT_INDOUBT when outcome unknown"]
+  end
+
+  subgraph Exec["🧵 Execution lifecycle — K8 · K11"]
+    S["start: pin flowContentHash"] --> K8["K8 deadlineMs / cancel<br/>abort via ctx.signal → EXECUTION_CANCELLED"]
+    K8 --> K11["K11 resume: hash still matches?<br/>no ⇒ resumeAs (replay-check | operator-ack)<br/>→ EXECUTION_MIGRATED"]
+  end
+
+  subgraph Log["🗄️ Log lifecycle — K10"]
+    L["events + snapshots"] --> ENC["at-rest encryption<br/>per-subject key, marked fields"]
+    ENC --> SHRED["crypto-shred: destroy key + tombstone<br/>→ PAYLOAD_SHREDDED (reads fail loudly)"]
+  end
+
+  subgraph Svc["⏰ Kernel services — T1 · T2"]
+    T1["T1 durable timers: ctx.sleep / sleepUntil<br/>schedule$ cron → TIMER_FIRED"]
+    T2["T2 wire ABI: JSON-RPC projection of K1<br/>+ shared fold-conformance vectors"]
+  end
+```
+
+### K9 — at-least-once delivery, in-doubt parking & fencing
+
+The subtlest ring: a partitioned worker must never double-write, and a non-idempotent effect whose outcome is unknown must be *parked*, never silently retried.
+
+```mermaid
+sequenceDiagram
+  participant D as Dispatcher
+  participant S as EventStore (fencing)
+  participant W1 as Worker A (lease fence=1)
+  participant W2 as Worker B (redispatch, fence=2)
+
+  D->>S: allocate lease → fence=1
+  D->>W1: execute(pkg)
+  W1->>S: append (carries fence=1) ✓
+  Note over W1: partition / stall (zombie)
+  D->>S: redispatch → allocate fence=2
+  D->>W2: execute(pkg)
+  W2->>S: append (carries fence=2) ✓
+  W1-->>S: append (fence=1) ✗ rejected — stale token fenced out
+  Note over W1,W2: non-idempotent effect, unknown outcome ⇒ park EFFECT_INDOUBT (operator resolves)
+```
+
+### T1 — a durable sleep is just a suspend with a logged wake time
+
+```mermaid
+flowchart LR
+  A["ctx.sleep(ms)<br/>ctx.sleepUntil(ts)"] --> B["suspend: record ABSOLUTE wake time in the log"]
+  Sch["schedule$ cron<br/>(defineConfig timers)"] --> C
+  B --> C["TimerService polls due timers<br/>(fenced firing, at-least-once)"]
+  C --> D["resume with TIMER_FIRED"]
+  D --> E["continue deterministically<br/>(wake time from log — wall-clock drift never enters the fold)"]
+```

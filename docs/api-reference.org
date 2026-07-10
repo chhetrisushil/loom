@@ -11,15 +11,16 @@ New to Loom? Start with [[file:getting-started.md][Getting Started]] and the [[f
 2.  [[#app][Composition]] (~@loom/app~, ~@loom/middleware~, ~@loom/registry~) — ~defineConfig~, storage, effect middleware, the A2A bus
 3.  [[#workflow-runtime][WorkflowRuntime]] — ~start~ / ~resume~ / ~fork~ / ~loadState~ + ~WorkflowContext~ + ~ExecutionHandle~
 4.  [[#replay-storage][Replay & storage]] — ~@loom/replay-vm~, ~@loom/event-runtime~, ~@loom/snapshot-runtime~
-5.  [[#effects][Effects]] (~@loom/effect-runtime~) — ~Effect~, ~EffectRuntime~, middleware, the four effect kinds
-6.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/a2ui~, ~@loom/blueprint-runtime~, ~@loom/renderer-react~, ~@loom/renderer-terminal~
-7.  [[#agentic][Agentic]] — ~@loom/llm~, ~@loom/reasoning~, ~@loom/agent~, ~@loom/mcp~, ~@loom/a2a~, ~@loom/capability~, ~@loom/intent~, ~@loom/planner~, ~@loom/memory~, ~@loom/orchestrator~
-8.  [[#compute][Compute & distribution]] — ~@loom/dispatcher~, ~@loom/worker-runtime~ (+ ~-local~/~-remote~), ~@loom/worker-server~, ~@loom/platform-cloudrun~, ~@loom/store-postgres~, ~@loom/graph-executor~, ~@loom/scheduler~
-9.  [[#dx][DX & tooling]] — ~@loom/analytics~, ~@loom/appgen~, ~@loom/cli~, ~@loom/testing~, ~@loom/eval~, ~@loom/deploy-sim~, ~@loom/scaffold~, ~@loom/compiler~, ~@loom/telemetry~
-10. [[#errors][Errors]]
+5.  [[#effects][Effects]] (~@loom/effect-runtime~) — ~Effect~, ~EffectRuntime~, middleware, the four effect kinds, K2 capability ring + K12 delegation
+6.  [[#kernel-hardening][Kernel hardening & security]] — the K1–K12 / T1–T2 ring map + ~@loom/isolate~ (K7), ~@loom/store-crypto~ (K10), ~@loom/wire-abi~ (T2)
+7.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/a2ui~, ~@loom/blueprint-runtime~, ~@loom/renderer-react~, ~@loom/renderer-terminal~
+8.  [[#agentic][Agentic]] — ~@loom/llm~, ~@loom/reasoning~, ~@loom/agent~, ~@loom/mcp~, ~@loom/a2a~, ~@loom/capability~, ~@loom/intent~, ~@loom/planner~, ~@loom/memory~, ~@loom/orchestrator~
+9.  [[#compute][Compute & distribution]] — ~@loom/dispatcher~, ~@loom/worker-runtime~ (+ ~-local~/~-remote~), ~@loom/worker-server~, ~@loom/platform-cloudrun~, ~@loom/store-postgres~, ~@loom/graph-executor~, ~@loom/scheduler~
+10. [[#dx][DX & tooling]] — ~@loom/analytics~, ~@loom/appgen~, ~@loom/cli~, ~@loom/testing~, ~@loom/eval~, ~@loom/deploy-sim~, ~@loom/scaffold~, ~@loom/compiler~, ~@loom/telemetry~
+11. [[#errors][Errors]]
 
 #+begin_quote
-*Loom 2.0.* Entries new or extended in the execution-kernel evolution are marked *(2.0)* inline. New packages: ~@loom/reasoning~, ~@loom/store-postgres~, ~@loom/analytics~, ~@loom/appgen~. For data structures, algorithms, and diagrams see [[file:loom-2.0/00-overview.md][docs/loom-2.0/]].
+*Loom 2.0.* Entries new or extended in the execution-kernel evolution are marked *(2.0)* inline. New packages: ~@loom/reasoning~, ~@loom/store-postgres~, ~@loom/analytics~, ~@loom/appgen~, and the kernel-hardening trio ~@loom/isolate~ (K7), ~@loom/store-crypto~ (K10), ~@loom/wire-abi~ (T2). For data structures, algorithms, and diagrams see [[file:loom-2.0/00-overview.md][docs/loom-2.0/]].
 #+end_quote
 
 -----
@@ -112,12 +113,15 @@ interface RetryPolicy { maxAttempts: number; backoffMs?: number; backoffMultipli
 interface StepDefinition<TIn, TOut> {
   readonly _tag: "StepDefinition"; id: string; name: string;
   toolId?: string; handler?: HandlerSpec<TIn, TOut>;
-  inputSchema: ZodSchema<TIn>; outputSchema: ZodSchema<TOut>; retry?: RetryPolicy; timeoutMs?: number;
+  inputSchema: ZodSchema<TIn>; outputSchema: ZodSchema<TOut>; retry?: RetryPolicy;
+  timeoutMs?: number;    // (2.0, K8) bounds a single effect
+  idempotent?: boolean;  // (2.0, K9) true ⇒ recovery may re-run safely; false ⇒ park at EFFECT_INDOUBT, never silent re-run
 }
 interface FlowDefinition<TIn, TOut> {
   readonly _tag: "FlowDefinition"; id: string; name: string; version: string; description?: string;
   inputSchema: ZodSchema<TIn>; outputSchema: ZodSchema<TOut>;
   steps: StepDefinition<any, any>[]; policies?: PolicyDefinition[];
+  deadlineMs?: number;   // (2.0, K8.3) wall-clock deadline for a live run ⇒ kernel EXECUTION_CANCELLED
 }
 interface ToolDefinition<TIn, TOut> {
   readonly _tag: "ToolDefinition"; id: string; name: string; description: string;
@@ -161,7 +165,7 @@ interface ExecutionState {
 }
 #+end_src
 
-*Reserved ~variables~ keys (2.0):* ~_decisions~ (logged ~ctx.decide~ choices, P9), ~_denials~ (capability ~EFFECT_DENIED~ audit, K2), and ~_resources~ (metered totals ~{ tokens, costUsd, ms, count, exceeded? }~, K3). See the [[file:loom-2.0/10-event-schema-reference.md][event-schema reference]].
+*Reserved ~variables~ keys (2.0):* ~_decisions~ (logged ~ctx.decide~ choices, P9), ~_denials~ (capability ~EFFECT_DENIED~ audit, K2), ~_resources~ (metered totals ~{ tokens, costUsd, ms, count, exceeded? }~, K3), ~_blocked~ (behavioral-safety ~SAFETY_BLOCKED~ audit, K6), ~_indoubt~ (parked ~EFFECT_INDOUBT~ deliveries, K9), and ~_shredded~ (crypto-shred ~PAYLOAD_SHREDDED~ tombstones, K10). The full 13-key table is in the [[file:loom-2.0/10-event-schema-reference.md][event-schema reference]].
 
 *Tasks & the process-control-block (2.0).* A step generalizes to a *task*; the minimal ~Execution~ PCB and its out-of-core ~ExecutionPolicy~ sidecar carry scheduling/compute/memory intent without bloating the core.
 
@@ -205,6 +209,7 @@ function defineConfig(config: LoomConfig): LoomApp
 type StorageConfig =
   | { kind: "memory" }                                            // ephemeral (tests / browser)
   | { kind: "sqlite"; dir?: string; branching?: boolean }         // embedded, lazily loaded (Node)
+  | { kind: "postgres"; url: string; branching?: boolean }        // (2.0) horizontal-scale backend
   | { kind: "custom";                                             // BRING YOUR OWN backend
       eventStore: EventStore; snapshotStore: SnapshotStore; branchRegistry?: BranchRegistry };
 
@@ -220,7 +225,10 @@ interface LoomConfig {
   catalog?: CatalogLike;                         // capability catalog
   agents?: AgentCard[];                          // advertised on the A2A bus
   capabilityAgents?: Record<string, string>;     // capabilityId → agentId
-  effectMiddleware?: EffectMiddleware[];
+  effectMiddleware?: EffectMiddleware[];         // ordered; retries/metering/safety/redaction (K3/K6/K10/K12)
+  authorizer?: CapabilityAuthorizer;             // (2.0, K2) capability protection ring — deny ungranted effects
+  timers?: {                                     // (2.0, T1) durable timers & cron
+    store: TimerStore; pollMs?: number; schedules?: ScheduleDefinition[]; fenced?: boolean };
   telemetry?: TelemetryAdapter[];
   dispatcher?: ExecutionDispatcher;              // placement (default: in-process)
   onEvent?: (event: EventEnvelope) => void;      // fired after projection + telemetry
@@ -311,6 +319,48 @@ class QuotaExceededError extends Error { readonly reason: string; }
 
 Emits ~RESOURCE_METERED~ (folds into ~variables._resources~); replay-safe (metered facts live on the log).
 
+*Behavioral safety (2.0, K6).* ~safetyMiddleware~ runs a chain of validators on each effect's input and output; a violation blocks the effect and records ~SAFETY_BLOCKED~ (folds into ~variables._blocked~).
+
+#+begin_src typescript
+function safetyMiddleware(options: { validators: readonly SafetyValidator[] }): EffectMiddleware
+type SafetyPhase = "input" | "output";
+interface SafetyCheckInfo { phase: SafetyPhase; toolId: string; stepId: string; value: unknown; ctx: EffectContext; }
+type SafetyVerdict   = { ok: true } | { ok: false; reason: string };
+type SafetyValidator = (info: SafetyCheckInfo) => SafetyVerdict | Promise<SafetyVerdict>;
+class SafetyViolationError extends Error { readonly reason: string; readonly phase: SafetyPhase; }
+// bundled validators:
+function denyPatterns(patterns: readonly RegExp[]): SafetyValidator;   // block on matched content
+function piiValidator(options?: { … }): SafetyValidator;              // block emails/SSNs/… in payloads
+function schemaValidator(schema: SchemaLike, phase?: SafetyPhase): SafetyValidator;
+function killSwitch(isOpen: () => boolean): SafetyValidator;          // global stop
+#+end_src
+
+*Secrets & redaction (2.0, K10).* ~redactionMiddleware~ resolves ~secretRef~ placeholders in effect input just-in-time (so a secret's plaintext is never logged) and, with ~redactOutput~, replaces marked result fields with a reference before ~STEP_COMPLETED~ is written.
+
+#+begin_src typescript
+function secretRef(id: string): SecretRef;                            // { __loomSecret: id } — a loggable placeholder
+function isSecretRef(value: unknown): value is SecretRef;
+interface SecretResolver { resolve(id: string): Promise<unknown> | unknown; store?(id: string, value: unknown): Promise<void> | void; }
+class InMemorySecretResolver implements SecretResolver { … }
+function redactionMiddleware(options: {
+  resolver: SecretResolver;
+  redactOutput?: (info: { stepId: string }) => readonly string[];    // output dot-paths to reference-swap (needs resolver.store)
+}): EffectMiddleware
+#+end_src
+
+*Nested budgets (2.0, K12).* ~nestedBudgetMiddleware~ enforces spend ceilings at several scopes at once (tenant / workflow / execution), tripping ~QUOTA_EXCEEDED~ at the tightest breached level.
+
+#+begin_src typescript
+function nestedBudgetMiddleware(options: {
+  pricing: Pricing;                              // same shape as meteringMiddleware
+  ledger: BudgetLedger;                          // cross-execution spend projection (tenant/workflow)
+  scopesOf: (ctx: EffectContext) => BudgetScope[]; // outermost (broadest) first; execution level uses key ""
+  clock?: () => number;
+}): EffectMiddleware
+interface BudgetScope { level: string; key: string; budget: Budget; }   // budget = { maxTokens?, maxCostUsd? }
+class BudgetLedger { /* accumulates spend per scope key */ }
+#+end_src
+
 ** ~@loom/registry~ — agent registry
 
 #+begin_src typescript
@@ -352,8 +402,12 @@ class WorkflowRuntime {
   restoreFromState(preloadedState: ExecutionState, resumeEvent?: ResumeEvent): Promise<ExecutionHandle>
   loadState(executionId: string): Promise<ExecutionState | null>   // fold durable state WITHOUT running
   fork(parentExecutionId: string, atSequence: number, opts?: ForkOptions): Promise<ForkResult>
+  resumeAs(executionId: string, newFlowId: string, resumeEvent: ResumeEvent,   // (2.0, K11.3) migrate an in-flight run to new flow code
+           options: { strategy: "replay-check" | "operator-ack" } & Omit<RunOptions, "executionId">): Promise<ExecutionHandle>
 }
 #+end_src
+
+*Flow-code versioning for in-flight executions (2.0, K11).* Each flow carries a ~flowContentHash~ (structural fingerprint over step bindings + durable policies, emitted by ~@loom/compiler~ and pinned into ~EXECUTION_STARTED~). A resume whose flow code no longer matches the pinned hash throws ~FlowCodeMismatchError~ rather than replaying against drifted code; ~resumeAs~ deliberately migrates such a run — ~"replay-check"~ verifies every recorded step still exists in the new flow (refuses with ~FlowMigrationCheckError~ otherwise), ~"operator-ack"~ vouches without the check. Either way it records a durable, replay-deterministic ~EXECUTION_MIGRATED~ verdict.
 
 ~WorkflowRuntime~ is also exported as *~ExecutionRuntime~ (2.0)* — the same class, renamed for the execution-kernel framing.
 
@@ -374,19 +428,25 @@ interface ExecutionContext {
     options?: { limit?: number }
   ): Promise<T>;                                                                       // results ALWAYS in input order
   suspend(config: { on: string; timeout?: number; correlationKey?: string }): Promise<never>;
+  sleep(ms: number): Promise<void>;                                                    // (2.0, T1) durable timer
+  sleepUntil(wakeAt: number): Promise<void>;                                           // (2.0, T1) wake at absolute ms
   emit(eventType: string, payload: unknown): void;                                     // durable domain event
   stream(eventType: string, delta: string, done?: boolean): void;                      // token streaming
   readonly ui: A2UIEmitter;                                                            // ctx.ui.set/merge/append …
 }
 #+end_src
 
+*Durable timers (2.0, T1).* ~ctx.sleep~/~ctx.sleepUntil~ suspend the execution with the absolute wake time recorded in the log; a wired ~TimerService~ fires a durable ~TIMER_FIRED~ resume, so a sleep survives restarts and replays deterministically (the scheduled time is in the log — wall-clock drift never enters the fold). Without a timer service the suspension is still durable and resumable by any node. Declare cron-driven starts with ~schedule$~ (see [[#authoring][~@loom/core~ builders]]) and wire both via ~defineConfig({ timers })~.
+
+*Cancellation, deadlines & bounded effects (2.0, K8).* A step's ~timeoutMs~ bounds a single effect; a flow's ~deadlineMs~ (see ~FlowDefinition~) bounds the whole run against the logged ~EXECUTION_STARTED~ timestamp (never reset by recovery). Breach — or ~handle.cancel()~ / ~ExecutionRuntime.cancel()~ — aborts in-flight effects via ~EffectContext.signal~ and records a kernel-driven ~EXECUTION_CANCELLED~.
+
 *The kernel ABI (2.0, K1).* The syscall surface is named and versioned; a conformance test pins it.
 
 #+begin_src typescript
-const KERNEL_ABI_VERSION: string;   // semver, e.g. "1.0.0"
+const KERNEL_ABI_VERSION: string;   // semver, e.g. "1.1.0" — MINOR bump added sleep/sleepUntil (T1)
 const KERNEL_SYSCALLS: readonly { name: string; kind: "call" | "accessor"; since: string; summary: string }[];
 const KERNEL_ABI: { version: string; syscalls: typeof KERNEL_SYSCALLS };
-// syscalls: execute · run · decide · parallel · suspend · emit · stream · ui
+// syscalls: execute · run · decide · parallel · suspend · sleep · sleepUntil · emit · stream · ui
 #+end_src
 
 ** ~ExecutionHandle~ & related types
@@ -480,6 +540,13 @@ class SqliteBranchRegistry { constructor(dbPath: string) }
 
 *Browser-safe subpath:* ~import { InMemoryAsyncEventStore } from "@loom/event-runtime/memory"~ imports only the in-memory store — no ~better-sqlite3~.
 
+*Tenant isolation (2.0, K12.5).* ~TenantScopedEventStore~ wraps any ~EventStore~ and key-prefixes every execution id with the tenant on the way in / un-prefixes on the way out, so a store scoped to tenant A can only ever *address* keys under A — reading or subscribing across tenants is impossible by construction, not by a filter. Fork stays in-tenant. ~@loom/snapshot-runtime~ ships the matching ~TenantScopedSnapshotStore~. Postgres row-level security is an optional hardening layer on top.
+
+#+begin_src typescript
+class TenantScopedEventStore    implements EventStore    { constructor(inner: EventStore, tenant: string) }
+class TenantScopedSnapshotStore implements SnapshotStore { constructor(inner: SnapshotStore, tenant: string) }  // @loom/snapshot-runtime
+#+end_src
+
 ** ~@loom/snapshot-runtime~ — bounded-tail replay
 
 #+begin_src typescript
@@ -563,6 +630,21 @@ interface Warmer { warm(toolId: string): void; }
 
 A denied effect never runs: it emits ~EFFECT_DENIED~ (folds into ~variables._denials~) and throws ~CapabilityDeniedError~, failing the step. All three options are opt-in — omit them and ~execute~ is the unchanged zero-overhead path.
 
+*Identity, tenancy & delegated authority (2.0, K12).* A ~CapabilityRequest~ can carry a ~PrincipalChain~ (tenant / actor / on-behalf-of / a verifiable delegation). ~DelegationAuthorizer~ honors a *signed, attenuated* delegation only after verifying its HMAC and intersecting its grants with the callee's own authority — a delegate can never invoke an effect the delegator lacked, nor one the callee lacks (no ambient escalation). Attenuation only narrows.
+
+#+begin_src typescript
+interface PrincipalChain { tenant?: string; actor?: string; onBehalfOf?: string; delegation?: DelegatedGrant; [k: string]: unknown; }
+interface DelegatedGrant { grants: string[]; issuedTo: string; sig: string; }   // HMAC-SHA256 over issuedTo + sorted grants
+function signDelegation(secret: string, issuedTo: string, grants: string[]): DelegatedGrant;
+function verifyDelegation(secret: string, token: DelegatedGrant): boolean;       // constant-time
+function attenuateDelegation(secret: string, token: DelegatedGrant, issuedTo: string, subset: string[]): DelegatedGrant; // narrow only
+class DelegationAuthorizer implements CapabilityAuthorizer {
+  constructor(options: { secret: string; base?: CapabilityAuthorizer })          // base = the callee's own authority
+}
+#+end_src
+
+Tenant isolation is enforced *by construction* at the store — see ~TenantScopedEventStore~ / ~TenantScopedSnapshotStore~ under [[#replay-storage][Replay & storage]].
+
 *Effect implementations* (each ~implements Effect~):
 
 #+begin_src typescript
@@ -571,6 +653,99 @@ new LlmEffect((input, ctx) => Promise<TOut>)     // kind "llm"  — a model call
 new A2AEffect((input, ctx) => Promise<TOut>)     // kind "a2a"  — delegate to a remote agent
 new HumanEffect({ on: string; timeout?: number; correlationKey?: (input) => string })  // kind "human" — throws SuspendError
 new LazyEffect(spec: HandlerSpec)                // kind "tool" — resolves an inline/lazy handler on first execute
+#+end_src
+
+-----
+
+* Kernel hardening & security
+:PROPERTIES:
+:CUSTOM_ID: kernel-hardening
+:END:
+
+The kernel-hardening rings (K1–K12) and kernel services (T1–T2) turn Loom into something that *earns* the word "kernel." Every ring is opt-in and byte-identical to Loom 1.x when unwired (P10); each new verdict folds like any other event (P9). Most rings surface through packages already documented above — this section is the index, plus the three packages that exist only for hardening. See the architecture narrative in [[file:architecture.md][§5.7]] and the ring-by-ring detail in [[file:loom-2.0/04-kernel-hardening.md][04 — Kernel Hardening]].
+
+| Ring | Concern | Where in this reference | Durable fact |
+|------+---------+-------------------------+--------------|
+| K1 | Versioned syscall ABI | ~KERNEL_ABI~ under [[#workflow-runtime][ExecutionContext]] | — |
+| K2 | Capability authority | ~CapabilityAuthorizer~/~GrantTable~ under [[#effects][Effects]] | ~EFFECT_DENIED~ |
+| K3 | Resource metering & quotas | ~meteringMiddleware~ under [[#app][@loom/middleware]] | ~RESOURCE_METERED~ / ~QUOTA_EXCEEDED~ |
+| K4 | Fault supervision | ~SupervisingDispatcher~ under [[#compute][@loom/dispatcher]] | — |
+| K5 | Event-schema governance | ~EVENT_SCHEMA_VERSION~ ([[file:loom-2.0/10-event-schema-reference.md][event-schema ref]]) | — |
+| K6 | Behavioral safety | ~safetyMiddleware~ under [[#app][@loom/middleware]] | ~SAFETY_BLOCKED~ |
+| K7 | Data-plane isolation & egress | ~@loom/isolate~ (below) | ~EGRESS_DENIED~ |
+| K8 | Cancellation & deadlines | ~deadlineMs~/~signal~ under [[#workflow-runtime][ExecutionContext]] | ~EXECUTION_CANCELLED~ |
+| K9 | Delivery contract & fencing | ~idempotent~ (step) + ~WorkerLease.fence~ | ~EFFECT_INDOUBT~ |
+| K10 | Log lifecycle & encryption | ~@loom/store-crypto~ (below) + ~redactionMiddleware~ | ~PAYLOAD_SHREDDED~ |
+| K11 | Flow-code versioning | ~resumeAs~/~flowContentHash~ under [[#workflow-runtime][WorkflowRuntime]] | ~EXECUTION_MIGRATED~ |
+| K12 | Identity, tenancy & delegation | ~DelegationAuthorizer~ + ~TenantScoped*~ stores | ~APPROVAL_GRANTED~ |
+| T1 | Durable timers & schedules | ~ctx.sleep~/~schedule$~ + ~defineConfig({ timers })~ | ~TIMER_FIRED~ |
+| T2 | Wire-level kernel ABI | ~@loom/wire-abi~ (below) | — |
+
+** ~@loom/isolate~ — data-plane isolation & brokered egress (K7)
+
+Runs an untrusted tool in a separate child process — its own authority domain. The tool's code is a *module the child loads*, never a closure over parent state; the child's env is scrubbed to exactly the credentials declared for that one tool; all network I/O is brokered kernel-side against a static allowlist (resolve-and-pin, so a DNS rebind can't redirect it), and ~ctx.signal~/~timeoutMs~ SIGKILLs the child.
+
+#+begin_src typescript
+class IsolatedToolEffect implements Effect {          // kind "tool" — drop-in for ToolEffect
+  constructor(spec: IsolatedToolSpec)
+  warm(): void            // advisory pre-warm: spawn the child before first execute
+  close(): void           // SIGKILL the warm child (tests / shutdown)
+}
+interface IsolatedToolSpec {
+  id: string;             // effect id (used in durable facts/errors)
+  modulePath: string;     // absolute, CJS-requireable module the CHILD loads
+  exportName?: string;    // named export implementing (input, ctx) => Promise<out>; default "default"
+  egress?: string[];      // K7.3 static allowlist, explicit "host:port"; omit/empty = no network at all
+  env?: Record<string, string>;  // K7.4 credentials for THIS tool only; child env is otherwise scrubbed
+  timeoutMs?: number;     // exceed ⇒ non-cooperative SIGKILL
+  idempotent?: boolean;   // K9.3 delivery semantic
+  warm?: boolean;         // pre-warm the child at construction
+}
+// the marshaled context an isolated tool receives (a host-function subset of EffectContext):
+interface IsolatedToolContext {
+  executionId: string; stepId: string; workflowId: string; attempt: number; idempotencyKey?: string;
+  emit(eventType: string, payload: unknown): void;
+  signal: AbortSignal;
+  fetch(url: string, init?: IsolatedFetchInit): Promise<IsolatedFetchResponse>;  // brokered — allowlist enforced parent-side
+}
+// the kernel-side egress broker (denies before any connection, emits EGRESS_DENIED):
+function brokeredFetch(toolId: string, allowlist: ReadonlySet<string>, url: string, init?: IsolatedFetchInit): Promise<BrokeredResponse>;
+class EgressDeniedError extends Error { readonly toolId: string; readonly target: string; readonly reason: string; }
+#+end_src
+
+** ~@loom/store-crypto~ — encryption-at-rest & crypto-shredding (K10)
+
+Wraps any ~EventStore~/~SnapshotStore~ to encrypt *marked* payload fields (dot-paths per event type) under a per-subject key on append and decrypt on read (AES-256-GCM; unmarked events stored verbatim — zero overhead). Erasure is by key destruction: ~shredSubject~ destroys the key (irreversible for everything encrypted under it, in events *and* snapshots) and appends a durable ~PAYLOAD_SHREDDED~ tombstone. A later decrypting read of a shredded execution throws ~PayloadShreddedError~ — replay fails *loudly*, never silently diverges. Optional store capabilities (fencing, ~readRange~, ~copyPrefix~) are forwarded, so it composes with K9.4 and ~fork()~.
+
+#+begin_src typescript
+class EncryptingEventStore    implements EventStore    { constructor(inner: EventStore,    keys: KeyStore, options: EncryptingEventStoreOptions) }
+class EncryptingSnapshotStore implements SnapshotStore { constructor(inner: SnapshotStore, keys: KeyStore, options: EncryptingSnapshotStoreOptions) }
+interface EncryptingEventStoreOptions {
+  sensitive: Record<string, readonly string[]>;   // event type → encrypted payload dot-paths
+  subjectOf?: (e: { executionId: string; workflowId: string }) => string;  // erasure subject (default: executionId)
+}
+interface KeyStore { getOrCreate(subjectId: string): Promise<Buffer>; get(subjectId: string): Promise<Buffer | null>; destroy(subjectId: string): Promise<void>; }
+class InMemoryKeyStore implements KeyStore { … }   // reference (tests / ephemeral)
+function shredSubject(keys: KeyStore, rawEventStore: EventStore, executionId: string,
+                      options?: { subjectId?: string; reason?: string; executionIds?: string[] }): Promise<void>;
+class PayloadShreddedError extends Error { … }     // thrown on any read of a shredded subject
+#+end_src
+
+Pair with ~redactionMiddleware~/~secretRef~ (under [[#app][@loom/middleware]]) to keep secrets out of the log in the first place; ~store-crypto~ protects what *is* persisted.
+
+** ~@loom/wire-abi~ — wire-level kernel ABI (T2)
+
+A language-neutral JSON-RPC projection of the K1 syscalls: a non-TS worker can drive a Loom execution over the wire, and the same fold-conformance vectors pin its behavior byte-for-byte against the in-process kernel.
+
+#+begin_src typescript
+const WIRE_ABI_VERSION: string;                      // tracks KERNEL_ABI_VERSION
+const WIRE_ABI: WireAbi;                             // { version, methods, carrierMethods }
+const WIRE_METHODS: readonly WireMethod[];           // JSON-RPC projection of the syscalls
+const CARRIER_METHODS: readonly CarrierMethod[];     // start / resume / poll transport methods
+function deriveWireMethods(syscalls: typeof KERNEL_SYSCALLS): WireMethod[];
+function handleRpc(req: JsonRpcRequest, options: CarrierOptions): Promise<JsonRpcResponse>;   // server side
+const FOLD_VECTORS: readonly FoldVector[];           // shared conformance corpus
+function runFoldVectors(fold: (events: unknown[]) => unknown): { passed: number; failures: FoldVector[] };
 #+end_src
 
 -----
@@ -916,10 +1091,16 @@ interface ExecutionPackage {
 type ExecutionOutcome = "completed" | "suspended" | "failed";
 interface ExecutionResult { executionId: string; status: ExecutionOutcome; state: ExecutionState; output?: unknown; error?: unknown; suspendedOn?: SuspendCondition; lastSequence: number; }
 interface WorkerRequest { executionId: string; metadata?: Record<string, unknown>; }
-interface WorkerLease   { leaseId: string; metadata?: Record<string, unknown>; }
+interface WorkerLease   {
+  leaseId: string;
+  fence?: number;                 // (2.0, K9.4) monotonic fencing token acquired at allocate time
+  metadata?: Record<string, unknown>;
+}
 #+end_src
 
 Implementations: ~new LocalWorkerRuntime(runtime: WorkflowRuntime)~ (in-process), ~new RemoteWorkerRuntime(baseUrl: string, { fetchImpl? })~ (HTTP → ~POST {baseUrl}/execute~).
+
+*Fencing (2.0, K9.4).* On a fencing-capable store, every event a run appends carries its ~lease.fence~; once a re-dispatch acquires a newer token, the older lease's holder can no longer write — a partitioned "zombie" worker is fenced out at the store rather than double-writing. Absent on single-node SQLite (correlation only).
 
 ** ~@loom/dispatcher~ — placement
 
@@ -1164,6 +1345,11 @@ class StorageWriteError extends Error    { constructor(cause: unknown); }
 class CapabilityDeniedError extends Error        { readonly toolId: string; readonly reason: string; }       // K2 — @loom/effect-runtime
 class QuotaExceededError extends Error           { readonly reason: string; }                                // K3 — @loom/middleware
 class CircuitOpenError extends Error             { readonly key: string; }                                   // K4 — @loom/dispatcher
+class SafetyViolationError extends Error         { readonly reason: string; readonly phase: "input" | "output"; } // K6 — @loom/middleware
+class EgressDeniedError extends Error            { readonly toolId: string; readonly target: string; readonly reason: string; } // K7 — @loom/isolate
+class PayloadShreddedError extends Error         { /* subject key destroyed */ }                             // K10 — @loom/store-crypto
+class FlowCodeMismatchError extends Error        { /* pinned flowContentHash drifted */ }                    // K11 — @loom/workflow-runtime
+class FlowMigrationCheckError extends Error      { /* resumeAs replay-check refused */ }                     // K11 — @loom/workflow-runtime
 class CapabilityInvokeDeniedError extends Error  { readonly capabilityId: string; readonly reason: string; } // M7 — @loom/capability
 #+end_src
 
