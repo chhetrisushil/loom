@@ -160,3 +160,38 @@ describe("InMemoryProjectionRuntime", () => {
     expect(calls[2]).toEqual({ completedSteps: 3 });
   });
 });
+
+describe("InMemoryProjectionRuntime — retention (leak fix)", () => {
+  type S = { completedSteps: number };
+
+  it("forget(executionId) drops retained state (reverts to initialState)", () => {
+    const rt = new InMemoryProjectionRuntime();
+    rt.register(stepCounterProjection);
+    rt.handleEvent(makeEvent("x", 1, "STEP_COMPLETED"));
+    expect(rt.getState<S>("step-counter", "x").completedSteps).toBe(1);
+    rt.forget("x");
+    expect(rt.getState<S>("step-counter", "x").completedSteps).toBe(0);
+  });
+
+  it("bounds retained executions via maxExecutions (LRU by touch)", () => {
+    const rt = new InMemoryProjectionRuntime({ maxExecutions: 2 });
+    rt.register(stepCounterProjection);
+    rt.handleEvent(makeEvent("a", 1, "STEP_COMPLETED"));
+    rt.handleEvent(makeEvent("b", 1, "STEP_COMPLETED"));
+    rt.handleEvent(makeEvent("c", 1, "STEP_COMPLETED")); // evicts oldest (a)
+    expect(rt.getState<S>("step-counter", "a").completedSteps).toBe(0); // evicted
+    expect(rt.getState<S>("step-counter", "b").completedSteps).toBe(1);
+    expect(rt.getState<S>("step-counter", "c").completedSteps).toBe(1);
+  });
+
+  it("keeps a re-touched execution alive (LRU recency)", () => {
+    const rt = new InMemoryProjectionRuntime({ maxExecutions: 2 });
+    rt.register(stepCounterProjection);
+    rt.handleEvent(makeEvent("a", 1, "STEP_COMPLETED"));
+    rt.handleEvent(makeEvent("b", 1, "STEP_COMPLETED"));
+    rt.handleEvent(makeEvent("a", 2, "STEP_COMPLETED")); // touch a → b is now oldest
+    rt.handleEvent(makeEvent("c", 1, "STEP_COMPLETED")); // evicts b
+    expect(rt.getState<S>("step-counter", "a").completedSteps).toBe(2);
+    expect(rt.getState<S>("step-counter", "b").completedSteps).toBe(0); // evicted
+  });
+});

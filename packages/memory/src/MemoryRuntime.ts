@@ -33,34 +33,45 @@ export class MemoryRuntime {
 
   async read(memoryId: string, scope: string): Promise<MemoryEntry[]> {
     const key = this.key(memoryId, scope);
-    return this.prune(memoryId, key);
+    const stored = await this.store.read(key);
+    const pruned = this.pruneList(memoryId, stored);
+    // Lazy expiry: if the view dropped entries, persist it so a cold scope (read but never
+    // re-appended) doesn't retain stale entries — and a scope pruned to empty drops its key
+    // entirely (clear + no re-append), bounding the store's distinct-scope growth.
+    if (pruned.length !== stored.length) await this.persist(key, pruned);
+    return pruned;
   }
 
   async clear(memoryId: string, scope: string): Promise<void> {
     await this.store.clear(this.key(memoryId, scope));
   }
 
-  // Drop entries older than ttlMs, then keep only the newest maxEntries.
-  private async prune(memoryId: string, key: string): Promise<MemoryEntry[]> {
+  // Drop entries older than ttlMs, then keep only the newest maxEntries. Pure.
+  private pruneList(memoryId: string, entries: MemoryEntry[]): MemoryEntry[] {
     const def = this.definitions.get(memoryId);
-    let entries = await this.store.read(key);
-
+    let out = entries;
     if (def?.ttlMs !== undefined) {
       const cutoff = Date.now() - def.ttlMs;
-      entries = entries.filter((e) => e.timestamp >= cutoff);
+      out = out.filter((e) => e.timestamp >= cutoff);
     }
-    if (def?.maxEntries !== undefined && entries.length > def.maxEntries) {
-      entries = entries.slice(entries.length - def.maxEntries);
+    if (def?.maxEntries !== undefined && out.length > def.maxEntries) {
+      out = out.slice(out.length - def.maxEntries);
     }
-    return entries;
+    return out;
   }
 
-  // Rewrite the stored list to the pruned view so eviction is durable.
+  // Rewrite the stored list to `entries` (empty ⇒ the key is dropped).
+  private async persist(key: string, entries: MemoryEntry[]): Promise<void> {
+    await this.store.clear(key);
+    for (const entry of entries) await this.store.append(key, entry);
+  }
+
+  // Rewrite the stored list to the pruned view so eviction is durable (only when it changed).
   private async evict(memoryId: string, key: string): Promise<void> {
     const def = this.definitions.get(memoryId);
     if (def?.ttlMs === undefined && def?.maxEntries === undefined) return;
-    const pruned = await this.prune(memoryId, key);
-    await this.store.clear(key);
-    for (const entry of pruned) await this.store.append(key, entry);
+    const stored = await this.store.read(key);
+    const pruned = this.pruneList(memoryId, stored);
+    if (pruned.length !== stored.length) await this.persist(key, pruned);
   }
 }

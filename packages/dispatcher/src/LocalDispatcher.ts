@@ -72,10 +72,14 @@ export class LocalDispatcher implements ExecutionDispatcher {
           this.leases.delete(pkg.executionId);
           await this.worker.release(lease);
         }
+        // A cancel during this attempt aborts it; DON'T redispatch a cancelled execution
+        // (that would re-run what the caller just cancelled). Also stops the flag leaking.
+        if (this.cancelled.has(pkg.executionId)) break;
       }
       throw lastErr;
     } finally {
       this.inFlight--;
+      this.cancelled.delete(pkg.executionId);
     }
   }
 
@@ -88,9 +92,13 @@ export class LocalDispatcher implements ExecutionDispatcher {
    * the store-side cancel (fence-then-cancel), never to this call landing.
    */
   async cancel(executionId: string): Promise<void> {
-    this.cancelled.add(executionId);
     const lease = this.leases.get(executionId);
     if (lease) {
+      // Only flag as cancelled when a dispatch is actually in flight (a lease is held) —
+      // the flag exists solely to stop that dispatch's retry loop, and gating it here keeps
+      // `cancelled` bounded (it's cleared in dispatch's finally). A cancel with no in-flight
+      // dispatch has nothing to short-circuit.
+      this.cancelled.add(executionId);
       this.leases.delete(executionId);
       await this.worker.release(lease);
     }

@@ -15,6 +15,42 @@ function withFrame(
   return { ...frames, [stepId]: frame };
 }
 
+// Defense-in-depth: reject `__proto__` as a fold container key. It's never a valid
+// stepId/decisionId, and the assignment form (`frames[key] = …`) would otherwise invoke
+// the prototype setter and corrupt that execution's own fold. (No global pollution is
+// reachable — see the audit — but fail-closed on a reserved key is cheap and clear.)
+function assertSafeKey(key: string): void {
+  if (key === "__proto__") {
+    throw new Error(`fold: reserved key "__proto__" is not a valid identifier`);
+  }
+}
+
+// ── O(1)-amortized audit-list append (per-fold ownership) ────────────────────
+//
+// The audit handlers below append to durable lists (`_outcomes`, `_timers`, …). A naive
+// `[...existing, item]` per event makes a full-log fold O(k²) for k events of one type.
+// Instead we track the arrays THIS fold pass created in `foldOwned` and push in place onto
+// those, copying only when the array came from the caller's input state (snapshot / prior
+// state) — which we must never mutate. `foldEvents` resets the set at the start of every
+// call; folding is synchronous and non-reentrant, so a module-level set is safe, and the
+// returned state's arrays are always fold-owned (never aliased into the input). Output is
+// byte-identical; only intermediate allocations drop from O(k²) to O(k).
+let foldOwned = new WeakSet<object>();
+
+export function resetFoldOwnership(): void {
+  foldOwned = new WeakSet<object>();
+}
+
+function appendAudit<T>(existing: T[] | undefined, item: T): T[] {
+  if (existing !== undefined && foldOwned.has(existing)) {
+    existing.push(item);
+    return existing;
+  }
+  const next = existing === undefined ? [item] : [...existing, item];
+  foldOwned.add(next);
+  return next;
+}
+
 const handlers: Record<string, Handler> = {
   EXECUTION_STARTED: (state, event) => {
     // `flowHash` (K11.1, additive — absent on legacy logs) is the content hash
@@ -141,6 +177,7 @@ const handlers: Record<string, Handler> = {
     // not shared, so in-place writes are safe).
     const frames = { ...state.frames };
     for (const stepId of payload.stepIds) {
+      assertSafeKey(stepId);
       frames[stepId] = {
         stepId,
         status: "pending",
@@ -196,6 +233,7 @@ const handlers: Record<string, Handler> = {
       estimatedLatencyMs?: number;
       confidence?: number;
     };
+    assertSafeKey(payload.decisionId);
     const existing = (state.variables._decisions as Record<string, unknown> | undefined) ?? {};
     return {
       ...state,
@@ -228,19 +266,15 @@ const handlers: Record<string, Handler> = {
   // not change frame/execution status.
   EFFECT_DENIED: (state, event) => {
     const payload = event.payload as { toolId: string; stepId?: string; reason?: string };
-    const existing = (state.variables._denials as unknown[] | undefined) ?? [];
     return {
       ...state,
       variables: {
         ...state.variables,
-        _denials: [
-          ...existing,
-          {
-            toolId: payload.toolId,
-            ...(payload.stepId !== undefined && { stepId: payload.stepId }),
-            ...(payload.reason !== undefined && { reason: payload.reason }),
-          },
-        ],
+        _denials: appendAudit(state.variables._denials as unknown[] | undefined, {
+          toolId: payload.toolId,
+          ...(payload.stepId !== undefined && { stepId: payload.stepId }),
+          ...(payload.reason !== undefined && { reason: payload.reason }),
+        }),
       },
       updatedAt: event.timestamp,
     };
@@ -259,20 +293,16 @@ const handlers: Record<string, Handler> = {
       score?: number;
       decisionId?: string;
     };
-    const existing = (state.variables._outcomes as unknown[] | undefined) ?? [];
     return {
       ...state,
       variables: {
         ...state.variables,
-        _outcomes: [
-          ...existing,
-          {
-            key: p.key,
-            ...(p.success !== undefined && { success: p.success }),
-            ...(p.score !== undefined && { score: p.score }),
-            ...(p.decisionId !== undefined && { decisionId: p.decisionId }),
-          },
-        ],
+        _outcomes: appendAudit(state.variables._outcomes as unknown[] | undefined, {
+          key: p.key,
+          ...(p.success !== undefined && { success: p.success }),
+          ...(p.score !== undefined && { score: p.score }),
+          ...(p.decisionId !== undefined && { decisionId: p.decisionId }),
+        }),
       },
       updatedAt: event.timestamp,
     };
@@ -291,21 +321,17 @@ const handlers: Record<string, Handler> = {
       reason?: string;
       category?: string;
     };
-    const existing = (state.variables._safety as unknown[] | undefined) ?? [];
     return {
       ...state,
       variables: {
         ...state.variables,
-        _safety: [
-          ...existing,
-          {
-            validatorId: p.validatorId,
-            ...(p.stepId !== undefined && { stepId: p.stepId }),
-            ...(p.phase !== undefined && { phase: p.phase }),
-            ...(p.reason !== undefined && { reason: p.reason }),
-            ...(p.category !== undefined && { category: p.category }),
-          },
-        ],
+        _safety: appendAudit(state.variables._safety as unknown[] | undefined, {
+          validatorId: p.validatorId,
+          ...(p.stepId !== undefined && { stepId: p.stepId }),
+          ...(p.phase !== undefined && { phase: p.phase }),
+          ...(p.reason !== undefined && { reason: p.reason }),
+          ...(p.category !== undefined && { category: p.category }),
+        }),
       },
       updatedAt: event.timestamp,
     };
@@ -325,20 +351,16 @@ const handlers: Record<string, Handler> = {
       attempts?: number;
       idempotencyKey?: string;
     };
-    const existing = (state.variables._indoubt as unknown[] | undefined) ?? [];
     return {
       ...state,
       variables: {
         ...state.variables,
-        _indoubt: [
-          ...existing,
-          {
-            stepId: p.stepId,
-            ...(p.toolId !== undefined && { toolId: p.toolId }),
-            ...(p.attempts !== undefined && { attempts: p.attempts }),
-            ...(p.idempotencyKey !== undefined && { idempotencyKey: p.idempotencyKey }),
-          },
-        ],
+        _indoubt: appendAudit(state.variables._indoubt as unknown[] | undefined, {
+          stepId: p.stepId,
+          ...(p.toolId !== undefined && { toolId: p.toolId }),
+          ...(p.attempts !== undefined && { attempts: p.attempts }),
+          ...(p.idempotencyKey !== undefined && { idempotencyKey: p.idempotencyKey }),
+        }),
       },
       updatedAt: event.timestamp,
     };
@@ -358,22 +380,18 @@ const handlers: Record<string, Handler> = {
       fromHash?: string;
       strategy?: string;
     };
-    const existing = (state.variables._migrations as unknown[] | undefined) ?? [];
     return {
       ...state,
       variables: {
         ...state.variables,
         ...(p.toHash !== undefined && { _flowHash: p.toHash }),
         _migratedTo: p.toFlowId,
-        _migrations: [
-          ...existing,
-          {
-            toFlowId: p.toFlowId,
-            ...(p.toHash !== undefined && { toHash: p.toHash }),
-            ...(p.fromHash !== undefined && { fromHash: p.fromHash }),
-            ...(p.strategy !== undefined && { strategy: p.strategy }),
-          },
-        ],
+        _migrations: appendAudit(state.variables._migrations as unknown[] | undefined, {
+          toFlowId: p.toFlowId,
+          ...(p.toHash !== undefined && { toHash: p.toHash }),
+          ...(p.fromHash !== undefined && { fromHash: p.fromHash }),
+          ...(p.strategy !== undefined && { strategy: p.strategy }),
+        }),
       },
       updatedAt: event.timestamp,
     };
@@ -387,20 +405,16 @@ const handlers: Record<string, Handler> = {
   // before any event is committed).
   APPROVAL_GRANTED: (state, event) => {
     const p = event.payload as { actor?: string; verifiedBy?: string; on?: string };
-    const existing = (state.variables._approvals as unknown[] | undefined) ?? [];
     return {
       ...state,
       variables: {
         ...state.variables,
-        _approvals: [
-          ...existing,
-          {
-            ...(p.actor !== undefined && { actor: p.actor }),
-            ...(p.verifiedBy !== undefined && { verifiedBy: p.verifiedBy }),
-            ...(p.on !== undefined && { on: p.on }),
-            at: event.timestamp,
-          },
-        ],
+        _approvals: appendAudit(state.variables._approvals as unknown[] | undefined, {
+          ...(p.actor !== undefined && { actor: p.actor }),
+          ...(p.verifiedBy !== undefined && { verifiedBy: p.verifiedBy }),
+          ...(p.on !== undefined && { on: p.on }),
+          at: event.timestamp,
+        }),
       },
       updatedAt: event.timestamp,
     };
@@ -440,20 +454,16 @@ const handlers: Record<string, Handler> = {
       target?: string;
       reason?: string;
     };
-    const existing = (state.variables._egress as unknown[] | undefined) ?? [];
     return {
       ...state,
       variables: {
         ...state.variables,
-        _egress: [
-          ...existing,
-          {
-            ...(p.toolId !== undefined && { toolId: p.toolId }),
-            ...(p.stepId !== undefined && { stepId: p.stepId }),
-            ...(p.target !== undefined && { target: p.target }),
-            ...(p.reason !== undefined && { reason: p.reason }),
-          },
-        ],
+        _egress: appendAudit(state.variables._egress as unknown[] | undefined, {
+          ...(p.toolId !== undefined && { toolId: p.toolId }),
+          ...(p.stepId !== undefined && { stepId: p.stepId }),
+          ...(p.target !== undefined && { target: p.target }),
+          ...(p.reason !== undefined && { reason: p.reason }),
+        }),
       },
       updatedAt: event.timestamp,
     };
@@ -467,20 +477,16 @@ const handlers: Record<string, Handler> = {
   // observable but never enters control flow.
   TIMER_FIRED: (state, event) => {
     const p = event.payload as { wakeAt?: number; scheduleId?: string; occurrence?: number };
-    const existing = (state.variables._timers as unknown[] | undefined) ?? [];
     return {
       ...state,
       variables: {
         ...state.variables,
-        _timers: [
-          ...existing,
-          {
-            firedAt: event.timestamp,
-            ...(p.wakeAt !== undefined && { wakeAt: p.wakeAt }),
-            ...(p.scheduleId !== undefined && { scheduleId: p.scheduleId }),
-            ...(p.occurrence !== undefined && { occurrence: p.occurrence }),
-          },
-        ],
+        _timers: appendAudit(state.variables._timers as unknown[] | undefined, {
+          firedAt: event.timestamp,
+          ...(p.wakeAt !== undefined && { wakeAt: p.wakeAt }),
+          ...(p.scheduleId !== undefined && { scheduleId: p.scheduleId }),
+          ...(p.occurrence !== undefined && { occurrence: p.occurrence }),
+        }),
       },
       updatedAt: event.timestamp,
     };

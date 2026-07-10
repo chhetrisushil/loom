@@ -144,4 +144,40 @@ describe("LocalDispatcher", () => {
     expect(result.status).toBe("completed");
     expect(attempt).toBe(2); // timed out once, then succeeded
   });
+
+  it("does not redispatch a cancelled execution (leak + retry-after-cancel fix)", async () => {
+    let started!: () => void;
+    const startedP = new Promise<void>((r) => {
+      started = r;
+    });
+    let proceed!: () => void;
+    const proceedP = new Promise<void>((r) => {
+      proceed = r;
+    });
+    let executes = 0;
+    const worker: WorkerRuntime = {
+      async allocate(request) {
+        return { leaseId: `lease-${request.executionId}` };
+      },
+      async execute() {
+        executes++;
+        started();
+        await proceedP; // hold the attempt open until the test cancels
+        throw new Error("aborted");
+      },
+      async release() {},
+      async cancel() {
+        return true;
+      },
+    };
+    const dispatcher = new LocalDispatcher(worker, { maxAttempts: 3 });
+
+    const run = dispatcher.dispatch(pkg);
+    await startedP; // attempt 1 is in flight (a lease is held)
+    await dispatcher.cancel(pkg.executionId); // flags cancelled
+    proceed(); // attempt 1 now fails
+    await expect(run).rejects.toThrow();
+
+    expect(executes).toBe(1); // NOT retried despite maxAttempts: 3
+  });
 });

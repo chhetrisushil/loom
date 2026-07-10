@@ -27,28 +27,33 @@ export function createTelemetryHook(adapter: TelemetryAdapter): (event: EventEnv
       case "EXECUTION_COMPLETED": {
         const info = flowState.get(executionId);
         if (!info) break;
-        const updated: FlowTelemetryInfo = {
+        adapter.onFlowComplete?.({
           ...info,
           status: "completed",
           completedAt: timestamp,
           durationMs: timestamp - info.startedAt,
-        };
-        flowState.set(executionId, updated);
-        adapter.onFlowComplete?.({ ...updated });
+        });
+        // Terminal — free the per-execution entry (this hook is a long-lived onEvent sink).
+        flowState.delete(executionId);
         break;
       }
 
       case "EXECUTION_FAILED": {
         const info = flowState.get(executionId);
         if (!info) break;
-        const updated: FlowTelemetryInfo = {
+        adapter.onFlowFail?.({
           ...info,
           status: "failed",
           completedAt: timestamp,
           durationMs: timestamp - info.startedAt,
-        };
-        flowState.set(executionId, updated);
-        adapter.onFlowFail?.({ ...updated });
+        });
+        flowState.delete(executionId);
+        break;
+      }
+
+      case "EXECUTION_CANCELLED": {
+        // Terminal — free the entry even though there is no cancel-specific callback.
+        flowState.delete(executionId);
         break;
       }
 
@@ -120,6 +125,7 @@ export function createTelemetryHook(adapter: TelemetryAdapter): (event: EventEnv
         };
         adapter.onStepComplete?.({ ...info });
         stepStarts.delete(key);
+        stepAttempts.delete(key);
         break;
       }
 
@@ -141,6 +147,7 @@ export function createTelemetryHook(adapter: TelemetryAdapter): (event: EventEnv
         };
         adapter.onStepFail?.({ ...info });
         stepStarts.delete(key);
+        stepAttempts.delete(key);
         break;
       }
 

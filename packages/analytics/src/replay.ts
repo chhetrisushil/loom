@@ -6,16 +6,21 @@ import type { EventEnvelope } from "@loom/core";
 // snapshot. Both stay read-only and dependency-free (structural types only) — the
 // replay-cost lens folds nothing, it counts the fold work the log implies.
 
-/** Event types whose fold APPENDS to a durable audit list in `variables` (they grow the fold). */
+/**
+ * Event types whose fold APPENDS to an unbounded durable structure in `variables` — the
+ * eight audit lists plus the `_decisions` map. `RESOURCE_METERED`/`QUOTA_EXCEEDED` are
+ * excluded: they fold into a FIXED-size accumulator, not a growing list.
+ */
 const AUDIT_APPEND_TYPES = new Set([
-  "DECISION_RECORDED",
-  "OUTCOME_RECORDED",
-  "EFFECT_DENIED",
-  "RESOURCE_METERED",
-  "QUOTA_EXCEEDED",
-  "EGRESS_DENIED",
-  "SAFETY_BLOCKED",
-  "APPROVAL_GRANTED",
+  "DECISION_RECORDED", // _decisions (map, per key)
+  "OUTCOME_RECORDED", // _outcomes
+  "EFFECT_DENIED", // _denials
+  "SAFETY_BLOCKED", // _safety
+  "EFFECT_INDOUBT", // _indoubt
+  "EXECUTION_MIGRATED", // _migrations
+  "APPROVAL_GRANTED", // _approvals
+  "EGRESS_DENIED", // _egress
+  "TIMER_FIRED", // _timers
 ]);
 
 export interface ReplayCost {
@@ -41,7 +46,7 @@ export interface ReplayCost {
  * Pure and log-derived; it does not run the fold.
  */
 export function replayCost(events: EventEnvelope[]): ReplayCost {
-  const byType: Record<string, number> = {};
+  const byType: Record<string, number> = Object.create(null);
   const execs = new Set<string>();
   let frameAllocations = 0;
   let auditAppends = 0;
