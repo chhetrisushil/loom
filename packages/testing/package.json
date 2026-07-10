@@ -8,6 +8,10 @@
     ".": {
       "require": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./conformance": {
+      "require": "./dist/conformance.js",
+      "types": "./dist/conformance.d.ts"
     }
   },
   "scripts": {
