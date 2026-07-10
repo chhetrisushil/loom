@@ -87,6 +87,11 @@ export class PostgresSnapshotStore implements SnapshotStore {
     return rows[0] ? rowToSnapshot(rows[0]) : null;
   }
 
+  async deleteExecution(executionId: string): Promise<void> {
+    await this.ready;
+    await this.pool.query("DELETE FROM snapshots WHERE execution_id = $1", [executionId]);
+  }
+
   async close(): Promise<void> {
     if (this.ownsPool) await this.pool.end();
   }

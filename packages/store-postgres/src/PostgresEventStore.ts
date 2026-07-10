@@ -188,6 +188,20 @@ export class PostgresEventStore implements EventStore {
     };
   }
 
+  async deleteExecution(executionId: string): Promise<void> {
+    await this.ready;
+    await this.pool.query("DELETE FROM events WHERE execution_id = $1", [executionId]);
+  }
+
+  async truncatePrefix(executionId: string, throughSequence: number): Promise<void> {
+    await this.ready;
+    // Preserve sequence 0 (bootstrap anchor); drop (0..throughSequence].
+    await this.pool.query(
+      "DELETE FROM events WHERE execution_id = $1 AND sequence > 0 AND sequence <= $2",
+      [executionId, throughSequence]
+    );
+  }
+
   async close(): Promise<void> {
     if (this.listener !== undefined) {
       await this.listener.end();

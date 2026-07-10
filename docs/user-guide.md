@@ -541,7 +541,7 @@ const context = await mem.recall("semantic", scope, { limit: 10, decide: ctx.dec
 
 ## 17. Kernel: grants, quotas & supervision
 
-*(Loom 2.0 kernel-hardening — K2 / K3 / K4 / K7 / K8 / K9 / K11 / T1.)* All opt-in; omit them and behavior is unchanged.
+*(Loom 2.0 kernel-hardening — K2 / K3 / K4 / K7 / K8 / K9 / K10 / K11 / T1.)* All opt-in; omit them and behavior is unchanged.
 
 ### Capability grants (protection ring, K2)
 
@@ -801,6 +801,58 @@ Occurrences that passed while no service was running are skipped (no catch-up �
 catch-up policy can layer on later). Cross-node duplicate fires settle at the shared store:
 the idempotent-wake guard, the `UNIQUE(execution_id, sequence)` backstop, and fencing (when
 `fenced`) guarantee exactly one durable history.
+
+### Log lifecycle: crypto-shredding, retention & compaction (K10)
+
+"Replay forever" collides with GDPR erasure and bounded storage. K10 gives the log a
+lifecycle without ever creating a silent third behavior between "replays identically" and
+"fails loudly".
+
+**Crypto-shredding (K10.2, `@loom/store-crypto`).** Encrypt sensitive fields at rest under a
+per-subject key; satisfy erasure by **destroying the key** — no history rewrite:
+
+```ts
+import { EncryptingEventStore, EncryptingSnapshotStore, InMemoryKeyStore, shredSubject }
+  from "@loom/store-crypto";
+
+const keys = new InMemoryKeyStore(); // KMS/HSM in production — the key IS the erasure boundary
+const eventStore = new EncryptingEventStore(inner, keys, {
+  sensitive: { STEP_COMPLETED: ["output.ssn"] },      // dot-paths; only these encrypt (A4)
+});
+const snapshotStore = new EncryptingSnapshotStore(innerSnaps, keys, {
+  sensitive: ["variables._input.ssn"],                // snapshots fold plaintext — cover them too (A1)
+});
+
+await shredSubject(keys, inner, executionId, { reason: "gdpr-erasure" });
+// key destroyed; PAYLOAD_SHREDDED tombstoned at shred time (A3); any decrypting read now
+// throws PayloadShreddedError — loud, never a silent divergence.
+```
+
+Snapshots are covered (or the secret survives the fold — erasure theater); a fork shares the
+parent's **subject** so its copied ciphertext stays readable and shreds with the parent (A2).
+
+**Retention & compaction (K10.1 / K10.4, `LogLifecycle`).** A kernel reclaims resources:
+
+```ts
+import { LogLifecycle } from "@loom/workflow-runtime";
+
+const life = new LogLifecycle(eventStore, snapshotStore, {
+  archive: { eventStore: archiveEvents, snapshotStore: archiveSnaps }, // A6 — archive first
+});
+
+// Reclaim a terminal execution older than its window (archive-before-delete, so the
+// learning plane + deploy-sim corpus aren't starved):
+await life.applyRetention(executionId, { terminalTtlMs: 30 * 86_400_000 }, Date.now());
+
+// Compact a very long execution: checkpoint + truncate the prefix (sequence 0 preserved);
+// `fold(snapshot, suffix) === fold(events)` still holds, so it replays byte-identically:
+await life.compact(executionId);
+```
+
+Both run over optional store SPI (`deleteExecution` / `truncatePrefix`, on in-memory, SQLite,
+and Postgres); a store that omits them can't be swept. Redaction markers that keep secrets
+out of the log entirely (K10.3) and store-file encryption-at-rest guidance (K10.5) are the
+K10 follow-ups.
 
 ---
 

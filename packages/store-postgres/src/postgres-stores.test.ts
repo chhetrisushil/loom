@@ -80,6 +80,16 @@ suite("@loom/store-postgres", () => {
       await expect(store.append(makeEnvelope("e4", 0))).rejects.toThrow();
     });
 
+    it("lifecycle (K10.1/.4): deleteExecution removes all; truncatePrefix keeps sequence 0", async () => {
+      for (let i = 0; i < 5; i++) await store.append(makeEnvelope("life", i));
+      // Compaction: truncate (0..3] — sequence 0 stays as the bootstrap anchor.
+      await store.truncatePrefix("life", 3);
+      expect((await store.read("life")).map((e) => e.sequence)).toEqual([0, 4]);
+      // Retention: delete the whole execution.
+      await store.deleteExecution("life");
+      expect(await store.read("life")).toEqual([]);
+    });
+
     it("timers (T1.3): schedule is idempotent; due orders soonest-first; complete retires", async () => {
       const { PostgresTimerStore } = await import("./PostgresTimerStore");
       const timers = new PostgresTimerStore(PG_URL as string);
