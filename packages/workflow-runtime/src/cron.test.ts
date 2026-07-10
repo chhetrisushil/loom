@@ -45,4 +45,37 @@ describe("cron (T1.2) — minimal UTC matcher", () => {
     expect(() => parseCron("a * * * *")).toThrow(/unsupported/);
     expect(() => parseCron("*/0 * * * *")).toThrow(/step/);
   });
+
+  // Field-jumping worst cases: a rarely-matching cron must still land on the
+  // exact occurrence a minute-by-minute scan would, jumping over the ~2M
+  // non-matching minutes rather than testing each.
+  it("finds a leap-day occurrence years out (skips whole non-Feb months + non-29 days)", () => {
+    const spec = parseCron("0 0 29 2 *"); // Feb 29, midnight UTC
+    // From mid-2026 the next Feb 29 is 2028 (a leap year) — 2027 has no Feb 29.
+    expect(nextOccurrence(spec, at("2026-07-10T00:00:00Z"))).toBe(at("2028-02-29T00:00:00Z"));
+  });
+
+  it("cross-checks the field-jumper against a brute-force minute scan over a year", () => {
+    // An awkward multi-field expression; verify equivalence at several instants.
+    const expr = "30 9,17 1,15 * 1"; // :30 past 09/17h, on the 1st or 15th, Mondays only (AND semantics)
+    const spec = parseCron(expr);
+    const bruteForce = (afterMs: number): number => {
+      const MIN = 60_000;
+      let t = (Math.floor(afterMs / MIN) + 1) * MIN;
+      for (let i = 0; i < 366 * 24 * 60 * 2; i++, t += MIN) {
+        const d = new Date(t);
+        if (
+          d.getUTCMinutes() === 30 &&
+          (d.getUTCHours() === 9 || d.getUTCHours() === 17) &&
+          (d.getUTCDate() === 1 || d.getUTCDate() === 15) &&
+          d.getUTCDay() === 1
+        )
+          return t;
+      }
+      throw new Error("no match");
+    };
+    for (const from of ["2026-01-01T00:00:00Z", "2026-06-15T12:31:00Z", "2027-02-28T23:59:00Z"]) {
+      expect(nextOccurrence(spec, at(from))).toBe(bruteForce(at(from)));
+    }
+  });
 });

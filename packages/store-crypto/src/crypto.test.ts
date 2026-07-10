@@ -34,4 +34,27 @@ describe("field-level AES-256-GCM envelope (K10.2)", () => {
     expect(out.other).toBe(1);
     expect(input.output.ssn).toBe("s"); // original untouched
   });
+
+  it("structural sharing: two paths under one prefix both transform, untouched subtrees are shared by reference", () => {
+    const input = {
+      creds: { user: "u", pass: "p" },
+      untouched: { big: [1, 2, 3] },
+    };
+    const out = mapPaths(input, ["creds.user", "creds.pass"], (v) => `X${v}`) as typeof input;
+
+    // Both sibling paths under `creds` were transformed on the SAME copied node.
+    expect(out.creds).toEqual({ user: "Xu", pass: "Xp" });
+    // The original is untouched (no shared mutation up the spine).
+    expect(input.creds).toEqual({ user: "u", pass: "p" });
+    // The untouched subtree is shared by reference (no needless deep clone).
+    expect(out.untouched).toBe(input.untouched);
+  });
+
+  it("does not mutate the original even when arrays are on the spine", () => {
+    const input = { items: [{ secret: "a" }, { secret: "b" }] };
+    const out = mapPaths(input, ["items.0.secret"], () => "REDACTED") as typeof input;
+    expect(out.items[0]?.secret).toBe("REDACTED");
+    expect(input.items[0]?.secret).toBe("a"); // original array + element untouched
+    expect(out.items[1]).toBe(input.items[1]); // untouched element shared
+  });
 });

@@ -59,16 +59,23 @@ export function hasEnvelope(obj: unknown): boolean {
   return false;
 }
 
-// ── dot-path get/set (structural clone on write, so inputs are never mutated) ─
+// ── dot-path transform (structural sharing, so inputs are never mutated) ──────
 
-function clone<T>(v: T): T {
-  return v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T);
+function shallowCopy(v: object): Record<string, unknown> {
+  return (Array.isArray(v) ? [...v] : { ...v }) as Record<string, unknown>;
 }
 
 /**
- * Return a deep copy of `root` with `transform` applied at each dot-path that
- * exists. Missing paths are skipped (a field a given event doesn't carry). Only
- * the marked paths are touched; everything else is copied verbatim.
+ * Return `root` with `transform` applied at each dot-path that exists — inputs
+ * are never mutated. Missing paths are skipped (a field a given event doesn't
+ * carry).
+ *
+ * Structural sharing, not a full deep clone: only the objects on the SPINE to
+ * each marked path are copied (shallowly); every untouched subtree is shared by
+ * reference. So a 100 KB payload with two marked fields copies ~two small
+ * objects instead of JSON-round-tripping the whole thing. Safe because the
+ * copied spine is the only structure written to, and callers treat the result
+ * as immutable (the transform replaces leaf values, e.g. encrypt/decrypt).
  */
 export function mapPaths(
   root: unknown,
@@ -76,19 +83,28 @@ export function mapPaths(
   transform: (value: unknown) => unknown
 ): unknown {
   if (paths.length === 0 || typeof root !== "object" || root === null) return root;
-  const out = clone(root) as Record<string, unknown>;
+  const out = shallowCopy(root);
   for (const path of paths) {
     const segs = path.split(".");
-    let cursor: Record<string, unknown> | undefined = out;
+    let src = root as Record<string, unknown>; // reads from the ORIGINAL
+    let dst = out; // writes into the copied spine
+    let reachable = true;
     for (let i = 0; i < segs.length - 1; i++) {
-      const child: unknown = cursor?.[segs[i] as string];
-      cursor =
-        typeof child === "object" && child !== null ? (child as Record<string, unknown>) : undefined;
-      if (cursor === undefined) break;
+      const seg = segs[i] as string;
+      const child = src[seg];
+      if (typeof child !== "object" || child === null) {
+        reachable = false;
+        break;
+      }
+      // Copy this spine node once (first path to reach it); later paths sharing
+      // the prefix descend into the already-copied node (dst[seg] !== src[seg]).
+      if (dst[seg] === child) dst[seg] = shallowCopy(child);
+      src = child as Record<string, unknown>;
+      dst = dst[seg] as Record<string, unknown>;
     }
     const leaf = segs[segs.length - 1] as string;
-    if (cursor !== undefined && Object.hasOwn(cursor, leaf)) {
-      cursor[leaf] = transform(cursor[leaf]);
+    if (reachable && Object.hasOwn(src, leaf)) {
+      dst[leaf] = transform(src[leaf]);
     }
   }
   return out;
