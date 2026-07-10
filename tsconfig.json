@@ -47,6 +47,7 @@
     { "path": "packages/spec" },
     { "path": "packages/verify" },
     { "path": "packages/dst" },
+    { "path": "packages/audit-chain" },
     { "path": "apps/playground" },
     { "path": "examples/cloud-command-center" }
   ]
