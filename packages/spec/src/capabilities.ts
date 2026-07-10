@@ -146,6 +146,19 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "No ABI version constant (it is a tool, not a wire contract) → cannot be L5; L4 via its zero-overhead bench.",
   },
   {
+    id: "dst",
+    title: "Deterministic Simulation Testing",
+    package: "@loom/dst",
+    level: "L4",
+    summary:
+      "Seeded virtual clock + fault-injecting store/network that drive the kernel under adversarial schedules and reproduce/minimize any invariant violation.",
+    evidence: {
+      conformanceTest: "packages/dst/src/dst.test.ts",
+      bench: "packages/dst/src/faultStore.bench.ts",
+    },
+    note: "Test/dev-only harness, not a wire contract → cannot be L5; L4 via its append-overhead bench. Production overhead is structurally zero (no runtime package imports it).",
+  },
+  {
     id: "scheduler",
     title: "Cooperative Scheduler",
     package: "@loom/scheduler",
