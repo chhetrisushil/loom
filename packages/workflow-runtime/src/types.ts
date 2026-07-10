@@ -46,6 +46,18 @@ export interface ExecutionContext {
     opts?: { rationale?: unknown; source?: string }
   ): Promise<T>;
 
+  // ADR 0032 (R2) — bounded, logged budget negotiation. Resolves the grant through the
+  // decision seam (recorded once, served on replay), so it is advisory and replay-safe:
+  // `grant = min(request, ceiling − already-spent)` (or `request` when no ceiling). It
+  // does NOT enforce — metering middleware still raises QUOTA_EXCEEDED — it just hands the
+  // flow a durable number to plan against. Negotiating one dimension more than once in a
+  // flow needs distinct `opts.id` (decisions are keyed by id).
+  negotiateBudget(
+    dimension: ResourceDimension,
+    request: number,
+    opts?: { id?: string; ceiling?: number; rationale?: unknown }
+  ): Promise<number>;
+
   parallel<TResults extends unknown[]>(
     pairs: { [K in keyof TResults]: [StepDefinition<unknown, TResults[K]>, unknown] },
     // Optional bounded concurrency. Omit for the current unbounded behaviour.
@@ -77,6 +89,9 @@ export interface ExecutionContext {
 // Back-compat alias. Existing code importing `WorkflowContext` keeps working; the
 // two are identical types. New code should prefer `ExecutionContext`.
 export type WorkflowContext = ExecutionContext;
+
+/** A negotiable/metered resource dimension (ADR 0032). */
+export type ResourceDimension = "tokens" | "costUsd" | "ms" | "memBytes" | "wallMs" | "netBytes";
 
 export interface RunOptions {
   executionId?: string;
