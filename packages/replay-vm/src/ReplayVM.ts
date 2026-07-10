@@ -32,7 +32,10 @@ export class ReplayVM {
     const decisions = this.state.variables._decisions as
       | Record<string, { choice: unknown }>
       | undefined;
-    return decisions?.[decisionId]?.choice;
+    // Own-key check (matches hasDecision) so a `__proto__`/inherited name can never read
+    // through the prototype chain.
+    if (decisions === undefined || !Object.hasOwn(decisions, decisionId)) return undefined;
+    return decisions[decisionId]?.choice;
   }
 
   getState(): ExecutionState {

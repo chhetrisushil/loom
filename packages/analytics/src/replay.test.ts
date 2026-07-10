@@ -34,7 +34,7 @@ describe("replayCost", () => {
     expect(rc.folds).toBe(8);
     expect(rc.executions).toBe(1);
     expect(rc.frameAllocations).toBe(2); // two STEP_STARTED
-    expect(rc.auditAppends).toBe(3); // DECISION_RECORDED + RESOURCE_METERED + OUTCOME_RECORDED
+    expect(rc.auditAppends).toBe(2); // DECISION_RECORDED + OUTCOME_RECORDED (RESOURCE_METERED = accumulator, excluded)
     expect(rc.byType.STEP_STARTED).toBe(2);
   });
 

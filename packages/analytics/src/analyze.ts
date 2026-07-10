@@ -109,7 +109,12 @@ export function costAnalytics(events: EventEnvelope[]): CostAnalytics {
 }
 
 export function reasoningAnalytics(events: EventEnvelope[]): ReasoningAnalytics {
-  const a: ReasoningAnalytics = { decisions: 0, routes: {}, elevations: 0, bySource: {} };
+  const a: ReasoningAnalytics = {
+    decisions: 0,
+    routes: Object.create(null),
+    elevations: 0,
+    bySource: Object.create(null),
+  };
   for (const e of events) {
     if (e.eventType !== "DECISION_RECORDED") continue;
     const p = e.payload as { decisionId?: string; choice?: unknown; source?: string };
@@ -165,7 +170,12 @@ export function analyze(events: EventEnvelope[]): Analytics {
     meteredCalls: 0,
     quotaExceeded: false,
   };
-  const reasoning: ReasoningAnalytics = { decisions: 0, routes: {}, elevations: 0, bySource: {} };
+  const reasoning: ReasoningAnalytics = {
+    decisions: 0,
+    routes: Object.create(null),
+    elevations: 0,
+    bySource: Object.create(null),
+  };
   const failedSteps: string[] = [];
   const deniedTools: string[] = [];
   let quotaExceeded = 0;

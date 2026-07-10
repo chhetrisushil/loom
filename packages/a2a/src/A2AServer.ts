@@ -13,10 +13,23 @@ export interface A2AServer {
   readonly url: string;
 }
 
+// Cap request bodies so an unauthenticated caller can't OOM the process by streaming a
+// huge (or endless) body into memory before parse. Matches the isolate broker's 10 MB cap.
+const MAX_BODY_BYTES = 10 * 1024 * 1024;
+
 function parseBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Uint8Array[] = [];
-    req.on("data", (chunk: Uint8Array) => chunks.push(chunk));
+    let size = 0;
+    req.on("data", (chunk: Uint8Array) => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new Error(`request body exceeds ${MAX_BODY_BYTES} bytes`));
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => {
       try {
         const raw = Buffer.concat(chunks);

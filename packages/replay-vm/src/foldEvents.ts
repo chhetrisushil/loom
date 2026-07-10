@@ -1,5 +1,5 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { getHandler } from "./eventHandlers";
+import { getHandler, resetFoldOwnership } from "./eventHandlers";
 
 const DEFAULT_STATE: Omit<ExecutionState, "executionId" | "workflowId" | "workflowVersion"> = {
   status: "pending",
@@ -24,6 +24,10 @@ export function foldEvents(
     ...DEFAULT_STATE,
     ...initial,
   };
+
+  // Fresh audit-list ownership for THIS fold pass, so in-place appends never touch the
+  // caller's `initial`/snapshot arrays (which we treat as immutable). See appendAudit.
+  resetFoldOwnership();
 
   for (const event of events) {
     const handler = getHandler(event.eventType);

@@ -203,14 +203,16 @@ export interface LatencyBreakdown {
 }
 
 function stat(durations: number[]): StepLatency {
-  const totalMs = durations.reduce((s, d) => s + d, 0);
+  // Single loop, no `Math.max(...durations)` spread — that would blow the call stack for a
+  // step invoked ~1e5+ times (a real risk over a large multi-execution aggregate).
+  let totalMs = 0;
+  let maxMs = 0;
+  for (const d of durations) {
+    totalMs += d;
+    if (d > maxMs) maxMs = d;
+  }
   const count = durations.length;
-  return {
-    count,
-    totalMs,
-    meanMs: count > 0 ? totalMs / count : 0,
-    maxMs: count > 0 ? Math.max(...durations) : 0,
-  };
+  return { count, totalMs, meanMs: count > 0 ? totalMs / count : 0, maxMs };
 }
 
 /**
@@ -277,11 +279,13 @@ export function latencyBreakdown(events: EventEnvelope[]): LatencyBreakdown {
     }
   }
 
-  const byStep: Record<string, StepLatency> = {};
+  // null-proto so an adversarial stepId like "__proto__" is an inert own key, not a
+  // prototype write that garbles the histogram.
+  const byStep: Record<string, StepLatency> = Object.create(null);
   const all: number[] = [];
   for (const [stepId, durs] of perStep) {
     byStep[stepId] = stat(durs);
-    all.push(...durs);
+    for (const d of durs) all.push(d); // avoid `all.push(...durs)` arg-spread blowup
   }
   const steps = stat(all);
 

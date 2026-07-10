@@ -13,6 +13,12 @@ export interface InMemoryProjectionRuntimeConfig {
    * semantics and adding zero overhead unless explicitly enabled.
    */
   coalesceNotifications?: boolean;
+  /**
+   * Bound how many distinct executions' projection states are retained (LRU by last touch).
+   * Prevents unbounded growth in a long-lived server: an execution evicted here reverts to
+   * `initialState` on the next `getState` (graceful). Default 10_000; set higher/lower to taste.
+   */
+  maxExecutions?: number;
 }
 
 export class InMemoryProjectionRuntime implements ProjectionRuntime {
@@ -24,8 +30,32 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
   private readonly dirtyKeys = new Set<string>();
   private flushScheduled = false;
 
+  // Insertion order = LRU order over distinct executions, for the retention bound.
+  private readonly maxExecutions: number;
+  private readonly execOrder = new Map<string, true>();
+
   constructor(config?: InMemoryProjectionRuntimeConfig) {
     this.coalesce = config?.coalesceNotifications ?? false;
+    this.maxExecutions = config?.maxExecutions ?? 10_000;
+  }
+
+  /** Drop all retained state + subscribers for an execution (e.g. after it completes). */
+  forget(executionId: string): void {
+    for (const projectionId of this.projections.keys()) {
+      const key = this.stateKey(projectionId, executionId);
+      this.states.delete(key);
+      this.subscribers.delete(key);
+    }
+    this.execOrder.delete(executionId);
+  }
+
+  private touch(executionId: string): void {
+    this.execOrder.delete(executionId);
+    this.execOrder.set(executionId, true);
+    if (this.execOrder.size > this.maxExecutions) {
+      const oldest = this.execOrder.keys().next().value;
+      if (oldest !== undefined) this.forget(oldest);
+    }
   }
 
   private stateKey(projectionId: string, executionId: string): string {
@@ -80,11 +110,13 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
       this.states.set(key, nextState);
       this.notify(key, nextState);
     }
+    this.touch(event.executionId);
   }
 
   seedState(projectionId: string, executionId: string, state: unknown): void {
     const key = this.stateKey(projectionId, executionId);
     this.states.set(key, state);
+    this.touch(executionId);
   }
 
   private notify(key: string, state: unknown): void {

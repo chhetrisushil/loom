@@ -33,6 +33,8 @@ export class PlacementDispatcher implements ExecutionDispatcher {
   private readonly defaultTarget: string;
   private readonly policy: PlacementPolicy;
   // Remember where each execution was placed so cancel() reaches the right target.
+  // Bounded (LRU-by-insertion) so it can't grow without limit in a long-lived dispatcher.
+  private static readonly ROUTED_CAP = 10_000;
   private readonly routed = new Map<string, string>();
   private inFlight = 0;
 
@@ -59,6 +61,14 @@ export class PlacementDispatcher implements ExecutionDispatcher {
     const name = chosen in this.targets ? chosen : this.defaultTarget;
     const target = this.targets[name] as ExecutionDispatcher;
     this.routed.set(pkg.executionId, name);
+    // Bound `routed` (it would otherwise grow one entry per execution forever). Recent
+    // executions — the ones a cancel can still act on — keep their precise target; only a
+    // very old execution (evicted here) falls back to the all-targets cancel path, which is
+    // harmless (a finished execution ignores a stray cancel). Insertion-ordered eviction.
+    if (this.routed.size > PlacementDispatcher.ROUTED_CAP) {
+      const oldest = this.routed.keys().next().value;
+      if (oldest !== undefined) this.routed.delete(oldest);
+    }
     this.inFlight++;
     try {
       return await target.dispatch(pkg, meta);

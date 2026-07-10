@@ -73,7 +73,7 @@ export function outcomeAnalytics(events: EventEnvelope[]): OutcomeStats[] {
  * by frequency chosen). The resulting route is still recorded via `ctx.decide` (P9).
  */
 export function rankFromOutcomes(events: EventEnvelope[]): Record<string, number> {
-  const out: Record<string, number> = {};
+  const out: Record<string, number> = Object.create(null);
   for (const s of outcomeAnalytics(events)) out[s.key] = s.rank;
   return out;
 }
