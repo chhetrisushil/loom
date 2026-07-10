@@ -159,6 +159,18 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "Test/dev-only harness, not a wire contract → cannot be L5; L4 via its append-overhead bench. Production overhead is structurally zero (no runtime package imports it).",
   },
   {
+    id: "audit-chain",
+    title: "Tamper-Evident Audit Chain",
+    package: "@loom/audit-chain",
+    level: "L2",
+    summary:
+      "Hash-chained (optionally HMAC-signed) EventStore wrapper; verifyChain detects any edit/insert/reorder/drop. Fold-invisible — replay byte-identical.",
+    evidence: {
+      conformanceTest: "packages/audit-chain/src/hashChain.test.ts",
+    },
+    note: "L2 (stable + tested, incl. a DST crash/recovery integrity property) — not yet wired into a shipped example/defineConfig path, so not L3; no version constant (a composable wrapper, not a wire contract).",
+  },
+  {
     id: "scheduler",
     title: "Cooperative Scheduler",
     package: "@loom/scheduler",
