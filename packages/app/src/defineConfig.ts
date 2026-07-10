@@ -1,6 +1,6 @@
 import type { AgentCard } from "@loom/a2a";
 import { a2uiSurfaceProjection } from "@loom/a2ui";
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope, ScheduleDefinition } from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
 import { EffectRuntime } from "@loom/effect-runtime";
 import type { CapabilityAuthorizer, EffectMiddleware } from "@loom/effect-runtime";
@@ -120,12 +120,19 @@ export interface LoomConfig {
   onEvent?: (event: EventEnvelope) => void;
   /**
    * T1 — durable timers. Wire a {@link TimerStore} (`InMemoryTimerStore`,
-   * `SqliteTimerStore` beside your event store) and the app runs a
-   * {@link TimerService}: `ctx.sleep`/`ctx.sleepUntil` — and `suspend({ timeout })`
-   * — get durable, restart-surviving wakes fired as `TIMER_FIRED`. Omit for
-   * today's behavior (suspensions wake only on explicit resume).
+   * `SqliteTimerStore`/`PostgresTimerStore` beside your event store) and the app
+   * runs a {@link TimerService}: `ctx.sleep`/`ctx.sleepUntil` — and
+   * `suspend({ timeout })` — get durable, restart-surviving wakes fired as
+   * `TIMER_FIRED`, and `schedules` (`schedule$`) fire cron occurrences with
+   * deterministic, idempotent starts. `fenced: true` for multi-node deployments
+   * (K9.4 tokens per fire). Omit everything for today's behavior.
    */
-  timers?: { store: TimerStore; pollMs?: number };
+  timers?: {
+    store: TimerStore;
+    pollMs?: number;
+    schedules?: ScheduleDefinition[];
+    fenced?: boolean;
+  };
 }
 
 export interface LoomStores {
@@ -253,6 +260,8 @@ export function defineConfig(config: LoomConfig): LoomApp {
   if (config.timers !== undefined) {
     timerService = new TimerService(runtime, config.timers.store, {
       ...(config.timers.pollMs !== undefined && { pollMs: config.timers.pollMs }),
+      ...(config.timers.schedules !== undefined && { schedules: config.timers.schedules }),
+      ...(config.timers.fenced !== undefined && { fenced: config.timers.fenced }),
     });
     timerService.start();
   }

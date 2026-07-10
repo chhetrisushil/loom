@@ -17,6 +17,8 @@ export type {
 } from "./types/execution";
 export { executionFromState } from "./types/execution";
 export { flowContentHash } from "./flowHash";
+export { schedule$ } from "./builders/schedule";
+export type { ScheduleConfig } from "./builders/schedule";
 export {
   ReplayError,
   StepError,
@@ -39,6 +41,7 @@ export type {
   MemoryDefinition,
   PolicyDefinition,
   ProjectionDefinition,
+  ScheduleDefinition,
   RetryPolicy,
   SkillDefinition,
   StepDefinition,

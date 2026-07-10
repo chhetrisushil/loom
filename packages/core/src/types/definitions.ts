@@ -132,6 +132,25 @@ export interface FlowDefinition<TIn = unknown, TOut = unknown> {
   deadlineMs?: number;
 }
 
+// ── Schedules (schedule$) — durable cron-style executions (T1.2) ─────────────
+//
+// A schedule statically binds a cron expression to a flow (P5 — wiring is
+// static and replay-safe). The TimerService fires each occurrence with a
+// DETERMINISTIC executionId derived from `scheduleId + occurrenceTime`, so a
+// fired occurrence that already started is never double-started (the store's
+// uniqueness backstop settles cross-node races). Cron fields are evaluated in
+// UTC so every node computes identical occurrences.
+export interface ScheduleDefinition<TIn = unknown> {
+  readonly _tag: "ScheduleDefinition";
+  id: string;
+  /** 5-field cron (min hour dom mon dow), UTC. Supports wildcards, steps, lists, ranges. */
+  cron: string;
+  /** The registered flow id each occurrence starts. */
+  flowId: string;
+  /** Input passed to every occurrence. */
+  input?: TIn;
+}
+
 export interface ProjectionDefinition<TState = unknown> {
   readonly _tag: "ProjectionDefinition";
   id: string;

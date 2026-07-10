@@ -738,8 +738,34 @@ const app = defineConfig({
 
 Firing mirrors K9's delivery contract: at-least-once delivery, idempotent wakes (a timer only
 fires while its execution is still suspended on exactly that `wakeAt` — a manual resume just
-retires it), so the effective wake is exactly-once. The cron-style `schedule$` registry and
-cross-node firing hardening arrive with T1.2.
+retires it), so the effective wake is exactly-once.
+
+**Cron schedules (T1.2).** `schedule$` statically binds a cron expression (5-field, UTC) to a
+flow; each due occurrence starts with the deterministic executionId
+`{scheduleId}@{occurrenceMs}` — every node computes the same id, so starts are idempotent
+without coordination (durable-state check + the store's uniqueness backstop settles races):
+
+```ts
+const nightlyAudit = schedule$({
+  id: "nightly-audit",
+  cron: "30 3 * * *",          // 03:30 UTC daily (*, */n, lists, ranges supported)
+  flowId: "audit-flow",
+  input: { scope: "all" },
+});
+const app = defineConfig({
+  storage: { kind: "postgres", url },
+  timers: {
+    store: new PostgresTimerStore(url), // same DB as the log — one backup, full kernel state
+    schedules: [nightlyAudit],
+    fenced: true,                       // multi-node: K9.4 token per fire/start
+  },
+});
+```
+
+Occurrences that passed while no service was running are skipped (no catch-up — a durable
+catch-up policy can layer on later). Cross-node duplicate fires settle at the shared store:
+the idempotent-wake guard, the `UNIQUE(execution_id, sequence)` backstop, and fencing (when
+`fenced`) guarantee exactly one durable history.
 
 ---
 

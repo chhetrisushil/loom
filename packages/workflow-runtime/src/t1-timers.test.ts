@@ -50,11 +50,18 @@ function boot(
 ) {
   const effects = new EffectRuntime();
   effects.register("after-tool", new ToolEffect(afterFn));
-  const stores = shared ?? {
-    eventStore: new InMemoryAsyncEventStore(),
-    snapshotStore: new InMemoryAsyncSnapshotStore(),
-    timerStore: new InMemoryTimerStore(),
-  };
+  // Share ONLY the stores — each boot gets its own runtime/effects.
+  const stores = shared
+    ? {
+        eventStore: shared.eventStore,
+        snapshotStore: shared.snapshotStore,
+        timerStore: shared.timerStore,
+      }
+    : {
+        eventStore: new InMemoryAsyncEventStore(),
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        timerStore: new InMemoryTimerStore(),
+      };
   const runtime = new WorkflowRuntime({
     eventStore: stores.eventStore,
     snapshotStore: stores.snapshotStore,
