@@ -10,9 +10,14 @@
   `SnapshotStore.deleteExecution` optional SPI (in-memory / SQLite / Postgres);
   `applyRetention` reclaims terminal-and-aged executions **archive-before-delete** (A6);
   `compact` checkpoints then truncates the prefix (sequence 0 preserved) with
-  `fold(snapshot, suffix) === fold(events)` conformance-tested. **Pending (follow-up on #43):**
-  K10.3 `SecretResolver` redaction markers (keep secrets out of the log entirely), K10.5
-  encryption-at-rest configuration docs for SQLite/Postgres. Amendments below applied.)
+  `fold(snapshot, suffix) === fold(events)` conformance-tested. K10.3 redaction markers:
+  `secretRef` + `SecretResolver` + `redactionMiddleware` (`@loom/middleware`) — a step's I/O
+  carries a deterministic reference, resolved to the real value at effect execution (the
+  middleware seam, kernel-side of any K7 boundary, A5), so the secret NEVER enters the log
+  (verified end-to-end); the effect-middleware `next(input?)` contract was extended (backward-
+  compatibly) to let a middleware transform the value the effect receives without touching the
+  logged input. **Pending (follow-up on #43):** K10.5 encryption-at-rest configuration docs
+  for SQLite/Postgres. Amendments below applied.)
 - Date: 2026-07-10
 - Requirements: [K10 in the kernel-hardening requirements](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md#k10--log-lifecycle-retention-redaction--encryption) — priority **P2**
 

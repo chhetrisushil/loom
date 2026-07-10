@@ -84,8 +84,13 @@ export interface Effect<TIn = unknown, TOut = unknown> {
   execute(input: TIn, ctx: EffectContext): Promise<TOut>;
 }
 
-/** Invokes the downstream middleware, or finally the effect itself. */
-export type EffectNext = () => Promise<unknown>;
+/**
+ * Invokes the downstream middleware, or finally the effect itself. Call `next()`
+ * to pass this middleware's input through unchanged; call `next(override)` to
+ * feed a TRANSFORMED input to the effect (e.g. K10.3 redaction resolving secret
+ * references). The override flows to the effect body, not back to the log.
+ */
+export type EffectNext = (input?: unknown) => Promise<unknown>;
 
 /**
  * Wraps a single effect execution — the cross-cutting seam (retries, logging,

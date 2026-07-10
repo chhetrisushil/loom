@@ -2080,6 +2080,9 @@ importers:
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../effect-runtime
+      '@loom/middleware':
+        specifier: workspace:*
+        version: link:../middleware
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
