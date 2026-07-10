@@ -17,7 +17,7 @@ Loom treats an intelligent workflow as a *process that unfolds over time*, not a
 - 🔁  *Deterministic replay* — state is a pure fold of the event log; the same events always reconstruct the same state. *Non-determinism is allowed only when logged* (P9) — so routing/optimizing still replays bit-for-bit.
 - 🌱  *Git-style branching* — fork an in-flight execution, simulate alternatives concurrently, and promote a winner. Branch-only, no merge.
 - 🤖  *Agentic, end to end* — LLMs, ReAct agents, MCP tools, and agent-to-agent calls are all durable, replayable *effects*. *Reasoning* adds cheap-first model routing with confidence-based elevation; *tiered memory* adds working/semantic/procedural recall.
-- 🛡️  *A real kernel* — a versioned syscall ABI, a capability *protection ring* (ungranted effects are denied), *resource accounting + quotas* (tokens/$/latency), and *fault supervision* (circuit breakers).
+- 🛡️  *A real kernel* — a versioned syscall ABI, a capability *protection ring* (ungranted effects are denied), *resource accounting + quotas* (tokens/$/latency), and *fault supervision* (circuit breakers). Hardened end to end (K1–K12, T1–T2): behavioral safety, data-plane isolation + brokered egress, idempotency/fencing, encryption-at-rest + crypto-shredding, flow-code versioning, identity/tenancy + delegation, durable timers, and a language-neutral wire ABI — every ring opt-in and byte-identical when unwired.
 - 📈  *Scale out* — the same interfaces on single-node SQLite or a network Postgres store with cross-node live subscribe (~LISTEN/NOTIFY~).
 - 🎨  *Bring your own renderer* — the same backend renders in React, Angular, Web Components, or the terminal.
 - 🧩  *One composition root* — ~defineConfig~ wires an app from a static config; the ~loom~ CLI, testing kit, evals, deploy-simulation, and a pluggable-compute seam surround it.
@@ -168,15 +168,15 @@ Loom 2.0 generalizes the durable workflow runtime into an *execution kernel for 
 | ~@loom/core~               | Authoring builders (~flow$~, ~step$~, ~handler$~, ~tool$~, ~agent$~, ~projection$~, …) + shared types |
 | ~@loom/workflow-runtime~   | Durable execution — ~start~ / ~resume~ / ~fork~ / ~loadState~, the ~ExecutionJournal~, ~ExecutionContext~ (~ctx.execute~ / ~ctx.run~ / ~ctx.decide~), and the versioned kernel ABI (~KERNEL_SYSCALLS~, K1) |
 | ~@loom/replay-vm~          | Deterministic replay — ~foldEvents~ / ~ReplayVM~ (pure state reconstruction) + the pinned on-disk event-schema ABI (~EVENT_SCHEMA_VERSION~, K5) |
-| ~@loom/event-runtime~      | Append-only ~EventStore~ (memory / SQLite) + git-style ~BranchRegistry~ |
+| ~@loom/event-runtime~      | Append-only ~EventStore~ (memory / SQLite) + git-style ~BranchRegistry~ + tenant-scoped stores (K12) |
 | ~@loom/snapshot-runtime~   | ~SnapshotStore~ — bounded-tail replay |
-| ~@loom/effect-runtime~     | Effect isolation for tool / LLM / human / A2A effects — plus the capability *protection ring* (~GrantTable~, K2), resource-accounting context (K3), and optional scheduler/warmer wiring (M6) |
+| ~@loom/effect-runtime~     | Effect isolation for tool / LLM / human / A2A effects — plus the capability *protection ring* (~GrantTable~, K2), verifiable delegation (~DelegationAuthorizer~, K12), resource-accounting context (K3), and optional scheduler/warmer wiring (M6) |
 | ~@loom/sdk~                | Public re-export surface |
 
 *Composition & effects*
 
 | ~@loom/app~                | *Composition root* — ~defineConfig~ assembles the runtime, stores, middleware, projections, and A2A bus from one static config |
-| ~@loom/middleware~         | Effect middleware — ~retryMiddleware~ (deterministic backoff) + ~meteringMiddleware~ (tokens/$/latency accounting + budget admission control, K3); the ~(ctx, input, next)~ chain |
+| ~@loom/middleware~         | Effect middleware (the ~(ctx, input, next)~ chain) — ~retryMiddleware~ (deterministic backoff), ~meteringMiddleware~ (tokens/$/latency + budget admission, K3), ~safetyMiddleware~ (behavioral validation, K6), ~redactionMiddleware~ (~secretRef~ resolution, K10), and ~nestedBudgetMiddleware~ (tenant/workflow ceilings, K12) |
 | ~@loom/registry~           | Workflow / agent registry |
 
 *Projection & UI*
@@ -221,6 +221,14 @@ Loom 2.0 generalizes the durable workflow runtime into an *execution kernel for 
 | ~@loom/scaffold~           | Code templates + registration codegen (~loom gen~ / ~new~) |
 | ~@loom/compiler~           | Vite plugin + CLI — ~handler$~ extraction, flow-graph validation, resumability metadata |
 | ~@loom/telemetry~          | Zero-overhead telemetry adapters + hooks |
+
+*Kernel hardening & security*
+
+| Package                    | Description |
+|----------------------------+-------------|
+| ~@loom/isolate~            | K7 data-plane isolation — untrusted tools in a scrubbed child process with brokered egress (static allowlist, ~EGRESS_DENIED~) |
+| ~@loom/store-crypto~       | K10 encryption-at-rest — ~EncryptingEventStore~ / ~EncryptingSnapshotStore~ (per-subject keys) + crypto-shredding (~shredSubject~, ~PAYLOAD_SHREDDED~) |
+| ~@loom/wire-abi~           | T2 wire-level kernel ABI — a language-neutral JSON-RPC projection of the K1 syscalls + shared fold-conformance vectors |
 
 -----
 
@@ -291,11 +299,12 @@ Start at [[file:docs/README.md][docs/README.md]] (the index), then:
 
 - [[file:docs/getting-started.md][Getting Started]] — zero to a running suspend/resume flow in ~5 minutes
 - [[file:docs/usage.md][Usage Guide]] — build a real app step by step
+- [[file:docs/usage-cli.md][CLI Usage Guide]] — the ~loom~ command end to end (scaffold, validate, observe, gate a deploy)
 - [[file:docs/user-guide.md][User Guide]] — every feature area with runnable examples
-- [[file:docs/architecture.md][Architecture]] — mission, core principles (P1–P10), and the reasoning behind each decision
-- [[file:docs/loom-2.0/00-overview.md][Loom 2.0 deep-dives]] — the execution-kernel evolution in full: data structures, algorithms, and diagrams for every subsystem, plus the [[file:docs/loom-2.0/10-event-schema-reference.md][event-schema reference]]
-- [[file:docs/api-reference.org][API Reference]] — exhaustive per-package API
-- [[file:docs/adr/][ADRs]] — the decision history (0001–0016; [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][ADR 0016]] records Loom 2.0)
+- [[file:docs/architecture.md][Architecture]] — mission, core principles (P1–P11), and the reasoning behind each decision (render to PDF with ~scripts/build-architecture-pdf.sh~)
+- [[file:docs/loom-2.0/00-overview.md][Loom 2.0 deep-dives]] — the execution-kernel evolution in full: data structures, algorithms, and diagrams for every subsystem, plus the [[file:docs/loom-2.0/10-event-schema-reference.md][event-schema reference]] and [[file:docs/loom-2.0/04-kernel-hardening.md][kernel hardening]] (K1–K12, T1–T2)
+- [[file:docs/api-reference.org][API Reference]] — exhaustive per-package API, including [[file:docs/api-reference.org][Kernel hardening & security]]
+- [[file:docs/adr/][ADRs]] — the decision history (0001–0027, all accepted; [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][ADR 0016]] records Loom 2.0)
 - [[file:docs/presentation/loom-deck.md][Presentation]] — the flagship deck, plus the [[file:docs/presentation/loom-2.0-deck.md][Loom 2.0 deck]] (Marp)
 
 -----
