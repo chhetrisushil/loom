@@ -17,6 +17,15 @@ export interface ToolConfig<TIn, TOut> {
    * kernel reads it.
    */
   idempotent?: boolean;
+  /**
+   * K7.3 — static egress allowlist (`host:port` entries) for tools that run
+   * ISOLATED (`@loom/isolate`'s IsolatedToolEffect). Declaration metadata, like
+   * `idempotent`: the enforced copy lives on the registered IsolatedToolSpec;
+   * the kernel-side broker denies anything else before connection with a
+   * durable EGRESS_DENIED fact. In-process ToolEffects have ambient authority —
+   * isolation is what turns this from convention into guarantee.
+   */
+  egress?: string[];
 }
 
 export function tool$<TIn = unknown, TOut = unknown>(

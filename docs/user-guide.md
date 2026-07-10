@@ -541,7 +541,7 @@ const context = await mem.recall("semantic", scope, { limit: 10, decide: ctx.dec
 
 ## 17. Kernel: grants, quotas & supervision
 
-*(Loom 2.0 kernel-hardening — K2 / K3 / K4 / K8 / K9 / K11 / T1.)* All opt-in; omit them and behavior is unchanged.
+*(Loom 2.0 kernel-hardening — K2 / K3 / K4 / K7 / K8 / K9 / K11 / T1.)* All opt-in; omit them and behavior is unchanged.
 
 ### Capability grants (protection ring, K2)
 
@@ -620,6 +620,41 @@ contract (an unreachable worker returns `false`, never throws); the *settlement*
 either way — the orchestrator's own `runtime.cancel()` fences-then-appends on the shared
 store, so even an undeliverable zombie ends fenced out with `EXECUTION_CANCELLED` on the log.
 A cancelled dispatch settles as a normal terminal result, never a retryable transport error.
+
+### Data-plane isolation & egress (K7)
+
+K2's grant table governs *which* effects run; in-process tool bodies still hold ambient
+authority. `@loom/isolate` turns the convention into a boundary — the tool runs in a pooled
+**child process** at the effect position (innermost, so grants/metering/safety all stay on
+the kernel side where the isolate can't forge them):
+
+```ts
+import { IsolatedToolEffect } from "@loom/isolate";
+
+effectRuntime.register("fetch-metrics", new IsolatedToolEffect({
+  id: "fetch-metrics",
+  modulePath: require.resolve("./tools/fetch-metrics.cjs"), // code the CHILD loads — no closures
+  egress: ["prometheus.internal:9090"], // K7.3 — static allowlist (tool$({ egress }) mirrors it)
+  env: { PROM_TOKEN: secrets.prom },    // K7.4 — this tool's credentials, and ONLY this tool's
+  timeoutMs: 30_000,                    // non-cooperative SIGKILL — the real kill path
+  idempotent: true,                     // K9 semantics compose unchanged
+}));
+
+// tools/fetch-metrics.cjs — authored against the marshaled ctx shim:
+module.exports = async (input, ctx) => {
+  const res = await ctx.fetch(`http://prometheus.internal:9090/api/v1/query?...`);
+  ctx.emit("METRICS_SAMPLED", { at: input.at }); // forwarded, ordered, before the result
+  return JSON.parse(res.body);
+};
+```
+
+The child's environment is **scrubbed** (exactly `env` + PATH — the parent's secrets aren't
+there to read), no store handles cross the boundary, and all network goes through the
+brokered `ctx.fetch`: the allowlist is enforced **before any connection** (durable
+`EGRESS_DENIED` on refusal, folded into `state.variables._egress`) and requests dispatch
+**resolve-and-pin** (DNS-rebind safe). The runner also blocks ambient network modules
+(`require("http")` throws) as defense-in-depth — for hostile-code-grade confinement add
+OS-layer sandboxing (netns/seccomp/container egress) around the worker.
 
 ### Effect delivery: at-least-once & idempotency (K9)
 

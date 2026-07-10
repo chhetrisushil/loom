@@ -1543,6 +1543,25 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
 
+  packages/isolate:
+    dependencies:
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../effect-runtime
+    devDependencies:
+      '@loom/middleware':
+        specifier: workspace:*
+        version: link:../middleware
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   packages/llm:
     dependencies:
       '@loom/core':
