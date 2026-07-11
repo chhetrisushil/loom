@@ -118,9 +118,7 @@ function defaultIO(): AppgenIO {
     },
     resolveConflict: async (existingPath) => {
       for (;;) {
-        const answer = (
-          await ask(`${existingPath} exists — [r]ename / [s]kip / [o]verwrite? `)
-        )
+        const answer = (await ask(`${existingPath} exists — [r]ename / [s]kip / [o]verwrite? `))
           .trim()
           .toLowerCase();
         if (answer === "s" || answer === "skip") return { action: "skip" };
