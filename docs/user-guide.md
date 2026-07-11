@@ -417,6 +417,7 @@ const provider = process.env.RECORD ? recordingProvider(realLlm, cassette) : rep
 ```
 loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
 loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
+loom appgen <intent> | --from <file> [--dir app]  generate a Loom app from natural language
 loom check --manifest <path>                    static flow-graph checks
 loom logs  --db <path> <executionId>            print the event timeline
 loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
@@ -426,7 +427,7 @@ loom inspect --db <path> [--port N]             web inspector (timeline + slider
 ```
 
 - **`logs` / `debug` / `inspect`** operate directly on a SQLite event DB — no app load needed. `debug --at N` folds the exact state at sequence *N* (time-travel); `inspect` serves a web timeline with a slider using the same fold.
-- **`gen` / `new`** implement the folder convention via **build-time codegen** (a static `loom.gen.ts`), not runtime globbing ([ADR 0011](adr/0011-folder-convention-codegen.md)).
+- **`gen` / `new`** implement the folder convention via **build-time codegen** (a static `loom.gen.ts`), not runtime globbing ([ADR 0011](adr/0011-folder-convention-codegen.md)). **`appgen`** turns a natural-language intent into a static app skeleton (`src/<capability>.ts` + `src/app.ts`) via [`@loom/appgen`](../packages/appgen) — deterministic and offline, with no model call at generate time or in the output.
 - **`eval` / `deploy check` / `check`** are CI gates (§12).
 
 For a command-by-command walkthrough with flags, exit codes, and example output, see the **[CLI Usage Guide](usage-cli.md)**.

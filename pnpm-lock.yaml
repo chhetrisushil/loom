@@ -1284,6 +1284,9 @@ importers:
       '@loom/app':
         specifier: workspace:*
         version: link:../app
+      '@loom/appgen':
+        specifier: workspace:*
+        version: link:../appgen
       '@loom/core':
         specifier: workspace:*
         version: link:../core

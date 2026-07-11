@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import * as fs from "node:fs";
 import { SqliteEventStore } from "@loom/event-runtime";
+import { cmdAppgen } from "./appgen";
 import { cmdCheck } from "./check";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { cmdDeployCheck } from "./deploy";
@@ -43,6 +45,7 @@ const USAGE = `loom — project-local commands for a Loom app
 
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
   loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
+  loom appgen <intent> | --from <file> [--dir app]  generate a Loom app from natural language
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
   loom logs  --db <path> <executionId>            print the event timeline
@@ -141,6 +144,19 @@ async function main(argv: string[]): Promise<number> {
       console.log(created ? `created ${dest}` : `skipped ${dest} (already exists)`);
       return created ? 0 : 1;
     }
+    case "appgen": {
+      const intent = resolveIntent(flags, positionals);
+      const dir = flags.dir ?? "app";
+      const r = await cmdAppgen({ intent, dir });
+      const lines = [
+        `appgen: ${r.specName} → ${dir}`,
+        ...r.written.map((p) => `  wrote ${p}`),
+        ...r.overwritten.map((p) => `  overwrote ${p}`),
+        ...r.skipped.map((p) => `  skipped ${p}`),
+      ];
+      console.log(lines.join("\n"));
+      return 0;
+    }
     case "deploy": {
       if (positionals[0] !== "check") {
         throw new Error("usage: loom deploy check --logs <dir> --config <module>");
@@ -172,6 +188,20 @@ async function main(argv: string[]): Promise<number> {
       console.error(`unknown command "${command}"\n\n${USAGE}`);
       return 1;
   }
+}
+
+/**
+ * Resolve the `appgen` intent from a `--from <file>` flag or the joined positional words.
+ * `--from` takes precedence; an empty result is an error. Extracted from the dispatcher so
+ * the source selection and empty guard are unit-testable without invoking `main`.
+ */
+export function resolveIntent(flags: Record<string, string>, positionals: string[]): string {
+  const intent =
+    flags.from !== undefined ? fs.readFileSync(flags.from, "utf8") : positionals.join(" ");
+  if (intent.trim() === "") {
+    throw new Error("provide an intent string or --from <file>");
+  }
+  return intent;
 }
 
 function requireFlag(flags: Record<string, string>, name: string): void {
