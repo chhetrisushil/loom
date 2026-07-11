@@ -23,6 +23,7 @@
   "dependencies": {
     "@loom/analytics": "workspace:*",
     "@loom/app": "workspace:*",
+    "@loom/appgen": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/deploy-sim": "workspace:*",
     "@loom/eval": "workspace:*",

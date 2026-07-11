@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { step$ } from "@loom/core";
 import type { EventEnvelope } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
@@ -10,7 +10,9 @@ import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
+import { type AppgenIO, type Conflict, cmdAppgen } from "./appgen";
 import { checkManifest } from "./check";
+import { resolveIntent } from "./cli";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { idempotencyAdvisory, loadLogs, runDeployCheck } from "./deploy";
 import { cmdGen, cmdNew, discoverFlows } from "./gen";
@@ -222,6 +224,97 @@ describe("loom CLI", () => {
       const { count, out } = cmdGen(join(dir, "empty-app"));
       expect(count).toBe(0);
       expect(readFileSync(out, "utf-8")).toContain("export const flowModules = [];");
+    });
+  });
+
+  describe("loom appgen (NL → app skeleton)", () => {
+    // Canonical @loom/appgen example → spec.name "planner", files src/planner.ts + src/app.ts.
+    const EXAMPLE =
+      "Create a planner. Use Gemma first. Elevate to Gemini. Pause for approval. Deploy on Fargate. Generate UI.";
+
+    // Real fs for exists/write, but scripted (non-interactive) conflict resolution.
+    function scriptedIO(actions: Conflict[]): AppgenIO & { conflicts: string[] } {
+      const conflicts: string[] = [];
+      let i = 0;
+      return {
+        conflicts,
+        exists: (p) => existsSync(p),
+        write: (p, contents) => {
+          mkdirSync(dirname(p), { recursive: true });
+          writeFileSync(p, contents);
+        },
+        resolveConflict: async (existingPath) => {
+          conflicts.push(existingPath);
+          const a = actions[i++];
+          if (a === undefined) throw new Error(`unexpected conflict for ${existingPath}`);
+          return a;
+        },
+      };
+    }
+
+    it("writes the generated files when the target dir is empty", async () => {
+      const appDir = join(dir, "gen");
+      const io = scriptedIO([]);
+      const r = await cmdAppgen({ intent: EXAMPLE, dir: appDir }, io);
+
+      expect(r.specName).toBe("planner");
+      expect(r.written).toEqual([join(appDir, "src/planner.ts"), join(appDir, "src/app.ts")]);
+      expect(r.skipped).toEqual([]);
+      expect(r.overwritten).toEqual([]);
+      expect(io.conflicts).toEqual([]); // no collisions → never prompted
+      expect(readFileSync(join(appDir, "src/planner.ts"), "utf-8")).toContain("capability$(");
+      expect(readFileSync(join(appDir, "src/app.ts"), "utf-8")).toContain("defineConfig(");
+    });
+
+    it("resolves the intent from a positional string or --from <file> identically", () => {
+      const fromFile = join(dir, "intent.txt");
+      writeFileSync(fromFile, EXAMPLE);
+      expect(resolveIntent({ from: fromFile }, [])).toBe(EXAMPLE);
+      expect(resolveIntent({}, ["Create", "a", "planner."])).toBe("Create a planner.");
+    });
+
+    it("errors when no intent is supplied", () => {
+      expect(() => resolveIntent({}, [])).toThrow(/provide an intent/);
+    });
+
+    it("renames on conflict, leaving the existing file untouched", async () => {
+      const appDir = join(dir, "rename");
+      mkdirSync(join(appDir, "src"), { recursive: true });
+      writeFileSync(join(appDir, "src/planner.ts"), "ORIGINAL");
+      const io = scriptedIO([{ action: "rename", newPath: "src/planner_v2.ts" }]);
+
+      const r = await cmdAppgen({ intent: EXAMPLE, dir: appDir }, io);
+
+      expect(io.conflicts).toEqual([join(appDir, "src/planner.ts")]);
+      expect(readFileSync(join(appDir, "src/planner.ts"), "utf-8")).toBe("ORIGINAL");
+      expect(r.written).toEqual([join(appDir, "src/planner_v2.ts"), join(appDir, "src/app.ts")]);
+      expect(readFileSync(join(appDir, "src/planner_v2.ts"), "utf-8")).toContain("capability$(");
+    });
+
+    it("skips a conflicting file", async () => {
+      const appDir = join(dir, "skip");
+      mkdirSync(join(appDir, "src"), { recursive: true });
+      writeFileSync(join(appDir, "src/planner.ts"), "ORIGINAL");
+      const io = scriptedIO([{ action: "skip" }]);
+
+      const r = await cmdAppgen({ intent: EXAMPLE, dir: appDir }, io);
+
+      expect(r.skipped).toEqual([join(appDir, "src/planner.ts")]);
+      expect(r.written).toEqual([join(appDir, "src/app.ts")]);
+      expect(readFileSync(join(appDir, "src/planner.ts"), "utf-8")).toBe("ORIGINAL");
+    });
+
+    it("overwrites a conflicting file in place", async () => {
+      const appDir = join(dir, "overwrite");
+      mkdirSync(join(appDir, "src"), { recursive: true });
+      writeFileSync(join(appDir, "src/planner.ts"), "ORIGINAL");
+      const io = scriptedIO([{ action: "overwrite" }]);
+
+      const r = await cmdAppgen({ intent: EXAMPLE, dir: appDir }, io);
+
+      expect(r.overwritten).toEqual([join(appDir, "src/planner.ts")]);
+      expect(r.written).toEqual([join(appDir, "src/app.ts")]);
+      expect(readFileSync(join(appDir, "src/planner.ts"), "utf-8")).toContain("capability$(");
     });
   });
 

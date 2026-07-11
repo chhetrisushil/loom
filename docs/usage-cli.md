@@ -9,7 +9,7 @@ The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`
 **Contents**
 
 1. [The command set](#the-command-set)
-2. [Scaffold & wire: `new`, `gen`](#scaffold--wire-new-gen)
+2. [Scaffold & wire: `new`, `gen`, `appgen`](#scaffold--wire-new-gen-appgen)
 3. [Validate before you run: `check`](#validate-before-you-run-check)
 4. [Observe a run: `logs`, `debug`, `inspect`](#observe-a-run-logs-debug-inspect)
 5. [Ship safely: `eval`, `deploy check`](#ship-safely-eval-deploy-check)
@@ -28,6 +28,7 @@ loom — project-local commands for a Loom app
 
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
   loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
+  loom appgen <intent> | --from <file> [--dir app]  generate a Loom app from natural language
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom logs  --db <path> <executionId>            print the event timeline
   loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
@@ -42,7 +43,7 @@ There are no global flags — each command declares its own. The recurring ones 
 
 ---
 
-## Scaffold & wire: `new`, `gen`
+## Scaffold & wire: `new`, `gen`, `appgen`
 
 These follow the **folder convention** — flows live at `app/flows/<name>/flow.ts`, agents at `app/agents/<name>/agent.ts`, tools at `app/tools/<name>/tool.ts` ([ADR 0011](adr/0011-folder-convention-codegen.md)).
 
@@ -82,6 +83,29 @@ export const flowModules = [_f0, _f1];
 ```
 
 Feed the generated `flowModules` to `defineConfig({ flowModules })` and every flow-shaped export registers itself. Re-run `loom gen` whenever you add or remove a flow. Exit `0` on a successful write.
+
+### `loom appgen <intent> | --from <file> [--dir app]`
+
+Turns a **natural-language intent** into a Loom app skeleton — one `src/<capability>.ts` flow file per capability plus a `src/app.ts` composition root — by parsing the sentence into an `AppSpec` and generating plain, static TypeScript ([`@loom/appgen`](../packages/appgen)). Parsing and codegen are **deterministic and offline — no model call at generate time and none in the output** (P5). The generated files are ordinary Loom code with `TODO` handlers you own and edit.
+
+| Argument / flag | Required | Default | Meaning |
+|---|---|---|---|
+| `<intent>` | one of the two | — | the intent as a quoted positional string |
+| `--from <file>` | one of the two | — | read the intent from a text file (takes precedence over the positional) |
+| `--dir` | no | `app` | base directory the generated `src/` files go under |
+
+The intent is a small directive grammar: `create a <name>` (a capability), `use <model> first` / `elevate to <model>`, `pause for approval`, `generate ui`, `step <name>`, `deploy on <target>`. Reasoning / approval / UI wiring is emitted only when asked for.
+
+```bash
+npx loom appgen "Create a planner. Use Gemma first. Pause for approval. Generate UI."
+# → appgen: planner → app
+#     wrote app/src/planner.ts
+#     wrote app/src/app.ts
+
+npx loom appgen --from intent.txt --dir app     # long specs from a file
+```
+
+Each file is written **directly when its target path is free**. On a collision it prompts interactively, per file — `src/planner.ts exists — [r]ename / [s]kip / [o]verwrite?` — where `r` asks for a new name (and re-checks it), `s` leaves the existing file untouched, and `o` replaces it. Exit `0`; the summary lists what was written, overwritten, and skipped.
 
 ---
 
@@ -225,6 +249,7 @@ npx loom deploy check --logs logs/ --config dist/app.js
 |---|---|---|---|
 | `loom new <kind> <name>` | scaffold a flow/agent/tool file | `--dir app` | file already exists |
 | `loom gen` | regenerate `loom.gen.ts` | `--dir app` | (write failure) |
+| `loom appgen <intent>` | generate an app skeleton from NL | `--from <file>`, `--dir app` | no intent supplied |
 | `loom check` | static flow-graph validation | `--manifest` *(req)* | issues found |
 | `loom logs` | print the event timeline | `--db` *(req)* | error |
 | `loom debug` | folded state at / after a sequence | `--db` *(req)*, `--at N` | error |
@@ -255,7 +280,7 @@ Note that `inspect`/`dev` start a long-lived server and stay in the foreground u
 Every command is also a pure function exported from `@loom/cli`, so you can build the same checks into your own scripts or tests without shelling out:
 
 ```ts
-import { cmdLogs, cmdDebug, cmdEval, cmdCheck, cmdGen, cmdNew,
+import { cmdLogs, cmdDebug, cmdEval, cmdCheck, cmdGen, cmdNew, cmdAppgen,
          cmdDeployCheck, serveInspector, parseArgs } from "@loom/cli";
 
 const timeline = await cmdLogs(".loom/events.db", executionId);
