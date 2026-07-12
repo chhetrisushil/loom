@@ -88,6 +88,14 @@ engine (`@loom/replay-vm` — the "no reducer into the fold" rule), that a 3P pl
 the `@loom/*` SPI (one kernel copy) and carries the `loom-plugin` keyword, and that a test wires
 `@loom/testing/conformance`. Non-zero exit on any error.
 
+And **run a storage plugin end-to-end** — wire its preset into a real app, run a durable flow,
+and confirm it persisted and replays (what `check` and conformance can't tell you):
+
+```
+loom plugin try --module ./loom-plugin-my-backend/dist/index.js \
+  --preset myStorage --options '{"url":"…"}'
+```
+
 ## Authoring a plugin (worked example: a storage backend)
 
 ```ts

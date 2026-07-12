@@ -43,6 +43,12 @@
     },
     {
       "path": "../../plugins/sqlite"
+    },
+    {
+      "path": "../workflow-runtime"
+    },
+    {
+      "path": "../plugin-kit"
     }
   ]
 }

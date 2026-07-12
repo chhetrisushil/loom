@@ -14,6 +14,7 @@ import { cmdIntrospect } from "./introspect";
 import { cmdCompat, cmdKernelManifest } from "./kernel";
 import { cmdOptimize } from "./optimize";
 import { cmdPluginCheck, cmdPluginNew, cmdPluginSeams } from "./plugin";
+import { cmdPluginTry } from "./pluginTry";
 import { cmdProfile } from "./profile";
 import { cmdVerify } from "./verify";
 
@@ -51,6 +52,7 @@ const USAGE = `loom — project-local commands for a Loom app
   loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
   loom plugin new <seam> <name> [--first-party] [--dir .]  scaffold a plugin package
   loom plugin check [--dir .]                     validate a plugin against the contract
+  loom plugin try --module <path> [--preset <name>] [--options <json>]  run a store plugin end-to-end
   loom plugin seams                               list the seams a plugin can target
   loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]  NL → new project or edits
                                                   (--dry-run previews; --check typechecks after apply)
@@ -160,6 +162,20 @@ async function main(argv: string[]): Promise<number> {
       if (sub === "seams") {
         console.log(cmdPluginSeams());
         return 0;
+      }
+      if (sub === "try") {
+        requireFlag(flags, "module");
+        const r = await cmdPluginTry({
+          module: flags.module!,
+          ...(flags.preset !== undefined && { preset: flags.preset }),
+          ...(flags.options !== undefined && { options: flags.options }),
+        });
+        const mark = (ok: boolean, msg: string) => `  ${ok ? "✓" : "✗"} ${msg}`;
+        console.log(mark(r.completed, `smoke flow completed (preset ${r.preset})`));
+        console.log(mark(r.eventsPersisted > 0, `persisted ${r.eventsPersisted} events`));
+        console.log(mark(r.replayOk, "replays from the durable store"));
+        console.log(`\nplugin try: ${r.ok ? "passed" : "FAILED"}`);
+        return r.ok ? 0 : 1;
       }
       if (sub === "check") {
         const dir = flags.dir ?? positionals[1] ?? ".";
