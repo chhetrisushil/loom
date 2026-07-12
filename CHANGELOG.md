@@ -110,3 +110,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     writing; the CLI surfaces the planner (deterministic vs model) and any ladder elevations.
   - Docs: `docs/usage-cli.md` rewritten for the full surface; a brownfield walkthrough at
     `examples/appgen-brownfield/README.md`. `@loom/appgen` stays offline; kernel untouched.
+  - **Planner provenance surfaced + loud model fallback.** The plan header and `--dry-run` output are
+    tagged `[deterministic]` / `[model]` (with any `[model, elevated e4b→12b]` ladder steps), matching
+    the spec lockfile's `changeSpec.planner`. When `--model` is passed but the model can't produce a
+    usable plan, `appgen` now prints a **loud warning** and falls back — so a silent, wrong-looking
+    generation no longer masquerades as a model result. Also fixed `--model` failing in-repo with
+    "Cannot find package '@loom/appgen-model'": the CLI now resolves the optional peer as a sibling of
+    `@loom/appgen` (works in `packages/*` and `node_modules/@loom/*` alike).

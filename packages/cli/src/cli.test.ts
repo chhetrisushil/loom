@@ -10,7 +10,7 @@ import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { type AppgenIO, type Conflict, cmdAppgen } from "./appgen";
+import { type AppgenIO, type Conflict, cmdAppgen, plannerTag, renderPlan } from "./appgen";
 import { checkManifest } from "./check";
 import { resolveIntent } from "./cli";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
@@ -409,6 +409,35 @@ describe("loom CLI", () => {
       const a = readFileSync(join(srcDir, "app/flows/planner/flow.ts"), "utf-8");
       const b = readFileSync(join(replayDir, "app/flows/planner/flow.ts"), "utf-8");
       expect(b).toBe(a); // byte-identical, reproduced without re-parsing the intent
+    });
+  });
+
+  describe("planner surface", () => {
+    it("--dry-run surfaces which planner produced the plan", () => {
+      const plan = {
+        root: "/x",
+        isNewProject: true,
+        creates: [{ path: "package.json", contents: "{}" }],
+        edits: [],
+        deletes: [],
+        skips: [],
+        regenRegistration: false,
+      };
+      expect(renderPlan(plan, ".", { planner: "deterministic" })).toContain("[deterministic]");
+      expect(
+        renderPlan(plan, ".", {
+          planner: "model",
+          elevations: [{ from: "gemma-e4b", to: "gemma-12b", reason: "x" }],
+        })
+      ).toContain("[model, elevated gemma-e4b→gemma-12b]");
+    });
+
+    it("plannerTag renders deterministic vs model (with elevations)", () => {
+      expect(plannerTag("deterministic")).toBe("[deterministic]");
+      expect(plannerTag("model")).toBe("[model]");
+      expect(plannerTag("model", [{ from: "a", to: "b", reason: "x" }])).toBe(
+        "[model, elevated a→b]"
+      );
     });
   });
 
