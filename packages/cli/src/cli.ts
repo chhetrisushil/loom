@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as readline from "node:readline";
 import type { FilePlan } from "@loom/appgen";
 import { SqliteEventStore } from "@loom/event-runtime";
-import { cmdAppgen, renderPlan } from "./appgen";
+import { type Elevation, type Planner, cmdAppgen, plannerTag, renderPlan } from "./appgen";
 import { cmdCheck } from "./check";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { cmdDeployCheck } from "./deploy";
@@ -180,22 +180,25 @@ async function main(argv: string[]): Promise<number> {
         offline,
         ...(model !== undefined && { model }),
         ...(fromSpec !== undefined && { fromSpec }),
-        ...(interactive && { confirm: (plan) => confirmPlan(plan, dir) }),
+        ...(interactive && {
+          confirm: (plan, planner, elevations) => confirmPlan(plan, dir, planner, elevations),
+        }),
       });
       if (r.dryRun) {
-        console.log(renderPlan(r.plan, dir));
+        console.log(
+          renderPlan(r.plan, dir, {
+            planner: r.planner,
+            ...(r.elevations && { elevations: r.elevations }),
+          })
+        );
         return 0;
       }
       if (r.aborted) {
         console.log("appgen: aborted — nothing written");
         return 0;
       }
-      const plannerNote =
-        r.planner === "model"
-          ? ` [model${r.elevations && r.elevations.length > 0 ? `, elevated ${r.elevations.map((e) => `${e.from}→${e.to}`).join(", ")}` : ""}]`
-          : "";
       const lines = [
-        `appgen: ${r.specName} → ${dir}${plannerNote}`,
+        `appgen: ${r.specName} → ${dir} ${plannerTag(r.planner, r.elevations)}`,
         ...r.written.map((p) => `  wrote ${p}`),
         ...r.overwritten.map((p) => `  overwrote ${p}`),
         ...r.deleted.map((p) => `  deleted ${p}`),
@@ -263,8 +266,13 @@ export function resolveIntent(flags: Record<string, string>, positionals: string
 }
 
 /** Show the plan (with diffs) and ask whether to apply it. Used only on a TTY. */
-function confirmPlan(plan: FilePlan, dir: string): Promise<boolean> {
-  console.log(renderPlan(plan, dir));
+function confirmPlan(
+  plan: FilePlan,
+  dir: string,
+  planner: Planner,
+  elevations?: Elevation[]
+): Promise<boolean> {
+  console.log(renderPlan(plan, dir, { planner, ...(elevations && { elevations }) }));
   return new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     rl.question("\nApply these changes? [y/N] ", (answer) => {

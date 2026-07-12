@@ -126,6 +126,8 @@ npx loom appgen --from-spec ./planner/.loom/appgen/1783875332959.spec.json --dir
 
 **Local model (`--model`).** Optional and offline: install `@loom/appgen-model` + `node-llama-cpp` in your project and point `--model` at a local `.gguf`. Planning runs through a cheap-first elevation ladder; if the model is missing, too weak, or produces an invalid plan, `appgen` **falls back to the deterministic parser** — it is never left without a valid `ChangeSpec`. See the [`@loom/appgen-model` README](../packages/appgen-model/README.md) for tiers and requirements.
 
+**Which planner ran.** The plan header (and `--dry-run` output) is tagged `[deterministic]` or `[model]` (with any `[model, elevated e4b→12b]` ladder steps), and the spec lockfile records `changeSpec.planner`. When you pass `--model` but the model can't produce a usable plan, `appgen` prints a loud warning and falls back — so a `[deterministic]` tag after `--model` means the model bailed (try a stronger tier / Node LTS, or name steps explicitly). The generated *code* is identical either way; provenance lives in the header and lockfile, not the files.
+
 ---
 
 ## Validate before you run: `check`

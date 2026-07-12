@@ -75,11 +75,15 @@ export interface AppgenOptions {
   /** Force the deterministic, model-free planner (overrides `model`). */
   offline?: boolean;
   /**
-   * Called with the computed plan before anything is written. Return `false` to abort
-   * without writing. Omitted → apply unconditionally (the default, and what tests use).
+   * Called with the computed plan (and which planner produced it) before anything is
+   * written. Return `false` to abort without writing. Omitted → apply unconditionally (the
+   * default, and what tests use).
    */
-  confirm?: (plan: FilePlan) => Promise<boolean>;
+  confirm?: (plan: FilePlan, planner: Planner, elevations?: Elevation[]) => Promise<boolean>;
 }
+
+export type Planner = "deterministic" | "model";
+export type Elevation = { from: string; to: string; reason: string };
 
 // biome-ignore lint/suspicious/noExplicitAny: @loom/appgen-model is an optional, lazily-loaded peer.
 type AppgenModelModule = any;
@@ -149,7 +153,17 @@ async function planChange(
       const m = await loadAppgenModel(opts.dir);
       const routes = [m.gemmaRoute(opts.model.path, opts.model.tier ?? m.DEFAULT_TIER)];
       if (opts.model.bigPath !== undefined) routes.push(m.gemmaRoute(opts.model.bigPath, "12b"));
-      return await m.planChangesModel(intent, model, { routes });
+      const spec: ChangeSpec = await m.planChangesModel(intent, model, { routes });
+      // The model ran but produced nothing usable → planChangesModel already fell back to
+      // the deterministic parser. Say so loudly, so it isn't silently the wrong output.
+      if (spec.planner !== "model") {
+        process.stderr.write(
+          "appgen: --model produced no valid plan — used the deterministic parser (output may " +
+            "not reflect your intent). Try a stronger --model (E4B+) on Node 20/22 LTS, or name " +
+            'steps explicitly (e.g. "… Step fetch. Step transform.").\n'
+        );
+      }
+      return spec;
     } catch (err) {
       process.stderr.write(
         `appgen: local-model planner unavailable (${
@@ -208,7 +222,11 @@ export async function cmdAppgen(
 
   // Interactive confirmation (if provided): abort cleanly on a "no", without writing.
   const hasChanges = plan.creates.length + plan.edits.length + plan.deletes.length > 0;
-  if (opts.confirm !== undefined && hasChanges && !(await opts.confirm(plan))) {
+  if (
+    opts.confirm !== undefined &&
+    hasChanges &&
+    !(await opts.confirm(plan, changeSpec.planner, changeSpec.elevations))
+  ) {
     result.aborted = true;
     io.close?.();
     return result;
@@ -247,14 +265,32 @@ export async function cmdAppgen(
   return result;
 }
 
+/** A one-line, human-readable tag for which planner produced a plan (and any elevations). */
+export function plannerTag(planner: Planner, elevations?: Elevation[]): string {
+  if (planner !== "model") return "[deterministic]";
+  const el =
+    elevations && elevations.length > 0
+      ? `, elevated ${elevations.map((e) => `${e.from}→${e.to}`).join(", ")}`
+      : "";
+  return `[model${el}]`;
+}
+
 /**
  * Render a plan as a terraform-style preview with a real unified diff per edit (used by
- * `--dry-run` and the interactive confirmation). Pass `diff: false` for a compact summary.
+ * `--dry-run` and the interactive confirmation). Pass `diff: false` for a compact summary,
+ * and `planner`/`elevations` to show which planner produced it.
  */
-export function renderPlan(plan: FilePlan, dir: string, opts: { diff?: boolean } = {}): string {
+export function renderPlan(
+  plan: FilePlan,
+  dir: string,
+  opts: { diff?: boolean; planner?: Planner; elevations?: Elevation[] } = {}
+): string {
   const showDiff = opts.diff !== false;
+  const tag = opts.planner !== undefined ? ` ${plannerTag(opts.planner, opts.elevations)}` : "";
   const lines: string[] = [];
-  lines.push(plan.isNewProject ? `plan: new project → ${dir}` : `plan: update app → ${dir}`);
+  lines.push(
+    (plan.isNewProject ? `plan: new project → ${dir}` : `plan: update app → ${dir}`) + tag
+  );
   for (const c of plan.creates) lines.push(`  + create ${c.path}`);
   for (const e of plan.edits) {
     lines.push(`  ~ edit   ${e.path}`);
