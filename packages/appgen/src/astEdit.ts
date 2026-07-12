@@ -63,10 +63,10 @@ export class FlowEditor {
   }
 
   /**
-   * Add a new step: insert its `step$` const after the last existing step const and
-   * register it in the flow's `steps: [...]` array. A no-op (recorded as a note) if a
-   * step with this id already exists. The step is registered but not auto-wired into
-   * the runner — that stays a human decision.
+   * Add a new step: insert its `step$` const after the last existing step const,
+   * register it in the flow's `steps: [...]` array, and wire a `ctx.run(...)` call into
+   * the runner before its `return`. A no-op (recorded as a note) if a step with this id
+   * already exists.
    */
   addStep(id: string): void {
     if (this.existingStepIds().includes(id)) {
@@ -80,7 +80,57 @@ export class FlowEditor {
     }
     this.splices.push({ start: anchor, end: anchor, text: `\n\n${stepConstSource(id)}` });
     this.registerInStepsArray(id);
-    this.notes.push(`added step "${id}" (registered; wire it into the runner)`);
+    const name = stepConstName(id);
+    const wired = this.insertStmtBeforeReturn(
+      `  await ctx.run(${name}, { prompt: input.prompt });\n`
+    );
+    this.notes.push(
+      wired
+        ? `added step "${id}" (registered and wired into the runner)`
+        : `added step "${id}" (registered; wire it into the runner)`
+    );
+  }
+
+  /**
+   * Remove a step: delete its `step$` const, its entry in the flow's `steps: [...]`
+   * array, and any bare `ctx.run(...)` call for it in the runner. Refuses (with a note)
+   * to delete a step whose handler has been hand-edited — that code is the human's to
+   * remove. Returns true if removed.
+   */
+  removeStep(id: string): boolean {
+    let stmt: ts.VariableStatement | undefined;
+    let constName: string | undefined;
+    let edited = false;
+    for (const s of this.sf.statements) {
+      if (!ts.isVariableStatement(s)) continue;
+      const decl = s.declarationList.declarations[0];
+      if (decl === undefined) continue;
+      const init = decl.initializer;
+      if (!isCallTo(init, "step$", this.sf)) continue;
+      const obj = init.arguments[0];
+      if (obj === undefined || !ts.isObjectLiteralExpression(obj)) continue;
+      const idInit = propInit(obj, "id");
+      if (idInit === undefined || !ts.isStringLiteralLike(idInit) || idInit.text !== id) continue;
+      stmt = s;
+      constName = decl.name.getText(this.sf);
+      const handler = propInit(obj, "handler");
+      if (isCallTo(handler, "handler$", this.sf) && handler.arguments[0] !== undefined) {
+        edited = !isStubBody(id, handler.arguments[0].getText(this.sf));
+      }
+    }
+    if (stmt === undefined || constName === undefined) {
+      this.notes.push(`step "${id}" not found — cannot delete`);
+      return false;
+    }
+    if (edited) {
+      this.notes.push(`step "${id}" has hand-edited code — not deleted (remove it manually)`);
+      return false;
+    }
+    this.spliceOutStatement(stmt);
+    this.removeFromStepsArray(constName);
+    this.removeRunnerCall(constName);
+    this.notes.push(`removed step "${id}"`);
+    return true;
   }
 
   /** Insert a durable approval suspend gate into the runner, unless one already exists. */
@@ -225,16 +275,57 @@ export class FlowEditor {
   }
 
   private insertBeforeRunnerReturn(text: string, note: string): void {
+    if (this.insertStmtBeforeReturn(text)) this.notes.push(note);
+    else this.notes.push(`could not locate the runner body — skipped: ${note}`);
+  }
+
+  /** Insert `text` before the runner's final statement (its `return`). */
+  private insertStmtBeforeReturn(text: string): boolean {
     const block = this.runnerBlock();
-    if (block === undefined || block.statements.length === 0) {
-      this.notes.push(`could not locate the runner body — skipped: ${note}`);
-      return;
-    }
-    // Insert before the final statement (the `return`), at the start of its line.
+    if (block === undefined || block.statements.length === 0) return false;
     const last = block.statements[block.statements.length - 1]!;
     const pos = last.getStart(this.sf);
     const lineStart = this.src.lastIndexOf("\n", pos - 1) + 1;
     this.splices.push({ start: lineStart, end: lineStart, text });
-    this.notes.push(note);
+    return true;
+  }
+
+  /** Splice out a whole statement, including its leading trivia and trailing newlines. */
+  private spliceOutStatement(stmt: ts.Node): void {
+    const start = stmt.getFullStart();
+    let end = stmt.getEnd();
+    while (end < this.src.length && this.src[end] === "\n") end++;
+    this.splices.push({ start, end, text: "" });
+  }
+
+  private removeFromStepsArray(constName: string): void {
+    const arr = this.flowStepsArray();
+    if (arr === undefined) return;
+    const els = arr.elements;
+    const idx = els.findIndex((e) => e.getText(this.sf) === constName);
+    if (idx < 0) return;
+    const el = els[idx]!;
+    if (els.length === 1) {
+      this.splices.push({ start: el.getStart(this.sf), end: el.getEnd(), text: "" });
+    } else if (idx === 0) {
+      // drop "el, " — from this element's start to the next element's start.
+      this.splices.push({ start: el.getStart(this.sf), end: els[1]!.getStart(this.sf), text: "" });
+    } else {
+      // drop ", el" — from the previous element's end to this element's end.
+      this.splices.push({ start: els[idx - 1]!.getEnd(), end: el.getEnd(), text: "" });
+    }
+  }
+
+  /** Remove a bare `ctx.run(<constName>, …)` statement from the runner (not a `const x = …`). */
+  private removeRunnerCall(constName: string): void {
+    const block = this.runnerBlock();
+    if (block === undefined) return;
+    const re = new RegExp(`ctx\\.run\\(\\s*${constName}\\b`);
+    for (const s of block.statements) {
+      if (ts.isExpressionStatement(s) && re.test(s.getText(this.sf))) {
+        this.spliceOutStatement(s);
+        return;
+      }
+    }
   }
 }

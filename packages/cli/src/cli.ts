@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import * as fs from "node:fs";
+import * as readline from "node:readline";
+import type { FilePlan } from "@loom/appgen";
 import { SqliteEventStore } from "@loom/event-runtime";
 import { cmdAppgen, renderPlan } from "./appgen";
 import { cmdCheck } from "./check";
@@ -168,6 +170,8 @@ async function main(argv: string[]): Promise<number> {
           : undefined;
       // `--from-spec` carries its own intent; otherwise resolve one from args / `--from`.
       const intent = fromSpec !== undefined ? "" : resolveIntent(flags, positionals);
+      // On a TTY (and not `--yes`/`--dry-run`), show the plan and ask before writing.
+      const interactive = flags.yes !== "true" && !dryRun && process.stdin.isTTY === true;
       const r = await cmdAppgen({
         intent,
         dir,
@@ -176,15 +180,25 @@ async function main(argv: string[]): Promise<number> {
         offline,
         ...(model !== undefined && { model }),
         ...(fromSpec !== undefined && { fromSpec }),
+        ...(interactive && { confirm: (plan) => confirmPlan(plan, dir) }),
       });
       if (r.dryRun) {
         console.log(renderPlan(r.plan, dir));
         return 0;
       }
+      if (r.aborted) {
+        console.log("appgen: aborted — nothing written");
+        return 0;
+      }
+      const plannerNote =
+        r.planner === "model"
+          ? ` [model${r.elevations && r.elevations.length > 0 ? `, elevated ${r.elevations.map((e) => `${e.from}→${e.to}`).join(", ")}` : ""}]`
+          : "";
       const lines = [
-        `appgen: ${r.specName} → ${dir}`,
+        `appgen: ${r.specName} → ${dir}${plannerNote}`,
         ...r.written.map((p) => `  wrote ${p}`),
         ...r.overwritten.map((p) => `  overwrote ${p}`),
+        ...r.deleted.map((p) => `  deleted ${p}`),
         ...r.skipped.map((p) => `  skipped ${p}`),
       ];
       if (r.lockfile !== undefined) lines.push(`  spec  ${r.lockfile}`);
@@ -246,6 +260,18 @@ export function resolveIntent(flags: Record<string, string>, positionals: string
     throw new Error("provide an intent string or --from <file>");
   }
   return intent;
+}
+
+/** Show the plan (with diffs) and ask whether to apply it. Used only on a TTY. */
+function confirmPlan(plan: FilePlan, dir: string): Promise<boolean> {
+  console.log(renderPlan(plan, dir));
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question("\nApply these changes? [y/N] ", (answer) => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(answer.trim()));
+    });
+  });
 }
 
 function requireFlag(flags: Record<string, string>, name: string): void {

@@ -15,6 +15,7 @@ import { checkManifest } from "./check";
 import { resolveIntent } from "./cli";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { idempotencyAdvisory, loadLogs, runDeployCheck } from "./deploy";
+import { unifiedDiff } from "./diff";
 import { cmdGen, cmdNew, discoverFlows } from "./gen";
 import { describeState, evaluateGoldens, foldAt, formatLog, parseArgs } from "./index";
 import { serveInspector } from "./inspector";
@@ -367,6 +368,31 @@ describe("loom CLI", () => {
       expect(existsSync(join(appDir, "package.json"))).toBe(false); // nothing written
     });
 
+    it("aborts without writing when the confirm callback returns false", async () => {
+      const appDir = join(dir, "confirm");
+      const r = await cmdAppgen(
+        { intent: "Create a greeter.", dir: appDir, confirm: async () => false },
+        scriptedIO([])
+      );
+      expect(r.aborted).toBe(true);
+      expect(r.written).toEqual([]);
+      expect(existsSync(join(appDir, "package.json"))).toBe(false);
+    });
+
+    it("deletes a generated flow on a delete intent and re-wires registration", async () => {
+      const appDir = join(dir, "del");
+      await cmdAppgen(
+        { intent: "Create a planner. Create a reporter.", dir: appDir },
+        scriptedIO([])
+      );
+      expect(existsSync(join(appDir, "app/flows/reporter/flow.ts"))).toBe(true);
+
+      const r = await cmdAppgen({ intent: "Delete the reporter.", dir: appDir }, scriptedIO([]));
+      expect(r.deleted.some((p) => p.includes(join("reporter", "flow.ts")))).toBe(true);
+      expect(existsSync(join(appDir, "app/flows/reporter/flow.ts"))).toBe(false);
+      expect(readFileSync(join(appDir, "app/loom.gen.ts"), "utf-8")).not.toContain("reporter");
+    });
+
     it("writes a replayable lockfile and --from-spec reproduces byte-identical output", async () => {
       const srcDir = join(dir, "spec-src");
       const first = await cmdAppgen({ intent: EXAMPLE, dir: srcDir, now: 123 }, scriptedIO([]));
@@ -383,6 +409,18 @@ describe("loom CLI", () => {
       const a = readFileSync(join(srcDir, "app/flows/planner/flow.ts"), "utf-8");
       const b = readFileSync(join(replayDir, "app/flows/planner/flow.ts"), "utf-8");
       expect(b).toBe(a); // byte-identical, reproduced without re-parsing the intent
+    });
+  });
+
+  describe("unifiedDiff (dry-run rendering)", () => {
+    it("marks inserted and unchanged lines", () => {
+      const d = unifiedDiff("a\nb\nc", "a\nb\nX\nc");
+      expect(d.some((l) => l === "+X")).toBe(true);
+      expect(d.some((l) => l === " b")).toBe(true);
+      expect(d.some((l) => l.startsWith("-"))).toBe(false);
+    });
+    it("returns nothing when the sides are identical", () => {
+      expect(unifiedDiff("a\nb", "a\nb")).toEqual([]);
     });
   });
 

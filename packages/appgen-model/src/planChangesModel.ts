@@ -1,4 +1,5 @@
 import { type AppModel, type ChangeSpec, planChangesDeterministic } from "@loom/appgen";
+import type { LlmMessage } from "@loom/llm";
 import {
   type DecideFn,
   type ModelRoute,
@@ -7,7 +8,8 @@ import {
   validatorConfidence,
 } from "@loom/reasoning";
 import { tryParseChangeSpec } from "./parse";
-import { buildSystem, buildUser } from "./prompt";
+import { buildRepairPrompt, buildSystem, buildUser } from "./prompt";
+import { validateChangeSpec } from "./validateSpec";
 
 // ── Stage 2 (the AI stage): intent + AppModel → ChangeSpec via a local model ──
 //
@@ -15,9 +17,13 @@ import { buildSystem, buildUser } from "./prompt";
 // cheap-first elevation ladder. The confidence signal is a VALIDATOR — "does the output
 // parse into a usable ChangeSpec?" — so a weak tier that emits junk drops below the
 // threshold and the runtime elevates to a stronger model, logging each elevation via
-// `decide` (P9 / DECISION_RECORDED). If even the top tier fails, we fall back to the
-// deterministic parser, exactly as `--offline` would. Codegen never sees raw NL — the
-// output of this function is always a validated ChangeSpec.
+// `decide` (P9 / DECISION_RECORDED).
+//
+// On top of the ladder is a SELF-REPAIR loop: a parseable ChangeSpec is semantically
+// validated against the AppModel (does it reference real flows/steps? right ops?), and on
+// any issue the model is re-prompted with exactly what was wrong (bounded retries). If it
+// still can't produce a valid plan, we fall back to the deterministic parser, exactly as
+// `--offline` would. Codegen never sees raw NL — the output is always a valid ChangeSpec.
 
 export interface PlanModelOptions {
   /** Cheap-first model tiers (e.g. Gemma E4B tier 0, 12B tier 1). */
@@ -26,6 +32,8 @@ export interface PlanModelOptions {
   decide?: DecideFn;
   /** Sampling temperature (default 0 for reproducible planning). */
   temperature?: number;
+  /** Max self-repair re-prompts when the plan is parseable but semantically invalid (default 1). */
+  maxRepairs?: number;
 }
 
 function elevationsFromTrace(trace: ReasoningTraceEntry[]): ChangeSpec["elevations"] {
@@ -52,20 +60,33 @@ export async function planChangesModel(
     elevateThreshold: 0.5,
   });
 
+  const maxRepairs = opts.maxRepairs ?? 1;
+  const messages: LlmMessage[] = [{ role: "user", content: buildUser(intent) }];
+
   try {
-    const result = await runtime.reason(
-      {
-        system: buildSystem(appModel),
-        messages: [{ role: "user", content: buildUser(intent) }],
-        strategy: "planning",
-        temperature: opts.temperature ?? 0,
-      },
-      opts.decide !== undefined ? { decide: opts.decide } : {}
-    );
-    const parsed = tryParseChangeSpec(result.content);
-    if (parsed !== undefined) {
-      const elevations = elevationsFromTrace(result.trace);
-      return { ...parsed, planner: "model", ...(elevations !== undefined && { elevations }) };
+    for (let attempt = 0; attempt <= maxRepairs; attempt++) {
+      const result = await runtime.reason(
+        {
+          system: buildSystem(appModel),
+          messages,
+          strategy: "planning",
+          temperature: opts.temperature ?? 0,
+        },
+        opts.decide !== undefined ? { decide: opts.decide } : {}
+      );
+      const parsed = tryParseChangeSpec(result.content);
+      if (parsed !== undefined) {
+        const issues = validateChangeSpec(parsed, appModel);
+        if (issues.length === 0) {
+          const elevations = elevationsFromTrace(result.trace);
+          return { ...parsed, planner: "model", ...(elevations !== undefined && { elevations }) };
+        }
+        if (attempt < maxRepairs) {
+          // Feed the model exactly what was wrong and let it revise the ChangeSpec.
+          messages.push({ role: "assistant", content: result.content });
+          messages.push({ role: "user", content: buildRepairPrompt(issues) });
+        }
+      }
     }
   } catch {
     // Any provider/native failure → deterministic fallback below.

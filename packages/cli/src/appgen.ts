@@ -16,6 +16,7 @@ import {
   writeLockfile,
 } from "@loom/appgen";
 import { generateRegistration } from "@loom/scaffold";
+import { unifiedDiff } from "./diff";
 import { discoverFlows } from "./gen";
 
 export type Conflict =
@@ -36,15 +37,21 @@ export interface AppgenResult {
   specName: string;
   written: string[];
   overwritten: string[];
+  deleted: string[];
   skipped: string[];
   /** True when `--dry-run`: the plan was computed but nothing was written. */
   dryRun: boolean;
   /** The computed change plan (for rendering a terraform-style preview). */
   plan: FilePlan;
+  /** Which planner produced the plan, and any reasoning-ladder elevations. */
+  planner: "deterministic" | "model";
+  elevations?: { from: string; to: string; reason: string }[];
   /** Path of the spec lockfile written after applying (absent on dry-run). */
   lockfile?: string;
   /** Typecheck result, when `--check` was requested. */
   typecheck?: TypecheckResult;
+  /** True when the user declined the plan at the confirmation prompt. */
+  aborted?: boolean;
 }
 
 export interface AppgenOptions {
@@ -67,6 +74,11 @@ export interface AppgenOptions {
   model?: { path: string; bigPath?: string; tier?: string };
   /** Force the deterministic, model-free planner (overrides `model`). */
   offline?: boolean;
+  /**
+   * Called with the computed plan before anything is written. Return `false` to abort
+   * without writing. Omitted → apply unconditionally (the default, and what tests use).
+   */
+  confirm?: (plan: FilePlan) => Promise<boolean>;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: @loom/appgen-model is an optional, lazily-loaded peer.
@@ -163,12 +175,23 @@ export async function cmdAppgen(
     specName: changeSpec.name,
     written: [],
     overwritten: [],
+    deleted: [],
     skipped: [],
     dryRun: opts.dryRun === true,
     plan,
+    planner: changeSpec.planner,
+    ...(changeSpec.elevations !== undefined && { elevations: changeSpec.elevations }),
   };
 
   if (opts.dryRun === true) return result; // preview only — no writes, no io.close
+
+  // Interactive confirmation (if provided): abort cleanly on a "no", without writing.
+  const hasChanges = plan.creates.length + plan.edits.length + plan.deletes.length > 0;
+  if (opts.confirm !== undefined && hasChanges && !(await opts.confirm(plan))) {
+    result.aborted = true;
+    io.close?.();
+    return result;
+  }
 
   try {
     // New files go through per-file conflict resolution; in-place edits are the point of
@@ -180,6 +203,11 @@ export async function cmdAppgen(
       const dest = path.join(opts.dir, e.path);
       io.write(dest, e.after);
       result.overwritten.push(dest);
+    }
+    for (const d of plan.deletes) {
+      const dest = path.join(opts.dir, d.path);
+      fs.rmSync(dest, { force: true });
+      result.deleted.push(dest);
     }
     // Re-wire the flow set (pre-existing + newly written) so `flowModules` stays correct.
     if (plan.regenRegistration) {
@@ -198,18 +226,24 @@ export async function cmdAppgen(
   return result;
 }
 
-/** Render a plan as a terraform-style preview (used by `--dry-run`). */
-export function renderPlan(plan: FilePlan, dir: string): string {
+/**
+ * Render a plan as a terraform-style preview with a real unified diff per edit (used by
+ * `--dry-run` and the interactive confirmation). Pass `diff: false` for a compact summary.
+ */
+export function renderPlan(plan: FilePlan, dir: string, opts: { diff?: boolean } = {}): string {
+  const showDiff = opts.diff !== false;
   const lines: string[] = [];
   lines.push(plan.isNewProject ? `plan: new project → ${dir}` : `plan: update app → ${dir}`);
   for (const c of plan.creates) lines.push(`  + create ${c.path}`);
   for (const e of plan.edits) {
     lines.push(`  ~ edit   ${e.path}`);
-    for (const n of e.notes) lines.push(`      • ${n}`);
+    for (const nt of e.notes) lines.push(`      • ${nt}`);
+    if (showDiff) for (const dl of unifiedDiff(e.before, e.after)) lines.push(`      ${dl}`);
   }
+  for (const d of plan.deletes) lines.push(`  ✗ delete ${d.path}`);
   for (const s of plan.skips) lines.push(`  - skip   ${s.path} (${s.reason})`);
   if (plan.regenRegistration) lines.push("  ~ edit   app/loom.gen.ts (re-wire flow registration)");
-  const n = plan.creates.length + plan.edits.length;
+  const n = plan.creates.length + plan.edits.length + plan.deletes.length;
   lines.push("");
   lines.push(
     `${n} change${n === 1 ? "" : "s"}, ${plan.skips.length} skipped — run with --apply to write`

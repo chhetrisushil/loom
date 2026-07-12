@@ -55,3 +55,13 @@ export function buildSystem(appModel: AppModel): string {
 export function buildUser(intent: string): string {
   return `Intent: ${intent.trim()}`;
 }
+
+/** A repair instruction listing what was wrong with the previous ChangeSpec. */
+export function buildRepairPrompt(issues: string[]): string {
+  return [
+    "Your previous ChangeSpec had these problems:",
+    ...issues.map((i) => `- ${i}`),
+    "",
+    "Output a corrected ChangeSpec JSON that fixes them. JSON only.",
+  ].join("\n");
+}

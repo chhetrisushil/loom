@@ -1,6 +1,7 @@
+import { pascal } from "@loom/scaffold";
 import type { AppModel } from "./appModel";
 import { parseIntent } from "./parseIntent";
-import type { ComputeSpec, ReasoningSpec } from "./types";
+import type { CapabilitySpec, ComputeSpec, ReasoningSpec } from "./types";
 
 // ── ChangeSpec: AppSpec extended with brownfield ops ─────────────────────────
 //
@@ -11,11 +12,11 @@ import type { ComputeSpec, ReasoningSpec } from "./types";
 // The deterministic planner below wraps `parseIntent` and diffs against the scan; a
 // model-backed planner (Stage 2, @loom/appgen-model) produces the same shape.
 
-export type Op = "create" | "extend" | "modify";
+export type Op = "create" | "extend" | "modify" | "delete";
 
 export interface StepChange {
   id: string;
-  /** `create` = a new step; `modify` = a step that already exists in the flow. */
+  /** `create` = a new step; `modify` = an existing step; `delete` = remove the step. */
   op: Op;
 }
 
@@ -23,7 +24,7 @@ export interface CapabilityChange {
   id: string;
   name: string;
   intent: string;
-  /** `create` = a new flow; `extend` = an existing flow gains steps/gates. */
+  /** `create` = a new flow; `extend` = add to an existing flow; `delete` = remove the flow. */
   op: Op;
   steps: StepChange[];
   reasoning?: ReasoningSpec;
@@ -31,7 +32,7 @@ export interface CapabilityChange {
   addApproval?: boolean;
   /** Add a durable UI surface (only when not already present). */
   addUi?: boolean;
-  /** GrantTable entries to wire (reserved for a later phase). */
+  /** Tool ids to grant this capability (wired into `app/config.ts` as a GrantTable). */
   wireGrants?: string[];
 }
 
@@ -45,17 +46,53 @@ export interface ChangeSpec {
   elevations?: { from: string; to: string; reason: string }[];
 }
 
+function slug(text: string): string {
+  return (
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "app"
+  );
+}
+
 /**
  * The deterministic, offline planner (Stage 2 fallback / `--offline`). Parses the
  * intent with the existing grammar parser, then diffs the resulting capabilities and
- * steps against the scanned {@link AppModel} to assign create / extend / modify ops.
- * Pure and reproducible — no model, mirrors what a model planner must emit.
+ * steps against the scanned {@link AppModel} to assign create / extend / modify / delete
+ * ops. Pure and reproducible — no model, mirrors what a model planner must emit.
+ *
+ * Beyond the base grammar it recognises two brownfield directives, handled here so
+ * `parseIntent` (and `AppSpec`) stay unchanged:
+ *   - `delete <name>` / `remove <name>` / `delete step <s> from <flow>`  → delete ops
+ *   - `grant <tool>[, <tool>] to <cap>`                                  → wireGrants
  */
 export function planChangesDeterministic(intent: string, appModel: AppModel): ChangeSpec {
-  const spec = parseIntent(intent);
-  const byId = new Map(appModel.flows.map((f) => [f.id, f]));
+  const sentences = intent
+    .split(/[.\n]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const deletes: string[] = [];
+  const grants: string[] = [];
+  const keep: string[] = [];
+  for (const s of sentences) {
+    if (/^(?:delete|remove)\b/i.test(s)) deletes.push(s);
+    else if (/^grant\b/i.test(s)) grants.push(s);
+    else keep.push(s);
+  }
 
-  const capabilities: CapabilityChange[] = spec.capabilities.map((cap) => {
+  // Only the non-delete/non-grant sentences drive the base grammar parser.
+  let specCaps: CapabilitySpec[] = [];
+  let specCompute: ComputeSpec | undefined;
+  let specName = "app";
+  if (keep.length > 0) {
+    const spec = parseIntent(keep.join(". "));
+    specCaps = spec.capabilities;
+    specCompute = spec.compute;
+    specName = spec.name;
+  }
+
+  const byId = new Map(appModel.flows.map((f) => [f.id, f]));
+  const capabilities: CapabilityChange[] = specCaps.map((cap) => {
     const existing = byId.get(cap.id);
     const existingSteps = new Set(existing?.steps.map((s) => s.id) ?? []);
     const steps: StepChange[] = cap.steps.map((id) => ({
@@ -75,10 +112,63 @@ export function planChangesDeterministic(intent: string, appModel: AppModel): Ch
     };
   });
 
+  const capById = new Map(capabilities.map((c) => [c.id, c]));
+  const ensureCap = (id: string, op: Op, sentence: string): CapabilityChange => {
+    let c = capById.get(id);
+    if (c === undefined) {
+      c = { id, name: pascal(id), intent: sentence, op, steps: [] };
+      capabilities.push(c);
+      capById.set(id, c);
+    }
+    return c;
+  };
+
+  for (const s of deletes) {
+    const stepM = s.match(
+      /(?:delete|remove)\s+(?:the\s+)?step\s+([a-z0-9][a-z0-9\s-]*?)(?:\s+from\s+(?:the\s+)?([a-z0-9\s-]+?)(?:\s+flow)?)?$/i
+    );
+    if (stepM?.[1] !== undefined) {
+      const stepId = slug(stepM[1]);
+      const flowId =
+        stepM[2] !== undefined
+          ? slug(stepM[2])
+          : appModel.flows.length === 1
+            ? appModel.flows[0]!.id
+            : undefined;
+      if (flowId !== undefined && byId.has(flowId)) {
+        ensureCap(flowId, "extend", s).steps.push({ id: stepId, op: "delete" });
+      }
+      continue;
+    }
+    const flowM = s.match(
+      /(?:delete|remove)\s+(?:the\s+)?([a-z0-9][a-z0-9\s-]*?)(?:\s+(?:flow|capability))?$/i
+    );
+    if (flowM?.[1] !== undefined) {
+      const id = slug(flowM[1]);
+      if (byId.has(id) && !capById.has(id)) ensureCap(id, "delete", s);
+    }
+  }
+
+  for (const s of grants) {
+    const m = s.match(
+      /^grant\s+(.+?)\s+to\s+(?:the\s+)?([a-z0-9][a-z0-9\s-]*?)(?:\s+(?:flow|capability))?$/i
+    );
+    if (m?.[1] !== undefined && m[2] !== undefined) {
+      const tools = m[1]
+        .split(/\s*(?:,|and)\s*/)
+        .map(slug)
+        .filter((t) => t.length > 0);
+      const capId = slug(m[2]);
+      const c = ensureCap(capId, byId.has(capId) ? "extend" : "create", s);
+      c.wireGrants = [...(c.wireGrants ?? []), ...tools];
+    }
+  }
+
+  const name = capabilities.find((c) => c.op !== "delete")?.id ?? capabilities[0]?.id ?? specName;
   return {
-    name: spec.name,
+    name,
     capabilities,
-    ...(spec.compute !== undefined && { compute: spec.compute }),
+    ...(specCompute !== undefined && { compute: specCompute }),
     planner: "deterministic",
   };
 }
