@@ -50,7 +50,14 @@ export interface PluginFinding {
 
 interface PluginManifest {
   name?: string;
+  version?: string;
+  description?: string;
+  license?: string;
+  repository?: unknown;
   keywords?: string[];
+  main?: string;
+  types?: string;
+  exports?: unknown;
   dependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
 }
@@ -64,7 +71,11 @@ const SPI_KERNEL = new Set<string>([...KERNEL_PACKAGES, ...SPI_PACKAGES]);
  * Static contract check for a plugin (ADR 0043 / docs/plugins.md). Pure over the
  * manifest + the text of its test files, so it is unit-testable without disk.
  */
-export function checkPlugin(pkg: PluginManifest, testSources: string[]): PluginFinding[] {
+export function checkPlugin(
+  pkg: PluginManifest,
+  testSources: string[],
+  opts: { publish?: boolean } = {}
+): PluginFinding[] {
   const findings: PluginFinding[] = [];
   const name = pkg.name ?? "";
   const firstParty = name.startsWith("@loom/plugin-");
@@ -129,6 +140,33 @@ export function checkPlugin(pkg: PluginManifest, testSources: string[]): PluginF
     });
   }
 
+  // Pre-publish readiness — npm-metadata hygiene a consumer relies on. Warn-only.
+  if (opts.publish) {
+    const need = (cond: boolean, ok: string, warn: string) =>
+      findings.push(cond ? { level: "ok", message: ok } : { level: "warn", message: warn });
+    need(
+      pkg.version !== undefined && pkg.version !== "0.0.0",
+      `version ${pkg.version}`,
+      "version is 0.0.0 / unset — bump it before publishing"
+    );
+    need(
+      typeof pkg.description === "string" && pkg.description.length > 0,
+      "has a description",
+      "no description — add one (shown in npm + `loom plugin search`)"
+    );
+    need(typeof pkg.license === "string", `license ${pkg.license}`, "no license field");
+    need(
+      pkg.repository !== undefined,
+      "has a repository field",
+      "no repository field (provenance)"
+    );
+    need(
+      pkg.exports !== undefined || (pkg.main !== undefined && pkg.types !== undefined),
+      "exposes an entry point + types",
+      "no exports/main+types — consumers can't import it or get types"
+    );
+  }
+
   return findings;
 }
 
@@ -151,7 +189,10 @@ function readTestSources(dir: string): string[] {
  * `loom plugin check [--dir .]` — validate a plugin package against the contract.
  * Reads its package.json + test files. Non-zero exit if any `error` finding.
  */
-export function cmdPluginCheck(dir: string): { findings: PluginFinding[]; ok: boolean } {
+export function cmdPluginCheck(
+  dir: string,
+  opts: { publish?: boolean } = {}
+): { findings: PluginFinding[]; ok: boolean } {
   const pkgPath = path.join(dir, "package.json");
   if (!fs.existsSync(pkgPath)) {
     return {
@@ -162,6 +203,6 @@ export function cmdPluginCheck(dir: string): { findings: PluginFinding[]; ok: bo
     };
   }
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8")) as PluginManifest;
-  const findings = checkPlugin(pkg, readTestSources(dir));
+  const findings = checkPlugin(pkg, readTestSources(dir), opts);
   return { findings, ok: !findings.some((f) => f.level === "error") };
 }

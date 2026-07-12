@@ -130,6 +130,29 @@ Presets that contribute middleware/telemetry/surfaces return a `Partial<LoomConf
 `defineConfig` concatenates arrays with the app's explicit entries (order = composition order).
 Middleware order is behavioural — declare where in the chain your middleware belongs.
 
+## Discovering & publishing
+
+Find published plugins by the `loom-plugin` npm keyword:
+
+```
+loom plugin search redis
+```
+
+Before you publish, run the readiness check — it adds npm-metadata checks (version bumped,
+description, license, repository, entry point + types) on top of the contract check:
+
+```
+loom plugin check --dir . --publish
+```
+
+Pre-publish checklist:
+
+- [ ] `name` is `loom-plugin-<name>` (or `@scope/loom-plugin-<name>`); keyword `loom-plugin` present
+- [ ] `@loom/*` SPI packages are **peerDependencies**, not bundled
+- [ ] a test wires `@loom/conformance` and passes (`run<Spi>Conformance`)
+- [ ] `version` bumped, plus `description`, `license`, `repository`, and `exports`/`main`+`types`
+- [ ] `loom plugin try` succeeds (for a store plugin) and `loom plugin check --publish` is clean
+
 ## Security (read this)
 
 A preset and any adapter constructor run at **composition time with full host authority, and

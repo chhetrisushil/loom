@@ -1347,9 +1347,15 @@ importers:
       '@loom/dispatcher':
         specifier: workspace:*
         version: link:../dispatcher
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../effect-runtime
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../llm
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../projection-runtime
@@ -2246,6 +2252,9 @@ importers:
         specifier: workspace:*
         version: link:../workflow-runtime
     devDependencies:
+      '@loom/conformance':
+        specifier: workspace:*
+        version: link:../conformance
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../effect-runtime

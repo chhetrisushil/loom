@@ -56,4 +56,36 @@ describe("checkPlugin", () => {
     );
     expect(levels(findings, "error")).toEqual([]);
   });
+
+  it("with --publish, warns on npm-readiness gaps (version/description/license/repo/exports)", () => {
+    const bare = checkPlugin(
+      { name: "loom-plugin-x", keywords: ["loom-plugin"], version: "0.0.0" },
+      [],
+      {
+        publish: true,
+      }
+    );
+    const warns = levels(bare, "warn").join("\n");
+    expect(warns).toMatch(/version is 0\.0\.0/);
+    expect(warns).toMatch(/no description/);
+    expect(warns).toMatch(/no license/);
+    expect(warns).toMatch(/no repository/);
+    expect(warns).toMatch(/exports\/main/);
+
+    const ready = checkPlugin(
+      {
+        name: "loom-plugin-x",
+        keywords: ["loom-plugin"],
+        version: "1.0.0",
+        description: "A store",
+        license: "MIT",
+        repository: "github:me/loom-plugin-x",
+        exports: { ".": {} },
+      },
+      ["@loom/conformance"],
+      { publish: true }
+    );
+    // no publish-readiness warnings for a complete manifest
+    expect(levels(ready, "warn")).toEqual([]);
+  });
 });
