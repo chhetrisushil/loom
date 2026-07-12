@@ -4,10 +4,11 @@ import { join } from "node:path";
 import { step$ } from "@loom/core";
 import { LocalDispatcher } from "@loom/dispatcher";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { SqliteBranchRegistry, SqliteEventStore } from "@loom/event-runtime";
+import { SqliteBranchRegistry, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+
 import { CloudRunWorkerRuntime } from "@loom/platform-cloudrun";
 import type { CloudRunConfig, CloudRunPlatform } from "@loom/platform-cloudrun";
-import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
+
 import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
 import { createWorkerServer } from "@loom/worker-server";
 import type { WorkerServer } from "@loom/worker-server";

@@ -1,59 +1,170 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/core" },
-    { "path": "packages/event-runtime" },
-    { "path": "packages/store-postgres" },
-    { "path": "packages/replay-vm" },
-    { "path": "packages/effect-runtime" },
-    { "path": "packages/snapshot-runtime" },
-    { "path": "packages/workflow-runtime" },
-    { "path": "packages/middleware" },
-    { "path": "packages/app" },
-    { "path": "tools/create-loom-app" },
-    { "path": "packages/eval" },
-    { "path": "packages/deploy-sim" },
-    { "path": "packages/testing" },
-    { "path": "packages/cli" },
-    { "path": "packages/scaffold" },
-    { "path": "packages/orchestrator" },
-    { "path": "packages/worker-runtime" },
-    { "path": "packages/worker-runtime-local" },
-    { "path": "packages/worker-runtime-remote" },
-    { "path": "packages/worker-server" },
-    { "path": "packages/dispatcher" },
-    { "path": "packages/platform-cloudrun" },
-    { "path": "packages/graph-executor" },
-    { "path": "packages/projection-runtime" },
-    { "path": "packages/blueprint-runtime" },
-    { "path": "packages/renderer-react" },
-    { "path": "packages/compiler" },
-    { "path": "packages/registry" },
-    { "path": "packages/llm" },
-    { "path": "packages/reasoning" },
-    { "path": "packages/analytics" },
-    { "path": "packages/appgen" },
-    { "path": "packages/appgen-model" },
-    { "path": "packages/agent" },
-    { "path": "packages/mcp" },
-    { "path": "packages/a2a" },
-    { "path": "packages/a2ui" },
-    { "path": "packages/memory" },
-    { "path": "packages/capability" },
-    { "path": "packages/intent" },
-    { "path": "packages/planner" },
-    { "path": "packages/renderer-terminal" },
-    { "path": "packages/sdk" },
-    { "path": "packages/telemetry" },
-    { "path": "packages/spec" },
-    { "path": "packages/verify" },
-    { "path": "packages/dst" },
-    { "path": "packages/audit-chain" },
-    { "path": "packages/fair-scheduler" },
-    { "path": "packages/live-query" },
-    { "path": "packages/orchestration" },
-    { "path": "packages/saga" },
-    { "path": "apps/playground" },
-    { "path": "examples/cloud-command-center" }
+    {
+      "path": "packages/core"
+    },
+    {
+      "path": "packages/event-runtime"
+    },
+    {
+      "path": "packages/store-postgres"
+    },
+    {
+      "path": "packages/replay-vm"
+    },
+    {
+      "path": "packages/effect-runtime"
+    },
+    {
+      "path": "packages/snapshot-runtime"
+    },
+    {
+      "path": "packages/workflow-runtime"
+    },
+    {
+      "path": "packages/middleware"
+    },
+    {
+      "path": "packages/app"
+    },
+    {
+      "path": "tools/create-loom-app"
+    },
+    {
+      "path": "packages/eval"
+    },
+    {
+      "path": "packages/deploy-sim"
+    },
+    {
+      "path": "packages/testing"
+    },
+    {
+      "path": "packages/cli"
+    },
+    {
+      "path": "packages/scaffold"
+    },
+    {
+      "path": "packages/orchestrator"
+    },
+    {
+      "path": "packages/worker-runtime"
+    },
+    {
+      "path": "packages/worker-runtime-local"
+    },
+    {
+      "path": "packages/worker-runtime-remote"
+    },
+    {
+      "path": "packages/worker-server"
+    },
+    {
+      "path": "packages/dispatcher"
+    },
+    {
+      "path": "packages/platform-cloudrun"
+    },
+    {
+      "path": "packages/graph-executor"
+    },
+    {
+      "path": "packages/projection-runtime"
+    },
+    {
+      "path": "packages/blueprint-runtime"
+    },
+    {
+      "path": "packages/renderer-react"
+    },
+    {
+      "path": "packages/compiler"
+    },
+    {
+      "path": "packages/registry"
+    },
+    {
+      "path": "packages/llm"
+    },
+    {
+      "path": "packages/reasoning"
+    },
+    {
+      "path": "packages/analytics"
+    },
+    {
+      "path": "packages/appgen"
+    },
+    {
+      "path": "packages/appgen-model"
+    },
+    {
+      "path": "packages/agent"
+    },
+    {
+      "path": "packages/mcp"
+    },
+    {
+      "path": "packages/a2a"
+    },
+    {
+      "path": "packages/a2ui"
+    },
+    {
+      "path": "packages/memory"
+    },
+    {
+      "path": "packages/capability"
+    },
+    {
+      "path": "packages/intent"
+    },
+    {
+      "path": "packages/planner"
+    },
+    {
+      "path": "packages/renderer-terminal"
+    },
+    {
+      "path": "packages/sdk"
+    },
+    {
+      "path": "packages/telemetry"
+    },
+    {
+      "path": "packages/spec"
+    },
+    {
+      "path": "packages/verify"
+    },
+    {
+      "path": "packages/dst"
+    },
+    {
+      "path": "packages/audit-chain"
+    },
+    {
+      "path": "packages/fair-scheduler"
+    },
+    {
+      "path": "packages/live-query"
+    },
+    {
+      "path": "packages/orchestration"
+    },
+    {
+      "path": "packages/saga"
+    },
+    {
+      "path": "apps/playground"
+    },
+    {
+      "path": "examples/cloud-command-center"
+    },
+    {
+      "path": "plugins/sqlite"
+    }
   ]
 }

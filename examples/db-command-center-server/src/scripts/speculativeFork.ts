@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { EffectRuntime } from "@loom/effect-runtime";
 /**
  * Speculative fork demo — git-style branching for agent executions (branch-only).
  *
@@ -12,12 +16,8 @@
  *
  * Run it:  pnpm --filter @loom/db-command-center-server demo:fork
  */
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { EffectRuntime } from "@loom/effect-runtime";
-import { SqliteBranchRegistry, SqliteEventStore } from "@loom/event-runtime";
-import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
+import { SqliteBranchRegistry, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { ScaleReplicasFlow } from "../capabilities/flows";
 

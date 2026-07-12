@@ -1,5 +1,5 @@
 import { advisoryPipeline, formatAdvisory } from "@loom/analytics";
-import { SqliteEventStore } from "@loom/event-runtime";
+import { SqliteEventStore } from "@loom/plugin-sqlite";
 
 /**
  * `loom optimize --db <path> <executionId>` — the advisory optimization report (ADR 0034):

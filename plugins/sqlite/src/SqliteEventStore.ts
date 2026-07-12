@@ -1,7 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
+import type { EventStore } from "@loom/event-runtime";
 import Database from "better-sqlite3";
 import { migrate } from "./schema";
-import type { EventStore } from "./types";
 
 interface EventRow {
   id: string;

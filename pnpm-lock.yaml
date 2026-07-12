@@ -370,6 +370,9 @@ importers:
       '@loom/llm':
         specifier: workspace:*
         version: link:../../packages/llm
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../../packages/projection-runtime
@@ -619,6 +622,9 @@ importers:
       '@loom/planner':
         specifier: workspace:*
         version: link:../../packages/planner
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../../packages/projection-runtime
@@ -835,6 +841,9 @@ importers:
       '@loom/planner':
         specifier: workspace:*
         version: link:../../packages/planner
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../../packages/projection-runtime
@@ -975,6 +984,9 @@ importers:
       '@loom/planner':
         specifier: workspace:*
         version: link:../../packages/planner
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../../packages/projection-runtime
@@ -1139,6 +1151,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../projection-runtime
@@ -1329,6 +1344,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/replay-vm':
         specifier: workspace:*
         version: link:../replay-vm
@@ -1550,13 +1568,7 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../core
-      better-sqlite3:
-        specifier: ^11.5.0
-        version: 11.10.0
     devDependencies:
-      '@types/better-sqlite3':
-        specifier: ^7.6.12
-        version: 7.6.13
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -1607,6 +1619,9 @@ importers:
       '@loom/platform-cloudrun':
         specifier: workspace:*
         version: link:../platform-cloudrun
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
@@ -1899,6 +1914,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
@@ -2161,6 +2179,9 @@ importers:
       '@loom/planner':
         specifier: workspace:*
         version: link:../planner
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../projection-runtime
@@ -2198,13 +2219,7 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
-      better-sqlite3:
-        specifier: ^11.5.0
-        version: 11.10.0
     devDependencies:
-      '@types/better-sqlite3':
-        specifier: ^7.6.12
-        version: 7.6.13
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -2289,6 +2304,9 @@ importers:
         specifier: ^8.13.0
         version: 8.22.0
     devDependencies:
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/replay-vm':
         specifier: workspace:*
         version: link:../replay-vm
@@ -2360,6 +2378,9 @@ importers:
       '@loom/middleware':
         specifier: workspace:*
         version: link:../middleware
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -2450,6 +2471,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
@@ -2500,6 +2524,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
@@ -2555,6 +2582,9 @@ importers:
       '@loom/middleware':
         specifier: workspace:*
         version: link:../middleware
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -2567,6 +2597,34 @@ importers:
       zod:
         specifier: ^3.23.8
         version: 3.25.76
+
+  plugins/sqlite:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
+      better-sqlite3:
+        specifier: ^11.5.0
+        version: 11.10.0
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.12
+        version: 7.6.13
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
   tools/create-loom-app:
     dependencies:

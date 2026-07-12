@@ -1,7 +1,7 @@
 import type { ExecutionState } from "@loom/core";
+import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import Database from "better-sqlite3";
-import { migrate } from "./schema";
-import type { Snapshot, SnapshotStore } from "./types";
+import { migrate } from "./snapshotSchema";
 
 interface SnapshotRow {
   id: string;

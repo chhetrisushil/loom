@@ -8,19 +8,50 @@
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
   "references": [
-    { "path": "../core" },
-    { "path": "../a2a" },
-    { "path": "../a2ui" },
-    { "path": "../dispatcher" },
-    { "path": "../effect-runtime" },
-    { "path": "../event-runtime" },
-    { "path": "../projection-runtime" },
-    { "path": "../replay-vm" },
-    { "path": "../snapshot-runtime" },
-    { "path": "../store-postgres" },
-    { "path": "../telemetry" },
-    { "path": "../verify" },
-    { "path": "../worker-runtime-local" },
-    { "path": "../workflow-runtime" }
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../a2a"
+    },
+    {
+      "path": "../a2ui"
+    },
+    {
+      "path": "../dispatcher"
+    },
+    {
+      "path": "../effect-runtime"
+    },
+    {
+      "path": "../event-runtime"
+    },
+    {
+      "path": "../projection-runtime"
+    },
+    {
+      "path": "../replay-vm"
+    },
+    {
+      "path": "../snapshot-runtime"
+    },
+    {
+      "path": "../store-postgres"
+    },
+    {
+      "path": "../telemetry"
+    },
+    {
+      "path": "../verify"
+    },
+    {
+      "path": "../worker-runtime-local"
+    },
+    {
+      "path": "../workflow-runtime"
+    },
+    {
+      "path": "../../plugins/sqlite"
+    }
   ]
 }

@@ -1,9 +1,9 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { EventEnvelope } from "@loom/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqliteEventStore } from "./SqliteEventStore";
-import type { EventEnvelope } from "./types";
 
 function makeEnvelope(executionId: string, sequence: number, payload: unknown = {}): EventEnvelope {
   return {

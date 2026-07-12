@@ -35,7 +35,8 @@
     "@loom/projection-runtime": "workspace:*",
     "@loom/registry": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*"
+    "@loom/workflow-runtime": "workspace:*",
+    "@loom/plugin-sqlite": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

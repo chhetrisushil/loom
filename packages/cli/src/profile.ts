@@ -1,5 +1,5 @@
 import { formatProfile, profile } from "@loom/analytics";
-import { SqliteEventStore } from "@loom/event-runtime";
+import { SqliteEventStore } from "@loom/plugin-sqlite";
 
 /**
  * `loom profile --db <path> <executionId>` — a flame graph + latency breakdown for

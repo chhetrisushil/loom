@@ -196,10 +196,8 @@ function buildStores(storage: StorageConfig): LoomStores {
   if (storage.kind === "sqlite") {
     const fs = loadNodeModule<typeof import("node:fs")>("node:fs");
     const path = loadNodeModule<typeof import("node:path")>("node:path");
-    const { SqliteEventStore, SqliteBranchRegistry } =
-      loadNodeModule<typeof import("@loom/event-runtime")>("@loom/event-runtime");
-    const { SqliteSnapshotStore } =
-      loadNodeModule<typeof import("@loom/snapshot-runtime")>("@loom/snapshot-runtime");
+    const { SqliteEventStore, SqliteBranchRegistry, SqliteSnapshotStore } =
+      loadNodeModule<typeof import("@loom/plugin-sqlite")>("@loom/plugin-sqlite");
 
     const dir = storage.dir ?? ".loom";
     fs.mkdirSync(dir, { recursive: true });

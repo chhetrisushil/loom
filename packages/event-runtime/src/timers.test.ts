@@ -1,13 +1,10 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SqliteTimerStore } from "./SqliteTimerStore";
 import { InMemoryTimerStore } from "./timers";
 import type { TimerStore } from "./timers";
 
-// T1.3 — timer storage contract, run against both reference backends.
-function timerStoreContract(name: string, make: () => TimerStore, cleanup?: () => void) {
+// T1.3 — timer storage contract. Run here against the in-memory reference; the
+// SQLite backend runs the same contract in @loom/plugin-sqlite (ADR 0043).
+export function timerStoreContract(name: string, make: () => TimerStore, cleanup?: () => void) {
   describe(name, () => {
     let store: TimerStore;
     beforeEach(() => {
@@ -51,26 +48,3 @@ function timerStoreContract(name: string, make: () => TimerStore, cleanup?: () =
 }
 
 timerStoreContract("InMemoryTimerStore", () => new InMemoryTimerStore());
-
-describe("SqliteTimerStore", () => {
-  let dir: string;
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "loom-timers-"));
-  });
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  timerStoreContract("contract", () => new SqliteTimerStore(join(dir ?? tmpdir(), "timers.db")));
-
-  it("persists across store instances (restart survival)", async () => {
-    const path = join(dir, "persist.db");
-    const first = new SqliteTimerStore(path);
-    await first.schedule({ executionId: "x", wakeAt: 42 });
-    await first.close();
-
-    const second = new SqliteTimerStore(path);
-    expect(await second.due(100)).toEqual([{ executionId: "x", wakeAt: 42 }]);
-    await second.close();
-  });
-});

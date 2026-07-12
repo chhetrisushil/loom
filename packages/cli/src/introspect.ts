@@ -1,5 +1,5 @@
 import { formatIntrospection, introspect } from "@loom/analytics";
-import { SqliteEventStore } from "@loom/event-runtime";
+import { SqliteEventStore } from "@loom/plugin-sqlite";
 
 /**
  * `loom introspect --db <path> <executionId> [--graph <name>]` — the read-only

@@ -8,16 +8,41 @@
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
   "references": [
-    { "path": "../analytics" },
-    { "path": "../app" },
-    { "path": "../appgen" },
-    { "path": "../core" },
-    { "path": "../deploy-sim" },
-    { "path": "../eval" },
-    { "path": "../event-runtime" },
-    { "path": "../replay-vm" },
-    { "path": "../scaffold" },
-    { "path": "../spec" },
-    { "path": "../verify" }
+    {
+      "path": "../analytics"
+    },
+    {
+      "path": "../app"
+    },
+    {
+      "path": "../appgen"
+    },
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../deploy-sim"
+    },
+    {
+      "path": "../eval"
+    },
+    {
+      "path": "../event-runtime"
+    },
+    {
+      "path": "../replay-vm"
+    },
+    {
+      "path": "../scaffold"
+    },
+    {
+      "path": "../spec"
+    },
+    {
+      "path": "../verify"
+    },
+    {
+      "path": "../../plugins/sqlite"
+    }
   ]
 }

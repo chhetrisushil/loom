@@ -2,7 +2,8 @@
 import * as fs from "node:fs";
 import * as readline from "node:readline";
 import type { FilePlan } from "@loom/appgen";
-import { SqliteEventStore } from "@loom/event-runtime";
+import { SqliteEventStore } from "@loom/plugin-sqlite";
+
 import { type Elevation, type Planner, cmdAppgen, plannerTag, renderPlan } from "./appgen";
 import { cmdCheck } from "./check";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
