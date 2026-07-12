@@ -15,6 +15,11 @@ export function changeSpecJsonSchema(): Record<string, unknown> {
       name: { type: "string" },
       capabilities: {
         type: "array",
+        // NOTE: no `minItems` here — node-llama-cpp's grammar sampler crashes (segfault)
+        // on array minItems for this schema. An empty plan is instead rejected by
+        // `tryParseChangeSpec` (the reasoning-ladder validator), which elevates or falls
+        // back. `compute` is omitted from the generation schema — it's rarely intended and
+        // only confuses small models; parse.ts still accepts it if a model emits one.
         items: {
           type: "object",
           properties: {
@@ -35,10 +40,6 @@ export function changeSpecJsonSchema(): Record<string, unknown> {
           },
           required: ["id", "name", "intent", "op", "steps"],
         },
-      },
-      compute: {
-        type: "object",
-        properties: { target: { type: "string" } },
       },
     },
     required: ["name", "capabilities"],

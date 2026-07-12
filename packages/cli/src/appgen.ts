@@ -72,6 +72,34 @@ export interface AppgenOptions {
 // biome-ignore lint/suspicious/noExplicitAny: @loom/appgen-model is an optional, lazily-loaded peer.
 type AppgenModelModule = any;
 
+// A genuine dynamic `import()` preserved through `new Function`. tsc under `module:
+// CommonJS` would down-level `import()` to `require()`, which cannot load an ESM-only
+// package (@loom/appgen-model pulls in node-llama-cpp, an ESM/top-level-await module).
+// biome-ignore lint/security/noGlobalEval: intentional — the only way to keep a real ESM import from CJS output.
+const esmImport = new Function("s", "return import(s)") as (
+  s: string
+) => Promise<AppgenModelModule>;
+
+/**
+ * Load the optional `@loom/appgen-model` package, resolved **from the target project**
+ * (`dir`) — the intended UX is `pnpm add @loom/appgen-model node-llama-cpp` in your app,
+ * then `loom appgen --model`. Falls back to resolving from the CLI itself.
+ */
+async function loadAppgenModel(dir: string): Promise<AppgenModelModule> {
+  const { createRequire } = await esmImport("node:module");
+  const { pathToFileURL } = await esmImport("node:url");
+  for (const anchor of [path.join(path.resolve(dir), "package.json"), __filename]) {
+    try {
+      const resolved = createRequire(anchor).resolve("@loom/appgen-model");
+      return await esmImport(pathToFileURL(resolved).href);
+    } catch {
+      // try the next anchor
+    }
+  }
+  // Last resort: bare specifier (works when hoisted into the CLI's own node_modules).
+  return await esmImport("@loom/appgen-model");
+}
+
 /**
  * Plan the change: a local model when `--model` is set and the optional
  * `@loom/appgen-model` package is installed, otherwise the deterministic parser. The
@@ -85,8 +113,7 @@ async function planChange(
 ): Promise<ChangeSpec> {
   if (opts.model !== undefined && opts.offline !== true) {
     try {
-      const specifier = "@loom/appgen-model";
-      const m: AppgenModelModule = await import(specifier);
+      const m = await loadAppgenModel(opts.dir);
       const routes = [m.gemmaRoute(opts.model.path, opts.model.tier ?? m.DEFAULT_TIER)];
       if (opts.model.bigPath !== undefined) routes.push(m.gemmaRoute(opts.model.bigPath, "12b"));
       return await m.planChangesModel(intent, model, { routes });

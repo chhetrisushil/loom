@@ -25,17 +25,19 @@ export interface GemmaProviderConfig {
 // biome-ignore lint/suspicious/noExplicitAny: node-llama-cpp is optional; typed at the boundary only.
 type LlamaModule = any;
 
+// A genuine dynamic `import()` preserved through the `new Function` boundary. tsc under
+// `module: CommonJS` would otherwise down-level `import()` to `require()`, which cannot
+// load node-llama-cpp (an ESM-only, top-level-await module → ERR_REQUIRE_ASYNC_MODULE).
+// biome-ignore lint/security/noGlobalEval: intentional — the only way to keep a real ESM import from CJS output.
+const esmImport = new Function("s", "return import(s)") as (s: string) => Promise<LlamaModule>;
+
 async function loadNodeLlamaCpp(): Promise<LlamaModule> {
   try {
-    // Indirect specifier so tsc doesn't statically resolve (and hard-require) the
-    // optional native module; it's only needed when actually running a local model.
-    const specifier = "node-llama-cpp";
-    return (await import(specifier)) as LlamaModule;
-  } catch {
+    return await esmImport("node-llama-cpp");
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
     throw new Error(
-      "GemmaProvider needs the optional dependency 'node-llama-cpp' and a local .gguf model. " +
-        "Install it (`pnpm add node-llama-cpp`) and pass --model <path>, or run `loom appgen` " +
-        "with --offline to use the deterministic parser."
+      `GemmaProvider needs the optional dependency 'node-llama-cpp' and a local .gguf model. Install it (\`pnpm add node-llama-cpp\`) and pass --model <path>, or run \`loom appgen\` with --offline to use the deterministic parser. (cause: ${cause})`
     );
   }
 }
@@ -48,20 +50,24 @@ export class GemmaProvider implements LlmProvider {
     const llama = await nlc.getLlama();
     const model = await llama.loadModel({ modelPath: this.config.modelPath });
     try {
-      const context = await model.createContext({ contextSize: this.config.contextSize ?? 4096 });
+      const context = await model.createContext({ contextSize: this.config.contextSize ?? 2048 });
       const session = new nlc.LlamaChatSession({
         contextSequence: context.getSequence(),
         ...(request.system !== undefined && { systemPrompt: request.system }),
       });
+      // node-llama-cpp v3 builds a JSON-schema grammar via the Llama instance (the
+      // `LlamaJsonSchemaGrammar` constructor is not the public entry point).
       const grammar =
         this.config.jsonSchema !== undefined
-          ? new nlc.LlamaJsonSchemaGrammar(llama, this.config.jsonSchema)
+          ? await llama.createGrammarForJsonSchema(this.config.jsonSchema)
           : undefined;
       const prompt = request.messages.map((m) => m.content).join("\n\n");
       const content: string = await session.prompt(prompt, {
         temperature: request.temperature ?? this.config.temperature ?? 0,
         ...(grammar !== undefined && { grammar }),
-        ...(request.maxTokens !== undefined && { maxTokens: request.maxTokens }),
+        // A ChangeSpec is small; bound generation (footprint + stability). Callers can
+        // override, but we never leave it unbounded.
+        maxTokens: request.maxTokens ?? this.config.maxTokens ?? 512,
       });
       await context.dispose?.();
       return { content, stopReason: "end_turn" };

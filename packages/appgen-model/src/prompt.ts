@@ -43,6 +43,11 @@ export function buildSystem(appModel: AppModel): string {
     '- Steps that already exist are op "modify"; genuinely new steps are op "create".',
     "- Never invent handler code or file paths — you emit intent, the toolchain emits code.",
     "",
+    'Example — existing flow "triage" with steps classify[stub]; gates=none.',
+    'Intent: "Add a route step to triage and pause for approval."',
+    "Output:",
+    '{"name":"triage","capabilities":[{"id":"triage","name":"Triage","intent":"Add a route step and pause for approval.","op":"extend","steps":[{"id":"route","op":"create"}],"addApproval":true}]}',
+    "",
     summarizeAppModel(appModel),
   ].join("\n");
 }
