@@ -1,0 +1,19 @@
+{
+  "name": "@loom/plugin-kit",
+  "version": "0.0.1",
+  "description": "Type helpers for authoring Loom plugins — preset contracts (e.g. StoragePreset) so a plugin's wiring is type-checked, with no dependency on @loom/app.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "require": "./dist/index.js", "types": "./dist/index.d.ts" } },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "test": "vitest run",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/event-runtime": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*"
+  },
+  "devDependencies": { "typescript": "^5.6.3", "vitest": "^2.1.8" }
+}

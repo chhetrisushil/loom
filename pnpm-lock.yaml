@@ -1806,6 +1806,22 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
 
+  packages/plugin-kit:
+    dependencies:
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../event-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../snapshot-runtime
+    devDependencies:
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   packages/projection-runtime:
     dependencies:
       '@loom/core':
@@ -2442,6 +2458,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../../packages/event-runtime
+      '@loom/plugin-kit':
+        specifier: workspace:*
+        version: link:../../packages/plugin-kit
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime
@@ -2547,6 +2566,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../../packages/event-runtime
+      '@loom/plugin-kit':
+        specifier: workspace:*
+        version: link:../../packages/plugin-kit
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime

@@ -1,7 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { BranchRegistry, EventStore } from "@loom/event-runtime";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
+import type { CustomStorage } from "@loom/plugin-kit";
 import { SqliteBranchRegistry } from "./SqliteBranchRegistry";
 import { SqliteEventStore } from "./SqliteEventStore";
 import { SqliteSnapshotStore } from "./SqliteSnapshotStore";
@@ -19,12 +18,7 @@ export interface SqliteStorageOptions {
  * needs to know SQLite exists (ADR 0043: 1P/3P storage backends are symmetric,
  * each supplied as a preset, none privileged with a `kind`).
  */
-export function sqliteStorage(options: SqliteStorageOptions = {}): {
-  kind: "custom";
-  eventStore: EventStore;
-  snapshotStore: SnapshotStore;
-  branchRegistry?: BranchRegistry;
-} {
+export function sqliteStorage(options: SqliteStorageOptions = {}): CustomStorage {
   const dir = options.dir ?? ".loom";
   mkdirSync(dir, { recursive: true });
   return {
