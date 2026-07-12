@@ -13,6 +13,7 @@ import { serveInspector } from "./inspector";
 import { cmdIntrospect } from "./introspect";
 import { cmdCompat, cmdKernelManifest } from "./kernel";
 import { cmdOptimize } from "./optimize";
+import { cmdPluginNew, cmdPluginSeams } from "./plugin";
 import { cmdProfile } from "./profile";
 import { cmdVerify } from "./verify";
 
@@ -48,6 +49,8 @@ const USAGE = `loom — project-local commands for a Loom app
 
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
   loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
+  loom plugin new <seam> <name> [--first-party] [--dir .]  scaffold a plugin package
+  loom plugin seams                               list the seams a plugin can target
   loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]  NL → new project or edits
                                                   (--dry-run previews; --check typechecks after apply)
   loom appgen ... --model <gguf> [--model-big <gguf>]  plan with a local Gemma model
@@ -150,6 +153,38 @@ async function main(argv: string[]): Promise<number> {
       const { path: dest, created } = cmdNew(kind, name, dir);
       console.log(created ? `created ${dest}` : `skipped ${dest} (already exists)`);
       return created ? 0 : 1;
+    }
+    case "plugin": {
+      const sub = positionals[0];
+      if (sub === "seams") {
+        console.log(cmdPluginSeams());
+        return 0;
+      }
+      if (sub === "new") {
+        const seam = positionals[1];
+        const name = positionals[2];
+        if (seam === undefined || name === undefined) {
+          throw new Error("usage: loom plugin new <seam> <name> [--first-party] [--dir .]");
+        }
+        const firstParty = flags["first-party"] === "true" || flags["1p"] === "true";
+        const dir = flags.dir ?? ".";
+        const { dir: root, written, skipped } = cmdPluginNew(seam, name, { firstParty, dir });
+        const lines = [
+          `plugin: ${firstParty ? "@loom/plugin-" : "loom-plugin-"}${name} (${seam}) → ${root}`,
+          ...written.map((p) => `  created ${p}`),
+          ...skipped.map((p) => `  skipped ${p} (already exists)`),
+        ];
+        if (written.length > 0) {
+          lines.push(
+            "",
+            `next: implement the SPI in ${root}/src/index.ts, un-comment the conformance`,
+            "      test, and run your formatter (e.g. biome/prettier) to tidy the scaffold."
+          );
+        }
+        console.log(lines.join("\n"));
+        return written.length > 0 ? 0 : 1;
+      }
+      throw new Error("usage: loom plugin new <seam> <name> | loom plugin seams");
     }
     case "appgen": {
       // For appgen, `dir` is the PROJECT ROOT (scaffold paths are already `app/…`-relative):
