@@ -353,6 +353,37 @@ describe("loom CLI", () => {
         "export const PlannerFlow"
       );
     });
+
+    it("--dry-run computes a plan but writes nothing", async () => {
+      const appDir = join(dir, "dry");
+      const io = scriptedIO([]);
+      const r = await cmdAppgen({ intent: EXAMPLE, dir: appDir, dryRun: true }, io);
+
+      expect(r.dryRun).toBe(true);
+      expect(r.plan.isNewProject).toBe(true);
+      expect(r.plan.creates.length).toBeGreaterThan(0);
+      expect(r.written).toEqual([]);
+      expect(r.overwritten).toEqual([]);
+      expect(existsSync(join(appDir, "package.json"))).toBe(false); // nothing written
+    });
+
+    it("writes a replayable lockfile and --from-spec reproduces byte-identical output", async () => {
+      const srcDir = join(dir, "spec-src");
+      const first = await cmdAppgen({ intent: EXAMPLE, dir: srcDir, now: 123 }, scriptedIO([]));
+      expect(first.lockfile).toBe(join(srcDir, ".loom/appgen/123.spec.json"));
+
+      // Replay the spec (no intent, no model) into a fresh directory.
+      const replayDir = join(dir, "spec-replay");
+      const replay = await cmdAppgen(
+        { intent: "", dir: replayDir, fromSpec: first.lockfile! },
+        scriptedIO([])
+      );
+      expect(replay.specName).toBe("planner");
+
+      const a = readFileSync(join(srcDir, "app/flows/planner/flow.ts"), "utf-8");
+      const b = readFileSync(join(replayDir, "app/flows/planner/flow.ts"), "utf-8");
+      expect(b).toBe(a); // byte-identical, reproduced without re-parsing the intent
+    });
   });
 
   describe("loom check (manifest)", () => {

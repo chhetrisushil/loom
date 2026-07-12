@@ -32,3 +32,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `cmdAppgen` is exported from `@loom/cli` for programmatic use, with an injectable IO seam.
   - Docs: new section in [`docs/usage-cli.md`](docs/usage-cli.md) and the CLI overview in
     [`docs/user-guide.md`](docs/user-guide.md).
+
+- **`loom appgen` — brownfield-aware, four-stage pipeline (foundation for AI-driven appgen).**
+  `appgen` now *scans the existing app* and applies a **delta** rather than only scaffolding from
+  scratch. Four stages, all deterministic and offline: **scan** (`scanApp(dir) → AppModel`,
+  a compact TS-AST summary of flows/steps/gates — never raw file dumps), **plan**
+  (`planChangesDeterministic(intent, appModel) → ChangeSpec`, tagging each capability/step
+  `create` / `extend` / `modify`), **apply** (`applyChanges` → creates via the existing templates,
+  surgical formatting-preserving edits to existing flows), and **validate** (in-process `tsc`).
+  The plan stage is the single seam where NL understanding lives and it emits a structured
+  `ChangeSpec` — a local model can be swapped in here later without touching codegen.
+  - **Plan → diff → confirm DX.** `--dry-run` renders a terraform-style plan (creates / edits /
+    skips) and writes nothing; omit it to apply. `--check` typechecks the app after applying.
+  - **Safety gate.** appgen only overwrites a handler body that still hashes to the generated
+    `TODO` stub; any human-edited handler is **insert-only**, never clobbered (`FlowEditor`,
+    content-hash gate). Brownfield edits add step consts, register them in the flow's `steps: []`
+    array, and insert approval / UI gates into the runner while preserving surrounding code.
+  - **Replayable spec lockfile.** Each apply records the accepted `ChangeSpec` to
+    `.loom/appgen/<timestamp>.spec.json`; `loom appgen --from-spec <file>` reproduces it
+    byte-for-byte with no model — the appgen equivalent of a golden log.
+  - `@loom/appgen` stays zero-dependency and offline (only `typescript` promoted to a runtime
+    dep for the AST scan/edit); the framework kernel is untouched. New exports: `scanApp`,
+    `planChangesDeterministic`, `applyChanges`, `FlowEditor`, `typecheck`, lockfile helpers.
+
+- **`@loom/appgen-model` — optional local-Gemma planner (truly AI-driven appgen).** A new,
+  **optional** package that swaps a small on-device Gemma model into appgen's single NL stage.
+  `loom appgen --model <gguf>` plans the `ChangeSpec` with the model instead of the grammar
+  parser — real language understanding, no token cost, minimal footprint. Everything downstream
+  is unchanged, because the model still emits only a `ChangeSpec`.
+  - **Grammar-constrained JSON.** Output is constrained to the `ChangeSpec` JSON schema via
+    node-llama-cpp, so a compact model reliably produces valid, on-schema plans.
+  - **Reasoning-ladder-on-itself.** Planning runs through `@loom/reasoning`'s cheap-first
+    elevation ladder with a *validator* confidence signal ("does it parse into a usable
+    ChangeSpec?"); a weak tier that emits junk elevates to a stronger one, and each elevation is
+    logged (P9) and recorded in the spec lockfile. Recommended tiers: Gemma **E4B** 4-bit QAT
+    default (~5 GB), E2B floor (~4 GB), 12B ceiling (~8 GB), selectable via `--model-tier` /
+    `--model-big`.
+  - **Deterministic fallback / footprint discipline.** Falls back to the deterministic parser
+    when the model or `node-llama-cpp` is unavailable or every tier fails (same as `--offline`);
+    loads/disposes the model per invocation (transient, not resident); prompts carry only the
+    compact scanned `AppModel` summary, never raw file contents.
+  - `node-llama-cpp` is an `optionalDependency`, lazily imported; `@loom/cli` loads
+    `@loom/appgen-model` only when `--model` is passed, so neither the framework nor default CLI
+    users carry the native runtime. Kernel and existing packages untouched.

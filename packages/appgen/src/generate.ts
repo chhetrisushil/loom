@@ -1,10 +1,6 @@
 import { appFiles, generateRegistration, pascal } from "@loom/scaffold";
+import { camel, stepConstName, stepConstSource } from "./stepTemplate";
 import type { AppSpec, CapabilitySpec, GeneratedFile } from "./types";
-
-function camel(id: string): string {
-  const p = pascal(id);
-  return p.charAt(0).toLowerCase() + p.slice(1);
-}
 
 // Emit one capability's flow as plain, static, inspectable TypeScript at the folder
 // convention path `app/flows/<id>/flow.ts` (discovered by `loom gen`, wired via
@@ -13,7 +9,7 @@ function camel(id: string): string {
 // developer owns and edits.
 function generateFlowFile(cap: CapabilitySpec): GeneratedFile {
   const Name = pascal(cap.id);
-  const stepConsts = cap.steps.map((s) => `${camel(s)}Step`);
+  const stepConsts = cap.steps.map(stepConstName);
   const usesReasoning = cap.reasoning !== undefined;
 
   const imports = [
@@ -24,17 +20,7 @@ function generateFlowFile(cap: CapabilitySpec): GeneratedFile {
     ...(usesReasoning ? [`// import { ReasoningRuntime } from "@loom/reasoning";`] : []),
   ].join("\n");
 
-  const steps = cap.steps
-    .map(
-      (s) => `const ${camel(s)}Step = step$({
-  id: "${s}",
-  name: "${pascal(s)}",
-  inputSchema: z.object({ prompt: z.string() }),
-  outputSchema: z.object({ result: z.string() }),
-  handler: handler$(async (input: { prompt: string }) => ({ result: \`TODO: implement ${s} for \${input.prompt}\` })),
-});`
-    )
-    .join("\n\n");
+  const steps = cap.steps.map(stepConstSource).join("\n\n");
 
   const runnerBody: string[] = [];
   if (usesReasoning) {

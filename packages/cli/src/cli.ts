@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import * as fs from "node:fs";
 import { SqliteEventStore } from "@loom/event-runtime";
-import { cmdAppgen } from "./appgen";
+import { cmdAppgen, renderPlan } from "./appgen";
 import { cmdCheck } from "./check";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { cmdDeployCheck } from "./deploy";
@@ -45,7 +45,11 @@ const USAGE = `loom — project-local commands for a Loom app
 
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
   loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
-  loom appgen <intent> | --from <file> [--dir .]  NL → full project (new dir) or flows (existing app)
+  loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]  NL → new project or edits
+                                                  (--dry-run previews; --check typechecks after apply)
+  loom appgen ... --model <gguf> [--model-big <gguf>]  plan with a local Gemma model
+                                                  (needs @loom/appgen-model + node-llama-cpp)
+  loom appgen --from-spec <file> [--dir .]        replay a .loom/appgen/<ts>.spec.json (no model)
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
   loom logs  --db <path> <executionId>            print the event timeline
@@ -145,19 +149,57 @@ async function main(argv: string[]): Promise<number> {
       return created ? 0 : 1;
     }
     case "appgen": {
-      const intent = resolveIntent(flags, positionals);
       // For appgen, `dir` is the PROJECT ROOT (scaffold paths are already `app/…`-relative):
-      // a new dir gets a full project; an existing app gets flows + a regenerated loom.gen.ts.
+      // a new dir gets a full project; an existing app gets flows + surgical edits.
       const dir = flags.dir ?? ".";
-      const r = await cmdAppgen({ intent, dir });
+      const dryRun = flags["dry-run"] === "true";
+      const fromSpec = flags["from-spec"];
+      const check = flags.check === "true";
+      const offline = flags.offline === "true";
+      // `--model <gguf>` enables the local-model planner (optional @loom/appgen-model);
+      // `--model-big <gguf>` is a stronger tier to elevate to.
+      const model =
+        flags.model !== undefined && flags.model !== "true"
+          ? {
+              path: flags.model,
+              ...(flags["model-big"] !== undefined && { bigPath: flags["model-big"] }),
+              ...(flags["model-tier"] !== undefined && { tier: flags["model-tier"] }),
+            }
+          : undefined;
+      // `--from-spec` carries its own intent; otherwise resolve one from args / `--from`.
+      const intent = fromSpec !== undefined ? "" : resolveIntent(flags, positionals);
+      const r = await cmdAppgen({
+        intent,
+        dir,
+        dryRun,
+        check,
+        offline,
+        ...(model !== undefined && { model }),
+        ...(fromSpec !== undefined && { fromSpec }),
+      });
+      if (r.dryRun) {
+        console.log(renderPlan(r.plan, dir));
+        return 0;
+      }
       const lines = [
         `appgen: ${r.specName} → ${dir}`,
         ...r.written.map((p) => `  wrote ${p}`),
         ...r.overwritten.map((p) => `  overwrote ${p}`),
         ...r.skipped.map((p) => `  skipped ${p}`),
       ];
+      if (r.lockfile !== undefined) lines.push(`  spec  ${r.lockfile}`);
+      if (r.typecheck !== undefined && !r.typecheck.skipped) {
+        lines.push(
+          r.typecheck.ok
+            ? "  check ✓ typecheck clean"
+            : `  check ✗ ${r.typecheck.diagnostics.length} error(s):`
+        );
+        for (const d of r.typecheck.diagnostics) {
+          lines.push(`    ${d.file ?? "?"}:${d.line ?? "?"} ${d.message}`);
+        }
+      }
       console.log(lines.join("\n"));
-      return 0;
+      return r.typecheck !== undefined && !r.typecheck.ok ? 1 : 0;
     }
     case "deploy": {
       if (positionals[0] !== "check") {
