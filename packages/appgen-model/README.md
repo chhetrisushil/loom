@@ -61,3 +61,16 @@ const changeSpec = await planChangesModel("add an approval gate to the planner f
 
 `planChangesModel` also accepts any `LlmProvider` route (not just Gemma), and a `decide`
 sink to log elevations durably.
+
+## Requirements & caveats (from real end-to-end testing)
+
+- **Node LTS.** node-llama-cpp's native binding is stable on Node 20/22 LTS. On very new Node
+  majors (e.g. 25) we observed intermittent native segfaults during inference. Use an LTS.
+- **RAM ↔ tier.** A 2B-class model (~1.6 GB Q4) fits an 8 GB machine but is often too weak — it
+  tends to emit an empty `capabilities` array under the JSON grammar, which the validator
+  rejects and the planner then falls back to deterministic. Use the **E4B** default (~5 GB, needs
+  ≥16 GB comfortably) or the 12B ceiling for real planning quality; 2B is fine only for the
+  simplest greenfield fills.
+- **Graceful by design.** Whatever the model does — junk output, a missing native dep, even a
+  crash on load — `loom appgen` degrades to the deterministic parser and still produces a valid
+  `ChangeSpec`. The model is a quality upgrade, never a hard dependency.
