@@ -53,7 +53,14 @@ describe("pluginFiles", () => {
   });
 
   it("lists all seams", () => {
-    expect(SEAM_KEYS).toEqual(["store", "dispatcher", "telemetry", "middleware"]);
+    expect(SEAM_KEYS).toEqual([
+      "store",
+      "dispatcher",
+      "telemetry",
+      "middleware",
+      "timer",
+      "projection",
+    ]);
     const text = listSeams();
     for (const k of SEAM_KEYS) expect(text).toContain(k);
   });

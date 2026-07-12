@@ -1,7 +1,14 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
-import type { BranchRef, BranchRegistry, EventStore } from "@loom/event-runtime";
+import type {
+  BranchRef,
+  BranchRegistry,
+  EventStore,
+  TimerRecord,
+  TimerStore,
+} from "@loom/event-runtime";
 import { readRangeOf } from "@loom/event-runtime";
+import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import type { ExecutionPackage } from "@loom/worker-runtime";
 import { describe, expect, it } from "vitest";
@@ -251,6 +258,124 @@ export function runExecutionDispatcherConformance(
     it("cancel of an unknown execution is safe (no throw)", async () => {
       const d = factory();
       await expect(d.cancel("nope")).resolves.toBeUndefined();
+    });
+  });
+}
+
+/**
+ * Prove a {@link TimerStore} (T1 durable timers) conforms: idempotent scheduling,
+ * soonest-first due ordering with a limit, and completion semantics.
+ */
+export function runTimerStoreConformance(factory: () => TimerStore, label = "TimerStore"): void {
+  describe(`${label} conformance (TimerStore SPI)`, () => {
+    it("schedule + due returns due timers soonest-first", async () => {
+      const s = factory();
+      await s.schedule({ executionId: "b", wakeAt: 200 });
+      await s.schedule({ executionId: "a", wakeAt: 100 });
+      await s.schedule({ executionId: "c", wakeAt: 900 });
+      expect(await s.due(500)).toEqual([
+        { executionId: "a", wakeAt: 100 },
+        { executionId: "b", wakeAt: 200 },
+      ]);
+      await s.close();
+    });
+
+    it("schedule is idempotent per (executionId, wakeAt)", async () => {
+      const s = factory();
+      await s.schedule({ executionId: "a", wakeAt: 100 });
+      await s.schedule({ executionId: "a", wakeAt: 100 });
+      expect((await s.due(500)).length).toBe(1);
+      await s.close();
+    });
+
+    it("due excludes not-yet-due timers and respects the limit", async () => {
+      const s = factory();
+      for (let i = 0; i < 5; i++) await s.schedule({ executionId: `e${i}`, wakeAt: i });
+      await s.schedule({ executionId: "future", wakeAt: 10_000 });
+      const due: TimerRecord[] = await s.due(100, 3);
+      expect(due.length).toBe(3);
+      expect(due.every((t) => t.wakeAt <= 100)).toBe(true);
+      await s.close();
+    });
+
+    it("complete removes a fired timer; unknown timers are a no-op", async () => {
+      const s = factory();
+      await s.schedule({ executionId: "a", wakeAt: 100 });
+      await s.complete("a", 100);
+      expect(await s.due(500)).toEqual([]);
+      await expect(s.complete("nope", 1)).resolves.toBeUndefined();
+      await s.close();
+    });
+  });
+}
+
+/**
+ * Prove a {@link ProjectionRuntime} conforms: per-execution folding of matching
+ * events, initial state before any events, live subscribe/unsubscribe, and
+ * `seedState`. Drives a small counter projection.
+ */
+export function runProjectionRuntimeConformance(
+  factory: () => ProjectionRuntime,
+  label = "ProjectionRuntime"
+): void {
+  const counter: Projection<{ n: number }> = {
+    id: "counter",
+    initialState: { n: 0 },
+    handlers: {
+      TICK: (s, e) => ({ n: s.n + ((e.payload as { by?: number }).by ?? 1) }),
+    },
+  };
+  const tick = (executionId: string, by: number, sequence: number): EventEnvelope => ({
+    id: `evt-${executionId}-${sequence}`,
+    workflowId: "wf",
+    executionId,
+    eventType: "TICK",
+    sequence,
+    timestamp: 0,
+    payload: { by },
+  });
+
+  describe(`${label} conformance (ProjectionRuntime SPI)`, () => {
+    it("getState returns the initial state before any events", () => {
+      const r = factory();
+      r.register(counter);
+      expect(r.getState("counter", "x")).toEqual({ n: 0 });
+    });
+
+    it("handleEvent folds matching events per execution", () => {
+      const r = factory();
+      r.register(counter);
+      r.handleEvent(tick("x", 2, 1));
+      r.handleEvent(tick("x", 3, 2));
+      r.handleEvent(tick("y", 5, 1));
+      expect(r.getState("counter", "x")).toEqual({ n: 5 });
+      expect(r.getState("counter", "y")).toEqual({ n: 5 });
+    });
+
+    it("subscribe fires on change; unsubscribe stops delivery", () => {
+      const r = factory();
+      r.register(counter);
+      const seen: number[] = [];
+      const unsub = r.subscribe<{ n: number }>("counter", "x", (s) => seen.push(s.n));
+      r.handleEvent(tick("x", 1, 1));
+      unsub();
+      r.handleEvent(tick("x", 1, 2));
+      expect(seen).toContain(1);
+      expect(seen).not.toContain(2);
+    });
+
+    it("seedState sets state directly", () => {
+      const r = factory();
+      r.register(counter);
+      r.seedState("counter", "x", { n: 42 });
+      expect(r.getState("counter", "x")).toEqual({ n: 42 });
+    });
+
+    it("an unhandled event type leaves state unchanged", () => {
+      const r = factory();
+      r.register(counter);
+      r.handleEvent({ ...tick("x", 1, 1), eventType: "OTHER" });
+      expect(r.getState("counter", "x")).toEqual({ n: 0 });
     });
   });
 }
