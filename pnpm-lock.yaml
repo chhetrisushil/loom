@@ -245,6 +245,9 @@ importers:
       '@loom/planner':
         specifier: workspace:*
         version: link:../../packages/planner
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/worker-runtime-local':
         specifier: workspace:*
         version: link:../../packages/worker-runtime-local
@@ -908,6 +911,9 @@ importers:
       '@loom/middleware':
         specifier: workspace:*
         version: link:../../packages/middleware
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../../packages/projection-runtime
@@ -1151,9 +1157,6 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
-      '@loom/plugin-sqlite':
-        specifier: workspace:*
-        version: link:../../plugins/sqlite
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../projection-runtime
@@ -1163,9 +1166,6 @@ importers:
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
-      '@loom/store-postgres':
-        specifier: workspace:*
-        version: link:../store-postgres
       '@loom/telemetry':
         specifier: workspace:*
         version: link:../telemetry

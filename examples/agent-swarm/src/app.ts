@@ -3,6 +3,7 @@ import { type LoomApp, defineConfig } from "@loom/app";
 import type { CapabilityCatalog } from "@loom/capability";
 import { LocalDispatcher } from "@loom/dispatcher";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
+import { sqliteStorage } from "@loom/plugin-sqlite";
 import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
 import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "./agents/definitions";
 import { buildCatalog } from "./capabilities/catalog";
@@ -27,7 +28,10 @@ export interface SwarmApp {
 export function buildApp(opts?: { storage?: StorageOpt }): SwarmApp {
   const catalog = buildCatalog();
   const app = defineConfig({
-    storage: opts?.storage ?? { kind: "memory" },
+    storage:
+      opts?.storage?.kind === "sqlite"
+        ? sqliteStorage({ dir: opts.storage.dir, branching: opts.storage.branching === true })
+        : { kind: "memory" },
     catalog,
     agents: FLEET.map((a) => AGENT_CARDS[a.id]).filter((c): c is AgentCard => c !== undefined),
     capabilityAgents: CAPABILITY_AGENT,

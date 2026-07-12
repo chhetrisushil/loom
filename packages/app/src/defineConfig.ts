@@ -41,21 +41,14 @@ export interface CatalogLike {
 export type StorageConfig =
   /** Ephemeral in-memory stores — great for tests, demos, and browser apps. */
   | { kind: "memory" }
-  /** Embedded SQLite (lazily loaded — Node only). `dir` holds the DB files. */
-  | { kind: "sqlite"; dir?: string; branching?: boolean }
-  /**
-   * Network-backed Postgres (lazily loaded — Node only) via `@loom/store-postgres`.
-   * The horizontal-scale backend: many workers on many machines share one durable
-   * log, with cross-node live `subscribe` over LISTEN/NOTIFY. `url` is a standard
-   * `postgres://…` connection string.
-   */
-  | { kind: "postgres"; url: string; branching?: boolean }
   /**
    * Bring your own storage backend. The runtime is storage-agnostic, so supply
    * any `EventStore` + `SnapshotStore` (and an optional `BranchRegistry` for
-   * fork/branch) — e.g. Postgres / Redis / DynamoDB. `defineConfig` uses them
-   * verbatim, so a network-backed app gets the same composition root as everyone
-   * else instead of hand-wiring `new WorkflowRuntime(...)`.
+   * fork/branch). This is also how every concrete backend is wired: a store plugin
+   * exports a preset returning this shape — `sqliteStorage({ dir })` from
+   * `@loom/plugin-sqlite`, `postgresStorage({ url })` from `@loom/store-postgres`,
+   * or your own — so `@loom/app` names no vendor and 1P/3P backends are symmetric
+   * (ADR 0043).
    */
   | {
       kind: "custom";
@@ -170,62 +163,18 @@ export interface LoomApp {
   close(): Promise<void>;
 }
 
-/**
- * Load a Node-only module lazily, opaque to bundlers. Resolving through this
- * module's own CommonJS `require` — reached via the `module` object, with the
- * specifier arriving as a variable (never a literal) — means Vite/Rollup cannot
- * trace it into the graph, so a browser app using in-memory storage never bundles
- * better-sqlite3 / node:fs. It is only ever reached on the `kind:"sqlite"` path
- * (never in a browser). Types come from `typeof import(...)` (erased at build
- * time — no runtime import), so the queries are never bundled either.
- */
-function loadNodeModule<T>(id: string): T {
-  const cjs = module as { require(moduleId: string): unknown };
-  return cjs.require.bind(module)(id) as T;
-}
-
 function buildStores(storage: StorageConfig): LoomStores {
   if (storage.kind === "custom") {
-    // Bring your own backend — used verbatim (Postgres/Redis/DynamoDB, …).
+    // Bring your own backend — used verbatim. Concrete backends arrive this way via
+    // a store plugin's preset (`sqliteStorage()`, `postgresStorage()`, …), so
+    // `@loom/app` stays free of any vendor dependency (ADR 0043).
     return {
       eventStore: storage.eventStore,
       snapshotStore: storage.snapshotStore,
       ...(storage.branchRegistry !== undefined && { branchRegistry: storage.branchRegistry }),
     };
   }
-  if (storage.kind === "sqlite") {
-    const fs = loadNodeModule<typeof import("node:fs")>("node:fs");
-    const path = loadNodeModule<typeof import("node:path")>("node:path");
-    const { SqliteEventStore, SqliteBranchRegistry, SqliteSnapshotStore } =
-      loadNodeModule<typeof import("@loom/plugin-sqlite")>("@loom/plugin-sqlite");
-
-    const dir = storage.dir ?? ".loom";
-    fs.mkdirSync(dir, { recursive: true });
-    const stores: LoomStores = {
-      eventStore: new SqliteEventStore(path.join(dir, "events.db")),
-      snapshotStore: new SqliteSnapshotStore(path.join(dir, "snapshots.db")),
-    };
-    if (storage.branching) {
-      // Own DB file so branch writes never contend with the event-log write lock.
-      stores.branchRegistry = new SqliteBranchRegistry(path.join(dir, "branches.db"));
-    }
-    return stores;
-  }
-  if (storage.kind === "postgres") {
-    // Same opaque lazy-require as sqlite: keeps `pg` out of browser bundles; only
-    // ever reached on this Node-only path.
-    const { PostgresEventStore, PostgresSnapshotStore, PostgresBranchRegistry } =
-      loadNodeModule<typeof import("@loom/store-postgres")>("@loom/store-postgres");
-    const stores: LoomStores = {
-      eventStore: new PostgresEventStore(storage.url),
-      snapshotStore: new PostgresSnapshotStore(storage.url),
-    };
-    if (storage.branching) {
-      stores.branchRegistry = new PostgresBranchRegistry(storage.url);
-    }
-    return stores;
-  }
-  // storage.kind === "memory"
+  // storage.kind === "memory" — the only backend the composition root itself knows.
   return {
     eventStore: new InMemoryAsyncEventStore(),
     snapshotStore: new InMemoryAsyncSnapshotStore(),

@@ -27,12 +27,10 @@
     "@loom/projection-runtime": "workspace:*",
     "@loom/replay-vm": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
-    "@loom/store-postgres": "workspace:*",
     "@loom/telemetry": "workspace:*",
     "@loom/verify": "workspace:*",
     "@loom/worker-runtime-local": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*",
-    "@loom/plugin-sqlite": "workspace:*"
+    "@loom/workflow-runtime": "workspace:*"
   },
   "devDependencies": {
     "@loom/middleware": "workspace:*",
