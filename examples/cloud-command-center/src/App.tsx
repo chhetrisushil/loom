@@ -8,8 +8,8 @@ import {
   TimelineRenderer,
   defaultRegistry,
   useLoom,
-} from "@loom/renderer-react";
-import type { WidgetAction } from "@loom/renderer-react";
+} from "@loom/plugin-renderer-react";
+import type { WidgetAction } from "@loom/plugin-renderer-react";
 import type React from "react";
 import { useCallback, useMemo, useState } from "react";
 import { IncidentBlueprint } from "./blueprints/IncidentBlueprint";

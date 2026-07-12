@@ -1,6 +1,6 @@
-import type { AgentCard } from "@loom/a2a";
 import { defineConfig } from "@loom/app";
 import type { WidgetAction } from "@loom/blueprint-runtime";
+import type { AgentCard } from "@loom/plugin-a2a";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "./agents/definitions";
 import { MissionControlBlueprint } from "./blueprints/MissionControlBlueprint";

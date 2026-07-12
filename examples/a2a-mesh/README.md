@@ -17,7 +17,7 @@ Because A2A is the contract, the same Loom code works against **Google ADK**
 ## Run the demo
 
 ```bash
-pnpm --filter @loom/a2a-mesh start
+pnpm --filter @loom/plugin-a2a-mesh start
 ```
 
 It runs fully offline against a mock external agent (`src/mockExternalAgent.ts`,
@@ -33,7 +33,7 @@ standing in for ADK/LangGraph) and shows both directions:
 **Call an external agent from Loom** (outbound):
 
 ```ts
-import { A2APeerClient } from "@loom/a2a";
+import { A2APeerClient } from "@loom/plugin-a2a";
 
 const peer = new A2APeerClient({ url: "http://localhost:9999" }); // remote A2A agent
 const tool = await peer.registerInto(effectRuntime, registry);    // now a Loom tool
@@ -45,7 +45,7 @@ const myAgent = agent$({ id: "orchestrator", name: "Orchestrator", tools: [tool]
 **Expose a Loom agent to the outside world** (inbound):
 
 ```ts
-import { createA2AServer, toAgentCard } from "@loom/a2a";
+import { createA2AServer, toAgentCard } from "@loom/plugin-a2a";
 
 const server = createA2AServer(workflowRuntime, myFlow, toAgentCard(myAgent), { port: 8080 });
 await server.start(); // ADK/LangGraph/etc. can now discover and call it

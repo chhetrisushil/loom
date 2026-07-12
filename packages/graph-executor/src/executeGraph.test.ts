@@ -6,12 +6,12 @@ import { LocalDispatcher } from "@loom/dispatcher";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { SqliteBranchRegistry, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
 
-import { CloudRunWorkerRuntime } from "@loom/platform-cloudrun";
-import type { CloudRunConfig, CloudRunPlatform } from "@loom/platform-cloudrun";
+import { CloudRunWorkerRuntime } from "@loom/plugin-cloudrun";
+import type { CloudRunConfig, CloudRunPlatform } from "@loom/plugin-cloudrun";
 
+import { createWorkerServer } from "@loom/plugin-worker-server";
+import type { WorkerServer } from "@loom/plugin-worker-server";
 import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
-import { createWorkerServer } from "@loom/worker-server";
-import type { WorkerServer } from "@loom/worker-server";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

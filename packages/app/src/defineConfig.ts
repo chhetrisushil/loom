@@ -1,4 +1,3 @@
-import type { AgentCard } from "@loom/a2a";
 import { a2uiSurfaceProjection } from "@loom/a2ui";
 import type { EventEnvelope, ScheduleDefinition } from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
@@ -13,6 +12,7 @@ import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime
 // node:fs/path are loaded lazily on the `kind:"sqlite"` path only (see
 // `loadNodeModule`), so a browser app using in-memory storage stays clean.
 import { InMemoryAsyncEventStore } from "@loom/event-runtime/memory";
+import type { AgentCard } from "@loom/plugin-a2a";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import type { SnapshotStore } from "@loom/snapshot-runtime";

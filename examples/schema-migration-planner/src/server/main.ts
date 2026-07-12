@@ -7,7 +7,7 @@ import { createApp } from "./app";
 
 const PORT = Number(process.env.PORT ?? 8787);
 
-// ── HTTP helpers (mirroring @loom/a2a's A2AServer) ────────────────────────────
+// ── HTTP helpers (mirroring @loom/plugin-a2a's A2AServer) ────────────────────────────
 function parseBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Uint8Array[] = [];

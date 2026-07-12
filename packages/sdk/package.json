@@ -8,6 +8,14 @@
     ".": {
       "require": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./sqlite": {
+      "require": "./dist/sqlite.js",
+      "types": "./dist/sqlite.d.ts"
+    },
+    "./postgres": {
+      "require": "./dist/postgres.js",
+      "types": "./dist/postgres.d.ts"
     }
   },
   "scripts": {
@@ -18,7 +26,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@loom/a2a": "workspace:*",
+    "@loom/plugin-a2a": "workspace:*",
     "@loom/a2ui": "workspace:*",
     "@loom/agent": "workspace:*",
     "@loom/blueprint-runtime": "workspace:*",
@@ -27,16 +35,17 @@
     "@loom/memory": "workspace:*",
     "@loom/planner": "workspace:*",
     "@loom/reasoning": "workspace:*",
-    "@loom/renderer-terminal": "workspace:*",
+    "@loom/plugin-renderer-terminal": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/llm": "workspace:*",
-    "@loom/mcp": "workspace:*",
+    "@loom/plugin-mcp": "workspace:*",
     "@loom/projection-runtime": "workspace:*",
     "@loom/registry": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@loom/workflow-runtime": "workspace:*",
-    "@loom/plugin-sqlite": "workspace:*"
+    "@loom/plugin-sqlite": "workspace:*",
+    "@loom/plugin-postgres": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

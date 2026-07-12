@@ -18,7 +18,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@loom/a2a": "workspace:*",
+    "@loom/plugin-a2a": "workspace:*",
     "@loom/a2ui": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/dispatcher": "workspace:*",

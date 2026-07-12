@@ -1,5 +1,5 @@
-import { RendererRegistry, defaultRegistry } from "@loom/renderer-react";
-import type { WidgetRenderer } from "@loom/renderer-react";
+import { RendererRegistry, defaultRegistry } from "@loom/plugin-renderer-react";
+import type { WidgetRenderer } from "@loom/plugin-renderer-react";
 import {
   DataTableRenderer,
   MetricCardRenderer,

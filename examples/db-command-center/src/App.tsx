@@ -1,7 +1,7 @@
-import type { AgentCard } from "@loom/a2a";
+import type { AgentCard } from "@loom/plugin-a2a";
+import { BlueprintRenderer, useProjection } from "@loom/plugin-renderer-react";
+import type { RendererRegistry, WidgetAction, WidgetRenderer } from "@loom/plugin-renderer-react";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
-import { BlueprintRenderer, useProjection } from "@loom/renderer-react";
-import type { RendererRegistry, WidgetAction, WidgetRenderer } from "@loom/renderer-react";
 import React, { useCallback, useState } from "react";
 import { MissionControlBlueprint } from "./blueprints/MissionControlBlueprint";
 import { ObservabilityBlueprint } from "./blueprints/ObservabilityBlueprint";

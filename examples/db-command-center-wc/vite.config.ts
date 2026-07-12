@@ -6,7 +6,7 @@ import { defineConfig } from "vite";
 //
 // The @loom/* workspace packages ship CommonJS; transformMixedEsModules lets
 // Rollup trace their named exports through the re-export getter chain during
-// `vite build`. @loom/a2a supplies types plus one runtime value (`toAgentCard`
+// `vite build`. @loom/plugin-a2a supplies types plus one runtime value (`toAgentCard`
 // in src/agents/definitions.ts), so it must be pre-bundled by optimizeDeps like
 // the other CJS packages; its Node http server is only reached via `import type`
 // and never enters the bundle.
@@ -15,7 +15,7 @@ export default defineConfig({
   optimizeDeps: {
     include: [
       "@loom/app",
-      "@loom/a2a/cards",
+      "@loom/plugin-a2a/cards",
       "@loom/a2ui",
       "@loom/agent",
       "@loom/blueprint-runtime",
@@ -39,7 +39,7 @@ export default defineConfig({
   build: {
     commonjsOptions: {
       transformMixedEsModules: true,
-      include: [/node_modules/, /packages\/.*\/dist/],
+      include: [/node_modules/, /packages\/.*\/dist/, /plugins\/.*\/dist/],
     },
   },
 });

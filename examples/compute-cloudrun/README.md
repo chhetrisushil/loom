@@ -64,4 +64,4 @@ backend and completes on another; the Cloud Run platform records its `allocate`
 | `src/main.ts` | Headless driver |
 | `test/compute.test.ts` | Equivalence, cross-backend resume, Cloud Run sizing |
 
-See also [`@loom/platform-cloudrun` deploy guide](../../packages/platform-cloudrun/deploy.md).
+See also [`@loom/plugin-cloudrun` deploy guide](../../packages/platform-cloudrun/deploy.md).

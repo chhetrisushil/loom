@@ -26,10 +26,10 @@
   "devDependencies": {
     "@loom/core": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
-    "@loom/platform-cloudrun": "workspace:*",
+    "@loom/plugin-cloudrun": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@loom/worker-runtime-local": "workspace:*",
-    "@loom/worker-server": "workspace:*",
+    "@loom/plugin-worker-server": "workspace:*",
     "@loom/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",

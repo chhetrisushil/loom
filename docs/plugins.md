@@ -41,6 +41,20 @@ treats them the same.
 A 3P plugin can be **promoted** to 1P when it meets the 1P bar (maintained by/with core,
 conformance-gated, security-reviewed).
 
+### The public barrel (`@loom/sdk`) re-exports 1P plugins
+
+Because 1P plugins are the curated set, `@loom/sdk` re-exports them — curation, not a runtime
+privilege (a 3P plugin wires through the identical seams, it just isn't ours to vouch for). To
+keep a bare `import "@loom/sdk"` lean and browser-safe, **native/heavy** plugins are re-exported
+via a **subpath**, not the main barrel:
+
+- Light 1P plugins (protocols, renderers) → `import { … } from "@loom/sdk"`.
+- Native/heavy 1P plugins → `import { SqliteEventStore } from "@loom/sdk/sqlite"`,
+  `import { postgresStorage } from "@loom/sdk/postgres"`.
+
+3P plugins are never in the barrel; you import them by their own name. Both remain explicit
+imports, so the 1P/3P distinction stays purely organisational.
+
 ### Current first-party plugins
 
 - `@loom/plugin-sqlite` — embedded SQLite `Event`/`Snapshot`/`Branch`/`Timer` stores + the

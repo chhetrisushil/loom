@@ -6,7 +6,7 @@ import { defineConfig } from "vite";
 // @loom/* ship CommonJS; transformMixedEsModules lets Rollup trace their named
 // exports during `vite build`. Only browser-safe @loom/* reach the client bundle
 // (the server-only packages are imported solely by src/server/*, which Vite never
-// bundles). @loom/a2a is used for its types only (import type …).
+// bundles). @loom/plugin-a2a is used for its types only (import type …).
 export default defineConfig({
   server: {
     proxy: {
@@ -20,7 +20,7 @@ export default defineConfig({
   build: {
     commonjsOptions: {
       transformMixedEsModules: true,
-      include: [/node_modules/, /packages\/.*\/dist/],
+      include: [/node_modules/, /packages\/.*\/dist/, /plugins\/.*\/dist/],
     },
   },
 });

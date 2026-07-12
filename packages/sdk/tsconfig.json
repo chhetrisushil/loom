@@ -35,10 +35,10 @@
       "path": "../agent"
     },
     {
-      "path": "../mcp"
+      "path": "../../plugins/mcp"
     },
     {
-      "path": "../a2a"
+      "path": "../../plugins/a2a"
     },
     {
       "path": "../a2ui"
@@ -59,10 +59,13 @@
       "path": "../memory"
     },
     {
-      "path": "../renderer-terminal"
+      "path": "../../plugins/renderer-terminal"
     },
     {
       "path": "../../plugins/sqlite"
+    },
+    {
+      "path": "../../plugins/postgres"
     }
   ]
 }

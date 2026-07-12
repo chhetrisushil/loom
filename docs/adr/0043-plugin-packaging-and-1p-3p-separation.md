@@ -198,8 +198,14 @@ Landed on branch `feat/plugin-packaging-1p-3p`, each phase built + tested + lint
   change no architecture and are sequenced as a follow-up batch.
 - **Deferred by design:** the a2ui contract/impl split (Phase 5) and the `LoomPlugin` manifest/brand
   (CL8) remain gated as recorded above.
-- **Open, undecided:** whether `@loom/sdk` should keep re-exporting adapter packages
-  (`a2a`, `a2ui`, `mcp`, `renderer-terminal`). Resolving this precedes relocating those three.
+- **Decided (2026-07-13):** `@loom/sdk` **re-exports 1P plugins** — this is *curation*, not the
+  forbidden *mechanical* 1P/3P asymmetry (D4 bans a runtime branch; a barrel re-export is neither).
+  Guardrail: dependency-light 1P plugins (protocols, renderers) re-export from the **main** barrel;
+  **native/heavy** ones (`plugin-sqlite`→better-sqlite3, `plugin-postgres`→pg) re-export via a
+  **subpath** (`@loom/sdk/sqlite`, `@loom/sdk/postgres`) so a bare `import "@loom/sdk"` stays lean
+  and browser-safe — preserving the very native-dep-shedding win this ADR lands. 3P plugins are
+  never in the barrel (they are not core's to vouch for); both remain explicit imports, so
+  value-level symmetry holds.
 
 ## Phasing
 

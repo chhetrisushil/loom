@@ -78,8 +78,8 @@ pnpm --filter @loom/db-observability test    # classification, dynamic assembly,
 
 The composer emits a **framework-agnostic `Blueprint`** — the intent→WHAT/WHY brain
 (`agent`/`topics`/`catalogue`/`composer`) is shared verbatim. Only the *rendering* differs:
-- **terminal** (`@loom/renderer-terminal`) prints each widget as `title: value`.
-- **browser** (`@loom/renderer-react`) renders the *same* blueprint with a custom
+- **terminal** (`@loom/plugin-renderer-terminal`) prints each widget as `title: value`.
+- **browser** (`@loom/plugin-renderer-react`) renders the *same* blueprint with a custom
   `RendererRegistry`: our Recharts renderers (`src/browser/renderers.tsx`) are registered
   under the standard widget-kind names and merged over the built-ins, so `MetricCard` →
   gauge, `Timeline` → area chart, `ProgressBar` → bar, `DataTable` → table. No catalogue

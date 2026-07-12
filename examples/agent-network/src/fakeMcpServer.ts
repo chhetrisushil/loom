@@ -2,7 +2,7 @@ import * as http from "node:http";
 
 // A tiny in-process MCP server so the showcase can connect to MCP without any
 // external process. It speaks the subset of the JSON-RPC MCP protocol that
-// @loom/mcp's McpClient uses: initialize, tools/list, tools/call.
+// @loom/plugin-mcp's McpClient uses: initialize, tools/list, tools/call.
 export function startFakeMcpServer(): Promise<{ url: string; close: () => Promise<void> }> {
   const server = http.createServer((req, res) => {
     const chunks: Uint8Array[] = [];

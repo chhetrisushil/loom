@@ -1,0 +1,28 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test.tsx"],
+  "references": [
+    {
+      "path": "../../packages/core"
+    },
+    {
+      "path": "../../packages/blueprint-runtime"
+    },
+    {
+      "path": "../../packages/projection-runtime"
+    },
+    {
+      "path": "../../packages/workflow-runtime"
+    },
+    {
+      "path": "../../packages/a2ui"
+    }
+  ]
+}

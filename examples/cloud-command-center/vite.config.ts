@@ -23,7 +23,7 @@ export default defineConfig({
       "@loom/intent",
       "@loom/llm",
       "@loom/projection-runtime",
-      "@loom/renderer-react",
+      "@loom/plugin-renderer-react",
       "@loom/snapshot-runtime",
       "@loom/workflow-runtime",
     ],
@@ -31,7 +31,7 @@ export default defineConfig({
   build: {
     commonjsOptions: {
       transformMixedEsModules: true,
-      include: [/node_modules/, /packages\/.*\/dist/],
+      include: [/node_modules/, /packages\/.*\/dist/, /plugins\/.*\/dist/],
     },
   },
 });

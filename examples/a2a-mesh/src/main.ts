@@ -1,9 +1,14 @@
-import { A2APeerClient, createA2AClientEffect, createA2AServer, toAgentCard } from "@loom/a2a";
 import { AgentRunner } from "@loom/agent";
 import { defineConfig } from "@loom/app";
 import { agent$, flow$, handler$, step$ } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
+import {
+  A2APeerClient,
+  createA2AClientEffect,
+  createA2AServer,
+  toAgentCard,
+} from "@loom/plugin-a2a";
 import { AgentRegistry } from "@loom/registry";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { z } from "zod";
@@ -25,7 +30,7 @@ import { startMockExternalAgent } from "./mockExternalAgent";
  * runs fully offline; the README shows how to point it at a real ADK/LangGraph
  * endpoint — the Loom-side code does not change.
  *
- * Run with:  pnpm --filter @loom/a2a-mesh start
+ * Run with:  pnpm --filter @loom/plugin-a2a-mesh start
  */
 
 function section(title: string): void {

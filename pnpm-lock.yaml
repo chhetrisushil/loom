@@ -44,12 +44,12 @@ importers:
       '@loom/intent':
         specifier: workspace:*
         version: link:../../packages/intent
+      '@loom/plugin-renderer-react':
+        specifier: workspace:*
+        version: link:../../plugins/renderer-react
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../../packages/projection-runtime
-      '@loom/renderer-react':
-        specifier: workspace:*
-        version: link:../../packages/renderer-react
       '@loom/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
@@ -96,9 +96,6 @@ importers:
 
   examples/a2a-mesh:
     dependencies:
-      '@loom/a2a':
-        specifier: workspace:*
-        version: link:../../packages/a2a
       '@loom/agent':
         specifier: workspace:*
         version: link:../../packages/agent
@@ -117,6 +114,9 @@ importers:
       '@loom/llm':
         specifier: workspace:*
         version: link:../../packages/llm
+      '@loom/plugin-a2a':
+        specifier: workspace:*
+        version: link:../../plugins/a2a
       '@loom/registry':
         specifier: workspace:*
         version: link:../../packages/registry
@@ -142,9 +142,6 @@ importers:
 
   examples/agent-network:
     dependencies:
-      '@loom/a2a':
-        specifier: workspace:*
-        version: link:../../packages/a2a
       '@loom/a2ui':
         specifier: workspace:*
         version: link:../../packages/a2ui
@@ -175,24 +172,27 @@ importers:
       '@loom/llm':
         specifier: workspace:*
         version: link:../../packages/llm
-      '@loom/mcp':
-        specifier: workspace:*
-        version: link:../../packages/mcp
       '@loom/memory':
         specifier: workspace:*
         version: link:../../packages/memory
       '@loom/planner':
         specifier: workspace:*
         version: link:../../packages/planner
+      '@loom/plugin-a2a':
+        specifier: workspace:*
+        version: link:../../plugins/a2a
+      '@loom/plugin-mcp':
+        specifier: workspace:*
+        version: link:../../plugins/mcp
+      '@loom/plugin-renderer-terminal':
+        specifier: workspace:*
+        version: link:../../plugins/renderer-terminal
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../../packages/projection-runtime
       '@loom/registry':
         specifier: workspace:*
         version: link:../../packages/registry
-      '@loom/renderer-terminal':
-        specifier: workspace:*
-        version: link:../../packages/renderer-terminal
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime
@@ -215,9 +215,6 @@ importers:
 
   examples/agent-swarm:
     dependencies:
-      '@loom/a2a':
-        specifier: workspace:*
-        version: link:../../packages/a2a
       '@loom/app':
         specifier: workspace:*
         version: link:../../packages/app
@@ -245,6 +242,9 @@ importers:
       '@loom/planner':
         specifier: workspace:*
         version: link:../../packages/planner
+      '@loom/plugin-a2a':
+        specifier: workspace:*
+        version: link:../../plugins/a2a
       '@loom/plugin-sqlite':
         specifier: workspace:*
         version: link:../../plugins/sqlite
@@ -373,15 +373,15 @@ importers:
       '@loom/llm':
         specifier: workspace:*
         version: link:../../packages/llm
+      '@loom/plugin-renderer-react':
+        specifier: workspace:*
+        version: link:../../plugins/renderer-react
       '@loom/plugin-sqlite':
         specifier: workspace:*
         version: link:../../plugins/sqlite
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../../packages/projection-runtime
-      '@loom/renderer-react':
-        specifier: workspace:*
-        version: link:../../packages/renderer-react
       '@loom/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
@@ -443,9 +443,15 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../../packages/event-runtime
-      '@loom/platform-cloudrun':
+      '@loom/plugin-cloudrun':
         specifier: workspace:*
-        version: link:../../packages/platform-cloudrun
+        version: link:../../plugins/cloudrun
+      '@loom/plugin-worker-remote':
+        specifier: workspace:*
+        version: link:../../plugins/worker-remote
+      '@loom/plugin-worker-server':
+        specifier: workspace:*
+        version: link:../../plugins/worker-server
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime
@@ -455,12 +461,6 @@ importers:
       '@loom/worker-runtime-local':
         specifier: workspace:*
         version: link:../../packages/worker-runtime-local
-      '@loom/worker-runtime-remote':
-        specifier: workspace:*
-        version: link:../../packages/worker-runtime-remote
-      '@loom/worker-server':
-        specifier: workspace:*
-        version: link:../../packages/worker-server
       '@loom/workflow-runtime':
         specifier: workspace:*
         version: link:../../packages/workflow-runtime
@@ -483,9 +483,6 @@ importers:
 
   examples/db-command-center:
     dependencies:
-      '@loom/a2a':
-        specifier: workspace:*
-        version: link:../../packages/a2a
       '@loom/a2ui':
         specifier: workspace:*
         version: link:../../packages/a2ui
@@ -525,15 +522,18 @@ importers:
       '@loom/planner':
         specifier: workspace:*
         version: link:../../packages/planner
+      '@loom/plugin-a2a':
+        specifier: workspace:*
+        version: link:../../plugins/a2a
+      '@loom/plugin-renderer-react':
+        specifier: workspace:*
+        version: link:../../plugins/renderer-react
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../../packages/projection-runtime
       '@loom/registry':
         specifier: workspace:*
         version: link:../../packages/registry
-      '@loom/renderer-react':
-        specifier: workspace:*
-        version: link:../../packages/renderer-react
       '@loom/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
@@ -586,9 +586,6 @@ importers:
 
   examples/db-command-center-server:
     dependencies:
-      '@loom/a2a':
-        specifier: workspace:*
-        version: link:../../packages/a2a
       '@loom/a2ui':
         specifier: workspace:*
         version: link:../../packages/a2ui
@@ -625,6 +622,9 @@ importers:
       '@loom/planner':
         specifier: workspace:*
         version: link:../../packages/planner
+      '@loom/plugin-a2a':
+        specifier: workspace:*
+        version: link:../../plugins/a2a
       '@loom/plugin-sqlite':
         specifier: workspace:*
         version: link:../../plugins/sqlite
@@ -671,9 +671,6 @@ importers:
 
   examples/db-command-center-wc:
     dependencies:
-      '@loom/a2a':
-        specifier: workspace:*
-        version: link:../../packages/a2a
       '@loom/a2ui':
         specifier: workspace:*
         version: link:../../packages/a2ui
@@ -710,6 +707,9 @@ importers:
       '@loom/planner':
         specifier: workspace:*
         version: link:../../packages/planner
+      '@loom/plugin-a2a':
+        specifier: workspace:*
+        version: link:../../plugins/a2a
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../../packages/projection-runtime
@@ -759,15 +759,15 @@ importers:
       '@loom/llm':
         specifier: workspace:*
         version: link:../../packages/llm
+      '@loom/plugin-renderer-react':
+        specifier: workspace:*
+        version: link:../../plugins/renderer-react
+      '@loom/plugin-renderer-terminal':
+        specifier: workspace:*
+        version: link:../../plugins/renderer-terminal
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../../packages/projection-runtime
-      '@loom/renderer-react':
-        specifier: workspace:*
-        version: link:../../packages/renderer-react
-      '@loom/renderer-terminal':
-        specifier: workspace:*
-        version: link:../../packages/renderer-terminal
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -805,9 +805,6 @@ importers:
 
   examples/incident-war-room:
     dependencies:
-      '@loom/a2a':
-        specifier: workspace:*
-        version: link:../../packages/a2a
       '@loom/a2ui':
         specifier: workspace:*
         version: link:../../packages/a2ui
@@ -844,6 +841,9 @@ importers:
       '@loom/planner':
         specifier: workspace:*
         version: link:../../packages/planner
+      '@loom/plugin-a2a':
+        specifier: workspace:*
+        version: link:../../plugins/a2a
       '@loom/plugin-sqlite':
         specifier: workspace:*
         version: link:../../plugins/sqlite
@@ -951,9 +951,6 @@ importers:
 
   examples/schema-migration-planner:
     dependencies:
-      '@loom/a2a':
-        specifier: workspace:*
-        version: link:../../packages/a2a
       '@loom/a2ui':
         specifier: workspace:*
         version: link:../../packages/a2ui
@@ -990,6 +987,9 @@ importers:
       '@loom/planner':
         specifier: workspace:*
         version: link:../../packages/planner
+      '@loom/plugin-a2a':
+        specifier: workspace:*
+        version: link:../../plugins/a2a
       '@loom/plugin-sqlite':
         specifier: workspace:*
         version: link:../../plugins/sqlite
@@ -1036,37 +1036,6 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-
-  packages/a2a:
-    dependencies:
-      '@loom/core':
-        specifier: workspace:*
-        version: link:../core
-      '@loom/effect-runtime':
-        specifier: workspace:*
-        version: link:../effect-runtime
-      '@loom/workflow-runtime':
-        specifier: workspace:*
-        version: link:../workflow-runtime
-    devDependencies:
-      '@loom/event-runtime':
-        specifier: workspace:*
-        version: link:../event-runtime
-      '@loom/snapshot-runtime':
-        specifier: workspace:*
-        version: link:../snapshot-runtime
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
 
   packages/a2ui:
     dependencies:
@@ -1139,9 +1108,6 @@ importers:
 
   packages/app:
     dependencies:
-      '@loom/a2a':
-        specifier: workspace:*
-        version: link:../a2a
       '@loom/a2ui':
         specifier: workspace:*
         version: link:../a2ui
@@ -1157,6 +1123,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/plugin-a2a':
+        specifier: workspace:*
+        version: link:../../plugins/a2a
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../projection-runtime
@@ -1582,21 +1551,21 @@ importers:
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../effect-runtime
-      '@loom/platform-cloudrun':
+      '@loom/plugin-cloudrun':
         specifier: workspace:*
-        version: link:../platform-cloudrun
+        version: link:../../plugins/cloudrun
       '@loom/plugin-sqlite':
         specifier: workspace:*
         version: link:../../plugins/sqlite
+      '@loom/plugin-worker-server':
+        specifier: workspace:*
+        version: link:../../plugins/worker-server
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
       '@loom/worker-runtime-local':
         specifier: workspace:*
         version: link:../worker-runtime-local
-      '@loom/worker-server':
-        specifier: workspace:*
-        version: link:../worker-server
       '@loom/workflow-runtime':
         specifier: workspace:*
         version: link:../workflow-runtime
@@ -1725,28 +1694,6 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
-  packages/mcp:
-    dependencies:
-      '@loom/core':
-        specifier: workspace:*
-        version: link:../core
-      '@loom/effect-runtime':
-        specifier: workspace:*
-        version: link:../effect-runtime
-    devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
-
   packages/memory:
     dependencies:
       '@loom/core':
@@ -1859,55 +1806,6 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
 
-  packages/platform-cloudrun:
-    dependencies:
-      '@loom/dispatcher':
-        specifier: workspace:*
-        version: link:../dispatcher
-      '@loom/worker-runtime':
-        specifier: workspace:*
-        version: link:../worker-runtime
-      '@loom/worker-runtime-remote':
-        specifier: workspace:*
-        version: link:../worker-runtime-remote
-    devDependencies:
-      '@loom/core':
-        specifier: workspace:*
-        version: link:../core
-      '@loom/effect-runtime':
-        specifier: workspace:*
-        version: link:../effect-runtime
-      '@loom/event-runtime':
-        specifier: workspace:*
-        version: link:../event-runtime
-      '@loom/plugin-sqlite':
-        specifier: workspace:*
-        version: link:../../plugins/sqlite
-      '@loom/snapshot-runtime':
-        specifier: workspace:*
-        version: link:../snapshot-runtime
-      '@loom/worker-runtime-local':
-        specifier: workspace:*
-        version: link:../worker-runtime-local
-      '@loom/worker-server':
-        specifier: workspace:*
-        version: link:../worker-server
-      '@loom/workflow-runtime':
-        specifier: workspace:*
-        version: link:../workflow-runtime
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
-
   packages/projection-runtime:
     dependencies:
       '@loom/core':
@@ -1949,77 +1847,6 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-
-  packages/renderer-react:
-    dependencies:
-      '@loom/a2ui':
-        specifier: workspace:*
-        version: link:../a2ui
-      '@loom/blueprint-runtime':
-        specifier: workspace:*
-        version: link:../blueprint-runtime
-      '@loom/core':
-        specifier: workspace:*
-        version: link:../core
-      '@loom/projection-runtime':
-        specifier: workspace:*
-        version: link:../projection-runtime
-      '@loom/workflow-runtime':
-        specifier: workspace:*
-        version: link:../workflow-runtime
-    devDependencies:
-      '@testing-library/react':
-        specifier: ^16.0.0
-        version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      '@types/react':
-        specifier: ^18.3.12
-        version: 18.3.31
-      '@types/react-dom':
-        specifier: ^18.3.1
-        version: 18.3.7(@types/react@18.3.31)
-      '@vitejs/plugin-react':
-        specifier: ^4.3.3
-        version: 4.7.0(vite@7.3.6(@types/node@22.20.0)(sass@1.90.0)(tsx@4.23.0))
-      jsdom:
-        specifier: ^25.0.0
-        version: 25.0.1
-      react:
-        specifier: ^18.3.1
-        version: 18.3.1
-      react-dom:
-        specifier: ^18.3.1
-        version: 18.3.1(react@18.3.1)
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-
-  packages/renderer-terminal:
-    dependencies:
-      '@loom/blueprint-runtime':
-        specifier: workspace:*
-        version: link:../blueprint-runtime
-      '@loom/projection-runtime':
-        specifier: workspace:*
-        version: link:../projection-runtime
-    devDependencies:
-      '@loom/core':
-        specifier: workspace:*
-        version: link:../core
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -2109,9 +1936,6 @@ importers:
 
   packages/sdk:
     dependencies:
-      '@loom/a2a':
-        specifier: workspace:*
-        version: link:../a2a
       '@loom/a2ui':
         specifier: workspace:*
         version: link:../a2ui
@@ -2136,15 +1960,24 @@ importers:
       '@loom/llm':
         specifier: workspace:*
         version: link:../llm
-      '@loom/mcp':
-        specifier: workspace:*
-        version: link:../mcp
       '@loom/memory':
         specifier: workspace:*
         version: link:../memory
       '@loom/planner':
         specifier: workspace:*
         version: link:../planner
+      '@loom/plugin-a2a':
+        specifier: workspace:*
+        version: link:../../plugins/a2a
+      '@loom/plugin-mcp':
+        specifier: workspace:*
+        version: link:../../plugins/mcp
+      '@loom/plugin-postgres':
+        specifier: workspace:*
+        version: link:../../plugins/postgres
+      '@loom/plugin-renderer-terminal':
+        specifier: workspace:*
+        version: link:../../plugins/renderer-terminal
       '@loom/plugin-sqlite':
         specifier: workspace:*
         version: link:../../plugins/sqlite
@@ -2157,9 +1990,6 @@ importers:
       '@loom/registry':
         specifier: workspace:*
         version: link:../registry
-      '@loom/renderer-terminal':
-        specifier: workspace:*
-        version: link:../renderer-terminal
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
@@ -2397,68 +2227,6 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
 
-  packages/worker-runtime-remote:
-    dependencies:
-      '@loom/worker-runtime':
-        specifier: workspace:*
-        version: link:../worker-runtime
-    devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-
-  packages/worker-server:
-    dependencies:
-      '@loom/worker-runtime':
-        specifier: workspace:*
-        version: link:../worker-runtime
-    devDependencies:
-      '@loom/core':
-        specifier: workspace:*
-        version: link:../core
-      '@loom/dispatcher':
-        specifier: workspace:*
-        version: link:../dispatcher
-      '@loom/effect-runtime':
-        specifier: workspace:*
-        version: link:../effect-runtime
-      '@loom/event-runtime':
-        specifier: workspace:*
-        version: link:../event-runtime
-      '@loom/plugin-sqlite':
-        specifier: workspace:*
-        version: link:../../plugins/sqlite
-      '@loom/snapshot-runtime':
-        specifier: workspace:*
-        version: link:../snapshot-runtime
-      '@loom/worker-runtime-local':
-        specifier: workspace:*
-        version: link:../worker-runtime-local
-      '@loom/worker-runtime-remote':
-        specifier: workspace:*
-        version: link:../worker-runtime-remote
-      '@loom/workflow-runtime':
-        specifier: workspace:*
-        version: link:../workflow-runtime
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
-
   packages/workflow-runtime:
     dependencies:
       '@loom/a2ui':
@@ -2492,6 +2260,37 @@ importers:
       '@loom/plugin-sqlite':
         specifier: workspace:*
         version: link:../../plugins/sqlite
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+
+  plugins/a2a:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
+    devDependencies:
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -2539,6 +2338,55 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
 
+  plugins/cloudrun:
+    dependencies:
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../../packages/dispatcher
+      '@loom/plugin-worker-remote':
+        specifier: workspace:*
+        version: link:../worker-remote
+      '@loom/worker-runtime':
+        specifier: workspace:*
+        version: link:../../packages/worker-runtime
+    devDependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../sqlite
+      '@loom/plugin-worker-server':
+        specifier: workspace:*
+        version: link:../worker-server
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
+      '@loom/worker-runtime-local':
+        specifier: workspace:*
+        version: link:../../packages/worker-runtime-local
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+
   plugins/crypto:
     dependencies:
       '@loom/core':
@@ -2563,6 +2411,28 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  plugins/mcp:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
 
   plugins/postgres:
     dependencies:
@@ -2598,6 +2468,77 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
+  plugins/renderer-react:
+    dependencies:
+      '@loom/a2ui':
+        specifier: workspace:*
+        version: link:../../packages/a2ui
+      '@loom/blueprint-runtime':
+        specifier: workspace:*
+        version: link:../../packages/blueprint-runtime
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/projection-runtime':
+        specifier: workspace:*
+        version: link:../../packages/projection-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
+    devDependencies:
+      '@testing-library/react':
+        specifier: ^16.0.0
+        version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      '@types/react':
+        specifier: ^18.3.12
+        version: 18.3.31
+      '@types/react-dom':
+        specifier: ^18.3.1
+        version: 18.3.7(@types/react@18.3.31)
+      '@vitejs/plugin-react':
+        specifier: ^4.3.3
+        version: 4.7.0(vite@7.3.6(@types/node@22.20.0)(sass@1.90.0)(tsx@4.23.0))
+      jsdom:
+        specifier: ^25.0.0
+        version: 25.0.1
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.1
+        version: 18.3.1(react@18.3.1)
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  plugins/renderer-terminal:
+    dependencies:
+      '@loom/blueprint-runtime':
+        specifier: workspace:*
+        version: link:../../packages/blueprint-runtime
+      '@loom/projection-runtime':
+        specifier: workspace:*
+        version: link:../../packages/projection-runtime
+    devDependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   plugins/sqlite:
     dependencies:
       '@loom/core':
@@ -2625,6 +2566,68 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  plugins/worker-remote:
+    dependencies:
+      '@loom/worker-runtime':
+        specifier: workspace:*
+        version: link:../../packages/worker-runtime
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  plugins/worker-server:
+    dependencies:
+      '@loom/worker-runtime':
+        specifier: workspace:*
+        version: link:../../packages/worker-runtime
+    devDependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../../packages/dispatcher
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../sqlite
+      '@loom/plugin-worker-remote':
+        specifier: workspace:*
+        version: link:../worker-remote
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
+      '@loom/worker-runtime-local':
+        specifier: workspace:*
+        version: link:../../packages/worker-runtime-local
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
 
   tools/create-loom-app:
     dependencies:

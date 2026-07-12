@@ -1,7 +1,7 @@
-import type { AgentCard } from "@loom/a2a";
-import { toAgentCard } from "@loom/a2a/cards";
 import { agent$ } from "@loom/core";
 import type { AgentDefinition } from "@loom/core";
+import type { AgentCard } from "@loom/plugin-a2a";
+import { toAgentCard } from "@loom/plugin-a2a/cards";
 import { DepsTool, PerfTool, ScopeTool, SecurityTool, SignoffTool } from "./tools";
 
 // ── The release-audit fleet ───────────────────────────────────────────────────

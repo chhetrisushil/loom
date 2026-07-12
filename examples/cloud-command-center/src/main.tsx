@@ -1,6 +1,6 @@
 import { defineConfig } from "@loom/app";
+import { LoomProvider } from "@loom/plugin-renderer-react";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { LoomProvider } from "@loom/renderer-react";
 import type { RegisteredFlow } from "@loom/workflow-runtime";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";

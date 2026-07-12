@@ -7,19 +7,16 @@ export { InMemoryAsyncEventStore } from "@loom/event-runtime";
 export type { BranchRef, BranchRegistry, LineageRecord } from "@loom/event-runtime";
 export { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 export type { SnapshotStore, Snapshot } from "@loom/snapshot-runtime";
-// SQLite stores are an adapter — re-exported from the plugin (ADR 0043).
-export {
-  SqliteEventStore,
-  SqliteBranchRegistry,
-  SqliteSnapshotStore,
-} from "@loom/plugin-sqlite";
+// Native-dep 1P store plugins (SQLite → better-sqlite3, Postgres → pg) are re-exported
+// via subpaths — `@loom/sdk/sqlite`, `@loom/sdk/postgres` — so a bare `@loom/sdk` import
+// stays lean and browser-safe (ADR 0043).
 
 // ── Agentic capabilities ─────────────────────────────────────────────────────
 export * from "@loom/llm";
 export * from "@loom/reasoning";
 export * from "@loom/agent";
-export * from "@loom/mcp";
-export * from "@loom/a2a";
+export * from "@loom/plugin-mcp";
+export * from "@loom/plugin-a2a";
 export * from "@loom/a2ui";
 export { AgentRegistry, globalAgentRegistry } from "@loom/registry";
 export type { RegisteredAgent, RegisteredAgentCard } from "@loom/registry";
@@ -29,4 +26,4 @@ export * from "@loom/capability";
 export * from "@loom/intent";
 export * from "@loom/planner";
 export * from "@loom/memory";
-export * from "@loom/renderer-terminal";
+export * from "@loom/plugin-renderer-terminal";

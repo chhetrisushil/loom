@@ -9,24 +9,62 @@
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"],
   "references": [
-    { "path": "../../packages/core" },
-    { "path": "../../packages/effect-runtime" },
-    { "path": "../../packages/sdk" },
-    { "path": "../../packages/workflow-runtime" },
-    { "path": "../../packages/worker-runtime" },
-    { "path": "../../packages/worker-runtime-local" },
-    { "path": "../../packages/dispatcher" },
-    { "path": "../../packages/event-runtime" },
-    { "path": "../../packages/snapshot-runtime" },
-    { "path": "../../packages/projection-runtime" },
-    { "path": "../../packages/blueprint-runtime" },
-    { "path": "../../packages/llm" },
-    { "path": "../../packages/agent" },
-    { "path": "../../packages/a2a" },
-    { "path": "../../packages/a2ui" },
-    { "path": "../../packages/capability" },
-    { "path": "../../packages/intent" },
-    { "path": "../../packages/planner" },
-    { "path": "../../packages/registry" }
+    {
+      "path": "../../packages/core"
+    },
+    {
+      "path": "../../packages/effect-runtime"
+    },
+    {
+      "path": "../../packages/sdk"
+    },
+    {
+      "path": "../../packages/workflow-runtime"
+    },
+    {
+      "path": "../../packages/worker-runtime"
+    },
+    {
+      "path": "../../packages/worker-runtime-local"
+    },
+    {
+      "path": "../../packages/dispatcher"
+    },
+    {
+      "path": "../../packages/event-runtime"
+    },
+    {
+      "path": "../../packages/snapshot-runtime"
+    },
+    {
+      "path": "../../packages/projection-runtime"
+    },
+    {
+      "path": "../../packages/blueprint-runtime"
+    },
+    {
+      "path": "../../packages/llm"
+    },
+    {
+      "path": "../../packages/agent"
+    },
+    {
+      "path": "../../plugins/a2a"
+    },
+    {
+      "path": "../../packages/a2ui"
+    },
+    {
+      "path": "../../packages/capability"
+    },
+    {
+      "path": "../../packages/intent"
+    },
+    {
+      "path": "../../packages/planner"
+    },
+    {
+      "path": "../../packages/registry"
+    }
   ]
 }

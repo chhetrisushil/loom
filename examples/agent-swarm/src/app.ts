@@ -1,8 +1,8 @@
-import type { AgentCard } from "@loom/a2a";
 import { type LoomApp, defineConfig } from "@loom/app";
 import type { CapabilityCatalog } from "@loom/capability";
 import { LocalDispatcher } from "@loom/dispatcher";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
+import type { AgentCard } from "@loom/plugin-a2a";
 import { sqliteStorage } from "@loom/plugin-sqlite";
 import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
 import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "./agents/definitions";

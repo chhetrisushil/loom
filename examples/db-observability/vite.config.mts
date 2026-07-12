@@ -18,14 +18,14 @@ export default defineConfig({
       "@loom/core",
       "@loom/llm",
       "@loom/projection-runtime",
-      "@loom/renderer-react",
+      "@loom/plugin-renderer-react",
     ],
   },
   build: {
     outDir: "dist/ui",
     commonjsOptions: {
       transformMixedEsModules: true,
-      include: [/node_modules/, /packages\/.*\/dist/],
+      include: [/node_modules/, /packages\/.*\/dist/, /plugins\/.*\/dist/],
     },
   },
 });

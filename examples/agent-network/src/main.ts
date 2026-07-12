@@ -1,15 +1,15 @@
-import { createA2AClientEffect, createA2AServer, toAgentCard } from "@loom/a2a";
 import { AgentRunner, SkillRegistry } from "@loom/agent";
 import { defineConfig } from "@loom/app";
 import { CapabilityCatalog } from "@loom/capability";
 import { agent$, flow$, handler$, instructions$, memory$, skill$, step$ } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { IntentRuntime } from "@loom/intent";
-import { McpClient } from "@loom/mcp";
 import { MemoryRuntime } from "@loom/memory";
 import { PlannerRuntime } from "@loom/planner";
+import { createA2AClientEffect, createA2AServer, toAgentCard } from "@loom/plugin-a2a";
+import { McpClient } from "@loom/plugin-mcp";
+import { TerminalRenderer } from "@loom/plugin-renderer-terminal";
 import { AgentRegistry } from "@loom/registry";
-import { TerminalRenderer } from "@loom/renderer-terminal";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 /**
  * Agent Network — a server-side showcase of Loom's agentic capabilities.

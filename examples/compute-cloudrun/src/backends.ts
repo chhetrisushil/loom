@@ -4,10 +4,10 @@ import {
   CloudRunWorkerRuntime,
   StaticCloudRunPlatform,
   defaultSizingPolicy,
-} from "@loom/platform-cloudrun";
-import type { CloudRunConfig } from "@loom/platform-cloudrun";
+} from "@loom/plugin-cloudrun";
+import type { CloudRunConfig } from "@loom/plugin-cloudrun";
+import { RemoteWorkerRuntime } from "@loom/plugin-worker-remote";
 import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
-import { RemoteWorkerRuntime } from "@loom/worker-runtime-remote";
 import type { WorkflowRuntime } from "@loom/workflow-runtime";
 
 // Three interchangeable compute backends for the SAME flow. Each returns an
