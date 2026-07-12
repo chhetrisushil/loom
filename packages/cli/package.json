@@ -32,7 +32,10 @@
     "@loom/scaffold": "workspace:*",
     "@loom/spec": "workspace:*",
     "@loom/verify": "workspace:*",
-    "@loom/plugin-sqlite": "workspace:*"
+    "@loom/plugin-sqlite": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*",
+    "@loom/plugin-kit": "workspace:*",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@loom/effect-runtime": "workspace:*",
