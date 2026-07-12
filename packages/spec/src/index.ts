@@ -19,3 +19,11 @@ export {
   renderMaturityTable,
   renderManifestText,
 } from "./render";
+export {
+  KERNEL_PACKAGES,
+  SPI_PACKAGES,
+  PURE_PACKAGES,
+  readWorkspaceGraph,
+  findLayeringViolations,
+  type LayeringViolation,
+} from "./layering";
