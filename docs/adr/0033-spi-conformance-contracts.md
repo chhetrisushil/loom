@@ -46,3 +46,13 @@ No new kernel mechanism — this is consolidation + test scaffolding over the ex
 
 - Merges the requirements' "Kernel Extensions" (mostly shipped) and "Runtime Contracts" (partial)
   into one consolidation item; "Fiber Contract" dropped (fibers rejected).
+
+## Coverage extension (2026-07-13)
+
+Conformance kits now cover **6 SPIs**: `runEventStoreConformance`, `runSnapshotStoreConformance`,
+`runBranchRegistryConformance`, `runExecutionDispatcherConformance`, plus **`runTimerStoreConformance`**
+and **`runProjectionRuntimeConformance`** — each self-tested against the in-memory reference (and
+the SQLite backend for the timer store). The `loom plugin new <seam>` scaffolder (ADR 0043) emits
+the matching conformance-wired test for `store | dispatcher | telemetry | middleware | timer |
+projection`. Remaining seams without a kit: worker-runtime, llm-provider, widget-renderer,
+capability-authorizer, effect-middleware, telemetry (passive-observer contracts — lower value).

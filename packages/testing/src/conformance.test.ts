@@ -5,8 +5,15 @@ import {
   EVENT_STORE_SPI_VERSION,
   InMemoryAsyncEventStore,
   InMemoryBranchRegistry,
+  InMemoryTimerStore,
 } from "@loom/event-runtime";
-import { SqliteBranchRegistry, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+import {
+  SqliteBranchRegistry,
+  SqliteEventStore,
+  SqliteSnapshotStore,
+  SqliteTimerStore,
+} from "@loom/plugin-sqlite";
+import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { InMemoryAsyncSnapshotStore, SNAPSHOT_STORE_SPI_VERSION } from "@loom/snapshot-runtime";
 import type {
   ExecutionPackage,
@@ -20,7 +27,9 @@ import {
   runBranchRegistryConformance,
   runEventStoreConformance,
   runExecutionDispatcherConformance,
+  runProjectionRuntimeConformance,
   runSnapshotStoreConformance,
+  runTimerStoreConformance,
 } from "./conformance";
 
 /** A minimal in-memory WorkerRuntime for the dispatcher conformance self-test. */
@@ -71,6 +80,11 @@ runBranchRegistryConformance(
 );
 
 runExecutionDispatcherConformance(() => new LocalDispatcher(new FakeWorker()), "LocalDispatcher");
+
+runTimerStoreConformance(() => new InMemoryTimerStore(), "InMemoryTimerStore");
+runTimerStoreConformance(() => new SqliteTimerStore(":memory:"), "SqliteTimerStore(:memory:)");
+
+runProjectionRuntimeConformance(() => new InMemoryProjectionRuntime(), "InMemoryProjectionRuntime");
 
 // Every public SPI declares a version constant (ADR 0033 — versioning policy).
 describe("SPI version constants", () => {

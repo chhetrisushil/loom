@@ -329,6 +329,114 @@ const SEAMS: Record<string, SeamDef> = {
       ].join("\n");
     },
   },
+
+  timer: {
+    key: "timer",
+    title: "Durable timer store (T1 scheduled wakes)",
+    wiring: "timers: { store: new <Name>TimerStore() }",
+    spiDeps: ["@loom/event-runtime"],
+    conformance: ["runTimerStoreConformance"],
+    index: (name) => {
+      const P = pascal(name);
+      return [
+        'import type { TimerRecord, TimerStore } from "@loom/event-runtime";',
+        "",
+        "/** A `TimerStore` — the findable half of `ctx.sleep`. Wire as `timers: { store }`. */",
+        `export class ${P}TimerStore implements TimerStore {`,
+        "  schedule(_timer: TimerRecord): Promise<void> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  due(_now: number, _limit?: number): Promise<TimerRecord[]> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  complete(_executionId: string, _wakeAt: number): Promise<void> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  close(): Promise<void> {",
+        "    return Promise.resolve();",
+        "  }",
+        "}",
+        "",
+      ].join("\n");
+    },
+    test: (name) => {
+      const P = pascal(name);
+      return [
+        "// Prove your timer store with the conformance kit once the methods are real:",
+        '// import { runTimerStoreConformance } from "@loom/testing/conformance";',
+        `// import { ${P}TimerStore } from "./index";`,
+        `// runTimerStoreConformance(() => new ${P}TimerStore());`,
+        "",
+        'import { describe, expect, it } from "vitest";',
+        `import { ${P}TimerStore } from "./index";`,
+        "",
+        `describe("${P}TimerStore", () => {`,
+        '  it("constructs", () => {',
+        `    expect(new ${P}TimerStore()).toBeDefined();`,
+        "  });",
+        "});",
+        "",
+      ].join("\n");
+    },
+  },
+
+  projection: {
+    key: "projection",
+    title: "Projection runtime (custom read-model backend)",
+    wiring: "projectionRuntime: new <Name>ProjectionRuntime()",
+    spiDeps: ["@loom/projection-runtime"],
+    conformance: ["runProjectionRuntimeConformance"],
+    index: (name) => {
+      const P = pascal(name);
+      return [
+        'import type { EventEnvelope } from "@loom/core";',
+        'import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";',
+        "",
+        "/** A `ProjectionRuntime` — folds events into read-models. Wire as `projectionRuntime`. */",
+        `export class ${P}ProjectionRuntime implements ProjectionRuntime {`,
+        "  register<TState>(_projection: Projection<TState>): void {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  getState<TState>(_projectionId: string, _executionId: string): TState {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  subscribe<TState>(",
+        "    _projectionId: string,",
+        "    _executionId: string,",
+        "    _handler: (state: TState) => void",
+        "  ): () => void {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  handleEvent(_event: EventEnvelope): void {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  seedState(_projectionId: string, _executionId: string, _state: unknown): void {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "}",
+        "",
+      ].join("\n");
+    },
+    test: (name) => {
+      const P = pascal(name);
+      return [
+        "// Prove your projection runtime with the conformance kit once methods are real:",
+        '// import { runProjectionRuntimeConformance } from "@loom/testing/conformance";',
+        `// import { ${P}ProjectionRuntime } from "./index";`,
+        `// runProjectionRuntimeConformance(() => new ${P}ProjectionRuntime());`,
+        "",
+        'import { describe, expect, it } from "vitest";',
+        `import { ${P}ProjectionRuntime } from "./index";`,
+        "",
+        `describe("${P}ProjectionRuntime", () => {`,
+        '  it("constructs", () => {',
+        `    expect(new ${P}ProjectionRuntime()).toBeDefined();`,
+        "  });",
+        "});",
+        "",
+      ].join("\n");
+    },
+  },
 };
 
 export const SEAM_KEYS = Object.keys(SEAMS);
@@ -344,7 +452,9 @@ export function listSeams(): string {
 }
 
 function pluginPackageJson(seam: SeamDef, packageName: string, firstParty: boolean): string {
-  const spi = [...seam.spiDeps];
+  // @loom/core is foundational (its types back every seam) and is always in the
+  // tsconfig references, so it is always a dependency — deduped against seam.spiDeps.
+  const spi = [...new Set(["@loom/core", ...seam.spiDeps])];
   const version = firstParty ? "workspace:*" : "*";
   const deps: Record<string, string> = {};
   for (const d of spi) deps[d] = version;
