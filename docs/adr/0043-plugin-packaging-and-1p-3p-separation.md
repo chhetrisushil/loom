@@ -191,11 +191,14 @@ Landed on branch `feat/plugin-packaging-1p-3p`, each phase built + tested + lint
 - **Done — Phase 1/4 (storage family):** relocated + renamed `store-postgres → @loom/plugin-postgres`,
   `store-crypto → @loom/plugin-crypto`, `audit-chain → @loom/plugin-audit-chain`, all under
   `plugins/`. 3P authoring guide: [`docs/plugins.md`](../plugins.md).
-- **Deferred — remaining adapters:** `worker-runtime-remote`, `worker-server`, `platform-cloudrun`,
-  `renderer-react` (clean but higher-churn: 5–9 importers each) and `mcp`, `a2a`, `renderer-terminal`
-  (also re-exported by the `@loom/sdk` public barrel — moving them forces the open barrel decision
-  below). These are pure mechanical `git mv` + specifier rewrites using the proven procedure; they
-  change no architecture and are sequenced as a follow-up batch.
+- **Done — all remaining adapters relocated:** `worker-runtime-remote → @loom/plugin-worker-remote`,
+  `worker-server → @loom/plugin-worker-server`, `platform-cloudrun → @loom/plugin-cloudrun`,
+  `renderer-react → @loom/plugin-renderer-react`, `mcp → @loom/plugin-mcp`, `a2a → @loom/plugin-a2a`,
+  `renderer-terminal → @loom/plugin-renderer-terminal`. **`plugins/` now holds all 11 first-party
+  adapters**; `packages/` is kernel + SPI + advisory + tooling only.
+- **Done — sdk re-exports 1P plugins** per the decision below: light plugins (`a2a`, `mcp`,
+  `renderer-terminal`) in the main barrel; native/heavy store plugins behind `@loom/sdk/sqlite` and
+  `@loom/sdk/postgres` subpaths so a bare `@loom/sdk` import stays lean.
 - **Deferred by design:** the a2ui contract/impl split (Phase 5) and the `LoomPlugin` manifest/brand
   (CL8) remain gated as recorded above.
 - **Decided (2026-07-13):** `@loom/sdk` **re-exports 1P plugins** — this is *curation*, not the
