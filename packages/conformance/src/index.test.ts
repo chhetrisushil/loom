@@ -1,5 +1,6 @@
 import type { ExecutionState } from "@loom/core";
 import { DISPATCHER_SPI_VERSION, LocalDispatcher } from "@loom/dispatcher";
+import { GrantTable } from "@loom/effect-runtime";
 import {
   BRANCH_REGISTRY_SPI_VERSION,
   EVENT_STORE_SPI_VERSION,
@@ -7,6 +8,7 @@ import {
   InMemoryBranchRegistry,
   InMemoryTimerStore,
 } from "@loom/event-runtime";
+import type { LlmProvider } from "@loom/llm";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { InMemoryAsyncSnapshotStore, SNAPSHOT_STORE_SPI_VERSION } from "@loom/snapshot-runtime";
 import type {
@@ -19,8 +21,10 @@ import type {
 import { describe, expect, it } from "vitest";
 import {
   runBranchRegistryConformance,
+  runCapabilityAuthorizerConformance,
   runEventStoreConformance,
   runExecutionDispatcherConformance,
+  runLlmProviderConformance,
   runProjectionRuntimeConformance,
   runSnapshotStoreConformance,
   runTimerStoreConformance,
@@ -77,3 +81,23 @@ describe("SPI version constants", () => {
     }
   });
 });
+
+// (WorkerRuntime conformance self-tests against LocalWorkerRuntime in
+// @loom/worker-runtime-local — that package owns the reference impl + a runtime to run.)
+
+// --- LlmProvider: a deterministic echo provider (offline). ---
+const echoProvider: LlmProvider = {
+  async complete(req) {
+    const last = req.messages[req.messages.length - 1];
+    return { content: `echo:${last?.content ?? ""}`, stopReason: "end_turn" };
+  },
+  async *stream(req) {
+    const last = req.messages[req.messages.length - 1];
+    yield { delta: `echo:${last?.content ?? ""}`, done: false };
+    yield { delta: "", done: true };
+  },
+};
+runLlmProviderConformance(() => echoProvider, "EchoLlmProvider");
+
+// --- CapabilityAuthorizer: the reference GrantTable. ---
+runCapabilityAuthorizerConformance(() => new GrantTable({ w: ["t"] }), "GrantTable");

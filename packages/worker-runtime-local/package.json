@@ -7,7 +7,8 @@
   "exports": {
     ".": {
       "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "scripts": {
@@ -30,6 +31,7 @@
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
     "zod": "^3.23.8",
-    "@loom/plugin-sqlite": "workspace:*"
+    "@loom/plugin-sqlite": "workspace:*",
+    "@loom/conformance": "workspace:*"
   }
 }

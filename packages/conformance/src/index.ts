@@ -1,5 +1,6 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
+import type { CapabilityAuthorizer, CapabilityRequest } from "@loom/effect-runtime";
 import type {
   BranchRef,
   BranchRegistry,
@@ -8,9 +9,10 @@ import type {
   TimerStore,
 } from "@loom/event-runtime";
 import { readRangeOf } from "@loom/event-runtime";
+import type { LlmProvider } from "@loom/llm";
 import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
-import type { ExecutionPackage } from "@loom/worker-runtime";
+import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
 import { describe, expect, it } from "vitest";
 
 // ── SPI conformance kits (ADR 0033) ──────────────────────────────────────────
@@ -376,6 +378,81 @@ export function runProjectionRuntimeConformance(
       r.register(counter);
       r.handleEvent({ ...tick("x", 1, 1), eventType: "OTHER" });
       expect(r.getState("counter", "x")).toEqual({ n: 0 });
+    });
+  });
+}
+
+/**
+ * Prove a {@link WorkerRuntime} conforms: `allocate` yields a lease, `execute` runs a
+ * package to a terminal status echoing the executionId, and `release` is safe. Because
+ * `execute` needs a runnable package, the factory returns a worker AND a package it can
+ * run (fresh per case, so their flow ids match).
+ */
+export function runWorkerRuntimeConformance(
+  factory: () => { worker: WorkerRuntime; pkg: ExecutionPackage },
+  label = "WorkerRuntime"
+): void {
+  describe(`${label} conformance (WorkerRuntime SPI)`, () => {
+    it("allocate → execute → release runs a package to a terminal status", async () => {
+      const { worker, pkg } = factory();
+      const lease = await worker.allocate({ executionId: pkg.executionId });
+      expect(typeof lease.leaseId).toBe("string");
+      const result = await worker.execute(lease, pkg);
+      expect(result.executionId).toBe(pkg.executionId);
+      expect(["completed", "suspended", "failed"]).toContain(result.status);
+      expect(result.lastSequence).toBeGreaterThanOrEqual(0);
+      await expect(worker.release(lease)).resolves.toBeUndefined();
+    });
+  });
+}
+
+/**
+ * Prove an {@link LlmProvider} conforms: `complete` returns `content` + a valid
+ * `stopReason`; `stream` (when supported) yields chunks terminated by `done`.
+ */
+export function runLlmProviderConformance(factory: () => LlmProvider, label = "LlmProvider"): void {
+  const req = { messages: [{ role: "user" as const, content: "hi" }] };
+  describe(`${label} conformance (LlmProvider SPI)`, () => {
+    it("complete returns content and a valid stopReason", async () => {
+      const res = await factory().complete(req);
+      expect(typeof res.content).toBe("string");
+      expect(["end_turn", "tool_use", "max_tokens"]).toContain(res.stopReason);
+    });
+
+    it("stream (when supported) yields chunks ending with done:true", async () => {
+      const provider = factory();
+      if (provider.stream === undefined) return;
+      const chunks = [];
+      for await (const c of provider.stream(req)) chunks.push(c);
+      expect(chunks.length).toBeGreaterThan(0);
+      expect(chunks[chunks.length - 1]?.done).toBe(true);
+    });
+  });
+}
+
+/**
+ * Prove a {@link CapabilityAuthorizer} conforms: `authorize` returns a boolean decision,
+ * deterministically for a given request, and a denial's `reason` (if any) is a string.
+ * (Policy content is the plugin's — the kit pins the *shape* and determinism.)
+ */
+export function runCapabilityAuthorizerConformance(
+  factory: () => CapabilityAuthorizer,
+  label = "CapabilityAuthorizer"
+): void {
+  const req: CapabilityRequest = { toolId: "t", executionId: "e", workflowId: "w", stepId: "s" };
+  describe(`${label} conformance (CapabilityAuthorizer SPI)`, () => {
+    it("authorize returns a boolean decision", () => {
+      expect(typeof factory().authorize(req).allowed).toBe("boolean");
+    });
+
+    it("authorize is deterministic for the same request", () => {
+      const a = factory();
+      expect(a.authorize(req).allowed).toBe(a.authorize(req).allowed);
+    });
+
+    it("a denial's reason, when present, is a string", () => {
+      const d = factory().authorize(req);
+      if (!d.allowed && d.reason !== undefined) expect(typeof d.reason).toBe("string");
     });
   });
 }

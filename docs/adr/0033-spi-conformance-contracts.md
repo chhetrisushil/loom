@@ -49,12 +49,15 @@ No new kernel mechanism — this is consolidation + test scaffolding over the ex
 
 ## Coverage extension (2026-07-13)
 
-Conformance kits now cover **6 SPIs**: `runEventStoreConformance`, `runSnapshotStoreConformance`,
-`runBranchRegistryConformance`, `runExecutionDispatcherConformance`, plus **`runTimerStoreConformance`**
-and **`runProjectionRuntimeConformance`**. The `loom plugin new <seam>` scaffolder (ADR 0043) emits
-the matching conformance-wired test for `store | dispatcher | telemetry | middleware | timer |
-projection`. Remaining seams without a kit: worker-runtime, llm-provider, widget-renderer,
-capability-authorizer, effect-middleware, telemetry (passive-observer contracts — lower value).
+Conformance kits now cover **9 SPIs**: `runEventStoreConformance`, `runSnapshotStoreConformance`,
+`runBranchRegistryConformance`, `runExecutionDispatcherConformance`, `runTimerStoreConformance`,
+`runProjectionRuntimeConformance`, plus **`runWorkerRuntimeConformance`** (worker factory + package
+factory; self-tested against `LocalWorkerRuntime` in `@loom/worker-runtime-local`),
+**`runLlmProviderConformance`** (`complete` shape + `stream`), and **`runCapabilityAuthorizerConformance`**
+(decision shape + determinism). The `loom plugin new <seam>` scaffolder (ADR 0043) emits the
+matching conformance-wired test for `store | dispatcher | telemetry | middleware | timer |
+projection`. Remaining seams without a kit: widget-renderer, effect-middleware, telemetry
+(framework-specific or passive-observer contracts — lower value).
 
 ## ESM distribution (2026-07-13)
 

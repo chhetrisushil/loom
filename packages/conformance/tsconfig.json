@@ -9,11 +9,29 @@
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
   "references": [
-    { "path": "../core" },
-    { "path": "../event-runtime" },
-    { "path": "../snapshot-runtime" },
-    { "path": "../dispatcher" },
-    { "path": "../projection-runtime" },
-    { "path": "../worker-runtime" }
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../event-runtime"
+    },
+    {
+      "path": "../snapshot-runtime"
+    },
+    {
+      "path": "../dispatcher"
+    },
+    {
+      "path": "../projection-runtime"
+    },
+    {
+      "path": "../worker-runtime"
+    },
+    {
+      "path": "../llm"
+    },
+    {
+      "path": "../effect-runtime"
+    }
   ]
 }

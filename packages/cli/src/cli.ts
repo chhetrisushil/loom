@@ -14,6 +14,7 @@ import { cmdIntrospect } from "./introspect";
 import { cmdCompat, cmdKernelManifest } from "./kernel";
 import { cmdOptimize } from "./optimize";
 import { cmdPluginCheck, cmdPluginNew, cmdPluginSeams } from "./plugin";
+import { cmdPluginSearch } from "./pluginSearch";
 import { cmdPluginTry } from "./pluginTry";
 import { cmdProfile } from "./profile";
 import { cmdVerify } from "./verify";
@@ -51,8 +52,9 @@ const USAGE = `loom — project-local commands for a Loom app
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
   loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
   loom plugin new <seam> <name> [--first-party] [--dir .]  scaffold a plugin package
-  loom plugin check [--dir .]                     validate a plugin against the contract
+  loom plugin check [--dir .] [--publish]         validate a plugin (--publish adds npm-readiness)
   loom plugin try --module <path> [--preset <name>] [--options <json>]  run a store plugin end-to-end
+  loom plugin search <term>                       find plugins on npm (keyword loom-plugin)
   loom plugin seams                               list the seams a plugin can target
   loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]  NL → new project or edits
                                                   (--dry-run previews; --check typechecks after apply)
@@ -177,9 +179,14 @@ async function main(argv: string[]): Promise<number> {
         console.log(`\nplugin try: ${r.ok ? "passed" : "FAILED"}`);
         return r.ok ? 0 : 1;
       }
+      if (sub === "search") {
+        const term = positionals.slice(1).join(" ");
+        console.log(await cmdPluginSearch(term));
+        return 0;
+      }
       if (sub === "check") {
         const dir = flags.dir ?? positionals[1] ?? ".";
-        const { findings, ok } = cmdPluginCheck(dir);
+        const { findings, ok } = cmdPluginCheck(dir, { publish: flags.publish === "true" });
         const glyph = { ok: "✓", warn: "⚠", error: "✗" } as const;
         for (const f of findings) console.log(`  ${glyph[f.level]} ${f.message}`);
         const errors = findings.filter((f) => f.level === "error").length;
@@ -211,9 +218,7 @@ async function main(argv: string[]): Promise<number> {
         console.log(lines.join("\n"));
         return written.length > 0 ? 0 : 1;
       }
-      throw new Error(
-        "usage: loom plugin new <seam> <name> | loom plugin check [--dir .] | loom plugin seams"
-      );
+      throw new Error("usage: loom plugin <new|check|try|search|seams> … (see `loom help`)");
     }
     case "appgen": {
       // For appgen, `dir` is the PROJECT ROOT (scaffold paths are already `app/…`-relative):
