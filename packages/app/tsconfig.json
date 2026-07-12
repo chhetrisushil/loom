@@ -36,9 +36,6 @@
       "path": "../snapshot-runtime"
     },
     {
-      "path": "../store-postgres"
-    },
-    {
       "path": "../telemetry"
     },
     {
@@ -49,9 +46,6 @@
     },
     {
       "path": "../workflow-runtime"
-    },
-    {
-      "path": "../../plugins/sqlite"
     }
   ]
 }

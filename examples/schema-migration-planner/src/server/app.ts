@@ -1,6 +1,7 @@
 import { defineConfig } from "@loom/app";
 import type { EventEnvelope } from "@loom/core";
 import type { BranchRegistry } from "@loom/event-runtime";
+import { sqliteStorage } from "@loom/plugin-sqlite";
 import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 import { InProcessA2ABus } from "../a2a/InProcessA2ABus";
 import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "../agents/definitions";
@@ -46,7 +47,7 @@ export function createApp(opts: { dataDir: string; missionId?: string }): Server
 
   const catalog = buildCatalog();
   const app = defineConfig({
-    storage: { kind: "sqlite", dir: opts.dataDir, branching: true },
+    storage: sqliteStorage({ dir: opts.dataDir, branching: true }),
     projectionRuntime,
     surfaces: SURFACES,
     catalog,

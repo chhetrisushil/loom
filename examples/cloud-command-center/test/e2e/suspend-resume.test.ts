@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { LoomApp } from "@loom/app";
 import { ToolEffect } from "@loom/effect-runtime";
+import { sqliteStorage } from "@loom/plugin-sqlite";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { createTestApp } from "@loom/testing";
 import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
@@ -47,7 +48,7 @@ function createRuntimes(dir: string): Runtimes {
   projectionRuntime.register(IncidentProjection);
 
   const app = createTestApp({
-    storage: { kind: "sqlite", dir },
+    storage: sqliteStorage({ dir }),
     projectionRuntime,
     flows: [InvestigateIncidentFlow as RegisteredFlow],
   });
