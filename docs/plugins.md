@@ -77,6 +77,17 @@ loom plugin new store my-backend --first-party # first-party: ./plugins/my-backe
 Seams: `store`, `dispatcher`, `telemetry`, `middleware` (more as conformance kits land — see
 ADR 0033). Then implement the SPI, un-comment the conformance test, and run your formatter.
 
+Validate it against the contract at any time:
+
+```
+loom plugin check --dir ./loom-plugin-my-backend
+```
+
+`check` verifies the naming convention, that the package does **not** depend on the replay fold
+engine (`@loom/replay-vm` — the "no reducer into the fold" rule), that a 3P plugin peer-depends on
+the `@loom/*` SPI (one kernel copy) and carries the `loom-plugin` keyword, and that a test wires
+`@loom/testing/conformance`. Non-zero exit on any error.
+
 ## Authoring a plugin (worked example: a storage backend)
 
 ```ts
