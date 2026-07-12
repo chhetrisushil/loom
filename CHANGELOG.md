@@ -54,3 +54,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `@loom/appgen` stays zero-dependency and offline (only `typescript` promoted to a runtime
     dep for the AST scan/edit); the framework kernel is untouched. New exports: `scanApp`,
     `planChangesDeterministic`, `applyChanges`, `FlowEditor`, `typecheck`, lockfile helpers.
+
+- **`@loom/appgen-model` — optional local-Gemma planner (truly AI-driven appgen).** A new,
+  **optional** package that swaps a small on-device Gemma model into appgen's single NL stage.
+  `loom appgen --model <gguf>` plans the `ChangeSpec` with the model instead of the grammar
+  parser — real language understanding, no token cost, minimal footprint. Everything downstream
+  is unchanged, because the model still emits only a `ChangeSpec`.
+  - **Grammar-constrained JSON.** Output is constrained to the `ChangeSpec` JSON schema via
+    node-llama-cpp, so a compact model reliably produces valid, on-schema plans.
+  - **Reasoning-ladder-on-itself.** Planning runs through `@loom/reasoning`'s cheap-first
+    elevation ladder with a *validator* confidence signal ("does it parse into a usable
+    ChangeSpec?"); a weak tier that emits junk elevates to a stronger one, and each elevation is
+    logged (P9) and recorded in the spec lockfile. Recommended tiers: Gemma **E4B** 4-bit QAT
+    default (~5 GB), E2B floor (~4 GB), 12B ceiling (~8 GB), selectable via `--model-tier` /
+    `--model-big`.
+  - **Deterministic fallback / footprint discipline.** Falls back to the deterministic parser
+    when the model or `node-llama-cpp` is unavailable or every tier fails (same as `--offline`);
+    loads/disposes the model per invocation (transient, not resident); prompts carry only the
+    compact scanned `AppModel` summary, never raw file contents.
+  - `node-llama-cpp` is an `optionalDependency`, lazily imported; `@loom/cli` loads
+    `@loom/appgen-model` only when `--model` is passed, so neither the framework nor default CLI
+    users carry the native runtime. Kernel and existing packages untouched.

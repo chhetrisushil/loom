@@ -47,6 +47,8 @@ const USAGE = `loom — project-local commands for a Loom app
   loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
   loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]  NL → new project or edits
                                                   (--dry-run previews; --check typechecks after apply)
+  loom appgen ... --model <gguf> [--model-big <gguf>]  plan with a local Gemma model
+                                                  (needs @loom/appgen-model + node-llama-cpp)
   loom appgen --from-spec <file> [--dir .]        replay a .loom/appgen/<ts>.spec.json (no model)
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
@@ -153,6 +155,17 @@ async function main(argv: string[]): Promise<number> {
       const dryRun = flags["dry-run"] === "true";
       const fromSpec = flags["from-spec"];
       const check = flags.check === "true";
+      const offline = flags.offline === "true";
+      // `--model <gguf>` enables the local-model planner (optional @loom/appgen-model);
+      // `--model-big <gguf>` is a stronger tier to elevate to.
+      const model =
+        flags.model !== undefined && flags.model !== "true"
+          ? {
+              path: flags.model,
+              ...(flags["model-big"] !== undefined && { bigPath: flags["model-big"] }),
+              ...(flags["model-tier"] !== undefined && { tier: flags["model-tier"] }),
+            }
+          : undefined;
       // `--from-spec` carries its own intent; otherwise resolve one from args / `--from`.
       const intent = fromSpec !== undefined ? "" : resolveIntent(flags, positionals);
       const r = await cmdAppgen({
@@ -160,6 +173,8 @@ async function main(argv: string[]): Promise<number> {
         dir,
         dryRun,
         check,
+        offline,
+        ...(model !== undefined && { model }),
         ...(fromSpec !== undefined && { fromSpec }),
       });
       if (r.dryRun) {

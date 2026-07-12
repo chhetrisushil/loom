@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import {
+  type AppModel,
   type ChangeSpec,
   type FilePlan,
   type GeneratedFile,
@@ -57,6 +58,47 @@ export interface AppgenOptions {
   check?: boolean;
   /** Timestamp source for the lockfile (ms). Injectable for deterministic tests. */
   now?: number;
+  /**
+   * Plan with a local Gemma model (via the optional `@loom/appgen-model` package) instead
+   * of the deterministic grammar parser. `path` is a local `.gguf`; `bigPath` is an
+   * optional stronger tier to elevate to. Falls back to deterministic if the package or
+   * model is unavailable. Ignored when `offline` is set.
+   */
+  model?: { path: string; bigPath?: string; tier?: string };
+  /** Force the deterministic, model-free planner (overrides `model`). */
+  offline?: boolean;
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: @loom/appgen-model is an optional, lazily-loaded peer.
+type AppgenModelModule = any;
+
+/**
+ * Plan the change: a local model when `--model` is set and the optional
+ * `@loom/appgen-model` package is installed, otherwise the deterministic parser. The
+ * model path itself also falls back to deterministic internally on any model failure, so
+ * this always resolves to a valid ChangeSpec.
+ */
+async function planChange(
+  intent: string,
+  model: AppModel,
+  opts: AppgenOptions
+): Promise<ChangeSpec> {
+  if (opts.model !== undefined && opts.offline !== true) {
+    try {
+      const specifier = "@loom/appgen-model";
+      const m: AppgenModelModule = await import(specifier);
+      const routes = [m.gemmaRoute(opts.model.path, opts.model.tier ?? m.DEFAULT_TIER)];
+      if (opts.model.bigPath !== undefined) routes.push(m.gemmaRoute(opts.model.bigPath, "12b"));
+      return await m.planChangesModel(intent, model, { routes });
+    } catch (err) {
+      process.stderr.write(
+        `appgen: local-model planner unavailable (${
+          err instanceof Error ? err.message : String(err)
+        }); using the deterministic parser. Install @loom/appgen-model + node-llama-cpp to enable it.\n`
+      );
+    }
+  }
+  return planChangesDeterministic(intent, model);
 }
 
 /**
@@ -86,7 +128,7 @@ export async function cmdAppgen(
     changeSpec = lock.changeSpec;
     intent = lock.intent;
   } else {
-    changeSpec = planChangesDeterministic(opts.intent, model);
+    changeSpec = await planChange(opts.intent, model, opts);
   }
   const plan = applyChanges(changeSpec, model);
 

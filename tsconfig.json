@@ -33,6 +33,7 @@
     { "path": "packages/reasoning" },
     { "path": "packages/analytics" },
     { "path": "packages/appgen" },
+    { "path": "packages/appgen-model" },
     { "path": "packages/agent" },
     { "path": "packages/mcp" },
     { "path": "packages/a2a" },
