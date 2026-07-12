@@ -94,7 +94,8 @@ export function appFiles(appName: string): Record<string, string> {
       {
         name: appName,
         private: true,
-        type: "module",
+        // CommonJS (no "type": "module") — @loom/* publish require-only exports, so
+        // `tsx app/main.ts` must resolve them via CJS (matches examples/loom-starter).
         scripts: {
           start: "tsx app/main.ts",
           test: "vitest run",
@@ -177,6 +178,17 @@ export function appFiles(appName: string): Record<string, string> {
       '    expect((state.variables._output as { output: string }).output).toBe("world");',
       "    await app.close();",
       "  });",
+      "});",
+      "",
+    ].join("\n"),
+
+    "vitest.config.ts": [
+      'import { defineConfig } from "vitest/config";',
+      "",
+      "export default defineConfig({",
+      "  // @loom/* publish require-only exports — resolve them the same way under Vite.",
+      '  resolve: { conditions: ["require", "default"] },',
+      '  test: { environment: "node" },',
       "});",
       "",
     ].join("\n"),

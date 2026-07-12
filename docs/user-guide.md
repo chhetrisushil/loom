@@ -417,7 +417,7 @@ const provider = process.env.RECORD ? recordingProvider(realLlm, cassette) : rep
 ```
 loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
 loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
-loom appgen <intent> | --from <file> [--dir app]  generate a Loom app from natural language
+loom appgen <intent> | --from <file> [--dir .]  NL → full project (new dir) or flows (existing app)
 loom check --manifest <path>                    static flow-graph checks
 loom logs  --db <path> <executionId>            print the event timeline
 loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
@@ -427,7 +427,7 @@ loom inspect --db <path> [--port N]             web inspector (timeline + slider
 ```
 
 - **`logs` / `debug` / `inspect`** operate directly on a SQLite event DB — no app load needed. `debug --at N` folds the exact state at sequence *N* (time-travel); `inspect` serves a web timeline with a slider using the same fold.
-- **`gen` / `new`** implement the folder convention via **build-time codegen** (a static `loom.gen.ts`), not runtime globbing ([ADR 0011](adr/0011-folder-convention-codegen.md)). **`appgen`** turns a natural-language intent into a static app skeleton (`src/<capability>.ts` + `src/app.ts`) via [`@loom/appgen`](../packages/appgen) — deterministic and offline, with no model call at generate time or in the output.
+- **`gen` / `new`** implement the folder convention via **build-time codegen** (a static `loom.gen.ts`), not runtime globbing ([ADR 0011](adr/0011-folder-convention-codegen.md)). **`appgen`** turns a natural-language intent into a static Loom app *in the same folder convention* (`app/flows/<id>/flow.ts` + `app/loom.gen.ts` + `app/config.ts`, or a full project) via [`@loom/appgen`](../packages/appgen) — deterministic and offline, with no model call at generate time or in the output.
 - **`eval` / `deploy check` / `check`** are CI gates (§12).
 
 For a command-by-command walkthrough with flags, exit codes, and example output, see the **[CLI Usage Guide](usage-cli.md)**.
@@ -1028,18 +1028,22 @@ report.recommendations; // { modelRankings, hotFailures, suggestedBudgetUsd }
 *(Loom 2.0, P11 — `@loom/appgen`.)* Turn a natural-language intent into a structured spec, then emit **plain, static, inspectable TypeScript you own** — there is no runtime interpretation of NL.
 
 ```ts
-import { parseIntent, generateApp } from "@loom/appgen";
+import { parseIntent, generateProject, generateFlows } from "@loom/appgen";
 
 const spec = parseIntent(
   "Create a planner. Use Gemma first. Elevate to Gemini. Pause for approval. Generate UI."
 );
 // spec: { name: "planner", capabilities: [{ id, reasoning:{baseModel,elevateTo}, approval, ui, … }], … }
 
-const files = generateApp(spec); // GeneratedFile[] — src/planner.ts (flow$/step$/capability$ + ctx.suspend gate + ctx.ui) + src/app.ts (defineConfig)
+// Full runnable project (folder convention): package.json, tsconfig.json, app/config.ts
+// (defineConfig({ flowModules })), app/main.ts, app/loom.gen.ts, app/flows/<id>/flow.ts.
+const project = generateProject(spec);
+// …or just the flow files, to drop into an existing app (then run `loom gen`):
+const flows = generateFlows(spec); // GeneratedFile[] — app/flows/planner/flow.ts (flow$/step$ + ctx.suspend gate + ctx.ui)
 // A CLI/editor writes them; the output is ordinary Loom code with TODO handlers to fill in.
 ```
 
-The only "understanding" is the deterministic, offline directive parser producing the `AppSpec`; codegen is pure and template-based (P4/P5 preserved).
+The generated app follows the same folder convention as `create-loom-app` / `loom new` / `loom gen` (reusing `@loom/scaffold`), so appgen output is consistent with every other generator. The only "understanding" is the deterministic, offline directive parser producing the `AppSpec`; codegen is pure and template-based (P4/P5 preserved).
 
 ---
 

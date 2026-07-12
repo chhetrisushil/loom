@@ -17,7 +17,9 @@
     "test:watch": "vitest",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@loom/scaffold": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
