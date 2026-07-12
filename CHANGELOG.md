@@ -75,3 +75,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `node-llama-cpp` is an `optionalDependency`, lazily imported; `@loom/cli` loads
     `@loom/appgen-model` only when `--model` is passed, so neither the framework nor default CLI
     users carry the native runtime. Kernel and existing packages untouched.
+  - **Verified end-to-end against a real Gemma GGUF (node-llama-cpp 3.19, Metal), which fixed four
+    bugs that previously made `--model` silently fall back every time:** (1) `tsc` under
+    `module: CommonJS` down-levelled dynamic `import()` to `require()`, which cannot load the
+    ESM-only, top-level-await node-llama-cpp (`ERR_REQUIRE_ASYNC_MODULE`) — now a genuine dynamic
+    import is preserved via `new Function` in both `GemmaProvider` and the CLI; (2) the v3 grammar is
+    built with `llama.createGrammarForJsonSchema(schema)`, not the `LlamaJsonSchemaGrammar`
+    constructor; (3) the CLI now resolves the optional `@loom/appgen-model` peer **from the target
+    project dir** (`pnpm add @loom/appgen-model node-llama-cpp` in your app), not from the CLI itself;
+    (4) the JSON-schema `minItems` constraint crashed node-llama-cpp's native sampler and was removed
+    (an empty plan is rejected by the ladder validator instead). Generation is now bounded
+    (`maxTokens` 512, `contextSize` 2048) for footprint and native stability. The package README
+    documents environment requirements: a Node 20/22 LTS (bleeding-edge Node majors show intermittent
+    native segfaults) and enough RAM for the tier (the E4B default is ~5 GB; a 2B model that fits 8 GB
+    is often too weak and degrades to the deterministic parser).
