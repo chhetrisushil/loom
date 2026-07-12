@@ -32,3 +32,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `cmdAppgen` is exported from `@loom/cli` for programmatic use, with an injectable IO seam.
   - Docs: new section in [`docs/usage-cli.md`](docs/usage-cli.md) and the CLI overview in
     [`docs/user-guide.md`](docs/user-guide.md).
+
+- **`loom appgen` — brownfield-aware, four-stage pipeline (foundation for AI-driven appgen).**
+  `appgen` now *scans the existing app* and applies a **delta** rather than only scaffolding from
+  scratch. Four stages, all deterministic and offline: **scan** (`scanApp(dir) → AppModel`,
+  a compact TS-AST summary of flows/steps/gates — never raw file dumps), **plan**
+  (`planChangesDeterministic(intent, appModel) → ChangeSpec`, tagging each capability/step
+  `create` / `extend` / `modify`), **apply** (`applyChanges` → creates via the existing templates,
+  surgical formatting-preserving edits to existing flows), and **validate** (in-process `tsc`).
+  The plan stage is the single seam where NL understanding lives and it emits a structured
+  `ChangeSpec` — a local model can be swapped in here later without touching codegen.
+  - **Plan → diff → confirm DX.** `--dry-run` renders a terraform-style plan (creates / edits /
+    skips) and writes nothing; omit it to apply. `--check` typechecks the app after applying.
+  - **Safety gate.** appgen only overwrites a handler body that still hashes to the generated
+    `TODO` stub; any human-edited handler is **insert-only**, never clobbered (`FlowEditor`,
+    content-hash gate). Brownfield edits add step consts, register them in the flow's `steps: []`
+    array, and insert approval / UI gates into the runner while preserving surrounding code.
+  - **Replayable spec lockfile.** Each apply records the accepted `ChangeSpec` to
+    `.loom/appgen/<timestamp>.spec.json`; `loom appgen --from-spec <file>` reproduces it
+    byte-for-byte with no model — the appgen equivalent of a golden log.
+  - `@loom/appgen` stays zero-dependency and offline (only `typescript` promoted to a runtime
+    dep for the AST scan/edit); the framework kernel is untouched. New exports: `scanApp`,
+    `planChangesDeterministic`, `applyChanges`, `FlowEditor`, `typecheck`, lockfile helpers.

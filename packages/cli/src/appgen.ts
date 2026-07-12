@@ -1,7 +1,19 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
-import { type GeneratedFile, generateFlows, generateProject, parseIntent } from "@loom/appgen";
+import {
+  type ChangeSpec,
+  type FilePlan,
+  type GeneratedFile,
+  type TypecheckResult,
+  applyChanges,
+  makeLock,
+  planChangesDeterministic,
+  readLockfile,
+  scanApp,
+  typecheck,
+  writeLockfile,
+} from "@loom/appgen";
 import { generateRegistration } from "@loom/scaffold";
 import { discoverFlows } from "./gen";
 
@@ -24,57 +36,116 @@ export interface AppgenResult {
   written: string[];
   overwritten: string[];
   skipped: string[];
+  /** True when `--dry-run`: the plan was computed but nothing was written. */
+  dryRun: boolean;
+  /** The computed change plan (for rendering a terraform-style preview). */
+  plan: FilePlan;
+  /** Path of the spec lockfile written after applying (absent on dry-run). */
+  lockfile?: string;
+  /** Typecheck result, when `--check` was requested. */
+  typecheck?: TypecheckResult;
 }
 
-/** A `dir` is treated as an existing Loom app if it already has a project manifest or a
- * generated flow registration / composition root (the folder-convention markers). */
-function isExistingApp(dir: string, io: AppgenIO): boolean {
-  return (
-    io.exists(path.join(dir, "package.json")) ||
-    io.exists(path.join(dir, "app", "loom.gen.ts")) ||
-    io.exists(path.join(dir, "app", "config.ts"))
-  );
+export interface AppgenOptions {
+  intent: string;
+  dir: string;
+  /** Compute and return the plan without writing anything. */
+  dryRun?: boolean;
+  /** Replay a previously written ChangeSpec lockfile instead of planning from intent. */
+  fromSpec?: string;
+  /** Typecheck the app after applying (in-process tsc). */
+  check?: boolean;
+  /** Timestamp source for the lockfile (ms). Injectable for deterministic tests. */
+  now?: number;
 }
 
 /**
- * `loom appgen <intent>` — parse a natural-language intent into an AppSpec and generate a
- * Loom app following the folder convention. Parsing and code generation are delegated to
- * @loom/appgen (pure, offline — no LLM); this handler owns file IO, per-file conflict
- * resolution (rename / skip / overwrite), and choosing the mode based on `dir`:
+ * `loom appgen <intent>` — the AI-native, brownfield-aware scaffolder. Four stages:
+ * scan the app (deterministic), plan the change against it (deterministic here; a local
+ * model can be swapped in), turn the plan into files/edits (deterministic), then write.
+ * All NL understanding lives in the plan stage and emits a structured ChangeSpec —
+ * codegen never sees raw NL. This handler owns file IO and per-file conflict resolution
+ * (rename / skip / overwrite); `--dry-run` computes the plan and writes nothing.
  *
- *   - Empty / new `dir`  → a full runnable project (package.json, tsconfig, app/config.ts,
+ *   - Net-new `dir`      → a full runnable project (package.json, tsconfig, app/config.ts,
  *     app/main.ts, app/loom.gen.ts, app/flows/<id>/flow.ts).
- *   - Existing Loom app  → just `app/flows/<id>/flow.ts` per capability, then regenerate
- *     `app/loom.gen.ts` from the filesystem (`loom gen`) so existing flows stay wired.
+ *   - Existing Loom app  → new `app/flows/<id>/flow.ts` per new capability + surgical,
+ *     formatting-preserving edits to existing flows, then regenerate `app/loom.gen.ts`.
  */
 export async function cmdAppgen(
-  opts: { intent: string; dir: string },
+  opts: AppgenOptions,
   io: AppgenIO = defaultIO()
 ): Promise<AppgenResult> {
-  const spec = parseIntent(opts.intent);
-  const existing = isExistingApp(opts.dir, io);
-  const files = existing ? generateFlows(spec) : generateProject(spec);
+  const model = scanApp(opts.dir);
+  // Replay a lockfile verbatim, or plan the delta from the intent (deterministic here;
+  // a local model can be swapped in without changing anything downstream).
+  let intent = opts.intent;
+  let changeSpec: ChangeSpec;
+  if (opts.fromSpec !== undefined) {
+    const lock = readLockfile(opts.fromSpec);
+    changeSpec = lock.changeSpec;
+    intent = lock.intent;
+  } else {
+    changeSpec = planChangesDeterministic(opts.intent, model);
+  }
+  const plan = applyChanges(changeSpec, model);
+
   const result: AppgenResult = {
-    specName: spec.name,
+    specName: changeSpec.name,
     written: [],
     overwritten: [],
     skipped: [],
+    dryRun: opts.dryRun === true,
+    plan,
   };
 
+  if (opts.dryRun === true) return result; // preview only — no writes, no io.close
+
   try {
-    for (const file of files) {
-      await writeFile(file, opts.dir, io, result);
+    // New files go through per-file conflict resolution; in-place edits are the point of
+    // the run, so they overwrite directly (the FlowEditor already guarded human code).
+    for (const c of plan.creates) {
+      await writeFile({ path: c.path, contents: c.contents }, opts.dir, io, result);
     }
-    // In an existing app, statically re-wire the flow set (both pre-existing and newly
-    // written flows) so `flowModules` stays correct — the `loom gen` step, unconditional.
-    if (existing) {
+    for (const e of plan.edits) {
+      const dest = path.join(opts.dir, e.path);
+      io.write(dest, e.after);
+      result.overwritten.push(dest);
+    }
+    // Re-wire the flow set (pre-existing + newly written) so `flowModules` stays correct.
+    if (plan.regenRegistration) {
       regenerateRegistration(opts.dir, io, result);
     }
+    // Record the accepted ChangeSpec as a replayable lockfile (provenance + `--from-spec`).
+    const now = opts.now ?? Date.now();
+    const lock = makeLock(intent, changeSpec, new Date(now).toISOString());
+    result.lockfile = writeLockfile(opts.dir, lock, `${now}.spec.json`);
   } finally {
     io.close?.();
   }
 
+  if (opts.check === true) result.typecheck = typecheck(opts.dir);
+
   return result;
+}
+
+/** Render a plan as a terraform-style preview (used by `--dry-run`). */
+export function renderPlan(plan: FilePlan, dir: string): string {
+  const lines: string[] = [];
+  lines.push(plan.isNewProject ? `plan: new project → ${dir}` : `plan: update app → ${dir}`);
+  for (const c of plan.creates) lines.push(`  + create ${c.path}`);
+  for (const e of plan.edits) {
+    lines.push(`  ~ edit   ${e.path}`);
+    for (const n of e.notes) lines.push(`      • ${n}`);
+  }
+  for (const s of plan.skips) lines.push(`  - skip   ${s.path} (${s.reason})`);
+  if (plan.regenRegistration) lines.push("  ~ edit   app/loom.gen.ts (re-wire flow registration)");
+  const n = plan.creates.length + plan.edits.length;
+  lines.push("");
+  lines.push(
+    `${n} change${n === 1 ? "" : "s"}, ${plan.skips.length} skipped — run with --apply to write`
+  );
+  return lines.join("\n");
 }
 
 /** Write one generated file under `dir`, applying per-file conflict resolution. */
