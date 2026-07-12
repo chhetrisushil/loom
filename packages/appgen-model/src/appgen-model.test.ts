@@ -7,6 +7,7 @@ import { extractJsonObject, tryParseChangeSpec } from "./parse";
 import { planChangesModel } from "./planChangesModel";
 import { summarizeAppModel } from "./prompt";
 import { changeSpecJsonSchema } from "./schema";
+import { validateChangeSpec } from "./validateSpec";
 
 const NET_NEW: AppModel = { root: "/x", isExisting: false, flows: [] };
 const EXISTING: AppModel = {
@@ -47,6 +48,27 @@ function fakeProvider(content: string): LlmProvider {
 function route(id: string, tier: number, content: string): ModelRoute {
   return { id, tier, tags: ["planning"], provider: fakeProvider(content) };
 }
+/** A provider that returns each content in turn across successive complete() calls. */
+function sequenceRoute(id: string, ...contents: string[]): ModelRoute {
+  let i = 0;
+  return {
+    id,
+    tier: 0,
+    tags: ["planning"],
+    provider: {
+      complete: async () => ({
+        content: contents[Math.min(i++, contents.length - 1)]!,
+        stopReason: "end_turn" as const,
+      }),
+    },
+  };
+}
+
+// Parseable but semantically wrong: op "extend" on a flow that doesn't exist.
+const INVALID_JSON = JSON.stringify({
+  name: "ghost",
+  capabilities: [{ id: "ghost", name: "Ghost", intent: "x", op: "extend", steps: [] }],
+});
 
 describe("summarizeAppModel", () => {
   it("says net-new for an empty model", () => {
@@ -119,5 +141,70 @@ describe("gemmaRoute / schema", () => {
     const schema = changeSpecJsonSchema();
     expect(JSON.stringify(schema)).toContain('"create"');
     expect(JSON.stringify(schema)).toContain('"extend"');
+  });
+});
+
+describe("validateChangeSpec", () => {
+  const spec = (caps: unknown[]) =>
+    ({ name: "x", capabilities: caps, planner: "model" }) as Parameters<
+      typeof validateChangeSpec
+    >[0];
+
+  it("passes a spec that matches the app", () => {
+    const s = spec([
+      {
+        id: "planner",
+        name: "P",
+        intent: "x",
+        op: "extend",
+        steps: [{ id: "summarize", op: "create" }],
+      },
+    ]);
+    expect(validateChangeSpec(s, EXISTING)).toEqual([]);
+  });
+  it("flags create on an existing flow, and extend on a missing one", () => {
+    expect(
+      validateChangeSpec(
+        spec([{ id: "planner", name: "P", intent: "x", op: "create", steps: [] }]),
+        EXISTING
+      ).join()
+    ).toMatch(/already exists/);
+    expect(
+      validateChangeSpec(
+        spec([{ id: "ghost", name: "G", intent: "x", op: "extend", steps: [] }]),
+        EXISTING
+      ).join()
+    ).toMatch(/no such flow/);
+  });
+  it("flags modify/delete of a step that doesn't exist", () => {
+    const s = spec([
+      {
+        id: "planner",
+        name: "P",
+        intent: "x",
+        op: "extend",
+        steps: [{ id: "nope", op: "delete" }],
+      },
+    ]);
+    expect(validateChangeSpec(s, EXISTING).join()).toMatch(/no such step/);
+  });
+});
+
+describe("self-repair loop", () => {
+  it("re-prompts the model with the validation issues, then accepts the fixed plan", async () => {
+    const spec = await planChangesModel("add summarize to planner", EXISTING, {
+      routes: [sequenceRoute("gemma-e4b", INVALID_JSON, VALID_JSON)], // 1st invalid, 2nd valid
+      maxRepairs: 1,
+    });
+    expect(spec.planner).toBe("model");
+    expect(spec.capabilities[0]?.id).toBe("planner");
+  });
+
+  it("falls back to deterministic when repairs are exhausted", async () => {
+    const spec = await planChangesModel("Create a greeter.", NET_NEW, {
+      routes: [route("gemma-e4b", 0, INVALID_JSON)], // parseable but always invalid
+      maxRepairs: 1,
+    });
+    expect(spec.planner).toBe("deterministic");
   });
 });

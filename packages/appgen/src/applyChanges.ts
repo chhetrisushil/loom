@@ -3,6 +3,7 @@ import * as path from "node:path";
 import type { AppModel } from "./appModel";
 import { FlowEditor } from "./astEdit";
 import type { CapabilityChange, ChangeSpec } from "./changeSpec";
+import { wireGrantsIntoConfig } from "./configEditor";
 import { generateFlows, generateProject } from "./generate";
 import type { AppSpec, CapabilitySpec } from "./types";
 
@@ -34,11 +35,16 @@ export interface PlanSkip {
   reason: string;
 }
 
+export interface PlanDelete {
+  path: string;
+}
+
 export interface FilePlan {
   root: string;
   isNewProject: boolean;
   creates: PlanCreate[];
   edits: PlanEdit[];
+  deletes: PlanDelete[];
   skips: PlanSkip[];
   /** After writing, re-run `loom gen` to re-wire `app/loom.gen.ts` from disk. */
   regenRegistration: boolean;
@@ -57,11 +63,14 @@ function capToCapabilitySpec(cap: CapabilityChange): CapabilitySpec {
 }
 
 export function applyChanges(changeSpec: ChangeSpec, appModel: AppModel): FilePlan {
-  // Net-new: a full runnable project from the whole spec.
+  // Net-new: a full runnable project from the whole spec (delete ops are meaningless
+  // against an app that doesn't exist yet, so drop them).
   if (!appModel.isExisting) {
     const appSpec: AppSpec = {
       name: changeSpec.name,
-      capabilities: changeSpec.capabilities.map(capToCapabilitySpec),
+      capabilities: changeSpec.capabilities
+        .filter((c) => c.op !== "delete")
+        .map(capToCapabilitySpec),
       ...(changeSpec.compute !== undefined && { compute: changeSpec.compute }),
     };
     return {
@@ -69,36 +78,65 @@ export function applyChanges(changeSpec: ChangeSpec, appModel: AppModel): FilePl
       isNewProject: true,
       creates: generateProject(appSpec).map((f) => ({ path: f.path, contents: f.contents })),
       edits: [],
+      deletes: [],
       skips: [],
       regenRegistration: false, // generateProject already emits loom.gen.ts
     };
   }
 
-  // Brownfield: create new flows, edit existing ones in place.
+  // Brownfield: create new flows, edit / delete existing ones in place.
   const creates: PlanCreate[] = [];
   const edits: PlanEdit[] = [];
+  const deletes: PlanDelete[] = [];
   const skips: PlanSkip[] = [];
-  let created = 0;
+  const grants: Record<string, string[]> = {};
+  let structural = 0; // creates or deletes → re-wire loom.gen.ts
 
   for (const cap of changeSpec.capabilities) {
+    if (cap.wireGrants !== undefined && cap.wireGrants.length > 0 && cap.op !== "delete") {
+      grants[cap.id] = [...(grants[cap.id] ?? []), ...cap.wireGrants];
+    }
+
     if (cap.op === "create") {
       const spec: AppSpec = { name: changeSpec.name, capabilities: [capToCapabilitySpec(cap)] };
       for (const f of generateFlows(spec)) creates.push({ path: f.path, contents: f.contents });
-      created++;
+      structural++;
+      continue;
+    }
+
+    const flow = appModel.flows.find((f) => f.id === cap.id);
+    if (flow === undefined) {
+      skips.push({ path: cap.id, reason: `${cap.op} target flow not found on disk` });
+      continue;
+    }
+
+    if (cap.op === "delete") {
+      // Never delete a flow that carries hand-written code.
+      const handEdited = flow.steps.some((s) => s.handlerState === "edited");
+      if (!flow.isGenerated || handEdited) {
+        skips.push({
+          path: flow.file,
+          reason: "not deleted — flow has hand-written code (remove it manually)",
+        });
+      } else {
+        deletes.push({ path: flow.file });
+        structural++;
+      }
       continue;
     }
 
     // extend / modify: edit the existing flow file in place.
-    const flow = appModel.flows.find((f) => f.id === cap.id);
-    if (flow === undefined) {
-      skips.push({ path: cap.id, reason: "extend target flow not found on disk" });
-      continue;
-    }
     const abs = path.join(appModel.root, flow.file);
     const before = fs.readFileSync(abs, "utf8");
     const editor = new FlowEditor(before, flow.file);
     for (const step of cap.steps) {
       if (step.op === "create") editor.addStep(step.id);
+      else if (step.op === "delete") editor.removeStep(step.id);
+      else if (step.op === "modify") {
+        editor.notes.push(
+          `step "${step.id}" marked modify — appgen doesn't rewrite handler bodies; edit ${flow.file} yourself`
+        );
+      }
     }
     if (cap.addApproval === true) editor.ensureApprovalGate();
     if (cap.addUi === true) editor.ensureUi();
@@ -110,12 +148,27 @@ export function applyChanges(changeSpec: ChangeSpec, appModel: AppModel): FilePl
     }
   }
 
+  // Grants → app/config.ts (one edit, merging every capability's grants).
+  if (Object.keys(grants).length > 0) {
+    const configRel = path.join("app", "config.ts");
+    const configAbs = path.join(appModel.root, configRel);
+    if (fs.existsSync(configAbs)) {
+      const before = fs.readFileSync(configAbs, "utf8");
+      const res = wireGrantsIntoConfig(before, grants, configRel);
+      if (res.changed) edits.push({ path: configRel, before, after: res.after, notes: res.notes });
+      else skips.push({ path: configRel, reason: res.notes.join("; ") || "no grant changes" });
+    } else {
+      skips.push({ path: configRel, reason: "no app/config.ts to wire grants into" });
+    }
+  }
+
   return {
     root: appModel.root,
     isNewProject: false,
     creates,
     edits,
+    deletes,
     skips,
-    regenRegistration: created > 0,
+    regenRegistration: structural > 0,
   };
 }

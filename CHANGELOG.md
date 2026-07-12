@@ -89,3 +89,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     documents environment requirements: a Node 20/22 LTS (bleeding-edge Node majors show intermittent
     native segfaults) and enough RAM for the tier (the E4B default is ~5 GB; a 2B model that fits 8 GB
     is often too weak and degrades to the deterministic parser).
+
+- **`loom appgen` completeness — delete/grant ops, runner wiring, self-repair, real diffs, confirm.**
+  Closes the remaining gaps against the requirement (captured in
+  [`docs/requirements/2026-07-12-ai-native-brownfield-appgen.md`](docs/requirements/2026-07-12-ai-native-brownfield-appgen.md)
+  + evaluation, and [ADR 0042](docs/adr/0042-ai-native-brownfield-appgen.md)):
+  - **`delete` op.** New grammar `delete <name>` / `delete step <s> from <flow>`; deletes generated
+    flow files and removes steps (const + `steps: []` entry + runner call). Refuses to delete a flow or
+    step that carries hand-written code. Tracked in `FilePlan.deletes`, honored by `--dry-run`.
+  - **New steps are wired into the runner.** `FlowEditor.addStep` now inserts a `ctx.run(<step>, …)`
+    call before the runner's `return`, not just a "wire it yourself" note.
+  - **`wireGrants` → `app/config.ts`.** New grammar `grant <tool>[, <tool>] to <cap>` (and a model
+    schema field) insert a `GrantTable` authorizer (and its import) into `defineConfig` via a
+    formatting-preserving `ConfigEditor`; it declines to guess a merge if an authorizer already exists.
+  - **Model self-repair loop.** `@loom/appgen-model` now runs `validateChangeSpec` (does the plan
+    reference real flows/steps with the right ops?) after the ladder and re-prompts the model with the
+    exact issues (bounded retries) before falling back to the deterministic parser.
+  - **Real `--dry-run` diffs.** Edits render as a dependency-free unified line diff instead of a summary.
+  - **Interactive confirm.** On a TTY (and without `--yes`), appgen shows the plan and asks before
+    writing; the CLI surfaces the planner (deterministic vs model) and any ladder elevations.
+  - Docs: `docs/usage-cli.md` rewritten for the full surface; a brownfield walkthrough at
+    `examples/appgen-brownfield/README.md`. `@loom/appgen` stays offline; kernel untouched.
