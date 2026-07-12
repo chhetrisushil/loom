@@ -417,7 +417,7 @@ const provider = process.env.RECORD ? recordingProvider(realLlm, cassette) : rep
 ```
 loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
 loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
-loom appgen <intent> | --from <file> [--dir .]  NL → full project (new dir) or flows (existing app)
+loom appgen <intent> [--dir .] [--dry-run] [--check] [--model <gguf>]  NL → new project or brownfield edits
 loom check --manifest <path>                    static flow-graph checks
 loom logs  --db <path> <executionId>            print the event timeline
 loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
@@ -1025,25 +1025,27 @@ report.recommendations; // { modelRankings, hotFailures, suggestedBudgetUsd }
 
 ## 19. AI-native codegen (`appgen`)
 
-*(Loom 2.0, P11 — `@loom/appgen`.)* Turn a natural-language intent into a structured spec, then emit **plain, static, inspectable TypeScript you own** — there is no runtime interpretation of NL.
+*(Loom 2.0, P11 — `@loom/appgen`. See [ADR 0042](adr/0042-ai-native-brownfield-appgen.md).)* Turn a natural-language intent into a change to a Loom app, then emit **plain, static, inspectable TypeScript you own** — there is no runtime interpretation of NL. `appgen` is **brownfield-aware**: it scans what already exists and applies a *delta*, in four stages with NL understanding isolated to exactly one:
+
+1. **scan** — `scanApp(dir)` → a compact `AppModel` (flows, steps, gates, and whether each handler is still a generated stub or hand-edited). Never raw file contents.
+2. **plan** — `planChangesDeterministic(intent, appModel)` → a `ChangeSpec` tagging each capability/step `create | extend | modify | delete`. The only stage that reads NL; a local model can drive it instead (see below).
+3. **apply** — `applyChanges(changeSpec, appModel)` → new flows from templates + **surgical, formatting-preserving edits** to existing ones (insert/register/wire a step, add approval/UI gates, wire grants) + deletes. A handler body is overwritten **only if it still hashes to the generated stub** — human-edited code is insert-only.
+4. **validate** — in-process `tsc` diagnostics (`--check`).
 
 ```ts
-import { parseIntent, generateProject, generateFlows } from "@loom/appgen";
+import { scanApp, planChangesDeterministic, applyChanges } from "@loom/appgen";
 
-const spec = parseIntent(
-  "Create a planner. Use Gemma first. Elevate to Gemini. Pause for approval. Generate UI."
-);
-// spec: { name: "planner", capabilities: [{ id, reasoning:{baseModel,elevateTo}, approval, ui, … }], … }
-
-// Full runnable project (folder convention): package.json, tsconfig.json, app/config.ts
-// (defineConfig({ flowModules })), app/main.ts, app/loom.gen.ts, app/flows/<id>/flow.ts.
-const project = generateProject(spec);
-// …or just the flow files, to drop into an existing app (then run `loom gen`):
-const flows = generateFlows(spec); // GeneratedFile[] — app/flows/planner/flow.ts (flow$/step$ + ctx.suspend gate + ctx.ui)
-// A CLI/editor writes them; the output is ordinary Loom code with TODO handlers to fill in.
+const appModel = scanApp("."); // net-new dir → empty; existing app → its flows/steps/gates
+const changeSpec = planChangesDeterministic("Create a planner. Step summarize. Pause for approval.", appModel);
+const plan = applyChanges(changeSpec, appModel); // { creates, edits, deletes, skips, regenRegistration }
+// A CLI/editor writes the plan; output is ordinary Loom code with TODO handlers to fill in.
 ```
 
-The generated app follows the same folder convention as `create-loom-app` / `loom new` / `loom gen` (reusing `@loom/scaffold`), so appgen output is consistent with every other generator. The only "understanding" is the deterministic, offline directive parser producing the `AppSpec`; codegen is pure and template-based (P4/P5 preserved).
+From the CLI: `loom appgen "<intent>" [--dry-run] [--yes] [--check] [--from-spec <file>] [--model <gguf>]`. `--dry-run` renders a real unified diff; each apply records a replayable `.loom/appgen/<ts>.spec.json` lockfile (`--from-spec` reproduces it with no model). The intent grammar adds `delete <name>`, `delete step <s> from <flow>`, and `grant <tool> to <cap>` to the base directives. See [`docs/usage-cli.md`](usage-cli.md#loom-appgen-intent--from-file--from-spec-file--dir--flags).
+
+The generated app follows the same folder convention as `create-loom-app` / `loom new` / `loom gen` (reusing `@loom/scaffold`). The deterministic parser is a small **directive grammar**; the only "understanding" is that one stage producing a `ChangeSpec`, and codegen stays pure and template-based (P4/P5 preserved).
+
+**Optional local model.** `@loom/appgen-model` swaps a small on-device Gemma model into the plan stage (`--model <gguf>`): grammar-constrained JSON, a cheap-first elevation ladder ([`@loom/reasoning`](../packages/reasoning)), and a self-repair loop that re-prompts on a semantically invalid plan. It is entirely optional — if the model is missing, too weak, or produces an invalid plan, appgen falls back to the deterministic parser, so you always get a valid `ChangeSpec`.
 
 ---
 

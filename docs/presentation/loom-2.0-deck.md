@@ -248,21 +248,22 @@ The flashy phases — reshaped to **read-only / opt-in / logged / advisory**:
 
 ## P11 — AI-native DX (NL → code you own)
 
-Not a runtime NL interpreter. **Codegen.**
+Not a runtime NL interpreter. **Brownfield-aware codegen.**
 
 ```
-"Create a planner. Use Gemma first. Elevate to Gemini.
- Pause for approval. Deploy on Fargate. Generate UI."
-        │  parseIntent (deterministic, offline)
+"Add a summarize step to the planner and pause for approval."
+   scanApp ──▶ AppModel        (what already exists: flows/steps/gates)
+        │  planChanges (deterministic or local model, swappable)
         ▼
-   AppSpec  (structured, JSON)
-        │  generateApp (pure, template-based)
+   ChangeSpec  (a DELTA: create · extend · modify · delete)
+        │  applyChanges (pure, surgical, formatting-preserving)
         ▼
-   plain, static, inspectable TypeScript you own
-   (flow$ / step$ / capability$ + defineConfig; ctx.suspend gate; ctx.ui)
+   plain, static TypeScript you own — new flows + in-place edits
+   (flow$ / step$ + defineConfig; ctx.suspend gate; ctx.ui)
+   --dry-run shows a diff · .loom lockfile replays it with no model
 ```
 
-The only "understanding" is the (swappable) parser producing a spec. Output is ordinary Loom code — **sugar, not a cage** (P4/P5).
+The only "understanding" is the (swappable) plan stage producing a spec; a handler is overwritten only while it's still the generated stub. Output is ordinary Loom code — **sugar, not a cage** (P4/P5).
 
 ---
 
