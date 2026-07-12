@@ -1,7 +1,7 @@
 {
-  "name": "@loom/store-postgres",
+  "name": "@loom/plugin-audit-chain",
   "version": "0.0.1",
-  "description": "Postgres store adapters for Loom — network-backed EventStore, SnapshotStore, and BranchRegistry with cross-node live subscribe (LISTEN/NOTIFY). The horizontal-scale backend behind the same interfaces as the SQLite stores.",
+  "description": "Tamper-evident hash-chained EventStore wrapper for Loom — each event carries H(prevHash ‖ canonical(event)) plus an optional HMAC signature, so the durable log is cryptographically verifiable. Fold-invisible: replay is byte-identical.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -19,16 +19,16 @@
   },
   "dependencies": {
     "@loom/core": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
-    "pg": "^8.13.0"
+    "@loom/event-runtime": "workspace:*"
   },
   "devDependencies": {
-    "@loom/replay-vm": "workspace:*",
+    "@loom/dst": "workspace:*",
+    "@loom/effect-runtime": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",
-    "@types/pg": "^8.11.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
-    "@loom/plugin-sqlite": "workspace:*"
+    "zod": "^3.23.8"
   }
 }

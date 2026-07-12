@@ -46,7 +46,7 @@ export type StorageConfig =
    * any `EventStore` + `SnapshotStore` (and an optional `BranchRegistry` for
    * fork/branch). This is also how every concrete backend is wired: a store plugin
    * exports a preset returning this shape — `sqliteStorage({ dir })` from
-   * `@loom/plugin-sqlite`, `postgresStorage({ url })` from `@loom/store-postgres`,
+   * `@loom/plugin-sqlite`, `postgresStorage({ url })` from `@loom/plugin-postgres`,
    * or your own — so `@loom/app` names no vendor and 1P/3P backends are symmetric
    * (ADR 0043).
    */

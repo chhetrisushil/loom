@@ -31,7 +31,7 @@ function makeEnvelope(executionId: string, sequence: number, payload: unknown = 
   };
 }
 
-suite("@loom/store-postgres", () => {
+suite("@loom/plugin-postgres", () => {
   let admin: Pool;
 
   beforeAll(async () => {

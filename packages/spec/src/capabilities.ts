@@ -161,12 +161,12 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "audit-chain",
     title: "Tamper-Evident Audit Chain",
-    package: "@loom/audit-chain",
+    package: "@loom/plugin-audit-chain",
     level: "L2",
     summary:
       "Hash-chained (optionally HMAC-signed) EventStore wrapper; verifyChain detects any edit/insert/reorder/drop. Fold-invisible — replay byte-identical.",
     evidence: {
-      conformanceTest: "packages/audit-chain/src/hashChain.test.ts",
+      conformanceTest: "plugins/audit-chain/src/hashChain.test.ts",
     },
     note: "L2 (stable + tested, incl. a DST crash/recovery integrity property) — not yet wired into a shipped example/defineConfig path, so not L3; no version constant (a composable wrapper, not a wire contract).",
   },
