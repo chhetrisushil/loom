@@ -175,6 +175,32 @@ code that builds your runtime. Consequences:
 - **a2ui contract/impl split** deferred until the UI wire format needs to be swappable.
 - **Advisory packages stay in `packages/`** — they are generic optional modules, not adapters.
 
+## Implementation status (2026-07-13)
+
+Landed on branch `feat/plugin-packaging-1p-3p`, each phase built + tested + linted green:
+
+- **Done — Phase 0:** `plugins/*` workspace tier; `@loom/spec` layering guard
+  (`findLayeringViolations`, transitive) enforced in CI. ADR 0044 (compiler) recorded.
+- **Done — Phase 2 (SQLite split):** `@loom/plugin-sqlite` created; `@loom/event-runtime` and
+  `@loom/snapshot-runtime` **dropped `better-sqlite3`** from their dependencies (kernel packages
+  now depend only on `@loom/core`). 20 importers relocated; kernel *tests* take the plugin as a
+  devDependency (guard checks runtime deps only).
+- **Done — Phase 3 (preset inversion):** `sqliteStorage()` / `postgresStorage()` presets;
+  `@loom/app` **dropped its vendor dependencies** and the `kind:"sqlite"/"postgres"` union arms +
+  the `loadNodeModule` hack. 1P and 3P storage backends now wire identically. Examples migrated.
+- **Done — Phase 1/4 (storage family):** relocated + renamed `store-postgres → @loom/plugin-postgres`,
+  `store-crypto → @loom/plugin-crypto`, `audit-chain → @loom/plugin-audit-chain`, all under
+  `plugins/`. 3P authoring guide: [`docs/plugins.md`](../plugins.md).
+- **Deferred — remaining adapters:** `worker-runtime-remote`, `worker-server`, `platform-cloudrun`,
+  `renderer-react` (clean but higher-churn: 5–9 importers each) and `mcp`, `a2a`, `renderer-terminal`
+  (also re-exported by the `@loom/sdk` public barrel — moving them forces the open barrel decision
+  below). These are pure mechanical `git mv` + specifier rewrites using the proven procedure; they
+  change no architecture and are sequenced as a follow-up batch.
+- **Deferred by design:** the a2ui contract/impl split (Phase 5) and the `LoomPlugin` manifest/brand
+  (CL8) remain gated as recorded above.
+- **Open, undecided:** whether `@loom/sdk` should keep re-exporting adapter packages
+  (`a2a`, `a2ui`, `mcp`, `renderer-terminal`). Resolving this precedes relocating those three.
+
 ## Phasing
 
 0. **Guard first** — land the CI layering check against today's graph (annotates the a2ui
