@@ -3,14 +3,16 @@ export * from "@loom/workflow-runtime";
 export * from "@loom/blueprint-runtime";
 export * from "@loom/projection-runtime";
 export type { EventStore } from "@loom/event-runtime";
+export { InMemoryAsyncEventStore } from "@loom/event-runtime";
+export type { BranchRef, BranchRegistry, LineageRecord } from "@loom/event-runtime";
+export { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+export type { SnapshotStore, Snapshot } from "@loom/snapshot-runtime";
+// SQLite stores are an adapter — re-exported from the plugin (ADR 0043).
 export {
   SqliteEventStore,
   SqliteBranchRegistry,
-  InMemoryAsyncEventStore,
-} from "@loom/event-runtime";
-export type { BranchRef, BranchRegistry, LineageRecord } from "@loom/event-runtime";
-export { SqliteSnapshotStore, InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-export type { SnapshotStore, Snapshot } from "@loom/snapshot-runtime";
+  SqliteSnapshotStore,
+} from "@loom/plugin-sqlite";
 
 // ── Agentic capabilities ─────────────────────────────────────────────────────
 export * from "@loom/llm";

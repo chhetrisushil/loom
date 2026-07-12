@@ -35,7 +35,8 @@
     "@loom/snapshot-runtime": "workspace:*",
     "@loom/worker-runtime-local": "workspace:*",
     "@loom/workflow-runtime": "workspace:*",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "@loom/plugin-sqlite": "workspace:*"
   },
   "devDependencies": {
     "@loom/testing": "workspace:*",

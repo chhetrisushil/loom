@@ -31,7 +31,8 @@
     "@loom/replay-vm": "workspace:*",
     "@loom/scaffold": "workspace:*",
     "@loom/spec": "workspace:*",
-    "@loom/verify": "workspace:*"
+    "@loom/verify": "workspace:*",
+    "@loom/plugin-sqlite": "workspace:*"
   },
   "devDependencies": {
     "@loom/effect-runtime": "workspace:*",

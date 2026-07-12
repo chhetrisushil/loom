@@ -6,8 +6,8 @@ import type { EventEnvelope } from "@loom/core";
 import { LocalDispatcher } from "@loom/dispatcher";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
-import { SqliteEventStore } from "@loom/event-runtime";
-import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
+import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+
 import type { ExecutionResult, WorkerRuntime } from "@loom/worker-runtime";
 import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
 import { RemoteWorkerRuntime } from "@loom/worker-runtime-remote";

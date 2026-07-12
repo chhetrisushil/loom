@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { EffectRuntime } from "@loom/effect-runtime";
 /**
  * Incident War Room — git-style branching for agent executions (branch-only).
  *
@@ -14,12 +18,8 @@
  *
  * Run it:  pnpm --filter @loom/incident-war-room demo:fork
  */
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { EffectRuntime } from "@loom/effect-runtime";
-import { SqliteBranchRegistry, SqliteEventStore } from "@loom/event-runtime";
-import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
+import { SqliteBranchRegistry, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { RemediateLagFlow } from "../capabilities/flows";
 import { STRATEGIES, type StrategyId, type StrategyOutcome } from "../warroom/strategies";

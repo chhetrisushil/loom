@@ -38,6 +38,7 @@
     "@loom/middleware": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "@loom/plugin-sqlite": "workspace:*"
   }
 }

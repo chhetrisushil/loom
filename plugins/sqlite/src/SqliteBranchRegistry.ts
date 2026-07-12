@@ -1,5 +1,5 @@
+import type { BranchRef, BranchRegistry, LineageRecord } from "@loom/event-runtime";
 import Database from "better-sqlite3";
-import type { BranchRef, BranchRegistry, LineageRecord } from "./BranchRegistry";
 import { migrate } from "./schema";
 
 interface RefRow {

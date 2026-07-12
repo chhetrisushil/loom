@@ -5,14 +5,9 @@ import {
   EVENT_STORE_SPI_VERSION,
   InMemoryAsyncEventStore,
   InMemoryBranchRegistry,
-  SqliteBranchRegistry,
-  SqliteEventStore,
 } from "@loom/event-runtime";
-import {
-  InMemoryAsyncSnapshotStore,
-  SNAPSHOT_STORE_SPI_VERSION,
-  SqliteSnapshotStore,
-} from "@loom/snapshot-runtime";
+import { SqliteBranchRegistry, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+import { InMemoryAsyncSnapshotStore, SNAPSHOT_STORE_SPI_VERSION } from "@loom/snapshot-runtime";
 import type {
   ExecutionPackage,
   ExecutionResult,

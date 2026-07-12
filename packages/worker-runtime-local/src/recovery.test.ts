@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { step$ } from "@loom/core";
 import type { EventEnvelope } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { SqliteEventStore } from "@loom/event-runtime";
-import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
+import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+
 import type { ExecutionPackage } from "@loom/worker-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";

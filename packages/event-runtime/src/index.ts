@@ -1,4 +1,3 @@
-export { SqliteEventStore } from "./SqliteEventStore";
 export { TenantScopedEventStore } from "./TenantScopedEventStore";
 export { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";
 export type { InMemoryAsyncEventStoreOptions } from "./InMemoryAsyncEventStore";
@@ -6,11 +5,9 @@ export type { EventStore, EventStoreOptions } from "./types";
 export { readRangeOf, EVENT_STORE_SPI_VERSION } from "./types";
 export { StaleFenceError, fenceOf } from "./fencing";
 export { lowerBoundBySequence, sliceBySequence } from "./sequenceRange";
-export { SqliteBranchRegistry } from "./SqliteBranchRegistry";
 export { InMemoryBranchRegistry } from "./InMemoryBranchRegistry";
 export type { InMemoryBranchRegistryOptions } from "./InMemoryBranchRegistry";
 export { InMemoryTimerStore } from "./timers";
 export type { TimerRecord, TimerStore } from "./timers";
-export { SqliteTimerStore } from "./SqliteTimerStore";
 export type { BranchRef, BranchRegistry, LineageRecord } from "./BranchRegistry";
 export { BRANCH_REGISTRY_SPI_VERSION } from "./BranchRegistry";

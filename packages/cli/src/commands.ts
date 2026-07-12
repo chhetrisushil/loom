@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { SqliteEventStore } from "@loom/event-runtime";
+import { SqliteEventStore } from "@loom/plugin-sqlite";
+
 import {
   type EvalReport,
   type Golden,

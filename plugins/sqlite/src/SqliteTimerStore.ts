@@ -1,5 +1,5 @@
+import type { TimerRecord, TimerStore } from "@loom/event-runtime";
 import Database from "better-sqlite3";
-import type { TimerRecord, TimerStore } from "./timers";
 
 interface TimerRow {
   execution_id: string;

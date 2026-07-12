@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { SqliteEventStore } from "@loom/event-runtime";
+import { SqliteEventStore } from "@loom/plugin-sqlite";
+
 import { foldEvents } from "@loom/replay-vm";
 import type { Snapshot } from "@loom/snapshot-runtime";
 import { Pool } from "pg";

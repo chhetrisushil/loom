@@ -31,7 +31,8 @@
     "@loom/telemetry": "workspace:*",
     "@loom/verify": "workspace:*",
     "@loom/worker-runtime-local": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*"
+    "@loom/workflow-runtime": "workspace:*",
+    "@loom/plugin-sqlite": "workspace:*"
   },
   "devDependencies": {
     "@loom/middleware": "workspace:*",

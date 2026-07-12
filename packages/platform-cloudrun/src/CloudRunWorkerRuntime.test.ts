@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { step$ } from "@loom/core";
 import { LocalDispatcher } from "@loom/dispatcher";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { SqliteEventStore } from "@loom/event-runtime";
-import { SqliteSnapshotStore } from "@loom/snapshot-runtime";
+import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+
 import type { ExecutionResult } from "@loom/worker-runtime";
 import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
 import { createWorkerServer } from "@loom/worker-server";
