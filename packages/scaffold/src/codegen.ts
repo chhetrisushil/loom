@@ -7,6 +7,12 @@ export function pascal(name: string): string {
     .join("");
 }
 
+/** kebab/snake/space → camelCase, for deriving a valid function identifier. */
+export function camel(name: string): string {
+  const p = pascal(name);
+  return p.charAt(0).toLowerCase() + p.slice(1);
+}
+
 /**
  * Generate the text of `loom.gen.ts` — a static module that imports each flow
  * module and re-exports them as `flowModules`, for `defineConfig({ flowModules })`.

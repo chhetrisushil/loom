@@ -63,6 +63,20 @@ imports, so the 1P/3P distinction stays purely organisational.
 - `@loom/plugin-crypto` — field-level crypto-shredding store wrappers (K10).
 - `@loom/plugin-audit-chain` — tamper-evident hash-chained `EventStore` wrapper.
 
+## Scaffolding a plugin
+
+The CLI generates a ready-to-fill package for a seam, in first- or third-party shape, with the
+preset stub, an SPI implementation stub, and a conformance-wired test:
+
+```
+loom plugin seams                              # list the seams you can target
+loom plugin new store my-backend               # third-party: ./loom-plugin-my-backend
+loom plugin new store my-backend --first-party # first-party: ./plugins/my-backend (@loom/plugin-*)
+```
+
+Seams: `store`, `dispatcher`, `telemetry`, `middleware` (more as conformance kits land — see
+ADR 0033). Then implement the SPI, un-comment the conformance test, and run your formatter.
+
 ## Authoring a plugin (worked example: a storage backend)
 
 ```ts
