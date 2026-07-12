@@ -8,7 +8,7 @@
       "path": "packages/event-runtime"
     },
     {
-      "path": "packages/store-postgres"
+      "path": "plugins/postgres"
     },
     {
       "path": "packages/replay-vm"
@@ -143,7 +143,7 @@
       "path": "packages/dst"
     },
     {
-      "path": "packages/audit-chain"
+      "path": "plugins/audit-chain"
     },
     {
       "path": "packages/fair-scheduler"

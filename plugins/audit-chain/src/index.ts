@@ -1,4 +1,4 @@
-// @loom/audit-chain — tamper-evident, hash-chained EventStore wrapper.
+// @loom/plugin-audit-chain — tamper-evident, hash-chained EventStore wrapper.
 //
 // Each event carries H(prevHash ‖ canonical(event)) in its metadata (plus an optional
 // HMAC signature), so any edit/insert/reorder/drop in the durable log is detectable
