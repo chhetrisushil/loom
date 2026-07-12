@@ -165,6 +165,9 @@
     },
     {
       "path": "plugins/sqlite"
+    },
+    {
+      "path": "packages/plugin-kit"
     }
   ]
 }

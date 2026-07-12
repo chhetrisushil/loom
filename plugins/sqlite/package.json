@@ -21,7 +21,8 @@
     "@loom/core": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
-    "better-sqlite3": "^11.5.0"
+    "better-sqlite3": "^11.5.0",
+    "@loom/plugin-kit": "workspace:*"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

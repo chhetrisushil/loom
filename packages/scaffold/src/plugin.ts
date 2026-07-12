@@ -31,14 +31,15 @@ const SEAMS: Record<string, SeamDef> = {
     key: "store",
     title: "Durable storage backend (EventStore + SnapshotStore [+ BranchRegistry])",
     wiring: "storage: <name>Storage({ /* … */ })",
-    spiDeps: ["@loom/event-runtime", "@loom/snapshot-runtime"],
+    spiDeps: ["@loom/event-runtime", "@loom/snapshot-runtime", "@loom/plugin-kit"],
     conformance: ["runEventStoreConformance", "runSnapshotStoreConformance"],
     index: (name) => {
       const P = pascal(name);
       const c = camel(name);
       return [
-        `import type { BranchRegistry, EventStore } from "@loom/event-runtime";`,
+        `import type { EventStore } from "@loom/event-runtime";`,
         `import type { SnapshotStore } from "@loom/snapshot-runtime";`,
+        `import type { CustomStorage } from "@loom/plugin-kit";`,
         "",
         `export interface ${P}StorageOptions {`,
         "  /** Whatever your backend needs — a URL, a directory, a token. */",
@@ -52,12 +53,7 @@ const SEAMS: Record<string, SeamDef> = {
         " * your stores constructed — so `@loom/app` never learns your backend exists and a",
         " * third-party backend wires exactly like a first-party one (ADR 0043).",
         " */",
-        `export function ${c}Storage(options: ${P}StorageOptions): {`,
-        '  kind: "custom";',
-        "  eventStore: EventStore;",
-        "  snapshotStore: SnapshotStore;",
-        "  branchRegistry?: BranchRegistry;",
-        "} {",
+        `export function ${c}Storage(options: ${P}StorageOptions): CustomStorage {`,
         "  return {",
         '    kind: "custom",',
         `    eventStore: new ${P}EventStore(options.url),`,

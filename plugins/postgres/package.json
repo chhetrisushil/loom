@@ -21,7 +21,8 @@
     "@loom/core": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
-    "pg": "^8.13.0"
+    "pg": "^8.13.0",
+    "@loom/plugin-kit": "workspace:*"
   },
   "devDependencies": {
     "@loom/replay-vm": "workspace:*",

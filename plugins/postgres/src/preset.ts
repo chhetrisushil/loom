@@ -1,5 +1,4 @@
-import type { BranchRegistry, EventStore } from "@loom/event-runtime";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
+import type { CustomStorage } from "@loom/plugin-kit";
 import { PostgresBranchRegistry } from "./PostgresBranchRegistry";
 import { PostgresEventStore } from "./PostgresEventStore";
 import { PostgresSnapshotStore } from "./PostgresSnapshotStore";
@@ -18,12 +17,7 @@ export interface PostgresStorageOptions {
  * never depends on `pg` (ADR 0043: storage backends are symmetric presets, so a
  * third-party backend is wired exactly like this first-party one).
  */
-export function postgresStorage(options: PostgresStorageOptions): {
-  kind: "custom";
-  eventStore: EventStore;
-  snapshotStore: SnapshotStore;
-  branchRegistry?: BranchRegistry;
-} {
+export function postgresStorage(options: PostgresStorageOptions): CustomStorage {
   return {
     kind: "custom",
     eventStore: new PostgresEventStore(options.url),
