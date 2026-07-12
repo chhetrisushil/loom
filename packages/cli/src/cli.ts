@@ -13,7 +13,7 @@ import { serveInspector } from "./inspector";
 import { cmdIntrospect } from "./introspect";
 import { cmdCompat, cmdKernelManifest } from "./kernel";
 import { cmdOptimize } from "./optimize";
-import { cmdPluginNew, cmdPluginSeams } from "./plugin";
+import { cmdPluginCheck, cmdPluginNew, cmdPluginSeams } from "./plugin";
 import { cmdProfile } from "./profile";
 import { cmdVerify } from "./verify";
 
@@ -50,6 +50,7 @@ const USAGE = `loom — project-local commands for a Loom app
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
   loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
   loom plugin new <seam> <name> [--first-party] [--dir .]  scaffold a plugin package
+  loom plugin check [--dir .]                     validate a plugin against the contract
   loom plugin seams                               list the seams a plugin can target
   loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]  NL → new project or edits
                                                   (--dry-run previews; --check typechecks after apply)
@@ -160,6 +161,16 @@ async function main(argv: string[]): Promise<number> {
         console.log(cmdPluginSeams());
         return 0;
       }
+      if (sub === "check") {
+        const dir = flags.dir ?? positionals[1] ?? ".";
+        const { findings, ok } = cmdPluginCheck(dir);
+        const glyph = { ok: "✓", warn: "⚠", error: "✗" } as const;
+        for (const f of findings) console.log(`  ${glyph[f.level]} ${f.message}`);
+        const errors = findings.filter((f) => f.level === "error").length;
+        const warns = findings.filter((f) => f.level === "warn").length;
+        console.log(`\nplugin check: ${ok ? "passed" : "FAILED"} (${errors} error, ${warns} warn)`);
+        return ok ? 0 : 1;
+      }
       if (sub === "new") {
         const seam = positionals[1];
         const name = positionals[2];
@@ -184,7 +195,9 @@ async function main(argv: string[]): Promise<number> {
         console.log(lines.join("\n"));
         return written.length > 0 ? 0 : 1;
       }
-      throw new Error("usage: loom plugin new <seam> <name> | loom plugin seams");
+      throw new Error(
+        "usage: loom plugin new <seam> <name> | loom plugin check [--dir .] | loom plugin seams"
+      );
     }
     case "appgen": {
       // For appgen, `dir` is the PROJECT ROOT (scaffold paths are already `app/…`-relative):
