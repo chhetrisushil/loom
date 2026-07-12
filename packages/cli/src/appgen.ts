@@ -93,9 +93,15 @@ const esmImport = new Function("s", "return import(s)") as (
 ) => Promise<AppgenModelModule>;
 
 /**
- * Load the optional `@loom/appgen-model` package, resolved **from the target project**
- * (`dir`) — the intended UX is `pnpm add @loom/appgen-model node-llama-cpp` in your app,
- * then `loom appgen --model`. Falls back to resolving from the CLI itself.
+ * Load the optional `@loom/appgen-model` package. Resolution order:
+ *  1. from the target project (`dir`) — the intended UX is
+ *     `pnpm add @loom/appgen-model node-llama-cpp` in your app;
+ *  2. from the CLI itself (when hoisted into the CLI's own node_modules);
+ *  3. as a sibling of `@loom/appgen` (which the CLI always resolves) — `appgen-model`
+ *     sits next to `appgen` both in the source monorepo (`packages/*`) and in an
+ *     installed layout (`node_modules/@loom/*`), so in-repo dev works without a
+ *     per-app install;
+ *  4. the bare specifier.
  */
 async function loadAppgenModel(dir: string): Promise<AppgenModelModule> {
   const { createRequire } = await esmImport("node:module");
@@ -108,7 +114,22 @@ async function loadAppgenModel(dir: string): Promise<AppgenModelModule> {
       // try the next anchor
     }
   }
-  // Last resort: bare specifier (works when hoisted into the CLI's own node_modules).
+  try {
+    // @loom/appgen resolves to `<base>/appgen/dist/index.js`; its sibling is
+    // `<base>/appgen-model/dist/index.js` in both packages/* and node_modules/@loom/*.
+    const appgenMain = createRequire(__filename).resolve("@loom/appgen");
+    const sibling = path.resolve(
+      path.dirname(appgenMain),
+      "..",
+      "..",
+      "appgen-model",
+      "dist",
+      "index.js"
+    );
+    if (fs.existsSync(sibling)) return await esmImport(pathToFileURL(sibling).href);
+  } catch {
+    // fall through to the bare specifier
+  }
   return await esmImport("@loom/appgen-model");
 }
 
