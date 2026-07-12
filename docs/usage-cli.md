@@ -28,7 +28,7 @@ loom — project-local commands for a Loom app
 
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
   loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
-  loom appgen <intent> | --from <file> [--dir app]  generate a Loom app from natural language
+  loom appgen <intent> | --from <file> [--dir .]  NL → full project (new dir) or flows (existing app)
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom logs  --db <path> <executionId>            print the event timeline
   loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
@@ -84,28 +84,35 @@ export const flowModules = [_f0, _f1];
 
 Feed the generated `flowModules` to `defineConfig({ flowModules })` and every flow-shaped export registers itself. Re-run `loom gen` whenever you add or remove a flow. Exit `0` on a successful write.
 
-### `loom appgen <intent> | --from <file> [--dir app]`
+### `loom appgen <intent> | --from <file> [--dir .]`
 
-Turns a **natural-language intent** into a Loom app skeleton — one `src/<capability>.ts` flow file per capability plus a `src/app.ts` composition root — by parsing the sentence into an `AppSpec` and generating plain, static TypeScript ([`@loom/appgen`](../packages/appgen)). Parsing and codegen are **deterministic and offline — no model call at generate time and none in the output** (P5). The generated files are ordinary Loom code with `TODO` handlers you own and edit.
+Turns a **natural-language intent** into a Loom app following the **[folder convention](#scaffold--wire-new-gen-appgen)** — the same shape `create-loom-app` / `loom new` / `loom gen` produce — by parsing the sentence into an `AppSpec` and generating plain, static TypeScript ([`@loom/appgen`](../packages/appgen)). Parsing and codegen are **deterministic and offline — no model call at generate time and none in the output** (P5). The generated files are ordinary Loom code with `TODO` handlers you own and edit.
+
+`appgen` **adapts to the target directory** (the project root):
+
+- **New / empty dir** → a full runnable project: `package.json`, `tsconfig.json`, `app/config.ts` (`defineConfig({ flowModules })`), `app/main.ts`, `app/loom.gen.ts`, and one `app/flows/<id>/flow.ts` per capability — so `pnpm install && pnpm start` runs out of the box.
+- **Existing Loom app** (a `package.json` / `app/loom.gen.ts` / `app/config.ts` is present) → just the `app/flows/<id>/flow.ts` files, then `app/loom.gen.ts` is regenerated from the filesystem (the `loom gen` step) so pre-existing flows stay wired.
 
 | Argument / flag | Required | Default | Meaning |
 |---|---|---|---|
 | `<intent>` | one of the two | — | the intent as a quoted positional string |
 | `--from <file>` | one of the two | — | read the intent from a text file (takes precedence over the positional) |
-| `--dir` | no | `app` | base directory the generated `src/` files go under |
+| `--dir` | no | `.` | the project root (a new dir → full project; an existing app → flows only) |
 
 The intent is a small directive grammar: `create a <name>` (a capability), `use <model> first` / `elevate to <model>`, `pause for approval`, `generate ui`, `step <name>`, `deploy on <target>`. Reasoning / approval / UI wiring is emitted only when asked for.
 
 ```bash
-npx loom appgen "Create a planner. Use Gemma first. Pause for approval. Generate UI."
-# → appgen: planner → app
-#     wrote app/src/planner.ts
-#     wrote app/src/app.ts
+npx loom appgen "Create a planner. Use Gemma first. Pause for approval. Generate UI." --dir ./planner
+# → appgen: planner → ./planner
+#     wrote ./planner/package.json
+#     wrote ./planner/app/config.ts
+#     wrote ./planner/app/flows/planner/flow.ts
+#     … (full project)
 
-npx loom appgen --from intent.txt --dir app     # long specs from a file
+npx loom appgen "Create a summarizer." --dir ./planner   # existing app: adds a flow + regenerates loom.gen.ts
 ```
 
-Each file is written **directly when its target path is free**. On a collision it prompts interactively, per file — `src/planner.ts exists — [r]ename / [s]kip / [o]verwrite?` — where `r` asks for a new name (and re-checks it), `s` leaves the existing file untouched, and `o` replaces it. Exit `0`; the summary lists what was written, overwritten, and skipped.
+Each file is written **directly when its target path is free**. On a collision it prompts interactively, per file — `app/flows/planner/flow.ts exists — [r]ename / [s]kip / [o]verwrite?` — where `r` asks for a new name (and re-checks it), `s` leaves the existing file untouched, and `o` replaces it. Exit `0`; the summary lists what was written, overwritten, and skipped.
 
 ---
 
@@ -249,7 +256,7 @@ npx loom deploy check --logs logs/ --config dist/app.js
 |---|---|---|---|
 | `loom new <kind> <name>` | scaffold a flow/agent/tool file | `--dir app` | file already exists |
 | `loom gen` | regenerate `loom.gen.ts` | `--dir app` | (write failure) |
-| `loom appgen <intent>` | generate an app skeleton from NL | `--from <file>`, `--dir app` | no intent supplied |
+| `loom appgen <intent>` | generate a Loom app from NL (folder convention) | `--from <file>`, `--dir .` | no intent supplied |
 | `loom check` | static flow-graph validation | `--manifest` *(req)* | issues found |
 | `loom logs` | print the event timeline | `--db` *(req)* | error |
 | `loom debug` | folded state at / after a sequence | `--db` *(req)*, `--at N` | error |

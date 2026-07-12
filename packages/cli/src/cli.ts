@@ -45,7 +45,7 @@ const USAGE = `loom — project-local commands for a Loom app
 
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
   loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
-  loom appgen <intent> | --from <file> [--dir app]  generate a Loom app from natural language
+  loom appgen <intent> | --from <file> [--dir .]  NL → full project (new dir) or flows (existing app)
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
   loom logs  --db <path> <executionId>            print the event timeline
@@ -146,7 +146,9 @@ async function main(argv: string[]): Promise<number> {
     }
     case "appgen": {
       const intent = resolveIntent(flags, positionals);
-      const dir = flags.dir ?? "app";
+      // For appgen, `dir` is the PROJECT ROOT (scaffold paths are already `app/…`-relative):
+      // a new dir gets a full project; an existing app gets flows + a regenerated loom.gen.ts.
+      const dir = flags.dir ?? ".";
       const r = await cmdAppgen({ intent, dir });
       const lines = [
         `appgen: ${r.specName} → ${dir}`,

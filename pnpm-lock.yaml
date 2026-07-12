@@ -1181,6 +1181,10 @@ importers:
         version: 3.25.76
 
   packages/appgen:
+    dependencies:
+      '@loom/scaffold':
+        specifier: workspace:*
+        version: link:../scaffold
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

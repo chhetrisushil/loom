@@ -1,5 +1,5 @@
 export { parseIntent } from "./parseIntent";
-export { generateApp } from "./generate";
+export { generateApp, generateFlows, generateProject } from "./generate";
 export type {
   AppSpec,
   CapabilitySpec,
