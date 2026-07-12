@@ -28,7 +28,7 @@ loom — project-local commands for a Loom app
 
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
   loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
-  loom appgen <intent> | --from <file> [--dir .]  NL → full project (new dir) or flows (existing app)
+  loom appgen <intent> [--dir .] [--dry-run] [--check] [--model <gguf>]  NL → new project or brownfield edits
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom logs  --db <path> <executionId>            print the event timeline
   loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
@@ -84,35 +84,47 @@ export const flowModules = [_f0, _f1];
 
 Feed the generated `flowModules` to `defineConfig({ flowModules })` and every flow-shaped export registers itself. Re-run `loom gen` whenever you add or remove a flow. Exit `0` on a successful write.
 
-### `loom appgen <intent> | --from <file> [--dir .]`
+### `loom appgen <intent> | --from <file> | --from-spec <file> [--dir .] [flags]`
 
-Turns a **natural-language intent** into a Loom app following the **[folder convention](#scaffold--wire-new-gen-appgen)** — the same shape `create-loom-app` / `loom new` / `loom gen` produce — by parsing the sentence into an `AppSpec` and generating plain, static TypeScript ([`@loom/appgen`](../packages/appgen)). Parsing and codegen are **deterministic and offline — no model call at generate time and none in the output** (P5). The generated files are ordinary Loom code with `TODO` handlers you own and edit.
+Turns a **natural-language intent** into a change to a Loom app, following the **[folder convention](#scaffold--wire-new-gen-appgen)**. It is **brownfield-aware**: it scans what already exists and applies a *delta* rather than only scaffolding from scratch. Four stages, with **NL understanding isolated to exactly one** and everything else deterministic and offline ([`@loom/appgen`](../packages/appgen)); the generated output is ordinary, statically-wired Loom code with `TODO` handlers you own (P5, P11):
 
-`appgen` **adapts to the target directory** (the project root):
+1. **scan** — `scanApp(dir)` summarizes the app (flows, steps, gates, and whether each handler is still a generated stub or hand-edited). Never raw file contents.
+2. **plan** — the intent is parsed into a `ChangeSpec` that tags each capability/step `create | extend | modify | delete`. This is the only stage that reads NL. Deterministic by default; a **local model** can drive it (see `--model`).
+3. **apply** — new flows come from the templates; existing flows are edited **surgically** (a new step is inserted, registered, and wired into the runner; approval/UI gates and grants are added) while untouched code is preserved byte-for-byte. A handler body is overwritten **only if it still hashes to the generated stub** — anything you have edited is insert-only.
+4. **validate** — with `--check`, the app is typechecked in-process (`tsc`) after applying.
 
-- **New / empty dir** → a full runnable project: `package.json`, `tsconfig.json`, `app/config.ts` (`defineConfig({ flowModules })`), `app/main.ts`, `app/loom.gen.ts`, and one `app/flows/<id>/flow.ts` per capability — so `pnpm install && pnpm start` runs out of the box.
-- **Existing Loom app** (a `package.json` / `app/loom.gen.ts` / `app/config.ts` is present) → just the `app/flows/<id>/flow.ts` files, then `app/loom.gen.ts` is regenerated from the filesystem (the `loom gen` step) so pre-existing flows stay wired.
+`appgen` **adapts to the target directory**: a new/empty dir gets a full runnable project (`package.json`, `tsconfig.json`, `app/config.ts`, `app/main.ts`, `app/loom.gen.ts`, one `app/flows/<id>/flow.ts` per capability); an existing app gets new flow files + surgical edits, then `app/loom.gen.ts` is regenerated.
 
-| Argument / flag | Required | Default | Meaning |
-|---|---|---|---|
-| `<intent>` | one of the two | — | the intent as a quoted positional string |
-| `--from <file>` | one of the two | — | read the intent from a text file (takes precedence over the positional) |
-| `--dir` | no | `.` | the project root (a new dir → full project; an existing app → flows only) |
+| Argument / flag | Meaning |
+|---|---|
+| `<intent>` | the intent as a quoted positional string |
+| `--from <file>` | read the intent from a text file (takes precedence over the positional) |
+| `--from-spec <file>` | replay a `.loom/appgen/<ts>.spec.json` lockfile verbatim — no NL, no model |
+| `--dir <path>` | the project root (default `.`) |
+| `--dry-run` | render the plan as a unified diff and write nothing |
+| `--yes` | apply without the interactive confirmation prompt |
+| `--check` | typecheck the app (`tsc`) after applying |
+| `--model <gguf>` | plan with a local Gemma model (needs [`@loom/appgen-model`](../packages/appgen-model) + `node-llama-cpp`) |
+| `--model-big <gguf>` | a stronger model tier to elevate to on low confidence |
+| `--model-tier <e2b\|e4b\|12b>` | the tier label for `--model` (default `e4b`) |
+| `--offline` | force the deterministic, model-free planner (overrides `--model`) |
 
-The intent is a small directive grammar: `create a <name>` (a capability), `use <model> first` / `elevate to <model>`, `pause for approval`, `generate ui`, `step <name>`, `deploy on <target>`. Reasoning / approval / UI wiring is emitted only when asked for.
+The intent grammar: `create a <name>` (a capability), `step <name>` / `delete <name>`, `use <model> first` / `elevate to <model>`, `pause for approval`, `generate ui`, `grant <tool> to <cap>`, `deploy on <target>`. Reasoning / approval / UI / grant wiring is emitted only when asked for.
 
 ```bash
-npx loom appgen "Create a planner. Use Gemma first. Pause for approval. Generate UI." --dir ./planner
-# → appgen: planner → ./planner
-#     wrote ./planner/package.json
-#     wrote ./planner/app/config.ts
-#     wrote ./planner/app/flows/planner/flow.ts
-#     … (full project)
+# 1. preview a brownfield change as a diff (writes nothing)
+npx loom appgen "Add a summarize step to the planner and pause for approval." --dir ./planner --dry-run
 
-npx loom appgen "Create a summarizer." --dir ./planner   # existing app: adds a flow + regenerates loom.gen.ts
+# 2. apply it (shows the plan, asks to confirm; --yes skips the prompt), then typecheck
+npx loom appgen "Add a summarize step to the planner and pause for approval." --dir ./planner --yes --check
+
+# 3. reproduce a previous generation exactly, with no model
+npx loom appgen --from-spec ./planner/.loom/appgen/1783875332959.spec.json --dir ./elsewhere
 ```
 
-Each file is written **directly when its target path is free**. On a collision it prompts interactively, per file — `app/flows/planner/flow.ts exists — [r]ename / [s]kip / [o]verwrite?` — where `r` asks for a new name (and re-checks it), `s` leaves the existing file untouched, and `o` replaces it. Exit `0`; the summary lists what was written, overwritten, and skipped.
+**Spec lockfile.** Each apply records the accepted `ChangeSpec` to `.loom/appgen/<timestamp>.spec.json`. `--from-spec` replays it byte-for-byte — the appgen equivalent of a golden log, so CI stays model-free. When a new file collides, `appgen` prompts per file — `[r]ename / [s]kip / [o]verwrite`.
+
+**Local model (`--model`).** Optional and offline: install `@loom/appgen-model` + `node-llama-cpp` in your project and point `--model` at a local `.gguf`. Planning runs through a cheap-first elevation ladder; if the model is missing, too weak, or produces an invalid plan, `appgen` **falls back to the deterministic parser** — it is never left without a valid `ChangeSpec`. See the [`@loom/appgen-model` README](../packages/appgen-model/README.md) for tiers and requirements.
 
 ---
 
@@ -256,7 +268,7 @@ npx loom deploy check --logs logs/ --config dist/app.js
 |---|---|---|---|
 | `loom new <kind> <name>` | scaffold a flow/agent/tool file | `--dir app` | file already exists |
 | `loom gen` | regenerate `loom.gen.ts` | `--dir app` | (write failure) |
-| `loom appgen <intent>` | generate a Loom app from NL (folder convention) | `--from <file>`, `--dir .` | no intent supplied |
+| `loom appgen <intent>` | brownfield-aware NL → new project or surgical edits (scan→plan→apply→validate) | `--dry-run`, `--yes`, `--check`, `--from <file>`, `--from-spec <file>`, `--model <gguf>`, `--offline`, `--dir .` | no intent supplied |
 | `loom check` | static flow-graph validation | `--manifest` *(req)* | issues found |
 | `loom logs` | print the event timeline | `--db` *(req)* | error |
 | `loom debug` | folded state at / after a sequence | `--db` *(req)*, `--at N` | error |
