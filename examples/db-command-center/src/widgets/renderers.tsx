@@ -1,4 +1,4 @@
-import type { WidgetAction, WidgetRendererProps } from "@loom/renderer-react";
+import type { WidgetAction, WidgetRendererProps } from "@loom/plugin-renderer-react";
 import React from "react";
 import type { AgentTask, PendingApproval, PlanEntry, RiskLevel, TaskStatus } from "../domain";
 

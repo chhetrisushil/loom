@@ -31,7 +31,7 @@ export default defineConfig({
   build: {
     commonjsOptions: {
       transformMixedEsModules: true,
-      include: [/node_modules/, /packages\/.*\/dist/],
+      include: [/node_modules/, /packages\/.*\/dist/, /plugins\/.*\/dist/],
     },
   },
 });

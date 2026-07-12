@@ -9,7 +9,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@loom/a2a": "workspace:*",
+    "@loom/plugin-a2a": "workspace:*",
     "@loom/a2ui": "workspace:*",
     "@loom/agent": "workspace:*",
     "@loom/app": "workspace:*",
@@ -20,12 +20,12 @@
     "@loom/event-runtime": "workspace:*",
     "@loom/intent": "workspace:*",
     "@loom/llm": "workspace:*",
-    "@loom/mcp": "workspace:*",
+    "@loom/plugin-mcp": "workspace:*",
     "@loom/memory": "workspace:*",
     "@loom/planner": "workspace:*",
     "@loom/projection-runtime": "workspace:*",
     "@loom/registry": "workspace:*",
-    "@loom/renderer-terminal": "workspace:*",
+    "@loom/plugin-renderer-terminal": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@loom/workflow-runtime": "workspace:*",
     "zod": "^3.23.8"

@@ -106,7 +106,7 @@ export const HelloFlow = {
 | ~@loom/app~            | ~defineConfig~ — the composition root                             |
 | ~@loom/core~           | Builders: ~flow$~, ~step$~, ~handler$~, ~projection$~, ~blueprint$~ |
 | ~@loom/projection-runtime~ | ~InMemoryProjectionRuntime~ + custom projections               |
-| ~@loom/renderer-react~ | ~BlueprintRenderer~, ~LoomProvider~, ~useLoom~, ~useProjection~   |
+| ~@loom/plugin-renderer-react~ | ~BlueprintRenderer~, ~LoomProvider~, ~useLoom~, ~useProjection~   |
 | ~@loom/capability~ / ~@loom/intent~ | Expose a flow as a capability + route a goal to it   |
 | ~@loom/telemetry~      | Telemetry adapters (Console + a custom React adapter)             |
 

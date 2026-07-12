@@ -1,6 +1,6 @@
-// @vitest-environment jsdom
-import type { AgentCard } from "@loom/a2a";
 import type { WidgetAction } from "@loom/blueprint-runtime";
+// @vitest-environment jsdom
+import type { AgentCard } from "@loom/plugin-a2a";
 import { createTestApp } from "@loom/testing";
 import { describe, expect, it } from "vitest";
 import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "../src/agents/definitions";

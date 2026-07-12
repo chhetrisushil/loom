@@ -1,4 +1,4 @@
-import type { WidgetRenderer } from "@loom/renderer-react";
+import type { WidgetRenderer } from "@loom/plugin-renderer-react";
 import type { CSSProperties } from "react";
 import {
   Area,

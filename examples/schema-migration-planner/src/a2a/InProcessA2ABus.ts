@@ -1,6 +1,6 @@
-import type { A2ATask, A2ATaskResult, A2ATaskStatus, AgentCard } from "@loom/a2a";
 import { LocalDispatcher } from "@loom/dispatcher";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
+import type { A2ATask, A2ATaskResult, A2ATaskStatus, AgentCard } from "@loom/plugin-a2a";
 import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
 import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 import { progressHub } from "../runtime/progressHub";
@@ -9,7 +9,7 @@ import { progressHub } from "../runtime/progressHub";
 //
 // The A2A protocol is transport-agnostic: an agent publishes an AgentCard and
 // accepts tasks; a caller sends a task and polls its status until terminal
-// (submitted → working → completed/failed). @loom/a2a ships an HTTP transport
+// (submitted → working → completed/failed). @loom/plugin-a2a ships an HTTP transport
 // (createA2AServer/createA2AClientEffect) for cross-process agents. This app runs
 // entirely in the browser, so we bring our own in-process transport with the
 // exact same protocol shapes.

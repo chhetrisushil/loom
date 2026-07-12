@@ -16,7 +16,7 @@ export default defineConfig({
       "@loom/effect-runtime",
       "@loom/event-runtime",
       "@loom/projection-runtime",
-      "@loom/renderer-react",
+      "@loom/plugin-renderer-react",
       "@loom/sdk",
       "@loom/snapshot-runtime",
       "@loom/telemetry",
@@ -30,7 +30,7 @@ export default defineConfig({
   build: {
     commonjsOptions: {
       transformMixedEsModules: true,
-      include: [/node_modules/, /packages\/.*\/dist/],
+      include: [/node_modules/, /packages\/.*\/dist/, /plugins\/.*\/dist/],
     },
   },
 });

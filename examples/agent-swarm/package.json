@@ -10,7 +10,7 @@
     "clean": "rm -rf dist .data tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@loom/a2a": "workspace:*",
+    "@loom/plugin-a2a": "workspace:*",
     "@loom/app": "workspace:*",
     "@loom/capability": "workspace:*",
     "@loom/core": "workspace:*",

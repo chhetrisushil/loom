@@ -1,7 +1,7 @@
-import type { AgentCard } from "@loom/a2a";
 import { BroadcastingProjectionRuntime, defineConfig } from "@loom/app";
 import type { EventEnvelope } from "@loom/core";
 import type { BranchRegistry } from "@loom/event-runtime";
+import type { AgentCard } from "@loom/plugin-a2a";
 import { sqliteStorage } from "@loom/plugin-sqlite";
 import type { WorkflowRuntime } from "@loom/workflow-runtime";
 import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "../agents/definitions";

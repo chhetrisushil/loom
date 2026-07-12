@@ -1,5 +1,5 @@
+import { TerminalRenderer } from "@loom/plugin-renderer-terminal";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
-import { TerminalRenderer } from "@loom/renderer-terminal";
 import type { DashboardComposer } from "./composer";
 import { buildCore } from "./wiring";
 

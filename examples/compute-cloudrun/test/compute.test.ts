@@ -1,7 +1,7 @@
 import type { ExecutionDispatcher } from "@loom/dispatcher";
+import { createWorkerServer } from "@loom/plugin-worker-server";
+import type { WorkerServer } from "@loom/plugin-worker-server";
 import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
-import { createWorkerServer } from "@loom/worker-server";
-import type { WorkerServer } from "@loom/worker-server";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   type CloudRunSink,

@@ -1,5 +1,5 @@
 {
-  "name": "@loom/a2a-mesh",
+  "name": "@loom/plugin-a2a-mesh",
   "version": "0.0.1",
   "description": "Bidirectional A2A mesh: using external agent frameworks (ADK/LangGraph/CrewAI) with Loom",
   "private": true,
@@ -9,7 +9,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@loom/a2a": "workspace:*",
+    "@loom/plugin-a2a": "workspace:*",
     "@loom/agent": "workspace:*",
     "@loom/app": "workspace:*",
     "@loom/core": "workspace:*",

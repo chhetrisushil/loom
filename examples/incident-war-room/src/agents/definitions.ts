@@ -1,7 +1,7 @@
-import type { AgentCard } from "@loom/a2a";
-import { toAgentCard } from "@loom/a2a";
 import { agent$ } from "@loom/core";
 import type { AgentDefinition } from "@loom/core";
+import type { AgentCard } from "@loom/plugin-a2a";
+import { toAgentCard } from "@loom/plugin-a2a";
 import { MetricsTool, ReplicaStatusTool, RestartPoolTool, ScaleReplicasTool } from "./tools";
 
 // ── The domain-specialist fleet ───────────────────────────────────────────────

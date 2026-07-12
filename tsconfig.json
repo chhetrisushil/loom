@@ -56,16 +56,16 @@
       "path": "packages/worker-runtime-local"
     },
     {
-      "path": "packages/worker-runtime-remote"
+      "path": "plugins/worker-remote"
     },
     {
-      "path": "packages/worker-server"
+      "path": "plugins/worker-server"
     },
     {
       "path": "packages/dispatcher"
     },
     {
-      "path": "packages/platform-cloudrun"
+      "path": "plugins/cloudrun"
     },
     {
       "path": "packages/graph-executor"
@@ -77,7 +77,7 @@
       "path": "packages/blueprint-runtime"
     },
     {
-      "path": "packages/renderer-react"
+      "path": "plugins/renderer-react"
     },
     {
       "path": "packages/compiler"
@@ -104,10 +104,10 @@
       "path": "packages/agent"
     },
     {
-      "path": "packages/mcp"
+      "path": "plugins/mcp"
     },
     {
-      "path": "packages/a2a"
+      "path": "plugins/a2a"
     },
     {
       "path": "packages/a2ui"
@@ -125,7 +125,7 @@
       "path": "packages/planner"
     },
     {
-      "path": "packages/renderer-terminal"
+      "path": "plugins/renderer-terminal"
     },
     {
       "path": "packages/sdk"

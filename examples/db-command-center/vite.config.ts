@@ -13,7 +13,7 @@ import { defineConfig } from "vite";
 // without it — LazyEffect resolves the HandlerRef directly. See
 // examples/cloud-command-center for the loomPlugin() compiler demo.
 //
-// @loom/a2a supplies types (import type …, fully elided) AND one runtime value —
+// @loom/plugin-a2a supplies types (import type …, fully elided) AND one runtime value —
 // `toAgentCard` in src/agents/definitions.ts. Because the @loom/* packages ship
 // CommonJS, that value import must be pre-bundled by optimizeDeps too, or Vite
 // serves the raw CJS dist as ESM and the named export can't be traced. Its Node
@@ -24,7 +24,7 @@ export default defineConfig({
   optimizeDeps: {
     include: [
       "@loom/app",
-      "@loom/a2a/cards",
+      "@loom/plugin-a2a/cards",
       "@loom/a2ui",
       "@loom/agent",
       "@loom/blueprint-runtime",
@@ -42,7 +42,7 @@ export default defineConfig({
       "@loom/planner",
       "@loom/projection-runtime",
       "@loom/registry",
-      "@loom/renderer-react",
+      "@loom/plugin-renderer-react",
       "@loom/snapshot-runtime/memory",
       "@loom/workflow-runtime",
     ],
@@ -50,7 +50,7 @@ export default defineConfig({
   build: {
     commonjsOptions: {
       transformMixedEsModules: true,
-      include: [/node_modules/, /packages\/.*\/dist/],
+      include: [/node_modules/, /packages\/.*\/dist/, /plugins\/.*\/dist/],
     },
   },
 });

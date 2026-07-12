@@ -161,7 +161,7 @@ export interface ProjectionDefinition<TState = unknown> {
 }
 
 // A2A skill descriptor carried on an agent. Defined structurally here (rather
-// than importing from @loom/a2a) so @loom/core stays dependency-light; @loom/a2a
+// than importing from @loom/plugin-a2a) so @loom/core stays dependency-light; @loom/plugin-a2a
 // maps this to its own AgentSkill when deriving an AgentCard.
 //
 // NOTE: this is A2A agent-card *metadata* — distinct from the runtime
