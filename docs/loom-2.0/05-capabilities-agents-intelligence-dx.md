@@ -351,114 +351,72 @@ Analyze → rank → apply (via `rankedRouter` + `ctx.decide`) → log → analy
 
 ## 4. AI-native DX — NL → codegen (P11)
 
-`@loom/appgen` is Loom's answer to "AI-native developer experience" — and it is deliberately *not* a runtime that interprets natural language. The pipeline is **NL → `parseIntent` → `AppSpec` → `generateApp` → plain TypeScript files you own**. The only place any "understanding" happens is the parser (which is deterministic, offline, and swappable); everything downstream is pure, template-based codegen. The output is ordinary Loom code, statically wired (P4/P5), with `TODO` handlers to fill in — *code you own*, not a black box you call.
+`@loom/appgen` is Loom's answer to "AI-native developer experience" — and it is deliberately *not* a runtime that interprets natural language. It is **brownfield-aware**: it scans the app that already exists and applies a *delta*. Four stages, with NL understanding isolated to exactly one and everything else deterministic and offline (see [ADR 0042](../adr/0042-ai-native-brownfield-appgen.md)):
 
-### 4.1 `AppSpec` — the structured intermediate
+**scan → plan → apply → validate.** The output is ordinary Loom code, statically wired (P4/P5), with `TODO` handlers to fill in — *code you own*, not a black box you call.
 
-NL is compiled into a JSON-serializable spec ([`packages/appgen/src/types.ts`](../../packages/appgen/src/types.ts)):
+### 4.1 `scanApp(dir) → AppModel` (deterministic)
+
+`scanApp` walks the folder convention and parses each `app/flows/<id>/flow.ts` with the TypeScript AST into a compact summary — flow ids, step ids, approval/UI gates, and each step's `handlerState` (`stub | edited | external`). It never carries raw file contents; a net-new directory yields an empty model. This is where brownfield "intelligence" comes from — cheap, deterministic analysis, not a model reading the repo.
+
+### 4.2 `planChanges(intent, appModel) → ChangeSpec` (the one NL stage)
+
+The plan stage is the *only* component that sees raw NL, and it emits a structured `ChangeSpec` — an `AppSpec` extended with an operation per capability and step (`create | extend | modify | delete`), plus `addApproval`/`addUi`/`wireGrants`. `planChangesDeterministic` wraps the directive grammar parser and diffs the result against the `AppModel`; a model-backed planner ([`@loom/appgen-model`](../../packages/appgen-model), §4.5) emits the *same* `ChangeSpec`. Codegen never sees raw NL either way.
+
+The base `AppSpec`/`ChangeSpec` types ([`packages/appgen/src/types.ts`](../../packages/appgen/src/types.ts), [`changeSpec.ts`](../../packages/appgen/src/changeSpec.ts)):
 
 ```ts
-export interface ReasoningSpec {
-  baseModel?: string;        // cheapest model to try first, e.g. "gemma"
-  elevateTo?: string[];      // ordered stronger models, e.g. ["gemini", "opus"]
-}
 export interface CapabilitySpec {
   id: string; name: string; intent: string;
-  steps: string[];           // step ids in order (defaults to a single "run")
-  reasoning?: ReasoningSpec;
-  approval?: boolean;        // pause for a human — a durable suspend gate
-  ui?: boolean;              // emit a UI surface update
+  steps: string[];                      // step ids in order (defaults to a single "run")
+  reasoning?: { baseModel?: string; elevateTo?: string[] };
+  approval?: boolean;                   // pause for a human — a durable suspend gate
+  ui?: boolean;                         // emit a UI surface update
 }
-export interface ComputeSpec { target?: string; }   // "local" | "cloudrun" | "fargate"
-export interface AppSpec {
-  name: string;
-  capabilities: CapabilitySpec[];
-  compute?: ComputeSpec;
+// ChangeSpec: the same, but a DELTA against an existing app —
+export type Op = "create" | "extend" | "modify" | "delete";
+export interface CapabilityChange extends /* id,name,intent */ {
+  op: Op; steps: { id: string; op: Op }[];
+  addApproval?: boolean; addUi?: boolean; wireGrants?: string[];
 }
-export interface GeneratedFile { path: string; contents: string; }
 ```
 
-The spec is the contract: `parseIntent` is the *only* component that ever sees raw NL, and `generateApp` only ever sees an `AppSpec`. Swap the parser for a model-backed one later and codegen is unaffected — it still consumes an `AppSpec`.
-
-### 4.2 `parseIntent(nl)` — the deterministic directive grammar
-
-`parseIntent` ([`packages/appgen/src/parseIntent.ts:31`](../../packages/appgen/src/parseIntent.ts)) splits the input on `.`/newline into sentences and matches each against a small, documented, case-insensitive grammar. Directives attach to the most recently created capability (or a default `"app"` capability if none was created yet):
+The deterministic parser ([`parseIntent.ts`](../../packages/appgen/src/parseIntent.ts) + [`changeSpec.ts`](../../packages/appgen/src/changeSpec.ts)) is a small, documented, case-insensitive **directive grammar** — a pure function of its input, no model/clock/randomness (the P2 discipline the core lives by):
 
 | Sentence | Effect |
 |---|---|
-| `create a <name>` / `create <name> capability` | start a new capability (`id` = kebab slug) |
-| `use <model> first` | `reasoning.baseModel` |
-| `elevate to <model>` | append to `reasoning.elevateTo` (repeatable) |
-| `pause for approval` / `wait for approval` | `approval = true` (durable suspend gate) |
-| `generate ui` / `with ui` | `ui = true` |
-| `(add) step <name>` | push an explicit step id |
+| `create a <name>` | a capability (existing flow → `extend`, else `create`) |
+| `(add) step <name>` | a step (existing → `modify`, else `create`) |
+| `delete <name>` / `delete step <s> from <flow>` | a `delete` op |
+| `grant <tool>[, <tool>] to <cap>` | `wireGrants` → a `GrantTable` authorizer |
+| `use <model> first` / `elevate to <model>` | reasoning ladder |
+| `pause for approval` / `generate ui` | durable suspend gate / UI surface |
 | `deploy on <target>` | app-level `compute.target` |
 
-Every capability is guaranteed at least one step (`"run"` if none was given). It is a pure function of its input string — reproducible, no model, no clock, no randomness (the same P2 discipline the core lives by).
+Natural, compound phrasing ("add a summarize step to the planner and pause for approval") is the *model* planner's job, not the directive grammar's.
 
-### 4.3 `generateApp(spec)` — pure, template-based codegen
+### 4.3 `applyChanges(changeSpec, appModel) → FilePlan` (deterministic)
 
-`generateApp(spec)` ([`packages/appgen/src/generate.ts:136`](../../packages/appgen/src/generate.ts)) returns `GeneratedFile[]`: one file per capability plus a `defineConfig` composition root. It is a **pure function** — it returns file *contents as strings*, so the caller (a CLI, an editor) decides where to write them. Each capability file ([`generate.ts:14`](../../packages/appgen/src/generate.ts)):
+Creates come from the same folder-convention templates as `create-loom-app` / `loom new` (reusing `@loom/scaffold`): `app/flows/<id>/flow.ts` (a `RegisteredFlow` with `step$`/`handler$`/`flow$` and `TODO` handlers), and a regenerated `app/loom.gen.ts`. Edits to existing flows are **surgical, formatting-preserving splices** via a self-contained `FlowEditor` (a TS-AST reader + an offset splice buffer): insert a `step$` const, register it in `steps: [...]`, wire a `ctx.run(...)` call into the runner, add an approval/UI gate, or wire grants into `app/config.ts`. Deletes remove generated flow files/steps.
 
-- emits `step$`/`handler$`/`flow$` declarations with `TODO` handler bodies;
-- wires `reasoning`/`approval`/`ui` **only when the spec asks for them** — reasoning emerges as a commented, ready-to-uncomment `reasoning.reason(..., { decide: ctx.decide })` block (so the route would be logged, P9), approval as `await ctx.suspend({ on: "Approved" })`, UI as `ctx.ui.set(...)`;
-- exports a `RegisteredFlow` and a `capability$(...)`.
+The **safety gate**: a handler body is overwritten only if it still hashes to the generated `TODO` stub. Anything a human has touched is insert-only, and a `delete` refuses to remove a flow/step carrying hand-written code. Untouched formatting and comments are preserved byte-for-byte, which keeps the `--dry-run` diff honest.
 
-The app file ([`generate.ts:103`](../../packages/appgen/src/generate.ts)) builds a `CapabilityCatalog`, `.register(...)`s every capability, and calls `defineConfig(...)` — the same static composition root a human would write. There is **no runtime NL interpretation** anywhere in the output.
+### 4.4 `validate` + the plan → diff → confirm loop
+
+`--dry-run` renders the `FilePlan` as a real unified diff and writes nothing; on a TTY, `appgen` shows the plan and asks before applying (`--yes` skips). `--check` typechecks the result in-process (`tsc`, not `loom check`, which needs a post-build manifest fresh source lacks). Every apply records the accepted `ChangeSpec` to `.loom/appgen/<timestamp>.spec.json`; `--from-spec` replays it byte-for-byte with **no model** — the appgen equivalent of a golden log.
 
 ```mermaid
 flowchart LR
-  NL["Natural language<br/>(free-form English)"] -->|"parseIntent (deterministic, offline, swappable)"| SPEC["AppSpec<br/>capabilities · reasoning · compute"]
-  SPEC -->|"generateApp (pure, template-based)"| FILES["GeneratedFile[]<br/>src/&lt;cap&gt;.ts + src/app.ts"]
-  FILES --> OWN["Plain, static, inspectable TypeScript<br/>you own & edit (P4/P5)"]
+  DIR["existing app (or empty dir)"] -->|"scanApp"| MODEL["AppModel<br/>(flows · steps · gates · handlerState)"]
+  NL["Natural language"] -->|"planChanges (deterministic or model, swappable)"| SPEC["ChangeSpec<br/>create · extend · modify · delete"]
+  MODEL --> SPEC
+  SPEC -->|"applyChanges (pure, surgical)"| PLAN["FilePlan<br/>creates · edits · deletes"]
+  PLAN --> OWN["Plain, static TypeScript<br/>you own & edit (P4/P5) + .loom lockfile"]
 ```
 
-### 4.4 Worked example
+### 4.5 Optional local model (`@loom/appgen-model`)
 
-The canonical intent:
-
-```text
-Create a planner. Use Gemma first. Elevate to Gemini. Pause for approval. Generate UI. Deploy on cloudrun.
-```
-
-`parseIntent` produces (shape):
-
-```jsonc
-{
-  "name": "planner",
-  "capabilities": [{
-    "id": "planner", "name": "Planner",
-    "intent": "Create a planner",
-    "steps": ["run"],
-    "reasoning": { "baseModel": "gemma", "elevateTo": ["gemini"] },
-    "approval": true,
-    "ui": true
-  }],
-  "compute": { "target": "cloudrun" }
-}
-```
-
-`generateApp` then emits `src/planner.ts` + `src/app.ts`. The generated flow runner has this structure (from [`generate.ts:40-67`](../../packages/appgen/src/generate.ts)):
-
-```mermaid
-flowchart TD
-  A["plannerRunner(ctx, input)"] --> B["// reasoning ladder: gemma → gemini<br/>// (commented ReasoningRuntime.reason with decide: ctx.decide)"]
-  B --> C["ctx.run(runStep, { prompt })"]
-  C --> D["await ctx.suspend({ on: 'Approved' })<br/>// durable human-approval gate"]
-  D --> E["ctx.ui.set('status', 'done')<br/>// durable, replayable UI surface"]
-  E --> F["return out"]
-```
-
-And `src/app.ts` wires it up:
-
-```ts
-const catalog = new CapabilityCatalog().register(plannerCapability);
-export const app = defineConfig({ storage: { kind: "memory" }, catalog });
-// Compute target: cloudrun → place executions with a PlacementDispatcher
-// over a cloudrun WorkerRuntime (see @loom/dispatcher).
-```
-
-The reasoning ladder ships as a **commented block** (a real hint, not a live import — so the file has no unused symbols), the approval gate is a real durable `ctx.suspend`, and the compute target becomes a `defineConfig` note pointing at `@loom/dispatcher`. Every line is plain Loom TypeScript the developer owns and edits. That is the AI-native DX thesis in one artifact: NL gets you a *starting point of real, inspectable code* — not a runtime that re-interprets English on every request.
+The plan stage can be driven by a small **on-device Gemma model** (`loom appgen --model <gguf>`): output is constrained to the `ChangeSpec` JSON schema (grammar-constrained decoding), planning runs through [`@loom/reasoning`](../../packages/reasoning)'s cheap-first elevation ladder with a *validator* confidence signal (logging elevations, P9), and a **self-repair loop** re-prompts the model with the exact semantic issues when a plan references a flow/step that doesn't exist. It is entirely optional and offline — if the model is missing, too weak, or produces an invalid plan, `appgen` falls back to the deterministic parser. You always get a valid `ChangeSpec`; that is the AI-native DX thesis — NL gets you a *starting point of real, inspectable code you own*, never a runtime that re-interprets English.
 
 ---
 

@@ -104,7 +104,7 @@ The durable core stays small and boring (execution + event log + determinism + e
 
 ### P11 — AI-native DX: natural language compiles to code, not runtime *(Loom 2.0)*
 
-Natural language is a **build-time** convenience, never a runtime input. `@loom/appgen` turns an intent into a structured `AppSpec` via a deterministic, offline directive parser (`parseIntent`), then emits **plain, static, inspectable TypeScript you own** (`generateApp`) — ordinary `flow$`/`step$`/`capability$` wired through `defineConfig`. There is no runtime interpretation of NL: the only "understanding" step is the swappable parser producing a spec, and codegen is pure and template-based, so the generated app is statically wired like any hand-written Loom code (**P4/P5 preserved**). See [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
+Natural language is a **build-time** convenience, never a runtime input. `@loom/appgen` is **brownfield-aware**: it scans the existing app (`scanApp` → `AppModel`), plans a *delta* from an intent via a deterministic, offline directive parser (`planChanges` → `ChangeSpec`, the only stage that reads NL), then applies it with surgical, formatting-preserving edits (`applyChanges`) — new flows from templates, existing ones edited only where a handler still hashes to the generated stub. The output is ordinary `flow$`/`step$` wired through `defineConfig` in the folder convention. There is no runtime interpretation of NL: the only "understanding" step is the swappable planner producing a spec, and codegen is pure and template-based (**P4/P5 preserved**). An optional [`@loom/appgen-model`](../packages/appgen-model) swaps a small on-device model into the plan stage. See [ADR 0042](adr/0042-ai-native-brownfield-appgen.md) and [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
 
 ---
 
@@ -452,7 +452,7 @@ flowchart TB
 | **Agentic** | `agent`, `a2a`, `llm`, `reasoning`, `mcp`, `capability`, `intent`, `planner`, `memory`, `orchestrator` |
 | **Compute / distribution** | `dispatcher`, `worker-runtime`, `worker-runtime-local`, `worker-runtime-remote`, `worker-server`, `platform-cloudrun`, `graph-executor`, `scheduler`, `store-postgres` |
 | **Kernel hardening / security** | `effect-runtime` (K2 authz + K12 delegation), `middleware` (K3 metering, K6 safety, K10 redaction, K12 nested budgets), `isolate` (K7 data-plane isolation & egress), `store-crypto` (K10 encryption & crypto-shredding), `event-runtime`/`snapshot-runtime` (K12 tenant scoping), `wire-abi` (T2), `telemetry` |
-| **Intelligence / DX** | `analytics`, `appgen`, `cli`, `eval`, `deploy-sim`, `testing`, `scaffold`, `compiler`, `telemetry` |
+| **Intelligence / DX** | `analytics`, `appgen`, `appgen-model` (optional local planner), `cli`, `eval`, `deploy-sim`, `testing`, `scaffold`, `compiler`, `telemetry` |
 | **Three-direction arc** | `dst` (simulation testing), `audit-chain` + `fair-scheduler` + execution-authz in `workflow-runtime` (multi-tenant isolation), `live-query` + `orchestration` + `saga` (coordination) — ADRs 0036–0041 |
 
 > **Loom 2.0.** The packages in **bold-new** groups above — `reasoning`, `store-postgres`, `analytics`, `appgen` — plus deepenings of `workflow-runtime`, `effect-runtime`, `middleware`, `dispatcher`, `memory`, `capability`, and `agent`, constitute the **execution-kernel evolution**. Its full data structures, algorithms, and diagrams live in [`docs/loom-2.0/`](loom-2.0/00-overview.md); the decision record is [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
@@ -567,5 +567,5 @@ Being honest about the edges:
 - **[Getting Started](getting-started.md)** — from zero to a running, suspend/resume flow in minutes.
 - **[Usage](usage.md)** — build a real app step by step.
 - **[User Guide](user-guide.md)** — every feature area with examples.
-- **[ADRs](adr/)** — the full decision history (0001–0027; 0016–0026 cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series).
+- **[ADRs](adr/)** — the full decision history (0001–0042; 0016–0026 cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series; 0036–0041 the three-direction arc; 0042 the AI-native brownfield `appgen`).
 - **[Presentation](presentation/loom-deck.md)** — the deck.

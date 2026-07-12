@@ -16,7 +16,7 @@ New to Loom? Start with [[file:getting-started.md][Getting Started]] and the [[f
 7.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/a2ui~, ~@loom/blueprint-runtime~, ~@loom/renderer-react~, ~@loom/renderer-terminal~
 8.  [[#agentic][Agentic]] — ~@loom/llm~, ~@loom/reasoning~, ~@loom/agent~, ~@loom/mcp~, ~@loom/a2a~, ~@loom/capability~, ~@loom/intent~, ~@loom/planner~, ~@loom/memory~, ~@loom/orchestrator~
 9.  [[#compute][Compute & distribution]] — ~@loom/dispatcher~, ~@loom/worker-runtime~ (+ ~-local~/~-remote~), ~@loom/worker-server~, ~@loom/platform-cloudrun~, ~@loom/store-postgres~, ~@loom/graph-executor~, ~@loom/scheduler~
-10. [[#dx][DX & tooling]] — ~@loom/analytics~, ~@loom/appgen~, ~@loom/cli~, ~@loom/testing~, ~@loom/eval~, ~@loom/deploy-sim~, ~@loom/scaffold~, ~@loom/compiler~, ~@loom/telemetry~
+10. [[#dx][DX & tooling]] — ~@loom/analytics~, ~@loom/appgen~, ~@loom/appgen-model~, ~@loom/cli~, ~@loom/testing~, ~@loom/eval~, ~@loom/deploy-sim~, ~@loom/scaffold~, ~@loom/compiler~, ~@loom/telemetry~
 11. [[#errors][Errors]]
 
 #+begin_quote
@@ -1218,26 +1218,39 @@ function runtimeIntelligence(events: EventEnvelope[], options?: { budgetHeadroom
 }
 #+end_src
 
-** ~@loom/appgen~ — AI-native codegen *(2.0)*
+** ~@loom/appgen~ — AI-native, brownfield-aware codegen *(2.0)*
 
-Natural language → a structured spec → *plain, static, inspectable TypeScript you own*. No runtime interpretation of NL.
+Natural language → a *delta* against the existing app → *plain, static, inspectable TypeScript you own*. No runtime interpretation of NL. Four stages, NL isolated to one (see [[file:adr/0042-ai-native-brownfield-appgen.md][ADR 0042]]).
 
 #+begin_src typescript
-function parseIntent(nl: string): AppSpec;                 // deterministic, offline directive parser
-function generateApp(spec: AppSpec): GeneratedFile[];      // pure, template-based codegen
-interface GeneratedFile { path: string; contents: string; }
+function scanApp(dir: string): AppModel;                              // deterministic scan (flows/steps/gates/handlerState)
+function planChangesDeterministic(intent: string, m: AppModel): ChangeSpec;  // the one NL stage (swappable for a model)
+function applyChanges(spec: ChangeSpec, m: AppModel): FilePlan;       // pure, surgical, formatting-preserving
+function typecheck(dir: string): TypecheckResult;                    // in-process tsc
 
-interface AppSpec { name: string; capabilities: CapabilitySpec[]; compute?: { target?: string }; }
-interface CapabilitySpec { id: string; name: string; intent: string; steps: string[]; reasoning?: { baseModel?: string; elevateTo?: string[] }; approval?: boolean; ui?: boolean; }
+type Op = "create" | "extend" | "modify" | "delete";
+interface ChangeSpec { name: string; capabilities: CapabilityChange[]; planner: "deterministic" | "model"; elevations?: {...}[]; }
+interface FilePlan { creates; edits; deletes; skips; regenRegistration: boolean; }
 #+end_src
 
-Grammar: "create a <name>" · "use <model> first" · "elevate to <model>" · "(pause|wait) for approval" · "generate ui" · "(add )?step <name>" · "deploy on <target>". See [[file:loom-2.0/05-capabilities-agents-intelligence-dx.md][the DX deep-dive]].
+Grammar: "create a <name>" · "(add )?step <name>" · "delete <name>" / "delete step <s> from <flow>" · "grant <tool> to <cap>" · "use <model> first" · "elevate to <model>" · "(pause|wait) for approval" · "generate ui" · "deploy on <target>". Safety gate: a handler body is overwritten only while it still hashes to the generated stub. Every apply records a replayable ~.loom/appgen/<ts>.spec.json~ lockfile. See [[file:loom-2.0/05-capabilities-agents-intelligence-dx.md][the DX deep-dive]].
+
+** ~@loom/appgen-model~ — optional local-model planner *(2.0)*
+
+Swaps a small on-device Gemma model (via ~node-llama-cpp~, an optional dep) into ~appgen~'s plan stage: grammar-constrained ~ChangeSpec~ JSON, the ~@loom/reasoning~ cheap-first elevation ladder, and a self-repair loop. Fully optional and offline — falls back to the deterministic parser whenever the model is missing, too weak, or produces an invalid plan.
+
+#+begin_src typescript
+function planChangesModel(intent: string, m: AppModel, opts: { routes; decide?; maxRepairs? }): Promise<ChangeSpec>;
+function gemmaRoute(modelPath: string, tier?: "e2b" | "e4b" | "12b"): ModelRoute;   // default e4b
+class GemmaProvider implements LlmProvider { /* node-llama-cpp, load/unload per call */ }
+#+end_src
 
 ** ~@loom/cli~ — the ~loom~ command
 
 #+begin_example
 loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
 loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
+loom appgen <intent> [--dir .] [--dry-run] [--check] [--model <gguf>]  NL → new project or brownfield edits
 loom check --manifest <path>                    static flow-graph checks (compiler manifest)
 loom logs  --db <path> <executionId>            print the event timeline
 loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
