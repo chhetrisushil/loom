@@ -20,7 +20,6 @@ export {
   type CrashingEventStore,
   type CrashingEventStoreOptions,
 } from "./crash";
-// NOTE: the SPI conformance kits (ADR 0033) are exposed via the `@loom/testing/conformance`
-// subpath, NOT this barrel. They `import "vitest"` at module scope; keeping them off the main
-// entry means importing app helpers (createTestApp, waitFor, …) never drags vitest into a
-// consumer's require graph (vitest forbids being require()'d from CommonJS).
+// NOTE: the SPI conformance kits (ADR 0033) now live in their own ESM package,
+// `@loom/conformance`, so a plugin can `import` them in its own vitest suite (a CJS
+// build that `require()`s vitest is forbidden). They are no longer part of @loom/testing.

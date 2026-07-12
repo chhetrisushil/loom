@@ -51,8 +51,20 @@ No new kernel mechanism — this is consolidation + test scaffolding over the ex
 
 Conformance kits now cover **6 SPIs**: `runEventStoreConformance`, `runSnapshotStoreConformance`,
 `runBranchRegistryConformance`, `runExecutionDispatcherConformance`, plus **`runTimerStoreConformance`**
-and **`runProjectionRuntimeConformance`** — each self-tested against the in-memory reference (and
-the SQLite backend for the timer store). The `loom plugin new <seam>` scaffolder (ADR 0043) emits
+and **`runProjectionRuntimeConformance`**. The `loom plugin new <seam>` scaffolder (ADR 0043) emits
 the matching conformance-wired test for `store | dispatcher | telemetry | middleware | timer |
 projection`. Remaining seams without a kit: worker-runtime, llm-provider, widget-renderer,
 capability-authorizer, effect-middleware, telemetry (passive-observer contracts — lower value).
+
+## ESM distribution (2026-07-13)
+
+The kits moved out of `@loom/testing/conformance` into their own package **`@loom/conformance`**,
+shipped as **ESM** (`"type": "module"`) with `vitest` as a **peer dependency**. The reason: the kits
+`import { describe, it } from "vitest"` at module scope; as a CJS build that becomes
+`require("vitest")`, which vitest forbids — so no other package could consume the kit in its own
+vitest suite. As ESM the import is native, so **any plugin (1P or 3P) runs the kit in its own
+tests** — e.g. `@loom/plugin-sqlite/src/conformance.test.ts` now runs all four store kits against
+the real SQLite backend. This also dissolved the `@loom/testing ↔ @loom/plugin-sqlite` build cycle
+(the kits' self-test against the in-memory references lives in `@loom/conformance`; durable-backend
+conformance lives in each backend's own package). Consumers add `default` export conditions on the
+SPI packages so the ESM kit can resolve them (harmless for CJS `require` consumers).

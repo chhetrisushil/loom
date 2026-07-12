@@ -12,7 +12,7 @@ describe("checkPlugin", () => {
         keywords: ["loom", "loom-plugin"],
         peerDependencies: { "@loom/event-runtime": "*", "@loom/snapshot-runtime": "*" },
       },
-      ['import { runEventStoreConformance } from "@loom/testing/conformance";']
+      ['import { runEventStoreConformance } from "@loom/conformance";']
     );
     expect(levels(findings, "error")).toEqual([]);
     expect(levels(findings, "warn")).toEqual([]);
@@ -45,14 +45,14 @@ describe("checkPlugin", () => {
   });
 
   it("warns when the name follows neither convention", () => {
-    const findings = checkPlugin({ name: "my-thing" }, ["@loom/testing/conformance"]);
+    const findings = checkPlugin({ name: "my-thing" }, ["@loom/conformance"]);
     expect(levels(findings, "warn").join()).toMatch(/neither/);
   });
 
   it("allows a legitimate workflow-runtime dependency (a2a/renderer pattern)", () => {
     const findings = checkPlugin(
       { name: "@loom/plugin-a2a", dependencies: { "@loom/workflow-runtime": "workspace:*" } },
-      ["@loom/testing/conformance"]
+      ["@loom/conformance"]
     );
     expect(levels(findings, "error")).toEqual([]);
   });
