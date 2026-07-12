@@ -96,7 +96,7 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: "Durable append-only log SPI (in-memory / SQLite / Postgres).",
     evidence: {
       versionConstant: "EVENT_STORE_SPI_VERSION",
-      conformanceTest: "packages/testing/src/conformance.test.ts",
+      conformanceTest: "packages/conformance/src/index.test.ts",
       bench: "packages/event-runtime/src/sequenceRange.bench.ts",
     },
   },
@@ -108,7 +108,7 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: "Point/latest/before snapshot SPI, bounding replay tail.",
     evidence: {
       versionConstant: "SNAPSHOT_STORE_SPI_VERSION",
-      conformanceTest: "packages/testing/src/conformance.test.ts",
+      conformanceTest: "packages/conformance/src/index.test.ts",
     },
   },
   {
@@ -119,7 +119,7 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: "Fork/promote lineage DAG SPI (no merge, by design).",
     evidence: {
       versionConstant: "BRANCH_REGISTRY_SPI_VERSION",
-      conformanceTest: "packages/testing/src/conformance.test.ts",
+      conformanceTest: "packages/conformance/src/index.test.ts",
     },
   },
   {
@@ -130,7 +130,7 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: "Placement-agnostic dispatch/cancel/health SPI.",
     evidence: {
       versionConstant: "DISPATCHER_SPI_VERSION",
-      conformanceTest: "packages/testing/src/conformance.test.ts",
+      conformanceTest: "packages/conformance/src/index.test.ts",
     },
   },
   {
@@ -318,7 +318,7 @@ export const CAPABILITIES: readonly Capability[] = [
     level: "L2",
     summary: "WorkerRuntime SPI + local/remote/CloudRun adapters.",
     evidence: {
-      conformanceTest: "packages/testing/src/conformance.test.ts",
+      conformanceTest: "packages/conformance/src/index.test.ts",
     },
     note: "SPI is L5, but only local/remote/CloudRun adapters exist; K8s/Lambda/GPU are demand-driven (#72) → the adapter set is L2.",
   },

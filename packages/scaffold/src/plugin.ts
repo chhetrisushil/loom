@@ -18,7 +18,7 @@ interface SeamDef {
   wiring: string;
   /** SPI packages the plugin depends on (besides `@loom/core`). */
   spiDeps: string[];
-  /** `@loom/testing/conformance` runners to pre-wire, if any. */
+  /** `@loom/conformance` runners to pre-wire, if any. */
   conformance: string[];
   /** `src/index.ts` body. */
   index: (name: string) => string;
@@ -115,7 +115,7 @@ const SEAMS: Record<string, SeamDef> = {
         "// import {",
         "//   runEventStoreConformance,",
         "//   runSnapshotStoreConformance,",
-        '// } from "@loom/testing/conformance";',
+        '// } from "@loom/conformance";',
         `// import { ${P}EventStore, ${P}SnapshotStore } from "./index";`,
         "//",
         `// runEventStoreConformance(() => new ${P}EventStore(":memory:"));`,
@@ -182,7 +182,7 @@ const SEAMS: Record<string, SeamDef> = {
       const P = pascal(name);
       return [
         "// Prove your dispatcher with the conformance kit once dispatch() is real:",
-        '// import { runExecutionDispatcherConformance } from "@loom/testing/conformance";',
+        '// import { runExecutionDispatcherConformance } from "@loom/conformance";',
         `// import { ${P}Dispatcher } from "./index";`,
         `// runExecutionDispatcherConformance(() => new ${P}Dispatcher());`,
         "",
@@ -359,7 +359,7 @@ const SEAMS: Record<string, SeamDef> = {
       const P = pascal(name);
       return [
         "// Prove your timer store with the conformance kit once the methods are real:",
-        '// import { runTimerStoreConformance } from "@loom/testing/conformance";',
+        '// import { runTimerStoreConformance } from "@loom/conformance";',
         `// import { ${P}TimerStore } from "./index";`,
         `// runTimerStoreConformance(() => new ${P}TimerStore());`,
         "",
@@ -417,7 +417,7 @@ const SEAMS: Record<string, SeamDef> = {
       const P = pascal(name);
       return [
         "// Prove your projection runtime with the conformance kit once methods are real:",
-        '// import { runProjectionRuntimeConformance } from "@loom/testing/conformance";',
+        '// import { runProjectionRuntimeConformance } from "@loom/conformance";',
         `// import { ${P}ProjectionRuntime } from "./index";`,
         `// runProjectionRuntimeConformance(() => new ${P}ProjectionRuntime());`,
         "",
@@ -456,7 +456,7 @@ function pluginPackageJson(seam: SeamDef, packageName: string, firstParty: boole
   for (const d of spi) deps[d] = version;
 
   const devDeps: Record<string, string> = {};
-  if (seam.conformance.length > 0) devDeps["@loom/testing"] = version;
+  if (seam.conformance.length > 0) devDeps["@loom/conformance"] = version;
   devDeps.typescript = "^5.6.3";
   devDeps.vitest = "^2.1.8";
 
@@ -544,7 +544,7 @@ function pluginReadme(
     "",
     "- Implement the SPI; keep the preset a pure function.",
     "- Contribute only to existing seams — no kernel hook, no reducer into the replay fold.",
-    "- Prove it with `@loom/testing/conformance` (see `src/index.test.ts`).",
+    "- Prove it with `@loom/conformance` (see `src/index.test.ts`).",
     firstParty
       ? "- First-party: lives in `plugins/`, conformance-gated in Loom CI."
       : "- Third-party: publish under `loom-plugin-*`, keyword `loom-plugin`; you own the supply-chain trust.",

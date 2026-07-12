@@ -1339,6 +1339,34 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
+  packages/conformance:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../dispatcher
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../event-runtime
+      '@loom/projection-runtime':
+        specifier: workspace:*
+        version: link:../projection-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../snapshot-runtime
+      '@loom/worker-runtime':
+        specifier: workspace:*
+        version: link:../worker-runtime
+    devDependencies:
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   packages/core:
     dependencies:
       ulid:
@@ -2134,9 +2162,6 @@ importers:
       '@loom/middleware':
         specifier: workspace:*
         version: link:../middleware
-      '@loom/plugin-sqlite':
-        specifier: workspace:*
-        version: link:../../plugins/sqlite
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -2579,6 +2604,9 @@ importers:
         specifier: ^11.5.0
         version: 11.10.0
     devDependencies:
+      '@loom/conformance':
+        specifier: workspace:*
+        version: link:../../packages/conformance
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13

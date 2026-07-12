@@ -22,7 +22,7 @@ A Loom plugin:
    reducer into the replay fold (durable custom facts are ordinary app events folded by
    user-space projections);
 4. is **byte-identical to hand-wiring** after boot (zero runtime overhead);
-5. ships **conformance tests** for each SPI it implements (`@loom/testing/conformance`);
+5. ships **conformance tests** for each SPI it implements (`@loom/conformance`);
 6. is **sugar, never a gate** — everything it does, you can also hand-wire into `defineConfig`.
 
 ## First-party (1P) vs third-party (3P)
@@ -86,7 +86,7 @@ loom plugin check --dir ./loom-plugin-my-backend
 `check` verifies the naming convention, that the package does **not** depend on the replay fold
 engine (`@loom/replay-vm` — the "no reducer into the fold" rule), that a 3P plugin peer-depends on
 the `@loom/*` SPI (one kernel copy) and carries the `loom-plugin` keyword, and that a test wires
-`@loom/testing/conformance`. Non-zero exit on any error.
+`@loom/conformance`. Non-zero exit on any error.
 
 And **run a storage plugin end-to-end** — wire its preset into a real app, run a durable flow,
 and confirm it persisted and replays (what `check` and conformance can't tell you):
@@ -122,7 +122,7 @@ export const app = defineConfig({ storage: myStorage({ url: process.env.DB_URL! 
 
 ```ts
 // 4. prove conformance in your own CI
-import { runEventStoreConformance } from "@loom/testing/conformance";
+import { runEventStoreConformance } from "@loom/conformance";
 runEventStoreConformance(() => new MyEventStore(":memory:"));
 ```
 

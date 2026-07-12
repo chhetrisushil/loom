@@ -168,6 +168,9 @@
     },
     {
       "path": "packages/plugin-kit"
+    },
+    {
+      "path": "packages/conformance"
     }
   ]
 }

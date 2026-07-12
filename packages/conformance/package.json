@@ -1,0 +1,26 @@
+{
+  "name": "@loom/conformance",
+  "version": "0.0.1",
+  "description": "Portable SPI conformance kits for Loom — run run<Spi>Conformance(factory) in your vitest suite to prove a store/dispatcher/timer/projection backend conforms. Ships ESM so `import vitest` resolves natively; vitest is a peer.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "test": "vitest run",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "peerDependencies": { "vitest": ">=2" },
+  "dependencies": {
+    "@loom/core": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/dispatcher": "workspace:*",
+    "@loom/projection-runtime": "workspace:*",
+    "@loom/worker-runtime": "workspace:*"
+  },
+  "devDependencies": { "typescript": "^5.6.3", "vitest": "^2.1.8" }
+}

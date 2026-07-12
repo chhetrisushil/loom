@@ -7,12 +7,6 @@ import {
   InMemoryBranchRegistry,
   InMemoryTimerStore,
 } from "@loom/event-runtime";
-import {
-  SqliteBranchRegistry,
-  SqliteEventStore,
-  SqliteSnapshotStore,
-  SqliteTimerStore,
-} from "@loom/plugin-sqlite";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { InMemoryAsyncSnapshotStore, SNAPSHOT_STORE_SPI_VERSION } from "@loom/snapshot-runtime";
 import type {
@@ -30,7 +24,7 @@ import {
   runProjectionRuntimeConformance,
   runSnapshotStoreConformance,
   runTimerStoreConformance,
-} from "./conformance";
+} from "./index";
 
 /** A minimal in-memory WorkerRuntime for the dispatcher conformance self-test. */
 class FakeWorker implements WorkerRuntime {
@@ -60,30 +54,14 @@ class FakeWorker implements WorkerRuntime {
   async release(): Promise<void> {}
 }
 
-// The conformance kits must pass against Loom's own reference impls — this self-tests
-// the kits AND pins every backend to the SPI contracts. Running the SAME kit against
-// both the in-memory and the durable SQLite backends is the point of the exercise:
-// a third-party backend proves conformance the same way.
+// The kits must pass against Loom's own reference impls — this self-tests the kits.
+// Durable backends (SQLite, Postgres) run the SAME kits in their own packages; that
+// is the point: a third-party backend proves conformance the same way.
 runEventStoreConformance(() => new InMemoryAsyncEventStore(), "InMemoryAsyncEventStore");
-runEventStoreConformance(() => new SqliteEventStore(":memory:"), "SqliteEventStore(:memory:)");
-
 runSnapshotStoreConformance(() => new InMemoryAsyncSnapshotStore(), "InMemoryAsyncSnapshotStore");
-runSnapshotStoreConformance(
-  () => new SqliteSnapshotStore(":memory:"),
-  "SqliteSnapshotStore(:memory:)"
-);
-
 runBranchRegistryConformance(() => new InMemoryBranchRegistry(), "InMemoryBranchRegistry");
-runBranchRegistryConformance(
-  () => new SqliteBranchRegistry(":memory:"),
-  "SqliteBranchRegistry(:memory:)"
-);
-
 runExecutionDispatcherConformance(() => new LocalDispatcher(new FakeWorker()), "LocalDispatcher");
-
 runTimerStoreConformance(() => new InMemoryTimerStore(), "InMemoryTimerStore");
-runTimerStoreConformance(() => new SqliteTimerStore(":memory:"), "SqliteTimerStore(:memory:)");
-
 runProjectionRuntimeConformance(() => new InMemoryProjectionRuntime(), "InMemoryProjectionRuntime");
 
 // Every public SPI declares a version constant (ADR 0033 — versioning policy).

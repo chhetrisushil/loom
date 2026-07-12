@@ -119,13 +119,13 @@ export function checkPlugin(pkg: PluginManifest, testSources: string[]): PluginF
   }
 
   // Conformance wiring — is any SPI impl proven with the published kit?
-  if (testSources.some((s) => s.includes("@loom/testing/conformance"))) {
-    findings.push({ level: "ok", message: "a test wires @loom/testing/conformance" });
+  if (testSources.some((s) => s.includes("@loom/conformance"))) {
+    findings.push({ level: "ok", message: "a test wires @loom/conformance" });
   } else {
     findings.push({
       level: "warn",
       message:
-        "no test imports @loom/testing/conformance — prove your SPI impl with the conformance kit (if one exists for your seam)",
+        "no test imports @loom/conformance — prove your SPI impl with the conformance kit (if one exists for your seam)",
     });
   }
 
