@@ -1,0 +1,31 @@
+{
+  "name": "@loom/plugin-content",
+  "version": "0.0.1",
+  "description": "Content-store seam for Loom (ADR 0046) — externalize large / PII payload fields out of the authoritative event log into a content-addressed side store, resolved transparently on read. Reference in-memory backend + ContentResolvingEventStore decorator. Erasure is physical (delete the bytes); absence is loud, never silent.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "test": "vitest run",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/core": "workspace:*",
+    "@loom/event-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@loom/conformance": "workspace:*",
+    "@loom/replay-vm": "workspace:*",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

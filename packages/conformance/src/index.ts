@@ -526,3 +526,67 @@ export function runKeyStoreConformance(factory: () => KeyStoreLike, label = "Key
     });
   });
 }
+
+// ── ContentStore (ADR 0046 content-store SPI) ─────────────────────────────────
+//
+// Not a kernel seam — it is the content plugin's SPI — but the contract (content-addressed,
+// idempotent, loud-free absence) is worth pinning. Structural type so `@loom/conformance`
+// stays free of any plugin dependency. Call from a ContentStore impl's test suite.
+
+/** Structural view of the content-store SPI (avoids a plugin dependency). */
+export interface ContentStoreLike {
+  put(bytes: Uint8Array): Promise<{ __loomContent: string }>;
+  get(ref: { __loomContent: string }): Promise<Uint8Array | null>;
+  delete(ref: { __loomContent: string }): Promise<void>;
+}
+
+/**
+ * Assert a ContentStore implementation upholds the ADR-0046 contract: content-addressed +
+ * idempotent puts (identical bytes → same ref, stored once), faithful round-trip, `get`
+ * returns `null` (never throws) on absence, and `delete` is idempotent physical erasure.
+ */
+export function runContentStoreConformance(
+  factory: () => ContentStoreLike,
+  label = "ContentStore"
+): void {
+  const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
+  const eq = (a: Uint8Array, b: Uint8Array): boolean =>
+    a.length === b.length && a.every((byte, i) => byte === b[i]);
+
+  describe(`${label} conformance (ContentStore SPI, ADR 0046)`, () => {
+    it("round-trips stored bytes", async () => {
+      const store = factory();
+      const ref = await store.put(bytes("hello"));
+      const got = await store.get(ref);
+      expect(got).not.toBeNull();
+      expect(eq(got as Uint8Array, bytes("hello"))).toBe(true);
+    });
+
+    it("is content-addressed: identical bytes yield the same ref (idempotent)", async () => {
+      const store = factory();
+      const a = await store.put(bytes("same"));
+      const b = await store.put(bytes("same"));
+      expect(a.__loomContent).toBe(b.__loomContent);
+    });
+
+    it("distinct bytes yield distinct refs", async () => {
+      const store = factory();
+      const a = await store.put(bytes("a"));
+      const b = await store.put(bytes("b"));
+      expect(a.__loomContent).not.toBe(b.__loomContent);
+    });
+
+    it("get returns null (never throws) for an absent ref", async () => {
+      const store = factory();
+      expect(await store.get({ __loomContent: "sha256:deadbeef" })).toBeNull();
+    });
+
+    it("delete physically erases; a subsequent get is null and delete is idempotent", async () => {
+      const store = factory();
+      const ref = await store.put(bytes("erase-me"));
+      await store.delete(ref);
+      expect(await store.get(ref)).toBeNull();
+      await store.delete(ref); // idempotent — must not throw
+    });
+  });
+}
