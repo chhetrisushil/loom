@@ -372,3 +372,51 @@ describe("defineConfig — egress scrubbing (K10-R6)", () => {
     await app.close();
   });
 });
+
+describe("defineConfig — compliance / subject rights (T3)", () => {
+  it("indexes subjects off the event stream and exports a subject's data", async () => {
+    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (ctx) => {
+      await ctx.run(metricsStep, { incidentId: "i1" });
+      return { resolved: true };
+    };
+    const flow = {
+      definition: { ...gatedFlow().definition, id: "subj-flow", steps: [metricsStep] },
+      runner,
+    } as RegisteredFlow;
+
+    // Subject = the incidentId carried in EXECUTION_STARTED input.
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow],
+      compliance: {
+        subjectOf: (e) =>
+          e.eventType === "EXECUTION_STARTED"
+            ? (e.payload as { input?: { incidentId?: string } }).input?.incidentId
+            : undefined,
+      },
+    });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+
+    await (
+      await app.runtime.start(flow, { incidentId: "acme" }, { executionId: "c1" })
+    ).waitForCompletion();
+    await (
+      await app.runtime.start(flow, { incidentId: "acme" }, { executionId: "c2" })
+    ).waitForCompletion();
+
+    expect(app.subjectIndex?.executionsOf("acme")).toEqual(["c1", "c2"]);
+
+    const out = await app.exportSubject("acme");
+    expect(out.subjectId).toBe("acme");
+    expect(out.executions.map((e) => e.executionId)).toEqual(["c1", "c2"]);
+    expect(out.executions[0]?.status).toBe("completed");
+    await app.close();
+  });
+
+  it("exportSubject throws a clear error when compliance is not configured", async () => {
+    const app = defineConfig({ storage: { kind: "memory" }, flows: [gatedFlow()] });
+    expect(app.subjectIndex).toBeUndefined();
+    await expect(app.exportSubject("x")).rejects.toThrow(/compliance/);
+    await app.close();
+  });
+});

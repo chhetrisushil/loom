@@ -24,6 +24,9 @@
       "path": "../effect-runtime"
     },
     {
+      "path": "../compliance"
+    },
+    {
       "path": "../event-runtime"
     },
     {
