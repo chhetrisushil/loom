@@ -85,13 +85,42 @@ function objectShape(node: z.ZodTypeAny): Record<string, z.ZodTypeAny> | undefin
   return def.shape() as Record<string, z.ZodTypeAny>;
 }
 
-/** The class of a schema, looking through any transparent wrappers around it. */
-function effectiveClass(schema: z.ZodTypeAny): DataClass | undefined {
+/** The mark on a schema, looking through any transparent wrappers around it (first wins). */
+function effectiveMark<T>(schema: z.ZodTypeAny, markOf: (node: z.ZodTypeAny) => T | undefined) {
   for (const node of chain(schema).nodes) {
-    const cls = classOf(node);
-    if (cls !== undefined) return cls;
+    const mark = markOf(node);
+    if (mark !== undefined) return mark;
   }
   return undefined;
+}
+
+/**
+ * Generic marked-path walker — the shared engine behind {@link collectClassifiedPaths} and the
+ * {@link externalized} marker. Walks an object schema, and for every node whose `markOf`
+ * returns a value emits `{ path, mark }`, recursing through nested objects and transparent
+ * wrappers. A marked *object* is reported at its own path and NOT descended into (the coarser
+ * mark wins — a marked address object is treated as a unit). Array-element recursion is out of
+ * scope: the dot-path sinks address scalar paths. Deterministic: schema-declaration order (P2).
+ */
+export function collectMarkedPaths<T>(
+  schema: z.ZodTypeAny,
+  markOf: (node: z.ZodTypeAny) => T | undefined,
+  prefix = ""
+): { path: string; mark: T }[] {
+  const out: { path: string; mark: T }[] = [];
+  const mark = effectiveMark(schema, markOf);
+  if (mark !== undefined && prefix !== "") {
+    out.push({ path: prefix, mark });
+    return out;
+  }
+  const shape = objectShape(chain(schema).inner);
+  if (shape !== undefined) {
+    for (const [key, child] of Object.entries(shape)) {
+      const childPath = prefix === "" ? key : `${prefix}.${key}`;
+      out.push(...collectMarkedPaths(child, markOf, childPath));
+    }
+  }
+  return out;
 }
 
 /** A classified leaf/subtree and its dot-path from the walked root. */
@@ -102,33 +131,14 @@ export interface ClassifiedPath {
 }
 
 /**
- * Walk an object schema and collect every classified field as a `{ path, dataClass }`,
- * recursing through nested objects and transparent wrappers. A classified *object* is
- * reported at its own path (its subtree is treated as a unit, and inner marks are NOT
- * also emitted — the coarser mark wins, so a "sensitive" address object encrypts whole
- * rather than field-by-field). Array element recursion is intentionally out of scope:
- * the dot-path sinks (crypto/redaction) address scalar paths, so a `[]` segment would
- * name a path they can't apply — mark the scalar field inside instead.
- *
- * Deterministic: paths come out in schema-declaration order (P2 — no Set/Map iteration
- * nondeterminism reaches a fold or a persisted map).
+ * Walk an object schema and collect every classified field as a `{ path, dataClass }` (over the
+ * `secret`/`sensitive`/`internal` taxonomy). Thin wrapper over {@link collectMarkedPaths}.
  */
 export function collectClassifiedPaths(schema: z.ZodTypeAny, prefix = ""): ClassifiedPath[] {
-  const out: ClassifiedPath[] = [];
-  const cls = effectiveClass(schema);
-  if (cls !== undefined && prefix !== "") {
-    // This node is classified as a unit; report it and do not descend (coarser wins).
-    out.push({ path: prefix, dataClass: cls });
-    return out;
-  }
-  const shape = objectShape(chain(schema).inner);
-  if (shape !== undefined) {
-    for (const [key, child] of Object.entries(shape)) {
-      const childPath = prefix === "" ? key : `${prefix}.${key}`;
-      out.push(...collectClassifiedPaths(child, childPath));
-    }
-  }
-  return out;
+  return collectMarkedPaths(schema, (node) => classOf(node), prefix).map((m) => ({
+    path: m.path,
+    dataClass: m.mark,
+  }));
 }
 
 /** The subset of {@link collectClassifiedPaths} matching one class (e.g. only `"sensitive"`). */

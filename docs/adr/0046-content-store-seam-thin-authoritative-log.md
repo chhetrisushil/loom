@@ -171,13 +171,17 @@ It is **overkill** — and crypto-shredding + `ctx.decide` remain the recommende
 Verified against the four invariants by test, including a fold-equivalence test proving that
 replay over resolved-from-content events equals replay over inline values (determinism).
 
-### Follow-ups (deferred, per the risks above)
+### Follow-ups
 
-- **Refcounted blob GC.** `deleteExecution`/`truncatePrefix` currently reclaim events but not
+- ✅ **The `externalized()` marker + derive helper** — shipped. `externalized()` in
+  `@loom/classify` (its own registry — orthogonal to the secret/sensitive/internal axis, since
+  a field can be both large *and* sensitive), and `externalizePathsFromSteps` in
+  `@loom/plugin-content` derives the `externalize` map from the schema marks (mirrors
+  `sensitivePathsFromSteps`). The classify walker was generalized to `collectMarkedPaths` so
+  both axes share one engine.
+- **Refcounted blob GC** (deferred). `deleteExecution`/`truncatePrefix` reclaim events but not
   blobs (forks share content-addressed blobs, so deletion must be refcount-aware). Erase
   content explicitly via `contentStore.delete(ref)` until then.
-- **The `externalized()` marker + derive helper** — so externalize paths come from the
-  `@loom/classify` schema marks (like `sensitivePathsFromSteps`) instead of a hand-authored map.
 - **Production backends** (`@loom/plugin-content-fs`, `-s3`, encrypted blob store) and
   `defineConfig` wiring — added when a real large-payload / residency requirement lands.
 

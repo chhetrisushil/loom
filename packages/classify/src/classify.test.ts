@@ -9,6 +9,7 @@ import {
   sensitive,
   strictest,
 } from "./classify";
+import { externalized, externalizedPaths, isExternalized } from "./external";
 
 describe("classify — markers (K10-R1)", () => {
   it("returns the SAME schema instance (validation untouched)", () => {
@@ -85,5 +86,38 @@ describe("classify — strictest", () => {
     expect(strictest(undefined, "internal")).toBe("internal");
     expect(strictest("sensitive", undefined)).toBe("sensitive");
     expect(strictest(undefined, undefined)).toBeUndefined();
+  });
+});
+
+describe("externalized marker (ADR 0046)", () => {
+  it("returns the same schema and reads back the mark", () => {
+    const base = z.string();
+    const marked = externalized(base);
+    expect(marked).toBe(base);
+    expect(marked.parse("ok")).toBe("ok");
+    expect(isExternalized(marked)).toBe(true);
+    expect(isExternalized(z.string())).toBe(false);
+    expect(isExternalized("not a schema")).toBe(false);
+  });
+
+  it("collects externalized paths, incl. through wrappers and a marked object as a unit", () => {
+    const schema = z.object({
+      id: z.string(),
+      doc: externalized(z.object({ title: z.string(), body: z.string() })),
+      attachment: externalized(z.string()).optional(),
+      small: z.string(),
+    });
+    expect(externalizedPaths(schema).sort()).toEqual(["attachment", "doc"]);
+  });
+
+  it("is orthogonal to the sensitivity taxonomy — a field can be both", () => {
+    // A large AND sensitive document: externalize the bytes, and encrypt them.
+    const schema = z.object({ report: externalized(sensitive(z.string())) });
+    expect(externalizedPaths(schema)).toEqual(["report"]);
+    expect(pathsOfClass(schema, "sensitive")).toEqual(["report"]);
+  });
+
+  it("returns nothing for an unmarked schema", () => {
+    expect(externalizedPaths(z.object({ a: z.string() }))).toEqual([]);
   });
 });
