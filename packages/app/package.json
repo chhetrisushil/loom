@@ -24,6 +24,7 @@
     "@loom/dispatcher": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
     "@loom/event-runtime": "workspace:*",
+    "@loom/middleware": "workspace:*",
     "@loom/projection-runtime": "workspace:*",
     "@loom/replay-vm": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
@@ -33,7 +34,7 @@
     "@loom/workflow-runtime": "workspace:*"
   },
   "devDependencies": {
-    "@loom/middleware": "workspace:*",
+    "@loom/classify": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",

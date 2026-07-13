@@ -1,3 +1,5 @@
+import { pathsOfClass } from "@loom/classify";
+import type { StepDefinition } from "@loom/core";
 import type { EffectContext, EffectMiddleware } from "@loom/effect-runtime";
 
 // ── K10.3 — redaction markers: keep secrets OUT of the log entirely ───────────
@@ -126,4 +128,46 @@ export function redactionMiddleware(options: RedactionOptions): EffectMiddleware
     }
     return redacted;
   };
+}
+
+// ── K10-R2 — derive output redaction from `secret()` marks ────────────────────
+//
+// Instead of hand-authoring a `redactOutput: ({stepId}) => paths` callback, mark the
+// field once — `apiToken: secret(z.string())` — and derive it. A step's output fields
+// classified `"secret"` are the ones that must never be persisted; each becomes a
+// redactOutput path (relative to the effect RESULT, which is why there is no `output.`
+// prefix — the crypto map operates on the event payload, redaction on the raw result).
+//
+// This is the low-risk half of K10-R2: it drives the EXISTING effect-path redaction seam
+// off the R1 taxonomy, with NO kernel change. Automatic secret substitution before
+// STEP_STARTED in the hot path remains deferred (its determinism stakes are higher).
+
+/**
+ * Precompute a `stepId → secret output paths` lookup from step definitions, for O(1) access
+ * in the per-effect redactOutput callback (a Map, not a per-call schema walk). Steps with no
+ * `secret()`-marked output field are omitted, so an all-unmarked app yields an empty Map and
+ * the redaction pass stays a no-op (G2).
+ */
+export function secretOutputPathsByStep(
+  // Only id + output schema are read; Pick drops the invariant handler field so concrete
+  // `StepDefinition<In, Out>` values pass without a cast.
+  steps: readonly Pick<StepDefinition, "id" | "outputSchema">[]
+): Map<string, readonly string[]> {
+  const byStep = new Map<string, readonly string[]>();
+  for (const step of steps) {
+    if (step.outputSchema === undefined) continue;
+    const paths = pathsOfClass(step.outputSchema, "secret");
+    if (paths.length > 0) byStep.set(step.id, paths);
+  }
+  return byStep;
+}
+
+/**
+ * A {@link RedactionOptions.redactOutput} callback derived from `secret()` marks — pass the
+ * result of {@link secretOutputPathsByStep} (or let `defineConfig({ secrets })` wire it).
+ */
+export function redactOutputFrom(
+  byStep: Map<string, readonly string[]>
+): (info: { stepId: string }) => readonly string[] {
+  return ({ stepId }) => byStep.get(stepId) ?? [];
 }

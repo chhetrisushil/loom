@@ -27,6 +27,9 @@
       "path": "../event-runtime"
     },
     {
+      "path": "../middleware"
+    },
+    {
       "path": "../projection-runtime"
     },
     {
