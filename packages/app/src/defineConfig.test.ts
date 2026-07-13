@@ -1,9 +1,10 @@
+import { secret } from "@loom/classify";
 import { step$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectMiddleware } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import type { BranchRegistry } from "@loom/event-runtime";
-import { retryMiddleware } from "@loom/middleware";
+import { InMemorySecretResolver, isSecretRef, retryMiddleware, secretRef } from "@loom/middleware";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
@@ -276,5 +277,56 @@ describe("defineConfig — retention (K10.1 log lifecycle)", () => {
     );
     expect(outcome).toBe("reclaimed");
     expect(await app.stores.eventStore.read("r1")).toHaveLength(0);
+  });
+});
+
+describe("defineConfig — secrets (K10-R2)", () => {
+  it("resolves input refs for the tool and redacts secret() output fields from the log", async () => {
+    const mintStep = step$({
+      id: "mint",
+      toolId: "mint-tool",
+      inputSchema: z.object({ apiKey: z.any() }),
+      outputSchema: z.object({ token: secret(z.string()), ok: z.boolean() }),
+    });
+    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (ctx) => {
+      await ctx.run(mintStep, { apiKey: secretRef("vault-key") });
+      return { resolved: true };
+    };
+    const flow = {
+      definition: { ...gatedFlow().definition, id: "mint-flow", steps: [mintStep] },
+      runner,
+    } as RegisteredFlow;
+
+    const resolver = new InMemorySecretResolver(new Map([["vault-key", "sk_live_REAL"]]));
+    const app = defineConfig({ storage: { kind: "memory" }, flows: [flow], secrets: { resolver } });
+
+    let toolSawKey: unknown;
+    app.effectRuntime.register(
+      "mint-tool",
+      new ToolEffect(async (input: { apiKey: string }) => {
+        toolSawKey = input.apiKey; // the tool sees the RESOLVED secret
+        return { token: "sk_minted_SECRET", ok: true };
+      })
+    );
+
+    const handle = await app.runtime.start(flow, { incidentId: "i1" }, { executionId: "s1" });
+    await handle.waitForCompletion();
+
+    // The tool received the resolved input secret.
+    expect(toolSawKey).toBe("sk_live_REAL");
+
+    const events = await app.stores.eventStore.read("s1");
+    // Input side: STEP_STARTED logged the reference, never the real key.
+    const started = events.find((e) => e.eventType === "STEP_STARTED");
+    expect(JSON.stringify(started?.payload)).not.toContain("sk_live_REAL");
+    expect(JSON.stringify(started?.payload)).toContain("vault-key");
+    // Output side: STEP_COMPLETED logged a ref, never the minted secret.
+    const completed = events.find((e) => e.eventType === "STEP_COMPLETED");
+    const loggedToken = (completed?.payload as { output: { token: unknown } }).output.token;
+    expect(isSecretRef(loggedToken)).toBe(true);
+    expect(JSON.stringify(completed?.payload)).not.toContain("sk_minted_SECRET");
+    // The minted value is recoverable only through the resolver.
+    expect(resolver.resolve("s1:mint:token")).toBe("sk_minted_SECRET");
+    await app.close();
   });
 });

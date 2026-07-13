@@ -1123,6 +1123,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/middleware':
+        specifier: workspace:*
+        version: link:../middleware
       '@loom/plugin-a2a':
         specifier: workspace:*
         version: link:../../plugins/a2a
@@ -1148,9 +1151,9 @@ importers:
         specifier: workspace:*
         version: link:../workflow-runtime
     devDependencies:
-      '@loom/middleware':
+      '@loom/classify':
         specifier: workspace:*
-        version: link:../middleware
+        version: link:../classify
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -1762,6 +1765,9 @@ importers:
 
   packages/middleware:
     dependencies:
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../classify
       '@loom/core':
         specifier: workspace:*
         version: link:../core
@@ -1778,6 +1784,9 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
 
   packages/orchestration:
     dependencies:

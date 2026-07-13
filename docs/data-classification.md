@@ -63,6 +63,28 @@ const store = new EncryptingEventStore(inner, keys, {
 correctly excluded. Paths are unioned and de-duplicated across steps; the store applies
 each only to events that carry it, so unioning across differently-shaped steps is safe.
 
+### Secrets, wired in one line (K10-R2)
+
+`defineConfig({ secrets })` installs the redaction seam automatically, so `secret()`-marked
+fields never reach the log — both directions, no kernel change:
+
+```ts
+const app = defineConfig({
+  storage: sqliteStorage({ path: "app.db" }),
+  flows: [chargeFlow],
+  secrets: { resolver: myVaultResolver }, // resolve(id) → value; store(id, value) for output
+});
+```
+
+- **Input** — a `secretRef("stripe-key")` in a step's input is resolved to the real value
+  for the tool, while `STEP_STARTED` logs only the reference.
+- **Output** — a step output field marked `secret()` is replaced by a deterministic
+  reference before `STEP_COMPLETED` — the paths are derived from the registered flows'
+  step schemas (`secretOutputPathsByStep` → `redactOutputFrom`), not hand-authored.
+
+The kernel hot-path substitution (automatic, before `STEP_STARTED`) is deliberately deferred
+— the effect-path seam already upholds the "secrets never enter the log" invariant.
+
 ## Triage (why a package, not the kernel)
 
 `@loom/classify` is a small **authoring-tier** package above the kernel. The taxonomy is

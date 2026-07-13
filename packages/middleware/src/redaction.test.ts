@@ -1,6 +1,16 @@
+import { secret } from "@loom/classify";
+import { step$ } from "@loom/core";
 import type { EffectContext } from "@loom/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
-import { InMemorySecretResolver, isSecretRef, redactionMiddleware, secretRef } from "./redaction";
+import { z } from "zod";
+import {
+  InMemorySecretResolver,
+  isSecretRef,
+  redactOutputFrom,
+  redactionMiddleware,
+  secretOutputPathsByStep,
+  secretRef,
+} from "./redaction";
 
 function ctx(emit = vi.fn()): EffectContext {
   return { executionId: "e1", workflowId: "wf", stepId: "charge", attempt: 1, emit };
@@ -81,5 +91,46 @@ describe("K10.3 — redaction markers (secrets never enter the log)", () => {
     });
     expect(seen).toEqual({ plain: 1 });
     expect(out).toEqual({ done: true });
+  });
+});
+
+describe("K10-R2 — derive output redaction from secret() marks", () => {
+  it("builds a stepId → secret-output-paths map, skipping unmarked steps", () => {
+    const charge = step$({
+      id: "charge",
+      inputSchema: z.object({ amount: z.number() }),
+      outputSchema: z.object({ token: secret(z.string()), ok: z.boolean() }),
+    });
+    const log = step$({
+      id: "log",
+      inputSchema: z.object({}),
+      outputSchema: z.object({ line: z.string() }),
+    });
+    const byStep = secretOutputPathsByStep([charge, log]);
+    expect(byStep.get("charge")).toEqual(["token"]);
+    expect(byStep.has("log")).toBe(false); // no secret field → omitted (G2)
+
+    const redactOutput = redactOutputFrom(byStep);
+    expect(redactOutput({ stepId: "charge" })).toEqual(["token"]);
+    expect(redactOutput({ stepId: "log" })).toEqual([]); // unknown/unmarked → no paths
+  });
+
+  it("drives redactionMiddleware end-to-end: a secret() output field is logged as a ref", async () => {
+    const charge = step$({
+      id: "charge",
+      inputSchema: z.object({}),
+      outputSchema: z.object({ token: secret(z.string()), ok: z.boolean() }),
+    });
+    const resolver = new InMemorySecretResolver();
+    const mw = redactionMiddleware({
+      resolver,
+      redactOutput: redactOutputFrom(secretOutputPathsByStep([charge])),
+    });
+
+    const logged = await mw(ctx(), {}, async () => ({ token: "sk_live_MINTED", ok: true }));
+    const ref = (logged as { token: unknown }).token;
+    expect(isSecretRef(ref)).toBe(true);
+    expect(resolver.resolve("e1:charge:token")).toBe("sk_live_MINTED");
+    expect((logged as { ok: boolean }).ok).toBe(true);
   });
 });

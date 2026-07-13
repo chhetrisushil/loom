@@ -12,6 +12,12 @@ import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime
 // node:fs/path are loaded lazily on the `kind:"sqlite"` path only (see
 // `loadNodeModule`), so a browser app using in-memory storage stays clean.
 import { InMemoryAsyncEventStore } from "@loom/event-runtime/memory";
+import {
+  type SecretResolver,
+  redactOutputFrom,
+  redactionMiddleware,
+  secretOutputPathsByStep,
+} from "@loom/middleware";
 import type { AgentCard } from "@loom/plugin-a2a";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
@@ -152,6 +158,21 @@ export interface LoomConfig {
     /** Where each execution's events/snapshot are copied before deletion (A6). */
     archive?: ArchiveStores;
   };
+  /**
+   * K10-R2 — secret handling. Wiring a resolver installs {@link redactionMiddleware} on the
+   * effect path (outermost), so:
+   *  - `secretRef(...)` values in step INPUT are resolved to the real value for the tool
+   *    while the log keeps only the reference (the secret never enters STEP_STARTED); and
+   *  - step OUTPUT fields marked `secret()` (K10-R1) are replaced by a reference before
+   *    STEP_COMPLETED — derived automatically from the registered flows' step schemas.
+   *
+   * Omitting the key installs nothing (G2). This is the low-risk half of K10-R2; automatic
+   * substitution inside the kernel hot path remains deliberately deferred.
+   */
+  secrets?: {
+    /** Resolves secret references to real values (back it with a vault/KMS in production). */
+    resolver: SecretResolver;
+  };
 }
 
 export interface LoomStores {
@@ -210,8 +231,24 @@ function buildStores(storage: StorageConfig): LoomStores {
  */
 export function defineConfig(config: LoomConfig): LoomApp {
   const stores = buildStores(config.storage);
+
+  // K10-R2 — secret redaction runs OUTERMOST on the effect path (it must resolve input
+  // references before any other middleware sees the value, and redact output references
+  // last). Its per-step secret-output paths are populated AFTER flow registration into a
+  // Map the redactOutput closure reads by reference, so the map is mutated in place — never
+  // reassigned — to keep that reference live.
+  const secretPathsByStep = new Map<string, readonly string[]>();
+  const effectMiddleware: EffectMiddleware[] = [...(config.effectMiddleware ?? [])];
+  if (config.secrets !== undefined) {
+    effectMiddleware.unshift(
+      redactionMiddleware({
+        resolver: config.secrets.resolver,
+        redactOutput: redactOutputFrom(secretPathsByStep),
+      })
+    );
+  }
   const effectRuntime = new EffectRuntime(
-    config.effectMiddleware ?? [],
+    effectMiddleware,
     config.authorizer !== undefined ? { authorizer: config.authorizer } : {}
   );
 
@@ -266,6 +303,18 @@ export function defineConfig(config: LoomConfig): LoomApp {
   }
   if (config.flowModules && config.flowModules.length > 0) {
     registerFlowsFrom(runtime, ...config.flowModules);
+  }
+
+  // K10-R2 — now that every flow is registered, derive each step's secret-output paths from
+  // its `secret()`-marked schema and fill the (by-reference) map the redactOutput closure
+  // reads. Mutated, not reassigned. No-op unless `secrets` is wired and a field is marked.
+  if (config.secrets !== undefined) {
+    for (const id of runtime.getFlowIds()) {
+      const steps = runtime.getFlow(id)?.definition.steps ?? [];
+      for (const [stepId, paths] of secretOutputPathsByStep(steps)) {
+        secretPathsByStep.set(stepId, paths);
+      }
+    }
   }
 
   if (config.manifest) {

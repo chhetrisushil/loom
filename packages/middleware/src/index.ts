@@ -11,6 +11,8 @@ export {
 } from "./metering";
 export {
   redactionMiddleware,
+  redactOutputFrom,
+  secretOutputPathsByStep,
   secretRef,
   isSecretRef,
   InMemorySecretResolver,
