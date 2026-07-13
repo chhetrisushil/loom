@@ -18,6 +18,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@loom/classify": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*"
@@ -26,6 +27,7 @@
     "@loom/replay-vm": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "zod": "^3.23.8"
   }
 }

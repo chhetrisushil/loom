@@ -171,6 +171,9 @@
     },
     {
       "path": "packages/conformance"
+    },
+    {
+      "path": "packages/classify"
     }
   ]
 }

@@ -1256,6 +1256,19 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
 
+  packages/classify:
+    dependencies:
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   packages/cli:
     dependencies:
       '@loom/analytics':
@@ -2442,6 +2455,9 @@ importers:
 
   plugins/crypto:
     dependencies:
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../../packages/classify
       '@loom/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -2464,6 +2480,9 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
 
   plugins/mcp:
     dependencies:

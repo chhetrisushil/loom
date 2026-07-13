@@ -8,6 +8,7 @@
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
   "references": [
+    { "path": "../../packages/classify" },
     { "path": "../../packages/core" },
     { "path": "../../packages/event-runtime" },
     { "path": "../../packages/snapshot-runtime" }
