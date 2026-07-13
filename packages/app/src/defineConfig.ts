@@ -20,8 +20,8 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime/memory";
 import { composeAdapters, createTelemetryHook } from "@loom/telemetry";
 import type { TelemetryAdapter } from "@loom/telemetry";
 import { type VerificationReport, runVerification, verify as runVerify } from "@loom/verify";
-import { TimerService, WorkflowRuntime } from "@loom/workflow-runtime";
-import type { RegisteredFlow } from "@loom/workflow-runtime";
+import { LogLifecycle, TimerService, WorkflowRuntime } from "@loom/workflow-runtime";
+import type { ArchiveStores, RegisteredFlow } from "@loom/workflow-runtime";
 import { InProcessA2ABus } from "./InProcessA2ABus";
 import {
   type FlowModule,
@@ -140,6 +140,18 @@ export interface LoomConfig {
    * `app.verify()` re-runs the same checks on demand (used by `loom verify`).
    */
   verify?: VerifyConfig;
+  /**
+   * K10.1 — log-lifecycle wiring. Presence exposes `app.lifecycle` (a {@link LogLifecycle})
+   * for explicit, non-background retention/compaction passes (the spec's anti-hidden-thread
+   * stance — an operator or `loom retention run` drives it; nothing prunes on a timer). The
+   * branch-integrity guard is wired automatically when the storage backend supplies a
+   * `branchRegistry`. Supply `archive` for archive-before-delete (A6). Omitting the key is
+   * byte-identical to not wiring it (G2) — `app.lifecycle` is still available, unarchived.
+   */
+  retention?: {
+    /** Where each execution's events/snapshot are copied before deletion (A6). */
+    archive?: ArchiveStores;
+  };
 }
 
 export interface LoomStores {
@@ -154,6 +166,12 @@ export interface LoomApp {
   projectionRuntime: ProjectionRuntime;
   bus: InProcessA2ABus;
   stores: LoomStores;
+  /**
+   * K10.1 log lifecycle — explicit retention/compaction over this app's stores, with the
+   * branch-integrity guard wired when a `branchRegistry` is present. Drive it from an
+   * operator pass (`loom retention run`); nothing runs it on a timer. See {@link LogLifecycle}.
+   */
+  lifecycle: LogLifecycle;
   /**
    * Re-run pre-flight verification on demand (read-only, off-log). Returns the report;
    * the caller decides what to do with it (the CLI exits non-zero on `!ok`). Available
@@ -234,6 +252,14 @@ export function defineConfig(config: LoomConfig): LoomApp {
     timerService.start();
   }
 
+  // K10.1 — log lifecycle wired over the same stores. Cheap to construct; drives nothing
+  // until a caller invokes applyRetention/compact (G2). The branch guard is active whenever
+  // the backend supplies a branchRegistry.
+  const lifecycle = new LogLifecycle(stores.eventStore, stores.snapshotStore, {
+    ...(config.retention?.archive !== undefined && { archive: config.retention.archive }),
+    ...(stores.branchRegistry !== undefined && { branchRegistry: stores.branchRegistry }),
+  });
+
   config.catalog?.registerInto(runtime);
   for (const flow of config.flows ?? []) {
     runtime.registerFlow(flow.definition, flow.runner);
@@ -309,6 +335,7 @@ export function defineConfig(config: LoomConfig): LoomApp {
     projectionRuntime,
     bus,
     stores,
+    lifecycle,
     verify() {
       return runVerify(resolveInput(), verifyOptions);
     },

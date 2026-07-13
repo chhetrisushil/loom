@@ -303,6 +303,42 @@ const handlers: Record<string, Handler> = {
     };
   },
 
+  // K10.1 (R5) — retention control facts on a dedicated lifecycle stream. When
+  // `applyRetention` archives or deletes a terminal execution it journals the action
+  // so the audit trail records its own pruning (P9): the values are gone but the FACT
+  // that they were pruned survives. Pure audit into `_lifecycle`; replay is byte-identical
+  // for any log that never prunes.
+  EXECUTION_ARCHIVED: (state, event) => {
+    const p = event.payload as { executionId: string };
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _lifecycle: appendAudit(state.variables._lifecycle as unknown[] | undefined, {
+          op: "archived",
+          executionId: p.executionId,
+          at: event.timestamp,
+        }),
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+  EXECUTION_DELETED: (state, event) => {
+    const p = event.payload as { executionId: string };
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _lifecycle: appendAudit(state.variables._lifecycle as unknown[] | undefined, {
+          op: "deleted",
+          executionId: p.executionId,
+          at: event.timestamp,
+        }),
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
   // Loom 2.0 (learning seam) — an OUTCOME_RECORDED fact: how a prior choice (a
   // route/capability/tool, by `key`) actually turned out. The symmetric counterpart
   // to DECISION_RECORDED ("what was chosen"): this records "how it went", so
@@ -647,7 +683,10 @@ export function getHandler(eventType: string): Handler | undefined {
 //   non-zero, so a log that never meters them replays byte-identically.
 // 1.12.0: added EXECUTION_DENIED (C.1 — execution-lifecycle authz). Pure audit into
 //   `_executionDenials`; a log that never denies replays byte-identically.
-export const EVENT_SCHEMA_VERSION = "1.12.0";
+// 1.13.0: added EXECUTION_ARCHIVED / EXECUTION_DELETED (K10.1 R5 — retention control
+//   facts). Pure audit into `_lifecycle` on a dedicated stream; a log that never prunes
+//   replays byte-identically.
+export const EVENT_SCHEMA_VERSION = "1.13.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

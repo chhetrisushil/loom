@@ -1,8 +1,11 @@
-import type { ExecutionState } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
+import type { EventEnvelope, ExecutionState } from "@loom/core";
+import type { BranchRegistry, EventStore } from "@loom/event-runtime";
 import { ReplayVM } from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
+
+/** Reserved control stream carrying retention facts (EXECUTION_ARCHIVED/_DELETED). */
+export const LIFECYCLE_STREAM = "__loom_lifecycle__";
 
 // ── K10.1 / K10.4 — log lifecycle: retention & compaction ─────────────────────
 //
@@ -29,6 +32,7 @@ export type RetentionOutcome =
   | "reclaimed" // archived (if configured) then deleted
   | "kept" // terminal but still within its TTL
   | "not-terminal" // still running/suspended — never reclaimed
+  | "blocked-by-branch" // a live descendant branch still depends on this prefix (R5.3)
   | "unknown" // no events for this id
   | "unsupported"; // the store can't delete (no deleteExecution)
 
@@ -36,8 +40,41 @@ export class LogLifecycle {
   constructor(
     private readonly eventStore: EventStore,
     private readonly snapshotStore: SnapshotStore,
-    private readonly options: { archive?: ArchiveStores } = {}
+    private readonly options: { archive?: ArchiveStores; branchRegistry?: BranchRegistry } = {}
   ) {}
+
+  /**
+   * R5.3 — a terminal execution MUST NOT be deleted while a live descendant branch still
+   * exists (a fork's copied prefix may alias this one, and deleting it would break that
+   * branch's replay/lineage). Conservative: block if any direct child still has events.
+   */
+  private async hasLiveDescendant(executionId: string): Promise<boolean> {
+    const registry = this.options.branchRegistry;
+    if (registry === undefined) return false;
+    for (const child of await registry.children(executionId)) {
+      if ((await this.eventStore.read(child.executionId)).length > 0) return true;
+    }
+    return false;
+  }
+
+  /** Journal a retention control fact to the dedicated lifecycle stream (P9: audit its own pruning). */
+  private async emitLifecycleFact(
+    eventType: "EXECUTION_ARCHIVED" | "EXECUTION_DELETED",
+    executionId: string,
+    now: number
+  ): Promise<void> {
+    const prior = await this.eventStore.read(LIFECYCLE_STREAM);
+    const fact: EventEnvelope = {
+      id: ulid(),
+      workflowId: LIFECYCLE_STREAM,
+      executionId: LIFECYCLE_STREAM,
+      eventType,
+      sequence: prior.length,
+      timestamp: now,
+      payload: { executionId },
+    };
+    await this.eventStore.append(fact);
+  }
 
   /**
    * K10.1 — reclaim one execution if it is terminal AND older than the policy
@@ -62,6 +99,9 @@ export class LogLifecycle {
     const endedAt = events[events.length - 1]!.timestamp;
     if (now - endedAt < policy.terminalTtlMs) return "kept";
 
+    // R5.3 — never delete a parent a live descendant branch still depends on.
+    if (await this.hasLiveDescendant(executionId)) return "blocked-by-branch";
+
     if (this.options.archive !== undefined) {
       const archive = this.options.archive;
       for (const event of events) await archive.eventStore.append(event);
@@ -69,8 +109,11 @@ export class LogLifecycle {
         const snap = await this.snapshotStore.loadLatest(executionId);
         if (snap !== null) await archive.snapshotStore.save(snap);
       }
+      await this.emitLifecycleFact("EXECUTION_ARCHIVED", executionId, now);
     }
 
+    // Journal the deletion fact BEFORE deleting — the values go, the fact survives (P9).
+    await this.emitLifecycleFact("EXECUTION_DELETED", executionId, now);
     await this.eventStore.deleteExecution(executionId);
     await this.snapshotStore.deleteExecution?.(executionId);
     return "reclaimed";
