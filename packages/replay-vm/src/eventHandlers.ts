@@ -338,6 +338,24 @@ const handlers: Record<string, Handler> = {
       updatedAt: event.timestamp,
     };
   },
+  // T3-R4.5 — an erasure was requested but deferred because an execution of the subject was
+  // still live (never shred a fold in flight). Folding the erasure control stream recovers the
+  // set of subjects awaiting completion, so a parked erasure survives a restart.
+  ERASURE_PENDING: (state, event) => {
+    const p = event.payload as { subjectId: string };
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _erasure: appendAudit(state.variables._erasure as unknown[] | undefined, {
+          op: "pending",
+          subjectId: p.subjectId,
+          at: event.timestamp,
+        }),
+      },
+      updatedAt: event.timestamp,
+    };
+  },
 
   // Loom 2.0 (learning seam) — an OUTCOME_RECORDED fact: how a prior choice (a
   // route/capability/tool, by `key`) actually turned out. The symmetric counterpart
@@ -686,7 +704,9 @@ export function getHandler(eventType: string): Handler | undefined {
 // 1.13.0: added EXECUTION_ARCHIVED / EXECUTION_DELETED (K10.1 R5 — retention control
 //   facts). Pure audit into `_lifecycle` on a dedicated stream; a log that never prunes
 //   replays byte-identically.
-export const EVENT_SCHEMA_VERSION = "1.13.0";
+// 1.14.0: added ERASURE_PENDING (T3-R4.5 — deferred-erasure control fact). Pure audit into
+//   `_erasure` on a dedicated stream; a log that never defers an erasure replays identically.
+export const EVENT_SCHEMA_VERSION = "1.14.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
