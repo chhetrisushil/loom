@@ -54,3 +54,5 @@ See [`../examples`](../examples):
 - `agent-network` — the full agentic pipeline (LLM, ReAct agent, MCP, A2A, intent, planner, memory).
 - `db-command-center` — intent → planner → A2A dispatch → durable human approval (same backend rendered in React, Web Components, and Angular).
 - `incident-war-room` & `schema-migration-planner` — git-style branching (fork → simulate → compare → promote).
+- `agent-swarm` — a fleet wired from intent, with `policy$` least-privilege enforcement (each agent scoped to its own effect; a fleet-wide read-only guardrail).
+- `a2ui-dashboard` — one A2UI surface per agent (`defineConfig({ a2ui: true })`): each agent drives its own live panel, folded durably from the event log.
