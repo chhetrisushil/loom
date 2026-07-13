@@ -6,6 +6,7 @@ import {
   type SubjectExport,
   SubjectIndex,
   type SubjectResolver,
+  type TenantResolver,
   exportSubject as exportSubjectData,
 } from "@loom/compliance";
 import type { EventEnvelope, ScheduleDefinition } from "@loom/core";
@@ -197,6 +198,13 @@ export interface LoomConfig {
   compliance?: {
     subjectOf: SubjectResolver;
     /**
+     * T3-R2.4 — partition the subject index by tenant so two tenants sharing a subject id are
+     * never merged (a cross-tenant access/erasure leak). Given an event, return its tenant —
+     * the tenant is not persisted in events by default, so read it from input/metadata. Omit
+     * for a single-tenant app.
+     */
+    tenantOf?: TenantResolver;
+    /**
      * T3 Phase B — enable `app.eraseSubject` (Art. 17). Wire `shred` to the crypto plugin's
      * `shredSubject` (bound to the KeyStore + raw store); it MUST be idempotent (no-op when a
      * subject is already erased). Erasure is liveness-gated: shredded now if the subject's
@@ -236,13 +244,16 @@ export interface LoomApp {
    * configured. For a partially-erased subject, wire the crypto store in tolerant mode
    * (K10-R4) so shredded fields export as `{ $shredded }` rather than throwing.
    */
-  exportSubject(subjectId: string, options?: { includeEvents?: boolean }): Promise<SubjectExport>;
+  exportSubject(
+    subjectId: string,
+    options?: { includeEvents?: boolean; tenant?: string }
+  ): Promise<SubjectExport>;
   /**
-   * T3 — request erasure of a subject (Art. 17). Shreds now if the subject's executions are
-   * all terminal, else parks the request and completes it when the last one terminates.
-   * Throws unless `compliance.erase` is configured.
+   * T3 — request erasure of a subject (Art. 17), optionally scoped to a `tenant` (T3-R2.4).
+   * Shreds now if the subject's executions are all terminal, else parks the request and
+   * completes it when the last one terminates. Throws unless `compliance.erase` is configured.
    */
-  eraseSubject(subjectId: string): Promise<EraseSubjectResult>;
+  eraseSubject(subjectId: string, tenant?: string): Promise<EraseSubjectResult>;
   /**
    * Re-run pre-flight verification on demand (read-only, off-log). Returns the report;
    * the caller decides what to do with it (the CLI exits non-zero on `!ok`). Available
@@ -315,7 +326,11 @@ export function defineConfig(config: LoomConfig): LoomApp {
   // T3 — subject index, fed live off the event stream (rebuildable from the log). Cheap to
   // construct; only built when `compliance` is wired (G2).
   const subjectIndex =
-    config.compliance !== undefined ? new SubjectIndex(config.compliance.subjectOf) : undefined;
+    config.compliance !== undefined
+      ? new SubjectIndex(config.compliance.subjectOf, {
+          ...(config.compliance.tenantOf !== undefined && { tenantOf: config.compliance.tenantOf }),
+        })
+      : undefined;
 
   // T3 Phase B — erasure coordinator, only when erasure is wired. Rehydrates any parked
   // requests from the durable control stream (best-effort, so a restart resumes deferrals).
@@ -477,15 +492,16 @@ export function defineConfig(config: LoomConfig): LoomApp {
         index: subjectIndex,
         eventStore: stores.eventStore,
         ...(options?.includeEvents !== undefined && { includeEvents: options.includeEvents }),
+        ...(options?.tenant !== undefined && { tenant: options.tenant }),
       });
     },
-    eraseSubject(subjectId) {
+    eraseSubject(subjectId, tenant) {
       if (eraseCoordinator === undefined) {
         return Promise.reject(
           new Error("[loom] eraseSubject requires `compliance: { subjectOf, erase: { shred } }`")
         );
       }
-      return eraseCoordinator.eraseSubject(subjectId);
+      return eraseCoordinator.eraseSubject(subjectId, tenant);
     },
     verify() {
       return runVerify(resolveInput(), verifyOptions);

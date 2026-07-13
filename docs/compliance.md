@@ -34,6 +34,32 @@ app.subjectIndex?.executionsOf("user-42"); // ["exec-a", "exec-b"]
 It is rebuildable from a cold log (`SubjectIndex.fromEvents(events, subjectOf)`) — the live
 and rebuilt indexes are identical (P2).
 
+### Multi-tenant isolation (T3-R2.4)
+
+In a shared runtime serving several tenants (K12), two tenants can legitimately use the
+**same** subject id (`"alice"` at tenant A ≠ `"alice"` at tenant B). Merging them would leak
+one tenant's records into another's access/erasure request. Supply a `tenantOf` resolver to
+**partition** the index — the tenant is not persisted in events by default (principal chains
+aren't), so read it from input/metadata:
+
+```ts
+const app = defineConfig({
+  storage: sqliteStorage({ path: "app.db" }),
+  flows: [signupFlow],
+  compliance: {
+    subjectOf: (e) => e.payload.input?.userId,
+    tenantOf: (e) => e.payload.input?.tenant, // partition key
+  },
+});
+
+app.subjectIndex?.executionsOf("alice", "acme");   // only acme's alice
+await app.exportSubject("alice", { tenant: "acme" }); // never crosses into globex
+await app.eraseSubject("alice", "acme");              // erases only acme's alice
+```
+
+Every query, export, and erasure is tenant-scoped; `tenants()` lists the partitions. Omit
+`tenantOf` and everything falls in one default partition (single-tenant apps are unchanged).
+
 ## Access & portability (Art. 15 / 20)
 
 `app.exportSubject(subjectId)` gathers every execution the index attributes to the subject,

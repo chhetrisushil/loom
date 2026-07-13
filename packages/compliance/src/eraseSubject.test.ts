@@ -129,3 +129,60 @@ describe("EraseCoordinator (T3 Phase B — erasure)", () => {
     expect(restarted.pendingSubjects()).toEqual(["dan"]);
   });
 });
+
+describe("EraseCoordinator — tenant isolation (T3-R2.4)", () => {
+  const tenantOf = (e: EventEnvelope): string | undefined =>
+    (e.payload as { input?: { tenant?: string } }).input?.tenant;
+
+  it("erases one tenant's subject without touching another tenant's same-id subject", async () => {
+    const store = new InMemoryAsyncEventStore();
+    // Same subject id "alice" under two tenants, both terminal.
+    await store.append(
+      ev("a1", 0, "EXECUTION_STARTED", { input: { userId: "alice", tenant: "acme" } })
+    );
+    await store.append(ev("a1", 1, "EXECUTION_COMPLETED", {}));
+    await store.append(
+      ev("a2", 0, "EXECUTION_STARTED", { input: { userId: "alice", tenant: "globex" } })
+    );
+    await store.append(ev("a2", 1, "EXECUTION_COMPLETED", {}));
+    const index = SubjectIndex.fromEvents(
+      [...(await store.read("a1")), ...(await store.read("a2"))],
+      subjectOf,
+      { tenantOf }
+    );
+    const shred = vi.fn(async () => {});
+    const coord = new EraseCoordinator({ index, eventStore: store, shred });
+
+    const result = await coord.eraseSubject("alice", "acme");
+    expect(result.outcome).toBe("erased");
+    // Only acme's execution is shredded — globex's alice is untouched.
+    expect(shred).toHaveBeenCalledTimes(1);
+    expect(shred).toHaveBeenCalledWith("alice", ["a1"]);
+  });
+
+  it("parks per (tenant, subject) — same subject id in two tenants parks independently", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await store.append(
+      ev("a1", 0, "EXECUTION_STARTED", { input: { userId: "alice", tenant: "acme" } })
+    ); // live
+    await store.append(
+      ev("a2", 0, "EXECUTION_STARTED", { input: { userId: "alice", tenant: "globex" } })
+    ); // live
+    const index = SubjectIndex.fromEvents(
+      [...(await store.read("a1")), ...(await store.read("a2"))],
+      subjectOf,
+      { tenantOf }
+    );
+    const shred = vi.fn(async () => {});
+    const coord = new EraseCoordinator({ index, eventStore: store, shred });
+
+    expect((await coord.eraseSubject("alice", "acme")).outcome).toBe("parked");
+    expect((await coord.eraseSubject("alice", "globex")).outcome).toBe("parked");
+
+    // Completing acme's execution erases ONLY acme's alice; globex stays parked.
+    await store.append(ev("a1", 1, "EXECUTION_COMPLETED", {}));
+    await coord.handleEvent(ev("a1", 1, "EXECUTION_COMPLETED", {}));
+    expect(shred).toHaveBeenCalledTimes(1);
+    expect(shred).toHaveBeenCalledWith("alice", ["a1"]);
+  });
+});

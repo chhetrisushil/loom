@@ -1,4 +1,10 @@
-export { SubjectIndex, type SubjectResolver } from "./SubjectIndex";
+export {
+  DEFAULT_TENANT,
+  SubjectIndex,
+  type SubjectIndexOptions,
+  type SubjectResolver,
+  type TenantResolver,
+} from "./SubjectIndex";
 export {
   exportSubject,
   type ExportSubjectOptions,

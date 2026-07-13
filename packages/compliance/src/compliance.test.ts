@@ -112,3 +112,38 @@ describe("exportSubject (T3-R2/R3 — access + portability)", () => {
     expect(out.executions).toEqual([]);
   });
 });
+
+describe("SubjectIndex — tenant isolation (T3-R2.4)", () => {
+  // Same subject id "alice" under two tenants — must never merge.
+  const tenantOf = (e: EventEnvelope): string | undefined =>
+    (e.payload as { input?: { tenant?: string } }).input?.tenant;
+  const events = [
+    ev("a1", 0, "EXECUTION_STARTED", { input: { userId: "alice", tenant: "acme" } }),
+    ev("a2", 0, "EXECUTION_STARTED", { input: { userId: "alice", tenant: "globex" } }),
+    ev("a3", 0, "EXECUTION_STARTED", { input: { userId: "bob", tenant: "acme" } }),
+  ];
+
+  it("partitions the same subject id across tenants", () => {
+    const idx = SubjectIndex.fromEvents(events, subjectOf, { tenantOf });
+    expect(idx.executionsOf("alice", "acme")).toEqual(["a1"]);
+    expect(idx.executionsOf("alice", "globex")).toEqual(["a2"]);
+    // Querying the wrong (or default) tenant never leaks the other tenant's records.
+    expect(idx.executionsOf("alice")).toEqual([]);
+    expect(idx.subjects("acme")).toEqual(["alice", "bob"]);
+    expect(idx.subjects("globex")).toEqual(["alice"]);
+    expect(idx.tenants()).toEqual(["acme", "globex"]);
+    expect(idx.tenantOfExecution("a2")).toBe("globex");
+    expect(idx.size).toBe(3); // (acme,alice), (globex,alice), (acme,bob)
+  });
+
+  it("scopes exportSubject to a tenant — one tenant's alice never appears in another's", async () => {
+    const store = new InMemoryAsyncEventStore();
+    for (const e of events) await store.append(e);
+    const index = SubjectIndex.fromEvents(events, subjectOf, { tenantOf });
+
+    const acme = await exportSubject("alice", { index, eventStore: store, tenant: "acme" });
+    expect(acme.executions.map((e) => e.executionId)).toEqual(["a1"]);
+    const globex = await exportSubject("alice", { index, eventStore: store, tenant: "globex" });
+    expect(globex.executions.map((e) => e.executionId)).toEqual(["a2"]);
+  });
+});

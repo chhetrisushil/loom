@@ -1,7 +1,7 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import type { EventStore } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
-import type { SubjectIndex } from "./SubjectIndex";
+import { DEFAULT_TENANT, type SubjectIndex } from "./SubjectIndex";
 
 // ── T3-R3/R4.5 — subject erasure (GDPR Art. 17, right to be forgotten) ─────────
 //
@@ -51,7 +51,8 @@ export interface EraseSubjectResult {
  * erasure completes the moment the subject's last live execution terminates.
  */
 export class EraseCoordinator {
-  /** Subjects awaiting completion in THIS process (authoritative live view; also durable). */
+  // Parked requests keyed by `tenant\x00subject` (T3-R2.4 — two tenants may share a subject
+  // id; they must not collide into one park entry). Authoritative live view; also durable.
   private readonly parked = new Set<string>();
 
   constructor(private readonly options: EraseCoordinatorOptions) {}
@@ -60,27 +61,31 @@ export class EraseCoordinator {
   async loadParked(): Promise<void> {
     for (const event of await this.options.eventStore.read(ERASURE_STREAM)) {
       if (event.eventType === "ERASURE_PENDING") {
-        this.parked.add((event.payload as { subjectId: string }).subjectId);
+        const p = event.payload as { subjectId: string; tenant?: string };
+        this.parked.add(parkKey(p.tenant ?? DEFAULT_TENANT, p.subjectId));
       }
     }
   }
 
-  /** Request erasure of a subject. Shreds now if all executions are terminal, else parks. */
-  async eraseSubject(subjectId: string): Promise<EraseSubjectResult> {
-    const executions = this.options.index.executionsOf(subjectId);
+  /** Request erasure of a subject within a tenant. Shreds now if all executions are terminal, else parks. */
+  async eraseSubject(
+    subjectId: string,
+    tenant: string = DEFAULT_TENANT
+  ): Promise<EraseSubjectResult> {
+    const executions = this.options.index.executionsOf(subjectId, tenant);
     if (executions.length === 0) {
       return { subjectId, outcome: "unknown", erased: [], pending: [] };
     }
     const live = await this.liveExecutions(executions);
     if (live.length === 0) {
       await this.options.shred(subjectId, executions);
-      this.parked.delete(subjectId);
+      this.parked.delete(parkKey(tenant, subjectId));
       return { subjectId, outcome: "erased", erased: executions, pending: [] };
     }
     // R4.5 — a live fold is in flight; record the request durably and defer.
-    if (!this.parked.has(subjectId)) {
-      this.parked.add(subjectId);
-      await this.appendPending(subjectId);
+    if (!this.parked.has(parkKey(tenant, subjectId))) {
+      this.parked.add(parkKey(tenant, subjectId));
+      await this.appendPending(subjectId, tenant);
     }
     return { subjectId, outcome: "parked", erased: [], pending: live };
   }
@@ -89,16 +94,18 @@ export class EraseCoordinator {
   async handleEvent(event: EventEnvelope): Promise<void> {
     if (!TERMINAL_EVENTS.has(event.eventType) || this.parked.size === 0) return;
     const subjectId = this.options.index.subjectOfExecution(event.executionId);
-    if (subjectId === undefined || !this.parked.has(subjectId)) return;
-    const executions = this.options.index.executionsOf(subjectId);
+    if (subjectId === undefined) return;
+    const tenant = this.options.index.tenantOfExecution(event.executionId) ?? DEFAULT_TENANT;
+    if (!this.parked.has(parkKey(tenant, subjectId))) return;
+    const executions = this.options.index.executionsOf(subjectId, tenant);
     if ((await this.liveExecutions(executions)).length > 0) return; // still blocked
     await this.options.shred(subjectId, executions);
-    this.parked.delete(subjectId);
+    this.parked.delete(parkKey(tenant, subjectId));
   }
 
-  /** Subjects with a deferred erasure still awaiting completion (sorted). */
+  /** Subjects with a deferred erasure still awaiting completion (sorted, deduped across tenants). */
   pendingSubjects(): string[] {
-    return [...this.parked].sort();
+    return [...new Set([...this.parked].map(subjectOfKey))].sort();
   }
 
   /** The subset of `executions` that are not yet terminal (a live fold reading the key). */
@@ -113,16 +120,25 @@ export class EraseCoordinator {
     return live;
   }
 
-  private async appendPending(subjectId: string): Promise<void> {
+  private async appendPending(subjectId: string, tenant: string): Promise<void> {
     const prior = await this.options.eventStore.read(ERASURE_STREAM);
     await this.options.eventStore.append({
-      id: `erasure-${subjectId}-${prior.length}`,
+      id: `erasure-${prior.length}`,
       workflowId: ERASURE_STREAM,
       executionId: ERASURE_STREAM,
       eventType: "ERASURE_PENDING",
       sequence: prior.length,
       timestamp: 0, // deterministic; the fact of the request is what matters
-      payload: { subjectId },
+      payload: { subjectId, ...(tenant !== DEFAULT_TENANT && { tenant }) },
     });
   }
+}
+
+// `tenant\x00subject` — NUL separates the two id spaces (never appears in a real id), so a
+// tenant/subject boundary can't be spoofed by crafting an id that contains the separator.
+function parkKey(tenant: string, subject: string): string {
+  return `${tenant}\x00${subject}`;
+}
+function subjectOfKey(key: string): string {
+  return key.slice(key.indexOf("\x00") + 1);
 }

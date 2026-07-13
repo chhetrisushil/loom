@@ -36,20 +36,23 @@ export interface ExportSubjectOptions {
   eventStore: Pick<EventStore, "read">;
   /** Include the raw event log per execution (Art. 20 portability). Default `true`. */
   includeEvents?: boolean;
+  /** T3-R2.4 — scope the export to a tenant (default: the single partition). */
+  tenant?: string;
 }
 
 /**
  * Assemble a data-subject export (Art. 15 access + Art. 20 portability): every execution the
- * {@link SubjectIndex} attributes to `subjectId`, each folded to its current state and (by
- * default) accompanied by its raw log. Executions are emitted in the index's deterministic
- * (sorted) order. An unknown subject yields an empty `executions` array — not an error.
+ * {@link SubjectIndex} attributes to `subjectId` (within `tenant`), each folded to its current
+ * state and (by default) accompanied by its raw log. Executions are emitted in the index's
+ * deterministic (sorted) order. An unknown subject yields an empty `executions` array — not an
+ * error. Scoping to a tenant is what keeps one tenant's `"alice"` out of another's export.
  */
 export async function exportSubject(
   subjectId: string,
   options: ExportSubjectOptions
 ): Promise<SubjectExport> {
   const includeEvents = options.includeEvents ?? true;
-  const executionIds = options.index.executionsOf(subjectId);
+  const executionIds = options.index.executionsOf(subjectId, options.tenant);
   const executions: SubjectExecutionExport[] = [];
   for (const executionId of executionIds) {
     const events = await options.eventStore.read(executionId);
