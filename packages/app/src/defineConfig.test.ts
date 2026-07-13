@@ -467,4 +467,52 @@ describe("defineConfig — compliance / subject rights (T3)", () => {
     await expect(app.eraseSubject("x")).rejects.toThrow(/eraseSubject requires/);
     await app.close();
   });
+
+  it("partitions the subject index by tenant (T3-R2.4)", async () => {
+    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (ctx) => {
+      await ctx.run(metricsStep, { incidentId: "i1" });
+      return { resolved: true };
+    };
+    const flow = {
+      definition: { ...gatedFlow().definition, id: "tenant-flow", steps: [metricsStep] },
+      runner,
+    } as RegisteredFlow;
+
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow],
+      compliance: {
+        // subject = incidentId; tenant = a field carried on the same input.
+        subjectOf: (e) =>
+          e.eventType === "EXECUTION_STARTED"
+            ? (e.payload as { input?: { incidentId?: string } }).input?.incidentId
+            : undefined,
+        tenantOf: (e) => (e.payload as { input?: { tenant?: string } }).input?.tenant,
+      },
+    });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+
+    // Same subject id "shared" under two tenants.
+    await (
+      await app.runtime.start(
+        flow,
+        { incidentId: "shared", tenant: "acme" } as { incidentId: string },
+        { executionId: "t-acme" }
+      )
+    ).waitForCompletion();
+    await (
+      await app.runtime.start(
+        flow,
+        { incidentId: "shared", tenant: "globex" } as { incidentId: string },
+        { executionId: "t-globex" }
+      )
+    ).waitForCompletion();
+
+    expect(app.subjectIndex?.executionsOf("shared", "acme")).toEqual(["t-acme"]);
+    expect(app.subjectIndex?.executionsOf("shared", "globex")).toEqual(["t-globex"]);
+    // A tenant-scoped export never crosses the boundary.
+    const acme = await app.exportSubject("shared", { tenant: "acme" });
+    expect(acme.executions.map((e) => e.executionId)).toEqual(["t-acme"]);
+    await app.close();
+  });
 });
