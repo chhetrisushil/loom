@@ -1039,6 +1039,9 @@ importers:
 
   packages/a2ui:
     dependencies:
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../classify
       '@loom/core':
         specifier: workspace:*
         version: link:../core
@@ -1286,6 +1289,9 @@ importers:
       '@loom/appgen':
         specifier: workspace:*
         version: link:../appgen
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../classify
       '@loom/core':
         specifier: workspace:*
         version: link:../core

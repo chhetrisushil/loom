@@ -1,3 +1,4 @@
+import { maskPaths } from "@loom/classify";
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import { recordedStepOutputs, replayAsFixture } from "@loom/eval";
 
@@ -18,7 +19,10 @@ export function foldAt(events: EventEnvelope[], sequence?: number): ExecutionSta
 
 const SUSPEND_TYPES = new Set(["EXECUTION_SUSPENDED"]);
 
-function detailOf(event: EventEnvelope): string {
+// K10-R6 — CLI egress. The CLI reads a cold log with no flow schemas, so it can't derive the
+// classification marks; the operator names the sensitive OUTPUT dot-paths explicitly via
+// `--redact` (e.g. `--redact ssn,user.token`), masked before anything is printed.
+function detailOf(event: EventEnvelope, redact: readonly string[]): string {
   const p = (event.payload ?? {}) as Record<string, unknown>;
   switch (event.eventType) {
     case "STEP_STARTED":
@@ -33,7 +37,7 @@ function detailOf(event: EventEnvelope): string {
       return on ? `on ${on}` : "";
     }
     case "EXECUTION_COMPLETED":
-      return truncate(JSON.stringify(p.output));
+      return truncate(JSON.stringify(maskPaths(p.output, redact)));
     case "EXECUTION_FAILED":
       return truncate(String(p.error ?? ""));
     default:
@@ -41,24 +45,31 @@ function detailOf(event: EventEnvelope): string {
   }
 }
 
-/** Pretty-print the event stream as a timeline, marking suspend points. */
-export function formatLog(events: EventEnvelope[]): string {
+/**
+ * Pretty-print the event stream as a timeline, marking suspend points. `redact` masks the
+ * given output dot-paths (K10-R6) so sensitive fields don't leak to stdout.
+ */
+export function formatLog(events: EventEnvelope[], redact: readonly string[] = []): string {
   if (events.length === 0) return "(no events)";
   const lines = events.map((e) => {
     const marker = SUSPEND_TYPES.has(e.eventType) ? "⏸" : " ";
     const seq = `#${e.sequence}`.padEnd(5);
     const type = e.eventType.padEnd(20);
-    return `${marker} ${seq} ${type} ${detailOf(e)}`.trimEnd();
+    return `${marker} ${seq} ${type} ${detailOf(e, redact)}`.trimEnd();
   });
   return lines.join("\n");
 }
 
-/** Human summary of a folded state — the `loom debug --at <seq>` view. */
-export function describeState(state: ExecutionState): string {
+/**
+ * Human summary of a folded state — the `loom debug --at <seq>` view. `redact` masks the
+ * given output dot-paths (K10-R6) before the output is printed.
+ */
+export function describeState(state: ExecutionState, redact: readonly string[] = []): string {
   const frames = Object.entries(state.frames)
     .map(([id, f]) => `    ${id}: ${f.status}`)
     .join("\n");
-  const output = state.variables._output;
+  const rawOutput = state.variables._output;
+  const output = rawOutput !== undefined ? maskPaths(rawOutput, redact) : undefined;
   return [
     `execution ${state.executionId}  (workflow ${state.workflowId})`,
     `status: ${state.status}   sequence: ${state.sequence}`,

@@ -1,4 +1,4 @@
-import { pathsOfClass } from "@loom/classify";
+import { REDACTED, maskPaths, pathsOfClass } from "@loom/classify";
 import type { StepDefinition } from "@loom/core";
 import type { StepTelemetryInfo, TelemetryAdapter } from "./types";
 
@@ -13,8 +13,8 @@ import type { StepTelemetryInfo, TelemetryAdapter } from "./types";
 // masked. `secret` fields are already handled by K10-R2 (they never reach the log/telemetry
 // in the first place), so they need no separate scrubbing here.
 
-/** The mask an egress-scrubbed field is replaced by (structure kept, value gone). */
-export const EGRESS_REDACTED = "[redacted]" as const;
+/** The mask an egress-scrubbed field is replaced by. Re-exported from `@loom/classify`. */
+export const EGRESS_REDACTED = REDACTED;
 
 /** Per-step dot-paths to scrub from the telemetry `input` / `output` payloads. */
 export interface StepScrubPaths {
@@ -81,36 +81,4 @@ export function scrubbingAdapter(
     }),
     ...(inner.onStepFail && { onStepFail: (info) => inner.onStepFail?.(scrubStep(info)) }),
   };
-}
-
-/**
- * Return a copy of `root` with each dot-path's value replaced by {@link EGRESS_REDACTED},
- * copying only the spine touched (structural sharing elsewhere). Absent paths are skipped —
- * a step whose payload doesn't carry a marked field is unaffected.
- */
-function maskPaths(root: unknown, paths: readonly string[]): unknown {
-  // A classified dot-path always roots at an object (the walker never indexes arrays), so an
-  // array/primitive root has nothing to mask.
-  if (typeof root !== "object" || root === null || Array.isArray(root)) return root;
-  const out: Record<string, unknown> = { ...(root as Record<string, unknown>) };
-  for (const path of paths) {
-    const segs = path.split(".");
-    let src = root as Record<string, unknown>;
-    let dst = out;
-    let reachable = true;
-    for (let i = 0; i < segs.length - 1; i++) {
-      const seg = segs[i] as string;
-      const child = src[seg];
-      if (typeof child !== "object" || child === null) {
-        reachable = false;
-        break;
-      }
-      if (dst[seg] === child) dst[seg] = { ...(child as Record<string, unknown>) };
-      src = child as Record<string, unknown>;
-      dst = dst[seg] as Record<string, unknown>;
-    }
-    const leaf = segs[segs.length - 1] as string;
-    if (reachable && Object.hasOwn(src, leaf)) dst[leaf] = EGRESS_REDACTED;
-  }
-  return out;
 }

@@ -47,6 +47,16 @@ export function parseArgs(argv: string[]): Parsed {
   return { command, positionals, flags };
 }
 
+/** Parse `--redact a,b,c` into a list of output dot-paths to mask (K10-R6). */
+export function parseRedact(flag: string | undefined): string[] {
+  return flag === undefined || flag === "true"
+    ? []
+    : flag
+        .split(",")
+        .map((p) => p.trim())
+        .filter(Boolean);
+}
+
 const USAGE = `loom — project-local commands for a Loom app
 
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
@@ -63,13 +73,13 @@ const USAGE = `loom — project-local commands for a Loom app
   loom appgen --from-spec <file> [--dir .]        replay a .loom/appgen/<ts>.spec.json (no model)
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
-  loom logs  --db <path> <executionId>            print the event timeline
+  loom logs  --db <path> <executionId> [--redact a,b]   print the event timeline
   loom profile --db <path> <executionId>          flame graph + latency breakdown
   loom introspect --db <path> <executionId> [--graph N]  execution/task/decision/resource graphs
   loom optimize --db <path> <executionId>         advisory optimization report (recommendations)
   loom kernel-manifest [--json] [--emit-docs <dir>]  kernel version + maturity manifest
   loom compat --abi <v> --event-schema <v> [...]  validate a deployment's contract versions
-  loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
+  loom debug --db <path> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
   loom eval  --dir <path>                         replay golden logs vs expectations
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
   loom inspect --db <path> [--port N]             web inspector (timeline + slider)
@@ -84,14 +94,14 @@ async function main(argv: string[]): Promise<number> {
     case "logs": {
       requireFlag(flags, "db");
       const executionId = requirePositional(positionals, "executionId");
-      console.log(await cmdLogs(flags.db!, executionId));
+      console.log(await cmdLogs(flags.db!, executionId, parseRedact(flags.redact)));
       return 0;
     }
     case "debug": {
       requireFlag(flags, "db");
       const executionId = requirePositional(positionals, "executionId");
       const at = flags.at !== undefined ? Number.parseInt(flags.at, 10) : undefined;
-      console.log(await cmdDebug(flags.db!, executionId, at));
+      console.log(await cmdDebug(flags.db!, executionId, at, parseRedact(flags.redact)));
       return 0;
     }
     case "eval": {

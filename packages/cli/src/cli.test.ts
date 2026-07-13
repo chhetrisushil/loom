@@ -13,6 +13,7 @@ import { z } from "zod";
 import { type AppgenIO, type Conflict, cmdAppgen, plannerTag, renderPlan } from "./appgen";
 import { checkManifest } from "./check";
 import { resolveIntent } from "./cli";
+import { parseRedact } from "./cli";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { idempotencyAdvisory, loadLogs, runDeployCheck } from "./deploy";
 import { unifiedDiff } from "./diff";
@@ -608,5 +609,49 @@ describe("loom CLI", () => {
         await store.close();
       }
     });
+  });
+});
+
+describe("K10-R6 — CLI egress redaction (--redact)", () => {
+  it("parseRedact splits a comma list, tolerating spaces / the bare flag", () => {
+    expect(parseRedact("ssn, user.token ,")).toEqual(["ssn", "user.token"]);
+    expect(parseRedact(undefined)).toEqual([]);
+    expect(parseRedact("true")).toEqual([]); // `--redact` with no value
+  });
+
+  it("formatLog masks redacted output paths on EXECUTION_COMPLETED", () => {
+    const events: EventEnvelope[] = [
+      {
+        id: "e0",
+        workflowId: "wf",
+        executionId: "x1",
+        eventType: "EXECUTION_COMPLETED",
+        sequence: 0,
+        timestamp: 1,
+        payload: { output: { ssn: "123-45-6789", ok: true } },
+      },
+    ];
+    const text = formatLog(events, ["ssn"]);
+    expect(text).not.toContain("123-45-6789");
+    expect(text).toContain("[redacted]");
+    expect(text).toContain('"ok":true');
+  });
+
+  it("describeState masks redacted paths in the folded output", () => {
+    const state = {
+      executionId: "x1",
+      workflowId: "wf",
+      workflowVersion: "1.0.0",
+      status: "completed",
+      frames: {},
+      variables: { _output: { token: "sk_live_SECRET", label: "ok" } },
+      sequence: 1,
+      startedAt: 0,
+      updatedAt: 0,
+    } as unknown as import("@loom/core").ExecutionState;
+    const text = describeState(state, ["token"]);
+    expect(text).not.toContain("sk_live_SECRET");
+    expect(text).toContain("[redacted]");
+    expect(text).toContain('"label":"ok"');
   });
 });

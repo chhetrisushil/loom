@@ -9,3 +9,4 @@ export {
   strictest,
 } from "./classify";
 export type { ClassifiedPath, DataClass } from "./classify";
+export { REDACTED, maskPaths } from "./redact";
