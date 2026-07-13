@@ -419,4 +419,52 @@ describe("defineConfig — compliance / subject rights (T3)", () => {
     await expect(app.exportSubject("x")).rejects.toThrow(/compliance/);
     await app.close();
   });
+
+  it("eraseSubject shreds a terminal subject via the wired shredder (T3 Phase B)", async () => {
+    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (ctx) => {
+      await ctx.run(metricsStep, { incidentId: "i1" });
+      return { resolved: true };
+    };
+    const flow = {
+      definition: { ...gatedFlow().definition, id: "erase-flow", steps: [metricsStep] },
+      runner,
+    } as RegisteredFlow;
+
+    const shredCalls: Array<[string, readonly string[]]> = [];
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow],
+      compliance: {
+        subjectOf: (e) =>
+          e.eventType === "EXECUTION_STARTED"
+            ? (e.payload as { input?: { incidentId?: string } }).input?.incidentId
+            : undefined,
+        erase: {
+          shred: async (subjectId, executionIds) => {
+            shredCalls.push([subjectId, executionIds]);
+          },
+        },
+      },
+    });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+
+    await (
+      await app.runtime.start(flow, { incidentId: "acme" }, { executionId: "e1" })
+    ).waitForCompletion();
+
+    const result = await app.eraseSubject("acme");
+    expect(result.outcome).toBe("erased");
+    expect(shredCalls).toEqual([["acme", ["e1"]]]);
+    await app.close();
+  });
+
+  it("eraseSubject rejects when erasure is not configured", async () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [gatedFlow()],
+      compliance: { subjectOf: () => undefined }, // index but no erase
+    });
+    await expect(app.eraseSubject("x")).rejects.toThrow(/eraseSubject requires/);
+    await app.close();
+  });
 });

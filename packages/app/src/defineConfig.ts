@@ -1,5 +1,8 @@
 import { a2uiSurfaceProjection } from "@loom/a2ui";
 import {
+  EraseCoordinator,
+  type EraseSubjectResult,
+  type Shredder,
   type SubjectExport,
   SubjectIndex,
   type SubjectResolver,
@@ -193,6 +196,14 @@ export interface LoomConfig {
    */
   compliance?: {
     subjectOf: SubjectResolver;
+    /**
+     * T3 Phase B — enable `app.eraseSubject` (Art. 17). Wire `shred` to the crypto plugin's
+     * `shredSubject` (bound to the KeyStore + raw store); it MUST be idempotent (no-op when a
+     * subject is already erased). Erasure is liveness-gated: shredded now if the subject's
+     * executions are all terminal, else parked (durable `ERASURE_PENDING`) and auto-completed
+     * when the last live execution terminates — never shredding a fold in flight.
+     */
+    erase?: { shred: Shredder };
   };
 }
 
@@ -226,6 +237,12 @@ export interface LoomApp {
    * (K10-R4) so shredded fields export as `{ $shredded }` rather than throwing.
    */
   exportSubject(subjectId: string, options?: { includeEvents?: boolean }): Promise<SubjectExport>;
+  /**
+   * T3 — request erasure of a subject (Art. 17). Shreds now if the subject's executions are
+   * all terminal, else parks the request and completes it when the last one terminates.
+   * Throws unless `compliance.erase` is configured.
+   */
+  eraseSubject(subjectId: string): Promise<EraseSubjectResult>;
   /**
    * Re-run pre-flight verification on demand (read-only, off-log). Returns the report;
    * the caller decides what to do with it (the CLI exits non-zero on `!ok`). Available
@@ -300,9 +317,23 @@ export function defineConfig(config: LoomConfig): LoomApp {
   const subjectIndex =
     config.compliance !== undefined ? new SubjectIndex(config.compliance.subjectOf) : undefined;
 
+  // T3 Phase B — erasure coordinator, only when erasure is wired. Rehydrates any parked
+  // requests from the durable control stream (best-effort, so a restart resumes deferrals).
+  const eraseCoordinator =
+    subjectIndex !== undefined && config.compliance?.erase !== undefined
+      ? new EraseCoordinator({
+          index: subjectIndex,
+          eventStore: stores.eventStore,
+          shred: config.compliance.erase.shred,
+        })
+      : undefined;
+  void eraseCoordinator?.loadParked();
+
   const onEvent = (event: EventEnvelope): void => {
     projectionRuntime.handleEvent(event);
-    subjectIndex?.handleEvent(event);
+    subjectIndex?.handleEvent(event); // index BEFORE coordinator (it reads the index)
+    // Fire-and-forget: a parked erasure completes asynchronously once its last fold ends.
+    void eraseCoordinator?.handleEvent(event);
     telemetryHook?.(event);
     config.onEvent?.(event);
   };
@@ -447,6 +478,14 @@ export function defineConfig(config: LoomConfig): LoomApp {
         eventStore: stores.eventStore,
         ...(options?.includeEvents !== undefined && { includeEvents: options.includeEvents }),
       });
+    },
+    eraseSubject(subjectId) {
+      if (eraseCoordinator === undefined) {
+        return Promise.reject(
+          new Error("[loom] eraseSubject requires `compliance: { subjectOf, erase: { shred } }`")
+        );
+      }
+      return eraseCoordinator.eraseSubject(subjectId);
     },
     verify() {
       return runVerify(resolveInput(), verifyOptions);
