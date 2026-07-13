@@ -27,6 +27,9 @@
       "path": "../../packages/core"
     },
     {
+      "path": "../../packages/llm"
+    },
+    {
       "path": "../deploy-sim"
     },
     {

@@ -70,8 +70,8 @@ const USAGE = `loom — project-local commands for a Loom app
   loom plugin seams                               list the seams a plugin can target
   loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]  NL → new project or edits
                                                   (--dry-run previews; --check typechecks after apply)
-  loom appgen ... --model <gguf> [--model-big <gguf>]  plan with a local Gemma model
-                                                  (needs @loom/appgen-model + node-llama-cpp)
+  loom appgen ... --model <spec> [--model-big <spec>]  plan with a model of your choice
+                                                  (anthropic:<m> / openai:<m> / gemini:<m> / a .gguf path)
   loom appgen --from-spec <file> [--dir .]        replay a .loom/appgen/<ts>.spec.json (no model)
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
@@ -269,13 +269,14 @@ async function main(argv: string[]): Promise<number> {
       const fromSpec = flags["from-spec"];
       const check = flags.check === "true";
       const offline = flags.offline === "true";
-      // `--model <gguf>` enables the local-model planner (optional @loom/appgen-model);
-      // `--model-big <gguf>` is a stronger tier to elevate to.
+      // `--model <spec>` plans with a model of your choice: anthropic:<model> / openai:<model>
+      // / gemini:<model> (API key from env), or a local .gguf path (optional @loom/appgen-model).
+      // `--model-big <spec>` is a stronger tier the reasoning ladder elevates to.
       const model =
         flags.model !== undefined && flags.model !== "true"
           ? {
-              path: flags.model,
-              ...(flags["model-big"] !== undefined && { bigPath: flags["model-big"] }),
+              spec: flags.model,
+              ...(flags["model-big"] !== undefined && { bigSpec: flags["model-big"] }),
               ...(flags["model-tier"] !== undefined && { tier: flags["model-tier"] }),
             }
           : undefined;

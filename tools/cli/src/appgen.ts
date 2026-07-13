@@ -15,9 +15,72 @@ import {
   typecheck,
   writeLockfile,
 } from "@loom/appgen";
+import { AnthropicProvider, GeminiProvider, OpenAiProvider } from "@loom/llm";
 import { generateRegistration } from "@loom/scaffold";
 import { unifiedDiff } from "./diff";
 import { discoverFlows } from "./gen";
+
+/** A structural view of a `@loom/reasoning` ModelRoute — avoids a hard dep here. */
+type ModelRoute = { id: string; provider: unknown; tier: number; tags?: string[] };
+
+/** Env var carrying each API provider's key — checked upfront for a clear error. */
+const KEY_ENV: Record<string, string> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  gemini: "GEMINI_API_KEY",
+};
+
+/**
+ * Resolve a `--model` provider spec into a reasoning `ModelRoute`:
+ *   `anthropic:<model>` / `openai:<model>` / `gemini:<model>` → the `@loom/llm` API provider
+ *     (key from the provider's env var), or
+ *   `gemma:<path>` / `local:<path>` / a bare `<path>.gguf`     → the local Gemma provider
+ *     (`m.gemmaRoute`, from the optional `@loom/appgen-model`).
+ * `m` is the lazily-loaded `@loom/appgen-model` (its `gemmaRoute`/`DEFAULT_TIER` are used only
+ * for the local case). Provider-agnostic: the planner reasons over whichever model is named.
+ */
+export function routeFromSpec(
+  spec: string,
+  tier: number,
+  gemmaTier: string | undefined,
+  m: AppgenModelModule
+): ModelRoute {
+  const colon = spec.indexOf(":");
+  const scheme = colon > 0 ? spec.slice(0, colon) : "";
+  const model = colon > 0 ? spec.slice(colon + 1) : spec;
+  const apiRoute = (provider: unknown): ModelRoute => ({
+    id: spec,
+    provider,
+    tier,
+    tags: ["planning"],
+  });
+  switch (scheme) {
+    case "anthropic":
+      requireKey("anthropic");
+      return apiRoute(new AnthropicProvider({ model }));
+    case "openai":
+      requireKey("openai");
+      return apiRoute(new OpenAiProvider({ model }));
+    case "gemini":
+      requireKey("gemini");
+      return apiRoute(new GeminiProvider({ model }));
+    case "gemma":
+    case "local":
+      return m.gemmaRoute(model, gemmaTier ?? m.DEFAULT_TIER);
+    default:
+      if (spec.endsWith(".gguf")) return m.gemmaRoute(spec, gemmaTier ?? m.DEFAULT_TIER);
+      throw new Error(
+        `--model: unrecognized provider in "${spec}". Use anthropic:<model>, openai:<model>, gemini:<model>, or a local .gguf path (gemma:<path>).`
+      );
+  }
+}
+
+function requireKey(provider: string): void {
+  const envVar = KEY_ENV[provider]!;
+  if (process.env[envVar] === undefined || process.env[envVar] === "") {
+    throw new Error(`--model ${provider}: set ${envVar} (the API key) in the environment.`);
+  }
+}
 
 export type Conflict =
   | { action: "rename"; newPath: string }
@@ -66,12 +129,14 @@ export interface AppgenOptions {
   /** Timestamp source for the lockfile (ms). Injectable for deterministic tests. */
   now?: number;
   /**
-   * Plan with a local Gemma model (via the optional `@loom/appgen-model` package) instead
-   * of the deterministic grammar parser. `path` is a local `.gguf`; `bigPath` is an
-   * optional stronger tier to elevate to. Falls back to deterministic if the package or
-   * model is unavailable. Ignored when `offline` is set.
+   * Plan with a model of your choice instead of the deterministic grammar parser. `spec` is a
+   * provider spec — `anthropic:<model>`, `openai:<model>`, `gemini:<model>` (API key from the
+   * provider's env var), or a local `.gguf` path / `gemma:<path>` (via the optional
+   * `@loom/appgen-model` package). `bigSpec` is an optional stronger tier the reasoning ladder
+   * elevates to. Falls back to deterministic if the provider/model is unavailable. Ignored when
+   * `offline` is set.
    */
-  model?: { path: string; bigPath?: string; tier?: string };
+  model?: { spec: string; bigSpec?: string; tier?: string };
   /** Force the deterministic, model-free planner (overrides `model`). */
   offline?: boolean;
   /**
@@ -151,24 +216,25 @@ async function planChange(
   if (opts.model !== undefined && opts.offline !== true) {
     try {
       const m = await loadAppgenModel(opts.dir);
-      const routes = [m.gemmaRoute(opts.model.path, opts.model.tier ?? m.DEFAULT_TIER)];
-      if (opts.model.bigPath !== undefined) routes.push(m.gemmaRoute(opts.model.bigPath, "12b"));
+      const routes = [routeFromSpec(opts.model.spec, 0, opts.model.tier, m)];
+      if (opts.model.bigSpec !== undefined)
+        routes.push(routeFromSpec(opts.model.bigSpec, 1, "12b", m));
       const spec: ChangeSpec = await m.planChangesModel(intent, model, { routes });
       // The model ran but produced nothing usable → planChangesModel already fell back to
       // the deterministic parser. Say so loudly, so it isn't silently the wrong output.
       if (spec.planner !== "model") {
         process.stderr.write(
           "appgen: --model produced no valid plan — used the deterministic parser (output may " +
-            "not reflect your intent). Try a stronger --model (E4B+) on Node 20/22 LTS, or name " +
-            'steps explicitly (e.g. "… Step fetch. Step transform.").\n'
+            "not reflect your intent). Try a stronger --model (e.g. anthropic:claude-opus-4-8), " +
+            'or name steps explicitly (e.g. "… Step fetch. Step transform.").\n'
         );
       }
       return spec;
     } catch (err) {
       process.stderr.write(
-        `appgen: local-model planner unavailable (${
+        `appgen: model planner unavailable (${
           err instanceof Error ? err.message : String(err)
-        }); using the deterministic parser. Install @loom/appgen-model + node-llama-cpp to enable it.\n`
+        }); using the deterministic parser. For an API model set its key (e.g. ANTHROPIC_API_KEY); for a local .gguf install @loom/appgen-model + node-llama-cpp.\n`
       );
     }
   }
