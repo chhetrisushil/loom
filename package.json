@@ -12,7 +12,9 @@
     "typecheck": "tsc --build",
     "clean": "turbo clean",
     "fitness": "pnpm build && pnpm typecheck && pnpm lint && pnpm test",
-    "present": "npx @marp-team/marp-cli@latest -s docs/presentation/"
+    "present": "npx @marp-team/marp-cli@latest -s docs/presentation/",
+    "link:global": "cd tools/cli && pnpm link --global && cd ../compiler && pnpm link --global && cd ../create-loom-app && pnpm link --global",
+    "unlink:global": "pnpm rm --global @loom/cli @loom/compiler @loom/create-loom-app"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

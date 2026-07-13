@@ -6,6 +6,8 @@
 
 The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`"scripts": { "loom": "loom" }` → `pnpm loom …`), or the local `node_modules/.bin/loom`. Starting a brand-new project? `npm create loom-app`.
 
+> **Working in the Loom monorepo?** The dev-tooling bins (`loom`, `loom-compile`, `create-loom-app`) live under `tools/`. Expose them globally against your local build with **`pnpm link:global`** (and `pnpm unlink:global` to remove) — a root script that re-links all three from `tools/*`. Run it after a fresh clone, or any time the tooling packages move (a stale global link left over from an old path is what breaks `loom` otherwise).
+
 **Contents**
 
 1. [The command set](#the-command-set)
