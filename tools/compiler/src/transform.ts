@@ -52,24 +52,15 @@ function tryProcessStep(
   localSteps: StepEntry[],
   pluginState: PluginState
 ): boolean {
-  // Match: const Foo = step$({...}) or export const Foo = step$({...})
-  let varName: string | undefined;
-  let callNode: ts.CallExpression | undefined;
-
-  if (ts.isVariableStatement(node)) {
-    const decl = node.declarationList.declarations[0];
-    if (
-      decl &&
-      ts.isIdentifier(decl.name) &&
-      decl.initializer &&
-      ts.isCallExpression(decl.initializer)
-    ) {
-      varName = decl.name.text;
-      callNode = decl.initializer;
-    }
+  // Match a `step$({...})` call WHEREVER it appears (the walk visits every node): a direct
+  // variable initializer `const Foo = step$(...)` — from which we capture the var name so a
+  // flow's `steps: [Foo]` array can resolve it — OR inline inside that array. Same robustness
+  // as flow$ detection; the old variable-only gate silently skipped inline/wrapped steps.
+  if (!(ts.isCallExpression(node) && isCallTo(node, "step$") && node.arguments.length > 0)) {
+    return false;
   }
-
-  if (!callNode || !isCallTo(callNode, "step$") || callNode.arguments.length === 0) return false;
+  const callNode = node;
+  const varName = declaredVarName(node); // undefined for an inline step$(...)
 
   const argObj = callNode.arguments[0];
   if (!argObj || !ts.isObjectLiteralExpression(argObj)) return false;
@@ -142,23 +133,13 @@ function tryProcessSkill(
   ms: MagicString,
   pluginState: PluginState
 ): boolean {
-  let varName: string | undefined;
-  let callNode: ts.CallExpression | undefined;
-
-  if (ts.isVariableStatement(node)) {
-    const decl = node.declarationList.declarations[0];
-    if (
-      decl &&
-      ts.isIdentifier(decl.name) &&
-      decl.initializer &&
-      ts.isCallExpression(decl.initializer)
-    ) {
-      varName = decl.name.text;
-      callNode = decl.initializer;
-    }
+  // Detect `skill$({...})` wherever it appears (direct var initializer or nested, e.g. inside
+  // an agent's skill list) — same robustness as step$/flow$.
+  if (!(ts.isCallExpression(node) && isCallTo(node, "skill$") && node.arguments.length > 0)) {
+    return false;
   }
-
-  if (!callNode || !isCallTo(callNode, "skill$") || callNode.arguments.length === 0) return false;
+  const callNode = node;
+  const varName = declaredVarName(node);
 
   const argObj = callNode.arguments[0];
   if (!argObj || !ts.isObjectLiteralExpression(argObj)) return false;
@@ -246,8 +227,20 @@ function collectFlows(
         ) {
           for (const el of stepsProp.initializer.elements) {
             if (ts.isIdentifier(el)) {
+              // A referenced step variable: `steps: [assessStep, …]`.
               const resolvedId = pluginState.stepsByVarName.get(el.text);
               if (resolvedId) stepIds.push(resolvedId);
+            } else if (
+              ts.isCallExpression(el) &&
+              isCallTo(el, "step$") &&
+              el.arguments.length > 0
+            ) {
+              // An inline step: `steps: [step$({ id: "…" }), …]` — read its id directly.
+              const arg = el.arguments[0];
+              const idProp =
+                arg && ts.isObjectLiteralExpression(arg) ? findProperty(arg, "id") : undefined;
+              const inlineId = idProp ? getStringLiteral(idProp.initializer) : undefined;
+              if (inlineId) stepIds.push(inlineId);
             }
           }
         }
@@ -317,6 +310,14 @@ function buildChunkSource(importLines: string[], fnText: string): string {
 
 function isCallTo(node: ts.CallExpression, name: string): boolean {
   return ts.isIdentifier(node.expression) && node.expression.text === name;
+}
+
+/** The variable name a call initializes (`const Foo = call(...)`), or undefined if it's inline. */
+function declaredVarName(call: ts.CallExpression): string | undefined {
+  const parent = call.parent;
+  return parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)
+    ? parent.name.text
+    : undefined;
 }
 
 function findProperty(
