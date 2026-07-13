@@ -43,9 +43,10 @@ drag it in.
 > into `app.schedules` + the `TimerService`, memories into `app.memory`
 > (`MemoryRuntime`). Discovery is by value shape (`_tag`), not AST parsing, so it is
 > robust to how each construct is declared/exported. `policy$` and `projection$` are
-> deliberately **excluded** — nothing consumes a `PolicyDefinition` yet, and
-> `projection$` is superseded by the `surfaces` config; discovering them would emit
-> registration no runtime reads.
+> **not** `loom gen`-discovered: `policy$` is enforced (a `PolicyAuthorizer` reads each
+> flow's `policies` + `defineConfig({ policies })`) but is carried *inline on the flow
+> definition*, not in an `app/policies/*` folder — nothing to generate; `projection$`
+> has no runtime consumer yet. The gate is "a runtime consumes a discovered file."
 
 **Sub-generators (`loom new [flow|agent|tool|skill|schedule|memory] <name>`).** Emit
 one file into the convention location; won't overwrite an existing file.

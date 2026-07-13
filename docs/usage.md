@@ -124,6 +124,7 @@ const app = defineConfig({
 | `memoryStore` | backing `MemoryStore` for `app.memory` (default in-memory; content is separate from the durable log) |
 | `effectMiddleware` | cross-cutting effect wrappers (retries, metering, safety, redaction… — see Step 11) |
 | `authorizer` | capability protection ring — deny ungranted effects (K2; see Step 11) |
+| `policies` | app-global `policy$` definitions enforced via a `PolicyAuthorizer` (composes under `authorizer`; per-flow policies read from each flow's `policies`) |
 | `timers` | durable timers + `schedule$` cron occurrences (T1; see Step 11) |
 | `validate` | `false \| "warn" \| "error"` — boot-time flow-graph validation |
 | `agents` / `capabilityAgents` | A2A agent cards (or `agent$` definitions — see `a2a`/`a2ui`) + capability→agent routing |
@@ -364,6 +365,29 @@ const app = defineConfig({
   flows: [investigateFlow],
   authorizer: new GrantTable({ "*": ["lookup-metrics", "triage-llm"] }), // "*" principal; list = allowed effects
 });
+```
+
+**Declarative policies (`policy$`)** — a higher-level companion to the grant table. Attach a `policy$` to a flow (or declare it app-global via `defineConfig({ policies })`) and it is enforced through the *same* K2 ring by a `PolicyAuthorizer`. Rules are **deny-wins** and combine simple allow/deny effect lists with richer `match` rules (glob on effect id / `principal.tenant` / step id). A policy composes **under** any `authorizer` — both must allow — so it can *tighten* a grant but never widen it; a flow with no policy is unaffected.
+
+```ts
+import { policy$ } from "@loom/core";
+
+const flow = flow$({
+  id: "billing",
+  // …
+  policies: [
+    policy$({
+      id: "no-external",
+      name: "No external calls for acme",
+      rules: {
+        allow: ["metrics", "logs-*"],                       // allow-list restricts to these
+        deny: ["external-http"],                            // deny wins
+        match: [{ effect: "external-*", tenant: "acme", deny: true }], // richer matcher
+      },
+    }),
+  ],
+});
+// Enforcement is automatic: defineConfig reads each flow's `policies` and builds the PolicyAuthorizer.
 ```
 
 **Quotas & budgets (K3)** — meter every effect onto the log and stop over-budget runs (`RESOURCE_METERED`, then `QUOTA_EXCEEDED`). Compose it in `effectMiddleware`:
