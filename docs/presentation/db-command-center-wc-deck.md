@@ -30,7 +30,7 @@ Loom's renderer contract is framework-agnostic: `{ widget, value, onAction }`.
 
 So the render layer should be **the only thing that changes** between UIs.
 
-- React version → `@loom/renderer-react` (`BlueprintRenderer`, fiber)
+- React version → `@loom/plugin-renderer-react` (`BlueprintRenderer`, fiber)
 - **This version → native Custom Elements**, ~150 lines of `src/dom/`
 
 Everything upstream of the pixels is identical.

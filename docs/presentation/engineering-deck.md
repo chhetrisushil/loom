@@ -237,7 +237,7 @@ const out = await runner.run({ prompt, memoryScope: "user-1" }, ctx);
 
 ---
 
-## Tools from anywhere — `@loom/mcp`
+## Tools from anywhere — `@loom/plugin-mcp`
 
 Model Context Protocol client — discover a server's tools and register them as effects automatically:
 
@@ -253,7 +253,7 @@ One call turns an external MCP server into first‑class, replayable Loom effect
 
 ---
 
-## Agent‑to‑Agent — `@loom/a2a`
+## Agent‑to‑Agent — `@loom/plugin-a2a`
 
 **Expose** a Loom flow as an agent, and **call** remote agents as effects:
 
@@ -377,7 +377,7 @@ A placement seam between orchestration and the runtime lets the **same flows** r
 defineConfig({ dispatcher })
    └─ ExecutionDispatcher ─┬─ local     (@loom/worker-runtime-local, in-process)
                            ├─ remote    (HTTP → @loom/worker-server)
-                           └─ Cloud Run (@loom/platform-cloudrun)
+                           └─ Cloud Run (@loom/plugin-cloudrun)
 ```
 
 - An **`ExecutionPackage`** carries resume coordinates (identity + sequence) — **never code**. Workers ship their own bundle and resolve flows **by id** from a static registry; suspension is a normal outcome across the wire.

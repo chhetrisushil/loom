@@ -322,7 +322,7 @@ triggers downstream).
 
 #### `PAYLOAD_SHREDDED`
 - **Introduced:** Loom 2.1 — K10, crypto-shredding ([ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md)).
-  A subject's encryption key was destroyed (`shredSubject`, `@loom/store-crypto`), so this
+  A subject's encryption key was destroyed (`shredSubject`, `@loom/plugin-crypto`), so this
   execution's sensitive payload fields are permanently unrecoverable. Written AT SHRED TIME
   by the lifecycle service (A3) — never at replay — so replay stays a pure read and
   deterministically encounters the erasure.

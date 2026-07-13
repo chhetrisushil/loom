@@ -120,7 +120,7 @@ implementation runs to prove alignment. Full map: [12-extension-seams.md](../loo
   `acquireFence`, `copyPrefix`, `deleteExecution`). An implementation MAY omit optional methods; the
   conformance kit skips them. A store that omits `acquireFence` performs no fencing (single-node).
 - **Compatibility:** an SPI version is semver; a MINOR bump adds an optional method, a MAJOR bump
-  changes a required-method contract. Kits import from `@loom/testing/conformance`.
+  changes a required-method contract. Kits import from `@loom/conformance`.
 
 ## 8. Resource semantics
 
@@ -150,7 +150,7 @@ checks — not reviewer memory:
 
 - **ABI/schema pins:** `abi.test.ts` (K1), `eventSchema.test.ts` (K5), `wire-abi.test.ts` (T2
   fold-vectors) fail on undocumented drift.
-- **SPI conformance kits:** `run<Spi>Conformance` (`@loom/testing/conformance`), run against the
+- **SPI conformance kits:** `run<Spi>Conformance` (`@loom/conformance`), run against the
   in-memory + SQLite reference impls.
 - **Replay-unchanged:** golden-log replay (`@loom/eval`) + deploy-simulation (`@loom/deploy-sim`).
 - **Zero-overhead (G2):** behavioural disabled-path tests + a relative-ratio bench gate

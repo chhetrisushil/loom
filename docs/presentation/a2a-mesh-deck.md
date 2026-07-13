@@ -54,7 +54,7 @@ One contract ⇒ the Loom-side code is **identical** for every peer.
 
 ---
 
-## Bidirectional — two roles, both already in `@loom/a2a`
+## Bidirectional — two roles, both already in `@loom/plugin-a2a`
 
 ```
           ┌──────────────────────────── A2A (HTTP/JSON) ───────────────────────────┐
@@ -76,7 +76,7 @@ One contract ⇒ the Loom-side code is **identical** for every peer.
 The A2A analogue of `McpClient.registerInto`. Discover a remote agent, register it as a **first-class Loom tool**:
 
 ```ts
-import { A2APeerClient } from "@loom/a2a";
+import { A2APeerClient } from "@loom/plugin-a2a";
 
 const peer = new A2APeerClient({ url: "http://localhost:8001" }); // any A2A endpoint
 const tool = await peer.registerInto(effectRuntime, registry);    // kind: "a2a"
@@ -97,7 +97,7 @@ const orchestrator = agent$({ id: "orchestrator", name: "Orchestrator", tools: [
 Any A2A client — ADK, a LangGraph shim, or another Loom service — can drive a Loom flow:
 
 ```ts
-import { createA2AServer, toAgentCard } from "@loom/a2a";
+import { createA2AServer, toAgentCard } from "@loom/plugin-a2a";
 
 // card derived from the agent$ definition; server fills in url from its address
 const server = createA2AServer(workflowRuntime, remediateFlow, toAgentCard(remediationAgent));
@@ -171,7 +171,7 @@ pnpm --filter @loom/a2a-mesh start
 
 Prints both directions of the mesh and exits — no API key, no external services.
 
-**Verified:** `@loom/a2a` builds clean; `A2APeerClient.test.ts` covers discovery,
+**Verified:** `@loom/plugin-a2a` builds clean; `A2APeerClient.test.ts` covers discovery,
 registration, a real in-process A2A round-trip, the registry hook, and `toolId`
 override (12/12 tests green). The example typechecks and runs end to end.
 
@@ -184,4 +184,4 @@ override (12/12 tests green). The example typechecks and runs end to end.
 - A remote agent becomes a **first-class Loom tool** — usable by an agent, a step, or the planner — while staying in its own runtime.
 - Same code for a mock peer, a real ADK server, or another Loom service. **One contract, any framework.**
 
-> See also: `engineering-deck.md` (the `@loom/a2a` slide) and `agent-network-deck.md` (A2A inside the full pipeline).
+> See also: `engineering-deck.md` (the `@loom/plugin-a2a` slide) and `agent-network-deck.md` (A2A inside the full pipeline).

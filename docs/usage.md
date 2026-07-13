@@ -102,7 +102,7 @@ Inside a runner you have the full `WorkflowContext`:
 import { defineConfig } from "@loom/app";
 
 const app = defineConfig({
-  storage: { kind: "sqlite", dir: ".loom", branching: true }, // or { kind: "memory" }
+  storage: sqliteStorage({ dir: ".loom", branching: true }), // or { kind: "memory" }
   surfaces: ["mission", "telemetry"],
   flows: [investigateFlow],
   validate: "warn", // static flow-graph checks at boot (missing effects, etc.)
@@ -115,7 +115,7 @@ const app = defineConfig({
 
 | Field | What it does |
 |---|---|
-| `storage` | `{ kind: "memory" }`, `{ kind: "sqlite", dir, branching }`, `{ kind: "postgres", url, branching }`, or `{ kind: "custom", eventStore, snapshotStore, branchRegistry? }` (bring your own backend) |
+| `storage` | `{ kind: "memory" }` or `{ kind: "custom", eventStore, snapshotStore, branchRegistry? }`. Concrete backends are **presets** returning a `custom` descriptor: `sqliteStorage({ dir, branching })` from `@loom/plugin-sqlite`, `postgresStorage({ url, branching })` from `@loom/plugin-postgres`, or your own (ADR 0043) |
 | `surfaces` | A2UI surface ids to project |
 | `flows` / `flowModules` | flows to register (explicit, or via `loom gen` modules) |
 | `effectMiddleware` | cross-cutting effect wrappers (retries, metering, safety, redaction… — see Step 11) |
@@ -174,7 +174,7 @@ const view = app.projectionRuntime.getState<{ phase: string; timeline: string[] 
 );
 ```
 
-Render it with any renderer — `@loom/renderer-react`, `@loom/renderer-terminal`, or your own (**bring-your-own-renderer**). The same backend drives React, Web Components, and Angular in the examples without changing a line of flow code.
+Render it with any renderer — `@loom/plugin-renderer-react`, `@loom/plugin-renderer-terminal`, or your own (**bring-your-own-renderer**). The same backend drives React, Web Components, and Angular in the examples without changing a line of flow code.
 
 For long-running work you can stream **numeric progress** and **log lines** out-of-band via a small pub/sub hub (see `schema-migration-planner`'s `progressHub`): handlers call `report(ctx.executionId, line)` / `reportProgress(ctx.executionId, pct)`, and an orchestrator subscribes.
 
@@ -227,7 +227,7 @@ app.effectRuntime.register("triage-llm", new LlmEffect(async (input, ctx) => {
 }));
 ```
 
-**Agents (ReAct).** `agent$` declares a tool-using agent; `@loom/agent` runs the reason→act loop; `@loom/mcp` discovers external tools via the Model Context Protocol.
+**Agents (ReAct).** `agent$` declares a tool-using agent; `@loom/agent` runs the reason→act loop; `@loom/plugin-mcp` discovers external tools via the Model Context Protocol.
 
 **A2A (agent-to-agent).** Expose a flow as an A2A task with `LoomAgentExecutor`, and call *external* agents (Google ADK, LangGraph, CrewAI) as steps. Locally, an `InProcessA2ABus` dispatches capabilities to the owning agent with streaming callbacks:
 
@@ -351,7 +351,7 @@ Everything so far is the happy path. The **kernel-hardening rings (K1–K12, T1�
 import { GrantTable } from "@loom/effect-runtime";
 
 const app = defineConfig({
-  storage: { kind: "sqlite", dir: ".loom" },
+  storage: sqliteStorage({ dir: ".loom" }),
   flows: [investigateFlow],
   authorizer: new GrantTable({ "*": ["lookup-metrics", "triage-llm"] }), // "*" principal; list = allowed effects
 });
@@ -379,7 +379,7 @@ safetyMiddleware({ validators: [piiValidator(), denyPatterns([/DROP TABLE/i]), k
 **Secrets & redaction (K10)** — pass secrets as `secretRef("db-password")` placeholders; `redactionMiddleware` resolves them just-in-time so plaintext never enters the log. Pair with **encryption-at-rest**: wrap the store in `EncryptingEventStore` (marked fields encrypted under a per-subject key), and erase a subject with `shredSubject(...)` — crypto-shredding appends `PAYLOAD_SHREDDED` and makes later reads fail *loudly*.
 
 ```ts
-import { EncryptingEventStore, InMemoryKeyStore } from "@loom/store-crypto";
+import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
 
 const events = new EncryptingEventStore(inner, new InMemoryKeyStore(), {
   sensitive: { STEP_COMPLETED: ["output.ssn", "output.email"] },
@@ -419,7 +419,7 @@ const token = signDelegation(secret, "worker-agent", ["lookup-metrics"]); // nar
 import { schedule$ } from "@loom/core";
 
 defineConfig({
-  storage: { kind: "sqlite", dir: ".loom" },
+  storage: sqliteStorage({ dir: ".loom" }),
   flows: [reconcileFlow],
   timers: { store: timerStore, schedules: [schedule$({ id: "nightly", cron: "0 3 * * *", flowId: "reconcile" })] },
 });
@@ -469,7 +469,7 @@ For the full command reference — every flag, exit code, and output shape — s
 
 **Deploy safety.** `loom deploy check` replays historical logs against your *new* flow definitions and fails on breaking changes (a removed step, a missing flow) before you promote — catching resume-incompatibility that types can't.
 
-**Where it runs.** By default executions run in-process. Point `dispatcher` at a remote worker (`@loom/worker-runtime-remote` → `@loom/worker-server`) or Cloud Run (`@loom/platform-cloudrun`) and the *same flows* run there — the public API is unchanged. See [`packages/platform-cloudrun/deploy.md`](../packages/platform-cloudrun/deploy.md).
+**Where it runs.** By default executions run in-process. Point `dispatcher` at a remote worker (`@loom/plugin-worker-remote` → `@loom/worker-server`) or Cloud Run (`@loom/plugin-cloudrun`) and the *same flows* run there — the public API is unchanged. See [`plugins/cloudrun/deploy.md`](../plugins/cloudrun/deploy.md).
 
 ---
 

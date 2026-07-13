@@ -86,7 +86,7 @@ import { defineConfig } from "@loom/app";
 import { helloFlow } from "./hello";
 
 const app = defineConfig({
-  storage: { kind: "memory" },     // in-memory; use { kind: "sqlite", dir: ".loom" } to persist
+  storage: { kind: "memory" },     // in-memory; use sqliteStorage({ dir: ".loom" }) to persist
   surfaces: ["default"],            // A2UI surfaces to project
   flows: [helloFlow],
 });
@@ -203,7 +203,7 @@ await app.close();
 Persist to SQLite so the CLI can read the log:
 
 ```ts
-const app = defineConfig({ storage: { kind: "sqlite", dir: ".loom" }, surfaces: ["default"], flows: [approveFlow] });
+const app = defineConfig({ storage: sqliteStorage({ dir: ".loom" }), surfaces: ["default"], flows: [approveFlow] });
 ```
 
 Then, from your project root:

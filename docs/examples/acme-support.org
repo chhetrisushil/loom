@@ -92,7 +92,7 @@ const runner = async (ctx, input) => {
   for transient failures — retries are in-memory and never touch a completed step,
   a suspend, or a cancellation, so the log stays deterministic.
 - *A2A child run.* Calling Acme's remote "legal review" agent is one effect. The
-  entire A2A layer is a single adapter, =LoomAgentExecutor= (@loom/a2a): its task
+  entire A2A layer is a single adapter, =LoomAgentExecutor= (@loom/plugin-a2a): its task
   lifecycle maps one-to-one onto Loom states — submit→=start=, input-required→a
   suspend, provideInput→=resume=, completed/failed→terminal. The server is a thin,
   *stateless* transport (it rebuilds status from the log via =loadState=), so it
@@ -143,7 +143,7 @@ runtime, your regression fixtures, and your pre-deploy compatibility check.
 |----------------------+--------------------------------------------------------|
 | composition          | =defineConfig= (@loom/app)                             |
 | retries/logging/etc. | effect middleware (@loom/middleware)                   |
-| remote agents        | =LoomAgentExecutor= (@loom/a2a)                        |
+| remote agents        | =LoomAgentExecutor= (@loom/plugin-a2a)                        |
 | durability / resume  | event log + snapshots (the runtime)                    |
 | regression / scoring | =@loom/eval= *(Tier 3)*                                |
 | safe deploys         | =simulateDeploy= *(Tier 3)*                            |

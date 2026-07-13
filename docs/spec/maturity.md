@@ -33,7 +33,7 @@ by a conformance test; `L4` requires a committed bench; `L2`/`L3` require a pass
 | Live Query | `L2` | @loom/live-query | test |
 | Placement Adapters | `L2` | @loom/dispatcher + workers | test |
 | Saga / Compensation | `L2` | @loom/saga | test |
-| Tamper-Evident Audit Chain | `L2` | @loom/audit-chain | test |
+| Tamper-Evident Audit Chain | `L2` | @loom/plugin-audit-chain | test |
 | GPU Worker | `L0` | — | — |
 
 ## Notes

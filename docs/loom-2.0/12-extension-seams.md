@@ -15,7 +15,7 @@ conforms (not just compile against the interface).
 Reference impls and third-party impls run the same kit from `@loom/testing`:
 
 ```ts
-import { runEventStoreConformance } from "@loom/testing/conformance";
+import { runEventStoreConformance } from "@loom/conformance";
 import { MyEventStore } from "./MyEventStore";
 
 runEventStoreConformance(() => new MyEventStore(/* … */), "MyEventStore");

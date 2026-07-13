@@ -83,7 +83,7 @@ flowchart TB
   Author --> Core --> Runtimes
 ```
 
-## 3. Principles (P1–P10)
+## 3. Principles (P1–P11)
 
 P1–P8 are the 1.0 principles (see [`../architecture.md` §2](../architecture.md)); Loom 2.0 **adds two**
 that *extend* them and never regress:

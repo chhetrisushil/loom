@@ -223,7 +223,7 @@ app.get("/api/execution/:id", async (req, res) => {
 
 #+begin_src typescript
 // main.tsx
-import { LoomProvider } from "@loom/renderer-react";
+import { LoomProvider } from "@loom/plugin-renderer-react";
 
 const { executionState, projectionState } = await fetch(`/api/execution/${executionId}`)
   .then(r => r.json());
@@ -248,7 +248,7 @@ If the execution is suspended, restore it with ~restoreFromState~:
 
 #+begin_src typescript
 import { deserializeExecution } from "@loom/workflow-runtime";
-import { useLoom } from "@loom/renderer-react";
+import { useLoom } from "@loom/plugin-renderer-react";
 
 function ApprovalPanel({ serializedState }: { serializedState: string }) {
   const { workflowRuntime, preloadedExecutionState } = useLoom();
