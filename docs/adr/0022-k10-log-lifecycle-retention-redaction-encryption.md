@@ -88,10 +88,20 @@ Adopted per the [K10 evaluation](../requirements/2026-07-10-kernel-hardening-eva
   lifecycle service (a tombstone into the affected execution's log), never at replay time —
   replay stays pure/read-only (P2) and deterministically *encounters* the tombstone.
 - **A4 — perf guardrails**: encryption is field-level, opt-in per marked field only;
-  envelope encryption with cached data keys; ships an append-path benchmark (marked vs
-  unmarked) plus the unwired bench (no markers ⇒ byte-identical append, G2).
+  envelope encryption with cached data keys. The unwired bench (no markers ⇒ byte-identical
+  append, G2) is proven; the *marked-vs-unmarked* append benchmark promised here is **not yet
+  shipped** — tracked as K10-R7 in the [K10/T3 evaluation](../requirements/2026-07-13-k10-t3-critical-evaluation.md).
 - **A5 — SecretResolver decoupling** (applied in Consequences above): the MUST is "secrets
   never enter the log", not "K7 is a prerequisite".
 - **A6 — retention posture**: archive-before-delete is the documented default — naive
   deletion starves the learning plane (`OUTCOME_RECORDED` mining,
   [ADR 0018](0018-learning-seam-outcome-recorded.md)) and the deploy-sim historical corpus.
+- **A7 — K10-R5 completion** (2026-07-13): `applyRetention` now (1) journals its own pruning
+  as pinned control facts `EXECUTION_ARCHIVED`/`EXECUTION_DELETED` to a reserved
+  `__loom_lifecycle__` stream (P9 — structure survives even as values are deleted;
+  `EVENT_SCHEMA_VERSION` → 1.13.0), and (2) refuses to delete a terminal execution while a
+  **live descendant branch** still depends on its copied prefix (`blocked-by-branch`, wired
+  off the `BranchRegistry`) — a latent-correctness fix. `defineConfig({ retention })` is now
+  real and exposes `app.lifecycle` for an explicit, non-background pass (no timer prunes the
+  log). Deferred: a `loom retention run` CLI needs a `listExecutions` store-SPI enumerator
+  (flagged, not yet added).

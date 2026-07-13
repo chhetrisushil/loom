@@ -251,3 +251,30 @@ describe("defineConfig — custom storage (bring your own backend)", () => {
     expect(app.stores.branchRegistry).toBe(branchRegistry);
   });
 });
+
+describe("defineConfig — retention (K10.1 log lifecycle)", () => {
+  it("exposes an app.lifecycle wired over the app's stores", async () => {
+    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (ctx) => {
+      await ctx.run(metricsStep, { incidentId: "i1" });
+      await ctx.run(remediationStep, { incidentId: "i1" });
+      return { resolved: true };
+    };
+    const flow = {
+      definition: { ...gatedFlow().definition, id: "straight-r" },
+      runner,
+    } as RegisteredFlow;
+    const app = defineConfig({ storage: { kind: "memory" }, flows: [flow] });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+    const handle = await app.runtime.start(flow, { incidentId: "i1" }, { executionId: "r1" });
+    await handle.waitForCompletion();
+
+    // A per-execution retention pass drives off the app's own stores — no background thread.
+    const outcome = await app.lifecycle.applyRetention(
+      "r1",
+      { terminalTtlMs: 0 },
+      Date.now() + 1e9
+    );
+    expect(outcome).toBe("reclaimed");
+    expect(await app.stores.eventStore.read("r1")).toHaveLength(0);
+  });
+});

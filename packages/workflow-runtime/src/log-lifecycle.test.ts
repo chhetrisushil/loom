@@ -1,12 +1,12 @@
 import { step$ } from "@loom/core";
 import type { FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore, InMemoryBranchRegistry } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { LogLifecycle } from "./LogLifecycle";
+import { LIFECYCLE_STREAM, LogLifecycle } from "./LogLifecycle";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import type { FlowRunner, RegisteredFlow } from "./types";
 
@@ -190,5 +190,54 @@ describe("K10.4 — compaction (fold(snapshot, suffix) === fold(events))", () =>
     });
     const life = new LogLifecycle(eventStore, app.snapshotStore);
     expect(await life.compact("tiny")).toBeNull();
+  });
+});
+
+describe("K10.1 R5 — branch guard + control facts", () => {
+  it("refuses to delete a parent with a live descendant branch (blocked-by-branch)", async () => {
+    const app = boot();
+    const handle = await app.runtime.start(app.flow, { n: 1 }, { executionId: "parent-1" });
+    await handle.waitForCompletion();
+
+    const branchRegistry = new InMemoryBranchRegistry();
+    await branchRegistry.recordLineage({
+      executionId: "child-1",
+      parentExecutionId: "parent-1",
+      forkSequence: 1,
+    });
+    // The child is "live" — it has events.
+    await app.eventStore.append({
+      id: "c0",
+      workflowId: FLOW,
+      executionId: "child-1",
+      eventType: "EXECUTION_STARTED",
+      sequence: 0,
+      timestamp: 1,
+      payload: { input: { n: 1 } },
+    });
+
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, { branchRegistry });
+    expect(await life.applyRetention("parent-1", { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
+      "blocked-by-branch"
+    );
+    // The parent's events are untouched.
+    expect((await app.eventStore.read("parent-1")).length).toBeGreaterThan(0);
+  });
+
+  it("journals EXECUTION_DELETED to the lifecycle stream on reclaim", async () => {
+    const app = boot();
+    const handle = await app.runtime.start(app.flow, { n: 1 }, { executionId: "del-1" });
+    await handle.waitForCompletion();
+
+    const now = Date.now() + 1e9;
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore);
+    expect(await life.applyRetention("del-1", { terminalTtlMs: 0 }, now)).toBe("reclaimed");
+
+    const lifecycleLog = await app.eventStore.read(LIFECYCLE_STREAM);
+    const folded = foldEvents(lifecycleLog).variables._lifecycle as {
+      op: string;
+      executionId: string;
+    }[];
+    expect(folded).toContainEqual({ op: "deleted", executionId: "del-1", at: now });
   });
 });
