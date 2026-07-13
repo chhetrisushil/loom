@@ -450,14 +450,31 @@ export function defineConfig(config: LoomConfig): LoomApp {
   // `policies` (config.flows + flowModules — read by shape, no runtime needed yet); `config.policies`
   // are global. A PolicyAuthorizer composes UNDER config.authorizer (both must allow). No policies
   // ⇒ the authorizer is exactly config.authorizer, so behaviour is byte-identical to before.
-  // NOTE: catalog-provided capability flows are governed by the grant model, not read here.
   const flowPolicies: Record<string, PolicyDefinition[]> = {};
+  const addPolicies = (workflowId: string, pols?: PolicyDefinition[]): void => {
+    if (pols && pols.length > 0) (flowPolicies[workflowId] ??= []).push(...pols);
+  };
   for (const flow of [
     ...(config.flows ?? []),
     ...registeredFlowsFrom(...(config.flowModules ?? [])),
   ]) {
-    const pols = flow.definition.policies;
-    if (pols && pols.length > 0) flowPolicies[flow.definition.id] = pols;
+    addPolicies(flow.definition.id, flow.definition.policies);
+  }
+  // Agent-attached policies (`agent$({ policies })`). A capability-bound agent runs a flow via the
+  // A2A executor (`runtime.start(flow)`), so its effects execute under that flow's workflowId — the
+  // agent's policies bind to `capabilityAgents[capabilityId] → agent`, keyed by the capability's
+  // flow. They merge with any flow-level policies on the same flow.
+  const agentDefsById = new Map<string, AgentDefinition>();
+  for (const entry of [
+    ...(config.agents ?? []),
+    ...agentDefinitionsFrom(...(config.agentModules ?? [])),
+  ]) {
+    if ("_tag" in entry && entry._tag === "AgentDefinition") agentDefsById.set(entry.id, entry);
+  }
+  for (const [capabilityId, agentId] of Object.entries(config.capabilityAgents ?? {})) {
+    const agent = agentDefsById.get(agentId);
+    const cap = config.catalog?.get(capabilityId);
+    if (agent?.policies && cap) addPolicies(cap.flow.definition.id, agent.policies);
   }
   const globalPolicies = config.policies ?? [];
   const hasPolicies = globalPolicies.length > 0 || Object.keys(flowPolicies).length > 0;

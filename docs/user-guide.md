@@ -633,7 +633,7 @@ policy$({
 });
 ```
 
-Evaluation is **deny-wins**; a policy composes **under** the `authorizer` (both must allow — defense in depth), so it can tighten a grant but never widen it, and a flow with no governing policy is unaffected. Enforcement keys on `workflowId` (the flow is the unit of authority, like `GrantTable`). *(Note: policies are read from `flows` / `flowModules` + `config.policies`; capability flows registered via a `catalog` use the grant model.)*
+Evaluation is **deny-wins**; a policy composes **under** the `authorizer` (both must allow — defense in depth), so it can tighten a grant but never widen it, and a flow with no governing policy is unaffected. Enforcement keys on `workflowId` (the flow is the unit of authority, like `GrantTable`). Policies come from three places: each flow's `policies` (`flows` / `flowModules`), app-global `config.policies`, and **agent-attached** `agent$({ policies })` — a capability-bound agent runs a flow (via `capabilityAgents`), so its policies bind to that flow's `workflowId` and are enforced whenever the agent runs it. *(A flow supplied only through a `catalog` but not wired to a policy source uses the grant model.)*
 
 ### Resource accounting & quotas (K3)
 

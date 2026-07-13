@@ -20,7 +20,7 @@ import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { defineConfig } from "./defineConfig";
+import { type CatalogLike, defineConfig } from "./defineConfig";
 
 const incident = z.object({ incidentId: z.string() });
 const resolved = z.object({ resolved: z.boolean() });
@@ -701,6 +701,46 @@ describe("defineConfig — agent auto-wiring (a2a / a2ui, opt-in)", () => {
     const handle = await app.runtime.start(ok, { incidentId: "i1" });
     await handle.waitForCompletion();
     expect(events).not.toContain("EFFECT_DENIED");
+  });
+
+  it("enforces an agent$'s policies on the capability flow it runs (via capabilityAgents)", async () => {
+    const denyMetrics = policy$({
+      id: "agent-deny",
+      name: "Agent Deny",
+      rules: { deny: ["metrics-tool"] },
+    });
+    const sre = agent$({ id: "sre", name: "SRE", tools: [], policies: [denyMetrics] });
+    const capFlow: RegisteredFlow = {
+      definition: {
+        _tag: "FlowDefinition",
+        id: "assess-flow",
+        name: "assess",
+        version: "1.0.0",
+        inputSchema: incident,
+        outputSchema: z.object({ cpu: z.number() }),
+        steps: [metricsStep],
+      },
+      runner: (async (ctx: WorkflowContext, input: { incidentId: string }) =>
+        ctx.run(metricsStep, { incidentId: input.incidentId })) as FlowRunner<unknown, unknown>,
+    } as RegisteredFlow;
+    const catalog: CatalogLike = {
+      registerInto: (rt) => rt.registerFlow(capFlow.definition, capFlow.runner),
+      get: (id) => (id === "assess" ? { flow: capFlow } : undefined),
+    };
+    const events: string[] = [];
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      catalog,
+      agents: [sre],
+      capabilityAgents: { assess: "sre" },
+      onEvent: (e) => events.push(e.eventType),
+    });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+    // The agent runs its capability flow; effects execute under that flow's workflowId,
+    // where the agent's policy denies metrics-tool.
+    const handle = await app.runtime.start(capFlow, { incidentId: "i1" });
+    await expect(handle.waitForCompletion()).rejects.toThrow(/denied/i);
+    expect(events).toContain("EFFECT_DENIED");
   });
 
   it("folds an eager projection$ registered via projectionModules", () => {
