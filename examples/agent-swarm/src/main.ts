@@ -11,6 +11,11 @@ const LOW_GOAL = "Audit payments-service for the 2.3.1 patch; sign off automatic
 async function main(): Promise<void> {
   const { app, conductor } = buildApp({ storage: { kind: "memory" } });
 
+  console.log(
+    "🛡️  Least-privilege policy$ active: each agent is scoped to its own audit tool, and the\n" +
+      "    fleet is read-only (deploy/rollback/promote/delete effects are denied by the K2 ring).\n"
+  );
+
   // ── Run 1: medium risk → pauses for a human sign-off ──────────────────────
   console.log(`\n▶ ${REVIEW_GOAL}`);
   const run1 = conductor.run(REVIEW_GOAL);

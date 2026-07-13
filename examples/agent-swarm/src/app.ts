@@ -2,10 +2,9 @@ import { type LoomApp, defineConfig } from "@loom/app";
 import type { CapabilityCatalog } from "@loom/capability";
 import { LocalDispatcher } from "@loom/dispatcher";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
-import type { AgentCard } from "@loom/plugin-a2a";
 import { sqliteStorage } from "@loom/plugin-sqlite";
 import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
-import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "./agents/definitions";
+import { CAPABILITY_AGENT, FLEET, FLEET_GUARDRAIL } from "./agents/definitions";
 import { buildCatalog } from "./capabilities/catalog";
 import { SwarmConductor } from "./orchestrator/SwarmConductor";
 
@@ -33,8 +32,14 @@ export function buildApp(opts?: { storage?: StorageOpt }): SwarmApp {
         ? sqliteStorage({ dir: opts.storage.dir, branching: opts.storage.branching === true })
         : { kind: "memory" },
     catalog,
-    agents: FLEET.map((a) => AGENT_CARDS[a.id]).filter((c): c is AgentCard => c !== undefined),
+    // Auto-wire the fleet onto the A2A bus straight from the agent$ definitions: `a2a: true`
+    // derives + registers each AgentCard (no hand-built, drift-prone card objects), and passing
+    // the definitions (not cards) is also what lets each agent's `policies` bind to the flow it
+    // runs. `policies` adds the fleet-wide read-only guardrail.
+    agents: FLEET,
+    a2a: true,
     capabilityAgents: CAPABILITY_AGENT,
+    policies: [FLEET_GUARDRAIL],
   });
 
   // The compute seam: executeGraph fans nodes out through this dispatcher. Local

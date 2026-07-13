@@ -26,6 +26,7 @@ Fully offline (deterministic `DemoLlmProvider`).
 |---|---|---|
 | Durable stores | `SqliteEventStore` + `SqliteSnapshotStore` (`./.data/`) — or **BYO** (see below) | — |
 | Runtime | `WorkflowRuntime`, `Orchestrator`, in-process A2A bus, 3 domain agents, durable flows (`ctx.suspend`/`resume`) | — |
+| A2A / A2UI wiring | `defineConfig({ agents: FLEET, a2a: true, a2ui: true })` — cards + per-agent surfaces auto-derived from the `agent$` definitions (no hand-built card objects; see `src/server/app.ts`) | — |
 | Projections | authoritative `mission` / `telemetry` surfaces | a mirror `InMemoryProjectionRuntime` fed by the stream |
 | UI | — | the reused `blueprint$` + `customWidget$` + `dom/` Custom Elements |
 | Bundle | — | **~34 kB** (the heavy backend stays on the server) |

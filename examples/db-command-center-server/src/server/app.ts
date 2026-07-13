@@ -1,10 +1,9 @@
 import { BroadcastingProjectionRuntime, defineConfig } from "@loom/app";
 import type { EventEnvelope } from "@loom/core";
 import type { BranchRegistry } from "@loom/event-runtime";
-import type { AgentCard } from "@loom/plugin-a2a";
 import { sqliteStorage } from "@loom/plugin-sqlite";
 import type { WorkflowRuntime } from "@loom/workflow-runtime";
-import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "../agents/definitions";
+import { CAPABILITY_AGENT, FLEET } from "../agents/definitions";
 import { buildCatalog } from "../capabilities/catalog";
 import { Orchestrator } from "../orchestrator/Orchestrator";
 import { MISSION_ID, type ServerFrame } from "../wire";
@@ -47,7 +46,13 @@ export function createApp(opts: { dataDir: string; missionId?: string }): Server
     projectionRuntime,
     surfaces: SURFACES,
     catalog,
-    agents: FLEET.map((a) => AGENT_CARDS[a.id]).filter((c): c is AgentCard => c !== undefined),
+    // Batteries-included A2A/A2UI wiring from the `agent$` definitions. `a2a: true` derives +
+    // registers each agent's AgentCard (replacing the hand-built card map), and `a2ui: true`
+    // registers an A2UI surface per agent (`surfaceId = agent.id`) so each agent is addressable
+    // as its own surface. Both are opt-in; with them off you wire cards/surfaces by hand as before.
+    agents: FLEET,
+    a2a: true,
+    a2ui: true,
     capabilityAgents: CAPABILITY_AGENT,
   });
 

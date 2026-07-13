@@ -1,8 +1,18 @@
-import { agent$ } from "@loom/core";
-import type { AgentDefinition } from "@loom/core";
-import type { AgentCard } from "@loom/plugin-a2a";
-import { toAgentCard } from "@loom/plugin-a2a/cards";
+import { agent$, policy$ } from "@loom/core";
+import type { AgentDefinition, PolicyDefinition } from "@loom/core";
 import { DepsTool, PerfTool, ScopeTool, SecurityTool, SignoffTool } from "./tools";
+
+// Least-privilege per agent: each audit agent may invoke ONLY its own audit effect (the step
+// id its capability flow runs). Attached to the agent$; `defineConfig` binds it to the flow the
+// agent runs (via `capabilityAgents`) and the K2 ring enforces it — so a misbehaving plan or model
+// can't make the security agent run the deps tool, etc. Enforcement is deny-wins under the
+// `authorizer`; the happy path (each flow calls only its own step) is unaffected.
+const onlyEffect = (stepId: string): PolicyDefinition =>
+  policy$({
+    id: `${stepId}-only`,
+    name: `Least privilege: ${stepId}`,
+    rules: { allow: [stepId] },
+  });
 
 // ── The release-audit fleet ───────────────────────────────────────────────────
 //
@@ -17,6 +27,7 @@ export const ScopeAgent: AgentDefinition = agent$({
   tools: [ScopeTool],
   version: "1.0.0",
   skills: [{ id: "scope-audit", name: "Scope a release audit" }],
+  policies: [onlyEffect("scope-step")],
 });
 
 export const SecurityAgent: AgentDefinition = agent$({
@@ -26,6 +37,7 @@ export const SecurityAgent: AgentDefinition = agent$({
   tools: [SecurityTool],
   version: "1.0.0",
   skills: [{ id: "security-audit", name: "Security audit" }],
+  policies: [onlyEffect("security-step")],
 });
 
 export const PerfAgent: AgentDefinition = agent$({
@@ -35,6 +47,7 @@ export const PerfAgent: AgentDefinition = agent$({
   tools: [PerfTool],
   version: "1.0.0",
   skills: [{ id: "perf-audit", name: "Performance audit" }],
+  policies: [onlyEffect("perf-step")],
 });
 
 export const DepsAgent: AgentDefinition = agent$({
@@ -44,6 +57,7 @@ export const DepsAgent: AgentDefinition = agent$({
   tools: [DepsTool],
   version: "1.0.0",
   skills: [{ id: "deps-audit", name: "Dependency audit" }],
+  policies: [onlyEffect("deps-step")],
 });
 
 export const SignoffAgent: AgentDefinition = agent$({
@@ -63,10 +77,15 @@ export const FLEET: AgentDefinition[] = [
   SignoffAgent,
 ];
 
-// The public, discoverable A2A card per agent, derived from its agent$ definition.
-export const AGENT_CARDS: Record<string, AgentCard> = Object.fromEntries(
-  FLEET.map((agent) => [agent.id, toAgentCard(agent)])
-);
+// A fleet-wide guardrail: the audit swarm is READ-ONLY. Even if a composed plan or a model tried
+// to invoke a deployment / rollback / promotion effect, the K2 ring denies it (`EFFECT_DENIED`) and
+// the step fails. App-global (passed to `defineConfig({ policies })`), so it applies to every
+// execution regardless of which agent ran it. Deny-wins; composes under any `authorizer`.
+export const FLEET_GUARDRAIL: PolicyDefinition = policy$({
+  id: "fleet-read-only",
+  name: "Read-only audit fleet",
+  rules: { deny: ["deploy-*", "rollback-*", "promote-*", "delete-*"] },
+});
 
 // Which agent owns each capability — the A2A routing table (static ⇒ replay-safe).
 // `record-plan` is a conductor-internal capability owned by the Scope agent.
