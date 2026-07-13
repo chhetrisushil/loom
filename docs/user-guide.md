@@ -312,6 +312,13 @@ const result = await app.bus.dispatch(capabilityId, input, prompt, {
 
 Register the mapping in config: `defineConfig({ agents: [card…], capabilityAgents: { "assess-cpu": "sre", … } })`. The `LoomAgentExecutor` adapts any registered flow into a stateless A2A task (folds state from stores per request) — see [ADR 0007](adr/0007-manifest-and-a2a-adapter.md).
 
+**Skip the boilerplate (opt-in).** Instead of hand-building `AgentCard`s, pass your `agent$`
+definitions to `agents` and flip a flag: `defineConfig({ agents: [triageAgent], a2a: true })`
+auto-derives + registers each agent's card (`toAgentCard`), and `a2ui: true` auto-registers an
+A2UI surface per agent (`surfaceId = agent.id`) so it can drive its own UI. Both are **off by
+default** — with the flags unset, nothing changes and you wire cards/surfaces manually exactly
+as above.
+
 ---
 
 ## 8. Intent, planner & memory
@@ -350,8 +357,10 @@ interface LoomConfig {
   flowModules?: FlowModule[];          // from `loom gen` (static discovery)
   effectMiddleware?: EffectMiddleware[];
   validate?: boolean | "warn" | "error";
-  agents?: AgentCard[];
+  agents?: (AgentCard | AgentDefinition)[]; // cards register verbatim; agent$ defs auto-wire behind flags
   capabilityAgents?: Record<string, string>;
+  a2a?: boolean;   // opt-in: auto-derive+register an AgentCard per agent$ definition (toAgentCard)
+  a2ui?: boolean;  // opt-in: auto-register an A2UI surface per agent (surfaceId = agent.id)
   telemetry?: TelemetryAdapter[];      // auto-scrubbed for sensitive()/internal() fields (K10-R6)
   dispatcher?: ExecutionDispatcher;    // where executions run
   onEvent?: (event: EventEnvelope) => void;
