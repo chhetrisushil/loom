@@ -15,13 +15,15 @@ function withFrame(
   return { ...frames, [stepId]: frame };
 }
 
-// Defense-in-depth: reject `__proto__` as a fold container key. It's never a valid
-// stepId/decisionId, and the assignment form (`frames[key] = …`) would otherwise invoke
-// the prototype setter and corrupt that execution's own fold. (No global pollution is
-// reachable — see the audit — but fail-closed on a reserved key is cheap and clear.)
+// Defense-in-depth: reject prototype-related keys as fold container keys. They are never
+// valid stepIds/decisionIds, and the assignment form (`frames[key] = …`) would otherwise
+// invoke the prototype setter / shadow `constructor` and corrupt that execution's own fold.
+// (No global pollution is reachable — see the audit — but fail-closed on a reserved key is
+// cheap and clear.)
+const RESERVED_FOLD_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 function assertSafeKey(key: string): void {
-  if (key === "__proto__") {
-    throw new Error(`fold: reserved key "__proto__" is not a valid identifier`);
+  if (RESERVED_FOLD_KEYS.has(key)) {
+    throw new Error(`fold: reserved key "${key}" is not a valid identifier`);
   }
 }
 

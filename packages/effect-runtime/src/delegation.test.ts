@@ -46,7 +46,8 @@ describe("K12.4 — verifiable attenuated delegation", () => {
     // Delegator confers deploy + delete-prod. Intersection with the callee's own
     // authority = deploy only.
     const token = signDelegation(SECRET, "callee-flow", ["deploy", "delete-prod"]);
-    const principal = { actor: "svc", delegation: token };
+    // The token was minted FOR "callee-flow", so the callee presents it as itself.
+    const principal = { actor: "callee-flow", delegation: token };
 
     expect(authz.authorize(req("deploy", principal)).allowed).toBe(true);
     // delete-prod: delegated but the CALLEE lacks it → no ambient escalation.
@@ -55,6 +56,16 @@ describe("K12.4 — verifiable attenuated delegation", () => {
     expect(denied.reason).toMatch(/callee itself lacks/);
     // rollback: the callee has it but it was NOT delegated → denied.
     expect(authz.authorize(req("rollback", principal)).allowed).toBe(false);
+  });
+
+  it("denies a valid token presented by a principal other than its issuedTo (confused deputy)", () => {
+    const base = new GrantTable({ "callee-flow": ["deploy"], attacker: ["deploy"] });
+    const authz = new DelegationAuthorizer({ secret: SECRET, base });
+    // Token minted FOR "callee-flow" — a leaked/misrouted copy presented by "attacker".
+    const token = signDelegation(SECRET, "callee-flow", ["deploy"]);
+    const decision = authz.authorize(req("deploy", { actor: "attacker", delegation: token }));
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toMatch(/issued to .* but presented by/);
   });
 
   it("a forged delegation is denied outright (not honored as a plain field)", () => {

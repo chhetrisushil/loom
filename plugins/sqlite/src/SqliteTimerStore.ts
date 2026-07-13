@@ -16,16 +16,21 @@ export class SqliteTimerStore implements TimerStore {
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("synchronous = NORMAL");
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS timers (
-        execution_id TEXT NOT NULL,
-        wake_at INTEGER NOT NULL,
-        PRIMARY KEY (execution_id, wake_at)
-      );
-      CREATE INDEX IF NOT EXISTS idx_timers_wake ON timers (wake_at ASC);
-    `);
+    try {
+      this.db.pragma("journal_mode = WAL");
+      this.db.pragma("synchronous = NORMAL");
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS timers (
+          execution_id TEXT NOT NULL,
+          wake_at INTEGER NOT NULL,
+          PRIMARY KEY (execution_id, wake_at)
+        );
+        CREATE INDEX IF NOT EXISTS idx_timers_wake ON timers (wake_at ASC);
+      `);
+    } catch (err) {
+      this.db.close(); // don't leak the file handle if setup fails on a bad/locked file
+      throw err;
+    }
   }
 
   async schedule(timer: TimerRecord): Promise<void> {

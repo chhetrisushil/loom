@@ -308,6 +308,13 @@ async function main(argv: string[]): Promise<number> {
       );
       await server.start();
       console.log(`loom inspector on ${server.url}  (Ctrl-C to stop)`);
+      // Graceful shutdown: on Ctrl-C, stop the server and close the DB handle instead
+      // of letting the process die with them open.
+      const shutdown = () => {
+        void server.stop().then(() => store.close());
+      };
+      process.once("SIGINT", shutdown);
+      process.once("SIGTERM", shutdown);
       return 0; // the listening socket keeps the process alive
     }
     case undefined:
