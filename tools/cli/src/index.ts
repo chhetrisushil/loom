@@ -20,6 +20,8 @@ export {
   discoverAgents,
   discoverTools,
   discoverSkills,
+  discoverSchedules,
+  discoverMemories,
   cmdGen,
   cmdNew,
 } from "./gen";

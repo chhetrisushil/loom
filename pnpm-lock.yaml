@@ -1132,6 +1132,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@loom/middleware':
         specifier: workspace:*
         version: link:../middleware

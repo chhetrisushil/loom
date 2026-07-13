@@ -119,7 +119,9 @@ const app = defineConfig({
 | `surfaces` | A2UI surface ids to project — a bare id, or `{ id, redact: [...] }` to mask surface paths from egress (K10-R6) |
 | `flows` / `flowModules` | flows to register (explicit, or via `loom gen`'s `flowModules`) |
 | `agentModules` / `toolModules` / `skillModules` | `agent$` / `tool$` / `skill$` definitions discovered by `loom gen` (value-shape); agents fold into `agents` (auto-wired behind `a2a`/`a2ui`), tools are exposed on `app.tools`, skills register into `app.skills` |
-| `skills` | `skill$` definitions registered directly into `app.skills` (in addition to `skillModules`) |
+| `scheduleModules` / `memoryModules` | `schedule$` / `memory$` definitions discovered by `loom gen`; schedules merge into `app.schedules` + fire via the `TimerService` (needs `timers.store`), memories register into `app.memory` |
+| `skills` / `memories` | `skill$` / `memory$` definitions registered directly (in addition to the `*Modules`) |
+| `memoryStore` | backing `MemoryStore` for `app.memory` (default in-memory; content is separate from the durable log) |
 | `effectMiddleware` | cross-cutting effect wrappers (retries, metering, safety, redaction… — see Step 11) |
 | `authorizer` | capability protection ring — deny ungranted effects (K2; see Step 11) |
 | `timers` | durable timers + `schedule$` cron occurrences (T1; see Step 11) |

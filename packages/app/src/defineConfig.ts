@@ -13,6 +13,7 @@ import {
 import type {
   AgentDefinition,
   EventEnvelope,
+  MemoryDefinition,
   ScheduleDefinition,
   SkillDefinition,
   ToolDefinition,
@@ -29,6 +30,8 @@ import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime
 // node:fs/path are loaded lazily on the `kind:"sqlite"` path only (see
 // `loadNodeModule`), so a browser app using in-memory storage stays clean.
 import { InMemoryAsyncEventStore } from "@loom/event-runtime/memory";
+import { MemoryRuntime } from "@loom/memory";
+import type { MemoryStore } from "@loom/memory";
 import {
   type SecretResolver,
   redactOutputFrom,
@@ -56,11 +59,15 @@ import {
   type AgentModule,
   type FlowModule,
   type ManifestView,
+  type MemoryModule,
+  type ScheduleModule,
   type SkillModule,
   type ToolModule,
   agentDefinitionsFrom,
   manifestWarnings,
+  memoryDefinitionsFrom,
   registerFlowsFrom,
+  scheduleDefinitionsFrom,
   skillDefinitionsFrom,
   toolDefinitionsFrom,
 } from "./registerFlows";
@@ -147,6 +154,29 @@ export interface LoomConfig {
    * `skill$` `SkillDefinition`s you'd otherwise hand into a `SkillRegistry` yourself.
    */
   skills?: SkillDefinition[];
+  /**
+   * Statically-imported schedule modules (from `loom gen`'s `scheduleModules`) — every
+   * `schedule$` definition is discovered by value shape and merged with {@link timers}`.schedules`,
+   * then handed to the `TimerService` so each cron occurrence starts its flow. Exposed on
+   * `app.schedules` for introspection. NOTE: schedules only *fire* when {@link timers} is
+   * configured with a `TimerStore`; discovered without `timers`, they are inert (a boot warning
+   * is emitted). Same folder-convention discovery, from `app/schedules/*.ts`.
+   */
+  scheduleModules?: ScheduleModule[];
+  /**
+   * Statically-imported memory modules (from `loom gen`'s `memoryModules`) — every `memory$`
+   * definition is discovered by value shape and registered into `app.memory` (a
+   * {@link MemoryRuntime}) so agents can resolve their `memoryId`. Same folder-convention
+   * discovery as `flowModules`, from `app/memories/*.ts`.
+   */
+  memoryModules?: MemoryModule[];
+  /** Memory definitions registered directly (in addition to any from `memoryModules`). */
+  memories?: MemoryDefinition[];
+  /**
+   * Backing store for `app.memory`. Defaults to an in-memory store (content is lost on restart —
+   * memory is separate from the durable event log). Pass a persistent `MemoryStore` for durability.
+   */
+  memoryStore?: MemoryStore;
   /**
    * Optional compiler manifest to cross-check against — any flow the compiler saw
    * but that isn't registered (or that carries a compiler warning) is reported
@@ -302,6 +332,16 @@ export interface LoomApp {
    */
   skills: SkillRegistry;
   /**
+   * Schedule definitions from `scheduleModules` + `timers.schedules` (for introspection). These are
+   * wired into the `TimerService` and fire only when `timers` is configured; empty when none.
+   */
+  schedules: ScheduleDefinition[];
+  /**
+   * Memory runtime holding every `memory$` definition from `memories` + `memoryModules`, backed by
+   * `memoryStore` (in-memory by default). Agents resolve their `memoryId` against it.
+   */
+  memory: MemoryRuntime;
+  /**
    * K10.1 log lifecycle — explicit retention/compaction over this app's stores, with the
    * branch-integrity guard wired when a `branchRegistry` is present. Drive it from an
    * operator pass (`loom retention run`); nothing runs it on a timer. See {@link LogLifecycle}.
@@ -440,16 +480,30 @@ export function defineConfig(config: LoomConfig): LoomApp {
     ...(config.timers !== undefined && { timerStore: config.timers.store }),
   });
 
+  // Schedules come from the explicit `timers.schedules` list AND from `scheduleModules` (loom gen
+  // discovery, value-shape). Both feed the one TimerService. Exposed on `app.schedules`.
+  const schedules = [
+    ...(config.timers?.schedules ?? []),
+    ...scheduleDefinitionsFrom(...(config.scheduleModules ?? [])),
+  ];
+
   // T1 — durable-timer firing service (opt-in; stopped on close()).
   let timerService: TimerService | undefined;
   if (config.timers !== undefined) {
     timerService = new TimerService(runtime, config.timers.store, {
       ...(config.timers.pollMs !== undefined && { pollMs: config.timers.pollMs }),
-      ...(config.timers.schedules !== undefined && { schedules: config.timers.schedules }),
+      ...(schedules.length > 0 && { schedules }),
       ...(config.timers.fenced !== undefined && { fenced: config.timers.fenced }),
       ...(config.timers.warmLeadMs !== undefined && { warmLeadMs: config.timers.warmLeadMs }),
     });
     timerService.start();
+  } else if (schedules.length > 0) {
+    // Discovered/declared schedules can't fire without a TimerStore — surface it loudly at boot
+    // rather than silently never running them.
+    const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+    warn(
+      `${schedules.length} schedule(s) declared but no \`timers\` store is configured — they will not fire. Add \`timers: { store }\` to enable cron.`
+    );
   }
 
   // K10.1 — log lifecycle wired over the same stores. Cheap to construct; drives nothing
@@ -513,6 +567,18 @@ export function defineConfig(config: LoomConfig): LoomApp {
     ...skillDefinitionsFrom(...(config.skillModules ?? [])),
   ]) {
     skills.register(skill);
+  }
+
+  // Memory definitions from the explicit `memories` list + `memoryModules` (loom gen discovery),
+  // registered into one MemoryRuntime backed by `memoryStore` (in-memory default). Agents resolve
+  // their `memoryId` against `app.memory`.
+  const memory =
+    config.memoryStore !== undefined ? new MemoryRuntime(config.memoryStore) : new MemoryRuntime();
+  for (const def of [
+    ...(config.memories ?? []),
+    ...memoryDefinitionsFrom(...(config.memoryModules ?? [])),
+  ]) {
+    memory.register(def);
   }
 
   const bus = new InProcessA2ABus(runtime, config.dispatcher);
@@ -597,6 +663,8 @@ export function defineConfig(config: LoomConfig): LoomApp {
     stores,
     tools,
     skills,
+    schedules,
+    memory,
     lifecycle,
     ...(subjectIndex !== undefined && { subjectIndex }),
     exportSubject(subjectId, options) {

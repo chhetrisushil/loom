@@ -1,11 +1,19 @@
-import type { AgentDefinition, SkillDefinition, ToolDefinition } from "@loom/core";
+import type {
+  AgentDefinition,
+  MemoryDefinition,
+  ScheduleDefinition,
+  SkillDefinition,
+  ToolDefinition,
+} from "@loom/core";
 import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 
-/** A statically-imported module namespace that may export RegisteredFlows / agents / tools / skills. */
+/** A statically-imported module namespace holding definitions (flows / agents / tools / …). */
 export type FlowModule = Record<string, unknown>;
 export type AgentModule = Record<string, unknown>;
 export type ToolModule = Record<string, unknown>;
 export type SkillModule = Record<string, unknown>;
+export type ScheduleModule = Record<string, unknown>;
+export type MemoryModule = Record<string, unknown>;
 
 function isAgentDefinition(value: unknown): value is AgentDefinition {
   return (
@@ -26,6 +34,20 @@ function isSkillDefinition(value: unknown): value is SkillDefinition {
     typeof value === "object" &&
     value !== null &&
     (value as { _tag?: unknown })._tag === "SkillDefinition"
+  );
+}
+function isScheduleDefinition(value: unknown): value is ScheduleDefinition {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { _tag?: unknown })._tag === "ScheduleDefinition"
+  );
+}
+function isMemoryDefinition(value: unknown): value is MemoryDefinition {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { _tag?: unknown })._tag === "MemoryDefinition"
   );
 }
 
@@ -57,6 +79,24 @@ export function skillDefinitionsFrom(...modules: SkillModule[]): SkillDefinition
   const out: SkillDefinition[] = [];
   for (const mod of modules) {
     for (const value of Object.values(mod)) if (isSkillDefinition(value)) out.push(value);
+  }
+  return out;
+}
+
+/** Collect every `schedule$` definition exported by the given modules (value-shape). */
+export function scheduleDefinitionsFrom(...modules: ScheduleModule[]): ScheduleDefinition[] {
+  const out: ScheduleDefinition[] = [];
+  for (const mod of modules) {
+    for (const value of Object.values(mod)) if (isScheduleDefinition(value)) out.push(value);
+  }
+  return out;
+}
+
+/** Collect every `memory$` definition exported by the given modules (value-shape). */
+export function memoryDefinitionsFrom(...modules: MemoryModule[]): MemoryDefinition[] {
+  const out: MemoryDefinition[] = [];
+  for (const mod of modules) {
+    for (const value of Object.values(mod)) if (isMemoryDefinition(value)) out.push(value);
   }
   return out;
 }

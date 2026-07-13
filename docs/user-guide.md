@@ -319,16 +319,23 @@ A2UI surface per agent (`surfaceId = agent.id`) so it can drive its own UI. Both
 default** — with the flags unset, nothing changes and you wire cards/surfaces manually exactly
 as above.
 
-You don't even list the definitions by hand: `loom gen` discovers every `agent$` under
-`app/agents/*.ts`, every `tool$` under `app/tools/*.ts`, and every `skill$` under `app/skills/*.ts`,
-emitting `agentModules` / `toolModules` / `skillModules`. Pass them straight through —
-`defineConfig({ agentModules, toolModules, skillModules, a2a: true })` — and each discovered agent is
-folded into `agents` (auto-wired behind the same flags), each tool is exposed on `app.tools`, and each
-skill is registered into `app.skills` (a `SkillRegistry`) for deterministic, offline selection
-(`app.skills.find(query)`). Discovery is by value shape, not by parsing, so it's robust to how you
-declare or re-export each construct. A tool's runnable **effect** is still registered explicitly
+You don't even list the definitions by hand: `loom gen` discovers every construct under its
+convention folder — `app/agents/*.ts`, `app/tools/*.ts`, `app/skills/*.ts`, `app/schedules/*.ts`,
+`app/memories/*.ts` — and emits `agentModules` / `toolModules` / `skillModules` / `scheduleModules` /
+`memoryModules`. Pass them straight through — `defineConfig({ agentModules, toolModules, skillModules,
+scheduleModules, memoryModules, a2a: true })` — and each is wired to the runtime that consumes it:
+agents fold into `agents` (auto-wired behind the same flags), tools land on `app.tools`, skills
+register into `app.skills` (`app.skills.find(query)`), schedules merge into `app.schedules` and fire via
+the `TimerService` (when `timers` is configured), and memories register into `app.memory` (agents
+resolve their `memoryId` against it). Discovery is by value shape, not by parsing, so it's robust to how
+you declare or re-export each construct. A tool's runnable **effect** is still registered explicitly
 (`effectRuntime.register(id, new ToolEffect(fn))`) — `tool$` is metadata-only by design; a skill's
 `instructions$` body stays lazy (only the selection metadata is held) until the skill is chosen.
+
+> `policy$` and `projection$` are intentionally **not** discovered — nothing in the runtime consumes a
+> `PolicyDefinition` yet (no policy engine), and `projection$` is superseded by the `surfaces` config.
+> Discovery is gated on "a runtime consumes it," so a construct is wired only once there is something
+> to wire it into.
 
 ---
 
@@ -370,6 +377,10 @@ interface LoomConfig {
   toolModules?: ToolModule[];          // from `loom gen`: tool$ defs → exposed on app.tools
   skillModules?: SkillModule[];        // from `loom gen`: skill$ defs → registered into app.skills
   skills?: SkillDefinition[];          // skills registered directly (in addition to skillModules)
+  scheduleModules?: ScheduleModule[];  // from `loom gen`: schedule$ defs → app.schedules + TimerService
+  memoryModules?: MemoryModule[];      // from `loom gen`: memory$ defs → registered into app.memory
+  memories?: MemoryDefinition[];       // memory defs registered directly (in addition to memoryModules)
+  memoryStore?: MemoryStore;           // backing store for app.memory (default in-memory)
   effectMiddleware?: EffectMiddleware[];
   validate?: boolean | "warn" | "error";
   agents?: (AgentCard | AgentDefinition)[]; // cards register verbatim; agent$ defs auto-wire behind flags
