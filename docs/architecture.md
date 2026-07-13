@@ -104,7 +104,7 @@ The durable core stays small and boring (execution + event log + determinism + e
 
 ### P11 — AI-native DX: natural language compiles to code, not runtime *(Loom 2.0)*
 
-Natural language is a **build-time** convenience, never a runtime input. `@loom/appgen` is **brownfield-aware**: it scans the existing app (`scanApp` → `AppModel`), plans a *delta* from an intent via a deterministic, offline directive parser (`planChanges` → `ChangeSpec`, the only stage that reads NL), then applies it with surgical, formatting-preserving edits (`applyChanges`) — new flows from templates, existing ones edited only where a handler still hashes to the generated stub. The output is ordinary `flow$`/`step$` wired through `defineConfig` in the folder convention. There is no runtime interpretation of NL: the only "understanding" step is the swappable planner producing a spec, and codegen is pure and template-based (**P4/P5 preserved**). An optional [`@loom/appgen-model`](../packages/appgen-model) swaps a small on-device model into the plan stage. See [ADR 0042](adr/0042-ai-native-brownfield-appgen.md) and [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
+Natural language is a **build-time** convenience, never a runtime input. `@loom/appgen` is **brownfield-aware**: it scans the existing app (`scanApp` → `AppModel`), plans a *delta* from an intent via a deterministic, offline directive parser (`planChanges` → `ChangeSpec`, the only stage that reads NL), then applies it with surgical, formatting-preserving edits (`applyChanges`) — new flows from templates, existing ones edited only where a handler still hashes to the generated stub. The output is ordinary `flow$`/`step$` wired through `defineConfig` in the folder convention. There is no runtime interpretation of NL: the only "understanding" step is the swappable planner producing a spec, and codegen is pure and template-based (**P4/P5 preserved**). An optional [`@loom/appgen-model`](../tools/appgen-model) swaps a small on-device model into the plan stage. See [ADR 0042](adr/0042-ai-native-brownfield-appgen.md) and [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
 
 ---
 
@@ -404,8 +404,10 @@ DST is the throughline the other two lean on: audit-chain integrity, and saga's 
 ## 6. Package map
 
 The workspace is split by tier (ADR 0043): **`packages/`** holds the kernel (mechanism/ABI), the
-SPI-contract packages, the advisory modules, and tooling; **`plugins/`** holds the first-party
-*adapters* — concrete backends for a specific external system — as `@loom/plugin-*`
+SPI-contract packages, and the advisory modules; **`tools/`** holds first-party *dev-tooling* —
+leaf packages consumed only at build/test/authoring time (`cli`, `compiler`, `appgen`,
+`appgen-model`, `deploy-sim`, `scaffold`, `eval`, `testing`, `dst`, `create-loom-app`);
+**`plugins/`** holds the first-party *adapters* — concrete backends for a specific external system — as `@loom/plugin-*`
 (`sqlite`, `postgres`, `crypto`, `audit-chain`, `cloudrun`, `worker-remote`, `worker-server`,
 `mcp`, `a2a`, `renderer-react`, `renderer-terminal`). A **CI layering guard** forbids any
 kernel/SPI package from depending on a `plugins/*` adapter, so the kernel names no vendor and ships

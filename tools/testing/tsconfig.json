@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"],
+  "references": [
+    { "path": "../../packages/app" },
+    { "path": "../../packages/core" },
+    { "path": "../../packages/dispatcher" },
+    { "path": "../../packages/event-runtime" },
+    { "path": "../../packages/llm" },
+    { "path": "../../packages/projection-runtime" },
+    { "path": "../../packages/snapshot-runtime" },
+    { "path": "../../packages/worker-runtime" },
+    { "path": "../../packages/workflow-runtime" }
+  ]
+}

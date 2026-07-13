@@ -440,7 +440,7 @@ loom inspect --db <path> [--port N]             web inspector (timeline + slider
 ```
 
 - **`logs` / `debug` / `inspect`** operate directly on a SQLite event DB — no app load needed. `debug --at N` folds the exact state at sequence *N* (time-travel); `inspect` serves a web timeline with a slider using the same fold.
-- **`gen` / `new`** implement the folder convention via **build-time codegen** (a static `loom.gen.ts`), not runtime globbing ([ADR 0011](adr/0011-folder-convention-codegen.md)). **`appgen`** turns a natural-language intent into a static Loom app *in the same folder convention* (`app/flows/<id>/flow.ts` + `app/loom.gen.ts` + `app/config.ts`, or a full project) via [`@loom/appgen`](../packages/appgen) — deterministic and offline, with no model call at generate time or in the output.
+- **`gen` / `new`** implement the folder convention via **build-time codegen** (a static `loom.gen.ts`), not runtime globbing ([ADR 0011](adr/0011-folder-convention-codegen.md)). **`appgen`** turns a natural-language intent into a static Loom app *in the same folder convention* (`app/flows/<id>/flow.ts` + `app/loom.gen.ts` + `app/config.ts`, or a full project) via [`@loom/appgen`](../tools/appgen) — deterministic and offline, with no model call at generate time or in the output.
 - **`eval` / `deploy check` / `check`** are CI gates (§12).
 
 For a command-by-command walkthrough with flags, exit codes, and example output, see the **[CLI Usage Guide](usage-cli.md)**.

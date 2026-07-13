@@ -32,19 +32,19 @@
       "path": "tools/create-loom-app"
     },
     {
-      "path": "packages/eval"
+      "path": "tools/eval"
     },
     {
-      "path": "packages/deploy-sim"
+      "path": "tools/deploy-sim"
     },
     {
-      "path": "packages/testing"
+      "path": "tools/testing"
     },
     {
-      "path": "packages/cli"
+      "path": "tools/cli"
     },
     {
-      "path": "packages/scaffold"
+      "path": "tools/scaffold"
     },
     {
       "path": "packages/orchestrator"
@@ -80,7 +80,7 @@
       "path": "plugins/renderer-react"
     },
     {
-      "path": "packages/compiler"
+      "path": "tools/compiler"
     },
     {
       "path": "packages/registry"
@@ -95,10 +95,10 @@
       "path": "packages/analytics"
     },
     {
-      "path": "packages/appgen"
+      "path": "tools/appgen"
     },
     {
-      "path": "packages/appgen-model"
+      "path": "tools/appgen-model"
     },
     {
       "path": "packages/agent"
@@ -140,7 +140,7 @@
       "path": "packages/verify"
     },
     {
-      "path": "packages/dst"
+      "path": "tools/dst"
     },
     {
       "path": "plugins/audit-chain"

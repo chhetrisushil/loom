@@ -23,7 +23,7 @@ runEventStoreConformance(() => new MyEventStore(/* … */), "MyEventStore");
 
 The kit exercises the **required** contract and skips **optional** methods a backend omits. The
 in-memory and SQLite reference impls both run these kits in
-`packages/testing/src/conformance.test.ts` — that is what pins the contracts.
+`tools/testing/src/conformance.test.ts` — that is what pins the contracts.
 
 ## Storage seams
 

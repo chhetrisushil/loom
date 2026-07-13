@@ -29,7 +29,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the principles (P1–P11)
 | **Advisory** | `packages/` | optional modules: `reasoning`, `memory`, `agent`, `planner`, `intent`, `capability`, `saga`, `orchestration`, `analytics`, `middleware`, `app`, `classify` (data-sensitivity markers), `compliance` (GDPR subject rights), … |
 | **Plugins (1P adapters)** | `plugins/` | `@loom/plugin-*`: `sqlite`, `postgres`, `crypto`, `content` (content-store seam), `audit-chain`, `cloudrun`, `worker-remote`, `worker-server`, `mcp`, `a2a`, `renderer-react`, `renderer-terminal` |
 | **Plugin authoring** | `packages/` | `@loom/plugin-kit` (typed presets), `@loom/conformance` (SPI conformance kits) |
-| **Tooling** | `packages/`, `tools/` | `compiler`, `cli`, `eval`, `deploy-sim`, `verify`, `appgen`, `scaffold`, `spec`, `dst`, `testing`, `create-loom-app` |
+| **Tooling** | `tools/` | first-party dev-tooling (leaf, build/test/authoring only): `cli`, `compiler`, `appgen`, `appgen-model`, `deploy-sim`, `scaffold`, `eval`, `testing`, `dst`, `create-loom-app`. (`verify`, `spec`, `conformance` stay in `packages/` — runtime/governance-adjacent.) |
 
 Third-party plugins live anywhere under the `loom-plugin-*` name (curated in the companion
 [`loom-plugins`](https://github.com/chhetrisushil/loom-plugins) repo). See
