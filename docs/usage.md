@@ -122,7 +122,9 @@ const app = defineConfig({
 | `authorizer` | capability protection ring — deny ungranted effects (K2; see Step 11) |
 | `timers` | durable timers + `schedule$` cron occurrences (T1; see Step 11) |
 | `validate` | `false \| "warn" \| "error"` — boot-time flow-graph validation |
-| `agents` / `capabilityAgents` | A2A agent cards + capability→agent routing |
+| `agents` / `capabilityAgents` | A2A agent cards (or `agent$` definitions — see `a2a`/`a2ui`) + capability→agent routing |
+| `a2a` | opt-in: auto-derive + register an `AgentCard` for each `agent$` definition in `agents` (no hand-built cards). Off ⇒ wire cards manually as before |
+| `a2ui` | opt-in: auto-register an A2UI surface per agent (`surfaceId = agent.id`). Off ⇒ register `surfaces` manually |
 | `dispatcher` | where executions run (in-process / remote / Cloud Run) |
 | `onEvent` | tap every committed event (telemetry, custom projections) |
 | `secrets` | `{ resolver }` — wire secret redaction: resolve `secretRef` input + redact `secret()` output (K10-R2; see [data classification](data-classification.md)) |

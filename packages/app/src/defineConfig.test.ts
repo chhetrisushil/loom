@@ -1,5 +1,5 @@
 import { secret, sensitive } from "@loom/classify";
-import { step$ } from "@loom/core";
+import { agent$, step$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectMiddleware } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
@@ -514,5 +514,68 @@ describe("defineConfig — compliance / subject rights (T3)", () => {
     const acme = await app.exportSubject("shared", { tenant: "acme" });
     expect(acme.executions.map((e) => e.executionId)).toEqual(["t-acme"]);
     await app.close();
+  });
+});
+
+describe("defineConfig — agent auto-wiring (a2a / a2ui, opt-in)", () => {
+  const triage = agent$({
+    id: "triage",
+    name: "Triage",
+    description: "triage agent",
+    tools: [],
+    skills: [{ id: "s1", name: "Skill One" }],
+  });
+  const manualCard = {
+    name: "Manual",
+    description: "",
+    url: "http://manual",
+    version: "1.0.0",
+    capabilities: {},
+    skills: [],
+  };
+
+  it("backward compatible: hand-built AgentCards register verbatim, no flags needed", () => {
+    const app = defineConfig({ storage: { kind: "memory" }, agents: [manualCard] });
+    expect(app.bus.agentCards().map((c) => c.name)).toContain("Manual");
+  });
+
+  it("a2a: true auto-derives + registers an AgentCard from an agent$ definition", () => {
+    const app = defineConfig({ storage: { kind: "memory" }, agents: [triage], a2a: true });
+    const card = app.bus.agentCards().find((c) => c.name === "Triage");
+    expect(card).toBeDefined();
+    expect(card?.url).toBe("loom+inproc://triage"); // derived default endpoint
+    expect(card?.skills).toEqual([{ id: "s1", name: "Skill One" }]);
+  });
+
+  it("a2ui: true registers a surface per agent (id = agent.id)", () => {
+    const app = defineConfig({ storage: { kind: "memory" }, agents: [triage], a2ui: true });
+    // getState throws unless the surface projection is registered.
+    expect(() => app.projectionRuntime.getState("triage", "x")).not.toThrow();
+  });
+
+  it("opt-in: a definition passed with NO flags is not wired, and warns", () => {
+    const warns: string[] = [];
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      agents: [triage],
+      onWarn: (m) => warns.push(m),
+    });
+    expect(app.bus.agentCards()).toHaveLength(0); // not on the bus
+    expect(() => app.projectionRuntime.getState("triage", "x")).toThrow(/not registered/); // no surface
+    expect(warns.some((w) => w.includes("neither `a2a` nor `a2ui`"))).toBe(true);
+  });
+
+  it("cards and definitions coexist in one list", () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      agents: [manualCard, triage],
+      a2a: true,
+    });
+    expect(
+      app.bus
+        .agentCards()
+        .map((c) => c.name)
+        .sort()
+    ).toEqual(["Manual", "Triage"]);
   });
 });

@@ -9,7 +9,7 @@ import {
   type TenantResolver,
   exportSubject as exportSubjectData,
 } from "@loom/compliance";
-import type { EventEnvelope, ScheduleDefinition } from "@loom/core";
+import type { AgentDefinition, EventEnvelope, ScheduleDefinition } from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
 import { EffectRuntime } from "@loom/effect-runtime";
 import type { CapabilityAuthorizer, EffectMiddleware } from "@loom/effect-runtime";
@@ -28,6 +28,7 @@ import {
   redactionMiddleware,
   secretOutputPathsByStep,
 } from "@loom/middleware";
+import { toAgentCard } from "@loom/plugin-a2a";
 import type { AgentCard } from "@loom/plugin-a2a";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
@@ -121,10 +122,30 @@ export interface LoomConfig {
   validate?: boolean | "warn" | "error";
   /** Capability catalog registered into the runtime + wired to agents. */
   catalog?: CatalogLike;
-  /** Agent cards advertised on the in-process A2A bus. */
-  agents?: AgentCard[];
+  /**
+   * Agents advertised on the in-process A2A bus. Accepts either hand-built `AgentCard`s
+   * (registered verbatim, exactly as before) **or** `agent$` `AgentDefinition`s. A definition
+   * is auto-wired only when the matching flag is enabled ({@link a2a} / {@link a2ui}); with the
+   * flags off, nothing about the current manual flow changes.
+   */
+  agents?: (AgentCard | AgentDefinition)[];
   /** capabilityId → agentId routing for the bus. */
   capabilityAgents?: Record<string, string>;
+  /**
+   * K/DX — auto-expose declared `agent$` definitions on the A2A bus. When `true`, every
+   * `AgentDefinition` in {@link agents} has its `AgentCard` derived (`toAgentCard`) and
+   * registered — no hand-written, drift-prone card objects. **Opt-in**: default/omitted is
+   * byte-identical to today (only explicit `AgentCard`s register; definitions warn if passed
+   * without this flag). Hand-wiring cards + `bus.registerAgent` keeps working unchanged.
+   */
+  a2a?: boolean;
+  /**
+   * K/DX — auto-register an A2UI surface per declared `agent$` definition (`surfaceId =
+   * agent.id`), so an agent can drive its own UI via `createA2UIEmitter(emit, agent.id)` with
+   * no manual `surfaces` entry. **Opt-in**: default/omitted registers nothing extra; manual
+   * `surfaces: [...]` is unaffected. Harmless (empty projection) for agents that never emit.
+   */
+  a2ui?: boolean;
   /** Static, ordered effect middleware (retries, logging, …). */
   effectMiddleware?: EffectMiddleware[];
   /**
@@ -432,8 +453,24 @@ export function defineConfig(config: LoomConfig): LoomApp {
   }
 
   const bus = new InProcessA2ABus(runtime, config.dispatcher);
-  for (const card of config.agents ?? []) {
-    bus.registerAgent(card);
+  let unwiredDefs = 0;
+  for (const entry of config.agents ?? []) {
+    // A hand-built AgentCard registers verbatim — the manual flow, unchanged.
+    if (!("_tag" in entry && entry._tag === "AgentDefinition")) {
+      bus.registerAgent(entry as AgentCard);
+      continue;
+    }
+    // An agent$ definition is auto-wired ONLY behind the opt-in flags.
+    const def = entry;
+    if (config.a2a) bus.registerAgent(toAgentCard(def)); // derive + register its card
+    if (config.a2ui) projectionRuntime.register(a2uiSurfaceProjection(def.id)); // one surface per agent
+    if (!config.a2a && !config.a2ui) unwiredDefs += 1;
+  }
+  if (unwiredDefs > 0) {
+    const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+    warn(
+      `${unwiredDefs} agent definition(s) passed to \`agents\` but neither \`a2a\` nor \`a2ui\` is enabled — they are not wired to anything. Enable a flag, or pass hand-built AgentCards to wire manually.`
+    );
   }
   for (const [capabilityId, agentId] of Object.entries(config.capabilityAgents ?? {})) {
     const cap = config.catalog?.get(capabilityId);
