@@ -244,5 +244,22 @@ describe("InMemoryProjectionRuntime — retention (leak fix)", () => {
       expect(load).toHaveBeenCalledTimes(1);
       expect(rt.getState<S>("lazy-counter", "a").completedSteps).toBe(2);
     });
+
+    it("abandons a projection whose load permanently fails — no retry storm, no buffer leak", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const load = vi.fn(async () => {
+        throw new Error("missing chunk");
+      });
+      const rt = new InMemoryProjectionRuntime();
+      rt.register(lazyCounter(load));
+      rt.handleEvent(makeEvent("a", 1, "STEP_COMPLETED"));
+      await Promise.resolve();
+      await Promise.resolve();
+      // Many more matching events must NOT re-trigger the load (it's abandoned).
+      for (let i = 2; i < 50; i++) rt.handleEvent(makeEvent("a", i, "STEP_COMPLETED"));
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("failed to load"));
+      warn.mockRestore();
+    });
   });
 });

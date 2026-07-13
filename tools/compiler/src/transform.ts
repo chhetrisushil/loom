@@ -244,13 +244,30 @@ function tryProcessProjection(
     ts.isObjectLiteralExpression(handlersProp.initializer)
   ) {
     const handlersObj = handlersProp.initializer;
-    // The event types are the property names of the fold map — read them without evaluating.
+    // The event types are the property names of the fold map — read them WITHOUT evaluating.
+    // Every property must be a statically-named entry (a `PropertyAssignment` or method): a
+    // computed key would leave `eventTypes` incomplete (the runtime would never gate/load for
+    // that event), and a shorthand/spread would reference names absent from the extracted chunk
+    // (a broken import). If any property isn't statically named, we bail out of extraction and
+    // leave the handlers inline+eager — correct, just not code-split.
     const eventTypes: string[] = [];
+    let extractable = true;
     for (const prop of handlersObj.properties) {
       const name = prop.name;
-      if (name && (ts.isIdentifier(name) || ts.isStringLiteral(name))) {
-        eventTypes.push(name.text);
+      const named =
+        (ts.isPropertyAssignment(prop) || ts.isMethodDeclaration(prop)) &&
+        name !== undefined &&
+        (ts.isIdentifier(name) || ts.isStringLiteral(name));
+      if (!named) {
+        extractable = false;
+        break;
       }
+      eventTypes.push((name as ts.Identifier | ts.StringLiteral).text);
+    }
+    if (!extractable) {
+      // Leave the projection eager (handlers inline); record it with no chunk.
+      pluginState.projections.set(projectionId, projectionEntry);
+      return false;
     }
     projectionEntry.eventTypes = eventTypes;
 

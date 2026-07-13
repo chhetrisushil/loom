@@ -47,16 +47,29 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${escaped}$`);
 }
 
-/** A single entry from an allow/deny list — an exact id or a compiled glob. */
-interface Pattern {
-  exact?: string;
-  glob?: RegExp;
+/**
+ * A compiled allow/deny list, split so an **exact** id is an O(1) `Set` membership test and
+ * only genuine globs fall back to a linear RegExp scan (the common case — a list of concrete
+ * effect ids — never touches the glob path). Compiled once at construction; matched per effect.
+ */
+interface PatternSet {
+  exact: Set<string>;
+  globs: RegExp[];
 }
-function compilePattern(entry: string): Pattern {
-  return entry.includes("*") ? { glob: globToRegExp(entry) } : { exact: entry };
+function compilePatterns(entries: readonly string[]): PatternSet {
+  const exact = new Set<string>();
+  const globs: RegExp[] = [];
+  for (const entry of entries) {
+    if (entry.includes("*")) globs.push(globToRegExp(entry));
+    else exact.add(entry);
+  }
+  return { exact, globs };
 }
-function patternMatches(pattern: Pattern, value: string): boolean {
-  return pattern.exact !== undefined ? pattern.exact === value : pattern.glob!.test(value);
+function patternSetMatches(set: PatternSet, value: string): boolean {
+  return set.exact.has(value) || set.globs.some((g) => g.test(value));
+}
+function patternSetEmpty(set: PatternSet): boolean {
+  return set.exact.size === 0 && set.globs.length === 0;
 }
 
 interface CompiledMatch {
@@ -66,8 +79,8 @@ interface CompiledMatch {
   deny: boolean;
 }
 interface CompiledPolicy {
-  allow: Pattern[];
-  deny: Pattern[];
+  allow: PatternSet;
+  deny: PatternSet;
   match: CompiledMatch[];
 }
 
@@ -87,8 +100,8 @@ function asRules(rules: Record<string, unknown>): PolicyRules {
 function compile(policy: PolicyDefinition): CompiledPolicy {
   const rules = asRules(policy.rules);
   return {
-    allow: (rules.allow ?? []).map(compilePattern),
-    deny: (rules.deny ?? []).map(compilePattern),
+    allow: compilePatterns(rules.allow ?? []),
+    deny: compilePatterns(rules.deny ?? []),
     match: (rules.match ?? []).map((m) => ({
       deny: m.deny === true,
       ...(m.effect !== undefined && { effect: globToRegExp(m.effect) }),
@@ -166,33 +179,15 @@ export class PolicyAuthorizer implements CapabilityAuthorizer {
   }
 
   private evaluate(req: CapabilityRequest): CapabilityDecision {
-    const applicable = [...this.global, ...(this.byPrincipal.get(this.principalOf(req)) ?? [])];
-    let hasAllowConstraint = false;
-    let allowed = false;
+    // Scan the global group then the principal's group directly — no merged-array allocation on
+    // this per-effect hot path. `state` accumulates the allow-list constraint across both groups.
+    const state: AllowState = { constrained: false, allowed: false };
+    const denial =
+      this.scan(this.global, req, state) ??
+      this.scan(this.byPrincipal.get(this.principalOf(req)), req, state);
+    if (denial !== undefined) return denial;
 
-    for (const policy of applicable) {
-      // (1) deny-wins — an explicit deny list entry.
-      if (policy.deny.some((p) => patternMatches(p, req.toolId))) {
-        return { allowed: false, reason: `effect "${req.toolId}" denied by policy` };
-      }
-      // (2) allow-list — its presence restricts to matching effects.
-      if (policy.allow.length > 0) {
-        hasAllowConstraint = true;
-        if (policy.allow.some((p) => patternMatches(p, req.toolId))) allowed = true;
-      }
-      // (3) rich match rules — deny fires immediately; allow contributes.
-      for (const rule of policy.match) {
-        const fires = matchFires(rule, req);
-        if (rule.deny) {
-          if (fires) return { allowed: false, reason: `effect "${req.toolId}" denied by policy` };
-        } else {
-          hasAllowConstraint = true;
-          if (fires) allowed = true;
-        }
-      }
-    }
-
-    if (hasAllowConstraint && !allowed) {
+    if (state.constrained && !state.allowed) {
       return {
         allowed: false,
         reason: `effect "${req.toolId}" not permitted by policy allow-list`,
@@ -200,4 +195,46 @@ export class PolicyAuthorizer implements CapabilityAuthorizer {
     }
     return { allowed: true };
   }
+
+  /**
+   * Scan one policy group. Returns a denial (deny-wins → final) or `undefined`, mutating `state`
+   * with any allow-list constraint seen. `undefined` policies (no group for the principal) no-op.
+   */
+  private scan(
+    policies: CompiledPolicy[] | undefined,
+    req: CapabilityRequest,
+    state: AllowState
+  ): CapabilityDecision | undefined {
+    if (policies === undefined) return undefined;
+    const deny: CapabilityDecision = {
+      allowed: false,
+      reason: `effect "${req.toolId}" denied by policy`,
+    };
+    for (const policy of policies) {
+      // (1) deny-wins — an explicit deny list entry.
+      if (patternSetMatches(policy.deny, req.toolId)) return deny;
+      // (2) allow-list — its presence restricts to matching effects.
+      if (!patternSetEmpty(policy.allow)) {
+        state.constrained = true;
+        if (patternSetMatches(policy.allow, req.toolId)) state.allowed = true;
+      }
+      // (3) rich match rules — deny fires immediately; allow contributes.
+      for (const rule of policy.match) {
+        const fires = matchFires(rule, req);
+        if (rule.deny) {
+          if (fires) return deny;
+        } else {
+          state.constrained = true;
+          if (fires) state.allowed = true;
+        }
+      }
+    }
+    return undefined;
+  }
+}
+
+/** Mutable allow-list accumulator threaded across policy groups in one authorization. */
+interface AllowState {
+  constrained: boolean;
+  allowed: boolean;
 }
