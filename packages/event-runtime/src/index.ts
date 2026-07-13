@@ -2,7 +2,12 @@ export { TenantScopedEventStore } from "./TenantScopedEventStore";
 export { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";
 export type { InMemoryAsyncEventStoreOptions } from "./InMemoryAsyncEventStore";
 export type { EventStore, EventStoreOptions } from "./types";
-export { readRangeOf, EVENT_STORE_SPI_VERSION } from "./types";
+export {
+  readRangeOf,
+  isReservedStream,
+  RESERVED_STREAM_PREFIX,
+  EVENT_STORE_SPI_VERSION,
+} from "./types";
 export { StaleFenceError, fenceOf } from "./fencing";
 export { lowerBoundBySequence, sliceBySequence } from "./sequenceRange";
 export { InMemoryBranchRegistry } from "./InMemoryBranchRegistry";

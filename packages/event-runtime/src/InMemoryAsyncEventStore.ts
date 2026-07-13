@@ -129,6 +129,11 @@ export class InMemoryAsyncEventStore implements EventStore {
     this.fences.delete(executionId);
   }
 
+  async listExecutions(): Promise<string[]> {
+    await this.tick();
+    return [...this.log.keys()];
+  }
+
   async truncatePrefix(executionId: string, throughSequence: number): Promise<void> {
     await this.tick();
     const list = this.log.get(executionId);

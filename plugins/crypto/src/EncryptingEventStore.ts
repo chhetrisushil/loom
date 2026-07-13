@@ -61,6 +61,7 @@ export class EncryptingEventStore implements EventStore {
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
+  readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
 
   constructor(
     private readonly inner: EventStore,
@@ -82,6 +83,10 @@ export class EncryptingEventStore implements EventStore {
     if (inner.copyPrefix !== undefined) {
       this.copyPrefix = (from, to, through, metadata) =>
         inner.copyPrefix!(from, to, through, metadata);
+    }
+    // Enumeration is over executionIds only — no payload, so no decryption needed.
+    if (inner.listExecutions !== undefined) {
+      this.listExecutions = () => inner.listExecutions!();
     }
   }
 
