@@ -24,6 +24,7 @@
     "@loom/snapshot-runtime": "workspace:*"
   },
   "devDependencies": {
+    "@loom/conformance": "workspace:*",
     "@loom/replay-vm": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
