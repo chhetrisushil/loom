@@ -3,7 +3,7 @@ import { LoomProvider } from "@loom/plugin-renderer-react";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
-import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "./agents/definitions";
+import { CAPABILITY_AGENT, FLEET } from "./agents/definitions";
 import { buildCatalog } from "./capabilities/catalog";
 import { Orchestrator } from "./orchestrator/Orchestrator";
 import { buildRegistry } from "./widgets/registry";
@@ -31,7 +31,9 @@ const app = defineConfig({
   // { projectionId: "mission" | "telemetry", path }.
   surfaces: ["mission", "telemetry"],
   catalog,
-  agents: Object.values(AGENT_CARDS),
+  // a2a: true derives + registers each agent's card from the `agent$` definitions.
+  agents: FLEET,
+  a2a: true,
   capabilityAgents: CAPABILITY_AGENT,
 });
 

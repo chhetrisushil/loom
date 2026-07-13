@@ -1,8 +1,7 @@
 import { defineConfig } from "@loom/app";
 import type { WidgetAction } from "@loom/blueprint-runtime";
-import type { AgentCard } from "@loom/plugin-a2a";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "./agents/definitions";
+import { CAPABILITY_AGENT, FLEET } from "./agents/definitions";
 import { MissionControlBlueprint } from "./blueprints/MissionControlBlueprint";
 import { ObservabilityBlueprint } from "./blueprints/ObservabilityBlueprint";
 import { buildCatalog } from "./capabilities/catalog";
@@ -30,7 +29,9 @@ const loomApp = defineConfig({
   projectionRuntime,
   surfaces: ["mission", "telemetry"],
   catalog,
-  agents: FLEET.map((a) => AGENT_CARDS[a.id]).filter((c): c is AgentCard => c !== undefined),
+  // a2a: true derives + registers each agent's card from the `agent$` definitions.
+  agents: FLEET,
+  a2a: true,
   capabilityAgents: CAPABILITY_AGENT,
 });
 

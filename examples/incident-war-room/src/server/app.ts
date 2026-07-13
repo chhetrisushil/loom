@@ -1,10 +1,9 @@
 import { BroadcastingProjectionRuntime, defineConfig } from "@loom/app";
 import type { EventEnvelope } from "@loom/core";
 import type { BranchRegistry } from "@loom/event-runtime";
-import type { AgentCard } from "@loom/plugin-a2a";
 import { sqliteStorage } from "@loom/plugin-sqlite";
 import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
-import { AGENT_CARDS, CAPABILITY_AGENT, FLEET } from "../agents/definitions";
+import { CAPABILITY_AGENT, FLEET } from "../agents/definitions";
 import { buildCatalog } from "../capabilities/catalog";
 import { RemediateLagFlow } from "../capabilities/flows";
 import { Orchestrator } from "../orchestrator/Orchestrator";
@@ -51,7 +50,10 @@ export function createApp(opts: { dataDir: string; missionId?: string }): Server
     // The branchable remediation flow isn't planner-routed — the War Room drives
     // it directly — so register it explicitly.
     flows: [RemediateLagFlow as RegisteredFlow],
-    agents: FLEET.map((a) => AGENT_CARDS[a.id]).filter((c): c is AgentCard => c !== undefined),
+    // Auto-derive + register each agent's A2A card from the `agent$` definitions (a2a: true),
+    // instead of hand-mapping a card table.
+    agents: FLEET,
+    a2a: true,
     capabilityAgents: CAPABILITY_AGENT,
   });
 
