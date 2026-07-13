@@ -4,7 +4,7 @@ import { foldEvents } from "@loom/replay-vm";
 import type { Snapshot } from "@loom/snapshot-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
-import { EncryptingEventStore } from "./EncryptingEventStore";
+import { EncryptingEventStore, isShredded } from "./EncryptingEventStore";
 import { EncryptingSnapshotStore } from "./EncryptingSnapshotStore";
 import { PayloadShreddedError } from "./errors";
 import { InMemoryKeyStore } from "./keystore";
@@ -85,6 +85,32 @@ describe("K10.2 — field-level crypto-shredding (events)", () => {
     // Fold the RAW log (tombstone included); the fact of shredding is recorded.
     const state = foldEvents(await inner.read("e1"));
     expect((state.variables._shredded as { subjectId?: string }).subjectId).toBe("e1");
+  });
+
+  it("K10-R4 — a tolerant read yields a { $shredded } placeholder instead of throwing", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const keys = new InMemoryKeyStore();
+    // Same store, but opted into tolerant reads (for deploy-sim / eval / export).
+    const store = new EncryptingEventStore(inner, keys, {
+      sensitive: SENSITIVE,
+      onShredded: "tolerate",
+    });
+    await store.append(ev("e1", 0, "EXECUTION_STARTED", { input: {} }));
+    await store.append(
+      ev("e1", 1, "STEP_COMPLETED", { stepId: "s", output: { ssn: "secret", ok: true } })
+    );
+
+    await shredSubject(keys, inner, "e1");
+
+    // Does NOT throw — the erased field is a marked placeholder; unmarked fields survive.
+    const events = await store.read("e1");
+    const output = (events[1]?.payload as { output: { ssn: unknown; ok: boolean } }).output;
+    expect(isShredded(output.ssn)).toBe(true);
+    expect(output.ssn).toEqual({ $shredded: true });
+    expect(output.ok).toBe(true);
+    // The default (throw) is unchanged — tolerance is strictly opt-in (G1 default).
+    const strict = new EncryptingEventStore(inner, keys, { sensitive: SENSITIVE });
+    await expect(strict.read("e1")).rejects.toBeInstanceOf(PayloadShreddedError);
   });
 });
 
