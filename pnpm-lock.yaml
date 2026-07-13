@@ -1111,6 +1111,9 @@ importers:
       '@loom/a2ui':
         specifier: workspace:*
         version: link:../a2ui
+      '@loom/compliance':
+        specifier: workspace:*
+        version: link:../compliance
       '@loom/core':
         specifier: workspace:*
         version: link:../core
@@ -1351,6 +1354,28 @@ importers:
       vite:
         specifier: ^5.4.10
         version: 5.4.21(@types/node@22.20.0)(sass@1.90.0)
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  packages/compliance:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../event-runtime
+      '@loom/replay-vm':
+        specifier: workspace:*
+        version: link:../replay-vm
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)

@@ -23,6 +23,7 @@
     "@loom/core": "workspace:*",
     "@loom/dispatcher": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
+    "@loom/compliance": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/middleware": "workspace:*",
     "@loom/projection-runtime": "workspace:*",

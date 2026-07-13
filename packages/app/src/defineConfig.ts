@@ -1,4 +1,10 @@
 import { a2uiSurfaceProjection } from "@loom/a2ui";
+import {
+  type SubjectExport,
+  SubjectIndex,
+  type SubjectResolver,
+  exportSubject as exportSubjectData,
+} from "@loom/compliance";
 import type { EventEnvelope, ScheduleDefinition } from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
 import { EffectRuntime } from "@loom/effect-runtime";
@@ -178,6 +184,16 @@ export interface LoomConfig {
     /** Resolves secret references to real values (back it with a vault/KMS in production). */
     resolver: SecretResolver;
   };
+  /**
+   * T3 (GDPR/CCPA-enabling) — data-subject rights. Supply a {@link SubjectResolver} (given an
+   * event, the data subject it concerns — usually read off EXECUTION_STARTED input, e.g. the
+   * userId) to maintain a live subject index over the event stream, exposing
+   * `app.subjectIndex` and `app.exportSubject(subjectId)` (Art. 15 access / Art. 20
+   * portability). Omitting the key builds nothing (G2). Not legal advice.
+   */
+  compliance?: {
+    subjectOf: SubjectResolver;
+  };
 }
 
 export interface LoomStores {
@@ -198,6 +214,18 @@ export interface LoomApp {
    * operator pass (`loom retention run`); nothing runs it on a timer. See {@link LogLifecycle}.
    */
   lifecycle: LogLifecycle;
+  /**
+   * T3 — live subject index (`subjectId → executions`), present only when `compliance` is
+   * wired. Fed by the event stream; rebuildable from the log. See `@loom/compliance`.
+   */
+  subjectIndex?: SubjectIndex;
+  /**
+   * T3 — assemble a data-subject export (Art. 15 access + Art. 20 portability) for every
+   * execution the subject index attributes to `subjectId`. Throws if `compliance` is not
+   * configured. For a partially-erased subject, wire the crypto store in tolerant mode
+   * (K10-R4) so shredded fields export as `{ $shredded }` rather than throwing.
+   */
+  exportSubject(subjectId: string, options?: { includeEvents?: boolean }): Promise<SubjectExport>;
   /**
    * Re-run pre-flight verification on demand (read-only, off-log). Returns the report;
    * the caller decides what to do with it (the CLI exits non-zero on `!ok`). Available
@@ -267,8 +295,14 @@ export function defineConfig(config: LoomConfig): LoomApp {
   // before defineConfig returns, so the deferred assignment is safe.
   let telemetryHook: ((event: EventEnvelope) => void) | undefined;
 
+  // T3 — subject index, fed live off the event stream (rebuildable from the log). Cheap to
+  // construct; only built when `compliance` is wired (G2).
+  const subjectIndex =
+    config.compliance !== undefined ? new SubjectIndex(config.compliance.subjectOf) : undefined;
+
   const onEvent = (event: EventEnvelope): void => {
     projectionRuntime.handleEvent(event);
+    subjectIndex?.handleEvent(event);
     telemetryHook?.(event);
     config.onEvent?.(event);
   };
@@ -400,6 +434,20 @@ export function defineConfig(config: LoomConfig): LoomApp {
     bus,
     stores,
     lifecycle,
+    ...(subjectIndex !== undefined && { subjectIndex }),
+    exportSubject(subjectId, options) {
+      if (subjectIndex === undefined) {
+        // Reject (not throw) so the Promise-returning contract holds either way.
+        return Promise.reject(
+          new Error("[loom] exportSubject requires `compliance: { subjectOf }` in defineConfig")
+        );
+      }
+      return exportSubjectData(subjectId, {
+        index: subjectIndex,
+        eventStore: stores.eventStore,
+        ...(options?.includeEvents !== undefined && { includeEvents: options.includeEvents }),
+      });
+    },
     verify() {
       return runVerify(resolveInput(), verifyOptions);
     },
