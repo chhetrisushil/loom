@@ -1,6 +1,12 @@
 export type { FlowTelemetryInfo, StepTelemetryInfo, TelemetryAdapter } from "./types";
 export { createTelemetryHook } from "./createTelemetryHook";
 export { ConsoleTelemetryAdapter } from "./adapters/ConsoleTelemetryAdapter";
+export {
+  EGRESS_REDACTED,
+  scrubbingAdapter,
+  scrubPathsByStep,
+  type StepScrubPaths,
+} from "./scrubbing";
 
 import type { TelemetryAdapter } from "./types";
 

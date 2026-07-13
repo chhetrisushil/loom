@@ -85,6 +85,27 @@ const app = defineConfig({
 The kernel hot-path substitution (automatic, before `STEP_STARTED`) is deliberately deferred
 — the effect-path seam already upholds the "secrets never enter the log" invariant.
 
+### Egress scrubbing (K10-R6)
+
+Telemetry is a **separate egress**: a step's `input`/`output` are shipped to Datadog / an
+OTel collector / a dashboard — outside the trust boundary. `defineConfig({ telemetry })`
+automatically wraps your adapters so `sensitive()` and `internal()` fields are masked
+(`[redacted]`) before any adapter sees them — derived from the registered steps, no extra
+wiring:
+
+```ts
+const app = defineConfig({
+  storage: sqliteStorage({ path: "app.db" }),
+  flows: [lookupFlow],
+  telemetry: [datadogAdapter], // sees { ssn: "[redacted]", ok: true }, never the plaintext
+});
+```
+
+The **log** still holds the real value (that is encryption/erasure's concern, K10.2); egress
+scrubbing governs only what leaves the boundary. `secret` fields need no scrubbing — K10-R2
+keeps them off the log and telemetry entirely. Compose `scrubbingAdapter`/`scrubPathsByStep`
+directly for other egress surfaces (a2ui, CLI).
+
 ## Triage (why a package, not the kernel)
 
 `@loom/classify` is a small **authoring-tier** package above the kernel. The taxonomy is
