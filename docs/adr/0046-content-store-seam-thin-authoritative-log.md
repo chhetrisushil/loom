@@ -1,7 +1,9 @@
 # ADR 0046 — Content-store seam: a thin, PII-light authoritative log
 
-- Status: **Accepted (design/SPI only); implementation deferred — gated on a concrete use case**
-- Date: 2026-07-13
+- Status: **Accepted — first cut shipped** (`@loom/plugin-content`: SPI + `ContentResolvingEventStore`
+  decorator + `InMemoryContentStore` reference backend + conformance kit). Production backends,
+  refcounted blob GC, and the `externalized()` marker remain follow-ups (see "Follow-ups").
+- Date: 2026-07-13 (updated 2026-07-13 — first cut landed)
 - Builds on: [ADR 0022 (K10 log lifecycle / retention / redaction / encryption)](0022-k10-log-lifecycle-retention-redaction-encryption.md),
   the `@loom/classify` taxonomy (K10-R1), `@loom/compliance` subject rights (T3),
   `secretRef`/`SecretResolver` (K10-R2/R3), `ctx.decide` / `DECISION_RECORDED` (Loom 2.0).
@@ -154,12 +156,31 @@ It is **overkill** — and crypto-shredding + `ctx.decide` remain the recommende
 
 ## Status of this decision
 
-**Design accepted; implementation deferred.** This ADR fixes the *shape* — content-addressed
-`ContentRef`, a `ContentStore` SPI resolved by a store decorator, loud-on-absence, policy above
-the kernel, backends as plugins — so the door is open and consistent with the existing store
-SPIs. It is **not built** now: the two-store referential-integrity + refcounting + transactional
-cost is real, and the project builds on concrete requirements rather than speculative infra (cf.
-K10-R4.2, deferred "until a use case appears"). It is promoted to implementation when a
-large-payload, data-residency, or physical-PII-separation requirement actually lands. Until
-then, mark fields `sensitive()`/`secret()` and record decisions with `ctx.decide` — that already
-keeps raw PII out of the deterministic path for the common case.
+**First cut shipped in `@loom/plugin-content`** (mirrors `@loom/plugin-crypto`'s structure):
+
+- `ContentRef` (content-addressed, `sha256:<hex>`), `isContentRef`, `contentAddress`.
+- `ContentStore` SPI (`put`/`get`/`delete`) + `InMemoryContentStore` reference backend
+  (content-addressed dedup observable via `size`).
+- `ContentResolvingEventStore` — the store decorator: externalizes marked payload paths on
+  append, resolves refs transparently on read, forwards optional capabilities, and throws
+  `ContentMissingError` (loud, G1) when erased bytes are needed. `copyPrefix` copies refs
+  verbatim, so a fork shares the parent's blobs for free (content-addressed dedup — no
+  re-wrap, in contrast to the crypto plugin's key lineage).
+- `runContentStoreConformance` in `@loom/conformance` (structural type — no plugin dep).
+
+Verified against the four invariants by test, including a fold-equivalence test proving that
+replay over resolved-from-content events equals replay over inline values (determinism).
+
+### Follow-ups (deferred, per the risks above)
+
+- **Refcounted blob GC.** `deleteExecution`/`truncatePrefix` currently reclaim events but not
+  blobs (forks share content-addressed blobs, so deletion must be refcount-aware). Erase
+  content explicitly via `contentStore.delete(ref)` until then.
+- **The `externalized()` marker + derive helper** — so externalize paths come from the
+  `@loom/classify` schema marks (like `sensitivePathsFromSteps`) instead of a hand-authored map.
+- **Production backends** (`@loom/plugin-content-fs`, `-s3`, encrypted blob store) and
+  `defineConfig` wiring — added when a real large-payload / residency requirement lands.
+
+Until externalization is wired for a given app, mark fields `sensitive()`/`secret()` and record
+decisions with `ctx.decide` — that already keeps raw PII out of the deterministic path for the
+common case.
