@@ -583,5 +583,5 @@ Being honest about the edges:
 - **[User Guide](user-guide.md)** — every feature area with examples.
 - **[Data classification](data-classification.md)** — field-sensitivity markers (`secret()`/`sensitive()`/`internal()`/`externalized()`) that drive encryption, redaction, and egress scrubbing (K10-R1/R6).
 - **[Compliance](compliance.md)** — data-subject rights: subject index, export (Art. 15/20), and erasure (Art. 17), tenant-scoped (T3).
-- **[ADRs](adr/)** — the full decision history (0001–0046; 0016–0026 cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series; 0036–0041 the three-direction arc; 0042 the AI-native brownfield `appgen`; 0043–0044 the plugin packaging + 1P/3P separation; 0046 the content-store seam).
+- **[ADRs](adr/)** — the full decision history (0001–0047; 0016–0026 cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series; 0036–0041 the three-direction arc; 0042 the AI-native brownfield `appgen`; 0043–0044 the plugin packaging + 1P/3P separation; 0046 the content-store seam; 0047 the `tools/*` dev-tooling tier).
 - **[Presentation](presentation/loom-deck.md)** — the deck.
