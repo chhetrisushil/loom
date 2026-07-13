@@ -11,7 +11,7 @@
 - [00 — Overview](00-overview.md) — the Loom 2.0 milestone map (M1–M11 + P-series).
 - [01 — Execution & decision seams](01-execution-and-decision-seams.md) — `ctx.decide`, `DECISION_RECORDED`, the effect authority ring (K2), and metering (K3).
 - [02 — Reasoning & memory](02-reasoning-and-memory.md) — `ReasoningRuntime`, the elevation ladder, confidence signals, and agent memory.
-- [Architecture](../architecture.md) — the durable spine and the core principles (P1–P10) referenced throughout.
+- [Architecture](../architecture.md) — the durable spine and the core principles (P1–P11) referenced throughout.
 
 ---
 
@@ -423,5 +423,5 @@ The plan stage can be driven by a small **on-device Gemma model** (`loom appgen 
 ### See also
 
 - [00 — Overview](00-overview.md) · [01 — Execution & decision seams](01-execution-and-decision-seams.md) · [02 — Reasoning & memory](02-reasoning-and-memory.md)
-- [Architecture](../architecture.md) — P1–P10, the durable spine, and the effect authority ring (K2).
+- [Architecture](../architecture.md) — P1–P11, the durable spine, and the effect authority ring (K2).
 - [ADR 0016 — Loom 2.0 execution runtime & decision seam](../adr/0016-loom-2.0-execution-runtime-and-decision-seam.md) — P9/P10 in full.

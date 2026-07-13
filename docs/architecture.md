@@ -275,20 +275,20 @@ flowchart LR
   PR --> R3["terminal"]
 ```
 
-### 5.4 Agentic layer (`@loom/agent`, `@loom/a2a`, `@loom/llm`, `@loom/mcp`, `@loom/capability`, `@loom/intent`, `@loom/planner`, `@loom/memory`)
+### 5.4 Agentic layer (`@loom/agent`, `@loom/plugin-a2a`, `@loom/llm`, `@loom/plugin-mcp`, `@loom/capability`, `@loom/intent`, `@loom/planner`, `@loom/memory`)
 
 The intelligence pipeline, all composable and all running *inside* durable flows:
 - **`@loom/llm`** — provider-agnostic model abstraction (`LlmProvider`).
 - **`@loom/agent`** — a ReAct-style tool-using loop.
-- **`@loom/mcp`** — Model Context Protocol client for external tools.
-- **`@loom/a2a`** — Agent-to-Agent protocol (client + server): call external agents (ADK, LangGraph, CrewAI) and expose Loom flows to them; `LoomAgentExecutor` adapts a flow into a stateless A2A task ([ADR 0007](adr/0007-manifest-and-a2a-adapter.md)).
+- **`@loom/plugin-mcp`** — Model Context Protocol client for external tools.
+- **`@loom/plugin-a2a`** — Agent-to-Agent protocol (client + server): call external agents (ADK, LangGraph, CrewAI) and expose Loom flows to them; `LoomAgentExecutor` adapts a flow into a stateless A2A task ([ADR 0007](adr/0007-manifest-and-a2a-adapter.md)).
 - **`@loom/capability`** — flows exposed as intent-addressable capabilities.
 - **`@loom/intent`** — routes natural-language intent to a capability.
 - **`@loom/planner`** — turns a goal into an ordered capability plan.
 - **`@loom/memory`** — scoped, TTL/size-bounded agent memory.
 - **`@loom/orchestrator`** — composable `decideApproval` (risk gate) + `dispatchPlan` primitives ([ADR 0013](adr/0013-orchestrator-primitives.md)).
 
-### 5.5 Compute & distribution (`@loom/dispatcher`, `@loom/worker-runtime*`, `@loom/worker-server`, `@loom/platform-cloudrun`, `@loom/graph-executor`, `@loom/scheduler`)
+### 5.5 Compute & distribution (`@loom/dispatcher`, `@loom/worker-runtime*`, `@loom/worker-server`, `@loom/plugin-cloudrun`, `@loom/graph-executor`, `@loom/scheduler`)
 
 Placement is a seam between the orchestrator and the runtime, so executions can run **anywhere** without touching the core ([ADRs 0001–0005](adr/)):
 
@@ -321,7 +321,7 @@ Every one of these is *a different lens on the durable log*:
 The rings noted inline above (K2/K3/K6) are part of a larger set that makes Loom *earn* the word "kernel." Each ring is opt-in and byte-identical to Loom 1.x when unwired (P10), and each new durable verdict is folded like any other event (P9). The full set is implemented:
 
 - **K1** — versioned syscall ABI (`KERNEL_ABI`, `packages/workflow-runtime/src/abi.ts`); **K2** — capability grants / authority ring (`EFFECT_DENIED`); **K3** — resource metering & quotas (`RESOURCE_METERED`/`QUOTA_EXCEEDED`); **K4** — fault supervision (`SupervisingDispatcher`, restart/backoff + circuit breaker); **K5** — event-schema ABI governance (`EVENT_SCHEMA_VERSION`, `knownEventTypes()`); **K6** — behavioral safety (`safetyMiddleware`, `SAFETY_BLOCKED`).
-- **K7** — data-plane isolation & brokered egress (`@loom/isolate`, child-process boundary, `EGRESS_DENIED`); **K8** — cancellation, deadlines & bounded effects; **K9** — effect-delivery contract: idempotency keys, in-doubt parking (`EFFECT_INDOUBT`), fencing; **K10** — log lifecycle: retention, crypto-shredding (`PAYLOAD_SHREDDED`), redaction & at-rest encryption (`@loom/store-crypto`); **K11** — flow-code versioning for in-flight executions (`flowContentHash`, `EXECUTION_MIGRATED`); **K12** — identity, tenancy & delegated authority (`APPROVAL_GRANTED`).
+- **K7** — data-plane isolation & brokered egress (`@loom/isolate`, child-process boundary, `EGRESS_DENIED`); **K8** — cancellation, deadlines & bounded effects; **K9** — effect-delivery contract: idempotency keys, in-doubt parking (`EFFECT_INDOUBT`), fencing; **K10** — log lifecycle: retention, crypto-shredding (`PAYLOAD_SHREDDED`), redaction & at-rest encryption (`@loom/plugin-crypto`); **K11** — flow-code versioning for in-flight executions (`flowContentHash`, `EXECUTION_MIGRATED`); **K12** — identity, tenancy & delegated authority (`APPROVAL_GRANTED`).
 - **T1** — durable timers & scheduled executions (`ctx.sleep`/`sleepUntil`, `TIMER_FIRED`, `schedule$` cron); **T2** — wire-level kernel ABI (`@loom/wire-abi`, a JSON-RPC projection of K1 for language neutrality).
 
 ```mermaid
@@ -362,7 +362,7 @@ plan-proposed kernel changes (a `CHILD_COMPLETED` event and a `ctx.compensate` s
   (generalizing `crashingEventStore`: crash / appendReject / msgLoss / msgDup, explore→record /
   replay modes) drive the real kernel under adversarial schedules; five invariants + `checkProperty`
   search→shrink→`replaySchedule`. Test/dev-only ⇒ zero production overhead by construction.
-- **Multi-tenant isolation** — `@loom/audit-chain` (fold-invisible hash chain + optional HMAC, tamper
+- **Multi-tenant isolation** — `@loom/plugin-audit-chain` (fold-invisible hash chain + optional HMAC, tamper
   detection via `verifyChain`), `@loom/fair-scheduler` (weighted round-robin across tenants behind
   the concurrency cap; drop-in `Scheduler`), and **execution-lifecycle authorization** (a pluggable
   `ExecutionAuthorizer` gating start/resume/cancel/query at the trust boundary → durable
@@ -379,7 +379,7 @@ flowchart TB
   subgraph Iso["Multi-tenant isolation (Direction C)"]
     AZ["execution-lifecycle authz → EXECUTION_DENIED (only schema touch: 1.12.0)"]
     FS["@loom/fair-scheduler — per-tenant weighted RR"]
-    AC["@loom/audit-chain — hash chain + HMAC (fold-invisible)"]
+    AC["@loom/plugin-audit-chain — hash chain + HMAC (fold-invisible)"]
   end
 
   subgraph Coord["Coordination primitives (Direction B)"]
@@ -403,6 +403,17 @@ DST is the throughline the other two lean on: audit-chain integrity, and saga's 
 
 ## 6. Package map
 
+The workspace is split by tier (ADR 0043): **`packages/`** holds the kernel (mechanism/ABI), the
+SPI-contract packages, the advisory modules, and tooling; **`plugins/`** holds the first-party
+*adapters* — concrete backends for a specific external system — as `@loom/plugin-*`
+(`sqlite`, `postgres`, `crypto`, `audit-chain`, `cloudrun`, `worker-remote`, `worker-server`,
+`mcp`, `a2a`, `renderer-react`, `renderer-terminal`). A **CI layering guard** forbids any
+kernel/SPI package from depending on a `plugins/*` adapter, so the kernel names no vendor and ships
+no native driver. Concrete backends are supplied as **presets** (`sqliteStorage()`, …) or adapters
+passed to `defineConfig` — a third-party plugin (`loom-plugin-*`) wires identically. Plugin
+authoring is supported by `@loom/plugin-kit` (typed presets) and `@loom/conformance` (SPI
+conformance kits). See [`plugins.md`](plugins.md) and [ADR 0043](adr/0043-plugin-packaging-and-1p-3p-separation.md).
+
 ```mermaid
 flowchart TB
   core["@loom/core (builders + types)"]
@@ -424,9 +435,9 @@ flowchart TB
   effects --> app
   mw["@loom/middleware<br/>(K3/K6/K10/K12)"] --> app
   proj["@loom/projection-runtime"] --> app
-  a2a["@loom/a2a"] --> app
+  a2a["@loom/plugin-a2a"] --> app
   iso["@loom/isolate (K7)"] --> effects
-  crypto["@loom/store-crypto (K10)"] --> events
+  crypto["@loom/plugin-crypto (K10)"] --> events
   crypto --> snap
   wire["@loom/wire-abi (T2)"] -. "projects K1 ABI" .-> wrt
 
@@ -435,7 +446,7 @@ flowchart TB
   testing["@loom/testing"] --> examples
   disp["@loom/dispatcher + worker-runtime*"] --> app
 
-  audit["@loom/audit-chain"] -. wraps .-> events
+  audit["@loom/plugin-audit-chain"] -. wraps .-> events
   fair["@loom/fair-scheduler"] -. "drop-in Scheduler" .-> disp
   lq["@loom/live-query"] --> wrt
   orch["@loom/orchestration"] --> wrt
@@ -567,5 +578,5 @@ Being honest about the edges:
 - **[Getting Started](getting-started.md)** — from zero to a running, suspend/resume flow in minutes.
 - **[Usage](usage.md)** — build a real app step by step.
 - **[User Guide](user-guide.md)** — every feature area with examples.
-- **[ADRs](adr/)** — the full decision history (0001–0042; 0016–0026 cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series; 0036–0041 the three-direction arc; 0042 the AI-native brownfield `appgen`).
+- **[ADRs](adr/)** — the full decision history (0001–0044; 0016–0026 cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series; 0036–0041 the three-direction arc; 0042 the AI-native brownfield `appgen`; 0043–0044 the plugin packaging + 1P/3P separation).
 - **[Presentation](presentation/loom-deck.md)** — the deck.

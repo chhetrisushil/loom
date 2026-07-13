@@ -271,7 +271,7 @@ Read a surface (server, client, or test):
 const view = app.projectionRuntime.getState<MyView>("mission", executionId);
 ```
 
-Register surfaces via `defineConfig({ surfaces: ["mission", "telemetry"] })`, or a custom projection with `projection$({ id, name, initialState, handlers })` for domain-specific read models. Render with any renderer — `@loom/renderer-react`, `@loom/renderer-terminal`, `@loom/a2ui` for Web Components, or your own. **The durable log never depends on the renderer.**
+Register surfaces via `defineConfig({ surfaces: ["mission", "telemetry"] })`, or a custom projection with `projection$({ id, name, initialState, handlers })` for domain-specific read models. Render with any renderer — `@loom/plugin-renderer-react`, `@loom/plugin-renderer-terminal`, `@loom/a2ui` for Web Components, or your own. **The durable log never depends on the renderer.**
 
 For streamed progress independent of surfaces, use a pub/sub hub (`progressHub`) — handlers call `report(id, line)` / `reportProgress(id, pct)` and orchestrators subscribe (`onReport` / `onProgress`). See [`examples/schema-migration-planner`](../examples/schema-migration-planner).
 
@@ -295,7 +295,7 @@ const dbaAgent = agent$({
 });
 ```
 
-`@loom/agent` runs a ReAct-style reason→act loop over an agent's tools; `@loom/mcp` discovers external tools via the Model Context Protocol.
+`@loom/agent` runs a ReAct-style reason→act loop over an agent's tools; `@loom/plugin-mcp` discovers external tools via the Model Context Protocol.
 
 ### A2A — agent-to-agent
 
@@ -341,8 +341,9 @@ The full stack in action: [`examples/db-command-center`](../examples/db-command-
 interface LoomConfig {
   storage:
     | { kind: "memory" }
-    | { kind: "sqlite"; dir?: string; branching?: boolean }
-    // Bring your own backend — Postgres/Redis/DynamoDB, used verbatim:
+    // Bring your own backend, used verbatim. Concrete backends are presets returning
+    // this shape: sqliteStorage({dir}) from @loom/plugin-sqlite, postgresStorage({url})
+    // from @loom/plugin-postgres, or your own (ADR 0043).
     | { kind: "custom"; eventStore; snapshotStore; branchRegistry? };
   surfaces?: string[];
   flows?: RegisteredFlow[];
@@ -462,8 +463,8 @@ flowchart LR
 ```
 
 - **Local:** `@loom/worker-runtime-local` — same process.
-- **Remote:** `@loom/worker-runtime-remote` posts an `ExecutionPackage` to `@loom/worker-server`'s `POST /execute`; the stateless worker rebuilds all state from shared stores.
-- **Cloud Run:** `@loom/platform-cloudrun` maps dispatch metadata to sizing; see [`packages/platform-cloudrun/deploy.md`](../packages/platform-cloudrun/deploy.md).
+- **Remote:** `@loom/plugin-worker-remote` posts an `ExecutionPackage` to `@loom/worker-server`'s `POST /execute`; the stateless worker rebuilds all state from shared stores.
+- **Cloud Run:** `@loom/plugin-cloudrun` maps dispatch metadata to sizing; see [`plugins/cloudrun/deploy.md`](../plugins/cloudrun/deploy.md).
 - **Fan-out:** `@loom/graph-executor` runs graph nodes as per-node executions (one writer each), joined via lineage.
 
 Workers reference flows/effects **by id** from a statically-wired registry — so a worker must be booted with the same registrations (P5). Suspension is a normal result across the network boundary.
@@ -798,7 +799,7 @@ await ctx.sleepUntil(Date.parse("2026-08-01")); // or at an absolute time
 // Wiring — one config key (timer rows live beside your event store, so one
 // backup captures the full kernel state):
 const app = defineConfig({
-  storage: { kind: "sqlite", dir: ".loom" },
+  storage: sqliteStorage({ dir: ".loom" }),
   timers: { store: new SqliteTimerStore(".loom/events.db") }, // or InMemoryTimerStore
 });
 // suspend({ on, timeout }) is unified too: with timers wired, the timeout becomes
@@ -822,7 +823,7 @@ const nightlyAudit = schedule$({
   input: { scope: "all" },
 });
 const app = defineConfig({
-  storage: { kind: "postgres", url },
+  storage: postgresStorage({ url }),
   timers: {
     store: new PostgresTimerStore(url), // same DB as the log — one backup, full kernel state
     schedules: [nightlyAudit],
@@ -842,12 +843,12 @@ the idempotent-wake guard, the `UNIQUE(execution_id, sequence)` backstop, and fe
 lifecycle without ever creating a silent third behavior between "replays identically" and
 "fails loudly".
 
-**Crypto-shredding (K10.2, `@loom/store-crypto`).** Encrypt sensitive fields at rest under a
+**Crypto-shredding (K10.2, `@loom/plugin-crypto`).** Encrypt sensitive fields at rest under a
 per-subject key; satisfy erasure by **destroying the key** — no history rewrite:
 
 ```ts
 import { EncryptingEventStore, EncryptingSnapshotStore, InMemoryKeyStore, shredSubject }
-  from "@loom/store-crypto";
+  from "@loom/plugin-crypto";
 
 const keys = new InMemoryKeyStore(); // KMS/HSM in production — the key IS the erasure boundary
 const eventStore = new EncryptingEventStore(inner, keys, {

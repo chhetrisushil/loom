@@ -167,7 +167,7 @@ The identical flow, steps, `ctx.suspend`, event log, and projections run under *
 | Flow + suspend/resume | `flows/InvestigateIncident.ts` | `app/incident.flow.ts` — same primitives |
 | Runtimes wired by | `<LoomProvider>` React context | `@Injectable` Angular DI |
 | State exposed via | hooks — `useLoom` / `useState` / `useMemo` | signals — `signal()` / `computed()` / `inject()` |
-| UI rendered by | `@loom/renderer-react` + blueprints | native template `@if` / `@for` |
+| UI rendered by | `@loom/plugin-renderer-react` + blueprints | native template `@if` / `@for` |
 
 > The Angular app imports **nothing** from the React package — a standalone proof the runtime is UI-framework-agnostic. **BYOR: bring your own renderer.**
 

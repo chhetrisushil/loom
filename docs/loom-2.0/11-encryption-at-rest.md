@@ -13,7 +13,7 @@ another.
 
 | Layer | Protects against | Where | Loom mechanism |
 |---|---|---|---|
-| **1. Field-level crypto-shredding (K10.2)** | A specific data-subject's PII must be *erasable* on demand (GDPR), even though the log is append-only | The **event/snapshot payloads** — the marked fields are ciphertext at rest | [`@loom/store-crypto`](../../packages/store-crypto/) — `EncryptingEventStore` / `EncryptingSnapshotStore`, erase by destroying the per-subject key |
+| **1. Field-level crypto-shredding (K10.2)** | A specific data-subject's PII must be *erasable* on demand (GDPR), even though the log is append-only | The **event/snapshot payloads** — the marked fields are ciphertext at rest | [`@loom/plugin-crypto`](../../packages/store-crypto/) — `EncryptingEventStore` / `EncryptingSnapshotStore`, erase by destroying the per-subject key |
 | **2. Redaction markers (K10.3)** | A secret must **never be persisted at all** (API keys, passwords) | The log never contains the value — only a deterministic reference | `redactionMiddleware` + `SecretResolver` (`@loom/middleware`) |
 | **3. Encryption at rest (K10.5)** | Someone reads the **raw disk / DB files / a stolen backup** | The whole store file/tablespace/volume | **Configured at the storage layer** — this page |
 
@@ -38,7 +38,7 @@ Put the store directory on an encrypted filesystem and there is nothing to chang
   disks, Azure disk encryption). Point `storage.dir` at a mount on that device.
 
 ```ts
-const app = defineConfig({ storage: { kind: "sqlite", dir: "/mnt/encrypted/loom" } });
+const app = defineConfig({ storage: sqliteStorage({ dir: "/mnt/encrypted/loom" }) });
 ```
 
 This encrypts the DB file, its WAL, and any backups taken from the volume — transparently.
@@ -69,7 +69,7 @@ Keep `LOOM_DB_KEY` in a secrets manager, not on disk beside the database.
 
 ## Postgres backend
 
-The Postgres stores (`@loom/store-postgres`, or the [reference backend](../examples/postgres-backend/README.md))
+The Postgres stores (`@loom/plugin-postgres`, or the [reference backend](../examples/postgres-backend/README.md))
 persist to a Postgres cluster. Encryption at rest is a **cluster/infrastructure** setting, not a
 Loom one — configure it where the cluster runs:
 
@@ -98,7 +98,7 @@ No Loom or SQL change — point `storage.url` at the encrypted instance.
 
 Postgres `pgcrypto` can encrypt individual columns, but for Loom that overlaps Layer 1
 (crypto-shredding, which already encrypts marked *fields* portably across SQLite and Postgres and
-gives you key-destruction erasure). Prefer `@loom/store-crypto` for field-level needs and reserve
+gives you key-destruction erasure). Prefer `@loom/plugin-crypto` for field-level needs and reserve
 volume/TDE encryption for the whole-file threat.
 
 ---
@@ -116,5 +116,5 @@ Most regulated deployments enable **all three**: field-level crypto for erasable
 for secrets, and volume encryption underneath for defence in depth.
 
 > See also: **[K10 in the kernel-hardening deep-dive](04-kernel-hardening.md)** ·
-> [`@loom/store-crypto`](../../packages/store-crypto/README.md) ·
+> [`@loom/plugin-crypto`](../../packages/store-crypto/README.md) ·
 > [ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md).

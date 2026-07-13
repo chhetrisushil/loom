@@ -8,10 +8,10 @@ Start here. The docs are a progressive funnel — read top to bottom, or jump to
 | **[Usage Guide](usage.md)** | Build a realistic app step by step (steps → flow → config → suspend/resume → agents → branching → ship). |
 | **[User Guide](user-guide.md)** | Look up a specific feature: fork, A2A, middleware, projections, testing, CLI, compute… |
 | **[CLI Usage Guide](usage-cli.md)** | Drive the `loom` command: scaffold (`new`/`gen`), validate (`check`), observe (`logs`/`debug`/`inspect`), and gate a deploy (`eval`/`deploy check`). |
-| **[Architecture](architecture.md)** | Understand the mission, core principles (P1–P10), the runtime model, and *why* each decision was made. |
+| **[Architecture](architecture.md)** | Understand the mission, core principles (P1–P11), the runtime model, and *why* each decision was made. |
 | **[Loom 2.0 deep-dives](loom-2.0/00-overview.md)** | The execution-kernel evolution in full detail: data structures, algorithms, and diagrams for every subsystem. |
 | **[Presentation](presentation/loom-deck.md)** | Present Loom — the flagship deck (Marp). More decks in [`presentation/`](presentation/). |
-| **[ADRs](adr/)** | Read the full decision history (0001–0027, all accepted), one record per decision. |
+| **[ADRs](adr/)** | Read the full decision history (0001–0044, all accepted), one record per decision. |
 | **[Requirements](requirements/)** | Recorded requirement sets — the kernel-hardening series [K7–K12, T1–T2](requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md) and its code-grounded [evaluation & amendments](requirements/2026-07-10-kernel-hardening-evaluation.md) (all eight accepted with amendments, all implemented). |
 
 ## Loom 2.0 — the execution kernel
@@ -31,7 +31,7 @@ Loom 2.0 evolves the durable workflow runtime into the **execution kernel for in
 
 The foundational decision record is [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md); the second kernel-hardening series (K7–K12, T1–T2) is recorded in [ADRs 0019–0026](adr/) with its [evaluation & amendments](requirements/2026-07-10-kernel-hardening-evaluation.md). Two follow-ups then landed on `main`: a second DS&A optimization pass ([ADR 0015 amendment](adr/0015-dsa-performance-optimizations.md#amendments-second-dsa-pass-pr-63-2026-07-10)) and off-log advisory pre-warming ([ADR 0027](adr/0027-advisory-pre-warming.md)).
 
-Then the **[Kernel Governance Layer](spec/loom-kernel-specification.md)** ([ADR 0035](adr/0035-kernel-governance-layer.md)) added the normative spec, evidence-derived [maturity badges](spec/maturity.md), and the [compatibility matrix](spec/compatibility-matrix.md), all generated from one manifest (`@loom/spec`). Most recently, the **three-direction arc** ([ADRs 0036–0041](adr/)) added three frontiers as opt-in packages over the stable syscall surface — **simulation testing** (`@loom/dst`), **multi-tenant isolation** (`@loom/audit-chain`, `@loom/fair-scheduler`, execution-lifecycle authorization), and **coordination primitives** (`@loom/live-query`, `@loom/orchestration`, `@loom/saga`) — landing `EVENT_SCHEMA_VERSION 1.12.0` (`+EXECUTION_DENIED`) with `KERNEL_ABI` unchanged. See [§5.8 of the architecture](architecture.md#58-the-three-direction-arc--simulation-testing-coordination-multi-tenant-isolation).
+Then the **[Kernel Governance Layer](spec/loom-kernel-specification.md)** ([ADR 0035](adr/0035-kernel-governance-layer.md)) added the normative spec, evidence-derived [maturity badges](spec/maturity.md), and the [compatibility matrix](spec/compatibility-matrix.md), all generated from one manifest (`@loom/spec`). Most recently, the **three-direction arc** ([ADRs 0036–0041](adr/)) added three frontiers as opt-in packages over the stable syscall surface — **simulation testing** (`@loom/dst`), **multi-tenant isolation** (`@loom/plugin-audit-chain`, `@loom/fair-scheduler`, execution-lifecycle authorization), and **coordination primitives** (`@loom/live-query`, `@loom/orchestration`, `@loom/saga`) — landing `EVENT_SCHEMA_VERSION 1.12.0` (`+EXECUTION_DENIED`) with `KERNEL_ABI` unchanged. See [§5.8 of the architecture](architecture.md#58-the-three-direction-arc--simulation-testing-coordination-multi-tenant-isolation).
 
 ## The one-paragraph version
 

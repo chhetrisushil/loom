@@ -54,13 +54,13 @@ The execution core has **no Node or DOM imports**; the *edges* are the only envi
 ISOMORPHIC CORE  (Node or browser — stores & effects injected)
   core · workflow-runtime · effect-runtime · replay-vm · projection-runtime
   blueprint-runtime · capability · intent · planner · agent · memory · scheduler
-  fetch-based I/O: @loom/llm · @loom/mcp client · @loom/a2a CLIENT
+  fetch-based I/O: @loom/llm · @loom/plugin-mcp client · @loom/plugin-a2a CLIENT
 
 SERVER-ONLY (Node)                    CLIENT-ONLY (browser)
-  SqliteEventStore  (better-sqlite3)    @loom/renderer-react
+  SqliteEventStore  (better-sqlite3)    @loom/plugin-renderer-react
   SqliteSnapshotStore                   (or BYOR: DOM / Web Components)
   createA2AServer   (node:http)
-  @loom/renderer-terminal · @loom/compiler (build time)
+  @loom/plugin-renderer-terminal · @loom/compiler (build time)
 ```
 
 **What you inject decides where it runs.** And because the store interfaces are async-first, "server-only" isn't SQLite-only — inject a Postgres/Redis/DynamoDB backend and the same core runs against your cloud datastore.
@@ -76,7 +76,7 @@ The store/transport interfaces are **async-first** — any backend plugs in. Shi
 | `EventStore` | `InMemoryEventStore` | `SqliteEventStore` · or **BYO** Postgres/Redis/DynamoDB |
 | `SnapshotStore` | `InMemorySnapshotStore` | `SqliteSnapshotStore` · or **BYO** |
 | Agent transport | `createA2AClientEffect` (`fetch`) | `createA2AServer` (`node:http`) |
-| Surface | `@loom/renderer-react` / BYOR DOM | `@loom/renderer-terminal` (TUI) |
+| Surface | `@loom/plugin-renderer-react` / BYOR DOM | `@loom/plugin-renderer-terminal` (TUI) |
 
 Because `EventStore`/`SnapshotStore`/`BranchRegistry` return Promises, a **network backend is first-class** — no adapter, no in-memory shim. The only *runtime* Node-only deps are the SQLite stores and the A2A server; `@loom/compiler` is Node-only but runs at **build time**, never bundled.
 
@@ -255,7 +255,7 @@ domain events ──▶ ProjectionRuntime (foldEvent) ──▶ view models ─�
 ```
 
 - **Blueprints are JSON, framework-free** — a server step can emit one; any renderer picks it up.
-- **BYOR**: `@loom/renderer-react`, `@loom/renderer-terminal`, or a DOM/Web-Components layer — the runtime carries **zero framework imports** (see `angular-command-center`).
+- **BYOR**: `@loom/plugin-renderer-react`, `@loom/plugin-renderer-terminal`, or a DOM/Web-Components layer — the runtime carries **zero framework imports** (see `angular-command-center`).
 - A refresh or resume **rebuilds the exact screen** from the log.
 
 ---
@@ -348,7 +348,7 @@ Presenter: fork() is called externally (e.g. an operator at the gate), not from 
 | **JSON-serializable Blueprints** | server-generated UI, persisted layouts, cross-renderer — no React coupling |
 | **Async-first storage, BYO backend** | sync stores (SQLite, in-memory) satisfy it trivially; async/network backends (Postgres, Redis, DynamoDB) are native → no architectural ceiling |
 | **Separate `@loom/compiler`** | TS/Vite deps never reach the browser bundle |
-| **UI-agnostic runtime** | only `@loom/renderer-react` is framework-specific → Angular/Vue/Node all reuse it |
+| **UI-agnostic runtime** | only `@loom/plugin-renderer-react` is framework-specific → Angular/Vue/Node all reuse it |
 
 ---
 

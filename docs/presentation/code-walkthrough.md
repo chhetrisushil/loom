@@ -253,7 +253,7 @@ Supporting files worth opening: `src/capabilities.ts` (capability$ + blueprint),
 **Terminal** (`packages/renderer-terminal`), used in Agent Network:
 
 ```ts
-import { TerminalRenderer } from "@loom/renderer-terminal";
+import { TerminalRenderer } from "@loom/plugin-renderer-terminal";
 console.log(new TerminalRenderer(projectionRuntime).render(incidentBlueprint, executionId));
 // or: renderBlueprintToString(blueprint, stateMap)
 ```

@@ -12,15 +12,15 @@ New to Loom? Start with [[file:getting-started.md][Getting Started]] and the [[f
 3.  [[#workflow-runtime][WorkflowRuntime]] — ~start~ / ~resume~ / ~fork~ / ~loadState~ + ~WorkflowContext~ + ~ExecutionHandle~
 4.  [[#replay-storage][Replay & storage]] — ~@loom/replay-vm~, ~@loom/event-runtime~, ~@loom/snapshot-runtime~
 5.  [[#effects][Effects]] (~@loom/effect-runtime~) — ~Effect~, ~EffectRuntime~, middleware, the four effect kinds, K2 capability ring + K12 delegation
-6.  [[#kernel-hardening][Kernel hardening & security]] — the K1–K12 / T1–T2 ring map + ~@loom/isolate~ (K7), ~@loom/store-crypto~ (K10), ~@loom/wire-abi~ (T2)
-7.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/a2ui~, ~@loom/blueprint-runtime~, ~@loom/renderer-react~, ~@loom/renderer-terminal~
-8.  [[#agentic][Agentic]] — ~@loom/llm~, ~@loom/reasoning~, ~@loom/agent~, ~@loom/mcp~, ~@loom/a2a~, ~@loom/capability~, ~@loom/intent~, ~@loom/planner~, ~@loom/memory~, ~@loom/orchestrator~
-9.  [[#compute][Compute & distribution]] — ~@loom/dispatcher~, ~@loom/worker-runtime~ (+ ~-local~/~-remote~), ~@loom/worker-server~, ~@loom/platform-cloudrun~, ~@loom/store-postgres~, ~@loom/graph-executor~, ~@loom/scheduler~
+6.  [[#kernel-hardening][Kernel hardening & security]] — the K1–K12 / T1–T2 ring map + ~@loom/isolate~ (K7), ~@loom/plugin-crypto~ (K10), ~@loom/wire-abi~ (T2)
+7.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/a2ui~, ~@loom/blueprint-runtime~, ~@loom/plugin-renderer-react~, ~@loom/plugin-renderer-terminal~
+8.  [[#agentic][Agentic]] — ~@loom/llm~, ~@loom/reasoning~, ~@loom/agent~, ~@loom/plugin-mcp~, ~@loom/plugin-a2a~, ~@loom/capability~, ~@loom/intent~, ~@loom/planner~, ~@loom/memory~, ~@loom/orchestrator~
+9.  [[#compute][Compute & distribution]] — ~@loom/dispatcher~, ~@loom/worker-runtime~ (+ ~-local~/~-remote~), ~@loom/worker-server~, ~@loom/plugin-cloudrun~, ~@loom/plugin-postgres~, ~@loom/graph-executor~, ~@loom/scheduler~
 10. [[#dx][DX & tooling]] — ~@loom/analytics~, ~@loom/appgen~, ~@loom/appgen-model~, ~@loom/cli~, ~@loom/testing~, ~@loom/eval~, ~@loom/deploy-sim~, ~@loom/scaffold~, ~@loom/compiler~, ~@loom/telemetry~
 11. [[#errors][Errors]]
 
 #+begin_quote
-*Loom 2.0.* Entries new or extended in the execution-kernel evolution are marked *(2.0)* inline. New packages: ~@loom/reasoning~, ~@loom/store-postgres~, ~@loom/analytics~, ~@loom/appgen~, and the kernel-hardening trio ~@loom/isolate~ (K7), ~@loom/store-crypto~ (K10), ~@loom/wire-abi~ (T2). For data structures, algorithms, and diagrams see [[file:loom-2.0/00-overview.md][docs/loom-2.0/]].
+*Loom 2.0.* Entries new or extended in the execution-kernel evolution are marked *(2.0)* inline. New packages: ~@loom/reasoning~, ~@loom/plugin-postgres~, ~@loom/analytics~, ~@loom/appgen~, and the kernel-hardening trio ~@loom/isolate~ (K7), ~@loom/plugin-crypto~ (K10), ~@loom/wire-abi~ (T2). For data structures, algorithms, and diagrams see [[file:loom-2.0/00-overview.md][docs/loom-2.0/]].
 #+end_quote
 
 -----
@@ -565,7 +565,7 @@ class SqliteSnapshotStore        { constructor(dbPath: string) }
 
 Browser-safe subpath: ~@loom/snapshot-runtime/memory~.
 
-** ~@loom/store-postgres~ — scale-out storage *(2.0)*
+** ~@loom/plugin-postgres~ — scale-out storage *(2.0)*
 
 Postgres implementations of the three store interfaces above — the horizontal-scale backend. Same contracts as the SQLite stores (JSONB payloads, server-side ~copyPrefix~), plus *cross-node live subscribe* via ~LISTEN/NOTIFY~.
 
@@ -675,7 +675,7 @@ The kernel-hardening rings (K1–K12) and kernel services (T1–T2) turn Loom in
 | K7 | Data-plane isolation & egress | ~@loom/isolate~ (below) | ~EGRESS_DENIED~ |
 | K8 | Cancellation & deadlines | ~deadlineMs~/~signal~ under [[#workflow-runtime][ExecutionContext]] | ~EXECUTION_CANCELLED~ |
 | K9 | Delivery contract & fencing | ~idempotent~ (step) + ~WorkerLease.fence~ | ~EFFECT_INDOUBT~ |
-| K10 | Log lifecycle & encryption | ~@loom/store-crypto~ (below) + ~redactionMiddleware~ | ~PAYLOAD_SHREDDED~ |
+| K10 | Log lifecycle & encryption | ~@loom/plugin-crypto~ (below) + ~redactionMiddleware~ | ~PAYLOAD_SHREDDED~ |
 | K11 | Flow-code versioning | ~resumeAs~/~flowContentHash~ under [[#workflow-runtime][WorkflowRuntime]] | ~EXECUTION_MIGRATED~ |
 | K12 | Identity, tenancy & delegation | ~DelegationAuthorizer~ + ~TenantScoped*~ stores | ~APPROVAL_GRANTED~ |
 | T1 | Durable timers & schedules | ~ctx.sleep~/~schedule$~ + ~defineConfig({ timers })~ | ~TIMER_FIRED~ |
@@ -713,7 +713,7 @@ function brokeredFetch(toolId: string, allowlist: ReadonlySet<string>, url: stri
 class EgressDeniedError extends Error { readonly toolId: string; readonly target: string; readonly reason: string; }
 #+end_src
 
-** ~@loom/store-crypto~ — encryption-at-rest & crypto-shredding (K10)
+** ~@loom/plugin-crypto~ — encryption-at-rest & crypto-shredding (K10)
 
 Wraps any ~EventStore~/~SnapshotStore~ to encrypt *marked* payload fields (dot-paths per event type) under a per-subject key on append and decrypt on read (AES-256-GCM; unmarked events stored verbatim — zero overhead). Erasure is by key destruction: ~shredSubject~ destroys the key (irreversible for everything encrypted under it, in events *and* snapshots) and appends a durable ~PAYLOAD_SHREDDED~ tombstone. A later decrypting read of a shredded execution throws ~PayloadShreddedError~ — replay fails *loudly*, never silently diverges. Optional store capabilities (fencing, ~readRange~, ~copyPrefix~) are forwarded, so it composes with K9.4 and ~fork()~.
 
@@ -833,7 +833,7 @@ function resolveWidgetValue(widget: Widget, stateMap: Map<string, unknown>): unk
 class RendererRegistry<TRenderer> { register(kind, renderer): this; get(kind); has(kind); kinds(); merge(other) }
 #+end_src
 
-** ~@loom/renderer-react~
+** ~@loom/plugin-renderer-react~
 
 #+begin_src typescript
 function BlueprintRenderer(props: {
@@ -859,7 +859,7 @@ const defaultRegistry: RendererRegistry<WidgetRenderer>;  // MetricCard/Timeline
 
 Built-in React renderers: ~MetricCardRenderer~, ~TimelineRenderer~, ~ApprovalCardRenderer~, ~StatusBadgeRenderer~, ~StreamingTextRenderer~. (~ProgressBar~ / ~DataTable~ / ~AlertCard~ widget factories exist but ship no default React renderer — bring your own.)
 
-** ~@loom/renderer-terminal~
+** ~@loom/plugin-renderer-terminal~
 
 #+begin_src typescript
 function renderBlueprintToString(blueprint: Blueprint, stateMap: Map<string, unknown>): string
@@ -946,7 +946,7 @@ function llmSkillSelector(provider: LlmProvider, maxSkills?: number): SkillSelec
 
 Emits ~SKILLS_SELECTED~ / ~AGENT_TOOL_CALL~ / ~AGENT_COMPLETED~ events via ~ctx.emit~.
 
-** ~@loom/mcp~ — Model Context Protocol
+** ~@loom/plugin-mcp~ — Model Context Protocol
 
 #+begin_src typescript
 class McpClient {
@@ -960,7 +960,7 @@ class McpClient {
 function mcpTool$(client: McpClient, toolName: string): StepDefinition<unknown, unknown>
 #+end_src
 
-** ~@loom/a2a~ — Agent-to-Agent
+** ~@loom/plugin-a2a~ — Agent-to-Agent
 
 #+begin_src typescript
 // Outbound: register a REMOTE agent as a Loom tool
@@ -982,7 +982,7 @@ type A2ATaskStatus = "submitted" | "working" | "completed" | "failed";
 interface A2ATaskResult { id: string; status: A2ATaskStatus; artifacts?: Array<{ name?: string; parts: A2AMessagePart[] }>; error?: string; }
 #+end_src
 
-Browser-safe subpath ~@loom/a2a/cards~ exports only ~toAgentCard~ (no ~node:http~).
+Browser-safe subpath ~@loom/plugin-a2a/cards~ exports only ~toAgentCard~ (no ~node:http~).
 
 ** ~@loom/capability~ / ~@loom/intent~ / ~@loom/planner~
 
@@ -1143,7 +1143,7 @@ function startWorkerServer(worker: WorkerRuntime, options?: { port?: number }): 
 interface WorkerServer { start(): Promise<void>; stop(): Promise<void>; readonly url: string; readonly port: number; }
 #+end_src
 
-** ~@loom/platform-cloudrun~
+** ~@loom/plugin-cloudrun~
 
 #+begin_src typescript
 class CloudRunWorkerRuntime {
@@ -1159,7 +1159,7 @@ type SizingPolicy = (meta?: DispatchMetadata) => CloudRunConfig;   // defaultSiz
 class StaticCloudRunPlatform { constructor(endpoint: string, options?: { secrets?; identity?; logs?; metrics? }) }
 #+end_src
 
-See [[file:../packages/platform-cloudrun/deploy.md][the Cloud Run deploy guide]].
+See [[file:../plugins/cloudrun/deploy.md][the Cloud Run deploy guide]].
 
 ** ~@loom/graph-executor~ — distributed fan-out
 
@@ -1360,7 +1360,7 @@ class QuotaExceededError extends Error           { readonly reason: string; }   
 class CircuitOpenError extends Error             { readonly key: string; }                                   // K4 — @loom/dispatcher
 class SafetyViolationError extends Error         { readonly reason: string; readonly phase: "input" | "output"; } // K6 — @loom/middleware
 class EgressDeniedError extends Error            { readonly toolId: string; readonly target: string; readonly reason: string; } // K7 — @loom/isolate
-class PayloadShreddedError extends Error         { /* subject key destroyed */ }                             // K10 — @loom/store-crypto
+class PayloadShreddedError extends Error         { /* subject key destroyed */ }                             // K10 — @loom/plugin-crypto
 class FlowCodeMismatchError extends Error        { /* pinned flowContentHash drifted */ }                    // K11 — @loom/workflow-runtime
 class FlowMigrationCheckError extends Error      { /* resumeAs replay-check refused */ }                     // K11 — @loom/workflow-runtime
 class CapabilityInvokeDeniedError extends Error  { readonly capabilityId: string; readonly reason: string; } // M7 — @loom/capability
