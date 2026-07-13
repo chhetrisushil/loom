@@ -99,3 +99,33 @@ describe("compiler — flow detection", () => {
     expect(manifest.flows.wf?.version).toBe("2.0.0");
   });
 });
+
+describe("compiler — builder detection robustness (inline / nested)", () => {
+  it("detects inline step$(...) inside a flow's steps array (with handler extraction)", () => {
+    const src = [
+      'import { flow$, step$, handler$ } from "@loom/core";',
+      'export const f = flow$({ id: "wf", steps: [',
+      '  step$({ id: "a", name: "A", handler: handler$(async () => ({})) }),',
+      '  step$({ id: "b", name: "B", handler: handler$(async () => ({})) }),',
+      "] });",
+    ].join("\n");
+    const state = emptyState();
+    const result = transformFile(src, "/abs/flow.ts", state);
+    const manifest = buildManifest(state, "dist");
+    expect(manifest.flows.wf?.steps).toEqual(["a", "b"]); // inline steps resolved
+    // both inline handlers are extracted into lazy chunks and rewritten to dynamic imports.
+    expect([...state.chunks.values()].filter((c) => c.kind === "step")).toHaveLength(2);
+    expect(result!.code).not.toContain("handler$(");
+  });
+
+  it("detects skill$(...) when nested (not a direct variable initializer)", () => {
+    const src = [
+      'import { skill$, instructions$ } from "@loom/core";',
+      'export const skills = [skill$({ id: "s1", name: "S", description: "d", instructions: instructions$("body") })];',
+    ].join("\n");
+    const state = emptyState();
+    transformFile(src, "/abs/skills.ts", state);
+    const manifest = buildManifest(state, "dist");
+    expect(manifest.skills.s1?.chunk).toMatch(/chunks\/s1_.*\.js$/);
+  });
+});
