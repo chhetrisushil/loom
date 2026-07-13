@@ -2508,6 +2508,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime
     devDependencies:
+      '@loom/conformance':
+        specifier: workspace:*
+        version: link:../../packages/conformance
       '@loom/replay-vm':
         specifier: workspace:*
         version: link:../../packages/replay-vm

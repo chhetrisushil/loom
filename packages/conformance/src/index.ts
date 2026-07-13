@@ -456,3 +456,73 @@ export function runCapabilityAuthorizerConformance(
     });
   });
 }
+
+// ── KeyStore (K10.2 crypto-shredding SPI) ─────────────────────────────────────
+//
+// Not a kernel seam — it is the crypto plugin's SPI — but the erasure contract is
+// security-critical, so the kit ships here (with a structural type, so `@loom/conformance`
+// stays free of any plugin dependency). Call it from a KeyStore impl's test suite.
+
+/** Structural view of the crypto-plugin KeyStore SPI (avoids a plugin dependency). */
+export interface KeyStoreLike {
+  getOrCreate(subjectId: string): Promise<Uint8Array>;
+  get(subjectId: string): Promise<Uint8Array | null>;
+  destroy(subjectId: string): Promise<void>;
+}
+
+/**
+ * Assert a KeyStore implementation upholds the erasure contract: stable keys,
+ * create-on-first-use, distinct keys per subject, and — the security-critical invariant —
+ * a destroyed key is gone forever and can never be resurrected.
+ */
+export function runKeyStoreConformance(factory: () => KeyStoreLike, label = "KeyStore"): void {
+  const eq = (a: Uint8Array, b: Uint8Array): boolean =>
+    a.length === b.length && a.every((byte, i) => byte === b[i]);
+
+  describe(`${label} conformance (KeyStore SPI, K10.2)`, () => {
+    it("getOrCreate returns a stable key for a subject", async () => {
+      const store = factory();
+      expect(eq(await store.getOrCreate("s1"), await store.getOrCreate("s1"))).toBe(true);
+    });
+
+    it("distinct subjects get distinct keys", async () => {
+      const store = factory();
+      expect(eq(await store.getOrCreate("s1"), await store.getOrCreate("s2"))).toBe(false);
+    });
+
+    it("get returns null before creation and the key after", async () => {
+      const store = factory();
+      expect(await store.get("s1")).toBeNull();
+      const created = await store.getOrCreate("s1");
+      const got = await store.get("s1");
+      expect(got).not.toBeNull();
+      expect(eq(got as Uint8Array, created)).toBe(true);
+    });
+
+    it("destroy makes the key unrecoverable (get → null)", async () => {
+      const store = factory();
+      await store.getOrCreate("s1");
+      await store.destroy("s1");
+      expect(await store.get("s1")).toBeNull();
+    });
+
+    it("a destroyed key can NEVER be resurrected (the erasure invariant)", async () => {
+      const store = factory();
+      await store.getOrCreate("s1");
+      await store.destroy("s1");
+      // getOrCreate may throw or yield, but get() MUST still report the subject as erased —
+      // resurrecting the same key would defeat crypto-shredding.
+      await store.getOrCreate("s1").catch(() => undefined);
+      expect(await store.get("s1")).toBeNull();
+    });
+
+    it("destroy is idempotent and destroying an unknown subject is a no-op", async () => {
+      const store = factory();
+      await store.destroy("never-existed");
+      await store.getOrCreate("s1");
+      await store.destroy("s1");
+      await store.destroy("s1");
+      expect(await store.get("s1")).toBeNull();
+    });
+  });
+}

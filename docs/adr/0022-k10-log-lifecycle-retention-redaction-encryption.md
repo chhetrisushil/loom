@@ -91,9 +91,10 @@ Adopted per the [K10 evaluation](../requirements/2026-07-10-kernel-hardening-eva
   lifecycle service (a tombstone into the affected execution's log), never at replay time —
   replay stays pure/read-only (P2) and deterministically *encounters* the tombstone.
 - **A4 — perf guardrails**: encryption is field-level, opt-in per marked field only;
-  envelope encryption with cached data keys. The unwired bench (no markers ⇒ byte-identical
-  append, G2) is proven; the *marked-vs-unmarked* append benchmark promised here is **not yet
-  shipped** — tracked as K10-R7 in the [K10/T3 evaluation](../requirements/2026-07-13-k10-t3-critical-evaluation.md).
+  envelope encryption with cached data keys. The *marked-vs-unmarked* append benchmark is now
+  shipped (`plugins/crypto/src/append.bench.ts`, K10-R7): a wrapper with an empty sensitive
+  map is within ~1.3x of an unwrapped `append` (a single map lookup, no crypto — G2), while
+  one encrypted field costs ~20x (the honest opt-in price, paid only per marked field).
 - **A5 — SecretResolver decoupling** (applied in Consequences above): the MUST is "secrets
   never enter the log", not "K7 is a prerequisite".
 - **A6 — retention posture**: archive-before-delete is the documented default — naive

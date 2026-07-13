@@ -106,6 +106,26 @@ scrubbing governs only what leaves the boundary. `secret` fields need no scrubbi
 keeps them off the log and telemetry entirely. Compose `scrubbingAdapter`/`scrubPathsByStep`
 directly for other egress surfaces (a2ui, CLI).
 
+## Middleware ordering (K10-R3.2)
+
+Redaction is a **data-shaping** middleware: it must run *outermost* of any middleware that
+inspects or transforms effect I/O, so a secret is resolved for the tool (input) and redacted
+from the result (output) before anything else sees the value. `defineConfig({ secrets })`
+wires it outermost for you (it is `unshift`-ed ahead of `effectMiddleware`), so you only need
+to think about order when composing `redactionMiddleware` **by hand** — put it first:
+
+```ts
+new EffectRuntime([
+  redactionMiddleware({ resolver }), // outermost — resolves/redacts before the rest
+  meteringMiddleware(...),
+  retryMiddleware(...),
+]);
+```
+
+This is a documented convention, not a hard boot-validator (K10-R3.2 was softened — a
+middleware-order validator is ceremony over opaque closures). Getting it wrong degrades
+redaction, not correctness of the fold.
+
 ## Triage (why a package, not the kernel)
 
 `@loom/classify` is a small **authoring-tier** package above the kernel. The taxonomy is
