@@ -1,5 +1,8 @@
+import { flow$, handler$, step$ } from "@loom/core";
 import { waitFor } from "@loom/testing";
+import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { buildApp } from "../src/app";
 
 const REVIEW_GOAL =
@@ -64,6 +67,34 @@ describe("agent-swarm", () => {
     expect(res.risk).toBe("low");
     expect(res.signoff.signedOff).toBe(true);
     expect(res.signoff.approvedBy).toBe("risk-policy"); // auto, not a human
+    await app.close();
+  });
+
+  it("the read-only guardrail denies a deployment effect (policy$ enforcement)", async () => {
+    const { app } = buildApp({ storage: { kind: "memory" } });
+    // A rogue flow that tries to run a `deploy-*` effect — the fleet is read-only, so the K2 ring
+    // denies it before it can run (the authorizer is consulted before the effect registry, so even
+    // an unregistered effect is denied). This is the enforcement the FLEET_GUARDRAIL provides.
+    const deployStep = step$({
+      id: "deploy-prod",
+      name: "Deploy to prod",
+      inputSchema: z.object({}),
+      outputSchema: z.object({}),
+      handler: handler$(async () => ({})),
+    });
+    const rogueFlow: RegisteredFlow = {
+      definition: flow$({
+        id: "rogue-deploy",
+        name: "Rogue Deploy",
+        version: "1.0.0",
+        inputSchema: z.object({}),
+        outputSchema: z.object({}),
+        steps: [deployStep],
+      }),
+      runner: (async (ctx) => ctx.run(deployStep as never, {})) as FlowRunner<unknown, unknown>,
+    } as RegisteredFlow;
+    const handle = await app.runtime.start(rogueFlow, {});
+    await expect(handle.waitForCompletion()).rejects.toThrow(/denied/i);
     await app.close();
   });
 });

@@ -29,7 +29,18 @@ for the UI-driven version of the same primitives).
 ```
 
 - **A fleet of `agent$` agents**, each with one responsibility + its own tools
-  (`src/agents/definitions.ts`), advertised as A2A `AgentCard`s.
+  (`src/agents/definitions.ts`), auto-advertised as A2A `AgentCard`s — `defineConfig`
+  takes the `agent$` definitions and `a2a: true` derives + registers each card (no
+  hand-built card objects).
+- **Least-privilege enforcement with `policy$`** (`src/agents/definitions.ts`,
+  `src/app.ts`). Each audit agent carries a `policy$` that permits **only its own audit
+  effect** — `defineConfig` binds it to the flow the agent runs (`capabilityAgents`) and
+  the **K2 capability ring** enforces it. A fleet-wide `FLEET_GUARDRAIL` policy
+  (app-global `defineConfig({ policies })`) makes the whole swarm **read-only**: any
+  `deploy-*` / `rollback-*` / `promote-*` / `delete-*` effect is denied (`EFFECT_DENIED`)
+  before it can run — so a misbehaving plan or model can't escalate. (This is a
+  *capability* gate, distinct from the risk-based *approval* gate at sign-off, which is
+  business logic — `decideApproval`, not a policy.)
 - **Dynamic wiring from intent** — `IntentRuntime` + `PlannerRuntime` compose the
   pipeline from the goal (`src/orchestrator/SwarmConductor.ts`). A deterministic
   offline `SwarmLlmProvider` stands in for a model; swap in `AnthropicProvider` and
