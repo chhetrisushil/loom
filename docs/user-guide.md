@@ -319,6 +319,14 @@ A2UI surface per agent (`surfaceId = agent.id`) so it can drive its own UI. Both
 default** — with the flags unset, nothing changes and you wire cards/surfaces manually exactly
 as above.
 
+You don't even list the definitions by hand: `loom gen` discovers every `agent$` under
+`app/agents/*.ts` (and every `tool$` under `app/tools/*.ts`) and emits `agentModules` /
+`toolModules`. Pass them straight through — `defineConfig({ agentModules, toolModules, a2a: true })`
+— and each discovered agent is folded into `agents` (auto-wired behind the same flags) while each
+tool is exposed on `app.tools`. Discovery is by value shape, not by parsing, so it's robust to how
+you declare or re-export each construct. A tool's runnable **effect** is still registered
+explicitly (`effectRuntime.register(id, new ToolEffect(fn))`) — `tool$` is metadata-only by design.
+
 ---
 
 ## 8. Intent, planner & memory
@@ -355,6 +363,8 @@ interface LoomConfig {
   surfaces?: (string | { id: string; redact?: string[] })[]; // redact masks surface egress (K10-R6)
   flows?: RegisteredFlow[];
   flowModules?: FlowModule[];          // from `loom gen` (static discovery)
+  agentModules?: AgentModule[];        // from `loom gen`: agent$ defs → fold into `agents`
+  toolModules?: ToolModule[];          // from `loom gen`: tool$ defs → exposed on app.tools
   effectMiddleware?: EffectMiddleware[];
   validate?: boolean | "warn" | "error";
   agents?: (AgentCard | AgentDefinition)[]; // cards register verbatim; agent$ defs auto-wire behind flags

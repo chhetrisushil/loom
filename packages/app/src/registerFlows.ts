@@ -1,7 +1,48 @@
+import type { AgentDefinition, ToolDefinition } from "@loom/core";
 import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 
-/** A statically-imported module namespace that may export RegisteredFlows. */
+/** A statically-imported module namespace that may export RegisteredFlows / agents / tools. */
 export type FlowModule = Record<string, unknown>;
+export type AgentModule = Record<string, unknown>;
+export type ToolModule = Record<string, unknown>;
+
+function isAgentDefinition(value: unknown): value is AgentDefinition {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { _tag?: unknown })._tag === "AgentDefinition"
+  );
+}
+function isToolDefinition(value: unknown): value is ToolDefinition {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { _tag?: unknown })._tag === "ToolDefinition"
+  );
+}
+
+/**
+ * Collect every `agent$` definition exported by the given modules — by VALUE SHAPE (`_tag`),
+ * so it's robust to how the agent is declared/exported (unlike AST parsing). Deterministic
+ * order (module order, then declaration order). Used to feed `defineConfig`'s agent auto-wiring
+ * from `loom gen`'s `agentModules`.
+ */
+export function agentDefinitionsFrom(...modules: AgentModule[]): AgentDefinition[] {
+  const out: AgentDefinition[] = [];
+  for (const mod of modules) {
+    for (const value of Object.values(mod)) if (isAgentDefinition(value)) out.push(value);
+  }
+  return out;
+}
+
+/** Collect every `tool$` definition exported by the given modules (value-shape). */
+export function toolDefinitionsFrom(...modules: ToolModule[]): ToolDefinition[] {
+  const out: ToolDefinition[] = [];
+  for (const mod of modules) {
+    for (const value of Object.values(mod)) if (isToolDefinition(value)) out.push(value);
+  }
+  return out;
+}
 
 function isRegisteredFlow(value: unknown): value is RegisteredFlow {
   if (typeof value !== "object" || value === null) return false;

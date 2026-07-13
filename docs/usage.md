@@ -117,7 +117,8 @@ const app = defineConfig({
 |---|---|
 | `storage` | `{ kind: "memory" }` or `{ kind: "custom", eventStore, snapshotStore, branchRegistry? }`. Concrete backends are **presets** returning a `custom` descriptor: `sqliteStorage({ dir, branching })` from `@loom/plugin-sqlite`, `postgresStorage({ url, branching })` from `@loom/plugin-postgres`, or your own (ADR 0043) |
 | `surfaces` | A2UI surface ids to project — a bare id, or `{ id, redact: [...] }` to mask surface paths from egress (K10-R6) |
-| `flows` / `flowModules` | flows to register (explicit, or via `loom gen` modules) |
+| `flows` / `flowModules` | flows to register (explicit, or via `loom gen`'s `flowModules`) |
+| `agentModules` / `toolModules` | `agent$` / `tool$` definitions discovered by `loom gen` (value-shape); agents fold into `agents` (auto-wired behind `a2a`/`a2ui`), tools are exposed on `app.tools` |
 | `effectMiddleware` | cross-cutting effect wrappers (retries, metering, safety, redaction… — see Step 11) |
 | `authorizer` | capability protection ring — deny ungranted effects (K2; see Step 11) |
 | `timers` | durable timers + `schedule$` cron occurrences (T1; see Step 11) |

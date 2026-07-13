@@ -17,7 +17,19 @@ describe("codegen", () => {
   });
 
   it("generateRegistration with no flows yields an empty array", () => {
-    expect(generateRegistration([])).toContain("export const flowModules = [];");
+    const out = generateRegistration([]);
+    expect(out).toContain("export const flowModules = [];");
+    // agent/tool arrays are always emitted (empty when none discovered).
+    expect(out).toContain("export const agentModules = [];");
+    expect(out).toContain("export const toolModules = [];");
+  });
+
+  it("generateRegistration emits agentModules + toolModules alongside flows", () => {
+    const out = generateRegistration(["./flows/a/flow"], ["./agents/triage"], ["./tools/lookup"]);
+    expect(out).toContain('import * as _a0 from "./agents/triage";');
+    expect(out).toContain("export const agentModules = [_a0];");
+    expect(out).toContain('import * as _t0 from "./tools/lookup";');
+    expect(out).toContain("export const toolModules = [_t0];");
   });
 });
 

@@ -1,5 +1,5 @@
 import { secret, sensitive } from "@loom/classify";
-import { agent$, step$ } from "@loom/core";
+import { agent$, step$, tool$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectMiddleware } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
@@ -577,5 +577,31 @@ describe("defineConfig — agent auto-wiring (a2a / a2ui, opt-in)", () => {
         .map((c) => c.name)
         .sort()
     ).toEqual(["Manual", "Triage"]);
+  });
+
+  it("discovers agents from agentModules (loom gen) and auto-wires them behind a2a", () => {
+    const mod = { triageAgent: triage, notAnAgent: 42, alsoNot: "x" }; // value-shape discovery
+    const app = defineConfig({ storage: { kind: "memory" }, agentModules: [mod], a2a: true });
+    expect(app.bus.agentCards().map((c) => c.name)).toContain("Triage");
+  });
+
+  it("agentModules without a flag are not wired (opt-in, same as `agents`)", () => {
+    const app = defineConfig({ storage: { kind: "memory" }, agentModules: [{ a: triage }] });
+    expect(app.bus.agentCards()).toHaveLength(0);
+  });
+
+  it("exposes tool$ definitions discovered from toolModules on app.tools (effects stay manual)", () => {
+    const lookup = tool$({
+      id: "lookup",
+      name: "Lookup",
+      description: "d",
+      inputSchema: z.object({}),
+      outputSchema: z.object({}),
+    });
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      toolModules: [{ LookupTool: lookup, notATool: 1 }],
+    });
+    expect(app.tools.map((t) => t.id)).toEqual(["lookup"]);
   });
 });
