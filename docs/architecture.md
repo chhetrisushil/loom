@@ -104,7 +104,7 @@ The durable core stays small and boring (execution + event log + determinism + e
 
 ### P11 — AI-native DX: natural language compiles to code, not runtime *(Loom 2.0)*
 
-Natural language is a **build-time** convenience, never a runtime input. `@loom/appgen` is **brownfield-aware**: it scans the existing app (`scanApp` → `AppModel`), plans a *delta* from an intent via a deterministic, offline directive parser (`planChanges` → `ChangeSpec`, the only stage that reads NL), then applies it with surgical, formatting-preserving edits (`applyChanges`) — new flows from templates, existing ones edited only where a handler still hashes to the generated stub. The output is ordinary `flow$`/`step$` wired through `defineConfig` in the folder convention. There is no runtime interpretation of NL: the only "understanding" step is the swappable planner producing a spec, and codegen is pure and template-based (**P4/P5 preserved**). An optional [`@loom/appgen-model`](../tools/appgen-model) swaps a small on-device model into the plan stage. See [ADR 0042](adr/0042-ai-native-brownfield-appgen.md) and [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
+Natural language is a **build-time** convenience, never a runtime input. `@loom/appgen` is **brownfield-aware**: it scans the existing app (`scanApp` → `AppModel`), plans a *delta* from an intent via a deterministic, offline directive parser (`planChanges` → `ChangeSpec`, the only stage that reads NL), then applies it with surgical, formatting-preserving edits (`applyChanges`) — new flows from templates, existing ones edited only where a handler still hashes to the generated stub. The output is ordinary `flow$`/`step$` wired through `defineConfig` in the folder convention. There is no runtime interpretation of NL: the only "understanding" step is the swappable planner producing a spec, and codegen is pure and template-based (**P4/P5 preserved**). The plan stage is **provider-agnostic** — `loom appgen --model <spec>` reasons with the model of your choice (`anthropic:` / `openai:` / `gemini:` via `@loom/llm`, or a local `.gguf` via the optional [`@loom/appgen-model`](../tools/appgen-model)), and always falls back to the deterministic parser. See [ADR 0042](adr/0042-ai-native-brownfield-appgen.md), [ADR 0050](adr/0050-appgen-model-provider-agnostic.md), and [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
 
 ---
 
@@ -117,7 +117,8 @@ flowchart TB
   subgraph Authoring["✍️  Authoring — plain TypeScript"]
     A1["step$ / handler$ — units of work"]
     A2["flow$ + runner — orchestration (async fn)"]
-    A3["agent$ / tool$ / projection$ — agentic + UI"]
+    A3["agent$ · tool$ · skill$ — agentic"]
+    A4["projection$ · schedule$ · memory$ · policy$ — UI · cron · memory · authority"]
   end
 
   subgraph Core["🧵  Durable core (isomorphic, deterministic)"]
@@ -245,7 +246,7 @@ This is the same mechanism behind time-travel debugging and deploy-simulation: r
 
 ### 5.2 Effects & middleware (`@loom/effect-runtime`, `@loom/middleware`)
 
-All side effects — tool calls, LLM calls, human waits, agent-to-agent calls — go through the **`EffectRuntime`**, keyed by `toolId`. This is the isolation boundary that makes replay possible: during replay, completed effects are served from the log, not re-executed. It is also the **authority boundary** (Loom 2.0 K2): given an optional `CapabilityAuthorizer` (e.g. a least-privilege `GrantTable`), the `EffectRuntime` authorizes every invocation and *denies* ungranted effects — the effect never runs, an `EFFECT_DENIED` fact is logged (P9), and a `CapabilityDeniedError` fails the step. This is the one protection ring a library can enforce; it is opt-in, so omitting an authorizer keeps the permissive default.
+All side effects — tool calls, LLM calls, human waits, agent-to-agent calls — go through the **`EffectRuntime`**, keyed by `toolId`. This is the isolation boundary that makes replay possible: during replay, completed effects are served from the log, not re-executed. It is also the **authority boundary** (Loom 2.0 K2): given an optional `CapabilityAuthorizer` (e.g. a least-privilege `GrantTable`), the `EffectRuntime` authorizes every invocation and *denies* ungranted effects — the effect never runs, an `EFFECT_DENIED` fact is logged (P9), and a `CapabilityDeniedError` fails the step. This is the one protection ring a library can enforce; it is opt-in, so omitting an authorizer keeps the permissive default. The imperative `GrantTable` has a **declarative companion**, `policy$`: a `PolicyAuthorizer` enforces `policy$` definitions (deny-wins allow/deny effect lists + glob matchers on effect id / tenant / step) through the *same* ring. Policies attach to a flow (`flow$({ policies })`), an agent (`agent$({ policies })`, bound to the flow it runs), or app-globally (`defineConfig({ policies })`), and compose **under** any authorizer — defense-in-depth: a policy can tighten a grant, never widen it ([ADR 0048](adr/0048-declarative-policy-enforcement.md)).
 
 **Middleware** wraps effect execution with cross-cutting concerns (retries with backoff, resource metering, and later logging/idempotency/tracing) as a composable `(ctx, input, next) => …` chain — the same shape as HTTP middleware, applied to effects ([ADR 0006](adr/0006-config-and-effect-middleware.md)). `meteringMiddleware` (Loom 2.0 K3) meters each effect's tokens/cost/time as a durable `RESOURCE_METERED` fact and enforces per-execution budgets by admission control (over-budget ⇒ the next effect is denied) — the scarce resource for intelligent software being tokens/$/latency, not CPU. `safetyMiddleware` (Loom 2.1 K6) is the same shape applied to *behavior*: pluggable validators check an effect's input before it runs and its output before it propagates, and a violation is a durable `SAFETY_BLOCKED` fact that fails the step — so the kernel governs not just *who* may act and *how much* it costs, but *whether the action/output is safe* ([ADR 0017](adr/0017-k6-behavioral-safety-ring.md)).
 
@@ -266,6 +267,8 @@ Every middleware after `retryMiddleware` is opt-in; the authorizer, metering, sa
 
 State for humans is a **read model**, folded from the same events by the `ProjectionRuntime` — completely decoupled from durability. Flows push UI updates via `ctx.ui.set/merge/append` (the **A2UI** patch protocol), which fold into **surfaces**. Surfaces render through pluggable renderers (React, Web Components, terminal) — **bring-your-own-renderer**. The durable log never depends on the UI.
 
+A projection can be declared with **`projection$`** and discovered by `loom gen`. When the compiler builds one, it extracts the whole `handlers` fold-map into its own `import()` chunk and records the handled event-type keys — so the fold code loads **on demand**, event-type-gated: a projection whose events never fire never loads its code (the same lazy-chunk mechanism as `handler$`/`instructions$`, [ADR 0049](adr/0049-projection-on-demand-fold-code.md)). At the config level, `defineConfig({ a2ui: true })` registers **one A2UI surface per `agent$`** (`surfaceId = agent.id`) so each agent drives its own panel, and `a2a: true` derives each agent's discoverable A2A card — both from the same `agent$` definitions, no hand-wired cards/surfaces.
+
 ```mermaid
 flowchart LR
   Ev["event log"] --> PR["ProjectionRuntime<br/>(fold events → surfaces)"]
@@ -278,10 +281,10 @@ flowchart LR
 ### 5.4 Agentic layer (`@loom/agent`, `@loom/plugin-a2a`, `@loom/llm`, `@loom/plugin-mcp`, `@loom/capability`, `@loom/intent`, `@loom/planner`, `@loom/memory`)
 
 The intelligence pipeline, all composable and all running *inside* durable flows:
-- **`@loom/llm`** — provider-agnostic model abstraction (`LlmProvider`).
-- **`@loom/agent`** — a ReAct-style tool-using loop.
+- **`@loom/llm`** — provider-agnostic model abstraction (`LlmProvider`), with `AnthropicProvider`, `OpenAiProvider`, and `GeminiProvider` shipped (and a VCR provider for tests); any provider drops in.
+- **`@loom/agent`** — a ReAct-style tool-using loop; a `SkillRegistry` selects `skill$` skills whose instruction bodies load lazily.
 - **`@loom/plugin-mcp`** — Model Context Protocol client for external tools.
-- **`@loom/plugin-a2a`** — Agent-to-Agent protocol (client + server): call external agents (ADK, LangGraph, CrewAI) and expose Loom flows to them; `LoomAgentExecutor` adapts a flow into a stateless A2A task ([ADR 0007](adr/0007-manifest-and-a2a-adapter.md)).
+- **`@loom/plugin-a2a`** — Agent-to-Agent protocol (client + server): call external agents (ADK, LangGraph, CrewAI) and expose Loom flows to them; `LoomAgentExecutor` adapts a flow into a stateless A2A task ([ADR 0007](adr/0007-manifest-and-a2a-adapter.md)). `defineConfig({ a2a: true })` auto-advertises every `agent$` as a discoverable card (no hand-built card table).
 - **`@loom/capability`** — flows exposed as intent-addressable capabilities.
 - **`@loom/intent`** — routes natural-language intent to a capability.
 - **`@loom/planner`** — turns a goal into an ordered capability plan.
@@ -307,14 +310,15 @@ flowchart LR
 - **`@loom/graph-executor`** fans a graph of nodes into **per-node executions** (one writer each), joined via the `BranchRegistry` — never multi-writer on one execution ([ADR 0005](adr/0005-distributed-graph-fork-join.md)).
 - **`@loom/scheduler`** is an *ephemeral* cooperative scheduler (priority, bounded concurrency, cancellation) for the agentic layer — replay-safe and not part of durable state.
 
-### 5.6 DX tooling (`@loom/cli`, `@loom/eval`, `@loom/deploy-sim`, `@loom/testing`, `@loom/scaffold`, `@loom/compiler`)
+### 5.6 DX tooling (`@loom/cli`, `@loom/appgen`, `@loom/eval`, `@loom/deploy-sim`, `@loom/testing`, `@loom/scaffold`, `@loom/compiler`)
 
 Every one of these is *a different lens on the durable log*:
 - **`@loom/eval`** — replay a recorded log as a test fixture; diff/score runs ([ADR 0008](adr/0008-evals-and-deploy-simulation.md)).
 - **`@loom/deploy-sim`** — replay historical logs against *new* flow definitions to catch breaking changes before promoting.
 - **`@loom/testing`** — `createTestApp`, `waitForPhase`, `captureGolden`, and a VCR LLM provider ([ADR 0009](adr/0009-testing-kit.md)).
-- **`@loom/cli`** (`loom`) — `logs` (tail the log), `debug` (time-travel to any sequence), `eval`, `check`, `gen`/`new` (build-time codegen), `deploy check`, `inspect` (web timeline + slider) ([ADRs 0010–0014](adr/)).
-- **`@loom/compiler`** — optional Vite plugin/CLI: `handler$` extraction, flow-graph analysis, resumability metadata.
+- **`@loom/cli`** (`loom`) — `logs` (tail the log), `debug` (time-travel to any sequence), `eval`, `check`, `gen`/`new` (build-time codegen — `gen` discovers all seven convention folders: flows, agents, tools, skills, schedules, memories, projections, [ADR 0011](adr/0011-folder-convention-codegen.md)), `appgen` (brownfield NL → code, model-of-your-choice), `deploy check`, `inspect` (web timeline + slider) ([ADRs 0010–0014](adr/)).
+- **`@loom/appgen`** (+ optional `@loom/appgen-model`) — brownfield-aware NL → code: scan → plan (provider-agnostic, [ADR 0050](adr/0050-appgen-model-provider-agnostic.md)) → surgical apply → validate; the NL stage is isolated and the output is plain, statically-wired code (P11).
+- **`@loom/compiler`** — optional Vite plugin/CLI: `handler$`/`instructions$`/`projection$` extraction into lazy chunks, flow-graph analysis, resumability metadata.
 
 ### 5.7 Kernel-hardening rings (K1–K12, T1–T2)
 
@@ -466,7 +470,7 @@ flowchart TB
 | **Compute / distribution** | `dispatcher`, `worker-runtime`, `worker-runtime-local`, `worker-runtime-remote`, `worker-server`, `platform-cloudrun`, `graph-executor`, `scheduler`, `store-postgres` |
 | **Kernel hardening / security** | `effect-runtime` (K2 authz + K12 delegation), `middleware` (K3 metering, K6 safety, K10 redaction, K12 nested budgets), `isolate` (K7 data-plane isolation & egress), `plugin-crypto` (K10 encryption & crypto-shredding), `event-runtime`/`snapshot-runtime` (K12 tenant scoping), `wire-abi` (T2), `telemetry` (K10-R6 egress scrubbing) |
 | **Data protection & compliance** | `classify` (K10-R1 `secret`/`sensitive`/`internal`/`externalized` markers), `compliance` (T3 subject index + export + erasure, tenant-scoped), `plugin-content` (ADR 0046 content-store seam) — see [data classification](data-classification.md) & [compliance](compliance.md) |
-| **Intelligence / DX** | `analytics`, `appgen`, `appgen-model` (optional local planner), `cli`, `eval`, `deploy-sim`, `testing`, `scaffold`, `compiler`, `telemetry` |
+| **Intelligence / DX** | `analytics`, `appgen` (provider-agnostic planner), `appgen-model` (optional local `.gguf` option), `cli`, `eval`, `deploy-sim`, `testing`, `scaffold`, `compiler`, `telemetry` |
 | **Three-direction arc** | `dst` (simulation testing), `audit-chain` + `fair-scheduler` + execution-authz in `workflow-runtime` (multi-tenant isolation), `live-query` + `orchestration` + `saga` (coordination) — ADRs 0036–0041 |
 
 > **Loom 2.0.** The packages in **bold-new** groups above — `reasoning`, `store-postgres`, `analytics`, `appgen` — plus deepenings of `workflow-runtime`, `effect-runtime`, `middleware`, `dispatcher`, `memory`, `capability`, and `agent`, constitute the **execution-kernel evolution**. Its full data structures, algorithms, and diagrams live in [`docs/loom-2.0/`](loom-2.0/00-overview.md); the decision record is [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
