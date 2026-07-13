@@ -22,6 +22,7 @@ export class TenantScopedEventStore implements EventStore {
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
+  readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
 
   constructor(
     private readonly inner: EventStore,
@@ -46,6 +47,15 @@ export class TenantScopedEventStore implements EventStore {
     }
     if (inner.truncatePrefix !== undefined) {
       this.truncatePrefix = (id, through) => inner.truncatePrefix!(scope(id), through);
+    }
+    if (inner.listExecutions !== undefined) {
+      // Enumerate only THIS tenant's executions: keep the ones under our prefix, strip it.
+      // Cross-tenant ids are invisible (isolation by construction, K12.5).
+      const prefix = `${this.tenant}${SEP}`;
+      this.listExecutions = async () =>
+        (await inner.listExecutions!())
+          .filter((id) => id.startsWith(prefix))
+          .map((id) => id.slice(prefix.length));
     }
   }
 

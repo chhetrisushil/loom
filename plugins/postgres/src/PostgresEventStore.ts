@@ -202,6 +202,14 @@ export class PostgresEventStore implements EventStore {
     );
   }
 
+  async listExecutions(): Promise<string[]> {
+    await this.ready;
+    const { rows } = await this.pool.query<{ execution_id: string }>(
+      "SELECT DISTINCT execution_id FROM events"
+    );
+    return rows.map((r) => r.execution_id);
+  }
+
   async close(): Promise<void> {
     if (this.listener !== undefined) {
       await this.listener.end();

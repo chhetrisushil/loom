@@ -6,8 +6,24 @@ export type { EventEnvelope };
  * SPI version for the {@link EventStore} contract (ADR 0033). Bump MINOR when adding an
  * optional method, MAJOR when changing a required method's contract. Pinned by
  * `runEventStoreConformance` in `@loom/testing`.
+ *
+ * 1.1.0: added optional `listExecutions()` (enumerate distinct executionIds — powers
+ *   `loom retention run` / `loom compliance report` over cold storage).
  */
-export const EVENT_STORE_SPI_VERSION = "1.0.0";
+export const EVENT_STORE_SPI_VERSION = "1.1.0";
+
+/**
+ * Reserved-stream prefix. Control facts (retention `__loom_lifecycle__`, erasure
+ * `__loom_erasure__`) are stored under executionIds beginning with this, so
+ * {@link listExecutions} surfaces them too. Enumerators over *real* executions filter with
+ * {@link isReservedStream}.
+ */
+export const RESERVED_STREAM_PREFIX = "__loom_";
+
+/** Whether an executionId names a reserved control stream rather than a real execution. */
+export function isReservedStream(executionId: string): boolean {
+  return executionId.startsWith(RESERVED_STREAM_PREFIX);
+}
 
 /**
  * Durable, append-only event log. Async-first so any backend plugs in —
@@ -78,6 +94,15 @@ export interface EventStore {
    * `fold(snapshot, suffix) === fold(events)` holds — the store only truncates.
    */
   truncatePrefix?(executionId: string, throughSequence: number): Promise<void>;
+  /**
+   * OPTIONAL enumeration of every distinct executionId in the store (unordered). Powers
+   * operator sweeps that must visit all executions — `loom retention run`,
+   * `loom compliance report`. Includes reserved control streams (`__loom_*`); callers that
+   * want only real executions filter with {@link isReservedStream}. A store that omits this
+   * cannot be swept over cold storage (there is no cheap fallback — enumeration requires a
+   * scan the store alone can do efficiently, e.g. `SELECT DISTINCT execution_id`).
+   */
+  listExecutions?(): Promise<string[]>;
   close(): Promise<void>;
 }
 

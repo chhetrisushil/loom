@@ -152,6 +152,14 @@ export class SqliteEventStore implements EventStore {
       .run(executionId, throughSequence);
   }
 
+  async listExecutions(): Promise<string[]> {
+    // The (execution_id, sequence) index makes DISTINCT a cheap index-only scan.
+    const rows = this.db
+      .prepare<[], { execution_id: string }>("SELECT DISTINCT execution_id FROM events")
+      .all();
+    return rows.map((r) => r.execution_id);
+  }
+
   async close(): Promise<void> {
     this.db.close();
   }

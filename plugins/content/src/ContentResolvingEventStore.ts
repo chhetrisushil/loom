@@ -43,6 +43,7 @@ export class ContentResolvingEventStore implements EventStore {
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
+  readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
 
   constructor(
     private readonly inner: EventStore,
@@ -70,6 +71,10 @@ export class ContentResolvingEventStore implements EventStore {
     }
     if (inner.truncatePrefix !== undefined) {
       this.truncatePrefix = (executionId, through) => inner.truncatePrefix!(executionId, through);
+    }
+    // Enumeration is over executionIds only — no payload, so no resolution needed.
+    if (inner.listExecutions !== undefined) {
+      this.listExecutions = () => inner.listExecutions!();
     }
   }
 

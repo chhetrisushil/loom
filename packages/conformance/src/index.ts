@@ -93,6 +93,19 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       expect(await store.acquireFence("y")).toBe(1);
       await store.close();
     });
+
+    it("listExecutions enumerates distinct executionIds (when supported)", async () => {
+      const store = factory();
+      if (store.listExecutions === undefined) return; // OPTIONAL (1.1.0)
+      await store.append(evt("x", 0));
+      await store.append(evt("x", 1)); // same execution, still one id
+      await store.append(evt("y", 0));
+      const ids = new Set(await store.listExecutions());
+      expect(ids.has("x")).toBe(true);
+      expect(ids.has("y")).toBe(true);
+      expect(ids.size).toBe(2);
+      await store.close();
+    });
   });
 }
 
