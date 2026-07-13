@@ -146,6 +146,17 @@ export class DelegationAuthorizer implements CapabilityAuthorizer {
     if (!verifyDelegation(this.options.secret, token)) {
       return { allowed: false, reason: "delegation signature invalid (forged or tampered)" };
     }
+    // K12.4 — bind the token to its intended holder. A delegation minted for
+    // `issuedTo` may only be presented BY that principal (`req.principal.actor`).
+    // The signature proves authenticity, not that the bearer is the intended
+    // holder — without this check a captured/misrouted token is a confused deputy,
+    // usable by whoever holds it.
+    if (req.principal?.actor !== token.issuedTo) {
+      return {
+        allowed: false,
+        reason: `delegation issued to "${token.issuedTo}" but presented by "${req.principal?.actor ?? "(none)"}"`,
+      };
+    }
     const delegated = new Set(token.grants);
     const inDelegated = delegated.has("*") || delegated.has(req.toolId);
     if (!inDelegated) {

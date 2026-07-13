@@ -28,9 +28,14 @@ export class SqliteSnapshotStore implements SnapshotStore {
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("synchronous = NORMAL");
-    migrate(this.db);
+    try {
+      this.db.pragma("journal_mode = WAL");
+      this.db.pragma("synchronous = NORMAL");
+      migrate(this.db);
+    } catch (err) {
+      this.db.close(); // don't leak the file handle if setup fails on a bad/locked file
+      throw err;
+    }
   }
 
   async save(snapshot: Snapshot): Promise<void> {

@@ -7,7 +7,6 @@ import {
   outcomeRecords,
 } from "./decisions";
 import { runtimeIntelligence } from "./intelligence";
-import { rankFromOutcomes } from "./outcomes";
 import { latencyBreakdown } from "./profile";
 
 // ── Advisory Optimization Pipeline (ADR 0034) ────────────────────────────────
@@ -122,8 +121,10 @@ export function advisoryPipeline(events: EventEnvelope[], opts?: AdvisoryOptions
   // analyze
   const intel = runtimeIntelligence(events);
   const rec = intel.recommendations;
-  // learn — the feed-forward signal for the next rankedRouter.
-  const rankings = rankFromOutcomes(events);
+  // learn — the feed-forward signal for the next rankedRouter. `runtimeIntelligence`
+  // already computed this exact value (rankFromOutcomes(events)) into outcomeRankings;
+  // reuse it instead of a second full-log pass + sort.
+  const rankings = rec.outcomeRankings;
 
   // recommend — prefer the outcome-driven ranking; fall back to frequency ranking.
   const modelRanks =
