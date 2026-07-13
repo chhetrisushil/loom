@@ -60,6 +60,9 @@ describe("pluginFiles", () => {
       "middleware",
       "timer",
       "projection",
+      "worker",
+      "llm",
+      "authorizer",
     ]);
     const text = listSeams();
     for (const k of SEAM_KEYS) expect(text).toContain(k);

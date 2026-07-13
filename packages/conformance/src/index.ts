@@ -9,7 +9,7 @@ import type {
   TimerStore,
 } from "@loom/event-runtime";
 import { readRangeOf } from "@loom/event-runtime";
-import type { LlmProvider } from "@loom/llm";
+import type { LlmProvider, LlmStreamChunk } from "@loom/llm";
 import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
@@ -422,7 +422,7 @@ export function runLlmProviderConformance(factory: () => LlmProvider, label = "L
     it("stream (when supported) yields chunks ending with done:true", async () => {
       const provider = factory();
       if (provider.stream === undefined) return;
-      const chunks = [];
+      const chunks: LlmStreamChunk[] = [];
       for await (const c of provider.stream(req)) chunks.push(c);
       expect(chunks.length).toBeGreaterThan(0);
       expect(chunks[chunks.length - 1]?.done).toBe(true);
