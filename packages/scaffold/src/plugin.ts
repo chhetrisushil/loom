@@ -433,6 +433,156 @@ const SEAMS: Record<string, SeamDef> = {
       ].join("\n");
     },
   },
+
+  worker: {
+    key: "worker",
+    title: "Worker runtime (run an execution on some compute)",
+    wiring: "dispatcher: new LocalDispatcher(new <Name>Worker())",
+    spiDeps: ["@loom/worker-runtime"],
+    conformance: ["runWorkerRuntimeConformance"],
+    index: (name) => {
+      const P = pascal(name);
+      return [
+        "import type {",
+        "  ExecutionPackage,",
+        "  ExecutionResult,",
+        "  WorkerLease,",
+        "  WorkerRequest,",
+        "  WorkerRuntime,",
+        '} from "@loom/worker-runtime";',
+        "",
+        "/** A `WorkerRuntime` — runs an ExecutionPackage on some compute; wrap it in a dispatcher. */",
+        `export class ${P}Worker implements WorkerRuntime {`,
+        "  allocate(request: WorkerRequest): Promise<WorkerLease> {",
+        "    return Promise.resolve({ leaseId: `lease-${request.executionId}` });",
+        "  }",
+        "  execute(_lease: WorkerLease, pkg: ExecutionPackage): Promise<ExecutionResult> {",
+        "    throw new Error(`not implemented: execute ${pkg.executionId}`);",
+        "  }",
+        "  release(_lease: WorkerLease): Promise<void> {",
+        "    return Promise.resolve();",
+        "  }",
+        "}",
+        "",
+      ].join("\n");
+    },
+    test: (name) => {
+      const P = pascal(name);
+      return [
+        "// Prove your worker with the conformance kit once execute() is real — it needs a",
+        "// package your worker can run, so the factory returns { worker, pkg }:",
+        '// import { runWorkerRuntimeConformance } from "@loom/conformance";',
+        `// import { ${P}Worker } from "./index";`,
+        `// runWorkerRuntimeConformance(() => ({ worker: new ${P}Worker(), pkg: /* runnable ExecutionPackage */ }));`,
+        "",
+        'import { describe, expect, it } from "vitest";',
+        `import { ${P}Worker } from "./index";`,
+        "",
+        `describe("${P}Worker", () => {`,
+        '  it("allocate returns a lease", async () => {',
+        `    const lease = await new ${P}Worker().allocate({ executionId: "e" });`,
+        '    expect(typeof lease.leaseId).toBe("string");',
+        "  });",
+        "});",
+        "",
+      ].join("\n");
+    },
+  },
+
+  llm: {
+    key: "llm",
+    title: "LLM provider (model backend)",
+    wiring: "createLlmEffect({ provider: new <Name>Provider() })",
+    spiDeps: ["@loom/llm"],
+    conformance: ["runLlmProviderConformance"],
+    index: (name) => {
+      const P = pascal(name);
+      return [
+        'import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";',
+        "",
+        "/** An `LlmProvider` — wire via `createLlmEffect({ provider })` or an agent's `provider`. */",
+        `export class ${P}Provider implements LlmProvider {`,
+        "  async complete(request: LlmRequest): Promise<LlmResponse> {",
+        "    throw new Error(`not implemented: complete (${request.messages.length} messages)`);",
+        "  }",
+        "  // stream?(request: LlmRequest): AsyncIterable<LlmStreamChunk> — optional",
+        "  // warm?(): void | Promise<void> — optional advisory pre-warm",
+        "}",
+        "",
+      ].join("\n");
+    },
+    test: (name) => {
+      const P = pascal(name);
+      return [
+        "// Prove your provider with the conformance kit once complete() is real:",
+        '// import { runLlmProviderConformance } from "@loom/conformance";',
+        `// import { ${P}Provider } from "./index";`,
+        `// runLlmProviderConformance(() => new ${P}Provider());`,
+        "",
+        'import { describe, expect, it } from "vitest";',
+        `import { ${P}Provider } from "./index";`,
+        "",
+        `describe("${P}Provider", () => {`,
+        '  it("constructs", () => {',
+        `    expect(new ${P}Provider()).toBeDefined();`,
+        "  });",
+        "});",
+        "",
+      ].join("\n");
+    },
+  },
+
+  authorizer: {
+    key: "authorizer",
+    title: "Capability authorizer (allow/deny each effect)",
+    wiring: "authorizer: new <Name>Authorizer()",
+    spiDeps: ["@loom/effect-runtime"],
+    conformance: ["runCapabilityAuthorizerConformance"],
+    index: (name) => {
+      const P = pascal(name);
+      return [
+        "import type {",
+        "  CapabilityAuthorizer,",
+        "  CapabilityDecision,",
+        "  CapabilityRequest,",
+        '} from "@loom/effect-runtime";',
+        "",
+        "/** A `CapabilityAuthorizer` — allow/deny each effect. Wire as `authorizer`. */",
+        `export class ${P}Authorizer implements CapabilityAuthorizer {`,
+        "  authorize(req: CapabilityRequest): CapabilityDecision {",
+        "    // TODO: your policy. Default-deny is the safe placeholder.",
+        "    return { allowed: false, reason: `not implemented (${req.toolId})` };",
+        "  }",
+        "}",
+        "",
+      ].join("\n");
+    },
+    test: (name) => {
+      const P = pascal(name);
+      return [
+        "// Prove your authorizer with the conformance kit (decision shape + determinism):",
+        '// import { runCapabilityAuthorizerConformance } from "@loom/conformance";',
+        `// import { ${P}Authorizer } from "./index";`,
+        `// runCapabilityAuthorizerConformance(() => new ${P}Authorizer());`,
+        "",
+        'import { describe, expect, it } from "vitest";',
+        `import { ${P}Authorizer } from "./index";`,
+        "",
+        `describe("${P}Authorizer", () => {`,
+        '  it("returns a boolean decision", () => {',
+        `    const d = new ${P}Authorizer().authorize({`,
+        '      toolId: "t",',
+        '      executionId: "e",',
+        '      workflowId: "w",',
+        '      stepId: "s",',
+        "    });",
+        '    expect(typeof d.allowed).toBe("boolean");',
+        "  });",
+        "});",
+        "",
+      ].join("\n");
+    },
+  },
 };
 
 export const SEAM_KEYS = Object.keys(SEAMS);
