@@ -64,3 +64,38 @@ describe("compiler — skill instruction extraction", () => {
     expect(manifest.skills.s1?.chunk).toBe("");
   });
 });
+
+describe("compiler — flow detection", () => {
+  const steps = [
+    'import { flow$, step$, handler$ } from "@loom/core";',
+    'const a = step$({ id: "a", name: "A", handler: handler$(async () => ({})) });',
+    'const b = step$({ id: "b", name: "B", handler: handler$(async () => ({})) });',
+  ];
+
+  it("detects flow$ as a direct variable initializer", () => {
+    const src = [
+      ...steps,
+      'export const f = flow$({ id: "wf", version: "1.0.0", steps: [a, b] });',
+    ].join("\n");
+    const state = emptyState();
+    transformFile(src, "/abs/flow.ts", state);
+    const manifest = buildManifest(state, "dist");
+    expect(manifest.flows.wf?.steps).toEqual(["a", "b"]);
+  });
+
+  it("detects flow$ nested in the RegisteredFlow shape `{ definition: flow$(...), runner } as RegisteredFlow` (regression)", () => {
+    // The idiomatic export shape — flow$ is NOT the direct variable initializer. Before the fix
+    // this produced an empty `flows` map for real apps.
+    const src = [
+      ...steps,
+      "const runner = async () => ({});",
+      'export const f = { definition: flow$({ id: "wf", version: "2.0.0", steps: [a, b] }), runner } as RegisteredFlow;',
+    ].join("\n");
+    const state = emptyState();
+    transformFile(src, "/abs/flow.ts", state);
+    const manifest = buildManifest(state, "dist");
+    expect(manifest.flows.wf).toBeDefined();
+    expect(manifest.flows.wf?.steps).toEqual(["a", "b"]);
+    expect(manifest.flows.wf?.version).toBe("2.0.0");
+  });
+});
