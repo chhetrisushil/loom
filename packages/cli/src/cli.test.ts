@@ -663,8 +663,12 @@ describe("loom retention run + compliance report (listExecutions SPI)", () => {
   let cdb: string;
   let csnap: string;
 
-  function seed(store: SqliteEventStore, id: string, steps: [string, unknown][]): Promise<void[]> {
-    return Promise.all(
+  async function seed(
+    store: SqliteEventStore,
+    id: string,
+    steps: [string, unknown][]
+  ): Promise<void> {
+    await Promise.all(
       steps.map(([eventType, payload], seq) =>
         store.append({
           id: `${id}-${seq}`,
