@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { generateRegistration, pascal } from "./codegen";
-import { agentFile, appFiles, flowFile, newFile, skillFile, toolFile } from "./templates";
+import {
+  agentFile,
+  appFiles,
+  flowFile,
+  memoryFile,
+  newFile,
+  scheduleFile,
+  skillFile,
+  toolFile,
+} from "./templates";
 
 describe("codegen", () => {
   it("pascal-cases kebab/snake/space names", () => {
@@ -16,21 +25,25 @@ describe("codegen", () => {
     expect(out).toContain("export const flowModules = [_f0, _f1];");
   });
 
-  it("generateRegistration with no flows yields an empty array", () => {
+  it("generateRegistration with no flows yields empty arrays for every construct", () => {
     const out = generateRegistration([]);
     expect(out).toContain("export const flowModules = [];");
-    // agent/tool/skill arrays are always emitted (empty when none discovered).
+    // agent/tool/skill/schedule/memory arrays are always emitted (empty when none discovered).
     expect(out).toContain("export const agentModules = [];");
     expect(out).toContain("export const toolModules = [];");
     expect(out).toContain("export const skillModules = [];");
+    expect(out).toContain("export const scheduleModules = [];");
+    expect(out).toContain("export const memoryModules = [];");
   });
 
-  it("generateRegistration emits agent/tool/skill modules alongside flows", () => {
+  it("generateRegistration emits every construct's modules alongside flows", () => {
     const out = generateRegistration(
       ["./flows/a/flow"],
       ["./agents/triage"],
       ["./tools/lookup"],
-      ["./skills/refunds"]
+      ["./skills/refunds"],
+      ["./schedules/nightly"],
+      ["./memories/chat"]
     );
     expect(out).toContain('import * as _a0 from "./agents/triage";');
     expect(out).toContain("export const agentModules = [_a0];");
@@ -38,6 +51,10 @@ describe("codegen", () => {
     expect(out).toContain("export const toolModules = [_t0];");
     expect(out).toContain('import * as _s0 from "./skills/refunds";');
     expect(out).toContain("export const skillModules = [_s0];");
+    expect(out).toContain('import * as _sc0 from "./schedules/nightly";');
+    expect(out).toContain("export const scheduleModules = [_sc0];");
+    expect(out).toContain('import * as _m0 from "./memories/chat";');
+    expect(out).toContain("export const memoryModules = [_m0];");
   });
 });
 
@@ -58,11 +75,20 @@ describe("per-file templates", () => {
     expect(skill).not.toContain("${");
   });
 
+  it("scheduleFile and memoryFile export their PascalCase constructs", () => {
+    expect(scheduleFile("nightly")).toContain("export const NightlySchedule");
+    expect(scheduleFile("nightly")).toContain("cron:");
+    expect(memoryFile("chat")).toContain("export const ChatMemory");
+    expect(memoryFile("chat")).not.toContain("${");
+  });
+
   it("newFile routes each kind to its convention path", () => {
     expect(newFile("flow", "greet").path).toBe("app/flows/greet/flow.ts");
     expect(newFile("agent", "support").path).toBe("app/agents/support.ts");
     expect(newFile("tool", "lookup").path).toBe("app/tools/lookup.ts");
     expect(newFile("skill", "refunds").path).toBe("app/skills/refunds.ts");
+    expect(newFile("schedule", "nightly").path).toBe("app/schedules/nightly.ts");
+    expect(newFile("memory", "chat").path).toBe("app/memories/chat.ts");
   });
 });
 

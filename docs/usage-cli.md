@@ -58,7 +58,7 @@ There are no global flags — each command declares its own. The recurring ones 
 
 ## Scaffold & wire: `new`, `gen`, `appgen`
 
-These follow the **folder convention** — flows live at `app/flows/<name>/flow.ts` (folder), agents at `app/agents/<name>.ts`, tools at `app/tools/<name>.ts`, and skills at `app/skills/<name>.ts` (flat files) ([ADR 0011](adr/0011-folder-convention-codegen.md)).
+These follow the **folder convention** — flows live at `app/flows/<name>/flow.ts` (folder); agents, tools, skills, schedules, and memories are flat files at `app/agents/<name>.ts`, `app/tools/<name>.ts`, `app/skills/<name>.ts`, `app/schedules/<name>.ts`, `app/memories/<name>.ts` ([ADR 0011](adr/0011-folder-convention-codegen.md)).
 
 ### `loom new <flow|agent|tool> <name> [--dir app]`
 
@@ -66,7 +66,7 @@ Scaffolds a single file from a template.
 
 | Argument / flag | Required | Default | Meaning |
 |---|---|---|---|
-| `<kind>` | yes | — | `flow`, `agent`, `tool`, or `skill` |
+| `<kind>` | yes | — | `flow`, `agent`, `tool`, `skill`, `schedule`, or `memory` |
 | `<name>` | yes | — | the human name, e.g. `greet` |
 | `--dir` | no | `app` | base directory the subfolders go under |
 
@@ -74,6 +74,8 @@ Scaffolds a single file from a template.
 npx loom new flow greet          # → creates app/flows/greet/flow.ts
 npx loom new agent triager       # → creates app/agents/triager.ts
 npx loom new skill refunds       # → creates app/skills/refunds.ts
+npx loom new schedule nightly    # → creates app/schedules/nightly.ts
+npx loom new memory chat         # → creates app/memories/chat.ts
 npx loom new tool lookup --dir src
 ```
 
@@ -81,16 +83,18 @@ It **never overwrites** an existing file: it prints `created <path>` (exit `0`) 
 
 ### `loom gen [--dir app]`
 
-Scans the four convention folders and writes `<dir>/loom.gen.ts` — a static, alphabetically-sorted registration module. Wiring is build-time and replay-safe (P5), so discovery is codegen, not runtime globbing:
+Scans the six convention folders and writes `<dir>/loom.gen.ts` — a static, alphabetically-sorted registration module. Wiring is build-time and replay-safe (P5), so discovery is codegen, not runtime globbing:
 
 - `<dir>/flows/<name>/flow.{ts,tsx}` → `flowModules`
 - `<dir>/agents/<name>.{ts,tsx}` → `agentModules`
 - `<dir>/tools/<name>.{ts,tsx}` → `toolModules`
 - `<dir>/skills/<name>.{ts,tsx}` → `skillModules`
+- `<dir>/schedules/<name>.{ts,tsx}` → `scheduleModules`
+- `<dir>/memories/<name>.{ts,tsx}` → `memoryModules`
 
 ```bash
-npx loom gen            # scans app/flows/**, app/agents/*, app/tools/*, app/skills/*
-# → "wrote app/loom.gen.ts (2 flows, 1 agent, 1 tool, 1 skill)"
+npx loom gen            # scans app/flows/**, app/{agents,tools,skills,schedules,memories}/*
+# → "wrote app/loom.gen.ts (2 flows, 1 agent, 1 tool, 1 skill, 1 schedule, 1 memory)"
 ```
 
 ```ts
@@ -111,9 +115,30 @@ export const toolModules = [_t0];
 import * as _s0 from "./skills/refunds";
 
 export const skillModules = [_s0];
+
+import * as _sc0 from "./schedules/nightly";
+
+export const scheduleModules = [_sc0];
+
+import * as _m0 from "./memories/chat";
+
+export const memoryModules = [_m0];
 ```
 
-Feed the generated modules to `defineConfig({ flowModules, agentModules, toolModules, skillModules })`: every flow-shaped export registers itself, every `agent$` definition is discovered by value shape (and auto-wired to the A2A bus / A2UI behind the opt-in `a2a` / `a2ui` flags), every `tool$` definition is exposed on `app.tools` for introspection, and every `skill$` definition is registered into `app.skills` (a `SkillRegistry`) for deterministic, offline selection (`app.skills.find(query)`). Discovery is by value shape, so it is robust to how each construct is declared or exported. Re-run `loom gen` whenever you add or remove a flow/agent/tool/skill. Exit `0` on a successful write.
+Feed the generated modules to `defineConfig({ flowModules, agentModules, toolModules, skillModules, scheduleModules, memoryModules })`. Each construct is discovered by **value shape** (its `_tag`), so discovery is robust to how it's declared or exported, and each is wired **iff a runtime consumes it**:
+
+| module | wired into | notes |
+|---|---|---|
+| `flowModules` | the workflow runtime | every `RegisteredFlow`-shaped export registers |
+| `agentModules` | `agents` → A2A bus / A2UI | auto-wired behind the opt-in `a2a` / `a2ui` flags |
+| `toolModules` | `app.tools` | introspection only — a tool's effect is registered separately |
+| `skillModules` | `app.skills` (`SkillRegistry`) | deterministic offline selection (`app.skills.find(query)`) |
+| `scheduleModules` | `app.schedules` → `TimerService` | fire **only** when `timers: { store }` is configured (else a boot warning) |
+| `memoryModules` | `app.memory` (`MemoryRuntime`) | agents resolve their `memoryId` against it |
+
+Re-run `loom gen` whenever you add or remove any construct. Exit `0` on a successful write.
+
+> `policy$` and `projection$` are **not** discovered: nothing in the runtime consumes a `PolicyDefinition` (there is no policy engine yet) and `projection$` is superseded by the `surfaces` config. Discovery is deliberately gated on "has a consumer" — wiring a definition nothing reads would be dead registration.
 
 ### `loom appgen <intent> | --from <file> | --from-spec <file> [--dir .] [flags]`
 

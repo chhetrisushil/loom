@@ -59,9 +59,20 @@ export function discoverSkills(dir: string): string[] {
   return discoverFlat(dir, "skills");
 }
 
+/** Discover schedule modules under `<dir>/schedules/<name>.{ts,tsx}` (flat convention). */
+export function discoverSchedules(dir: string): string[] {
+  return discoverFlat(dir, "schedules");
+}
+
+/** Discover memory modules under `<dir>/memories/<name>.{ts,tsx}` (flat convention). */
+export function discoverMemories(dir: string): string[] {
+  return discoverFlat(dir, "memories");
+}
+
 /**
  * `loom gen [--dir app]` — write `<dir>/loom.gen.ts` registering the discovered
- * flows, agents, tools, and skills (the folder convention). Returns per-kind counts.
+ * flows, agents, tools, skills, schedules, and memories (the folder convention).
+ * Returns per-kind counts.
  */
 export function cmdGen(dir: string): {
   out: string;
@@ -70,14 +81,18 @@ export function cmdGen(dir: string): {
   agents: number;
   tools: number;
   skills: number;
+  schedules: number;
+  memories: number;
 } {
   const flows = discoverFlows(dir);
   const agents = discoverAgents(dir);
   const tools = discoverTools(dir);
   const skills = discoverSkills(dir);
+  const schedules = discoverSchedules(dir);
+  const memories = discoverMemories(dir);
   fs.mkdirSync(dir, { recursive: true });
   const out = path.join(dir, "loom.gen.ts");
-  fs.writeFileSync(out, generateRegistration(flows, agents, tools, skills));
+  fs.writeFileSync(out, generateRegistration(flows, agents, tools, skills, schedules, memories));
   return {
     out,
     count: flows.length,
@@ -85,6 +100,8 @@ export function cmdGen(dir: string): {
     agents: agents.length,
     tools: tools.length,
     skills: skills.length,
+    schedules: schedules.length,
+    memories: memories.length,
   };
 }
 
@@ -94,10 +111,11 @@ export function cmdNew(
   name: string,
   dir: string
 ): { path: string; created: boolean } {
-  if (kind !== "flow" && kind !== "agent" && kind !== "tool" && kind !== "skill") {
-    throw new Error(`unknown kind "${kind}" — expected flow | agent | tool | skill`);
+  const kinds = ["flow", "agent", "tool", "skill", "schedule", "memory"];
+  if (!kinds.includes(kind)) {
+    throw new Error(`unknown kind "${kind}" — expected ${kinds.join(" | ")}`);
   }
-  const { path: rel, content } = newFile(kind, name);
+  const { path: rel, content } = newFile(kind as Parameters<typeof newFile>[0], name);
   const dest = path.join(dir, rel.replace(/^app\//, ""));
   if (fs.existsSync(dest)) {
     return { path: dest, created: false };

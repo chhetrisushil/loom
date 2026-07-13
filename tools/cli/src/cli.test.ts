@@ -23,6 +23,8 @@ import {
   cmdNew,
   discoverAgents,
   discoverFlows,
+  discoverMemories,
+  discoverSchedules,
   discoverSkills,
   discoverTools,
 } from "./gen";
@@ -221,22 +223,28 @@ describe("loom CLI", () => {
       expect(gen).toContain("export const flowModules = [_f0, _f1];");
     });
 
-    it("discovers agents + tools + skills (flat-file) and emits their modules", () => {
+    it("discovers every construct (flat-file) and emits all six module arrays", () => {
       const appDir = join(dir, "app-at");
       cmdNew("flow", "greet", appDir);
       const agent = cmdNew("agent", "triage", appDir);
       const tool = cmdNew("tool", "lookup", appDir);
       const skill = cmdNew("skill", "refunds", appDir);
+      const schedule = cmdNew("schedule", "nightly", appDir);
+      const mem = cmdNew("memory", "chat", appDir);
       expect(agent.path).toBe(join(appDir, "agents/triage.ts")); // flat file, not a folder
       expect(tool.path).toBe(join(appDir, "tools/lookup.ts"));
       expect(skill.path).toBe(join(appDir, "skills/refunds.ts"));
+      expect(schedule.path).toBe(join(appDir, "schedules/nightly.ts"));
+      expect(mem.path).toBe(join(appDir, "memories/chat.ts"));
 
       expect(discoverAgents(appDir)).toEqual(["./agents/triage"]);
       expect(discoverTools(appDir)).toEqual(["./tools/lookup"]);
       expect(discoverSkills(appDir)).toEqual(["./skills/refunds"]);
+      expect(discoverSchedules(appDir)).toEqual(["./schedules/nightly"]);
+      expect(discoverMemories(appDir)).toEqual(["./memories/chat"]);
 
-      const { flows, agents, tools, skills, out } = cmdGen(appDir);
-      expect([flows, agents, tools, skills]).toEqual([1, 1, 1, 1]);
+      const { flows, agents, tools, skills, schedules, memories, out } = cmdGen(appDir);
+      expect([flows, agents, tools, skills, schedules, memories]).toEqual([1, 1, 1, 1, 1, 1]);
       const gen = readFileSync(out, "utf-8");
       expect(gen).toContain('import * as _a0 from "./agents/triage";');
       expect(gen).toContain("export const agentModules = [_a0];");
@@ -244,6 +252,10 @@ describe("loom CLI", () => {
       expect(gen).toContain("export const toolModules = [_t0];");
       expect(gen).toContain('import * as _s0 from "./skills/refunds";');
       expect(gen).toContain("export const skillModules = [_s0];");
+      expect(gen).toContain('import * as _sc0 from "./schedules/nightly";');
+      expect(gen).toContain("export const scheduleModules = [_sc0];");
+      expect(gen).toContain('import * as _m0 from "./memories/chat";');
+      expect(gen).toContain("export const memoryModules = [_m0];");
     });
 
     it("does not overwrite an existing file", () => {

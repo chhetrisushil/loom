@@ -26,6 +26,7 @@
     "@loom/effect-runtime": "workspace:*",
     "@loom/compliance": "workspace:*",
     "@loom/event-runtime": "workspace:*",
+    "@loom/memory": "workspace:*",
     "@loom/middleware": "workspace:*",
     "@loom/projection-runtime": "workspace:*",
     "@loom/replay-vm": "workspace:*",

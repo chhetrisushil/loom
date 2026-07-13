@@ -1,8 +1,8 @@
 import { secret, sensitive } from "@loom/classify";
-import { agent$, instructions$, skill$, step$, tool$ } from "@loom/core";
+import { agent$, instructions$, memory$, schedule$, skill$, step$, tool$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectMiddleware } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
 import type { BranchRegistry } from "@loom/event-runtime";
 import { InMemorySecretResolver, isSecretRef, retryMiddleware, secretRef } from "@loom/middleware";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
@@ -627,5 +627,43 @@ describe("defineConfig — agent auto-wiring (a2a / a2ui, opt-in)", () => {
     expect(app.skills.ids().sort()).toEqual(["escalate", "refunds"]);
     // The deterministic selector is wired and scores over the discovered metadata.
     expect(app.skills.find("refund billing")[0]?.skill.id).toBe("refunds");
+  });
+
+  it("registers memory$ definitions from memoryModules + memories into app.memory", async () => {
+    const chat = memory$({ id: "chat", name: "Chat", maxEntries: 5 });
+    const scratch = memory$({ id: "scratch", name: "Scratch" });
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      memories: [scratch],
+      memoryModules: [{ ChatMemory: chat, notAMemory: 3 }],
+    });
+    // Registered defs are addressable; a round-trip through the runtime proves wiring.
+    await app.memory.append("chat", "session-1", { role: "user", content: "hi" });
+    const entries = await app.memory.read("chat", "session-1");
+    expect(entries.map((e) => e.content)).toEqual(["hi"]);
+    // The scratch (explicit) memory is registered too — reading an unwritten scope is empty.
+    expect(await app.memory.read("scratch", "s")).toEqual([]);
+  });
+
+  it("merges scheduleModules into app.schedules and wires them into the TimerService", () => {
+    const nightly = schedule$({ id: "nightly", cron: "0 0 * * *", flowId: "report" });
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      timers: { store: new InMemoryTimerStore() },
+      scheduleModules: [{ NightlySchedule: nightly, notASchedule: 1 }],
+    });
+    expect(app.schedules.map((s) => s.id)).toEqual(["nightly"]);
+  });
+
+  it("warns when schedules are declared but no timers store is configured", () => {
+    const nightly = schedule$({ id: "nightly", cron: "0 0 * * *", flowId: "report" });
+    const onWarn = vi.fn();
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      scheduleModules: [{ NightlySchedule: nightly }],
+      onWarn,
+    });
+    expect(app.schedules.map((s) => s.id)).toEqual(["nightly"]);
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining("will not fire"));
   });
 });

@@ -88,9 +88,39 @@ export function skillFile(name: string): string {
   ].join("\n");
 }
 
+/** `app/schedules/<name>.ts` — a cron schedule stub (points at a flow to start). */
+export function scheduleFile(name: string): string {
+  const P = pascal(name);
+  return [
+    'import { schedule$ } from "@loom/core";',
+    "",
+    `export const ${P}Schedule = schedule$({`,
+    `  id: "${name}",`,
+    '  cron: "0 * * * *", // hourly (UTC); 5-field cron',
+    `  flowId: "TODO-flow-id", // the registered flow each occurrence starts`,
+    "});",
+    "",
+  ].join("\n");
+}
+
+/** `app/memories/<name>.ts` — a named memory definition stub. */
+export function memoryFile(name: string): string {
+  const P = pascal(name);
+  return [
+    'import { memory$ } from "@loom/core";',
+    "",
+    `export const ${P}Memory = memory$({`,
+    `  id: "${name}",`,
+    `  name: "${P}",`,
+    "  // ttlMs / maxEntries bound each scope; omit for unbounded.",
+    "});",
+    "",
+  ].join("\n");
+}
+
 /** Route `loom new <kind> <name>` to the file it generates (path + contents). */
 export function newFile(
-  kind: "flow" | "agent" | "tool" | "skill",
+  kind: "flow" | "agent" | "tool" | "skill" | "schedule" | "memory",
   name: string
 ): { path: string; content: string } {
   switch (kind) {
@@ -102,6 +132,10 @@ export function newFile(
       return { path: `app/tools/${name}.ts`, content: toolFile(name) };
     case "skill":
       return { path: `app/skills/${name}.ts`, content: skillFile(name) };
+    case "schedule":
+      return { path: `app/schedules/${name}.ts`, content: scheduleFile(name) };
+    case "memory":
+      return { path: `app/memories/${name}.ts`, content: memoryFile(name) };
   }
 }
 
@@ -243,6 +277,8 @@ export function appFiles(appName: string): Record<string, string> {
       "  tools/<name>.ts        tools     (loom new tool <name>)",
       "  agents/<name>.ts       agents    (loom new agent <name>)",
       "  skills/<name>.ts       skills    (loom new skill <name>)",
+      "  schedules/<name>.ts    schedules (loom new schedule <name>)",
+      "  memories/<name>.ts     memories  (loom new memory <name>)",
       "  middleware.ts          cross-cutting effect middleware",
       "  config.ts              the app (defineConfig)",
       "  loom.gen.ts            generated flow registration (pnpm gen)",
