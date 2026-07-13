@@ -103,8 +103,30 @@ const app = defineConfig({
 
 The **log** still holds the real value (that is encryption/erasure's concern, K10.2); egress
 scrubbing governs only what leaves the boundary. `secret` fields need no scrubbing — K10-R2
-keeps them off the log and telemetry entirely. Compose `scrubbingAdapter`/`scrubPathsByStep`
-directly for other egress surfaces (a2ui, CLI).
+keeps them off the log and telemetry entirely.
+
+### The other egress surfaces: a2ui + CLI
+
+Telemetry sits at the effect boundary, so it derives its scrub paths from step schemas
+(`scrubPathsByStep`). The other two egress surfaces are **not** schema-bound, so they take
+explicit paths — but all three share one masking primitive (`maskPaths` from `@loom/classify`,
+masking to `[redacted]`):
+
+- **a2ui** — surface state is *app-authored* (agents emit free-form patches, not step
+  outputs), so classification marks can't reach it. Declare the sensitive surface dot-paths
+  when registering the surface; they're masked in the folded state before any reader
+  (`getSurface`/`getState`/a client renderer) sees them:
+
+  ```ts
+  defineConfig({ surfaces: [{ id: "ui", redact: ["user.ssn"] }] });
+  ```
+
+- **CLI** — `loom logs` / `loom debug` read a cold log with no flow schemas, so the operator
+  names the sensitive output paths explicitly:
+
+  ```
+  loom debug --db app.db <execId> --redact ssn,user.token
+  ```
 
 ## Middleware ordering (K10-R3.2)
 

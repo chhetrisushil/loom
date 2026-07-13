@@ -184,3 +184,45 @@ describe("a2uiSurfaceProjection", () => {
     expect(next).toEqual({ a: 0 });
   });
 });
+
+describe("a2uiSurfaceProjection — egress redaction (K10-R6)", () => {
+  function patchEvent(patches: A2UIPatch[]): EventEnvelope {
+    return {
+      id: "e1",
+      workflowId: "wf",
+      executionId: "x1",
+      eventType: A2UI_PATCH,
+      sequence: 0,
+      timestamp: 1,
+      payload: { patches },
+    };
+  }
+
+  it("masks declared surface paths before they reach the folded state", () => {
+    const proj = a2uiSurfaceProjection("ui", { redact: ["user.ssn"] });
+    const state = proj.handlers[A2UI_PATCH]!(
+      {},
+      patchEvent([{ op: "set", path: "user", value: { name: "Ann", ssn: "123-45-6789" } }])
+    );
+    expect(state).toEqual({ user: { name: "Ann", ssn: "[redacted]" } });
+  });
+
+  it("stays masked across successive folds (idempotent) and leaves unmarked paths intact", () => {
+    const proj = a2uiSurfaceProjection("ui", { redact: ["token"] });
+    let state = proj.handlers[A2UI_PATCH]!(
+      {},
+      patchEvent([{ op: "set", path: "token", value: "sk_1" }])
+    );
+    state = proj.handlers[A2UI_PATCH]!(
+      state,
+      patchEvent([{ op: "set", path: "label", value: "ok" }])
+    );
+    expect(state).toEqual({ token: "[redacted]", label: "ok" });
+  });
+
+  it("with no redact option is an unchanged pass-through (G2)", () => {
+    const proj = a2uiSurfaceProjection("ui");
+    const state = proj.handlers[A2UI_PATCH]!({}, patchEvent([{ op: "set", path: "a", value: 1 }]));
+    expect(state).toEqual({ a: 1 });
+  });
+});

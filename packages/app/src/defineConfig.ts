@@ -89,8 +89,13 @@ export interface LoomConfig {
   storage: StorageConfig;
   /** Projection runtime to fold events into UI surfaces. Default in-memory. */
   projectionRuntime?: ProjectionRuntime;
-  /** A2UI surfaces to register on the projection runtime. */
-  surfaces?: string[];
+  /**
+   * A2UI surfaces to register on the projection runtime. A bare string is the surface id;
+   * the object form declares K10-R6 egress redaction — surface dot-paths masked before any
+   * reader (client/renderer) sees them (A2UI patches are app-authored, so sensitive surface
+   * paths are declared explicitly rather than derived from schema marks).
+   */
+  surfaces?: (string | { id: string; redact?: readonly string[] })[];
   /** Flows registered directly (in addition to any from `catalog`). */
   flows?: RegisteredFlow[];
   /**
@@ -315,7 +320,11 @@ export function defineConfig(config: LoomConfig): LoomApp {
 
   const projectionRuntime = config.projectionRuntime ?? new InMemoryProjectionRuntime();
   for (const surface of config.surfaces ?? []) {
-    projectionRuntime.register(a2uiSurfaceProjection(surface));
+    const [id, redact] =
+      typeof surface === "string" ? [surface, undefined] : [surface.id, surface.redact];
+    projectionRuntime.register(
+      a2uiSurfaceProjection(id, ...(redact !== undefined ? [{ redact }] : []))
+    );
   }
 
   // Built AFTER flow registration (below) so K10-R6 egress scrubbing can derive its paths

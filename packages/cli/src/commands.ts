@@ -11,30 +11,39 @@ import {
   formatLog,
 } from "./core";
 
-/** `loom logs --db <path> <executionId>` — the durable event stream. */
-export async function cmdLogs(db: string, executionId: string): Promise<string> {
+/** `loom logs --db <path> <executionId> [--redact a,b]` — the durable event stream. */
+export async function cmdLogs(
+  db: string,
+  executionId: string,
+  redact: readonly string[] = []
+): Promise<string> {
   const store = new SqliteEventStore(db);
   try {
-    return formatLog(await store.read(executionId));
+    return formatLog(await store.read(executionId), redact);
   } finally {
     await store.close();
   }
 }
 
 /**
- * `loom debug --db <path> <executionId> [--at <seq>]` — time-travel over the log.
- * With `--at`, prints the folded state at that sequence; otherwise the full
- * timeline plus the final state.
+ * `loom debug --db <path> <executionId> [--at <seq>] [--redact a,b]` — time-travel over the
+ * log. With `--at`, prints the folded state at that sequence; otherwise the full timeline plus
+ * the final state. `--redact` masks the listed output dot-paths from the printout (K10-R6).
  */
-export async function cmdDebug(db: string, executionId: string, at?: number): Promise<string> {
+export async function cmdDebug(
+  db: string,
+  executionId: string,
+  at?: number,
+  redact: readonly string[] = []
+): Promise<string> {
   const store = new SqliteEventStore(db);
   try {
     const events = await store.read(executionId);
     if (events.length === 0) return `(no execution "${executionId}")`;
     if (at !== undefined) {
-      return describeState(foldAt(events, at));
+      return describeState(foldAt(events, at), redact);
     }
-    return `${formatLog(events)}\n\n${describeState(foldAt(events))}`;
+    return `${formatLog(events, redact)}\n\n${describeState(foldAt(events), redact)}`;
   } finally {
     await store.close();
   }

@@ -12,6 +12,9 @@
       "path": "../analytics"
     },
     {
+      "path": "../classify"
+    },
+    {
       "path": "../app"
     },
     {
