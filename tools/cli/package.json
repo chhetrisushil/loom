@@ -30,6 +30,7 @@
     "@loom/deploy-sim": "workspace:*",
     "@loom/eval": "workspace:*",
     "@loom/event-runtime": "workspace:*",
+    "@loom/llm": "workspace:*",
     "@loom/replay-vm": "workspace:*",
     "@loom/scaffold": "workspace:*",
     "@loom/spec": "workspace:*",

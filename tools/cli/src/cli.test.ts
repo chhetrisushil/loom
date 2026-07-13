@@ -6,11 +6,19 @@ import type { EventEnvelope } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
 
+import { AnthropicProvider, GeminiProvider, OpenAiProvider } from "@loom/llm";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { type AppgenIO, type Conflict, cmdAppgen, plannerTag, renderPlan } from "./appgen";
+import {
+  type AppgenIO,
+  type Conflict,
+  cmdAppgen,
+  plannerTag,
+  renderPlan,
+  routeFromSpec,
+} from "./appgen";
 import { checkManifest } from "./check";
 import { resolveIntent } from "./cli";
 import { parseRedact } from "./cli";
@@ -776,5 +784,61 @@ describe("loom retention run + compliance report (listExecutions SPI)", () => {
     const remaining = (await store.listExecutions()).filter((id) => !id.startsWith("__loom_"));
     expect(remaining).toEqual(["x3"]);
     store.close();
+  });
+});
+
+describe("appgen --model provider resolution (any model of your choice)", () => {
+  // A fake @loom/appgen-model — only its gemmaRoute/DEFAULT_TIER are used (the local case).
+  const fakeM = {
+    DEFAULT_TIER: "e4b",
+    gemmaRoute: (modelPath: string, tierKey: string) => ({
+      id: `gemma:${modelPath}#${tierKey}`,
+      tier: 0,
+      tags: ["planning"],
+      provider: { local: modelPath },
+    }),
+  };
+  const withEnv = (vars: Record<string, string>, fn: () => void): void => {
+    const saved: Record<string, string | undefined> = {};
+    for (const [k, v] of Object.entries(vars)) {
+      saved[k] = process.env[k];
+      process.env[k] = v;
+    }
+    try {
+      fn();
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  };
+
+  it("resolves anthropic / openai / gemini specs to the matching @loom/llm provider", () => {
+    withEnv({ ANTHROPIC_API_KEY: "a", OPENAI_API_KEY: "o", GEMINI_API_KEY: "g" }, () => {
+      expect(
+        routeFromSpec("anthropic:claude-opus-4-8", 0, undefined, fakeM).provider
+      ).toBeInstanceOf(AnthropicProvider);
+      expect(routeFromSpec("openai:gpt-4o", 0, undefined, fakeM).provider).toBeInstanceOf(
+        OpenAiProvider
+      );
+      const g = routeFromSpec("gemini:gemini-2.0-flash", 1, undefined, fakeM);
+      expect(g.provider).toBeInstanceOf(GeminiProvider);
+      expect(g.id).toBe("gemini:gemini-2.0-flash");
+      expect(g.tier).toBe(1);
+    });
+  });
+
+  it("routes a .gguf path / gemma: / local: to the local Gemma provider", () => {
+    expect(routeFromSpec("./e4b.gguf", 0, undefined, fakeM).id).toContain("gemma:");
+    expect(routeFromSpec("gemma:/m/e4b.gguf", 0, "12b", fakeM).id).toContain("#12b");
+    expect(routeFromSpec("local:/m/e4b.gguf", 0, undefined, fakeM).id).toContain("gemma:");
+  });
+
+  it("errors clearly on a missing key or an unknown provider", () => {
+    withEnv({ ANTHROPIC_API_KEY: "" }, () => {
+      expect(() => routeFromSpec("anthropic:x", 0, undefined, fakeM)).toThrow(/ANTHROPIC_API_KEY/);
+    });
+    expect(() => routeFromSpec("cohere:x", 0, undefined, fakeM)).toThrow(/unrecognized provider/);
   });
 });

@@ -30,7 +30,7 @@ loom — project-local commands for a Loom app
 
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
   loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
-  loom appgen <intent> [--dir .] [--dry-run] [--check] [--model <gguf>]  NL → new project or brownfield edits
+  loom appgen <intent> [--dir .] [--dry-run] [--check] [--model <spec>]  NL → new project or brownfield edits
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
   loom logs  --db <path> <executionId> [--redact a,b]   print the event timeline
@@ -154,7 +154,7 @@ Re-run `loom gen` whenever you add or remove any construct. Exit `0` on a succes
 Turns a **natural-language intent** into a change to a Loom app, following the **[folder convention](#scaffold--wire-new-gen-appgen)**. It is **brownfield-aware**: it scans what already exists and applies a *delta* rather than only scaffolding from scratch. Four stages, with **NL understanding isolated to exactly one** and everything else deterministic and offline ([`@loom/appgen`](../tools/appgen)); the generated output is ordinary, statically-wired Loom code with `TODO` handlers you own (P5, P11):
 
 1. **scan** — `scanApp(dir)` summarizes the app (flows, steps, gates, and whether each handler is still a generated stub or hand-edited). Never raw file contents.
-2. **plan** — the intent is parsed into a `ChangeSpec` that tags each capability/step `create | extend | modify | delete`. This is the only stage that reads NL. Deterministic by default; a **local model** can drive it (see `--model`).
+2. **plan** — the intent is parsed into a `ChangeSpec` that tags each capability/step `create | extend | modify | delete`. This is the only stage that reads NL. Deterministic by default; a **model of your choice** can drive it (see `--model`).
 3. **apply** — new flows come from the templates; existing flows are edited **surgically** (a new step is inserted, registered, and wired into the runner; approval/UI gates and grants are added) while untouched code is preserved byte-for-byte. A handler body is overwritten **only if it still hashes to the generated stub** — anything you have edited is insert-only.
 4. **validate** — with `--check`, the app is typechecked in-process (`tsc`) after applying.
 
@@ -169,9 +169,9 @@ Turns a **natural-language intent** into a change to a Loom app, following the *
 | `--dry-run` | render the plan as a unified diff and write nothing |
 | `--yes` | apply without the interactive confirmation prompt |
 | `--check` | typecheck the app (`tsc`) after applying |
-| `--model <gguf>` | plan with a local Gemma model (needs [`@loom/appgen-model`](../tools/appgen-model) + `node-llama-cpp`) |
-| `--model-big <gguf>` | a stronger model tier to elevate to on low confidence |
-| `--model-tier <e2b\|e4b\|12b>` | the tier label for `--model` (default `e4b`) |
+| `--model <spec>` | plan with a **model of your choice**: `anthropic:<model>`, `openai:<model>`, `gemini:<model>` (API key from the provider's env var), or a local `.gguf` path / `gemma:<path>` (needs [`@loom/appgen-model`](../tools/appgen-model) + `node-llama-cpp`) |
+| `--model-big <spec>` | a stronger model the reasoning ladder elevates to on low confidence (any provider spec) |
+| `--model-tier <e2b\|e4b\|12b>` | tier label for a **local** `--model` (default `e4b`; ignored for API providers) |
 | `--offline` | force the deterministic, model-free planner (overrides `--model`) |
 
 The intent grammar: `create a <name>` (a capability), `step <name>` / `delete <name>`, `use <model> first` / `elevate to <model>`, `pause for approval`, `generate ui`, `grant <tool> to <cap>`, `deploy on <target>`. Reasoning / approval / UI / grant wiring is emitted only when asked for.
@@ -189,7 +189,14 @@ npx loom appgen --from-spec ./planner/.loom/appgen/1783875332959.spec.json --dir
 
 **Spec lockfile.** Each apply records the accepted `ChangeSpec` to `.loom/appgen/<timestamp>.spec.json`. `--from-spec` replays it byte-for-byte — the appgen equivalent of a golden log, so CI stays model-free. When a new file collides, `appgen` prompts per file — `[r]ename / [s]kip / [o]verwrite`.
 
-**Local model (`--model`).** Optional and offline: install `@loom/appgen-model` + `node-llama-cpp` in your project and point `--model` at a local `.gguf`. Planning runs through a cheap-first elevation ladder; if the model is missing, too weak, or produces an invalid plan, `appgen` **falls back to the deterministic parser** — it is never left without a valid `ChangeSpec`. See the [`@loom/appgen-model` README](../tools/appgen-model/README.md) for tiers and requirements.
+**Model of your choice (`--model`).** Optional. The planner is **provider-agnostic** — it reasons over whichever model you name:
+
+- `--model anthropic:claude-opus-4-8` — via `@loom/llm`'s `AnthropicProvider` (`ANTHROPIC_API_KEY`).
+- `--model openai:gpt-4o` — `OpenAiProvider` (`OPENAI_API_KEY`).
+- `--model gemini:gemini-2.0-flash` — `GeminiProvider` (`GEMINI_API_KEY`).
+- `--model ./model.gguf` (or `gemma:<path>`) — a **local** model via the optional `@loom/appgen-model` + `node-llama-cpp` (fully offline).
+
+Planning runs through a cheap-first elevation ladder (`--model-big <spec>` names a stronger tier). If the provider/key is missing, the model is too weak, or it produces an invalid plan, `appgen` **falls back to the deterministic parser** — it is never left without a valid `ChangeSpec`. Any `@loom/llm` `LlmProvider` works; these four are wired by name for convenience.
 
 **Which planner ran.** The plan header (and `--dry-run` output) is tagged `[deterministic]` or `[model]` (with any `[model, elevated e4b→12b]` ladder steps), and the spec lockfile records `changeSpec.planner`. When you pass `--model` but the model can't produce a usable plan, `appgen` prints a loud warning and falls back — so a `[deterministic]` tag after `--model` means the model bailed (try a stronger tier / Node LTS, or name steps explicitly). The generated *code* is identical either way; provenance lives in the header and lockfile, not the files.
 
@@ -366,7 +373,7 @@ npx loom compliance report --db .loom/events.db --subject-path input.userId
 |---|---|---|---|
 | `loom new <kind> <name>` | scaffold a flow/agent/tool file | `--dir app` | file already exists |
 | `loom gen` | regenerate `loom.gen.ts` | `--dir app` | (write failure) |
-| `loom appgen <intent>` | brownfield-aware NL → new project or surgical edits (scan→plan→apply→validate) | `--dry-run`, `--yes`, `--check`, `--from <file>`, `--from-spec <file>`, `--model <gguf>`, `--offline`, `--dir .` | no intent supplied |
+| `loom appgen <intent>` | brownfield-aware NL → new project or surgical edits (scan→plan→apply→validate) | `--dry-run`, `--yes`, `--check`, `--from <file>`, `--from-spec <file>`, `--model <spec>`, `--offline`, `--dir .` | no intent supplied |
 | `loom check` | static flow-graph validation | `--manifest` *(req)* | issues found |
 | `loom logs` | print the event timeline | `--db` *(req)* | error |
 | `loom debug` | folded state at / after a sequence | `--db` *(req)*, `--at N` | error |

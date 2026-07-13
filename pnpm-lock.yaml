@@ -2610,6 +2610,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../../packages/event-runtime
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../../packages/llm
       '@loom/plugin-kit':
         specifier: workspace:*
         version: link:../../packages/plugin-kit
