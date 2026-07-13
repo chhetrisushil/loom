@@ -58,7 +58,7 @@ There are no global flags — each command declares its own. The recurring ones 
 
 ## Scaffold & wire: `new`, `gen`, `appgen`
 
-These follow the **folder convention** — flows live at `app/flows/<name>/flow.ts` (folder); agents, tools, skills, schedules, and memories are flat files at `app/agents/<name>.ts`, `app/tools/<name>.ts`, `app/skills/<name>.ts`, `app/schedules/<name>.ts`, `app/memories/<name>.ts` ([ADR 0011](adr/0011-folder-convention-codegen.md)).
+These follow the **folder convention** — flows live at `app/flows/<name>/flow.ts` (folder); agents, tools, skills, schedules, memories, and projections are flat files at `app/agents/<name>.ts`, `app/tools/<name>.ts`, `app/skills/<name>.ts`, `app/schedules/<name>.ts`, `app/memories/<name>.ts`, `app/projections/<name>.ts` ([ADR 0011](adr/0011-folder-convention-codegen.md)).
 
 ### `loom new <flow|agent|tool> <name> [--dir app]`
 
@@ -66,7 +66,7 @@ Scaffolds a single file from a template.
 
 | Argument / flag | Required | Default | Meaning |
 |---|---|---|---|
-| `<kind>` | yes | — | `flow`, `agent`, `tool`, `skill`, `schedule`, or `memory` |
+| `<kind>` | yes | — | `flow`, `agent`, `tool`, `skill`, `schedule`, `memory`, or `projection` |
 | `<name>` | yes | — | the human name, e.g. `greet` |
 | `--dir` | no | `app` | base directory the subfolders go under |
 
@@ -76,6 +76,7 @@ npx loom new agent triager       # → creates app/agents/triager.ts
 npx loom new skill refunds       # → creates app/skills/refunds.ts
 npx loom new schedule nightly    # → creates app/schedules/nightly.ts
 npx loom new memory chat         # → creates app/memories/chat.ts
+npx loom new projection counter  # → creates app/projections/counter.ts
 npx loom new tool lookup --dir src
 ```
 
@@ -83,7 +84,7 @@ It **never overwrites** an existing file: it prints `created <path>` (exit `0`) 
 
 ### `loom gen [--dir app]`
 
-Scans the six convention folders and writes `<dir>/loom.gen.ts` — a static, alphabetically-sorted registration module. Wiring is build-time and replay-safe (P5), so discovery is codegen, not runtime globbing:
+Scans the seven convention folders and writes `<dir>/loom.gen.ts` — a static, alphabetically-sorted registration module. Wiring is build-time and replay-safe (P5), so discovery is codegen, not runtime globbing:
 
 - `<dir>/flows/<name>/flow.{ts,tsx}` → `flowModules`
 - `<dir>/agents/<name>.{ts,tsx}` → `agentModules`
@@ -91,10 +92,11 @@ Scans the six convention folders and writes `<dir>/loom.gen.ts` — a static, al
 - `<dir>/skills/<name>.{ts,tsx}` → `skillModules`
 - `<dir>/schedules/<name>.{ts,tsx}` → `scheduleModules`
 - `<dir>/memories/<name>.{ts,tsx}` → `memoryModules`
+- `<dir>/projections/<name>.{ts,tsx}` → `projectionModules`
 
 ```bash
-npx loom gen            # scans app/flows/**, app/{agents,tools,skills,schedules,memories}/*
-# → "wrote app/loom.gen.ts (2 flows, 1 agent, 1 tool, 1 skill, 1 schedule, 1 memory)"
+npx loom gen            # scans app/flows/**, app/{agents,tools,skills,schedules,memories,projections}/*
+# → "wrote app/loom.gen.ts (2 flows, 1 agent, 1 tool, 1 skill, 1 schedule, 1 memory, 1 projection)"
 ```
 
 ```ts
@@ -123,9 +125,13 @@ export const scheduleModules = [_sc0];
 import * as _m0 from "./memories/chat";
 
 export const memoryModules = [_m0];
+
+import * as _p0 from "./projections/counter";
+
+export const projectionModules = [_p0];
 ```
 
-Feed the generated modules to `defineConfig({ flowModules, agentModules, toolModules, skillModules, scheduleModules, memoryModules })`. Each construct is discovered by **value shape** (its `_tag`), so discovery is robust to how it's declared or exported, and each is wired **iff a runtime consumes it**:
+Feed the generated modules to `defineConfig({ flowModules, agentModules, toolModules, skillModules, scheduleModules, memoryModules, projectionModules })`. Each construct is discovered by **value shape** (its `_tag`), so discovery is robust to how it's declared or exported, and each is wired **iff a runtime consumes it**:
 
 | module | wired into | notes |
 |---|---|---|
@@ -135,10 +141,13 @@ Feed the generated modules to `defineConfig({ flowModules, agentModules, toolMod
 | `skillModules` | `app.skills` (`SkillRegistry`) | deterministic offline selection (`app.skills.find(query)`) |
 | `scheduleModules` | `app.schedules` → `TimerService` | fire **only** when `timers: { store }` is configured (else a boot warning) |
 | `memoryModules` | `app.memory` (`MemoryRuntime`) | agents resolve their `memoryId` against it |
+| `projectionModules` | the projection runtime | compiled projections fold **on demand** — see below |
 
 Re-run `loom gen` whenever you add or remove any construct. Exit `0` on a successful write.
 
-> `policy$` and `projection$` are **not** `loom gen`-discovered. `policy$` **is** enforced (a `PolicyAuthorizer` reads each flow's `policies` + `defineConfig({ policies })` — see the [user guide](user-guide.md#7-agents-tools--a2a)), but it's carried *inline on the flow definition*, not from an `app/policies/*` folder, so there's no separate module to generate. `projection$` has no runtime consumer yet. Discovery stays gated on "a runtime consumes a discovered *file*" — wiring a `*Modules` array nothing reads would be dead registration.
+**Projections load their fold code on demand.** When the `@loom/compiler` plugin builds a `projection$`, it extracts the whole `handlers` fold map into its own `import()` chunk (exactly like `handler$`/`instructions$`) and records the handled event-type keys. At runtime the projection stays **code-dormant** until an event whose type it folds first fires — then it imports the chunk once (buffering until ready) and folds normally after. A projection whose events never fire never loads its code. Uncompiled (dev), the handlers are inline and eager.
+
+> `policy$` is **not** `loom gen`-discovered: it **is** enforced (a `PolicyAuthorizer` reads each flow's `policies` + `defineConfig({ policies })` — see the [user guide](user-guide.md#7-agents-tools--a2a)), but it's carried *inline on the flow definition*, not from an `app/policies/*` folder, so there's no separate module to generate. Discovery stays gated on "a runtime consumes a discovered *file*."
 
 ### `loom appgen <intent> | --from <file> | --from-spec <file> [--dir .] [flags]`
 

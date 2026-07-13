@@ -1,4 +1,5 @@
 import type { ZodSchema } from "zod";
+import type { EventEnvelope } from "./event";
 
 export type EffectKind = "tool" | "llm" | "human" | "a2a";
 
@@ -151,13 +152,42 @@ export interface ScheduleDefinition<TIn = unknown> {
   input?: TIn;
 }
 
+/** An event-fold map: for each handled event type, a pure reducer over the projection state. */
+export type ProjectionHandlers<TState = unknown> = Record<
+  string,
+  (state: TState, event: EventEnvelope) => TState
+>;
+
+/**
+ * The compiler-emitted lazy form of a projection's handlers (analogous to a step's
+ * `HandlerLoader` / a skill's instructions loader). The fold map lives in its own
+ * `import()` chunk; `eventTypes` carries the handled event-type KEYS so the runtime
+ * can gate loading on a matching event WITHOUT importing the chunk. Both forms are
+ * resolved by {@link loadProjectionHandlers}.
+ */
+export interface ProjectionHandlersRef<TState = unknown> {
+  readonly _loomProjectionHandlersRef: true;
+  /** The event types this projection folds — readable without loading the chunk. */
+  eventTypes: string[];
+  load: () => Promise<{ default: ProjectionHandlers<TState> }>;
+}
+
+export type ProjectionHandlersSpec<TState = unknown> =
+  | ProjectionHandlers<TState>
+  | ProjectionHandlersRef<TState>;
+
 export interface ProjectionDefinition<TState = unknown> {
   readonly _tag: "ProjectionDefinition";
   id: string;
   name: string;
   sourceFlowId?: string;
   initialState: TState;
-  handlers: Record<string, (state: TState, payload: unknown) => TState>;
+  /**
+   * Inline fold map (dev / no compiler), or the compiler-emitted lazy ref
+   * (`_loomProjectionHandlersRef`) whose fold code loads on demand. See
+   * {@link ProjectionHandlersSpec}.
+   */
+  handlers: ProjectionHandlersSpec<TState>;
 }
 
 // A2A skill descriptor carried on an agent. Defined structurally here (rather

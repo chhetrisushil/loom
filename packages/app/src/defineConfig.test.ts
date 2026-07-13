@@ -4,6 +4,7 @@ import {
   instructions$,
   memory$,
   policy$,
+  projection$,
   schedule$,
   skill$,
   step$,
@@ -700,6 +701,70 @@ describe("defineConfig — agent auto-wiring (a2a / a2ui, opt-in)", () => {
     const handle = await app.runtime.start(ok, { incidentId: "i1" });
     await handle.waitForCompletion();
     expect(events).not.toContain("EFFECT_DENIED");
+  });
+
+  it("folds an eager projection$ registered via projectionModules", () => {
+    const counter = projection$({
+      id: "evt-counter",
+      name: "Counter",
+      initialState: { n: 0 },
+      handlers: { PING: (s: { n: number }) => ({ n: s.n + 1 }) },
+    });
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      projectionModules: [{ Counter: counter, notAProjection: 1 }],
+    });
+    const ev = (seq: number) => ({
+      id: `e${seq}`,
+      workflowId: "w",
+      executionId: "x",
+      eventType: "PING",
+      sequence: seq,
+      timestamp: 0,
+      payload: {},
+    });
+    app.projectionRuntime.handleEvent(ev(0));
+    app.projectionRuntime.handleEvent(ev(1));
+    expect(app.projectionRuntime.getState<{ n: number }>("evt-counter", "x").n).toBe(2);
+  });
+
+  it("loads a lazy projection$ (compiler ref) on the first matching event", async () => {
+    let loaded = 0;
+    // Simulate the compiler-emitted lazy ref: eventTypes known up front; fold code behind load().
+    const lazy = projection$({
+      id: "lazy-counter",
+      name: "Lazy",
+      initialState: { n: 0 },
+      handlers: {
+        _loomProjectionHandlersRef: true,
+        eventTypes: ["PING"],
+        load: async () => {
+          loaded += 1;
+          return { default: { PING: (s: { n: number }) => ({ n: s.n + 1 }) } };
+        },
+      } as never,
+    });
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      projectionModules: [{ Lazy: lazy }],
+    });
+    const ev = (type: string, seq: number) => ({
+      id: `e${seq}`,
+      workflowId: "w",
+      executionId: "x",
+      eventType: type,
+      sequence: seq,
+      timestamp: 0,
+      payload: {},
+    });
+    // A non-handled event must NOT trigger the load.
+    app.projectionRuntime.handleEvent(ev("OTHER", 0));
+    expect(loaded).toBe(0);
+    // First matching event triggers the one-time load; buffered until ready.
+    app.projectionRuntime.handleEvent(ev("PING", 1));
+    expect(loaded).toBe(1);
+    await new Promise((r) => setTimeout(r, 0)); // let the load + buffer-drain settle
+    expect(app.projectionRuntime.getState<{ n: number }>("lazy-counter", "x").n).toBe(1);
   });
 
   it("registers memory$ definitions from memoryModules + memories into app.memory", async () => {

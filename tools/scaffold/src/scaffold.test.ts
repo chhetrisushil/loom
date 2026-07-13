@@ -6,6 +6,7 @@ import {
   flowFile,
   memoryFile,
   newFile,
+  projectionFile,
   scheduleFile,
   skillFile,
   toolFile,
@@ -34,6 +35,7 @@ describe("codegen", () => {
     expect(out).toContain("export const skillModules = [];");
     expect(out).toContain("export const scheduleModules = [];");
     expect(out).toContain("export const memoryModules = [];");
+    expect(out).toContain("export const projectionModules = [];");
   });
 
   it("generateRegistration emits every construct's modules alongside flows", () => {
@@ -43,7 +45,8 @@ describe("codegen", () => {
       ["./tools/lookup"],
       ["./skills/refunds"],
       ["./schedules/nightly"],
-      ["./memories/chat"]
+      ["./memories/chat"],
+      ["./projections/counter"]
     );
     expect(out).toContain('import * as _a0 from "./agents/triage";');
     expect(out).toContain("export const agentModules = [_a0];");
@@ -55,6 +58,8 @@ describe("codegen", () => {
     expect(out).toContain("export const scheduleModules = [_sc0];");
     expect(out).toContain('import * as _m0 from "./memories/chat";');
     expect(out).toContain("export const memoryModules = [_m0];");
+    expect(out).toContain('import * as _p0 from "./projections/counter";');
+    expect(out).toContain("export const projectionModules = [_p0];");
   });
 });
 
@@ -75,11 +80,14 @@ describe("per-file templates", () => {
     expect(skill).not.toContain("${");
   });
 
-  it("scheduleFile and memoryFile export their PascalCase constructs", () => {
+  it("scheduleFile, memoryFile and projectionFile export their PascalCase constructs", () => {
     expect(scheduleFile("nightly")).toContain("export const NightlySchedule");
     expect(scheduleFile("nightly")).toContain("cron:");
     expect(memoryFile("chat")).toContain("export const ChatMemory");
     expect(memoryFile("chat")).not.toContain("${");
+    expect(projectionFile("counter")).toContain("export const CounterProjection");
+    expect(projectionFile("counter")).toContain("handlers:");
+    expect(projectionFile("counter")).not.toContain("${");
   });
 
   it("newFile routes each kind to its convention path", () => {
@@ -89,6 +97,7 @@ describe("per-file templates", () => {
     expect(newFile("skill", "refunds").path).toBe("app/skills/refunds.ts");
     expect(newFile("schedule", "nightly").path).toBe("app/schedules/nightly.ts");
     expect(newFile("memory", "chat").path).toBe("app/memories/chat.ts");
+    expect(newFile("projection", "counter").path).toBe("app/projections/counter.ts");
   });
 });
 

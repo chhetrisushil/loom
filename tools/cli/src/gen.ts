@@ -69,6 +69,11 @@ export function discoverMemories(dir: string): string[] {
   return discoverFlat(dir, "memories");
 }
 
+/** Discover projection modules under `<dir>/projections/<name>.{ts,tsx}` (flat convention). */
+export function discoverProjections(dir: string): string[] {
+  return discoverFlat(dir, "projections");
+}
+
 /**
  * `loom gen [--dir app]` — write `<dir>/loom.gen.ts` registering the discovered
  * flows, agents, tools, skills, schedules, and memories (the folder convention).
@@ -83,6 +88,7 @@ export function cmdGen(dir: string): {
   skills: number;
   schedules: number;
   memories: number;
+  projections: number;
 } {
   const flows = discoverFlows(dir);
   const agents = discoverAgents(dir);
@@ -90,9 +96,13 @@ export function cmdGen(dir: string): {
   const skills = discoverSkills(dir);
   const schedules = discoverSchedules(dir);
   const memories = discoverMemories(dir);
+  const projections = discoverProjections(dir);
   fs.mkdirSync(dir, { recursive: true });
   const out = path.join(dir, "loom.gen.ts");
-  fs.writeFileSync(out, generateRegistration(flows, agents, tools, skills, schedules, memories));
+  fs.writeFileSync(
+    out,
+    generateRegistration(flows, agents, tools, skills, schedules, memories, projections)
+  );
   return {
     out,
     count: flows.length,
@@ -102,6 +112,7 @@ export function cmdGen(dir: string): {
     skills: skills.length,
     schedules: schedules.length,
     memories: memories.length,
+    projections: projections.length,
   };
 }
 
@@ -111,7 +122,7 @@ export function cmdNew(
   name: string,
   dir: string
 ): { path: string; created: boolean } {
-  const kinds = ["flow", "agent", "tool", "skill", "schedule", "memory"];
+  const kinds = ["flow", "agent", "tool", "skill", "schedule", "memory", "projection"];
   if (!kinds.includes(kind)) {
     throw new Error(`unknown kind "${kind}" — expected ${kinds.join(" | ")}`);
   }

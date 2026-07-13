@@ -15,6 +15,7 @@ export function loomPlugin(): Plugin {
     flows: new Map(),
     skills: new Map(),
     skillsByVarName: new Map(),
+    projections: new Map(),
   };
 
   let resolvedConfig: ResolvedConfig;

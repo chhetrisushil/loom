@@ -22,6 +22,7 @@ export {
   discoverSkills,
   discoverSchedules,
   discoverMemories,
+  discoverProjections,
   cmdGen,
   cmdNew,
 } from "./gen";

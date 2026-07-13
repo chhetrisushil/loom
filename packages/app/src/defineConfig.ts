@@ -10,11 +10,13 @@ import {
   type TenantResolver,
   exportSubject as exportSubjectData,
 } from "@loom/compliance";
+import { isProjectionHandlersRef, loadProjectionHandlers, projectionEventTypes } from "@loom/core";
 import type {
   AgentDefinition,
   EventEnvelope,
   MemoryDefinition,
   PolicyDefinition,
+  ProjectionDefinition,
   ScheduleDefinition,
   SkillDefinition,
   ToolDefinition,
@@ -61,12 +63,14 @@ import {
   type FlowModule,
   type ManifestView,
   type MemoryModule,
+  type ProjectionModule,
   type ScheduleModule,
   type SkillModule,
   type ToolModule,
   agentDefinitionsFrom,
   manifestWarnings,
   memoryDefinitionsFrom,
+  projectionDefinitionsFrom,
   registerFlowsFrom,
   registeredFlowsFrom,
   scheduleDefinitionsFrom,
@@ -179,6 +183,16 @@ export interface LoomConfig {
    * memory is separate from the durable event log). Pass a persistent `MemoryStore` for durability.
    */
   memoryStore?: MemoryStore;
+  /**
+   * Statically-imported projection modules (from `loom gen`'s `projectionModules`) — every
+   * `projection$` definition is discovered by value shape and folded into the projection
+   * runtime. A compiler-emitted lazy-handlers ref becomes an **event-type-gated** projection:
+   * its fold code loads on demand the first time one of its handled events fires (a projection
+   * whose events never fire never loads its code). Discovery from `app/projections/*.ts`.
+   */
+  projectionModules?: ProjectionModule[];
+  /** Projection definitions registered directly (in addition to any from `projectionModules`). */
+  projections?: ProjectionDefinition[];
   /**
    * Optional compiler manifest to cross-check against — any flow the compiler saw
    * but that isn't registered (or that carries a compiler warning) is reported
@@ -465,6 +479,28 @@ export function defineConfig(config: LoomConfig): LoomApp {
       typeof surface === "string" ? [surface, undefined] : [surface.id, surface.redact];
     projectionRuntime.register(
       a2uiSurfaceProjection(id, ...(redact !== undefined ? [{ redact }] : []))
+    );
+  }
+
+  // projection$ definitions (explicit + discovered via projectionModules) folded into the
+  // projection runtime. Each is adapted to the runtime's Projection shape; a compiler-emitted
+  // lazy-handlers ref becomes an event-type-gated `lazy` projection (its fold code loads on the
+  // first matching event), otherwise the inline fold map is used directly.
+  for (const def of [
+    ...(config.projections ?? []),
+    ...projectionDefinitionsFrom(...(config.projectionModules ?? [])),
+  ]) {
+    projectionRuntime.register(
+      isProjectionHandlersRef(def.handlers)
+        ? {
+            id: def.id,
+            initialState: def.initialState,
+            lazy: {
+              eventTypes: projectionEventTypes(def.handlers),
+              load: () => loadProjectionHandlers(def.handlers),
+            },
+          }
+        : { id: def.id, initialState: def.initialState, handlers: def.handlers }
     );
   }
 

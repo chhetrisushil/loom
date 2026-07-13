@@ -1,7 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryProjectionRuntime } from "./InMemoryProjectionRuntime";
-import type { Projection } from "./types";
+import type { Projection, ProjectionFoldMap } from "./types";
 
 function makeEvent(executionId: string, sequence: number, eventType: string): EventEnvelope {
   return {
@@ -193,5 +193,56 @@ describe("InMemoryProjectionRuntime — retention (leak fix)", () => {
     rt.handleEvent(makeEvent("c", 1, "STEP_COMPLETED")); // evicts b
     expect(rt.getState<S>("step-counter", "a").completedSteps).toBe(2);
     expect(rt.getState<S>("step-counter", "b").completedSteps).toBe(0); // evicted
+  });
+
+  describe("event-type-gated lazy projections", () => {
+    const lazyCounter = (load: () => Promise<ProjectionFoldMap<S>>): Projection<S> => ({
+      id: "lazy-counter",
+      initialState: { completedSteps: 0 },
+      lazy: { eventTypes: ["STEP_COMPLETED"], load },
+    });
+
+    it("never loads the fold code when no handled event fires", async () => {
+      const load = vi.fn();
+      const rt = new InMemoryProjectionRuntime();
+      rt.register(lazyCounter(load as never));
+      rt.handleEvent(makeEvent("a", 1, "SOMETHING_ELSE")); // not in eventTypes
+      rt.handleEvent(makeEvent("a", 2, "ANOTHER")); // not in eventTypes
+      await Promise.resolve();
+      expect(load).not.toHaveBeenCalled();
+    });
+
+    it("loads on the first matching event and folds buffered events in order", async () => {
+      const foldMap: ProjectionFoldMap<S> = {
+        STEP_COMPLETED: (state) => ({ completedSteps: state.completedSteps + 1 }),
+      };
+      const load = vi.fn(async () => foldMap);
+      const rt = new InMemoryProjectionRuntime();
+      rt.register(lazyCounter(load));
+
+      // Three matching events arrive before the async load resolves — all buffered.
+      rt.handleEvent(makeEvent("a", 1, "STEP_COMPLETED"));
+      rt.handleEvent(makeEvent("a", 2, "STEP_COMPLETED"));
+      rt.handleEvent(makeEvent("a", 3, "STEP_COMPLETED"));
+      expect(load).toHaveBeenCalledTimes(1); // loaded once, not per event
+      expect(rt.getState<S>("lazy-counter", "a").completedSteps).toBe(0); // not yet caught up
+
+      await Promise.resolve(); // let the load promise resolve + buffer drain
+      expect(rt.getState<S>("lazy-counter", "a").completedSteps).toBe(3); // caught up in order
+    });
+
+    it("folds synchronously once loaded (no re-import)", async () => {
+      const foldMap: ProjectionFoldMap<S> = {
+        STEP_COMPLETED: (state) => ({ completedSteps: state.completedSteps + 1 }),
+      };
+      const load = vi.fn(async () => foldMap);
+      const rt = new InMemoryProjectionRuntime();
+      rt.register(lazyCounter(load));
+      rt.handleEvent(makeEvent("a", 1, "STEP_COMPLETED"));
+      await Promise.resolve();
+      rt.handleEvent(makeEvent("a", 2, "STEP_COMPLETED")); // now on the loaded fast path
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(rt.getState<S>("lazy-counter", "a").completedSteps).toBe(2);
+    });
   });
 });

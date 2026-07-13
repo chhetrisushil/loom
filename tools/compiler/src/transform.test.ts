@@ -11,6 +11,7 @@ function emptyState(): PluginState {
     flows: new Map(),
     skills: new Map(),
     skillsByVarName: new Map(),
+    projections: new Map(),
   };
 }
 
@@ -62,6 +63,50 @@ describe("compiler — skill instruction extraction", () => {
     expect(state.skills.get("s1")?.chunkVirtualId).toBeUndefined();
     const manifest = buildManifest(state, "dist");
     expect(manifest.skills.s1?.chunk).toBe("");
+  });
+});
+
+describe("compiler — projection handlers extraction", () => {
+  it("extracts a projection$ handlers map into a lazy chunk, records event types, rewrites to a ref", () => {
+    const src = [
+      'import { projection$ } from "@loom/core";',
+      "export const Counter = projection$({",
+      '  id: "step-counter",',
+      '  name: "Counter",',
+      "  initialState: { n: 0 },",
+      "  handlers: {",
+      "    STEP_COMPLETED: (s, _e) => ({ n: s.n + 1 }),",
+      "    STEP_FAILED: (s, _e) => ({ n: s.n }),",
+      "  },",
+      "});",
+    ].join("\n");
+
+    const state = emptyState();
+    const result = transformFile(src, "/abs/projections.ts", state);
+    expect(result).not.toBeNull();
+
+    // The handlers map is rewritten to a lazy ref carrying the event-type keys + a loader.
+    expect(result!.code).toContain("_loomProjectionHandlersRef: true");
+    expect(result!.code).toContain('eventTypes: ["STEP_COMPLETED","STEP_FAILED"]');
+    expect(result!.code).toContain('() => import("\0loom:chunk:step-counter_');
+
+    // The fold map is captured as the chunk's default export.
+    const chunk = [...state.chunks.values()].find((c) => c.kind === "projection");
+    expect(chunk).toBeDefined();
+    expect(chunk!.chunkSource).toContain("export default {");
+    expect(chunk!.chunkSource).toContain("STEP_COMPLETED");
+
+    // The projection is recorded with its event types + chunk, and surfaced in the manifest.
+    const entry = state.projections.get("step-counter");
+    expect(entry?.eventTypes).toEqual(["STEP_COMPLETED", "STEP_FAILED"]);
+    const manifest = buildManifest(state, "dist");
+    expect(manifest.projections["step-counter"]?.eventTypes).toEqual([
+      "STEP_COMPLETED",
+      "STEP_FAILED",
+    ]);
+    expect(manifest.projections["step-counter"]?.chunk).toMatch(
+      /^dist\/chunks\/step-counter_.*\.js$/
+    );
   });
 });
 
