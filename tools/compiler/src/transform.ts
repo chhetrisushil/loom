@@ -221,17 +221,14 @@ function collectFlows(
   absolutePath: string
 ): void {
   ts.forEachChild(sourceFile, function visit(node: ts.Node): void {
-    let callNode: ts.CallExpression | undefined;
-
-    if (ts.isVariableStatement(node)) {
-      const decl = node.declarationList.declarations[0];
-      if (decl?.initializer && ts.isCallExpression(decl.initializer)) {
-        callNode = decl.initializer;
-      }
-    }
-
-    if (callNode && isCallTo(callNode, "flow$") && callNode.arguments.length > 0) {
-      const argObj = callNode.arguments[0];
+    // Match a `flow$(...)` call WHEREVER it appears — not only as a direct variable
+    // initializer (`const f = flow$(...)`), but also nested inside the idiomatic
+    // `RegisteredFlow` shape `const f = { definition: flow$(...), runner } as RegisteredFlow`.
+    // The walk recurses into every child (below), so matching the call node directly catches
+    // both; the previous variable-initializer-only check missed the object-wrapped form and
+    // emitted an empty `flows` map for real apps.
+    if (ts.isCallExpression(node) && isCallTo(node, "flow$") && node.arguments.length > 0) {
+      const argObj = node.arguments[0];
       if (argObj && ts.isObjectLiteralExpression(argObj)) {
         const idProp = findProperty(argObj, "id");
         const versionProp = findProperty(argObj, "version");
