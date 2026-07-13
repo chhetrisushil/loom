@@ -202,6 +202,25 @@ Same execution + replay semantics for all four. **AI calls are just effects** �
 
 ---
 
+## Data governance — classify once, enforce everywhere (`@loom/classify`, `@loom/compliance`)
+
+The event log is durable *and* compliance-safe — the same log. Mark a field once; the framework derives the wiring.
+
+```ts
+const output = z.object({
+  ssn:   sensitive(z.string()),   // encrypted at rest, crypto-shreddable, scrubbed from egress
+  token: secret(z.string()),      // never persisted (resolved from a vault at effect time)
+  doc:   externalized(z.object({…})), // stored in a content store; log keeps a ref (ADR 0046)
+});
+```
+
+- **`ctx.decide` for shreddable data** — branch on the *decision*, not the raw value; the decision is durable + replayable, the value becomes erasable. This is how you replay deterministically *and* forget PII.
+- **GDPR/CCPA out of the box** — `@loom/compliance`: subject index (who a record concerns), `exportSubject` (Art. 15/20), `eraseSubject` (Art. 17, liveness-gated), tenant-scoped.
+- **Egress boundary** — sensitive/internal fields are scrubbed from telemetry / a2ui / CLI (K10-R6); crypto-shredding + `loom retention run` bound log lifetime.
+- **One config key** — `defineConfig({ secrets, retention, compliance })`; empty ⇒ byte-identical (G2).
+
+---
+
 ## Configurable LLM — `@loom/llm`
 
 The model is chosen in exactly **one** place:

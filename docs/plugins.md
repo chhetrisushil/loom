@@ -60,7 +60,9 @@ imports, so the 1P/3P distinction stays purely organisational.
 - `@loom/plugin-sqlite` — embedded SQLite `Event`/`Snapshot`/`Branch`/`Timer` stores + the
   `sqliteStorage()` preset.
 - `@loom/plugin-postgres` — network Postgres stores (LISTEN/NOTIFY) + `postgresStorage()`.
-- `@loom/plugin-crypto` — field-level crypto-shredding store wrappers (K10).
+- `@loom/plugin-crypto` — field-level crypto-shredding store wrappers (K10) + `KeyStore` SPI.
+- `@loom/plugin-content` — content-store seam: `ContentResolvingEventStore` externalizes marked
+  payload fields to a content-addressed side store + `ContentStore` SPI ([ADR 0046](adr/0046-content-store-seam-thin-authoritative-log.md)).
 - `@loom/plugin-audit-chain` — tamper-evident hash-chained `EventStore` wrapper.
 
 ## Scaffolding a plugin

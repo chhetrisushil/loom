@@ -76,9 +76,11 @@ load-bearing, plus the global guardrails that gate every additive capability:
   `(state, event) => state`; a `__proto__` container key MUST be rejected (fold hardening).
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
-  the pinned type set MUST change together. The current version is **1.12.0** — the most recent
-  additive type is `EXECUTION_DENIED` (C.1 execution-lifecycle authorization; pure audit into
-  `variables._executionDenials`, so a log that never denies replays byte-identically).
+  the pinned type set MUST change together. The current version is **1.14.0** — the most recent
+  additive types are the K10.1 retention control facts `EXECUTION_ARCHIVED`/`EXECUTION_DELETED`
+  (1.13.0, into `variables._lifecycle`) and the T3-R4.5 `ERASURE_PENDING` deferred-erasure fact
+  (1.14.0, into `variables._erasure`) — all pure audit on reserved control streams, so a log
+  that never prunes or defers an erasure replays byte-identically.
 
 ## 5. Suspension semantics
 

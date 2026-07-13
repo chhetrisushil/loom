@@ -30,12 +30,23 @@ loom — project-local commands for a Loom app
   loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
   loom appgen <intent> [--dir .] [--dry-run] [--check] [--model <gguf>]  NL → new project or brownfield edits
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
-  loom logs  --db <path> <executionId>            print the event timeline
-  loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
+  loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
+  loom logs  --db <path> <executionId> [--redact a,b]   print the event timeline
+  loom debug --db <path> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
+  loom profile --db <path> <executionId>          flame graph + latency breakdown
+  loom introspect --db <path> <executionId> [--graph N]  execution/task/decision/resource graphs
+  loom optimize --db <path> <executionId>         advisory optimization report
   loom eval  --dir <path>                         replay golden logs vs expectations
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
+  loom retention run --db <path> --snap <path> [--ttl ms] [--apply]  reclaim aged terminal executions
+  loom compliance report --db <path> --subject-path <p> [--tenant-path <p>]  data-subject inventory
   loom inspect --db <path> [--port N]             web inspector (timeline + slider)
 ```
+
+> Data-protection commands: `--redact a,b` masks output dot-paths from `logs`/`debug` (K10-R6);
+> `retention run` (dry-run by default, `--apply` to reclaim) and `compliance report` (subject
+> inventory) sweep the store via the `listExecutions` SPI. `kernel-manifest` and `compat`
+> (deployment-contract tooling) and `plugin …` (plugin authoring) have their own sections below.
 
 There are no global flags — each command declares its own. The recurring ones are `--db <path>` (a SQLite event-store file), `--dir <path>` (a directory, defaulting to `app` for `gen`/`new`), and `--at <N>` (a sequence number). An unknown command prints the usage to stderr and exits `1`.
 
@@ -261,6 +272,37 @@ npx loom deploy check --logs logs/ --config dist/app.js
 ```
 
 `✗` marks a **breaking** change (fails the gate, exit `1`); `•` marks an advisory. A clean run prints `✓ N execution(s) — safe to promote` (exit `0`). When the config also exports an `effectRuntime`, an optional K9 advisory flags tool effects with no `idempotent` declaration (re-run at-least-once on recovery) — advisory only, it never fails the gate.
+
+---
+
+## Data protection: `retention run`, `compliance report`
+
+Operator sweeps over a stored log, both built on the `listExecutions` store-SPI (1.1.0). Reserved
+control streams (`__loom_*`) are filtered automatically. See [data classification](data-classification.md) and [compliance](compliance.md).
+
+### `loom retention run --db <events.db> --snap <snap.db> [--ttl <ms>] [--apply]`
+
+Reclaim terminal executions older than the TTL (K10.1). **Dry run by default** — it reports
+`would-reclaim` / `kept` / `not-terminal` per execution; `--apply` performs the deletion via
+`LogLifecycle` (branch-integrity guard + `EXECUTION_ARCHIVED`/`EXECUTION_DELETED` control facts
+included) and reports `reclaimed` / `blocked-by-branch` / … Nothing prunes on a timer — the
+operator drives it.
+
+```bash
+npx loom retention run --db .loom/events.db --snap .loom/snapshots.db --ttl 7776000000   # dry run (90 days)
+npx loom retention run --db .loom/events.db --snap .loom/snapshots.db --ttl 7776000000 --apply
+```
+
+### `loom compliance report --db <path> --subject-path <dotpath> [--tenant-path <dotpath>]`
+
+A data-subject inventory (T3): folds every execution's `EXECUTION_STARTED`, attributing it to a
+subject (and optional tenant) read from a dot-path off the input — a cold log has no flow code,
+so you name the path, e.g. `--subject-path input.userId --tenant-path input.tenant`. Reports
+subject → execution counts, per tenant.
+
+```bash
+npx loom compliance report --db .loom/events.db --subject-path input.userId
+```
 
 ---
 

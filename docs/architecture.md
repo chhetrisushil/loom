@@ -462,7 +462,8 @@ flowchart TB
 | **Projection / UI** | `projection-runtime`, `a2ui`, `blueprint-runtime`, `renderer-react`, `renderer-terminal` |
 | **Agentic** | `agent`, `a2a`, `llm`, `reasoning`, `mcp`, `capability`, `intent`, `planner`, `memory`, `orchestrator` |
 | **Compute / distribution** | `dispatcher`, `worker-runtime`, `worker-runtime-local`, `worker-runtime-remote`, `worker-server`, `platform-cloudrun`, `graph-executor`, `scheduler`, `store-postgres` |
-| **Kernel hardening / security** | `effect-runtime` (K2 authz + K12 delegation), `middleware` (K3 metering, K6 safety, K10 redaction, K12 nested budgets), `isolate` (K7 data-plane isolation & egress), `store-crypto` (K10 encryption & crypto-shredding), `event-runtime`/`snapshot-runtime` (K12 tenant scoping), `wire-abi` (T2), `telemetry` |
+| **Kernel hardening / security** | `effect-runtime` (K2 authz + K12 delegation), `middleware` (K3 metering, K6 safety, K10 redaction, K12 nested budgets), `isolate` (K7 data-plane isolation & egress), `plugin-crypto` (K10 encryption & crypto-shredding), `event-runtime`/`snapshot-runtime` (K12 tenant scoping), `wire-abi` (T2), `telemetry` (K10-R6 egress scrubbing) |
+| **Data protection & compliance** | `classify` (K10-R1 `secret`/`sensitive`/`internal`/`externalized` markers), `compliance` (T3 subject index + export + erasure, tenant-scoped), `plugin-content` (ADR 0046 content-store seam) — see [data classification](data-classification.md) & [compliance](compliance.md) |
 | **Intelligence / DX** | `analytics`, `appgen`, `appgen-model` (optional local planner), `cli`, `eval`, `deploy-sim`, `testing`, `scaffold`, `compiler`, `telemetry` |
 | **Three-direction arc** | `dst` (simulation testing), `audit-chain` + `fair-scheduler` + execution-authz in `workflow-runtime` (multi-tenant isolation), `live-query` + `orchestration` + `saga` (coordination) — ADRs 0036–0041 |
 
@@ -578,5 +579,7 @@ Being honest about the edges:
 - **[Getting Started](getting-started.md)** — from zero to a running, suspend/resume flow in minutes.
 - **[Usage](usage.md)** — build a real app step by step.
 - **[User Guide](user-guide.md)** — every feature area with examples.
-- **[ADRs](adr/)** — the full decision history (0001–0044; 0016–0026 cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series; 0036–0041 the three-direction arc; 0042 the AI-native brownfield `appgen`; 0043–0044 the plugin packaging + 1P/3P separation).
+- **[Data classification](data-classification.md)** — field-sensitivity markers (`secret()`/`sensitive()`/`internal()`/`externalized()`) that drive encryption, redaction, and egress scrubbing (K10-R1/R6).
+- **[Compliance](compliance.md)** — data-subject rights: subject index, export (Art. 15/20), and erasure (Art. 17), tenant-scoped (T3).
+- **[ADRs](adr/)** — the full decision history (0001–0046; 0016–0026 cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series; 0036–0041 the three-direction arc; 0042 the AI-native brownfield `appgen`; 0043–0044 the plugin packaging + 1P/3P separation; 0046 the content-store seam).
 - **[Presentation](presentation/loom-deck.md)** — the deck.

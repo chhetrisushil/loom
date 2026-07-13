@@ -345,20 +345,28 @@ interface LoomConfig {
     // this shape: sqliteStorage({dir}) from @loom/plugin-sqlite, postgresStorage({url})
     // from @loom/plugin-postgres, or your own (ADR 0043).
     | { kind: "custom"; eventStore; snapshotStore; branchRegistry? };
-  surfaces?: string[];
+  surfaces?: (string | { id: string; redact?: string[] })[]; // redact masks surface egress (K10-R6)
   flows?: RegisteredFlow[];
   flowModules?: FlowModule[];          // from `loom gen` (static discovery)
   effectMiddleware?: EffectMiddleware[];
   validate?: boolean | "warn" | "error";
   agents?: AgentCard[];
   capabilityAgents?: Record<string, string>;
-  telemetry?: TelemetryAdapter[];
+  telemetry?: TelemetryAdapter[];      // auto-scrubbed for sensitive()/internal() fields (K10-R6)
   dispatcher?: ExecutionDispatcher;    // where executions run
   onEvent?: (event: EventEnvelope) => void;
   onWarn?: (message: string) => void;
   projectionRuntime?: ProjectionRuntime;
   catalog?: CatalogLike;
   manifest?: ManifestView;
+  // ── Data protection (see §K10/T3 below + docs/data-classification.md, docs/compliance.md)
+  secrets?: { resolver: SecretResolver };                       // K10-R2 secret redaction
+  retention?: { archive?: ArchiveStores };                      // K10.1 log lifecycle → app.lifecycle
+  compliance?: {                                                // T3 data-subject rights
+    subjectOf: SubjectResolver;
+    tenantOf?: TenantResolver;                                  // T3-R2.4 tenant partition
+    erase?: { shred: Shredder };                                // Art. 17 erasure
+  };
 }
 
 interface LoomApp {
@@ -367,6 +375,10 @@ interface LoomApp {
   projectionRuntime: ProjectionRuntime;
   bus: InProcessA2ABus;
   stores: { eventStore: EventStore; snapshotStore: SnapshotStore; branchRegistry?: BranchRegistry };
+  lifecycle: LogLifecycle;                                      // K10.1 retention/compaction
+  subjectIndex?: SubjectIndex;                                  // T3 (when compliance wired)
+  exportSubject(id: string, o?: { includeEvents?: boolean; tenant?: string }): Promise<SubjectExport>;
+  eraseSubject(id: string, tenant?: string): Promise<EraseSubjectResult>;
   close(): Promise<void>;
 }
 ```
@@ -910,6 +922,42 @@ stolen disk or leaked backup — is a storage-layer concern: volume encryption
 or SQLCipher/TDE for per-file/per-cluster keys. All three layers stack; see
 **[Encryption at rest](loom-2.0/11-encryption-at-rest.md)** for the SQLite and Postgres
 configuration and when to use which.
+
+**Classify once, derive the wiring (K10-R1/R2/R6).** The hand-authored `sensitive: {…}` maps
+above are the low level. In practice, mark the field **once** on its schema and every mechanism
+derives its wiring — encryption, redaction, and egress scrubbing:
+
+```ts
+import { sensitive, secret, internal, externalized } from "@loom/classify";
+
+const output = z.object({
+  ssn: sensitive(z.string()),        // encrypt-at-rest + crypto-shreddable + scrubbed from egress
+  apiToken: secret(z.string()),      // never persisted (substituted via secretRef)
+  note: internal(z.string()),        // logged, but never egressed externally
+  doc: externalized(z.object({…})),  // stored in a content store, log keeps a ref (ADR 0046)
+});
+
+// One config key wires secret redaction; telemetry egress is auto-scrubbed for marked fields:
+const app = defineConfig({ storage, flows, secrets: { resolver }, telemetry: [datadog] });
+```
+
+See **[Data classification](data-classification.md)** for the full taxonomy + derive helpers,
+and the [content-store seam](adr/0046-content-store-seam-thin-authoritative-log.md) for `externalized()`.
+
+**Data-subject rights (T3, `@loom/compliance`).** Event-sourcing makes GDPR Art. 15/20 (access,
+portability) and Art. 17 (erasure) a *fold*. Wire a `subjectOf` resolver (and `tenantOf` for
+multi-tenant isolation) and get a live subject index + export + erasure:
+
+```ts
+const app = defineConfig({ storage, flows,
+  compliance: { subjectOf: (e) => e.payload.input?.userId, erase: { shred } } });
+
+await app.exportSubject("user-42");             // Art. 15 access + Art. 20 portability
+await app.eraseSubject("user-42");              // Art. 17 — liveness-gated (never shreds a live fold)
+```
+
+Operator sweeps over cold storage: `loom compliance report` (subject inventory) and
+`loom retention run`. See **[Compliance](compliance.md)**.
 
 ### Identity & delegated authority (K12)
 
