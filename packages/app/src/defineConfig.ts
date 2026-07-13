@@ -452,7 +452,10 @@ export function defineConfig(config: LoomConfig): LoomApp {
   // ⇒ the authorizer is exactly config.authorizer, so behaviour is byte-identical to before.
   const flowPolicies: Record<string, PolicyDefinition[]> = {};
   const addPolicies = (workflowId: string, pols?: PolicyDefinition[]): void => {
-    if (pols && pols.length > 0) (flowPolicies[workflowId] ??= []).push(...pols);
+    if (!pols || pols.length === 0) return;
+    const existing = flowPolicies[workflowId];
+    if (existing) existing.push(...pols);
+    else flowPolicies[workflowId] = [...pols];
   };
   for (const flow of [
     ...(config.flows ?? []),
