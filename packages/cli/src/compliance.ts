@@ -1,6 +1,6 @@
 import { SubjectIndex } from "@loom/compliance";
 import type { EventEnvelope } from "@loom/core";
-import { isReservedStream } from "@loom/event-runtime";
+import { isReservedStream, readRangeOf } from "@loom/event-runtime";
 import { SqliteEventStore } from "@loom/plugin-sqlite";
 
 // ── `loom compliance report` — data-subject inventory over cold storage (T3) ────
@@ -53,7 +53,9 @@ export async function cmdComplianceReport(
 
     const index = new SubjectIndex(subjectOf, tenantOf !== undefined ? { tenantOf } : {});
     for (const id of ids) {
-      for (const event of await store.read(id)) index.handleEvent(event);
+      // The subject/tenant live in EXECUTION_STARTED (sequence 0), so read ONLY the bootstrap
+      // event — not the whole log. O(executions) reads instead of O(total events).
+      for (const event of await readRangeOf(store, id, 0, 0)) index.handleEvent(event);
     }
 
     const lines: string[] = [];

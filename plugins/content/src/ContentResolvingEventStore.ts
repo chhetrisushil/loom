@@ -101,13 +101,14 @@ export class ContentResolvingEventStore implements EventStore {
   }
 
   private async resolveAll(executionId: string, events: EventEnvelope[]): Promise<EventEnvelope[]> {
-    // Fast path: no event carries a ref → verbatim (no walk, no allocation).
-    if (!events.some((e) => hasContentRef(e.payload))) return events;
+    // Single walk: compute the per-event ref flag ONCE (`hasContentRef` is a full deep walk of
+    // the payload; it was run twice — the `.some()` fast-path plus a second call inside the
+    // `.map()`). Fast path: no event carries a ref → verbatim, no allocation.
+    const refBearing = events.map((e) => hasContentRef(e.payload));
+    if (!refBearing.some(Boolean)) return events;
     return Promise.all(
-      events.map(async (e) =>
-        hasContentRef(e.payload)
-          ? { ...e, payload: await this.resolveRefs(e.payload, executionId) }
-          : e
+      events.map(async (e, i) =>
+        refBearing[i] ? { ...e, payload: await this.resolveRefs(e.payload, executionId) } : e
       )
     );
   }
