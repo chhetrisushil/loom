@@ -107,5 +107,5 @@ Adopted per the [K10 evaluation](../requirements/2026-07-10-kernel-hardening-eva
   **live descendant branch** still depends on its copied prefix (`blocked-by-branch`, wired
   off the `BranchRegistry`) — a latent-correctness fix. `defineConfig({ retention })` is now
   real and exposes `app.lifecycle` for an explicit, non-background pass (no timer prunes the
-  log). Deferred: a `loom retention run` CLI needs a `listExecutions` store-SPI enumerator
-  (flagged, not yet added).
+  log). `loom retention run` (dry-run by default, `--apply` to reclaim) is **shipped**, on the
+  `listExecutions` store-SPI enumerator (EVENT_STORE_SPI 1.1.0).
