@@ -15,7 +15,14 @@ export {
   type AppgenResult,
   type Conflict,
 } from "./appgen";
-export { discoverFlows, discoverAgents, discoverTools, cmdGen, cmdNew } from "./gen";
+export {
+  discoverFlows,
+  discoverAgents,
+  discoverTools,
+  discoverSkills,
+  cmdGen,
+  cmdNew,
+} from "./gen";
 export { checkManifest, cmdCheck, type CheckManifest, type CheckResult } from "./check";
 export { buildTrace, type Trace, type TraceEvent, type TraceFrame } from "./trace";
 export { loadLogs, runDeployCheck, cmdDeployCheck } from "./deploy";

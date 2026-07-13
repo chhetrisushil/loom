@@ -18,7 +18,14 @@ import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { cmdComplianceReport } from "./compliance";
 import { idempotencyAdvisory, loadLogs, runDeployCheck } from "./deploy";
 import { unifiedDiff } from "./diff";
-import { cmdGen, cmdNew, discoverAgents, discoverFlows, discoverTools } from "./gen";
+import {
+  cmdGen,
+  cmdNew,
+  discoverAgents,
+  discoverFlows,
+  discoverSkills,
+  discoverTools,
+} from "./gen";
 import { describeState, evaluateGoldens, foldAt, formatLog, parseArgs } from "./index";
 import { serveInspector } from "./inspector";
 import { cmdIntrospect } from "./introspect";
@@ -214,24 +221,29 @@ describe("loom CLI", () => {
       expect(gen).toContain("export const flowModules = [_f0, _f1];");
     });
 
-    it("discovers agents + tools (flat-file convention) and emits agentModules/toolModules", () => {
+    it("discovers agents + tools + skills (flat-file) and emits their modules", () => {
       const appDir = join(dir, "app-at");
       cmdNew("flow", "greet", appDir);
       const agent = cmdNew("agent", "triage", appDir);
       const tool = cmdNew("tool", "lookup", appDir);
+      const skill = cmdNew("skill", "refunds", appDir);
       expect(agent.path).toBe(join(appDir, "agents/triage.ts")); // flat file, not a folder
       expect(tool.path).toBe(join(appDir, "tools/lookup.ts"));
+      expect(skill.path).toBe(join(appDir, "skills/refunds.ts"));
 
       expect(discoverAgents(appDir)).toEqual(["./agents/triage"]);
       expect(discoverTools(appDir)).toEqual(["./tools/lookup"]);
+      expect(discoverSkills(appDir)).toEqual(["./skills/refunds"]);
 
-      const { flows, agents, tools, out } = cmdGen(appDir);
-      expect([flows, agents, tools]).toEqual([1, 1, 1]);
+      const { flows, agents, tools, skills, out } = cmdGen(appDir);
+      expect([flows, agents, tools, skills]).toEqual([1, 1, 1, 1]);
       const gen = readFileSync(out, "utf-8");
       expect(gen).toContain('import * as _a0 from "./agents/triage";');
       expect(gen).toContain("export const agentModules = [_a0];");
       expect(gen).toContain('import * as _t0 from "./tools/lookup";');
       expect(gen).toContain("export const toolModules = [_t0];");
+      expect(gen).toContain('import * as _s0 from "./skills/refunds";');
+      expect(gen).toContain("export const skillModules = [_s0];");
     });
 
     it("does not overwrite an existing file", () => {

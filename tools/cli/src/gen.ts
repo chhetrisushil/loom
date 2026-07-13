@@ -54,9 +54,14 @@ export function discoverTools(dir: string): string[] {
   return discoverFlat(dir, "tools");
 }
 
+/** Discover skill modules under `<dir>/skills/<name>.{ts,tsx}` (flat convention). */
+export function discoverSkills(dir: string): string[] {
+  return discoverFlat(dir, "skills");
+}
+
 /**
  * `loom gen [--dir app]` — write `<dir>/loom.gen.ts` registering the discovered
- * flows, agents, and tools (the folder convention). Returns per-kind counts.
+ * flows, agents, tools, and skills (the folder convention). Returns per-kind counts.
  */
 export function cmdGen(dir: string): {
   out: string;
@@ -64,19 +69,22 @@ export function cmdGen(dir: string): {
   flows: number;
   agents: number;
   tools: number;
+  skills: number;
 } {
   const flows = discoverFlows(dir);
   const agents = discoverAgents(dir);
   const tools = discoverTools(dir);
+  const skills = discoverSkills(dir);
   fs.mkdirSync(dir, { recursive: true });
   const out = path.join(dir, "loom.gen.ts");
-  fs.writeFileSync(out, generateRegistration(flows, agents, tools));
+  fs.writeFileSync(out, generateRegistration(flows, agents, tools, skills));
   return {
     out,
     count: flows.length,
     flows: flows.length,
     agents: agents.length,
     tools: tools.length,
+    skills: skills.length,
   };
 }
 
@@ -86,8 +94,8 @@ export function cmdNew(
   name: string,
   dir: string
 ): { path: string; created: boolean } {
-  if (kind !== "flow" && kind !== "agent" && kind !== "tool") {
-    throw new Error(`unknown kind "${kind}" — expected flow | agent | tool`);
+  if (kind !== "flow" && kind !== "agent" && kind !== "tool" && kind !== "skill") {
+    throw new Error(`unknown kind "${kind}" — expected flow | agent | tool | skill`);
   }
   const { path: rel, content } = newFile(kind, name);
   const dest = path.join(dir, rel.replace(/^app\//, ""));

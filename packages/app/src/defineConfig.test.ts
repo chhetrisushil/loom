@@ -1,5 +1,5 @@
 import { secret, sensitive } from "@loom/classify";
-import { agent$, step$, tool$ } from "@loom/core";
+import { agent$, instructions$, skill$, step$, tool$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectMiddleware } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
@@ -603,5 +603,29 @@ describe("defineConfig — agent auto-wiring (a2a / a2ui, opt-in)", () => {
       toolModules: [{ LookupTool: lookup, notATool: 1 }],
     });
     expect(app.tools.map((t) => t.id)).toEqual(["lookup"]);
+  });
+
+  it("registers skill$ definitions from skillModules + skills into app.skills", () => {
+    const refunds = skill$({
+      id: "refunds",
+      name: "Refunds",
+      description: "handle refund requests",
+      tags: ["billing"],
+      instructions: instructions$("Refund the customer."),
+    });
+    const escalate = skill$({
+      id: "escalate",
+      name: "Escalate",
+      description: "escalate to a human",
+      instructions: instructions$("Page the on-call."),
+    });
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      skills: [escalate],
+      skillModules: [{ RefundsSkill: refunds, notASkill: 7 }],
+    });
+    expect(app.skills.ids().sort()).toEqual(["escalate", "refunds"]);
+    // The deterministic selector is wired and scores over the discovered metadata.
+    expect(app.skills.find("refund billing")[0]?.skill.id).toBe("refunds");
   });
 });

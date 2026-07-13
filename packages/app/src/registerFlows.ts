@@ -1,10 +1,11 @@
-import type { AgentDefinition, ToolDefinition } from "@loom/core";
+import type { AgentDefinition, SkillDefinition, ToolDefinition } from "@loom/core";
 import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 
-/** A statically-imported module namespace that may export RegisteredFlows / agents / tools. */
+/** A statically-imported module namespace that may export RegisteredFlows / agents / tools / skills. */
 export type FlowModule = Record<string, unknown>;
 export type AgentModule = Record<string, unknown>;
 export type ToolModule = Record<string, unknown>;
+export type SkillModule = Record<string, unknown>;
 
 function isAgentDefinition(value: unknown): value is AgentDefinition {
   return (
@@ -18,6 +19,13 @@ function isToolDefinition(value: unknown): value is ToolDefinition {
     typeof value === "object" &&
     value !== null &&
     (value as { _tag?: unknown })._tag === "ToolDefinition"
+  );
+}
+function isSkillDefinition(value: unknown): value is SkillDefinition {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { _tag?: unknown })._tag === "SkillDefinition"
   );
 }
 
@@ -40,6 +48,15 @@ export function toolDefinitionsFrom(...modules: ToolModule[]): ToolDefinition[] 
   const out: ToolDefinition[] = [];
   for (const mod of modules) {
     for (const value of Object.values(mod)) if (isToolDefinition(value)) out.push(value);
+  }
+  return out;
+}
+
+/** Collect every `skill$` definition exported by the given modules (value-shape). */
+export function skillDefinitionsFrom(...modules: SkillModule[]): SkillDefinition[] {
+  const out: SkillDefinition[] = [];
+  for (const mod of modules) {
+    for (const value of Object.values(mod)) if (isSkillDefinition(value)) out.push(value);
   }
   return out;
 }
