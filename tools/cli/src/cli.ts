@@ -177,8 +177,13 @@ async function main(argv: string[]): Promise<number> {
     }
     case "gen": {
       const dir = flags.dir ?? "app";
-      const { out, count } = cmdGen(dir);
-      console.log(`wrote ${out} (${count} flow${count === 1 ? "" : "s"})`);
+      const { out, flows, agents, tools } = cmdGen(dir);
+      const parts = [
+        `${flows} flow${flows === 1 ? "" : "s"}`,
+        `${agents} agent${agents === 1 ? "" : "s"}`,
+        `${tools} tool${tools === 1 ? "" : "s"}`,
+      ];
+      console.log(`wrote ${out} (${parts.join(", ")})`);
       return 0;
     }
     case "new": {

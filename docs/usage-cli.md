@@ -58,7 +58,7 @@ There are no global flags — each command declares its own. The recurring ones 
 
 ## Scaffold & wire: `new`, `gen`, `appgen`
 
-These follow the **folder convention** — flows live at `app/flows/<name>/flow.ts`, agents at `app/agents/<name>/agent.ts`, tools at `app/tools/<name>/tool.ts` ([ADR 0011](adr/0011-folder-convention-codegen.md)).
+These follow the **folder convention** — flows live at `app/flows/<name>/flow.ts` (folder), agents at `app/agents/<name>.ts` and tools at `app/tools/<name>.ts` (flat files) ([ADR 0011](adr/0011-folder-convention-codegen.md)).
 
 ### `loom new <flow|agent|tool> <name> [--dir app]`
 
@@ -72,7 +72,7 @@ Scaffolds a single file from a template.
 
 ```bash
 npx loom new flow greet          # → creates app/flows/greet/flow.ts
-npx loom new agent triager       # → creates app/agents/triager/agent.ts
+npx loom new agent triager       # → creates app/agents/triager.ts
 npx loom new tool lookup --dir src
 ```
 
@@ -80,11 +80,15 @@ It **never overwrites** an existing file: it prints `created <path>` (exit `0`) 
 
 ### `loom gen [--dir app]`
 
-Scans `<dir>/flows/<name>/flow.{ts,tsx}` and writes `<dir>/loom.gen.ts` — a static, alphabetically-sorted registration module. Wiring is build-time and replay-safe (P5), so discovery is codegen, not runtime globbing.
+Scans the three convention folders and writes `<dir>/loom.gen.ts` — a static, alphabetically-sorted registration module. Wiring is build-time and replay-safe (P5), so discovery is codegen, not runtime globbing:
+
+- `<dir>/flows/<name>/flow.{ts,tsx}` → `flowModules`
+- `<dir>/agents/<name>.{ts,tsx}` → `agentModules`
+- `<dir>/tools/<name>.{ts,tsx}` → `toolModules`
 
 ```bash
-npx loom gen            # scans app/flows/**, writes app/loom.gen.ts
-# → "wrote app/loom.gen.ts (2 flows)"
+npx loom gen            # scans app/flows/**, app/agents/*, app/tools/*
+# → "wrote app/loom.gen.ts (2 flows, 1 agent, 1 tool)"
 ```
 
 ```ts
@@ -93,9 +97,17 @@ import * as _f0 from "./flows/greet/flow";
 import * as _f1 from "./flows/report/flow";
 
 export const flowModules = [_f0, _f1];
+
+import * as _a0 from "./agents/triager";
+
+export const agentModules = [_a0];
+
+import * as _t0 from "./tools/lookup";
+
+export const toolModules = [_t0];
 ```
 
-Feed the generated `flowModules` to `defineConfig({ flowModules })` and every flow-shaped export registers itself. Re-run `loom gen` whenever you add or remove a flow. Exit `0` on a successful write.
+Feed the generated modules to `defineConfig({ flowModules, agentModules, toolModules })`: every flow-shaped export registers itself, every `agent$` definition is discovered by value shape (and auto-wired to the A2A bus / A2UI behind the opt-in `a2a` / `a2ui` flags), and every `tool$` definition is exposed on `app.tools` for introspection. Discovery is by value shape, so it is robust to how each construct is declared or exported. Re-run `loom gen` whenever you add or remove a flow/agent/tool. Exit `0` on a successful write.
 
 ### `loom appgen <intent> | --from <file> | --from-spec <file> [--dir .] [flags]`
 

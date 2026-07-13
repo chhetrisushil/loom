@@ -9,7 +9,12 @@ import {
   type TenantResolver,
   exportSubject as exportSubjectData,
 } from "@loom/compliance";
-import type { AgentDefinition, EventEnvelope, ScheduleDefinition } from "@loom/core";
+import type {
+  AgentDefinition,
+  EventEnvelope,
+  ScheduleDefinition,
+  ToolDefinition,
+} from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
 import { EffectRuntime } from "@loom/effect-runtime";
 import type { CapabilityAuthorizer, EffectMiddleware } from "@loom/effect-runtime";
@@ -46,10 +51,14 @@ import { LogLifecycle, TimerService, WorkflowRuntime } from "@loom/workflow-runt
 import type { ArchiveStores, RegisteredFlow } from "@loom/workflow-runtime";
 import { InProcessA2ABus } from "./InProcessA2ABus";
 import {
+  type AgentModule,
   type FlowModule,
   type ManifestView,
+  type ToolModule,
+  agentDefinitionsFrom,
   manifestWarnings,
   registerFlowsFrom,
+  toolDefinitionsFrom,
 } from "./registerFlows";
 import { type FlowGraphFlow, validateFlowGraph } from "./validate";
 import { type VerifyConfig, normalizeVerify, resolveVerifyInput } from "./verifyAdapter";
@@ -106,6 +115,21 @@ export interface LoomConfig {
    * staying deterministic (static imports, not manifest dynamic-import).
    */
   flowModules?: FlowModule[];
+  /**
+   * Statically-imported agent modules (from `loom gen`'s `agentModules`) — every `agent$`
+   * definition exported is discovered by value shape and folded into {@link agents}, so it
+   * participates in the A2A/A2UI auto-wiring behind the {@link a2a}/{@link a2ui} flags. Same
+   * folder-convention discovery as `flowModules`, extended to `app/agents/*.ts`.
+   */
+  agentModules?: AgentModule[];
+  /**
+   * Statically-imported tool modules (from `loom gen`'s `toolModules`) — every `tool$`
+   * definition is discovered by value shape and exposed on `app.tools` (for introspection /
+   * validation). NOTE: a tool's runnable EFFECT is registered separately
+   * (`effectRuntime.register(id, new ToolEffect(fn))`) — `tool$` is metadata-only by design,
+   * so effects are never auto-wired from a definition.
+   */
+  toolModules?: ToolModule[];
   /**
    * Optional compiler manifest to cross-check against — any flow the compiler saw
    * but that isn't registered (or that carries a compiler warning) is reported
@@ -253,6 +277,8 @@ export interface LoomApp {
   projectionRuntime: ProjectionRuntime;
   bus: InProcessA2ABus;
   stores: LoomStores;
+  /** Tool definitions discovered from `toolModules` (metadata; register effects separately). */
+  tools: ToolDefinition[];
   /**
    * K10.1 log lifecycle — explicit retention/compaction over this app's stores, with the
    * branch-integrity guard wired when a `branchRegistry` is present. Drive it from an
@@ -452,9 +478,20 @@ export function defineConfig(config: LoomConfig): LoomApp {
     }
   }
 
+  // Tool definitions discovered from `toolModules` (value-shape; metadata only — effects are
+  // registered explicitly, tool$ carries no handler). Exposed on the app for introspection.
+  const tools = toolDefinitionsFrom(...(config.toolModules ?? []));
+
   const bus = new InProcessA2ABus(runtime, config.dispatcher);
   let unwiredDefs = 0;
-  for (const entry of config.agents ?? []) {
+  // Agents come from the explicit `agents` list AND from `agentModules` (loom gen discovery,
+  // value-shape). Both feed the same wiring: cards register verbatim; agent$ definitions
+  // auto-wire only behind the a2a/a2ui flags.
+  const allAgents = [
+    ...(config.agents ?? []),
+    ...agentDefinitionsFrom(...(config.agentModules ?? [])),
+  ];
+  for (const entry of allAgents) {
     // A hand-built AgentCard registers verbatim — the manual flow, unchanged.
     if (!("_tag" in entry && entry._tag === "AgentDefinition")) {
       bus.registerAgent(entry as AgentCard);
@@ -525,6 +562,7 @@ export function defineConfig(config: LoomConfig): LoomApp {
     projectionRuntime,
     bus,
     stores,
+    tools,
     lifecycle,
     ...(subjectIndex !== undefined && { subjectIndex }),
     exportSubject(subjectId, options) {
