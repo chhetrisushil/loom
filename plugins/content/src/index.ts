@@ -12,3 +12,4 @@ export {
   type ContentResolvingEventStoreOptions,
 } from "./ContentResolvingEventStore";
 export { ContentMissingError } from "./errors";
+export { externalizePathsFromSteps } from "./derive";
