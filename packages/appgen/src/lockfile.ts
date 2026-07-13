@@ -37,11 +37,28 @@ export function writeLockfile(root: string, lock: AppgenLock, fileName: string):
   return dest;
 }
 
-/** Read and minimally validate a lockfile written by {@link writeLockfile}. */
+// Every id in a spec becomes a file-path segment and a codegen identifier; the live NL
+// path guarantees this by construction (ids come from `slug()`), but a `--from-spec`
+// lockfile is hand-editable/shareable data. Re-assert the slug shape on read so a crafted
+// spec can't traverse out of the output dir (`../…`) or inject code via a non-identifier id.
+const SAFE_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+function assertSafeId(id: unknown, what: string): void {
+  if (typeof id !== "string" || !SAFE_ID.test(id)) {
+    throw new Error(
+      `appgen lockfile: unsafe ${what} id ${JSON.stringify(id)} — must be a kebab slug`
+    );
+  }
+}
+
+/** Read and validate a lockfile written by {@link writeLockfile}. */
 export function readLockfile(file: string): AppgenLock {
   const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<AppgenLock>;
   if (raw.changeSpec === undefined || !Array.isArray(raw.changeSpec.capabilities)) {
     throw new Error(`not a valid appgen lockfile: ${file}`);
+  }
+  for (const cap of raw.changeSpec.capabilities) {
+    assertSafeId(cap?.id, "capability");
+    for (const step of cap?.steps ?? []) assertSafeId(step?.id, "step");
   }
   return raw as AppgenLock;
 }

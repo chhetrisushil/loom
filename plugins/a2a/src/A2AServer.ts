@@ -5,6 +5,13 @@ import type { A2ATask, AgentCard } from "./types";
 
 export interface A2AServerOptions {
   port?: number;
+  /**
+   * Authenticate the task routes (`POST /tasks/send`, `GET /tasks/:id`). Return `true` to
+   * allow. **When unset the server is UNAUTHENTICATED**: any caller can submit tasks and
+   * read any execution's folded state. The agent-card route stays open. Supply your own
+   * scheme (shared secret, mTLS, …); the server supplies the gate.
+   */
+  authorize?: (req: http.IncomingMessage) => boolean | Promise<boolean>;
 }
 
 export interface A2AServer {
@@ -71,8 +78,22 @@ export function createA2AServer(
           return;
         }
 
+        // Gate the task routes when an authorizer is wired; the agent card stays open.
+        if (options.authorize !== undefined && url !== "/.well-known/agent.json") {
+          if (!(await options.authorize(req))) {
+            json(res, 401, { error: "unauthorized" });
+            return;
+          }
+        }
+
         if (method === "POST" && url === "/tasks/send") {
           const task = (await parseBody(req)) as A2ATask;
+          // `task.id` becomes the executionId verbatim — reject a non-string so a caller
+          // can't squat/collide an execution id with an object/array.
+          if (typeof task?.id !== "string" || task.id.length === 0) {
+            json(res, 400, { error: "task.id must be a non-empty string" });
+            return;
+          }
           const { id } = await executor.submit(task);
           json(res, 202, { id });
           return;
