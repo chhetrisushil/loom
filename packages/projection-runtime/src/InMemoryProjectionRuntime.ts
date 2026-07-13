@@ -15,7 +15,18 @@ interface ActiveProjection {
   load?: () => Promise<ProjectionFoldMap<unknown>>;
   loading: boolean;
   buffer: EventEnvelope[];
+  // Set once a load rejects permanently (a missing/broken chunk is not transient): the
+  // projection is abandoned so it can't leak an unbounded buffer or retry-storm the import.
+  loadFailed?: boolean;
 }
+
+/**
+ * Cap on how many matching events a lazy projection buffers while its fold code loads. A local
+ * `import()` resolves in well under this window; exceeding it means the load is stuck or broken,
+ * so we stop buffering (the projection is a read-model, rebuildable from the log) rather than
+ * grow memory without bound. Generous so normal bursts never hit it.
+ */
+const LAZY_BUFFER_LIMIT = 10_000;
 
 export interface InMemoryProjectionRuntimeConfig {
   /**
@@ -136,11 +147,14 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
       }
       // Lazy projection: gate on the compiler-recorded event types WITHOUT loading the
       // fold code. A non-matching event never touches this projection (0 code loaded).
+      // A projection whose load already failed permanently is skipped (no buffer, no retry).
+      if (projection.loadFailed === true) continue;
       if (projection.eventTypes?.has(event.eventType) !== true) continue;
 
       // First matching event: buffer it (and any that arrive during load), kick the
       // one-time import, and drain the buffer in arrival order once the code is ready.
-      projection.buffer.push(event);
+      // Bounded so a stuck/broken load can't grow the buffer without limit.
+      if (projection.buffer.length < LAZY_BUFFER_LIMIT) projection.buffer.push(event);
       if (!projection.loading) {
         projection.loading = true;
         projection.load!()
@@ -152,10 +166,16 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
             projection.buffer = [];
             for (const buf of buffered) this.apply(projection, handlers, buf);
           })
-          .catch(() => {
-            // Load failed — release the latch so a later matching event retries; the
-            // buffered events are retained and drained on the next successful load.
+          .catch((err) => {
+            // A chunk load failure is not transient (missing/broken module). Abandon the
+            // projection: free the buffer and stop retrying, rather than leak memory and
+            // re-import on every matching event. The read-model can be rebuilt from the log.
             projection.loading = false;
+            projection.loadFailed = true;
+            projection.buffer = [];
+            console.warn(
+              `[loom] projection "${projection.id}" failed to load its fold code — it will not update: ${String(err)}`
+            );
           });
       }
     }

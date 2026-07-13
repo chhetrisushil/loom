@@ -108,6 +108,28 @@ describe("compiler — projection handlers extraction", () => {
       /^dist\/chunks\/step-counter_.*\.js$/
     );
   });
+
+  it("leaves handlers eager (no chunk) when a key is not statically named", () => {
+    const src = [
+      'import { projection$ } from "@loom/core";',
+      "const evt = 'DYNAMIC';",
+      "export const P = projection$({",
+      '  id: "dyn",',
+      '  name: "Dyn",',
+      "  initialState: { n: 0 },",
+      "  handlers: { [evt]: (s, _e) => ({ n: s.n + 1 }) },", // computed key — not extractable
+      "});",
+      // Force a chunk elsewhere so transformFile reports "modified".
+      'import { step$, handler$ } from "@loom/core";',
+      'export const St = step$({ id: "st", handler: handler$(async () => 1) });',
+    ].join("\n");
+    const state = emptyState();
+    const result = transformFile(src, "/abs/dyn.ts", state);
+    expect(result!.code).not.toContain("_loomProjectionHandlersRef"); // stayed eager
+    expect(state.projections.get("dyn")?.chunkVirtualId).toBeUndefined();
+    const manifest = buildManifest(state, "dist");
+    expect(manifest.projections.dyn?.chunk).toBe("");
+  });
 });
 
 describe("compiler — flow detection", () => {

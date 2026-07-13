@@ -145,7 +145,7 @@ Feed the generated modules to `defineConfig({ flowModules, agentModules, toolMod
 
 Re-run `loom gen` whenever you add or remove any construct. Exit `0` on a successful write.
 
-**Projections load their fold code on demand.** When the `@loom/compiler` plugin builds a `projection$`, it extracts the whole `handlers` fold map into its own `import()` chunk (exactly like `handler$`/`instructions$`) and records the handled event-type keys. At runtime the projection stays **code-dormant** until an event whose type it folds first fires — then it imports the chunk once (buffering until ready) and folds normally after. A projection whose events never fire never loads its code. Uncompiled (dev), the handlers are inline and eager.
+**Projections load their fold code on demand** ([ADR 0049](adr/0049-projection-on-demand-fold-code.md)). When the `@loom/compiler` plugin builds a `projection$`, it extracts the whole `handlers` fold map into its own `import()` chunk (exactly like `handler$`/`instructions$`) and records the handled event-type keys. At runtime the projection stays **code-dormant** until an event whose type it folds first fires — then it imports the chunk once (buffering until ready) and folds normally after. A projection whose events never fire never loads its code. Uncompiled (dev), the handlers are inline and eager.
 
 > `policy$` is **not** `loom gen`-discovered: it **is** enforced (a `PolicyAuthorizer` reads each flow's `policies` + `defineConfig({ policies })` — see the [user guide](user-guide.md#7-agents-tools--a2a)), but it's carried *inline on the flow definition*, not from an `app/policies/*` folder, so there's no separate module to generate. Discovery stays gated on "a runtime consumes a discovered *file*."
 
