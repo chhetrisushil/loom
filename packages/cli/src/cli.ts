@@ -7,6 +7,7 @@ import { SqliteEventStore } from "@loom/plugin-sqlite";
 import { type Elevation, type Planner, cmdAppgen, plannerTag, renderPlan } from "./appgen";
 import { cmdCheck } from "./check";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
+import { cmdComplianceReport } from "./compliance";
 import { cmdDeployCheck } from "./deploy";
 import { cmdGen, cmdNew } from "./gen";
 import { serveInspector } from "./inspector";
@@ -17,6 +18,7 @@ import { cmdPluginCheck, cmdPluginNew, cmdPluginSeams } from "./plugin";
 import { cmdPluginSearch } from "./pluginSearch";
 import { cmdPluginTry } from "./pluginTry";
 import { cmdProfile } from "./profile";
+import { cmdRetentionRun } from "./retention";
 import { cmdVerify } from "./verify";
 
 interface Parsed {
@@ -82,6 +84,8 @@ const USAGE = `loom — project-local commands for a Loom app
   loom debug --db <path> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
   loom eval  --dir <path>                         replay golden logs vs expectations
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
+  loom retention run --db <path> --snap <path> [--ttl ms] [--apply]  reclaim aged terminal executions
+  loom compliance report --db <path> --subject-path <p> [--tenant-path <p>]  data-subject inventory
   loom inspect --db <path> [--port N]             web inspector (timeline + slider)
 
 New project?  →  npm create loom-app
@@ -102,6 +106,23 @@ async function main(argv: string[]): Promise<number> {
       const executionId = requirePositional(positionals, "executionId");
       const at = flags.at !== undefined ? Number.parseInt(flags.at, 10) : undefined;
       console.log(await cmdDebug(flags.db!, executionId, at, parseRedact(flags.redact)));
+      return 0;
+    }
+    case "retention": {
+      requirePositional(positionals, "run"); // `loom retention run`
+      requireFlag(flags, "db");
+      requireFlag(flags, "snap");
+      const ttl = flags.ttl !== undefined ? Number.parseInt(flags.ttl, 10) : 0;
+      console.log(await cmdRetentionRun(flags.db!, flags.snap!, ttl, flags.apply === "true"));
+      return 0;
+    }
+    case "compliance": {
+      requirePositional(positionals, "report"); // `loom compliance report`
+      requireFlag(flags, "db");
+      requireFlag(flags, "subject-path");
+      console.log(
+        await cmdComplianceReport(flags.db!, flags["subject-path"]!, flags["tenant-path"])
+      );
       return 0;
     }
     case "eval": {

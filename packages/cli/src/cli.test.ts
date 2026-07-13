@@ -15,6 +15,7 @@ import { checkManifest } from "./check";
 import { resolveIntent } from "./cli";
 import { parseRedact } from "./cli";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
+import { cmdComplianceReport } from "./compliance";
 import { idempotencyAdvisory, loadLogs, runDeployCheck } from "./deploy";
 import { unifiedDiff } from "./diff";
 import { cmdGen, cmdNew, discoverFlows } from "./gen";
@@ -24,6 +25,7 @@ import { cmdIntrospect } from "./introspect";
 import { cmdCompat, cmdKernelManifest } from "./kernel";
 import { cmdOptimize } from "./optimize";
 import { cmdProfile } from "./profile";
+import { cmdRetentionRun } from "./retention";
 import { buildTrace } from "./trace";
 import { cmdVerify } from "./verify";
 
@@ -653,5 +655,69 @@ describe("K10-R6 — CLI egress redaction (--redact)", () => {
     expect(text).not.toContain("sk_live_SECRET");
     expect(text).toContain("[redacted]");
     expect(text).toContain('"label":"ok"');
+  });
+});
+
+describe("loom retention run + compliance report (listExecutions SPI)", () => {
+  let cdir: string;
+  let cdb: string;
+  let csnap: string;
+
+  function seed(store: SqliteEventStore, id: string, steps: [string, unknown][]): Promise<void[]> {
+    return Promise.all(
+      steps.map(([eventType, payload], seq) =>
+        store.append({
+          id: `${id}-${seq}`,
+          workflowId: "wf",
+          executionId: id,
+          eventType,
+          sequence: seq,
+          timestamp: 1000 + seq,
+          payload,
+        })
+      )
+    );
+  }
+
+  beforeEach(async () => {
+    cdir = mkdtempSync(join(tmpdir(), "loom-ret-"));
+    cdb = join(cdir, "events.db");
+    csnap = join(cdir, "snap.db");
+    const store = new SqliteEventStore(cdb);
+    // Two completed executions for "ann", one still-running for "bob".
+    await seed(store, "x1", [
+      ["EXECUTION_STARTED", { input: { userId: "ann" } }],
+      ["EXECUTION_COMPLETED", { output: {} }],
+    ]);
+    await seed(store, "x2", [
+      ["EXECUTION_STARTED", { input: { userId: "ann" } }],
+      ["EXECUTION_COMPLETED", { output: {} }],
+    ]);
+    await seed(store, "x3", [["EXECUTION_STARTED", { input: { userId: "bob" } }]]);
+    store.close();
+  });
+  afterEach(() => rmSync(cdir, { recursive: true, force: true }));
+
+  it("compliance report inventories subjects → executions", async () => {
+    const text = await cmdComplianceReport(cdb, "input.userId");
+    expect(text).toContain("2 subject(s)");
+    expect(text).toMatch(/ann\s+2 executions/);
+    expect(text).toMatch(/bob\s+1 execution\b/);
+  });
+
+  it("retention run dry-runs by default, reclaims aged terminal executions with --apply", async () => {
+    const dry = await cmdRetentionRun(cdb, csnap, 0, false);
+    expect(dry).toContain("DRY RUN");
+    expect(dry).toContain("would-reclaim"); // x1, x2 terminal + aged
+    expect(dry).toContain("not-terminal"); // x3 still running
+
+    const applied = await cmdRetentionRun(cdb, csnap, 0, true);
+    expect(applied).toContain("reclaimed");
+
+    // x1/x2 are gone; x3 (running) survives.
+    const store = new SqliteEventStore(cdb);
+    const remaining = (await store.listExecutions()).filter((id) => !id.startsWith("__loom_"));
+    expect(remaining).toEqual(["x3"]);
+    store.close();
   });
 });

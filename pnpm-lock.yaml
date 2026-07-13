@@ -1292,6 +1292,9 @@ importers:
       '@loom/classify':
         specifier: workspace:*
         version: link:../classify
+      '@loom/compliance':
+        specifier: workspace:*
+        version: link:../compliance
       '@loom/core':
         specifier: workspace:*
         version: link:../core
