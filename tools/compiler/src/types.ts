@@ -1,7 +1,8 @@
 export interface ExtractedChunk {
-  // The owning construct's id — a step id (kind "step") or skill id (kind "skill").
+  // The owning construct's id — a step id (kind "step"), skill id ("skill"), or
+  // projection id ("projection").
   stepId: string;
-  kind: "step" | "skill";
+  kind: "step" | "skill" | "projection";
   chunkVirtualId: string;
   chunkSource: string;
   sourceFile: string;
@@ -11,6 +12,16 @@ export interface ExtractedChunk {
 export interface SkillEntry {
   id: string;
   varName: string;
+  chunkVirtualId?: string;
+  hash?: string;
+  sourceFile: string;
+}
+
+export interface ProjectionEntry {
+  id: string;
+  varName: string;
+  /** The event-type keys the projection folds — read statically from the handlers object. */
+  eventTypes: string[];
   chunkVirtualId?: string;
   hash?: string;
   sourceFile: string;
@@ -41,4 +52,5 @@ export interface PluginState {
   flows: Map<string, FlowEntry>;
   skills: Map<string, SkillEntry>;
   skillsByVarName: Map<string, string>;
+  projections: Map<string, ProjectionEntry>;
 }

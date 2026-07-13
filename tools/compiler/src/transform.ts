@@ -1,7 +1,14 @@
 import MagicString from "magic-string";
 import ts from "typescript";
 import { shortHash } from "./hash";
-import type { ExtractedChunk, FlowEntry, PluginState, SkillEntry, StepEntry } from "./types";
+import type {
+  ExtractedChunk,
+  FlowEntry,
+  PluginState,
+  ProjectionEntry,
+  SkillEntry,
+  StepEntry,
+} from "./types";
 
 const VIRTUAL_PREFIX = "\0loom:chunk:";
 
@@ -13,7 +20,8 @@ export function transformFile(
   if (
     !sourceText.includes("step$") &&
     !sourceText.includes("flow$") &&
-    !sourceText.includes("skill$")
+    !sourceText.includes("skill$") &&
+    !sourceText.includes("projection$")
   ) {
     return null;
   }
@@ -30,6 +38,9 @@ export function transformFile(
       modified = true;
     }
     if (tryProcessSkill(node, absolutePath, importLines, ms, pluginState)) {
+      modified = true;
+    }
+    if (tryProcessProjection(node, absolutePath, importLines, ms, pluginState)) {
       modified = true;
     }
     ts.forEachChild(node, visit);
@@ -192,6 +203,84 @@ function tryProcessSkill(
   pluginState.skills.set(skillId, skillEntry);
 
   return skillEntry.chunkVirtualId !== undefined;
+}
+
+// Match: const Foo = projection$({ ..., handlers: { EVENT_A: (s,e)=>…, EVENT_B: … } })
+// and extract the whole `handlers` object literal into its own lazy chunk, recording the
+// event-type KEYS statically so the runtime can gate loading on a matching event without
+// importing the chunk. The handlers value is rewritten to a `ProjectionHandlersRef`
+// ({ _loomProjectionHandlersRef, eventTypes, load: () => import(chunk) }). Same
+// lazy-boundary treatment as handler$/instructions$, but for a whole fold map.
+function tryProcessProjection(
+  node: ts.Node,
+  absolutePath: string,
+  importLines: string[],
+  ms: MagicString,
+  pluginState: PluginState
+): boolean {
+  if (!(ts.isCallExpression(node) && isCallTo(node, "projection$") && node.arguments.length > 0)) {
+    return false;
+  }
+  const argObj = node.arguments[0];
+  if (!argObj || !ts.isObjectLiteralExpression(argObj)) return false;
+
+  const idProp = findProperty(argObj, "id");
+  const handlersProp = findProperty(argObj, "handlers");
+  const projectionId = idProp ? getStringLiteral(idProp.initializer) : undefined;
+  if (!projectionId) return false;
+
+  const projectionEntry: ProjectionEntry = {
+    id: projectionId,
+    varName: declaredVarName(node) ?? projectionId,
+    eventTypes: [],
+    sourceFile: absolutePath,
+  };
+
+  // Only an inline object-literal handlers map is extractable — an already-lazy ref or a
+  // referenced identifier is left as-is (still correct, just not code-split here).
+  if (
+    handlersProp &&
+    ts.isPropertyAssignment(handlersProp) &&
+    ts.isObjectLiteralExpression(handlersProp.initializer)
+  ) {
+    const handlersObj = handlersProp.initializer;
+    // The event types are the property names of the fold map — read them without evaluating.
+    const eventTypes: string[] = [];
+    for (const prop of handlersObj.properties) {
+      const name = prop.name;
+      if (name && (ts.isIdentifier(name) || ts.isStringLiteral(name))) {
+        eventTypes.push(name.text);
+      }
+    }
+    projectionEntry.eventTypes = eventTypes;
+
+    const objText = sourceText(ms, handlersObj);
+    const hash = shortHash(absolutePath + projectionId);
+    const chunkVirtualId = `${VIRTUAL_PREFIX}${projectionId}_${hash}`;
+
+    pluginState.chunks.set(chunkVirtualId, {
+      stepId: projectionId,
+      kind: "projection",
+      chunkVirtualId,
+      chunkSource: buildChunkSource(importLines, objText),
+      sourceFile: absolutePath,
+      hash,
+    } satisfies ExtractedChunk);
+
+    // Rewrite the handlers value to the lazy ref. `eventTypes` is inlined so the runtime
+    // gates on it without loading the chunk.
+    ms.overwrite(
+      handlersObj.getStart(),
+      handlersObj.getEnd(),
+      `{ _loomProjectionHandlersRef: true, eventTypes: ${JSON.stringify(eventTypes)}, load: () => import("${chunkVirtualId}") }`
+    );
+
+    projectionEntry.chunkVirtualId = chunkVirtualId;
+    projectionEntry.hash = hash;
+  }
+
+  pluginState.projections.set(projectionId, projectionEntry);
+  return projectionEntry.chunkVirtualId !== undefined;
 }
 
 function collectFlows(

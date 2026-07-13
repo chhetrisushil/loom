@@ -118,9 +118,29 @@ export function memoryFile(name: string): string {
   ].join("\n");
 }
 
+/** `app/projections/<name>.ts` — a projection stub (handlers fold events; loaded on demand). */
+export function projectionFile(name: string): string {
+  const P = pascal(name);
+  return [
+    'import { projection$ } from "@loom/core";',
+    "",
+    `export const ${P}Projection = projection$({`,
+    `  id: "${name}",`,
+    `  name: "${P}",`,
+    "  initialState: { count: 0 },",
+    "  // The fold map: one reducer per event type. The @loom/compiler plugin extracts this",
+    "  // into its own chunk, loaded on demand the first time a handled event fires.",
+    "  handlers: {",
+    "    STEP_COMPLETED: (state, _event) => ({ count: state.count + 1 }),",
+    "  },",
+    "});",
+    "",
+  ].join("\n");
+}
+
 /** Route `loom new <kind> <name>` to the file it generates (path + contents). */
 export function newFile(
-  kind: "flow" | "agent" | "tool" | "skill" | "schedule" | "memory",
+  kind: "flow" | "agent" | "tool" | "skill" | "schedule" | "memory" | "projection",
   name: string
 ): { path: string; content: string } {
   switch (kind) {
@@ -136,6 +156,8 @@ export function newFile(
       return { path: `app/schedules/${name}.ts`, content: scheduleFile(name) };
     case "memory":
       return { path: `app/memories/${name}.ts`, content: memoryFile(name) };
+    case "projection":
+      return { path: `app/projections/${name}.ts`, content: projectionFile(name) };
   }
 }
 
@@ -189,11 +211,11 @@ export function appFiles(appName: string): Record<string, string> {
 
     "app/config.ts": [
       'import { defineConfig } from "@loom/app";',
-      'import { agentModules, flowModules, skillModules, toolModules } from "./loom.gen";',
+      'import { agentModules, flowModules, projectionModules, skillModules, toolModules } from "./loom.gen";',
       'import { middleware } from "./middleware";',
       "",
-      "// The whole app, declared once. Flows/agents/tools/skills are discovered from",
-      "// app/flows, app/agents, app/tools, app/skills via `loom gen` (app/loom.gen.ts). Set",
+      "// The whole app, declared once. Flows/agents/tools/skills/projections are discovered",
+      "// from app/{flows,agents,tools,skills,projections} via `loom gen` (app/loom.gen.ts). Set",
       "// `a2a: true` to auto-expose agents on the A2A bus. Swap storage to sqlite for durability.",
       "export const app = defineConfig({",
       '  storage: { kind: "memory" },',
@@ -201,6 +223,7 @@ export function appFiles(appName: string): Record<string, string> {
       "  agentModules, // set a2a: true / a2ui: true to auto-wire discovered agents",
       "  toolModules, // discovered tool definitions on app.tools; register effects yourself",
       "  skillModules, // discovered skills registered into app.skills (app.skills.find(query))",
+      "  projectionModules, // discovered projections folded into the projection runtime",
       "  effectMiddleware: middleware,",
       "});",
       "",
@@ -279,6 +302,7 @@ export function appFiles(appName: string): Record<string, string> {
       "  skills/<name>.ts       skills    (loom new skill <name>)",
       "  schedules/<name>.ts    schedules (loom new schedule <name>)",
       "  memories/<name>.ts     memories  (loom new memory <name>)",
+      "  projections/<name>.ts  projections (loom new projection <name>)",
       "  middleware.ts          cross-cutting effect middleware",
       "  config.ts              the app (defineConfig)",
       "  loom.gen.ts            generated flow registration (pnpm gen)",

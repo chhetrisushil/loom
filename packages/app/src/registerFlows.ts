@@ -1,6 +1,7 @@
 import type {
   AgentDefinition,
   MemoryDefinition,
+  ProjectionDefinition,
   ScheduleDefinition,
   SkillDefinition,
   ToolDefinition,
@@ -14,6 +15,7 @@ export type ToolModule = Record<string, unknown>;
 export type SkillModule = Record<string, unknown>;
 export type ScheduleModule = Record<string, unknown>;
 export type MemoryModule = Record<string, unknown>;
+export type ProjectionModule = Record<string, unknown>;
 
 function isAgentDefinition(value: unknown): value is AgentDefinition {
   return (
@@ -48,6 +50,13 @@ function isMemoryDefinition(value: unknown): value is MemoryDefinition {
     typeof value === "object" &&
     value !== null &&
     (value as { _tag?: unknown })._tag === "MemoryDefinition"
+  );
+}
+function isProjectionDefinition(value: unknown): value is ProjectionDefinition {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { _tag?: unknown })._tag === "ProjectionDefinition"
   );
 }
 
@@ -97,6 +106,15 @@ export function memoryDefinitionsFrom(...modules: MemoryModule[]): MemoryDefinit
   const out: MemoryDefinition[] = [];
   for (const mod of modules) {
     for (const value of Object.values(mod)) if (isMemoryDefinition(value)) out.push(value);
+  }
+  return out;
+}
+
+/** Collect every `projection$` definition exported by the given modules (value-shape). */
+export function projectionDefinitionsFrom(...modules: ProjectionModule[]): ProjectionDefinition[] {
+  const out: ProjectionDefinition[] = [];
+  for (const mod of modules) {
+    for (const value of Object.values(mod)) if (isProjectionDefinition(value)) out.push(value);
   }
   return out;
 }

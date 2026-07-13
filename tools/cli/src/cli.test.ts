@@ -24,6 +24,7 @@ import {
   discoverAgents,
   discoverFlows,
   discoverMemories,
+  discoverProjections,
   discoverSchedules,
   discoverSkills,
   discoverTools,
@@ -231,20 +232,26 @@ describe("loom CLI", () => {
       const skill = cmdNew("skill", "refunds", appDir);
       const schedule = cmdNew("schedule", "nightly", appDir);
       const mem = cmdNew("memory", "chat", appDir);
+      const projection = cmdNew("projection", "counter", appDir);
       expect(agent.path).toBe(join(appDir, "agents/triage.ts")); // flat file, not a folder
       expect(tool.path).toBe(join(appDir, "tools/lookup.ts"));
       expect(skill.path).toBe(join(appDir, "skills/refunds.ts"));
       expect(schedule.path).toBe(join(appDir, "schedules/nightly.ts"));
       expect(mem.path).toBe(join(appDir, "memories/chat.ts"));
+      expect(projection.path).toBe(join(appDir, "projections/counter.ts"));
 
       expect(discoverAgents(appDir)).toEqual(["./agents/triage"]);
       expect(discoverTools(appDir)).toEqual(["./tools/lookup"]);
       expect(discoverSkills(appDir)).toEqual(["./skills/refunds"]);
       expect(discoverSchedules(appDir)).toEqual(["./schedules/nightly"]);
       expect(discoverMemories(appDir)).toEqual(["./memories/chat"]);
+      expect(discoverProjections(appDir)).toEqual(["./projections/counter"]);
 
-      const { flows, agents, tools, skills, schedules, memories, out } = cmdGen(appDir);
-      expect([flows, agents, tools, skills, schedules, memories]).toEqual([1, 1, 1, 1, 1, 1]);
+      const { flows, agents, tools, skills, schedules, memories, projections, out } =
+        cmdGen(appDir);
+      expect([flows, agents, tools, skills, schedules, memories, projections]).toEqual([
+        1, 1, 1, 1, 1, 1, 1,
+      ]);
       const gen = readFileSync(out, "utf-8");
       expect(gen).toContain('import * as _a0 from "./agents/triage";');
       expect(gen).toContain("export const agentModules = [_a0];");
@@ -256,6 +263,8 @@ describe("loom CLI", () => {
       expect(gen).toContain("export const scheduleModules = [_sc0];");
       expect(gen).toContain('import * as _m0 from "./memories/chat";');
       expect(gen).toContain("export const memoryModules = [_m0];");
+      expect(gen).toContain('import * as _p0 from "./projections/counter";');
+      expect(gen).toContain("export const projectionModules = [_p0];");
     });
 
     it("does not overwrite an existing file", () => {

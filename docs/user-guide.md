@@ -332,11 +332,14 @@ you declare or re-export each construct. A tool's runnable **effect** is still r
 (`effectRuntime.register(id, new ToolEffect(fn))`) — `tool$` is metadata-only by design; a skill's
 `instructions$` body stays lazy (only the selection metadata is held) until the skill is chosen.
 
-> `policy$` and `projection$` are **not** `loom gen`-discovered — but for different reasons. `policy$`
-> **is** enforced (a `PolicyAuthorizer` reads each flow's `policies` + `defineConfig({ policies })` —
-> see below), it's just carried *inline on the flow definition* rather than in an `app/policies/*`
-> folder, so there's nothing to generate. `projection$` has no runtime consumer yet. Discovery stays
-> gated on "a runtime consumes a discovered file."
+> `projection$` is discovered too (`app/projections/*.ts` → `projectionModules`), and it folds its
+> events **on demand**: the compiler extracts each projection's `handlers` map into its own `import()`
+> chunk, so the fold code loads only when one of its handled events first fires — a projection whose
+> events never fire never loads its code (the same lazy-chunk trick as `handler$`).
+>
+> `policy$` is the one builder **not** `loom gen`-discovered: it **is** enforced (a `PolicyAuthorizer`
+> reads each flow's `policies` + `defineConfig({ policies })` — see below), but it's carried *inline on
+> the flow definition* rather than in an `app/policies/*` folder, so there's nothing to generate.
 
 ---
 
@@ -382,6 +385,9 @@ interface LoomConfig {
   memoryModules?: MemoryModule[];      // from `loom gen`: memory$ defs → registered into app.memory
   memories?: MemoryDefinition[];       // memory defs registered directly (in addition to memoryModules)
   memoryStore?: MemoryStore;           // backing store for app.memory (default in-memory)
+  projectionModules?: ProjectionModule[]; // from `loom gen`: projection$ defs → projection runtime (lazy fold code)
+  projections?: ProjectionDefinition[];   // projections registered directly (in addition to projectionModules)
+  policies?: PolicyDefinition[];       // app-global policy$ enforced via PolicyAuthorizer (composes under authorizer)
   effectMiddleware?: EffectMiddleware[];
   validate?: boolean | "warn" | "error";
   agents?: (AgentCard | AgentDefinition)[]; // cards register verbatim; agent$ defs auto-wire behind flags

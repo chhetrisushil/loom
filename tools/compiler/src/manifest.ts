@@ -27,10 +27,19 @@ export interface ManifestSkill {
   chunk: string;
 }
 
+// A projection's lazy-loaded fold map. `eventTypes` are the handled event-type keys
+// (the runtime gates on-demand loading against them WITHOUT importing the chunk);
+// `chunk` is empty when the handlers weren't an inline object literal to extract.
+export interface ManifestProjection {
+  eventTypes: string[];
+  chunk: string;
+}
+
 export interface LoomManifest {
   version: "1";
   flows: Record<string, ManifestFlow>;
   skills: Record<string, ManifestSkill>;
+  projections: Record<string, ManifestProjection>;
   /** Deduplicated, sorted list of source modules that declare flows. */
   flowModules: string[];
 }
@@ -91,10 +100,21 @@ export function buildManifest(
     };
   }
 
+  const projections: Record<string, ManifestProjection> = {};
+  for (const [projectionId, projection] of state.projections) {
+    projections[projectionId] = {
+      eventTypes: projection.eventTypes,
+      chunk: projection.chunkVirtualId
+        ? `${outDir}/chunks/${projectionId}_${projection.hash}.js`
+        : "",
+    };
+  }
+
   return {
     version: COMPILER_MANIFEST_VERSION,
     flows,
     skills,
+    projections,
     flowModules: [...flowModuleSet].sort(),
   };
 }

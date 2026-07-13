@@ -1,5 +1,21 @@
 import type { EventEnvelope } from "@loom/core";
-import type { Projection, ProjectionRuntime } from "./types";
+import type { Projection, ProjectionFoldMap, ProjectionRuntime } from "./types";
+
+/**
+ * The runtime's normalized view of a registered projection. An eager projection has its
+ * `handlers` resolved up front; a lazy one gates loading on its `eventTypes` and buffers
+ * matching events until its fold code is `import()`-ed (event-type-gated on-demand loading).
+ */
+interface ActiveProjection {
+  id: string;
+  initialState: unknown;
+  handlers?: ProjectionFoldMap<unknown>;
+  // Lazy state — cleared to undefined once resolved into `handlers`.
+  eventTypes?: Set<string> | undefined;
+  load?: () => Promise<ProjectionFoldMap<unknown>>;
+  loading: boolean;
+  buffer: EventEnvelope[];
+}
 
 export interface InMemoryProjectionRuntimeConfig {
   /**
@@ -22,7 +38,7 @@ export interface InMemoryProjectionRuntimeConfig {
 }
 
 export class InMemoryProjectionRuntime implements ProjectionRuntime {
-  private readonly projections = new Map<string, Projection<unknown>>();
+  private readonly projections = new Map<string, ActiveProjection>();
   private readonly states = new Map<string, unknown>();
   private readonly subscribers = new Map<string, Set<(state: unknown) => void>>();
 
@@ -63,7 +79,20 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
   }
 
   register<TState>(projection: Projection<TState>): void {
-    this.projections.set(projection.id, projection as Projection<unknown>);
+    const active: ActiveProjection = {
+      id: projection.id,
+      initialState: projection.initialState,
+      loading: false,
+      buffer: [],
+      ...(projection.handlers !== undefined && {
+        handlers: projection.handlers as ProjectionFoldMap<unknown>,
+      }),
+      ...(projection.lazy !== undefined && {
+        eventTypes: new Set(projection.lazy.eventTypes),
+        load: projection.lazy.load as () => Promise<ProjectionFoldMap<unknown>>,
+      }),
+    };
+    this.projections.set(projection.id, active);
   }
 
   getState<TState>(projectionId: string, executionId: string): TState {
@@ -99,18 +128,53 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
   }
 
   handleEvent(event: EventEnvelope): void {
-    for (const [projectionId, projection] of this.projections) {
-      const handler = projection.handlers[event.eventType];
-      if (!handler) continue;
+    for (const [, projection] of this.projections) {
+      if (projection.handlers !== undefined) {
+        // Eager (or an already-loaded lazy) projection — fold synchronously as before.
+        this.apply(projection, projection.handlers, event);
+        continue;
+      }
+      // Lazy projection: gate on the compiler-recorded event types WITHOUT loading the
+      // fold code. A non-matching event never touches this projection (0 code loaded).
+      if (projection.eventTypes?.has(event.eventType) !== true) continue;
 
-      const key = this.stateKey(projectionId, event.executionId);
-      const currentState = this.states.has(key) ? this.states.get(key) : projection.initialState;
-
-      const nextState = handler(currentState, event);
-      this.states.set(key, nextState);
-      this.notify(key, nextState);
+      // First matching event: buffer it (and any that arrive during load), kick the
+      // one-time import, and drain the buffer in arrival order once the code is ready.
+      projection.buffer.push(event);
+      if (!projection.loading) {
+        projection.loading = true;
+        projection.load!()
+          .then((handlers) => {
+            projection.handlers = handlers;
+            projection.eventTypes = undefined; // resolved — the eager path takes over
+            projection.loading = false;
+            const buffered = projection.buffer;
+            projection.buffer = [];
+            for (const buf of buffered) this.apply(projection, handlers, buf);
+          })
+          .catch(() => {
+            // Load failed — release the latch so a later matching event retries; the
+            // buffered events are retained and drained on the next successful load.
+            projection.loading = false;
+          });
+      }
     }
     this.touch(event.executionId);
+  }
+
+  /** Fold one event into a projection's state via the matching handler, then notify. */
+  private apply(
+    projection: ActiveProjection,
+    handlers: ProjectionFoldMap<unknown>,
+    event: EventEnvelope
+  ): void {
+    const handler = handlers[event.eventType];
+    if (!handler) return;
+    const key = this.stateKey(projection.id, event.executionId);
+    const currentState = this.states.has(key) ? this.states.get(key) : projection.initialState;
+    const nextState = handler(currentState, event);
+    this.states.set(key, nextState);
+    this.notify(key, nextState);
   }
 
   seedState(projectionId: string, executionId: string, state: unknown): void {

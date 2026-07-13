@@ -17,42 +17,46 @@ the env-dependent wiring that breaks deterministic replay (rejected in Tier 2A).
 **The convention:**
 ```
 app/ flows/<name>/flow.ts   tools/<name>.ts   agents/<name>.ts   skills/<name>.ts
-     schedules/<name>.ts    memories/<name>.ts
+     schedules/<name>.ts    memories/<name>.ts   projections/<name>.ts
      middleware.ts  config.ts  loom.gen.ts (generated)
 ```
 
 **Build-time codegen (`@loom/scaffold` + `loom gen`).**
-`generateRegistration(flowPaths, agentPaths, toolPaths, skillPaths, schedulePaths, memoryPaths)`
+`generateRegistration(flowPaths, agentPaths, toolPaths, skillPaths, schedulePaths, memoryPaths, projectionPaths)`
 emits `loom.gen.ts` — a **static** module that imports each discovered module and
 re-exports `flowModules` / `agentModules` / `toolModules` / `skillModules` /
-`scheduleModules` / `memoryModules`, consumed by `defineConfig({ ...all six })`
-(the Tier-2A value-shape scan: `registerFlowsFrom` + `agentDefinitionsFrom` /
-`toolDefinitionsFrom` / `skillDefinitionsFrom` / `scheduleDefinitionsFrom` /
-`memoryDefinitionsFrom`). The imports are fixed at build time, so the set is
-identical on every resume / remote worker — replay-safe by construction. `loom gen`
-is a lightweight fs walk (`discoverFlows` / `discoverAgents` / `discoverTools` /
-`discoverSkills` / `discoverSchedules` / `discoverMemories`) deliberately
+`scheduleModules` / `memoryModules` / `projectionModules`, consumed by
+`defineConfig({ ...all seven })` (the Tier-2A value-shape scan: `registerFlowsFrom` +
+`agentDefinitionsFrom` / `toolDefinitionsFrom` / `skillDefinitionsFrom` /
+`scheduleDefinitionsFrom` / `memoryDefinitionsFrom` / `projectionDefinitionsFrom`).
+The imports are fixed at build time, so the set is identical on every resume /
+remote worker — replay-safe by construction. `loom gen` is a lightweight fs walk
+(`discoverFlows` / `discoverAgents` / `discoverTools` / `discoverSkills` /
+`discoverSchedules` / `discoverMemories` / `discoverProjections`) deliberately
 **decoupled** from the heavy handler-extraction compiler — the convention must not
 drag it in.
 
 > **Amendment (later PRs).** The original convention discovered only flows; agent,
-> tool, skill, schedule, and memory discovery were added incrementally. The rule for
-> each: `loom gen` discovers a construct **iff a runtime consumes its definition** —
-> agents feed the A2A/A2UI auto-wiring (behind opt-in flags), tools land on
-> `app.tools`, skills register into `app.skills` (`SkillRegistry`), schedules merge
-> into `app.schedules` + the `TimerService`, memories into `app.memory`
-> (`MemoryRuntime`). Discovery is by value shape (`_tag`), not AST parsing, so it is
-> robust to how each construct is declared/exported. `policy$` and `projection$` are
-> **not** `loom gen`-discovered: `policy$` is enforced (a `PolicyAuthorizer` reads each
-> flow's `policies` + `defineConfig({ policies })`) but is carried *inline on the flow
-> definition*, not in an `app/policies/*` folder — nothing to generate; `projection$`
-> has no runtime consumer yet. The gate is "a runtime consumes a discovered file."
+> tool, skill, schedule, memory, and projection discovery were added incrementally.
+> The rule for each: `loom gen` discovers a construct **iff a runtime consumes its
+> definition** — agents feed the A2A/A2UI auto-wiring (behind opt-in flags), tools
+> land on `app.tools`, skills register into `app.skills` (`SkillRegistry`), schedules
+> merge into `app.schedules` + the `TimerService`, memories into `app.memory`
+> (`MemoryRuntime`), projections fold into the projection runtime (their handler code
+> loaded on demand — the compiler extracts each projection's fold map into its own
+> `import()` chunk, event-type-gated). Discovery is by value shape (`_tag`), not AST
+> parsing, so it is robust to how each construct is declared/exported. `policy$` is the
+> one builder **not** discovered: it is enforced (a `PolicyAuthorizer` reads each flow's
+> `policies` + `defineConfig({ policies })`) but is carried *inline on the flow
+> definition*, not in an `app/policies/*` folder — nothing to generate. The gate is "a
+> runtime consumes a discovered file."
 
-**Sub-generators (`loom new [flow|agent|tool|skill|schedule|memory] <name>`).** Emit
-one file into the convention location; won't overwrite an existing file.
+**Sub-generators (`loom new [flow|agent|tool|skill|schedule|memory|projection] <name>`).**
+Emit one file into the convention location; won't overwrite an existing file.
 
 **Shared templating (`@loom/scaffold`).** Per-file templates (`flowFile`,
-`toolFile`, `agentFile`, `skillFile`, `scheduleFile`, `memoryFile`, `newFile`) + the
+`toolFile`, `agentFile`, `skillFile`, `scheduleFile`, `memoryFile`, `projectionFile`,
+`newFile`) + the
 whole-app `appFiles` (now convention-following, with a pre-generated `loom.gen.ts`
 so a scaffolded app runs out of the box). `create-loom-app` and `loom new` both
 consume it — no duplicated templates.
