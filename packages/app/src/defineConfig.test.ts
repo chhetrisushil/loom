@@ -1,4 +1,4 @@
-import { secret } from "@loom/classify";
+import { secret, sensitive } from "@loom/classify";
 import { step$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectMiddleware } from "@loom/effect-runtime";
@@ -327,6 +327,48 @@ describe("defineConfig — secrets (K10-R2)", () => {
     expect(JSON.stringify(completed?.payload)).not.toContain("sk_minted_SECRET");
     // The minted value is recoverable only through the resolver.
     expect(resolver.resolve("s1:mint:token")).toBe("sk_minted_SECRET");
+    await app.close();
+  });
+});
+
+describe("defineConfig — egress scrubbing (K10-R6)", () => {
+  it("scrubs sensitive() output fields from telemetry adapters automatically", async () => {
+    const lookupStep = step$({
+      id: "lookup",
+      toolId: "lookup-tool",
+      inputSchema: z.object({ q: z.string() }),
+      outputSchema: z.object({ ssn: sensitive(z.string()), ok: z.boolean() }),
+    });
+    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (ctx) => {
+      await ctx.run(lookupStep, { q: "who" });
+      return { resolved: true };
+    };
+    const flow = {
+      definition: { ...gatedFlow().definition, id: "lookup-flow", steps: [lookupStep] },
+      runner,
+    } as RegisteredFlow;
+
+    const stepOutputs: unknown[] = [];
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow],
+      telemetry: [{ onStepComplete: (i) => stepOutputs.push(i.output) }],
+    });
+    app.effectRuntime.register(
+      "lookup-tool",
+      new ToolEffect(async () => ({ ssn: "123-45-6789", ok: true }))
+    );
+
+    const handle = await app.runtime.start(flow, { incidentId: "i1" }, { executionId: "t1" });
+    await handle.waitForCompletion();
+
+    // Telemetry (egress) never saw the plaintext ssn — only the mask.
+    expect(stepOutputs[0]).toEqual({ ssn: "[redacted]", ok: true });
+    // But the LOG still has it (encryption/erasure is the log's concern, not egress).
+    const completed = (await app.stores.eventStore.read("t1")).find(
+      (e) => e.eventType === "STEP_COMPLETED"
+    );
+    expect((completed?.payload as { output: { ssn: string } }).output.ssn).toBe("123-45-6789");
     await app.close();
   });
 });

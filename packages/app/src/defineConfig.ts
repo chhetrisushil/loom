@@ -23,7 +23,12 @@ import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime/memory";
-import { composeAdapters, createTelemetryHook } from "@loom/telemetry";
+import {
+  composeAdapters,
+  createTelemetryHook,
+  scrubPathsByStep,
+  scrubbingAdapter,
+} from "@loom/telemetry";
 import type { TelemetryAdapter } from "@loom/telemetry";
 import { type VerificationReport, runVerification, verify as runVerify } from "@loom/verify";
 import { LogLifecycle, TimerService, WorkflowRuntime } from "@loom/workflow-runtime";
@@ -257,10 +262,10 @@ export function defineConfig(config: LoomConfig): LoomApp {
     projectionRuntime.register(a2uiSurfaceProjection(surface));
   }
 
-  const telemetryHook =
-    config.telemetry && config.telemetry.length > 0
-      ? createTelemetryHook(composeAdapters(...config.telemetry))
-      : undefined;
+  // Built AFTER flow registration (below) so K10-R6 egress scrubbing can derive its paths
+  // from the registered steps' schemas. `onEvent` reads it by closure; no event can fire
+  // before defineConfig returns, so the deferred assignment is safe.
+  let telemetryHook: ((event: EventEnvelope) => void) | undefined;
 
   const onEvent = (event: EventEnvelope): void => {
     projectionRuntime.handleEvent(event);
@@ -305,16 +310,26 @@ export function defineConfig(config: LoomConfig): LoomApp {
     registerFlowsFrom(runtime, ...config.flowModules);
   }
 
-  // K10-R2 — now that every flow is registered, derive each step's secret-output paths from
-  // its `secret()`-marked schema and fill the (by-reference) map the redactOutput closure
-  // reads. Mutated, not reassigned. No-op unless `secrets` is wired and a field is marked.
+  // Every flow is now registered — gather the full step set once for the derivations below.
+  const allSteps = runtime
+    .getFlowIds()
+    .flatMap((id) => runtime.getFlow(id)?.definition.steps ?? []);
+
+  // K10-R2 — derive each step's secret-output paths from its `secret()`-marked schema and
+  // fill the (by-reference) map the redactOutput closure reads. Mutated, not reassigned.
   if (config.secrets !== undefined) {
-    for (const id of runtime.getFlowIds()) {
-      const steps = runtime.getFlow(id)?.definition.steps ?? [];
-      for (const [stepId, paths] of secretOutputPathsByStep(steps)) {
-        secretPathsByStep.set(stepId, paths);
-      }
+    for (const [stepId, paths] of secretOutputPathsByStep(allSteps)) {
+      secretPathsByStep.set(stepId, paths);
     }
+  }
+
+  // K10-R6 — telemetry is a separate egress (data ships OUTSIDE the trust boundary). Scrub
+  // `sensitive`/`internal`-marked fields (K10-R1) from step input/output before any adapter
+  // sees them. Automatic when telemetry is wired and a field is marked; a pass-through
+  // otherwise (G2 — scrubbingAdapter returns the inner adapter unchanged on an empty map).
+  if (config.telemetry && config.telemetry.length > 0) {
+    const composed = composeAdapters(...config.telemetry);
+    telemetryHook = createTelemetryHook(scrubbingAdapter(composed, scrubPathsByStep(allSteps)));
   }
 
   if (config.manifest) {
