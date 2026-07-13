@@ -320,12 +320,15 @@ default** — with the flags unset, nothing changes and you wire cards/surfaces 
 as above.
 
 You don't even list the definitions by hand: `loom gen` discovers every `agent$` under
-`app/agents/*.ts` (and every `tool$` under `app/tools/*.ts`) and emits `agentModules` /
-`toolModules`. Pass them straight through — `defineConfig({ agentModules, toolModules, a2a: true })`
-— and each discovered agent is folded into `agents` (auto-wired behind the same flags) while each
-tool is exposed on `app.tools`. Discovery is by value shape, not by parsing, so it's robust to how
-you declare or re-export each construct. A tool's runnable **effect** is still registered
-explicitly (`effectRuntime.register(id, new ToolEffect(fn))`) — `tool$` is metadata-only by design.
+`app/agents/*.ts`, every `tool$` under `app/tools/*.ts`, and every `skill$` under `app/skills/*.ts`,
+emitting `agentModules` / `toolModules` / `skillModules`. Pass them straight through —
+`defineConfig({ agentModules, toolModules, skillModules, a2a: true })` — and each discovered agent is
+folded into `agents` (auto-wired behind the same flags), each tool is exposed on `app.tools`, and each
+skill is registered into `app.skills` (a `SkillRegistry`) for deterministic, offline selection
+(`app.skills.find(query)`). Discovery is by value shape, not by parsing, so it's robust to how you
+declare or re-export each construct. A tool's runnable **effect** is still registered explicitly
+(`effectRuntime.register(id, new ToolEffect(fn))`) — `tool$` is metadata-only by design; a skill's
+`instructions$` body stays lazy (only the selection metadata is held) until the skill is chosen.
 
 ---
 
@@ -365,6 +368,8 @@ interface LoomConfig {
   flowModules?: FlowModule[];          // from `loom gen` (static discovery)
   agentModules?: AgentModule[];        // from `loom gen`: agent$ defs → fold into `agents`
   toolModules?: ToolModule[];          // from `loom gen`: tool$ defs → exposed on app.tools
+  skillModules?: SkillModule[];        // from `loom gen`: skill$ defs → registered into app.skills
+  skills?: SkillDefinition[];          // skills registered directly (in addition to skillModules)
   effectMiddleware?: EffectMiddleware[];
   validate?: boolean | "warn" | "error";
   agents?: (AgentCard | AgentDefinition)[]; // cards register verbatim; agent$ defs auto-wire behind flags

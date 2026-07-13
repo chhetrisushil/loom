@@ -62,7 +62,7 @@ export function parseRedact(flag: string | undefined): string[] {
 const USAGE = `loom — project-local commands for a Loom app
 
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
-  loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
+  loom new   <flow|agent|tool|skill> <name> [--dir app] scaffold a file (folder convention)
   loom plugin new <seam> <name> [--first-party] [--dir .]  scaffold a plugin package
   loom plugin check [--dir .] [--publish]         validate a plugin (--publish adds npm-readiness)
   loom plugin try --module <path> [--preset <name>] [--options <json>]  run a store plugin end-to-end
@@ -177,11 +177,12 @@ async function main(argv: string[]): Promise<number> {
     }
     case "gen": {
       const dir = flags.dir ?? "app";
-      const { out, flows, agents, tools } = cmdGen(dir);
+      const { out, flows, agents, tools, skills } = cmdGen(dir);
       const parts = [
         `${flows} flow${flows === 1 ? "" : "s"}`,
         `${agents} agent${agents === 1 ? "" : "s"}`,
         `${tools} tool${tools === 1 ? "" : "s"}`,
+        `${skills} skill${skills === 1 ? "" : "s"}`,
       ];
       console.log(`wrote ${out} (${parts.join(", ")})`);
       return 0;

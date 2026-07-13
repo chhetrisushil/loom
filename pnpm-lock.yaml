@@ -1114,6 +1114,9 @@ importers:
       '@loom/a2ui':
         specifier: workspace:*
         version: link:../a2ui
+      '@loom/agent':
+        specifier: workspace:*
+        version: link:../agent
       '@loom/compliance':
         specifier: workspace:*
         version: link:../compliance

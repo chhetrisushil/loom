@@ -1,4 +1,5 @@
 import { a2uiSurfaceProjection } from "@loom/a2ui";
+import { SkillRegistry } from "@loom/agent";
 import {
   EraseCoordinator,
   type EraseSubjectResult,
@@ -13,6 +14,7 @@ import type {
   AgentDefinition,
   EventEnvelope,
   ScheduleDefinition,
+  SkillDefinition,
   ToolDefinition,
 } from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
@@ -54,10 +56,12 @@ import {
   type AgentModule,
   type FlowModule,
   type ManifestView,
+  type SkillModule,
   type ToolModule,
   agentDefinitionsFrom,
   manifestWarnings,
   registerFlowsFrom,
+  skillDefinitionsFrom,
   toolDefinitionsFrom,
 } from "./registerFlows";
 import { type FlowGraphFlow, validateFlowGraph } from "./validate";
@@ -130,6 +134,19 @@ export interface LoomConfig {
    * so effects are never auto-wired from a definition.
    */
   toolModules?: ToolModule[];
+  /**
+   * Statically-imported skill modules (from `loom gen`'s `skillModules`) — every `skill$`
+   * definition is discovered by value shape and registered into `app.skills` (a
+   * {@link SkillRegistry}) for deterministic, offline skill selection. Only the cheap metadata
+   * (id/name/description/tags) is held for scoring; the `instructions$` body stays lazy until a
+   * skill is chosen. Same folder-convention discovery as `flowModules`, from `app/skills/*.ts`.
+   */
+  skillModules?: SkillModule[];
+  /**
+   * Skills registered directly (in addition to any discovered from `skillModules`). Accepts the
+   * `skill$` `SkillDefinition`s you'd otherwise hand into a `SkillRegistry` yourself.
+   */
+  skills?: SkillDefinition[];
   /**
    * Optional compiler manifest to cross-check against — any flow the compiler saw
    * but that isn't registered (or that carries a compiler warning) is reported
@@ -279,6 +296,11 @@ export interface LoomApp {
   stores: LoomStores;
   /** Tool definitions discovered from `toolModules` (metadata; register effects separately). */
   tools: ToolDefinition[];
+  /**
+   * Skill registry holding every `skill$` definition from `skills` + `skillModules` — the
+   * deterministic, offline selection surface (`app.skills.find(query)`). Empty when none declared.
+   */
+  skills: SkillRegistry;
   /**
    * K10.1 log lifecycle — explicit retention/compaction over this app's stores, with the
    * branch-integrity guard wired when a `branchRegistry` is present. Drive it from an
@@ -482,6 +504,17 @@ export function defineConfig(config: LoomConfig): LoomApp {
   // registered explicitly, tool$ carries no handler). Exposed on the app for introspection.
   const tools = toolDefinitionsFrom(...(config.toolModules ?? []));
 
+  // Skills come from the explicit `skills` list AND from `skillModules` (loom gen discovery,
+  // value-shape). Both register into one SkillRegistry — the offline, replay-safe selection
+  // surface. Only metadata is held here; each skill's instructions$ body stays lazy (ADR 0044).
+  const skills = new SkillRegistry();
+  for (const skill of [
+    ...(config.skills ?? []),
+    ...skillDefinitionsFrom(...(config.skillModules ?? [])),
+  ]) {
+    skills.register(skill);
+  }
+
   const bus = new InProcessA2ABus(runtime, config.dispatcher);
   let unwiredDefs = 0;
   // Agents come from the explicit `agents` list AND from `agentModules` (loom gen discovery,
@@ -563,6 +596,7 @@ export function defineConfig(config: LoomConfig): LoomApp {
     bus,
     stores,
     tools,
+    skills,
     lifecycle,
     ...(subjectIndex !== undefined && { subjectIndex }),
     exportSubject(subjectId, options) {

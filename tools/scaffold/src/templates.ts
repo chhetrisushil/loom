@@ -71,9 +71,26 @@ export function agentFile(name: string): string {
   ].join("\n");
 }
 
+/** `app/skills/<name>.ts` — a skill definition stub (instructions stay lazy). */
+export function skillFile(name: string): string {
+  const P = pascal(name);
+  return [
+    'import { instructions$, skill$ } from "@loom/core";',
+    "",
+    `export const ${P}Skill = skill$({`,
+    `  id: "${name}",`,
+    `  name: "${P}",`,
+    `  description: "TODO: describe ${name}.",`,
+    "  tags: [],",
+    `  instructions: instructions$("TODO: write the ${name} instructions."),`,
+    "});",
+    "",
+  ].join("\n");
+}
+
 /** Route `loom new <kind> <name>` to the file it generates (path + contents). */
 export function newFile(
-  kind: "flow" | "agent" | "tool",
+  kind: "flow" | "agent" | "tool" | "skill",
   name: string
 ): { path: string; content: string } {
   switch (kind) {
@@ -83,6 +100,8 @@ export function newFile(
       return { path: `app/agents/${name}.ts`, content: agentFile(name) };
     case "tool":
       return { path: `app/tools/${name}.ts`, content: toolFile(name) };
+    case "skill":
+      return { path: `app/skills/${name}.ts`, content: skillFile(name) };
   }
 }
 
@@ -136,17 +155,18 @@ export function appFiles(appName: string): Record<string, string> {
 
     "app/config.ts": [
       'import { defineConfig } from "@loom/app";',
-      'import { agentModules, flowModules, toolModules } from "./loom.gen";',
+      'import { agentModules, flowModules, skillModules, toolModules } from "./loom.gen";',
       'import { middleware } from "./middleware";',
       "",
-      "// The whole app, declared once. Flows/agents/tools are discovered from",
-      "// app/flows, app/agents, app/tools via `loom gen` (app/loom.gen.ts). Set",
+      "// The whole app, declared once. Flows/agents/tools/skills are discovered from",
+      "// app/flows, app/agents, app/tools, app/skills via `loom gen` (app/loom.gen.ts). Set",
       "// `a2a: true` to auto-expose agents on the A2A bus. Swap storage to sqlite for durability.",
       "export const app = defineConfig({",
       '  storage: { kind: "memory" },',
       "  flowModules,",
       "  agentModules, // set a2a: true / a2ui: true to auto-wire discovered agents",
       "  toolModules, // discovered tool definitions on app.tools; register effects yourself",
+      "  skillModules, // discovered skills registered into app.skills (app.skills.find(query))",
       "  effectMiddleware: middleware,",
       "});",
       "",
@@ -222,6 +242,7 @@ export function appFiles(appName: string): Record<string, string> {
       "  flows/<name>/flow.ts   your flows (add with: loom new flow <name>)",
       "  tools/<name>.ts        tools     (loom new tool <name>)",
       "  agents/<name>.ts       agents    (loom new agent <name>)",
+      "  skills/<name>.ts       skills    (loom new skill <name>)",
       "  middleware.ts          cross-cutting effect middleware",
       "  config.ts              the app (defineConfig)",
       "  loom.gen.ts            generated flow registration (pnpm gen)",

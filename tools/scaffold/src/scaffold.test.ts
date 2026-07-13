@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { generateRegistration, pascal } from "./codegen";
-import { agentFile, appFiles, flowFile, newFile, toolFile } from "./templates";
+import { agentFile, appFiles, flowFile, newFile, skillFile, toolFile } from "./templates";
 
 describe("codegen", () => {
   it("pascal-cases kebab/snake/space names", () => {
@@ -19,17 +19,25 @@ describe("codegen", () => {
   it("generateRegistration with no flows yields an empty array", () => {
     const out = generateRegistration([]);
     expect(out).toContain("export const flowModules = [];");
-    // agent/tool arrays are always emitted (empty when none discovered).
+    // agent/tool/skill arrays are always emitted (empty when none discovered).
     expect(out).toContain("export const agentModules = [];");
     expect(out).toContain("export const toolModules = [];");
+    expect(out).toContain("export const skillModules = [];");
   });
 
-  it("generateRegistration emits agentModules + toolModules alongside flows", () => {
-    const out = generateRegistration(["./flows/a/flow"], ["./agents/triage"], ["./tools/lookup"]);
+  it("generateRegistration emits agent/tool/skill modules alongside flows", () => {
+    const out = generateRegistration(
+      ["./flows/a/flow"],
+      ["./agents/triage"],
+      ["./tools/lookup"],
+      ["./skills/refunds"]
+    );
     expect(out).toContain('import * as _a0 from "./agents/triage";');
     expect(out).toContain("export const agentModules = [_a0];");
     expect(out).toContain('import * as _t0 from "./tools/lookup";');
     expect(out).toContain("export const toolModules = [_t0];");
+    expect(out).toContain('import * as _s0 from "./skills/refunds";');
+    expect(out).toContain("export const skillModules = [_s0];");
   });
 });
 
@@ -41,15 +49,20 @@ describe("per-file templates", () => {
     expect(f).not.toContain("${");
   });
 
-  it("toolFile and agentFile export their PascalCase constructs", () => {
+  it("toolFile, agentFile and skillFile export their PascalCase constructs", () => {
     expect(toolFile("lookup")).toContain("export const LookupTool");
     expect(agentFile("support")).toContain("export const SupportAgent");
+    const skill = skillFile("refunds");
+    expect(skill).toContain("export const RefundsSkill");
+    expect(skill).toContain("instructions$(");
+    expect(skill).not.toContain("${");
   });
 
   it("newFile routes each kind to its convention path", () => {
     expect(newFile("flow", "greet").path).toBe("app/flows/greet/flow.ts");
     expect(newFile("agent", "support").path).toBe("app/agents/support.ts");
     expect(newFile("tool", "lookup").path).toBe("app/tools/lookup.ts");
+    expect(newFile("skill", "refunds").path).toBe("app/skills/refunds.ts");
   });
 });
 
@@ -59,6 +72,7 @@ describe("appFiles", () => {
     expect(files["app/flows/greet/flow.ts"]).toContain("GreetFlow");
     expect(files["app/loom.gen.ts"]).toContain("./flows/greet/flow");
     expect(files["app/config.ts"]).toContain("flowModules");
+    expect(files["app/config.ts"]).toContain("skillModules");
     for (const content of Object.values(files)) expect(content).not.toContain("${");
   });
 });
