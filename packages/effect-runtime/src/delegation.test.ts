@@ -68,6 +68,25 @@ describe("K12.4 — verifiable attenuated delegation", () => {
     expect(decision.reason).toMatch(/issued to .* but presented by/);
   });
 
+  it("rejects an expired token and honors a live one (exp is signature-bound)", () => {
+    const base = new GrantTable({ "callee-flow": ["deploy"] });
+    const clock = { t: 1_000 };
+    const authz = new DelegationAuthorizer({ secret: SECRET, base, now: () => clock.t });
+    const token = signDelegation(SECRET, "callee-flow", ["deploy"], 2_000); // exp = 2000
+    const principal = { actor: "callee-flow", delegation: token };
+
+    expect(authz.authorize(req("deploy", principal)).allowed).toBe(true); // t=1000 < 2000
+    clock.t = 2_500;
+    const denied = authz.authorize(req("deploy", principal));
+    expect(denied.allowed).toBe(false);
+    expect(denied.reason).toMatch(/expired/);
+    // Tampering exp to extend it breaks the signature.
+    const tampered = { ...token, exp: 9_999 };
+    expect(
+      authz.authorize(req("deploy", { actor: "callee-flow", delegation: tampered })).allowed
+    ).toBe(false);
+  });
+
   it("a forged delegation is denied outright (not honored as a plain field)", () => {
     const authz = new DelegationAuthorizer({ secret: SECRET });
     const forged = { grants: ["delete-prod"], issuedTo: "callee-flow", sig: "deadbeef" };

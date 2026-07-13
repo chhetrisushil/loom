@@ -119,6 +119,8 @@ export interface DelegationAuthorizerOptions {
    * delegates all of its authority decisions upstream).
    */
   base?: CapabilityAuthorizer;
+  /** Clock for token-expiry checks (epoch ms). Injectable for tests; defaults to `Date.now`. */
+  now?: () => number;
 }
 
 /**
@@ -145,6 +147,11 @@ export class DelegationAuthorizer implements CapabilityAuthorizer {
     }
     if (!verifyDelegation(this.options.secret, token)) {
       return { allowed: false, reason: "delegation signature invalid (forged or tampered)" };
+    }
+    // Reject expired tokens (exp is signature-bound, so it can't be extended). A token
+    // without exp never expires — the same as before this field existed.
+    if (token.exp !== undefined && (this.options.now?.() ?? Date.now()) >= token.exp) {
+      return { allowed: false, reason: `delegation expired at ${token.exp}` };
     }
     // K12.4 — bind the token to its intended holder. A delegation minted for
     // `issuedTo` may only be presented BY that principal (`req.principal.actor`).
@@ -194,26 +201,36 @@ export interface DelegatedGrant {
   grants: string[];
   /** The principal this token was issued to (bound into the signature). */
   issuedTo: string;
-  /** HMAC-SHA256 over `${issuedTo}\n${sorted grants}` with the shared delegation secret. */
+  /** Optional absolute expiry (epoch ms), bound into the signature; rejected once past. */
+  exp?: number;
+  /** HMAC-SHA256 over `${issuedTo}\n${sorted grants}[\nexp=…]` with the shared delegation secret. */
   sig: string;
 }
 
-function delegationPayload(issuedTo: string, grants: readonly string[]): string {
-  return `${issuedTo}\n${[...grants].sort().join(",")}`;
+// `exp` is appended only when present, so tokens without it sign the exact prior payload
+// (backward-compatible), while a tampered `exp` breaks the signature.
+function delegationPayload(issuedTo: string, grants: readonly string[], exp?: number): string {
+  const base = `${issuedTo}\n${[...grants].sort().join(",")}`;
+  return exp !== undefined ? `${base}\nexp=${exp}` : base;
 }
 
 /** Mint a delegation token: the delegator signs the subset it confers on `issuedTo`. */
-export function signDelegation(secret: string, issuedTo: string, grants: string[]): DelegatedGrant {
+export function signDelegation(
+  secret: string,
+  issuedTo: string,
+  grants: string[],
+  exp?: number
+): DelegatedGrant {
   const sig = createHmac("sha256", secret)
-    .update(delegationPayload(issuedTo, grants))
+    .update(delegationPayload(issuedTo, grants, exp))
     .digest("hex");
-  return { grants: [...grants], issuedTo, sig };
+  return { grants: [...grants], issuedTo, ...(exp !== undefined && { exp }), sig };
 }
 
 /** Verify a delegation's signature (constant-time). A forged/tampered token fails. */
 export function verifyDelegation(secret: string, token: DelegatedGrant): boolean {
   const expected = createHmac("sha256", secret)
-    .update(delegationPayload(token.issuedTo, token.grants))
+    .update(delegationPayload(token.issuedTo, token.grants, token.exp))
     .digest("hex");
   const a = Buffer.from(expected, "hex");
   const b = Buffer.from(token.sig, "hex");

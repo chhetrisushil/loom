@@ -4,6 +4,15 @@ import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
 export interface WorkerServerOptions {
   /** Port to listen on. 0 (default) picks a free port — read `.port` after start. */
   port?: number;
+  /**
+   * Authenticate the mutating routes (`/execute`, `/cancel`). Return `true` to allow.
+   * The scheme is yours (shared secret, mTLS via `req.socket`, a signed dispatch token) —
+   * the server supplies the gate, you supply the policy. **When unset the server is
+   * UNAUTHENTICATED**: a caller can run any registered flow and inject resume/approval
+   * events into any execution. Only run it that way behind a trusted network / proxy.
+   * `/health` is always open.
+   */
+  authorize?: (req: http.IncomingMessage) => boolean | Promise<boolean>;
 }
 
 export interface WorkerServer {
@@ -77,6 +86,14 @@ export function createWorkerServer(
         if (method === "GET" && url === "/health") {
           json(res, 200, { healthy: true });
           return;
+        }
+
+        // Gate the mutating routes when an authorizer is wired. `/health` stays open.
+        if (options.authorize !== undefined && (url === "/execute" || url === "/cancel")) {
+          if (!(await options.authorize(req))) {
+            json(res, 401, { error: "unauthorized" });
+            return;
+          }
         }
 
         if (method === "POST" && url === "/execute") {
