@@ -6,5 +6,9 @@
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
-  "references": [{ "path": "../appgen" }, { "path": "../llm" }, { "path": "../reasoning" }]
+  "references": [
+    { "path": "../appgen" },
+    { "path": "../../packages/llm" },
+    { "path": "../../packages/reasoning" }
+  ]
 }

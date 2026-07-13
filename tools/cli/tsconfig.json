@@ -9,22 +9,22 @@
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
   "references": [
     {
-      "path": "../analytics"
+      "path": "../../packages/analytics"
     },
     {
-      "path": "../classify"
+      "path": "../../packages/classify"
     },
     {
-      "path": "../compliance"
+      "path": "../../packages/compliance"
     },
     {
-      "path": "../app"
+      "path": "../../packages/app"
     },
     {
       "path": "../appgen"
     },
     {
-      "path": "../core"
+      "path": "../../packages/core"
     },
     {
       "path": "../deploy-sim"
@@ -33,28 +33,28 @@
       "path": "../eval"
     },
     {
-      "path": "../event-runtime"
+      "path": "../../packages/event-runtime"
     },
     {
-      "path": "../replay-vm"
+      "path": "../../packages/replay-vm"
     },
     {
       "path": "../scaffold"
     },
     {
-      "path": "../spec"
+      "path": "../../packages/spec"
     },
     {
-      "path": "../verify"
+      "path": "../../packages/verify"
     },
     {
       "path": "../../plugins/sqlite"
     },
     {
-      "path": "../workflow-runtime"
+      "path": "../../packages/workflow-runtime"
     },
     {
-      "path": "../plugin-kit"
+      "path": "../../packages/plugin-kit"
     }
   ]
 }

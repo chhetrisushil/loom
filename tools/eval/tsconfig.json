@@ -6,5 +6,5 @@
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
-  "references": [{ "path": "../core" }, { "path": "../eval" }]
+  "references": [{ "path": "../../packages/core" }, { "path": "../../packages/replay-vm" }]
 }

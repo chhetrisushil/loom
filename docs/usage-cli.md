@@ -97,7 +97,7 @@ Feed the generated `flowModules` to `defineConfig({ flowModules })` and every fl
 
 ### `loom appgen <intent> | --from <file> | --from-spec <file> [--dir .] [flags]`
 
-Turns a **natural-language intent** into a change to a Loom app, following the **[folder convention](#scaffold--wire-new-gen-appgen)**. It is **brownfield-aware**: it scans what already exists and applies a *delta* rather than only scaffolding from scratch. Four stages, with **NL understanding isolated to exactly one** and everything else deterministic and offline ([`@loom/appgen`](../packages/appgen)); the generated output is ordinary, statically-wired Loom code with `TODO` handlers you own (P5, P11):
+Turns a **natural-language intent** into a change to a Loom app, following the **[folder convention](#scaffold--wire-new-gen-appgen)**. It is **brownfield-aware**: it scans what already exists and applies a *delta* rather than only scaffolding from scratch. Four stages, with **NL understanding isolated to exactly one** and everything else deterministic and offline ([`@loom/appgen`](../tools/appgen)); the generated output is ordinary, statically-wired Loom code with `TODO` handlers you own (P5, P11):
 
 1. **scan** — `scanApp(dir)` summarizes the app (flows, steps, gates, and whether each handler is still a generated stub or hand-edited). Never raw file contents.
 2. **plan** — the intent is parsed into a `ChangeSpec` that tags each capability/step `create | extend | modify | delete`. This is the only stage that reads NL. Deterministic by default; a **local model** can drive it (see `--model`).
@@ -115,7 +115,7 @@ Turns a **natural-language intent** into a change to a Loom app, following the *
 | `--dry-run` | render the plan as a unified diff and write nothing |
 | `--yes` | apply without the interactive confirmation prompt |
 | `--check` | typecheck the app (`tsc`) after applying |
-| `--model <gguf>` | plan with a local Gemma model (needs [`@loom/appgen-model`](../packages/appgen-model) + `node-llama-cpp`) |
+| `--model <gguf>` | plan with a local Gemma model (needs [`@loom/appgen-model`](../tools/appgen-model) + `node-llama-cpp`) |
 | `--model-big <gguf>` | a stronger model tier to elevate to on low confidence |
 | `--model-tier <e2b\|e4b\|12b>` | the tier label for `--model` (default `e4b`) |
 | `--offline` | force the deterministic, model-free planner (overrides `--model`) |
@@ -135,7 +135,7 @@ npx loom appgen --from-spec ./planner/.loom/appgen/1783875332959.spec.json --dir
 
 **Spec lockfile.** Each apply records the accepted `ChangeSpec` to `.loom/appgen/<timestamp>.spec.json`. `--from-spec` replays it byte-for-byte — the appgen equivalent of a golden log, so CI stays model-free. When a new file collides, `appgen` prompts per file — `[r]ename / [s]kip / [o]verwrite`.
 
-**Local model (`--model`).** Optional and offline: install `@loom/appgen-model` + `node-llama-cpp` in your project and point `--model` at a local `.gguf`. Planning runs through a cheap-first elevation ladder; if the model is missing, too weak, or produces an invalid plan, `appgen` **falls back to the deterministic parser** — it is never left without a valid `ChangeSpec`. See the [`@loom/appgen-model` README](../packages/appgen-model/README.md) for tiers and requirements.
+**Local model (`--model`).** Optional and offline: install `@loom/appgen-model` + `node-llama-cpp` in your project and point `--model` at a local `.gguf`. Planning runs through a cheap-first elevation ladder; if the model is missing, too weak, or produces an invalid plan, `appgen` **falls back to the deterministic parser** — it is never left without a valid `ChangeSpec`. See the [`@loom/appgen-model` README](../tools/appgen-model/README.md) for tiers and requirements.
 
 **Which planner ran.** The plan header (and `--dry-run` output) is tagged `[deterministic]` or `[model]` (with any `[model, elevated e4b→12b]` ladder steps), and the spec lockfile records `changeSpec.planner`. When you pass `--model` but the model can't produce a usable plan, `appgen` prints a loud warning and falls back — so a `[deterministic]` tag after `--model` means the model bailed (try a stronger tier / Node LTS, or name steps explicitly). The generated *code* is identical either way; provenance lives in the header and lockfile, not the files.
 

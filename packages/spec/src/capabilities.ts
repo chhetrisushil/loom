@@ -153,8 +153,8 @@ export const CAPABILITIES: readonly Capability[] = [
     summary:
       "Seeded virtual clock + fault-injecting store/network that drive the kernel under adversarial schedules and reproduce/minimize any invariant violation.",
     evidence: {
-      conformanceTest: "packages/dst/src/dst.test.ts",
-      bench: "packages/dst/src/faultStore.bench.ts",
+      conformanceTest: "tools/dst/src/dst.test.ts",
+      bench: "tools/dst/src/faultStore.bench.ts",
     },
     note: "Test/dev-only harness, not a wire contract → cannot be L5; L4 via its append-overhead bench. Production overhead is structurally zero (no runtime package imports it).",
   },
@@ -295,7 +295,7 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: "handler$ extraction, flow-graph + non-determinism analysis, manifest.",
     evidence: {
       versionConstant: "COMPILER_MANIFEST_VERSION",
-      conformanceTest: "packages/compiler/src/transform.test.ts",
+      conformanceTest: "tools/compiler/src/transform.test.ts",
       usedIn: "loom-starter, examples/*",
     },
     note: "Manifest schema is versioned but not conformance-PINNED like the semver ABIs → L3, not L5.",

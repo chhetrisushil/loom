@@ -74,7 +74,7 @@ importers:
     devDependencies:
       '@loom/compiler':
         specifier: workspace:*
-        version: link:../../packages/compiler
+        version: link:../../tools/compiler
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -260,7 +260,7 @@ importers:
     devDependencies:
       '@loom/testing':
         specifier: workspace:*
-        version: link:../../packages/testing
+        version: link:../../tools/testing
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -403,10 +403,10 @@ importers:
     devDependencies:
       '@loom/compiler':
         specifier: workspace:*
-        version: link:../../packages/compiler
+        version: link:../../tools/compiler
       '@loom/testing':
         specifier: workspace:*
-        version: link:../../packages/testing
+        version: link:../../tools/testing
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -558,10 +558,10 @@ importers:
     devDependencies:
       '@loom/compiler':
         specifier: workspace:*
-        version: link:../../packages/compiler
+        version: link:../../tools/compiler
       '@loom/testing':
         specifier: workspace:*
-        version: link:../../packages/testing
+        version: link:../../tools/testing
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -652,7 +652,7 @@ importers:
     devDependencies:
       '@loom/testing':
         specifier: workspace:*
-        version: link:../../packages/testing
+        version: link:../../tools/testing
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -734,7 +734,7 @@ importers:
     devDependencies:
       '@loom/testing':
         specifier: workspace:*
-        version: link:../../packages/testing
+        version: link:../../tools/testing
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -874,7 +874,7 @@ importers:
     devDependencies:
       '@loom/testing':
         specifier: workspace:*
-        version: link:../../packages/testing
+        version: link:../../tools/testing
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -932,10 +932,10 @@ importers:
     devDependencies:
       '@loom/cli':
         specifier: workspace:*
-        version: link:../../packages/cli
+        version: link:../../tools/cli
       '@loom/testing':
         specifier: workspace:*
-        version: link:../../packages/testing
+        version: link:../../tools/testing
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -1020,7 +1020,7 @@ importers:
     devDependencies:
       '@loom/testing':
         specifier: workspace:*
-        version: link:../../packages/testing
+        version: link:../../tools/testing
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -1173,48 +1173,6 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
 
-  packages/appgen:
-    dependencies:
-      '@loom/scaffold':
-        specifier: workspace:*
-        version: link:../scaffold
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-    devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-
-  packages/appgen-model:
-    dependencies:
-      '@loom/appgen':
-        specifier: workspace:*
-        version: link:../appgen
-      '@loom/llm':
-        specifier: workspace:*
-        version: link:../llm
-      '@loom/reasoning':
-        specifier: workspace:*
-        version: link:../reasoning
-    optionalDependencies:
-      node-llama-cpp:
-        specifier: ^3.0.0
-        version: 3.19.0(typescript@5.9.3)
-    devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-
   packages/blueprint-runtime:
     dependencies:
       '@loom/core':
@@ -1274,95 +1232,6 @@ importers:
       typescript:
         specifier: ^5.6.3
         version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-
-  packages/cli:
-    dependencies:
-      '@loom/analytics':
-        specifier: workspace:*
-        version: link:../analytics
-      '@loom/app':
-        specifier: workspace:*
-        version: link:../app
-      '@loom/appgen':
-        specifier: workspace:*
-        version: link:../appgen
-      '@loom/classify':
-        specifier: workspace:*
-        version: link:../classify
-      '@loom/compliance':
-        specifier: workspace:*
-        version: link:../compliance
-      '@loom/core':
-        specifier: workspace:*
-        version: link:../core
-      '@loom/deploy-sim':
-        specifier: workspace:*
-        version: link:../deploy-sim
-      '@loom/eval':
-        specifier: workspace:*
-        version: link:../eval
-      '@loom/event-runtime':
-        specifier: workspace:*
-        version: link:../event-runtime
-      '@loom/plugin-kit':
-        specifier: workspace:*
-        version: link:../plugin-kit
-      '@loom/plugin-sqlite':
-        specifier: workspace:*
-        version: link:../../plugins/sqlite
-      '@loom/replay-vm':
-        specifier: workspace:*
-        version: link:../replay-vm
-      '@loom/scaffold':
-        specifier: workspace:*
-        version: link:../scaffold
-      '@loom/spec':
-        specifier: workspace:*
-        version: link:../spec
-      '@loom/verify':
-        specifier: workspace:*
-        version: link:../verify
-      '@loom/workflow-runtime':
-        specifier: workspace:*
-        version: link:../workflow-runtime
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
-    devDependencies:
-      '@loom/effect-runtime':
-        specifier: workspace:*
-        version: link:../effect-runtime
-      '@loom/snapshot-runtime':
-        specifier: workspace:*
-        version: link:../snapshot-runtime
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-
-  packages/compiler:
-    dependencies:
-      magic-string:
-        specifier: ^0.30.21
-        version: 0.30.21
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-    devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      vite:
-        specifier: ^5.4.10
-        version: 5.4.21(@types/node@22.20.0)(sass@1.90.0)
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
@@ -1442,40 +1311,6 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
-  packages/deploy-sim:
-    dependencies:
-      '@loom/core':
-        specifier: workspace:*
-        version: link:../core
-      '@loom/eval':
-        specifier: workspace:*
-        version: link:../eval
-    devDependencies:
-      '@loom/effect-runtime':
-        specifier: workspace:*
-        version: link:../effect-runtime
-      '@loom/event-runtime':
-        specifier: workspace:*
-        version: link:../event-runtime
-      '@loom/snapshot-runtime':
-        specifier: workspace:*
-        version: link:../snapshot-runtime
-      '@loom/workflow-runtime':
-        specifier: workspace:*
-        version: link:../workflow-runtime
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
-
   packages/dispatcher:
     dependencies:
       '@loom/core':
@@ -1494,37 +1329,6 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-
-  packages/dst:
-    dependencies:
-      '@loom/core':
-        specifier: workspace:*
-        version: link:../core
-      '@loom/effect-runtime':
-        specifier: workspace:*
-        version: link:../effect-runtime
-      '@loom/event-runtime':
-        specifier: workspace:*
-        version: link:../event-runtime
-      '@loom/snapshot-runtime':
-        specifier: workspace:*
-        version: link:../snapshot-runtime
-      '@loom/workflow-runtime':
-        specifier: workspace:*
-        version: link:../workflow-runtime
-    devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
 
   packages/effect-runtime:
     dependencies:
@@ -1550,40 +1354,6 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-
-  packages/eval:
-    dependencies:
-      '@loom/core':
-        specifier: workspace:*
-        version: link:../core
-      '@loom/replay-vm':
-        specifier: workspace:*
-        version: link:../replay-vm
-    devDependencies:
-      '@loom/effect-runtime':
-        specifier: workspace:*
-        version: link:../effect-runtime
-      '@loom/event-runtime':
-        specifier: workspace:*
-        version: link:../event-runtime
-      '@loom/snapshot-runtime':
-        specifier: workspace:*
-        version: link:../snapshot-runtime
-      '@loom/workflow-runtime':
-        specifier: workspace:*
-        version: link:../workflow-runtime
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
 
   packages/event-runtime:
     dependencies:
@@ -1996,7 +1766,7 @@ importers:
     devDependencies:
       '@loom/dst':
         specifier: workspace:*
-        version: link:../dst
+        version: link:../../tools/dst
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../effect-runtime
@@ -2018,18 +1788,6 @@ importers:
       zod:
         specifier: ^3.23.8
         version: 3.25.76
-
-  packages/scaffold:
-    devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
   packages/scheduler:
     devDependencies:
@@ -2139,7 +1897,7 @@ importers:
     dependencies:
       '@loom/compiler':
         specifier: workspace:*
-        version: link:../compiler
+        version: link:../../tools/compiler
       '@loom/dispatcher':
         specifier: workspace:*
         version: link:../dispatcher
@@ -2187,55 +1945,6 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
-
-  packages/testing:
-    dependencies:
-      '@loom/app':
-        specifier: workspace:*
-        version: link:../app
-      '@loom/core':
-        specifier: workspace:*
-        version: link:../core
-      '@loom/dispatcher':
-        specifier: workspace:*
-        version: link:../dispatcher
-      '@loom/event-runtime':
-        specifier: workspace:*
-        version: link:../event-runtime
-      '@loom/llm':
-        specifier: workspace:*
-        version: link:../llm
-      '@loom/projection-runtime':
-        specifier: workspace:*
-        version: link:../projection-runtime
-      '@loom/snapshot-runtime':
-        specifier: workspace:*
-        version: link:../snapshot-runtime
-      '@loom/worker-runtime':
-        specifier: workspace:*
-        version: link:../worker-runtime
-      '@loom/workflow-runtime':
-        specifier: workspace:*
-        version: link:../workflow-runtime
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-    devDependencies:
-      '@loom/effect-runtime':
-        specifier: workspace:*
-        version: link:../effect-runtime
-      '@loom/middleware':
-        specifier: workspace:*
-        version: link:../middleware
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -2430,7 +2139,7 @@ importers:
     devDependencies:
       '@loom/dst':
         specifier: workspace:*
-        version: link:../../packages/dst
+        version: link:../../tools/dst
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../../packages/effect-runtime
@@ -2793,11 +2502,37 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
 
-  tools/create-loom-app:
+  tools/appgen:
     dependencies:
       '@loom/scaffold':
         specifier: workspace:*
-        version: link:../../packages/scaffold
+        version: link:../scaffold
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  tools/appgen-model:
+    dependencies:
+      '@loom/appgen':
+        specifier: workspace:*
+        version: link:../appgen
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../../packages/llm
+      '@loom/reasoning':
+        specifier: workspace:*
+        version: link:../../packages/reasoning
+    optionalDependencies:
+      node-llama-cpp:
+        specifier: ^3.0.0
+        version: 3.19.0(typescript@5.9.3)
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -2808,6 +2543,271 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  tools/cli:
+    dependencies:
+      '@loom/analytics':
+        specifier: workspace:*
+        version: link:../../packages/analytics
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../../packages/app
+      '@loom/appgen':
+        specifier: workspace:*
+        version: link:../appgen
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../../packages/classify
+      '@loom/compliance':
+        specifier: workspace:*
+        version: link:../../packages/compliance
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/deploy-sim':
+        specifier: workspace:*
+        version: link:../deploy-sim
+      '@loom/eval':
+        specifier: workspace:*
+        version: link:../eval
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
+      '@loom/plugin-kit':
+        specifier: workspace:*
+        version: link:../../packages/plugin-kit
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
+      '@loom/replay-vm':
+        specifier: workspace:*
+        version: link:../../packages/replay-vm
+      '@loom/scaffold':
+        specifier: workspace:*
+        version: link:../scaffold
+      '@loom/spec':
+        specifier: workspace:*
+        version: link:../../packages/spec
+      '@loom/verify':
+        specifier: workspace:*
+        version: link:../../packages/verify
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  tools/compiler:
+    dependencies:
+      magic-string:
+        specifier: ^0.30.21
+        version: 0.30.21
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      vite:
+        specifier: ^5.4.10
+        version: 5.4.21(@types/node@22.20.0)(sass@1.90.0)
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  tools/create-loom-app:
+    dependencies:
+      '@loom/scaffold':
+        specifier: workspace:*
+        version: link:../scaffold
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  tools/deploy-sim:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/eval':
+        specifier: workspace:*
+        version: link:../eval
+    devDependencies:
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+
+  tools/dst:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+
+  tools/eval:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/replay-vm':
+        specifier: workspace:*
+        version: link:../../packages/replay-vm
+    devDependencies:
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+
+  tools/scaffold:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
+  tools/testing:
+    dependencies:
+      '@loom/app':
+        specifier: workspace:*
+        version: link:../../packages/app
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../../packages/dispatcher
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../../packages/llm
+      '@loom/projection-runtime':
+        specifier: workspace:*
+        version: link:../../packages/projection-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
+      '@loom/worker-runtime':
+        specifier: workspace:*
+        version: link:../../packages/worker-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+    devDependencies:
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+      '@loom/middleware':
+        specifier: workspace:*
+        version: link:../../packages/middleware
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
 
 packages:
 

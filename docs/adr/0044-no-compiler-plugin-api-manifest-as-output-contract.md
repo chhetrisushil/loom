@@ -18,12 +18,12 @@ The plugin question was raised for `@loom/compiler` — the build-time Vite plug
 non-determinism analysis, and emits `loom-manifest.json`. Grounded facts:
 
 - `loomPlugin()` is **itself a Vite plugin** (`enforce: "pre"`), and takes **no options** — there
-  is no extension surface today (`packages/compiler/src/plugin.ts:10`).
+  is no extension surface today (`tools/compiler/src/plugin.ts:10`).
 - The recognised markers (`step$`, `flow$`, `skill$`, `handler$`, `instructions$`) are a **closed,
   string-matched set** validated by AST checks; adding one touches three layers (scanner,
-  transform, visitor) (`packages/compiler/src/transform.ts`).
+  transform, visitor) (`tools/compiler/src/transform.ts`).
 - The emitted manifest is a **versioned contract** (`COMPILER_MANIFEST_VERSION = "1"`,
-  `packages/compiler/src/manifest.ts:5`) carrying per-step/chunk **hashes**. Those hashes feed
+  `tools/compiler/src/manifest.ts:5`) carrying per-step/chunk **hashes**. Those hashes feed
   **K11 flow-code versioning**, resume-refusal, and `deploy-sim` drift detection; `@loom/spec`
   pins the version and `@loom/app` cross-checks flows against it at boot. ADR 0023 requires the
   hash be computed over *"compiler-normalized manifest content, never raw bundler output"* so it

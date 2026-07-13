@@ -361,9 +361,9 @@ Analyze → rank → apply (via `rankedRouter` + `ctx.decide`) → log → analy
 
 ### 4.2 `planChanges(intent, appModel) → ChangeSpec` (the one NL stage)
 
-The plan stage is the *only* component that sees raw NL, and it emits a structured `ChangeSpec` — an `AppSpec` extended with an operation per capability and step (`create | extend | modify | delete`), plus `addApproval`/`addUi`/`wireGrants`. `planChangesDeterministic` wraps the directive grammar parser and diffs the result against the `AppModel`; a model-backed planner ([`@loom/appgen-model`](../../packages/appgen-model), §4.5) emits the *same* `ChangeSpec`. Codegen never sees raw NL either way.
+The plan stage is the *only* component that sees raw NL, and it emits a structured `ChangeSpec` — an `AppSpec` extended with an operation per capability and step (`create | extend | modify | delete`), plus `addApproval`/`addUi`/`wireGrants`. `planChangesDeterministic` wraps the directive grammar parser and diffs the result against the `AppModel`; a model-backed planner ([`@loom/appgen-model`](../../tools/appgen-model), §4.5) emits the *same* `ChangeSpec`. Codegen never sees raw NL either way.
 
-The base `AppSpec`/`ChangeSpec` types ([`packages/appgen/src/types.ts`](../../packages/appgen/src/types.ts), [`changeSpec.ts`](../../packages/appgen/src/changeSpec.ts)):
+The base `AppSpec`/`ChangeSpec` types ([`tools/appgen/src/types.ts`](../../tools/appgen/src/types.ts), [`changeSpec.ts`](../../tools/appgen/src/changeSpec.ts)):
 
 ```ts
 export interface CapabilitySpec {
@@ -381,7 +381,7 @@ export interface CapabilityChange extends /* id,name,intent */ {
 }
 ```
 
-The deterministic parser ([`parseIntent.ts`](../../packages/appgen/src/parseIntent.ts) + [`changeSpec.ts`](../../packages/appgen/src/changeSpec.ts)) is a small, documented, case-insensitive **directive grammar** — a pure function of its input, no model/clock/randomness (the P2 discipline the core lives by):
+The deterministic parser ([`parseIntent.ts`](../../tools/appgen/src/parseIntent.ts) + [`changeSpec.ts`](../../tools/appgen/src/changeSpec.ts)) is a small, documented, case-insensitive **directive grammar** — a pure function of its input, no model/clock/randomness (the P2 discipline the core lives by):
 
 | Sentence | Effect |
 |---|---|

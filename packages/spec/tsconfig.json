@@ -8,7 +8,7 @@
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
   "references": [
-    { "path": "../compiler" },
+    { "path": "../../tools/compiler" },
     { "path": "../dispatcher" },
     { "path": "../event-runtime" },
     { "path": "../replay-vm" },
