@@ -332,6 +332,27 @@ triggers downstream).
   throws `PayloadShreddedError` rather than folding ciphertext or a default (never a silent
   third behavior).
 
+#### `EXECUTION_ARCHIVED` / `EXECUTION_DELETED`
+- **Introduced:** 1.13.0 — K10.1 retention control facts ([ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md)).
+  Written by `LogLifecycle.applyRetention` to a reserved control stream (`__loom_lifecycle__`)
+  when a terminal-and-aged execution is archived (if an archive is configured) and then
+  reclaimed. Retention audits its own pruning (P9) — the *structure* survives even as the
+  *values* are deleted.
+- **Payload:** `{ executionId: string }`
+- **Folds into:** appends `{ op: "archived" | "deleted", executionId, at }` to
+  `variables._lifecycle` (of the lifecycle stream). **Pure audit.** A log that never prunes
+  replays byte-identically.
+
+#### `ERASURE_PENDING`
+- **Introduced:** 1.14.0 — T3-R4.5 deferred-erasure protocol ([ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md)).
+  Written by the `EraseCoordinator` (`@loom/compliance`) to a reserved control stream
+  (`__loom_erasure__`) when a subject's erasure is requested but DEFERRED because one of the
+  subject's executions is still live — never shred a fold in flight. Folding the stream
+  recovers the pending set, so a parked erasure survives a restart.
+- **Payload:** `{ subjectId: string; tenant?: string }`
+- **Folds into:** appends `{ op: "pending", subjectId, at }` to `variables._erasure` (of the
+  erasure stream). **Pure audit.** A log that never defers an erasure replays byte-identically.
+
 #### `EGRESS_DENIED`
 - **Introduced:** Loom 2.1 — K7, data-plane isolation ([ADR 0019](../adr/0019-k7-data-plane-isolation-and-egress-control.md)).
   The kernel-side egress broker refused an isolated tool's network target: not in the tool's
@@ -459,7 +480,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts:311`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.12.0"; // …1.9.0 APPROVAL_GRANTED (K12); 1.10.0 DECISION_RECORDED fields (ADR 0030); 1.11.0 RESOURCE_METERED dimensions (ADR 0032); 1.12.0 EXECUTION_DENIED (C.1, ADR 0039)
+export const EVENT_SCHEMA_VERSION = "1.14.0"; // …1.11.0 RESOURCE_METERED dimensions (ADR 0032); 1.12.0 EXECUTION_DENIED (C.1, ADR 0039); 1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1 retention control facts); 1.14.0 ERASURE_PENDING (T3-R4.5 deferred-erasure control fact)
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
@@ -475,11 +496,12 @@ export function knownEventTypes(): string[] {
   that must be deliberate. A conformance test pins `knownEventTypes()` so the set cannot drift
   silently.
 
-The complete pinned set (the 25 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
+The complete pinned set (the 29 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
 returns them):
 
 `APPROVAL_GRANTED`, `DECISION_RECORDED`, `EFFECT_DENIED`, `EFFECT_INDOUBT`, `EGRESS_DENIED`,
-`EXECUTION_CANCELLED`, `EXECUTION_COMPLETED`, `EXECUTION_FAILED`, `EXECUTION_MIGRATED`,
+`ERASURE_PENDING`, `EXECUTION_ARCHIVED`, `EXECUTION_CANCELLED`, `EXECUTION_COMPLETED`,
+`EXECUTION_DELETED`, `EXECUTION_DENIED`, `EXECUTION_FAILED`, `EXECUTION_MIGRATED`,
 `EXECUTION_RESUMED`, `EXECUTION_STARTED`, `EXECUTION_SUSPENDED`, `OUTCOME_RECORDED`,
 `PARALLEL_COMPLETED`, `PARALLEL_STARTED`, `PAYLOAD_SHREDDED`, `QUOTA_EXCEEDED`,
 `RESOURCE_METERED`, `SAFETY_BLOCKED`, `STEP_CANCELLED`, `STEP_COMPLETED`, `STEP_FAILED`,

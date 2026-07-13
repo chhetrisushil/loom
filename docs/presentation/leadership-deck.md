@@ -135,6 +135,22 @@ Traditional frameworks optimize for **hydration** (rebuild state on every reques
 
 ---
 
+## New: data protection & compliance — built-in, not bolted-on
+
+**Durable logging *without* the PII liability.** Auditability and compliance are the *same*
+event log — not a second system.
+
+- **Compliance as a platform capability** — subject rights (who a record concerns, data export
+  & deletion per **GDPR/CCPA**), retention, encryption, and multi-tenant isolation come with the
+  kernel. No separate audit/compliance layer to build.
+- **Bound the liability** — sensitive fields are classified once and never stored in plaintext;
+  **crypto-shredding** + retention policies let you *forget* a subject's data on demand (right to
+  be forgotten) without rewriting history — the log stays intact, the values become unrecoverable.
+- **Risk mitigation on day one** — adopt Loom for durability; turn on encryption / redaction /
+  erasure on the *same* log as regulations tighten. No re-architecture later.
+
+---
+
 ## New: responsive & high-performance — all opt-in
 
 Recent additions make agentic apps feel faster, without changing anything that already works:

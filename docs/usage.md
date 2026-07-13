@@ -116,7 +116,7 @@ const app = defineConfig({
 | Field | What it does |
 |---|---|
 | `storage` | `{ kind: "memory" }` or `{ kind: "custom", eventStore, snapshotStore, branchRegistry? }`. Concrete backends are **presets** returning a `custom` descriptor: `sqliteStorage({ dir, branching })` from `@loom/plugin-sqlite`, `postgresStorage({ url, branching })` from `@loom/plugin-postgres`, or your own (ADR 0043) |
-| `surfaces` | A2UI surface ids to project |
+| `surfaces` | A2UI surface ids to project — a bare id, or `{ id, redact: [...] }` to mask surface paths from egress (K10-R6) |
 | `flows` / `flowModules` | flows to register (explicit, or via `loom gen` modules) |
 | `effectMiddleware` | cross-cutting effect wrappers (retries, metering, safety, redaction… — see Step 11) |
 | `authorizer` | capability protection ring — deny ungranted effects (K2; see Step 11) |
@@ -125,6 +125,9 @@ const app = defineConfig({
 | `agents` / `capabilityAgents` | A2A agent cards + capability→agent routing |
 | `dispatcher` | where executions run (in-process / remote / Cloud Run) |
 | `onEvent` | tap every committed event (telemetry, custom projections) |
+| `secrets` | `{ resolver }` — wire secret redaction: resolve `secretRef` input + redact `secret()` output (K10-R2; see [data classification](data-classification.md)) |
+| `retention` | `{ archive? }` — expose `app.lifecycle` for `loom retention run` (K10.1); archive-before-delete |
+| `compliance` | `{ subjectOf, tenantOf?, erase?: { shred } }` — subject index + `app.exportSubject`/`app.eraseSubject` (T3; see [compliance](compliance.md)) |
 
 > Prefer manual wiring? You can construct `new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime, onEvent })` directly — `defineConfig` is sugar over exactly that (P6: nothing is hidden).
 
