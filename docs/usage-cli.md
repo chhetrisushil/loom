@@ -138,7 +138,7 @@ Feed the generated modules to `defineConfig({ flowModules, agentModules, toolMod
 
 Re-run `loom gen` whenever you add or remove any construct. Exit `0` on a successful write.
 
-> `policy$` and `projection$` are **not** discovered: nothing in the runtime consumes a `PolicyDefinition` (there is no policy engine yet) and `projection$` is superseded by the `surfaces` config. Discovery is deliberately gated on "has a consumer" — wiring a definition nothing reads would be dead registration.
+> `policy$` and `projection$` are **not** `loom gen`-discovered. `policy$` **is** enforced (a `PolicyAuthorizer` reads each flow's `policies` + `defineConfig({ policies })` — see the [user guide](user-guide.md#7-agents-tools--a2a)), but it's carried *inline on the flow definition*, not from an `app/policies/*` folder, so there's no separate module to generate. `projection$` has no runtime consumer yet. Discovery stays gated on "a runtime consumes a discovered *file*" — wiring a `*Modules` array nothing reads would be dead registration.
 
 ### `loom appgen <intent> | --from <file> | --from-spec <file> [--dir .] [flags]`
 

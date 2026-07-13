@@ -14,12 +14,13 @@ import type {
   AgentDefinition,
   EventEnvelope,
   MemoryDefinition,
+  PolicyDefinition,
   ScheduleDefinition,
   SkillDefinition,
   ToolDefinition,
 } from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
-import { EffectRuntime } from "@loom/effect-runtime";
+import { EffectRuntime, PolicyAuthorizer } from "@loom/effect-runtime";
 import type { CapabilityAuthorizer, EffectMiddleware } from "@loom/effect-runtime";
 import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
 // Only the in-memory stores are imported statically — they are pure JS. We import
@@ -67,6 +68,7 @@ import {
   manifestWarnings,
   memoryDefinitionsFrom,
   registerFlowsFrom,
+  registeredFlowsFrom,
   scheduleDefinitionsFrom,
   skillDefinitionsFrom,
   toolDefinitionsFrom,
@@ -225,6 +227,14 @@ export interface LoomConfig {
    * e.g. `new GrantTable({ "my-flow": ["metrics-tool", "logs-tool"] })`.
    */
   authorizer?: CapabilityAuthorizer;
+  /**
+   * App-global `policy$` definitions enforced on EVERY effect via a `PolicyAuthorizer`.
+   * Per-flow policies are read automatically from each flow's `policies` (`flow$`); these
+   * `policies` apply on top of them, everywhere. A policy composes UNDER {@link authorizer}
+   * (both must allow — defense in depth), so it can tighten a grant but never widen it.
+   * Enforcement is deny-wins; a flow with no governing policy is unaffected (opt-in).
+   */
+  policies?: PolicyDefinition[];
   /** Telemetry adapters, composed and wired to the event stream. */
   telemetry?: TelemetryAdapter[];
   /** Placement dispatcher for the bus (default: in-process). e.g. Cloud Run. */
@@ -422,9 +432,31 @@ export function defineConfig(config: LoomConfig): LoomApp {
       })
     );
   }
+  // Policy enforcement (policy$ → K2 ring). Per-flow policies are read from each flow's
+  // `policies` (config.flows + flowModules — read by shape, no runtime needed yet); `config.policies`
+  // are global. A PolicyAuthorizer composes UNDER config.authorizer (both must allow). No policies
+  // ⇒ the authorizer is exactly config.authorizer, so behaviour is byte-identical to before.
+  // NOTE: catalog-provided capability flows are governed by the grant model, not read here.
+  const flowPolicies: Record<string, PolicyDefinition[]> = {};
+  for (const flow of [
+    ...(config.flows ?? []),
+    ...registeredFlowsFrom(...(config.flowModules ?? [])),
+  ]) {
+    const pols = flow.definition.policies;
+    if (pols && pols.length > 0) flowPolicies[flow.definition.id] = pols;
+  }
+  const globalPolicies = config.policies ?? [];
+  const hasPolicies = globalPolicies.length > 0 || Object.keys(flowPolicies).length > 0;
+  const authorizer: CapabilityAuthorizer | undefined = hasPolicies
+    ? new PolicyAuthorizer(flowPolicies, {
+        global: globalPolicies,
+        ...(config.authorizer !== undefined && { base: config.authorizer }),
+      })
+    : config.authorizer;
+
   const effectRuntime = new EffectRuntime(
     effectMiddleware,
-    config.authorizer !== undefined ? { authorizer: config.authorizer } : {}
+    authorizer !== undefined ? { authorizer } : {}
   );
 
   const projectionRuntime = config.projectionRuntime ?? new InMemoryProjectionRuntime();
@@ -641,7 +673,7 @@ export function defineConfig(config: LoomConfig): LoomApp {
   const verifyCfg = normalizeVerify(config.verify);
   const resolveInput = () =>
     resolveVerifyInput(runtime, {
-      ...(config.authorizer !== undefined && { authorizer: config.authorizer }),
+      ...(authorizer !== undefined && { authorizer }),
       ...(config.dispatcher !== undefined && { dispatcher: config.dispatcher }),
       ...(verifyCfg?.meteredDimensions !== undefined && {
         meteredDimensions: verifyCfg.meteredDimensions,

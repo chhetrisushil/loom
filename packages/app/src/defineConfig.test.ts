@@ -1,5 +1,14 @@
 import { secret, sensitive } from "@loom/classify";
-import { agent$, instructions$, memory$, schedule$, skill$, step$, tool$ } from "@loom/core";
+import {
+  agent$,
+  instructions$,
+  memory$,
+  policy$,
+  schedule$,
+  skill$,
+  step$,
+  tool$,
+} from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectMiddleware } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
@@ -627,6 +636,70 @@ describe("defineConfig — agent auto-wiring (a2a / a2ui, opt-in)", () => {
     expect(app.skills.ids().sort()).toEqual(["escalate", "refunds"]);
     // The deterministic selector is wired and scores over the discovered metadata.
     expect(app.skills.find("refund billing")[0]?.skill.id).toBe("refunds");
+  });
+
+  it("enforces a flow's policy$ deny end-to-end (EFFECT_DENIED, run rejects)", async () => {
+    const noMetrics = policy$({
+      id: "no-metrics",
+      name: "No Metrics",
+      rules: { deny: ["metrics-tool"] },
+    });
+    const guarded: RegisteredFlow = {
+      definition: {
+        _tag: "FlowDefinition",
+        id: "guarded",
+        name: "guarded",
+        version: "1.0.0",
+        inputSchema: incident,
+        outputSchema: z.object({ cpu: z.number() }),
+        steps: [metricsStep],
+        policies: [noMetrics],
+      },
+      runner: (async (ctx: WorkflowContext, input: { incidentId: string }) =>
+        ctx.run(metricsStep, { incidentId: input.incidentId })) as FlowRunner<unknown, unknown>,
+    } as RegisteredFlow;
+    const events: string[] = [];
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [guarded],
+      onEvent: (e) => events.push(e.eventType),
+    });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+    const handle = await app.runtime.start(guarded, { incidentId: "i1" });
+    await expect(handle.waitForCompletion()).rejects.toThrow(/denied/i);
+    expect(events).toContain("EFFECT_DENIED");
+  });
+
+  it("a policy allow-list permits the listed effect and the flow completes", async () => {
+    const onlyMetrics = policy$({
+      id: "only-metrics",
+      name: "Only Metrics",
+      rules: { allow: ["metrics-tool"] },
+    });
+    const ok: RegisteredFlow = {
+      definition: {
+        _tag: "FlowDefinition",
+        id: "ok-flow",
+        name: "ok-flow",
+        version: "1.0.0",
+        inputSchema: incident,
+        outputSchema: z.object({ cpu: z.number() }),
+        steps: [metricsStep],
+        policies: [onlyMetrics],
+      },
+      runner: (async (ctx: WorkflowContext, input: { incidentId: string }) =>
+        ctx.run(metricsStep, { incidentId: input.incidentId })) as FlowRunner<unknown, unknown>,
+    } as RegisteredFlow;
+    const events: string[] = [];
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [ok],
+      onEvent: (e) => events.push(e.eventType),
+    });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+    const handle = await app.runtime.start(ok, { incidentId: "i1" });
+    await handle.waitForCompletion();
+    expect(events).not.toContain("EFFECT_DENIED");
   });
 
   it("registers memory$ definitions from memoryModules + memories into app.memory", async () => {

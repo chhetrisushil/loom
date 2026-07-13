@@ -138,6 +138,20 @@ export function registerFlowsFrom(runtime: WorkflowRuntime, ...modules: FlowModu
   return registered;
 }
 
+/**
+ * Collect every `RegisteredFlow`-shaped export from the given modules WITHOUT
+ * registering it — for boot-time reads that need the flow definitions (e.g.
+ * building a policy authorizer from each flow's `policies`) before the runtime
+ * exists. Discovery is by the same shape scan as {@link registerFlowsFrom}.
+ */
+export function registeredFlowsFrom(...modules: FlowModule[]): RegisteredFlow[] {
+  const out: RegisteredFlow[] = [];
+  for (const mod of modules) {
+    for (const value of Object.values(mod)) if (isRegisteredFlow(value)) out.push(value);
+  }
+  return out;
+}
+
 /** Minimal view of the compiler manifest needed for the cross-check. */
 export interface ManifestView {
   flows: Record<string, { warnings?: string[] }>;

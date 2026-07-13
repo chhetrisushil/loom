@@ -332,10 +332,11 @@ you declare or re-export each construct. A tool's runnable **effect** is still r
 (`effectRuntime.register(id, new ToolEffect(fn))`) — `tool$` is metadata-only by design; a skill's
 `instructions$` body stays lazy (only the selection metadata is held) until the skill is chosen.
 
-> `policy$` and `projection$` are intentionally **not** discovered — nothing in the runtime consumes a
-> `PolicyDefinition` yet (no policy engine), and `projection$` is superseded by the `surfaces` config.
-> Discovery is gated on "a runtime consumes it," so a construct is wired only once there is something
-> to wire it into.
+> `policy$` and `projection$` are **not** `loom gen`-discovered — but for different reasons. `policy$`
+> **is** enforced (a `PolicyAuthorizer` reads each flow's `policies` + `defineConfig({ policies })` —
+> see below), it's just carried *inline on the flow definition* rather than in an `app/policies/*`
+> folder, so there's nothing to generate. `projection$` has no runtime consumer yet. Discovery stays
+> gated on "a runtime consumes a discovered file."
 
 ---
 
@@ -607,6 +608,26 @@ const effectRuntime = new EffectRuntime([], {
 // …or via defineConfig({ authorizer: new GrantTable({ … }) }).
 // Any other toolId this flow invokes → CapabilityDeniedError, EFFECT_DENIED logged.
 ```
+
+**Declarative policies (`policy$`).** A `GrantTable` is imperative wiring; `policy$` is the declarative companion enforced through the *same* ring by a `PolicyAuthorizer`. Attach policies to a flow (`flow$({ policies: [...] })`) or app-globally (`defineConfig({ policies: [...] })`) — `defineConfig` reads them and builds the authorizer automatically.
+
+```ts
+import { policy$ } from "@loom/core";
+
+policy$({
+  id: "pii-guard",
+  name: "PII guard",
+  rules: {
+    allow: ["metrics", "logs-*"],  // allow-list restricts to matching effects
+    deny: ["external-http"],       // deny wins over allow
+    match: [                       // richer matchers: glob on effect / principal.tenant / step
+      { effect: "external-*", tenant: "acme", deny: true },
+    ],
+  },
+});
+```
+
+Evaluation is **deny-wins**; a policy composes **under** the `authorizer` (both must allow — defense in depth), so it can tighten a grant but never widen it, and a flow with no governing policy is unaffected. Enforcement keys on `workflowId` (the flow is the unit of authority, like `GrantTable`). *(Note: policies are read from `flows` / `flowModules` + `config.policies`; capability flows registered via a `catalog` use the grant model.)*
 
 ### Resource accounting & quotas (K3)
 

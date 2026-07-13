@@ -21,6 +21,8 @@ export {
   verifyDelegation,
   attenuateDelegation,
 } from "./authz";
+export { PolicyAuthorizer } from "./policy";
+export type { PolicyRules, PolicyMatchRule, PolicyAuthorizerOptions } from "./policy";
 export type {
   CapabilityAuthorizer,
   CapabilityDecision,
