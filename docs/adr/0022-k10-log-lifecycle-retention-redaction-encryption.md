@@ -42,7 +42,10 @@ identically" and "fails loudly":
 - **Crypto-shredding**: payload fields marked sensitive in a step/tool schema are encrypted
   per-execution (or per-subject) at append; destroying the key satisfies erasure while
   leaving the log structurally intact. Replay of a shredded execution fails *explicitly*
-  with **`PAYLOAD_SHREDDED`**, never silently diverges (G1) (K10.2).
+  with **`PAYLOAD_SHREDDED`**, never silently diverges (G1) (K10.2). A read may opt into a
+  **tolerant mode** (`onShredded: "tolerate"`) that substitutes a `{ $shredded }` placeholder
+  instead of throwing — for OFF-log consumers only (deploy-sim, eval, export), never the
+  authoritative fold (K10-R4; see amendment A7).
 - Field-level redaction markers (`z.string().brand("secret")` or equivalent) keep secrets
   out of the log entirely, substituting a deterministic reference resolved only inside the
   K7 boundary (K10.3).

@@ -17,6 +17,28 @@ export interface EncryptingEventStoreOptions {
    * and their forks — together (A2 fork lineage; see README).
    */
   subjectOf?: (envelope: Pick<EventEnvelope, "executionId" | "workflowId">) => string;
+  /**
+   * K10-R4 — what a read does when the subject's key has been DESTROYED (crypto-shredded):
+   *  - `"throw"` (**default**): {@link PayloadShreddedError}. The authoritative fold MUST
+   *    fail loudly, never silently diverge (G1) — the right default for replay/resume.
+   *  - `"tolerate"`: replace each sensitive field with a `{ $shredded: true }` placeholder
+   *    ({@link SHREDDED}) so OFF-log consumers — deploy-sim, eval, subject export — can
+   *    process an erased log without crashing. NEVER use for the authoritative fold: the
+   *    placeholder is not the original value, so a resume off it would diverge.
+   */
+  onShredded?: "throw" | "tolerate";
+}
+
+/** K10-R4 — the placeholder a tolerant read substitutes for an erased sensitive field. */
+export const SHREDDED: { readonly $shredded: true } = { $shredded: true };
+
+/** True for the {@link SHREDDED} placeholder a tolerant read leaves behind. */
+export function isShredded(value: unknown): value is { $shredded: true } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { $shredded?: unknown }).$shredded === true
+  );
 }
 
 /**
@@ -33,6 +55,7 @@ export interface EncryptingEventStoreOptions {
 export class EncryptingEventStore implements EventStore {
   private readonly sensitive: Record<string, readonly string[]>;
   private readonly subjectOf: (e: Pick<EventEnvelope, "executionId" | "workflowId">) => string;
+  private readonly onShredded: "throw" | "tolerate";
   // K9.4/fork/perf capabilities are forwarded only when the inner store has them,
   // so a capability probe (`if (store.copyPrefix)`) behaves identically.
   readonly readRange?: NonNullable<EventStore["readRange"]>;
@@ -46,6 +69,7 @@ export class EncryptingEventStore implements EventStore {
   ) {
     this.sensitive = options.sensitive;
     this.subjectOf = options.subjectOf ?? ((e) => e.executionId);
+    this.onShredded = options.onShredded ?? "throw";
     if (inner.readRange !== undefined) {
       this.readRange = (executionId, from, to) =>
         inner.readRange!(executionId, from, to).then((evs) => this.decryptAll(executionId, evs));
@@ -80,9 +104,15 @@ export class EncryptingEventStore implements EventStore {
     const subjectId = this.subjectOf({ executionId, workflowId: events[0]?.workflowId ?? "" });
     const key = await this.keys.get(subjectId);
     if (key === null) {
-      // The key is gone — either never created (impossible if envelopes exist)
-      // or DESTROYED. Fail loudly (K10.2): the tombstone is already in the log.
-      throw new PayloadShreddedError(subjectId, executionId);
+      // The key is gone — either never created (impossible if envelopes exist) or DESTROYED.
+      // Default: fail loudly (K10.2) — the tombstone is already in the log. Tolerant mode
+      // (K10-R4): hand OFF-log consumers a { $shredded } placeholder instead of throwing.
+      if (this.onShredded === "throw") throw new PayloadShreddedError(subjectId, executionId);
+      return events.map((e, i) => {
+        const paths = this.sensitive[e.eventType];
+        if (paths === undefined || !encrypted[i]) return e;
+        return { ...e, payload: mapPaths(e.payload, paths, () => SHREDDED) };
+      });
     }
     return events.map((e, i) => {
       const paths = this.sensitive[e.eventType];

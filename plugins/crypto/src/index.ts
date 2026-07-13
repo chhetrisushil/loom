@@ -3,6 +3,8 @@ export { PayloadShreddedError } from "./errors";
 export {
   EncryptingEventStore,
   type EncryptingEventStoreOptions,
+  SHREDDED,
+  isShredded,
 } from "./EncryptingEventStore";
 export {
   EncryptingSnapshotStore,
