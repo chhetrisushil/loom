@@ -15,23 +15,34 @@ import type { ContentStore } from "./ContentStore";
 // finding in an archived month-1 run survives any number of rotations.
 
 /**
- * Recursively collect content addresses out of an event payload. Any object
- * carrying a string `__loomContent` is a ref leaf — this covers bare ADR 0046
+ * Collect content addresses out of an event payload. Any object carrying a
+ * string `__loomContent` is a ref leaf — this covers bare ADR 0046
  * `ContentRef`s (e.g. a finding's `evidence` list) AND ADR 0054 claim-check
- * envelopes (whose `ref` field is such an object, found by recursion).
+ * envelopes (whose `ref` field is such an object, found by descent).
+ *
+ * Iterative with cycle detection: the sweep is a retention job over
+ * app-controlled payloads, so a pathologically deep (or, from an in-memory
+ * store, cyclic) value must not stack-overflow the pass (audit W8).
  */
 function collectContentRefs(value: unknown, visit: (address: string) => void): void {
-  if (typeof value !== "object" || value === null) return;
-  const address = (value as { __loomContent?: unknown }).__loomContent;
-  if (typeof address === "string") {
-    visit(address);
-    return;
+  const queue: unknown[] = [value];
+  const seen = new WeakSet<object>();
+  while (queue.length > 0) {
+    const current = queue.pop();
+    if (typeof current !== "object" || current === null) continue;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    const address = (current as { __loomContent?: unknown }).__loomContent;
+    if (typeof address === "string") {
+      visit(address);
+      continue;
+    }
+    if (Array.isArray(current)) {
+      for (const item of current) queue.push(item);
+    } else {
+      for (const item of Object.values(current)) queue.push(item);
+    }
   }
-  if (Array.isArray(value)) {
-    for (const item of value) collectContentRefs(item, visit);
-    return;
-  }
-  for (const item of Object.values(value)) collectContentRefs(item, visit);
 }
 
 /**

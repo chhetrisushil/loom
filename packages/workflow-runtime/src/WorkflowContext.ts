@@ -19,7 +19,7 @@ export class WorkflowContextImpl implements WorkflowContext {
   readonly executionId: string;
   readonly workflowId: string;
   readonly ui: A2UIEmitter;
-  private suspendPassthroughConsumed = false;
+  private suspendPassthroughsConsumed = 0;
 
   constructor(
     executionId: string,
@@ -300,13 +300,22 @@ export class WorkflowContextImpl implements WorkflowContext {
   }
 
   suspend(_config: SuspendConfig): Promise<never> {
-    // During resume replay, _resumePayload marks that this suspend was already
-    // triggered and the workflow was subsequently resumed. Pass through instead of
-    // re-throwing so execution continues past the suspend point.
-    const state = this.vm.getState();
-    if ("_resumePayload" in state.variables && !this.suspendPassthroughConsumed) {
-      this.suspendPassthroughConsumed = true;
-      return Promise.resolve(state.variables._resumePayload) as unknown as Promise<never>;
+    // During resume replay, gates that were already resumed pass through IN
+    // ORDER, each receiving ITS OWN recorded payload — the fold's ordered
+    // `_resumePayloads` list (1.16.0, ADR 0057). The i-th suspend call in a
+    // re-run consumes payload i; a gate beyond the recorded resumes throws and
+    // parks as before. (The single-latest `_resumePayload` fed gate 1 the LAST
+    // gate's payload in multi-gate flows — the silent bug the list fixes.)
+    // Legacy fallback: a pre-1.16 snapshot folded only `_resumePayload`; treat
+    // it as a one-entry list so single-gate flows resume byte-identically.
+    const variables = this.vm.getState().variables;
+    const recorded =
+      (variables._resumePayloads as unknown[] | undefined) ??
+      ("_resumePayload" in variables ? [variables._resumePayload] : []);
+    if (this.suspendPassthroughsConsumed < recorded.length) {
+      const payload = recorded[this.suspendPassthroughsConsumed];
+      this.suspendPassthroughsConsumed++;
+      return Promise.resolve(payload) as unknown as Promise<never>;
     }
     throw new SuspendError(_config);
   }
