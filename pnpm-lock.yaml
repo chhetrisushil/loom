@@ -2308,9 +2308,6 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../../packages/event-runtime
-      '@loom/middleware':
-        specifier: workspace:*
-        version: link:../../packages/middleware
     devDependencies:
       '@loom/conformance':
         specifier: workspace:*
