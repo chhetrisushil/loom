@@ -1,7 +1,7 @@
 {
   "name": "@loom/plugin-postgres",
   "version": "0.0.1",
-  "description": "Postgres store adapters for Loom — network-backed EventStore, SnapshotStore, and BranchRegistry with cross-node live subscribe (LISTEN/NOTIFY). The horizontal-scale backend behind the same interfaces as the SQLite stores.",
+  "description": "Postgres store adapters for Loom \u2014 network-backed EventStore, SnapshotStore, and BranchRegistry with cross-node live subscribe (LISTEN/NOTIFY). The horizontal-scale backend behind the same interfaces as the SQLite stores.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -23,7 +23,8 @@
     "@loom/plugin-durable-state": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "pg": "^8.13.0",
-    "@loom/plugin-kit": "workspace:*"
+    "@loom/plugin-kit": "workspace:*",
+    "@loom/plugin-read-model": "workspace:*"
   },
   "devDependencies": {
     "@loom/replay-vm": "workspace:*",

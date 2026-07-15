@@ -21,6 +21,9 @@
     },
     {
       "path": "../durable-state"
+    },
+    {
+      "path": "../read-model"
     }
   ]
 }

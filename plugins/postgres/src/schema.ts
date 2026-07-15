@@ -74,6 +74,32 @@ export async function migrate(pool: Pool): Promise<void> {
       revision BIGINT NOT NULL,
       payload JSONB NOT NULL
     );
+
+    -- RM (@loom/plugin-read-model, issue #183): durable cross-execution event
+    -- index. Idempotent rows (PK model_id,row_id) + monotonic per-execution
+    -- watermarks; a read model is a rebuildable cache of the log, never an
+    -- authority. GIN on fields serves the @> equality queries.
+    CREATE TABLE IF NOT EXISTS read_model_rows (
+      model_id TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      execution_id TEXT NOT NULL,
+      sequence BIGINT NOT NULL,
+      timestamp BIGINT NOT NULL,
+      kind TEXT NOT NULL,
+      fields JSONB NOT NULL,
+      value JSONB NOT NULL,
+      PRIMARY KEY (model_id, row_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_rm_rows_order
+      ON read_model_rows (model_id, kind, timestamp, sequence);
+    CREATE INDEX IF NOT EXISTS idx_rm_rows_fields
+      ON read_model_rows USING GIN (fields jsonb_path_ops);
+    CREATE TABLE IF NOT EXISTS read_model_watermarks (
+      model_id TEXT NOT NULL,
+      execution_id TEXT NOT NULL,
+      sequence BIGINT NOT NULL,
+      PRIMARY KEY (model_id, execution_id)
+    );
   `);
 }
 

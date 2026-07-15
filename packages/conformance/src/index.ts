@@ -723,3 +723,140 @@ export function runDurableStateStoreConformance(
     });
   });
 }
+
+// ── ReadModelStore (RM, db-copilot infra — issue #183) ────────────────────────
+//
+// The `@loom/plugin-read-model` backend contract: a dumb indexed row store with
+// idempotent apply and monotonic per-execution watermarks. Model knowledge
+// (kinds, extractors) lives above the SPI, so conformance pins storage
+// semantics only. Structural type, same idiom as ContentStore/DurableStateStore.
+
+type RmScalar = string | number | boolean | null;
+
+/** Structural view of the read-model store SPI (avoids a plugin dependency). */
+export interface ReadModelStoreLike {
+  apply(
+    modelId: string,
+    executionId: string,
+    upToSequence: number,
+    rows: readonly {
+      rowId: string;
+      executionId: string;
+      sequence: number;
+      timestamp: number;
+      kind: string;
+      fields: Record<string, RmScalar>;
+      value: unknown;
+    }[]
+  ): Promise<void>;
+  watermark(modelId: string, executionId: string): Promise<number | null>;
+  watermarkedExecutions(modelId: string): Promise<string[]>;
+  query(
+    modelId: string,
+    q?: {
+      kind?: string;
+      where?: Record<string, RmScalar>;
+      order?: "asc" | "desc";
+      limit?: number;
+      cursor?: string;
+    }
+  ): Promise<{ rows: { rowId: string; value: unknown }[]; nextCursor?: string }>;
+  clear(modelId: string): Promise<void>;
+}
+
+/**
+ * Assert a ReadModelStore backend upholds the RM contract: idempotent apply
+ * (per rowId), monotonic watermarks (never regress), kind + field-equality
+ * queries with stable keyset pagination (no duplicates, no gaps, order held
+ * across pages), per-model isolation, and idempotent clear of rows AND
+ * watermarks.
+ */
+export function runReadModelStoreConformance(
+  factory: () => ReadModelStoreLike,
+  label = "ReadModelStore"
+): void {
+  const row = (
+    n: number,
+    over: Partial<{
+      kind: string;
+      fields: Record<string, RmScalar>;
+      executionId: string;
+      timestamp: number;
+    }> = {}
+  ) => ({
+    rowId: `e-${n}`,
+    executionId: over.executionId ?? "x-1",
+    sequence: n,
+    timestamp: over.timestamp ?? 1_000 + n,
+    kind: over.kind ?? "FINDING_RECORDED",
+    fields: over.fields ?? { target: "orders" },
+    value: { n },
+  });
+
+  describe(`${label} conformance (ReadModelStore SPI, RM)`, () => {
+    it("apply is idempotent per rowId; re-apply never duplicates", async () => {
+      const store = factory();
+      await store.apply("m", "x-1", 0, [row(0)]);
+      await store.apply("m", "x-1", 0, [row(0)]);
+      const page = await store.query("m");
+      expect(page.rows).toHaveLength(1);
+    });
+
+    it("watermarks advance monotonically and never regress", async () => {
+      const store = factory();
+      await store.apply("m", "x-1", 5, []);
+      await store.apply("m", "x-1", 3, []); // late/duplicate delivery
+      expect(await store.watermark("m", "x-1")).toBe(5);
+      expect(await store.watermark("m", "ghost")).toBeNull();
+      expect(await store.watermarkedExecutions("m")).toEqual(["x-1"]);
+    });
+
+    it("queries filter by kind and by field equality (ANDed)", async () => {
+      const store = factory();
+      await store.apply("m", "x-1", 2, [
+        row(0, { fields: { target: "orders", severity: "high" } }),
+        row(1, { fields: { target: "orders", severity: "low" } }),
+        row(2, { kind: "DECISION_RECORDED", fields: { target: "orders" } }),
+      ]);
+      expect((await store.query("m", { kind: "FINDING_RECORDED" })).rows).toHaveLength(2);
+      expect(
+        (await store.query("m", { where: { target: "orders", severity: "high" } })).rows
+      ).toHaveLength(1);
+      expect((await store.query("m", { where: { target: "users" } })).rows).toHaveLength(0);
+    });
+
+    it("keyset pagination walks every row exactly once, order held, both directions", async () => {
+      const store = factory();
+      const rows = Array.from({ length: 23 }, (_, n) => row(n, { timestamp: 5_000 - n }));
+      await store.apply("m", "x-1", 22, rows);
+      for (const order of ["asc", "desc"] as const) {
+        const seen: string[] = [];
+        let cursor: string | undefined;
+        for (;;) {
+          const page = await store.query("m", {
+            order,
+            limit: 4,
+            ...(cursor !== undefined && { cursor }),
+          });
+          seen.push(...page.rows.map((r) => r.rowId));
+          if (page.nextCursor === undefined) break;
+          cursor = page.nextCursor;
+        }
+        expect(seen).toHaveLength(23);
+        expect(new Set(seen).size).toBe(23);
+      }
+    });
+
+    it("models are isolated; clear drops rows AND watermarks for one model only", async () => {
+      const store = factory();
+      await store.apply("a", "x-1", 0, [row(0)]);
+      await store.apply("b", "x-1", 0, [row(0)]);
+      await store.clear("a");
+      await store.clear("a"); // idempotent
+      expect((await store.query("a")).rows).toHaveLength(0);
+      expect(await store.watermark("a", "x-1")).toBeNull();
+      expect((await store.query("b")).rows).toHaveLength(1);
+      expect(await store.watermark("b", "x-1")).toBe(0);
+    });
+  });
+}
