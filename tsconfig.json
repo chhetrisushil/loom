@@ -180,6 +180,9 @@
     },
     {
       "path": "plugins/content"
+    },
+    {
+      "path": "plugins/durable-state"
     }
   ]
 }

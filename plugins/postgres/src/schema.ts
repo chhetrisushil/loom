@@ -64,6 +64,16 @@ export async function migrate(pool: Pool): Promise<void> {
       PRIMARY KEY (execution_id, wake_at)
     );
     CREATE INDEX IF NOT EXISTS idx_timers_wake ON timers (wake_at ASC);
+
+    -- ADR 0051 D2 (@loom/plugin-durable-state): typed keyed carry state for
+    -- schedule-driven agents, revisioned for compare-and-set. The contract
+    -- (schemas, migrations) lives above the SPI; this is a dumb CAS store.
+    CREATE TABLE IF NOT EXISTS durable_state (
+      key TEXT NOT NULL PRIMARY KEY,
+      contract_version BIGINT NOT NULL,
+      revision BIGINT NOT NULL,
+      payload JSONB NOT NULL
+    );
   `);
 }
 

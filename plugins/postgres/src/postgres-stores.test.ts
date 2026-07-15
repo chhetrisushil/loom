@@ -44,7 +44,7 @@ suite("@loom/plugin-postgres", () => {
   });
 
   beforeEach(async () => {
-    await admin.query("TRUNCATE events, snapshots, refs, lineage, fences, timers");
+    await admin.query("TRUNCATE events, snapshots, refs, lineage, fences, timers, durable_state");
   });
 
   describe("PostgresEventStore", () => {
@@ -106,6 +106,42 @@ suite("@loom/plugin-postgres", () => {
         expect(await timers.due(500)).toEqual([{ executionId: "b", wakeAt: 200 }]);
       } finally {
         await timers.close();
+      }
+    });
+
+    it("durable state (ADR 0051 D2): CAS create/update, loud conflicts, idempotent clear", async () => {
+      const { PostgresDurableStateStore } = await import("./PostgresDurableStateStore");
+      const state = new PostgresDurableStateStore(PG_URL as string);
+      try {
+        expect(await state.load("k")).toBeNull();
+        const created = await state.save(
+          "k",
+          { contractVersion: 2, payload: { list: [1, "χ", null] } },
+          0
+        );
+        expect(created.revision).toBe(1);
+        expect(await state.load("k")).toEqual({
+          contractVersion: 2,
+          revision: 1,
+          payload: { list: [1, "χ", null] },
+        });
+        const updated = await state.save("k", { contractVersion: 2, payload: { list: [] } }, 1);
+        expect(updated.revision).toBe(2);
+        await expect(state.save("k", { contractVersion: 2, payload: {} }, 1)).rejects.toMatchObject(
+          {
+            name: "RevisionConflictError",
+            expectedRevision: 1,
+            actualRevision: 2,
+          }
+        );
+        await expect(
+          state.save("ghost", { contractVersion: 1, payload: {} }, 3)
+        ).rejects.toMatchObject({ name: "RevisionConflictError", actualRevision: 0 });
+        await state.clear("k");
+        expect(await state.load("k")).toBeNull();
+        await state.clear("k"); // idempotent — must not throw
+      } finally {
+        await state.close();
       }
     });
 

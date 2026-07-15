@@ -1,10 +1,12 @@
 import {
   runBranchRegistryConformance,
+  runDurableStateStoreConformance,
   runEventStoreConformance,
   runSnapshotStoreConformance,
   runTimerStoreConformance,
 } from "@loom/conformance";
 import { SqliteBranchRegistry } from "./SqliteBranchRegistry";
+import { SqliteDurableStateStore } from "./SqliteDurableStateStore";
 import { SqliteEventStore } from "./SqliteEventStore";
 import { SqliteSnapshotStore } from "./SqliteSnapshotStore";
 import { SqliteTimerStore } from "./SqliteTimerStore";
@@ -15,3 +17,7 @@ runEventStoreConformance(() => new SqliteEventStore(":memory:"), "SqliteEventSto
 runSnapshotStoreConformance(() => new SqliteSnapshotStore(":memory:"), "SqliteSnapshotStore");
 runBranchRegistryConformance(() => new SqliteBranchRegistry(":memory:"), "SqliteBranchRegistry");
 runTimerStoreConformance(() => new SqliteTimerStore(":memory:"), "SqliteTimerStore");
+runDurableStateStoreConformance(
+  () => new SqliteDurableStateStore(":memory:"),
+  "SqliteDurableStateStore"
+);
