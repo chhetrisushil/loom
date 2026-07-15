@@ -190,6 +190,24 @@ const app = defineConfig({
 });
 ```
 
+For effects whose results are large and individually low-value (telemetry reads, bulk
+exports), `claimCheckMiddleware` ([ADR 0054](adr/0054-claim-check-middleware.md)) keeps the
+log lean: results over an inline cap are stored content-addressed and the log records
+`{ ref, size, digest }` **as the step output** — replay never resolves the ref, and the
+per-tool `digest` (a declared pure projection) is the only part orchestration may branch on
+(`loom lint claim-check` flags reach-through). Pair it with the K10.6 pinned sweep
+(`sweepUnpinnedContent`) so refs cited by your domain events outlive raw-data TTLs:
+
+```ts
+import { claimCheckMiddleware } from "@loom/middleware";
+
+claimCheckMiddleware({
+  store: contentStore,                       // the ADR 0046 ContentStore
+  inlineCapBytes: 16 * 1024,
+  digests: { "pg.stat.read": (r) => summarize(r) }, // pure — the replayable projection
+});
+```
+
 `retryMiddleware` options: `maxRetries`, `baseDelayMs`, `factor`, `maxDelayMs`, `jitter` (deterministic FNV-1a jitter — no `Math.random`), `isRetryable`, `onRetry`, and an injectable `sleep`. It **never** retries a `SuspendError` or an aborted signal.
 
 ---
@@ -403,7 +421,8 @@ interface LoomConfig {
   manifest?: ManifestView;
   // ── Data protection (see §K10/T3 below + docs/data-classification.md, docs/compliance.md)
   secrets?: { resolver: SecretResolver };                       // K10-R2 secret redaction
-  retention?: { archive?: ArchiveStores };                      // K10.1 log lifecycle → app.lifecycle
+  retention?: { archive?: ArchiveStores; pinned?: PinPredicate }; // K10.1 lifecycle + K10.6 pin seam
+  validateInput?: boolean;                                      // parse inputSchema at start() (ADR 0051 D7)
   compliance?: {                                                // T3 data-subject rights
     subjectOf: SubjectResolver;
     tenantOf?: TenantResolver;                                  // T3-R2.4 tenant partition
@@ -916,6 +935,14 @@ the idempotent-wake guard, the `UNIQUE(execution_id, sequence)` backstop, and fe
 "Replay forever" collides with GDPR erasure and bounded storage. K10 gives the log a
 lifecycle without ever creating a silent third behavior between "replays identically" and
 "fails loudly".
+
+**Pinning (K10.6, ADR 0055).** Retention consults an optional `PinPredicate`
+(`defineConfig({ retention: { pinned } })`) before reclaiming an execution — `pinByEventKinds(store,
+["FINDING_RECORDED"])` pins runs carrying your designated domain events. The companion
+`sweepUnpinnedContent` (in `@loom/plugin-content`) reclaims content-store blobs on a TTL while
+refs cited by pinned event kinds survive — across archival, re-derived from the log on every
+sweep (mark-and-sweep, no mutable index). The joint rule the perpetual-agents series fixed:
+*findings and their evidence are permanent; runs are archivable; raw telemetry is disposable.*
 
 **Crypto-shredding (K10.2, `@loom/plugin-crypto`).** Encrypt sensitive fields at rest under a
 per-subject key; satisfy erasure by **destroying the key** — no history rewrite:

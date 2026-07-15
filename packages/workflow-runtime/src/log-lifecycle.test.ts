@@ -224,7 +224,7 @@ describe("K10.1 R5 — branch guard + control facts", () => {
     expect((await app.eventStore.read("parent-1")).length).toBeGreaterThan(0);
   });
 
-  it("K10.5 — the pin predicate exempts an otherwise-reclaimable execution", async () => {
+  it("K10.6 — the pin predicate exempts an otherwise-reclaimable execution", async () => {
     const app = boot();
     const handle = await app.runtime.start(app.flow, { n: 1 }, { executionId: "pin-1" });
     await handle.waitForCompletion();
@@ -254,7 +254,7 @@ describe("K10.1 R5 — branch guard + control facts", () => {
     expect(await app.eventStore.read("pin-2")).toEqual([]);
   });
 
-  it("K10.5 — the pin gate runs before TTL-eligible archive copies (archive untouched)", async () => {
+  it("K10.6 — the pin gate runs before TTL-eligible archive copies (archive untouched)", async () => {
     const app = boot();
     const handle = await app.runtime.start(app.flow, { n: 1 }, { executionId: "pin-arc" });
     await handle.waitForCompletion();

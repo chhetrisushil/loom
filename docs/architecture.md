@@ -248,7 +248,7 @@ This is the same mechanism behind time-travel debugging and deploy-simulation: r
 
 All side effects — tool calls, LLM calls, human waits, agent-to-agent calls — go through the **`EffectRuntime`**, keyed by `toolId`. This is the isolation boundary that makes replay possible: during replay, completed effects are served from the log, not re-executed. It is also the **authority boundary** (Loom 2.0 K2): given an optional `CapabilityAuthorizer` (e.g. a least-privilege `GrantTable`), the `EffectRuntime` authorizes every invocation and *denies* ungranted effects — the effect never runs, an `EFFECT_DENIED` fact is logged (P9), and a `CapabilityDeniedError` fails the step. This is the one protection ring a library can enforce; it is opt-in, so omitting an authorizer keeps the permissive default. The imperative `GrantTable` has a **declarative companion**, `policy$`: a `PolicyAuthorizer` enforces `policy$` definitions (deny-wins allow/deny effect lists + glob matchers on effect id / tenant / step) through the *same* ring. Policies attach to a flow (`flow$({ policies })`), an agent (`agent$({ policies })`, bound to the flow it runs), or app-globally (`defineConfig({ policies })`), and compose **under** any authorizer — defense-in-depth: a policy can tighten a grant, never widen it ([ADR 0048](adr/0048-declarative-policy-enforcement.md)).
 
-**Middleware** wraps effect execution with cross-cutting concerns (retries with backoff, resource metering, and later logging/idempotency/tracing) as a composable `(ctx, input, next) => …` chain — the same shape as HTTP middleware, applied to effects ([ADR 0006](adr/0006-config-and-effect-middleware.md)). `meteringMiddleware` (Loom 2.0 K3) meters each effect's tokens/cost/time as a durable `RESOURCE_METERED` fact and enforces per-execution budgets by admission control (over-budget ⇒ the next effect is denied) — the scarce resource for intelligent software being tokens/$/latency, not CPU. `safetyMiddleware` (Loom 2.1 K6) is the same shape applied to *behavior*: pluggable validators check an effect's input before it runs and its output before it propagates, and a violation is a durable `SAFETY_BLOCKED` fact that fails the step — so the kernel governs not just *who* may act and *how much* it costs, but *whether the action/output is safe* ([ADR 0017](adr/0017-k6-behavioral-safety-ring.md)).
+**Middleware** wraps effect execution with cross-cutting concerns (retries with backoff, resource metering, and later logging/idempotency/tracing) as a composable `(ctx, input, next) => …` chain — the same shape as HTTP middleware, applied to effects ([ADR 0006](adr/0006-config-and-effect-middleware.md)). `meteringMiddleware` (Loom 2.0 K3) meters each effect's tokens/cost/time as a durable `RESOURCE_METERED` fact and enforces per-execution budgets by admission control (over-budget ⇒ the next effect is denied) — the scarce resource for intelligent software being tokens/$/latency, not CPU. `safetyMiddleware` (Loom 2.1 K6) is the same shape applied to *behavior*: pluggable validators check an effect's input before it runs and its output before it propagates, and a violation is a durable `SAFETY_BLOCKED` fact that fails the step — so the kernel governs not just *who* may act and *how much* it costs, but *whether the action/output is safe* ([ADR 0017](adr/0017-k6-behavioral-safety-ring.md)). `claimCheckMiddleware` ([ADR 0054](adr/0054-claim-check-middleware.md)) keeps the log itself lean: an effect result over an inline cap is stored content-addressed and the log records `{ ref, size, digest }` **as the value** — the fold never resolves it, so replay never touches the content store and bulk telemetry stays out of the authoritative log (the digest, a per-tool declared pure projection, is what orchestration may branch on).
 
 ```mermaid
 flowchart LR
@@ -258,7 +258,8 @@ flowchart LR
   M1 --> M2["meteringMiddleware<br/>(K3 — budget → QUOTA_EXCEEDED)"]
   M2 --> M3["safetyMiddleware<br/>(K6 — validate in/out → SAFETY_BLOCKED)"]
   M3 --> M4["redactionMiddleware<br/>(K10 — resolve secretRefs)"]
-  M4 --> Eff["Effect.execute<br/>tool · llm · human · a2a<br/>(K7 IsolatedToolEffect for untrusted tools)"]
+  M4 --> M5["claimCheckMiddleware<br/>(ADR 0054 — over-cap result → ref+digest)"]
+  M5 --> Eff["Effect.execute<br/>tool · llm · human · a2a<br/>(K7 IsolatedToolEffect for untrusted tools)"]
 ```
 
 Every middleware after `retryMiddleware` is opt-in; the authorizer, metering, safety, and redaction rings are each *omittable* and byte-identical to the permissive path when unwired (P10). The full ring set is catalogued in §5.7.
@@ -325,7 +326,7 @@ Every one of these is *a different lens on the durable log*:
 The rings noted inline above (K2/K3/K6) are part of a larger set that makes Loom *earn* the word "kernel." Each ring is opt-in and byte-identical to Loom 1.x when unwired (P10), and each new durable verdict is folded like any other event (P9). The full set is implemented:
 
 - **K1** — versioned syscall ABI (`KERNEL_ABI`, `packages/workflow-runtime/src/abi.ts`); **K2** — capability grants / authority ring (`EFFECT_DENIED`); **K3** — resource metering & quotas (`RESOURCE_METERED`/`QUOTA_EXCEEDED`); **K4** — fault supervision (`SupervisingDispatcher`, restart/backoff + circuit breaker); **K5** — event-schema ABI governance (`EVENT_SCHEMA_VERSION`, `knownEventTypes()`); **K6** — behavioral safety (`safetyMiddleware`, `SAFETY_BLOCKED`).
-- **K7** — data-plane isolation & brokered egress (`@loom/isolate`, child-process boundary, `EGRESS_DENIED`); **K8** — cancellation, deadlines & bounded effects; **K9** — effect-delivery contract: idempotency keys, in-doubt parking (`EFFECT_INDOUBT`), fencing; **K10** — log lifecycle: retention, crypto-shredding (`PAYLOAD_SHREDDED`), redaction & at-rest encryption (`@loom/plugin-crypto`); **K11** — flow-code versioning for in-flight executions (`flowContentHash`, `EXECUTION_MIGRATED`); **K12** — identity, tenancy & delegated authority (`APPROVAL_GRANTED`).
+- **K7** — data-plane isolation & brokered egress (`@loom/isolate`, child-process boundary, `EGRESS_DENIED`); **K8** — cancellation, deadlines & bounded effects; **K9** — effect-delivery contract: idempotency keys, in-doubt parking (`EFFECT_INDOUBT`), fencing; **K10** — log lifecycle: retention, crypto-shredding (`PAYLOAD_SHREDDED`), redaction & at-rest encryption (`@loom/plugin-crypto`), and the K10.6 pin seam (`PinPredicate` + pinned content GC — findings' evidence outlives raw-telemetry TTL and run archival, ADR 0055); **K11** — flow-code versioning for in-flight executions (`flowContentHash`, `EXECUTION_MIGRATED`) plus K11.5 contract-versioned state migration on `resumeAs` (the recorded `migratedInput` replaces the folded input, ADR 0056); **K12** — identity, tenancy & delegated authority (`APPROVAL_GRANTED`).
 - **T1** — durable timers & scheduled executions (`ctx.sleep`/`sleepUntil`, `TIMER_FIRED`, `schedule$` cron); **T2** — wire-level kernel ABI (`@loom/wire-abi`, a JSON-RPC projection of K1 for language neutrality).
 
 ```mermaid
@@ -339,8 +340,8 @@ flowchart TB
     K7["K7 isolation / egress → EGRESS_DENIED"]
     K8["K8 cancel / deadline → EXECUTION_CANCELLED"]
     K9["K9 delivery / fencing → EFFECT_INDOUBT"]
-    K10["K10 log lifecycle / crypto → PAYLOAD_SHREDDED"]
-    K11["K11 flow versioning → EXECUTION_MIGRATED"]
+    K10["K10 log lifecycle / crypto / K10.6 pins → PAYLOAD_SHREDDED"]
+    K11["K11 flow versioning / K11.5 state migration → EXECUTION_MIGRATED"]
     K12["K12 identity / tenancy → APPROVAL_GRANTED"]
   end
 
@@ -412,8 +413,8 @@ SPI-contract packages, and the advisory modules; **`tools/`** holds first-party 
 leaf packages consumed only at build/test/authoring time (`cli`, `compiler`, `appgen`,
 `appgen-model`, `deploy-sim`, `scaffold`, `eval`, `testing`, `dst`, `create-loom-app`);
 **`plugins/`** holds the first-party *adapters* — concrete backends for a specific external system — as `@loom/plugin-*`
-(`sqlite`, `postgres`, `crypto`, `audit-chain`, `cloudrun`, `worker-remote`, `worker-server`,
-`mcp`, `a2a`, `renderer-react`, `renderer-terminal`). A **CI layering guard** forbids any
+(`sqlite`, `postgres`, `crypto`, `content`, `durable-state`, `audit-chain`, `cloudrun`,
+`worker-remote`, `worker-server`, `mcp`, `a2a`, `renderer-react`, `renderer-terminal`). A **CI layering guard** forbids any
 kernel/SPI package from depending on a `plugins/*` adapter, so the kernel names no vendor and ships
 no native driver. Concrete backends are supplied as **presets** (`sqliteStorage()`, …) or adapters
 passed to `defineConfig` — a third-party plugin (`loom-plugin-*`) wires identically. Plugin
@@ -453,6 +454,8 @@ flowchart TB
   disp["@loom/dispatcher + worker-runtime*"] --> app
 
   audit["@loom/plugin-audit-chain"] -. wraps .-> events
+  content["@loom/plugin-content<br/>(ContentStore + K10.6 pinned GC)"] -. "refs in payloads" .-> events
+  dstate["@loom/plugin-durable-state<br/>(carry state as recorded effects)"] --> effects
   fair["@loom/fair-scheduler"] -. "drop-in Scheduler" .-> disp
   lq["@loom/live-query"] --> wrt
   orch["@loom/orchestration"] --> wrt
@@ -587,5 +590,5 @@ Being honest about the edges:
 - **[User Guide](user-guide.md)** — every feature area with examples.
 - **[Data classification](data-classification.md)** — field-sensitivity markers (`secret()`/`sensitive()`/`internal()`/`externalized()`) that drive encryption, redaction, and egress scrubbing (K10-R1/R6).
 - **[Compliance](compliance.md)** — data-subject rights: subject index, export (Art. 15/20), and erasure (Art. 17), tenant-scoped (T3).
-- **[ADRs](adr/)** — the full decision history (0001–0047; 0016–0026 cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series; 0036–0041 the three-direction arc; 0042 the AI-native brownfield `appgen`; 0043–0044 the plugin packaging + 1P/3P separation; 0046 the content-store seam; 0047 the `tools/*` dev-tooling tier).
+- **[ADRs](adr/)** — the full decision history (0001–0057; 0016–0026 cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series; 0036–0041 the three-direction arc; 0042 the AI-native brownfield `appgen`; 0043–0044 the plugin packaging + 1P/3P separation; 0046 the content-store seam; 0047 the `tools/*` dev-tooling tier; 0051–0057 the perpetual-agents series — schedule-driven agents with durable carry state, claim-checked effect data, pinned retention, state migration on resume, and the multi-gate suspend fix).
 - **[Presentation](presentation/loom-deck.md)** — the deck.

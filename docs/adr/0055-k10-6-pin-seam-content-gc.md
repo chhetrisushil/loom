@@ -1,4 +1,4 @@
-# ADR 0055 — K10.5: the pin seam — retention pin predicate + pinned mark-and-sweep for content
+# ADR 0055 — K10.6: the pin seam — retention pin predicate + pinned mark-and-sweep for content
 
 - Status: **Accepted — shipped** (`PinPredicate` on `LogLifecycle`, `defineConfig({ retention.pinned })`,
   `sweepUnpinnedContent`/`pinByEventKinds` in `@loom/plugin-content`)
@@ -7,6 +7,10 @@
   retention), ADR 0054 (claim-check envelope), ADR 0046 (content store — whose "refcounted blob GC"
   follow-up this closes).
 - Part of: the perpetual-agents series (W3, issue #167). Additive/opt-in (G2); no new event kinds.
+- Amendment (2026-07-15, W9): **relabeled K10.5 → K10.6.** The series originally reused
+  "K10.5", which the K10 requirement set had already assigned to encryption-at-rest
+  (ADR 0022, `docs/loom-2.0/11-encryption-at-rest.md`). The pin seam is K10.6 everywhere
+  (docs, code comments, tests); mechanics unchanged.
 
 ## Context
 

@@ -18,7 +18,7 @@ K10/K11/T1. Rewritten against the current kernel:
 | --- | --- |
 | **Application patterns** (§2) | Sentinel = `schedule$` over bounded runs; findings as domain events; staleness-typed reads; substrate isolation; chain-level OTel |
 | **First-party plugins** (§3) | `@loom/plugin-durable-state` (typed, versioned, migratable carry state as recorded effects); claim-check middleware over `@loom/plugin-content` |
-| **Kernel — small, governed** (§4) | K10.5 pin seam for retention; K11.5 contract-versioned state migration on resume; opt-in `inputSchema` enforcement at start |
+| **Kernel — small, governed** (§4) | K10.6 pin seam for retention; K11.5 contract-versioned state migration on resume; opt-in `inputSchema` enforcement at start |
 | **Deferred, evidence-gated** (§5) | T4 run chaining (`rotate$`) — drafted, not scheduled; promoted only if the schedule-based sentinel hits a documented wall |
 | **Rejected** | Identity-preserving transfer of live suspensions across runs (original RC-4a); a kernel `finding$` primitive (original TS-4) |
 
@@ -86,7 +86,7 @@ schedules; runs are an implementation detail (original RC-10, app-wired).
 **P-6 (SHOULD).** The joint retention rule from the original draft is adopted **as
 declared policy over existing mechanism**: findings and their pinned evidence are
 permanent; runs are archivable (K10.1); raw telemetry is disposable on its own TTL
-outside Loom. The one mechanism gap this exposes is the pin seam — §4, K10.5.
+outside Loom. The one mechanism gap this exposes is the pin seam — §4, K10.6.
 
 ---
 
@@ -172,7 +172,7 @@ manifest — not in the kernel and not as a compiler plugin API.
 
 ## 4. Kernel requirements (small, K5-governed)
 
-**K10.5 — Pin seam in retention (MUST).** `LogLifecycle.applyRetention` and
+**K10.6 — Pin seam in retention (MUST).** `LogLifecycle.applyRetention` and
 `ContentStore` garbage collection currently have no way to know that a `ContentRef`
 cited by a finding must outlive both the raw-telemetry TTL and the archival of the run
 that produced it. Requirement: the retention path accepts a **pin predicate** —
@@ -267,12 +267,12 @@ chain id, drained idempotently at run start. If that approximation proves insuff
 | RC-8 rotation policies | On-deploy: free under P-1. Event-count/duration: moot without perpetual runs; T4 config if promoted |
 | RC-9 `checkpoint$` | Shipped (§1: snapshots + K10.4 compaction) |
 | RC-10 chain OTel | P-5 (TelemetryAdapter, app-wired) |
-| RC-11 retention/cold storage | Shipped (K10.1) + K10.5 pin seam for evidence reachability |
+| RC-11 retention/cold storage | Shipped (K10.1) + K10.6 pin seam for evidence reachability |
 | TS-1 result-by-reference | CC-1 middleware over shipped ADR 0046 store |
 | TS-2 replay determinism + lint | Automatic under CC-1; digest = CC-2; lint = CC-5 (tools/*, not kernel) |
 | TS-3 content addressing | Shipped (`ContentRef`, §1) |
 | TS-4 `finding$` primitive | **Rejected**; P-2 domain events via `ctx.emit` |
-| TS-5 evidence pinning | K10.5 seam (kernel) + pin index in claim-check plugin |
+| TS-5 evidence pinning | K10.6 seam (kernel) + pin index in claim-check plugin |
 | TS-6 staleness-typed reads | P-3 (tool contract) |
 | TS-7 physical isolation | Shipped/deployment (§1) |
 | TS-8 aggregate-view convention | P-4 + CC-5 lint |
@@ -296,7 +296,7 @@ A sentinel schedule running 12 simulated months at 5-minute cadence:
 4. Deleting all raw telemetry older than 30 days and archiving all executions older
    than 60: every finding emitted in month 1 remains queryable from the log/projections,
    and every `ContentRef` it cites resolves byte-for-byte against its recorded hash
-   (K10.5 pin held against both `ContentStore` GC and K10.1 archival).
+   (K10.6 pin held against both `ContentStore` GC and K10.1 archival).
 5. A simulated 6-hour ingestion outage: every wake in the window records a
    stale-marked read (P-3) and completes; zero hung or failed executions.
 6. The event log for the full year contains no payload over the CC-1 inline cap;
@@ -307,9 +307,9 @@ A sentinel schedule running 12 simulated months at 5-minute cadence:
 
 ## 8. Open questions
 
-1. K10.5 pin-predicate granularity: per-execution exemption vs per-ref reachability —
+1. K10.6 pin-predicate granularity: per-execution exemption vs per-ref reachability —
    per-ref is strictly more precise but requires the plugin-maintained index; decide in
-   the K10.5 ADR.
+   the K10.6 ADR.
 2. K11.5 event shape: extend `EXECUTION_MIGRATED` payload vs a distinct
    `STATE_MIGRATED` kind — both additive MINOR; prefer whichever keeps fold logic
    simplest.

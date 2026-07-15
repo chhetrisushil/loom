@@ -27,7 +27,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the principles (P1–P11)
 | **Kernel** | `packages/` | mechanism + ABI: `core`, `event-runtime`, `snapshot-runtime`, `replay-vm`, `effect-runtime`, `workflow-runtime`, `scheduler`, `wire-abi` |
 | **SPI contracts** | `packages/` | the seams adapters implement: `worker-runtime`, `projection-runtime`, `llm`, `blueprint-runtime`, `registry`, `telemetry`, `dispatcher` |
 | **Advisory** | `packages/` | optional modules: `reasoning`, `memory`, `agent`, `planner`, `intent`, `capability`, `saga`, `orchestration`, `analytics`, `middleware`, `app`, `classify` (data-sensitivity markers), `compliance` (GDPR subject rights), … |
-| **Plugins (1P adapters)** | `plugins/` | `@loom/plugin-*`: `sqlite`, `postgres`, `crypto`, `content` (content-store seam), `audit-chain`, `cloudrun`, `worker-remote`, `worker-server`, `mcp`, `a2a`, `renderer-react`, `renderer-terminal` |
+| **Plugins (1P adapters)** | `plugins/` | `@loom/plugin-*`: `sqlite`, `postgres`, `crypto`, `content` (content-store seam), `durable-state` (typed, contract-migratable carry state), `audit-chain`, `cloudrun`, `worker-remote`, `worker-server`, `mcp`, `a2a`, `renderer-react`, `renderer-terminal` |
 | **Plugin authoring** | `packages/` | `@loom/plugin-kit` (typed presets), `@loom/conformance` (SPI conformance kits) |
 | **Tooling** | `tools/` | first-party dev-tooling (leaf, build/test/authoring only): `cli`, `compiler`, `appgen`, `appgen-model`, `deploy-sim`, `scaffold`, `eval`, `testing`, `dst`, `create-loom-app`. (`verify`, `spec`, `conformance` stay in `packages/` — runtime/governance-adjacent.) |
 

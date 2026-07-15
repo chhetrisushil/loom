@@ -29,7 +29,7 @@ export interface ArchiveStores {
 }
 
 /**
- * K10.5 (ADR 0055) — the pin seam: retention consults this predicate before
+ * K10.6 (ADR 0055) — the pin seam: retention consults this predicate before
  * reclaiming an execution; `true` exempts it. The kernel checks the predicate;
  * WHAT pins is app/plugin policy (G3) — e.g. "executions whose log carries
  * finding events" via `@loom/plugin-content`'s `pinByEventKinds`. Content-blob
@@ -43,7 +43,7 @@ export type RetentionOutcome =
   | "kept" // terminal but still within its TTL
   | "not-terminal" // still running/suspended — never reclaimed
   | "blocked-by-branch" // a live descendant branch still depends on this prefix (R5.3)
-  | "pinned" // exempted by the pin predicate (K10.5)
+  | "pinned" // exempted by the pin predicate (K10.6)
   | "unknown" // no events for this id
   | "unsupported"; // the store can't delete (no deleteExecution)
 
@@ -117,7 +117,7 @@ export class LogLifecycle {
     // R5.3 — never delete a parent a live descendant branch still depends on.
     if (await this.hasLiveDescendant(executionId)) return "blocked-by-branch";
 
-    // K10.5 — the pin gate, last before anything is copied or destroyed.
+    // K10.6 — the pin gate, last before anything is copied or destroyed.
     if (this.options.pinned !== undefined && (await this.options.pinned(executionId)) === true) {
       return "pinned";
     }

@@ -13,7 +13,7 @@ replication-lag **sentinel** that "runs forever" — without a perpetual executi
 | **CC-1..4** claim-checked telemetry | `claimCheckMiddleware` (4 KiB cap): the log records `{ ref, size, digest }`; the flow branches ONLY on the declared digest |
 | **P-2** findings = domain events | `ctx.emit(FINDING_RECORDED, …)` with an app-owned Zod schema, citing evidence by content hash |
 | **P-3** staleness, never a hang | outage reads return `{ stale: true, asOf }` — small, inline, recorded |
-| **K10.1 + K10.5** retention | archive runs at 60d; `sweepUnpinnedContent` reclaims telemetry blobs at 30d — evidence cited by findings is pinned forever, across archival |
+| **K10.1 + K10.6** retention | archive runs at 60d; `sweepUnpinnedContent` reclaims telemetry blobs at 30d — evidence cited by findings is pinned forever, across archival |
 | **ADR 0051 D7** boundary validation | `validateInput: true` — schedule inputs parse the declared contract (defaults applied) |
 
 ## What the acceptance suite proves (`pnpm test`)

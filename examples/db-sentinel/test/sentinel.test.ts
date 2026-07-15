@@ -145,7 +145,7 @@ describe("db-sentinel — 12 simulated months (requirements §7)", () => {
     expect(await world.eventStore.read(ids[100]!)).toEqual(before);
   });
 
-  it("6. retention (K10.1 + K10.5): archive runs 60d+, reclaim telemetry blobs 30d+ — every finding's evidence survives, hash-verifiable", async () => {
+  it("6. retention (K10.1 + K10.6): archive runs 60d+, reclaim telemetry blobs 30d+ — every finding's evidence survives, hash-verifiable", async () => {
     const { world, ids } = await yearPromise;
 
     // Collect evidence + a couple of telemetry refs BEFORE pruning.
@@ -185,7 +185,7 @@ describe("db-sentinel — 12 simulated months (requirements §7)", () => {
     }
     expect(reclaimed).toBeGreaterThan(1000); // ~10 months of runs archived + deleted
 
-    // K10.5 — pinned mark-and-sweep across LIVE + ARCHIVE stores.
+    // K10.6 — pinned mark-and-sweep across LIVE + ARCHIVE stores.
     const report = await sweepUnpinnedContent({
       eventStores: [world.eventStore, archive.eventStore],
       contentStore: world.contentStore,

@@ -70,6 +70,6 @@ contract as-is.
   views + claim-check offload + findings via `ctx.emit` citing `ref`/hash — tamper-evident
   evidence (TS-3) for free from content addressing.
 - Unpinned blob TTL can now age out telemetry without touching replay — but evidence cited by
-  findings needs the K10.5 pin seam (W3, next) before aggressive TTLs are safe.
+  findings needs the K10.6 pin seam (W3, next) before aggressive TTLs are safe.
 - `isClaimCheck`/`ClaimCheckEnvelope` are the shared vocabulary W3's pin index and W6's lint
   build on.
