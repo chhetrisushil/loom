@@ -36,7 +36,10 @@ export class ExecutionJournal {
     private readonly onCommit?: (sequence: number) => void,
     // K9.4 — the fencing token this run holds; stamped onto every envelope's
     // metadata so a fencing store can reject a zombie predecessor's writes.
-    private readonly fence?: number
+    private readonly fence?: number,
+    // Injectable clock for envelope timestamps (DST/simulation — the same
+    // time-injection principle as TimerStore.due(now)). Default: wall clock.
+    private readonly now: () => number = Date.now
   ) {
     // Seed from the folded VM tip: -1 for a fresh start (first commit → seq 0),
     // or the last applied sequence on resume/restore (next commit continues).
@@ -64,7 +67,7 @@ export class ExecutionJournal {
       executionId: state.executionId,
       eventType,
       sequence,
-      timestamp: opts?.timestamp ?? Date.now(),
+      timestamp: opts?.timestamp ?? this.now(),
       payload,
       ...(metadata !== undefined && { metadata }),
     };

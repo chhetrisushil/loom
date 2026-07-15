@@ -834,6 +834,55 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
+  examples/db-sentinel:
+    dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
+      '@loom/middleware':
+        specifier: workspace:*
+        version: link:../../packages/middleware
+      '@loom/plugin-content':
+        specifier: workspace:*
+        version: link:../../plugins/content
+      '@loom/plugin-durable-state':
+        specifier: workspace:*
+        version: link:../../plugins/durable-state
+      '@loom/replay-vm':
+        specifier: workspace:*
+        version: link:../../packages/replay-vm
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@loom/dst':
+        specifier: workspace:*
+        version: link:../../tools/dst
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   examples/incident-war-room:
     dependencies:
       '@loom/a2ui':
