@@ -6,6 +6,8 @@ import {
   claimCheckMiddleware,
   isClaimCheck,
   resolveClaimCheck,
+  resolveClaimCheckBytes,
+  streamResult,
 } from "./claimCheck";
 
 /** Minimal content-addressed store matching the ADR 0046 contract. */
@@ -14,6 +16,17 @@ class FakeContentStore {
   async put(bytes: Uint8Array): Promise<{ __loomContent: string }> {
     const address = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
     this.blobs.set(address, bytes);
+    return { __loomContent: address };
+  }
+  async putStream(stream: AsyncIterable<Uint8Array>): Promise<{ __loomContent: string }> {
+    const hash = createHash("sha256");
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of stream) {
+      hash.update(chunk);
+      chunks.push(chunk);
+    }
+    const address = `sha256:${hash.digest("hex")}`;
+    this.blobs.set(address, Buffer.concat(chunks));
     return { __loomContent: address };
   }
   async get(ref: { __loomContent: string }): Promise<Uint8Array | null> {
@@ -146,5 +159,62 @@ describe("claimCheckMiddleware", () => {
     expect(isClaimCheck({ __loomClaimCheck: 1, ref: { __loomContent: "x" } })).toBe(false);
     expect(isClaimCheck(null)).toBe(false);
     expect(isClaimCheck("sha256:abc")).toBe(false);
+  });
+});
+
+describe("stream-typed results (ST-2, ADR 0059)", () => {
+  async function* chunksOf(text: string, chunkSize: number): AsyncGenerator<Uint8Array> {
+    const bytes = new TextEncoder().encode(text);
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      yield bytes.slice(i, i + chunkSize);
+    }
+  }
+
+  it("streams into the store: envelope matches put() of the same bytes; digest from the tool", async () => {
+    const store = new FakeContentStore();
+    const mw = claimCheckMiddleware({ store, inlineCapBytes: 128 });
+    const text = "row,".repeat(5_000); // ~20 KB in 7-byte chunks — never one buffer
+    const out = (await mw(ctx("dump.table"), {}, async () =>
+      streamResult(chunksOf(text, 7), { digest: { rows: 5_000 } })
+    )) as ClaimCheckEnvelope;
+
+    expect(isClaimCheck(out)).toBe(true);
+    expect(out.size).toBe(new TextEncoder().encode(text).byteLength);
+    expect(out.codec).toBe("bytes");
+    expect(out.digest).toEqual({ rows: 5_000 });
+    // Content address identical to a whole-buffer put of the same bytes.
+    const wholeRef = await new FakeContentStore().put(new TextEncoder().encode(text));
+    expect(out.ref.__loomContent).toBe(wholeRef.__loomContent);
+  });
+
+  it("a store without putStream refuses loudly (the effect fails, nothing recorded silently)", async () => {
+    const store = { put: new FakeContentStore().put.bind(new FakeContentStore()) };
+    const mw = claimCheckMiddleware({ store, inlineCapBytes: 128 });
+    await expect(
+      mw(ctx("dump.table"), {}, async () => streamResult(chunksOf("x", 1)))
+    ).rejects.toThrow(/does not implement putStream/);
+  });
+
+  it("resolveClaimCheckBytes round-trips; resolveClaimCheck refuses a bytes codec", async () => {
+    const store = new FakeContentStore();
+    const mw = claimCheckMiddleware({ store, inlineCapBytes: 128 });
+    const out = (await mw(ctx("dump.table"), {}, async () =>
+      streamResult(chunksOf("hello stream", 3))
+    )) as ClaimCheckEnvelope;
+    const bytes = await resolveClaimCheckBytes(store, out);
+    expect(new TextDecoder().decode(bytes as Uint8Array)).toBe("hello stream");
+    await expect(resolveClaimCheck(store, out)).rejects.toThrow(/resolveClaimCheckBytes/);
+  });
+
+  it("reports the offload with the streamed size (CC-3)", async () => {
+    const store = new FakeContentStore();
+    const seen: number[] = [];
+    const mw = claimCheckMiddleware({
+      store,
+      inlineCapBytes: 128,
+      onOffload: (info) => seen.push(info.size),
+    });
+    await mw(ctx("dump.table"), {}, async () => streamResult(chunksOf("abcdef", 2)));
+    expect(seen).toEqual([6]);
   });
 });
