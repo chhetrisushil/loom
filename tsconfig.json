@@ -186,6 +186,9 @@
     },
     {
       "path": "plugins/read-model"
+    },
+    {
+      "path": "plugins/sentinel"
     }
   ]
 }

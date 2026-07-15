@@ -122,7 +122,7 @@ export function cmdNew(
   name: string,
   dir: string
 ): { path: string; created: boolean } {
-  const kinds = ["flow", "agent", "tool", "skill", "schedule", "memory", "projection"];
+  const kinds = ["flow", "agent", "tool", "skill", "schedule", "memory", "projection", "sentinel"];
   if (!kinds.includes(kind)) {
     throw new Error(`unknown kind "${kind}" — expected ${kinds.join(" | ")}`);
   }

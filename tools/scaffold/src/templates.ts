@@ -36,6 +36,59 @@ export function flowFile(name: string): string {
   ].join("\n");
 }
 
+/** `app/flows/<name>/flow.ts` — a schedule-driven sentinel starter (@loom/plugin-sentinel). */
+export function sentinelFile(name: string): string {
+  const P = pascal(name);
+  return [
+    "// The perpetual-agent pattern (ADRs 0051-0057): a schedule over bounded runs.",
+    "// Wire preset.schedule into defineConfig({ timers }), preset.middleware into",
+    "// effectMiddleware, call preset.register(app.effectRuntime), and feed",
+    "// preset.pinnedEventTypes to `loom sweep content --pin`.",
+    'import { flow$ } from "@loom/core";',
+    'import { isClaimCheck } from "@loom/middleware";',
+    'import { sentinelPreset } from "@loom/plugin-sentinel";',
+    'import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";',
+    'import { z } from "zod";',
+    "",
+    "const stateSchema = z.object({ wakes: z.number() }); // TODO: your carry-state contract",
+    "",
+    `export const ${P}Preset = sentinelPreset<z.infer<typeof stateSchema>>({`,
+    `  id: "${name}",`,
+    '  cron: "0 */6 * * *", // TODO: cadence',
+    "  state: { schema: stateSchema },",
+    "  stateStore: undefined as never, // TODO: durable-state backend (sqlite/postgres)",
+    "  contentStore: undefined as never, // TODO: content backend (SqliteContentStore)",
+    "});",
+    "",
+    "const io = z.object({}).passthrough();",
+    "",
+    "const runner: FlowRunner<Record<string, unknown>, Record<string, unknown>> = async (ctx) => {",
+    `  const carried = await ${P}Preset.state.load(ctx);`,
+    "  // TODO: observe via your tool$ (recorded; over-cap results go by reference):",
+    "  // const read = await ctx.execute(readTask, { at: Preset.occurrenceOf(ctx.executionId) });",
+    "  // if (isClaimCheck(read) && (read.digest as YourDigest).metric > threshold) {",
+    '  //   ctx.emit("FINDING_RECORDED", { evidence: [read.ref] /* + your schema */ });',
+    "  // }",
+    "  void isClaimCheck;",
+    `  await ${P}Preset.state.save(ctx, { wakes: (carried.value?.wakes ?? 0) + 1 }, carried.revision);`,
+    "  return { ok: true };",
+    "};",
+    "",
+    `export const ${P}Flow: RegisteredFlow = {`,
+    "  definition: flow$({",
+    `    id: "${name}-flow",`,
+    `    name: "${P} sentinel",`,
+    '    version: "1.0.0",',
+    "    inputSchema: io,",
+    "    outputSchema: io,",
+    "    steps: [],",
+    "  }),",
+    "  runner: runner as FlowRunner<unknown, unknown>,",
+    "};",
+    "",
+  ].join("\n");
+}
+
 /** `app/tools/<name>.ts` — a tool definition stub. */
 export function toolFile(name: string): string {
   const P = pascal(name);
@@ -140,10 +193,12 @@ export function projectionFile(name: string): string {
 
 /** Route `loom new <kind> <name>` to the file it generates (path + contents). */
 export function newFile(
-  kind: "flow" | "agent" | "tool" | "skill" | "schedule" | "memory" | "projection",
+  kind: "flow" | "agent" | "tool" | "skill" | "schedule" | "memory" | "projection" | "sentinel",
   name: string
 ): { path: string; content: string } {
   switch (kind) {
+    case "sentinel":
+      return { path: `app/flows/${name}/flow.ts`, content: sentinelFile(name) };
     case "flow":
       return { path: `app/flows/${name}/flow.ts`, content: flowFile(name) };
     case "agent":
