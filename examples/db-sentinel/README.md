@@ -60,3 +60,7 @@ test/             the acceptance suite
 ```
 
 Offline and deterministic end to end: no database, no network, no wall clock.
+
+> This example is the **de-composed** version of the pattern — every seam visible. For the
+> one-declaration form, see `sentinelPreset()` in `@loom/plugin-sentinel` (or scaffold a
+> starter with `loom new sentinel <name>`).

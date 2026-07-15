@@ -29,7 +29,7 @@ The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`
 loom — project-local commands for a Loom app
 
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
-  loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
+  loom new   <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app]  scaffold a file (folder convention)
   loom appgen <intent> [--dir .] [--dry-run] [--check] [--model <spec>]  NL → new project or brownfield edits
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
@@ -42,6 +42,7 @@ loom — project-local commands for a Loom app
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
   loom lint claim-check [--dir .]                 CC-5: flag claim-check reach-through inside flows
   loom retention run --db <path> --snap <path> [--ttl ms] [--apply]  reclaim aged terminal executions
+  loom sweep content --db <path> --content <path> [--archive-db <path>] [--pin KIND,KIND] [--ttl ms] [--apply]  K10.6 pinned blob sweep (dry-run default)
   loom compliance report --db <path> --subject-path <p> [--tenant-path <p>]  data-subject inventory
   loom inspect --db <path> [--port N]             web inspector (timeline + slider)
 ```
@@ -61,7 +62,7 @@ There are no global flags — each command declares its own. The recurring ones 
 
 These follow the **folder convention** — flows live at `app/flows/<name>/flow.ts` (folder); agents, tools, skills, schedules, memories, and projections are flat files at `app/agents/<name>.ts`, `app/tools/<name>.ts`, `app/skills/<name>.ts`, `app/schedules/<name>.ts`, `app/memories/<name>.ts`, `app/projections/<name>.ts` ([ADR 0011](adr/0011-folder-convention-codegen.md)).
 
-### `loom new <flow|agent|tool> <name> [--dir app]`
+### `loom new <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app]`
 
 Scaffolds a single file from a template.
 
@@ -73,6 +74,7 @@ Scaffolds a single file from a template.
 
 ```bash
 npx loom new flow greet          # → creates app/flows/greet/flow.ts
+npx loom new sentinel pg-lag     # → a complete schedule-driven sentinel starter (@loom/plugin-sentinel)
 npx loom new agent triager       # → creates app/agents/triager.ts
 npx loom new skill refunds       # → creates app/skills/refunds.ts
 npx loom new schedule nightly    # → creates app/schedules/nightly.ts

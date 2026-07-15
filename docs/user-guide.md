@@ -208,6 +208,13 @@ claimCheckMiddleware({
 });
 ```
 
+For results too large to hold in memory at all (a table dump, shadow-execution output), the
+tool returns `streamResult(stream, { digest })` (ADR 0059): the middleware pipes the stream
+into the content store *inside the effect* — the worker heap never holds the payload — and the
+recorded value is still the small envelope (with a `codec`; read those back with
+`resolveClaimCheckBytes`, outside the determinism boundary as ever). The digest must come from
+the tool itself, computed while producing (the bytes are consumed by the upload).
+
 `retryMiddleware` options: `maxRetries`, `baseDelayMs`, `factor`, `maxDelayMs`, `jitter` (deterministic FNV-1a jitter — no `Math.random`), `isRetryable`, `onRetry`, and an injectable `sleep`. It **never** retries a `SuspendError` or an aborted signal.
 
 ---
@@ -930,6 +937,41 @@ catch-up policy can layer on later). Cross-node duplicate fires settle at the sh
 the idempotent-wake guard, the `UNIQUE(execution_id, sequence)` backstop, and fencing (when
 `fenced`) guarantee exactly one durable history.
 
+### Read models: durable cross-execution queries (ADR 0058)
+
+Projections are per-execution and in-process; **read models** (`@loom/plugin-read-model`) are
+the durable, cross-execution query layer — "every FINDING_RECORDED for table `orders`, newest
+first", over months of runs, answered from an index instead of a re-fold:
+
+```ts
+import { InMemoryReadModelStore, ReadModelService } from "@loom/plugin-read-model";
+// durable backends: SqliteReadModelStore / PostgresReadModelStore
+
+const readModels = new ReadModelService(new InMemoryReadModelStore());
+readModels.register({
+  id: "findings-by-target",
+  kinds: ["FINDING_RECORDED"],
+  indexes: ["target", "severity"],
+  extract: (e) => [{ fields: { target: e.payload.target, severity: e.payload.severity } }],
+});
+
+const app = defineConfig({
+  // the live tail rides the same in-process feed projections use:
+  onEvent: (e) => readModels.handleEvent(e),
+  /* … */
+});
+await readModels.catchUp([app.stores.eventStore /*, archiveStore */]); // watermark-incremental
+
+const page = await readModels.query("findings-by-target", {
+  where: { target: "orders" }, order: "desc", limit: 50,
+});
+```
+
+A read model is a **cache of the log with a watermark, never an authority**: drop it and
+`rebuild()` re-derives identical state; queries are read-only and never recorded, so replay is
+untouched. Ingestion converges from any mix of live tail, catch-up scans, and multiple nodes
+(idempotent rows + monotonic per-execution watermarks — no global event order required).
+
 ### Log lifecycle: crypto-shredding, retention & compaction (K10)
 
 "Replay forever" collides with GDPR erasure and bounded storage. K10 gives the log a
@@ -943,6 +985,8 @@ lifecycle without ever creating a silent third behavior between "replays identic
 refs cited by pinned event kinds survive — across archival, re-derived from the log on every
 sweep (mark-and-sweep, no mutable index). The joint rule the perpetual-agents series fixed:
 *findings and their evidence are permanent; runs are archivable; raw telemetry is disposable.*
+The whole pattern — schedule, carry state, claim-check, pin policy — is one declaration via
+`sentinelPreset()` (`@loom/plugin-sentinel`), and `loom new sentinel <name>` scaffolds it.
 
 **Crypto-shredding (K10.2, `@loom/plugin-crypto`).** Encrypt sensitive fields at rest under a
 per-subject key; satisfy erasure by **destroying the key** — no history rewrite:
