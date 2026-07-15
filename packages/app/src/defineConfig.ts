@@ -56,7 +56,7 @@ import {
 import type { TelemetryAdapter } from "@loom/telemetry";
 import { type VerificationReport, runVerification, verify as runVerify } from "@loom/verify";
 import { LogLifecycle, TimerService, WorkflowRuntime } from "@loom/workflow-runtime";
-import type { ArchiveStores, RegisteredFlow } from "@loom/workflow-runtime";
+import type { ArchiveStores, PinPredicate, RegisteredFlow } from "@loom/workflow-runtime";
 import { InProcessA2ABus } from "./InProcessA2ABus";
 import {
   type AgentModule,
@@ -293,6 +293,13 @@ export interface LoomConfig {
   retention?: {
     /** Where each execution's events/snapshot are copied before deletion (A6). */
     archive?: ArchiveStores;
+    /**
+     * K10.5 — pin predicate: retention exempts executions this returns `true`
+     * for (outcome `"pinned"`). The kernel supplies the gate; what pins is
+     * policy (G3) — e.g. `pinByEventKinds(store, ["FINDING_RECORDED"])` from
+     * `@loom/plugin-content`.
+     */
+    pinned?: PinPredicate;
   };
   /**
    * K10-R2 — secret handling. Wiring a resolver installs {@link redactionMiddleware} on the
@@ -599,6 +606,7 @@ export function defineConfig(config: LoomConfig): LoomApp {
   // the backend supplies a branchRegistry.
   const lifecycle = new LogLifecycle(stores.eventStore, stores.snapshotStore, {
     ...(config.retention?.archive !== undefined && { archive: config.retention.archive }),
+    ...(config.retention?.pinned !== undefined && { pinned: config.retention.pinned }),
     ...(stores.branchRegistry !== undefined && { branchRegistry: stores.branchRegistry }),
   });
 

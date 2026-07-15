@@ -224,6 +224,52 @@ describe("K10.1 R5 — branch guard + control facts", () => {
     expect((await app.eventStore.read("parent-1")).length).toBeGreaterThan(0);
   });
 
+  it("K10.5 — the pin predicate exempts an otherwise-reclaimable execution", async () => {
+    const app = boot();
+    const handle = await app.runtime.start(app.flow, { n: 1 }, { executionId: "pin-1" });
+    await handle.waitForCompletion();
+
+    const consulted: string[] = [];
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      pinned: async (executionId) => {
+        consulted.push(executionId);
+        return executionId === "pin-1";
+      },
+    });
+
+    // Pinned → exempt; nothing archived, nothing deleted.
+    expect(await life.applyRetention("pin-1", { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
+      "pinned"
+    );
+    expect(consulted).toEqual(["pin-1"]);
+    expect((await app.eventStore.read("pin-1")).length).toBeGreaterThan(0);
+    expect(await app.eventStore.read(LIFECYCLE_STREAM)).toEqual([]); // no archive/delete facts
+
+    // A second execution the predicate does NOT pin reclaims normally.
+    const handle2 = await app.runtime.start(app.flow, { n: 2 }, { executionId: "pin-2" });
+    await handle2.waitForCompletion();
+    expect(await life.applyRetention("pin-2", { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
+      "reclaimed"
+    );
+    expect(await app.eventStore.read("pin-2")).toEqual([]);
+  });
+
+  it("K10.5 — the pin gate runs before TTL-eligible archive copies (archive untouched)", async () => {
+    const app = boot();
+    const handle = await app.runtime.start(app.flow, { n: 1 }, { executionId: "pin-arc" });
+    await handle.waitForCompletion();
+
+    const archiveEvents = new InMemoryAsyncEventStore();
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      archive: { eventStore: archiveEvents },
+      pinned: () => true,
+    });
+    expect(await life.applyRetention("pin-arc", { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
+      "pinned"
+    );
+    expect(await archiveEvents.read("pin-arc")).toEqual([]); // pin means NO copy either
+  });
+
   it("journals EXECUTION_DELETED to the lifecycle stream on reclaim", async () => {
     const app = boot();
     const handle = await app.runtime.start(app.flow, { n: 1 }, { executionId: "del-1" });

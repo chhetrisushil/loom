@@ -20,7 +20,8 @@
   "dependencies": {
     "@loom/classify": "workspace:*",
     "@loom/core": "workspace:*",
-    "@loom/event-runtime": "workspace:*"
+    "@loom/event-runtime": "workspace:*",
+    "@loom/middleware": "workspace:*"
   },
   "devDependencies": {
     "@loom/conformance": "workspace:*",
