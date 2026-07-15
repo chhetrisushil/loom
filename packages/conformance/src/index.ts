@@ -106,6 +106,34 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       expect(ids.size).toBe(2);
       await store.close();
     });
+
+    it("listExecutionsPage walks every id exactly once, lexicographic, bounded pages (when supported)", async () => {
+      const store = factory();
+      if (store.listExecutionsPage === undefined) {
+        await store.close();
+        return; // OPTIONAL (1.2.0, SP-1)
+      }
+      const ids = Array.from({ length: 23 }, (_, i) => `e-${String(i).padStart(2, "0")}`);
+      for (const id of ids) await store.append(evt(id, 0));
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      for (;;) {
+        const page = await store.listExecutionsPage({
+          ...(cursor !== undefined && { cursor }),
+          limit: 5,
+        });
+        expect(page.executionIds.length).toBeLessThanOrEqual(5);
+        seen.push(...page.executionIds);
+        if (page.nextCursor === undefined) break;
+        cursor = page.nextCursor;
+      }
+      expect(seen).toEqual(ids); // all, exactly once, lexicographic
+      // Paged and whole-list enumerations agree.
+      if (store.listExecutions !== undefined) {
+        expect(new Set(await store.listExecutions())).toEqual(new Set(seen));
+      }
+      await store.close();
+    });
   });
 }
 

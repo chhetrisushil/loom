@@ -1,4 +1,4 @@
-import { isReservedStream } from "@loom/event-runtime";
+import { isReservedStream, iterateExecutionIds } from "@loom/event-runtime";
 import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
 import { foldEvents } from "@loom/replay-vm";
 import { LogLifecycle } from "@loom/workflow-runtime";
@@ -34,16 +34,21 @@ export async function cmdRetentionRun(
   const events = new SqliteEventStore(db);
   const snapshots = new SqliteSnapshotStore(snap);
   try {
-    if (events.listExecutions === undefined) {
-      return "this event store does not support listExecutions (cannot enumerate for retention)";
+    if (events.listExecutions === undefined && events.listExecutionsPage === undefined) {
+      return "this event store does not support enumeration (cannot sweep for retention)";
     }
-    const ids = (await events.listExecutions()).filter((id) => !isReservedStream(id)).sort();
     const now = Date.now();
     const lifecycle = new LogLifecycle(events, snapshots);
 
+    // SP-2 — bounded-memory enumeration: pages when the store supports them
+    // (SPI 1.2.0; SqliteEventStore does, lexicographically ordered), whole-list
+    // fallback otherwise.
     const rows: string[] = [];
     const outcomes: string[] = [];
-    for (const id of ids) {
+    let seen = 0;
+    for await (const id of iterateExecutionIds(events)) {
+      if (isReservedStream(id)) continue;
+      seen++;
       const outcome = apply
         ? await lifecycle.applyRetention(id, { terminalTtlMs: ttlMs }, now)
         : await previewRetention(events, id, ttlMs, now);
@@ -52,8 +57,8 @@ export async function cmdRetentionRun(
     }
 
     const mode = apply ? "run" : "DRY RUN (pass --apply to reclaim)";
-    const header = `retention ${mode} — ttl ${ttlMs}ms — ${ids.length} execution(s)`;
-    return ids.length === 0
+    const header = `retention ${mode} — ttl ${ttlMs}ms — ${seen} execution(s)`;
+    return seen === 0
       ? `${header}\n  (no executions)`
       : `${header}\n${rows.join("\n")}\n${tally(outcomes)}`;
   } finally {

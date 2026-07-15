@@ -1,4 +1,5 @@
-import type { EventStore } from "@loom/event-runtime";
+import type { EventStore, ExecutionEnumerable } from "@loom/event-runtime";
+import { iterateExecutionIds } from "@loom/event-runtime";
 import type { ContentStore } from "./ContentStore";
 
 // ── K10.6 (ADR 0055) — pinned mark-and-sweep for claim-checked content ────────
@@ -63,11 +64,12 @@ export function pinByEventKinds(
 export interface ContentSweepOptions {
   /**
    * Every log store whose events may cite content — the live store AND any
-   * archive stores. All must support `listExecutions()`: a store that cannot be
+   * archive stores. All must be enumerable (`listExecutionsPage()` preferred —
+   * SP-2, bounded memory — or `listExecutions()`): a store that cannot be
    * enumerated cannot be swept safely (its pins would be invisible), so the
    * sweep refuses rather than silently under-pinning.
    */
-  eventStores: readonly Pick<EventStore, "read" | "listExecutions">[];
+  eventStores: readonly (Pick<EventStore, "read"> & ExecutionEnumerable)[];
   contentStore: Pick<ContentStore, "delete">;
   /** Event kinds whose cited refs are pinned — retained as long as the citing fact exists. */
   pinnedEventTypes: Iterable<string>;
@@ -102,12 +104,12 @@ export async function sweepUnpinnedContent(
   let executionsScanned = 0;
 
   for (const store of options.eventStores) {
-    if (store.listExecutions === undefined) {
+    if (store.listExecutions === undefined && store.listExecutionsPage === undefined) {
       throw new TypeError(
-        "sweepUnpinnedContent: every event store must support listExecutions() — a store that cannot be enumerated cannot be swept safely"
+        "sweepUnpinnedContent: every event store must support listExecutionsPage() or listExecutions() — a store that cannot be enumerated cannot be swept safely"
       );
     }
-    for (const executionId of await store.listExecutions()) {
+    for await (const executionId of iterateExecutionIds(store)) {
       executionsScanned++;
       for (const event of await store.read(executionId)) {
         collectContentRefs(event.payload, (address) => {

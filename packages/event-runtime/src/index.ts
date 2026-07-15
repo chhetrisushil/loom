@@ -1,10 +1,11 @@
 export { TenantScopedEventStore } from "./TenantScopedEventStore";
 export { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";
 export type { InMemoryAsyncEventStoreOptions } from "./InMemoryAsyncEventStore";
-export type { EventStore, EventStoreOptions } from "./types";
+export type { EventStore, EventStoreOptions, ExecutionEnumerable, ExecutionPage } from "./types";
 export {
   readRangeOf,
   isReservedStream,
+  iterateExecutionIds,
   RESERVED_STREAM_PREFIX,
   EVENT_STORE_SPI_VERSION,
 } from "./types";
