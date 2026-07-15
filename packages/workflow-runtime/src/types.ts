@@ -252,6 +252,26 @@ export class FlowMigrationCheckError extends Error {
   }
 }
 
+/**
+ * K11.5 (ADR 0056) — the operator-supplied state transform threw during
+ * `resumeAs`: the recorded input could not be migrated to the target flow's
+ * contract. Nothing was appended; the execution is untouched. Fix the transform
+ * (or the target contract) and re-run the migration.
+ */
+export class StateMigrationError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly toFlowId: string,
+    readonly detail: string
+  ) {
+    super(
+      `state migration of execution "${executionId}" to flow "${toFlowId}" failed: ${detail} — nothing was appended; the execution is unchanged`
+    );
+    this.name = "StateMigrationError";
+    Object.setPrototypeOf(this, StateMigrationError.prototype);
+  }
+}
+
 export class FlowCodeMismatchError extends Error {
   constructor(
     readonly executionId: string,

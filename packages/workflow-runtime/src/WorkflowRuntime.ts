@@ -17,6 +17,7 @@ import {
   ExecutionDeniedError,
   FlowCodeMismatchError,
   FlowMigrationCheckError,
+  StateMigrationError,
 } from "./types";
 import type {
   ExecutionAuthorizer,
@@ -597,6 +598,11 @@ export class WorkflowRuntime {
       throw new Error(`Execution ${executionId} was cancelled; resume refused (terminal status)`);
     }
 
+    // K11.5 — a previously-migrated execution resumes with its RECORDED migrated
+    // input (folded `_input`), never the pre-migration EXECUTION_STARTED payload.
+    const foldedInput = vm.getState().variables._input;
+    const effectiveInput = foldedInput !== undefined ? foldedInput : originalInput;
+
     // K11 — resolve the CODE to resume on: the current version, a PINNED older
     // version whose hash matches the recorded one, a migrated target (K11.3), or
     // a loud refusal — never a silent fold with changed code (legacy logs = G2).
@@ -612,7 +618,7 @@ export class WorkflowRuntime {
       workflowId,
       vm,
       resolved.runner as FlowRunner<unknown, unknown>,
-      originalInput,
+      effectiveInput,
       [
         ...(approval !== undefined ? [approval] : []),
         { eventType: resumeEvent.eventType, payload: resumeEvent.payload },
@@ -643,10 +649,20 @@ export class WorkflowRuntime {
     executionId: string,
     newFlowId: string,
     resumeEvent: ResumeEvent,
-    options: { strategy: "replay-check" | "operator-ack" } & Omit<
-      RunOptions,
-      "executionId" | "allowFlowCodeMismatch"
-    >
+    options: {
+      strategy: "replay-check" | "operator-ack";
+      /**
+       * K11.5 (ADR 0056) — contract-versioned state migration. The durable state
+       * contract a resumed runner sees is its recorded input (folded `_input`);
+       * when the target flow's contract evolved, supply the old→new transform
+       * (typically a Zod transform's `parse`). The RESULT is recorded on
+       * EXECUTION_MIGRATED (`migratedInput`), so every later resume/restore/
+       * replay folds the same migrated value — the outcome is durable, not the
+       * function. A throwing transform refuses the migration (StateMigrationError)
+       * with nothing appended. Absent = today's behavior, byte-identical.
+       */
+      transformState?: (input: unknown) => unknown;
+    } & Omit<RunOptions, "executionId" | "allowFlowCodeMismatch">
   ): Promise<ExecutionHandle> {
     const allEvents = await this.eventStore.read(executionId);
     if (allEvents.length === 0) {
@@ -689,13 +705,32 @@ export class WorkflowRuntime {
       }
     }
 
+    // K11.5 — the recorded input is the state contract carrier: prefer the folded
+    // `_input` (which a PRIOR migration may already have replaced) over the raw
+    // EXECUTION_STARTED payload.
+    const recordedInput =
+      state.variables._input !== undefined ? state.variables._input : originalInput;
+    let migratedInput: unknown;
+    let stateMigrated = false;
+    if (options.transformState !== undefined) {
+      try {
+        migratedInput = options.transformState(recordedInput);
+      } catch (err) {
+        throw new StateMigrationError(executionId, newFlowId, String(err));
+      }
+      if (migratedInput === undefined) {
+        throw new StateMigrationError(executionId, newFlowId, "transform returned undefined");
+      }
+      stateMigrated = true;
+    }
+
     const recorded = state.variables._flowHash;
     return this.execute(
       executionId,
       workflowId,
       vm,
       target.runner as FlowRunner<unknown, unknown>,
-      originalInput,
+      stateMigrated ? migratedInput : recordedInput,
       [
         {
           eventType: "EXECUTION_MIGRATED",
@@ -704,6 +739,7 @@ export class WorkflowRuntime {
             strategy: options.strategy,
             ...(toHash !== undefined && { toHash }),
             ...(typeof recorded === "string" && { fromHash: recorded }),
+            ...(stateMigrated && { migratedInput }),
           },
         },
         { eventType: resumeEvent.eventType, payload: resumeEvent.payload },
