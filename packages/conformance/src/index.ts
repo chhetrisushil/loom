@@ -894,6 +894,15 @@ export function runReadModelStoreConformance(
       }
     });
 
+    it("rejects malformed cursors and invalid limits loudly (audit hardening)", async () => {
+      const store = factory();
+      await store.apply("m", "x-1", 0, [row(0)]);
+      await expect(store.query("m", { cursor: "not json" })).rejects.toThrow(/cursor/);
+      await expect(store.query("m", { cursor: '{"x":1}' })).rejects.toThrow(/cursor/);
+      await expect(store.query("m", { limit: 0 })).rejects.toThrow(/limit/);
+      await expect(store.query("m", { limit: -1 })).rejects.toThrow(/limit/);
+    });
+
     it("models are isolated; clear drops rows AND watermarks for one model only", async () => {
       const store = factory();
       await store.apply("a", "x-1", 0, [row(0)]);

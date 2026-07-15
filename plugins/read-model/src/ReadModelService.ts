@@ -140,16 +140,30 @@ export class ReadModelService {
       for await (const executionId of iterateExecutionIds(source)) {
         if (isReservedStream(executionId)) continue;
         report.executionsScanned++;
+        if (this.models.size === 0) continue;
+        // Audit fix (DS&A rank 1): ONE shared read per execution from the MIN
+        // watermark frontier, filtered per model — not M re-reads of the same
+        // events for M models. Idempotent apply keeps correctness unchanged.
+        const marks = new Map<string, number>();
+        let frontier = Number.POSITIVE_INFINITY;
         for (const model of this.models.values()) {
-          const mark = await this.store.watermark(model.id, executionId);
-          const events = await source.readFrom(executionId, mark === null ? 0 : mark + 1);
-          if (events.length === 0) continue;
-          report.eventsScanned += events.length;
+          const mark = (await this.store.watermark(model.id, executionId)) ?? -1;
+          marks.set(model.id, mark);
+          if (mark < frontier) frontier = mark;
+        }
+        const events = await source.readFrom(executionId, frontier + 1);
+        if (events.length === 0) continue;
+        report.eventsScanned += events.length;
+        const tip = events[events.length - 1]!.sequence;
+        for (const model of this.models.values()) {
+          const from = marks.get(model.id)!;
+          if (tip <= from) continue; // this model is already past everything read
           const rows: ReadModelRow[] = [];
           for (const event of events) {
-            if (model.kinds.includes(event.eventType)) rows.push(...toRows(model, event));
+            if (event.sequence > from && model.kinds.includes(event.eventType)) {
+              rows.push(...toRows(model, event));
+            }
           }
-          const tip = events[events.length - 1]!.sequence;
           await this.store.apply(model.id, executionId, tip, rows);
           report.rowsApplied += rows.length;
         }

@@ -257,3 +257,40 @@ describe("acceptance §5.1 — a year of db-sentinel-shaped logs", () => {
     expect(again.eventsScanned).toBe(0);
   });
 });
+
+describe("audit fixes", () => {
+  it("catchUp reads each execution ONCE for all models (shared read, not M reads)", async () => {
+    const { service } = boot(); // two models registered (FINDINGS + DECISIONS)
+    const events = new InMemoryAsyncEventStore();
+    for (let i = 0; i < 4; i++) {
+      await events.append(
+        evt(`run-${i}`, 0, "FINDING_RECORDED", { target: "orders", severity: "low" }, T0 + i)
+      );
+      await events.append(evt(`run-${i}`, 1, "DECISION_RECORDED", { subject: "s" }, T0 + i));
+    }
+    let readFromCalls = 0;
+    const counting = {
+      listExecutions: events.listExecutions.bind(events),
+      readFrom: (executionId: string, from: number) => {
+        readFromCalls++;
+        return events.readFrom(executionId, from);
+      },
+    };
+    await service.catchUp([counting]);
+    expect(readFromCalls).toBe(4); // one per execution — NOT models × executions
+    expect((await service.query("findings-by-target")).rows).toHaveLength(4);
+    expect((await service.query("decisions-by-subject")).rows).toHaveLength(4);
+  });
+
+  it("query limits are validated and clamped; malformed cursors are loud TypeErrors", async () => {
+    const { service } = boot();
+    await expect(service.query("findings-by-target", { limit: 0 })).rejects.toThrow(/limit/);
+    await expect(service.query("findings-by-target", { limit: -3 })).rejects.toThrow(/limit/);
+    await expect(service.query("findings-by-target", { cursor: "not json" })).rejects.toThrow(
+      /cursor/
+    );
+    await expect(service.query("findings-by-target", { cursor: '{"x":1}' })).rejects.toThrow(
+      /cursor/
+    );
+  });
+});

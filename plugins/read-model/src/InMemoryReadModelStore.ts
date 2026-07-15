@@ -5,6 +5,7 @@ import type {
   ReadModelScalar,
   ReadModelStore,
 } from "./types";
+import { clampQueryLimit, parseQueryCursor } from "./types";
 
 type Cursor = [timestamp: number, sequence: number, rowId: string];
 
@@ -70,14 +71,14 @@ export class InMemoryReadModelStore implements ReadModelStore {
 
   async query(modelId: string, q: ReadModelQuery = {}): Promise<ReadModelPage> {
     const desc = q.order === "desc";
-    const limit = q.limit ?? 100;
+    const limit = clampQueryLimit(q.limit);
     const all = [...(this.rows.get(modelId)?.values() ?? [])]
       .filter((row) => matches(row, q))
       .sort((a, b) => (desc ? -1 : 1) * compareKeys(keyOf(a), keyOf(b)));
 
     let start = 0;
     if (q.cursor !== undefined) {
-      const after = JSON.parse(q.cursor) as Cursor;
+      const after = parseQueryCursor(q.cursor);
       start = all.findIndex((row) => (desc ? -1 : 1) * compareKeys(keyOf(row), after) > 0);
       if (start === -1) start = all.length;
     }

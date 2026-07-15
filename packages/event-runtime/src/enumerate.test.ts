@@ -29,6 +29,19 @@ describe("iterateExecutionIds (SP-2)", () => {
     expect(seen).toEqual(["b", "a"]); // fallback preserves the store's order
   });
 
+  it("refuses a non-advancing cursor (buggy 3P store) instead of spinning", async () => {
+    const stuck = {
+      listExecutionsPage: async () => ({ executionIds: ["a"], nextCursor: "same" }),
+    };
+    const seen: string[] = [];
+    await expect(
+      (async () => {
+        for await (const id of iterateExecutionIds(stuck)) seen.push(id);
+      })()
+    ).rejects.toThrow(/non-advancing cursor/);
+    expect(seen.length).toBeLessThanOrEqual(2); // aborted immediately, no spin
+  });
+
   it("refuses a source with neither surface", async () => {
     const iterator = iterateExecutionIds({})[Symbol.asyncIterator]();
     await expect(iterator.next()).rejects.toThrow(/cannot be enumerated/);

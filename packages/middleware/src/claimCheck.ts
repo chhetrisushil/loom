@@ -152,7 +152,20 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
           yield chunk;
         }
       })();
-      const streamedRef = await options.store.putStream(counted);
+      let streamedRef: { __loomContent: string };
+      try {
+        streamedRef = await options.store.putStream(counted);
+      } finally {
+        // W-audit leak fix: if putStream threw mid-consumption, `counted` is
+        // suspended at a yield and nobody would ever finalize it — resuming it
+        // with a return completion propagates through its for-await to the
+        // SOURCE iterator's return(), closing whatever the tool handed us
+        // (file handle, socket). A no-op when the stream was fully consumed.
+        await counted.return(undefined).then(
+          () => {},
+          () => {} // the offload is already failing; source cleanup errors don't mask it
+        );
+      }
       const envelope: ClaimCheckEnvelope = {
         __loomClaimCheck: true,
         ref: { __loomContent: streamedRef.__loomContent },

@@ -13,6 +13,9 @@ import Database from "better-sqlite3";
  */
 export class SqliteContentStore implements ContentStore {
   private readonly db: Database.Database;
+  private readonly insertStmt: Database.Statement;
+  private readonly getStmt: Database.Statement;
+  private readonly deleteStmt: Database.Statement;
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
@@ -25,6 +28,11 @@ export class SqliteContentStore implements ContentStore {
           bytes BLOB NOT NULL
         );
       `);
+      this.insertStmt = this.db.prepare(
+        "INSERT OR IGNORE INTO content_blobs (address, bytes) VALUES (?, ?)"
+      );
+      this.getStmt = this.db.prepare("SELECT bytes FROM content_blobs WHERE address = ?");
+      this.deleteStmt = this.db.prepare("DELETE FROM content_blobs WHERE address = ?");
     } catch (err) {
       this.db.close(); // don't leak the file handle if setup fails on a bad/locked file
       throw err;
@@ -33,9 +41,7 @@ export class SqliteContentStore implements ContentStore {
 
   async put(bytes: Uint8Array): Promise<ContentRef> {
     const address = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-    this.db
-      .prepare("INSERT OR IGNORE INTO content_blobs (address, bytes) VALUES (?, ?)")
-      .run(address, Buffer.from(bytes));
+    this.insertStmt.run(address, Buffer.from(bytes));
     return { __loomContent: address, size: bytes.byteLength };
   }
 
@@ -51,21 +57,17 @@ export class SqliteContentStore implements ContentStore {
       size += chunk.byteLength;
     }
     const address = `sha256:${hash.digest("hex")}`;
-    this.db
-      .prepare("INSERT OR IGNORE INTO content_blobs (address, bytes) VALUES (?, ?)")
-      .run(address, Buffer.concat(chunks, size));
+    this.insertStmt.run(address, Buffer.concat(chunks, size));
     return { __loomContent: address, size };
   }
 
   async get(ref: ContentRef): Promise<Uint8Array | null> {
-    const row = this.db
-      .prepare("SELECT bytes FROM content_blobs WHERE address = ?")
-      .get(ref.__loomContent) as { bytes: Buffer } | undefined;
+    const row = this.getStmt.get(ref.__loomContent) as { bytes: Buffer } | undefined;
     return row === undefined ? null : new Uint8Array(row.bytes);
   }
 
   async delete(ref: ContentRef): Promise<void> {
-    this.db.prepare("DELETE FROM content_blobs WHERE address = ?").run(ref.__loomContent);
+    this.deleteStmt.run(ref.__loomContent);
   }
 
   async close(): Promise<void> {

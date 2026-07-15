@@ -218,3 +218,42 @@ describe("stream-typed results (ST-2, ADR 0059)", () => {
     expect(seen).toEqual([6]);
   });
 });
+
+describe("stream source finalization (audit leak fix)", () => {
+  it("a putStream failure mid-consumption finalizes the tool's source stream", async () => {
+    let closed = false;
+    async function* fileLikeSource(): AsyncGenerator<Uint8Array> {
+      try {
+        for (let i = 0; i < 100; i++) yield new Uint8Array(8);
+      } finally {
+        closed = true; // stands in for fs stream destroy / socket close
+      }
+    }
+    const failingStore = {
+      put: async () => ({ __loomContent: "sha256:unused" }),
+      putStream: async (stream: AsyncIterable<Uint8Array>) => {
+        let n = 0;
+        for await (const _chunk of stream) {
+          if (++n === 2) throw new Error("quota exceeded mid-upload");
+        }
+        return { __loomContent: "sha256:unreached" };
+      },
+    };
+    const mw = claimCheckMiddleware({ store: failingStore });
+    await expect(
+      mw(ctx("dump.table"), {}, async () => streamResult(fileLikeSource()))
+    ).rejects.toThrow(/quota exceeded/);
+    expect(closed).toBe(true); // the source's finally ran — no handle leak
+  });
+
+  it("a fully-consumed stream is unaffected by the finalizer (no-op return)", async () => {
+    const store = new FakeContentStore();
+    const mw = claimCheckMiddleware({ store, inlineCapBytes: 8 });
+    async function* two(): AsyncGenerator<Uint8Array> {
+      yield new TextEncoder().encode("ab");
+      yield new TextEncoder().encode("cd");
+    }
+    const out = await mw(ctx("t"), {}, async () => streamResult(two()));
+    expect((out as ClaimCheckEnvelope).size).toBe(4);
+  });
+});
