@@ -213,7 +213,17 @@ const handlers: Record<string, Handler> = {
       status: "running",
       variables: {
         ...state.variables,
-        ...(event.payload !== undefined && { _resumePayload: event.payload }),
+        ...(event.payload !== undefined && {
+          // Latest payload (legacy key, kept for compat with pre-1.16 snapshots)…
+          _resumePayload: event.payload,
+          // …and the ORDERED list of every resume payload (1.16.0): a flow with
+          // N suspend gates passes gate i through with payload i on replay —
+          // the single-latest key silently fed gate 1 the LAST gate's payload.
+          _resumePayloads: appendAudit(
+            state.variables._resumePayloads as unknown[] | undefined,
+            event.payload
+          ),
+        }),
       },
       updatedAt: event.timestamp,
     };
@@ -716,7 +726,11 @@ export function getHandler(eventType: string): Handler | undefined {
 //   ADR 0056 — contract-versioned state migration on resumeAs). When present it replaces
 //   `_input` in the fold and stamps `stateMigrated: true` on the `_migrations` audit
 //   entry; a log that never migrates state replays byte-identically.
-export const EVENT_SCHEMA_VERSION = "1.15.0";
+// 1.16.0: EXECUTION_RESUMED additionally folds `_resumePayloads` — the ORDERED list of
+//   every resume payload (ADR 0057). Fixes the multi-gate suspend bug: the single-latest
+//   `_resumePayload` (kept for compat) fed gate 1 the LAST gate's payload on replay.
+//   Additive fold key from existing events; no payload or kind changes.
+export const EVENT_SCHEMA_VERSION = "1.16.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

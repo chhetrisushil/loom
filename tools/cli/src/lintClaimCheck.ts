@@ -65,6 +65,7 @@ const SKIP_DIRS = new Set(["node_modules", "dist", ".git", ".loom"]);
 
 function walkTsFiles(dir: string, into: string[]): void {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) continue; // never follow links (loops / tree escape)
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (!SKIP_DIRS.has(entry.name)) walkTsFiles(full, into);
