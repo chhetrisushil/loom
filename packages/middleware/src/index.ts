@@ -2,12 +2,16 @@ export { retryMiddleware, type RetryOptions } from "./retry";
 export {
   claimCheckMiddleware,
   isClaimCheck,
+  isStreamResult,
   resolveClaimCheck,
+  resolveClaimCheckBytes,
+  streamResult,
   type ClaimCheckEnvelope,
   type ClaimCheckInfo,
   type ClaimCheckOptions,
   type ClaimCheckReader,
   type ClaimCheckStore,
+  type StreamedResult,
 } from "./claimCheck";
 export {
   meteringMiddleware,

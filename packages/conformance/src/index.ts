@@ -577,6 +577,8 @@ export function runKeyStoreConformance(factory: () => KeyStoreLike, label = "Key
 /** Structural view of the content-store SPI (avoids a plugin dependency). */
 export interface ContentStoreLike {
   put(bytes: Uint8Array): Promise<{ __loomContent: string }>;
+  /** OPTIONAL (ST-1, SPI streaming): content-addressed streaming ingestion. */
+  putStream?(stream: AsyncIterable<Uint8Array>): Promise<{ __loomContent: string }>;
   get(ref: { __loomContent: string }): Promise<Uint8Array | null>;
   delete(ref: { __loomContent: string }): Promise<void>;
 }
@@ -628,6 +630,23 @@ export function runContentStoreConformance(
       await store.delete(ref);
       expect(await store.get(ref)).toBeNull();
       await store.delete(ref); // idempotent — must not throw
+    });
+
+    it("putStream addresses the streamed sequence exactly like put(concat) (when supported)", async () => {
+      const store = factory();
+      if (store.putStream === undefined) return; // OPTIONAL (ST-1, ADR 0059)
+      const text = "streamed-content-".repeat(64);
+      async function* chunks(): AsyncGenerator<Uint8Array> {
+        const all = bytes(text);
+        for (let i = 0; i < all.length; i += 13) yield all.slice(i, i + 13);
+      }
+      const streamed = await store.putStream(chunks());
+      const whole = await store.put(bytes(text));
+      expect(streamed.__loomContent).toBe(whole.__loomContent); // identical address
+      const got = await store.get(streamed);
+      expect(eq(got as Uint8Array, bytes(text))).toBe(true); // faithful round-trip
+      const again = await store.putStream(chunks());
+      expect(again.__loomContent).toBe(streamed.__loomContent); // idempotent by address
     });
   });
 }

@@ -15,6 +15,8 @@ import type { EffectMiddleware } from "@loom/effect-runtime";
 export interface ClaimCheckStore {
   /** Content-addressed, idempotent by hash — the `ContentStore.put` contract (ADR 0046). */
   put(bytes: Uint8Array): Promise<{ __loomContent: string }>;
+  /** OPTIONAL (ST-1, ADR 0059) — streaming ingestion; required only for stream-typed results. */
+  putStream?(stream: AsyncIterable<Uint8Array>): Promise<{ __loomContent: string }>;
 }
 
 /** Read-side view, for {@link resolveClaimCheck} OUTSIDE the determinism boundary. */
@@ -26,10 +28,56 @@ export interface ClaimCheckReader {
 export interface ClaimCheckEnvelope {
   readonly __loomClaimCheck: true;
   readonly ref: { readonly __loomContent: string };
-  /** Byte length of the offloaded JSON payload. */
+  /** Byte length of the offloaded payload. */
   readonly size: number;
   /** The tool's declared deterministic projection of the result (CC-2), if any. */
   readonly digest?: unknown;
+  /**
+   * How the offloaded bytes decode. Absent = JSON (the classic offload path);
+   * stream-typed results record their declared codec ("bytes" default) —
+   * resolve those with {@link resolveClaimCheckBytes}, not JSON parsing.
+   */
+  readonly codec?: string;
+}
+
+// ── ST-2 (ADR 0059) — stream-typed tool results ───────────────────────────────
+//
+// A tool whose result is too large to hold in memory returns
+// `streamResult(stream, { digest })` instead of the payload: the middleware
+// streams it into the content store INSIDE the effect (transient side of the
+// determinism boundary) and the recorded value is still the small envelope.
+// The digest MUST come from the tool (computed while producing) — the bytes
+// are consumed by the upload, so no post-hoc projection is possible.
+
+export interface StreamedResult {
+  readonly __loomStreamResult: true;
+  readonly stream: AsyncIterable<Uint8Array>;
+  /** The declared deterministic projection (CC-2). Pure w.r.t. the streamed content. */
+  readonly digest?: unknown;
+  /** Recorded on the envelope; default "bytes". */
+  readonly codec?: string;
+}
+
+/** Wrap a byte stream as a tool result; Node `Readable`s satisfy the iterable directly. */
+export function streamResult(
+  stream: AsyncIterable<Uint8Array>,
+  opts: { digest?: unknown; codec?: string } = {}
+): StreamedResult {
+  return {
+    __loomStreamResult: true,
+    stream,
+    ...(opts.digest !== undefined && { digest: opts.digest }),
+    ...(opts.codec !== undefined && { codec: opts.codec }),
+  };
+}
+
+export function isStreamResult(value: unknown): value is StreamedResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { __loomStreamResult?: unknown }).__loomStreamResult === true &&
+    typeof (value as { stream?: unknown }).stream === "object"
+  );
 }
 
 export function isClaimCheck(value: unknown): value is ClaimCheckEnvelope {
@@ -86,6 +134,43 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
   return async (ctx, _input, next): Promise<unknown> => {
     const result = await next();
     if (isClaimCheck(result)) return result; // already an envelope (stacked wiring) — never double-wrap
+
+    // ST-2 — stream-typed result: ALWAYS offloads (a stream is a declared-big
+    // payload), never buffered by the middleware (a counting wrapper is the only
+    // thing between the tool and the store).
+    if (isStreamResult(result)) {
+      if (options.store.putStream === undefined) {
+        throw new TypeError(
+          `claim-check: tool "${ctx.toolId ?? ctx.stepId}" returned a streamed result but the content store does not implement putStream() (ST-1, ADR 0059)`
+        );
+      }
+      let size = 0;
+      const source = result.stream;
+      const counted = (async function* () {
+        for await (const chunk of source) {
+          size += chunk.byteLength;
+          yield chunk;
+        }
+      })();
+      const streamedRef = await options.store.putStream(counted);
+      const envelope: ClaimCheckEnvelope = {
+        __loomClaimCheck: true,
+        ref: { __loomContent: streamedRef.__loomContent },
+        size,
+        codec: result.codec ?? "bytes",
+        ...(result.digest !== undefined && { digest: result.digest }),
+      };
+      options.onOffload?.({
+        ...(ctx.toolId !== undefined && { toolId: ctx.toolId }),
+        stepId: ctx.stepId,
+        executionId: ctx.executionId,
+        workflowId: ctx.workflowId,
+        size,
+        contentAddress: streamedRef.__loomContent,
+      });
+      return envelope;
+    }
+
     let json: string | undefined;
     try {
       json = JSON.stringify(result);
@@ -127,7 +212,24 @@ export async function resolveClaimCheck<T = unknown>(
   reader: ClaimCheckReader,
   envelope: ClaimCheckEnvelope
 ): Promise<T | null> {
+  if (envelope.codec !== undefined && envelope.codec !== "json") {
+    throw new TypeError(
+      `resolveClaimCheck: envelope codec is "${envelope.codec}", not JSON — use resolveClaimCheckBytes for stream-offloaded content`
+    );
+  }
   const bytes = await reader.get(envelope.ref);
   if (bytes === null) return null;
   return JSON.parse(new TextDecoder().decode(bytes)) as T;
+}
+
+/**
+ * CC-4 for stream-offloaded content (ST-2): the raw bytes, `null` on absence.
+ * Same boundary rule as {@link resolveClaimCheck}: OUTSIDE the determinism
+ * boundary only.
+ */
+export async function resolveClaimCheckBytes(
+  reader: ClaimCheckReader,
+  envelope: ClaimCheckEnvelope
+): Promise<Uint8Array | null> {
+  return reader.get(envelope.ref);
 }
