@@ -13,3 +13,9 @@ export {
 } from "./ContentResolvingEventStore";
 export { ContentMissingError } from "./errors";
 export { externalizePathsFromSteps } from "./derive";
+export {
+  pinByEventKinds,
+  sweepUnpinnedContent,
+  type ContentSweepOptions,
+  type ContentSweepReport,
+} from "./gc";

@@ -16,6 +16,7 @@ export {
   type RetentionPolicy,
   type ArchiveStores,
   type RetentionOutcome,
+  type PinPredicate,
 } from "./LogLifecycle";
 export { parseCron, nextOccurrence, type CronSpec } from "./cron";
 export type {
