@@ -183,6 +183,9 @@
     },
     {
       "path": "plugins/durable-state"
+    },
+    {
+      "path": "plugins/read-model"
     }
   ]
 }

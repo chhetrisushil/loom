@@ -5,5 +5,6 @@ export { migrate as migratePostgresStores, NOTIFY_CHANNEL } from "./schema";
 export type { PgConfig } from "./pool";
 export { PostgresTimerStore } from "./PostgresTimerStore";
 export { PostgresDurableStateStore } from "./PostgresDurableStateStore";
+export { PostgresReadModelStore } from "./PostgresReadModelStore";
 
 export { postgresStorage, type PostgresStorageOptions } from "./preset";

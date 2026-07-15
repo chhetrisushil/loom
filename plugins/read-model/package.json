@@ -1,0 +1,30 @@
+{
+  "name": "@loom/plugin-read-model",
+  "version": "0.0.1",
+  "description": "Durable, checkpointed cross-execution read models for Loom (RM-1..4, db-copilot infra) — app-declared extractors index domain events into a persisted, queryable store; per-execution watermarks + idempotent apply make live tail, catch-up scan, and multi-node ingestion converge; rebuildable from the log, which stays the only authority.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "test": "vitest run",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/core": "workspace:*",
+    "@loom/event-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@loom/conformance": "workspace:*",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

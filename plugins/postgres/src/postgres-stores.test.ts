@@ -44,7 +44,9 @@ suite("@loom/plugin-postgres", () => {
   });
 
   beforeEach(async () => {
-    await admin.query("TRUNCATE events, snapshots, refs, lineage, fences, timers, durable_state");
+    await admin.query(
+      "TRUNCATE events, snapshots, refs, lineage, fences, timers, durable_state, read_model_rows, read_model_watermarks"
+    );
   });
 
   describe("PostgresEventStore", () => {
@@ -106,6 +108,39 @@ suite("@loom/plugin-postgres", () => {
         expect(await timers.due(500)).toEqual([{ executionId: "b", wakeAt: 200 }]);
       } finally {
         await timers.close();
+      }
+    });
+
+    it("read models (RM #183): idempotent apply, GREATEST watermarks, @> queries, keyset paging", async () => {
+      const { PostgresReadModelStore } = await import("./PostgresReadModelStore");
+      const rm = new PostgresReadModelStore(PG_URL as string);
+      const row = (n: number, target: string) => ({
+        rowId: `e-${n}`,
+        executionId: "x-1",
+        sequence: n,
+        timestamp: 1_000 + n,
+        kind: "FINDING_RECORDED",
+        fields: { target },
+        value: { n },
+      });
+      try {
+        await rm.apply("m", "x-1", 1, [row(0, "orders"), row(1, "users")]);
+        await rm.apply("m", "x-1", 0, [row(0, "orders")]); // duplicate + stale mark
+        expect(await rm.watermark("m", "x-1")).toBe(1);
+        const orders = await rm.query("m", { where: { target: "orders" } });
+        expect(orders.rows).toHaveLength(1);
+        expect((orders.rows[0]?.value as { n: number }).n).toBe(0);
+        // keyset paging walks both rows exactly once
+        const first = await rm.query("m", { limit: 1 });
+        expect(first.nextCursor).toBeDefined();
+        const second = await rm.query("m", { limit: 1, cursor: first.nextCursor as string });
+        expect(second.rows[0]?.rowId).not.toBe(first.rows[0]?.rowId);
+        expect(second.nextCursor).toBeUndefined();
+        await rm.clear("m");
+        expect((await rm.query("m")).rows).toHaveLength(0);
+        expect(await rm.watermark("m", "x-1")).toBeNull();
+      } finally {
+        await rm.close();
       }
     });
 
