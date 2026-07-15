@@ -57,8 +57,8 @@ imports, so the 1P/3P distinction stays purely organisational.
 
 ### Current first-party plugins
 
-- `@loom/plugin-sqlite` — embedded SQLite `Event`/`Snapshot`/`Branch`/`Timer` stores + the
-  `sqliteStorage()` preset.
+- `@loom/plugin-sqlite` — embedded SQLite `Event`/`Snapshot`/`Branch`/`Timer`/`DurableState`/
+  `ReadModel`/`Content` stores + the `sqliteStorage()` preset.
 - `@loom/plugin-postgres` — network Postgres stores (LISTEN/NOTIFY) + `postgresStorage()`.
 - `@loom/plugin-crypto` — field-level crypto-shredding store wrappers (K10) + `KeyStore` SPI.
 - `@loom/plugin-content` — content-store seam: `ContentResolvingEventStore` externalizes marked
@@ -67,6 +67,13 @@ imports, so the 1P/3P distinction stays purely organisational.
   RECORDED effects (replay folds the recorded value, never the store) + CAS revisions and the
   `sentinelState()` schedule-driven convenience ([ADR 0053](adr/0053-durable-state-plugin.md)).
   SQLite/Postgres backends ship in their storage plugins.
+- `@loom/plugin-read-model` — durable, checkpointed cross-execution read models: app-declared
+  extractors index domain events into a persisted, queryable store (kind + field-equality,
+  keyset-paged); convergent ingestion from the live `onEvent` tail + watermark-incremental
+  catch-up; a cache of the log, never an authority ([ADR 0058](adr/0058-read-model-plugin.md)).
+- `@loom/plugin-sentinel` — `sentinelPreset()`: the perpetual-agent pattern (schedule + carry
+  state + claim-check + K10.6 pin policy) as one composition-time declaration, plus the
+  `loom new sentinel` scaffold.
 - `@loom/plugin-audit-chain` — tamper-evident hash-chained `EventStore` wrapper.
 
 ## Scaffolding a plugin

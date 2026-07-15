@@ -128,8 +128,14 @@ implementation runs to prove alignment. Full map: [12-extension-seams.md](../loo
 | Effect / middleware / authority | `Effect` / `EffectMiddleware` / `CapabilityAuthorizer` (`@loom/effect-runtime`) | — | (staged) |
 
 - **Required vs optional:** each interface marks optional methods (e.g. `EventStore.readRange`,
-  `acquireFence`, `copyPrefix`, `deleteExecution`). An implementation MAY omit optional methods; the
-  conformance kit skips them. A store that omits `acquireFence` performs no fencing (single-node).
+  `acquireFence`, `copyPrefix`, `deleteExecution`, and the paged `listExecutionsPage` — SPI 1.2.0,
+  the bounded-memory enumeration maintenance passes prefer). An implementation MAY omit optional
+  methods; the conformance kit skips them. A store that omits `acquireFence` performs no fencing
+  (single-node).
+- **Plugin-tier SPIs** are pinned the same way, without kernel version constants:
+  `ContentStore` (incl. the ADR 0059 `putStream` outcome contract), `DurableStateStore`, and
+  `ReadModelStore` (incl. query limit/cursor validation) each ship a `run…Conformance` kit in
+  `@loom/conformance`.
 - **Compatibility:** an SPI version is semver; a MINOR bump adds an optional method, a MAJOR bump
   changes a required-method contract. Kits import from `@loom/conformance`.
 
