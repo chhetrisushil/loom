@@ -20,6 +20,7 @@
   "dependencies": {
     "@loom/core": "workspace:*",
     "@loom/event-runtime": "workspace:*",
+    "@loom/plugin-durable-state": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "pg": "^8.13.0",
     "@loom/plugin-kit": "workspace:*"

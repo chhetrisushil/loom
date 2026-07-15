@@ -603,3 +603,123 @@ export function runContentStoreConformance(
     });
   });
 }
+
+// ── DurableStateStore (ADR 0051 D2 durable-state SPI) ─────────────────────────
+//
+// The `@loom/plugin-durable-state` backend contract: a dumb keyed CAS store.
+// Contract knowledge (schemas, migrations) lives above the SPI, so conformance
+// pins only storage semantics: revisions start at 1 and increment by exactly one,
+// `expectedRevision: 0` creates, any mismatch rejects with an error shaped like
+// RevisionConflictError (matched structurally — 3P backends may not share the
+// class), and `clear` is idempotent. Structural type, same idiom as ContentStore.
+
+/** Structural view of the durable-state store SPI (avoids a plugin dependency). */
+export interface DurableStateStoreLike {
+  load(
+    key: string
+  ): Promise<{ contractVersion: number; revision: number; payload: unknown } | null>;
+  save(
+    key: string,
+    value: { contractVersion: number; payload: unknown },
+    expectedRevision: number
+  ): Promise<{ contractVersion: number; revision: number; payload: unknown }>;
+  clear(key: string): Promise<void>;
+}
+
+/**
+ * Assert a DurableStateStore backend upholds the ADR-0051-D2 contract:
+ * compare-and-set revisions (create at 0 → 1, strict +1 increments), loud
+ * structured conflicts carrying expected/actual, absence as `null` (never a
+ * throw), JSON payload fidelity, per-key isolation, and idempotent `clear`.
+ */
+export function runDurableStateStoreConformance(
+  factory: () => DurableStateStoreLike,
+  label = "DurableStateStore"
+): void {
+  describe(`${label} conformance (DurableStateStore SPI, ADR 0051 D2)`, () => {
+    it("load returns null (never throws) for an absent key", async () => {
+      const store = factory();
+      expect(await store.load("absent")).toBeNull();
+    });
+
+    it("save with expectedRevision 0 creates at revision 1 and round-trips", async () => {
+      const store = factory();
+      const saved = await store.save("k", { contractVersion: 2, payload: { n: 1 } }, 0);
+      expect(saved.revision).toBe(1);
+      expect(saved.contractVersion).toBe(2);
+      const loaded = await store.load("k");
+      expect(loaded).toEqual({ contractVersion: 2, revision: 1, payload: { n: 1 } });
+    });
+
+    it("CAS increments by exactly one per successful save", async () => {
+      const store = factory();
+      await store.save("k", { contractVersion: 1, payload: { n: 1 } }, 0);
+      const second = await store.save("k", { contractVersion: 1, payload: { n: 2 } }, 1);
+      expect(second.revision).toBe(2);
+      expect((await store.load("k"))?.payload).toEqual({ n: 2 });
+    });
+
+    it("a stale expectedRevision rejects with a structured conflict and leaves the record intact", async () => {
+      const store = factory();
+      await store.save("k", { contractVersion: 1, payload: { n: 1 } }, 0);
+      await store.save("k", { contractVersion: 1, payload: { n: 2 } }, 1);
+      await expect(
+        store.save("k", { contractVersion: 1, payload: { n: 99 } }, 1)
+      ).rejects.toMatchObject({
+        name: "RevisionConflictError",
+        expectedRevision: 1,
+        actualRevision: 2,
+      });
+      expect(await store.load("k")).toEqual({ contractVersion: 1, revision: 2, payload: { n: 2 } });
+    });
+
+    it("creating an existing key (expectedRevision 0) conflicts", async () => {
+      const store = factory();
+      await store.save("k", { contractVersion: 1, payload: {} }, 0);
+      await expect(store.save("k", { contractVersion: 1, payload: {} }, 0)).rejects.toMatchObject({
+        name: "RevisionConflictError",
+        actualRevision: 1,
+      });
+    });
+
+    it("updating an absent key conflicts with actualRevision 0", async () => {
+      const store = factory();
+      await expect(
+        store.save("ghost", { contractVersion: 1, payload: {} }, 3)
+      ).rejects.toMatchObject({
+        name: "RevisionConflictError",
+        expectedRevision: 3,
+        actualRevision: 0,
+      });
+    });
+
+    it("preserves JSON payload fidelity (nesting, arrays, null, numbers, unicode)", async () => {
+      const store = factory();
+      const payload = {
+        nested: { deep: [1, 2.5, null, "χ", { flag: false }] },
+        empty: {},
+        list: [] as unknown[],
+      };
+      await store.save("k", { contractVersion: 1, payload }, 0);
+      expect((await store.load("k"))?.payload).toEqual(payload);
+    });
+
+    it("keys are isolated", async () => {
+      const store = factory();
+      await store.save("a", { contractVersion: 1, payload: { of: "a" } }, 0);
+      await store.save("b", { contractVersion: 1, payload: { of: "b" } }, 0);
+      expect((await store.load("a"))?.payload).toEqual({ of: "a" });
+      expect((await store.load("b"))?.payload).toEqual({ of: "b" });
+    });
+
+    it("clear removes the key, is idempotent, and create works again afterwards", async () => {
+      const store = factory();
+      await store.save("k", { contractVersion: 1, payload: { n: 1 } }, 0);
+      await store.clear("k");
+      expect(await store.load("k")).toBeNull();
+      await store.clear("k"); // idempotent — must not throw
+      const recreated = await store.save("k", { contractVersion: 1, payload: { n: 2 } }, 0);
+      expect(recreated.revision).toBe(1);
+    });
+  });
+}
