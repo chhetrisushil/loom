@@ -1,7 +1,7 @@
 import type { EventStore } from "@loom/event-runtime";
 import type { ContentStore } from "./ContentStore";
 
-// ── K10.5 (ADR 0055) — pinned mark-and-sweep for claim-checked content ────────
+// ── K10.6 (ADR 0055) — pinned mark-and-sweep for claim-checked content ────────
 //
 // Blob reclamation was the ADR 0046 deferred gap: `deleteExecution`/
 // `truncatePrefix` reclaim events but never blobs. This sweep closes it for
@@ -46,7 +46,7 @@ function collectContentRefs(value: unknown, visit: (address: string) => void): v
 }
 
 /**
- * A {@link PinPredicate} for `LogLifecycle` (K10.5): pin any execution whose log
+ * A {@link PinPredicate} for `LogLifecycle` (K10.6): pin any execution whose log
  * carries at least one event of the designated kinds — e.g. the app's finding
  * events. Use when no archive is configured and reclaiming the run would destroy
  * the only copy of its durable conclusions.

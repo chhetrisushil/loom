@@ -80,7 +80,7 @@ async function fixture() {
   return { content, live, archive, evidence, staleTelemetry, freshTelemetry };
 }
 
-describe("sweepUnpinnedContent (K10.5, ADR 0055)", () => {
+describe("sweepUnpinnedContent (K10.6, ADR 0055)", () => {
   it("reclaims stale unpinned telemetry; finding-cited evidence survives archival, hash-verifiable", async () => {
     const f = await fixture();
     const report = await sweepUnpinnedContent({
@@ -158,7 +158,7 @@ describe("sweepUnpinnedContent (K10.5, ADR 0055)", () => {
   });
 });
 
-describe("pinByEventKinds (K10.5 execution-level predicate)", () => {
+describe("pinByEventKinds (K10.6 execution-level predicate)", () => {
   it("pins executions whose log carries a designated event kind", async () => {
     const f = await fixture();
     const pinned = pinByEventKinds(f.archive, ["FINDING_RECORDED"]);

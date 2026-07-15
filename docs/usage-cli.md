@@ -40,6 +40,7 @@ loom — project-local commands for a Loom app
   loom optimize --db <path> <executionId>         advisory optimization report
   loom eval  --dir <path>                         replay golden logs vs expectations
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
+  loom lint claim-check [--dir .]                 CC-5: flag claim-check reach-through inside flows
   loom retention run --db <path> --snap <path> [--ttl ms] [--apply]  reclaim aged terminal executions
   loom compliance report --db <path> --subject-path <p> [--tenant-path <p>]  data-subject inventory
   loom inspect --db <path> [--port N]             web inspector (timeline + slider)

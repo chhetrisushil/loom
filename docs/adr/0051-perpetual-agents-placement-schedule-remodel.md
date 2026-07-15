@@ -93,7 +93,7 @@ projections. A kernel `finding$` would be exactly the genericity violation the K
 gatekeeping exists to catch. Promote to a contrib package only when a second application
 wants the schema — not before.
 
-### D5 — K10.5: a pin seam in retention (kernel accepts a predicate; the plugin owns the index)
+### D5 — K10.6: a pin seam in retention (kernel accepts a predicate; the plugin owns the index)
 
 Evidence cited by a finding must outlive both raw-telemetry TTL and archival of the run that
 recorded it — today neither `LogLifecycle.applyRetention` nor content-blob reclamation can

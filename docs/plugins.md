@@ -63,6 +63,10 @@ imports, so the 1P/3P distinction stays purely organisational.
 - `@loom/plugin-crypto` — field-level crypto-shredding store wrappers (K10) + `KeyStore` SPI.
 - `@loom/plugin-content` — content-store seam: `ContentResolvingEventStore` externalizes marked
   payload fields to a content-addressed side store + `ContentStore` SPI ([ADR 0046](adr/0046-content-store-seam-thin-authoritative-log.md)).
+- `@loom/plugin-durable-state` — typed, versioned, contract-migratable keyed carry state as
+  RECORDED effects (replay folds the recorded value, never the store) + CAS revisions and the
+  `sentinelState()` schedule-driven convenience ([ADR 0053](adr/0053-durable-state-plugin.md)).
+  SQLite/Postgres backends ship in their storage plugins.
 - `@loom/plugin-audit-chain` — tamper-evident hash-chained `EventStore` wrapper.
 
 ## Scaffolding a plugin

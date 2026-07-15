@@ -76,11 +76,14 @@ load-bearing, plus the global guardrails that gate every additive capability:
   `(state, event) => state`; a `__proto__` container key MUST be rejected (fold hardening).
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
-  the pinned type set MUST change together. The current version is **1.14.0** — the most recent
-  additive types are the K10.1 retention control facts `EXECUTION_ARCHIVED`/`EXECUTION_DELETED`
-  (1.13.0, into `variables._lifecycle`) and the T3-R4.5 `ERASURE_PENDING` deferred-erasure fact
-  (1.14.0, into `variables._erasure`) — all pure audit on reserved control streams, so a log
-  that never prunes or defers an erasure replays byte-identically.
+  the pinned type set MUST change together. The current version is **1.16.0** — after the
+  K10.1/T3 audit facts (1.13.0/1.14.0), the perpetual-agents series added two additive MINORs
+  with **no new event kinds**: 1.15.0 extends `EXECUTION_MIGRATED` with an optional
+  `migratedInput` payload field (K11.5 contract-versioned state migration — the fold replaces
+  `variables._input` with the recorded transformed value, ADR 0056), and 1.16.0 folds the
+  ordered `variables._resumePayloads` list from existing `EXECUTION_RESUMED` events (the
+  multi-gate suspend fix, ADR 0057). Logs that never migrate state or resume twice replay
+  byte-identically.
 
 ## 5. Suspension semantics
 
@@ -92,6 +95,12 @@ load-bearing, plus the global guardrails that gate every additive capability:
   drift never enters the fold.
 - Resume MAY be authority-gated: a `ResumeAuthenticator` verdict is recorded as `APPROVAL_GRANTED`
   (K12); a rejected resume never reaches the log.
+- On replay, resumed gates pass through **in order, each with its own recorded payload** (the
+  `_resumePayloads` fold, ADR 0057); a gate beyond the recorded resumes parks as before.
+- `resumeAs` (K11.3) MAY carry an operator-supplied state transform (K11.5, ADR 0056): the
+  transform's RESULT is recorded on `EXECUTION_MIGRATED` (`migratedInput`), every later
+  resume/restore folds the migrated input, and a failing transform refuses the migration with
+  nothing appended.
 
 ## 6. Placement semantics
 

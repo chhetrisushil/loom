@@ -68,7 +68,8 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._output` | `EXECUTION_COMPLETED` | the flow output |
 | `variables._error` | `EXECUTION_FAILED` | error string |
 | `variables._cancelReason` | `EXECUTION_CANCELLED` | cancel reason |
-| `variables._resumePayload` | `EXECUTION_RESUMED` | resume payload (consumed by `ctx.suspend` passthrough) |
+| `variables._resumePayload` | `EXECUTION_RESUMED` | LATEST resume payload (legacy key, kept for pre-1.16 snapshots) |
+| `variables._resumePayloads` | `EXECUTION_RESUMED` | ORDERED list of every resume payload — gate *i* passes through with payload *i* on replay (1.16.0, ADR 0057) |
 | `variables._decisions` | `DECISION_RECORDED` | `Record<decisionId, { choice, rationale?, source? }>` |
 | `variables._denials` | `EFFECT_DENIED` | `Array<{ toolId, stepId?, reason? }>` |
 | `variables._executionDenials` | `EXECUTION_DENIED` | `Array<{ op, reason?, actor? }>` — refused lifecycle ops (C.1) |
@@ -78,7 +79,8 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._indoubt` | `EFFECT_INDOUBT` | `Array<{ stepId, toolId?, attempts?, idempotencyKey? }>` |
 | `variables._flowHash` | `EXECUTION_STARTED` / `EXECUTION_MIGRATED` | the flow-code content hash this execution currently resolves against (K11.1/.3) |
 | `variables._migratedTo` | `EXECUTION_MIGRATED` | the flow id this execution now resolves to after a migration (K11.3) |
-| `variables._migrations` | `EXECUTION_MIGRATED` | `Array<{ toFlowId, toHash?, fromHash?, strategy? }>` — migration audit trail |
+| `variables._migrations` | `EXECUTION_MIGRATED` | `Array<{ toFlowId, toHash?, fromHash?, strategy?, stateMigrated? }>` — migration audit trail |
+| `variables._input` (replaced) | `EXECUTION_MIGRATED` | when the payload carries `migratedInput` (K11.5, 1.15.0), the recorded TRANSFORMED input replaces `_input` so every later resume folds it |
 | `variables._timers` | `TIMER_FIRED` | `Array<{ firedAt, wakeAt?, scheduleId?, occurrence? }>` — durable-timer wakes (T1) |
 | `variables._egress` | `EGRESS_DENIED` | `Array<{ toolId?, stepId?, target?, reason? }>` — kernel-side egress denials (K7) |
 | `variables._shredded` | `PAYLOAD_SHREDDED` | `{ subjectId?, reason?, at }` — crypto-shred tombstone (K10) |
@@ -303,12 +305,17 @@ triggers downstream).
   via `resumeAs(executionId, flowId, event, { strategy })` — `"replay-check"` (proven
   fold-compatible first: every recorded step still exists in the target flow, deploy-sim's
   step-orphan rule) or `"operator-ack"`.
-- **Payload:** `{ toFlowId: string; toHash?: string; fromHash?: string; strategy?: string }`
+- **Payload:** `{ toFlowId: string; toHash?: string; fromHash?: string; strategy?: string; migratedInput?: unknown }`
+  — `migratedInput` (1.15.0, K11.5, [ADR 0056](../adr/0056-k11-5-state-migration-on-resume.md)) is
+  the RESULT of an operator-supplied contract transform applied to the folded input at
+  migration time: the outcome is durable, never the function.
 - **Folds into:** re-points `variables._flowHash = toHash` and
   `variables._migratedTo = toFlowId` (subsequent resumes resolve and check against the NEW
-  code), and appends the verdict to `variables._migrations`. Status untouched — the
-  accompanying resume events own the lifecycle. Replay re-applies the same verdict at the
-  same sequence (G1).
+  code), replaces `variables._input` with `migratedInput` when present (every later
+  resume/restore folds the migrated input), and appends the verdict to
+  `variables._migrations` (with `stateMigrated: true` when input was transformed). Status
+  untouched — the accompanying resume events own the lifecycle. Replay re-applies the same
+  verdict at the same sequence (G1).
 
 #### `APPROVAL_GRANTED`
 - **Introduced:** Loom 2.1 — K12, identity & delegated authority ([ADR 0024](../adr/0024-k12-identity-tenancy-delegated-authority.md)).
@@ -480,7 +487,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts:311`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.14.0"; // …1.11.0 RESOURCE_METERED dimensions (ADR 0032); 1.12.0 EXECUTION_DENIED (C.1, ADR 0039); 1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1 retention control facts); 1.14.0 ERASURE_PENDING (T3-R4.5 deferred-erasure control fact)
+export const EVENT_SCHEMA_VERSION = "1.16.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057) — both additive, NO new event kinds
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

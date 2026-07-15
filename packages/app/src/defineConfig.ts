@@ -303,7 +303,7 @@ export interface LoomConfig {
     /** Where each execution's events/snapshot are copied before deletion (A6). */
     archive?: ArchiveStores;
     /**
-     * K10.5 — pin predicate: retention exempts executions this returns `true`
+     * K10.6 — pin predicate: retention exempts executions this returns `true`
      * for (outcome `"pinned"`). The kernel supplies the gate; what pins is
      * policy (G3) — e.g. `pinByEventKinds(store, ["FINDING_RECORDED"])` from
      * `@loom/plugin-content`.
