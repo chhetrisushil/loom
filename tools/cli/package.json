@@ -1,7 +1,7 @@
 {
   "name": "@loom/cli",
   "version": "0.0.1",
-  "description": "The loom CLI — project-local commands over the durable log: logs, debug (time-travel), eval",
+  "description": "The loom CLI \u2014 project-local commands over the durable log: logs, debug (time-travel), eval",
   "bin": {
     "loom": "./dist/cli.js"
   },
@@ -38,7 +38,8 @@
     "@loom/plugin-sqlite": "workspace:*",
     "@loom/workflow-runtime": "workspace:*",
     "@loom/plugin-kit": "workspace:*",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "@loom/plugin-content": "workspace:*"
   },
   "devDependencies": {
     "@loom/effect-runtime": "workspace:*",

@@ -20,6 +20,7 @@ import { cmdPluginSearch } from "./pluginSearch";
 import { cmdPluginTry } from "./pluginTry";
 import { cmdProfile } from "./profile";
 import { cmdRetentionRun } from "./retention";
+import { cmdSweepContent } from "./sweepContent";
 import { cmdVerify } from "./verify";
 
 interface Parsed {
@@ -87,6 +88,7 @@ const USAGE = `loom — project-local commands for a Loom app
   loom eval  --dir <path>                         replay golden logs vs expectations
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
   loom retention run --db <path> --snap <path> [--ttl ms] [--apply]  reclaim aged terminal executions
+  loom sweep content --db <path> --content <path> [--archive-db <path>] [--pin KIND,KIND] [--ttl ms] [--apply]  K10.6 pinned blob sweep
   loom compliance report --db <path> --subject-path <p> [--tenant-path <p>]  data-subject inventory
   loom inspect --db <path> [--port N]             web inspector (timeline + slider)
 
@@ -116,6 +118,23 @@ async function main(argv: string[]): Promise<number> {
       requireFlag(flags, "snap");
       const ttl = flags.ttl !== undefined ? Number.parseInt(flags.ttl, 10) : 0;
       console.log(await cmdRetentionRun(flags.db!, flags.snap!, ttl, flags.apply === "true"));
+      return 0;
+    }
+    case "sweep": {
+      requirePositional(positionals, "content"); // `loom sweep content`
+      requireFlag(flags, "db");
+      requireFlag(flags, "content");
+      const ttl = flags.ttl !== undefined ? Number.parseInt(flags.ttl, 10) : 30 * 24 * 3_600_000;
+      console.log(
+        await cmdSweepContent({
+          db: flags.db!,
+          content: flags.content!,
+          ...(flags["archive-db"] !== undefined && { archiveDb: flags["archive-db"] }),
+          ...(flags.pin !== undefined && { pin: flags.pin }),
+          ttlMs: ttl,
+          apply: flags.apply === "true",
+        })
+      );
       return 0;
     }
     case "compliance": {
