@@ -17,6 +17,7 @@ import {
   ExecutionDeniedError,
   FlowCodeMismatchError,
   FlowMigrationCheckError,
+  InputValidationError,
   StateMigrationError,
 } from "./types";
 import type {
@@ -99,6 +100,16 @@ export interface WorkflowRuntimeDeps {
    * kernel best-effort records for denied resume/cancel on non-fencing stores).
    */
   onExecutionDenied?: (request: ExecutionAuthzRequest, reason?: string) => void;
+  /**
+   * ADR 0051 D7 — opt-in input validation at `start()`. When true, the flow's
+   * declared `inputSchema` is parsed at the boundary for EVERY entry path that
+   * lands on start (direct starts, schedule occurrences, A2A submits); invalid
+   * input refuses with {@link InputValidationError} BEFORE anything is appended,
+   * and the PARSED value is what runs and is recorded (Zod defaults/transforms
+   * apply). Off (default) = inputSchema stays declaration-only metadata,
+   * byte-identically (G2).
+   */
+  validateInput?: boolean;
 }
 
 export class WorkflowRuntime {
@@ -112,6 +123,7 @@ export class WorkflowRuntime {
   private readonly timerStore: TimerStore | undefined;
   private readonly resumeAuthenticator: ResumeAuthenticator | undefined;
   private readonly executionAuthorizer: ExecutionAuthorizer | undefined;
+  private readonly validateInput: boolean;
   private readonly onExecutionDenied:
     | ((request: ExecutionAuthzRequest, reason?: string) => void)
     | undefined;
@@ -140,6 +152,7 @@ export class WorkflowRuntime {
     this.timerStore = deps.timerStore;
     this.executionAuthorizer = deps.executionAuthorizer;
     this.onExecutionDenied = deps.onExecutionDenied;
+    this.validateInput = deps.validateInput ?? false;
   }
 
   // ── C.1 — execution-lifecycle authorization helpers ────────────────────────
@@ -509,6 +522,23 @@ export class WorkflowRuntime {
       );
     }
 
+    // ADR 0051 D7 — opt-in contract enforcement at the boundary: the PARSED
+    // value (Zod defaults/transforms applied) is what runs and is recorded;
+    // invalid input refuses BEFORE anything is appended. Off = declaration-only
+    // metadata, byte-identically (G2).
+    let effectiveInput: unknown = input;
+    if (this.validateInput && definition.inputSchema !== undefined) {
+      const parsed = definition.inputSchema.safeParse(input);
+      if (!parsed.success) {
+        throw new InputValidationError(
+          definition.id,
+          executionId,
+          parsed.error.issues.map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`).join("; ")
+        );
+      }
+      effectiveInput = parsed.data;
+    }
+
     // Empty VM seeded with identity only; the EXECUTION_STARTED bootstrap event
     // (committed in execute) is what folds status → "running" at sequence 0.
     const vm = new ReplayVM([], {
@@ -525,11 +555,11 @@ export class WorkflowRuntime {
       definition.id,
       vm,
       runner as FlowRunner<unknown, unknown>,
-      input,
+      effectiveInput,
       [
         {
           eventType: "EXECUTION_STARTED",
-          payload: { input, ...(flowHash !== undefined && { flowHash }) },
+          payload: { input: effectiveInput, ...(flowHash !== undefined && { flowHash }) },
         },
       ],
       options?.fence,

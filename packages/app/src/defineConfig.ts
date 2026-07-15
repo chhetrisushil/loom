@@ -290,6 +290,15 @@ export interface LoomConfig {
    * `branchRegistry`. Supply `archive` for archive-before-delete (A6). Omitting the key is
    * byte-identical to not wiring it (G2) — `app.lifecycle` is still available, unarchived.
    */
+  /**
+   * ADR 0051 D7 — opt-in input validation at start. When true, every entry path
+   * (direct starts, schedule occurrences, A2A submits) parses the flow's declared
+   * `inputSchema` at the boundary: invalid input refuses with a typed
+   * `InputValidationError` before anything is appended, and the parsed value
+   * (Zod defaults/transforms applied) is what runs and is recorded. Omitted =
+   * declaration-only metadata, byte-identical (G2).
+   */
+  validateInput?: boolean;
   retention?: {
     /** Where each execution's events/snapshot are copied before deletion (A6). */
     archive?: ArchiveStores;
@@ -573,6 +582,7 @@ export function defineConfig(config: LoomConfig): LoomApp {
     onEvent,
     ...(stores.branchRegistry !== undefined && { branchRegistry: stores.branchRegistry }),
     ...(config.timers !== undefined && { timerStore: config.timers.store }),
+    ...(config.validateInput !== undefined && { validateInput: config.validateInput }),
   });
 
   // Schedules come from the explicit `timers.schedules` list AND from `scheduleModules` (loom gen
