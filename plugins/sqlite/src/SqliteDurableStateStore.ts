@@ -18,6 +18,11 @@ interface DurableStateRow {
  */
 export class SqliteDurableStateStore implements DurableStateStore {
   private readonly db: Database.Database;
+  private readonly loadStmt: Database.Statement;
+  private readonly insertStmt: Database.Statement;
+  private readonly updateStmt: Database.Statement;
+  private readonly revisionStmt: Database.Statement;
+  private readonly clearStmt: Database.Statement;
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
@@ -32,6 +37,17 @@ export class SqliteDurableStateStore implements DurableStateStore {
           payload TEXT NOT NULL
         );
       `);
+      this.loadStmt = this.db.prepare(
+        "SELECT contract_version, revision, payload FROM durable_state WHERE key = ?"
+      );
+      this.insertStmt = this.db.prepare(
+        "INSERT OR IGNORE INTO durable_state (key, contract_version, revision, payload) VALUES (?, ?, 1, ?)"
+      );
+      this.updateStmt = this.db.prepare(
+        "UPDATE durable_state SET contract_version = ?, revision = ?, payload = ? WHERE key = ? AND revision = ?"
+      );
+      this.revisionStmt = this.db.prepare("SELECT revision FROM durable_state WHERE key = ?");
+      this.clearStmt = this.db.prepare("DELETE FROM durable_state WHERE key = ?");
     } catch (err) {
       this.db.close(); // don't leak the file handle if setup fails on a bad/locked file
       throw err;
@@ -39,11 +55,7 @@ export class SqliteDurableStateStore implements DurableStateStore {
   }
 
   async load(key: string): Promise<DurableStateRecord | null> {
-    const row = this.db
-      .prepare<[string]>(
-        "SELECT contract_version, revision, payload FROM durable_state WHERE key = ?"
-      )
-      .get(key) as DurableStateRow | undefined;
+    const row = this.loadStmt.get(key) as DurableStateRow | undefined;
     if (row === undefined) return null;
     return {
       contractVersion: row.contract_version,
@@ -60,17 +72,14 @@ export class SqliteDurableStateStore implements DurableStateStore {
     const payload = JSON.stringify(value.payload);
     const changes =
       expectedRevision === 0
-        ? this.db
-            .prepare<[string, number, string]>(
-              "INSERT OR IGNORE INTO durable_state (key, contract_version, revision, payload) VALUES (?, ?, 1, ?)"
-            )
-            .run(key, value.contractVersion, payload).changes
-        : this.db
-            .prepare<[number, number, string, string, number]>(
-              "UPDATE durable_state SET contract_version = ?, revision = ?, payload = ? WHERE key = ? AND revision = ?"
-            )
-            .run(value.contractVersion, expectedRevision + 1, payload, key, expectedRevision)
-            .changes;
+        ? this.insertStmt.run(key, value.contractVersion, payload).changes
+        : this.updateStmt.run(
+            value.contractVersion,
+            expectedRevision + 1,
+            payload,
+            key,
+            expectedRevision
+          ).changes;
     if (changes === 1) {
       return {
         contractVersion: value.contractVersion,
@@ -78,14 +87,12 @@ export class SqliteDurableStateStore implements DurableStateStore {
         payload: value.payload,
       };
     }
-    const row = this.db
-      .prepare<[string]>("SELECT revision FROM durable_state WHERE key = ?")
-      .get(key) as { revision: number } | undefined;
+    const row = this.revisionStmt.get(key) as { revision: number } | undefined;
     throw new RevisionConflictError(key, expectedRevision, row?.revision ?? 0);
   }
 
   async clear(key: string): Promise<void> {
-    this.db.prepare<[string]>("DELETE FROM durable_state WHERE key = ?").run(key);
+    this.clearStmt.run(key);
   }
 
   async close(): Promise<void> {

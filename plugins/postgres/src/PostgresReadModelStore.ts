@@ -4,6 +4,7 @@ import type {
   ReadModelRow,
   ReadModelStore,
 } from "@loom/plugin-read-model";
+import { clampQueryLimit, parseQueryCursor } from "@loom/plugin-read-model";
 import type { Pool } from "pg";
 import { type PgConfig, toPool } from "./pool";
 import { migrate } from "./schema";
@@ -45,22 +46,34 @@ export class PostgresReadModelStore implements ReadModelStore {
     rows: readonly ReadModelRow[]
   ): Promise<void> {
     await this.ready;
-    for (const row of rows) {
+    // Audit fix (DS&A rank 3): batched multi-VALUES inserts — one round-trip
+    // per chunk instead of one per row. Idempotence (ON CONFLICT DO NOTHING)
+    // makes the batch exactly as safe as the loop it replaces.
+    const BATCH = 500; // 500 × 8 params = 4000, well under the 65535 cap
+    for (let i = 0; i < rows.length; i += BATCH) {
+      const chunk = rows.slice(i, i + BATCH);
+      const values = chunk
+        .map((_, j) => {
+          const b = j * 8;
+          return `($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5}, $${b + 6}, $${b + 7}::jsonb, $${b + 8}::jsonb)`;
+        })
+        .join(", ");
+      const params = chunk.flatMap((row) => [
+        modelId,
+        row.rowId,
+        row.executionId,
+        row.sequence,
+        row.timestamp,
+        row.kind,
+        JSON.stringify(row.fields),
+        JSON.stringify(row.value ?? null),
+      ]);
       await this.pool.query(
         `INSERT INTO read_model_rows
            (model_id, row_id, execution_id, sequence, timestamp, kind, fields, value)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
+         VALUES ${values}
          ON CONFLICT (model_id, row_id) DO NOTHING`,
-        [
-          modelId,
-          row.rowId,
-          row.executionId,
-          row.sequence,
-          row.timestamp,
-          row.kind,
-          JSON.stringify(row.fields),
-          JSON.stringify(row.value ?? null),
-        ]
+        params
       );
     }
     await this.pool.query(
@@ -93,7 +106,7 @@ export class PostgresReadModelStore implements ReadModelStore {
   async query(modelId: string, q: ReadModelQuery = {}): Promise<ReadModelPage> {
     await this.ready;
     const desc = q.order === "desc";
-    const limit = q.limit ?? 100;
+    const limit = clampQueryLimit(q.limit);
     const clauses = ["model_id = $1"];
     const params: unknown[] = [modelId];
     if (q.kind !== undefined) {
@@ -105,7 +118,7 @@ export class PostgresReadModelStore implements ReadModelStore {
       clauses.push(`fields @> $${params.length}::jsonb`); // exact scalar containment, GIN-indexed
     }
     if (q.cursor !== undefined) {
-      const [ts, seq, rowId] = JSON.parse(q.cursor) as [number, number, string];
+      const [ts, seq, rowId] = parseQueryCursor(q.cursor);
       params.push(ts, seq, rowId);
       clauses.push(
         `(timestamp, sequence, row_id) ${desc ? "<" : ">"} ($${params.length - 2}, $${params.length - 1}, $${params.length})`

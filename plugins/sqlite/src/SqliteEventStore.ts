@@ -29,6 +29,8 @@ function rowToEnvelope(row: EventRow): EventEnvelope {
 
 export class SqliteEventStore implements EventStore {
   private readonly db: Database.Database;
+  private pageFirstStmt: Database.Statement | undefined;
+  private pageAfterStmt: Database.Statement | undefined;
   private readonly subscribers = new Map<string, Set<(event: EventEnvelope) => void>>();
 
   constructor(dbPath: string) {
@@ -165,17 +167,18 @@ export class SqliteEventStore implements EventStore {
     limit?: number;
   }): Promise<{ executionIds: string[]; nextCursor?: string }> {
     // SP-1 (SPI 1.2.0) — keyset over the same index: lexicographic, bounded memory.
+    // Statements prepared lazily once (audit: no per-page re-parse on big scans).
     const limit = opts?.limit ?? 1000;
+    this.pageFirstStmt ??= this.db.prepare(
+      "SELECT DISTINCT execution_id FROM events ORDER BY execution_id LIMIT ?"
+    );
+    this.pageAfterStmt ??= this.db.prepare(
+      "SELECT DISTINCT execution_id FROM events WHERE execution_id > ? ORDER BY execution_id LIMIT ?"
+    );
     const rows =
       opts?.cursor === undefined
-        ? (this.db
-            .prepare("SELECT DISTINCT execution_id FROM events ORDER BY execution_id LIMIT ?")
-            .all(limit + 1) as { execution_id: string }[])
-        : (this.db
-            .prepare(
-              "SELECT DISTINCT execution_id FROM events WHERE execution_id > ? ORDER BY execution_id LIMIT ?"
-            )
-            .all(opts.cursor, limit + 1) as { execution_id: string }[]);
+        ? (this.pageFirstStmt.all(limit + 1) as { execution_id: string }[])
+        : (this.pageAfterStmt.all(opts.cursor, limit + 1) as { execution_id: string }[]);
     const executionIds = rows.slice(0, limit).map((r) => r.execution_id);
     const last = executionIds[executionIds.length - 1];
     return {

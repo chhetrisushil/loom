@@ -4,6 +4,7 @@ import type {
   ReadModelRow,
   ReadModelStore,
 } from "@loom/plugin-read-model";
+import { clampQueryLimit, parseQueryCursor } from "@loom/plugin-read-model";
 import Database from "better-sqlite3";
 
 interface RowRecord {
@@ -25,6 +26,14 @@ interface RowRecord {
  */
 export class SqliteReadModelStore implements ReadModelStore {
   private readonly db: Database.Database;
+  // Audit fix (DS&A rank 2): statements are prepared ONCE — apply-heavy
+  // catch-ups no longer re-parse identical SQL per call.
+  private readonly insertRowStmt: Database.Statement;
+  private readonly upsertMarkStmt: Database.Statement;
+  private readonly watermarkStmt: Database.Statement;
+  private readonly watermarkedStmt: Database.Statement;
+  private readonly clearRowsStmt: Database.Statement;
+  private readonly clearMarksStmt: Database.Statement;
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
@@ -52,6 +61,25 @@ export class SqliteReadModelStore implements ReadModelStore {
           PRIMARY KEY (model_id, execution_id)
         );
       `);
+      this.insertRowStmt = this.db.prepare(
+        `INSERT OR IGNORE INTO read_model_rows
+           (model_id, row_id, execution_id, sequence, timestamp, kind, fields, value)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      this.upsertMarkStmt = this.db.prepare(
+        `INSERT INTO read_model_watermarks (model_id, execution_id, sequence)
+         VALUES (?, ?, ?)
+         ON CONFLICT (model_id, execution_id)
+         DO UPDATE SET sequence = MAX(sequence, excluded.sequence)`
+      );
+      this.watermarkStmt = this.db.prepare(
+        "SELECT sequence FROM read_model_watermarks WHERE model_id = ? AND execution_id = ?"
+      );
+      this.watermarkedStmt = this.db.prepare(
+        "SELECT execution_id FROM read_model_watermarks WHERE model_id = ?"
+      );
+      this.clearRowsStmt = this.db.prepare("DELETE FROM read_model_rows WHERE model_id = ?");
+      this.clearMarksStmt = this.db.prepare("DELETE FROM read_model_watermarks WHERE model_id = ?");
     } catch (err) {
       this.db.close(); // don't leak the file handle if setup fails on a bad/locked file
       throw err;
@@ -64,20 +92,9 @@ export class SqliteReadModelStore implements ReadModelStore {
     upToSequence: number,
     rows: readonly ReadModelRow[]
   ): Promise<void> {
-    const insertRow = this.db.prepare(
-      `INSERT OR IGNORE INTO read_model_rows
-         (model_id, row_id, execution_id, sequence, timestamp, kind, fields, value)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    );
-    const upsertMark = this.db.prepare(
-      `INSERT INTO read_model_watermarks (model_id, execution_id, sequence)
-       VALUES (?, ?, ?)
-       ON CONFLICT (model_id, execution_id)
-       DO UPDATE SET sequence = MAX(sequence, excluded.sequence)`
-    );
     this.db.transaction(() => {
       for (const row of rows) {
-        insertRow.run(
+        this.insertRowStmt.run(
           modelId,
           row.rowId,
           row.executionId,
@@ -88,27 +105,23 @@ export class SqliteReadModelStore implements ReadModelStore {
           JSON.stringify(row.value ?? null)
         );
       }
-      upsertMark.run(modelId, executionId, upToSequence);
+      this.upsertMarkStmt.run(modelId, executionId, upToSequence);
     })();
   }
 
   async watermark(modelId: string, executionId: string): Promise<number | null> {
-    const row = this.db
-      .prepare("SELECT sequence FROM read_model_watermarks WHERE model_id = ? AND execution_id = ?")
-      .get(modelId, executionId) as { sequence: number } | undefined;
+    const row = this.watermarkStmt.get(modelId, executionId) as { sequence: number } | undefined;
     return row?.sequence ?? null;
   }
 
   async watermarkedExecutions(modelId: string): Promise<string[]> {
-    const rows = this.db
-      .prepare("SELECT execution_id FROM read_model_watermarks WHERE model_id = ?")
-      .all(modelId) as { execution_id: string }[];
+    const rows = this.watermarkedStmt.all(modelId) as { execution_id: string }[];
     return rows.map((r) => r.execution_id);
   }
 
   async query(modelId: string, q: ReadModelQuery = {}): Promise<ReadModelPage> {
     const desc = q.order === "desc";
-    const limit = q.limit ?? 100;
+    const limit = clampQueryLimit(q.limit);
     const clauses = ["model_id = ?"];
     const params: unknown[] = [modelId];
     if (q.kind !== undefined) {
@@ -126,7 +139,7 @@ export class SqliteReadModelStore implements ReadModelStore {
       }
     }
     if (q.cursor !== undefined) {
-      const [ts, seq, rowId] = JSON.parse(q.cursor) as [number, number, string];
+      const [ts, seq, rowId] = parseQueryCursor(q.cursor);
       clauses.push(`(timestamp, sequence, row_id) ${desc ? "<" : ">"} (?, ?, ?)`);
       params.push(ts, seq, rowId);
     }
@@ -163,8 +176,8 @@ export class SqliteReadModelStore implements ReadModelStore {
 
   async clear(modelId: string): Promise<void> {
     this.db.transaction(() => {
-      this.db.prepare("DELETE FROM read_model_rows WHERE model_id = ?").run(modelId);
-      this.db.prepare("DELETE FROM read_model_watermarks WHERE model_id = ?").run(modelId);
+      this.clearRowsStmt.run(modelId);
+      this.clearMarksStmt.run(modelId);
     })();
   }
 

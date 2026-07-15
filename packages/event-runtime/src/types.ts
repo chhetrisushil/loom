@@ -150,6 +150,13 @@ export async function* iterateExecutionIds(
       });
       for (const id of page.executionIds) yield id;
       if (page.nextCursor === undefined) return;
+      if (page.nextCursor === cursor) {
+        // Audit hardening: a buggy store returning a non-advancing cursor would
+        // spin every maintenance pass forever — refuse loudly instead.
+        throw new TypeError(
+          "iterateExecutionIds: listExecutionsPage returned a non-advancing cursor (store bug) — aborting the scan"
+        );
+      }
       cursor = page.nextCursor;
     }
   }

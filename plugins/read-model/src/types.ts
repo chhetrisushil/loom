@@ -61,6 +61,43 @@ export interface ReadModelPage {
   nextCursor?: string;
 }
 
+/** Hard page-size ceiling (audit hardening): huge limits cannot exhaust a backend. */
+export const MAX_QUERY_LIMIT = 10_000;
+
+/** Validate + clamp a query limit. Backends MUST route limits through this (SPI contract). */
+export function clampQueryLimit(limit: number | undefined): number {
+  if (limit === undefined) return 100;
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new TypeError(`read-model query: limit must be a positive integer (got ${limit})`);
+  }
+  return Math.min(limit, MAX_QUERY_LIMIT);
+}
+
+/** The keyset cursor tuple every backend orders by. */
+export type QueryCursor = [timestamp: number, sequence: number, rowId: string];
+
+/** Parse + validate an opaque cursor. Malformed input is a loud TypeError, never a crash. */
+export function parseQueryCursor(cursor: string): QueryCursor {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cursor);
+  } catch {
+    parsed = undefined;
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length !== 3 ||
+    typeof parsed[0] !== "number" ||
+    typeof parsed[1] !== "number" ||
+    typeof parsed[2] !== "string"
+  ) {
+    throw new TypeError(
+      "read-model query: malformed cursor — pass back the nextCursor a prior page returned"
+    );
+  }
+  return parsed as QueryCursor;
+}
+
 /**
  * The read-model store SPI — a dumb indexed row store. All model knowledge
  * (kinds, extractors) lives above, in {@link ReadModelService}. Conformance:
