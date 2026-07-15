@@ -1,0 +1,36 @@
+{
+  "name": "@loom/plugin-sentinel",
+  "version": "0.0.1",
+  "description": "The perpetual-agent pattern as one declaration (DX-1, db-copilot infra): sentinelPreset() bundles the schedule, contract-migratable carry state (@loom/plugin-durable-state), claim-checked telemetry (@loom/middleware), and the K10.6 pin policy — the five files of examples/db-sentinel's harness, composition-time only (ADR 0043/0044).",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "test": "vitest run",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/core": "workspace:*",
+    "@loom/effect-runtime": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
+    "@loom/middleware": "workspace:*",
+    "@loom/plugin-content": "workspace:*",
+    "@loom/plugin-durable-state": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
