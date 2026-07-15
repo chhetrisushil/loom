@@ -13,6 +13,7 @@ import { cmdGen, cmdNew } from "./gen";
 import { serveInspector } from "./inspector";
 import { cmdIntrospect } from "./introspect";
 import { cmdCompat, cmdKernelManifest } from "./kernel";
+import { cmdLintClaimCheck } from "./lintClaimCheck";
 import { cmdOptimize } from "./optimize";
 import { cmdPluginCheck, cmdPluginNew, cmdPluginSeams } from "./plugin";
 import { cmdPluginSearch } from "./pluginSearch";
@@ -74,6 +75,7 @@ const USAGE = `loom — project-local commands for a Loom app
                                                   (anthropic:<m> / openai:<m> / gemini:<m> / a .gguf path)
   loom appgen --from-spec <file> [--dir .]        replay a .loom/appgen/<ts>.spec.json (no model)
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
+  loom lint claim-check [--dir .]                 CC-5: flag claim-check reach-through inside flows
   loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
   loom logs  --db <path> <executionId> [--redact a,b]   print the event timeline
   loom profile --db <path> <executionId>          flame graph + latency breakdown
@@ -130,6 +132,12 @@ async function main(argv: string[]): Promise<number> {
       const { text, report } = cmdEval(flags.dir!);
       console.log(text);
       return report.ok ? 0 : 1;
+    }
+    case "lint": {
+      requirePositional(positionals, "claim-check"); // `loom lint claim-check`
+      const { text, findings } = cmdLintClaimCheck(flags.dir ?? ".");
+      console.log(text);
+      return findings.length === 0 ? 0 : 1;
     }
     case "check": {
       requireFlag(flags, "manifest");
