@@ -10,7 +10,6 @@
   "references": [
     { "path": "../../packages/classify" },
     { "path": "../../packages/core" },
-    { "path": "../../packages/event-runtime" },
-    { "path": "../../packages/middleware" }
+    { "path": "../../packages/event-runtime" }
   ]
 }

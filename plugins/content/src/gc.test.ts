@@ -1,9 +1,15 @@
 import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { ClaimCheckEnvelope } from "@loom/middleware";
 import { describe, expect, it } from "vitest";
 import { pinByEventKinds, sweepUnpinnedContent } from "./gc";
 import { InMemoryContentStore, contentAddress } from "./index";
+
+/** The ADR 0054 claim-check envelope shape (structural — no middleware dep). */
+interface ClaimCheckEnvelope {
+  __loomClaimCheck: true;
+  ref: { __loomContent: string };
+  size: number;
+}
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 100 * DAY;
@@ -115,6 +121,26 @@ describe("sweepUnpinnedContent (K10.5, ADR 0055)", () => {
     expect(second.reclaimed).not.toContain(f.evidence.__loomContent);
     expect(await f.content.get(f.freshTelemetry)).toBeNull();
     expect(await f.content.get(f.evidence)).not.toBeNull();
+  });
+
+  it("pins BARE ContentRefs cited by pinned events (a finding's evidence list)", async () => {
+    const content = new InMemoryContentStore();
+    const plan = await content.put(bytes("EXPLAIN output"));
+    const store = new InMemoryAsyncEventStore();
+    // Evidence cited as a bare ADR 0046 ref — no claim-check envelope wrapper.
+    await store.append(
+      evt("run-1", 0, "FINDING_RECORDED", { evidence: [{ __loomContent: plan.__loomContent }] }, 1)
+    );
+    const report = await sweepUnpinnedContent({
+      eventStores: [store],
+      contentStore: content,
+      pinnedEventTypes: ["FINDING_RECORDED"],
+      olderThanMs: 0,
+      now: NOW,
+    });
+    expect(report.refsPinned).toBe(1);
+    expect(report.reclaimed).toEqual([]);
+    expect(await content.get(plan)).not.toBeNull();
   });
 
   it("refuses a store that cannot be enumerated (under-pinning is destructive)", async () => {

@@ -38,6 +38,11 @@ export interface TimerServiceOptions {
    * which would surprise single-node apps that also resume manually).
    */
   fenced?: boolean;
+  /**
+   * Injectable clock (DST/simulation): anchors the cron cursors at construction
+   * and is the default `now` for interval-driven ticks. Default: `Date.now`.
+   */
+  now?: () => number;
 }
 
 /**
@@ -72,6 +77,7 @@ export class TimerService {
   }>;
   private timer: ReturnType<typeof setInterval> | undefined;
   private ticking = false;
+  private readonly now: () => number;
 
   constructor(
     private readonly runtime: WorkflowRuntime,
@@ -83,10 +89,11 @@ export class TimerService {
     this.onError = options.onError;
     this.fenced = options.fenced ?? false;
     this.warmLeadMs = options.warmLeadMs ?? 0;
+    this.now = options.now ?? Date.now;
     // Cron cursors start at construction time: no catch-up of occurrences that
     // passed while nothing was running (documented; a durable catch-up policy
     // can layer on later without changing the firing contract).
-    const floor = Date.now();
+    const floor = this.now();
     this.schedules = (options.schedules ?? []).map((def) => ({
       def,
       spec: parseCron(def.cron),
@@ -109,7 +116,7 @@ export class TimerService {
   }
 
   /** One poll: fire every due timer and every due cron occurrence. Exposed for deterministic tests. */
-  async tick(now = Date.now()): Promise<void> {
+  async tick(now = this.now()): Promise<void> {
     if (this.ticking) return; // never overlap polls
     this.ticking = true;
     try {

@@ -110,6 +110,14 @@ export interface WorkflowRuntimeDeps {
    * byte-identically (G2).
    */
   validateInput?: boolean;
+  /**
+   * Injectable clock for event-envelope timestamps (DST/simulation). Loom's
+   * time-injection principle already covers timers (`TimerStore.due(now)`,
+   * `tick(now)`) and suspend wake times (recorded once); envelope timestamps
+   * were the gap — retention windows and content-GC citation ages read them.
+   * Default: `Date.now` (unchanged, G2). Never fold-relevant.
+   */
+  now?: () => number;
 }
 
 export class WorkflowRuntime {
@@ -124,6 +132,7 @@ export class WorkflowRuntime {
   private readonly resumeAuthenticator: ResumeAuthenticator | undefined;
   private readonly executionAuthorizer: ExecutionAuthorizer | undefined;
   private readonly validateInput: boolean;
+  private readonly now: () => number;
   private readonly onExecutionDenied:
     | ((request: ExecutionAuthzRequest, reason?: string) => void)
     | undefined;
@@ -153,6 +162,7 @@ export class WorkflowRuntime {
     this.executionAuthorizer = deps.executionAuthorizer;
     this.onExecutionDenied = deps.onExecutionDenied;
     this.validateInput = deps.validateInput ?? false;
+    this.now = deps.now ?? Date.now;
   }
 
   // ── C.1 — execution-lifecycle authorization helpers ────────────────────────
@@ -1049,7 +1059,8 @@ export class WorkflowRuntime {
         if (!cancelled) controller.abort(err);
       },
       maybeSnapshot,
-      fence
+      fence,
+      this.now
     );
 
     // Commit bootstrap events (EXECUTION_STARTED / resume+RESUMED / restore) so

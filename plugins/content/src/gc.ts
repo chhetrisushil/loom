@@ -1,5 +1,4 @@
 import type { EventStore } from "@loom/event-runtime";
-import { isClaimCheck } from "@loom/middleware";
 import type { ContentStore } from "./ContentStore";
 
 // ── K10.5 (ADR 0055) — pinned mark-and-sweep for claim-checked content ────────
@@ -15,19 +14,24 @@ import type { ContentStore } from "./ContentStore";
 // alongside the live one. Keyed by content address, so a blob cited by a
 // finding in an archived month-1 run survives any number of rotations.
 
-/** Recursively collect claim-check content addresses out of an event payload. */
-function collectClaimCheckRefs(value: unknown, visit: (address: string) => void): void {
-  if (isClaimCheck(value)) {
-    visit(value.ref.__loomContent); // the envelope is a leaf — digests are projections, not containers
+/**
+ * Recursively collect content addresses out of an event payload. Any object
+ * carrying a string `__loomContent` is a ref leaf — this covers bare ADR 0046
+ * `ContentRef`s (e.g. a finding's `evidence` list) AND ADR 0054 claim-check
+ * envelopes (whose `ref` field is such an object, found by recursion).
+ */
+function collectContentRefs(value: unknown, visit: (address: string) => void): void {
+  if (typeof value !== "object" || value === null) return;
+  const address = (value as { __loomContent?: unknown }).__loomContent;
+  if (typeof address === "string") {
+    visit(address);
     return;
   }
   if (Array.isArray(value)) {
-    for (const item of value) collectClaimCheckRefs(item, visit);
+    for (const item of value) collectContentRefs(item, visit);
     return;
   }
-  if (typeof value === "object" && value !== null) {
-    for (const item of Object.values(value)) collectClaimCheckRefs(item, visit);
-  }
+  for (const item of Object.values(value)) collectContentRefs(item, visit);
 }
 
 /**
@@ -95,7 +99,7 @@ export async function sweepUnpinnedContent(
     for (const executionId of await store.listExecutions()) {
       executionsScanned++;
       for (const event of await store.read(executionId)) {
-        collectClaimCheckRefs(event.payload, (address) => {
+        collectContentRefs(event.payload, (address) => {
           const prior = lastCited.get(address);
           if (prior === undefined || event.timestamp > prior) {
             lastCited.set(address, event.timestamp);
