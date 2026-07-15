@@ -134,6 +134,27 @@ export class InMemoryAsyncEventStore implements EventStore {
     return [...this.log.keys()];
   }
 
+  async listExecutionsPage(opts?: {
+    cursor?: string;
+    limit?: number;
+  }): Promise<{ executionIds: string[]; nextCursor?: string }> {
+    await this.tick();
+    const limit = opts?.limit ?? 1000;
+    const cursor = opts?.cursor;
+    const sorted = [...this.log.keys()].sort();
+    let start = 0;
+    if (cursor !== undefined) {
+      const idx = sorted.findIndex((id) => id > cursor);
+      start = idx === -1 ? sorted.length : idx;
+    }
+    const executionIds = sorted.slice(start, start + limit);
+    const last = executionIds[executionIds.length - 1];
+    return {
+      executionIds,
+      ...(last !== undefined && start + limit < sorted.length && { nextCursor: last }),
+    };
+  }
+
   async truncatePrefix(executionId: string, throughSequence: number): Promise<void> {
     await this.tick();
     const list = this.log.get(executionId);

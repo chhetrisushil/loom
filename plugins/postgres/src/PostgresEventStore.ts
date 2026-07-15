@@ -210,6 +210,31 @@ export class PostgresEventStore implements EventStore {
     return rows.map((r) => r.execution_id);
   }
 
+  async listExecutionsPage(opts?: {
+    cursor?: string;
+    limit?: number;
+  }): Promise<{ executionIds: string[]; nextCursor?: string }> {
+    // SP-1 (SPI 1.2.0) — keyset over idx_events_exec: lexicographic, bounded memory.
+    await this.ready;
+    const limit = opts?.limit ?? 1000;
+    const { rows } =
+      opts?.cursor === undefined
+        ? await this.pool.query<{ execution_id: string }>(
+            "SELECT DISTINCT execution_id FROM events ORDER BY execution_id LIMIT $1",
+            [limit + 1]
+          )
+        : await this.pool.query<{ execution_id: string }>(
+            "SELECT DISTINCT execution_id FROM events WHERE execution_id > $1 ORDER BY execution_id LIMIT $2",
+            [opts.cursor, limit + 1]
+          );
+    const executionIds = rows.slice(0, limit).map((r) => r.execution_id);
+    const last = executionIds[executionIds.length - 1];
+    return {
+      executionIds,
+      ...(rows.length > limit && last !== undefined && { nextCursor: last }),
+    };
+  }
+
   async close(): Promise<void> {
     if (this.listener !== undefined) {
       await this.listener.end();

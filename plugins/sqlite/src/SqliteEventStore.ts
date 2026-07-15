@@ -160,6 +160,30 @@ export class SqliteEventStore implements EventStore {
     return rows.map((r) => r.execution_id);
   }
 
+  async listExecutionsPage(opts?: {
+    cursor?: string;
+    limit?: number;
+  }): Promise<{ executionIds: string[]; nextCursor?: string }> {
+    // SP-1 (SPI 1.2.0) — keyset over the same index: lexicographic, bounded memory.
+    const limit = opts?.limit ?? 1000;
+    const rows =
+      opts?.cursor === undefined
+        ? (this.db
+            .prepare("SELECT DISTINCT execution_id FROM events ORDER BY execution_id LIMIT ?")
+            .all(limit + 1) as { execution_id: string }[])
+        : (this.db
+            .prepare(
+              "SELECT DISTINCT execution_id FROM events WHERE execution_id > ? ORDER BY execution_id LIMIT ?"
+            )
+            .all(opts.cursor, limit + 1) as { execution_id: string }[]);
+    const executionIds = rows.slice(0, limit).map((r) => r.execution_id);
+    const last = executionIds[executionIds.length - 1];
+    return {
+      executionIds,
+      ...(rows.length > limit && last !== undefined && { nextCursor: last }),
+    };
+  }
+
   async close(): Promise<void> {
     this.db.close();
   }

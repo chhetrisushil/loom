@@ -92,6 +92,11 @@ export interface ReadModelStore {
 /** Structural read surface of an event store — live store or K10.1 archive (RM-4). */
 export interface ReadModelEventSource {
   listExecutions?(): Promise<string[]>;
+  /** SP-2 — preferred when present: bounded-memory keyset enumeration (SPI 1.2.0). */
+  listExecutionsPage?(opts?: {
+    cursor?: string;
+    limit?: number;
+  }): Promise<{ executionIds: string[]; nextCursor?: string }>;
   readFrom(executionId: string, fromSequence: number): Promise<EventEnvelope[]>;
 }
 

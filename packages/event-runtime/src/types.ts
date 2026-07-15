@@ -9,8 +9,11 @@ export type { EventEnvelope };
  *
  * 1.1.0: added optional `listExecutions()` (enumerate distinct executionIds — powers
  *   `loom retention run` / `loom compliance report` over cold storage).
+ * 1.2.0: added optional `listExecutionsPage()` (SP-1, db-copilot infra #184 — keyset-paged
+ *   enumeration so maintenance passes run in bounded memory at year scale). Consumers use
+ *   {@link iterateExecutionIds}, which prefers pages and falls back to `listExecutions()`.
  */
-export const EVENT_STORE_SPI_VERSION = "1.1.0";
+export const EVENT_STORE_SPI_VERSION = "1.2.0";
 
 /**
  * Reserved-stream prefix. Control facts (retention `__loom_lifecycle__`, erasure
@@ -103,7 +106,60 @@ export interface EventStore {
    * scan the store alone can do efficiently, e.g. `SELECT DISTINCT execution_id`).
    */
   listExecutions?(): Promise<string[]>;
+  /**
+   * OPTIONAL keyset-paged enumeration (SP-1, SPI 1.2.0): distinct executionIds in
+   * LEXICOGRAPHIC order, `limit` per page, resumed via the opaque `cursor` from the prior
+   * page. Bounded-memory alternative to {@link listExecutions} for maintenance passes
+   * (retention, the K10.6 sweep, read-model catch-up) over year-scale stores. Executions
+   * created DURING iteration whose ids sort before the cursor may be missed — acceptable
+   * for periodic maintenance jobs (they are visited on the next pass); do not use this for
+   * exactly-once semantics. Same reserved-stream note as `listExecutions`.
+   */
+  listExecutionsPage?(opts?: { cursor?: string; limit?: number }): Promise<ExecutionPage>;
   close(): Promise<void>;
+}
+
+/** One page of {@link EventStore.listExecutionsPage}. `nextCursor` present iff more remain. */
+export interface ExecutionPage {
+  executionIds: string[];
+  nextCursor?: string;
+}
+
+/** The enumeration surface of a store — what maintenance passes actually need. */
+export interface ExecutionEnumerable {
+  listExecutions?(): Promise<string[]>;
+  listExecutionsPage?(opts?: { cursor?: string; limit?: number }): Promise<ExecutionPage>;
+}
+
+/**
+ * SP-2 — the one enumeration loop every maintenance pass shares: prefers the
+ * bounded-memory paged surface, falls back to `listExecutions()`, and REFUSES a
+ * store with neither (silent partial passes are how retention deletes evidence
+ * and read models under-index).
+ */
+export async function* iterateExecutionIds(
+  source: ExecutionEnumerable,
+  pageSize = 1000
+): AsyncGenerator<string, void, void> {
+  if (source.listExecutionsPage !== undefined) {
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await source.listExecutionsPage({
+        ...(cursor !== undefined && { cursor }),
+        limit: pageSize,
+      });
+      for (const id of page.executionIds) yield id;
+      if (page.nextCursor === undefined) return;
+      cursor = page.nextCursor;
+    }
+  }
+  if (source.listExecutions !== undefined) {
+    for (const id of await source.listExecutions()) yield id;
+    return;
+  }
+  throw new TypeError(
+    "iterateExecutionIds: the store supports neither listExecutionsPage() nor listExecutions() — it cannot be enumerated"
+  );
 }
 
 export interface EventStoreOptions {

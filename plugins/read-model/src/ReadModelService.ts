@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
+import { iterateExecutionIds } from "@loom/event-runtime";
 import type {
   CatchUpReport,
   ExtractedRow,
@@ -130,13 +131,14 @@ export class ReadModelService {
   async catchUp(sources: readonly ReadModelEventSource[]): Promise<CatchUpReport> {
     const report: CatchUpReport = { executionsScanned: 0, eventsScanned: 0, rowsApplied: 0 };
     for (const source of sources) {
-      if (source.listExecutions === undefined) {
+      if (source.listExecutions === undefined && source.listExecutionsPage === undefined) {
         throw new TypeError(
-          "ReadModelService.catchUp: every event source must support listExecutions() — a source that cannot be enumerated cannot be indexed completely"
+          "ReadModelService.catchUp: every event source must support listExecutionsPage() or listExecutions() — a source that cannot be enumerated cannot be indexed completely"
         );
       }
-      const executionIds = (await source.listExecutions()).filter((id) => !isReservedStream(id));
-      for (const executionId of executionIds) {
+      // SP-2 — bounded-memory enumeration: pages when the source supports them.
+      for await (const executionId of iterateExecutionIds(source)) {
+        if (isReservedStream(executionId)) continue;
         report.executionsScanned++;
         for (const model of this.models.values()) {
           const mark = await this.store.watermark(model.id, executionId);
