@@ -253,6 +253,25 @@ export class FlowMigrationCheckError extends Error {
 }
 
 /**
+ * ADR 0051 D7 — `start()` refused invalid input against the flow's declared
+ * `inputSchema` (opt-in via `WorkflowRuntimeDeps.validateInput`). Nothing was
+ * appended; no execution exists.
+ */
+export class InputValidationError extends Error {
+  constructor(
+    readonly workflowId: string,
+    readonly executionId: string,
+    readonly detail: string
+  ) {
+    super(
+      `start of flow "${workflowId}" (execution "${executionId}") refused: input does not satisfy the declared inputSchema — ${detail}`
+    );
+    this.name = "InputValidationError";
+    Object.setPrototypeOf(this, InputValidationError.prototype);
+  }
+}
+
+/**
  * K11.5 (ADR 0056) — the operator-supplied state transform threw during
  * `resumeAs`: the recorded input could not be migrated to the target flow's
  * contract. Nothing was appended; the execution is untouched. Fix the transform

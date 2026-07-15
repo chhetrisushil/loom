@@ -7,6 +7,7 @@ export {
   ExecutionDeniedError,
   FlowCodeMismatchError,
   FlowMigrationCheckError,
+  InputValidationError,
   StateMigrationError,
   StepTimeoutError,
   TIMER_FIRED,
