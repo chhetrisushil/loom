@@ -1,5 +1,15 @@
 export { retryMiddleware, type RetryOptions } from "./retry";
 export {
+  claimCheckMiddleware,
+  isClaimCheck,
+  resolveClaimCheck,
+  type ClaimCheckEnvelope,
+  type ClaimCheckInfo,
+  type ClaimCheckOptions,
+  type ClaimCheckReader,
+  type ClaimCheckStore,
+} from "./claimCheck";
+export {
   meteringMiddleware,
   llmUsageTokens,
   QuotaExceededError,

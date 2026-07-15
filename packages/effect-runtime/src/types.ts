@@ -27,6 +27,14 @@ export interface EffectContext {
   stepId: string;
   workflowId: string;
   attempt: number;
+  /**
+   * The resolved effect id for this invocation. The runtime sets it on the view
+   * of the context the MIDDLEWARE chain receives (additive — hand-built contexts
+   * simply leave it unset, and the effect itself still receives the caller's
+   * context unchanged). Lets cross-cutting middleware key per-tool configuration
+   * — e.g. claim-check digest declarations — without a lookup side channel.
+   */
+  readonly toolId?: string;
   emit(eventType: string, payload: unknown): void;
   /**
    * Cooperative cancellation for this effect. Aborts when the owning execution is

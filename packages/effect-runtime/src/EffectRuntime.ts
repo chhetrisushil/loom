@@ -76,12 +76,16 @@ export class EffectRuntime {
     // `next(override?)` threads an optional transformed input down the chain
     // (K10.3 redaction resolves secret references into the value the effect sees);
     // middleware that pass their received input unchanged just call `next()`.
+    // Middleware see the resolved toolId on their context view (per-tool config,
+    // e.g. claim-check digests); the effect receives the caller's ctx unchanged.
+    const mwCtx: EffectContext =
+      this.middleware.length > 0 && ctx.toolId === undefined ? { ...ctx, toolId } : ctx;
     let chain: EffectNext = (inp: unknown = input) => effect.execute(inp, ctx);
     for (let i = this.middleware.length - 1; i >= 0; i--) {
       const mw = this.middleware[i]!;
       const downstream = chain;
       chain = (inp: unknown = input) =>
-        mw(ctx, inp, (override?: unknown) => downstream(override ?? inp));
+        mw(mwCtx, inp, (override?: unknown) => downstream(override ?? inp));
     }
 
     // Advisory pre-warm (M6) — off the durable path, fire-and-forget, no event.

@@ -122,6 +122,27 @@ describe("EffectRuntime — middleware", () => {
     await expect(runtime.execute("missing", {}, ctx)).rejects.toThrow(/No effect registered/);
     expect(mw).not.toHaveBeenCalled();
   });
+
+  it("middleware see the resolved toolId on their ctx view; the effect receives the caller's ctx unchanged", async () => {
+    let mwToolId: string | undefined;
+    const capture: EffectMiddleware = async (c, _i, next) => {
+      mwToolId = c.toolId;
+      return next();
+    };
+    const fn = vi.fn().mockResolvedValue("ok");
+    const runtime = new EffectRuntime([capture]);
+    runtime.register("my-tool", new ToolEffect(fn));
+
+    await runtime.execute("my-tool", { v: 1 }, ctx);
+    expect(mwToolId).toBe("my-tool");
+    expect(fn).toHaveBeenCalledWith({ v: 1 }, ctx); // exact caller ctx — no enrichment leaks to the effect
+    expect(ctx.toolId).toBeUndefined(); // caller's object untouched
+
+    // A pre-populated toolId is honored, not overwritten (additive contract).
+    mwToolId = undefined;
+    await runtime.execute("my-tool", {}, { ...ctx, toolId: "pre-set" });
+    expect(mwToolId).toBe("pre-set");
+  });
 });
 
 describe("HumanEffect", () => {
