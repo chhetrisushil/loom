@@ -1,5 +1,6 @@
 import {
   runBranchRegistryConformance,
+  runContentStoreConformance,
   runDurableStateStoreConformance,
   runEventStoreConformance,
   runReadModelStoreConformance,
@@ -7,6 +8,7 @@ import {
   runTimerStoreConformance,
 } from "@loom/conformance";
 import { SqliteBranchRegistry } from "./SqliteBranchRegistry";
+import { SqliteContentStore } from "./SqliteContentStore";
 import { SqliteDurableStateStore } from "./SqliteDurableStateStore";
 import { SqliteEventStore } from "./SqliteEventStore";
 import { SqliteReadModelStore } from "./SqliteReadModelStore";
@@ -25,3 +27,4 @@ runDurableStateStoreConformance(
 );
 
 runReadModelStoreConformance(() => new SqliteReadModelStore(":memory:"), "SqliteReadModelStore");
+runContentStoreConformance(() => new SqliteContentStore(":memory:"), "SqliteContentStore");

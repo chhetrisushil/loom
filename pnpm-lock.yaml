@@ -2553,6 +2553,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../../packages/event-runtime
+      '@loom/plugin-content':
+        specifier: workspace:*
+        version: link:../content
       '@loom/plugin-durable-state':
         specifier: workspace:*
         version: link:../durable-state
@@ -2721,6 +2724,9 @@ importers:
       '@loom/llm':
         specifier: workspace:*
         version: link:../../packages/llm
+      '@loom/plugin-content':
+        specifier: workspace:*
+        version: link:../../plugins/content
       '@loom/plugin-kit':
         specifier: workspace:*
         version: link:../../packages/plugin-kit

@@ -24,7 +24,8 @@
     "@loom/snapshot-runtime": "workspace:*",
     "better-sqlite3": "^11.5.0",
     "@loom/plugin-kit": "workspace:*",
-    "@loom/plugin-read-model": "workspace:*"
+    "@loom/plugin-read-model": "workspace:*",
+    "@loom/plugin-content": "workspace:*"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

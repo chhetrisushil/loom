@@ -76,13 +76,18 @@ export interface ContentSweepOptions {
   /** Reclaim an unpinned ref only when its latest citation is older than this. */
   olderThanMs: number;
   now: number;
+  /**
+   * DX-2 — report what WOULD be reclaimed without deleting anything (the
+   * `loom sweep content` operator default; `--apply` turns it off).
+   */
+  dryRun?: boolean;
 }
 
 export interface ContentSweepReport {
   executionsScanned: number;
   refsSeen: number;
   refsPinned: number;
-  /** Content addresses whose bytes were physically erased this sweep. */
+  /** Content addresses erased this sweep — or, under `dryRun`, that WOULD be. */
   reclaimed: string[];
 }
 
@@ -127,7 +132,9 @@ export async function sweepUnpinnedContent(
   for (const [address, citedAt] of lastCited) {
     if (pinned.has(address)) continue;
     if (options.now - citedAt < options.olderThanMs) continue;
-    await options.contentStore.delete({ __loomContent: address });
+    if (options.dryRun !== true) {
+      await options.contentStore.delete({ __loomContent: address });
+    }
     reclaimed.push(address);
   }
   return { executionsScanned, refsSeen: lastCited.size, refsPinned: pinned.size, reclaimed };
