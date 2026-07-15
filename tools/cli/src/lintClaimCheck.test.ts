@@ -36,7 +36,8 @@ describe("lintClaimCheckSource (CC-5)", () => {
   });
 
   it("ignores non-flow modules entirely (UI/export code may resolve)", () => {
-    const source = `export async function renderEvidence(store, envelope) {\n  return resolveClaimCheck(store, envelope);\n}\n`;
+    const source =
+      "export async function renderEvidence(store, envelope) {\n  return resolveClaimCheck(store, envelope);\n}\n";
     expect(lintClaimCheckSource("ui/evidence.ts", source)).toEqual([]);
   });
 });
