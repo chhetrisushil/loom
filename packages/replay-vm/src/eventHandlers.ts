@@ -456,18 +456,24 @@ const handlers: Record<string, Handler> = {
       toHash?: string;
       fromHash?: string;
       strategy?: string;
+      migratedInput?: unknown;
     };
     return {
       ...state,
       variables: {
         ...state.variables,
         ...(p.toHash !== undefined && { _flowHash: p.toHash }),
+        // K11.5 — contract-versioned state migration: the recorded TRANSFORMED
+        // input replaces `_input`, so every later resume/restore/replay folds
+        // the same migrated value (the outcome is durable, not the function).
+        ...(p.migratedInput !== undefined && { _input: p.migratedInput }),
         _migratedTo: p.toFlowId,
         _migrations: appendAudit(state.variables._migrations as unknown[] | undefined, {
           toFlowId: p.toFlowId,
           ...(p.toHash !== undefined && { toHash: p.toHash }),
           ...(p.fromHash !== undefined && { fromHash: p.fromHash }),
           ...(p.strategy !== undefined && { strategy: p.strategy }),
+          ...(p.migratedInput !== undefined && { stateMigrated: true }),
         }),
       },
       updatedAt: event.timestamp,
@@ -706,7 +712,11 @@ export function getHandler(eventType: string): Handler | undefined {
 //   replays byte-identically.
 // 1.14.0: added ERASURE_PENDING (T3-R4.5 — deferred-erasure control fact). Pure audit into
 //   `_erasure` on a dedicated stream; a log that never defers an erasure replays identically.
-export const EVENT_SCHEMA_VERSION = "1.14.0";
+// 1.15.0: additive optional EXECUTION_MIGRATED payload field `migratedInput` (K11.5,
+//   ADR 0056 — contract-versioned state migration on resumeAs). When present it replaces
+//   `_input` in the fold and stamps `stateMigrated: true` on the `_migrations` audit
+//   entry; a log that never migrates state replays byte-identically.
+export const EVENT_SCHEMA_VERSION = "1.15.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
