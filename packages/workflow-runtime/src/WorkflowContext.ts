@@ -15,6 +15,23 @@ import type {
   WorkflowContext,
 } from "./types";
 
+// Audit MEM-HIGH (DE-4 follow-up) — typed-failure payloads land inline in the
+// log and the folded frame with no claim-check path (middleware inspects only
+// RETURNED results, never thrown errors). Cap them at the same 16 KiB the
+// claim-check default uses; a domain outcome bigger than this should carry a
+// content ref, not the bytes. Measured as JSON string length (chars ≈ bytes
+// for the payloads this governs; exactness is not load-bearing).
+const TYPED_FAILURE_PAYLOAD_CAP = 16 * 1024;
+
+/** JSON length of a value, or MAX_SAFE_INTEGER when it cannot be encoded (over any cap). */
+function safeJsonLength(value: unknown): number {
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return Number.MAX_SAFE_INTEGER;
+  }
+}
+
 export class WorkflowContextImpl implements WorkflowContext {
   readonly executionId: string;
   readonly workflowId: string;
@@ -226,18 +243,32 @@ export class WorkflowContextImpl implements WorkflowContext {
       // it with its schema-validated payload so replay substitutes it (frame
       // gains errorChannel). Declaration resolution: step `errors:` wins, the
       // registered effect's map is the fallback (the K9.3 idiom). A payload that
-      // fails its channel's schema — or an undeclared channel — degrades LOUDLY
-      // to the legacy untyped failure, which keeps at-least-once re-execution.
+      // fails its channel's schema, exceeds the inline cap, or rides an
+      // undeclared channel degrades LOUDLY to the legacy untyped failure, which
+      // keeps at-least-once re-execution.
       if (err instanceof TypedFailure) {
         const schema = (task.errors ?? this.effectRuntime.declaredErrors(toolId))?.[err.channel];
         if (schema !== undefined) {
           const parsed = schema.safeParse(err.payload);
           if (parsed.success) {
+            // Audit MEM-HIGH (ADR 0054 economics) — a typed-failure payload is
+            // recorded inline in the immutable log AND retained in the folded
+            // frame; claim-check middleware never sees thrown errors, so this
+            // seam must enforce the inline cap itself. Over-cap degrades to the
+            // untyped path: no channel/payload recorded, legacy semantics.
+            const payloadSize = safeJsonLength(parsed.data);
+            if (payloadSize <= TYPED_FAILURE_PAYLOAD_CAP) {
+              this.emit("STEP_FAILED", {
+                stepId: id,
+                error: String(err),
+                channel: err.channel,
+                payload: parsed.data,
+              });
+              throw err;
+            }
             this.emit("STEP_FAILED", {
               stepId: id,
-              error: String(err),
-              channel: err.channel,
-              payload: parsed.data,
+              error: `typed-failure payload for channel "${err.channel}" exceeds the inline cap (${payloadSize} > ${TYPED_FAILURE_PAYLOAD_CAP} JSON chars) — degraded to untyped; carry a content ref in the payload instead (ADR 0054/0060)`,
             });
             throw err;
           }

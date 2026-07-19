@@ -1,5 +1,5 @@
 import type { ContentStore } from "./ContentStore";
-import type { ContentRef } from "./content";
+import { type ContentRef, contentAddress } from "./content";
 
 export interface CachingContentStoreOptions {
   /**
@@ -55,8 +55,11 @@ export class CachingContentStore implements ContentStore {
             : await Promise.all(missRefs.map((r) => inner.get(r)));
         fetched.forEach((bytes, j) => {
           const at = missIndexes[j] as number;
+          if (bytes != null) {
+            this.verifyFetched((missRefs[j] as ContentRef).__loomContent, bytes);
+            this.admit((missRefs[j] as ContentRef).__loomContent, bytes);
+          }
           results[at] = bytes ?? null;
-          if (bytes != null) this.admit((missRefs[j] as ContentRef).__loomContent, bytes);
         });
       }
       return results;
@@ -73,7 +76,10 @@ export class CachingContentStore implements ContentStore {
     const hit = this.touch(ref.__loomContent);
     if (hit !== undefined) return hit;
     const bytes = await this.inner.get(ref);
-    if (bytes !== null) this.admit(ref.__loomContent, bytes);
+    if (bytes !== null) {
+      this.verifyFetched(ref.__loomContent, bytes);
+      this.admit(ref.__loomContent, bytes);
+    }
     return bytes;
   }
 
@@ -95,6 +101,23 @@ export class CachingContentStore implements ContentStore {
       this.cache.set(address, hit);
     }
     return hit;
+  }
+
+  /**
+   * Audit SEC-2 — FETCHED bytes are verified against their content address
+   * before they are served OR cached: a buggy/compromised inner store returning
+   * wrong bytes for an address must neither poison the cache nor reach the
+   * caller (the sandbox pins scripts by hash through this store — a mispairing
+   * would defeat that provenance). Throws loudly on mismatch. Applies only to
+   * sha256-addressed refs (the ADR 0046 scheme) and only to the fetch path —
+   * `put` bytes came from the caller and the inner store derived the address.
+   */
+  private verifyFetched(address: string, bytes: Uint8Array): void {
+    if (address.startsWith("sha256:") && contentAddress(bytes) !== address) {
+      throw new Error(
+        `CachingContentStore: inner store returned bytes whose hash does not match "${address}" — refusing to cache or serve (possible corruption or poisoning)`
+      );
+    }
   }
 
   private admit(address: string, bytes: Uint8Array): void {

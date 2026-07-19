@@ -31,14 +31,19 @@ export function contentAddress(bytes: Uint8Array): string {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
+// Stateless for whole-input encode/decode — hoisted (audit nit: decodeValue runs
+// per ref occurrence during substitution, incl. the live tail).
+const UTF8_ENCODER = new TextEncoder();
+const UTF8_DECODER = new TextDecoder();
+
 /** Encode a value to bytes for the content store (JSON — the only codec today). */
 export function encodeValue(value: unknown): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(value));
+  return UTF8_ENCODER.encode(JSON.stringify(value));
 }
 
 /** Decode content-store bytes back to the original value. */
 export function decodeValue(bytes: Uint8Array): unknown {
-  return JSON.parse(new TextDecoder().decode(bytes));
+  return JSON.parse(UTF8_DECODER.decode(bytes));
 }
 
 /** Whether a payload carries any {@link ContentRef} (the read-side fast path). */

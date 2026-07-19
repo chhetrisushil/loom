@@ -42,11 +42,20 @@ export const MCP_INVOKE_ERRORS = {
 };
 
 /**
- * The step input. `authToken` is the per-call credential FALLBACK and must be a
+ * The step input. `authToken` is the per-call credential FALLBACK and MUST be a
  * `secretRef(...)` (K10.3) in the logged input — `redactionMiddleware` resolves
  * it to the raw token only inside the effect, so STEP_STARTED records the
  * reference, never the credential. The PRIMARY path is the opaque K12.1
  * `ctx.principal`, which never appears in the input at all.
+ *
+ * ENFORCEMENT (audit SEC-1): a string `authToken` reaching the effect is
+ * ambiguous — either the wired redaction middleware resolved a secretRef
+ * (safe: the log holds the ref), or a caller passed a raw credential (which
+ * STEP_STARTED has already persisted into the immutable log). The effect
+ * therefore REJECTS string tokens unless `acceptResolvedTokens: true` is set —
+ * the explicit assertion that redactionMiddleware is wired and callers pass
+ * refs. The default turns a silent permanent credential leak into a loud,
+ * immediate error.
  */
 export const McpInvokeInput = z.object({
   toolName: z.string(),
@@ -56,6 +65,15 @@ export const McpInvokeInput = z.object({
   /** A secretRef (resolved by redactionMiddleware) — never a raw token. */
   authToken: z.unknown().optional(),
 });
+
+/** Structural K10.3 SecretRef check (kept local so the plugin stays middleware-free at runtime). */
+function isSecretRefShape(value: unknown): value is { __loomSecret: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { __loomSecret?: unknown }).__loomSecret === "string"
+  );
+}
 
 export type McpInvokeInputValue = z.infer<typeof McpInvokeInput>;
 
@@ -68,6 +86,13 @@ export interface McpInvokeOptions {
   principalToHeaders?: (principal: PrincipalChain) => Record<string, string>;
   /** Fallback: map a resolved per-call token to headers. Default: `authorization: Bearer <token>`. */
   tokenToHeaders?: (token: string) => Record<string, string>;
+  /**
+   * Audit SEC-1 — assert that redactionMiddleware is wired and every caller
+   * passes `authToken` as a secretRef, so a string token reaching the effect is
+   * a middleware-RESOLVED credential (never logged raw). Without this flag,
+   * string tokens are rejected loudly. Default false (safe).
+   */
+  acceptResolvedTokens?: boolean;
 }
 
 /**
@@ -84,13 +109,25 @@ export function registerMcpInvoke(
   const tokenToHeaders =
     options.tokenToHeaders ?? ((token: string) => ({ authorization: `Bearer ${token}` }));
 
+  // Audit PERF-A2 — single-flight refresh: concurrent invokes at TTL expiry
+  // (exactly the fanout$ case) share ONE listTools round-trip instead of a
+  // thundering herd of K RPCs + K re-hashes with K−1 snapshots discarded.
   let snapshot: { at: number; byName: Map<string, MappedMcpTool> } | undefined;
-  const toolsByName = async (): Promise<Map<string, MappedMcpTool>> => {
-    if (snapshot === undefined || Date.now() - snapshot.at > ttlMs) {
-      const tools = await client.listTools();
-      snapshot = { at: Date.now(), byName: new Map(tools.map((t) => [t.definition.id, t])) };
+  let refreshing: Promise<Map<string, MappedMcpTool>> | undefined;
+  const toolsByName = (): Promise<Map<string, MappedMcpTool>> => {
+    if (snapshot !== undefined && Date.now() - snapshot.at <= ttlMs) {
+      return Promise.resolve(snapshot.byName);
     }
-    return snapshot.byName;
+    refreshing ??= client
+      .listTools()
+      .then((tools) => {
+        snapshot = { at: Date.now(), byName: new Map(tools.map((t) => [t.definition.id, t])) };
+        return snapshot.byName;
+      })
+      .finally(() => {
+        refreshing = undefined;
+      });
+    return refreshing;
   };
 
   const effect = new ToolEffect(
@@ -114,8 +151,21 @@ export function registerMcpInvoke(
       let headers: Record<string, string> | undefined;
       if (ctx.principal !== undefined && options.principalToHeaders !== undefined) {
         headers = options.principalToHeaders(ctx.principal);
-      } else if (typeof call.authToken === "string") {
-        headers = tokenToHeaders(call.authToken);
+      } else if (call.authToken !== undefined) {
+        if (isSecretRefShape(call.authToken)) {
+          // An UNRESOLVED ref reached the effect: redactionMiddleware is not wired.
+          throw new Error(
+            "mcpInvoke: authToken secretRef was not resolved — wire redactionMiddleware (K10.3) or use principalToHeaders (ADR 0063)"
+          );
+        }
+        if (typeof call.authToken === "string") {
+          if (options.acceptResolvedTokens !== true) {
+            throw new Error(
+              "mcpInvoke: string authToken rejected — pass a secretRef and wire redactionMiddleware, then set acceptResolvedTokens:true. A raw token here would already be persisted in STEP_STARTED; if one was passed, rotate it (ADR 0063, audit SEC-1)"
+            );
+          }
+          headers = tokenToHeaders(call.authToken);
+        }
       }
 
       ctx.emit(MCP_DISPATCHED, {
@@ -152,8 +202,19 @@ export function mcpInvoke$(id: string): StepDefinition<McpInvokeInputValue, unkn
 // ── The dispatch index (ADR 0063 D4) ─────────────────────────────────────────
 
 export interface McpDispatchIndexState {
-  /** toolName → the executions that dispatched it and every schema hash observed. */
-  byTool: Record<string, { executions: string[]; schemaHashes: string[] }>;
+  /**
+   * toolName → the executions that dispatched it and every schema hash
+   * observed. `seen` is the O(1) membership companion of the two ordered
+   * arrays (audit PERF-A3 — `includes` scans made the fold O(E²) per hot
+   * tool); keys are `x:<executionId>` / `h:<schemaHash>`. Plain JSON so the
+   * read-model plugin persists it as-is. Growth is one entry per distinct
+   * (tool, execution) pair by design — retention rides the read-model store's
+   * lifecycle, not this fold.
+   */
+  byTool: Record<
+    string,
+    { executions: string[]; schemaHashes: string[]; seen: Record<string, true> }
+  >;
 }
 
 /**
@@ -169,17 +230,29 @@ export const mcpDispatchIndex: ProjectionDefinition<McpDispatchIndexState> = pro
   handlers: {
     [MCP_DISPATCHED]: (state: McpDispatchIndexState, event: EventEnvelope) => {
       const payload = event.payload as { toolName: string; schemaHash: string };
-      const entry = state.byTool[payload.toolName] ?? { executions: [], schemaHashes: [] };
+      const entry = state.byTool[payload.toolName] ?? {
+        executions: [],
+        schemaHashes: [],
+        seen: {},
+      };
+      const executionKey = `x:${event.executionId}`;
+      const hashKey = `h:${payload.schemaHash}`;
+      const newExecution = entry.seen[executionKey] === undefined;
+      const newHash = entry.seen[hashKey] === undefined;
+      if (!newExecution && !newHash) return state; // O(1) no-op for repeat dispatches
       return {
         byTool: {
           ...state.byTool,
           [payload.toolName]: {
-            executions: entry.executions.includes(event.executionId)
-              ? entry.executions
-              : [...entry.executions, event.executionId],
-            schemaHashes: entry.schemaHashes.includes(payload.schemaHash)
-              ? entry.schemaHashes
-              : [...entry.schemaHashes, payload.schemaHash],
+            executions: newExecution ? [...entry.executions, event.executionId] : entry.executions,
+            schemaHashes: newHash
+              ? [...entry.schemaHashes, payload.schemaHash]
+              : entry.schemaHashes,
+            seen: {
+              ...entry.seen,
+              ...(newExecution && { [executionKey]: true as const }),
+              ...(newHash && { [hashKey]: true as const }),
+            },
           },
         },
       };

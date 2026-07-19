@@ -5,6 +5,7 @@ import {
   type ContentRef,
   collectContentRefs,
   encodeValue,
+  hasContentRef,
   mapPathsAsync,
   substituteContentRefs,
 } from "./content";
@@ -121,8 +122,15 @@ export class ContentResolvingEventStore implements EventStore {
     distinct: ReadonlyMap<string, ContentRef>,
     executionId: string
   ): Promise<Map<string, Uint8Array>> {
-    const addresses = [...distinct.keys()];
-    const refs = [...distinct.values()];
+    // Single pass over the map (audit nit): addresses and refs stay index-aligned.
+    const addresses = new Array<string>(distinct.size);
+    const refs = new Array<ContentRef>(distinct.size);
+    let n = 0;
+    for (const [address, ref] of distinct) {
+      addresses[n] = address;
+      refs[n] = ref;
+      n++;
+    }
     const fetched =
       this.content.getMany !== undefined
         ? await this.content.getMany(refs)
@@ -144,12 +152,16 @@ export class ContentResolvingEventStore implements EventStore {
   ): Promise<() => void> {
     // Live subscribers get resolved events too (best-effort: if resolution fails — e.g. a race
     // with erasure — the raw ref-bearing event is delivered rather than dropping it).
+    // Audit PERF-A1 — the ref-free common case (heartbeats, STEP_STARTED, decisions)
+    // pays the zero-allocation `hasContentRef` walk only; the Map is allocated
+    // exclusively for ref-bearing events.
     return this.inner.subscribe(executionId, (event: EventEnvelope) => {
-      const distinct = new Map<string, ContentRef>();
-      if (!collectContentRefs(event.payload, distinct)) {
+      if (!hasContentRef(event.payload)) {
         handler(event);
         return;
       }
+      const distinct = new Map<string, ContentRef>();
+      collectContentRefs(event.payload, distinct);
       void this.fetchBytes(distinct, executionId)
         .then((bytes) =>
           handler({ ...event, payload: substituteContentRefs(event.payload, bytes) })

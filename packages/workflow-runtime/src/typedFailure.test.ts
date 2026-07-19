@@ -273,6 +273,46 @@ describe("typed failure channels (DE-4, ADR 0060)", () => {
     expect(state.frames["hydrate-widget"]).not.toHaveProperty("errorChannel");
   });
 
+  it("MEM-HIGH cap: an over-cap typed payload degrades loudly to an untyped failure (no channel in log or frame)", async () => {
+    const { runtime, eventStore } = boot((effects) =>
+      effects.register(
+        "drifty-tool",
+        new ToolEffect(async () =>
+          fail("schemaDrift", { toolName: "t", observedHash: "x".repeat(20 * 1024) })
+        )
+      )
+    );
+    const bigPayloadStep = step$({
+      id: "big-payload",
+      toolId: "drifty-tool",
+      inputSchema: z.unknown(),
+      outputSchema: z.unknown(),
+      errors: { schemaDrift: z.object({ toolName: z.string(), observedHash: z.string() }) },
+    });
+    const runner: FlowRunner<Record<string, unknown>, Record<string, unknown>> = async (ctx) => {
+      try {
+        await ctx.run(bigPayloadStep, {});
+      } catch {
+        return { caught: true };
+      }
+      return { caught: false };
+    };
+    runtime.registerFlow(makeFlow(runner).definition, runner);
+    const handle = await runtime.start(makeFlow(runner), {}, { executionId: "typed-cap" });
+    const state = await handle.waitForCompletion();
+
+    const failed = (await eventStore.read("typed-cap")).filter(
+      (e) => e.eventType === "STEP_FAILED"
+    );
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.payload).not.toHaveProperty("channel");
+    expect(failed[0]?.payload).not.toHaveProperty("payload");
+    expect(String((failed[0]?.payload as { error?: unknown }).error)).toContain(
+      "exceeds the inline cap"
+    );
+    expect(state.frames["big-payload"]).not.toHaveProperty("errorChannel");
+  });
+
   it("effect-registry fallback: a step without its own errors map inherits the registered effect's channels", async () => {
     const { runtime, eventStore } = boot((effects) =>
       effects.register(

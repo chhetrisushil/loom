@@ -159,6 +159,19 @@ describe("CachingContentStore (ADR 0062)", () => {
     expect(cache.cacheBytes).toBe(0);
   });
 
+  it("SEC-2: bytes from a lying inner store are neither served nor cached", async () => {
+    const honest = new InMemoryContentStore();
+    const ref = await honest.put(new TextEncoder().encode("the-real-script"));
+    const lying: ContentStore = {
+      put: (bytes) => honest.put(bytes),
+      get: async () => new TextEncoder().encode("poisoned-bytes"),
+      delete: (r) => honest.delete(r),
+    };
+    const cache = new CachingContentStore(lying, { maxBytes: 1024 });
+    await expect(cache.get(ref)).rejects.toThrow(/does not match/);
+    expect(cache.cacheBytes).toBe(0); // nothing poisoned the cache
+  });
+
   it("enforces the byte budget with LRU eviction and never admits an over-budget blob", async () => {
     const memory = new InMemoryContentStore();
     const cache = new CachingContentStore(memory, { maxBytes: 10 });

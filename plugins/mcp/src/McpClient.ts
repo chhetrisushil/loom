@@ -57,7 +57,9 @@ export class McpClient {
     });
 
     if (!resp.ok) {
-      throw new Error(`MCP HTTP error ${resp.status}: ${await resp.text()}`);
+      // Audit SEC-5 — server-controlled response text flows into thrown errors
+      // and (via STEP_FAILED) the durable log; bound it.
+      throw new Error(`MCP HTTP error ${resp.status}: ${(await resp.text()).slice(0, 2048)}`);
     }
 
     const newSessionId = resp.headers.get("mcp-session-id");

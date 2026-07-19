@@ -106,7 +106,13 @@ function boot(client: McpClient, opts?: Parameters<typeof registerMcpInvoke>[2])
       resolver: { resolve: async (refId) => (refId === "recipient" ? "raw-token-123" : null) },
     }),
   ]);
-  registerMcpInvoke(client, effectRuntime, { server: "fake", ...opts });
+  // acceptResolvedTokens: redactionMiddleware IS wired above, so a string
+  // reaching the effect is a resolved secretRef (the SEC-1 assertion).
+  registerMcpInvoke(client, effectRuntime, {
+    server: "fake",
+    acceptResolvedTokens: true,
+    ...opts,
+  });
   const runtime = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime });
   return { runtime, eventStore, snapshotStore };
 }
@@ -162,7 +168,13 @@ describe("mcpInvoke$ (ADR 0063)", () => {
       if (h !== undefined) indexState = h(indexState, e);
     }
     expect(indexState).toEqual({
-      byTool: { search: { executions: ["mcp-1"], schemaHashes: [pin] } },
+      byTool: {
+        search: {
+          executions: ["mcp-1"],
+          schemaHashes: [pin],
+          seen: { "x:mcp-1": true, [`h:${pin}`]: true },
+        },
+      },
     });
   });
 
@@ -247,6 +259,31 @@ describe("mcpInvoke$ (ADR 0063)", () => {
       errorChannel: "toolNotFound",
       errorPayload: { toolName: "nope" },
     });
+  });
+
+  it("SEC-1: a string authToken is rejected loudly unless acceptResolvedTokens is asserted", async () => {
+    fake = await startFakeMcpServer();
+    const client = new McpClient({ transport: "http", url: fake.url });
+    // No redaction middleware, no opt-in — the safe default.
+    const effectRuntime = new EffectRuntime();
+    registerMcpInvoke(client, effectRuntime, { server: "fake" });
+    await expect(
+      effectRuntime.execute(
+        "mcp.invoke",
+        { toolName: "search", args: { q: "x" }, authToken: "sk-live-raw-credential" },
+        { executionId: "x", stepId: "s", workflowId: "w", attempt: 1, emit: () => {} }
+      )
+    ).rejects.toThrow(/string authToken rejected/);
+    // And an UNRESOLVED secretRef reaching the effect means middleware is missing.
+    await expect(
+      effectRuntime.execute(
+        "mcp.invoke",
+        { toolName: "search", authToken: { __loomSecret: "recipient" } },
+        { executionId: "x", stepId: "s", workflowId: "w", attempt: 1, emit: () => {} }
+      )
+    ).rejects.toThrow(/was not resolved/);
+    // No tools/call ever went out.
+    expect(fake.requests.filter((r) => r.method === "tools/call")).toHaveLength(0);
   });
 
   it("principal: the recipient token reaches the transport as a header but NEVER the log", async () => {

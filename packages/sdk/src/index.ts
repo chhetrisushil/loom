@@ -1,5 +1,6 @@
 export * from "@loom/core";
 export * from "@loom/workflow-runtime";
+export * from "@loom/orchestration";
 export * from "@loom/blueprint-runtime";
 export * from "@loom/projection-runtime";
 export type { EventStore } from "@loom/event-runtime";
@@ -9,7 +10,8 @@ export { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 export type { SnapshotStore, Snapshot } from "@loom/snapshot-runtime";
 // Native-dep 1P store plugins (SQLite → better-sqlite3, Postgres → pg) are re-exported
 // via subpaths — `@loom/sdk/sqlite`, `@loom/sdk/postgres` — so a bare `@loom/sdk` import
-// stays lean and browser-safe (ADR 0043).
+// stays lean and browser-safe (ADR 0043). The QuickJS sandbox (WASM engine) likewise
+// rides `@loom/sdk/sandbox` (ADR 0064).
 
 // ── Agentic capabilities ─────────────────────────────────────────────────────
 export * from "@loom/llm";

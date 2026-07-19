@@ -12,12 +12,18 @@
 // (as JSON.stringify does), `undefined` array elements serialized as `null`
 // (as JSON.stringify does). Non-JSON values (function, symbol, bigint,
 // non-finite numbers) throw — a schema document must be plain data.
+//
+// Audit hardening: depth-capped (a hostile listTools response must degrade to a
+// catchable TypeError, not a host stack overflow — SEC-3), and no per-node path
+// strings on the success path (PERF-B2).
+
+const MAX_DEPTH = 1024;
 
 export function canonicalJson(value: unknown): string {
-  return canon(value, "$");
+  return canon(value, 0);
 }
 
-function canon(value: unknown, path: string): string {
+function canon(value: unknown, depth: number): string {
   if (value === null) return "null";
   switch (typeof value) {
     case "string":
@@ -26,23 +32,26 @@ function canon(value: unknown, path: string): string {
       return value ? "true" : "false";
     case "number":
       if (!Number.isFinite(value)) {
-        throw new TypeError(`canonicalJson: non-finite number at ${path}`);
+        throw new TypeError("canonicalJson: non-finite number");
       }
       return JSON.stringify(value);
     case "object": {
+      if (depth >= MAX_DEPTH) {
+        throw new TypeError(`canonicalJson: depth limit exceeded (${MAX_DEPTH})`);
+      }
       if (Array.isArray(value)) {
-        const parts = value.map((v, i) => (v === undefined ? "null" : canon(v, `${path}[${i}]`)));
+        const parts = value.map((v) => (v === undefined ? "null" : canon(v, depth + 1)));
         return `[${parts.join(",")}]`;
       }
       const record = value as Record<string, unknown>;
       const keys = Object.keys(record)
         .filter((k) => record[k] !== undefined)
         .sort();
-      const parts = keys.map((k) => `${JSON.stringify(k)}:${canon(record[k], `${path}.${k}`)}`);
+      const parts = keys.map((k) => `${JSON.stringify(k)}:${canon(record[k], depth + 1)}`);
       return `{${parts.join(",")}}`;
     }
     default:
-      throw new TypeError(`canonicalJson: unsupported ${typeof value} at ${path}`);
+      throw new TypeError(`canonicalJson: unsupported ${typeof value}`);
   }
 }
 
@@ -50,15 +59,22 @@ function canon(value: unknown, path: string): string {
 // is drift-detection grade (pairwise miss ~2^-64 at registry scale) where the
 // compiler's 32-bit shortHash is not. Cross-language stability comes from
 // hashing the UTF-8 BYTES of the canonical string, not UTF-16 code units.
+// Warm-path constants (audit PERF-B1): module-level encoder, indexed loop, and
+// a 256-entry BigInt table so the per-byte cost is one table read + xor + mul
+// (no BigInt allocation per byte). A two-lane Math.imul formulation would be
+// ~20-50× faster still; deferred until a hot-path caller exists (ADR 0065
+// discipline — measured need, not speculation).
 const FNV64_OFFSET = 0xcbf29ce484222325n;
 const FNV64_PRIME = 0x100000001b3n;
 const MASK64 = 0xffffffffffffffffn;
+const UTF8 = new TextEncoder();
+const BYTE_BIGINTS: readonly bigint[] = Array.from({ length: 256 }, (_, i) => BigInt(i));
 
 export function fnv1a64(text: string): string {
-  const bytes = new TextEncoder().encode(text);
+  const bytes = UTF8.encode(text);
   let h = FNV64_OFFSET;
-  for (const byte of bytes) {
-    h ^= BigInt(byte);
+  for (let i = 0; i < bytes.length; i++) {
+    h ^= BYTE_BIGINTS[bytes[i] as number] as bigint;
     h = (h * FNV64_PRIME) & MASK64;
   }
   return h.toString(16).padStart(16, "0");

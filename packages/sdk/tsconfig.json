@@ -66,6 +66,12 @@
     },
     {
       "path": "../../plugins/postgres"
+    },
+    {
+      "path": "../orchestration"
+    },
+    {
+      "path": "../../plugins/sandbox"
     }
   ]
 }

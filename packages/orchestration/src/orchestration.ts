@@ -152,6 +152,9 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         if (spec === undefined) return;
         const flow = deps.flows[spec.flowId];
         if (flow === undefined) {
+          // Reclaim the spec — this child will never start, so no terminal
+          // event will ever arrive to clean it up (audit MEM-LOW, pre-existing).
+          specs.delete(childId);
           fail(new Error(`orchestration: no flow registered for "${spec.flowId}"`));
           return;
         }

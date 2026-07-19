@@ -147,6 +147,17 @@ describe("sandboxEval (ADR 0064)", () => {
     expect(failure.payload).toEqual({ expected: stale, observed: expected });
   });
 
+  it("MEM-MEDIUM: a script completing with a Promise does not crash on double-dispose", async () => {
+    const { scripts, effects } = await boot();
+    // `vm.dump` of a Promise disposes the handle itself (quickjs-emscripten 0.31);
+    // the alive-guard must prevent QuickJSUseAfterFree.
+    const ref = await put(scripts, "Promise.resolve(42)");
+    const output = await effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx);
+    // The host never drains the VM job queue, so a Promise completion value is
+    // surfaced as its pending/settled descriptor — odd output, never a crash.
+    expect(output).toBeTypeOf("object");
+  });
+
   it("fails typed on an erased script (scriptMissing)", async () => {
     const { scripts, effects } = await boot();
     const ref = await put(scripts, "1 + 1");

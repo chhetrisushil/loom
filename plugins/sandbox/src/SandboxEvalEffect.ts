@@ -75,32 +75,44 @@ export class SandboxEvalEffect implements Effect {
     // stop a synchronous runaway loop, so wall-clock rides it too.
     let tripped: "cpu" | "wallClock" | undefined;
     let ticks = 0;
-    const deadline = Date.now() + this.limits.wallClockMs;
     runtime.setMemoryLimit(this.limits.memoryBytes);
-    runtime.setInterruptHandler(() => {
-      if (ctx.signal?.aborted === true) return true;
-      if (Date.now() > deadline) {
-        tripped = "wallClock";
-        return true;
-      }
-      if (++ticks > this.limits.interruptBudget) {
-        tripped = "cpu";
-        return true;
-      }
-      return false;
-    });
 
     const vm = runtime.newContext();
     try {
-      // The ONLY thing the VM sees: a JSON-marshaled `input` global. No fetch,
-      // no require, no process, no timers — capability-empty by construction.
-      const seed = vm.evalCode(`globalThis.input = ${JSON.stringify(input ?? null)};`);
+      // The ONLY thing the VM sees: a JSON-marshaled `input` global — seeded as
+      // a STRING parsed in-VM (audit PERF-B4: evalCode of an object literal
+      // makes the engine parse the input as JS source, slower than JSON.parse
+      // and — before the fix — charged against the caller's interrupt budget).
+      // No fetch, no require, no process, no timers — capability-empty by
+      // construction.
+      const json = vm.newString(JSON.stringify(input ?? null));
+      vm.setProp(vm.global, "__loomInputJson", json);
+      json.dispose();
+      const seed = vm.evalCode(
+        "globalThis.input = JSON.parse(globalThis.__loomInputJson); delete globalThis.__loomInputJson;"
+      );
       if (seed.error !== undefined) {
         const err = vm.dump(seed.error) as { message?: string };
         seed.error.dispose();
         throw new Error(`sandbox: input marshalling failed: ${err.message ?? "unknown"}`);
       }
       seed.value.dispose();
+
+      // Install the guards AFTER seeding, so the user script alone pays the
+      // interrupt budget and wall clock.
+      const deadline = Date.now() + this.limits.wallClockMs;
+      runtime.setInterruptHandler(() => {
+        if (ctx.signal?.aborted === true) return true;
+        if (Date.now() > deadline) {
+          tripped = "wallClock";
+          return true;
+        }
+        if (++ticks > this.limits.interruptBudget) {
+          tripped = "cpu";
+          return true;
+        }
+        return false;
+      });
 
       const result = vm.evalCode(script);
       if (result.error !== undefined) {
@@ -109,11 +121,20 @@ export class SandboxEvalEffect implements Effect {
         this.mapEngineError(err, tripped, ctx);
       }
       const output = vm.dump(result.value) as unknown;
-      result.value.dispose();
+      // Audit MEM-MEDIUM — `dump` DISPOSES the handle itself when the value is
+      // a Promise (verified against quickjs-emscripten 0.31 internals); an
+      // unconditional dispose then throws QuickJSUseAfterFree. Guard on alive.
+      if (result.value.alive) result.value.dispose();
       return output;
     } finally {
-      vm.dispose();
-      runtime.dispose();
+      // Audit MEM-MEDIUM corollary — if vm.dispose() ever throws, the runtime's
+      // WASM-heap allocation must still be reclaimed (this.module is a process
+      // singleton; a skipped runtime.dispose() leaks the heap permanently).
+      try {
+        vm.dispose();
+      } finally {
+        runtime.dispose();
+      }
     }
   }
 
@@ -122,7 +143,9 @@ export class SandboxEvalEffect implements Effect {
     tripped: "cpu" | "wallClock" | undefined,
     ctx: EffectContext
   ): never {
-    const message = `${err.name ?? "Error"}: ${err.message ?? "unknown"}`;
+    // Audit SEC-5 — script-authored text flows into the durable STEP_FAILED
+    // record; bound it so an adversarial script cannot bloat the immutable log.
+    const message = `${err.name ?? "Error"}: ${err.message ?? "unknown"}`.slice(0, 2048);
     if (ctx.signal?.aborted === true) {
       // Cancellation is the kernel's outcome (STEP_CANCELLED), not a channel.
       throw ctx.signal.reason instanceof Error ? ctx.signal.reason : new Error(message);
