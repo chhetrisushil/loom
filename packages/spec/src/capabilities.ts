@@ -220,6 +220,18 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "Composed from existing primitives — NO new syscall or event type (P10 win; the plan's CHILD_COMPLETED governed event proved unnecessary). L2; single-child await today (fan-out is a follow-up).",
   },
   {
+    id: "mcp-dynamic-dispatch",
+    title: "MCP Dynamic Dispatch",
+    package: "@loom/plugin-mcp",
+    level: "L2",
+    summary:
+      "ONE registered `mcp.invoke` effect; tool name/args/schema-pin are runtime data on dynamically-minted steps. Pinned jsonSchemaHash verified per call → typed schemaDrift/toolNotFound channels; principals ride ctx.principal/secretRef, never the log; MCP_DISPATCHED indexed by projection.",
+    evidence: {
+      conformanceTest: "plugins/mcp/src/mcpInvoke.test.ts",
+    },
+    note: "ADR 0063 — plugin placement per the ADR 0043 litmus (vendor-specific). Canonical hashing lives in @loom/core (one implementation for drift check + registry change detection). MCP_DISPATCHED is a userspace domain event (fold skips unknown types — no EVENT_SCHEMA bump).",
+  },
+  {
     id: "content-batch-resolution",
     title: "Batched Content Resolution",
     package: "@loom/plugin-content",

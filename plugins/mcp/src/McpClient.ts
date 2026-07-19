@@ -1,4 +1,4 @@
-import { tool$ } from "@loom/core";
+import { jsonSchemaHash, tool$ } from "@loom/core";
 import type { ToolDefinition } from "@loom/core";
 import type { EffectRuntime } from "@loom/effect-runtime";
 import { ToolEffect } from "@loom/effect-runtime";
@@ -25,7 +25,11 @@ export class McpClient {
 
   constructor(private readonly config: McpServerConfig) {}
 
-  private async rpc<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
+  private async rpc<T = unknown>(
+    method: string,
+    params?: Record<string, unknown>,
+    extraHeaders?: Record<string, string>
+  ): Promise<T> {
     const id = this.nextId++;
     const body: JsonRpcRequest = {
       jsonrpc: "2.0",
@@ -38,6 +42,9 @@ export class McpClient {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
       ...this.config.headers,
+      // ADR 0063 — per-call credentials (principal/token → headers) ride the
+      // transport only; they are supplied inside the effect and never logged.
+      ...extraHeaders,
     };
     if (this.sessionId !== undefined) {
       headers["mcp-session-id"] = this.sessionId;
@@ -89,10 +96,15 @@ export class McpClient {
     return mapped.map((m) => m.definition);
   }
 
-  async callTool(name: string, input: unknown): Promise<unknown> {
+  async callTool(
+    name: string,
+    input: unknown,
+    extraHeaders?: Record<string, string>
+  ): Promise<unknown> {
     const result = await this.rpc<{ content: Array<{ type: string; text?: string }> }>(
       "tools/call",
-      { name, arguments: input as Record<string, unknown> }
+      { name, arguments: input as Record<string, unknown> },
+      extraHeaders
     );
     const textContent = result.content
       .filter((c) => c.type === "text")
@@ -135,6 +147,8 @@ export class McpClient {
       definition,
       effect,
       jsonInputSchema: mcpTool.inputSchema,
+      // ADR 0063 — the canonical pin (one hashing implementation, @loom/core).
+      schemaHash: jsonSchemaHash(mcpTool.inputSchema),
     };
   }
 }

@@ -17,4 +17,11 @@ export interface MappedMcpTool {
   definition: ToolDefinition;
   effect: ToolEffect;
   jsonInputSchema: Record<string, unknown>;
+  /**
+   * ADR 0063 — the canonical fingerprint of `jsonInputSchema`
+   * (`jsonSchemaHash`, `fnv1a64:<hex16>`). Pin it in a blueprint at plan time;
+   * `mcpInvoke$` verifies it per call and fails typed (`schemaDrift`) on
+   * mismatch. The SAME hashing implementation backs registry change detection.
+   */
+  schemaHash: string;
 }

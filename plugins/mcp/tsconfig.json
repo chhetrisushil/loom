@@ -3,17 +3,44 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "types": ["node"],
-    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+    "types": [
+      "node"
+    ],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ]
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts"],
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts"
+  ],
   "references": [
     {
       "path": "../../packages/core"
     },
     {
       "path": "../../packages/effect-runtime"
+    },
+    {
+      "path": "../../packages/event-runtime"
+    },
+    {
+      "path": "../../packages/middleware"
+    },
+    {
+      "path": "../../packages/replay-vm"
+    },
+    {
+      "path": "../../packages/snapshot-runtime"
+    },
+    {
+      "path": "../../packages/workflow-runtime"
     }
   ]
 }
