@@ -26,6 +26,13 @@ export interface ToolConfig<TIn, TOut> {
    * isolation is what turns this from convention into guarantee.
    */
   egress?: string[];
+  /**
+   * DE-4 — declared failure channels (channel → payload schema). Like
+   * `idempotent`, declaration metadata: pass the same map to the registered
+   * effect (`Effect.errors`) — the effect registry is where the kernel reads it
+   * when the invoking step doesn't declare its own.
+   */
+  errors?: Record<string, z.ZodSchema>;
 }
 
 export function tool$<TIn = unknown, TOut = unknown>(
@@ -40,5 +47,6 @@ export function tool$<TIn = unknown, TOut = unknown>(
     inputSchema: config.inputSchema,
     outputSchema: config.outputSchema,
     ...(config.idempotent !== undefined && { idempotent: config.idempotent }),
+    ...(config.errors !== undefined && { errors: config.errors }),
   };
 }

@@ -220,6 +220,18 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "Composed from existing primitives — NO new syscall or event type (P10 win; the plan's CHILD_COMPLETED governed event proved unnecessary). L2; single-child await today (fan-out is a follow-up).",
   },
   {
+    id: "typed-failure-channels",
+    title: "Typed Failure Channels",
+    package: "@loom/workflow-runtime",
+    level: "L2",
+    summary:
+      "Contracts declare `errors:` channels; a TypedFailure on a declared channel is logged with its validated payload and SUBSTITUTED on replay — flows branch on failure deterministically.",
+    evidence: {
+      conformanceTest: "packages/workflow-runtime/src/typedFailure.test.ts",
+    },
+    note: "NO new syscall — TypedFailure is a userspace throw caught at the execute seam (KERNEL_ABI stays 1.1.0, the saga/ctx.compensate precedent). EVENT_SCHEMA 1.17.0: additive STEP_FAILED {channel, payload}. Undeclared channels keep legacy at-least-once retry semantics (G2).",
+  },
+  {
     id: "saga",
     title: "Saga / Compensation",
     package: "@loom/saga",

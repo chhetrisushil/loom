@@ -20,10 +20,12 @@ export { flowContentHash } from "./flowHash";
 export { schedule$ } from "./builders/schedule";
 export type { ScheduleConfig } from "./builders/schedule";
 export {
+  fail,
   ReplayError,
   StepError,
   StorageWriteError,
   SuspendError,
+  TypedFailure,
   WorkflowNotFoundError,
 } from "./types/errors";
 export type {

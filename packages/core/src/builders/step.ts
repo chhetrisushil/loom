@@ -16,6 +16,8 @@ export interface StepConfig<TIn, TOut> {
   outputSchema: z.ZodSchema<TOut>;
   retry?: RetryPolicy;
   timeoutMs?: number;
+  /** DE-4 — declared failure channels (channel → payload schema); see {@link StepDefinition.errors}. */
+  errors?: Record<string, z.ZodSchema>;
 }
 
 export function step$<TIn = unknown, TOut = unknown>(
@@ -31,6 +33,7 @@ export function step$<TIn = unknown, TOut = unknown>(
     ...(config.handler !== undefined && { handler: config.handler }),
     ...(config.retry !== undefined && { retry: config.retry }),
     ...(config.timeoutMs !== undefined && { timeoutMs: config.timeoutMs }),
+    ...(config.errors !== undefined && { errors: config.errors }),
   };
 }
 

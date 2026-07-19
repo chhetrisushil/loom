@@ -82,6 +82,17 @@ export interface Warmer {
   warm(toolId: string): void;
 }
 
+/**
+ * Minimal structural view of a Zod schema's `safeParse` — kept structural so
+ * `@loom/effect-runtime` stays zod-free (the same dependency-light idiom as
+ * core's AgentSkillDef). A `Record<string, z.ZodSchema>` satisfies it directly.
+ */
+export interface ErrorChannelSchema {
+  safeParse(
+    input: unknown
+  ): { success: true; data: unknown } | { success: false; error: { message: string } };
+}
+
 export interface Effect<TIn = unknown, TOut = unknown> {
   kind: EffectKind;
   /**
@@ -93,6 +104,15 @@ export interface Effect<TIn = unknown, TOut = unknown> {
    * at-least-once re-run — existing effects behave byte-identically (G2).
    */
   readonly idempotent?: boolean;
+  /**
+   * DE-4 (ADR 0060) — the effect's declared failure channels (channel name →
+   * payload schema). Like `idempotent`, a declaration the kernel reads from the
+   * registry: a `TypedFailure` thrown on a declared channel is recorded as a
+   * typed STEP_FAILED and substituted on replay. A step-level `errors:`
+   * declaration wins over this registry fallback. Undeclared channels keep the
+   * legacy untyped at-least-once failure semantics (G2).
+   */
+  readonly errors?: Record<string, ErrorChannelSchema>;
   /**
    * Advisory pre-warm (latency-only, off the durable path). If present, the
    * kernel may call it BEFORE the effect is needed to spin up a cold resource

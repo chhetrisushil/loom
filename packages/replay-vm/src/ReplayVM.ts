@@ -16,6 +16,22 @@ export class ReplayVM {
     return this.state.frames[stepId]?.status === "failed";
   }
 
+  // DE-4 (ADR 0060) — the typed-failure twin of hasCompleted/getOutput. Defined
+  // only when the step's frame failed ON A DECLARED CHANNEL (a 1.17.0 typed
+  // STEP_FAILED); untyped failures return undefined and keep the legacy
+  // re-execute-on-replay semantics.
+  getTypedFailure(
+    stepId: string
+  ): { channel: string; payload: unknown; error?: unknown } | undefined {
+    const frame = this.state.frames[stepId];
+    if (frame?.status !== "failed" || frame.errorChannel === undefined) return undefined;
+    return {
+      channel: frame.errorChannel,
+      payload: frame.errorPayload,
+      ...(frame.error !== undefined && { error: frame.error }),
+    };
+  }
+
   getOutput(stepId: string): unknown {
     return this.state.frames[stepId]?.output;
   }

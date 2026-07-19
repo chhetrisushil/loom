@@ -1,4 +1,4 @@
-import { SuspendError } from "@loom/core";
+import { SuspendError, TypedFailure } from "@loom/core";
 import type { EffectContext, EffectMiddleware } from "@loom/effect-runtime";
 
 export interface RetryOptions {
@@ -12,7 +12,13 @@ export interface RetryOptions {
   maxDelayMs?: number;
   /** Spread delays deterministically to avoid thundering herds. Default true. */
   jitter?: boolean;
-  /** Decide whether a given error is retryable. Default: all (non-control) errors. */
+  /**
+   * Decide whether a given error is retryable. Default: all (non-control) errors
+   * EXCEPT `TypedFailure` (DE-4) — a declared domain outcome is not transient, so
+   * retrying it by default would just burn attempts on a deterministic result.
+   * An explicit `isRetryable` retains full control (retrying a TypedFailure
+   * in-memory is legal: no durable event has been emitted yet).
+   */
   isRetryable?: (err: unknown) => boolean;
   /** Observability hook fired before each backoff wait. */
   onRetry?: (info: { ctx: EffectContext; attempt: number; delayMs: number; err: unknown }) => void;
@@ -42,7 +48,7 @@ export function retryMiddleware(options: RetryOptions = {}): EffectMiddleware {
   const factor = options.factor ?? 2;
   const maxDelayMs = options.maxDelayMs ?? 30_000;
   const useJitter = options.jitter ?? true;
-  const isRetryable = options.isRetryable ?? (() => true);
+  const isRetryable = options.isRetryable ?? ((err: unknown) => !(err instanceof TypedFailure));
   const sleep = options.sleep ?? defaultSleep;
 
   return async (ctx, _input, next) => {
