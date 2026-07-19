@@ -15,8 +15,10 @@ Loom treats an intelligent workflow as a *process that unfolds over time*, not a
 
 - ⏸️  *Durable suspend / resume* — a flow can wait days for a human, survive a restart, and continue from exactly where it left off. Completed steps are never re-run.
 - 🔁  *Deterministic replay* — state is a pure fold of the event log; the same events always reconstruct the same state. *Non-determinism is allowed only when logged* (P9) — so routing/optimizing still replays bit-for-bit.
+- 🎯  *Typed failure channels* — a contract declares its EXPECTED failure modes (~errors: { schemaDrift: schema }~); a ~fail(channel, payload)~ is recorded with its validated payload and *substituted on replay* like a completed result, so flows branch on failure deterministically (ADR 0060).
+- 🧮  *The interpreter pattern* — a statically compiled flow may issue ~ctx.run~ over runtime-loaded plan data (a blueprint, a runbook) and stay fully replayable under the step-identity rule (~`${id}#${index}`~, linted by the compiler; ADR 0061). ~fanout$~ gives runtime-sized deterministic parallelism.
 - 🌱  *Git-style branching* — fork an in-flight execution, simulate alternatives concurrently, and promote a winner. Branch-only, no merge.
-- 🤖  *Agentic, end to end* — LLMs, ReAct agents, MCP tools, and agent-to-agent calls are all durable, replayable *effects*. *Reasoning* adds cheap-first model routing with confidence-based elevation; *tiered memory* adds working/semantic/procedural recall.
+- 🤖  *Agentic, end to end* — LLMs, ReAct agents, MCP tools (incl. schema-hash-pinned *dynamic dispatch* with typed drift repair, ADR 0063), sandboxed LLM-authored code (QuickJS, ADR 0064), and agent-to-agent calls are all durable, replayable *effects*. *Reasoning* adds cheap-first model routing with confidence-based elevation; *tiered memory* adds working/semantic/procedural recall.
 - 🛡️  *A real kernel* — a versioned syscall ABI, a capability *protection ring* (ungranted effects are denied), *resource accounting + quotas* (tokens/$/latency), and *fault supervision* (circuit breakers). Hardened end to end (K1–K12, T1–T2): behavioral safety, data-plane isolation + brokered egress, idempotency/fencing, encryption-at-rest + crypto-shredding, flow-code versioning, identity/tenancy + delegation, durable timers, and a language-neutral wire ABI — every ring opt-in and byte-identical when unwired.
 - 📈  *Scale out* — the same interfaces on single-node SQLite or a network Postgres store with cross-node live subscribe (~LISTEN/NOTIFY~).
 - 🎨  *Bring your own renderer* — the same backend renders in React, Angular, Web Components, or the terminal.
@@ -159,24 +161,43 @@ Loom 2.0 generalizes the durable workflow runtime into an *execution kernel for 
 
 -----
 
+* Repository layout
+
+| Tier | Location | What |
+|------+----------+------|
+| *Kernel* | ~packages/~ | mechanism + ABI: ~core~, ~event-runtime~, ~snapshot-runtime~, ~replay-vm~, ~effect-runtime~, ~workflow-runtime~, ~scheduler~, ~wire-abi~ |
+| *SPI contracts* | ~packages/~ | the seams adapters implement: ~worker-runtime~, ~projection-runtime~, ~llm~, ~blueprint-runtime~, ~registry~, ~telemetry~, ~dispatcher~ |
+| *Advisory* | ~packages/~ | optional modules: ~reasoning~, ~memory~, ~agent~, ~planner~, ~intent~, ~capability~, ~saga~, ~orchestration~, ~analytics~, ~middleware~, ~app~, ~classify~ (data-sensitivity markers), ~compliance~ (GDPR subject rights), ~isolate~, ~verify~, ~spec~, ~conformance~, … |
+| *Plugins (1P adapters)* | ~plugins/~ | ~@loom/plugin-*~: ~sqlite~, ~postgres~, ~crypto~, ~content~ (content-store seam + batched ~getMany~ + caching), ~durable-state~, ~read-model~, ~sentinel~, ~audit-chain~, ~cloudrun~, ~worker-remote~, ~worker-server~, ~mcp~ (incl. ~mcpInvoke$~ dynamic dispatch), ~sandbox~ (QuickJS eval of LLM-authored scripts), ~a2a~, ~renderer-react~, ~renderer-terminal~ |
+| *Plugin authoring* | ~packages/~ | ~@loom/plugin-kit~ (typed presets), ~@loom/conformance~ (SPI conformance kits) |
+| *Tooling* | ~tools/~ | first-party dev-tooling (leaf, build/test/authoring only): ~cli~, ~compiler~, ~appgen~, ~appgen-model~, ~deploy-sim~, ~scaffold~, ~eval~, ~testing~, ~dst~, ~create-loom-app~ |
+
+Third-party plugins live in the sibling [[https://github.com/chhetrisushil/loom-plugins][~loom-plugins~]] repo (or anywhere, under the ~loom-plugin-*~ name). See [[file:docs/plugins.md][docs/plugins.md]] and [[file:docs/adr/0043-plugin-packaging-and-1p-3p-separation.md][ADR 0043]].
+
+Storage backends are *presets* (~sqliteStorage()~, ~postgresStorage()~, …) that return a ~custom~ descriptor, so the composition root names no vendor — a third-party backend wires identically.
+
+-----
+
 * Packages
 
 *Core runtime*
 
 | Package                    | Description |
 |----------------------------+-------------|
-| ~@loom/core~               | Authoring builders (~flow$~, ~step$~, ~handler$~, ~tool$~, ~agent$~, ~projection$~, …) + shared types |
-| ~@loom/workflow-runtime~   | Durable execution — ~start~ / ~resume~ / ~fork~ / ~loadState~, the ~ExecutionJournal~, ~ExecutionContext~ (~ctx.execute~ / ~ctx.run~ / ~ctx.decide~), and the versioned kernel ABI (~KERNEL_SYSCALLS~, K1) |
+| ~@loom/core~               | Authoring builders (~flow$~, ~step$~, ~handler$~, ~tool$~ incl. typed ~errors:~ channels, ~agent$~, ~projection$~, …) + shared types + ~TypedFailure~ / ~fail~ (ADR 0060) + the canonical ~jsonSchemaHash~ (ADR 0063) |
+| ~@loom/workflow-runtime~   | Durable execution — ~start~ / ~resume~ / ~fork~ / ~restoreFromState~, the ~ExecutionJournal~, ~ExecutionContext~ (~ctx.execute~ / ~ctx.run~ / ~ctx.decide~ / ~ctx.parallel~), typed-failure substitution, and the versioned kernel ABI (~KERNEL_SYSCALLS~, K1) |
 | ~@loom/replay-vm~          | Deterministic replay — ~foldEvents~ / ~ReplayVM~ (pure state reconstruction) + the pinned on-disk event-schema ABI (~EVENT_SCHEMA_VERSION~, K5) |
-| ~@loom/event-runtime~      | Append-only ~EventStore~ (memory / SQLite) + git-style ~BranchRegistry~ + tenant-scoped stores (K12) |
+| ~@loom/event-runtime~      | Append-only ~EventStore~ SPI + git-style ~BranchRegistry~ + tenant-scoped stores (K12); in-memory reference impls |
 | ~@loom/snapshot-runtime~   | ~SnapshotStore~ — bounded-tail replay |
-| ~@loom/effect-runtime~     | Effect isolation for tool / LLM / human / A2A effects — plus the capability *protection ring* (~GrantTable~, K2), verifiable delegation (~DelegationAuthorizer~, K12), resource-accounting context (K3), and optional scheduler/warmer wiring (M6) |
-| ~@loom/sdk~                | Public re-export surface |
+| ~@loom/effect-runtime~     | Effect isolation for tool / LLM / human / A2A effects — plus the capability *protection ring* (~GrantTable~, K2), verifiable delegation (K12), resource-accounting context (K3), declared idempotence + error channels, and optional scheduler/warmer wiring (M6) |
+| ~@loom/sdk~                | Public re-export surface — light 1P plugins in the main barrel; native/heavy behind subpaths (~@loom/sdk/sqlite~, ~/postgres~, ~/sandbox~) |
 
-*Composition & effects*
+*Composition, effects & orchestration*
 
-| ~@loom/app~                | *Composition root* — ~defineConfig~ assembles the runtime, stores, middleware, projections, and A2A bus from one static config |
-| ~@loom/middleware~         | Effect middleware (the ~(ctx, input, next)~ chain) — ~retryMiddleware~ (deterministic backoff), ~meteringMiddleware~ (tokens/$/latency + budget admission, K3), ~safetyMiddleware~ (behavioral validation, K6), ~redactionMiddleware~ (~secretRef~ resolution, K10), and ~nestedBudgetMiddleware~ (tenant/workflow ceilings, K12) |
+| ~@loom/app~                | *Composition root* — ~defineConfig~ assembles the runtime, stores, middleware, projections, verify (incl. compiler-lint inputs), ~registerEffects~, and the A2A bus from one static config |
+| ~@loom/middleware~         | Effect middleware — ~retryMiddleware~ (deterministic backoff; skips ~TypedFailure~ by default), ~meteringMiddleware~ (K3), ~safetyMiddleware~ (K6), ~redactionMiddleware~ (~secretRef~ resolution, K10.3), ~claimCheckMiddleware~ + ~resolveClaimChecks~ (ADR 0054/0062), ~nestedBudgetMiddleware~ (K12) |
+| ~@loom/orchestration~      | Cross-execution orchestration — ~awaitChild~ (durable child await, recursion-guarded via ~maxDepth~) + ~fanout$~ (runtime-sized deterministic fan-out, ADR 0061) |
+| ~@loom/saga~               | Compensation — replay-safe rollback as ordinary ~ctx.run~ steps |
 | ~@loom/registry~           | Workflow / agent registry |
 
 *Projection & UI*
@@ -184,51 +205,51 @@ Loom 2.0 generalizes the durable workflow runtime into an *execution kernel for 
 | ~@loom/projection-runtime~ | Event → projection folding with live subscriptions |
 | ~@loom/a2ui~               | Agent-to-UI protocol — durable patch/event UI updates (~ctx.ui.set/merge/append~) |
 | ~@loom/blueprint-runtime~  | Schema-driven, JSON-serializable UI blueprints |
-| ~@loom/renderer-react~     | React renderer (with opt-in render-side fiber) |
-| ~@loom/renderer-terminal~  | Terminal renderer — same blueprint, non-React surface |
+| ~@loom/plugin-renderer-react~ | React renderer (with opt-in render-side fiber) |
+| ~@loom/plugin-renderer-terminal~ | Terminal renderer — same blueprint, non-React surface |
 
 *Agentic*
 
 | ~@loom/llm~                | Provider-agnostic LLM abstraction (Anthropic, OpenAI, custom) |
-| ~@loom/reasoning~          | *Reasoning Runtime* — model-route registry, cheap-first ~tagRouter~, pluggable confidence signals, confidence-based *elevation*; routes logged via the decision seam (~rankedRouter~ for learned routing) |
-| ~@loom/agent~              | ReAct-style agent loop over your tools — re-based to compose the Reasoning Runtime (routing/elevation), with routes logged |
-| ~@loom/mcp~                | Model Context Protocol client + tool discovery |
-| ~@loom/a2a~                | Agent-to-Agent protocol client + server |
-| ~@loom/capability~         | Flows as intent-addressable capabilities (~capability$~ + ~CapabilityCatalog~) — with ~version~, ~dependencies~ (transitive ~resolve~), and optional invoke authorization |
-| ~@loom/intent~             | Routes natural-language intent to a capability (prefers the Reasoning Runtime when supplied) |
-| ~@loom/planner~            | Composes an ordered, multi-step plan from a goal (prefers the Reasoning Runtime when supplied) |
-| ~@loom/memory~             | Scoped agent memory + ~TieredMemory~ — working / episodic / semantic / procedural tiers with eviction/summarization/promotion and replay-safe *logged recall* |
-| ~@loom/orchestrator~       | Composable approval (~decideApproval~) + plan-dispatch primitives |
+| ~@loom/reasoning~          | *Reasoning Runtime* — model routing, pluggable confidence, elevation; routes logged via the decision seam |
+| ~@loom/agent~              | ReAct-style agent loop over your tools, composing the Reasoning Runtime |
+| ~@loom/plugin-mcp~         | Model Context Protocol client + tool discovery + ~mcpInvoke$~ *dynamic dispatch* — schema-hash pinning, typed ~schemaDrift~/~toolNotFound~ channels, principal-safe credentials, ~mcpDispatchIndex~ (ADR 0063) |
+| ~@loom/plugin-sandbox~     | Hardened QuickJS/WASM eval of content-addressed, LLM-authored reshaping scripts — in-engine limits, no ambient I/O, shape-hash validation (ADR 0064) |
+| ~@loom/plugin-a2a~         | Agent-to-Agent protocol client + server |
+| ~@loom/capability~ · ~@loom/intent~ · ~@loom/planner~ | Flows as intent-addressable capabilities; NL intent routing; multi-step plan composition |
+| ~@loom/memory~             | Scoped agent memory + ~TieredMemory~ with replay-safe *logged recall* |
 
 *Compute & distribution*
 
-| ~@loom/dispatcher~         | Execution placement — ~LocalDispatcher~ + ~PlacementDispatcher~ (route to named targets by ~ExecutionPolicy~) + ~SupervisingDispatcher~ (restart/backoff + circuit breaker, K4) |
-| ~@loom/worker-runtime~ (~-local~ / ~-remote~) | Worker SPI + ~ExecutionPackage~ (resume coordinates, never code); in-process + HTTP impls |
-| ~@loom/worker-server~      | Stateless worker HTTP endpoint — ~POST /execute~ |
-| ~@loom/platform-cloudrun~  | Cloud Run adapter — ~CloudRunWorkerRuntime~ + sizing policy |
-| ~@loom/store-postgres~     | *Scale-out storage* — Postgres event / snapshot / branch stores behind the same interfaces, with cross-node live subscribe (~LISTEN/NOTIFY~); ~defineConfig({ storage: { kind: "postgres", url } })~ |
+| ~@loom/dispatcher~         | Execution placement — ~LocalDispatcher~ + ~PlacementDispatcher~ + ~SupervisingDispatcher~ (circuit breaker, K4) |
+| ~@loom/worker-runtime~ (~-local~) / ~@loom/plugin-worker-remote~ / ~@loom/plugin-worker-server~ | Worker SPI + ~ExecutionPackage~ (resume coordinates, never code); in-process, HTTP client, and stateless server impls |
+| ~@loom/plugin-cloudrun~    | Cloud Run adapter — ~CloudRunWorkerRuntime~ + sizing policy |
+| ~@loom/plugin-postgres~    | *Scale-out storage* — Postgres event / snapshot / branch / timer / read-model stores + cross-node live subscribe (~LISTEN/NOTIFY~) + ~postgresStorage()~ preset |
+| ~@loom/plugin-sqlite~      | Embedded SQLite stores + ~sqliteStorage()~ preset |
 | ~@loom/graph-executor~     | Distributed fan-out — per-node executions (one writer each), joined via lineage |
-| ~@loom/scheduler~          | Ephemeral cooperative scheduler — priority lanes, ~parallelLimit~, cancellation; can sit in the effect path for bounded-concurrency admission control (M6) |
+| ~@loom/scheduler~          | Ephemeral cooperative scheduler — priority lanes, ~parallelLimit~, cancellation |
 
-*DX & tooling*
+*Data, security & governance*
 
-| ~@loom/analytics~          | *Event intelligence* — read-only analyzers over the log (execution / cost / reasoning / failure) + ~runtimeIntelligence~ advisory report (rankings, hot failures, budget suggestion) |
-| ~@loom/appgen~             | *AI-native DX* — ~parseIntent~ (NL → structured ~AppSpec~) + ~generateApp~ (→ plain, static, inspectable TypeScript you own); codegen, not a runtime NL interpreter |
-| ~@loom/cli~                | The ~loom~ CLI — ~logs~ / ~debug~ / ~inspect~ / ~eval~ / ~deploy check~ / ~gen~ / ~new~ / ~check~ |
-| ~@loom/testing~            | Testing kit — ~createTestApp~, ~waitForPhase~, ~captureGolden~, VCR LLM provider |
-| ~@loom/eval~               | Log-as-fixture evals — replay recorded logs, diff/score runs |
-| ~@loom/deploy-sim~         | Deploy simulation — replay history vs new flow defs to catch resume-breaking changes |
+| ~@loom/plugin-content~     | Content-store seam (ADR 0046) — ~ContentResolvingEventStore~, claim-check backing, batched ~getMany~ + ~CachingContentStore~ (ADR 0062), K10.6 pinned sweep |
+| ~@loom/plugin-durable-state~ | Typed, versioned, contract-migratable carry state as recorded effects |
+| ~@loom/plugin-read-model~  | Durable, checkpointed cross-execution read models (ADR 0058) |
+| ~@loom/plugin-sentinel~    | The perpetual-agent pattern as one composition-time preset |
+| ~@loom/plugin-crypto~      | K10 encryption-at-rest + crypto-shredding (~PAYLOAD_SHREDDED~) |
+| ~@loom/plugin-audit-chain~ | Tamper-evident hash-chained ~EventStore~ wrapper |
+| ~@loom/isolate~            | K7 data-plane isolation — untrusted tools in a scrubbed child process with brokered egress |
+| ~@loom/classify~ · ~@loom/compliance~ | Field-sensitivity markers (~secret()~/~sensitive()~) · GDPR subject export/erasure |
+| ~@loom/verify~ · ~@loom/spec~ · ~@loom/conformance~ | Pre-flight verification (determinism/replay/capability rules incl. the ADR 0061 loop-identity lint) · evidence-derived capability manifest (ADR 0035) · SPI conformance kits |
+| ~@loom/wire-abi~           | T2 wire-level kernel ABI — language-neutral JSON-RPC projection of the K1 syscalls |
+
+*DX & tooling* (~tools/~)
+
+| ~@loom/cli~                | The ~loom~ CLI — ~gen~ / ~new~ / ~plugin~ / ~check~ / ~verify~ / ~lint~ / ~logs~ / ~debug~ / ~inspect~ / ~profile~ / ~eval~ / ~deploy check~ / ~retention run~ / ~sweep content~ / ~appgen~ |
+| ~@loom/compiler~           | Vite plugin + CLI — ~handler$~ extraction, flow-graph analysis, non-determinism + loop-identity lints (ADR 0061), resumability metadata |
+| ~@loom/appgen~ (+ ~appgen-model~) | *AI-native DX* — NL → structured spec → plain, static TypeScript you own (optional local-Gemma planner) |
+| ~@loom/testing~ · ~@loom/eval~ · ~@loom/deploy-sim~ · ~@loom/dst~ | Testing kit · log-as-fixture evals · deploy simulation · deterministic simulation testing |
 | ~@loom/scaffold~           | Code templates + registration codegen (~loom gen~ / ~new~) |
-| ~@loom/compiler~           | Vite plugin + CLI — ~handler$~ extraction, flow-graph validation, resumability metadata |
-| ~@loom/telemetry~          | Zero-overhead telemetry adapters + hooks |
-
-*Kernel hardening & security*
-
-| Package                    | Description |
-|----------------------------+-------------|
-| ~@loom/isolate~            | K7 data-plane isolation — untrusted tools in a scrubbed child process with brokered egress (static allowlist, ~EGRESS_DENIED~) |
-| ~@loom/store-crypto~       | K10 encryption-at-rest — ~EncryptingEventStore~ / ~EncryptingSnapshotStore~ (per-subject keys) + crypto-shredding (~shredSubject~, ~PAYLOAD_SHREDDED~) |
-| ~@loom/wire-abi~           | T2 wire-level kernel ABI — a language-neutral JSON-RPC projection of the K1 syscalls + shared fold-conformance vectors |
+| ~@loom/analytics~ · ~@loom/telemetry~ | Read-only event intelligence + advisory reports · zero-overhead telemetry adapters |
 
 -----
 
@@ -248,6 +269,10 @@ Every example is offline-first (no API key needed — a deterministic mock LLM s
 | [[file:examples/db-command-center-server][~db-command-center-server~]] | The *same* app as server + client — durable runtime on a Node server (SQLite), WC client over HTTP + SSE (isomorphic deployment) |
 | [[file:examples/incident-war-room][~incident-war-room~]] | Git-style branching, live — fork the durable execution at a gate → simulate strategies concurrently → compare → *promote* the winner. Branch-only, no merge |
 | [[file:examples/schema-migration-planner][~schema-migration-planner~]] | The same branching on a second domain (schema migrations) + live per-branch simulation progress — proving the seam is domain-agnostic |
+| [[file:examples/agent-swarm][~agent-swarm~]] | Headless — a dynamic agent swarm wired from user intent: durable plan (~record-plan~ → ~PLAN_COMPOSED~) + parallel ~executeGraph~ fan-out (one execution per node) |
+| [[file:examples/compute-cloudrun][~compute-cloudrun~]] | The same flow on three interchangeable compute backends (in-process / remote-HTTP / Cloud Run), offline — a stateless worker resumes cross-backend |
+| [[file:examples/db-observability][~db-observability~]] | A dashboard *blueprint generated dynamically* from a user question + widget catalogue — the agent splits the answer into WHAT (direct) and WHY (causal) |
+| [[file:examples/db-sentinel][~db-sentinel~]] | The perpetual-agent pattern — ~sentinelPreset()~: schedule-driven bounded runs with durable carry state, claim-checked telemetry, and pinned retention |
 
 ** Running them
 
@@ -288,6 +313,7 @@ pnpm test        # run every package's test suite
 pnpm typecheck   # type-check everything
 pnpm lint        # Biome lint
 pnpm format      # Biome format
+pnpm fitness     # build + typecheck + lint + test (the full gate)
 pnpm dev         # watch mode — rebuild packages as you edit
 #+end_src
 
@@ -303,12 +329,16 @@ Start at [[file:docs/README.md][docs/README.md]] (the index), then:
 - [[file:docs/user-guide.md][User Guide]] — every feature area with runnable examples
 - [[file:docs/architecture.md][Architecture]] — mission, core principles (P1–P11), and the reasoning behind each decision (render to PDF with ~scripts/build-architecture-pdf.sh~)
 - [[file:docs/loom-2.0/00-overview.md][Loom 2.0 deep-dives]] — the execution-kernel evolution in full: data structures, algorithms, and diagrams for every subsystem, plus the [[file:docs/loom-2.0/10-event-schema-reference.md][event-schema reference]] and [[file:docs/loom-2.0/04-kernel-hardening.md][kernel hardening]] (K1–K12, T1–T2)
+- [[file:docs/plugins.md][Plugins]] — the 1P/3P plugin model, authoring guide, and the current first-party inventory
+- [[file:docs/spec/loom-kernel-specification.md][Kernel specification]] — the normative spec (syscall ABI, event model incl. typed failure channels, SPI contracts) + the [[file:docs/spec/compatibility-matrix.md][compatibility matrix]]
 - [[file:docs/api-reference.org][API Reference]] — exhaustive per-package API, including [[file:docs/api-reference.org][Kernel hardening & security]]
-- [[file:docs/adr/][ADRs]] — the decision history (0001–0027, all accepted; [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][ADR 0016]] records Loom 2.0)
+- [[file:docs/adr/][ADRs]] — the decision history (0001–0065; [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][0016]] Loom 2.0 · [[file:docs/adr/0043-plugin-packaging-and-1p-3p-separation.md][0043]] plugin packaging · [[file:docs/adr/0051-perpetual-agents-placement-schedule-remodel.md][0051–0057]] perpetual agents · [[file:docs/adr/0060-typed-failure-channels.md][0060–0065]] the GenUI dynamic-execution series)
 - [[file:docs/presentation/loom-deck.md][Presentation]] — the flagship deck, plus the [[file:docs/presentation/loom-2.0-deck.md][Loom 2.0 deck]] (Marp)
 
 -----
 
 * Tech stack
 
-TypeScript (compiled to CommonJS via ~tsc~) · pnpm workspaces + Turborepo · Vitest · Biome · Zod · ~better-sqlite3~ (embedded) / ~pg~ (optional Postgres scale-out) · React 18 + Vite (example UIs).
+TypeScript (compiled to CommonJS via ~tsc~) · pnpm workspaces + Turborepo · Vitest · Biome · Zod · ~better-sqlite3~ (embedded) / ~pg~ (optional Postgres scale-out) · ~quickjs-emscripten~ (the sandbox plugin's WASM engine) · React 18 + Vite (example UIs).
+
+Licensed under *Apache-2.0* (see [[file:LICENSE][LICENSE]]).
