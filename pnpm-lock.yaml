@@ -787,18 +787,42 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
       '@loom/llm':
         specifier: workspace:*
         version: link:../../packages/llm
+      '@loom/orchestration':
+        specifier: workspace:*
+        version: link:../../packages/orchestration
+      '@loom/plugin-content':
+        specifier: workspace:*
+        version: link:../../plugins/content
+      '@loom/plugin-mcp':
+        specifier: workspace:*
+        version: link:../../plugins/mcp
       '@loom/plugin-renderer-react':
         specifier: workspace:*
         version: link:../../plugins/renderer-react
       '@loom/plugin-renderer-terminal':
         specifier: workspace:*
         version: link:../../plugins/renderer-terminal
+      '@loom/plugin-sandbox':
+        specifier: workspace:*
+        version: link:../../plugins/sandbox
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../../packages/projection-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -808,6 +832,9 @@ importers:
       recharts:
         specifier: ^2.13.3
         version: 2.15.4(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

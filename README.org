@@ -271,7 +271,7 @@ Every example is offline-first (no API key needed — a deterministic mock LLM s
 | [[file:examples/schema-migration-planner][~schema-migration-planner~]] | The same branching on a second domain (schema migrations) + live per-branch simulation progress — proving the seam is domain-agnostic |
 | [[file:examples/agent-swarm][~agent-swarm~]] | Headless — a dynamic agent swarm wired from user intent: durable plan (~record-plan~ → ~PLAN_COMPOSED~) + parallel ~executeGraph~ fan-out (one execution per node) |
 | [[file:examples/compute-cloudrun][~compute-cloudrun~]] | The same flow on three interchangeable compute backends (in-process / remote-HTTP / Cloud Run), offline — a stateless worker resumes cross-backend |
-| [[file:examples/db-observability][~db-observability~]] | A dashboard *blueprint generated dynamically* from a user question + widget catalogue — the agent splits the answer into WHAT (direct) and WHY (causal) |
+| [[file:examples/db-observability][~db-observability~]] | A dashboard *blueprint generated dynamically* from a user question + widget catalogue (WHAT/WHY split) — telemetry hydrated by a durable interpreter flow: ~fanout$~ → ~mcpInvoke$~ (schema-pinned) → ~sandboxEval$~, with a live schema-drift → typed-failure → in-band-repair demo |
 | [[file:examples/db-sentinel][~db-sentinel~]] | The perpetual-agent pattern — ~sentinelPreset()~: schedule-driven bounded runs with durable carry state, claim-checked telemetry, and pinned retention |
 
 ** Running them

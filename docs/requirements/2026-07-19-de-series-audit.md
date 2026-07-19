@@ -97,9 +97,10 @@ nothing invoked or populated them). Wired end-to-end:
   effects).
 - `loom new tool` scaffold now demonstrates the `errors:`/`fail` typed-channel contract.
 
-Identified, not built (follow-up candidates): extending `examples/db-observability` into
-the full blueprint-interpreter demo (`mcpInvoke$` + `sandboxEval$` + `fanout$`); wiring
-`loom verify` to auto-read the manifest's `loopIdentity` field.
+Follow-ups: `examples/db-observability` has since been extended into the full
+blueprint-interpreter demo (`fanout$` → `mcpInvoke$` → `sandboxEval$` over an in-process
+MCP server, with a narrated schema-drift → typed-failure → in-band-repair pass — see its
+README). Still open: wiring `loom verify` to auto-read the manifest's `loopIdentity` field.
 
 ## 4. Docs & diagrams synced
 

@@ -32,10 +32,42 @@ are drawn as visualisations** (a radial gauge, an area chart, a saturation bar, 
    TerminalRenderer.render(blueprint, executionId)   ← binds to cpu/connections/… projections
 ```
 
+Telemetry itself is **hydrated by a durable Loom interpreter flow** (the GenUI
+blueprint-interpreter pattern, ADRs 0060/0061/0063/0064): a *hydration plan* — one node
+per projection, each naming an MCP tool, a **pinned input-schema hash**, and a
+**content-addressed reshaping script** — is the flow's logged input, walked by a
+statically compiled runner:
+
+```
+ plan (logged in the run's first event)
+   │  one node per projection: { toolName, schemaPin, scriptRef, shapePin }
+   ▼
+ fanout$(ctx, mcpInvoke$("hydrate"), nodes)     ← `hydrate#${i}` step identity (ADR 0061)
+   │  per call: verify schemaPin — mismatch ⇒ TYPED schemaDrift failure (ADR 0060/0063)
+   ▼
+ fanout$(ctx, sandboxEval$("reshape"), …)       ← QuickJS sandbox: RAW → widget shape,
+   │                                               output validated vs shapePin (ADR 0064)
+   ▼
+ { cpu, connections, replication, queries } → seeded into the projections
+```
+
+Midway through the demo a simulated **backend deploy changes `db.replication`'s input
+schema**: the pinned hash no longer matches, the invoke fails on the **typed
+`schemaDrift` channel** (recorded with the observed hash), and the flow **repairs
+in-band** — recorded sibling frames are *substituted from the log* (zero re-invocation;
+the test pins exactly one `tools/call` per tool), and only the drifted node re-runs under
+a re-minted `hydrate#2#repair` id. The MCP "backend" runs in-process (`src/mcpServer.ts`)
+— still offline, still deterministic.
+
 ## How it works
 
+- **Durable hydration** (`src/hydration.ts` + `src/mcpServer.ts`) — the interpreter flow
+  above: `fanout$` (`@loom/orchestration`) over `mcpInvoke$` (`@loom/plugin-mcp`, schema
+  pins from `listTools`) chained into `sandboxEval$` (`@loom/plugin-sandbox`,
+  content-addressed scripts in a `ContentStore`), with the typed drift→repair branch.
 - **Telemetry projections** (`src/telemetry.ts`) — `cpu`, `connections`, `replication`,
-  `queries` read-models, seeded with a deterministic "DB under CPU stress" scenario,
+  `queries` read-models, populated from the hydration flow's output (the browser build
+  keeps the deterministic seeded scenario — hydration is the Node/terminal path),
   plus an `answer` projection the agent writes its WHAT/WHY text into.
 - **Widget catalogue** (`src/catalogue.ts`) — the palette the UI is built from: each
   entry knows its topic + how to build a bound `Widget` (`MetricCard`, `ProgressBar`,
@@ -70,8 +102,8 @@ push deterministic samples so the gauge/area animate.
 **Headless (terminal):**
 
 ```bash
-pnpm --filter @loom/db-observability start   # asks 4 questions, prints a generated dashboard for each
-pnpm --filter @loom/db-observability test    # classification, dynamic assembly, rendered output, registry
+pnpm --filter @loom/db-observability start   # hydrate via MCP+sandbox, ask 4 questions, drift+repair midway
+pnpm --filter @loom/db-observability test    # classification, dynamic assembly, hydration + drift repair, registry
 ```
 
 ## One blueprint, two surfaces
@@ -89,7 +121,9 @@ The composer emits a **framework-agnostic `Blueprint`** — the intent→WHAT/WH
 
 | Path | Purpose |
 |------|---------|
-| `src/telemetry.ts` | Telemetry + answer projections, seeded scenario, live-sample helpers |
+| `src/hydration.ts` | The durable interpreter flow: plan builder + `fanout$` → `mcpInvoke$` → `sandboxEval$` + drift repair |
+| `src/mcpServer.ts` | In-process MCP telemetry server (offline) + the `upgradeReplicationTool` drift trigger |
+| `src/telemetry.ts` | Telemetry + answer projections, `applyHydratedStates`, seeded scenario (browser), live-sample helpers |
 | `src/catalogue.ts` | The available widget catalogue (the palette) |
 | `src/topics.ts` | Per-topic WHAT/WHY causal models |
 | `src/agent.ts` | Offline intent classifier (`LlmProvider`) |
@@ -97,4 +131,4 @@ The composer emits a **framework-agnostic `Blueprint`** — the intent→WHAT/WH
 | `src/wiring.ts` | `buildCore` — surface-agnostic projections + composer (terminal-free) |
 | `src/app.ts` / `src/main.ts` | Terminal wiring + headless driver |
 | `src/browser/` | React dashboard: `renderers.tsx` (Recharts), `registry.ts`, `App.tsx`, `main.tsx` |
-| `test/` | Classification, dynamic assembly, rendered output, browser registry |
+| `test/` | Classification, dynamic assembly, rendered output, browser registry, hydration + drift repair |

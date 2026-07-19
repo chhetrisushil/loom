@@ -117,6 +117,21 @@ export function seedScenario(pr: ProjectionRuntime, executionId: string): void {
   } satisfies QueriesState);
 }
 
+/**
+ * Apply the output of a durable hydration run (projectionId → reshaped state)
+ * to the projections the widgets bind to. The states arrive from the
+ * fanout$ → mcpInvoke$ → sandboxEval$ interpreter flow (src/hydration.ts).
+ */
+export function applyHydratedStates(
+  pr: ProjectionRuntime,
+  executionId: string,
+  states: Record<string, unknown>
+): void {
+  for (const [projectionId, state] of Object.entries(states)) {
+    pr.seedState(projectionId, executionId, state);
+  }
+}
+
 /** Read the current telemetry as a plain snapshot (for the composer's reasoning). */
 export function readTelemetry(pr: ProjectionRuntime, executionId: string): TelemetrySnapshot {
   return {
