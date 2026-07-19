@@ -10,6 +10,8 @@ export {
   CHILD_DONE,
   awaitChild,
   childIdFor,
+  depthOf,
   parentOf,
   superviseChildren,
 } from "./orchestration";
+export { fanout$, type FanoutOptions } from "./fanout";

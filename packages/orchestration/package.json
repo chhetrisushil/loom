@@ -1,7 +1,7 @@
 {
   "name": "@loom/orchestration",
   "version": "0.0.1",
-  "description": "Cross-execution orchestration for Loom — spawn a child workflow from a parent and durably await its result, built from execute/decide/suspend/resume with no new syscall. A supervisor correlates child completion back to the waiting parent.",
+  "description": "Cross-execution orchestration for Loom \u2014 spawn a child workflow from a parent and durably await its result, built from execute/decide/suspend/resume with no new syscall. A supervisor correlates child completion back to the waiting parent.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -24,6 +24,7 @@
   },
   "devDependencies": {
     "@loom/effect-runtime": "workspace:*",
+    "@loom/replay-vm": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
