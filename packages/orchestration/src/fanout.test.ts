@@ -8,8 +8,8 @@ import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { awaitChild, depthOf } from "./orchestration";
 import { fanout$ } from "./fanout";
+import { awaitChild, depthOf } from "./orchestration";
 
 // ── ADR 0061 D4/D5 — fanout$ (the DE-1 residue) + the recursion depth guard ──
 
@@ -133,9 +133,9 @@ describe("fanout$ (ADR 0061 D4)", () => {
       );
       void groups;
       const leaves = await Promise.all(
-        input.items.slice(0, 2).map((_, g) =>
-          fanout$(ctx, { ...inner, id: `leaf#${g}` }, [{ n: 0 }, { n: 1 }])
-        )
+        input.items
+          .slice(0, 2)
+          .map((_, g) => fanout$(ctx, { ...inner, id: `leaf#${g}` }, [{ n: 0 }, { n: 1 }]))
       );
       void leaves;
       return { results: [] };

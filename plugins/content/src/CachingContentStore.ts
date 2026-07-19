@@ -1,5 +1,5 @@
-import type { ContentRef } from "./content";
 import type { ContentStore } from "./ContentStore";
+import type { ContentRef } from "./content";
 
 export interface CachingContentStoreOptions {
   /**

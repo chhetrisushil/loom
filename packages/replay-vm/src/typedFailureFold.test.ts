@@ -1,7 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import { describe, expect, it } from "vitest";
-import { foldEvents } from "./foldEvents";
 import { ReplayVM } from "./ReplayVM";
+import { foldEvents } from "./foldEvents";
 
 // ── DE-4 (1.17.0) — STEP_FAILED {channel, payload} fold ──────────────────────
 //
@@ -9,11 +9,7 @@ import { ReplayVM } from "./ReplayVM";
 // errorChannel/errorPayload into the frame (what the execute seam substitutes
 // from); a channel-less STEP_FAILED folds a frame deep-equal to pre-1.17.
 
-function envelope(
-  sequence: number,
-  eventType: string,
-  payload: unknown
-): EventEnvelope {
+function envelope(sequence: number, eventType: string, payload: unknown): EventEnvelope {
   return {
     id: `e-${sequence}`,
     executionId: "x-1",

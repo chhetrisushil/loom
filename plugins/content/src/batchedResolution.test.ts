@@ -2,9 +2,9 @@ import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { CachingContentStore } from "./CachingContentStore";
-import type { ContentRef } from "./content";
 import { ContentResolvingEventStore } from "./ContentResolvingEventStore";
 import { type ContentStore, InMemoryContentStore } from "./ContentStore";
+import type { ContentRef } from "./content";
 import { ContentMissingError } from "./errors";
 
 // ── ADR 0062 — batch-scoped two-phase resolution ──────────────────────────────

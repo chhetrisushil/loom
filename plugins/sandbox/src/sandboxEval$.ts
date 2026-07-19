@@ -5,8 +5,8 @@ import { z } from "zod";
 import { SandboxEvalEffect } from "./SandboxEvalEffect";
 import {
   SANDBOX_ERRORS,
-  type SandboxEvalInputValue,
   SandboxEvalInput,
+  type SandboxEvalInputValue,
   type SandboxSpec,
   type ScriptReader,
 } from "./types";

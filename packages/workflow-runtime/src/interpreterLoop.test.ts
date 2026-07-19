@@ -108,7 +108,11 @@ describe("interpreter-pattern crash matrix (ADR 0061)", () => {
       for (const e of prefix) await store.append(e);
 
       const recovery = boot(store);
-      const folded = new ReplayVM(prefix, { executionId: "interp", workflowId: "interpreter", workflowVersion: "1.0.0" }).getState();
+      const folded = new ReplayVM(prefix, {
+        executionId: "interp",
+        workflowId: "interpreter",
+        workflowVersion: "1.0.0",
+      }).getState();
       expect(folded.status).toBe("running"); // no terminal event — a real crash, not a failure
 
       const handle = await recovery.runtime.restoreFromState(folded);
@@ -135,7 +139,13 @@ describe("interpreter-pattern crash matrix (ADR 0061)", () => {
     for (const e of prefix) await store.append(e);
 
     const recovery = boot(store);
-    const handle = await recovery.runtime.restoreFromState(new ReplayVM(prefix, { executionId: "interp", workflowId: "interpreter", workflowVersion: "1.0.0" }).getState());
+    const handle = await recovery.runtime.restoreFromState(
+      new ReplayVM(prefix, {
+        executionId: "interp",
+        workflowId: "interpreter",
+        workflowVersion: "1.0.0",
+      }).getState()
+    );
     const state = await handle.waitForCompletion();
 
     expect(state.status).toBe("completed");

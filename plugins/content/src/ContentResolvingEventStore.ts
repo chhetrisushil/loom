@@ -151,7 +151,9 @@ export class ContentResolvingEventStore implements EventStore {
         return;
       }
       void this.fetchBytes(distinct, executionId)
-        .then((bytes) => handler({ ...event, payload: substituteContentRefs(event.payload, bytes) }))
+        .then((bytes) =>
+          handler({ ...event, payload: substituteContentRefs(event.payload, bytes) })
+        )
         .catch(() => handler(event));
     });
   }

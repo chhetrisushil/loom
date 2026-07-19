@@ -361,7 +361,8 @@ describe("typed failure channels (DE-4, ADR 0060)", () => {
     expect(
       events.some(
         (e) =>
-          e.eventType === "STEP_COMPLETED" && (e.payload as { stepId?: string }).stepId === "ok-step"
+          e.eventType === "STEP_COMPLETED" &&
+          (e.payload as { stepId?: string }).stepId === "ok-step"
       )
     ).toBe(true);
   });

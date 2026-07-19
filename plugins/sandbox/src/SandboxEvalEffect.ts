@@ -2,7 +2,7 @@ import { fail } from "@loom/core";
 import type { Effect, EffectContext, ErrorChannelSchema } from "@loom/effect-runtime";
 import { type QuickJSWASMModule, getQuickJS } from "quickjs-emscripten";
 import { shapeHash } from "./shape";
-import { SANDBOX_ERRORS, type SandboxEvalInputValue, SandboxEvalInput } from "./types";
+import { SANDBOX_ERRORS, SandboxEvalInput, type SandboxEvalInputValue } from "./types";
 import type { SandboxLimits, ScriptReader } from "./types";
 
 // ── ADR 0064 — the hardened eval effect ──────────────────────────────────────

@@ -36,10 +36,7 @@ async function put(scripts: InMemoryContentStore, code: string) {
   return scripts.put(encoder.encode(code));
 }
 
-async function expectChannel(
-  p: Promise<unknown>,
-  channel: string
-): Promise<TypedFailure> {
+async function expectChannel(p: Promise<unknown>, channel: string): Promise<TypedFailure> {
   try {
     await p;
   } catch (err) {
@@ -55,12 +52,25 @@ describe("sandboxEval (ADR 0064)", () => {
     const { scripts, effects } = await boot();
     const ref = await put(
       scripts,
-      `(() => ({ series: input.rows.map((r) => ({ t: r[0], v: r[1] * 2 })) }))()`
+      "(() => ({ series: input.rows.map((r) => ({ t: r[0], v: r[1] * 2 })) }))()"
     );
-    const input = { scriptRef: ref, input: { rows: [[1, 10], [2, 20]] } };
+    const input = {
+      scriptRef: ref,
+      input: {
+        rows: [
+          [1, 10],
+          [2, 20],
+        ],
+      },
+    };
     const first = await effects.execute(SANDBOX_TOOL_ID, input, baseCtx);
     const second = await effects.execute(SANDBOX_TOOL_ID, input, baseCtx);
-    expect(first).toEqual({ series: [{ t: 1, v: 20 }, { t: 2, v: 40 }] });
+    expect(first).toEqual({
+      series: [
+        { t: 1, v: 20 },
+        { t: 2, v: 40 },
+      ],
+    });
     expect(second).toEqual(first); // pure function of (script, input)
   });
 
@@ -68,7 +78,7 @@ describe("sandboxEval (ADR 0064)", () => {
     const { scripts, effects } = await boot({
       limits: { interruptBudget: 50, wallClockMs: 60_000 },
     });
-    const ref = await put(scripts, `while (true) {}`);
+    const ref = await put(scripts, "while (true) {}");
     const failure = await expectChannel(
       effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx),
       "limitExceeded"
@@ -92,7 +102,7 @@ describe("sandboxEval (ADR 0064)", () => {
     const { scripts, effects } = await boot({
       limits: { interruptBudget: Number.MAX_SAFE_INTEGER, wallClockMs: 50 },
     });
-    const ref = await put(scripts, `while (true) {}`);
+    const ref = await put(scripts, "while (true) {}");
     const failure = await expectChannel(
       effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx),
       "limitExceeded"
@@ -105,13 +115,13 @@ describe("sandboxEval (ADR 0064)", () => {
     for (const code of [
       `fetch("http://example.com")`,
       `require("node:fs")`,
-      `process.env.SECRET`,
-      `setTimeout(() => {}, 1)`,
+      "process.env.SECRET",
+      "setTimeout(() => {}, 1)",
     ]) {
       const ref = await put(scripts, code);
-      await expect(
-        effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx)
-      ).rejects.toThrow(/sandbox script failed:.*not defined/);
+      await expect(effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx)).rejects.toThrow(
+        /sandbox script failed:.*not defined/
+      );
     }
   });
 
@@ -139,7 +149,7 @@ describe("sandboxEval (ADR 0064)", () => {
 
   it("fails typed on an erased script (scriptMissing)", async () => {
     const { scripts, effects } = await boot();
-    const ref = await put(scripts, `1 + 1`);
+    const ref = await put(scripts, "1 + 1");
     await scripts.delete(ref);
     const failure = await expectChannel(
       effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx),
@@ -150,7 +160,7 @@ describe("sandboxEval (ADR 0064)", () => {
 
   it("DE-4 integration: a recorded shapeMismatch replays with ZERO re-evaluation", async () => {
     const scripts = new InMemoryContentStore();
-    const ref = await put(scripts, `(() => ({ ok: true }))()`);
+    const ref = await put(scripts, "(() => ({ ok: true }))()");
     const stale = shapeHash({ entirely: "different" });
 
     const makeRuntime = (reader: { get: typeof scripts.get; reads: number }) => {

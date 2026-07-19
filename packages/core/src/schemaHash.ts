@@ -31,9 +31,7 @@ function canon(value: unknown, path: string): string {
       return JSON.stringify(value);
     case "object": {
       if (Array.isArray(value)) {
-        const parts = value.map((v, i) =>
-          v === undefined ? "null" : canon(v, `${path}[${i}]`)
-        );
+        const parts = value.map((v, i) => (v === undefined ? "null" : canon(v, `${path}[${i}]`)));
         return `[${parts.join(",")}]`;
       }
       const record = value as Record<string, unknown>;

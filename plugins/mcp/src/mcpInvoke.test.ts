@@ -10,12 +10,7 @@ import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { McpClient } from "./McpClient";
-import {
-  MCP_DISPATCHED,
-  mcpDispatchIndex,
-  mcpInvoke$,
-  registerMcpInvoke,
-} from "./mcpInvoke$";
+import { MCP_DISPATCHED, mcpDispatchIndex, mcpInvoke$, registerMcpInvoke } from "./mcpInvoke$";
 
 // ── ADR 0063 — mcpInvoke$ end-to-end against a fake MCP server ───────────────
 

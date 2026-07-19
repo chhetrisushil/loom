@@ -76,9 +76,7 @@ export function buildManifest(
         chunkMap[stepId] = `${outDir}/${fileName}`;
       } else if (!step.toolId) {
         warnings.push(
-          `Step "${stepId}" in flow "${flowId}" has neither a handler$ nor a toolId — it must be registered manually. ` +
-            `(Steps minted dynamically in the runner body — the interpreter pattern — should instead bind a static toolId ` +
-            `to a registered effect and derive ids as \`\${id}#\${index}\`; see ADR 0061.)`
+          `Step "${stepId}" in flow "${flowId}" has neither a handler$ nor a toolId — it must be registered manually. (Steps minted dynamically in the runner body — the interpreter pattern — should instead bind a static toolId to a registered effect and derive ids as \`\${id}#\${index}\`; see ADR 0061.)`
         );
       }
     }

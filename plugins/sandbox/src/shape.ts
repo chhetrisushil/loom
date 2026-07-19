@@ -19,9 +19,7 @@ export function shapeOf(value: unknown): Shape {
       const s = shapeOf(v);
       shapes.set(JSON.stringify(s), s);
     }
-    return [...shapes.entries()]
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([, s]) => s);
+    return [...shapes.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, s]) => s);
   }
   if (t === "object") {
     const out: { [key: string]: Shape } = {};

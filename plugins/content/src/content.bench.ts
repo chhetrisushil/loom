@@ -1,9 +1,9 @@
 import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { bench, describe } from "vitest";
-import type { ContentRef } from "./content";
 import { ContentResolvingEventStore } from "./ContentResolvingEventStore";
 import { type ContentStore, InMemoryContentStore } from "./ContentStore";
+import type { ContentRef } from "./content";
 
 // ── ADR 0062 guardrail bench — frozen-snapshot serving (TS-10) ────────────────
 //
