@@ -78,7 +78,12 @@ import {
   toolDefinitionsFrom,
 } from "./registerFlows";
 import { type FlowGraphFlow, validateFlowGraph } from "./validate";
-import { type VerifyConfig, normalizeVerify, resolveVerifyInput } from "./verifyAdapter";
+import {
+  type VerifyConfig,
+  type VerifyLintInputs,
+  normalizeVerify,
+  resolveVerifyInput,
+} from "./verifyAdapter";
 
 /** Structural view of a CapabilityCatalog — avoids a hard `@loom/capability` dep. */
 export interface CatalogLike {
@@ -420,9 +425,12 @@ export interface LoomApp {
   /**
    * Re-run pre-flight verification on demand (read-only, off-log). Returns the report;
    * the caller decides what to do with it (the CLI exits non-zero on `!ok`). Available
-   * regardless of the `verify` config key. See `@loom/verify`.
+   * regardless of the `verify` config key. `options.lint` merges EXTRA compiler-lint
+   * findings (per-flow, over any configured `verify.lint`) — `loom verify` uses this to
+   * inject the compiler manifest's ADR 0061 `loopIdentity` field automatically. See
+   * `@loom/verify`.
    */
-  verify(): VerificationReport;
+  verify(options?: { lint?: VerifyLintInputs }): VerificationReport;
   close(): Promise<void>;
 }
 
@@ -757,23 +765,29 @@ export function defineConfig(config: LoomConfig): LoomApp {
   // Pre-flight verification (opt-in, G2). Built lazily so an unwired app pays nothing:
   // with no `verify` key and no `app.verify()` call, `resolveInput` never runs.
   const verifyCfg = normalizeVerify(config.verify);
-  const resolveInput = () =>
-    resolveVerifyInput(runtime, {
+  // Compiler lint findings (issue #82 nondeterminism; ADR 0061 loop identity) flow
+  // into the determinism rule. `extraLint` (from `app.verify({ lint })` — e.g. the
+  // manifest's loopIdentity field injected by `loom verify`) merges per-flow OVER
+  // the configured `verify.lint`.
+  const resolveInput = (extraLint?: VerifyLintInputs) => {
+    const nonDeterministicByFlow = {
+      ...verifyCfg?.lint?.nonDeterministicByFlow,
+      ...extraLint?.nonDeterministicByFlow,
+    };
+    const loopIdentityByFlow = {
+      ...verifyCfg?.lint?.loopIdentityByFlow,
+      ...extraLint?.loopIdentityByFlow,
+    };
+    return resolveVerifyInput(runtime, {
       ...(authorizer !== undefined && { authorizer }),
       ...(config.dispatcher !== undefined && { dispatcher: config.dispatcher }),
       ...(verifyCfg?.meteredDimensions !== undefined && {
         meteredDimensions: verifyCfg.meteredDimensions,
       }),
-      // Compiler lint findings (issue #82 nondeterminism; ADR 0061 loop identity)
-      // flow into the determinism rule — previously this path was structurally
-      // dead (the adapter accepted findings nothing supplied).
-      ...(verifyCfg?.lint?.nonDeterministicByFlow !== undefined && {
-        nonDeterministicByFlow: verifyCfg.lint.nonDeterministicByFlow,
-      }),
-      ...(verifyCfg?.lint?.loopIdentityByFlow !== undefined && {
-        loopIdentityByFlow: verifyCfg.lint.loopIdentityByFlow,
-      }),
+      ...(Object.keys(nonDeterministicByFlow).length > 0 && { nonDeterministicByFlow }),
+      ...(Object.keys(loopIdentityByFlow).length > 0 && { loopIdentityByFlow }),
     });
+  };
   const verifyOptions = verifyCfg?.rules !== undefined ? { rules: verifyCfg.rules } : undefined;
 
   if (verifyCfg !== undefined && verifyCfg.mode !== "off") {
@@ -816,8 +830,8 @@ export function defineConfig(config: LoomConfig): LoomApp {
       }
       return eraseCoordinator.eraseSubject(subjectId, tenant);
     },
-    verify() {
-      return runVerify(resolveInput(), verifyOptions);
+    verify(options) {
+      return runVerify(resolveInput(options?.lint), verifyOptions);
     },
     async close() {
       timerService?.stop();

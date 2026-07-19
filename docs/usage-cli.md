@@ -32,7 +32,7 @@ loom — project-local commands for a Loom app
   loom new   <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app]  scaffold a file (folder convention)
   loom appgen <intent> [--dir .] [--dry-run] [--check] [--model <spec>]  NL → new project or brownfield edits
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
-  loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
+  loom verify --config <module> [--manifest <path>]  pre-flight runtime verification (@loom/verify); the compiler manifest's ADR 0061 loopIdentity findings are auto-injected (explicit --manifest, or loom-manifest.json beside the config / in the cwd)
   loom logs  --db <path> <executionId> [--redact a,b]   print the event timeline
   loom debug --db <path> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
   loom profile --db <path> <executionId>          flame graph + latency breakdown
