@@ -32,4 +32,5 @@ export {
   type VerifyConfig,
   type NormalizedVerify,
   type VerifyAdapterInputs,
+  type VerifyLintInputs,
 } from "./verifyAdapter";

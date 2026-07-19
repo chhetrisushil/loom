@@ -103,6 +103,13 @@ export function toolFile(name: string): string {
     '  kind: "tool",',
     "  inputSchema: z.object({}),",
     "  outputSchema: z.object({}),",
+    "  // Typed failure channels (ADR 0060) — declare EXPECTED failure modes so the",
+    '  // effect can `fail("notFound", { id })`: the failure is recorded with its',
+    "  // validated payload, flows branch on it deterministically, and replay",
+    "  // substitutes it without re-invoking the effect. Undeclared failures keep",
+    "  // legacy retry semantics. Pass the same map to the registered effect:",
+    "  //   new ToolEffect(fn, { errors: { notFound: z.object({ id: z.string() }) } })",
+    "  // errors: { notFound: z.object({ id: z.string() }) },",
     "});",
     "",
   ].join("\n");

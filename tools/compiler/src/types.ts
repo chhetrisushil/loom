@@ -33,6 +33,12 @@ export interface FlowEntry {
   stepIds: string[];
   suspendPoints: string[];
   sourceFile: string;
+  /**
+   * ADR 0061 — loop step-identity findings from `analyzeLoopIdentity` over the
+   * flow-declaring module (surfaced as manifest warnings and consumable by
+   * `@loom/verify` via `FlowSpec.loopIdentityCalls`).
+   */
+  loopIdentityFindings?: import("./loopIdentity").LoopStepIdentityFinding[];
 }
 
 export interface StepEntry {

@@ -236,6 +236,15 @@ export interface LoomConfig {
   /** Static, ordered effect middleware (retries, logging, …). */
   effectMiddleware?: EffectMiddleware[];
   /**
+   * DX (ADR 0063/0064 follow-up) — composition-time effect registration hook,
+   * called once with the constructed `EffectRuntime` before any execution
+   * starts. The seam that makes single-effect dispatchers compose declaratively:
+   * `registerEffects: (fx) => { registerMcpInvoke(client, fx); registerSandboxEval(fx, store); }`.
+   * Discovery (`toolModules`) supplies tool *metadata*; this supplies the
+   * runnable effects. Static wiring (P5) — the hook runs at boot, never later.
+   */
+  registerEffects?: (effects: EffectRuntime) => void;
+  /**
    * Capability protection ring (K2). When set, every effect is authorized against
    * it and ungranted effects are denied (least-privilege). Omit for permissive.
    * e.g. `new GrantTable({ "my-flow": ["metrics-tool", "logs-tool"] })`.
@@ -508,6 +517,9 @@ export function defineConfig(config: LoomConfig): LoomApp {
     effectMiddleware,
     authorizer !== undefined ? { authorizer } : {}
   );
+  // Composition-time effect registration (single-effect dispatchers like
+  // mcp.invoke / sandbox.eval register here; P5 — static, at boot).
+  config.registerEffects?.(effectRuntime);
 
   const projectionRuntime = config.projectionRuntime ?? new InMemoryProjectionRuntime();
   for (const surface of config.surfaces ?? []) {
@@ -751,6 +763,15 @@ export function defineConfig(config: LoomConfig): LoomApp {
       ...(config.dispatcher !== undefined && { dispatcher: config.dispatcher }),
       ...(verifyCfg?.meteredDimensions !== undefined && {
         meteredDimensions: verifyCfg.meteredDimensions,
+      }),
+      // Compiler lint findings (issue #82 nondeterminism; ADR 0061 loop identity)
+      // flow into the determinism rule — previously this path was structurally
+      // dead (the adapter accepted findings nothing supplied).
+      ...(verifyCfg?.lint?.nonDeterministicByFlow !== undefined && {
+        nonDeterministicByFlow: verifyCfg.lint.nonDeterministicByFlow,
+      }),
+      ...(verifyCfg?.lint?.loopIdentityByFlow !== undefined && {
+        loopIdentityByFlow: verifyCfg.lint.loopIdentityByFlow,
       }),
     });
   const verifyOptions = verifyCfg?.rules !== undefined ? { rules: verifyCfg.rules } : undefined;

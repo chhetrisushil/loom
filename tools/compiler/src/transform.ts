@@ -1,6 +1,7 @@
 import MagicString from "magic-string";
 import ts from "typescript";
 import { shortHash } from "./hash";
+import { type LoopStepIdentityFinding, analyzeLoopIdentityNode } from "./loopIdentity";
 import type {
   ExtractedChunk,
   FlowEntry,
@@ -307,6 +308,15 @@ function collectFlows(
   pluginState: PluginState,
   absolutePath: string
 ): void {
+  // ADR 0061 — lint the module for loop-scoped ctx.run/execute whose step id
+  // cannot vary per iteration (silent replay corruption). Computed lazily, once
+  // per flow-bearing module; findings attach to every flow declared in it.
+  let loopFindings: LoopStepIdentityFinding[] | undefined;
+  const lintLoopIdentity = (): LoopStepIdentityFinding[] => {
+    loopFindings ??= analyzeLoopIdentityNode(sourceFile);
+    return loopFindings;
+  };
+
   ts.forEachChild(sourceFile, function visit(node: ts.Node): void {
     // Match a `flow$(...)` call WHEREVER it appears — not only as a direct variable
     // initializer (`const f = flow$(...)`), but also nested inside the idiomatic
@@ -354,12 +364,14 @@ function collectFlows(
         // Heuristic: detect suspend points from runner source text
         const suspendPoints = detectSuspendPoints(_sourceText, stepIds, pluginState);
 
+        const findings = lintLoopIdentity();
         pluginState.flows.set(flowId, {
           id: flowId,
           version: version ?? "0.0.0",
           stepIds,
           suspendPoints,
           sourceFile: absolutePath,
+          ...(findings.length > 0 && { loopIdentityFindings: findings }),
         } satisfies FlowEntry);
       }
     }

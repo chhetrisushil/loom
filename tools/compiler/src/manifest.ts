@@ -11,6 +11,12 @@ export interface ManifestFlow {
   suspendPoints: string[];
   warnings: string[];
   /**
+   * ADR 0061 — structured loop step-identity findings for this flow's module
+   * (also rendered into `warnings`). Feed to `@loom/verify` via
+   * `FlowSpec.loopIdentityCalls`; additive manifest field.
+   */
+  loopIdentity?: Array<{ callee: string; loopKind: string; reason: string; location?: string }>;
+  /**
    * The source module that declared this flow (relative to the project root).
    * Enables tooling and `@loom/app`'s manifest cross-check to know where a flow
    * lives. Registration itself stays a static import (see `registerFlowsFrom`) —
@@ -81,6 +87,14 @@ export function buildManifest(
       }
     }
 
+    // ADR 0061 — surface loop step-identity findings as warnings (rendered) AND
+    // structurally (for @loom/verify's determinism rule via loopIdentityCalls).
+    for (const f of flow.loopIdentityFindings ?? []) {
+      warnings.push(
+        `Flow "${flowId}": ctx.${f.callee} inside ${f.loopKind} uses a step id that cannot vary per iteration (${f.reason}) — frames are keyed by id, so later iterations replay iteration 0's output. Mint \`\${id}#\${index}\` (ADR 0061).`
+      );
+    }
+
     const module = relModule(flow.sourceFile, root);
     if (module) flowModuleSet.add(module);
 
@@ -91,6 +105,8 @@ export function buildManifest(
       suspendPoints: flow.suspendPoints,
       warnings,
       module,
+      ...(flow.loopIdentityFindings !== undefined &&
+        flow.loopIdentityFindings.length > 0 && { loopIdentity: flow.loopIdentityFindings }),
     };
   }
 

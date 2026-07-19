@@ -102,3 +102,77 @@ describe("analyzeLoopIdentity (ADR 0061)", () => {
     ).toEqual([]);
   });
 });
+
+describe("loop-identity wiring: transform → manifest (ADR 0061 DX)", () => {
+  function emptyState() {
+    return {
+      chunks: new Map(),
+      steps: new Map(),
+      stepsByVarName: new Map(),
+      flows: new Map(),
+      skills: new Map(),
+      skillsByVarName: new Map(),
+      projections: new Map(),
+    };
+  }
+
+  it("a flow-bearing module with a bad loop surfaces findings in the manifest (warning + structured field)", async () => {
+    const { transformFile } = await import("./transform");
+    const { buildManifest } = await import("./manifest");
+    const src = [
+      'import { flow$, step$ } from "@loom/core";',
+      'import { z } from "zod";',
+      "const io = z.object({});",
+      "export const runner = async (ctx, input) => {",
+      "  for (const item of input.plan) {",
+      "    await ctx.run(applyStep, item);",
+      "  }",
+      "};",
+      "export const flow = flow$({",
+      '  id: "interp",',
+      '  name: "interp",',
+      '  version: "1.0.0",',
+      "  inputSchema: io,",
+      "  outputSchema: io,",
+      "  steps: [],",
+      "});",
+    ].join("\n");
+    const state = emptyState();
+    transformFile(src, "/abs/interp.ts", state);
+    const manifest = buildManifest(state);
+    const flow = manifest.flows.interp;
+    expect(flow).toBeDefined();
+    expect(flow?.loopIdentity).toEqual([
+      { callee: "run", loopKind: "ForOfStatement", reason: "static-step-in-loop" },
+    ]);
+    expect(flow?.warnings.some((w) => w.includes("ADR 0061"))).toBe(true);
+  });
+
+  it("a clean interpreter module carries no loopIdentity field", async () => {
+    const { transformFile } = await import("./transform");
+    const { buildManifest } = await import("./manifest");
+    const src = [
+      'import { flow$, step$ } from "@loom/core";',
+      'import { z } from "zod";',
+      "const io = z.object({});",
+      "export const runner = async (ctx, input) => {",
+      "  for (const [i, item] of input.plan.entries()) {",
+      "    await ctx.run(step$({ id: `apply#${i}`, toolId: 'apply' }), item);",
+      "  }",
+      "};",
+      "export const flow = flow$({",
+      '  id: "clean",',
+      '  name: "clean",',
+      '  version: "1.0.0",',
+      "  inputSchema: io,",
+      "  outputSchema: io,",
+      "  steps: [],",
+      "});",
+    ].join("\n");
+    const state = emptyState();
+    transformFile(src, "/abs/clean.ts", state);
+    const manifest = buildManifest(state);
+    expect(manifest.flows.clean?.loopIdentity).toBeUndefined();
+    expect(manifest.flows.clean?.warnings.some((w) => w.includes("ADR 0061"))).toBe(false);
+  });
+});

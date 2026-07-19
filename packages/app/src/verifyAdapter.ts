@@ -7,6 +7,7 @@ import { EVENT_SCHEMA_VERSION } from "@loom/replay-vm";
 import type {
   FlowSpec,
   GrantSpec,
+  LoopIdentityCall,
   NonDeterministicCall,
   PlacementSpec,
   RuleName,
@@ -20,6 +21,16 @@ import type { WorkflowRuntime } from "@loom/workflow-runtime";
  * lets an app declare which resource dimensions its metering covers (for the
  * resource-compat rule) or restrict the rule set.
  */
+/**
+ * Compiler lint findings fed into the determinism rule (the object-form `lint` key).
+ * Produce from `@loom/compiler`: `analyzeNonDeterminism` / `analyzeLoopIdentity` over
+ * flow-runner source, or read the compiler manifest's per-flow `loopIdentity` field.
+ */
+export interface VerifyLintInputs {
+  readonly nonDeterministicByFlow?: Readonly<Record<string, readonly NonDeterministicCall[]>>;
+  readonly loopIdentityByFlow?: Readonly<Record<string, readonly LoopIdentityCall[]>>;
+}
+
 export type VerifyConfig =
   | VerifyMode
   | {
@@ -28,12 +39,15 @@ export type VerifyConfig =
       readonly meteredDimensions?: readonly string[];
       /** Restrict to a subset of rules; defaults to all. */
       readonly rules?: readonly RuleName[];
+      /** Compiler lint findings (nondeterminism issue #82, loop identity ADR 0061). */
+      readonly lint?: VerifyLintInputs;
     };
 
 export interface NormalizedVerify {
   readonly mode: VerifyMode;
   readonly meteredDimensions?: readonly string[];
   readonly rules?: readonly RuleName[];
+  readonly lint?: VerifyLintInputs;
 }
 
 /** Normalize the `verify` key. Object form without an explicit mode defaults to `"warn"`. */
@@ -44,6 +58,7 @@ export function normalizeVerify(v: VerifyConfig | undefined): NormalizedVerify |
     mode: v.mode ?? "warn",
     ...(v.meteredDimensions !== undefined && { meteredDimensions: v.meteredDimensions }),
     ...(v.rules !== undefined && { rules: v.rules }),
+    ...(v.lint !== undefined && { lint: v.lint }),
   };
 }
 
@@ -58,6 +73,12 @@ export interface VerifyAdapterInputs {
    * and served on replay, so non-determinism inside them is already safe).
    */
   readonly nonDeterministicByFlow?: Readonly<Record<string, readonly NonDeterministicCall[]>>;
+  /**
+   * ADR 0061 — per-flow loop step-identity findings, feeding the determinism rule's
+   * loop-identity warnings. Produce from `@loom/compiler`'s `analyzeLoopIdentity` (or read
+   * the compiler manifest's per-flow `loopIdentity` field, which carries the same shape).
+   */
+  readonly loopIdentityByFlow?: Readonly<Record<string, readonly LoopIdentityCall[]>>;
 }
 
 /**
@@ -89,11 +110,13 @@ export function resolveVerifyInput(
       .filter((s): s is typeof s & { toolId: string } => s.toolId !== undefined)
       .map((s) => ({ toolId: s.toolId, capability: s.toolId, kind: "step" as const }));
     const nonDet = inputs.nonDeterministicByFlow?.[def.id];
+    const loopIdent = inputs.loopIdentityByFlow?.[def.id];
     flows.push({
       id: def.id,
       flowHash: flowContentHash(def),
       ...(effects.length > 0 && { effects }),
       ...(nonDet !== undefined && nonDet.length > 0 && { nonDeterministicCalls: nonDet }),
+      ...(loopIdent !== undefined && loopIdent.length > 0 && { loopIdentityCalls: loopIdent }),
     });
   }
 
