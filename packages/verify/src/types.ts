@@ -46,6 +46,19 @@ export interface NonDeterministicCall {
   readonly location?: string;
 }
 
+/**
+ * A `ctx.run`/`ctx.execute` inside a loop whose step id cannot vary per iteration
+ * (ADR 0061 — the step-identity rule). Flagged by the compiler's
+ * `analyzeLoopIdentity`; frames are keyed by id, so a reused id is served
+ * iteration 0's memoized output — silent replay corruption.
+ */
+export interface LoopIdentityCall {
+  readonly callee: string;
+  readonly loopKind: string;
+  readonly reason: string;
+  readonly location?: string;
+}
+
 export interface SuspendPoint {
   readonly id?: string;
   readonly correlationKey?: string;
@@ -73,6 +86,8 @@ export interface FlowSpec {
   /** K11 content hash; absent means the flow cannot be pinned to a code version. */
   readonly flowHash?: string;
   readonly nonDeterministicCalls?: readonly NonDeterministicCall[];
+  /** ADR 0061 loop-identity findings (absent ⇒ no findings; G2). */
+  readonly loopIdentityCalls?: readonly LoopIdentityCall[];
   readonly suspends?: readonly SuspendPoint[];
   readonly effects?: readonly EffectRef[];
   /** `ExecutionPolicy.computeTarget`, if the flow pins a placement lane. */

@@ -206,6 +206,16 @@ stateDiagram-v2
 
 Crucially, on resume the flow function **re-runs from the top**, but every already-completed step is served from the log (its `STEP_COMPLETED` event is replayed, the effect is *not* re-executed) — so effects happen exactly once and the suspend point is reached deterministically. This is P2 (deterministic replay) doing the heavy lifting.
 
+### 4.3.1 Step identity & the interpreter pattern
+
+Replay's substitution is keyed by **step id** (`frames[stepId]`) — not by log position. That single fact is both the freedom and the obligation of dynamic flows ([ADR 0061](adr/0061-step-identity-interpreter-guardrails.md)):
+
+> The sequence of durable-step identities an execution produces must be a **pure function of logged inputs** (flow input, step outputs, decisions, resume payloads). A step invoked more than once with different intent must mint a deterministic distinct id — `` `${id}#${index}` `` for loops, `` `${id}#retry:${n}` `` for deliberate re-tries (saga uses `#compensate:${i}`). Reusing an id returns/substitutes the **first recorded outcome** — completed output and typed failures alike ([ADR 0060](adr/0060-typed-failure-channels.md)).
+
+The freedom: a statically compiled **interpreter flow** may issue `ctx.run` inside loops bounded by runtime-loaded data (a blueprint, a runbook) and remain fully replayable — the id sequence re-derives identically from the logged input, crash recovery re-executes only the frames that never completed, and `flowContentHash` (K11.1) is unaffected because dynamic steps are deliberately outside the structural hash. Dynamic steps bind a static `toolId` to a registered effect; the effect registry, not the compiler manifest, is their load-bearing map.
+
+The obligation: a loop that *reuses* one id is silently wrong — iteration 2+ is served iteration 1's memoized output. The compiler's `analyzeLoopIdentity` pass flags loop-scoped `ctx.run`/`ctx.execute` whose id cannot vary per iteration (surfaced through `@loom/verify`'s determinism rule), and the kernel's interpreter crash-matrix test pins the contract.
+
 ### 4.4 Recovery & snapshots
 
 A crash mid-flight is just another resume. On redispatch the worker folds the durable state and decides idempotently: still `running` → resume; already `completed`/`suspended` → return as-is. No step re-runs.

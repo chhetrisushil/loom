@@ -220,6 +220,18 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "Composed from existing primitives — NO new syscall or event type (P10 win; the plan's CHILD_COMPLETED governed event proved unnecessary). L2; single-child await today (fan-out is a follow-up).",
   },
   {
+    id: "step-identity-guardrails",
+    title: "Step Identity & Interpreter Pattern",
+    package: "@loom/workflow-runtime",
+    level: "L2",
+    summary:
+      "The ADR 0061 identity rule (durable-step ids are a pure function of logged inputs; dynamic ids minted `${id}#${index}`), linted by the compiler's analyzeLoopIdentity and pinned by the kernel's interpreter crash-matrix test.",
+    evidence: {
+      conformanceTest: "packages/workflow-runtime/src/interpreterLoop.test.ts",
+    },
+    note: "No kernel changes — a documented contract + compiler lint (tools/compiler loopIdentity.ts, surfaced via @loom/verify's determinism rule) + crash-matrix tests. Dynamic steps are deliberately outside flowContentHash (K11.1 covers the compiled skeleton only).",
+  },
+  {
     id: "typed-failure-channels",
     title: "Typed Failure Channels",
     package: "@loom/workflow-runtime",

@@ -20,6 +20,16 @@ const determinism: Rule = (input) => {
         });
       }
     }
+    // ADR 0061 — the step-identity rule. A syntactic heuristic, so `warn`:
+    // a reused id inside a loop is served iteration 0's memoized output.
+    for (const call of flow.loopIdentityCalls ?? []) {
+      findings.push({
+        rule: "determinism",
+        severity: "warn",
+        message: `ctx.${call.callee} inside ${call.loopKind} uses a step id that cannot vary per iteration (${call.reason}); frames are keyed by id, so later iterations replay iteration 0's output. Mint \`\${id}#\${index}\` (ADR 0061).`,
+        location: call.location ?? flow.id,
+      });
+    }
   }
   return findings;
 };

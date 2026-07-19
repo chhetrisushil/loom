@@ -7,6 +7,7 @@ export type {
   Finding,
   VerificationReport,
   NonDeterministicCall,
+  LoopIdentityCall,
   SuspendPoint,
   EffectRef,
   BudgetSpec,

@@ -191,6 +191,22 @@ The ~skills~ map mirrors a flow's ~chunkMap~ for ~skill$~ instruction bodies: ea
 
 Warnings never break the build. They are advisory — the intent is to catch configuration mistakes early rather than at runtime.
 
+** Dynamic steps & the identity rule (ADR 0061)
+
+The static ~steps: [...]~ list is the compiler's world; steps minted at runtime inside
+a runner body — the *interpreter pattern*, ~ctx.run~ in a loop over runtime-loaded plan
+data — are deliberately outside it (and outside ~flowContentHash~). They are valid and
+fully replayable under one contract: *the sequence of durable-step identities must be a
+pure function of logged inputs*, so ids are minted deterministically
+(~`${id}#${index}`~) and each binds a static ~toolId~ to a registered effect (the
+effect registry, not the chunkMap, is their load-bearing map).
+
+The ~analyzeLoopIdentity~ export (a sibling of ~analyzeNonDeterminism~; same
+source-region contract) flags ~ctx.run~/~ctx.execute~ inside loop bodies whose step id
+cannot vary per iteration — the silent-corruption case where iteration 2+ replays
+iteration 1's memoized output. Feed its findings to ~@loom/verify~ via
+~FlowSpec.loopIdentityCalls~; they surface as ~determinism~-rule warnings.
+
 * Feature 3 — Resumability
 
 The compiler package exports serialization utilities for the server → client state hand-off. This enables a React app to mount with fully-hydrated projection state and resume a suspended workflow without any EventStore round-trip.

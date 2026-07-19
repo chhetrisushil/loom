@@ -23,6 +23,15 @@ import type { FlowDefinition, RetryPolicy, StepDefinition } from "./types/defini
 // The hash is computed from the normalized in-memory definition — never from
 // bundler output — so a rebuild with identical structure yields an identical
 // hash (no resume-refusal flapping from non-reproducible builds).
+//
+// DYNAMIC STEPS (the interpreter pattern, ADR 0061): steps minted at runtime
+// inside a runner body (`${id}#${index}`) are deliberately OUTSIDE this hash —
+// K11.1 guards the compiled structural skeleton only. Fold-compatibility of a
+// data-dependent sequence is guaranteed by the step-identity rule instead (the
+// sequence of durable-step identities must be a pure function of logged
+// inputs), and dynamic steps bind a static `toolId` to a registered effect, so
+// the effect registry — not this hash or the compiler manifest — is their
+// load-bearing map.
 
 function canonicalRetry(retry: RetryPolicy | undefined): string {
   if (retry === undefined) return "";
