@@ -215,7 +215,45 @@ recorded value is still the small envelope (with a `codec`; read those back with
 `resolveClaimCheckBytes`, outside the determinism boundary as ever). The digest must come from
 the tool itself, computed while producing (the bytes are consumed by the upload).
 
-`retryMiddleware` options: `maxRetries`, `baseDelayMs`, `factor`, `maxDelayMs`, `jitter` (deterministic FNV-1a jitter — no `Math.random`), `isRetryable`, `onRetry`, and an injectable `sleep`. It **never** retries a `SuspendError` or an aborted signal.
+`retryMiddleware` options: `maxRetries`, `baseDelayMs`, `factor`, `maxDelayMs`, `jitter` (deterministic FNV-1a jitter — no `Math.random`), `isRetryable`, `onRetry`, and an injectable `sleep`. It **never** retries a `SuspendError`, an aborted signal, or (by default) a `TypedFailure` — a declared domain outcome is not transient.
+
+### Typed failure channels (ADR 0060)
+
+An effect that can fail in an *expected* way — schema drift, not-found, quota — declares those
+channels on its contract and completes on them with `fail(channel, payload)`:
+
+```ts
+import { fail, step$, TypedFailure } from "@loom/core";
+import { z } from "zod";
+
+const hydrate = step$({
+  id: "hydrate#0",
+  toolId: "mcp.invoke",
+  inputSchema: z.unknown(),
+  outputSchema: z.unknown(),
+  errors: { schemaDrift: z.object({ toolName: z.string(), observedHash: z.string() }) },
+});
+
+// in the flow runner:
+try {
+  await ctx.run(hydrate, input);
+} catch (err) {
+  if (err instanceof TypedFailure && err.channel === "schemaDrift") {
+    // err.payload is the validated, RECORDED payload — branch deterministically
+    // (suspend into repair, re-plan, …). On replay this branch re-runs from the
+    // log without re-invoking the effect.
+  }
+}
+```
+
+A declared-channel failure is logged as `STEP_FAILED { channel, payload }` (payload
+Zod-validated, capped at 16 KiB) and **substituted on replay** exactly like a completed
+result — the failure twin of the memoized success. Undeclared channels, invalid payloads,
+and over-cap payloads degrade loudly to the legacy untyped failure (at-least-once
+re-execution). Re-invoking the *same step id* after a typed failure is served the recorded
+outcome; a deliberate retry mints a new id (`` `${id}#retry:1` `` — see §14's identity rule).
+Declare channels on `tool$`/`ToolEffect` (`errors:` option) to cover every step that
+dispatches through the effect.
 
 ---
 
@@ -321,6 +359,42 @@ const dbaAgent = agent$({
 ```
 
 `@loom/agent` runs a ReAct-style reason→act loop over an agent's tools; `@loom/plugin-mcp` discovers external tools via the Model Context Protocol.
+
+### Dynamic MCP dispatch & sandboxed reshaping (ADR 0063/0064)
+
+For blueprint/interpreter-style flows whose tool calls are **data** (a saved manifest names
+the tool, not the code), `mcpInvoke$` dispatches through ONE registered `mcp.invoke` effect
+with the tool name, args, and a pinned schema hash in the run-time input — verified per call,
+failing on the typed `schemaDrift` channel so the flow repairs in-band. `sandboxEval$`
+(`@loom/sdk/sandbox`) executes content-addressed, LLM-authored reshaping scripts in a
+capability-empty QuickJS VM with in-engine resource limits and shape-hash validation:
+
+```ts
+import { registerMcpInvoke, mcpInvoke$ } from "@loom/plugin-mcp";
+import { registerSandboxEval, sandboxEval$ } from "@loom/plugin-sandbox";
+
+const app = defineConfig({
+  // …
+  registerEffects: (effects) => {
+    registerMcpInvoke(mcpClient, effects, { server: "metrics" });
+    registerSandboxEval(effects, contentStore);
+  },
+});
+
+// in an interpreter runner — ids minted per the ADR 0061 identity rule:
+const raw = await ctx.run(mcpInvoke$(`hydrate#${i}`), {
+  toolName: node.toolName, args: node.args, expectedSchemaHash: node.pin,
+});
+const shaped = await ctx.run(sandboxEval$(`reshape#${i}`), {
+  scriptRef: node.scriptRef, input: raw, expectedOutputShapeHash: node.shapePin,
+});
+```
+
+Per-recipient credentials ride the opaque `ctx.principal` (mapped to transport headers inside
+the effect) or a `secretRef` in the input resolved by `redactionMiddleware` — never the log
+(string tokens are rejected unless `acceptResolvedTokens: true` asserts the middleware is
+wired). Dispatches emit `MCP_DISPATCHED`, indexed by the shipped `mcpDispatchIndex`
+projection for the "which executions called tool X at schema H" repair query.
 
 ### A2A — agent-to-agent
 
@@ -562,6 +636,7 @@ Determinism is what makes resume, fork, and replay trustworthy. Keep these in mi
 - **Keep wiring static.** Register flows/effects explicitly (or via `loom gen`). No runtime globbing or env-conditional registration, or a remote worker/replay can't reconstruct the same graph (P5).
 - **Middleware must be replay-safe too.** Retries/jitter use deterministic hashing, not `Math.random`. Follow suit in custom middleware on replayable paths.
 - **Snapshots are an optimization, not truth.** The log is authoritative; snapshots only shorten the fold. Never store data *only* in a snapshot.
+- **The step-identity rule (ADR 0061).** Frames are keyed by step id, so `ctx.run` in a loop must mint a deterministic distinct id per iteration — `` `${id}#${index}` `` — or iteration 2+ silently replays iteration 1's output. The sequence of ids must be a pure function of *logged* inputs (the interpreter pattern: a statically compiled flow walking runtime-loaded plan data is fully replayable under this rule). `fanout$(ctx, baseStep, items)` (`@loom/orchestration`) does the minting for parallel fan-out; the compiler's `analyzeLoopIdentity` lint flags violations (manifest warnings via `loomPlugin()`/`loom check`, or `verify: { lint: { loopIdentityByFlow } }` at boot).
 
 ---
 

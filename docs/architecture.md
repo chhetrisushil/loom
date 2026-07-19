@@ -214,7 +214,28 @@ Replay's substitution is keyed by **step id** (`frames[stepId]`) — not by log 
 
 The freedom: a statically compiled **interpreter flow** may issue `ctx.run` inside loops bounded by runtime-loaded data (a blueprint, a runbook) and remain fully replayable — the id sequence re-derives identically from the logged input, crash recovery re-executes only the frames that never completed, and `flowContentHash` (K11.1) is unaffected because dynamic steps are deliberately outside the structural hash. Dynamic steps bind a static `toolId` to a registered effect; the effect registry, not the compiler manifest, is their load-bearing map.
 
-The obligation: a loop that *reuses* one id is silently wrong — iteration 2+ is served iteration 1's memoized output. The compiler's `analyzeLoopIdentity` pass flags loop-scoped `ctx.run`/`ctx.execute` whose id cannot vary per iteration (surfaced through `@loom/verify`'s determinism rule), and the kernel's interpreter crash-matrix test pins the contract.
+The obligation: a loop that *reuses* one id is silently wrong — iteration 2+ is served iteration 1's memoized output. The compiler's `analyzeLoopIdentity` pass flags loop-scoped `ctx.run`/`ctx.execute` whose id cannot vary per iteration (surfaced through `@loom/verify`'s determinism rule and the compiler manifest's `loopIdentity` warnings), and the kernel's interpreter crash-matrix test pins the contract.
+
+Typed failures ([ADR 0060](adr/0060-typed-failure-channels.md)) are the failure twin of the memoized success — recorded once, substituted forever:
+
+```mermaid
+sequenceDiagram
+  participant F as flow runner
+  participant X as execute seam
+  participant E as effect
+  participant L as event log
+  Note over F,L: live run
+  F->>X: ctx.run(step, input)
+  X->>E: invoke
+  E-->>X: fail("schemaDrift", payload)
+  X->>L: STEP_FAILED { channel, payload }  (Zod-validated, ≤16 KiB)
+  X-->>F: throw TypedFailure — flow catches, branches (repair/suspend)
+  Note over F,L: replay / resume / recovery
+  F->>X: ctx.run(step, input)
+  X->>L: frame has errorChannel?
+  L-->>X: { channel, payload }  (recorded)
+  X-->>F: rethrow TypedFailure — same branch, ZERO re-invocation
+```
 
 ### 4.4 Recovery & snapshots
 

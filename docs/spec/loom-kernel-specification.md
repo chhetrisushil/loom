@@ -76,14 +76,32 @@ load-bearing, plus the global guardrails that gate every additive capability:
   `(state, event) => state`; a `__proto__` container key MUST be rejected (fold hardening).
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
-  the pinned type set MUST change together. The current version is **1.16.0** — after the
+  the pinned type set MUST change together. The current version is **1.17.0** — after the
   K10.1/T3 audit facts (1.13.0/1.14.0), the perpetual-agents series added two additive MINORs
   with **no new event kinds**: 1.15.0 extends `EXECUTION_MIGRATED` with an optional
   `migratedInput` payload field (K11.5 contract-versioned state migration — the fold replaces
   `variables._input` with the recorded transformed value, ADR 0056), and 1.16.0 folds the
   ordered `variables._resumePayloads` list from existing `EXECUTION_RESUMED` events (the
-  multi-gate suspend fix, ADR 0057). Logs that never migrate state or resume twice replay
-  byte-identically.
+  multi-gate suspend fix, ADR 0057). The GenUI/DE series added 1.17.0 (ADR 0060, again no new
+  event kind): optional `channel`/`payload` fields on `STEP_FAILED` — a **typed failure** on a
+  contract-declared error channel, folded into the frame as `errorChannel`/`errorPayload`.
+  Logs that never migrate state, resume twice, or fail typed replay byte-identically.
+
+### 4.1 Typed failure channels (ADR 0060)
+
+- A contract MAY declare `errors: { <channel>: schema }` (step-level wins; the registered
+  effect's map is the fallback). A `TypedFailure` thrown on a **declared** channel is recorded
+  as `STEP_FAILED { channel, payload }` with the payload validated against the channel schema
+  **before** the append, and capped at 16 KiB (over-cap, invalid-payload, and
+  undeclared-channel failures all degrade loudly to the legacy untyped `STEP_FAILED`).
+- **Replay substitution:** a frame with `errorChannel` is served at the execute seam exactly as
+  a completed frame is — the `TypedFailure` is rethrown with the recorded payload, the effect
+  (and its middleware) is never re-invoked, and the flow deterministically re-takes the same
+  catch branch. This applies to live re-invocation of the same step id too (the ADR 0061
+  identity rule: a deliberate retry mints a new id). Untyped failures keep the legacy
+  at-least-once re-execution.
+- There is **no `ctx.fail` syscall** — `TypedFailure` is a userspace throw (`fail(channel,
+  payload)` in `@loom/core`); `KERNEL_ABI` is unchanged.
 
 ## 5. Suspension semantics
 

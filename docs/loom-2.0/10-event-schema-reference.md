@@ -171,13 +171,18 @@ generalization.
 - Handler: `eventHandlers.ts:49`.
 
 #### `STEP_FAILED`
-- **Introduced:** 1.x core.
+- **Introduced:** 1.x core; `channel`/`payload` added 1.17.0 (DE-4, ADR 0060).
 - **Emitted by:** `ctx.execute` when the effect throws (non-suspend, non-cancel)
   (`WorkflowContext.ts:89`).
-- **Payload:** `{ stepId: string; error?: unknown }`
+- **Payload:** `{ stepId: string; error?: unknown; channel?: string; payload?: unknown }` —
+  `channel`/`payload` present only for a **typed failure** on a contract-declared error
+  channel; the payload is Zod-validated against the channel schema and capped at 16 KiB
+  before the append (over-cap / invalid / undeclared degrade to the untyped form).
 - **Folds into:** `status → "failed"` (execution-level) **and** `frames[stepId].status →
-  "failed"` (preserving `attempts`, `startedAt`, `input`, setting `error`). This is the only
-  `STEP_*` event that also moves the *execution* status.
+  "failed"` (preserving `attempts`, `startedAt`, `input`, setting `error`; a typed failure
+  also sets `errorChannel`/`errorPayload`, which the execute seam SUBSTITUTES on replay —
+  the effect is never re-invoked and the flow re-takes the same catch branch). This is the
+  only `STEP_*` event that also moves the *execution* status.
 - Handler: `eventHandlers.ts:68`.
 
 #### `STEP_CANCELLED`
@@ -487,7 +492,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts:311`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.16.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057) — both additive, NO new event kinds
+export const EVENT_SCHEMA_VERSION = "1.17.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060) — all additive, NO new event kinds
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
