@@ -75,6 +75,17 @@ imports, so the 1P/3P distinction stays purely organisational.
   state + claim-check + K10.6 pin policy) as one composition-time declaration, plus the
   `loom new sentinel` scaffold.
 - `@loom/plugin-audit-chain` — tamper-evident hash-chained `EventStore` wrapper.
+- `@loom/plugin-mcp` — MCP client + dynamic dispatch: `mcpInvoke$` mints steps whose tool
+  name/args/schema-pin are runtime data through ONE registered `mcp.invoke` effect; pinned
+  `jsonSchemaHash` verified per call → typed `schemaDrift`/`toolNotFound` channels; principals
+  ride `ctx.principal`/`secretRef`, never the log; `MCP_DISPATCHED` + `mcpDispatchIndex`
+  projection for the "which executions called tool X at schema H" query
+  ([ADR 0063](adr/0063-mcp-dynamic-dispatch.md)).
+- `@loom/plugin-sandbox` — hardened QuickJS-in-WASM eval of content-addressed, LLM-authored
+  reshaping scripts: in-engine memory/CPU/wall-clock limits, no ambient I/O by construction,
+  output shape-hash validation; `scriptMissing`/`limitExceeded`/`shapeMismatch` are typed
+  channels so a planner re-plans and replay never re-burns CPU
+  ([ADR 0064](adr/0064-sandbox-eval-plugin.md)).
 
 ## Scaffolding a plugin
 
