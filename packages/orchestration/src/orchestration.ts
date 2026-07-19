@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
+import { fail } from "@loom/core";
 import type { ExecutionContext, RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 
 // ── Cross-execution orchestration (child workflows) ───────────────────────────
@@ -39,6 +40,19 @@ export function parentOf(childId: string): string | undefined {
   return i < 0 ? undefined : childId.slice(0, i);
 }
 
+/**
+ * Orchestration depth of an execution id: 0 for a root, +1 per `::` nesting
+ * level. Derived purely from the deterministic child-id scheme, so the depth
+ * guard replays identically.
+ */
+export function depthOf(executionId: string): number {
+  let depth = 0;
+  for (let i = executionId.indexOf(SEP); i >= 0; i = executionId.indexOf(SEP, i + SEP.length)) {
+    depth++;
+  }
+  return depth;
+}
+
 /** Marker + spec recorded by `awaitChild` and read by the supervisor. */
 interface SpawnChoice {
   __orchestration: true;
@@ -61,12 +75,24 @@ function asSpawnChoice(value: unknown): SpawnChoice | undefined {
  * From inside a parent flow: spawn `flowId(input)` as a child execution and suspend
  * until it completes, returning its output. Replay-safe — the spawn is fixed by
  * `ctx.decide`, so a resume/recovery re-run never starts a second child.
+ *
+ * `maxDepth` (ADR 0061 D5) bounds recursive re-entry — a self-invoking flow
+ * (e.g. a drift-repair loop re-entering its interpreter) must not recurse
+ * unboundedly on persistent failure. Exceeding it throws a typed
+ * `depthExceeded` failure (ADR 0060) BEFORE anything durable happens, so the
+ * calling flow can catch it and settle; uncaught, the run fails loudly.
  */
 export async function awaitChild<TOut = unknown>(
   ctx: Pick<ExecutionContext, "executionId" | "decide" | "suspend">,
-  spec: { key: string; flowId: string; input: unknown }
+  spec: { key: string; flowId: string; input: unknown; maxDepth?: number }
 ): Promise<TOut> {
   const childId = childIdFor(ctx.executionId, spec.key);
+  if (spec.maxDepth !== undefined) {
+    const depth = depthOf(childId);
+    if (depth > spec.maxDepth) {
+      fail("depthExceeded", { childId, depth, maxDepth: spec.maxDepth });
+    }
+  }
   await ctx.decide(`orchestration:spawn:${spec.key}`, () => ({
     __orchestration: true as const,
     childId,

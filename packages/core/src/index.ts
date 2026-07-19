@@ -17,6 +17,7 @@ export type {
 } from "./types/execution";
 export { executionFromState } from "./types/execution";
 export { flowContentHash } from "./flowHash";
+export { canonicalJson, fnv1a64, jsonSchemaHash } from "./schemaHash";
 export { schedule$ } from "./builders/schedule";
 export type { ScheduleConfig } from "./builders/schedule";
 export {

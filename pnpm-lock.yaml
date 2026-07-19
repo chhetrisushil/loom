@@ -1693,6 +1693,9 @@ importers:
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../effect-runtime
+      '@loom/replay-vm':
+        specifier: workspace:*
+        version: link:../replay-vm
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
