@@ -22,6 +22,11 @@ export interface ClaimCheckStore {
 /** Read-side view, for {@link resolveClaimCheck} OUTSIDE the determinism boundary. */
 export interface ClaimCheckReader {
   get(ref: { __loomContent: string }): Promise<Uint8Array | null>;
+  /**
+   * OPTIONAL (TS-10, ADR 0062) — batched get, positionally aligned, null per
+   * absent entry. A `ContentStore` with `getMany` satisfies this structurally.
+   */
+  getMany?(refs: readonly { __loomContent: string }[]): Promise<(Uint8Array | null)[]>;
 }
 
 /** What STEP_COMPLETED records in place of an over-cap effect result. */
@@ -245,4 +250,42 @@ export async function resolveClaimCheckBytes(
   envelope: ClaimCheckEnvelope
 ): Promise<Uint8Array | null> {
   return reader.get(envelope.ref);
+}
+
+/**
+ * TS-10 (ADR 0062) — the batch twin of {@link resolveClaimCheck}, for
+ * interactive read paths (frozen-snapshot serving: a completed run's envelopes,
+ * one human waiting). One `getMany` round-trip when the reader supports it
+ * (coalesced parallel `get`s otherwise), deduped by content address; results
+ * positionally aligned with `envelopes`, `null` per erased/absent entry.
+ * Same boundary rule: OUTSIDE the determinism boundary only.
+ */
+export async function resolveClaimChecks<T = unknown>(
+  reader: ClaimCheckReader,
+  envelopes: readonly ClaimCheckEnvelope[]
+): Promise<(T | null)[]> {
+  for (const envelope of envelopes) {
+    if (envelope.codec !== undefined && envelope.codec !== "json") {
+      throw new TypeError(
+        `resolveClaimChecks: envelope codec is "${envelope.codec}", not JSON — use resolveClaimCheckBytes for stream-offloaded content`
+      );
+    }
+  }
+  const distinct = new Map<string, { __loomContent: string }>();
+  for (const e of envelopes) {
+    if (!distinct.has(e.ref.__loomContent)) distinct.set(e.ref.__loomContent, e.ref);
+  }
+  const refs = [...distinct.values()];
+  const fetched =
+    reader.getMany !== undefined
+      ? await reader.getMany(refs)
+      : await Promise.all(refs.map((r) => reader.get(r)));
+  const byAddress = new Map<string, Uint8Array | null>();
+  refs.forEach((r, i) => byAddress.set(r.__loomContent, fetched[i] ?? null));
+  const decoder = new TextDecoder();
+  return envelopes.map((e) => {
+    const bytes = byAddress.get(e.ref.__loomContent) ?? null;
+    // Decode per-occurrence so callers never alias one parsed object.
+    return bytes === null ? null : (JSON.parse(decoder.decode(bytes)) as T);
+  });
 }

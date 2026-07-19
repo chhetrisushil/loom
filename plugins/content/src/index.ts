@@ -1,12 +1,19 @@
 export {
   type ContentRef,
+  collectContentRefs,
   contentAddress,
   decodeValue,
   encodeValue,
   hasContentRef,
   isContentRef,
+  substituteContentRefs,
 } from "./content";
-export { type ContentStore, InMemoryContentStore } from "./ContentStore";
+export {
+  CONTENT_STORE_SPI_VERSION,
+  type ContentStore,
+  InMemoryContentStore,
+} from "./ContentStore";
+export { CachingContentStore, type CachingContentStoreOptions } from "./CachingContentStore";
 export {
   ContentResolvingEventStore,
   type ContentResolvingEventStoreOptions,

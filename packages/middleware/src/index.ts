@@ -5,6 +5,7 @@ export {
   isStreamResult,
   resolveClaimCheck,
   resolveClaimCheckBytes,
+  resolveClaimChecks,
   streamResult,
   type ClaimCheckEnvelope,
   type ClaimCheckInfo,
