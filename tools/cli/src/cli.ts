@@ -77,7 +77,8 @@ const USAGE = `loom — project-local commands for a Loom app
   loom appgen --from-spec <file> [--dir .]        replay a .loom/appgen/<ts>.spec.json (no model)
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom lint claim-check [--dir .]                 CC-5: flag claim-check reach-through inside flows
-  loom verify --config <module>                   pre-flight runtime verification (@loom/verify)
+  loom verify --config <module> [--manifest <path>]  pre-flight runtime verification (@loom/verify)
+                                                  (auto-reads loom-manifest.json loopIdentity findings, ADR 0061)
   loom logs  --db <path> <executionId> [--redact a,b]   print the event timeline
   loom profile --db <path> <executionId>          flame graph + latency breakdown
   loom introspect --db <path> <executionId> [--graph N]  execution/task/decision/resource graphs
