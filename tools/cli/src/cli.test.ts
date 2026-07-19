@@ -627,6 +627,66 @@ describe("loom CLI", () => {
       const p = writeConfig("bad.js", "module.exports = { default: {} };");
       await expect(cmdVerify(p)).rejects.toThrow(/LoomApp/);
     });
+
+    // A fixture whose verify() echoes injected loop-identity findings as warnings,
+    // so the tests observe exactly what cmdVerify passed through.
+    const ECHOING_APP = `module.exports = { default: {
+       verify: (opts) => {
+         const flows = Object.keys((opts && opts.lint && opts.lint.loopIdentityByFlow) || {});
+         return {
+           ok: true,
+           findings: flows.map((f) => ({ rule: "determinism", severity: "warn", message: "loop-identity: " + f })),
+           checked: ["determinism"],
+         };
+       },
+       close: async () => {},
+     } };`;
+
+    const MANIFEST = JSON.stringify({
+      flows: {
+        interp: {
+          loopIdentity: [
+            { callee: "run", loopKind: "ForOfStatement", reason: "static-step-in-loop" },
+          ],
+        },
+        clean: { loopIdentity: [] },
+      },
+    });
+
+    it("injects the manifest's loopIdentity findings via --manifest (ADR 0061)", async () => {
+      const sub = join(dir, "verify-explicit");
+      mkdirSync(sub, { recursive: true });
+      writeFileSync(join(sub, "app.js"), ECHOING_APP);
+      writeFileSync(join(sub, "m.json"), MANIFEST);
+      const { text, result } = await cmdVerify(join(sub, "app.js"), join(sub, "m.json"));
+      expect(text).toContain("[manifest]");
+      expect(text).toContain("loop-identity: interp");
+      expect(result.findings).toHaveLength(1); // `clean` (empty findings) is not injected
+    });
+
+    it("auto-detects loom-manifest.json next to the config when --manifest is omitted", async () => {
+      const sub = join(dir, "verify-auto");
+      mkdirSync(sub, { recursive: true });
+      writeFileSync(join(sub, "app.js"), ECHOING_APP);
+      writeFileSync(join(sub, "loom-manifest.json"), MANIFEST);
+      const { text, result } = await cmdVerify(join(sub, "app.js"));
+      expect(text).toContain("loop-identity findings for 1 flow(s)");
+      expect(result.findings.map((f) => f.message)).toEqual(["loop-identity: interp"]);
+    });
+
+    it("stays byte-identical when no manifest exists or it carries no findings", async () => {
+      const sub = join(dir, "verify-none");
+      mkdirSync(sub, { recursive: true });
+      writeFileSync(join(sub, "app.js"), ECHOING_APP);
+      const bare = await cmdVerify(join(sub, "app.js"));
+      expect(bare.text).not.toContain("[manifest]");
+      expect(bare.result.findings).toHaveLength(0);
+
+      writeFileSync(join(sub, "loom-manifest.json"), JSON.stringify({ flows: { clean: {} } }));
+      const empty = await cmdVerify(join(sub, "app.js"));
+      expect(empty.text).not.toContain("[manifest]");
+      expect(empty.result.findings).toHaveLength(0);
+    });
   });
 
   describe("loom kernel-manifest / compat", () => {

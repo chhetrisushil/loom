@@ -166,7 +166,7 @@ async function main(argv: string[]): Promise<number> {
     }
     case "verify": {
       requireFlag(flags, "config");
-      const { text, result } = await cmdVerify(flags.config!);
+      const { text, result } = await cmdVerify(flags.config!, flags.manifest);
       console.log(text);
       return result.ok ? 0 : 1;
     }

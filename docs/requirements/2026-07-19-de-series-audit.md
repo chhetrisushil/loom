@@ -97,10 +97,12 @@ nothing invoked or populated them). Wired end-to-end:
   effects).
 - `loom new tool` scaffold now demonstrates the `errors:`/`fail` typed-channel contract.
 
-Follow-ups: `examples/db-observability` has since been extended into the full
+Follow-ups — both closed since: `examples/db-observability` extended into the full
 blueprint-interpreter demo (`fanout$` → `mcpInvoke$` → `sandboxEval$` over an in-process
 MCP server, with a narrated schema-drift → typed-failure → in-band-repair pass — see its
-README). Still open: wiring `loom verify` to auto-read the manifest's `loopIdentity` field.
+README), and `loom verify` now auto-reads the compiler manifest's `loopIdentity` field
+(`--manifest`, or auto-detected `loom-manifest.json` beside the config / in the cwd)
+through the new `app.verify({ lint })` per-call override.
 
 ## 4. Docs & diagrams synced
 

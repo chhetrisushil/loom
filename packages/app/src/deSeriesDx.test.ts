@@ -82,6 +82,28 @@ describe("defineConfig verify.lint plumbing (ADR 0061 / issue #82)", () => {
   });
 });
 
+describe("app.verify({ lint }) override (loom verify manifest injection, ADR 0061)", () => {
+  it("merges extra loop-identity findings over the configured lint at call time", () => {
+    const app = defineConfig({ storage: { kind: "memory" }, flows: [flow()] });
+
+    const bare = app.verify();
+    expect(bare.findings.filter((f) => f.rule === "determinism")).toHaveLength(0);
+
+    const injected = app.verify({
+      lint: {
+        loopIdentityByFlow: {
+          interp: [{ callee: "run", loopKind: "ForOfStatement", reason: "static-step-in-loop" }],
+        },
+      },
+    });
+    const warnings = injected.findings.filter((f) => f.rule === "determinism");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.message).toContain("cannot vary per iteration");
+    // And the override is per-call — the next bare verify is clean again.
+    expect(app.verify().findings.filter((f) => f.rule === "determinism")).toHaveLength(0);
+  });
+});
+
 describe("defineConfig registerEffects seam (ADR 0063/0064 DX)", () => {
   it("runs the hook at boot with the constructed EffectRuntime", () => {
     const app = defineConfig({
