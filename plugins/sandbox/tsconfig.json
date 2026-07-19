@@ -1,0 +1,38 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts"
+  ],
+  "references": [
+    {
+      "path": "../../packages/core"
+    },
+    {
+      "path": "../../packages/effect-runtime"
+    },
+    {
+      "path": "../content"
+    },
+    {
+      "path": "../../packages/event-runtime"
+    },
+    {
+      "path": "../../packages/snapshot-runtime"
+    },
+    {
+      "path": "../../packages/workflow-runtime"
+    }
+  ]
+}

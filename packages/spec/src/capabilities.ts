@@ -220,6 +220,18 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "Composed from existing primitives — NO new syscall or event type (P10 win; the plan's CHILD_COMPLETED governed event proved unnecessary). L2; single-child await today (fan-out is a follow-up).",
   },
   {
+    id: "sandbox-eval",
+    title: "Sandboxed Reshaping Executor",
+    package: "@loom/plugin-sandbox",
+    level: "L2",
+    summary:
+      "QuickJS-in-WASM eval of content-addressed, LLM-authored reshaping scripts: in-engine memory/CPU/wall-clock limits, no ambient I/O by construction, output shape-hash validation — typed scriptMissing/limitExceeded/shapeMismatch channels.",
+    evidence: {
+      conformanceTest: "plugins/sandbox/src/sandbox.test.ts",
+    },
+    note: "ADR 0064 — engine choice: quickjs-emscripten (capability-EMPTY VM vs @loom/isolate's subtractively-scrubbed child process; the isolation CONTRACT follows IsolatedToolSpec). idempotent:true (pure function of script+input); resource kills are typed so replay never re-burns CPU. Written once, audited once — the security test list is the audit's executable form.",
+  },
+  {
     id: "mcp-dynamic-dispatch",
     title: "MCP Dynamic Dispatch",
     package: "@loom/plugin-mcp",
