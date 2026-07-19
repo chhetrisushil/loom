@@ -25,6 +25,14 @@ export interface ExecutionFrame {
    * callers fall back to `startedAt`.
    */
   firstStartedAt?: number;
+  /**
+   * DE-4 (1.17.0-additive) — the declared error channel a typed STEP_FAILED
+   * completed on, with its schema-validated payload. Absent on legacy folds and
+   * on untyped failures; presence is what makes replay SUBSTITUTE the failure
+   * instead of re-executing the step.
+   */
+  errorChannel?: string;
+  errorPayload?: unknown;
   attempts: number;
 }
 

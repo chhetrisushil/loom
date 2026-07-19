@@ -1,4 +1,4 @@
-import type { Effect, EffectContext } from "../types";
+import type { Effect, EffectContext, ErrorChannelSchema } from "../types";
 
 export interface ToolEffectOptions {
   /**
@@ -8,11 +8,18 @@ export interface ToolEffectOptions {
    * at-least-once re-run.
    */
   idempotent?: boolean;
+  /**
+   * DE-4 — declared failure channels for this tool (see {@link Effect.errors}).
+   * Pass the same map declared on the `tool$` contract so the kernel's registry
+   * fallback sees it. Omit for legacy untyped failure semantics.
+   */
+  errors?: Record<string, ErrorChannelSchema>;
 }
 
 export class ToolEffect<TIn = unknown, TOut = unknown> implements Effect<TIn, TOut> {
   readonly kind = "tool" as const;
   readonly idempotent?: boolean;
+  readonly errors?: Record<string, ErrorChannelSchema>;
 
   constructor(
     private readonly fn: (input: TIn, ctx: EffectContext) => Promise<TOut>,
@@ -20,6 +27,9 @@ export class ToolEffect<TIn = unknown, TOut = unknown> implements Effect<TIn, TO
   ) {
     if (options.idempotent !== undefined) {
       this.idempotent = options.idempotent;
+    }
+    if (options.errors !== undefined) {
+      this.errors = options.errors;
     }
   }
 

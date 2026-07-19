@@ -4,7 +4,14 @@ import {
   CapabilityDeniedError,
   type EffectRuntimeOptions,
 } from "./authz";
-import type { Effect, EffectContext, EffectMiddleware, EffectNext, Warmer } from "./types";
+import type {
+  Effect,
+  EffectContext,
+  EffectMiddleware,
+  EffectNext,
+  ErrorChannelSchema,
+  Warmer,
+} from "./types";
 
 export class EffectRuntime {
   private readonly registry = new Map<string, Effect>();
@@ -138,6 +145,17 @@ export class EffectRuntime {
    */
   declaredIdempotence(toolId: string): boolean | undefined {
     return this.registry.get(toolId)?.idempotent;
+  }
+
+  /**
+   * DE-4 — a registered effect's declared failure channels (`Effect.errors`).
+   * The kernel's registry fallback when the invoking step declares no `errors:`
+   * map of its own; `undefined` (undeclared, or no such effect) means every
+   * TypedFailure from this effect degrades to the legacy untyped failure. Pure/
+   * synchronous so the replay decision is deterministic.
+   */
+  declaredErrors(toolId: string): Record<string, ErrorChannelSchema> | undefined {
+    return this.registry.get(toolId)?.errors;
   }
 
   /** The registered effect's kind (`tool` / `llm` / `human` / `a2a`), for tooling. */

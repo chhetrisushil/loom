@@ -10,6 +10,7 @@ export type {
   EffectKind,
   EffectMiddleware,
   EffectNext,
+  ErrorChannelSchema,
   ResourceSnapshot,
   Warmer,
 } from "./types";

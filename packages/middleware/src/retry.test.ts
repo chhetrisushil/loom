@@ -1,4 +1,4 @@
-import { SuspendError } from "@loom/core";
+import { SuspendError, TypedFailure, fail } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -46,6 +46,32 @@ describe("retryMiddleware", () => {
 
     await expect(runtime.execute("t", {}, baseCtx)).rejects.toThrow("always");
     expect(fn).toHaveBeenCalledTimes(3); // 1 + 2, then give up
+  });
+
+  it("does not retry a TypedFailure by default (DE-4 — a declared domain outcome is not transient)", async () => {
+    const { sleep, delays } = fakeSleep();
+    const fn = vi.fn(async () => fail("schemaDrift", { observedHash: "h1" }));
+    const runtime = new EffectRuntime([retryMiddleware({ maxRetries: 5, sleep })]);
+    runtime.register("t", new ToolEffect(fn));
+
+    await expect(runtime.execute("t", {}, baseCtx)).rejects.toBeInstanceOf(TypedFailure);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(delays).toHaveLength(0);
+  });
+
+  it("an explicit isRetryable can opt back in to retrying TypedFailure (in-memory, pre-durable)", async () => {
+    const { sleep } = fakeSleep();
+    const fn = vi
+      .fn()
+      .mockImplementationOnce(async () => fail("flaky", { n: 1 }))
+      .mockResolvedValueOnce("ok");
+    const runtime = new EffectRuntime([
+      retryMiddleware({ maxRetries: 2, sleep, isRetryable: () => true }),
+    ]);
+    runtime.register("t", new ToolEffect(fn));
+
+    expect(await runtime.execute("t", {}, baseCtx)).toBe("ok");
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 
   it("never retries a SuspendError (control-flow, not a failure)", async () => {

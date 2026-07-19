@@ -11,6 +11,36 @@ export class SuspendError extends Error {
   }
 }
 
+/**
+ * DE-4 (ADR 0060) — a typed failure on a DECLARED error channel. Thrown from an
+ * effect/handler body (via {@link fail}); when the owning contract declares the
+ * channel in its `errors:` map, the kernel records STEP_FAILED with
+ * `{ channel, payload }` (payload validated against the channel's schema) and
+ * REPLAY SUBSTITUTES the recorded failure — the effect is never re-invoked and
+ * the flow deterministically re-takes the same catch branch. An UNDECLARED
+ * channel degrades to the legacy untyped failure (at-least-once re-run).
+ *
+ * Deliberately a plain userspace throw, not a syscall: no `ctx.fail`, no new
+ * event type, KERNEL_ABI stays 1.1.0 (the saga/ctx.compensate precedent).
+ */
+export class TypedFailure extends Error {
+  readonly channel: string;
+  readonly payload: unknown;
+
+  constructor(channel: string, payload: unknown, message?: string) {
+    super(message ?? `typed failure on channel "${channel}"`);
+    this.name = "TypedFailure";
+    this.channel = channel;
+    this.payload = payload;
+    Object.setPrototypeOf(this, TypedFailure.prototype);
+  }
+}
+
+/** Complete the current effect on a declared error channel (throws {@link TypedFailure}). */
+export function fail(channel: string, payload: unknown, message?: string): never {
+  throw new TypedFailure(channel, payload, message);
+}
+
 export class StepError extends Error {
   readonly stepId: string;
   readonly cause: unknown;

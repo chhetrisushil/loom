@@ -117,7 +117,14 @@ const handlers: Record<string, Handler> = {
   },
 
   STEP_FAILED: (state, event) => {
-    const payload = event.payload as { stepId: string; error?: unknown };
+    const payload = event.payload as {
+      stepId: string;
+      error?: unknown;
+      // DE-4 (1.17.0) — present only for typed failures on a DECLARED channel;
+      // absence folds byte-identically to pre-1.17 logs (K5 payload-extension rule).
+      channel?: string;
+      payload?: unknown;
+    };
     const existing = state.frames[payload.stepId];
     const frame: ExecutionFrame = {
       stepId: payload.stepId,
@@ -127,6 +134,10 @@ const handlers: Record<string, Handler> = {
       ...(existing?.firstStartedAt !== undefined && { firstStartedAt: existing.firstStartedAt }),
       ...(existing?.input !== undefined && { input: existing.input }),
       ...(payload.error !== undefined && { error: payload.error }),
+      ...(payload.channel !== undefined && {
+        errorChannel: payload.channel,
+        errorPayload: payload.payload,
+      }),
     };
     return {
       ...state,
@@ -730,7 +741,11 @@ export function getHandler(eventType: string): Handler | undefined {
 //   every resume payload (ADR 0057). Fixes the multi-gate suspend bug: the single-latest
 //   `_resumePayload` (kept for compat) fed gate 1 the LAST gate's payload on replay.
 //   Additive fold key from existing events; no payload or kind changes.
-export const EVENT_SCHEMA_VERSION = "1.16.0";
+// 1.17.0: additive optional STEP_FAILED payload fields `channel`, `payload` (DE-4,
+//   ADR 0060 — typed failure channels). Folded into frame `errorChannel`/`errorPayload`;
+//   presence makes the execute seam SUBSTITUTE the recorded failure on replay instead of
+//   re-executing the step. A log that never fails typed replays byte-identically.
+export const EVENT_SCHEMA_VERSION = "1.17.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

@@ -1,6 +1,6 @@
 import { createA2UIEmitter } from "@loom/a2ui";
 import type { A2UIEmitter } from "@loom/a2ui";
-import { SuspendError } from "@loom/core";
+import { SuspendError, TypedFailure } from "@loom/core";
 import type { ExecutableTask, StepDefinition } from "@loom/core";
 import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
@@ -62,6 +62,22 @@ export class WorkflowContextImpl implements WorkflowContext {
     const id = task.id;
     if (this.vm.hasCompleted(id)) {
       return this.vm.getOutput(id) as TOut;
+    }
+
+    // DE-4 (ADR 0060) — typed-failure substitution, the failure twin of the
+    // completed short-circuit above: a recorded declared-channel failure is
+    // rethrown WITHOUT re-invoking the effect (zero events, zero middleware), so
+    // the flow deterministically re-takes the same catch branch on replay. This
+    // applies to LIVE re-invocation of the same id too — a deliberate retry must
+    // mint a new id (`${id}#retry:N`), per the step-identity rule (ADR 0061).
+    // Untyped failures leave no errorChannel and keep legacy re-execution.
+    const typed = this.vm.getTypedFailure(id);
+    if (typed !== undefined) {
+      throw new TypedFailure(
+        typed.channel,
+        typed.payload,
+        typeof typed.error === "string" ? typed.error : undefined
+      );
     }
 
     // K8 — a cancelled execution starts no further steps: bail before the
@@ -199,6 +215,32 @@ export class WorkflowContextImpl implements WorkflowContext {
       if (this.signal?.aborted === true) {
         this.emit("STEP_CANCELLED", { stepId: id });
         throw err;
+      }
+      // DE-4 — a TypedFailure on a DECLARED channel is a domain outcome: record
+      // it with its schema-validated payload so replay substitutes it (frame
+      // gains errorChannel). Declaration resolution: step `errors:` wins, the
+      // registered effect's map is the fallback (the K9.3 idiom). A payload that
+      // fails its channel's schema — or an undeclared channel — degrades LOUDLY
+      // to the legacy untyped failure, which keeps at-least-once re-execution.
+      if (err instanceof TypedFailure) {
+        const schema = (task.errors ?? this.effectRuntime.declaredErrors(toolId))?.[err.channel];
+        if (schema !== undefined) {
+          const parsed = schema.safeParse(err.payload);
+          if (parsed.success) {
+            this.emit("STEP_FAILED", {
+              stepId: id,
+              error: String(err),
+              channel: err.channel,
+              payload: parsed.data,
+            });
+            throw err;
+          }
+          this.emit("STEP_FAILED", {
+            stepId: id,
+            error: `typed-failure payload for channel "${err.channel}" failed validation: ${parsed.error.message}`,
+          });
+          throw err;
+        }
       }
       this.emit("STEP_FAILED", { stepId: id, error: String(err) });
       throw err;

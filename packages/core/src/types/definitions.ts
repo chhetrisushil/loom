@@ -70,6 +70,14 @@ export interface ToolDefinition<TIn = unknown, TOut = unknown> {
    * an operator verdict. Undeclared keeps the legacy at-least-once re-run.
    */
   idempotent?: boolean;
+  /**
+   * DE-4 (ADR 0060) — declared failure channels: channel name → payload schema.
+   * A `TypedFailure` thrown on a declared channel is a first-class domain
+   * outcome: logged as STEP_FAILED `{ channel, payload }` (payload validated)
+   * and substituted on replay instead of re-invoking the effect. Undeclared
+   * channels keep the legacy untyped at-least-once failure semantics.
+   */
+  errors?: Record<string, ZodSchema>;
 }
 
 export interface StepDefinition<TIn = unknown, TOut = unknown> {
@@ -82,6 +90,8 @@ export interface StepDefinition<TIn = unknown, TOut = unknown> {
   outputSchema: ZodSchema<TOut>;
   retry?: RetryPolicy;
   timeoutMs?: number;
+  /** DE-4 — declared failure channels (see {@link ToolDefinition.errors}). Step declaration wins over the registered effect's. */
+  errors?: Record<string, ZodSchema>;
 }
 
 // ── Tasks (ctx.execute) — the generalized unit of durable work (Loom 2.0) ─────
@@ -105,6 +115,8 @@ export interface TaskDefinition<TIn = unknown, TOut = unknown> {
   outputSchema?: ZodSchema<TOut>;
   retry?: RetryPolicy;
   timeoutMs?: number;
+  /** DE-4 — declared failure channels (see {@link ToolDefinition.errors}). */
+  errors?: Record<string, ZodSchema>;
 }
 
 // The argument accepted by ctx.execute: a StepDefinition (the 'step' kind,
