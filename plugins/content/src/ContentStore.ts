@@ -7,6 +7,15 @@ import { type ContentRef, contentAddress } from "./content";
 // object storage / a filesystem / an encrypted blob store in production (as separate
 // `@loom/plugin-content-*` backends); the reference implementation here is in-memory.
 
+/**
+ * ContentStore SPI version (introduced retroactively by ADR 0062 — the SPI had
+ * shipped two revisions without a version anchor for conformance to pin).
+ *  - 1.0.0: `put`/`get`/`delete` (ADR 0046).
+ *  - 1.1.0: optional `putStream` (ST-1, ADR 0059).
+ *  - 1.2.0: optional `getMany` (TS-10, ADR 0062 — batched interactive reads).
+ */
+export const CONTENT_STORE_SPI_VERSION = "1.2.0";
+
 export interface ContentStore {
   /** Store bytes, returning their content-addressed ref. Idempotent by hash (stored once). */
   put(bytes: Uint8Array): Promise<ContentRef>;
@@ -23,6 +32,14 @@ export interface ContentStore {
   putStream?(stream: AsyncIterable<Uint8Array>): Promise<ContentRef>;
   /** Resolve a ref to its bytes, or `null` if erased/absent — MUST NOT throw on absence. */
   get(ref: ContentRef): Promise<Uint8Array | null>;
+  /**
+   * OPTIONAL (TS-10, ADR 0062) — batched get for interactive read paths (e.g.
+   * frozen-snapshot serving: many refs, one human waiting). Result is
+   * positionally aligned with `refs`; `null` per absent entry; MUST NOT throw
+   * on absence. Duplicate refs are legal and resolve identically. Semantics are
+   * exactly element-wise `get` — only the round-trip count may differ.
+   */
+  getMany?(refs: readonly ContentRef[]): Promise<(Uint8Array | null)[]>;
   /** Physically erase the bytes. Idempotent; referential integrity is the caller's concern. */
   delete(ref: ContentRef): Promise<void>;
 }
@@ -66,6 +83,10 @@ export class InMemoryContentStore implements ContentStore {
 
   async get(ref: ContentRef): Promise<Uint8Array | null> {
     return this.blobs.get(ref.__loomContent) ?? null;
+  }
+
+  async getMany(refs: readonly ContentRef[]): Promise<(Uint8Array | null)[]> {
+    return refs.map((ref) => this.blobs.get(ref.__loomContent) ?? null);
   }
 
   async delete(ref: ContentRef): Promise<void> {

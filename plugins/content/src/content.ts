@@ -51,6 +51,72 @@ export function hasContentRef(value: unknown): boolean {
   return false;
 }
 
+/**
+ * ADR 0062 — phase 1 of batched resolution: collect every {@link ContentRef} in
+ * a payload into `into` (keyed by content address — duplicates collapse), and
+ * report whether any was found. One walk replaces the old `hasContentRef`
+ * pre-walk + per-ref fetch recursion.
+ */
+export function collectContentRefs(value: unknown, into: Map<string, ContentRef>): boolean {
+  if (isContentRef(value)) {
+    if (!into.has(value.__loomContent)) into.set(value.__loomContent, value);
+    return true;
+  }
+  if (Array.isArray(value)) {
+    let found = false;
+    for (const v of value) if (collectContentRefs(v, into)) found = true;
+    return found;
+  }
+  if (typeof value === "object" && value !== null) {
+    let found = false;
+    for (const v of Object.values(value as Record<string, unknown>)) {
+      if (collectContentRefs(v, into)) found = true;
+    }
+    return found;
+  }
+  return false;
+}
+
+/**
+ * ADR 0062 — phase 2 of batched resolution: pure rebuild substituting each
+ * {@link ContentRef} from the fetched bytes. Decoding is deliberately
+ * per-OCCURRENCE (the fetch dedupes by address — the expensive part — but two
+ * payload sites never alias one decoded object). Ref-free subtrees are returned
+ * as-is (structural sharing).
+ */
+export function substituteContentRefs(
+  value: unknown,
+  bytesByAddress: ReadonlyMap<string, Uint8Array>
+): unknown {
+  if (isContentRef(value)) {
+    const bytes = bytesByAddress.get(value.__loomContent);
+    // Callers guarantee every collected address was fetched; a miss here is a
+    // programming error, surfaced loudly.
+    if (bytes === undefined) throw new Error(`unfetched content ref: ${value.__loomContent}`);
+    return decodeValue(bytes);
+  }
+  if (Array.isArray(value)) {
+    let changed = false;
+    const out = value.map((v) => {
+      const r = substituteContentRefs(v, bytesByAddress);
+      if (r !== v) changed = true;
+      return r;
+    });
+    return changed ? out : value;
+  }
+  if (typeof value === "object" && value !== null) {
+    let changed = false;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const r = substituteContentRefs(v, bytesByAddress);
+      out[k] = r;
+      if (r !== v) changed = true;
+    }
+    return changed ? out : value;
+  }
+  return value;
+}
+
 function shallowCopy(value: object): Record<string, unknown> {
   return Array.isArray(value)
     ? ([...value] as unknown as Record<string, unknown>)

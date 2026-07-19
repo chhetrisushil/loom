@@ -15,6 +15,7 @@
     "build": "tsc --build",
     "dev": "tsc --build --watch",
     "test": "vitest run",
+    "bench": "vitest bench --run",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {

@@ -3,11 +3,10 @@ import type { EventStore } from "@loom/event-runtime";
 import type { ContentStore } from "./ContentStore";
 import {
   type ContentRef,
-  decodeValue,
+  collectContentRefs,
   encodeValue,
-  hasContentRef,
-  isContentRef,
   mapPathsAsync,
+  substituteContentRefs,
 } from "./content";
 import { ContentMissingError } from "./errors";
 
@@ -100,36 +99,43 @@ export class ContentResolvingEventStore implements EventStore {
     return this.resolveAll(executionId, await this.inner.readFrom(executionId, fromSequence));
   }
 
+  // ADR 0062 — batch-scoped two-phase resolution. Phase 1 collects DISTINCT refs
+  // across the WHOLE read batch (one walk, dedupe by content address); the fetch
+  // is ONE `getMany` round-trip when the store supports it (coalesced parallel
+  // `get`s otherwise — still strictly better than the old per-ref sequential
+  // awaits); phase 2 is a pure synchronous substitute pass. O(payload nodes) +
+  // one round-trip replaces O(refs) serialized round-trips. Fast path: no event
+  // carries a ref → verbatim, no allocation.
   private async resolveAll(executionId: string, events: EventEnvelope[]): Promise<EventEnvelope[]> {
-    // Single walk: compute the per-event ref flag ONCE (`hasContentRef` is a full deep walk of
-    // the payload; it was run twice — the `.some()` fast-path plus a second call inside the
-    // `.map()`). Fast path: no event carries a ref → verbatim, no allocation.
-    const refBearing = events.map((e) => hasContentRef(e.payload));
-    if (!refBearing.some(Boolean)) return events;
-    return Promise.all(
-      events.map(async (e, i) =>
-        refBearing[i] ? { ...e, payload: await this.resolveRefs(e.payload, executionId) } : e
-      )
+    const distinct = new Map<string, ContentRef>();
+    const refBearing = events.map((e) => collectContentRefs(e.payload, distinct));
+    if (distinct.size === 0) return events;
+    const bytesByAddress = await this.fetchBytes(distinct, executionId);
+    return events.map((e, i) =>
+      refBearing[i] ? { ...e, payload: substituteContentRefs(e.payload, bytesByAddress) } : e
     );
   }
 
-  private async resolveRefs(value: unknown, executionId: string): Promise<unknown> {
-    if (isContentRef(value)) {
-      const bytes = await this.content.get(value);
-      if (bytes === null) throw new ContentMissingError(value.__loomContent, executionId);
-      return decodeValue(bytes);
-    }
-    if (Array.isArray(value)) {
-      return Promise.all(value.map((v) => this.resolveRefs(v, executionId)));
-    }
-    if (typeof value === "object" && value !== null) {
-      const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        out[k] = await this.resolveRefs(v, executionId);
+  /** Fetch all distinct refs; loudness contract unchanged (missing ⇒ ContentMissingError, G1). */
+  private async fetchBytes(
+    distinct: ReadonlyMap<string, ContentRef>,
+    executionId: string
+  ): Promise<Map<string, Uint8Array>> {
+    const addresses = [...distinct.keys()];
+    const refs = [...distinct.values()];
+    const fetched =
+      this.content.getMany !== undefined
+        ? await this.content.getMany(refs)
+        : await Promise.all(refs.map((r) => this.content.get(r)));
+    const out = new Map<string, Uint8Array>();
+    for (let i = 0; i < addresses.length; i++) {
+      const bytes = fetched[i];
+      if (bytes === null || bytes === undefined) {
+        throw new ContentMissingError(addresses[i] as string, executionId);
       }
-      return out;
+      out.set(addresses[i] as string, bytes);
     }
-    return value;
+    return out;
   }
 
   async subscribe(
@@ -139,12 +145,13 @@ export class ContentResolvingEventStore implements EventStore {
     // Live subscribers get resolved events too (best-effort: if resolution fails — e.g. a race
     // with erasure — the raw ref-bearing event is delivered rather than dropping it).
     return this.inner.subscribe(executionId, (event: EventEnvelope) => {
-      if (!hasContentRef(event.payload)) {
+      const distinct = new Map<string, ContentRef>();
+      if (!collectContentRefs(event.payload, distinct)) {
         handler(event);
         return;
       }
-      void this.resolveRefs(event.payload, executionId)
-        .then((payload) => handler({ ...event, payload }))
+      void this.fetchBytes(distinct, executionId)
+        .then((bytes) => handler({ ...event, payload: substituteContentRefs(event.payload, bytes) }))
         .catch(() => handler(event));
     });
   }

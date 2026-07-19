@@ -220,6 +220,19 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "Composed from existing primitives — NO new syscall or event type (P10 win; the plan's CHILD_COMPLETED governed event proved unnecessary). L2; single-child await today (fan-out is a follow-up).",
   },
   {
+    id: "content-batch-resolution",
+    title: "Batched Content Resolution",
+    package: "@loom/plugin-content",
+    level: "L4",
+    summary:
+      "ContentStore.getMany (CONTENT_STORE_SPI_VERSION 1.2.0) + batch-scoped two-phase resolution: one round-trip per read batch, plus a byte-budgeted cache-forever LRU decorator (delete evicts first).",
+    evidence: {
+      conformanceTest: "plugins/content/src/contentStoreConformance.test.ts",
+      bench: "plugins/content/src/content.bench.ts",
+    },
+    note: "TS-10 (ADR 0062) — the read-side sequel to ADR 0059's putStream. Optional-method + conformance-skip idiom; interactive budget p95 ≤ 150ms for ≤ 50 refs (asserted in batchedResolution.test.ts against an injected-latency backend).",
+  },
+  {
     id: "step-identity-guardrails",
     title: "Step Identity & Interpreter Pattern",
     package: "@loom/workflow-runtime",

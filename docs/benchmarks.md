@@ -91,3 +91,24 @@ fold input). Measured on the K7 isolated-executor boundary — the largest cold 
 Pre-warming boosts *latency, not throughput*, and only pays off at genuine I/O /
 cold-start boundaries (K7 child, LLM connection, scheduled fires) — so it is scoped
 there and nowhere else. See [ADR 0027](adr/0027-advisory-pre-warming.md).
+
+## Batched content resolution — frozen-snapshot serving (ADR 0062)
+
+`ContentStore.getMany` + batch-scoped two-phase resolution in
+`ContentResolvingEventStore` (collect distinct refs across the read batch → one
+round-trip → pure substitute). Measured resolving 50 externalized refs through a
+2ms-per-round-trip backend (`plugins/content/src/content.bench.ts`):
+
+| resolve 50 refs @ 2ms backend latency | mean ms |
+|---|---|
+| pre-ADR-0062 shape (serialized per-ref awaits) | ~114 |
+| coalesced parallel `get`s (fallback, no `getMany`) | ~2.7 |
+| **`getMany` (one batched round-trip)** | **~2.6** |
+
+~44× over the old serialized shape; comfortably inside the TS-10 interactive
+budget (p95 ≤ 150ms for ≤ 50 refs, asserted in `batchedResolution.test.ts`).
+The batched-vs-coalesced gap is small against an in-memory backend (latency
+does not scale with concurrency there); on real network stores with connection
+caps the single round-trip is the durable win. `CachingContentStore` layers
+cache-forever on top (content-addressed ⇒ immutable), with `delete`-evicts-first
+so erasure is never resurrected.

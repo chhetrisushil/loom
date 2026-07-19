@@ -580,6 +580,8 @@ export interface ContentStoreLike {
   /** OPTIONAL (ST-1, SPI streaming): content-addressed streaming ingestion. */
   putStream?(stream: AsyncIterable<Uint8Array>): Promise<{ __loomContent: string }>;
   get(ref: { __loomContent: string }): Promise<Uint8Array | null>;
+  /** OPTIONAL (TS-10, ADR 0062): batched get — positional, null-on-absence. */
+  getMany?(refs: readonly { __loomContent: string }[]): Promise<(Uint8Array | null)[]>;
   delete(ref: { __loomContent: string }): Promise<void>;
 }
 
@@ -647,6 +649,32 @@ export function runContentStoreConformance(
       expect(eq(got as Uint8Array, bytes(text))).toBe(true); // faithful round-trip
       const again = await store.putStream(chunks());
       expect(again.__loomContent).toBe(streamed.__loomContent); // idempotent by address
+    });
+
+    it("getMany is element-wise get: positional, null holes, duplicates identical (when supported)", async () => {
+      const store = factory();
+      if (store.getMany === undefined) return; // OPTIONAL (TS-10, ADR 0062)
+      const a = await store.put(bytes("alpha"));
+      const b = await store.put(bytes("beta"));
+      const absent = { __loomContent: "sha256:deadbeef" };
+
+      expect(await store.getMany([])).toEqual([]);
+
+      const results = await store.getMany([a, absent, b, a]);
+      expect(results).toHaveLength(4);
+      expect(eq(results[0] as Uint8Array, bytes("alpha"))).toBe(true);
+      expect(results[1]).toBeNull(); // absent → null hole, never a throw
+      expect(eq(results[2] as Uint8Array, bytes("beta"))).toBe(true);
+      expect(eq(results[3] as Uint8Array, bytes("alpha"))).toBe(true); // duplicate resolves identically
+
+      // Element-wise agreement with get.
+      for (const [i, ref] of [a, absent, b].entries()) {
+        const single = await store.get(ref);
+        const batched = (await store.getMany([a, absent, b]))[i] ?? null;
+        expect(batched === null ? null : [...(batched as Uint8Array)]).toEqual(
+          single === null ? null : [...single]
+        );
+      }
     });
   });
 }
