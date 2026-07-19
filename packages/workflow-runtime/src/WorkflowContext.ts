@@ -55,6 +55,12 @@ export class WorkflowContextImpl implements WorkflowContext {
   // forwards a StepDefinition (the 'step' task kind) here. All task kinds resolve
   // through the EffectRuntime by toolId, and the wire events stay STEP_* so
   // existing logs replay byte-identically.
+  //
+  // STEP IDENTITY (ADR 0061): frames are keyed by `task.id` — the completed
+  // short-circuit and the typed-failure substitution below both serve the FIRST
+  // recorded outcome for an id. The sequence of ids an execution produces must
+  // be a pure function of logged inputs; a task invoked more than once with
+  // different intent must mint a deterministic distinct id (`${id}#${index}`).
   async execute<TIn = unknown, TOut = unknown>(
     task: ExecutableTask<TIn, TOut>,
     input: TIn
