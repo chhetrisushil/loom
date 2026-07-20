@@ -28,7 +28,6 @@ type LlamaModule = any;
 // A genuine dynamic `import()` preserved through the `new Function` boundary. tsc under
 // `module: CommonJS` would otherwise down-level `import()` to `require()`, which cannot
 // load node-llama-cpp (an ESM-only, top-level-await module → ERR_REQUIRE_ASYNC_MODULE).
-// biome-ignore lint/security/noGlobalEval: intentional — the only way to keep a real ESM import from CJS output.
 const esmImport = new Function("s", "return import(s)") as (s: string) => Promise<LlamaModule>;
 
 async function loadNodeLlamaCpp(): Promise<LlamaModule> {
