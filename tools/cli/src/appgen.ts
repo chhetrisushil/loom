@@ -156,7 +156,6 @@ type AppgenModelModule = any;
 // A genuine dynamic `import()` preserved through `new Function`. tsc under `module:
 // CommonJS` would down-level `import()` to `require()`, which cannot load an ESM-only
 // package (@loom/appgen-model pulls in node-llama-cpp, an ESM/top-level-await module).
-// biome-ignore lint/security/noGlobalEval: intentional — the only way to keep a real ESM import from CJS output.
 const esmImport = new Function("s", "return import(s)") as (
   s: string
 ) => Promise<AppgenModelModule>;
