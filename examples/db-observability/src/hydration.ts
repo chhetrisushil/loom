@@ -11,20 +11,28 @@ import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { z } from "zod";
 
-// ── Durable telemetry hydration — the blueprint-interpreter pattern ───────────
-// (ADRs 0060/0061/0063/0064.) The dashboard's telemetry is no longer read from
-// pre-seeded projections: a HYDRATION PLAN — one node per projection, each naming
-// an MCP tool, a pinned input-schema hash, and a content-addressed reshaping
-// script — is the INPUT of a durable Loom flow (hash-pinned in the run's first
-// event). A statically compiled interpreter runner walks it:
+// ── Telemetry hydration — the transient blueprint-interpreter pattern ─────────
+// (ADRs 0060/0061/0063/0064/0065; DE-series eval.) The dashboard's telemetry is
+// a HYDRATION PLAN — one node per projection, each naming an MCP tool, a pinned
+// input-schema hash, and a content-addressed reshaping script.
 //
-//   fanout$ ──► mcpInvoke$ (schema-pin verified per call; typed schemaDrift)
-//          ──► sandboxEval$ (LLM-authored reshape in a QuickJS sandbox,
-//                            output validated against a pinned shape hash)
+// The hot READ path is NOT a loom run (ADR 0065 — "don't make it a run until
+// something durable happens"). It is a TRANSIENT interpreter: plain code walks
+// the immutable plan, invoking each effect via `runtime.invokeTransient` — the
+// supported façade over the non-durable path. It mutates nothing and writes ZERO
+// events; if it fails the client simply retries. Every dashboard open and every
+// 50 ms hydration batch runs here, paying no durability it never uses:
 //
-// Ids are minted `${base}#${i}` (the ADR 0061 identity rule), so a crash — or a
-// drift-aborted fan-out — recovers by substitution: recorded frames are served
-// from the log, only the missing work re-executes.
+//   invokeTransient("mcp.invoke")   (schema-pin verified per call; typed schemaDrift)
+//   invokeTransient("sandbox.eval") (LLM-authored reshape in a QuickJS sandbox,
+//                                    output validated against a pinned shape hash)
+//
+// The determinism boundary is crossed ONLY when something durable happens: a
+// pin drifts, and the REPAIR must be recorded. Then — and only then — we
+// `start()` a durable loom run (the repair flow below) whose SCHEMA_REPAIRED
+// event and repaired frames are the auditable, branchable forensic record.
+// Ids in that run are minted `${base}#${i}` (the ADR 0061 identity rule), so a
+// crash recovers by substitution.
 
 /** One node of the plan: which tool feeds which projection, through which script. */
 export interface HydrationNode {
@@ -93,71 +101,69 @@ const PROJECTION_TOOLS: Record<string, string> = {
   queries: "db.queries",
 };
 
-// ── The flow (dynamic steps — deliberately outside the static list, ADR 0061) ─
+// ── The durable REPAIR flow (only runs when a pin drifts) ─────────────────────
+// The transient read path CANNOT record anything — that is the whole point. When
+// it hits a `schemaDrift` TypedFailure, we cross the determinism boundary and
+// `start()` this durable run. It re-walks the plan under the observed pin,
+// recording SCHEMA_REPAIRED (the forensic payload) plus a durable frame per node
+// — replay-substitutable and branchable. Dynamic steps, deliberately outside the
+// static list (ADR 0061); ids minted `${base}#${i}`.
 
-const planSchema = z.object({
-  nodes: z.array(
-    z.object({
-      projectionId: z.string(),
-      toolName: z.string(),
-      expectedSchemaHash: z.string(),
-      scriptRef: z.object({ __loomContent: z.string() }).passthrough(),
-      expectedOutputShapeHash: z.string(),
-    })
-  ),
+interface RepairInput {
+  plan: HydrationPlan;
+  drift: { toolName: string; expectedSchemaHash: string; observedHash: string };
+}
+
+const repairInputSchema = z.object({
+  plan: z.object({
+    nodes: z.array(
+      z.object({
+        projectionId: z.string(),
+        toolName: z.string(),
+        expectedSchemaHash: z.string(),
+        scriptRef: z.object({ __loomContent: z.string() }).passthrough(),
+        expectedOutputShapeHash: z.string(),
+      })
+    ),
+  }),
+  drift: z.object({
+    toolName: z.string(),
+    expectedSchemaHash: z.string(),
+    observedHash: z.string(),
+  }),
 });
 
-const hydrateFlowDef: FlowDefinition<HydrationPlan, HydratedStates> = {
+const repairFlowDef: FlowDefinition<RepairInput, HydratedStates> = {
   _tag: "FlowDefinition",
-  id: "hydrate-telemetry",
-  name: "Hydrate telemetry",
+  id: "repair-telemetry",
+  name: "Repair telemetry pin",
   version: "1.0.0",
-  inputSchema: planSchema as unknown as z.ZodSchema<HydrationPlan>,
+  inputSchema: repairInputSchema as unknown as z.ZodSchema<RepairInput>,
   outputSchema: z.record(z.unknown()) as z.ZodSchema<HydratedStates>,
   steps: [],
 };
 
-const runner: FlowRunner<HydrationPlan, HydratedStates> = async (ctx, plan) => {
-  const invokeInputs = plan.nodes.map((node) => ({
-    toolName: node.toolName,
-    args: { window: "5m" },
-    expectedSchemaHash: node.expectedSchemaHash,
-  }));
+const repairRunner: FlowRunner<RepairInput, HydratedStates> = async (ctx, { plan, drift }) => {
+  // The typed payload IS the forensic record — recorded, replay-substituted,
+  // branchable. Accept the observed schema as the new pin and durably re-walk.
+  ctx.emit(SCHEMA_REPAIRED, drift);
 
-  // Phase 1 — fetch RAW telemetry: one mcpInvoke$ step per node (`hydrate#${i}`).
-  // limit: 1 keeps the drift demo deterministic (nodes settle in order, so the
-  // repair pass below substitutes a predictable prefix); production fan-outs
-  // drop the limit and rely on the same substitution semantics.
-  let raw: unknown[];
-  try {
-    raw = await fanout$(ctx, mcpInvoke$("hydrate"), invokeInputs, { limit: 1 });
-  } catch (err) {
-    if (!(err instanceof TypedFailure) || err.channel !== "schemaDrift") throw err;
-    // In-band repair (the GenUI drift loop): the typed payload IS the forensic
-    // record — recorded, replay-substituted, branchable. Accept the observed
-    // schema as the new pin and re-walk the plan: recorded frames SUBSTITUTE
-    // (zero re-invocation); the drifted node re-runs under a re-minted id
-    // (`#repair` — the ADR 0061 rule: a deliberate retry is a NEW identity).
-    const drift = err.payload as {
-      toolName: string;
-      expectedSchemaHash: string;
-      observedHash: string;
+  const raw: unknown[] = [];
+  for (const [i, node] of plan.nodes.entries()) {
+    const input = {
+      toolName: node.toolName,
+      args: { window: "5m" },
+      // The drifted node re-runs under a re-minted id (`#repair` — a deliberate
+      // retry is a NEW identity, ADR 0061) against the observed hash.
+      expectedSchemaHash:
+        node.toolName === drift.toolName ? drift.observedHash : node.expectedSchemaHash,
     };
-    ctx.emit(SCHEMA_REPAIRED, drift);
-    raw = [];
-    for (const [i, input] of invokeInputs.entries()) {
-      raw[i] =
-        input.toolName === drift.toolName
-          ? await ctx.run(mcpInvoke$(`hydrate#${i}#repair`), {
-              ...input,
-              expectedSchemaHash: drift.observedHash,
-            })
-          : await ctx.run(mcpInvoke$(`hydrate#${i}`), input);
-    }
+    raw[i] =
+      node.toolName === drift.toolName
+        ? await ctx.run(mcpInvoke$(`hydrate#${i}#repair`), input)
+        : await ctx.run(mcpInvoke$(`hydrate#${i}`), input);
   }
 
-  // Phase 2 — reshape RAW → projection state in the sandbox, in parallel
-  // (`reshape#${i}`), each output validated against its pinned shape hash.
   const shaped = await fanout$(
     ctx,
     sandboxEval$("reshape"),
@@ -176,9 +182,19 @@ const runner: FlowRunner<HydrationPlan, HydratedStates> = async (ctx, plan) => {
 export interface Hydrator {
   /** Build the plan: content-address the scripts, pin tool-schema + shape hashes. */
   buildPlan: () => Promise<HydrationPlan>;
-  /** Run one durable hydration; returns projectionId → reshaped state. */
+  /**
+   * Hydrate the dashboard: walk the plan TRANSIENTLY (zero events), and on a
+   * `schemaDrift` escalate to a durable repair run keyed by `executionId`.
+   * Returns projectionId → reshaped state. The common case writes nothing.
+   */
   hydrate: (executionId: string, plan: HydrationPlan) => Promise<HydratedStates>;
-  /** The durable log (inspect SCHEMA_REPAIRED, step events, the logged plan). */
+  /**
+   * The pure transient walk, exposed for callers that want to handle drift
+   * themselves. Throws a `schemaDrift` {@link TypedFailure} on a drifted pin.
+   * Writes ZERO events under any outcome.
+   */
+  hydrateTransient: (plan: HydrationPlan) => Promise<HydratedStates>;
+  /** The durable log for an executionId (empty unless a repair run happened). */
   events: (executionId: string) => Promise<EventEnvelope[]>;
 }
 
@@ -197,11 +213,35 @@ export function createHydrator(serverUrl: string): Hydrator {
     snapshotStore: new InMemoryAsyncSnapshotStore(),
     effectRuntime,
   });
-  runtime.registerFlow(hydrateFlowDef, runner as FlowRunner<unknown, unknown>);
-  const flow: RegisteredFlow<HydrationPlan, HydratedStates> = {
-    definition: hydrateFlowDef,
-    runner,
+  runtime.registerFlow(repairFlowDef, repairRunner as FlowRunner<unknown, unknown>);
+  const repairFlow: RegisteredFlow<RepairInput, HydratedStates> = {
+    definition: repairFlowDef,
+    runner: repairRunner,
   };
+
+  // The transient interpreter: plain code over the immutable plan. Each effect
+  // runs through `invokeTransient` — no execution, no fold, no fence, no events.
+  async function hydrateTransient(plan: HydrationPlan): Promise<HydratedStates> {
+    const raw = await Promise.all(
+      plan.nodes.map((node) =>
+        runtime.invokeTransient("mcp.invoke", {
+          toolName: node.toolName,
+          args: { window: "5m" },
+          expectedSchemaHash: node.expectedSchemaHash,
+        })
+      )
+    );
+    const shaped = await Promise.all(
+      plan.nodes.map((node, i) =>
+        runtime.invokeTransient("sandbox.eval", {
+          scriptRef: node.scriptRef,
+          input: raw[i],
+          expectedOutputShapeHash: node.expectedOutputShapeHash,
+        })
+      )
+    );
+    return Object.fromEntries(plan.nodes.map((node, i) => [node.projectionId, shaped[i]]));
+  }
 
   return {
     async buildPlan() {
@@ -224,10 +264,20 @@ export function createHydrator(serverUrl: string): Hydrator {
       }
       return { nodes };
     },
+    hydrateTransient,
     async hydrate(executionId, plan) {
-      const handle = await runtime.start(flow, plan, { executionId });
-      const state = await handle.waitForCompletion();
-      return state.variables._output as HydratedStates;
+      try {
+        // Hot path: transient, zero durable footprint. Retried by the client on
+        // any transport failure — nothing to recover.
+        return await hydrateTransient(plan);
+      } catch (err) {
+        if (!(err instanceof TypedFailure) || err.channel !== "schemaDrift") throw err;
+        // Something durable happened: cross the boundary and record the repair.
+        const drift = err.payload as RepairInput["drift"];
+        const handle = await runtime.start(repairFlow, { plan, drift }, { executionId });
+        const state = await handle.waitForCompletion();
+        return state.variables._output as HydratedStates;
+      }
     },
     events: (executionId) => eventStore.read(executionId),
   };

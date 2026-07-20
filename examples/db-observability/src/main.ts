@@ -4,14 +4,16 @@ import { startTelemetryMcpServer } from "./mcpServer";
 import { applyHydratedStates } from "./telemetry";
 
 // Ask the observability assistant a few questions. Telemetry is HYDRATED by a
-// durable Loom interpreter flow — fanout$ over mcpInvoke$ (schema-hash-pinned
-// dynamic MCP dispatch) chained into sandboxEval$ (sandboxed, LLM-authored
-// reshaping) — then each question is analysed by the agent, categorised, and
-// answered with a DYNAMICALLY-generated dashboard (WHAT + WHY), rendered
-// headlessly to the terminal. Offline, no API key: the MCP server runs
-// in-process. Midway, a simulated backend deploy drifts one tool's schema —
-// the pinned hash mismatches, the flow fails TYPED (schemaDrift) and repairs
-// in-band; recorded siblings substitute from the log (ADR 0060/0061/0063/0064).
+// TRANSIENT interpreter — plain-code invokeTransient over mcp.invoke
+// (schema-hash-pinned dynamic MCP dispatch) chained into sandbox.eval (sandboxed,
+// LLM-authored reshaping), writing zero events on the hot read path — then each
+// question is analysed by the agent, categorised, and answered with a
+// DYNAMICALLY-generated dashboard (WHAT + WHY), rendered headlessly to the
+// terminal. Offline, no API key: the MCP server runs in-process. Midway, a
+// simulated backend deploy drifts one tool's schema — the pinned hash
+// mismatches, the transient read fails TYPED (schemaDrift), and hydration
+// crosses the determinism boundary into a DURABLE repair run that records the
+// fix (ADR 0060/0061/0063/0064/0065).
 
 const QUESTIONS_BEFORE = [
   "Why is the CPU utilization high?",
@@ -32,7 +34,7 @@ async function main(): Promise<void> {
     const hydrator = createHydrator(server.url);
 
     console.log(
-      dim("\n── Hydrating telemetry: durable flow, fanout$ → mcpInvoke$ → sandboxEval$ ──")
+      dim("\n── Hydrating telemetry: transient walk, invokeTransient(mcp.invoke → sandbox.eval) ──")
     );
     const plan = await hydrator.buildPlan();
     console.log(
@@ -72,7 +74,7 @@ async function main(): Promise<void> {
       };
       console.log(
         note(
-          `⚠ schemaDrift on ${p.toolName}: pinned ${p.expectedSchemaHash.slice(0, 18)}… observed ${p.observedHash.slice(0, 18)}… — repaired in-band; recorded siblings substituted from the log`
+          `⚠ schemaDrift on ${p.toolName}: pinned ${p.expectedSchemaHash.slice(0, 18)}… observed ${p.observedHash.slice(0, 18)}… — transient read escalated to a DURABLE repair run, recorded under the observed pin`
         )
       );
     }

@@ -12,6 +12,7 @@ export type {
   EffectNext,
   ErrorChannelSchema,
   ResourceSnapshot,
+  TransientInvokeOptions,
   Warmer,
 } from "./types";
 export {
