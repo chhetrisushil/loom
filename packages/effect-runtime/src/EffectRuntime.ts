@@ -10,6 +10,7 @@ import type {
   EffectMiddleware,
   EffectNext,
   ErrorChannelSchema,
+  TransientInvokeOptions,
   Warmer,
 } from "./types";
 
@@ -109,6 +110,58 @@ export class EffectRuntime {
       }) as Promise<TOut>;
     }
     return chain() as Promise<TOut>;
+  }
+
+  /**
+   * Run a single registered effect ONCE, off the durable path — the supported
+   * façade over the already-blessed transient invocation (DE-series eval; ADR
+   * 0065 "don't make it a run until something durable happens"). It is exactly
+   * {@link execute}, but the framework owns the {@link EffectContext} instead of
+   * every caller hand-rolling one.
+   *
+   * What it does NOT do — the load-bearing guarantee (R1): nothing is written.
+   * The EffectRuntime holds no event store, no journal, and no fence, so a
+   * transient invocation produces zero envelopes, no `EXECUTION_STARTED`, no
+   * `STEP_*`, and no snapshot — structurally, not by convention. This is the
+   * sanctioned side of the ADR 0065 line: no execution, no fold, no recovery.
+   *
+   * Middleware contract (R3): the SAME statically configured effect-runtime
+   * middleware chain that a durable step's effect call runs also runs here —
+   * retry/backoff and the K2 authorizer are effect-local and remain in force.
+   * What is bypassed is everything ABOVE this layer: the workflow interpreter's
+   * journaling/durability (fold, `ExecutionJournal`, fencing, snapshots) is not
+   * EffectRuntime middleware at all, so there is nothing to opt out of.
+   *
+   * `ctx.emit` is a no-op sink (R4): an effect that emits transiently has the
+   * event DROPPED by construction — never buffered, never later flushed. Do not
+   * author a transient effect that relies on emitting durable state.
+   *
+   * The synthesized identity is throwaway: `idempotencyKey` is left unset, so do
+   * NOT rely on provider-side dedup across transient calls (they carry no stable
+   * key — a transient read path is expected to be retry-on-client).
+   *
+   * @param opts optional {@link TransientInvokeOptions} — `signal` (cancellation,
+   * R5), `principal` (authz still enforced if wired), `label` (trace tag only).
+   */
+  async invokeTransient<TIn = unknown, TOut = unknown>(
+    toolId: string,
+    input: TIn,
+    opts: TransientInvokeOptions = {}
+  ): Promise<TOut> {
+    // Synthesize the throwaway context the caller must never build (R2). The ids
+    // are meaningful only for the lifetime of this call: `executionId` carries
+    // the trace label for middleware correlation, `stepId` the toolId. `emit` is
+    // the drop sink (R4) — including the authz-denial emit, which still throws.
+    const ctx: EffectContext = {
+      executionId: `transient:${opts.label ?? toolId}`,
+      stepId: toolId,
+      workflowId: "transient",
+      attempt: 1,
+      emit: () => {},
+      ...(opts.signal !== undefined && { signal: opts.signal }),
+      ...(opts.principal !== undefined && { principal: opts.principal }),
+    };
+    return this.execute<TIn, TOut>(toolId, input, ctx);
   }
 
   has(toolId: string): boolean {

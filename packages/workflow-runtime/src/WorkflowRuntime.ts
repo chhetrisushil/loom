@@ -1,7 +1,12 @@
 import { SuspendError, flowContentHash } from "@loom/core";
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import { LazyEffect } from "@loom/effect-runtime";
-import type { Effect, EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
+import type {
+  Effect,
+  EffectRuntime,
+  PrincipalChain,
+  TransientInvokeOptions,
+} from "@loom/effect-runtime";
 import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
 // Import the pure sequence helper from the browser-safe subpath, not the barrel:
 // the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
@@ -269,6 +274,25 @@ export class WorkflowRuntime {
 
   register(toolId: string, effect: Effect): void {
     this.effectRuntime.register(toolId, effect);
+  }
+
+  /**
+   * Run a single registered effect ONCE, off the durable path — a thin delegate
+   * to {@link EffectRuntime.invokeTransient} so an app that only holds the
+   * top-level runtime gets the transient façade without reaching for the
+   * effectRuntime. It writes NOTHING to this runtime's event store: no
+   * `EXECUTION_STARTED`, no `STEP_*`, no snapshot, no fence (R1). Use it for
+   * read-path hydration over an immutable manifest; `start()` a durable run only
+   * when a state-changing outcome (drift repair, planning) must be recorded.
+   * See {@link EffectRuntime.invokeTransient} for the full middleware/emit
+   * contract.
+   */
+  invokeTransient<TIn = unknown, TOut = unknown>(
+    toolId: string,
+    input: TIn,
+    opts?: TransientInvokeOptions
+  ): Promise<TOut> {
+    return this.effectRuntime.invokeTransient<TIn, TOut>(toolId, input, opts);
   }
 
   registerFlow<TIn, TOut>(

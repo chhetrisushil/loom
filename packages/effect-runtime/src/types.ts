@@ -73,6 +73,38 @@ export interface EffectContext {
 }
 
 /**
+ * Options for a transient (non-durable) effect invocation — {@link
+ * EffectRuntime.invokeTransient}. Every field is optional; the empty case is a
+ * bare one-shot call with no cancellation and no principal.
+ *
+ * There is deliberately no `executionId`/`stepId`/`attempt`/`emit` here: those
+ * are the internal {@link EffectContext} shape the façade OWNS and synthesizes,
+ * so a caller never couples to it (R2). None of these fields is ever persisted —
+ * a transient invocation writes nothing (R1).
+ */
+export interface TransientInvokeOptions {
+  /**
+   * Optional cooperative cancellation (R5). Forwarded verbatim as
+   * `EffectContext.signal`, so it propagates to the effect's `fetch`/sandbox/
+   * provider and aborts the in-flight call. Lets a caller bound a transient
+   * invocation with a deadline.
+   */
+  readonly signal?: AbortSignal;
+  /**
+   * Optional authenticated principal chain. If an authorizer is wired on the
+   * runtime (K2 protection ring), it is still enforced transiently — an
+   * unauthorized effect never runs. Undefined ⇒ no principal (today's behavior).
+   */
+  readonly principal?: PrincipalChain;
+  /**
+   * A trace/metric tag ONLY — surfaced to middleware via the synthetic context's
+   * `executionId` for correlation, and never persisted (there is nothing to
+   * persist to). Defaults to the `toolId`.
+   */
+  readonly label?: string;
+}
+
+/**
  * Advisory pre-warm hook (M6). Called off the durable path before an effect runs so a
  * backend can keep a model/connection/cache hot. It is latency-only — it MUST NOT emit
  * events or influence outcomes (P10 advisory plane). A failed/absent warm just means a

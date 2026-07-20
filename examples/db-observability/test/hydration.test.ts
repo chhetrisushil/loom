@@ -4,7 +4,10 @@ import { type TelemetryMcpServer, startTelemetryMcpServer } from "../src/mcpServ
 import { applyHydratedStates, readTelemetry } from "../src/telemetry";
 import { buildCore } from "../src/wiring";
 
-// ── The blueprint-interpreter hydration (fanout$ → mcpInvoke$ → sandboxEval$) ─
+// ── The transient blueprint-interpreter hydration ─────────────────────────────
+// Hot read path: invokeTransient over the immutable plan (zero events). The
+// determinism boundary is crossed only on drift, when a durable repair run is
+// recorded. (ADR 0065 / the invokeTransient DX façade.)
 
 let server: TelemetryMcpServer | undefined;
 afterEach(async () => {
@@ -12,8 +15,8 @@ afterEach(async () => {
   server = undefined;
 });
 
-describe("db-observability durable hydration", () => {
-  it("hydrates every projection through MCP + sandboxed reshaping, with per-node step identity", async () => {
+describe("db-observability transient hydration", () => {
+  it("hydrates every projection transiently — correct states, ZERO durable events", async () => {
     server = await startTelemetryMcpServer();
     const hydrator = createHydrator(server.url);
     const plan = await hydrator.buildPlan();
@@ -36,19 +39,10 @@ describe("db-observability durable hydration", () => {
     expect(states.replication).toEqual({ lagMs: 320, trend: "rising", replicas: 2 });
     expect((states.queries as { total: number }).total).toBe(3800);
 
-    // Dynamic step identity per the ADR 0061 rule: hydrate#i / reshape#i frames.
+    // The load-bearing guarantee (R1): the hot path is NOT a loom run. No
+    // EXECUTION_STARTED, no STEP_*, no snapshot — the event log is empty.
     const events = await hydrator.events("h-1");
-    const stepIds = events
-      .filter((e) => e.eventType === "STEP_COMPLETED")
-      .map((e) => (e.payload as { stepId: string }).stepId);
-    for (let i = 0; i < 4; i++) {
-      expect(stepIds).toContain(`hydrate#${i}`);
-      expect(stepIds).toContain(`reshape#${i}`);
-    }
-    // The plan (the manifest) is hash-pinned in the run's FIRST event.
-    const started = events.find((e) => e.eventType === "EXECUTION_STARTED");
-    const input = (started?.payload as { input: { nodes: unknown[] } }).input;
-    expect(input.nodes).toHaveLength(4);
+    expect(events).toEqual([]);
 
     // And the dashboard composes from the hydrated (not hand-seeded) telemetry.
     const core = buildCore("h-view");
@@ -58,7 +52,7 @@ describe("db-observability durable hydration", () => {
     expect(result.what).toContain("91%");
   });
 
-  it("repairs a drifted schema pin in-band: typed failure recorded, siblings substituted, states still correct", async () => {
+  it("crosses the boundary on drift: transient read fails, a DURABLE repair run is recorded", async () => {
     server = await startTelemetryMcpServer();
     const hydrator = createHydrator(server.url);
     const plan = await hydrator.buildPlan(); // pins the PRE-deploy schema hashes
@@ -69,26 +63,39 @@ describe("db-observability durable hydration", () => {
     expect(states.replication).toEqual({ lagMs: 320, trend: "rising", replicas: 2 });
 
     const events = await hydrator.events("h-drift");
-    // The drift is a RECORDED typed failure + a SCHEMA_REPAIRED domain event.
-    const typed = events.find(
-      (e) =>
-        e.eventType === "STEP_FAILED" &&
-        (e.payload as { channel?: string }).channel === "schemaDrift"
-    );
-    expect(typed).toBeDefined();
+    // The drift was detected TRANSIENTLY (a retry signal, never a durable fact),
+    // so the durable log carries NO STEP_FAILED — only the repair outcome. The
+    // full forensic payload rides SCHEMA_REPAIRED (transient transport, durable
+    // outcome).
+    expect(events.some((e) => e.eventType === "STEP_FAILED")).toBe(false);
     const repaired = events.find((e) => e.eventType === SCHEMA_REPAIRED);
     expect((repaired?.payload as { toolName: string }).toolName).toBe("db.replication");
+    expect((repaired?.payload as { observedHash: string }).observedHash).toBeTruthy();
 
-    // The repair pass re-ran ONLY the drifted node, under a re-minted id;
-    // completed siblings were substituted from the log (exactly one tools/call
-    // per tool across the whole run — the drifted invoke never reached the
-    // backend, its repair did).
+    // The durable repair re-walks the plan: the drifted node under a re-minted id
+    // (ADR 0061 — a deliberate retry is a NEW identity), siblings under hydrate#i.
     const stepIds = events
       .filter((e) => e.eventType === "STEP_COMPLETED")
       .map((e) => (e.payload as { stepId: string }).stepId);
     expect(stepIds).toContain("hydrate#2#repair");
-    for (const [tool, count] of server.calls) {
-      expect(count, `tools/call count for ${tool}`).toBe(1);
-    }
+    for (let i = 0; i < 4; i++) expect(stepIds).toContain(`reshape#${i}`);
+    // The manifest is hash-pinned in the repair run's FIRST event.
+    const started = events.find((e) => e.eventType === "EXECUTION_STARTED");
+    const input = (started?.payload as { input: { plan: { nodes: unknown[] } } }).input;
+    expect(input.plan.nodes).toHaveLength(4);
+  });
+
+  it("hydrateTransient surfaces a schemaDrift TypedFailure and still writes nothing", async () => {
+    server = await startTelemetryMcpServer();
+    const hydrator = createHydrator(server.url);
+    const plan = await hydrator.buildPlan();
+    server.upgradeReplicationTool();
+
+    // The raw transient walk propagates the typed failure to the caller...
+    await expect(hydrator.hydrateTransient(plan)).rejects.toMatchObject({
+      channel: "schemaDrift",
+    });
+    // ...and, being transient, appended nothing anywhere.
+    expect(await hydrator.events("unused")).toEqual([]);
   });
 });

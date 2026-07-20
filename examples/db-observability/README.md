@@ -32,39 +32,44 @@ are drawn as visualisations** (a radial gauge, an area chart, a saturation bar, 
    TerminalRenderer.render(blueprint, executionId)   ← binds to cpu/connections/… projections
 ```
 
-Telemetry itself is **hydrated by a durable Loom interpreter flow** (the GenUI
-blueprint-interpreter pattern, ADRs 0060/0061/0063/0064): a *hydration plan* — one node
-per projection, each naming an MCP tool, a **pinned input-schema hash**, and a
-**content-addressed reshaping script** — is the flow's logged input, walked by a
-statically compiled runner:
+Telemetry itself is **hydrated by a transient interpreter** (the GenUI
+blueprint-interpreter pattern, ADRs 0060/0061/0063/0064/0065): a *hydration plan* — one
+node per projection, each naming an MCP tool, a **pinned input-schema hash**, and a
+**content-addressed reshaping script** — is walked by plain code. Because hydration is the
+hot read path (every dashboard open, every 50 ms batch) and mutates nothing, it is **not a
+loom run** (ADR 0065 — "don't make it a run until something durable happens"): each effect
+runs through `runtime.invokeTransient`, writing **zero events**.
 
 ```
- plan (logged in the run's first event)
+ plan (immutable, content-addressed — never logged on the hot path)
    │  one node per projection: { toolName, schemaPin, scriptRef, shapePin }
    ▼
- fanout$(ctx, mcpInvoke$("hydrate"), nodes)     ← `hydrate#${i}` step identity (ADR 0061)
+ invokeTransient("mcp.invoke", node)            ← transient, no events
    │  per call: verify schemaPin — mismatch ⇒ TYPED schemaDrift failure (ADR 0060/0063)
    ▼
- fanout$(ctx, sandboxEval$("reshape"), …)       ← QuickJS sandbox: RAW → widget shape,
+ invokeTransient("sandbox.eval", …)             ← QuickJS sandbox: RAW → widget shape,
    │                                               output validated vs shapePin (ADR 0064)
    ▼
  { cpu, connections, replication, queries } → seeded into the projections
 ```
 
 Midway through the demo a simulated **backend deploy changes `db.replication`'s input
-schema**: the pinned hash no longer matches, the invoke fails on the **typed
-`schemaDrift` channel** (recorded with the observed hash), and the flow **repairs
-in-band** — recorded sibling frames are *substituted from the log* (zero re-invocation;
-the test pins exactly one `tools/call` per tool), and only the drifted node re-runs under
-a re-minted `hydrate#2#repair` id. The MCP "backend" runs in-process (`src/mcpServer.ts`)
-— still offline, still deterministic.
+schema**: the pinned hash no longer matches and the transient invoke fails on the **typed
+`schemaDrift` channel**. *That* is the moment the determinism boundary is crossed — a
+repair must be recorded — so hydration escalates to a **durable repair run**
+(`start(repairFlow, …)`): it emits `SCHEMA_REPAIRED` (the forensic payload), re-walks the
+plan under the observed pin, and re-runs the drifted node under a re-minted
+`hydrate#2#repair` id (ADR 0061 — a deliberate retry is a NEW identity). The transient
+failure itself is never a durable fact; only the repair outcome is. The MCP "backend" runs
+in-process (`src/mcpServer.ts`) — still offline, still deterministic.
 
 ## How it works
 
-- **Durable hydration** (`src/hydration.ts` + `src/mcpServer.ts`) — the interpreter flow
-  above: `fanout$` (`@loom/orchestration`) over `mcpInvoke$` (`@loom/plugin-mcp`, schema
-  pins from `listTools`) chained into `sandboxEval$` (`@loom/plugin-sandbox`,
-  content-addressed scripts in a `ContentStore`), with the typed drift→repair branch.
+- **Transient hydration + durable repair** (`src/hydration.ts` + `src/mcpServer.ts`) — the
+  interpreter above: plain-code `invokeTransient` over `mcp.invoke` (`@loom/plugin-mcp`,
+  schema pins from `listTools`) chained into `sandbox.eval` (`@loom/plugin-sandbox`,
+  content-addressed scripts in a `ContentStore`), escalating to a durable repair flow
+  (`fanout$` from `@loom/orchestration`) only on the typed drift→repair branch.
 - **Telemetry projections** (`src/telemetry.ts`) — `cpu`, `connections`, `replication`,
   `queries` read-models, populated from the hydration flow's output (the browser build
   keeps the deterministic seeded scenario — hydration is the Node/terminal path),
