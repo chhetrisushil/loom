@@ -232,7 +232,7 @@ export function appFiles(appName: string): Record<string, string> {
         name: appName,
         private: true,
         // CommonJS (no "type": "module") — @loom/* publish require-only exports, so
-        // `tsx app/main.ts` must resolve them via CJS (matches examples/loom-starter).
+        // `tsx app/main.ts` must resolve them via CJS (matches the loom-starter example).
         scripts: {
           start: "tsx app/main.ts",
           test: "vitest run",

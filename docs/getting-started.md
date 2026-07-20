@@ -263,7 +263,7 @@ describe("approve flow", () => {
 | Look up a specific feature (fork, A2A, middleware, projections…) | **[User Guide](user-guide.md)** |
 | Understand *why* Loom is built this way | **[Architecture](architecture.md)** |
 | See the ideas as a deck | **[Presentation](presentation/loom-deck.md)** |
-| Study runnable apps | [`examples/`](../examples) — start with `agent-network`, then `incident-war-room` |
+| Study runnable apps | [examples catalogue](examples.md) → sibling `loom-examples` repo — start with `loom-starter`, then `incident-war-room` |
 
 **The three moves to remember:**
 1. `ctx.run(step, input)` — do a unit of work (recorded, replay-safe).

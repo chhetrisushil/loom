@@ -314,7 +314,7 @@ await branchRegistry.putRef({ name: "main", executionId: parentId, tip: forkPoin
 await branchRegistry.promote("commit", "main"); // pointer move, no merge
 ```
 
-**Pattern (fork → simulate → compare → promote).** Fork per strategy, run concurrently with `parallelLimit`, compare the projected outcomes, then commit the winner via a fresh fork resumed with `simulate:false`. Losing branches stay immutable — a full audit trail. Full worked example: [`examples/incident-war-room`](../examples/incident-war-room) and the [Usage tutorial §10](usage.md#step-10--branch-fork--simulate--promote).
+**Pattern (fork → simulate → compare → promote).** Fork per strategy, run concurrently with `parallelLimit`, compare the projected outcomes, then commit the winner via a fresh fork resumed with `simulate:false`. Losing branches stay immutable — a full audit trail. Full worked example: `incident-war-room` (in the [examples catalogue](examples.md)) and the [Usage tutorial §10](usage.md#step-10--branch-fork--simulate--promote).
 
 ---
 
@@ -336,7 +336,7 @@ const view = app.projectionRuntime.getState<MyView>("mission", executionId);
 
 Register surfaces via `defineConfig({ surfaces: ["mission", "telemetry"] })`, or a custom projection with `projection$({ id, name, initialState, handlers })` for domain-specific read models. Render with any renderer — `@loom/plugin-renderer-react`, `@loom/plugin-renderer-terminal`, `@loom/a2ui` for Web Components, or your own. **The durable log never depends on the renderer.**
 
-For streamed progress independent of surfaces, use a pub/sub hub (`progressHub`) — handlers call `report(id, line)` / `reportProgress(id, pct)` and orchestrators subscribe (`onReport` / `onProgress`). See [`examples/schema-migration-planner`](../examples/schema-migration-planner).
+For streamed progress independent of surfaces, use a pub/sub hub (`progressHub`) — handlers call `report(id, line)` / `reportProgress(id, pct)` and orchestrators subscribe (`onReport` / `onProgress`). See `schema-migration-planner` (in the [examples catalogue](examples.md)).
 
 ---
 
@@ -457,7 +457,7 @@ for (const s of plan.steps) {
 
 `@loom/memory` gives agents scoped, TTL/size-bounded stores via `memory$({ id, name, ttlMs, maxEntries })`. `@loom/orchestrator` packages the recurring route→plan→dispatch→gate loop as composable functions (`dispatchPlan`, `decideApproval`) — use them where they fit; drop to primitives where they don't ([ADR 0013](adr/0013-orchestrator-primitives.md)).
 
-The full stack in action: [`examples/db-command-center`](../examples/db-command-center).
+The full stack in action: `db-command-center` (in the [examples catalogue](examples.md)).
 
 ---
 
@@ -1333,4 +1333,4 @@ await catalog.invoke(runtime, "triage", input, { principal: "oncall" }); // deni
 
 - **[Getting Started](getting-started.md)** · **[Usage tutorial](usage.md)** · **[Architecture](architecture.md)** · **[ADRs](adr/)**
 - **Loom 2.0 deep-dives:** [`loom-2.0/`](loom-2.0/00-overview.md) — data structures, algorithms, and diagrams for every subsystem, plus the [event-schema reference](loom-2.0/10-event-schema-reference.md).
-- Runnable apps: [`examples/`](../examples) — `agent-network`, `db-command-center`, `incident-war-room`, `schema-migration-planner`.
+- Runnable apps: [examples catalogue](examples.md) (sibling `loom-examples` repo) — `agent-network`, `db-command-center`, `incident-war-room`, `schema-migration-planner`.

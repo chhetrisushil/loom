@@ -50,9 +50,13 @@ A Loom workflow is an ordinary `async` TypeScript function whose every meaningfu
 
 ## Runnable examples
 
-See [`../examples`](../examples):
+The runnable example apps live in the sibling **`loom-examples`** repo
+(`git@github.com:chhetrisushil/loom-examples.git`); this repo keeps the framework
+packages. See the **[examples catalogue](examples.md)** for what each teaches and
+the APIs/ADRs it exercises, then read the source in `../loom-examples/examples/<name>/`
+(check `loom-examples` out beside `loom`; run one with `pnpm --filter @loom/<name> start`).
 
-- **[`loom-starter`](../examples/loom-starter)** — **start here.** The canonical new-architecture example: `defineConfig` + folder convention (`loom gen`) + effect middleware + `@loom/testing` + evals + deploy-sim + the compute seam, in one compact release-approval app.
+- **`loom-starter`** — **start here.** The canonical new-architecture example: `defineConfig` + folder convention (`loom gen`) + effect middleware + `@loom/testing` + evals + deploy-sim + the compute seam, in one compact release-approval app.
 - `agent-network` — the full agentic pipeline (LLM, ReAct agent, MCP, A2A, intent, planner, memory).
 - `db-command-center` — intent → planner → A2A dispatch → durable human approval (same backend rendered in React, Web Components, and Angular).
 - `db-sentinel` — the perpetual-agent pattern (ADRs 0051–0057): a `schedule$`-driven sentinel with durable carry state, claim-checked telemetry, findings as domain events, and pinned retention — all ten acceptance criteria proven over a DST-simulated year.
