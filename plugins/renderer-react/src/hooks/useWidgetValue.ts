@@ -1,5 +1,5 @@
 import type { Widget } from "@loom/blueprint-runtime";
-import { resolveWidgetValue } from "@loom/blueprint-runtime";
+import { resolvePath, resolveWidgetValue } from "@loom/blueprint-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import { useCallback, useRef, useSyncExternalStore } from "react";
 
@@ -20,14 +20,25 @@ export function useWidgetValue<T = unknown>(
   isEqual: (a: T, b: T) => boolean = Object.is
 ): T {
   const projectionId = widget.binding?.projectionId;
+  const path = widget.binding?.path;
 
   const subscribe = useCallback(
     (onStoreChange: () => void) => {
       // A widget with no binding never changes — subscribe to nothing.
       if (projectionId === undefined) return () => {};
-      return runtime.subscribe(projectionId, executionId, () => onStoreChange());
+      // Slice-scoped: the runtime wakes us only when THIS widget's bound slice
+      // changes, so an unrelated slice's update on the same projection no longer
+      // schedules React work at all. Deps are stable primitives (projectionId, path),
+      // so the subscription is not torn down and rebuilt on every parent render.
+      return runtime.subscribeSelector(
+        projectionId,
+        executionId,
+        (state) => resolvePath(state, path ?? ""),
+        () => onStoreChange(),
+        isEqual as (a: unknown, b: unknown) => boolean
+      );
     },
-    [runtime, projectionId, executionId]
+    [runtime, projectionId, executionId, path, isEqual]
   );
 
   // Cache the last resolved slice so equal values return a STABLE reference —

@@ -29,6 +29,26 @@ export interface ProjectionRuntime {
     executionId: string,
     handler: (state: TState) => void
   ): () => void;
+  /**
+   * Fine-grained ("selector") subscription: invoke `handler` only when
+   * `selector(state)` changes — by `isEqual`, default `Object.is` — rather than on
+   * every projection event. The framework-agnostic building block for live rendering
+   * surfaces (terminal, editor webview, TUI, …): each derives a slice-granular,
+   * memoized subscription from the shared read-model without reimplementing the diff.
+   *
+   * Change-only, exactly like {@link subscribe}: it does NOT fire on subscribe. The
+   * last slice is seeded from current state at subscribe time, so the first `handler`
+   * call is the first genuine change. Read the initial value via `getState` + selector.
+   * Participates in `coalesceNotifications` — a burst collapses to one call per changed
+   * slice per microtask.
+   */
+  subscribeSelector<TState, TSlice>(
+    projectionId: string,
+    executionId: string,
+    selector: (state: TState) => TSlice,
+    handler: (slice: TSlice) => void,
+    isEqual?: (a: TSlice, b: TSlice) => boolean
+  ): () => void;
   handleEvent(event: EventEnvelope): void;
   seedState(projectionId: string, executionId: string, state: unknown): void;
 }

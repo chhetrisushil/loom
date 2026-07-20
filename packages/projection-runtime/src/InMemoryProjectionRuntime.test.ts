@@ -262,4 +262,120 @@ describe("InMemoryProjectionRuntime — retention (leak fix)", () => {
       warn.mockRestore();
     });
   });
+
+  describe("subscribeSelector (fine-grained slice subscription)", () => {
+    // A projection with two independent slices, so we can prove a subscriber bound
+    // to one slice is not woken by a change to the other.
+    const abProjection: Projection<{ a: number; b: number }> = {
+      id: "ab",
+      initialState: { a: 0, b: 0 },
+      handlers: {
+        INCR_A: (s) => ({ ...s, a: s.a + 1 }),
+        INCR_B: (s) => ({ ...s, b: s.b + 1 }),
+      },
+    };
+
+    it("fires only when the selected slice changes, with the new slice value", () => {
+      const runtime = new InMemoryProjectionRuntime();
+      runtime.register(abProjection);
+      const seen: number[] = [];
+      runtime.subscribeSelector<{ a: number; b: number }, number>(
+        "ab",
+        "e1",
+        (s) => s.a,
+        (a) => seen.push(a)
+      );
+      runtime.handleEvent(makeEvent("e1", 0, "INCR_A"));
+      runtime.handleEvent(makeEvent("e1", 1, "INCR_A"));
+      expect(seen).toEqual([1, 2]);
+    });
+
+    it("does NOT fire when a different slice of the same projection changes", () => {
+      const runtime = new InMemoryProjectionRuntime();
+      runtime.register(abProjection);
+      const handler = vi.fn();
+      runtime.subscribeSelector<{ a: number; b: number }, number>("ab", "e2", (s) => s.a, handler);
+      runtime.handleEvent(makeEvent("e2", 0, "INCR_B"));
+      runtime.handleEvent(makeEvent("e2", 1, "INCR_B"));
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it("is change-only: does not fire on subscribe", () => {
+      const runtime = new InMemoryProjectionRuntime();
+      runtime.register(abProjection);
+      runtime.handleEvent(makeEvent("e3", 0, "INCR_A")); // state now { a: 1 }
+      const handler = vi.fn();
+      runtime.subscribeSelector<{ a: number; b: number }, number>("ab", "e3", (s) => s.a, handler);
+      // Seeded from current state — no initial call, and no fire until a real change.
+      expect(handler).not.toHaveBeenCalled();
+      runtime.handleEvent(makeEvent("e3", 1, "INCR_A"));
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler).toHaveBeenCalledWith(2);
+    });
+
+    it("stops firing after unsubscribe", () => {
+      const runtime = new InMemoryProjectionRuntime();
+      runtime.register(abProjection);
+      const handler = vi.fn();
+      const unsub = runtime.subscribeSelector<{ a: number; b: number }, number>(
+        "ab",
+        "e4",
+        (s) => s.a,
+        handler
+      );
+      runtime.handleEvent(makeEvent("e4", 0, "INCR_A"));
+      unsub();
+      runtime.handleEvent(makeEvent("e4", 1, "INCR_A"));
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it("honours a custom isEqual — a structurally-equal new slice does not fire", () => {
+      const tagProjection: Projection<{ tags: string[] }> = {
+        id: "tags",
+        initialState: { tags: ["x"] },
+        // TOUCH replaces the array with a fresh, equal-contents array (new reference).
+        handlers: { TOUCH: (s) => ({ tags: [...s.tags] }) },
+      };
+      const runtime = new InMemoryProjectionRuntime();
+      runtime.register(tagProjection);
+      const arraysEqual = (a: string[], b: string[]) =>
+        a.length === b.length && a.every((v, i) => v === b[i]);
+      const handler = vi.fn();
+      runtime.subscribeSelector<{ tags: string[] }, string[]>(
+        "tags",
+        "e5",
+        (s) => s.tags,
+        handler,
+        arraysEqual
+      );
+      runtime.handleEvent(makeEvent("e5", 0, "TOUCH"));
+      // New array reference but equal contents — custom isEqual suppresses the fire.
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it("routes independent slices to independent subscribers", () => {
+      const runtime = new InMemoryProjectionRuntime();
+      runtime.register(abProjection);
+      const aSeen = vi.fn();
+      const bSeen = vi.fn();
+      runtime.subscribeSelector<{ a: number; b: number }, number>("ab", "e6", (s) => s.a, aSeen);
+      runtime.subscribeSelector<{ a: number; b: number }, number>("ab", "e6", (s) => s.b, bSeen);
+      runtime.handleEvent(makeEvent("e6", 0, "INCR_A"));
+      expect(aSeen).toHaveBeenCalledTimes(1);
+      expect(aSeen).toHaveBeenCalledWith(1);
+      expect(bSeen).not.toHaveBeenCalled();
+    });
+
+    it("coalesce mode: a burst collapses to one selector call with the latest slice", async () => {
+      const runtime = new InMemoryProjectionRuntime({ coalesceNotifications: true });
+      runtime.register(abProjection);
+      const handler = vi.fn();
+      runtime.subscribeSelector<{ a: number; b: number }, number>("ab", "e7", (s) => s.a, handler);
+      for (let i = 0; i < 5; i++) runtime.handleEvent(makeEvent("e7", i, "INCR_A"));
+      expect(handler).not.toHaveBeenCalled(); // deferred to a microtask
+      await Promise.resolve();
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler).toHaveBeenCalledWith(5);
+    });
+  });
 });
