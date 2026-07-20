@@ -87,7 +87,8 @@ are the forensic, replay-substitutable, branchable record.
 
 ## Worked example
 
-`examples/db-observability` implements exactly this: `src/hydration.ts` hydrates a
-DB-telemetry dashboard transiently on every open, and escalates to a durable
-repair run when a simulated backend deploy drifts a tool's input schema. Run it
-with `pnpm --filter @loom/db-observability start`.
+`db-observability` (in the sibling [`loom-examples`](./examples.md) repo)
+implements exactly this: `src/hydration.ts` hydrates a DB-telemetry dashboard
+transiently on every open, and escalates to a durable repair run when a simulated
+backend deploy drifts a tool's input schema. Run it with `pnpm --filter
+@loom/db-observability start` from `loom-examples`.

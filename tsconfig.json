@@ -161,9 +161,6 @@
       "path": "apps/playground"
     },
     {
-      "path": "examples/cloud-command-center"
-    },
-    {
       "path": "plugins/sqlite"
     },
     {

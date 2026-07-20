@@ -19,7 +19,8 @@ import type { ZodSchema } from "zod";
 // shipped pieces (schedule$ over bounded runs, contract-migratable carry state,
 // claim-checked telemetry, the K10.6 pin policy) — it adds no runtime behavior
 // of its own, so everything it returns is testable/replaceable independently.
-// The de-composed version of everything here is examples/db-sentinel.
+// The de-composed version of everything here is db-sentinel (in the sibling
+// loom-examples repo).
 
 export interface SentinelPresetConfig<TState> {
   /** Schedule id — the agent's stable identity (`chain_id = scheduleId`). */

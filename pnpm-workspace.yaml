@@ -2,5 +2,5 @@ packages:
   - 'apps/*'
   - 'packages/*'
   - 'plugins/*'
-  - 'examples/*'
   - 'tools/*'
+  # Examples moved to the sibling ../loom-examples repo (see AGENTS.md / docs/examples.md).

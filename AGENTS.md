@@ -1,0 +1,55 @@
+# AGENTS.md — Loom
+
+Orientation for AI coding agents (and humans) working in the `loom` repo.
+
+This repo is the **Loom framework**: the kernel + first-party packages under
+`packages/*`, `plugins/*`, and `tools/*`, wired as a pnpm workspace. Runnable
+example apps are **not** here — see below.
+
+## Examples live in the sibling `loom-examples` repo
+
+To keep this repo focused on the framework, the example apps were extracted to
+**`loom-examples`** (`git@github.com:chhetrisushil/loom-examples.git`), the same
+sibling-repo pattern used for `loom-plugins` (3P plugins) and `loom-demo`.
+
+They consume this repo's **unpublished** `@loom/*` packages from a sibling
+`../loom` checkout via `link:` (pnpm `overrides`), not `workspace:*`:
+
+```
+workspace/
+├── loom/            # this repo:        pnpm install && pnpm build
+└── loom-examples/   # git clone, then:  pnpm install   (link: → ../loom)
+```
+
+**To evaluate an example's usage pattern:** read the catalogue below (or the
+long-form `docs/examples.md`) to pick the right one, then read its source in
+`../loom-examples/examples/<name>/`. Ensure `loom-examples` is checked out beside
+`loom`; run one with `pnpm --filter @loom/<name> start` from that repo. Full
+wiring rationale (why `link:`/overrides and not git/npm deps) is in
+`../loom-examples/AGENTS.md`.
+
+## Example catalogue
+
+| Example | Pattern it teaches | Key APIs / ADRs |
+|---|---|---|
+| `loom-starter` | Minimal flow + human-in-the-loop approval | `step$`, `ctx.run`, resume |
+| `db-observability` | Transient hydration → durable repair (GenUI dashboards) | `invokeTransient`, `mcpInvoke$`, `sandboxEval$` · ADR 0065/0066 |
+| `incident-war-room` | Git-style execution branching (fork / simulate / promote) | `BranchRegistry`, `parallelLimit` |
+| `schema-migration-planner` | Branching + live per-branch progress | `reportProgress` / `onProgress` |
+| `agent-swarm` | Dynamic agent swarm wired from user intent | `executeGraph` fan-out, `PLAN_COMPOSED` |
+| `compute-cloudrun` | One flow across in-process / remote / Cloud Run backends | dispatcher + worker-runtime SPI · ADR 0001–0005 |
+| `db-command-center` | intent → planner → A2A agentic app (React UI) | `intent`, `planner`, `@loom/plugin-a2a` |
+| `db-command-center-server` / `-wc` | Server + web-component surfaces of the above | A2A server, `@loom/a2ui` |
+| `cloud-command-center` | Command-center built with the `@loom/compiler` `loomPlugin()` | `handler$` extraction, resumability |
+| `db-sentinel` | Perpetual-agent / sentinel pattern | `sentinelPreset`, `@loom/plugin-durable-state` |
+| `a2a-mesh`, `agent-network` | Agent-to-agent mesh / networking | `@loom/plugin-a2a`, `A2AEffect` |
+| `a2ui-dashboard`, `angular-command-center` | UI / renderer surface variants | `@loom/a2ui`, renderers |
+| `appgen-brownfield`, `appgen-models` | AI-driven app generation | `@loom/appgen` |
+
+## Working in this repo
+
+- Package manager: `pnpm@9.14.4` (pinned; use `corepack`). Build: `pnpm build`
+  (turbo). Test: `pnpm test`. Lint: `pnpm lint` (biome).
+- All changes land on a feature branch via PR (never commit to `main` directly).
+- ADRs in `docs/adr/`; the recipe docs in `docs/` cross-link the examples that
+  demonstrate them (e.g. `docs/transient-interpreter.md` → `db-observability`).
