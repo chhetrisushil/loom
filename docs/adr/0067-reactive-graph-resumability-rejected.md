@@ -100,3 +100,13 @@ ABI/event-schema change).
 - Lazy/virtualized widget hydration remains available to `plugin-renderer-react` as an ordinary,
   demand-and-benchmark-gated optimization (D3), decoupled from any signals question.
 - No code changes land with this ADR; it is a verdict record.
+
+## Follow-up
+
+The generic residue this ADR identified — lifting the "wake me only when my bound slice changed"
+diffing out of the React hook into the framework-agnostic read-model layer — was subsequently built
+in **[ADR 0068](0068-projection-selector-subscription.md)** (`ProjectionRuntime.subscribeSelector`)
+once multi-surface GenUI (terminal, editor-webview, Claude Code) supplied the second live consumer
+the evidence gate waited for. It is a `packages/*` mechanism addition, not a signals adoption:
+`KERNEL_ABI` and `EVENT_SCHEMA` remain unchanged, and none of Qwik's signal model / closure
+serialization / QRL lexical-capture is involved.

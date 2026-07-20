@@ -1,5 +1,5 @@
 import type { Widget } from "@loom/blueprint-runtime";
-import { resolveWidgetValue } from "@loom/blueprint-runtime";
+import { resolvePath, resolveWidgetValue } from "@loom/blueprint-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import { startTransition, useEffect, useState } from "react";
 
@@ -31,19 +31,29 @@ export function useDeferredWidgetValue<T = unknown>(
   executionId: string
 ): T {
   const projectionId = widget.binding?.projectionId;
+  const path = widget.binding?.path;
   const [value, setValue] = useState<T>(() => selectSlice<T>(runtime, widget, executionId));
 
   useEffect(() => {
-    // Urgent initial read on (re)subscribe.
-    setValue(selectSlice<T>(runtime, widget, executionId));
+    // A widget with no binding never changes — keep the initial value, no subscription.
     if (projectionId === undefined) return;
-    return runtime.subscribe(projectionId, executionId, () => {
-      const next = selectSlice<T>(runtime, widget, executionId);
-      startTransition(() => {
-        setValue((prev) => (Object.is(prev, next) ? prev : next));
-      });
-    });
-  }, [runtime, widget, projectionId, executionId]);
+    // Urgent initial read on (re)subscribe — via stable primitives (projectionId, path)
+    // so the effect isn't a function of the widget object's identity.
+    setValue(resolvePath(runtime.getState(projectionId, executionId), path ?? "") as T);
+    // Slice-scoped: the runtime fires only on an actual slice change and hands us the
+    // new slice, so the equality guard now lives in the runtime (not here). We just
+    // stream the update as a non-urgent transition.
+    return runtime.subscribeSelector<unknown, T>(
+      projectionId,
+      executionId,
+      (state) => resolvePath(state, path ?? "") as T,
+      (slice) => {
+        startTransition(() => {
+          setValue(slice);
+        });
+      }
+    );
+  }, [runtime, projectionId, path, executionId]);
 
   return value;
 }

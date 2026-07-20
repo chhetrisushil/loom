@@ -28,6 +28,18 @@ interface ActiveProjection {
  */
 const LAZY_BUFFER_LIMIT = 10_000;
 
+/**
+ * A registered selector-subscription (see {@link InMemoryProjectionRuntime.subscribeSelector}).
+ * `last` holds the previously-seen slice so we can fire only on change; it is seeded from
+ * current state at subscribe time (change-only semantics — no initial call).
+ */
+interface SelectorEntry {
+  selector: (state: unknown) => unknown;
+  isEqual: (a: unknown, b: unknown) => boolean;
+  handler: (slice: unknown) => void;
+  last: unknown;
+}
+
 export interface InMemoryProjectionRuntimeConfig {
   /**
    * Coalesce subscriber notifications. When true, instead of notifying
@@ -52,6 +64,9 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
   private readonly projections = new Map<string, ActiveProjection>();
   private readonly states = new Map<string, unknown>();
   private readonly subscribers = new Map<string, Set<(state: unknown) => void>>();
+  // Selector-subscribers, keyed like `subscribers`. Kept separate so whole-state
+  // subscription stays a zero-overhead fast path when no selector-subscribers exist.
+  private readonly selectorSubscribers = new Map<string, Set<SelectorEntry>>();
 
   private readonly coalesce: boolean;
   private readonly dirtyKeys = new Set<string>();
@@ -72,6 +87,7 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
       const key = this.stateKey(projectionId, executionId);
       this.states.delete(key);
       this.subscribers.delete(key);
+      this.selectorSubscribers.delete(key);
     }
     this.execOrder.delete(executionId);
   }
@@ -136,6 +152,45 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
         this.subscribers.delete(key);
       }
     };
+  }
+
+  subscribeSelector<TState, TSlice>(
+    projectionId: string,
+    executionId: string,
+    selector: (state: TState) => TSlice,
+    handler: (slice: TSlice) => void,
+    isEqual: (a: TSlice, b: TSlice) => boolean = Object.is
+  ): () => void {
+    const key = this.stateKey(projectionId, executionId);
+    let set = this.selectorSubscribers.get(key);
+    if (!set) {
+      set = new Set();
+      this.selectorSubscribers.set(key, set);
+    }
+    const sel = selector as (state: unknown) => unknown;
+    const entry: SelectorEntry = {
+      selector: sel,
+      isEqual: isEqual as (a: unknown, b: unknown) => boolean,
+      handler: handler as (slice: unknown) => void,
+      // Seed from current state so change-only holds from the first event on.
+      last: sel(this.peekState(projectionId, executionId)),
+    };
+    set.add(entry);
+    return () => {
+      set!.delete(entry);
+      if (set!.size === 0) {
+        this.selectorSubscribers.delete(key);
+      }
+    };
+  }
+
+  // Current state without throwing for an unregistered/unseen projection (unlike
+  // getState) — used to seed a selector-subscription's `last`. resolve-by-path
+  // selectors are null-safe, so an absent state seeds cleanly to `undefined`.
+  private peekState(projectionId: string, executionId: string): unknown {
+    const key = this.stateKey(projectionId, executionId);
+    if (this.states.has(key)) return this.states.get(key);
+    return this.projections.get(projectionId)?.initialState;
   }
 
   handleEvent(event: EventEnvelope): void {
@@ -232,6 +287,20 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
     if (handlers) {
       for (const handler of handlers) {
         handler(state);
+      }
+    }
+    // Selector-subscribers: recompute each slice against the latest state and fire
+    // only those whose slice actually changed — so an unrelated slice's update never
+    // wakes this subscriber. Snapshot the set so an unsubscribe during iteration
+    // (a handler tearing itself down) can't mutate the live set mid-loop.
+    const selectors = this.selectorSubscribers.get(key);
+    if (selectors) {
+      for (const entry of [...selectors]) {
+        const next = entry.selector(state);
+        if (!entry.isEqual(entry.last, next)) {
+          entry.last = next;
+          entry.handler(next);
+        }
       }
     }
   }

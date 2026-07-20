@@ -39,6 +39,16 @@ export class BroadcastingProjectionRuntime implements ProjectionRuntime {
     return this.inner.subscribe(projectionId, executionId, handler);
   }
 
+  subscribeSelector<TState, TSlice>(
+    projectionId: string,
+    executionId: string,
+    selector: (state: TState) => TSlice,
+    handler: (slice: TSlice) => void,
+    isEqual?: (a: TSlice, b: TSlice) => boolean
+  ): () => void {
+    return this.inner.subscribeSelector(projectionId, executionId, selector, handler, isEqual);
+  }
+
   seedState(projectionId: string, executionId: string, state: unknown): void {
     this.inner.seedState(projectionId, executionId, state);
   }

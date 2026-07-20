@@ -12,7 +12,7 @@ export {
 } from "./widgets";
 export { customWidget$ } from "./customWidget";
 export { RendererRegistry } from "./RendererRegistry";
-export { traverseBlueprint, resolveWidgetValue } from "./traverseBlueprint";
+export { traverseBlueprint, resolveWidgetValue, resolvePath } from "./traverseBlueprint";
 export { traverseBlueprintAsync } from "./traverseBlueprintAsync";
 export type {
   AsyncTraversalOptions,

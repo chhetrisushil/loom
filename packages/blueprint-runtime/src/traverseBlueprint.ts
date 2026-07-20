@@ -9,13 +9,17 @@ export interface ContainerContext<TNode> {
 
 // ── Value resolution ──────────────────────────────────────────────────────────
 
-function getNestedValue(obj: unknown, path: string): unknown {
+// Resolve a dot-path (e.g. "a.b.c") against a projection state. Null-safe and
+// generic — no widget/UI coupling — so any live rendering surface can build a
+// slice selector for `ProjectionRuntime.subscribeSelector` without duplicating
+// this traversal (see useWidgetValue). An empty path binds to the whole state.
+export function resolvePath(state: unknown, path: string): unknown {
   // An empty path binds the widget to the whole projection surface (the root),
   // not a nested field — otherwise `"".split(".")` yields `[""]` and dereferences
   // a non-existent "" key, silently returning undefined.
-  if (path === "") return obj;
+  if (path === "") return state;
   const parts = path.split(".");
-  let current: unknown = obj;
+  let current: unknown = state;
   for (const part of parts) {
     if (current === null || current === undefined) return undefined;
     current = (current as Record<string, unknown>)[part];
@@ -26,7 +30,7 @@ function getNestedValue(obj: unknown, path: string): unknown {
 export function resolveWidgetValue(widget: Widget, stateMap: Map<string, unknown>): unknown {
   if (!widget.binding) return undefined;
   const state = stateMap.get(widget.binding.projectionId);
-  return getNestedValue(state, widget.binding.path);
+  return resolvePath(state, widget.binding.path);
 }
 
 // ── traverseBlueprint ─────────────────────────────────────────────────────────
