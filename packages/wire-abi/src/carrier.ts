@@ -17,13 +17,26 @@ export type FlowResolver = (flowId: string) => RegisteredFlow | undefined;
 export interface CarrierOptions {
   /** How `execution.start` resolves a flowId to a RegisteredFlow. Defaults to `runtime.getFlow`. */
   resolveFlow?: FlowResolver;
+  /**
+   * Resolve the authenticated principal for a request from the TRANSPORT's connection
+   * context — NEVER from the request body. The mounting transport authenticates the
+   * connection (mTLS, bearer token, signed header, …) and supplies this bound to that
+   * identity; the carrier ignores any client-supplied `principal` in the wire params.
+   * Omitted → no principal is asserted and the runtime's default identity applies.
+   *
+   * This is the trust boundary: the K2/K12 authz ring keys tenant/actor grants and the
+   * DelegationAuthorizer confused-deputy binding on this principal, so it must reflect who
+   * is really connected, not who the client claims to be.
+   */
+  resolvePrincipal?: (request: JsonRpcRequest) => Record<string, unknown> | undefined;
 }
 
 interface StartParams {
   flowId: string;
   input?: unknown;
   executionId?: string;
-  principal?: Record<string, unknown>;
+  // NOTE: no `principal` field — identity is resolved transport-side via
+  // CarrierOptions.resolvePrincipal, never trusted from the client request body.
 }
 interface ResumeParams {
   executionId: string;
@@ -80,9 +93,14 @@ export async function handleRpc(
         if (flow === undefined) {
           return err(id, RPC_ERRORS.invalidParams, `no flow registered: "${p.flowId}"`);
         }
+        // SECURITY: the principal (the identity the K2/K12 authz ring keys on) comes from
+        // the transport's AUTHENTICATED connection via resolvePrincipal — never from the
+        // request body. A wire client cannot self-assert an actor/tenant, so a captured
+        // delegation token can't be replayed by supplying a matching `actor` field.
+        const principal = options.resolvePrincipal?.(request);
         const handle = await runtime.start(flow, p.input, {
           ...(p.executionId !== undefined && { executionId: p.executionId }),
-          ...(p.principal !== undefined && { principal: p.principal }),
+          ...(principal !== undefined && { principal }),
         });
         await settle(runtime, handle);
         return ok(id, stateView(handle.getState()));

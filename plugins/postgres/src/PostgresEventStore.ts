@@ -66,10 +66,21 @@ export class PostgresEventStore implements EventStore {
     // the execution has no fence, or the envelope's token (0 when absent) is at
     // least the current one. A conditional zero-row insert means a zombie write.
     const fence = fenceOf(envelope) ?? 0;
+    // Cross-process delivery tag: a JSON-encoded [senderId, executionId, sequence], so our
+    // own listener ignores what we deliver locally. The pg_notify is folded into the insert
+    // as a CTE so it fires in the SAME round-trip and ONLY when a row actually landed —
+    // halving DB round-trips on the hottest write path. On a fence rejection the CTE inserts
+    // 0 rows, the outer SELECT returns 0 rows, pg_notify is never called, and rowCount === 0
+    // still signals the stale fence exactly as before.
+    const notifyTag = JSON.stringify([this.senderId, envelope.executionId, envelope.sequence]);
     const result = await this.pool.query(
-      `INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
-       SELECT $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb
-       WHERE COALESCE((SELECT fence FROM fences WHERE execution_id = $3), $9::bigint) <= $9::bigint`,
+      `WITH ins AS (
+         INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
+         SELECT $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb
+         WHERE COALESCE((SELECT fence FROM fences WHERE execution_id = $3), $9::bigint) <= $9::bigint
+         RETURNING execution_id
+       )
+       SELECT pg_notify($10, $11) FROM ins`,
       [
         envelope.id,
         envelope.workflowId,
@@ -80,6 +91,8 @@ export class PostgresEventStore implements EventStore {
         JSON.stringify(envelope.payload),
         envelope.metadata !== undefined ? JSON.stringify(envelope.metadata) : null,
         fence,
+        NOTIFY_CHANNEL,
+        notifyTag,
       ]
     );
     if (result.rowCount === 0) {
@@ -96,13 +109,6 @@ export class PostgresEventStore implements EventStore {
 
     // Same-process subscribers fire synchronously (matches the SQLite contract).
     this.notifyLocal(envelope.executionId, envelope);
-
-    // Cross-process delivery: a JSON-encoded [senderId, executionId, sequence] tag,
-    // so our own listener ignores what we just delivered locally.
-    await this.pool.query("SELECT pg_notify($1, $2)", [
-      NOTIFY_CHANNEL,
-      JSON.stringify([this.senderId, envelope.executionId, envelope.sequence]),
-    ]);
   }
 
   async read(executionId: string): Promise<EventEnvelope[]> {

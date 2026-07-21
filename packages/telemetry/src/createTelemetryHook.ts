@@ -6,6 +6,22 @@ export function createTelemetryHook(adapter: TelemetryAdapter): (event: EventEnv
   const stepStarts = new Map<string, number>();
   const stepAttempts = new Map<string, number>();
 
+  // A step that is in-flight when its execution reaches a terminal state (notably a
+  // K8 fail-fast cancel that aborts a running step without emitting STEP_COMPLETED/FAILED)
+  // never self-deletes its `${executionId}:${stepId}` entry. Sweep them on any execution
+  // terminal so this long-lived onEvent sink does not accumulate orphans forever. The maps
+  // only ever hold in-flight steps (completed/failed steps delete themselves), so this scan
+  // is bounded by the number of concurrently in-flight steps, not by total executions.
+  const dropExecutionSteps = (execId: string): void => {
+    const prefix = `${execId}:`;
+    for (const k of stepStarts.keys()) {
+      if (k.startsWith(prefix)) stepStarts.delete(k);
+    }
+    for (const k of stepAttempts.keys()) {
+      if (k.startsWith(prefix)) stepAttempts.delete(k);
+    }
+  };
+
   return (event: EventEnvelope): void => {
     const { executionId, workflowId, eventType, timestamp, payload } = event;
 
@@ -35,6 +51,7 @@ export function createTelemetryHook(adapter: TelemetryAdapter): (event: EventEnv
         });
         // Terminal — free the per-execution entry (this hook is a long-lived onEvent sink).
         flowState.delete(executionId);
+        dropExecutionSteps(executionId);
         break;
       }
 
@@ -48,12 +65,14 @@ export function createTelemetryHook(adapter: TelemetryAdapter): (event: EventEnv
           durationMs: timestamp - info.startedAt,
         });
         flowState.delete(executionId);
+        dropExecutionSteps(executionId);
         break;
       }
 
       case "EXECUTION_CANCELLED": {
         // Terminal — free the entry even though there is no cancel-specific callback.
         flowState.delete(executionId);
+        dropExecutionSteps(executionId);
         break;
       }
 

@@ -3,16 +3,32 @@ import type { ExecutionFrame, ExecutionState } from "@loom/core";
 
 type Handler = (state: ExecutionState, event: EventEnvelope) => ExecutionState;
 
-// Copy-on-write a single frame: a shallow spread of the frames container (S key
-// references, untouched frames shared) plus the one new frame — O(S) refs + 1
-// allocation, instead of deep-cloning all S frames on every step event. Safe
-// because handlers never mutate a frame in place; they always write a new object.
-function withFrame(
+// Copy-on-write a single frame into the frames container, with per-fold ownership
+// (mirrors `appendAudit` below). The first step event of a fold pass spreads the
+// caller's input container once — O(S) key refs, untouched frames shared — and marks
+// the result fold-owned; every later step event in the same pass writes in place onto
+// that owned container (O(1)). `foldEvents` resets ownership at the start of each call,
+// and the input state (snapshot / prior state) is never mutated, so copy-on-write —
+// and the async snapshot saves that hold prior states — are preserved. Byte-identical
+// output; per-replay frame allocations drop from O(S²) to O(S). Handlers never mutate a
+// frame in place; they always write a new frame object, so sharing untouched frames is safe.
+//
+// Uses the assignment form (`frames[stepId] = frame`), so reserved keys must be rejected
+// (see assertSafeKey) — unlike a computed-key object literal, `frames["__proto__"] = …`
+// would invoke the prototype setter and corrupt this execution's own fold.
+function setFrame(
   frames: Record<string, ExecutionFrame>,
   stepId: string,
   frame: ExecutionFrame
 ): Record<string, ExecutionFrame> {
-  return { ...frames, [stepId]: frame };
+  assertSafeKey(stepId);
+  if (foldOwned.has(frames)) {
+    frames[stepId] = frame;
+    return frames;
+  }
+  const next = { ...frames, [stepId]: frame };
+  foldOwned.add(next);
+  return next;
 }
 
 // Defense-in-depth: reject prototype-related keys as fold container keys. They are never
@@ -91,7 +107,7 @@ const handlers: Record<string, Handler> = {
     };
     return {
       ...state,
-      frames: withFrame(state.frames, payload.stepId, frame),
+      frames: setFrame(state.frames, payload.stepId, frame),
       updatedAt: event.timestamp,
     };
   },
@@ -111,7 +127,7 @@ const handlers: Record<string, Handler> = {
     };
     return {
       ...state,
-      frames: withFrame(state.frames, payload.stepId, frame),
+      frames: setFrame(state.frames, payload.stepId, frame),
       updatedAt: event.timestamp,
     };
   },
@@ -142,7 +158,7 @@ const handlers: Record<string, Handler> = {
     return {
       ...state,
       status: "failed",
-      frames: withFrame(state.frames, payload.stepId, frame),
+      frames: setFrame(state.frames, payload.stepId, frame),
       updatedAt: event.timestamp,
     };
   },
@@ -163,7 +179,7 @@ const handlers: Record<string, Handler> = {
     };
     return {
       ...state,
-      frames: withFrame(state.frames, payload.stepId, frame),
+      frames: setFrame(state.frames, payload.stepId, frame),
       updatedAt: event.timestamp,
     };
   },
@@ -179,7 +195,7 @@ const handlers: Record<string, Handler> = {
     };
     return {
       ...state,
-      frames: withFrame(state.frames, payload.stepId, frame),
+      frames: setFrame(state.frames, payload.stepId, frame),
       updatedAt: event.timestamp,
     };
   },
@@ -187,8 +203,10 @@ const handlers: Record<string, Handler> = {
   PARALLEL_STARTED: (state, event) => {
     const payload = event.payload as { stepIds: string[] };
     // One fresh container, then write each new frame into it (the container is
-    // not shared, so in-place writes are safe).
+    // not shared, so in-place writes are safe). Mark it fold-owned so subsequent
+    // step events in the same fold pass mutate it in place instead of re-spreading.
     const frames = { ...state.frames };
+    foldOwned.add(frames);
     for (const stepId of payload.stepIds) {
       assertSafeKey(stepId);
       frames[stepId] = {
