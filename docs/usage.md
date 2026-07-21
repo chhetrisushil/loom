@@ -347,7 +347,7 @@ await runtime.resume(commit.executionId, {
 await branchRegistry.promote("commit", "main");
 ```
 
-The parent and losing branches remain immutable — a full audit trail of what was tried and why. See `examples/incident-war-room` and `examples/schema-migration-planner`.
+The parent and losing branches remain immutable — a full audit trail of what was tried and why. See `incident-war-room` and `schema-migration-planner` in the sibling [`loom-examples`](examples.md) repo.
 
 ---
 

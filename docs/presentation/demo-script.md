@@ -7,6 +7,10 @@ Everything runs **offline** — the examples use mock/scripted LLM providers, so
 
 ## Prerequisites (once)
 
+> **The example apps now live in the sibling [`loom-examples`](../examples.md) repo.** Check it out
+> next to `loom` and run the commands below from that checkout — every `pnpm --filter @loom/<example>`
+> resolves there, not in the framework repo.
+
 ```bash
 # Node ≥ 20, pnpm ≥ 9
 pnpm install

@@ -397,6 +397,8 @@ class WorkflowRuntime {
   registerFlow<TIn, TOut>(definition: FlowDefinition<TIn, TOut>, runner: FlowRunner<TIn, TOut>): void
   getFlow(flowId: string): RegisteredFlow | undefined
   getFlowIds(): string[]
+  invokeTransient<TIn, TOut>(toolId: string, input: TIn, opts?: TransientInvokeOptions): Promise<TOut>  // (ADR 0066) façade over EffectRuntime.invokeTransient — non-durable read-path effect, emits nothing
+
   start<TIn, TOut>(flow: RegisteredFlow<TIn, TOut>, input: TIn, options?: RunOptions): Promise<ExecutionHandle>
   resume(executionId: string, resumeEvent: ResumeEvent): Promise<ExecutionHandle>
   restoreFromState(preloadedState: ExecutionState, resumeEvent?: ResumeEvent): Promise<ExecutionHandle>
@@ -606,8 +608,10 @@ class EffectRuntime {
   constructor(middleware?: readonly EffectMiddleware[], options?: EffectRuntimeOptions)  // (2.0) options
   register(toolId: string, effect: Effect): void
   execute<TIn, TOut>(toolId: string, input: TIn, ctx: EffectContext): Promise<TOut>       // authorize → warm → schedule → middleware → effect
+  invokeTransient<TIn, TOut>(toolId: string, input: TIn, opts?: TransientInvokeOptions): Promise<TOut>  // (ADR 0066) non-durable invoke: authorize/meter/middleware still run, but NO events emitted
   has(toolId: string): boolean
 }
+interface TransientInvokeOptions { signal?: AbortSignal; principal?: PrincipalChain; label?: string; }  // (ADR 0066) — signal (deadline), principal (K2 still enforced), label (trace tag only)
 #+end_src
 
 *The protection ring, accounting context & scheduling (2.0, K2/K3/M6).*
@@ -768,6 +772,15 @@ interface ProjectionRuntime {
   register<TState>(projection: Projection<TState>): void;
   getState<TState>(projectionId: string, executionId: string): TState;
   subscribe<TState>(projectionId: string, executionId: string, handler: (state: TState) => void): () => void;
+  // (ADR 0068) fine-grained slice subscription: memoized, change-only per slice. Seeds the last
+  // slice from current state at subscribe time (does NOT fire on subscribe); participates in
+  // coalesceNotifications. Read the initial value via getState + selector.
+  subscribeSelector<TState, TSlice>(
+    projectionId: string, executionId: string,
+    selector: (state: TState) => TSlice,
+    handler: (slice: TSlice) => void,
+    isEqual?: (a: TSlice, b: TSlice) => boolean
+  ): () => void;
   handleEvent(event: EventEnvelope): void;
   seedState(projectionId: string, executionId: string, state: unknown): void;
 }
