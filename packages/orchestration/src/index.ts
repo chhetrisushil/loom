@@ -11,6 +11,7 @@ export {
   type SupervisorDeps,
   CHILD_DONE,
   CHILD_FAILED,
+  awaitAll,
   awaitChild,
   awaitChildren,
   childIdFor,

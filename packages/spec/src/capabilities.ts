@@ -213,7 +213,7 @@ export const CAPABILITIES: readonly Capability[] = [
     package: "@loom/orchestration",
     level: "L2",
     summary:
-      "Spawn child workflows and durably await their results via decide/suspend/resume + a completion-correlating supervisor — one child (awaitChild, throws childFailed on failure) or a concurrent group (awaitChildren, wait-all settled ChildResult[] in input order).",
+      "Spawn child workflows and durably await their results via decide/suspend/resume + a completion-correlating supervisor — one child (awaitChild, throws childFailed on failure), a concurrent group (awaitChildren, wait-all settled ChildResult[] in input order), or the all-or-nothing awaitAll (unwrapped outputs, throws on any failure).",
     evidence: {
       conformanceTest: "packages/orchestration/src/parallelChildren.test.ts",
     },
