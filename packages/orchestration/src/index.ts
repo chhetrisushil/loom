@@ -6,9 +6,11 @@
 // syscall, no new event type (P10).
 
 export {
+  type ChildResult,
   type ChildSupervisor,
   type SupervisorDeps,
   CHILD_DONE,
+  CHILD_FAILED,
   awaitChild,
   awaitChildren,
   childIdFor,

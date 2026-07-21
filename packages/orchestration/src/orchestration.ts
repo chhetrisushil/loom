@@ -31,6 +31,21 @@ import type { ExecutionContext, RegisteredFlow, WorkflowRuntime } from "@loom/wo
 /** The resume signal a completed child delivers to its waiting parent. */
 export const CHILD_DONE = "CHILD_DONE";
 
+/**
+ * The settled outcome of one child, as returned (positionally) by `awaitChildren`.
+ * A group is wait-all: every member settles into one of these before the parent
+ * resumes, so a partial failure is DATA the parent inspects — not an exception and
+ * not a hang. (`awaitChild`, awaiting a single result, instead THROWS `childFailed`
+ * on a non-`completed` outcome.)
+ */
+export type ChildResult<TOut = unknown> =
+  | { status: "completed"; output: TOut }
+  | { status: "failed"; error: string }
+  | { status: "cancelled"; reason?: string };
+
+/** The typed-failure channel `awaitChild` throws on when its child fails or is cancelled. */
+export const CHILD_FAILED = "childFailed";
+
 const SEP = "::";
 
 /** Deterministic child execution id — `<parentId>::<key>` (stable across replay). */
@@ -117,6 +132,14 @@ function asGroupChoice(value: unknown): GroupSpawnChoice | undefined {
  * until it completes, returning its output. Replay-safe — the spawn is fixed by
  * `ctx.decide`, so a resume/recovery re-run never starts a second child.
  *
+ * If the child FAILS or is CANCELLED, this throws a typed `childFailed` failure
+ * (ADR 0060) carrying `{ childId, status, error?/reason? }`, so the parent can
+ * `try/catch` and settle (e.g. spawn a fallback) or let it propagate — an uncaught
+ * throw fails the parent, which, if the parent is itself a child, propagates the
+ * failure one level up through the very same mechanism. (`awaitChildren` does NOT
+ * throw per-child — it returns each member's settled `ChildResult` for the parent
+ * to weigh.)
+ *
  * `maxDepth` (ADR 0061 D5) bounds recursive re-entry — a self-invoking flow
  * (e.g. a drift-repair loop re-entering its interpreter) must not recurse
  * unboundedly on persistent failure. Exceeding it throws a typed
@@ -141,17 +164,26 @@ export async function awaitChild<TOut = unknown>(
     input: spec.input,
   }));
   const resumed = (await ctx.suspend({ on: CHILD_DONE, correlationKey: childId })) as unknown as {
-    output: TOut;
+    output?: TOut;
+    __childFailed?: Exclude<ChildResult, { status: "completed" }>;
   };
-  return resumed.output;
+  if (resumed.__childFailed !== undefined) {
+    // Replay-deterministic: the failure rides the recorded resume payload, so a parent
+    // recovery re-run re-throws it at the same point and re-takes the same catch branch.
+    fail(CHILD_FAILED, { childId, ...resumed.__childFailed });
+  }
+  return resumed.output as TOut;
 }
 
 /**
  * From inside a parent flow: spawn every `children[i]` as a child execution CONCURRENTLY
- * and suspend until they ALL complete, returning their outputs positionally aligned with
- * `children` (NOT completion order). Still ONE suspend/resume cycle per parent — the
- * supervisor starts the whole group, collects each output, and resumes once with the
- * array — so it rides the single `_resumePayload` slot exactly like `awaitChild`.
+ * and suspend until they ALL settle, returning each member's `ChildResult` positionally
+ * aligned with `children` (NOT completion order). Wait-all, allSettled-style: a member
+ * that fails or is cancelled becomes a `{ status: "failed" | "cancelled", … }` entry
+ * rather than throwing — the parent inspects the array and decides what a partial failure
+ * means (retry, fall back, or fail loudly). Still ONE suspend/resume cycle per parent —
+ * the supervisor starts the whole group, collects each settled result, and resumes once
+ * with the array — so it rides the single `_resumePayload` slot exactly like `awaitChild`.
  *
  * Replay-safe by the same mechanism: a SINGLE `ctx.decide` fixes the entire group
  * (every child id + spec), so a resume/recovery re-run never starts a second fan-out.
@@ -160,9 +192,6 @@ export async function awaitChild<TOut = unknown>(
  * identically to the single-child path. Deterministic ids mean `group.key` and each item's
  * position, not wall-clock, decide identity — so the fan-out is crash-recoverable frame by
  * frame. An empty `children` resolves to `[]` without suspending (no members to await).
- *
- * A member that fails/cancels leaves the group unresolved and the parent suspended —
- * parallel failure propagation is the same documented follow-up as the single-child path.
  */
 export async function awaitChildren<TOut = unknown>(
   ctx: Pick<ExecutionContext, "executionId" | "decide" | "suspend">,
@@ -171,7 +200,7 @@ export async function awaitChildren<TOut = unknown>(
     children: readonly { flowId: string; input: unknown }[];
     maxDepth?: number;
   }
-): Promise<TOut[]> {
+): Promise<ChildResult<TOut>[]> {
   if (group.children.length === 0) return [];
   const groupId = childIdFor(ctx.executionId, group.key);
   const members: GroupMember[] = group.children.map((c, i) => ({
@@ -194,9 +223,9 @@ export async function awaitChildren<TOut = unknown>(
     members,
   }));
   const resumed = (await ctx.suspend({ on: CHILD_DONE, correlationKey: groupId })) as unknown as {
-    outputs: TOut[];
+    settled: ChildResult<TOut>[];
   };
-  return resumed.outputs;
+  return resumed.settled;
 }
 
 export interface SupervisorDeps {
@@ -227,16 +256,31 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   const specs = new Map<string, { flowId: string; input: unknown }>();
   // childIds (and groupIds) already started this process (idempotency within the runtime).
   const started = new Set<string>();
-  // groupId → live aggregation for a parallel spawn: its members, their outputs collected
-  // positionally, and the count still outstanding. Learned from the group DECISION_RECORDED.
+  // groupId → live aggregation for a parallel spawn: its members, their SETTLED results
+  // collected positionally, and the count still outstanding. Learned from the group
+  // DECISION_RECORDED. Wait-all: every member (success OR failure) fills its slot.
   const groups = new Map<
     string,
-    { parentId: string; members: GroupMember[]; outputs: unknown[]; remaining: number }
+    { parentId: string; members: GroupMember[]; results: ChildResult[]; remaining: number }
   >();
-  // member childId → (groupId, index), so a member's completion lands in the right slot.
+  // member childId → (groupId, index), so a member's terminal event lands in the right slot.
   const memberOf = new Map<string, { groupId: string; index: number }>();
 
   const fail = (err: unknown): void => deps.onError?.(err);
+
+  // The settled outcome of a child, derived from its terminal event. Completions carry an
+  // `output`; failures/cancels flatten to the string the kernel records (EXECUTION_FAILED
+  // → `{ error }`, EXECUTION_CANCELLED → `{ reason }`).
+  const settle = (event: EventEnvelope): ChildResult => {
+    if (event.eventType === "EXECUTION_COMPLETED") {
+      return { status: "completed", output: (event.payload as { output?: unknown }).output };
+    }
+    if (event.eventType === "EXECUTION_CANCELLED") {
+      const reason = (event.payload as { reason?: unknown }).reason;
+      return { status: "cancelled", ...(reason !== undefined && { reason: String(reason) }) };
+    }
+    return { status: "failed", error: String((event.payload as { error?: unknown }).error) };
+  };
 
   // Wait until the parent is DURABLE (readable-as-suspended) before touching it. onEvent
   // fires synchronously at commit time (ExecutionJournal.commit), BEFORE the async durable
@@ -291,7 +335,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
             // groupId is `<parentId>::<key>`, so parentOf peels back to the parent.
             parentId: parentOf(group.groupId) ?? group.groupId,
             members: group.members,
-            outputs: new Array<unknown>(group.members.length),
+            results: new Array<ChildResult>(group.members.length),
             remaining: group.members.length,
           });
           group.members.forEach((m, index) =>
@@ -384,42 +428,40 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           }
         }
 
-        // A group member terminating: route its output into the group's slot rather than
-        // resuming the parent directly (the parent awaits the WHOLE group, not each child).
+        // A group member terminating: SETTLE it into the group's slot (wait-all — success
+        // AND failure both fill a slot) rather than resuming the parent directly (the parent
+        // awaits the WHOLE group). When the last member settles, resume once with the array.
         const location = memberOf.get(execId);
         if (location !== undefined) {
           memberOf.delete(execId);
           started.delete(execId);
           const group = groups.get(location.groupId);
           if (group === undefined) return;
-          if (event.eventType !== "EXECUTION_COMPLETED") {
-            // A failed/cancelled member never fills its slot, so `remaining` never reaches
-            // 0 and the parent stays suspended — parallel failure propagation is the same
-            // documented follow-up as the single-child path. (The group is reclaimed when
-            // the parent itself terminates, above.)
-            return;
-          }
-          group.outputs[location.index] = (event.payload as { output?: unknown }).output;
+          group.results[location.index] = settle(event);
           group.remaining -= 1;
           if (group.remaining === 0) {
             groups.delete(location.groupId);
             started.delete(location.groupId); // fan-out idempotency marker; group is done.
-            // Outputs are positionally aligned with `children` (index order), NOT completion
+            // Results are positionally aligned with `children` (index order), NOT completion
             // order — the deterministic contract awaitChildren promises.
-            void resumeParent(group.parentId, { outputs: group.outputs });
+            void resumeParent(group.parentId, { settled: group.results });
           }
           return;
         }
 
         if (!started.has(execId)) return;
         const parentId = parentOf(execId);
-        if (event.eventType === "EXECUTION_COMPLETED" && parentId !== undefined) {
-          const output = (event.payload as { output?: unknown }).output;
-          void resumeParent(parentId, { output });
+        if (parentId !== undefined) {
+          if (event.eventType === "EXECUTION_COMPLETED") {
+            void resumeParent(parentId, { output: (event.payload as { output?: unknown }).output });
+          } else {
+            // Propagate the child's abnormal termination so the parent's `awaitChild` THROWS
+            // `childFailed` (and, uncaught, fails the parent — which propagates one level up
+            // if the parent is itself a child) instead of hanging forever.
+            void resumeParent(parentId, { __childFailed: settle(event) });
+          }
         }
-        // Bound the supervisor's maps: once a child is terminal it needs no more
-        // bookkeeping. (A failed/cancelled child leaves its parent suspended — failure
-        // propagation is a documented follow-up — but the maps are still reclaimed.)
+        // Bound the supervisor's maps: once a child is terminal it needs no more bookkeeping.
         specs.delete(execId);
         started.delete(execId);
       }
