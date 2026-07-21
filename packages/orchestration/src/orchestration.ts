@@ -168,9 +168,18 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         event.eventType === "EXECUTION_FAILED" ||
         event.eventType === "EXECUTION_CANCELLED"
       ) {
-        const childId = event.executionId;
-        if (!started.has(childId)) return;
-        const parentId = parentOf(childId);
+        const execId = event.executionId;
+        // Reclaim specs for any recorded-but-never-started child of a parent that has now
+        // terminated. If a parent fails/cancels before its CHILD_DONE suspend lands, the
+        // child never starts, so no child-terminal event ever arrives to clean its spec —
+        // an unbounded `specs` leak. A terminated execution spawns no further children, so
+        // any spec still keyed under it is dead. (`started` self-cleans: only started
+        // children get an entry, and a started child always reaches its own terminal event.)
+        for (const recordedChildId of specs.keys()) {
+          if (parentOf(recordedChildId) === execId) specs.delete(recordedChildId);
+        }
+        if (!started.has(execId)) return;
+        const parentId = parentOf(execId);
         if (event.eventType === "EXECUTION_COMPLETED" && parentId !== undefined) {
           const output = (event.payload as { output?: unknown }).output;
           void deps.runtime
@@ -180,8 +189,8 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         // Bound the supervisor's maps: once a child is terminal it needs no more
         // bookkeeping. (A failed/cancelled child leaves its parent suspended — failure
         // propagation is a documented follow-up — but the maps are still reclaimed.)
-        specs.delete(childId);
-        started.delete(childId);
+        specs.delete(execId);
+        started.delete(execId);
       }
     },
   };
