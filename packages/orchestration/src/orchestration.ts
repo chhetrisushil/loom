@@ -11,11 +11,13 @@ import type { ExecutionContext, RegisteredFlow, WorkflowRuntime } from "@loom/wo
 //   • a supervisor starts the child, and on the child's completion `resume`s the parent
 //     with the child's output.
 // Each await rides ONE suspend/resume cycle per parent (the single `_resumePayload` slot):
-//   • `awaitChild` — spawn ONE child, suspend once, resume once with its output.
+//   • `awaitChild` — spawn ONE child, suspend once, resume once with its output; THROWS
+//     `childFailed` if the child fails/cancels.
 //   • `awaitChildren` — spawn N children CONCURRENTLY under a shared group correlationKey,
-//     suspend once, resume once with the array of outputs (still one slot: the supervisor
-//     aggregates every child's output and delivers them together). Outputs come back in
-//     input order, not completion order.
+//     suspend once, resume once with a wait-all array of SETTLED `ChildResult`s in input
+//     order (the parent weighs partial failure itself).
+//   • `awaitAll` — `awaitChildren` for the all-or-nothing path: unwrapped outputs in input
+//     order, or THROWS `childFailed` (first failure) if any member didn't complete.
 //
 // DURABILITY RACE (both paths) — `onEvent` fires synchronously at commit time, before the
 // async durable write drains, so a fast/instant child can complete and resume its parent
@@ -226,6 +228,41 @@ export async function awaitChildren<TOut = unknown>(
     settled: ChildResult<TOut>[];
   };
   return resumed.settled;
+}
+
+/**
+ * `awaitChildren` for the all-or-nothing happy path: fan out, wait for all, and return
+ * the outputs UNWRAPPED and positionally aligned with `children` — but if ANY member
+ * failed or was cancelled, throw the same typed `childFailed` failure `awaitChild` throws
+ * (carrying the FIRST failure, by input index: `{ childId, index, status, error?/reason? }`).
+ * So a parent that only wants "all N succeed, give me the values" gets `Promise.all`
+ * ergonomics without hand-unwrapping every `ChildResult`; a parent that must weigh partial
+ * failure uses `awaitChildren` directly.
+ *
+ * A thin userspace wrapper — same one suspend/resume cycle, same replay-safety (it awaits
+ * `awaitChildren`, then the throw rides the recorded resume payload). Note it still WAITS
+ * for every member before throwing (wait-all, not early-abort); it does not cancel the
+ * siblings of a failed member.
+ */
+export async function awaitAll<TOut = unknown>(
+  ctx: Pick<ExecutionContext, "executionId" | "decide" | "suspend">,
+  group: {
+    key: string;
+    children: readonly { flowId: string; input: unknown }[];
+    maxDepth?: number;
+  }
+): Promise<TOut[]> {
+  const settled = await awaitChildren<TOut>(ctx, group);
+  const failedIndex = settled.findIndex((r) => r.status !== "completed");
+  if (failedIndex >= 0) {
+    const first = settled[failedIndex] as Exclude<ChildResult<TOut>, { status: "completed" }>;
+    fail(CHILD_FAILED, {
+      childId: childIdFor(ctx.executionId, `${group.key}#${failedIndex}`),
+      index: failedIndex,
+      ...first,
+    });
+  }
+  return settled.map((r) => (r as { status: "completed"; output: TOut }).output);
 }
 
 export interface SupervisorDeps {

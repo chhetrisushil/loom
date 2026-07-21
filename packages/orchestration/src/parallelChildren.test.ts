@@ -1,4 +1,5 @@
 import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loom/core";
+import { TypedFailure } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
@@ -7,8 +8,10 @@ import { type FlowRunner, type RegisteredFlow, WorkflowRuntime } from "@loom/wor
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+  CHILD_FAILED,
   type ChildResult,
   type ChildSupervisor,
+  awaitAll,
   awaitChildren,
   superviseChildren,
 } from "./orchestration";
@@ -66,6 +69,35 @@ const parentFlow = {
   runner: parentRunner,
 } as RegisteredFlow<ParentIn, ParentOut>;
 
+// ── allParent: awaitAll (all-or-nothing) → unwrapped values, or catches childFailed. ──
+type AllOut = { vs: number[]; failedIndex: number };
+const allRunner: FlowRunner<ParentIn, AllOut> = async (ctx, input) => {
+  try {
+    const vs = await awaitAll<ChildOut>(ctx, {
+      key: "g",
+      children: input.items.map((it) => ({ flowId: "child", input: it })),
+    });
+    return { vs: vs.map((o) => o.v), failedIndex: -1 };
+  } catch (err) {
+    if (err instanceof TypedFailure && err.channel === CHILD_FAILED) {
+      return { vs: [], failedIndex: (err.payload as { index: number }).index };
+    }
+    throw err;
+  }
+};
+const allFlow = {
+  definition: {
+    _tag: "FlowDefinition",
+    id: "all",
+    name: "all",
+    version: "1.0.0",
+    inputSchema: parentFlow.definition.inputSchema,
+    outputSchema: z.object({ vs: z.array(z.number()), failedIndex: z.number() }),
+    steps: [],
+  } satisfies FlowDefinition<ParentIn, AllOut>,
+  runner: allRunner,
+} as RegisteredFlow<ParentIn, AllOut>;
+
 function build(eventStore: EventStore = new InMemoryAsyncEventStore()) {
   const holder: { supervisor?: ChildSupervisor } = {};
   const runtime = new WorkflowRuntime({
@@ -75,6 +107,7 @@ function build(eventStore: EventStore = new InMemoryAsyncEventStore()) {
     onEvent: (e) => holder.supervisor?.onEvent(e),
   });
   runtime.registerFlow(parentFlow.definition, parentRunner);
+  runtime.registerFlow(allFlow.definition, allRunner);
   runtime.registerFlow(childFlow.definition, childRunner);
   holder.supervisor = superviseChildren({ runtime, flows: { child: childFlow as RegisteredFlow } });
   return runtime;
@@ -186,6 +219,67 @@ describe("awaitChildren — parallel children (wait-all settled)", () => {
     expect(resultsOf(parent).map((r) => (r.status === "completed" ? r.output.v : null))).toEqual([
       2, 4, 6,
     ]);
+  }, 20000);
+});
+
+describe("awaitAll — all-or-nothing fan-out", () => {
+  it("returns unwrapped outputs in input order when every child completes", async () => {
+    const rt = build();
+    await rt.start(allFlow, { items: [{ n: 1 }, { n: 2 }, { n: 3 }] }, { executionId: "A" });
+    const parent = await waitForStatus(rt, "A", "completed");
+    expect(outputOf(parent)).toEqual({ vs: [2, 4, 6], failedIndex: -1 });
+  }, 20000);
+
+  it("throws childFailed (first failure, by index) if any member fails", async () => {
+    const rt = build();
+    await rt.start(
+      allFlow,
+      { items: [{ n: 1 }, { n: 2, boom: true }, { n: 3 }] },
+      { executionId: "AF" }
+    );
+    // The parent caught the throw and recorded which index failed (still WAITED for all).
+    const parent = await waitForStatus(rt, "AF", "completed");
+    expect(outputOf(parent)).toEqual({ vs: [], failedIndex: 1 });
+  }, 20000);
+
+  it("an uncaught awaitAll failure fails the parent", async () => {
+    const holder: { supervisor?: ChildSupervisor } = {};
+    const rt = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: new EffectRuntime(),
+      onEvent: (e) => holder.supervisor?.onEvent(e),
+    });
+    // A parent that does NOT catch: awaitAll's throw escapes and fails it.
+    const raw: FlowRunner<ParentIn, { vs: number[] }> = async (ctx, input) => {
+      const vs = await awaitAll<ChildOut>(ctx, {
+        key: "g",
+        children: input.items.map((it) => ({ flowId: "child", input: it })),
+      });
+      return { vs: vs.map((o) => o.v) };
+    };
+    const rawFlow = {
+      definition: {
+        _tag: "FlowDefinition",
+        id: "rawall",
+        name: "rawall",
+        version: "1.0.0",
+        inputSchema: parentFlow.definition.inputSchema,
+        outputSchema: z.object({ vs: z.array(z.number()) }),
+        steps: [],
+      } satisfies FlowDefinition<ParentIn, { vs: number[] }>,
+      runner: raw,
+    } as RegisteredFlow<ParentIn, { vs: number[] }>;
+    rt.registerFlow(rawFlow.definition, raw);
+    rt.registerFlow(childFlow.definition, childRunner);
+    holder.supervisor = superviseChildren({
+      runtime: rt,
+      flows: { child: childFlow as RegisteredFlow },
+    });
+
+    await rt.start(rawFlow, { items: [{ n: 1 }, { n: 2, boom: true }] }, { executionId: "AR" });
+    const parent = await waitForStatus(rt, "AR", "failed");
+    expect(parent.status).toBe("failed");
   }, 20000);
 });
 
