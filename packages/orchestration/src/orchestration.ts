@@ -14,6 +14,16 @@ import type { ExecutionContext, RegisteredFlow, WorkflowRuntime } from "@loom/wo
 // per parent: spawn a child, suspend once, resume once with its result. (Fan-out over
 // many children in one suspend is a documented follow-up.)
 //
+// FOLLOW-UP RACE — when parallel children land, they inherit this path's durability
+// race and MUST carry its guards. `onEvent` fires synchronously at commit time, before
+// the async durable write drains, so a fast/instant child can complete and resume its
+// parent before the parent's suspend is readable ("No execution found" → the parent
+// hangs). The single-child fix closes this with (a) a child-start gate on the parent
+// reading durably-as-suspended and (b) a bounded resume retry — see `resumeParent` and
+// the child-start gate in `superviseChildren`. A parallel spawn multiplies the exposure
+// (N instant children racing ONE suspend), so both guards, plus the slow-append
+// regression test in `childDurabilityRace.test.ts`, carry over verbatim.
+//
 // No new event type: CHILD_DONE is a resume SIGNAL name (like TIMER_FIRED delivery),
 // and the spec rides in the DECISION_RECORDED the supervisor already sees via onEvent.
 
