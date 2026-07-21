@@ -213,11 +213,11 @@ export const CAPABILITIES: readonly Capability[] = [
     package: "@loom/orchestration",
     level: "L2",
     summary:
-      "Spawn a child workflow and durably await its result via decide/suspend/resume + a completion-correlating supervisor.",
+      "Spawn child workflows and durably await their results via decide/suspend/resume + a completion-correlating supervisor — one child (awaitChild) or a concurrent group (awaitChildren, outputs in input order).",
     evidence: {
-      conformanceTest: "packages/orchestration/src/orchestration.test.ts",
+      conformanceTest: "packages/orchestration/src/parallelChildren.test.ts",
     },
-    note: "Composed from existing primitives — NO new syscall or event type (P10 win; the plan's CHILD_COMPLETED governed event proved unnecessary). L2; single-child await today (fan-out is a follow-up).",
+    note: "Composed from existing primitives — NO new syscall or event type (P10 win; the plan's CHILD_COMPLETED governed event proved unnecessary). L2; single-child and concurrent fan-out both land on the one suspend/resume cycle (parallel failure propagation remains the follow-up).",
   },
   {
     id: "sandbox-eval",

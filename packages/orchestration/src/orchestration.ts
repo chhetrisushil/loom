@@ -10,19 +10,20 @@ import type { ExecutionContext, RegisteredFlow, WorkflowRuntime } from "@loom/wo
 //   • `ctx.suspend({ on: CHILD_DONE, correlationKey: childId })` parks the parent;
 //   • a supervisor starts the child, and on the child's completion `resume`s the parent
 //     with the child's output.
-// Because `_resumePayload` is a single slot, this builds on ONE suspend/resume cycle
-// per parent: spawn a child, suspend once, resume once with its result. (Fan-out over
-// many children in one suspend is a documented follow-up.)
+// Each await rides ONE suspend/resume cycle per parent (the single `_resumePayload` slot):
+//   • `awaitChild` — spawn ONE child, suspend once, resume once with its output.
+//   • `awaitChildren` — spawn N children CONCURRENTLY under a shared group correlationKey,
+//     suspend once, resume once with the array of outputs (still one slot: the supervisor
+//     aggregates every child's output and delivers them together). Outputs come back in
+//     input order, not completion order.
 //
-// FOLLOW-UP RACE — when parallel children land, they inherit this path's durability
-// race and MUST carry its guards. `onEvent` fires synchronously at commit time, before
-// the async durable write drains, so a fast/instant child can complete and resume its
-// parent before the parent's suspend is readable ("No execution found" → the parent
-// hangs). The single-child fix closes this with (a) a child-start gate on the parent
-// reading durably-as-suspended and (b) a bounded resume retry — see `resumeParent` and
-// the child-start gate in `superviseChildren`. A parallel spawn multiplies the exposure
-// (N instant children racing ONE suspend), so both guards, plus the slow-append
-// regression test in `childDurabilityRace.test.ts`, carry over verbatim.
+// DURABILITY RACE (both paths) — `onEvent` fires synchronously at commit time, before the
+// async durable write drains, so a fast/instant child can complete and resume its parent
+// before the parent's suspend is readable ("No execution found" → the parent hangs). Two
+// guards close it: (a) a child-start gate on the parent reading durably-as-suspended
+// (`waitParentDurable`) and (b) a bounded resume retry (`resumeParent`). The parallel path
+// multiplies the exposure (N instant children racing ONE suspend); the gate is per-suspend
+// so one wait covers the whole group, and `childDurabilityRace.test.ts` exercises both.
 //
 // No new event type: CHILD_DONE is a resume SIGNAL name (like TIMER_FIRED delivery),
 // and the spec rides in the DECISION_RECORDED the supervisor already sees via onEvent.
@@ -81,6 +82,36 @@ function asSpawnChoice(value: unknown): SpawnChoice | undefined {
     : undefined;
 }
 
+/** One member of a parallel spawn — a child to start under the shared group id. */
+interface GroupMember {
+  childId: string;
+  flowId: string;
+  input: unknown;
+}
+
+/**
+ * Marker + spec recorded by `awaitChildren` and read by the supervisor. The whole
+ * group rides in ONE `DECISION_RECORDED` (one decision fixes every child id + spec),
+ * so the fan-out is replay-deterministic and a recovery re-run re-derives the exact
+ * same members instead of spawning a second set.
+ */
+interface GroupSpawnChoice {
+  __orchestrationGroup: true;
+  /** The parent's suspend correlationKey — also the group's identity. */
+  groupId: string;
+  members: GroupMember[];
+}
+
+function asGroupChoice(value: unknown): GroupSpawnChoice | undefined {
+  const c = value as Partial<GroupSpawnChoice> | null;
+  return c !== null &&
+    c.__orchestrationGroup === true &&
+    typeof c.groupId === "string" &&
+    Array.isArray(c.members)
+    ? (c as GroupSpawnChoice)
+    : undefined;
+}
+
 /**
  * From inside a parent flow: spawn `flowId(input)` as a child execution and suspend
  * until it completes, returning its output. Replay-safe — the spawn is fixed by
@@ -115,6 +146,59 @@ export async function awaitChild<TOut = unknown>(
   return resumed.output;
 }
 
+/**
+ * From inside a parent flow: spawn every `children[i]` as a child execution CONCURRENTLY
+ * and suspend until they ALL complete, returning their outputs positionally aligned with
+ * `children` (NOT completion order). Still ONE suspend/resume cycle per parent — the
+ * supervisor starts the whole group, collects each output, and resumes once with the
+ * array — so it rides the single `_resumePayload` slot exactly like `awaitChild`.
+ *
+ * Replay-safe by the same mechanism: a SINGLE `ctx.decide` fixes the entire group
+ * (every child id + spec), so a resume/recovery re-run never starts a second fan-out.
+ * Child ids are `<parentId>::<group.key>#<i>` — one nesting level deeper than the parent,
+ * so `maxDepth` (checked once; all members share the parent's depth + 1) bounds recursion
+ * identically to the single-child path. Deterministic ids mean `group.key` and each item's
+ * position, not wall-clock, decide identity — so the fan-out is crash-recoverable frame by
+ * frame. An empty `children` resolves to `[]` without suspending (no members to await).
+ *
+ * A member that fails/cancels leaves the group unresolved and the parent suspended —
+ * parallel failure propagation is the same documented follow-up as the single-child path.
+ */
+export async function awaitChildren<TOut = unknown>(
+  ctx: Pick<ExecutionContext, "executionId" | "decide" | "suspend">,
+  group: {
+    key: string;
+    children: readonly { flowId: string; input: unknown }[];
+    maxDepth?: number;
+  }
+): Promise<TOut[]> {
+  if (group.children.length === 0) return [];
+  const groupId = childIdFor(ctx.executionId, group.key);
+  const members: GroupMember[] = group.children.map((c, i) => ({
+    // `#<i>` shares the child-id namespace with `awaitChild` keys; a group `key` must be
+    // distinct from any sibling single-child key in the same parent (childIdFor already
+    // forbids the `::` separator in the key, which is what protects `parentOf`).
+    childId: childIdFor(ctx.executionId, `${group.key}#${i}`),
+    flowId: c.flowId,
+    input: c.input,
+  }));
+  if (group.maxDepth !== undefined) {
+    const depth = depthOf(members[0]!.childId);
+    if (depth > group.maxDepth) {
+      fail("depthExceeded", { groupId, depth, maxDepth: group.maxDepth });
+    }
+  }
+  await ctx.decide(`orchestration:spawn-group:${group.key}`, () => ({
+    __orchestrationGroup: true as const,
+    groupId,
+    members,
+  }));
+  const resumed = (await ctx.suspend({ on: CHILD_DONE, correlationKey: groupId })) as unknown as {
+    outputs: TOut[];
+  };
+  return resumed.outputs;
+}
+
 export interface SupervisorDeps {
   runtime: WorkflowRuntime;
   /** Child flows by id, so the supervisor can start them by the recorded flowId. */
@@ -141,26 +225,52 @@ export interface ChildSupervisor {
 export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   // childId → spec, learned from DECISION_RECORDED before the parent's suspend lands.
   const specs = new Map<string, { flowId: string; input: unknown }>();
-  // childIds already started this process (idempotency within the runtime).
+  // childIds (and groupIds) already started this process (idempotency within the runtime).
   const started = new Set<string>();
+  // groupId → live aggregation for a parallel spawn: its members, their outputs collected
+  // positionally, and the count still outstanding. Learned from the group DECISION_RECORDED.
+  const groups = new Map<
+    string,
+    { parentId: string; members: GroupMember[]; outputs: unknown[]; remaining: number }
+  >();
+  // member childId → (groupId, index), so a member's completion lands in the right slot.
+  const memberOf = new Map<string, { groupId: string; index: number }>();
 
   const fail = (err: unknown): void => deps.onError?.(err);
 
-  // Resume the parent, retrying a transient "No execution found". A completed
-  // child proves its parent exists and is suspended-on-CHILD_DONE, but under an
-  // async event store (e.g. Postgres) a fast consecutive execution's just-written
-  // events can briefly not be readable when the child completes almost instantly
-  // — a read-after-write visibility gap. Without the retry the resume throws and
-  // the parent hangs forever. Bounded backoff (~0.4s) covers the gap; a genuinely
-  // missing parent still surfaces via onError after the retries.
-  const resumeParent = async (parentId: string, output: unknown, attempt = 0): Promise<void> => {
+  // Wait until the parent is DURABLE (readable-as-suspended) before touching it. onEvent
+  // fires synchronously at commit time (ExecutionJournal.commit), BEFORE the async durable
+  // write drains — so a fast/instant child could otherwise complete and trigger a resume
+  // that re-reads a parent whose suspend has not yet landed ("No execution found" → the
+  // parent hangs). Bounded (~1s); typically resolves at once. `loadState` and `resume` read
+  // the SAME event store, so once the parent reads suspended a later resume is guaranteed
+  // to find it. (A parallel spawn multiplies the exposure — N children racing ONE suspend —
+  // but the gate is per-suspend, so one wait covers the whole group.)
+  const waitParentDurable = async (parentId: string | undefined): Promise<void> => {
+    if (parentId === undefined) return;
+    for (let i = 0; i < 200; i++) {
+      const s = await deps.runtime.loadState(parentId).catch(() => undefined);
+      if (s?.status === "suspended") break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  };
+
+  // Resume the parent, retrying a transient "No execution found". A completed child proves
+  // its parent exists and is suspended-on-CHILD_DONE, but under an async event store (e.g.
+  // Postgres) a just-written suspend can briefly not be readable when the child completes
+  // almost instantly — a read-after-write visibility gap the durability gate bounds but a
+  // slower store can still exceed. Without the retry the resume throws and the parent hangs
+  // forever. Bounded backoff (~1s) backstops the gate; a genuinely missing parent still
+  // surfaces via onError after the retries. `payload` is `{ output }` for a single child or
+  // `{ outputs }` for a group.
+  const resumeParent = async (parentId: string, payload: unknown, attempt = 0): Promise<void> => {
     try {
-      await deps.runtime.resume(parentId, { eventType: CHILD_DONE, payload: { output } });
+      await deps.runtime.resume(parentId, { eventType: CHILD_DONE, payload });
     } catch (err) {
       const transient = err instanceof Error && /No execution found/.test(err.message);
       if (transient && attempt < 10) {
         await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
-        return resumeParent(parentId, output, attempt + 1);
+        return resumeParent(parentId, payload, attempt + 1);
       }
       fail(err);
     }
@@ -169,9 +279,25 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   return {
     onEvent(event: EventEnvelope): void {
       if (event.eventType === "DECISION_RECORDED") {
-        const choice = asSpawnChoice((event.payload as { choice?: unknown }).choice);
-        if (choice !== undefined)
-          specs.set(choice.childId, { flowId: choice.flowId, input: choice.input });
+        const choice = (event.payload as { choice?: unknown }).choice;
+        const single = asSpawnChoice(choice);
+        if (single !== undefined) {
+          specs.set(single.childId, { flowId: single.flowId, input: single.input });
+          return;
+        }
+        const group = asGroupChoice(choice);
+        if (group !== undefined) {
+          groups.set(group.groupId, {
+            // groupId is `<parentId>::<key>`, so parentOf peels back to the parent.
+            parentId: parentOf(group.groupId) ?? group.groupId,
+            members: group.members,
+            outputs: new Array<unknown>(group.members.length),
+            remaining: group.members.length,
+          });
+          group.members.forEach((m, index) =>
+            memberOf.set(m.childId, { groupId: group.groupId, index })
+          );
+        }
         return;
       }
 
@@ -180,8 +306,39 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           event.payload as { condition?: { on?: string; correlationKey?: string } }
         ).condition;
         if (condition?.on !== CHILD_DONE) return;
-        const childId = condition.correlationKey;
-        if (childId === undefined || started.has(childId)) return;
+        const correlationKey = condition.correlationKey;
+        if (correlationKey === undefined || started.has(correlationKey)) return;
+
+        // Parallel spawn: one suspend, start every member of the group.
+        const group = groups.get(correlationKey);
+        if (group !== undefined) {
+          started.add(correlationKey); // idempotency: a replayed suspend won't re-fan-out.
+          const runnable = group.members.map((m) => ({ member: m, flow: deps.flows[m.flowId] }));
+          for (const { member, flow } of runnable) {
+            if (flow === undefined) {
+              // A member with no registered flow can never start, so the group can never
+              // complete and the parent stays suspended (parity with the single-child
+              // missing-flow case). Surface it; the other members still run.
+              fail(new Error(`orchestration: no flow registered for "${member.flowId}"`));
+            }
+          }
+          // One durability gate covers the whole group — all members share the one parent
+          // suspend — then start each member (idempotently) exactly as a single child.
+          void (async () => {
+            await waitParentDurable(group.parentId);
+            for (const { member, flow } of runnable) {
+              if (flow === undefined || started.has(member.childId)) continue;
+              started.add(member.childId);
+              await deps.runtime
+                .start(flow, member.input, { executionId: member.childId })
+                .catch(fail);
+            }
+          })();
+          return;
+        }
+
+        // Single child.
+        const childId = correlationKey;
         const spec = specs.get(childId);
         if (spec === undefined) return;
         const flow = deps.flows[spec.flowId];
@@ -193,21 +350,10 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           return;
         }
         started.add(childId);
-        // Start the child only once the parent's suspend is DURABLE. onEvent fires
-        // synchronously at commit time (ExecutionJournal.commit), BEFORE the async
-        // durable write drains — so a fast/instant child could otherwise complete
-        // and trigger a resume that re-reads the parent before its suspend has
-        // landed ("No execution found" → the parent hangs). Wait for the parent to
-        // be readable-as-suspended first; bounded, and typically resolves at once.
+        // Start the child only once the parent's suspend is DURABLE (see waitParentDurable).
         const parentId = parentOf(childId);
         void (async () => {
-          if (parentId !== undefined) {
-            for (let i = 0; i < 200; i++) {
-              const s = await deps.runtime.loadState(parentId).catch(() => undefined);
-              if (s?.status === "suspended") break;
-              await new Promise((r) => setTimeout(r, 5));
-            }
-          }
+          await waitParentDurable(parentId);
           await deps.runtime.start(flow, spec.input, { executionId: childId }).catch(fail);
         })();
         return;
@@ -228,11 +374,48 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         for (const recordedChildId of specs.keys()) {
           if (parentOf(recordedChildId) === execId) specs.delete(recordedChildId);
         }
+        // Same reclaim for a group whose parent terminated before (or instead of) resuming:
+        // an unresolved group under a dead parent is dead. Also drop its member index.
+        for (const [groupId, group] of groups) {
+          if (group.parentId === execId) {
+            for (const m of group.members) memberOf.delete(m.childId);
+            groups.delete(groupId);
+            started.delete(groupId); // the fan-out idempotency marker; dead with the group.
+          }
+        }
+
+        // A group member terminating: route its output into the group's slot rather than
+        // resuming the parent directly (the parent awaits the WHOLE group, not each child).
+        const location = memberOf.get(execId);
+        if (location !== undefined) {
+          memberOf.delete(execId);
+          started.delete(execId);
+          const group = groups.get(location.groupId);
+          if (group === undefined) return;
+          if (event.eventType !== "EXECUTION_COMPLETED") {
+            // A failed/cancelled member never fills its slot, so `remaining` never reaches
+            // 0 and the parent stays suspended — parallel failure propagation is the same
+            // documented follow-up as the single-child path. (The group is reclaimed when
+            // the parent itself terminates, above.)
+            return;
+          }
+          group.outputs[location.index] = (event.payload as { output?: unknown }).output;
+          group.remaining -= 1;
+          if (group.remaining === 0) {
+            groups.delete(location.groupId);
+            started.delete(location.groupId); // fan-out idempotency marker; group is done.
+            // Outputs are positionally aligned with `children` (index order), NOT completion
+            // order — the deterministic contract awaitChildren promises.
+            void resumeParent(group.parentId, { outputs: group.outputs });
+          }
+          return;
+        }
+
         if (!started.has(execId)) return;
         const parentId = parentOf(execId);
         if (event.eventType === "EXECUTION_COMPLETED" && parentId !== undefined) {
           const output = (event.payload as { output?: unknown }).output;
-          void resumeParent(parentId, output);
+          void resumeParent(parentId, { output });
         }
         // Bound the supervisor's maps: once a child is terminal it needs no more
         // bookkeeping. (A failed/cancelled child leaves its parent suspended — failure
