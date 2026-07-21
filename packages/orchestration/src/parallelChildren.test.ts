@@ -6,14 +6,20 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { type FlowRunner, type RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { type ChildSupervisor, awaitChildren, superviseChildren } from "./orchestration";
+import {
+  type ChildResult,
+  type ChildSupervisor,
+  awaitChildren,
+  superviseChildren,
+} from "./orchestration";
 
-// ── Child: doubles `n`, optionally after `delayMs` so completion order can be
-//    made to differ from input order (proves the aggregation is index-ordered). ──
-type ChildIn = { n: number; delayMs?: number };
+// ── Child: doubles `n`, optionally after `delayMs` (so completion order can be made
+//    to differ from input order) and optionally throwing (to exercise settled failure). ──
+type ChildIn = { n: number; delayMs?: number; boom?: boolean };
 type ChildOut = { v: number };
 const childRunner: FlowRunner<ChildIn, ChildOut> = async (_ctx, input) => {
   if (input.delayMs) await new Promise((r) => setTimeout(r, input.delayMs));
+  if (input.boom) throw new Error(`boom(${input.n})`);
   return { v: input.n * 2 };
 };
 const childFlow = {
@@ -22,22 +28,26 @@ const childFlow = {
     id: "child",
     name: "child",
     version: "1.0.0",
-    inputSchema: z.object({ n: z.number(), delayMs: z.number().optional() }),
+    inputSchema: z.object({
+      n: z.number(),
+      delayMs: z.number().optional(),
+      boom: z.boolean().optional(),
+    }),
     outputSchema: z.object({ v: z.number() }),
     steps: [],
   } satisfies FlowDefinition<ChildIn, ChildOut>,
   runner: childRunner,
 } as RegisteredFlow<ChildIn, ChildOut>;
 
-// ── Parent: fans out over `items`, awaits them all, returns their doubled values. ──
+// ── Parent: fans out over `items`, awaits them all, returns their SETTLED results. ──
 type ParentIn = { items: ChildIn[] };
-type ParentOut = { vs: number[] };
+type ParentOut = { results: ChildResult<ChildOut>[] };
 const parentRunner: FlowRunner<ParentIn, ParentOut> = async (ctx, input) => {
-  const outs = await awaitChildren<ChildOut>(ctx, {
+  const results = await awaitChildren<ChildOut>(ctx, {
     key: "g",
     children: input.items.map((it) => ({ flowId: "child", input: it })),
   });
-  return { vs: outs.map((o) => o.v) };
+  return { results };
 };
 const parentFlow = {
   definition: {
@@ -46,9 +56,11 @@ const parentFlow = {
     name: "parent",
     version: "1.0.0",
     inputSchema: z.object({
-      items: z.array(z.object({ n: z.number(), delayMs: z.number().optional() })),
+      items: z.array(
+        z.object({ n: z.number(), delayMs: z.number().optional(), boom: z.boolean().optional() })
+      ),
     }),
-    outputSchema: z.object({ vs: z.array(z.number()) }),
+    outputSchema: z.object({ results: z.array(z.any()) }),
     steps: [],
   } satisfies FlowDefinition<ParentIn, ParentOut>,
   runner: parentRunner,
@@ -69,6 +81,8 @@ function build(eventStore: EventStore = new InMemoryAsyncEventStore()) {
 }
 
 const outputOf = (s: ExecutionState): unknown => s.variables._output;
+const resultsOf = (s: ExecutionState): ChildResult<ChildOut>[] =>
+  (outputOf(s) as ParentOut).results;
 
 async function waitForStatus(
   rt: WorkflowRuntime,
@@ -107,8 +121,8 @@ class SlowAppendStore implements EventStore {
   [k: string]: any;
 }
 
-describe("awaitChildren — parallel children", () => {
-  it("spawns every child, resumes once with outputs in INPUT order (not completion order)", async () => {
+describe("awaitChildren — parallel children (wait-all settled)", () => {
+  it("settles every child, resumes once with results in INPUT order (not completion order)", async () => {
     const rt = build();
     // Delays fall as n rises, so completion order is the REVERSE of input order —
     // a passing index-ordered result therefore can't be an accident of timing.
@@ -120,20 +134,34 @@ describe("awaitChildren — parallel children", () => {
     await rt.start(parentFlow, { items }, { executionId: "P" });
 
     const parent = await waitForStatus(rt, "P", "completed");
-    expect(outputOf(parent)).toEqual({ vs: [2, 4, 6] });
+    expect(resultsOf(parent)).toEqual([
+      { status: "completed", output: { v: 2 } },
+      { status: "completed", output: { v: 4 } },
+      { status: "completed", output: { v: 6 } },
+    ]);
+  }, 20000);
 
-    // All three child executions ran, each exactly once.
-    for (let i = 0; i < 3; i++) {
-      const child = await rt.loadState(`P::g#${i}`);
-      expect(child && outputOf(child)).toEqual({ v: items[i]!.n * 2 });
-    }
+  it("weathers a partial failure: the failed member settles as `failed`, the rest complete", async () => {
+    const rt = build();
+    await rt.start(
+      parentFlow,
+      { items: [{ n: 1 }, { n: 2, boom: true }, { n: 3 }] },
+      { executionId: "PF" }
+    );
+    // Wait-all: the parent still COMPLETES (no throw) — the failure is data, not an exception.
+    const parent = await waitForStatus(rt, "PF", "completed");
+    const results = resultsOf(parent);
+    expect(results[0]).toEqual({ status: "completed", output: { v: 2 } });
+    expect(results[1]?.status).toBe("failed");
+    expect((results[1] as { error: string }).error).toMatch(/boom\(2\)/);
+    expect(results[2]).toEqual({ status: "completed", output: { v: 6 } });
   }, 20000);
 
   it("resolves to [] for an empty group without ever suspending", async () => {
     const rt = build();
     await rt.start(parentFlow, { items: [] }, { executionId: "E" });
     const parent = await waitForStatus(rt, "E", "completed");
-    expect(outputOf(parent)).toEqual({ vs: [] });
+    expect(resultsOf(parent)).toEqual([]);
   });
 
   it("is replay-safe: a recovery re-run does not spawn a second fan-out", async () => {
@@ -142,9 +170,7 @@ describe("awaitChildren — parallel children", () => {
     await waitForStatus(rt, "R", "completed");
 
     // Each child log holds a single EXECUTION_STARTED — the group was fixed by one decision.
-    for (const [i, n] of [4, 5].entries()) {
-      const log = await rt.loadState(`R::g#${i}`);
-      expect(log && outputOf(log)).toEqual({ v: n * 2 });
+    for (const i of [0, 1]) {
       const events = await (rt as unknown as { eventStore: EventStore }).eventStore.read(
         `R::g#${i}`
       );
@@ -157,23 +183,30 @@ describe("awaitChildren — parallel children", () => {
     // No delays → children complete almost instantly, N of them racing ONE suspend.
     await rt.start(parentFlow, { items: [{ n: 1 }, { n: 2 }, { n: 3 }] }, { executionId: "S1" });
     const parent = await waitForStatus(rt, "S1", "completed");
-    expect(outputOf(parent)).toEqual({ vs: [2, 4, 6] });
+    expect(resultsOf(parent).map((r) => (r.status === "completed" ? r.output.v : null))).toEqual([
+      2, 4, 6,
+    ]);
   }, 20000);
 });
 
-// ── Nested fan-out: a group member is itself a group parent. Proves ids compose
-//    (`T::g#0::g#1`), depth deepens per level, and reclaim survives nesting. ──
-type MidIn = { base: number };
-type MidOut = { sum: number };
+// ── Nested fan-out: a group member is itself a group parent that TOLERATES a failing
+//    grandchild via settled results. Proves ids compose (`T::g#0::g#1`), depth deepens,
+//    reclaim survives nesting, and a partial failure stays contained at the level that
+//    inspects it. ──
+type MidIn = { base: number; boomSecond?: boolean };
+type MidOut = { sum: number; failures: number };
 const midRunner: FlowRunner<MidIn, MidOut> = async (ctx, input) => {
-  const outs = await awaitChildren<ChildOut>(ctx, {
+  const results = await awaitChildren<ChildOut>(ctx, {
     key: "g",
     children: [
       { flowId: "child", input: { n: input.base } },
-      { flowId: "child", input: { n: input.base + 1 } },
+      { flowId: "child", input: { n: input.base + 1, boom: input.boomSecond } },
     ],
   });
-  return { sum: outs.reduce((a, o) => a + o.v, 0) };
+  // The mid decides what a partial failure means: sum the completed, count the failed.
+  const sum = results.reduce((a, r) => (r.status === "completed" ? a + r.output.v : a), 0);
+  const failures = results.filter((r) => r.status !== "completed").length;
+  return { sum, failures };
 };
 const midFlow = {
   definition: {
@@ -181,23 +214,23 @@ const midFlow = {
     id: "mid",
     name: "mid",
     version: "1.0.0",
-    inputSchema: z.object({ base: z.number() }),
-    outputSchema: z.object({ sum: z.number() }),
+    inputSchema: z.object({ base: z.number(), boomSecond: z.boolean().optional() }),
+    outputSchema: z.object({ sum: z.number(), failures: z.number() }),
     steps: [],
   } satisfies FlowDefinition<MidIn, MidOut>,
   runner: midRunner,
 } as RegisteredFlow<MidIn, MidOut>;
 
-type TopOut = { sums: number[] };
+type TopOut = { mids: ChildResult<MidOut>[] };
 const topRunner: FlowRunner<Record<string, never>, TopOut> = async (ctx) => {
-  const outs = await awaitChildren<MidOut>(ctx, {
+  const mids = await awaitChildren<MidOut>(ctx, {
     key: "g",
     children: [
       { flowId: "mid", input: { base: 10 } },
-      { flowId: "mid", input: { base: 20 } },
+      { flowId: "mid", input: { base: 20, boomSecond: true } },
     ],
   });
-  return { sums: outs.map((o) => o.sum) };
+  return { mids };
 };
 const topFlow = {
   definition: {
@@ -206,14 +239,14 @@ const topFlow = {
     name: "top",
     version: "1.0.0",
     inputSchema: z.object({}),
-    outputSchema: z.object({ sums: z.array(z.number()) }),
+    outputSchema: z.object({ mids: z.array(z.any()) }),
     steps: [],
   } satisfies FlowDefinition<Record<string, never>, TopOut>,
   runner: topRunner,
 } as RegisteredFlow;
 
-describe("awaitChildren — nested fan-out", () => {
-  it("composes: a group whose members each fan out again resolves bottom-up in order", async () => {
+describe("awaitChildren — nested fan-out with contained failure", () => {
+  it("composes: a partial grandchild failure stays contained at the mid that inspects it", async () => {
     const holder: { supervisor?: ChildSupervisor } = {};
     const rt = new WorkflowRuntime({
       eventStore: new InMemoryAsyncEventStore(),
@@ -231,11 +264,14 @@ describe("awaitChildren — nested fan-out", () => {
 
     await rt.start(topFlow, {}, { executionId: "T" });
     const top = await waitForStatus(rt, "T", "completed");
-    // mid(10) = (10*2)+(11*2) = 42 ; mid(20) = (20*2)+(21*2) = 82 — in input order.
-    expect(outputOf(top)).toEqual({ sums: [42, 82] });
+    const mids = (outputOf(top) as TopOut).mids;
+    // mid(10): (10*2)+(11*2)=42, 0 failures ; mid(20): 20*2=40 (grandchild 21 boomed), 1 failure.
+    expect(mids[0]).toEqual({ status: "completed", output: { sum: 42, failures: 0 } });
+    expect(mids[1]).toEqual({ status: "completed", output: { sum: 40, failures: 1 } });
 
-    // A grandchild executed at depth 2 under its immediate mid parent.
-    const grandchild = await rt.loadState("T::g#0::g#1");
-    expect(grandchild && outputOf(grandchild)).toEqual({ v: 22 });
+    // The boomed grandchild (depth 2) settled as failed under its immediate mid parent;
+    // its mid still COMPLETED (contained), so top saw a completed mid, not a failure.
+    const grandchild = await rt.loadState("T::g#1::g#1");
+    expect(grandchild?.status).toBe("failed");
   }, 20000);
 });
