@@ -120,9 +120,13 @@ export interface ChildSupervisor {
 
 /**
  * The supervisor that turns spawn intents into running children and their completions
- * into parent resumes. It correlates purely from the events it observes via `onEvent`
- * (no store read → no read-after-commit race): the spawn spec comes from the parent's
- * `DECISION_RECORDED`, and the child id embeds the parent id.
+ * into parent resumes. Correlation is store-read-free — the spawn spec comes from the
+ * parent's `DECISION_RECORDED` and the child id embeds the parent id, both observed via
+ * `onEvent` — so no read is needed to know WHICH parent a child belongs to. The store IS
+ * read, however, to gate on durability: `onEvent` fires at commit time, before the async
+ * durable write drains, so both starting a child and resuming its parent guard against
+ * the parent's suspend not yet being readable (see `resumeParent` and the child-start
+ * durability gate below).
  */
 export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   // childId → spec, learned from DECISION_RECORDED before the parent's suspend lands.
@@ -131,6 +135,26 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   const started = new Set<string>();
 
   const fail = (err: unknown): void => deps.onError?.(err);
+
+  // Resume the parent, retrying a transient "No execution found". A completed
+  // child proves its parent exists and is suspended-on-CHILD_DONE, but under an
+  // async event store (e.g. Postgres) a fast consecutive execution's just-written
+  // events can briefly not be readable when the child completes almost instantly
+  // — a read-after-write visibility gap. Without the retry the resume throws and
+  // the parent hangs forever. Bounded backoff (~0.4s) covers the gap; a genuinely
+  // missing parent still surfaces via onError after the retries.
+  const resumeParent = async (parentId: string, output: unknown, attempt = 0): Promise<void> => {
+    try {
+      await deps.runtime.resume(parentId, { eventType: CHILD_DONE, payload: { output } });
+    } catch (err) {
+      const transient = err instanceof Error && /No execution found/.test(err.message);
+      if (transient && attempt < 10) {
+        await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+        return resumeParent(parentId, output, attempt + 1);
+      }
+      fail(err);
+    }
+  };
 
   return {
     onEvent(event: EventEnvelope): void {
@@ -159,7 +183,23 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           return;
         }
         started.add(childId);
-        void deps.runtime.start(flow, spec.input, { executionId: childId }).catch(fail);
+        // Start the child only once the parent's suspend is DURABLE. onEvent fires
+        // synchronously at commit time (ExecutionJournal.commit), BEFORE the async
+        // durable write drains — so a fast/instant child could otherwise complete
+        // and trigger a resume that re-reads the parent before its suspend has
+        // landed ("No execution found" → the parent hangs). Wait for the parent to
+        // be readable-as-suspended first; bounded, and typically resolves at once.
+        const parentId = parentOf(childId);
+        void (async () => {
+          if (parentId !== undefined) {
+            for (let i = 0; i < 200; i++) {
+              const s = await deps.runtime.loadState(parentId).catch(() => undefined);
+              if (s?.status === "suspended") break;
+              await new Promise((r) => setTimeout(r, 5));
+            }
+          }
+          await deps.runtime.start(flow, spec.input, { executionId: childId }).catch(fail);
+        })();
         return;
       }
 
@@ -182,9 +222,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         const parentId = parentOf(execId);
         if (event.eventType === "EXECUTION_COMPLETED" && parentId !== undefined) {
           const output = (event.payload as { output?: unknown }).output;
-          void deps.runtime
-            .resume(parentId, { eventType: CHILD_DONE, payload: { output } })
-            .catch(fail);
+          void resumeParent(parentId, output);
         }
         // Bound the supervisor's maps: once a child is terminal it needs no more
         // bookkeeping. (A failed/cancelled child leaves its parent suspended — failure
