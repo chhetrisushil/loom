@@ -288,6 +288,52 @@ await runtime.resume(executionId, {
 new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime, snapshotEvery: 100 });
 ```
 
+### Child workflows (`@loom/orchestration`)
+
+Spawn another flow as a **separate child execution** — its own durable log, its own replay, its own failure — and durably await its result from the parent. Built entirely from `ctx.decide` + `ctx.suspend` + `runtime.resume` (one suspend/resume cycle per await): **no new syscall, no new event type**. A `superviseChildren` supervisor, wired into the runtime's `onEvent`, turns each spawn into a running child and each child's completion back into a parent resume.
+
+```ts
+import {
+  awaitChild, awaitChildren, awaitAll,
+  superviseChildren, type ChildResult,
+} from "@loom/orchestration";
+
+// Wire the supervisor once (it sees every execution's events):
+const holder: { supervisor?: ReturnType<typeof superviseChildren> } = {};
+const runtime = new WorkflowRuntime({
+  eventStore, snapshotStore, effectRuntime,
+  onEvent: (e) => holder.supervisor?.onEvent(e),
+});
+holder.supervisor = superviseChildren({ runtime, flows: { build: buildFlow, smoke: smokeFlow } });
+```
+
+Three ways to await, inside a parent runner:
+
+```ts
+// One child — returns its output, or THROWS a typed `childFailed` if it fails/cancels.
+const artifact = await awaitChild<Built>(ctx, { key: "build", flowId: "build", input });
+
+// N children CONCURRENTLY, wait-all SETTLED — a partial failure is data, not an exception.
+const results: ChildResult<Built>[] = await awaitChildren<Built>(ctx, {
+  key: "build",
+  children: services.map((s) => ({ flowId: "build", input: s })),
+});
+results.forEach((r, i) => {                    // positionally aligned with the input, in order
+  if (r.status === "completed") ship(r.output);
+  else if (r.status === "failed") report(services[i], r.error);
+  else report(services[i], r.reason);          // "cancelled"
+});
+
+// N children, ALL-OR-NOTHING — unwrapped outputs, or THROWS `childFailed` on the first failure.
+const built = await awaitAll<Built>(ctx, { key: "build", children: [...] });
+```
+
+**Replay-safe by construction.** Each spawn is fixed by one `ctx.decide`, and child ids are deterministic — `<parentId>::<key>` for `awaitChild`, `<parentId>::<key>#<i>` for the `awaitChildren`/`awaitAll` fan-out — so a recovery re-run never starts a second child, and the id scheme composes for nested children. `maxDepth` bounds recursive re-entry.
+
+**Failure propagation composes up the tree.** An uncaught `childFailed` (from `awaitChild`/`awaitAll`) fails the parent; if that parent is itself a child, the failure climbs one level up through the same mechanism. `childFailed` is a typed failure (channel `CHILD_FAILED`) carrying `{ childId, status, error?/reason? }` — catch it to settle with a fallback, or let it propagate. Use `awaitChildren` when partial failure is acceptable (the parent weighs the settled results); use `awaitAll` when the set must all succeed.
+
+Composed from existing primitives, so it stays outside the kernel (P10). See the runnable **`child-orchestration`** example in the sibling [`loom-examples`](examples.md) repo (a release pipeline: `awaitChildren` builds → `awaitAll` smoke gate → `awaitChild` publish).
+
 ---
 
 ## 5. Branching: fork / simulate / promote

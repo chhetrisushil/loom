@@ -404,9 +404,11 @@ plan-proposed kernel changes (a `CHILD_COMPLETED` event and a `ctx.compensate` s
   `ExecutionAuthorizer` gating start/resume/cancel/query at the trust boundary → durable
   `EXECUTION_DENIED`).
 - **Coordination primitives** — `@loom/live-query` (loadState + `EventStore.subscribe`),
-  `@loom/orchestration` (spawn a child workflow and durably await it via decide/suspend/resume + a
-  completion-correlating supervisor), and `@loom/saga` (register compensators, run them in reverse on
-  failure as replay-safe `ctx.run` steps).
+  `@loom/orchestration` (spawn child workflows and durably await them via decide/suspend/resume + a
+  completion-correlating supervisor — `awaitChild` for one, `awaitChildren` for a concurrent
+  wait-all `ChildResult[]`, `awaitAll` for all-or-nothing; child failure propagates as a typed
+  `childFailed` that composes up the tree), and `@loom/saga` (register compensators, run them in
+  reverse on failure as replay-safe `ctx.run` steps).
 
 ```mermaid
 flowchart TB

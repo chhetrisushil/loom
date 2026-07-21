@@ -33,6 +33,11 @@ pnpm --filter @loom/db-observability start
   [`transient-interpreter.md`](./transient-interpreter.md), ADR 0065/0066.
 - **`db-sentinel`** — the perpetual-agent / sentinel pattern via `sentinelPreset`
   (schedule + durable carry-state + claim-checked telemetry).
+- **`child-orchestration`** — cross-execution orchestration (`@loom/orchestration`)
+  end to end: a release pipeline that fans out builds with `awaitChildren`
+  (wait-all settled, tolerate partial failure), gates smoke tests with `awaitAll`
+  (all-or-nothing), and publishes with `awaitChild` (one child) — each service a
+  separate durable child execution, no new syscall.
 
 ### Execution branching
 
