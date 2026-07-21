@@ -1,14 +1,16 @@
-// @loom/orchestration — spawn a child workflow and durably await its result.
+// @loom/orchestration — spawn child workflows from a parent and durably await their results.
 //
-// `awaitChild(ctx, spec)` (parent-side) + `superviseChildren(deps)` (a supervisor wired
-// into WorkflowRuntimeDeps.onEvent). Composed from execute/decide/suspend/resume — no
-// new syscall, no new event type (P10).
+// `awaitChild(ctx, spec)` (one child) / `awaitChildren(ctx, group)` (N concurrent children,
+// outputs in input order) — parent-side — plus `superviseChildren(deps)` (a supervisor wired
+// into WorkflowRuntimeDeps.onEvent). Composed from execute/decide/suspend/resume — no new
+// syscall, no new event type (P10).
 
 export {
   type ChildSupervisor,
   type SupervisorDeps,
   CHILD_DONE,
   awaitChild,
+  awaitChildren,
   childIdFor,
   depthOf,
   parentOf,
