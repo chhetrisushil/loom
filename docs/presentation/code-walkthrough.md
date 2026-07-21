@@ -5,6 +5,8 @@ A read‑along tour of real files. Open each path as you go. The **Cloud Command
 (`examples/agent-network`) for the agentic pieces, and **Angular** for framework‑agnosticism.
 
 > Every excerpt below is copied from the repo. Line numbers drift as code evolves; open the file to follow along.
+> **The example apps (`examples/…` paths below) now live in the sibling [`loom-examples`](../examples.md) repo** —
+> open them from that checkout; the framework packages (`@loom/*`) referenced here remain in this repo.
 
 ---
 

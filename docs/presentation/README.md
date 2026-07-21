@@ -58,6 +58,10 @@ Presenter notes are in `<!-- ... -->` comments (shown in Marp presenter view, hi
 
 Full runbook: [`demo-script.md`](./demo-script.md). Quick start — **no API key needed** (offline):
 
+> **Prerequisite:** the example apps (`@loom/agent-network`, `@loom/db-command-center`, …) now live in the
+> sibling **[`loom-examples`](../examples.md)** repo. Check it out next to `loom`, run `pnpm install && pnpm build`
+> there, and run the `pnpm --filter @loom/<example>` commands below from that checkout.
+
 ```bash
 pnpm install && pnpm build        # once
 

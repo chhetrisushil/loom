@@ -36,7 +36,7 @@ On top of that, Loom is now a **platform**:
 
 Plus **testing**, **evals**, and **deploy-simulation** — all lenses on the same log.
 
-**One canonical example** wires all of it: [`examples/loom-starter`](../../examples/loom-starter).
+**One canonical example** wires all of it: `loom-starter` (in the sibling [`loom-examples`](../examples.md) repo).
 
 ---
 
