@@ -1,0 +1,30 @@
+{
+  "name": "@loom/plugin-a2ui",
+  "version": "0.0.1",
+  "description": "A2UI egress adapter — projects Loom agent surfaces onto the Google A2UI (Agent-to-UI) wire protocol v1.0 (createSurface / updateDataModel / deleteSurface) so any A2UI-compliant client can render a Loom-driven UI. Egress + inbound actions only; bidirectional RPC (callFunction/actionResponse) is out of scope by design.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "test": "vitest run",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@loom/agent-surface": "workspace:*",
+    "@loom/classify": "workspace:*",
+    "@loom/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

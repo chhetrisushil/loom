@@ -110,6 +110,9 @@
       "path": "plugins/a2a"
     },
     {
+      "path": "plugins/a2ui"
+    },
+    {
       "path": "packages/agent-surface"
     },
     {
