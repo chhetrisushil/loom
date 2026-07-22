@@ -1,6 +1,15 @@
 import { SURFACE_PATCH } from "@loom/agent-surface";
 import type { SurfacePatch, SurfacePatchPayload, SurfaceState } from "@loom/agent-surface";
 import { defineConfig } from "@loom/app";
+import {
+  A2UISurfaceBridge,
+  badge,
+  bind,
+  column,
+  list,
+  text,
+} from "@loom/plugin-a2ui";
+import type { A2UIServerMessage, ComponentInstance } from "@loom/plugin-a2ui";
 import { CapabilityCatalog, capability$ } from "@loom/capability";
 import type { EventEnvelope } from "@loom/core";
 import { IntentRuntime } from "@loom/intent";
@@ -93,6 +102,22 @@ const app = defineConfig({
 const eventStore = app.stores.eventStore;
 const workflowRuntime = app.runtime;
 const intentRuntime = new IntentRuntime({ catalog, workflowRuntime });
+
+// ── A2UI egress view ──────────────────────────────────────────────────────────
+// The component tree an external A2UI client would render. The bridge sends this
+// once (createSurface), then streams the surface data separately (updateDataModel);
+// each component binds to a JSON Pointer into that data model. This is the real
+// A2UI wire protocol — distinct from Loom's native surface patches.
+const A2UI_VIEW: ComponentInstance[] = [
+  column("root", ["taskId", "status", "score", "logHeading", "log"]),
+  text("taskId", bind("/taskId")),
+  badge("status", bind("/status")),
+  text("score", bind("/stats/score")),
+  text("logHeading", "Progress"),
+  list("log", "/progressLog", "logItem"),
+  // Collection scope: a relative binding ("") resolves to the current list element.
+  text("logItem", bind("")),
+];
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -420,12 +445,15 @@ function App() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [executionId, setExecutionId] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
-  const [tab, setTab] = useState<"blueprint" | "events" | "state" | "trace" | "surface">("blueprint");
+  const [tab, setTab] = useState<
+    "blueprint" | "events" | "state" | "trace" | "surface" | "a2ui"
+  >("blueprint");
   const [counter, setCounter] = useState(1);
   const [projState, setProjState] = useState<TaskState | null>(null);
   const [traceData, setTraceData] = useState<TraceSnapshot>({ flow: null, steps: [] });
   const [uiSurface, setUiSurface] = useState<SurfaceState>({});
   const [patchStream, setPatchStream] = useState<{ time: string; patch: SurfacePatch }[]>([]);
+  const [a2uiMessages, setA2uiMessages] = useState<{ time: string; msg: A2UIServerMessage }[]>([]);
   const [intentText, setIntentText] = useState("analyze a task and apply the result");
 
   const addLog = useCallback((entry: LogEntry) => {
@@ -461,6 +489,10 @@ function App() {
     if (!executionId) return;
     let unsub: (() => void) | undefined;
     let cancelled = false;
+    // One A2UI bridge per execution: the same event stream that feeds the log and
+    // the native patch view is also the "SSE broadcaster" fed through the bridge.
+    // Each event yields 0+ A2UI wire messages a real A2UI client would render.
+    const bridge = new A2UISurfaceBridge({ executionId, components: A2UI_VIEW });
     void eventStore
       .subscribe(executionId, (e: EventEnvelope) => {
         addLog({ time: now(), kind: "event", label: e.eventType, payload: e.payload });
@@ -469,6 +501,9 @@ function App() {
           const entries = payload.patches.map((patch) => ({ time: now(), patch }));
           setPatchStream((prev) => [...entries.reverse(), ...prev]);
         }
+        // Translate the event into A2UI protocol messages via the egress bridge.
+        const a2ui = bridge.handleEvent(e).map((msg) => ({ time: now(), msg }));
+        if (a2ui.length > 0) setA2uiMessages((prev) => [...a2ui.reverse(), ...prev]);
       })
       .then((u) => {
         if (cancelled) u();
@@ -490,6 +525,7 @@ function App() {
       setTraceData({ flow: null, steps: [] });
       setUiSurface({});
       setPatchStream([]);
+      setA2uiMessages([]);
       clearTrace();
 
       try {
@@ -602,7 +638,7 @@ function App() {
       </header>
 
       <div style={s.tabBar}>
-        {(["blueprint", "events", "state", "trace", "surface"] as const).map((t) => (
+        {(["blueprint", "events", "state", "trace", "surface", "a2ui"] as const).map((t) => (
           <button
             type="button"
             key={t}
@@ -617,7 +653,9 @@ function App() {
                   ? "Projection State"
                   : t === "trace"
                     ? "Trace"
-                    : "Surface"}
+                    : t === "surface"
+                      ? "Surface"
+                      : "A2UI"}
           </button>
         ))}
       </div>
@@ -689,6 +727,8 @@ function App() {
         {tab === "trace" && <TraceTab data={traceData} />}
 
         {tab === "surface" && <SurfaceTab surface={uiSurface} patches={patchStream} />}
+
+        {tab === "a2ui" && <A2UITab messages={a2uiMessages} />}
       </main>
 
       <footer style={s.footer}>
@@ -967,6 +1007,56 @@ function SurfaceTab({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ── A2UITab ─────────────────────────────────────────────────────────────────
+// The same event stream, projected onto the real Google A2UI wire protocol by
+// @loom/plugin-a2ui's egress bridge. Note the translation: Loom's native delta
+// patches (append/increment/merge, seen on the Surface tab) become A2UI's
+// absolute `updateDataModel` value-replacements — the bridge folds locally and
+// emits the concrete post-patch value at each JSON Pointer.
+
+const a2uiColor: Record<string, string> = {
+  createSurface: "#805ad5",
+  updateDataModel: "#3182ce",
+  updateComponents: "#38a169",
+  deleteSurface: "#e53e3e",
+};
+
+function a2uiKind(msg: A2UIServerMessage): string {
+  return Object.keys(msg).find((k) => k !== "version") ?? "?";
+}
+
+function A2UITab({ messages }: { messages: { time: string; msg: A2UIServerMessage }[] }) {
+  if (messages.length === 0) {
+    return (
+      <div style={s.empty}>
+        No A2UI messages yet — run the flow. Each <code>SURFACE_PATCH</code> event is projected
+        through the <code>@loom/plugin-a2ui</code> egress bridge into A2UI protocol v1.0 messages
+        (<code>createSurface</code> / <code>updateDataModel</code>) a compliant client would render.
+      </div>
+    );
+  }
+  return (
+    <div style={s.logPanel}>
+      <div style={s.stateJsonTitle}>A2UI wire messages ({messages.length})</div>
+      {messages.map((entry, i) => {
+        const kind = a2uiKind(entry.msg);
+        const body = (entry.msg as Record<string, unknown>)[kind];
+        return (
+          <div key={i} style={{ ...s.logRow, alignItems: "flex-start" }}>
+            <span style={s.logTime}>{entry.time}</span>
+            <span
+              style={{ ...s.logLabel, color: a2uiColor[kind] ?? "#a0aec0", minWidth: 128 }}
+            >
+              {kind}
+            </span>
+            <span style={s.logPayload}>{JSON.stringify(body)}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

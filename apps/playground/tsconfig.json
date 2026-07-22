@@ -29,6 +29,9 @@
       "path": "../../packages/projection-runtime"
     },
     {
+      "path": "../../plugins/a2ui"
+    },
+    {
       "path": "../../plugins/renderer-react"
     },
     {
