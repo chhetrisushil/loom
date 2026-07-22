@@ -411,6 +411,10 @@ onClientMessage((m) => {
 
 It ships a default component catalog (`Text`/`Column`/`Row`/`List`/`Badge`/`Button`) plus `defineCatalog` for your own. The bidirectional-RPC surface (`callFunction`/`actionResponse`, two-way binding) is deliberately out of scope. See `apps/playground` (the **A2UI** tab) for a live end-to-end wiring, and the [API reference](api-reference.org) for the full surface.
 
+The playground's **A2UI** tab shows the emitted wire messages (`createSurface` → `updateDataModel` → `deleteSurface`), and the **Approve** button round-trips an inbound `action` back through `ingestAction`:
+
+![Playground A2UI tab — surface patches projected onto the A2UI wire protocol, and the Approve action routed back through the bridge](media/playground-a2ui-tab.gif)
+
 For streamed progress independent of surfaces, use a pub/sub hub (`progressHub`) — handlers call `report(id, line)` / `reportProgress(id, pct)` and orchestrators subscribe (`onReport` / `onProgress`). See `schema-migration-planner` (in the [examples catalogue](examples.md)).
 
 ---
