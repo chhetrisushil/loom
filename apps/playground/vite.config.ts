@@ -16,6 +16,7 @@ export default defineConfig({
       "@loom/effect-runtime",
       "@loom/event-runtime",
       "@loom/projection-runtime",
+      "@loom/plugin-a2ui",
       "@loom/plugin-renderer-react",
       "@loom/sdk",
       "@loom/snapshot-runtime",

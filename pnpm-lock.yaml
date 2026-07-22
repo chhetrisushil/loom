@@ -44,6 +44,9 @@ importers:
       '@loom/intent':
         specifier: workspace:*
         version: link:../../packages/intent
+      '@loom/plugin-a2ui':
+        specifier: workspace:*
+        version: link:../../plugins/a2ui
       '@loom/plugin-renderer-react':
         specifier: workspace:*
         version: link:../../plugins/renderer-react

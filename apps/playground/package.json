@@ -20,6 +20,7 @@
     "@loom/intent": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/projection-runtime": "workspace:*",
+    "@loom/plugin-a2ui": "workspace:*",
     "@loom/plugin-renderer-react": "workspace:*",
     "@loom/sdk": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
