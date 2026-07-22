@@ -1,5 +1,5 @@
-import { agentSurfaceProjection } from "@loom/agent-surface";
 import { SkillRegistry } from "@loom/agent";
+import { agentSurfaceProjection } from "@loom/agent-surface";
 import {
   EraseCoordinator,
   type EraseSubjectResult,

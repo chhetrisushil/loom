@@ -4,9 +4,9 @@ import type { EventEnvelope } from "@loom/core";
 import { describe, expect, it } from "vitest";
 import { A2UISurfaceBridge } from "./A2UISurfaceBridge";
 import { DEFAULT_CATALOG_ID, bind, column, text } from "./catalog";
-import { dotPathToParts, dotPathToPointer } from "./pointer";
 import type { A2UIServerMessage } from "./messages";
 import { A2UI_VERSION } from "./messages";
+import { dotPathToParts, dotPathToPointer } from "./pointer";
 
 // ── pointer conversion ──────────────────────────────────────────────────────
 
@@ -148,7 +148,7 @@ describe("A2UISurfaceBridge — patch translation (after open)", () => {
     expect(msgs.map((m) => asUpdate(m).contents)).toEqual(["run", ["x"], 10]);
   });
 
-  it("set at the root path replaces the whole data model (pointer \"\")", () => {
+  it('set at the root path replaces the whole data model (pointer "")', () => {
     const b = opened();
     const [m] = b.handleEvent(patchEvent([{ op: "set", path: "", value: { fresh: true } }]));
     expect(asUpdate(m!)).toEqual({ surfaceId: "ui:exec-1", path: "", contents: { fresh: true } });

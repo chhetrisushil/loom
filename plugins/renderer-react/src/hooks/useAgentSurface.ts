@@ -11,9 +11,7 @@ export function useAgentSurface(
   executionId: string,
   surface: string = DEFAULT_SURFACE
 ): SurfaceState {
-  const [state, setState] = useState<SurfaceState>(() =>
-    runtime.getSurface(surface, executionId)
-  );
+  const [state, setState] = useState<SurfaceState>(() => runtime.getSurface(surface, executionId));
 
   useEffect(() => {
     setState(runtime.getSurface(surface, executionId));

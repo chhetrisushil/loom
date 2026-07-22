@@ -66,11 +66,7 @@ function removeIn(state: SurfaceState, parts: string[]): SurfaceState {
 // with k appends to one list is O(k) not O(k²). This is safe: the input state's
 // arrays are never in `owned`, so previous states are never mutated (cross-batch
 // immutability is preserved); only arrays this batch just created are pushed to.
-function applyOne(
-  state: SurfaceState,
-  patch: SurfacePatch,
-  owned: WeakSet<object>
-): SurfaceState {
+function applyOne(state: SurfaceState, patch: SurfacePatch, owned: WeakSet<object>): SurfaceState {
   const parts = splitPath(patch.path);
   switch (patch.op) {
     case "set":

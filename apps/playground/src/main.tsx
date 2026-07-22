@@ -1,6 +1,9 @@
 import { SURFACE_PATCH } from "@loom/agent-surface";
 import type { SurfacePatch, SurfacePatchPayload, SurfaceState } from "@loom/agent-surface";
 import { defineConfig } from "@loom/app";
+import { CapabilityCatalog, capability$ } from "@loom/capability";
+import type { EventEnvelope } from "@loom/core";
+import { IntentRuntime } from "@loom/intent";
 import {
   A2UISurfaceBridge,
   A2UI_VERSION,
@@ -12,9 +15,6 @@ import {
   text,
 } from "@loom/plugin-a2ui";
 import type { A2UIServerMessage, ComponentInstance } from "@loom/plugin-a2ui";
-import { CapabilityCatalog, capability$ } from "@loom/capability";
-import type { EventEnvelope } from "@loom/core";
-import { IntentRuntime } from "@loom/intent";
 import { LoomProvider, useLoom } from "@loom/plugin-renderer-react";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { ConsoleTelemetryAdapter } from "@loom/telemetry";
@@ -450,9 +450,9 @@ function App() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [executionId, setExecutionId] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
-  const [tab, setTab] = useState<
-    "blueprint" | "events" | "state" | "trace" | "surface" | "a2ui"
-  >("blueprint");
+  const [tab, setTab] = useState<"blueprint" | "events" | "state" | "trace" | "surface" | "a2ui">(
+    "blueprint"
+  );
   const [counter, setCounter] = useState(1);
   const [projState, setProjState] = useState<TaskState | null>(null);
   const [traceData, setTraceData] = useState<TraceSnapshot>({ flow: null, steps: [] });
@@ -1004,8 +1004,8 @@ function SurfaceTab({
   if (patches.length === 0) {
     return (
       <div style={s.empty}>
-        No agent-surface patches yet — run the flow. Each <code>ctx.ui.*</code> call emits one durable,
-        replayable <code>SURFACE_PATCH</code> event that folds into the surface.
+        No agent-surface patches yet — run the flow. Each <code>ctx.ui.*</code> call emits one
+        durable, replayable <code>SURFACE_PATCH</code> event that folds into the surface.
       </div>
     );
   }
@@ -1065,8 +1065,8 @@ function A2UITab({ messages }: { messages: { time: string; msg: A2UIServerMessag
     return (
       <div style={s.empty}>
         No A2UI messages yet — run the flow. Each <code>SURFACE_PATCH</code> event is projected
-        through the <code>@loom/plugin-a2ui</code> egress bridge into A2UI protocol v1.0 messages
-        (<code>createSurface</code> / <code>updateDataModel</code>) a compliant client would render.
+        through the <code>@loom/plugin-a2ui</code> egress bridge into A2UI protocol v1.0 messages (
+        <code>createSurface</code> / <code>updateDataModel</code>) a compliant client would render.
       </div>
     );
   }
@@ -1079,9 +1079,7 @@ function A2UITab({ messages }: { messages: { time: string; msg: A2UIServerMessag
         return (
           <div key={i} style={{ ...s.logRow, alignItems: "flex-start" }}>
             <span style={s.logTime}>{entry.time}</span>
-            <span
-              style={{ ...s.logLabel, color: a2uiColor[kind] ?? "#a0aec0", minWidth: 128 }}
-            >
+            <span style={{ ...s.logLabel, color: a2uiColor[kind] ?? "#a0aec0", minWidth: 128 }}>
               {kind}
             </span>
             <span style={s.logPayload}>{JSON.stringify(body)}</span>

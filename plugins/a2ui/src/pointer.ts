@@ -13,7 +13,7 @@ function escapeSegment(seg: string): string {
 /** "a.b" → "/a/b"; "" → "" (the whole data model). */
 export function dotPathToPointer(dotPath: string): string {
   if (dotPath === "") return "";
-  return "/" + dotPath.split(".").map(escapeSegment).join("/");
+  return `/${dotPath.split(".").map(escapeSegment).join("/")}`;
 }
 
 /** Split a Loom dot-path into the segment array `getSurfaceValue` expects. */
