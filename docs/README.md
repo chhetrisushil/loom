@@ -62,5 +62,5 @@ the APIs/ADRs it exercises, then read the source in `../loom-examples/examples/<
 - `db-sentinel` — the perpetual-agent pattern (ADRs 0051–0057): a `schedule$`-driven sentinel with durable carry state, claim-checked telemetry, findings as domain events, and pinned retention — all ten acceptance criteria proven over a DST-simulated year.
 - `incident-war-room` & `schema-migration-planner` — git-style branching (fork → simulate → compare → promote).
 - `agent-swarm` — a fleet wired from intent, with `policy$` least-privilege enforcement (each agent scoped to its own effect; a fleet-wide read-only guardrail).
-- `a2ui-dashboard` — one A2UI surface per agent (`defineConfig({ a2ui: true })`): each agent drives its own live panel, folded durably from the event log.
+- `a2ui-dashboard` — one agent surface per agent (`defineConfig({ agentSurface: true })`): each agent drives its own live panel, folded durably from the event log.
 - `appgen-brownfield` & `appgen-models` — `loom appgen` walkthroughs (docs-only): surgical edits to an existing app, and planning with the model of your choice (`--model anthropic:` / `openai:` / `gemini:` / a local `.gguf`).

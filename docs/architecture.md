@@ -130,7 +130,7 @@ flowchart TB
 
   subgraph Edges["🔌  Pluggable edges"]
     E1["EventStore / SnapshotStore<br/>(memory · SQLite · Postgres…)"]
-    E2["ProjectionRuntime + A2UI<br/>→ React / WebComponents / terminal"]
+    E2["ProjectionRuntime + agent-surface<br/>→ React / WebComponents / terminal"]
     E3["Dispatcher + WorkerRuntime<br/>(in-process · HTTP · Cloud Run)"]
     E4["LLM · MCP · A2A · agents"]
   end
@@ -295,11 +295,11 @@ flowchart LR
 
 Every middleware after `retryMiddleware` is opt-in; the authorizer, metering, safety, and redaction rings are each *omittable* and byte-identical to the permissive path when unwired (P10). The full ring set is catalogued in §5.7.
 
-### 5.3 Projections & UI (`@loom/projection-runtime`, `@loom/a2ui`, `@loom/blueprint-runtime`, renderers)
+### 5.3 Projections & UI (`@loom/projection-runtime`, `@loom/agent-surface`, `@loom/blueprint-runtime`, renderers)
 
-State for humans is a **read model**, folded from the same events by the `ProjectionRuntime` — completely decoupled from durability. Flows push UI updates via `ctx.ui.set/merge/append` (the **A2UI** patch protocol), which fold into **surfaces**. Surfaces render through pluggable renderers (React, Web Components, terminal) — **bring-your-own-renderer**. The durable log never depends on the UI.
+State for humans is a **read model**, folded from the same events by the `ProjectionRuntime` — completely decoupled from durability. Flows push UI updates via `ctx.ui.set/merge/append` (the **agent-surface** patch protocol — Loom's native surface mechanism, *not* the external Google A2UI wire protocol despite the historical name), which fold into **surfaces**. Surfaces render through pluggable renderers (React, terminal) — **bring-your-own-renderer**. For interop, `@loom/plugin-a2ui` projects a surface onto the real **A2UI (Agent-to-UI) wire protocol v1.0** so any A2UI-compliant client can render it (egress adapter, kernel untouched — [ADR 0069](adr/0069-a2ui-egress-adapter.md)). The durable log never depends on the UI.
 
-A projection can be declared with **`projection$`** and discovered by `loom gen`. When the compiler builds one, it extracts the whole `handlers` fold-map into its own `import()` chunk and records the handled event-type keys — so the fold code loads **on demand**, event-type-gated: a projection whose events never fire never loads its code (the same lazy-chunk mechanism as `handler$`/`instructions$`, [ADR 0049](adr/0049-projection-on-demand-fold-code.md)). At the config level, `defineConfig({ a2ui: true })` registers **one A2UI surface per `agent$`** (`surfaceId = agent.id`) so each agent drives its own panel, and `a2a: true` derives each agent's discoverable A2A card — both from the same `agent$` definitions, no hand-wired cards/surfaces.
+A projection can be declared with **`projection$`** and discovered by `loom gen`. When the compiler builds one, it extracts the whole `handlers` fold-map into its own `import()` chunk and records the handled event-type keys — so the fold code loads **on demand**, event-type-gated: a projection whose events never fire never loads its code (the same lazy-chunk mechanism as `handler$`/`instructions$`, [ADR 0049](adr/0049-projection-on-demand-fold-code.md)). At the config level, `defineConfig({ agentSurface: true })` registers **one agent surface per `agent$`** (`surfaceId = agent.id`) so each agent drives its own panel, and `a2a: true` derives each agent's discoverable A2A card — both from the same `agent$` definitions, no hand-wired cards/surfaces.
 
 ```mermaid
 flowchart LR
@@ -504,7 +504,7 @@ flowchart TB
 | **Core runtime** | `core`, `workflow-runtime`, `replay-vm`, `event-runtime`, `snapshot-runtime` |
 | **Composition** | `app` (`defineConfig`), `registry` |
 | **Effects** | `effect-runtime`, `middleware` |
-| **Projection / UI** | `projection-runtime`, `a2ui`, `blueprint-runtime`, `renderer-react`, `renderer-terminal` |
+| **Projection / UI** | `projection-runtime`, `agent-surface`, `plugin-a2ui`, `blueprint-runtime`, `renderer-react`, `renderer-terminal` |
 | **Agentic** | `agent`, `a2a`, `llm`, `reasoning`, `mcp`, `capability`, `intent`, `planner`, `memory`, `orchestrator` |
 | **Compute / distribution** | `dispatcher`, `worker-runtime`, `worker-runtime-local`, `worker-runtime-remote`, `worker-server`, `platform-cloudrun`, `graph-executor`, `scheduler`, `store-postgres` |
 | **Kernel hardening / security** | `effect-runtime` (K2 authz + K12 delegation), `middleware` (K3 metering, K6 safety, K10 redaction, K12 nested budgets), `isolate` (K7 data-plane isolation & egress), `plugin-crypto` (K10 encryption & crypto-shredding), `event-runtime`/`snapshot-runtime` (K12 tenant scoping), `wire-abi` (T2), `telemetry` (K10-R6 egress scrubbing) |
@@ -565,7 +565,7 @@ Each subsection is a decision, *why* it was made, and what it buys you. The dist
 ### D7 — Projections decoupled from durability; bring-your-own-renderer
 
 - **Context.** UI concerns tend to leak into persistence.
-- **Decision.** Read models are folded independently by the `ProjectionRuntime`; flows emit UI via the A2UI patch protocol; renderers (React/WC/terminal) are pluggable (P8).
+- **Decision.** Read models are folded independently by the `ProjectionRuntime`; flows emit UI via the agent-surface patch protocol; renderers (React/WC/terminal) are pluggable (P8).
 - **Reasoning.** The durable log must not depend on how (or whether) anything is rendered. Separating projection from persistence lets the same backend drive any front end — proven by the same app rendered in React, Web Components, and Angular.
 - **Advantages.** UI-framework independence; headless operation; live surfaces without coupling; the log stays clean.
 

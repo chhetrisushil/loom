@@ -13,7 +13,7 @@ New to Loom? Start with [[file:getting-started.md][Getting Started]] and the [[f
 4.  [[#replay-storage][Replay & storage]] — ~@loom/replay-vm~, ~@loom/event-runtime~, ~@loom/snapshot-runtime~
 5.  [[#effects][Effects]] (~@loom/effect-runtime~) — ~Effect~, ~EffectRuntime~, middleware, the four effect kinds, K2 capability ring + K12 delegation
 6.  [[#kernel-hardening][Kernel hardening & security]] — the K1–K12 / T1–T2 ring map + ~@loom/isolate~ (K7), ~@loom/plugin-crypto~ (K10), ~@loom/wire-abi~ (T2)
-7.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/a2ui~, ~@loom/blueprint-runtime~, ~@loom/plugin-renderer-react~, ~@loom/plugin-renderer-terminal~
+7.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/agent-surface~, ~@loom/plugin-a2ui~, ~@loom/blueprint-runtime~, ~@loom/plugin-renderer-react~, ~@loom/plugin-renderer-terminal~
 8.  [[#agentic][Agentic]] — ~@loom/llm~, ~@loom/reasoning~, ~@loom/agent~, ~@loom/plugin-mcp~, ~@loom/plugin-a2a~, ~@loom/capability~, ~@loom/intent~, ~@loom/planner~, ~@loom/memory~, ~@loom/orchestrator~
 9.  [[#compute][Compute & distribution]] — ~@loom/dispatcher~, ~@loom/worker-runtime~ (+ ~-local~/~-remote~), ~@loom/worker-server~, ~@loom/plugin-cloudrun~, ~@loom/plugin-postgres~, ~@loom/graph-executor~, ~@loom/scheduler~
 10. [[#dx][DX & tooling]] — ~@loom/analytics~, ~@loom/appgen~, ~@loom/appgen-model~, ~@loom/cli~, ~@loom/testing~, ~@loom/eval~, ~@loom/deploy-sim~, ~@loom/scaffold~, ~@loom/compiler~, ~@loom/telemetry~
@@ -216,7 +216,7 @@ type StorageConfig =
 interface LoomConfig {
   storage: StorageConfig;                       // required
   projectionRuntime?: ProjectionRuntime;        // default in-memory
-  surfaces?: string[];                          // A2UI surfaces to register
+  surfaces?: string[];                          // agent surfaces to register
   flows?: RegisteredFlow[];
   flowModules?: FlowModule[];                    // every RegisteredFlow-shaped export is registered
   manifest?: ManifestView;                       // cross-check vs compiler manifest
@@ -285,7 +285,7 @@ interface DispatchResult { taskId: string; status: A2ATaskStatus; artifact: unkn
 interface ApprovalDecision { approved: boolean; approvedBy: string; }
 #+end_src
 
-Also exported: ~BroadcastingProjectionRuntime~ (a ~ProjectionRuntime~ decorator that emits each ~A2UI_PATCH~ to an SSE sink, with ~snapshot()~), and ~progressHub~.
+Also exported: ~BroadcastingProjectionRuntime~ (a ~ProjectionRuntime~ decorator that emits each ~SURFACE_PATCH~ to an SSE sink, with ~snapshot()~), and ~progressHub~.
 
 ** ~@loom/middleware~ — effect middleware
 
@@ -434,7 +434,7 @@ interface ExecutionContext {
   sleepUntil(wakeAt: number): Promise<void>;                                           // (2.0, T1) wake at absolute ms
   emit(eventType: string, payload: unknown): void;                                     // durable domain event
   stream(eventType: string, delta: string, done?: boolean): void;                      // token streaming
-  readonly ui: A2UIEmitter;                                                            // ctx.ui.set/merge/append …
+  readonly ui: SurfaceEmitter;                                                            // ctx.ui.set/merge/append …
 }
 #+end_src
 
@@ -789,35 +789,110 @@ class InMemoryProjectionRuntime {
 }
 #+end_src
 
-** ~@loom/a2ui~ — the Agent-to-UI protocol
+** ~@loom/agent-surface~ — native surface-patch protocol
 
-Flows drive the UI with typed, durable patches that fold into named *surfaces*.
+Loom's *native*, event-sourced UI mechanism: flows drive the UI with typed, durable
+patches that fold into named *surfaces*. This is **not** the external Google A2UI wire
+protocol — for interop with A2UI-compliant clients see ~@loom/plugin-a2ui~ below, which
+projects these surfaces onto the A2UI wire format.
 
 #+begin_src typescript
-const A2UI_PATCH = "A2UI_PATCH";
+const SURFACE_PATCH = "SURFACE_PATCH";
 const DEFAULT_SURFACE = "ui";                    // the surface ctx.ui.* targets
 
-type A2UIPatch =
+type SurfacePatch =
   | { op: "set";       path: string; value: unknown }
   | { op: "merge";     path: string; value: Record<string, unknown> }
   | { op: "append";    path: string; value: unknown }
   | { op: "remove";    path: string }
   | { op: "increment"; path: string; by?: number };
 
-interface A2UIEmitter {
+interface SurfaceEmitter {
   set(path: string, value: unknown): void;
   merge(path: string, value: Record<string, unknown>): void;
   append(path: string, value: unknown): void;
   remove(path: string): void;
   increment(path: string, by?: number): void;
-  patch(patches: A2UIPatch[]): void;
+  patch(patches: SurfacePatch[]): void;
 }
-function createA2UIEmitter(emit: (eventType: string, payload: unknown) => void, surface?: string): A2UIEmitter
-function a2uiSurfaceProjection(surfaceId?: string): Projection<A2UISurfaceState>   // register on a ProjectionRuntime
-function applyA2UIPatch(state: A2UISurfaceState, patch: A2UIPatch): A2UISurfaceState        // pure, total
-function applyA2UIPatches(state: A2UISurfaceState, patches: readonly A2UIPatch[]): A2UISurfaceState
-// getSurfaceValue(state, parts: string[]): unknown ;  class A2UIRuntime { handleEvent/getSurface/seed/subscribe }
+function createSurfaceEmitter(emit: (eventType: string, payload: unknown) => void, surface?: string): SurfaceEmitter
+function agentSurfaceProjection(surfaceId?: string): Projection<SurfaceState>   // register on a ProjectionRuntime
+function applySurfacePatch(state: SurfaceState, patch: SurfacePatch): SurfaceState        // pure, total
+function applySurfacePatches(state: SurfaceState, patches: readonly SurfacePatch[]): SurfaceState
+// getSurfaceValue(state, parts: string[]): unknown ;  class AgentSurfaceRuntime { handleEvent/getSurface/seed/subscribe }
 #+end_src
+
+** ~@loom/plugin-a2ui~ — A2UI (Agent-to-UI) egress adapter
+
+Projects a Loom agent surface onto the *real* Google [[https://a2ui.org][A2UI]] wire
+protocol v1.0, so any A2UI-compliant client can render a Loom-driven UI. A **1P plugin**,
+kernel untouched (ADR 0069). **Egress + inbound actions only** by design — the
+bidirectional RPC surface (~callFunction~/~actionResponse~, two-way binding) is deferred
+because it fights Loom's append-only replay grain.
+
+The bridge folds ~SURFACE_PATCH~ events locally and translates Loom's *delta* ops into
+A2UI's *absolute* ~updateDataModel~ value-replacement (A2UI has no patch framework);
+~remove~ → ~contents: null~. K10-R6 egress redaction is applied on the way out.
+
+#+begin_src typescript
+const A2UI_VERSION = "v1.0";
+
+// One session per (surface, execution): feed it the event stream, get A2UI wire messages.
+class A2UISurfaceBridge {
+  constructor(opts: {
+    executionId: string;                 // which execution's surface
+    components: ComponentInstance[];      // the view (component tree); one node must be id:"root"
+    surface?: string;                     // Loom surface id (default "ui")
+    a2uiSurfaceId?: string;               // emitted wire id (default `${surface}:${executionId}`)
+    catalogId?: string;                   // default DEFAULT_CATALOG_ID
+    redact?: readonly string[];           // K10-R6 egress dot-paths
+    surfaceProperties?: Record<string, unknown>;
+  });
+  get surfaceId(): string;
+  snapshot(): A2UIServerMessage[];             // createSurface + current data (late-joining client)
+  handleEvent(event: EventEnvelope): A2UIServerMessage[];  // 0+ createSurface/updateDataModel messages
+  close(): A2UIServerMessage[];                // deleteSurface
+  ingestAction(msg: A2UIClientMessage): ActionPayload | null;  // inbound: normalize a client action
+}
+
+// Catalog (mandatory in A2UI — createSurface names a catalogId)
+const DEFAULT_CATALOG_ID = "loom.core.v1";
+const defaultCatalog: A2UICatalog;           // Text/Column/Row/List/Badge/Button
+function defineCatalog(catalog: A2UICatalog): A2UICatalog;   // bring your own
+
+// Component-tree builders (bindings are JSON Pointers into the surface data model)
+function bind(pointer: string): { path: string };
+function text(id, value): ComponentInstance;
+function badge(id, label, tone?): ComponentInstance;
+function column(id, children: string[]): ComponentInstance;
+function row(id, children: string[]): ComponentInstance;
+function list(id, path, itemComponentId): ComponentInstance;   // template iteration
+function button(id, label, action: string): ComponentInstance; // raises an inbound action
+function jsonDebugView(): ComponentInstance[];                  // render the whole model as JSON
+
+function dotPathToPointer(dotPath: string): string;   // "a.b" → "/a/b" (RFC 6901)
+#+end_src
+
+Usage — bridge a surface to a connected client (e.g. an SSE endpoint):
+
+#+begin_src typescript
+import { A2UISurfaceBridge, column, text, badge, bind } from "@loom/plugin-a2ui";
+
+const view = [column("root", ["status", "score"]), badge("status", bind("/status")), text("score", bind("/stats/score"))];
+const bridge = new A2UISurfaceBridge({ executionId, components: view });
+
+send(bridge.snapshot());                        // createSurface (view + current data)
+eventStore.subscribe(executionId, (e) => {
+  for (const msg of bridge.handleEvent(e)) send(msg);  // updateDataModel per patch
+});
+// inbound: a client Button action → resume the flow
+onClientMessage((m) => {
+  const action = bridge.ingestAction(m);
+  if (action?.action === "approve") runtime.resume(executionId, { eventType: "TaskApproved", payload: { a2ui: action } });
+});
+#+end_src
+
+See ~apps/playground~ (the "A2UI" tab) for a live end-to-end wiring.
 
 ** ~@loom/blueprint-runtime~ — declarative UI
 
@@ -864,7 +939,7 @@ function useLoom(): { projectionRuntime; workflowRuntime; preloadedExecutionStat
 
 function useProjection<TState>(pr: ProjectionRuntime, projectionId: string, executionId: string): TState
 function useDeferredProjection<TState>(pr, projectionId, executionId): TState   // marks streamed updates non-urgent
-function useA2UISurface(runtime: A2UIRuntime, executionId: string, surface?: string): A2UISurfaceState
+function useAgentSurface(runtime: AgentSurfaceRuntime, executionId: string, surface?: string): SurfaceState
 
 type FiberConfig = boolean | { granularUpdates?: boolean; suspense?: boolean; deferStreaming?: boolean }; // all default off
 const defaultRegistry: RendererRegistry<WidgetRenderer>;  // MetricCard/Timeline/ApprovalCard/StatusBadge/StreamingText

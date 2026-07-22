@@ -15,7 +15,7 @@ happen — not just "this is secret-ish":
 |---|---|---|
 | `secret` | **never persisted** | substituted / redacted before the value reaches the log (K10-R2 `secretRef`, K10.3 redaction) |
 | `sensitive` | encrypted-at-rest, crypto-shreddable | field-level encryption ([`@loom/plugin-crypto`](adr/0022-k10-log-lifecycle-retention-redaction-encryption.md)) + scrubbed from egress |
-| `internal` | persisted in the clear | scrubbed from **external** egress only (telemetry / a2ui / CLI, K10-R6); never crosses the trust boundary |
+| `internal` | persisted in the clear | scrubbed from **external** egress only (telemetry / agent-surface / CLI, K10-R6); never crosses the trust boundary |
 
 An unmarked field is unclassified and handled by nothing — omitting the marker is a true
 no-op (G2).
@@ -105,14 +105,14 @@ The **log** still holds the real value (that is encryption/erasure's concern, K1
 scrubbing governs only what leaves the boundary. `secret` fields need no scrubbing — K10-R2
 keeps them off the log and telemetry entirely.
 
-### The other egress surfaces: a2ui + CLI
+### The other egress surfaces: agent-surface + CLI
 
 Telemetry sits at the effect boundary, so it derives its scrub paths from step schemas
 (`scrubPathsByStep`). The other two egress surfaces are **not** schema-bound, so they take
 explicit paths — but all three share one masking primitive (`maskPaths` from `@loom/classify`,
 masking to `[redacted]`):
 
-- **a2ui** — surface state is *app-authored* (agents emit free-form patches, not step
+- **agent-surface** — surface state is *app-authored* (agents emit free-form patches, not step
   outputs), so classification marks can't reach it. Declare the sensitive surface dot-paths
   when registering the surface; they're masked in the folded state before any reader
   (`getSurface`/`getState`/a client renderer) sees them:

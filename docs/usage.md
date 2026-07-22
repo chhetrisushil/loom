@@ -90,7 +90,7 @@ Inside a runner you have the full `WorkflowContext`:
 | `ctx.suspend({ on, correlationKey, timeout })` | Durable pause for a human/signal |
 | `ctx.emit(type, payload)` | Emit a domain event into the log |
 | `ctx.stream(type, delta, done?)` | Stream token/deltas (e.g. LLM output) |
-| `ctx.ui.set/merge/append(path, …)` | Push updates to a UI surface (A2UI) |
+| `ctx.ui.set/merge/append(path, …)` | Push updates to a UI surface (agent-surface) |
 
 ---
 
@@ -116,9 +116,9 @@ const app = defineConfig({
 | Field | What it does |
 |---|---|
 | `storage` | `{ kind: "memory" }` or `{ kind: "custom", eventStore, snapshotStore, branchRegistry? }`. Concrete backends are **presets** returning a `custom` descriptor: `sqliteStorage({ dir, branching })` from `@loom/plugin-sqlite`, `postgresStorage({ url, branching })` from `@loom/plugin-postgres`, or your own (ADR 0043) |
-| `surfaces` | A2UI surface ids to project — a bare id, or `{ id, redact: [...] }` to mask surface paths from egress (K10-R6) |
+| `surfaces` | agent surface ids to project — a bare id, or `{ id, redact: [...] }` to mask surface paths from egress (K10-R6) |
 | `flows` / `flowModules` | flows to register (explicit, or via `loom gen`'s `flowModules`) |
-| `agentModules` / `toolModules` / `skillModules` | `agent$` / `tool$` / `skill$` definitions discovered by `loom gen` (value-shape); agents fold into `agents` (auto-wired behind `a2a`/`a2ui`), tools are exposed on `app.tools`, skills register into `app.skills` |
+| `agentModules` / `toolModules` / `skillModules` | `agent$` / `tool$` / `skill$` definitions discovered by `loom gen` (value-shape); agents fold into `agents` (auto-wired behind `a2a`/`agentSurface`), tools are exposed on `app.tools`, skills register into `app.skills` |
 | `scheduleModules` / `memoryModules` | `schedule$` / `memory$` definitions discovered by `loom gen`; schedules merge into `app.schedules` + fire via the `TimerService` (needs `timers.store`), memories register into `app.memory` |
 | `skills` / `memories` | `skill$` / `memory$` definitions registered directly (in addition to the `*Modules`) |
 | `memoryStore` | backing `MemoryStore` for `app.memory` (default in-memory; content is separate from the durable log) |
@@ -127,9 +127,9 @@ const app = defineConfig({
 | `policies` | app-global `policy$` definitions enforced via a `PolicyAuthorizer` (composes under `authorizer`; per-flow policies read from each flow's `policies`) |
 | `timers` | durable timers + `schedule$` cron occurrences (T1; see Step 11) |
 | `validate` | `false \| "warn" \| "error"` — boot-time flow-graph validation |
-| `agents` / `capabilityAgents` | A2A agent cards (or `agent$` definitions — see `a2a`/`a2ui`) + capability→agent routing |
+| `agents` / `capabilityAgents` | A2A agent cards (or `agent$` definitions — see `a2a`/`agentSurface`) + capability→agent routing |
 | `a2a` | opt-in: auto-derive + register an `AgentCard` for each `agent$` definition in `agents` (no hand-built cards). Off ⇒ wire cards manually as before |
-| `a2ui` | opt-in: auto-register an A2UI surface per agent (`surfaceId = agent.id`). Off ⇒ register `surfaces` manually |
+| `agentSurface` | opt-in: auto-register an agent surface per agent (`surfaceId = agent.id`). Off ⇒ register `surfaces` manually |
 | `dispatcher` | where executions run (in-process / remote / Cloud Run) |
 | `onEvent` | tap every committed event (telemetry, custom projections) |
 | `secrets` | `{ resolver }` — wire secret redaction: resolve `secretRef` input + redact `secret()` output (K10-R2; see [data classification](data-classification.md)) |
@@ -164,7 +164,7 @@ Because state is `fold(events)`, you can also inspect without running: `await ap
 
 ## Step 5 — Drive a live UI with surfaces
 
-Flows push UI updates through `ctx.ui` (the **A2UI** patch protocol). These fold into named **surfaces** in the `ProjectionRuntime`, completely decoupled from durability.
+Flows push UI updates through `ctx.ui` (the **agent-surface** patch protocol). These fold into named **surfaces** in the `ProjectionRuntime`, completely decoupled from durability.
 
 ```ts
 const runner: FlowRunner<In, Out> = async (ctx, input) => {

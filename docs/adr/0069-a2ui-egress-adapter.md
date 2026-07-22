@@ -66,3 +66,21 @@ consumer needs them (the "second consumer" evidence gate).
 - A2UI is young (v1.0, Dec 2025). Housing it in a swappable, versioned plugin — not the kernel — keeps the
   churn blast radius at the edge.
 - Loom keeps **one** internal UI protocol (`agent-surface`); A2UI is purely an optional egress projection.
+
+## Rollout (addendum, 2026-07-22)
+
+The decision above shipped in full and was rolled out across the ecosystem:
+
+- **Playground** — the `apps/playground` event stream ("SSE broadcaster") is now wired through an
+  `A2UISurfaceBridge`; a live **A2UI** tab shows the emitted wire messages beside the native surface
+  patches, and the **Approve** button routes through `ingestAction` (the inbound leg), demonstrating the
+  full round-trip end-to-end.
+- **Documentation** — the living guides (`api-reference`, `user-guide`, `architecture`, `usage`,
+  `data-classification`, …) were updated: native-protocol references renamed to `agent-surface`
+  (`SURFACE_PATCH`, `SurfaceEmitter`, `agentSurfaceProjection`, config flag `agentSurface`), and a new
+  `@loom/plugin-a2ui` API section plus a "how to use" walkthrough were added. Historical records (ADRs,
+  requirements, presentation decks) were intentionally left unchanged as point-in-time artifacts.
+- **Downstream repos** — `@loom/a2ui` → `@loom/agent-surface` was migrated in the sibling repos that
+  consumed it (`genUI`, `aetherOS`, `loom-examples`), each as its own PR (typecheck/tests green). Their
+  own local naming (e.g. genUI's `surface/a2ui.ts`, the `a2ui-dashboard` example folder) was kept — only
+  the broken package/symbol references were migrated.
