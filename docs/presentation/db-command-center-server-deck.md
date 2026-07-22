@@ -60,7 +60,7 @@ The client no longer imports the orchestrator, agents, or flows — only the ren
   InMemoryProjectionRuntime               POST /api/missions {goal} → orchestrator.run(goal)
    (mirror: mission, telemetry)           GET  /api/missions/:id/stream  (SSE)
   dom/BlueprintDom + elements  ◀──SSE───    • on connect: {kind:"snapshot", serializeProjections}
-  approval banner                           • then {kind:"patch", envelope} per A2UI_PATCH
+  approval banner                           • then {kind:"patch", envelope} per SURFACE_PATCH
         │ fetch POST                       POST /api/missions/:id/approve {approved}
         └──────────▶ /api ◀────────────    SqliteEventStore + SqliteSnapshotStore (durable)
                                            WorkflowRuntime + Orchestrator + InProcessA2ABus + agents
@@ -74,7 +74,7 @@ The client no longer imports the orchestrator, agents, or flows — only the ren
 POST /api/missions          {goal}            → { missionId }        // start / restart
 GET  /api/missions/:id/stream                 → SSE
      • {kind:"snapshot", snapshot}  // serializeProjections(mission+telemetry) on connect
-     • {kind:"patch", envelope}     // one A2UI_PATCH EventEnvelope per update
+     • {kind:"patch", envelope}     // one SURFACE_PATCH EventEnvelope per update
 POST /api/missions/:id/approve {approved}      → { ok }              // human-in-the-loop
 ```
 
@@ -90,7 +90,7 @@ One shared file of pure types + route consts, imported by **both** sides
 ```ts
 handleEvent(env) {
   this.inner.handleEvent(env);                       // fold locally
-  if (env.eventType === A2UI_PATCH && env.executionId === missionId)
+  if (env.eventType === SURFACE_PATCH && env.executionId === missionId)
     this.onPatch(env);                               // → fan out to SSE clients
 }
 snapshot() { return serializeProjections({mission, telemetry}, missionId); }

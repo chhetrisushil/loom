@@ -68,7 +68,7 @@ pnpm install && pnpm build        # once
 pnpm --filter @loom/agent-network start          # Demo 0: whole pipeline, headless (best opener)
 pnpm --filter @loom/a2a-mesh start                # Demo 0b: A2A interop with ADK/LangGraph/CrewAI (headless)
 pnpm --filter @loom/cloud-command-center dev      # Demo 1: durable + streaming UI + approval (React)
-pnpm --filter @loom/playground dev                # Demo 2: A2UI patch stream + Trace tab
+pnpm --filter @loom/playground dev                # Demo 2: agent-surface patch stream + Trace tab
 pnpm --filter @loom/angular-command-center dev    # Demo 3: same runtime, Angular UI (optional)
 pnpm --filter @loom/db-command-center dev         # Demo 4: agentic DB command center — planner + A2A + HITL + fiber (React)
 pnpm --filter @loom/db-command-center-wc dev      # Demo 5: the same app in vanilla Web Components (no framework)
@@ -89,7 +89,7 @@ pnpm --filter @loom/schema-migration-planner dev        #         …or the live
 > **capability** and starts a **workflow**; agents call **tools** (local or via MCP) and can delegate to
 > other agents (**A2A**); the workflow **suspends** for human approval — surviving restarts — and
 > **resumes** without re‑running completed work; and agents **generate and drive the UI** live via durable
-> patches (**A2UI**), rendering to web, Angular, or a terminal. State is an **append‑only event log**, so
+> patches (**agent-surface**), rendering to web, Angular, or a terminal. State is an **append‑only event log**, so
 > durability, auditability, and cost‑efficiency are the same mechanism.
 
 ---

@@ -17,7 +17,7 @@ title: "Loom — Agentic DB Command Center"
 
 <!--
 Presenter: "This is a reference app that exercises the *whole* Loom stack end to
-end: intent, planner, capabilities, agents, A2A, durable workflows, A2UI, and the
+end: intent, planner, capabilities, agents, A2A, durable workflows, agent surfaces, and the
 React renderer's fiber path. Runs fully offline — no API key."
 -->
 
@@ -45,7 +45,7 @@ Same app, same agents — the **goal text** drives which workflow runs and wheth
 | Workflow composed **dynamically** from the goal | `PlannerRuntime.plan(goal)` → ordered capability pipeline |
 | Domain agents communicating over **A2A** | `agents/definitions.ts` + `a2a/InProcessA2ABus.ts` |
 | **Long-running** agents | durable Loom flows in `capabilities/flows.ts` |
-| Near-real-time **task list & status** | `AgentTaskList` widget on the `mission` A2UI surface |
+| Near-real-time **task list & status** | `AgentTaskList` widget on the `mission` agent surface |
 | Agent tasks created **dynamically** | one `AgentTask` per plan step, at dispatch |
 | **Observability** dashboard | `blueprints/ObservabilityBlueprint.ts` |
 
@@ -59,14 +59,14 @@ Same app, same agents — the **goal text** drives which workflow runs and wheth
                                     │  risk gate,             └─ Capacity Agent ────┘   (ctx.suspend /
                                     │  human-in-the-loop                                  resume for approval)
                                     ▼
-                    A2UI surfaces:  "mission"  +  "telemetry"
+                    agent surfaces:  "mission"  +  "telemetry"
                                     ▼
               BlueprintRenderer (fiber) over a custom RendererRegistry (React)
 ```
 
 - **Left** = intelligence: intent routing + planning.
 - **Middle** = the Orchestrator conducting agents over A2A, enforcing the risk policy.
-- **Right** = generated UI: A2UI surfaces rendered by blueprints.
+- **Right** = generated UI: agent surfaces rendered by blueprints.
 
 ---
 
@@ -127,9 +127,9 @@ Same mechanism as `cloud-command-center`'s suspend/resume — replayable and res
 
 ---
 
-## Near-real-time surfaces (A2UI)
+## Near-real-time surfaces (agent-surface)
 
-Agents narrate through a `progressHub`; the Orchestrator folds progress + metrics into two **A2UI surfaces**:
+Agents narrate through a `progressHub`; the Orchestrator folds progress + metrics into two **agent surfaces**:
 
 - **`mission`** — `phase`, `plan`, `tasks[]`, `pendingApproval`, `summary`
 - **`telemetry`** — `metrics`, `history`, `fleet`, streaming `log`

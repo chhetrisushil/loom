@@ -100,7 +100,7 @@ Traditional frameworks optimize for **hydration** (rebuild state on every reques
 | **Speculative branching** | Fork an in‑flight task, try alternate plans, keep the winner |
 | **Agents + tools** | ReAct agents, MCP tool discovery, agent memory |
 | **Agent‑to‑Agent (A2A)** | Expose a workflow as an agent; call remote agents |
-| **Generated UI (A2UI)** | Agents drive live UIs via durable patches |
+| **Generated UI (agent-surface)** | Agents drive live UIs via durable patches |
 | **Intent → Plan → Capability** | Users express goals; Loom routes & plans |
 | **Multi‑surface** | Same app renders to web, Angular, terminal, … |
 | **Safe releases** | Simulate a deploy against real history + replayable evals gate CI *before* you promote |
@@ -240,4 +240,5 @@ Incremental and layered — teams adopt one capability at a time.
 - **Blueprint** — a JSON‑serializable UI description rendered to any surface.
 - **Effect** — a sandboxed side effect (tool/LLM/human/agent) that runs once and is remembered.
 - **Resumability** — restoring a live/suspended execution without re‑running work.
-- **A2UI** — Agent‑to‑UI: agents drive interfaces via durable patch events.
+- **Agent surface** — agents drive interfaces via durable patch events (Loom's native UI mechanism).
+- **A2UI** — the external [Agent‑to‑UI](https://a2ui.org) wire protocol; Loom surfaces are exposed to A2UI‑compliant clients via the `@loom/plugin-a2ui` adapter.
