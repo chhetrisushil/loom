@@ -60,7 +60,7 @@ No dominant option — every column trades off. So don't guess: **branch**.
 
 - `src/branching/BranchOrchestrator.ts` — the fork/simulate/promote lifecycle. Only the
   flow id (`execute-migration`) and resume event type (`MigrationDecision`) differ.
-- The `branch` A2UI surface + `BranchGraph` / `BranchDiff` / `BranchControls` widgets.
+- The `branch` agent surface + `BranchGraph` / `BranchDiff` / `BranchControls` widgets.
 - The `wire.ts` protocol, the server/client SSE plumbing, the `Orchestrator` branch lifecycle.
 
 **New (the domain):** `warroom/strategies.ts` (strategies + outcome fields), the migration

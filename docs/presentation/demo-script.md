@@ -62,8 +62,8 @@ Open the printed URL (default `http://localhost:5173/`, auto‑increments if bus
 **What to show**
 1. The intent box is pre‑filled: *"investigate high CPU on the postgres cluster"*. Click **Run Intent**.
    - Event Log shows `Intent "…" → capability investigate-incident` — **Intent Over Routes**.
-2. Watch the **Workflow Phase** badge move: investigating → triaging → awaiting‑approval. These are **A2UI patches** from the flow.
-3. Watch **AI Root‑Cause Analysis** stream in **token by token** — the LLM effect pushing A2UI patches into the `ui` surface.
+2. Watch the **Workflow Phase** badge move: investigating → triaging → awaiting‑approval. These are **agent-surface patches** from the flow.
+3. Watch **AI Root‑Cause Analysis** stream in **token by token** — the LLM effect pushing agent-surface patches into the `ui` surface.
 4. The workflow **suspends** at the approval step. Click **Approve Remediation**.
 5. It **resumes** → phase `resolved`. The metrics/logs steps are **not** re‑run.
 
@@ -82,13 +82,13 @@ pnpm --filter @loom/playground dev
 
 **What to show**
 1. Type a goal, click **➤ Run Intent** (or **▶ Run Flow** for the direct path).
-2. **A2UI tab** — live `ui` surface (left) next to the **raw patch stream** (right): `set` / `merge` / `append` / `increment` scrolling as the flow runs.
+2. **Surface tab** — live `ui` surface (left) next to the **raw patch stream** (right): `set` / `merge` / `append` / `increment` scrolling as the flow runs.
 3. **Trace tab** — Gantt‑style per‑step timing (from `@loom/telemetry`).
 4. **Event Log tab** — the append‑only event stream that *is* the application state.
 5. Click **✓ Approve** to resume.
 
 **Talking points**
-- "The A2UI tab is the protocol laid bare — every UI change is a typed, ordered, replayable patch event."
+- "The Surface tab is the protocol laid bare — every UI change is a typed, ordered, replayable patch event."
 - "The Trace and Event tabs are free observability: the event log gives you audit + timing with zero instrumentation."
 
 ---

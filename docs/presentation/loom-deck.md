@@ -106,7 +106,7 @@ Build that spine well; keep authoring in plain TypeScript; everything else compo
        start/resume/fork     sole sequencer         pure state = fold(events)
                                      │
   🔌  PLUGGABLE EDGES
-      EventStore/Snapshot   ProjectionRuntime+A2UI   Dispatcher+Worker   LLM/MCP/A2A
+      EventStore/Snapshot   ProjectionRuntime+agent-surface   Dispatcher+Worker   LLM/MCP/A2A
       (memory·SQLite·PG)    (React·WC·terminal)       (local·HTTP·Cloud Run)
 ```
 

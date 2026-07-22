@@ -122,7 +122,7 @@ runtime  ─await→  journal.drain()   at durability barriers:
  effect-runtime · event-runtime · snapshot-runtime · replay-vm
         └───────────────────────────► @loom/core (types, builders, SuspendError)
 
- Agentic:      llm · agent · mcp · a2a · a2ui · registry
+ Agentic:      llm · agent · mcp · a2a · agent-surface · registry
  Intelligence: capability · intent · planner · memory · renderer-terminal
  Scheduler:    scheduler (ephemeral, dependency-free)
  Optional:     telemetry (depends only on core — OTel-ready)
@@ -251,7 +251,7 @@ State is the log; **read models are projections**; the UI **binds to projection 
 ```
 domain events ──▶ ProjectionRuntime (foldEvent) ──▶ view models ──▶ Blueprint widgets
   STEP_COMPLETED     MetricsProjection                  MetricCard { path: "cpu" }
-  A2UI_PATCH         "ui" surface                       StreamingText { path: "aiAnalysis" }
+  SURFACE_PATCH         "ui" surface                       StreamingText { path: "aiAnalysis" }
 ```
 
 - **Blueprints are JSON, framework-free** — a server step can emit one; any renderer picks it up.

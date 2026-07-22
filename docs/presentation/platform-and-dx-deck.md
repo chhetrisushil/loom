@@ -49,7 +49,7 @@ const eventStore = new InMemoryEventStore();
 const snapshotStore = new InMemorySnapshotStore();
 const effectRuntime = new EffectRuntime();
 const projectionRuntime = new InMemoryProjectionRuntime();
-projectionRuntime.register(a2uiSurfaceProjection("mission"));
+projectionRuntime.register(agentSurfaceProjection("mission"));
 const runtime = new WorkflowRuntime({
   eventStore, snapshotStore, effectRuntime,
   onEvent: (e) => projectionRuntime.handleEvent(e),

@@ -274,7 +274,7 @@ Loom is deliberately the **kernel** layer of a three-layer stack:
 ```
   AetherOS   ── platform: marketplaces · registries · cloud · governance
       │
-   GenUI     ── application & interaction: blueprints · A2UI · multimodal surfaces
+   GenUI     ── application & interaction: blueprints · agent surfaces · multimodal surfaces
       │
    Loom 2.0  ── the execution kernel: execution · scheduling · reasoning ·
                 memory · compute · projections · durability · determinism

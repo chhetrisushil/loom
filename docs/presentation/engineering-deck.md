@@ -42,7 +42,7 @@ Intent → Planner → Workflow → Agent → Effect → Event Log
 
 **Composition & effects** — `app` (**`defineConfig`**), `middleware` (retry/logging), `registry`
 
-**UI** — `blueprint-runtime`, `renderer-react`, `renderer-terminal`, `a2ui`
+**UI** — `blueprint-runtime`, `renderer-react`, `renderer-terminal`, `agent-surface`
 
 **Agentic** — `llm`, `agent`, `mcp`, `a2a` · **Intelligence** — `capability`, `intent`, `planner`, `memory`, `orchestrator`
 
@@ -143,7 +143,7 @@ await ctx.parallel([[a, i], [b, j]])// run steps concurrently
 await ctx.suspend({ on: "ApprovalGranted", correlationKey, timeout })
 ctx.emit("DOMAIN_EVENT", payload)   // durable custom event
 ctx.stream("TOKEN", delta, done)    // token streaming
-ctx.ui.set("phase", "triaging")     // A2UI — drive the UI (durable patch)
+ctx.ui.set("phase", "triaging")     // agent-surface — drive the UI (durable patch)
 ```
 
 Every call is an **event** — durable, ordered, replayable.
@@ -216,7 +216,7 @@ const output = z.object({
 
 - **`ctx.decide` for shreddable data** — branch on the *decision*, not the raw value; the decision is durable + replayable, the value becomes erasable. This is how you replay deterministically *and* forget PII.
 - **GDPR/CCPA out of the box** — `@loom/compliance`: subject index (who a record concerns), `exportSubject` (Art. 15/20), `eraseSubject` (Art. 17, liveness-gated), tenant-scoped.
-- **Egress boundary** — sensitive/internal fields are scrubbed from telemetry / a2ui / CLI (K10-R6); crypto-shredding + `loom retention run` bound log lifetime.
+- **Egress boundary** — sensitive/internal fields are scrubbed from telemetry / agent-surface / CLI (K10-R6); crypto-shredding + `loom retention run` bound log lifetime.
 - **One config key** — `defineConfig({ secrets, retention, compliance })`; empty ⇒ byte-identical (G2).
 
 ---
@@ -291,7 +291,7 @@ Built on Node `http` + `fetch` — no framework HTTP dependency. Because A2A is 
 
 ---
 
-## Generated UI — the A2UI protocol (`@loom/a2ui`)
+## Generated UI — the agent-surface protocol (`@loom/agent-surface`)
 
 Agents drive the UI with **typed, durable patches** — not ad‑hoc messages:
 
@@ -301,9 +301,10 @@ ctx.ui.merge("metrics", { cpu: 87 });
 ctx.ui.append("timeline", "root cause found");   // set / merge / append / remove / increment
 ```
 
-- Each call emits one `A2UI_PATCH` event → **durable & replayable**.
-- `a2uiSurfaceProjection("ui")` folds patches into a projection; widgets bind with `{ projectionId: "ui", path }` — **zero renderer changes**.
+- Each call emits one `SURFACE_PATCH` event → **durable & replayable**.
+- `agentSurfaceProjection("ui")` folds patches into a projection; widgets bind with `{ projectionId: "ui", path }` — **zero renderer changes**.
 - `StreamingText` widget grows live as tokens arrive. Refresh/resume rebuilds the exact screen.
+- **A2UI interop** — `@loom/plugin-a2ui` projects a surface onto the external [A2UI](https://a2ui.org) wire protocol (v1.0), so any A2UI‑compliant client can render it. Egress adapter, kernel untouched (ADR 0069).
 
 ---
 

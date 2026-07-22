@@ -11,7 +11,7 @@ title: "Loom — Cloud Command Center"
 
 ### An event-sourced, durable, human-in-the-loop AI incident workflow — in the browser
 
-**Intent routing · streaming AI triage · durable suspend/approve/resume · A2UI surfaces · React renderer**
+**Intent routing · streaming AI triage · durable suspend/approve/resume · agent surfaces · React renderer**
 
 `examples/cloud-command-center` — React + Vite
 
@@ -99,11 +99,11 @@ await handle.waitForCompletion();   // remediation runs, then "resolved"
 
 ## Streaming AI triage → the UI, live
 
-The triage effect streams tokens and folds each into an **A2UI patch**:
+The triage effect streams tokens and folds each into an **agent-surface patch**:
 
 ```ts
 // runtime/aiTriage.ts
-const ui = createA2UIEmitter((type, payload) => ctx.emit(type, payload));
+const ui = createSurfaceEmitter((type, payload) => ctx.emit(type, payload));
 ui.set("aiAnalysis", ""); ui.set("aiStreaming", true);
 
 for await (const chunk of provider.stream(request)) {
@@ -120,7 +120,7 @@ StreamingText({ title: "AI Root-Cause Analysis",
   binding: { projectionId: "ui", path: "aiAnalysis" } })
 ```
 
-Each patch is a durable `A2UI_PATCH` event ⇒ the streamed analysis **replays** too.
+Each patch is a durable `SURFACE_PATCH` event ⇒ the streamed analysis **replays** too.
 
 ---
 
@@ -149,7 +149,7 @@ State is an **append-only event log**; read models are **projections**; the UI *
  ───────        ─────────────────────────        ─────────────────────────
  STEP_COMPLETED ─▶ MetricsProjection   ─────────▶ MetricCard { path: "cpu" }
  APPROVAL_…     ─▶ IncidentProjection  ─────────▶ Timeline, StatusBadge
- A2UI_PATCH     ─▶ "ui" surface        ─────────▶ StreamingText { path: "aiAnalysis" }
+ SURFACE_PATCH     ─▶ "ui" surface        ─────────▶ StreamingText { path: "aiAnalysis" }
 ```
 
 `<BlueprintRenderer blueprint={IncidentBlueprint} projectionRuntime={…} executionId={…} />`
@@ -243,7 +243,7 @@ swap one line in `runtime/aiTriage.ts` for `AnthropicProvider({ model: "claude-o
 
 - A **durable, resumable AI workflow that runs in the browser** — refresh-safe, no server required.
 - **Human-in-the-loop is a `ctx.suspend` checkpoint**, not a modal — it survives restarts.
-- **Streaming AI** and **UI updates** are the *same* durable event mechanism (A2UI patches) → both replay.
+- **Streaming AI** and **UI updates** are the *same* durable event mechanism (agent-surface patches) → both replay.
 - **Intent → capability → flow**, and **events → projections → widgets** — the shape every Loom UI app shares.
 - **BYOR**: the *same* durable agentic backend runs under React **or** Angular — only the render layer swaps (`examples/angular-command-center`).
 

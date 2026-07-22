@@ -17,7 +17,7 @@ A read‑along tour of real files. Open each path as you go. The **Cloud Command
 ```ts
 export const investigateIncidentRunner: FlowRunner<InvestigateInput, InvestigateOutput> =
   async (ctx, input) => {
-    ctx.ui.set("phase", "investigating");                       // A2UI patch → live UI
+    ctx.ui.set("phase", "investigating");                       // agent-surface patch → live UI
 
     const metrics = await ctx.run(FetchMetricsStep, { incidentId: input.incidentId });
     const logs    = await ctx.run(FetchLogsStep,    { incidentId: input.incidentId });
@@ -42,7 +42,7 @@ export const investigateIncidentRunner: FlowRunner<InvestigateInput, Investigate
 **Why it matters**
 - Reads like a plain async function — but every `ctx.run` / `ctx.emit` / `ctx.ui` / `ctx.suspend` is a **durable event**.
 - `ctx.suspend` parks the workflow (a snapshot is saved); it can wait 24h and survive restarts.
-- `ctx.ui.set(...)` drives the UI from the flow with **no bespoke event or projection wiring** (that's A2UI).
+- `ctx.ui.set(...)` drives the UI from the flow with **no bespoke event or projection wiring** (that's the agent-surface protocol).
 
 ---
 
@@ -80,7 +80,7 @@ export const AiTriageStep = step$({
 
 ---
 
-## 3. The LLM effect + A2UI streaming
+## 3. The LLM effect + agent-surface streaming
 
 **`examples/cloud-command-center/src/runtime/aiTriage.ts`** (browser‑safe — no SQLite imports)
 
@@ -90,12 +90,12 @@ export const llmProvider: LlmProvider = new MockLlmProvider();
 
 export function registerAiTriageEffect(effectRuntime, provider = llmProvider) {
   effectRuntime.register("ai-triage-tool", new LlmEffect(async (input, ctx) => {
-    const ui = createA2UIEmitter((type, payload) => ctx.emit(type, payload));  // effect drives the UI
+    const ui = createSurfaceEmitter((type, payload) => ctx.emit(type, payload));  // effect drives the UI
     let analysis = "";
     ui.set("aiStreaming", true);
     for await (const chunk of provider.stream(request)) {   // token-by-token
       analysis += chunk.delta;
-      ui.set("aiAnalysis", analysis);                       // A2UI patch per token → UI grows live
+      ui.set("aiAnalysis", analysis);                       // agent-surface patch per token → UI grows live
     }
     ui.set("aiStreaming", false);
     return { analysis };                                    // memoized on the step frame
@@ -105,7 +105,7 @@ export function registerAiTriageEffect(effectRuntime, provider = llmProvider) {
 
 **Why it matters**
 - **Configurable LLM:** the provider is the only place the model is named. `MockLlmProvider` keeps the demo offline; `AnthropicProvider`/`OpenAiProvider` go live with a one‑line swap.
-- **A2UI streaming:** any effect that can `emit` can drive the UI. Tokens stream into the `ui` surface as durable patches, and the final text is returned so the step is **memoized on resume** (streams once, not on replay).
+- **agent-surface streaming:** any effect that can `emit` can drive the UI. Tokens stream into the `ui` surface as durable patches, and the final text is returned so the step is **memoized on resume** (streams once, not on replay).
 
 ---
 
@@ -132,11 +132,11 @@ export const IncidentBlueprint = blueprint$({
 
 **Why it matters**
 - The UI is a **JSON‑serializable description**, not React code — it's portable, cacheable, versionable, and renders to any surface.
-- Widgets bind to state by `{ projectionId, path }`. The `ui` bindings read the A2UI surface; `metrics`/`incident` read event‑folded projections. `StreamingText` re‑renders as `ui.aiAnalysis` grows.
+- Widgets bind to state by `{ projectionId, path }`. The `ui` bindings read the agent surface; `metrics`/`incident` read event‑folded projections. `StreamingText` re‑renders as `ui.aiAnalysis` grows.
 
 ---
 
-## 5. Projections + the A2UI surface
+## 5. Projections + the agent surface
 
 **`examples/cloud-command-center/src/projections/MetricsProjection.ts`** — fold events into a read‑model:
 
@@ -153,14 +153,14 @@ export const MetricsProjection = {
 };
 ```
 
-The A2UI surface is **also just a projection**, provided for you:
+The agent surface is **also just a projection**, provided for you:
 
 ```ts
-import { a2uiSurfaceProjection } from "@loom/a2ui";
-projectionRuntime.register(a2uiSurfaceProjection("ui"));   // folds A2UI_PATCH events → "ui" state
+import { agentSurfaceProjection } from "@loom/agent-surface";
+projectionRuntime.register(agentSurfaceProjection("ui"));   // folds SURFACE_PATCH events → "ui" state
 ```
 
-**Why it matters** — dashboards, forms, and the A2UI surface are all the **same primitive**: a pure fold over the event log. Nothing mutates UI state directly.
+**Why it matters** — dashboards, forms, and the agent surface are all the **same primitive**: a pure fold over the event log. Nothing mutates UI state directly.
 
 ---
 
@@ -173,7 +173,7 @@ const effectRuntime = new EffectRuntime();
 const projectionRuntime = new InMemoryProjectionRuntime();
 projectionRuntime.register(MetricsProjection);
 projectionRuntime.register(IncidentProjection);
-projectionRuntime.register(a2uiSurfaceProjection("ui"));            // A2UI surface
+projectionRuntime.register(agentSurfaceProjection("ui"));            // agent surface
 
 const workflowRuntime = new WorkflowRuntime({
   eventStore: new InMemoryEventStore(),
