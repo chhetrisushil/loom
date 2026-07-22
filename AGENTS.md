@@ -43,7 +43,8 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
 | `cloud-command-center` | Command-center built with the `@loom/compiler` `loomPlugin()` | `handler$` extraction, resumability |
 | `db-sentinel` | Perpetual-agent / sentinel pattern | `sentinelPreset`, `@loom/plugin-durable-state` |
 | `a2a-mesh`, `agent-network` | Agent-to-agent mesh / networking | `@loom/plugin-a2a`, `A2AEffect` |
-| `a2ui-dashboard`, `angular-command-center` | UI / renderer surface variants | `@loom/a2ui`, renderers |
+| `a2ui-dashboard`, `angular-command-center` | UI / renderer surface variants | `@loom/agent-surface`, renderers |
+| `a2ui-egress` | Project a surface onto the Google A2UI wire protocol | `@loom/plugin-a2ui` `A2UISurfaceBridge`, `ingestAction` |
 | `appgen-brownfield`, `appgen-models` | AI-driven app generation | `@loom/appgen` |
 
 ## Working in this repo
