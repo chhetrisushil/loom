@@ -3,8 +3,10 @@ import type { SurfacePatch, SurfacePatchPayload, SurfaceState } from "@loom/agen
 import { defineConfig } from "@loom/app";
 import {
   A2UISurfaceBridge,
+  A2UI_VERSION,
   badge,
   bind,
+  button,
   column,
   list,
   text,
@@ -18,7 +20,7 @@ import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { ConsoleTelemetryAdapter } from "@loom/telemetry";
 import type { FlowTelemetryInfo, StepTelemetryInfo, TelemetryAdapter } from "@loom/telemetry";
 import type React from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { z } from "zod";
 import { RegisteredTaskFlow, type TaskInput } from "./flow";
@@ -109,7 +111,7 @@ const intentRuntime = new IntentRuntime({ catalog, workflowRuntime });
 // each component binds to a JSON Pointer into that data model. This is the real
 // A2UI wire protocol — distinct from Loom's native surface patches.
 const A2UI_VIEW: ComponentInstance[] = [
-  column("root", ["taskId", "status", "score", "logHeading", "log"]),
+  column("root", ["taskId", "status", "score", "logHeading", "log", "approve"]),
   text("taskId", bind("/taskId")),
   badge("status", bind("/status")),
   text("score", bind("/stats/score")),
@@ -117,6 +119,9 @@ const A2UI_VIEW: ComponentInstance[] = [
   list("log", "/progressLog", "logItem"),
   // Collection scope: a relative binding ("") resolves to the current list element.
   text("logItem", bind("")),
+  // The inbound leg: this Button declares the "approve" action a client raises,
+  // which the bridge normalizes on the way back in (see `approve`).
+  button("approve", "Approve", "approve"),
 ];
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -454,6 +459,9 @@ function App() {
   const [uiSurface, setUiSurface] = useState<SurfaceState>({});
   const [patchStream, setPatchStream] = useState<{ time: string; patch: SurfacePatch }[]>([]);
   const [a2uiMessages, setA2uiMessages] = useState<{ time: string; msg: A2UIServerMessage }[]>([]);
+  // The live A2UI bridge for the current execution — held in a ref so the Approve
+  // handler can push an inbound client `action` back through it.
+  const bridgeRef = useRef<A2UISurfaceBridge | null>(null);
   const [intentText, setIntentText] = useState("analyze a task and apply the result");
 
   const addLog = useCallback((entry: LogEntry) => {
@@ -493,6 +501,7 @@ function App() {
     // the native patch view is also the "SSE broadcaster" fed through the bridge.
     // Each event yields 0+ A2UI wire messages a real A2UI client would render.
     const bridge = new A2UISurfaceBridge({ executionId, components: A2UI_VIEW });
+    bridgeRef.current = bridge;
     void eventStore
       .subscribe(executionId, (e: EventEnvelope) => {
         addLog({ time: now(), kind: "event", label: e.eventType, payload: e.payload });
@@ -512,6 +521,7 @@ function App() {
     return () => {
       cancelled = true;
       unsub?.();
+      bridgeRef.current = null;
     };
   }, [executionId, addLog]);
 
@@ -564,12 +574,33 @@ function App() {
 
   const approve = useCallback(async () => {
     if (!executionId) return;
+
+    // Inbound A2UI leg: the click simulates an A2UI client raising the Approve
+    // Button's declared action. The bridge normalizes it (validating it targets
+    // this surface), and the app maps that action → the Loom resume event — the
+    // "caller decides how to turn an action into a Loom event" contract.
+    const bridge = bridgeRef.current;
+    const clientMessage = {
+      version: A2UI_VERSION,
+      action: {
+        surfaceId: bridge?.surfaceId ?? `ui:${executionId}`,
+        action: "approve",
+        context: { taskId: projState?.taskId ?? null },
+      },
+    };
+    const action = bridge?.ingestAction(clientMessage) ?? null;
+    if (!action) {
+      sysLog("A2UI action ignored — not an `approve` for this surface");
+      return;
+    }
+    addLog({ time: now(), kind: "event", label: "A2UI ▸ action", payload: action });
+
     setPhase("running");
-    sysLog("Sending approval…");
+    sysLog(`A2UI action "${action.action}" → resume TaskApproved`);
     try {
       const handle = await wfr.resume(executionId, {
         eventType: "TaskApproved",
-        payload: { approvedBy: "playground-user", approvedAt: Date.now() },
+        payload: { approvedBy: "a2ui-client", approvedAt: Date.now(), a2ui: action },
       });
       handle.waitForCompletion().then((st) => {
         if (st.status === "completed") {
@@ -581,7 +612,7 @@ function App() {
       setPhase("failed");
       sysLog(`Resume error: ${String(err)}`);
     }
-  }, [wfr, executionId, sysLog]);
+  }, [wfr, executionId, sysLog, addLog, projState]);
 
   const reset = useCallback(() => {
     setPhase("idle");
