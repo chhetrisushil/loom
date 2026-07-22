@@ -1,14 +1,13 @@
 import {
-  applySurfacePatches,
   DEFAULT_SURFACE,
-  getSurfaceValue,
   SURFACE_PATCH,
+  applySurfacePatches,
+  getSurfaceValue,
 } from "@loom/agent-surface";
 import type { SurfacePatch, SurfacePatchPayload, SurfaceState } from "@loom/agent-surface";
 import { maskPaths } from "@loom/classify";
 import type { EventEnvelope } from "@loom/core";
 import { DEFAULT_CATALOG_ID } from "./catalog";
-import { dotPathToParts, dotPathToPointer } from "./pointer";
 import { A2UI_VERSION } from "./messages";
 import type {
   A2UIClientMessage,
@@ -17,6 +16,7 @@ import type {
   ComponentInstance,
 } from "./messages";
 import { isAction } from "./messages";
+import { dotPathToParts, dotPathToPointer } from "./pointer";
 
 export interface A2UISurfaceBridgeOptions {
   /** Which Loom agent surface to bridge (default `DEFAULT_SURFACE` = "ui"). */

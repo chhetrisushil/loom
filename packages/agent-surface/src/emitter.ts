@@ -1,4 +1,4 @@
-import { SURFACE_PATCH, DEFAULT_SURFACE } from "./types";
+import { DEFAULT_SURFACE, SURFACE_PATCH } from "./types";
 import type { SurfacePatch } from "./types";
 
 // The producer half of the protocol. Any context that can emit events (a
@@ -22,7 +22,10 @@ export interface SurfaceEmitter {
 
 type EmitFn = (eventType: string, payload: unknown) => void;
 
-export function createSurfaceEmitter(emit: EmitFn, surface: string = DEFAULT_SURFACE): SurfaceEmitter {
+export function createSurfaceEmitter(
+  emit: EmitFn,
+  surface: string = DEFAULT_SURFACE
+): SurfaceEmitter {
   const send = (patches: SurfacePatch[]): void => {
     emit(SURFACE_PATCH, { surface, patches });
   };

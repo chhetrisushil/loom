@@ -112,11 +112,7 @@ export function list(id: string, path: string, itemComponentId: string): Compone
   return { id, component: "List", children: { path, componentId: itemComponentId } };
 }
 
-export function button(
-  id: string,
-  label: Dynamic<string>,
-  action: string
-): ComponentInstance {
+export function button(id: string, label: Dynamic<string>, action: string): ComponentInstance {
   return { id, component: "Button", label, action };
 }
 

@@ -24,7 +24,10 @@ describe("applySurfacePatch", () => {
   });
 
   it("merge shallow-merges into an object", () => {
-    const after = applySurfacePatch({ cfg: { a: 1 } }, { op: "merge", path: "cfg", value: { b: 2 } });
+    const after = applySurfacePatch(
+      { cfg: { a: 1 } },
+      { op: "merge", path: "cfg", value: { b: 2 } }
+    );
     expect(after).toEqual({ cfg: { a: 1, b: 2 } });
   });
 
@@ -69,7 +72,10 @@ describe("applySurfacePatch", () => {
 
   it("ignores an unknown op (forward-compatible)", () => {
     const before = { a: 1 };
-    const after = applySurfacePatch(before, { op: "frobnicate", path: "a" } as unknown as SurfacePatch);
+    const after = applySurfacePatch(before, {
+      op: "frobnicate",
+      path: "a",
+    } as unknown as SurfacePatch);
     expect(after).toEqual(before);
   });
 
@@ -117,7 +123,11 @@ describe("createSurfaceEmitter", () => {
 
 // ── AgentSurfaceRuntime ───────────────────────────────────────────────────────────────
 
-function patchEvent(patches: SurfacePatch[], surface?: string, executionId = "exec-1"): EventEnvelope {
+function patchEvent(
+  patches: SurfacePatch[],
+  surface?: string,
+  executionId = "exec-1"
+): EventEnvelope {
   return {
     id: `${executionId}-1`,
     workflowId: "wf",
@@ -222,7 +232,10 @@ describe("agentSurfaceProjection — egress redaction (K10-R6)", () => {
 
   it("with no redact option is an unchanged pass-through (G2)", () => {
     const proj = agentSurfaceProjection("ui");
-    const state = proj.handlers[SURFACE_PATCH]!({}, patchEvent([{ op: "set", path: "a", value: 1 }]));
+    const state = proj.handlers[SURFACE_PATCH]!(
+      {},
+      patchEvent([{ op: "set", path: "a", value: 1 }])
+    );
     expect(state).toEqual({ a: 1 });
   });
 });

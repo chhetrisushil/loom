@@ -2,7 +2,7 @@ import { maskPaths } from "@loom/classify";
 import type { EventEnvelope } from "@loom/core";
 import type { Projection } from "@loom/projection-runtime";
 import { applySurfacePatches } from "./applyPatch";
-import { SURFACE_PATCH, DEFAULT_SURFACE } from "./types";
+import { DEFAULT_SURFACE, SURFACE_PATCH } from "./types";
 import type { SurfacePatchPayload, SurfaceState } from "./types";
 
 /** Options for a surface projection. */
