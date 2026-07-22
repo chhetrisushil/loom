@@ -130,8 +130,8 @@ describe("WorkflowRuntime — basic execution", () => {
   });
 });
 
-describe("WorkflowRuntime — A2UI (ctx.ui)", () => {
-  it("ctx.ui.* emits durable A2UI_PATCH events with the right patches", async () => {
+describe("WorkflowRuntime — agent-surface (ctx.ui)", () => {
+  it("ctx.ui.* emits durable SURFACE_PATCH events with the right patches", async () => {
     const events: { eventType: string; payload: unknown }[] = [];
     const eventStore = new SqliteEventStore(dbPath);
     const snapshotStore = new SqliteSnapshotStore(`${dbPath}-snap`);
@@ -153,7 +153,7 @@ describe("WorkflowRuntime — A2UI (ctx.ui)", () => {
 
     await (await runtime.start(makeFlow(runner), { incidentId: "ui-1" })).waitForCompletion();
 
-    const patchEvents = events.filter((e) => e.eventType === "A2UI_PATCH");
+    const patchEvents = events.filter((e) => e.eventType === "SURFACE_PATCH");
     expect(patchEvents).toHaveLength(4);
     expect(
       patchEvents.map((e) => (e.payload as { patches: { op: string }[] }).patches[0]?.op)

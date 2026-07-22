@@ -12,7 +12,7 @@
     { "path": "../replay-vm" },
     { "path": "../effect-runtime" },
     { "path": "../snapshot-runtime" },
-    { "path": "../a2ui" },
+    { "path": "../agent-surface" },
     { "path": "../workflow-runtime" },
     { "path": "../llm" },
     { "path": "../reasoning" },

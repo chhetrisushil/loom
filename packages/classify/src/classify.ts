@@ -12,7 +12,7 @@ import type { z } from "zod";
 //   • "sensitive" — personal/confidential data, persisted only encrypted-at-rest and
 //                   crypto-shreddable (K10.2), and scrubbed from external egress (K10-R6).
 //   • "internal"  — persisted in the clear but scrubbed from EXTERNAL egress
-//                   (telemetry / a2ui / CLI, K10-R6); never crosses the trust boundary.
+//                   (telemetry / agent-surface / CLI, K10-R6); never crosses the trust boundary.
 //
 // The kernel stays ignorant of these names (G3 — the mechanism lives below in the crypto
 // plugin / middleware; the policy *vocabulary* lives here, above the kernel). A field with

@@ -1,5 +1,5 @@
-import { A2UI_PATCH } from "@loom/a2ui";
-import type { A2UIPatch, A2UIPatchPayload, A2UISurfaceState } from "@loom/a2ui";
+import { SURFACE_PATCH } from "@loom/agent-surface";
+import type { SurfacePatch, SurfacePatchPayload, SurfaceState } from "@loom/agent-surface";
 import { defineConfig } from "@loom/app";
 import { CapabilityCatalog, capability$ } from "@loom/capability";
 import type { EventEnvelope } from "@loom/core";
@@ -62,7 +62,7 @@ const ReactAdapter: TelemetryAdapter = {
 
 // ── Runtime setup (defineConfig) ──────────────────────────────────────────────
 // A projection runtime that also folds the domain TaskProjection. defineConfig
-// registers the A2UI "ui" surface for us and wires onEvent → handleEvent.
+// registers the agent-surface "ui" surface for us and wires onEvent → handleEvent.
 const projectionRuntime = new InMemoryProjectionRuntime();
 projectionRuntime.register(TaskProjection);
 
@@ -420,12 +420,12 @@ function App() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [executionId, setExecutionId] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
-  const [tab, setTab] = useState<"blueprint" | "events" | "state" | "trace" | "a2ui">("blueprint");
+  const [tab, setTab] = useState<"blueprint" | "events" | "state" | "trace" | "surface">("blueprint");
   const [counter, setCounter] = useState(1);
   const [projState, setProjState] = useState<TaskState | null>(null);
   const [traceData, setTraceData] = useState<TraceSnapshot>({ flow: null, steps: [] });
-  const [uiSurface, setUiSurface] = useState<A2UISurfaceState>({});
-  const [patchStream, setPatchStream] = useState<{ time: string; patch: A2UIPatch }[]>([]);
+  const [uiSurface, setUiSurface] = useState<SurfaceState>({});
+  const [patchStream, setPatchStream] = useState<{ time: string; patch: SurfacePatch }[]>([]);
   const [intentText, setIntentText] = useState("analyze a task and apply the result");
 
   const addLog = useCallback((entry: LogEntry) => {
@@ -437,13 +437,13 @@ function App() {
     [addLog]
   );
 
-  // Poll projection + A2UI surface + trace state every 200ms
+  // Poll projection + agent-surface surface + trace state every 200ms
   useEffect(() => {
     if (!executionId) return;
     const tick = () => {
       const st = pr.getState<TaskState>("task", executionId);
       if (st) setProjState(st);
-      setUiSurface(pr.getState<A2UISurfaceState>("ui", executionId));
+      setUiSurface(pr.getState<SurfaceState>("ui", executionId));
       setTraceData({
         flow: mutableTrace.flow,
         steps: Array.from(mutableTrace.steps.values()),
@@ -454,7 +454,7 @@ function App() {
     return () => clearInterval(id);
   }, [executionId, pr]);
 
-  // Subscribe to raw events for the event log + A2UI patch stream tabs.
+  // Subscribe to raw events for the event log + agent-surface patch stream tabs.
   // subscribe() is async now, so resolve the unsubscribe and guard against the
   // effect being torn down before it settles.
   useEffect(() => {
@@ -464,8 +464,8 @@ function App() {
     void eventStore
       .subscribe(executionId, (e: EventEnvelope) => {
         addLog({ time: now(), kind: "event", label: e.eventType, payload: e.payload });
-        if (e.eventType === A2UI_PATCH) {
-          const payload = e.payload as A2UIPatchPayload;
+        if (e.eventType === SURFACE_PATCH) {
+          const payload = e.payload as SurfacePatchPayload;
           const entries = payload.patches.map((patch) => ({ time: now(), patch }));
           setPatchStream((prev) => [...entries.reverse(), ...prev]);
         }
@@ -602,7 +602,7 @@ function App() {
       </header>
 
       <div style={s.tabBar}>
-        {(["blueprint", "events", "state", "trace", "a2ui"] as const).map((t) => (
+        {(["blueprint", "events", "state", "trace", "surface"] as const).map((t) => (
           <button
             type="button"
             key={t}
@@ -617,7 +617,7 @@ function App() {
                   ? "Projection State"
                   : t === "trace"
                     ? "Trace"
-                    : "A2UI"}
+                    : "Surface"}
           </button>
         ))}
       </div>
@@ -688,7 +688,7 @@ function App() {
 
         {tab === "trace" && <TraceTab data={traceData} />}
 
-        {tab === "a2ui" && <A2UITab surface={uiSurface} patches={patchStream} />}
+        {tab === "surface" && <SurfaceTab surface={uiSurface} patches={patchStream} />}
       </main>
 
       <footer style={s.footer}>
@@ -911,9 +911,9 @@ function EmptyState() {
   );
 }
 
-// ── A2UITab ─────────────────────────────────────────────────────────────────
-// Shows the A2UI protocol in action: the live "ui" surface (rebuilt purely by
-// folding A2UI_PATCH events) on the left, and the raw patch stream on the right.
+// ── SurfaceTab ─────────────────────────────────────────────────────────────────
+// Shows the agent-surface protocol in action: the live "ui" surface (rebuilt purely by
+// folding SURFACE_PATCH events) on the left, and the raw patch stream on the right.
 
 const patchColor: Record<string, string> = {
   set: "#3182ce",
@@ -923,18 +923,18 @@ const patchColor: Record<string, string> = {
   remove: "#e53e3e",
 };
 
-function A2UITab({
+function SurfaceTab({
   surface,
   patches,
 }: {
-  surface: A2UISurfaceState;
-  patches: { time: string; patch: A2UIPatch }[];
+  surface: SurfaceState;
+  patches: { time: string; patch: SurfacePatch }[];
 }) {
   if (patches.length === 0) {
     return (
       <div style={s.empty}>
-        No A2UI patches yet — run the flow. Each <code>ctx.ui.*</code> call emits one durable,
-        replayable <code>A2UI_PATCH</code> event that folds into the surface.
+        No agent-surface patches yet — run the flow. Each <code>ctx.ui.*</code> call emits one durable,
+        replayable <code>SURFACE_PATCH</code> event that folds into the surface.
       </div>
     );
   }

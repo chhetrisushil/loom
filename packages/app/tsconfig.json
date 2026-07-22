@@ -18,7 +18,7 @@
       "path": "../../plugins/a2a"
     },
     {
-      "path": "../a2ui"
+      "path": "../agent-surface"
     },
     {
       "path": "../dispatcher"

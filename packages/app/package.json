@@ -20,7 +20,7 @@
   "dependencies": {
     "@loom/agent": "workspace:*",
     "@loom/plugin-a2a": "workspace:*",
-    "@loom/a2ui": "workspace:*",
+    "@loom/agent-surface": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/dispatcher": "workspace:*",
     "@loom/effect-runtime": "workspace:*",

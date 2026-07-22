@@ -38,7 +38,7 @@
       "path": "../../packages/telemetry"
     },
     {
-      "path": "../../packages/a2ui"
+      "path": "../../packages/agent-surface"
     },
     {
       "path": "../../packages/capability"

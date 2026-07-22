@@ -110,7 +110,7 @@
       "path": "plugins/a2a"
     },
     {
-      "path": "packages/a2ui"
+      "path": "packages/agent-surface"
     },
     {
       "path": "packages/memory"

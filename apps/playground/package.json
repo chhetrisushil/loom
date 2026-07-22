@@ -11,7 +11,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@loom/a2ui": "workspace:*",
+    "@loom/agent-surface": "workspace:*",
     "@loom/app": "workspace:*",
     "@loom/blueprint-runtime": "workspace:*",
     "@loom/capability": "workspace:*",

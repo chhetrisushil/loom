@@ -8,7 +8,7 @@ import type { A2ATask, A2ATaskResult, A2ATaskStatus } from "./types";
  * single adapter over the runtime:
  *
  *   submit / working   → runtime.start → running
- *   input-required     → SuspendError / status "suspended" (approval / A2UI form)
+ *   input-required     → SuspendError / status "suspended" (approval / agent-surface form)
  *   provideInput       → runtime.resume(executionId, resumeEvent)
  *   completed / failed → terminal ExecutionState
  *

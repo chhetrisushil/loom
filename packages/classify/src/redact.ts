@@ -1,6 +1,6 @@
 // ── K10-R6 — the shared egress-masking primitive ──────────────────────────────
 //
-// One structural path-masker, used by every egress surface (telemetry adapters, a2ui
+// One structural path-masker, used by every egress surface (telemetry adapters, agent-surface
 // surfaces, the CLI). It replaces the value at each dot-path with a mask, copying only the
 // spine it touches (structural sharing elsewhere) and never mutating the caller's object.
 // Absent paths are skipped, so masking a payload that doesn't carry a marked field is a

@@ -1,4 +1,4 @@
-import { A2UI_PATCH } from "@loom/a2ui";
+import { SURFACE_PATCH } from "@loom/agent-surface";
 import type { EventEnvelope } from "@loom/core";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
@@ -8,11 +8,11 @@ import { serializeProjections } from "@loom/workflow-runtime";
 //
 // A ProjectionRuntime decorator for the server. It delegates everything to an
 // InMemoryProjectionRuntime, but after folding an event it forwards the
-// mission's A2UI surface patches to connected SSE clients — so the browser can
+// mission's agent-surface surface patches to connected SSE clients — so the browser can
 // mirror the surfaces the Orchestrator drives, without the client running any of
 // the agentic backend.
 //
-// Only `A2UI_PATCH` envelopes for this mission are broadcast; the durable flows'
+// Only `SURFACE_PATCH` envelopes for this mission are broadcast; the durable flows'
 // STEP_* events (different execution ids) fold locally and are not streamed.
 export class BroadcastingProjectionRuntime implements ProjectionRuntime {
   private readonly inner = new InMemoryProjectionRuntime();
@@ -55,7 +55,7 @@ export class BroadcastingProjectionRuntime implements ProjectionRuntime {
 
   handleEvent(event: EventEnvelope): void {
     this.inner.handleEvent(event);
-    if (event.eventType === A2UI_PATCH && event.executionId === this.missionId) {
+    if (event.eventType === SURFACE_PATCH && event.executionId === this.missionId) {
       this.onPatch(event);
     }
   }

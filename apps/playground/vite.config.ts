@@ -8,7 +8,7 @@ export default defineConfig({
   optimizeDeps: {
     include: [
       "@loom/app",
-      "@loom/a2ui",
+      "@loom/agent-surface",
       "@loom/blueprint-runtime",
       "@loom/capability",
       "@loom/core",

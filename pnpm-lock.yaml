@@ -20,9 +20,9 @@ importers:
 
   apps/playground:
     dependencies:
-      '@loom/a2ui':
+      '@loom/agent-surface':
         specifier: workspace:*
-        version: link:../../packages/a2ui
+        version: link:../../packages/agent-surface
       '@loom/app':
         specifier: workspace:*
         version: link:../../packages/app
@@ -94,28 +94,6 @@ importers:
         specifier: ^5.4.10
         version: 5.4.21(@types/node@22.20.0)(sass@1.90.0)
 
-  packages/a2ui:
-    dependencies:
-      '@loom/classify':
-        specifier: workspace:*
-        version: link:../classify
-      '@loom/core':
-        specifier: workspace:*
-        version: link:../core
-      '@loom/projection-runtime':
-        specifier: workspace:*
-        version: link:../projection-runtime
-    devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.20.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-
   packages/agent:
     dependencies:
       '@loom/core':
@@ -150,6 +128,28 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
 
+  packages/agent-surface:
+    dependencies:
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../classify
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
+      '@loom/projection-runtime':
+        specifier: workspace:*
+        version: link:../projection-runtime
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   packages/analytics:
     dependencies:
       '@loom/core':
@@ -168,12 +168,12 @@ importers:
 
   packages/app:
     dependencies:
-      '@loom/a2ui':
-        specifier: workspace:*
-        version: link:../a2ui
       '@loom/agent':
         specifier: workspace:*
         version: link:../agent
+      '@loom/agent-surface':
+        specifier: workspace:*
+        version: link:../agent-surface
       '@loom/compliance':
         specifier: workspace:*
         version: link:../compliance
@@ -869,12 +869,12 @@ importers:
 
   packages/sdk:
     dependencies:
-      '@loom/a2ui':
-        specifier: workspace:*
-        version: link:../a2ui
       '@loom/agent':
         specifier: workspace:*
         version: link:../agent
+      '@loom/agent-surface':
+        specifier: workspace:*
+        version: link:../agent-surface
       '@loom/blueprint-runtime':
         specifier: workspace:*
         version: link:../blueprint-runtime
@@ -1125,9 +1125,9 @@ importers:
 
   packages/workflow-runtime:
     dependencies:
-      '@loom/a2ui':
+      '@loom/agent-surface':
         specifier: workspace:*
-        version: link:../a2ui
+        version: link:../agent-surface
       '@loom/core':
         specifier: workspace:*
         version: link:../core
@@ -1477,9 +1477,9 @@ importers:
 
   plugins/renderer-react:
     dependencies:
-      '@loom/a2ui':
+      '@loom/agent-surface':
         specifier: workspace:*
-        version: link:../../packages/a2ui
+        version: link:../../packages/agent-surface
       '@loom/blueprint-runtime':
         specifier: workspace:*
         version: link:../../packages/blueprint-runtime

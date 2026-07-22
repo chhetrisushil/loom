@@ -282,7 +282,7 @@ export function appFiles(appName: string): Record<string, string> {
       "export const app = defineConfig({",
       '  storage: { kind: "memory" },',
       "  flowModules,",
-      "  agentModules, // set a2a: true / a2ui: true to auto-wire discovered agents",
+      "  agentModules, // set a2a: true / agentSurface: true to auto-wire discovered agents",
       "  toolModules, // discovered tool definitions on app.tools; register effects yourself",
       "  skillModules, // discovered skills registered into app.skills (app.skills.find(query))",
       "  projectionModules, // discovered projections folded into the projection runtime",

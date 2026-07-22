@@ -1,7 +1,7 @@
 {
-  "name": "@loom/a2ui",
+  "name": "@loom/agent-surface",
   "version": "0.0.1",
-  "description": "A2UI — patch/event-based Agent-to-UI protocol for Loom workflows",
+  "description": "Agent-surface — Loom's native, event-sourced patch protocol for driving durable, replayable UI surfaces",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

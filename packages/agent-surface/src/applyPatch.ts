@@ -1,4 +1,4 @@
-import type { A2UIPatch, A2UISurfaceState } from "./types";
+import type { SurfacePatch, SurfaceState } from "./types";
 
 // ── Immutable path helpers ────────────────────────────────────────────────────
 
@@ -12,7 +12,7 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function getIn(state: A2UISurfaceState, parts: string[]): unknown {
+function getIn(state: SurfaceState, parts: string[]): unknown {
   let current: unknown = state;
   for (const part of parts) {
     if (current === null || current === undefined) return undefined;
@@ -25,10 +25,10 @@ function getIn(state: A2UISurfaceState, parts: string[]): unknown {
 // `update(existing)`. Clones every object along the path so callers never mutate
 // the previous state (structural sharing everywhere else).
 function updateIn(
-  state: A2UISurfaceState,
+  state: SurfaceState,
   parts: string[],
   update: (existing: unknown) => unknown
-): A2UISurfaceState {
+): SurfaceState {
   if (parts.length === 0) {
     return asRecord(update(state));
   }
@@ -43,7 +43,7 @@ function updateIn(
   return clone;
 }
 
-function removeIn(state: A2UISurfaceState, parts: string[]): A2UISurfaceState {
+function removeIn(state: SurfaceState, parts: string[]): SurfaceState {
   if (parts.length === 0) return {};
   const [head, ...rest] = parts;
   if (head === undefined) return state;
@@ -67,10 +67,10 @@ function removeIn(state: A2UISurfaceState, parts: string[]): A2UISurfaceState {
 // arrays are never in `owned`, so previous states are never mutated (cross-batch
 // immutability is preserved); only arrays this batch just created are pushed to.
 function applyOne(
-  state: A2UISurfaceState,
-  patch: A2UIPatch,
+  state: SurfaceState,
+  patch: SurfacePatch,
   owned: WeakSet<object>
-): A2UISurfaceState {
+): SurfaceState {
   const parts = splitPath(patch.path);
   switch (patch.op) {
     case "set":
@@ -100,14 +100,14 @@ function applyOne(
   }
 }
 
-export function applyA2UIPatch(state: A2UISurfaceState, patch: A2UIPatch): A2UISurfaceState {
+export function applySurfacePatch(state: SurfaceState, patch: SurfacePatch): SurfaceState {
   return applyOne(state, patch, new WeakSet());
 }
 
-export function applyA2UIPatches(
-  state: A2UISurfaceState,
-  patches: readonly A2UIPatch[]
-): A2UISurfaceState {
+export function applySurfacePatches(
+  state: SurfaceState,
+  patches: readonly SurfacePatch[]
+): SurfaceState {
   const owned = new WeakSet<object>();
   let next = state;
   for (const patch of patches) next = applyOne(next, patch, owned);

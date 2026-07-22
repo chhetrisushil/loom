@@ -1,4 +1,4 @@
-import type { A2UIEmitter } from "@loom/a2ui";
+import type { SurfaceEmitter } from "@loom/agent-surface";
 import type { ExecutableTask, ExecutionState, FlowDefinition, StepDefinition } from "@loom/core";
 import type { PrincipalChain } from "@loom/effect-runtime";
 
@@ -100,9 +100,9 @@ export interface ExecutionContext {
 
   stream(eventType: string, delta: string, done?: boolean): void;
 
-  // A2UI — drive the UI with durable, replayable patch/event updates.
+  // Agent-surface — drive the UI with durable, replayable patch/event updates.
   // ctx.ui.set(path, value) / append / merge / increment / remove / patch.
-  readonly ui: A2UIEmitter;
+  readonly ui: SurfaceEmitter;
 }
 
 // Back-compat alias. Existing code importing `WorkflowContext` keeps working; the

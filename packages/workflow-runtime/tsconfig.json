@@ -13,6 +13,6 @@
     { "path": "../scheduler" },
     { "path": "../effect-runtime" },
     { "path": "../snapshot-runtime" },
-    { "path": "../a2ui" }
+    { "path": "../agent-surface" }
   ]
 }
