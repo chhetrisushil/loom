@@ -68,6 +68,12 @@ pnpm --filter @loom/db-observability start
 
 - **`a2ui-dashboard`**, **`angular-command-center`** — renderer/UI surface variants
   over `@loom/agent-surface`.
+- **`a2ui-egress`** — projects a Loom agent surface onto the Google **A2UI**
+  (Agent-to-UI) wire protocol v1.0 via `@loom/plugin-a2ui`'s `A2UISurfaceBridge`:
+  fold `SURFACE_PATCH` *delta* patches into *absolute* `createSurface` /
+  `updateDataModel` / `deleteSurface` messages, and drive a human-approval gate
+  through an inbound A2UI `action` (`ingestAction` → `runtime.resume`). Headless.
+  The same bridge is wired into a live React tab in `apps/playground`.
 - **`appgen-brownfield`**, **`appgen-models`** — AI-driven app generation
   (`@loom/appgen`).
 
