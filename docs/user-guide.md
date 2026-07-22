@@ -11,7 +11,7 @@ A **topic-by-topic reference** with runnable examples. Unlike the sequential [Us
 - [3. Effects & middleware](#3-effects--middleware)
 - [4. Suspend & resume](#4-suspend--resume)
 - [5. Branching: fork / simulate / promote](#5-branching-fork--simulate--promote)
-- [6. Projections & A2UI surfaces](#6-projections--a2ui-surfaces)
+- [6. Projections & agent surfaces](#6-projections--agent-surfaces)
 - [7. Agents, tools & A2A](#7-agents-tools--a2a)
 - [8. Intent, planner & memory](#8-intent-planner--memory)
 - [9. Configuration reference](#9-configuration-reference)
@@ -107,7 +107,7 @@ interface ExecutionContext {
   suspend(config: { on: string; timeout?: number; correlationKey?: string }): Promise<never>;
   emit(eventType: string, payload: unknown): void;
   stream(eventType: string, delta: string, done?: boolean): void;
-  readonly ui: A2UIEmitter; // .set / .merge / .append
+  readonly ui: SurfaceEmitter; // .set / .merge / .append
 }
 ```
 
@@ -364,7 +364,7 @@ await branchRegistry.promote("commit", "main"); // pointer move, no merge
 
 ---
 
-## 6. Projections & A2UI surfaces
+## 6. Projections & agent surfaces
 
 A **projection** is a read model folded from events, independent of durability. Flows emit UI patches via `ctx.ui`; they fold into named **surfaces**.
 
@@ -380,7 +380,36 @@ Read a surface (server, client, or test):
 const view = app.projectionRuntime.getState<MyView>("mission", executionId);
 ```
 
-Register surfaces via `defineConfig({ surfaces: ["mission", "telemetry"] })`, or a custom projection with `projection$({ id, name, initialState, handlers })` for domain-specific read models. Render with any renderer — `@loom/plugin-renderer-react`, `@loom/plugin-renderer-terminal`, `@loom/a2ui` for Web Components, or your own. **The durable log never depends on the renderer.**
+Register surfaces via `defineConfig({ surfaces: ["mission", "telemetry"] })`, or a custom projection with `projection$({ id, name, initialState, handlers })` for domain-specific read models. Render with any renderer — `@loom/plugin-renderer-react`, `@loom/plugin-renderer-terminal`, or your own. **The durable log never depends on the renderer.**
+
+> **Naming note.** `@loom/agent-surface` is Loom's *native* surface-patch protocol — it is **not** the external Google [A2UI](https://a2ui.org) wire protocol, despite the historical name. To interoperate with A2UI-compliant clients, use the `@loom/plugin-a2ui` egress adapter below.
+
+### Exposing a surface over A2UI (external clients)
+
+`@loom/plugin-a2ui` projects an agent surface onto the real **A2UI (Agent-to-UI) wire protocol v1.0**, so any A2UI-compliant client (web/mobile/desktop) can render a Loom-driven UI without executing code. It's an **egress adapter** (a 1P plugin, kernel untouched — [ADR 0069](adr/0069-a2ui-egress-adapter.md)): it folds `SURFACE_PATCH` events and emits A2UI `createSurface` / `updateDataModel` / `deleteSurface` messages, translating Loom's *delta* patches into A2UI's *absolute* value-replacement. It also ingests the client's inbound `action`.
+
+```ts
+import { A2UISurfaceBridge, column, text, badge, bind } from "@loom/plugin-a2ui";
+
+// The A2UI "view" — components bound by JSON Pointer into the surface data model.
+const view = [column("root", ["status", "score"]), badge("status", bind("/status")), text("score", bind("/stats/score"))];
+const bridge = new A2UISurfaceBridge({ executionId, components: view });
+
+send(bridge.snapshot());                                   // createSurface (view + current data)
+eventStore.subscribe(executionId, (e) => {
+  for (const msg of bridge.handleEvent(e)) send(msg);       // updateDataModel per patch
+});
+
+// Inbound: a client Button action → resume the flow.
+onClientMessage((m) => {
+  const action = bridge.ingestAction(m);
+  if (action?.action === "approve") {
+    app.runtime.resume(executionId, { eventType: "TaskApproved", payload: { a2ui: action } });
+  }
+});
+```
+
+It ships a default component catalog (`Text`/`Column`/`Row`/`List`/`Badge`/`Button`) plus `defineCatalog` for your own. The bidirectional-RPC surface (`callFunction`/`actionResponse`, two-way binding) is deliberately out of scope. See `apps/playground` (the **A2UI** tab) for a live end-to-end wiring, and the [API reference](api-reference.org) for the full surface.
 
 For streamed progress independent of surfaces, use a pub/sub hub (`progressHub`) — handlers call `report(id, line)` / `reportProgress(id, pct)` and orchestrators subscribe (`onReport` / `onProgress`). See `schema-migration-planner` (in the [examples catalogue](examples.md)).
 
@@ -459,8 +488,8 @@ Register the mapping in config: `defineConfig({ agents: [card…], capabilityAge
 
 **Skip the boilerplate (opt-in).** Instead of hand-building `AgentCard`s, pass your `agent$`
 definitions to `agents` and flip a flag: `defineConfig({ agents: [triageAgent], a2a: true })`
-auto-derives + registers each agent's card (`toAgentCard`), and `a2ui: true` auto-registers an
-A2UI surface per agent (`surfaceId = agent.id`) so it can drive its own UI. Both are **off by
+auto-derives + registers each agent's card (`toAgentCard`), and `agentSurface: true` auto-registers an
+agent surface per agent (`surfaceId = agent.id`) so it can drive its own UI. Both are **off by
 default** — with the flags unset, nothing changes and you wire cards/surfaces manually exactly
 as above.
 
@@ -538,7 +567,7 @@ interface LoomConfig {
   agents?: (AgentCard | AgentDefinition)[]; // cards register verbatim; agent$ defs auto-wire behind flags
   capabilityAgents?: Record<string, string>;
   a2a?: boolean;   // opt-in: auto-derive+register an AgentCard per agent$ definition (toAgentCard)
-  a2ui?: boolean;  // opt-in: auto-register an A2UI surface per agent (surfaceId = agent.id)
+  agentSurface?: boolean;  // opt-in: auto-register an agent surface per agent (surfaceId = agent.id)
   telemetry?: TelemetryAdapter[];      // auto-scrubbed for sensitive()/internal() fields (K10-R6)
   dispatcher?: ExecutionDispatcher;    // where executions run
   onEvent?: (event: EventEnvelope) => void;

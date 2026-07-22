@@ -139,7 +139,7 @@ Feed the generated modules to `defineConfig({ flowModules, agentModules, toolMod
 | module | wired into | notes |
 |---|---|---|
 | `flowModules` | the workflow runtime | every `RegisteredFlow`-shaped export registers |
-| `agentModules` | `agents` → A2A bus / A2UI | auto-wired behind the opt-in `a2a` / `a2ui` flags |
+| `agentModules` | `agents` → A2A bus / agent-surface | auto-wired behind the opt-in `a2a` / `agentSurface` flags |
 | `toolModules` | `app.tools` | introspection only — a tool's effect is registered separately |
 | `skillModules` | `app.skills` (`SkillRegistry`) | deterministic offline selection (`app.skills.find(query)`) |
 | `scheduleModules` | `app.schedules` → `TimerService` | fire **only** when `timers: { store }` is configured (else a boot warning) |

@@ -87,7 +87,7 @@ import { helloFlow } from "./hello";
 
 const app = defineConfig({
   storage: { kind: "memory" },     // in-memory; use sqliteStorage({ dir: ".loom" }) to persist
-  surfaces: ["default"],            // A2UI surfaces to project
+  surfaces: ["default"],            // agent surfaces to project
   flows: [helloFlow],
 });
 

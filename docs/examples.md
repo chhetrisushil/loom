@@ -67,7 +67,7 @@ pnpm --filter @loom/db-observability start
 ### UI / generation
 
 - **`a2ui-dashboard`**, **`angular-command-center`** — renderer/UI surface variants
-  over `@loom/a2ui`.
+  over `@loom/agent-surface`.
 - **`appgen-brownfield`**, **`appgen-models`** — AI-driven app generation
   (`@loom/appgen`).
 
