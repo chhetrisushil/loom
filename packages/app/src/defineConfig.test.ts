@@ -527,7 +527,7 @@ describe("defineConfig — compliance / subject rights (T3)", () => {
   });
 });
 
-describe("defineConfig — agent auto-wiring (a2a / a2ui, opt-in)", () => {
+describe("defineConfig — agent auto-wiring (a2a / agentSurface, opt-in)", () => {
   const triage = agent$({
     id: "triage",
     name: "Triage",
@@ -557,8 +557,8 @@ describe("defineConfig — agent auto-wiring (a2a / a2ui, opt-in)", () => {
     expect(card?.skills).toEqual([{ id: "s1", name: "Skill One" }]);
   });
 
-  it("a2ui: true registers a surface per agent (id = agent.id)", () => {
-    const app = defineConfig({ storage: { kind: "memory" }, agents: [triage], a2ui: true });
+  it("agentSurface: true registers a surface per agent (id = agent.id)", () => {
+    const app = defineConfig({ storage: { kind: "memory" }, agents: [triage], agentSurface: true });
     // getState throws unless the surface projection is registered.
     expect(() => app.projectionRuntime.getState("triage", "x")).not.toThrow();
   });
@@ -572,7 +572,7 @@ describe("defineConfig — agent auto-wiring (a2a / a2ui, opt-in)", () => {
     });
     expect(app.bus.agentCards()).toHaveLength(0); // not on the bus
     expect(() => app.projectionRuntime.getState("triage", "x")).toThrow(/not registered/); // no surface
-    expect(warns.some((w) => w.includes("neither `a2a` nor `a2ui`"))).toBe(true);
+    expect(warns.some((w) => w.includes("neither `a2a` nor `agentSurface`"))).toBe(true);
   });
 
   it("cards and definitions coexist in one list", () => {

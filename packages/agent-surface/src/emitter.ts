@@ -1,10 +1,10 @@
-import { A2UI_PATCH, DEFAULT_SURFACE } from "./types";
-import type { A2UIPatch } from "./types";
+import { SURFACE_PATCH, DEFAULT_SURFACE } from "./types";
+import type { SurfacePatch } from "./types";
 
 // The producer half of the protocol. Any context that can emit events (a
 // WorkflowContext, a step's EffectContext, an agent) can drive the UI through
-// this ergonomic wrapper — every method emits a single A2UI_PATCH event.
-export interface A2UIEmitter {
+// this ergonomic wrapper — every method emits a single SURFACE_PATCH event.
+export interface SurfaceEmitter {
   // Replace the value at `path` ("" replaces the whole surface).
   set(path: string, value: unknown): void;
   // Shallow-merge an object into the object at `path`.
@@ -17,14 +17,14 @@ export interface A2UIEmitter {
   // Add `by` (default 1) to the number at `path`.
   increment(path: string, by?: number): void;
   // Emit an arbitrary batch of patches atomically (one event).
-  patch(patches: A2UIPatch[]): void;
+  patch(patches: SurfacePatch[]): void;
 }
 
 type EmitFn = (eventType: string, payload: unknown) => void;
 
-export function createA2UIEmitter(emit: EmitFn, surface: string = DEFAULT_SURFACE): A2UIEmitter {
-  const send = (patches: A2UIPatch[]): void => {
-    emit(A2UI_PATCH, { surface, patches });
+export function createSurfaceEmitter(emit: EmitFn, surface: string = DEFAULT_SURFACE): SurfaceEmitter {
+  const send = (patches: SurfacePatch[]): void => {
+    emit(SURFACE_PATCH, { surface, patches });
   };
   return {
     set: (path, value) => send([{ op: "set", path, value }]),

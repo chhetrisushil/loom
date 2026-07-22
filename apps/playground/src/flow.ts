@@ -63,8 +63,8 @@ export const TaskFlow = flow$({
 const runner: FlowRunner<TaskInput, TaskOutput> = async (ctx, input) => {
   ctx.emit("TASK_STARTED", { taskId: input.taskId, label: input.label });
 
-  // A2UI: drive the UI with durable, replayable patches. Every ctx.ui.* call
-  // emits one A2UI_PATCH event — watch them stream in on the "A2UI" tab.
+  // agent-surface: drive the UI with durable, replayable patches. Every ctx.ui.* call
+  // emits one A2UI_PATCH event — watch them stream in on the "agent-surface" tab.
   ctx.ui.set("taskId", input.taskId);
   ctx.ui.set("status", "fetching");
   ctx.ui.append("progressLog", `Fetching data for ${input.taskId}`);

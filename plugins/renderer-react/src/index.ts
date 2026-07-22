@@ -9,7 +9,7 @@ export { useProjection } from "./hooks/useProjection";
 export { useDeferredProjection } from "./hooks/useDeferredProjection";
 export { useWidgetValue } from "./hooks/useWidgetValue";
 export { useDeferredWidgetValue } from "./hooks/useDeferredWidgetValue";
-export { useA2UISurface } from "./hooks/useA2UISurface";
+export { useAgentSurface } from "./hooks/useAgentSurface";
 export { LoomProvider, useLoom } from "./LoomProvider";
 export type { FiberConfig, FiberConfigObject } from "./fiber/types";
 export type { WidgetAction, WidgetRenderer, WidgetRendererProps } from "./RendererRegistry";

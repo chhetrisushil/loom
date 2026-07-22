@@ -19,7 +19,7 @@ export * from "@loom/reasoning";
 export * from "@loom/agent";
 export * from "@loom/plugin-mcp";
 export * from "@loom/plugin-a2a";
-export * from "@loom/a2ui";
+export * from "@loom/agent-surface";
 export { AgentRegistry, globalAgentRegistry } from "@loom/registry";
 export type { RegisteredAgent, RegisteredAgentCard } from "@loom/registry";
 

@@ -76,7 +76,7 @@ export const KERNEL_SYSCALLS: readonly KernelSyscall[] = [
     name: "ui",
     kind: "accessor",
     since: "1.0.0",
-    summary: "drive durable, replayable UI surfaces (A2UI)",
+    summary: "drive durable, replayable UI surfaces (agent-surface)",
   },
 ] as const;
 

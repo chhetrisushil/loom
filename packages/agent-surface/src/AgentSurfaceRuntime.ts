@@ -1,44 +1,44 @@
 import type { EventEnvelope } from "@loom/core";
-import { applyA2UIPatches } from "./applyPatch";
-import { A2UI_PATCH, DEFAULT_SURFACE } from "./types";
-import type { A2UIPatchPayload, A2UISurfaceState } from "./types";
+import { applySurfacePatches } from "./applyPatch";
+import { SURFACE_PATCH, DEFAULT_SURFACE } from "./types";
+import type { SurfacePatchPayload, SurfaceState } from "./types";
 
 // The consumer half of the protocol. A standalone, event-sourced surface store:
-// feed it the event stream and it folds A2UI_PATCH events into per-surface,
+// feed it the event stream and it folds SURFACE_PATCH events into per-surface,
 // per-execution state trees. Framework-agnostic — usable from React, Angular,
 // Vue, or a headless client. For React apps that already have a
-// ProjectionRuntime, prefer `a2uiSurfaceProjection` instead (zero extra runtime).
-export class A2UIRuntime {
-  private readonly surfaces = new Map<string, A2UISurfaceState>();
-  private readonly subscribers = new Map<string, Set<(state: A2UISurfaceState) => void>>();
+// ProjectionRuntime, prefer `agentSurfaceProjection` instead (zero extra runtime).
+export class AgentSurfaceRuntime {
+  private readonly surfaces = new Map<string, SurfaceState>();
+  private readonly subscribers = new Map<string, Set<(state: SurfaceState) => void>>();
 
   private key(surface: string, executionId: string): string {
     return `${surface}::${executionId}`;
   }
 
   handleEvent(event: EventEnvelope): void {
-    if (event.eventType !== A2UI_PATCH) return;
-    const payload = event.payload as A2UIPatchPayload;
+    if (event.eventType !== SURFACE_PATCH) return;
+    const payload = event.payload as SurfacePatchPayload;
     const surface = payload.surface ?? DEFAULT_SURFACE;
     const key = this.key(surface, event.executionId);
     const current = this.surfaces.get(key) ?? {};
-    const next = applyA2UIPatches(current, payload.patches);
+    const next = applySurfacePatches(current, payload.patches);
     this.surfaces.set(key, next);
     this.notify(key, next);
   }
 
-  getSurface(surface: string, executionId: string): A2UISurfaceState {
+  getSurface(surface: string, executionId: string): SurfaceState {
     return this.surfaces.get(this.key(surface, executionId)) ?? {};
   }
 
-  seed(surface: string, executionId: string, state: A2UISurfaceState): void {
+  seed(surface: string, executionId: string, state: SurfaceState): void {
     this.surfaces.set(this.key(surface, executionId), state);
   }
 
   subscribe(
     surface: string,
     executionId: string,
-    handler: (state: A2UISurfaceState) => void
+    handler: (state: SurfaceState) => void
   ): () => void {
     const key = this.key(surface, executionId);
     let set = this.subscribers.get(key);
@@ -53,7 +53,7 @@ export class A2UIRuntime {
     };
   }
 
-  private notify(key: string, state: A2UISurfaceState): void {
+  private notify(key: string, state: SurfaceState): void {
     const set = this.subscribers.get(key);
     if (!set) return;
     for (const handler of set) handler(state);

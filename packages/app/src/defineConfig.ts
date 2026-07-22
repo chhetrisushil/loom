@@ -1,4 +1,4 @@
-import { a2uiSurfaceProjection } from "@loom/a2ui";
+import { agentSurfaceProjection } from "@loom/agent-surface";
 import { SkillRegistry } from "@loom/agent";
 import {
   EraseCoordinator,
@@ -122,9 +122,9 @@ export interface LoomConfig {
   /** Projection runtime to fold events into UI surfaces. Default in-memory. */
   projectionRuntime?: ProjectionRuntime;
   /**
-   * A2UI surfaces to register on the projection runtime. A bare string is the surface id;
+   * Agent surfaces to register on the projection runtime. A bare string is the surface id;
    * the object form declares K10-R6 egress redaction — surface dot-paths masked before any
-   * reader (client/renderer) sees them (A2UI patches are app-authored, so sensitive surface
+   * reader (client/renderer) sees them (surface patches are app-authored, so sensitive surface
    * paths are declared explicitly rather than derived from schema marks).
    */
   surfaces?: (string | { id: string; redact?: readonly string[] })[];
@@ -140,7 +140,7 @@ export interface LoomConfig {
   /**
    * Statically-imported agent modules (from `loom gen`'s `agentModules`) — every `agent$`
    * definition exported is discovered by value shape and folded into {@link agents}, so it
-   * participates in the A2A/A2UI auto-wiring behind the {@link a2a}/{@link a2ui} flags. Same
+   * participates in the A2A / agent-surface auto-wiring behind the {@link a2a}/{@link agentSurface} flags. Same
    * folder-convention discovery as `flowModules`, extended to `app/agents/*.ts`.
    */
   agentModules?: AgentModule[];
@@ -217,7 +217,7 @@ export interface LoomConfig {
   /**
    * Agents advertised on the in-process A2A bus. Accepts either hand-built `AgentCard`s
    * (registered verbatim, exactly as before) **or** `agent$` `AgentDefinition`s. A definition
-   * is auto-wired only when the matching flag is enabled ({@link a2a} / {@link a2ui}); with the
+   * is auto-wired only when the matching flag is enabled ({@link a2a} / {@link agentSurface}); with the
    * flags off, nothing about the current manual flow changes.
    */
   agents?: (AgentCard | AgentDefinition)[];
@@ -232,12 +232,12 @@ export interface LoomConfig {
    */
   a2a?: boolean;
   /**
-   * K/DX — auto-register an A2UI surface per declared `agent$` definition (`surfaceId =
-   * agent.id`), so an agent can drive its own UI via `createA2UIEmitter(emit, agent.id)` with
+   * K/DX — auto-register an agent surface per declared `agent$` definition (`surfaceId =
+   * agent.id`), so an agent can drive its own UI via `createSurfaceEmitter(emit, agent.id)` with
    * no manual `surfaces` entry. **Opt-in**: default/omitted registers nothing extra; manual
    * `surfaces: [...]` is unaffected. Harmless (empty projection) for agents that never emit.
    */
-  a2ui?: boolean;
+  agentSurface?: boolean;
   /** Static, ordered effect middleware (retries, logging, …). */
   effectMiddleware?: EffectMiddleware[];
   /**
@@ -534,7 +534,7 @@ export function defineConfig(config: LoomConfig): LoomApp {
     const [id, redact] =
       typeof surface === "string" ? [surface, undefined] : [surface.id, surface.redact];
     projectionRuntime.register(
-      a2uiSurfaceProjection(id, ...(redact !== undefined ? [{ redact }] : []))
+      agentSurfaceProjection(id, ...(redact !== undefined ? [{ redact }] : []))
     );
   }
 
@@ -711,7 +711,7 @@ export function defineConfig(config: LoomConfig): LoomApp {
   let unwiredDefs = 0;
   // Agents come from the explicit `agents` list AND from `agentModules` (loom gen discovery,
   // value-shape). Both feed the same wiring: cards register verbatim; agent$ definitions
-  // auto-wire only behind the a2a/a2ui flags.
+  // auto-wire only behind the a2a/agentSurface flags.
   const allAgents = [
     ...(config.agents ?? []),
     ...agentDefinitionsFrom(...(config.agentModules ?? [])),
@@ -725,13 +725,13 @@ export function defineConfig(config: LoomConfig): LoomApp {
     // An agent$ definition is auto-wired ONLY behind the opt-in flags.
     const def = entry;
     if (config.a2a) bus.registerAgent(toAgentCard(def)); // derive + register its card
-    if (config.a2ui) projectionRuntime.register(a2uiSurfaceProjection(def.id)); // one surface per agent
-    if (!config.a2a && !config.a2ui) unwiredDefs += 1;
+    if (config.agentSurface) projectionRuntime.register(agentSurfaceProjection(def.id)); // one surface per agent
+    if (!config.a2a && !config.agentSurface) unwiredDefs += 1;
   }
   if (unwiredDefs > 0) {
     const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
     warn(
-      `${unwiredDefs} agent definition(s) passed to \`agents\` but neither \`a2a\` nor \`a2ui\` is enabled — they are not wired to anything. Enable a flag, or pass hand-built AgentCards to wire manually.`
+      `${unwiredDefs} agent definition(s) passed to \`agents\` but neither \`a2a\` nor \`agentSurface\` is enabled — they are not wired to anything. Enable a flag, or pass hand-built AgentCards to wire manually.`
     );
   }
   for (const [capabilityId, agentId] of Object.entries(config.capabilityAgents ?? {})) {

@@ -1,5 +1,5 @@
-import { createA2UIEmitter } from "@loom/a2ui";
-import type { A2UIEmitter } from "@loom/a2ui";
+import { createSurfaceEmitter } from "@loom/agent-surface";
+import type { SurfaceEmitter } from "@loom/agent-surface";
 import { SuspendError, TypedFailure } from "@loom/core";
 import type { ExecutableTask, StepDefinition } from "@loom/core";
 import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
@@ -35,7 +35,7 @@ function safeJsonLength(value: unknown): number {
 export class WorkflowContextImpl implements WorkflowContext {
   readonly executionId: string;
   readonly workflowId: string;
-  readonly ui: A2UIEmitter;
+  readonly ui: SurfaceEmitter;
   private suspendPassthroughsConsumed = 0;
 
   constructor(
@@ -57,9 +57,9 @@ export class WorkflowContextImpl implements WorkflowContext {
   ) {
     this.executionId = executionId;
     this.workflowId = workflowId;
-    // A2UI patches flow through the normal event pipeline, so UI updates are
+    // agent-surface patches flow through the normal event pipeline, so UI updates are
     // durable and replay deterministically alongside every other event.
-    this.ui = createA2UIEmitter((eventType, payload) => this.emit(eventType, payload));
+    this.ui = createSurfaceEmitter((eventType, payload) => this.emit(eventType, payload));
   }
 
   // Synchronous: the journal allocates a sequence, folds the VM, fires onEvent,
