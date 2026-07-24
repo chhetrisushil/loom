@@ -146,6 +146,10 @@ function now() {
   return new Date().toLocaleTimeString("en", { hour12: false });
 }
 
+// Cap for the newest-first UI buffers (event log, patch stream, A2UI messages) so
+// a long session stays bounded in memory and per-prepend cost.
+const MAX_ROWS = 500;
+
 const phaseBg: Record<Phase, string> = {
   idle: "#4a5568",
   running: "#2b6cb0",
@@ -465,7 +469,9 @@ function App() {
   const [intentText, setIntentText] = useState("analyze a task and apply the result");
 
   const addLog = useCallback((entry: LogEntry) => {
-    setLog((prev) => [entry, ...prev]);
+    // Cap the newest-first buffers so a long session doesn't grow without bound
+    // (and each O(n) prepend stays cheap). Display-only — old rows just drop off.
+    setLog((prev) => [entry, ...prev].slice(0, MAX_ROWS));
   }, []);
 
   const sysLog = useCallback(
@@ -508,11 +514,12 @@ function App() {
         if (e.eventType === SURFACE_PATCH) {
           const payload = e.payload as SurfacePatchPayload;
           const entries = payload.patches.map((patch) => ({ time: now(), patch }));
-          setPatchStream((prev) => [...entries.reverse(), ...prev]);
+          setPatchStream((prev) => [...entries.reverse(), ...prev].slice(0, MAX_ROWS));
         }
         // Translate the event into A2UI protocol messages via the egress bridge.
         const a2ui = bridge.handleEvent(e).map((msg) => ({ time: now(), msg }));
-        if (a2ui.length > 0) setA2uiMessages((prev) => [...a2ui.reverse(), ...prev]);
+        if (a2ui.length > 0)
+          setA2uiMessages((prev) => [...a2ui.reverse(), ...prev].slice(0, MAX_ROWS));
       })
       .then((u) => {
         if (cancelled) u();
@@ -631,22 +638,26 @@ function App() {
     // This single demo call site is tagged `#1`.
     const callId = `${executionId}:getLocale#1`;
     const request = bridge.callFunction("getLocale", { hint: "browser" }, { callId });
-    setA2uiMessages((prev) => [{ time: now(), msg: request }, ...prev]);
+    setA2uiMessages((prev) => [{ time: now(), msg: request }, ...prev].slice(0, MAX_ROWS));
     sysLog(`A2UI callFunction "getLocale" → client  callId=${callId}`);
 
     // Inbound reply. Simulate a compliant client answering; the bridge normalizes
-    // the `functionResponse` for this surface (returns null if it isn't ours).
-    const answer = bridge.ingestFunctionResponse({
-      version: A2UI_VERSION,
-      functionResponse: {
-        surfaceId: bridge.surfaceId,
-        callId,
-        name: "getLocale",
-        result: { locale: "en-GB" },
+    // the `functionResponse` for this surface AND rejects any reply whose callId
+    // isn't the one we just issued (guards a forged / replayed response).
+    const answer = bridge.ingestFunctionResponse(
+      {
+        version: A2UI_VERSION,
+        functionResponse: {
+          surfaceId: bridge.surfaceId,
+          callId,
+          name: "getLocale",
+          result: { locale: "en-GB" },
+        },
       },
-    });
+      callId
+    );
     if (!answer) {
-      sysLog("A2UI functionResponse ignored — not for this surface");
+      sysLog("A2UI functionResponse ignored — wrong surface or unexpected callId");
       return;
     }
     addLog({ time: now(), kind: "event", label: "A2UI ▸ functionResponse", payload: answer });

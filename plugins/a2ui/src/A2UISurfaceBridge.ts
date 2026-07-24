@@ -220,11 +220,22 @@ export class A2UISurfaceBridge {
    * Twin of {@link ingestAction}: the plugin creates no Loom event itself — the
    * caller maps the returned payload to a resume event (grain A) or resolves the
    * awaiting `a2ui.callFunction` effect by `callId` (grain B).
+   *
+   * SECURITY: a client controls this message, so a reply is only as trustworthy
+   * as its correlation. Pass `expectedCallId` (the id of the request you actually
+   * issued) to reject a forged or replayed response — without it this checks only
+   * the surface, so an unsolicited reply for an arbitrary `callId` would pass and
+   * (if the caller resumes a gate with it) let the client inject data. Always
+   * pass it when the pending request's id is known.
    */
-  ingestFunctionResponse(message: A2UIClientMessage): FunctionResponsePayload | null {
+  ingestFunctionResponse(
+    message: A2UIClientMessage,
+    expectedCallId?: string
+  ): FunctionResponsePayload | null {
     if (!isFunctionResponse(message)) return null;
     const { functionResponse } = message;
     if (functionResponse.surfaceId !== this.a2uiSurfaceId) return null;
+    if (expectedCallId !== undefined && functionResponse.callId !== expectedCallId) return null;
     return functionResponse;
   }
 }

@@ -292,6 +292,25 @@ describe("A2UISurfaceBridge — callFunction / ingestFunctionResponse", () => {
     ).toBeNull();
     expect(b.ingestFunctionResponse({ version: A2UI_VERSION, error: "boom" })).toBeNull();
   });
+
+  it("ingestFunctionResponse rejects a forged/replayed callId when expectedCallId is given", () => {
+    const b = newBridge();
+    const msg = {
+      version: A2UI_VERSION,
+      functionResponse: {
+        surfaceId: "ui:exec-1",
+        callId: "exec-1:getLocale#1",
+        name: "getLocale",
+        result: { locale: "en-GB" },
+      },
+    };
+    // Matches the outstanding request → accepted.
+    expect(b.ingestFunctionResponse(msg, "exec-1:getLocale#1")?.result).toEqual({
+      locale: "en-GB",
+    });
+    // Surface matches but callId doesn't (forged / stale) → rejected.
+    expect(b.ingestFunctionResponse(msg, "exec-1:getLocale#2")).toBeNull();
+  });
 });
 
 // ── Grain B — registerA2UICallFunction effect ───────────────────────────────────
@@ -393,5 +412,33 @@ describe("registerA2UICallFunction (grain B)", () => {
     await expect(
       cap.get().execute({ surfaceId: "ui:exec-1", name: "confirm" }, effectCtx())
     ).rejects.toThrow(/user cancelled/);
+  });
+
+  it("rejects a mis-correlated response (wrong callId) instead of adopting it", async () => {
+    const cap = captureEffect();
+    registerA2UICallFunction(cap.runtime, {
+      // A mis-wiring transport that returns some OTHER call's reply.
+      call: async (req) => ({
+        surfaceId: req.surfaceId,
+        callId: "some-other-call",
+        name: req.name,
+        result: "leaked",
+      }),
+    });
+    await expect(
+      cap.get().execute({ surfaceId: "ui:exec-1", name: "confirm" }, effectCtx())
+    ).rejects.toThrow(/mis-correlated/);
+  });
+
+  it("times out a transport that never resolves (bounds the effect)", async () => {
+    const cap = captureEffect();
+    registerA2UICallFunction(
+      cap.runtime,
+      { call: () => new Promise(() => {}) }, // never resolves
+      { requestTimeoutMs: 20 }
+    );
+    await expect(
+      cap.get().execute({ surfaceId: "ui:exec-1", name: "confirm" }, effectCtx())
+    ).rejects.toThrow(/timed out after 20ms/);
   });
 });
