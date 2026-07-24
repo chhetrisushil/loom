@@ -94,3 +94,21 @@ That is a distinct, stateful concern; nothing here depends on it.
 - This **supersedes the "Deferred" section of ADR 0069** for `callFunction`/`functionResponse`; the
   "second consumer" gate is satisfied.
 - `@loom/plugin-a2ui` gains a `@loom/effect-runtime` dependency (types only) for the grain-B helper.
+
+## Caveats (delivery contract on the callId)
+
+Neither of these is a P2/replay risk — replay stays a pure, deterministic fold either way — but both
+are application-level correctness obligations the `callId` carries.
+
+1. **`callId` must be call-site-unique, not just deterministic (grain A).** A suspend-gate has no step id
+   to key on, so a callId derived from the function name (`` `${executionId}:getLocale` ``) collides if the
+   same client function is called twice in one execution — replay is unaffected (the suspend passthrough is
+   positional, ADR 0057), but the two live request/response pairs become indistinguishable, so a reply for
+   call #1 can be applied to gate #2. Mint a call-site-unique id (`` `${executionId}:getLocale#1` ``),
+   mirroring the step-identity rule (ADR 0061). **Grain B is immune**: `ctx.idempotencyKey`
+   (`executionId:stepId`) is unique per `ctx.execute` by construction.
+
+2. **A side-effecting client function must dedup on `callId` (grain B, K9.1).** Effects are at-least-once;
+   a retry-middleware or crash recovery may invoke the transport more than once within a logical attempt,
+   always with the same `callId`. A mutating client function (submit/charge/write) must therefore dedup on
+   `callId` client-side; the deterministic key is what makes that possible. A pure read needs no dedup.
