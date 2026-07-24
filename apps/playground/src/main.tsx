@@ -625,9 +625,11 @@ function App() {
     const bridge = bridgeRef.current;
     if (!bridge) return;
 
-    // Outbound request. The `callId` is DETERMINISTIC (never random) — the K9
-    // delivery key projected onto the transport, so a re-issue reuses it.
-    const callId = `${executionId}:getLocale`;
+    // Outbound request. The `callId` must be DETERMINISTIC (never random — the K9
+    // delivery key, so a re-issue reuses it) AND call-site-unique (a distinct call
+    // of the same function needs a distinct id, mirroring step identity, ADR 0061).
+    // This single demo call site is tagged `#1`.
+    const callId = `${executionId}:getLocale#1`;
     const request = bridge.callFunction("getLocale", { hint: "browser" }, { callId });
     setA2uiMessages((prev) => [{ time: now(), msg: request }, ...prev]);
     sysLog(`A2UI callFunction "getLocale" → client  callId=${callId}`);
