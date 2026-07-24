@@ -183,10 +183,19 @@ export class A2UISurfaceBridge {
    *
    * The bridge is deliberately clock- and random-free (like the rest of its
    * surface — it never calls `Date.now`/`Math.random`), so the correlation
-   * `callId` is caller-supplied and MUST be deterministic: derive it from the
-   * calling step (grain A: `ctx.stepId`; grain B: `ctx.idempotencyKey`, i.e.
-   * `executionId:stepId`). A crash-recovered re-issue then reuses the same
-   * `callId`, letting the client dedup — the K9 delivery contract on the wire.
+   * `callId` is caller-supplied and MUST be:
+   *   1. **deterministic** (never random) — a crash-recovered re-issue reuses the
+   *      same `callId`, letting the client dedup (the K9 delivery contract on the
+   *      wire); and
+   *   2. **call-site-unique** — two calls in one execution, *even of the same
+   *      function*, must carry distinct `callId`s, or their request/response
+   *      correlation collides. This mirrors the step-identity rule (ADR 0061).
+   *
+   * Grain B (a delegated `a2ui.callFunction` effect) gets both for free: use
+   * `ctx.idempotencyKey` (= `executionId:stepId`, and each `ctx.execute` has a
+   * distinct step id). Grain A (a suspend gate) has no step id, so the flow
+   * author mints the id per call site — e.g. `` `${ctx.executionId}:getLocale#1` ``,
+   * NOT `` `${ctx.executionId}:getLocale` `` (which would collide on a second call).
    */
   callFunction(
     name: string,

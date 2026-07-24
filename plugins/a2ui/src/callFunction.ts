@@ -13,6 +13,13 @@
 // for an operator verdict instead of blindly re-invoking the client function —
 // the exact "did the client function actually run?" resolution.
 //
+// At-least-once (K9.1): effects are at-least-once, steps are exactly-once only
+// w.r.t. the log. A configured retry-middleware — or crash recovery — may invoke
+// `transport.call` more than once within a logical attempt, always with the SAME
+// `callId`. So a genuinely side-effecting client function (submit/charge/write)
+// MUST dedup on `callId` on the client side; the deterministic key is what makes
+// that possible. A pure read needs no dedup.
+//
 // The plugin stays transport-agnostic: the caller injects the
 // `A2UICallFunctionTransport` that actually carries the request to the client
 // and correlates the `functionResponse` back by `callId` (a WebSocket, an SSE +
