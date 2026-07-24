@@ -822,17 +822,24 @@ function applySurfacePatches(state: SurfaceState, patches: readonly SurfacePatch
 // getSurfaceValue(state, parts: string[]): unknown ;  class AgentSurfaceRuntime { handleEvent/getSurface/seed/subscribe }
 #+end_src
 
-** ~@loom/plugin-a2ui~ — A2UI (Agent-to-UI) egress adapter
+** ~@loom/plugin-a2ui~ — A2UI (Agent-to-UI) adapter
 
 Projects a Loom agent surface onto the *real* Google [[https://a2ui.org][A2UI]] wire
 protocol v1.0, so any A2UI-compliant client can render a Loom-driven UI. A **1P plugin**,
-kernel untouched (ADR 0069). **Egress + inbound actions only** by design — the
-bidirectional RPC surface (~callFunction~/~actionResponse~, two-way binding) is deferred
-because it fights Loom's append-only replay grain.
+kernel untouched (ADR 0069, ADR 0070). Covers **egress**, the inbound ~action~ leg, and
+the **~callFunction~ bidirectional RPC** (the agent invokes a named client function and
+receives a ~functionResponse~). Only continuous two-way *binding sync* remains out of
+scope.
 
 The bridge folds ~SURFACE_PATCH~ events locally and translates Loom's *delta* ops into
 A2UI's *absolute* ~updateDataModel~ value-replacement (A2UI has no patch framework);
 ~remove~ → ~contents: null~. K10-R6 egress redaction is applied on the way out.
+
+~callFunction~ is reconciled with Loom's append-only replay grain **not** as a blocking
+sync RPC in the log, but by the client's *result* re-entering as an ordinary recorded fact
+— a resume event (grain A) or a ~STEP_COMPLETED~ output (grain B). No client-side effect
+runtime is needed; determinism rests on **result-as-recorded-fact + a deterministic
+~callId~**. No new event types; ~EVENT_SCHEMA~/~KERNEL_ABI~ unchanged (ADR 0070).
 
 #+begin_src typescript
 const A2UI_VERSION = "v1.0";
@@ -853,12 +860,26 @@ class A2UISurfaceBridge {
   handleEvent(event: EventEnvelope): A2UIServerMessage[];  // 0+ createSurface/updateDataModel messages
   close(): A2UIServerMessage[];                // deleteSurface
   ingestAction(msg: A2UIClientMessage): ActionPayload | null;  // inbound: normalize a client action
+  // callFunction (bidirectional RPC). callId MUST be deterministic (never random)
+  // AND call-site-unique — grain A has no step id, so mint it per call site, e.g.
+  // `${executionId}:getLocale#1` (mirrors step identity, ADR 0061). Grain B uses
+  // ctx.idempotencyKey (= executionId:stepId), unique per ctx.execute, for free.
+  callFunction(name: string, args: unknown, opts: { callId: string; callableFrom?: string }): A2UIServerMessage;
+  ingestFunctionResponse(msg: A2UIClientMessage): FunctionResponsePayload | null;  // inbound: normalize a reply
 }
 
 // Catalog (mandatory in A2UI — createSurface names a catalogId)
 const DEFAULT_CATALOG_ID = "loom.core.v1";
 const defaultCatalog: A2UICatalog;           // Text/Column/Row/List/Badge/Button
 function defineCatalog(catalog: A2UICatalog): A2UICatalog;   // bring your own
+function defineFunction(fn: CatalogFunctionSchema): CatalogFunctionSchema; // a client-callable function
+
+// Grain B — callFunction as a delegated effect. Registers an `a2ui.callFunction`
+// effect (idempotent:false → a crash mid-call parks at EFFECT_INDOUBT for an
+// operator verdict, not a blind re-fire). Transport injected → plugin stays
+// transport-agnostic. Call via `ctx.execute({ id, toolId: A2UI_CALL_FUNCTION_TOOL_ID }, input)`.
+const A2UI_CALL_FUNCTION_TOOL_ID = "a2ui.callFunction";
+function registerA2UICallFunction(fx: EffectRuntime, transport: A2UICallFunctionTransport, opts?: { toolId?: string }): string;
 
 // Component-tree builders (bindings are JSON Pointers into the surface data model)
 function bind(pointer: string): { path: string };
@@ -892,7 +913,29 @@ onClientMessage((m) => {
 });
 #+end_src
 
-See ~apps/playground~ (the "A2UI" tab) for a live end-to-end wiring.
+~callFunction~ — the two grains (see ADR 0070; a runnable demo is ~examples/a2ui-callfunction~):
+
+#+begin_src typescript
+// Grain A — read a client value via a suspend/resume gate (no live socket).
+// In the flow: announce the pending call, then suspend on the result.
+const callId = `${ctx.executionId}:getLocale#1`;          // deterministic + call-site-unique
+ctx.ui.set("pendingCall", { callId, name: "getLocale" });
+const reply = (await ctx.suspend({ on: "A2UIFunctionResult", correlationKey: callId })) as { result?: unknown };
+// In the driver: emit the request, get the client's answer, resume the gate.
+send(bridge.callFunction("getLocale", {}, { callId }));   // → client
+const fr = bridge.ingestFunctionResponse(clientMsg);       // client → normalize for this surface
+runtime.resume(executionId, { eventType: "A2UIFunctionResult", payload: fr });
+
+// Grain B — side-effecting call as a delegated effect (needs a duplex transport).
+registerA2UICallFunction(app.effectRuntime, transport);    // at composition time (registerEffects)
+// In the flow: a synchronous-looking call; result folded as STEP_COMPLETED.
+const out = await ctx.execute({ _tag: "TaskDefinition", kind: "tool", id: "confirm-submit",
+  toolId: A2UI_CALL_FUNCTION_TOOL_ID }, { surfaceId: `ui:${ctx.executionId}`, name: "confirmSubmit", args });
+#+end_src
+
+A side-effecting client function must **dedup on ~callId~** (effects are at-least-once, K9.1).
+
+See ~apps/playground~ (the "A2UI" tab — the ~ƒ callFunction~ button) for a live wiring.
 
 ** ~@loom/blueprint-runtime~ — declarative UI
 

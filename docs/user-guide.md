@@ -386,7 +386,7 @@ Register surfaces via `defineConfig({ surfaces: ["mission", "telemetry"] })`, or
 
 ### Exposing a surface over A2UI (external clients)
 
-`@loom/plugin-a2ui` projects an agent surface onto the real **A2UI (Agent-to-UI) wire protocol v1.0**, so any A2UI-compliant client (web/mobile/desktop) can render a Loom-driven UI without executing code. It's an **egress adapter** (a 1P plugin, kernel untouched — [ADR 0069](adr/0069-a2ui-egress-adapter.md)): it folds `SURFACE_PATCH` events and emits A2UI `createSurface` / `updateDataModel` / `deleteSurface` messages, translating Loom's *delta* patches into A2UI's *absolute* value-replacement. It also ingests the client's inbound `action`.
+`@loom/plugin-a2ui` projects an agent surface onto the real **A2UI (Agent-to-UI) wire protocol v1.0**, so any A2UI-compliant client (web/mobile/desktop) can render a Loom-driven UI without executing code. A 1P plugin, kernel untouched ([ADR 0069](adr/0069-a2ui-egress-adapter.md), [ADR 0070](adr/0070-a2ui-callfunction-bidirectional-rpc.md)): it folds `SURFACE_PATCH` events and emits A2UI `createSurface` / `updateDataModel` / `deleteSurface` messages (translating Loom's *delta* patches into A2UI's *absolute* value-replacement), ingests the client's inbound `action`, and supports the **`callFunction` bidirectional RPC** (see below). Only continuous two-way *binding sync* is out of scope.
 
 ```ts
 import { A2UISurfaceBridge, column, text, badge, bind } from "@loom/plugin-a2ui";
@@ -409,7 +409,14 @@ onClientMessage((m) => {
 });
 ```
 
-It ships a default component catalog (`Text`/`Column`/`Row`/`List`/`Badge`/`Button`) plus `defineCatalog` for your own. The bidirectional-RPC surface (`callFunction`/`actionResponse`, two-way binding) is deliberately out of scope. See `apps/playground` (the **A2UI** tab) for a live end-to-end wiring, and the [API reference](api-reference.org) for the full surface.
+It ships a default component catalog (`Text`/`Column`/`Row`/`List`/`Badge`/`Button`) plus `defineCatalog` for your own.
+
+**`callFunction` (bidirectional RPC).** The agent can also ask the client to run a named catalog function and answer with a `functionResponse` — reconciled with Loom's replay grain by the client's *result* re-entering as a recorded fact (no client-side effect runtime needed), keyed by a deterministic `callId`. Two grains ([ADR 0070](adr/0070-a2ui-callfunction-bidirectional-rpc.md); runnable in `examples/a2ui-callfunction`):
+
+- **Grain A** — a read, via a `ctx.suspend` gate: `bridge.callFunction(name, args, { callId })` → client answers → `bridge.ingestFunctionResponse(msg)` → `runtime.resume`. The `callId` must be deterministic **and** call-site-unique (e.g. `` `${executionId}:getLocale#1` ``).
+- **Grain B** — a side effect, via a delegated effect: `registerA2UICallFunction(app.effectRuntime, transport)`, then `await ctx.execute({ toolId: A2UI_CALL_FUNCTION_TOOL_ID, … }, input)`. Declared `idempotent: false`, so a crash mid-call parks at `EFFECT_INDOUBT` for an operator verdict. The `callId` is `ctx.idempotencyKey` (unique per step); a side-effecting client function must dedup on it (effects are at-least-once).
+
+See `apps/playground` (the **A2UI** tab) for a live end-to-end wiring, and the [API reference](api-reference.org) for the full surface.
 
 The playground's **A2UI** tab shows the emitted wire messages (`createSurface` → `updateDataModel` → `deleteSurface`), and the **Approve** button round-trips an inbound `action` back through `ingestAction`:
 
