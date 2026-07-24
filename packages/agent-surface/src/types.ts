@@ -4,7 +4,7 @@
 // state tree by emitting durable patch events. It is deliberately NOT the Google
 // A2UI wire protocol (component catalogs, JSON-Pointer bindings, bidirectional
 // RPC); for interop with external A2UI clients see the `@loom/plugin-a2ui`
-// egress adapter, which projects these surfaces onto the A2UI wire format.
+// adapter, which projects these surfaces onto the A2UI wire format.
 
 // The single event type that carries every surface update. Because updates travel
 // as ordinary Loom events, they are durable, ordered, and replayable — the UI

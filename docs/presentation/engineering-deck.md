@@ -304,7 +304,7 @@ ctx.ui.append("timeline", "root cause found");   // set / merge / append / remov
 - Each call emits one `SURFACE_PATCH` event → **durable & replayable**.
 - `agentSurfaceProjection("ui")` folds patches into a projection; widgets bind with `{ projectionId: "ui", path }` — **zero renderer changes**.
 - `StreamingText` widget grows live as tokens arrive. Refresh/resume rebuilds the exact screen.
-- **A2UI interop** — `@loom/plugin-a2ui` projects a surface onto the external [A2UI](https://a2ui.org) wire protocol (v1.0), so any A2UI‑compliant client can render it. Egress adapter, kernel untouched (ADR 0069).
+- **A2UI interop** — `@loom/plugin-a2ui` projects a surface onto the external [A2UI](https://a2ui.org) wire protocol (v1.0), so any A2UI‑compliant client can render it — egress, the inbound `action` leg, and the `callFunction` bidirectional RPC (the agent invokes a client function; its result re-enters as a recorded fact, keyed by a deterministic `callId`). Kernel untouched (ADR 0069, ADR 0070).
 
 ---
 

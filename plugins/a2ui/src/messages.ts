@@ -1,6 +1,6 @@
 // ── A2UI protocol v1.0 wire messages ──────────────────────────────────────────
 //
-// The subset of the Google A2UI (Agent-to-UI) protocol this egress adapter
+// The subset of the Google A2UI (Agent-to-UI) protocol this adapter
 // speaks. A2UI is a *component-tree + data-model* protocol: the agent describes a
 // UI declaratively (components drawn from a catalog, bound to a data model by
 // JSON Pointer) and any compliant client renders it — no code is ever shipped.

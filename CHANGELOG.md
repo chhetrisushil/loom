@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A2UI `callFunction` (bidirectional RPC) in `@loom/plugin-a2ui`.** The A2UI adapter now covers the
+  agent→client `callFunction` leg (the agent invokes a named catalog function; the client answers with a
+  `functionResponse`), promoting the surface deferred in ADR 0069. Two composition grains on
+  transport-agnostic primitives: **grain A** — a read via a `ctx.suspend` gate
+  (`bridge.callFunction` → `ingestFunctionResponse` → `runtime.resume`); **grain B** — a side-effecting
+  call via a delegated effect (`registerA2UICallFunction`, `idempotent: false` so a crash mid-call parks at
+  `EFFECT_INDOUBT`). Determinism rests on **result-as-recorded-fact + a deterministic, call-site-unique
+  `callId`** — no client-side effect runtime, no new event types (`EVENT_SCHEMA`/`KERNEL_ABI` unchanged).
+  Inbound replies are correlation-checked (`ingestFunctionResponse(msg, expectedCallId)` and an effect-side
+  `callId`/`surfaceId` match), and `registerA2UICallFunction` accepts a `requestTimeoutMs`. New
+  `examples/a2ui-callfunction` demonstrates both grains + a crash→in-doubt recovery. See
+  [ADR 0070](docs/adr/0070-a2ui-callfunction-bidirectional-rpc.md).
 - **`loom appgen` — natural-language → Loom app.** New `@loom/cli` subcommand that turns a
   natural-language intent into a Loom app following the **folder convention** (the same shape
   `create-loom-app` / `loom new` / `loom gen` produce), wiring the pure `@loom/appgen` library
