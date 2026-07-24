@@ -59,6 +59,11 @@ two-way-binding sync — and the rich catalog half (client `functions`, validati
 append-only, replayable event grain. They are edge-of-system concerns; promote only when a concrete
 consumer needs them (the "second consumer" evidence gate).
 
+> **Update:** `callFunction`/`functionResponse` and the catalog `functions` vocabulary were promoted in
+> [ADR 0070](0070-a2ui-callfunction-bidirectional-rpc.md) once that gate was met — reconciled with the
+> replay grain by the client's *result* re-entering as a recorded fact (not a sync RPC in the log), keyed
+> by a deterministic `callId`. Continuous two-way binding sync remains out of scope.
+
 ## Consequences
 
 - The adapter is **transport-agnostic**: it produces/consumes A2UI *messages*, so any binding (the app's
