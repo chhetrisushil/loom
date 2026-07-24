@@ -1214,6 +1214,9 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

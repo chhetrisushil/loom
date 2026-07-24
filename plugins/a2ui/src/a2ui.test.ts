@@ -1,10 +1,13 @@
 import { SURFACE_PATCH } from "@loom/agent-surface";
 import type { SurfacePatch } from "@loom/agent-surface";
 import type { EventEnvelope } from "@loom/core";
+import type { Effect, EffectContext, EffectRuntime } from "@loom/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { A2UISurfaceBridge } from "./A2UISurfaceBridge";
+import type { A2UICallFunctionInput } from "./callFunction";
+import { registerA2UICallFunction } from "./callFunction";
 import { DEFAULT_CATALOG_ID, bind, column, text } from "./catalog";
-import type { A2UIServerMessage } from "./messages";
+import type { A2UIServerMessage, CallFunctionPayload, FunctionResponsePayload } from "./messages";
 import { A2UI_VERSION } from "./messages";
 import { dotPathToParts, dotPathToPointer } from "./pointer";
 
@@ -218,5 +221,177 @@ describe("A2UISurfaceBridge — close and ingestAction", () => {
       b.ingestAction({ version: A2UI_VERSION, action: { surfaceId: "other", action: "x" } })
     ).toBeNull();
     expect(b.ingestAction({ version: A2UI_VERSION, error: "boom" })).toBeNull();
+  });
+});
+
+// ── callFunction (bidirectional RPC) ────────────────────────────────────────────
+
+const asCallFunction = (m: A2UIServerMessage) =>
+  (m as { callFunction: CallFunctionPayload }).callFunction;
+
+describe("A2UISurfaceBridge — callFunction / ingestFunctionResponse", () => {
+  it("callFunction emits a well-formed request with this surface's id and the caller's callId", () => {
+    const b = newBridge();
+    const msg = b.callFunction("getLocale", { hint: "browser" }, { callId: "exec-1:step-7" });
+    expect(msg.version).toBe(A2UI_VERSION);
+    expect(asCallFunction(msg)).toEqual({
+      surfaceId: "ui:exec-1",
+      callId: "exec-1:step-7",
+      name: "getLocale",
+      args: { hint: "browser" },
+    });
+  });
+
+  it("callFunction omits args when undefined and forwards callableFrom", () => {
+    const b = newBridge();
+    const msg = b.callFunction("ping", undefined, { callId: "c1", callableFrom: "root" });
+    expect(asCallFunction(msg)).toEqual({
+      surfaceId: "ui:exec-1",
+      callId: "c1",
+      name: "ping",
+      callableFrom: "root",
+    });
+  });
+
+  it("callId is a pure echo of the caller's key — stable across bridge instances (replay-safe)", () => {
+    // The bridge is clock/random-free: two independently constructed bridges for
+    // the same execution produce byte-identical requests for the same callId.
+    const a = newBridge();
+    const b = newBridge();
+    const ma = asCallFunction(a.callFunction("f", { x: 1 }, { callId: "exec-1:s1" }));
+    const mb = asCallFunction(b.callFunction("f", { x: 1 }, { callId: "exec-1:s1" }));
+    expect(ma).toEqual(mb);
+  });
+
+  it("ingestFunctionResponse returns the payload when it targets this surface", () => {
+    const b = newBridge();
+    const functionResponse: FunctionResponsePayload = {
+      surfaceId: "ui:exec-1",
+      callId: "exec-1:step-7",
+      name: "getLocale",
+      result: "en-GB",
+    };
+    expect(b.ingestFunctionResponse({ version: A2UI_VERSION, functionResponse })).toEqual(
+      functionResponse
+    );
+  });
+
+  it("ingestFunctionResponse returns null for another surface or a non-response", () => {
+    const b = newBridge();
+    expect(
+      b.ingestFunctionResponse({
+        version: A2UI_VERSION,
+        functionResponse: { surfaceId: "other", callId: "c", name: "f" },
+      })
+    ).toBeNull();
+    expect(
+      b.ingestFunctionResponse({
+        version: A2UI_VERSION,
+        action: { surfaceId: "ui:exec-1", action: "x" },
+      })
+    ).toBeNull();
+    expect(b.ingestFunctionResponse({ version: A2UI_VERSION, error: "boom" })).toBeNull();
+  });
+});
+
+// ── Grain B — registerA2UICallFunction effect ───────────────────────────────────
+
+// A capturing fake so we can drive the registered effect directly.
+function captureEffect(): {
+  runtime: EffectRuntime;
+  get(): Effect<A2UICallFunctionInput, unknown>;
+} {
+  let captured: Effect<A2UICallFunctionInput, unknown> | undefined;
+  const runtime = {
+    register(_id: string, effect: Effect) {
+      captured = effect as Effect<A2UICallFunctionInput, unknown>;
+    },
+  } as unknown as EffectRuntime;
+  return {
+    runtime,
+    get() {
+      if (captured === undefined) throw new Error("no effect registered");
+      return captured;
+    },
+  };
+}
+
+function effectCtx(over: Partial<EffectContext> = {}): EffectContext {
+  return {
+    executionId: "exec-1",
+    stepId: "step-7",
+    workflowId: "wf",
+    attempt: 1,
+    idempotencyKey: "exec-1:step-7",
+    emit() {},
+    ...over,
+  };
+}
+
+describe("registerA2UICallFunction (grain B)", () => {
+  it("registers under the default tool id and declares the effect non-idempotent", () => {
+    const cap = captureEffect();
+    const toolId = registerA2UICallFunction(cap.runtime, {
+      call: async () => ({ surfaceId: "ui:exec-1", callId: "c", name: "f", result: null }),
+    });
+    expect(toolId).toBe("a2ui.callFunction");
+    // K9.3 — mutating client call: recovery must not silently re-run.
+    expect(cap.get().idempotent).toBe(false);
+    expect(cap.get().kind).toBe("a2a");
+  });
+
+  it("keys the request by ctx.idempotencyKey and returns the client's result", async () => {
+    const cap = captureEffect();
+    let seen: CallFunctionPayload | undefined;
+    registerA2UICallFunction(cap.runtime, {
+      call: async (req) => {
+        seen = req;
+        return { surfaceId: req.surfaceId, callId: req.callId, name: req.name, result: "en-GB" };
+      },
+    });
+    const out = await cap
+      .get()
+      .execute(
+        { surfaceId: "ui:exec-1", name: "getLocale", args: { hint: "browser" } },
+        effectCtx()
+      );
+    expect(out).toBe("en-GB");
+    expect(seen).toEqual({
+      surfaceId: "ui:exec-1",
+      callId: "exec-1:step-7", // = ctx.idempotencyKey
+      name: "getLocale",
+      args: { hint: "browser" },
+    });
+  });
+
+  it("derives the same callId across a crash-recovery re-issue (at-least-once dedup)", async () => {
+    const cap = captureEffect();
+    const ids: string[] = [];
+    registerA2UICallFunction(cap.runtime, {
+      call: async (req) => {
+        ids.push(req.callId);
+        return { surfaceId: req.surfaceId, callId: req.callId, name: req.name, result: 1 };
+      },
+    });
+    const input = { surfaceId: "ui:exec-1", name: "confirm" };
+    // First attempt, then a recovery re-run: attempt advances but the key is stable.
+    await cap.get().execute(input, effectCtx({ attempt: 1 }));
+    await cap.get().execute(input, effectCtx({ attempt: 2 }));
+    expect(ids).toEqual(["exec-1:step-7", "exec-1:step-7"]);
+  });
+
+  it("throws when the client returns the error leg", async () => {
+    const cap = captureEffect();
+    registerA2UICallFunction(cap.runtime, {
+      call: async (req) => ({
+        surfaceId: req.surfaceId,
+        callId: req.callId,
+        name: req.name,
+        error: "user cancelled",
+      }),
+    });
+    await expect(
+      cap.get().execute({ surfaceId: "ui:exec-1", name: "confirm" }, effectCtx())
+    ).rejects.toThrow(/user cancelled/);
   });
 });
