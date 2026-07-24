@@ -614,6 +614,42 @@ function App() {
     }
   }, [wfr, executionId, sysLog, addLog, projState]);
 
+  // A2UI `callFunction` (bidirectional RPC) — the agent asks the CLIENT to run a
+  // catalog function and answer with a `functionResponse` (ADR 0070). This is the
+  // other half of the inbound leg above: `approve` is the client raising an
+  // action; this is the agent invoking the client. Demonstrated here at the wire
+  // level (the demo flow has no callFunction gate) — a real flow would suspend on
+  // the result (grain A) or await a delegated `a2ui.callFunction` effect (grain B).
+  const callClientFn = useCallback(() => {
+    if (!executionId) return;
+    const bridge = bridgeRef.current;
+    if (!bridge) return;
+
+    // Outbound request. The `callId` is DETERMINISTIC (never random) — the K9
+    // delivery key projected onto the transport, so a re-issue reuses it.
+    const callId = `${executionId}:getLocale`;
+    const request = bridge.callFunction("getLocale", { hint: "browser" }, { callId });
+    setA2uiMessages((prev) => [{ time: now(), msg: request }, ...prev]);
+    sysLog(`A2UI callFunction "getLocale" → client  callId=${callId}`);
+
+    // Inbound reply. Simulate a compliant client answering; the bridge normalizes
+    // the `functionResponse` for this surface (returns null if it isn't ours).
+    const answer = bridge.ingestFunctionResponse({
+      version: A2UI_VERSION,
+      functionResponse: {
+        surfaceId: bridge.surfaceId,
+        callId,
+        name: "getLocale",
+        result: { locale: "en-GB" },
+      },
+    });
+    if (!answer) {
+      sysLog("A2UI functionResponse ignored — not for this surface");
+      return;
+    }
+    addLog({ time: now(), kind: "event", label: "A2UI ▸ functionResponse", payload: answer });
+  }, [executionId, addLog, sysLog]);
+
   const reset = useCallback(() => {
     setPhase("idle");
     setExecutionId(null);
@@ -759,7 +795,7 @@ function App() {
 
         {tab === "surface" && <SurfaceTab surface={uiSurface} patches={patchStream} />}
 
-        {tab === "a2ui" && <A2UITab messages={a2uiMessages} />}
+        {tab === "a2ui" && <A2UITab messages={a2uiMessages} onCallFunction={callClientFn} />}
       </main>
 
       <footer style={s.footer}>
@@ -1054,38 +1090,56 @@ const a2uiColor: Record<string, string> = {
   updateDataModel: "#3182ce",
   updateComponents: "#38a169",
   deleteSurface: "#e53e3e",
+  callFunction: "#dd6b20",
 };
 
 function a2uiKind(msg: A2UIServerMessage): string {
   return Object.keys(msg).find((k) => k !== "version") ?? "?";
 }
 
-function A2UITab({ messages }: { messages: { time: string; msg: A2UIServerMessage }[] }) {
-  if (messages.length === 0) {
-    return (
-      <div style={s.empty}>
-        No A2UI messages yet — run the flow. Each <code>SURFACE_PATCH</code> event is projected
-        through the <code>@loom/plugin-a2ui</code> egress bridge into A2UI protocol v1.0 messages (
-        <code>createSurface</code> / <code>updateDataModel</code>) a compliant client would render.
-      </div>
-    );
-  }
+function A2UITab({
+  messages,
+  onCallFunction,
+}: {
+  messages: { time: string; msg: A2UIServerMessage }[];
+  onCallFunction: () => void;
+}) {
   return (
     <div style={s.logPanel}>
-      <div style={s.stateJsonTitle}>A2UI wire messages ({messages.length})</div>
-      {messages.map((entry, i) => {
-        const kind = a2uiKind(entry.msg);
-        const body = (entry.msg as Record<string, unknown>)[kind];
-        return (
-          <div key={i} style={{ ...s.logRow, alignItems: "flex-start" }}>
-            <span style={s.logTime}>{entry.time}</span>
-            <span style={{ ...s.logLabel, color: a2uiColor[kind] ?? "#a0aec0", minWidth: 128 }}>
-              {kind}
-            </span>
-            <span style={s.logPayload}>{JSON.stringify(body)}</span>
-          </div>
-        );
-      })}
+      <div style={{ ...s.logRow, justifyContent: "space-between", alignItems: "center" }}>
+        <span style={s.stateJsonTitle}>A2UI wire messages ({messages.length})</span>
+        <button
+          type="button"
+          style={{ ...s.btn, ...s.btnGray }}
+          onClick={onCallFunction}
+          title="Bidirectional RPC (ADR 0070): ask the client to run the getLocale catalog function and log its functionResponse"
+        >
+          ƒ callFunction: getLocale
+        </button>
+      </div>
+      {messages.length === 0 ? (
+        <div style={s.empty}>
+          No A2UI messages yet — run the flow. Each <code>SURFACE_PATCH</code> event is projected
+          through the <code>@loom/plugin-a2ui</code> bridge into A2UI protocol v1.0 messages (
+          <code>createSurface</code> / <code>updateDataModel</code>). Use{" "}
+          <code>ƒ callFunction</code> above to fire an agent→client <code>callFunction</code>{" "}
+          request (its <code>functionResponse</code> lands in the Event Log).
+        </div>
+      ) : (
+        messages.map((entry, i) => {
+          const kind = a2uiKind(entry.msg);
+          const body = (entry.msg as Record<string, unknown>)[kind];
+          return (
+            <div key={i} style={{ ...s.logRow, alignItems: "flex-start" }}>
+              <span style={s.logTime}>{entry.time}</span>
+              <span style={{ ...s.logLabel, color: a2uiColor[kind] ?? "#a0aec0", minWidth: 128 }}>
+                {kind}
+              </span>
+              <span style={s.logPayload}>{JSON.stringify(body)}</span>
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }
