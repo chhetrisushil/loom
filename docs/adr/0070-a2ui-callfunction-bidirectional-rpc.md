@@ -112,3 +112,22 @@ are application-level correctness obligations the `callId` carries.
    a retry-middleware or crash recovery may invoke the transport more than once within a logical attempt,
    always with the same `callId`. A mutating client function (submit/charge/write) must therefore dedup on
    `callId` client-side; the deterministic key is what makes that possible. A pure read needs no dedup.
+
+## Security notes
+
+A `functionResponse` is **client-controlled input**, so a reply is only as trustworthy as its correlation
+and validation:
+
+- **Correlate the reply (forgery / replay).** `ingestFunctionResponse(msg, expectedCallId)` rejects a reply
+  whose `callId` isn't the one you issued (without `expectedCallId` it checks only the surface, so an
+  unsolicited reply would pass and, if the caller resumes a gate with it, let the client inject data). The
+  grain-B effect enforces the same check internally (`response.callId`/`surfaceId` must match the request).
+- **Validate the result.** The client's `result` becomes a durable `STEP_COMPLETED` output / resume payload
+  — validate it against the catalog's declared `returns` schema before acting on anything sensitive, the
+  same as any external effect output.
+- **Grain A bypasses the capability ring.** Grain B runs through the `EffectRuntime`, so K2 authorization
+  and K3 metering apply; a grain-A gate is `ctx.suspend` + app `resume`, so *which* function is invoked
+  isn't capability-checked and the reply is only gated by a `resumeAuthenticator` (K12.2) if one is wired.
+- **Bound the wait.** `registerA2UICallFunction(..., { requestTimeoutMs })` races the transport against a
+  timeout (and aborts `ctx.signal`), so a transport that never resolves fails the step instead of pinning
+  the effect for the execution's lifetime.

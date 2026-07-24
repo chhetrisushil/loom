@@ -58,11 +58,23 @@ export interface A2UICallFunctionTransport {
  * Register the `a2ui.callFunction` effect on an `EffectRuntime`, backed by an
  * injected transport. Returns the tool id it registered under (so a flow/tool
  * definition can reference it). Mirrors `A2APeerClient.registerInto`.
+ *
+ * Hardening:
+ * - The response is **correlation-checked** — a reply whose `callId`/`surfaceId`
+ *   doesn't match the request is rejected, so a mis-wiring transport can't feed
+ *   one step another step's result.
+ * - `requestTimeoutMs` **bounds the wait**: the call is raced against a timeout
+ *   (and `ctx.signal` is aborted), so a transport that never resolves fails the
+ *   step instead of pinning the effect for the execution's lifetime. Omit for the
+ *   unbounded default.
+ *
+ * The client's `result` is still external, untrusted input — validate it against
+ * the catalog's declared `returns` schema before acting on anything sensitive.
  */
 export function registerA2UICallFunction(
   effectRuntime: EffectRuntime,
   transport: A2UICallFunctionTransport,
-  opts: { toolId?: string } = {}
+  opts: { toolId?: string; requestTimeoutMs?: number } = {}
 ): string {
   const toolId = opts.toolId ?? A2UI_CALL_FUNCTION_TOOL_ID;
 
@@ -83,7 +95,13 @@ export function registerA2UICallFunction(
         ...(input.callableFrom !== undefined && { callableFrom: input.callableFrom }),
       };
 
-      const response = await transport.call(request, ctx.signal);
+      const response = await callWithTimeout(transport, request, ctx.signal, opts.requestTimeoutMs);
+      // Defense-in-depth: adopt only a reply that correlates to THIS request.
+      if (response.callId !== callId || response.surfaceId !== request.surfaceId) {
+        throw new Error(
+          `a2ui callFunction "${input.name}" response mis-correlated (expected callId=${callId})`
+        );
+      }
       if (response.error !== undefined) {
         throw new Error(
           `a2ui callFunction "${input.name}" failed: ${describeError(response.error)}`
@@ -95,6 +113,38 @@ export function registerA2UICallFunction(
 
   effectRuntime.register(toolId, effect);
   return toolId;
+}
+
+// Await `transport.call`, bounded by `timeoutMs` when set. Races the call against
+// a rejecting timer AND aborts a linked signal (best-effort cooperative cancel),
+// so even a transport that ignores the signal cannot pin the effect forever.
+function callWithTimeout(
+  transport: A2UICallFunctionTransport,
+  request: CallFunctionPayload,
+  parentSignal: AbortSignal | undefined,
+  timeoutMs: number | undefined
+): Promise<FunctionResponsePayload> {
+  if (timeoutMs === undefined) return transport.call(request, parentSignal);
+
+  const controller = new AbortController();
+  const onParentAbort = () => controller.abort();
+  if (parentSignal !== undefined) {
+    if (parentSignal.aborted) controller.abort();
+    else parentSignal.addEventListener("abort", onParentAbort, { once: true });
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`a2ui callFunction "${request.name}" timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([transport.call(request, controller.signal), timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+    parentSignal?.removeEventListener("abort", onParentAbort);
+  });
 }
 
 function describeError(error: unknown): string {
