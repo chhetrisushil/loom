@@ -9,9 +9,10 @@ import type { ComponentInstance } from "./messages";
 // plugin ships one small, curated default catalog sufficient to render Loom
 // surfaces, plus `defineCatalog` so an app can supply its own richer one.
 //
-// The "rich" half of A2UI catalogs — client-side `functions`, validation
-// `checks`, `callableFrom` boundaries — is intentionally omitted from this
-// egress MVP (it leans on the bidirectional model we scope out).
+// Client-side `functions` — the vocabulary the agent may `callFunction` on the
+// client and receive a `functionResponse` for — are declared here (see ADR
+// 0070). Continuous two-way *binding sync* (live data-model reconciliation)
+// remains out of scope.
 
 export interface CatalogComponentSchema {
   /** JSON-Schema discriminator — routes a node to this component type. */
@@ -20,16 +21,34 @@ export interface CatalogComponentSchema {
   properties?: Record<string, unknown>;
 }
 
+/**
+ * A client-callable function the agent may invoke via `callFunction`. `args` /
+ * `returns` are JSON-Schema documents (kept loose here, mirroring the component
+ * schemas); `callableFrom` optionally scopes which surface region may originate
+ * the call (A2UI catalog boundary).
+ */
+export interface CatalogFunctionSchema {
+  name: string;
+  args?: Record<string, unknown>;
+  returns?: Record<string, unknown>;
+  callableFrom?: string;
+}
+
 export interface A2UICatalog {
   id: string;
   components: Record<string, CatalogComponentSchema>;
-  functions?: Record<string, unknown>;
+  functions?: Record<string, CatalogFunctionSchema>;
   surfaceProperties?: Record<string, unknown>;
 }
 
 /** Identity helper — declare a BYO catalog with inferred types. */
 export function defineCatalog(catalog: A2UICatalog): A2UICatalog {
   return catalog;
+}
+
+/** Identity helper — declare a client-callable function with inferred types. */
+export function defineFunction(fn: CatalogFunctionSchema): CatalogFunctionSchema {
+  return fn;
 }
 
 export const DEFAULT_CATALOG_ID = "loom.core.v1";

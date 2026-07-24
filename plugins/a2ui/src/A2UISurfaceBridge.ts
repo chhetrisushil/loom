@@ -14,8 +14,9 @@ import type {
   A2UIServerMessage,
   ActionPayload,
   ComponentInstance,
+  FunctionResponsePayload,
 } from "./messages";
-import { isAction } from "./messages";
+import { isAction, isFunctionResponse } from "./messages";
 import { dotPathToParts, dotPathToPointer } from "./pointer";
 
 export interface A2UISurfaceBridgeOptions {
@@ -174,5 +175,47 @@ export class A2UISurfaceBridge {
     const { action } = message;
     if (action.surfaceId !== this.a2uiSurfaceId) return null;
     return action;
+  }
+
+  /**
+   * Emit a `callFunction` request asking the client to invoke a named catalog
+   * function and answer with a `functionResponse`.
+   *
+   * The bridge is deliberately clock- and random-free (like the rest of its
+   * surface — it never calls `Date.now`/`Math.random`), so the correlation
+   * `callId` is caller-supplied and MUST be deterministic: derive it from the
+   * calling step (grain A: `ctx.stepId`; grain B: `ctx.idempotencyKey`, i.e.
+   * `executionId:stepId`). A crash-recovered re-issue then reuses the same
+   * `callId`, letting the client dedup — the K9 delivery contract on the wire.
+   */
+  callFunction(
+    name: string,
+    args: unknown,
+    opts: { callId: string; callableFrom?: string }
+  ): A2UIServerMessage {
+    return {
+      version: A2UI_VERSION,
+      callFunction: {
+        surfaceId: this.a2uiSurfaceId,
+        callId: opts.callId,
+        name,
+        ...(args !== undefined && { args }),
+        ...(opts.callableFrom !== undefined && { callableFrom: opts.callableFrom }),
+      },
+    };
+  }
+
+  /**
+   * Normalize an inbound client message into a `functionResponse` for THIS
+   * surface, or `null` if it isn't a `functionResponse` targeting this bridge.
+   * Twin of {@link ingestAction}: the plugin creates no Loom event itself — the
+   * caller maps the returned payload to a resume event (grain A) or resolves the
+   * awaiting `a2ui.callFunction` effect by `callId` (grain B).
+   */
+  ingestFunctionResponse(message: A2UIClientMessage): FunctionResponsePayload | null {
+    if (!isFunctionResponse(message)) return null;
+    const { functionResponse } = message;
+    if (functionResponse.surfaceId !== this.a2uiSurfaceId) return null;
+    return functionResponse;
   }
 }
