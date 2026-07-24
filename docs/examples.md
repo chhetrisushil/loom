@@ -74,6 +74,14 @@ pnpm --filter @loom/db-observability start
   `updateDataModel` / `deleteSurface` messages, and drive a human-approval gate
   through an inbound A2UI `action` (`ingestAction` → `runtime.resume`). Headless.
   The same bridge is wired into a live React tab in `apps/playground`.
+- **`a2ui-callfunction`** — the A2UI **bidirectional RPC** (`callFunction`) leg on
+  top of `@loom/plugin-a2ui` (ADR 0070), driving a client-side function from a
+  flow two ways: a read via a suspend/resume gate (grain A) and a side-effecting
+  call via a delegated `a2ui.callFunction` effect (grain B). Proves no client-side
+  effect runtime is needed for determinism — the deterministic `callId`
+  (`executionId:stepId`) plus `idempotent:false` route a crash mid-call to
+  `EFFECT_INDOUBT` for an operator verdict rather than re-firing the client.
+  Headless, offline.
 - **`appgen-brownfield`**, **`appgen-models`** — AI-driven app generation
   (`@loom/appgen`).
 
