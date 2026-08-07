@@ -237,7 +237,7 @@ app.effectRuntime.register("triage-llm", new LlmEffect(async (input, ctx) => {
 }));
 ```
 
-**Agents (ReAct).** `agent$` declares a tool-using agent; `@loom/agent` runs the reason→act loop; `@loom/plugin-mcp` discovers external tools via the Model Context Protocol.
+**Agents (ReAct).** `agent$` declares a tool-using agent; `@loom/agent` runs the reason→act loop; `@loom/plugin-mcp` discovers external tools via the Model Context Protocol — and, with `createMcpServer`, exposes your own flows to any MCP host in the other direction. `@loom/plugin-mcp-app` adds the MCP Apps (`ui://`) UI layer on top of that server.
 
 **A2A (agent-to-agent).** Expose a flow as an A2A task with `LoomAgentExecutor`, and call *external* agents (Google ADK, LangGraph, CrewAI) as steps. Locally, an `InProcessA2ABus` dispatches capabilities to the owning agent with streaming callbacks:
 

@@ -84,6 +84,17 @@ are the forensic, replay-substitutable, branchable record.
 - **Do not** try to make a transient call "sometimes durable." That is DE-2,
   rejected on invariants (ADR 0065). Return `Promise<TOut>`; take no store;
   return no handle.
+- **Do not** declare `mode` on the effects this pattern uses. `mcp.invoke` and
+  `sandbox.eval` are **dual-seam by design** — this page's hot path calls them
+  through `invokeTransient`, and the repair run calls the *same* effects through
+  `ctx.run`. Pinning either seam (ADR 0073) breaks one of those two paths, at
+  runtime, in whichever deployment happened to use the other half.
+  `plugins/mcp/src/dualSeam.test.ts` guards this.
+
+  Declare a mode only when the effect's *own contract* depends on the seam — a
+  mutation that must be recorded, or a recovery story that needs the journal.
+  "Both seams are legitimate" is a real answer, and leaving the marker off is how
+  you say it.
 
 ## Worked example
 
