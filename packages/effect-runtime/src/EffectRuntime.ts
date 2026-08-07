@@ -4,6 +4,7 @@ import {
   CapabilityDeniedError,
   type EffectRuntimeOptions,
 } from "./authz";
+import { EffectModeViolationError } from "./types";
 import type {
   Effect,
   EffectContext,
@@ -47,6 +48,20 @@ export class EffectRuntime {
     input: TIn,
     ctx: EffectContext
   ): Promise<TOut> {
+    return this.runSeam<TIn, TOut>(toolId, input, ctx, "journaled");
+  }
+
+  // The shared execute path for both seams. `seam` records which entry point the
+  // caller came through, so the effect-mode boundary is enforced in exactly one
+  // place and cannot be spoofed by hand-building a context that merely *looks*
+  // transient. Everything else — K2 authz, the middleware chain, K8 cancellation
+  // — is identical on both paths.
+  private async runSeam<TIn = unknown, TOut = unknown>(
+    toolId: string,
+    input: TIn,
+    ctx: EffectContext,
+    seam: "journaled" | "ambient"
+  ): Promise<TOut> {
     // Protection ring first: an unauthorized effect never runs, and its denial is a
     // durable, auditable fact (P9). Checked before registry lookup so probing for
     // unregistered effects is denied too.
@@ -68,6 +83,15 @@ export class EffectRuntime {
     const effect = this.registry.get(toolId);
     if (!effect) {
       throw new Error(`No effect registered for toolId: "${toolId}"`);
+    }
+
+    // The determinism-boundary check (ADR 0072). A declared mode pins the effect
+    // to one seam: `ambient` reads (pagination, drill-down, a surface refetch)
+    // must never append to the log, and a `journaled` effect invoked transiently
+    // would silently produce no durable fact. Undeclared effects are unaffected,
+    // so this is byte-identical for everything that has not opted in (G2).
+    if (effect.mode !== undefined && effect.mode !== seam) {
+      throw new EffectModeViolationError(toolId, effect.mode, seam);
     }
 
     // K8 — a cancelled/deadline-breached execution never starts another effect:
@@ -161,7 +185,7 @@ export class EffectRuntime {
       ...(opts.signal !== undefined && { signal: opts.signal }),
       ...(opts.principal !== undefined && { principal: opts.principal }),
     };
-    return this.execute<TIn, TOut>(toolId, input, ctx);
+    return this.runSeam<TIn, TOut>(toolId, input, ctx, "ambient");
   }
 
   has(toolId: string): boolean {

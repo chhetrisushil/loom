@@ -51,6 +51,33 @@ describe("tool$", () => {
     });
     expect(def.kind).toBe("llm");
   });
+
+  // ADR 0072 — the declaration half of the determinism-boundary check. The
+  // enforced copy lives on the registered effect (`ToolEffect`), the same split
+  // as `idempotent`/`errors`.
+  it("carries a declared effect mode", () => {
+    const def = tool$({
+      id: "page",
+      name: "Page",
+      description: "paginate a table",
+      inputSchema,
+      outputSchema,
+      mode: "ambient",
+    });
+    expect(def.mode).toBe("ambient");
+  });
+
+  it("omits mode when undeclared, so nothing defaults into a boundary", () => {
+    const def = tool$({
+      id: "plain",
+      name: "Plain",
+      description: "no mode",
+      inputSchema,
+      outputSchema,
+    });
+    expect(def.mode).toBeUndefined();
+    expect("mode" in def).toBe(false);
+  });
 });
 
 describe("flow$", () => {

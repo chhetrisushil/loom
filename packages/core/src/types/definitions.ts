@@ -52,6 +52,31 @@ export interface MemoryDefinition {
   maxEntries?: number;
 }
 
+/**
+ * Which side of the determinism boundary a tool may be invoked from.
+ *
+ * - `"journaled"` — the tool participates in an execution. It runs through
+ *   `ctx.execute`, its result is recorded (STEP_COMPLETED) and substituted on
+ *   replay. Invoking it transiently is refused: the caller wanted a durable
+ *   fact and would silently get none.
+ * - `"ambient"` — the tool is a read/enrichment call that must NEVER append to
+ *   the log: pagination, drill-down, a surface refetch. It runs only through
+ *   `EffectRuntime.invokeTransient` (ADR 0066 — zero durable footprint by
+ *   construction). Invoking it inside an execution is refused, because a call
+ *   whose count and order are driven by a user poisons replay.
+ *
+ * Undeclared (`undefined`) keeps today's behaviour on both paths, byte-identical
+ * (G2) — the marker is a true no-op until an author opts in.
+ *
+ * This is a DECLARATION plus a boundary check at the execute seam, **not** a
+ * journaling mode: there is still exactly one replay model, and an `ambient`
+ * tool is not "an effect that skips its journal" (that would be the rejected
+ * DE-2 durability class — a second semantic model inside one execution). The
+ * enforced copy lives on the registered effect, the same split as
+ * {@link ToolDefinition.idempotent} and `egress`.
+ */
+export type EffectMode = "journaled" | "ambient";
+
 export interface ToolDefinition<TIn = unknown, TOut = unknown> {
   readonly _tag: "ToolDefinition";
   id: string;
@@ -78,6 +103,13 @@ export interface ToolDefinition<TIn = unknown, TOut = unknown> {
    * channels keep the legacy untyped at-least-once failure semantics.
    */
   errors?: Record<string, ZodSchema>;
+  /**
+   * Which invocation seam this tool belongs to — see {@link EffectMode}.
+   * Declaration metadata, like `idempotent`/`errors`: pass the same value to the
+   * registered effect (`new ToolEffect(fn, { mode })`), which is where the
+   * boundary check reads it.
+   */
+  mode?: EffectMode;
 }
 
 export interface StepDefinition<TIn = unknown, TOut = unknown> {

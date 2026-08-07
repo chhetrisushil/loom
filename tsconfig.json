@@ -110,6 +110,9 @@
       "path": "plugins/mcp"
     },
     {
+      "path": "plugins/mcp-app"
+    },
+    {
       "path": "plugins/a2a"
     },
     {

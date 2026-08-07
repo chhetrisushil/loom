@@ -1,6 +1,8 @@
 # ADR 0072 — MCP Apps (SEP-1865): ingress fidelity now, `ui://` egress gated on an MCP server
 
-- Status: **Draft** (2026-08-08)
+- Status: **Accepted — implemented** (2026-08-08). The D7 evidence gate was closed by explicit
+  direction to build the server; Steps 0–2 shipped together with the effect-mode boundary
+  ([ADR 0073](0073-effect-mode-journaled-vs-ambient.md)) that D5's cursor tool depends on.
 - Date: 2026-08-08
 - Evaluates: [MCP Apps placement evaluation](../requirements/2026-08-08-mcp-apps-extension-evaluation.md)
 - Builds on: the A2UI egress adapter ([ADR 0069](0069-a2ui-egress-adapter.md)),
@@ -25,9 +27,17 @@ notifications (`ui/notifications/tool-input`, `-partial`, `-result`, `-cancelled
 view calls back with `tools/call`, `resources/read`, `ui/open-link`, `ui/message`,
 `ui/request-display-mode`, `ui/update-model-context`.
 
-It is an **official extension, not core spec**, and the 2026-07-28 release candidate then
-restructured the protocol underneath it — stateless operation, `initialize` and
-`Mcp-Session-Id` removed, Tasks demoted from core to extension. Churn is live.
+It is an **official extension, not core spec**, and the 2026-07-28 revision then restructured
+the protocol underneath it — stateless operation, `initialize` and `Mcp-Session-Id` removed,
+Tasks demoted from core to extension. Churn is live.
+
+> **Correction (2026-08-08, during implementation).** This ADR and its evaluation both describe
+> 2026-07-28 as a *release candidate*, which was true of the announcement post. The
+> specification's versioning page now lists **2026-07-28 as Current**. Two refinements follow,
+> neither of which changes a verdict: version negotiation is per-request
+> (`_meta["io.modelcontextprotocol/protocolVersion"]` plus the `MCP-Protocol-Version` header on
+> Streamable HTTP) rather than handshake-only, and the last handshake-based revision is
+> `2025-11-25`. D3b is implemented against that reality.
 
 Four properties of the extension decide the design (full derivation in the evaluation §0):
 
@@ -189,6 +199,45 @@ edge — the same bet ADR 0069 made on A2UI.
 - **If the project declines to own an MCP server, the correct outcome is Steps 0–1 and
   stop.** A UI extension with no server to attach it to is not a deliverable, and building
   the UI half first inverts the dependency for no gain.
+
+## Implementation record (2026-08-08)
+
+Shipped as specified, with three findings worth recording because two of them changed the code
+and one changed the shape of D5.
+
+**A fourth ingress defect, found while implementing D3a.** `callTool` also ignored `isError`.
+MCP reports tool failures *in band* — a successful JSON-RPC response carrying `isError: true` —
+so the old client returned a failure's text as if it were a value, and every MCP tool error
+became a plausible-looking success. `callTool` now throws; `callToolResult` exposes the flag
+for callers that branch.
+
+**D5 needed ADR 0073 to be correct rather than conventional.** The cursor tool is declared
+`mode: "ambient"`, and that declaration is what lets a serving surface route it — without it,
+`createMcpServer` would need a hardcoded list of "tools that must not be journaled", which is
+the hand-wiring the declaration exists to remove. The journaled/ambient boundary also became the
+server's app-call rule: an app-originated call to a `journaled` tool is **denied by default**
+(`authorizeAppJournaledCall`), which is D6's "distinct principal" requirement in its enforceable
+form.
+
+**One pin, one hashing implementation.** The first cut hashed the template with a bare
+`fnv1a64` on the egress side while ingress hashed with a `text:`-tagged scheme — so a pin
+captured at plan time did not equal what a reader recomputed, and the pin silently stopped
+detecting drift. Caught by a round-trip test, fixed by having `surfaceHostPin` delegate to the
+ingress side's `hashResourceBody`. This is ADR 0063 D1's warning arriving on schedule: "two
+canonicalizations that mostly agree is how registry-driven repair becomes unreliable."
+
+**Audience has no in-band signal.** The extension puts visibility enforcement on the *host*,
+which is the only party that knows whether a `tools/call` came from the model or a View. A
+server therefore cannot derive audience from the request alone, so `audienceOf` is
+deployment-supplied (a distinct path, port, or credential) and defaults to `"model"` — absent an
+explicit boundary, app-only tools stay unreachable rather than silently open. An
+audience-invisible tool is reported as *unknown* rather than forbidden, since a "you may not
+call that" reply confirms the tool exists.
+
+Delivered: `McpServer` + `servedEffect` in `@loom/plugin-mcp`; `@loom/plugin-mcp-app` with the
+static template, its pin, the payload builder, and the cursor tool. Spec capabilities
+`mcp-server`, `mcp-apps-ui-egress`, `effect-mode-boundary` (L2). Workspace green — 70 build
+tasks, 123 test tasks.
 
 ## Notes on what was rejected and why it mattered
 

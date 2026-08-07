@@ -1475,6 +1475,40 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
+  plugins/mcp-app:
+    dependencies:
+      '@loom/agent-surface':
+        specifier: workspace:*
+        version: link:../../packages/agent-surface
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../../packages/classify
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
+      '@loom/plugin-a2ui':
+        specifier: workspace:*
+        version: link:../a2ui
+      '@loom/plugin-mcp':
+        specifier: workspace:*
+        version: link:../mcp
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   plugins/postgres:
     dependencies:
       '@loom/core':

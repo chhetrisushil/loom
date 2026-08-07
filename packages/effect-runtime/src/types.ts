@@ -1,7 +1,33 @@
-import type { EffectKind } from "@loom/core";
+import type { EffectKind, EffectMode } from "@loom/core";
 import type { PrincipalChain } from "./authz";
 
-export type { EffectKind };
+export type { EffectKind, EffectMode };
+
+/**
+ * A tool was invoked from the wrong side of the determinism boundary — an
+ * `ambient` effect inside an execution, or a `journaled` effect transiently.
+ *
+ * This is a contract violation, not an authorization denial: it is thrown
+ * plainly rather than recorded as an EFFECT_DENIED fact, because the caller used
+ * the wrong entry point (a programming error) rather than lacking authority.
+ */
+export class EffectModeViolationError extends Error {
+  readonly toolId: string;
+  readonly declared: EffectMode;
+  /** The seam the call actually came through. */
+  readonly attempted: "journaled" | "ambient";
+  constructor(toolId: string, declared: EffectMode, attempted: "journaled" | "ambient") {
+    super(
+      declared === "ambient"
+        ? `Effect "${toolId}" is declared ambient and must not be invoked inside an execution — its result would be journaled, and a call whose count/order is user-driven poisons replay. Use EffectRuntime.invokeTransient (ADR 0066).`
+        : `Effect "${toolId}" is declared journaled and must not be invoked transiently — a transient call has zero durable footprint, so the durable fact the caller expected would silently not exist. Use ctx.execute inside an execution.`
+    );
+    this.name = "EffectModeViolationError";
+    this.toolId = toolId;
+    this.declared = declared;
+    this.attempted = attempted;
+  }
+}
 
 /**
  * Running resource totals for the owning execution (Loom 2.0 K3). Threaded into
@@ -145,6 +171,19 @@ export interface Effect<TIn = unknown, TOut = unknown> {
    * legacy untyped at-least-once failure semantics (G2).
    */
   readonly errors?: Record<string, ErrorChannelSchema>;
+  /**
+   * Which invocation seam this effect belongs to — `"journaled"` (inside an
+   * execution) or `"ambient"` (transient only). Like `idempotent`, a declaration
+   * the runtime reads from the registry: `execute` refuses an `ambient` effect
+   * and `invokeTransient` refuses a `"journaled"` one, both with
+   * {@link EffectModeViolationError}. Undeclared keeps today's behaviour on both
+   * paths (G2).
+   *
+   * This is a boundary check, not a journaling mode: an `ambient` effect is not
+   * "an effect that skips its journal" — it is one that may not enter an
+   * execution at all, so there remains exactly one replay model.
+   */
+  readonly mode?: EffectMode;
   /**
    * Advisory pre-warm (latency-only, off the durable path). If present, the
    * kernel may call it BEFORE the effect is needed to spin up a cold resource
