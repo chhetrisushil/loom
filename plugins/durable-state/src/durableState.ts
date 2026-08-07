@@ -165,6 +165,12 @@ export function durableState<T>(config: DurableStateConfig<T>): DurableStateHand
         migrated,
       };
     },
+    // ADR 0073 — deliberately NO `mode`. `load` is genuinely dual-seam: journaled
+    // inside a flow (where the recorded value is what replay folds), and a
+    // perfectly reasonable ambient read outside one — an operator dashboard
+    // peeking at a sentinel's carry state changes nothing and should not have to
+    // start an execution to look. Pinning it to either seam would forbid a
+    // legitimate caller, which is why the marker is opt-in rather than required.
     { idempotent: true }
   );
 
@@ -207,7 +213,15 @@ export function durableState<T>(config: DurableStateConfig<T>): DurableStateHand
         throw err;
       }
     },
-    { idempotent: true }
+    {
+      idempotent: true,
+      // ADR 0073 — a mutation that MUST be recorded. The whole contract of this
+      // plugin is "RECORDED effects: replay folds the recorded value, never the
+      // store" (ADR 0053). A transient write would mutate the store while the log
+      // learns nothing, so replay would fold a state the run never produced —
+      // exactly the split-brain the recorded-effect design exists to prevent.
+      mode: "journaled",
+    }
   );
 
   const clearEffect = new ToolEffect<ClearInput, ClearResult>(
@@ -215,7 +229,15 @@ export function durableState<T>(config: DurableStateConfig<T>): DurableStateHand
       await config.store.clear(key);
       return { cleared: true };
     },
-    { idempotent: true }
+    {
+      idempotent: true,
+      // ADR 0073 — a mutation that MUST be recorded. The whole contract of this
+      // plugin is "RECORDED effects: replay folds the recorded value, never the
+      // store" (ADR 0053). A transient write would mutate the store while the log
+      // learns nothing, so replay would fold a state the run never produced —
+      // exactly the split-brain the recorded-effect design exists to prevent.
+      mode: "journaled",
+    }
   );
 
   const effects: DurableStateHandle<T>["effects"] = {

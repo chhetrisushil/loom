@@ -83,6 +83,15 @@ export function registerA2UICallFunction(
     // K9.3 — a client function is a mutating external call in the general case;
     // refuse silent re-run on recovery and park at EFFECT_INDOUBT instead.
     idempotent: false,
+    // ADR 0073 — journaled, and not merely by convention: this effect's whole
+    // recovery story IS the journal. `idempotent: false` means a crash mid-call
+    // parks the execution at EFFECT_INDOUBT for an operator verdict, and the
+    // deterministic `callId` is `ctx.idempotencyKey` (`executionId:stepId`).
+    // Invoked transiently there is no journal to park in, no fence, and no stable
+    // key — a crash would leave a client function that may or may not have run
+    // with nothing recording that it was ever attempted. Grain A (the suspend
+    // gate) is unaffected: it is `ctx.suspend` + `resume`, not this effect.
+    mode: "journaled",
     async execute(input: A2UICallFunctionInput, ctx: EffectContext): Promise<unknown> {
       // Deterministic callId = the K9 idempotency key (`executionId:stepId`).
       // Fall back to the same derivation if a hand-built context omits it.

@@ -289,6 +289,21 @@ cannot spoof it.
 The payoff is that a surface can route from the declaration instead of an allowlist — which is
 exactly what `@loom/plugin-mcp`'s `servedEffect` does.
 
+**When to declare — and when not to.** Declare a mode when the effect's *own contract* depends on
+the seam, i.e. when being on the wrong side would corrupt recovery, replay, or durability.
+`a2ui.callFunction` is `journaled` because a crashed call parks at EFFECT_INDOUBT and there is no
+journal to park in transiently; durable-state's `save`/`clear` are `journaled` because a transient
+write moves the store while the log learns nothing.
+
+Leave it **undeclared** when both seams are legitimate — that is a real answer, not an omission:
+
+- `mcp.invoke` and `sandbox.eval` are dual-seam by design. The transient-interpreter pattern
+  hydrates a read path with `invokeTransient`, then starts a *durable repair run* that calls the
+  same effects through `ctx.run`. Pinning either would break one path.
+- durable-state's `load` — journaled in a flow, a fine ambient read for an operator dashboard.
+- Anything wrapping someone else's system (a discovered MCP tool, an A2A peer): you cannot know
+  whether a remote tool is a read or a mutation, and a guessed seam has teeth.
+
 ## 4. Suspend & resume
 
 `ctx.suspend()` writes a durable checkpoint and returns control to the caller. The execution now lives entirely in storage — the process can restart, and another machine can resume it.

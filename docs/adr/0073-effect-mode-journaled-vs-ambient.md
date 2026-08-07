@@ -98,6 +98,46 @@ merely *looks* transient. Tested explicitly.
   and the honest statement today is that this makes the boundary *expressible and enforceable*,
   not yet universally enforced.
 
+## Rollout (addendum, 2026-08-08) — most tools stay undeclared, deliberately
+
+The obvious follow-on — "now declare modes on the remaining tools" — was surveyed and largely
+**declined**. Treating the marker as a form to fill in would have broken shipped architecture.
+
+**Declared `journaled` (3):**
+
+| Effect | Why the seam is pinned |
+|---|---|
+| `a2ui.callFunction` | Its recovery story *is* the journal: `idempotent: false` parks a crashed call at EFFECT_INDOUBT, and the deterministic `callId` is `ctx.idempotencyKey`. Transiently there is no journal to park in, no fence, and no stable key. (Grain A is unaffected — it is `ctx.suspend`/`resume`, not this effect.) |
+| durable-state `save` | ADR 0053's contract is "RECORDED effects — replay folds the recorded value, never the store". A transient write moves the store while the log learns nothing, so replay folds a state the run never produced. |
+| durable-state `clear` | Same. |
+
+**Left undeclared, on purpose:**
+
+- **`mcp.invoke` and `sandbox.eval` are dual-seam by documented design.** The
+  transient-interpreter pattern (`docs/transient-interpreter.md`, the DE-2 verdict) hydrates a
+  read path with `invokeTransient("mcp.invoke", …)` / `invokeTransient("sandbox.eval", …)` and
+  then starts a **durable repair run** that calls the same effects through `ctx.run(mcpInvoke$(…))`.
+  Pinning either seam breaks one of those paths. `plugins/mcp/src/dualSeam.test.ts` asserts this,
+  so a later sweep argues with a failing test rather than a comment.
+- **durable-state `load`.** Journaled inside a flow; a perfectly reasonable ambient read outside
+  one (an operator dashboard peeking at a sentinel's carry state should not have to start an
+  execution). Pinning it would forbid a legitimate caller.
+- **Tools discovered from a remote MCP server** (`McpClient.mapTool`) and **A2A peers**
+  (`A2APeerClient`). Both wrap someone else's system; whether a given remote tool is a read or a
+  mutation is unknowable here, and a guessed seam has teeth.
+- **Step handlers** auto-registered by the interpreter (`LazyEffect`). Declaring a seam inside
+  kernel auto-registration would change behaviour for every step in every app to buy nothing —
+  the interpreter is already the only caller.
+
+**The general rule this establishes.** Declare a mode when the effect's *own contract* depends on
+the seam — when being on the wrong side would corrupt recovery, replay, or durability. Leave it
+undeclared when both seams are legitimate. The marker is opt-in because "unknown" and "both" are
+real answers, and G2 makes them the safe default.
+
+The cost stated in Consequences therefore stands and is now deliberate rather than pending: an
+unmarked tool is still invocable on either seam. That is not a gap to be closed by sweeping; it
+is the design.
+
 ## Notes
 
 The framing that prompted this — "if `tool$`'s digest declaration doesn't already carry an
