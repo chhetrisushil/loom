@@ -15,7 +15,7 @@ export interface ToolEffectOptions {
    */
   errors?: Record<string, ErrorChannelSchema>;
   /**
-   * ADR 0072 — which invocation seam this tool belongs to. Pass the same value
+   * ADR 0073 — which invocation seam this tool belongs to. Pass the same value
    * declared on the `tool$` contract; this registered copy is the enforced one.
    * Omit to keep today's behaviour on both seams.
    */

@@ -53,7 +53,7 @@ export interface MemoryDefinition {
 }
 
 /**
- * Which side of the determinism boundary a tool may be invoked from.
+ * Which side of the determinism boundary a tool may be invoked from (ADR 0073).
  *
  * - `"journaled"` — the tool participates in an execution. It runs through
  *   `ctx.execute`, its result is recorded (STEP_COMPLETED) and substituted on

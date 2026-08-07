@@ -52,7 +52,7 @@ describe("tool$", () => {
     expect(def.kind).toBe("llm");
   });
 
-  // ADR 0072 — the declaration half of the determinism-boundary check. The
+  // ADR 0073 — the declaration half of the determinism-boundary check. The
   // enforced copy lives on the registered effect (`ToolEffect`), the same split
   // as `idempotent`/`errors`.
   it("carries a declared effect mode", () => {

@@ -13,7 +13,7 @@
 // revision adds push this same cursor becomes the push source with no change to
 // the payload contract. Recorded plainly instead of engineered around.
 //
-// The cursor is declared `mode: "ambient"` (ADR 0072): it is an enrichment read
+// The cursor is declared `mode: "ambient"` (ADR 0073): it is an enrichment read
 // whose count and order are driven by a user, and journaling it would poison
 // replay. The declaration is what lets a serving surface route it correctly
 // instead of relying on a hardcoded allowlist.
