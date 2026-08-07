@@ -949,6 +949,13 @@ const out = await ctx.execute({ _tag: "TaskDefinition", kind: "tool", id: "confi
 
 A side-effecting client function must **dedup on ~callId~** (effects are at-least-once, K9.1).
 
+The ~a2ui.callFunction~ effect is declared ~mode: "journaled"~ (ADR 0073): its recovery story *is*
+the journal — a crash mid-call parks at ~EFFECT_INDOUBT~ and the ~callId~ is ~ctx.idempotencyKey~,
+neither of which exists transiently. Grain A is unaffected (it is ~ctx.suspend~/~resume~).
+
+See ~apps/playground~ (the "A2UI" tab — the ~ƒ callFunction~ button) for a live wiring, and
+~a2ui-callfunction~ in the sibling [[file:examples.md][loom-examples]] repo for both grains.
+
 ** ~@loom/plugin-mcp-app~ — MCP Apps (SEP-1865) egress
 
 Projects a Loom agent surface onto the MCP Apps extension so any MCP host renders a Loom-driven
@@ -1045,13 +1052,33 @@ const server = createMcpServer({
   authorizeAppJournaledCall: (tool, req) => verifyUserGrant(req, tool.name),   // default DENY
 });
 await server.start();
-
-// In the flow, at the gate:
-const action = await ctx.suspend({ on: "TaskApproved" }) as SurfaceAction;
-if (isStale(action, currentSequence)) fail("staleDecision", { seen: action.seenSequence, current: currentSequence });
 #+end_src
 
-See ~apps/playground~ (the "A2UI" tab — the ~ƒ callFunction~ button) for a live wiring.
+The verdict is computed at the *trust boundary*, not in the flow. `seenSequence` is a claim by an
+untrusted client, and the head sequence it must be judged against is a property of the LOG — which
+the tool handler owns and `ctx` does not expose. So the handler decides *stale or not* and the flow
+decides *what that means*:
+
+#+begin_src typescript
+// In the approve tool's handler — evidence:
+const events = await eventStore.read(executionId);          // BEFORE resuming; a resume moves the head
+const headSequence = events.at(-1)?.sequence ?? 0;
+await runtime.resume(executionId, {
+  eventType: "TaskApproved",
+  payload: { ...action, stale: isStale(action, headSequence), headSequence },
+});
+
+// In the flow, at the gate — policy:
+const signal = (await ctx.suspend({ on: "TaskApproved" })) as { stale: boolean; seenSequence?: number };
+if (signal.stale) {
+  // This gate refuses; another flow could legitimately accept. Declare
+  // `staleDecision` on the step to make it a recorded, branchable outcome.
+  ctx.ui.set("status", "re-review");
+}
+#+end_src
+
+A runnable end-to-end wiring — real MCP server, real client, and the published template executed in
+a DOM — is ~mcp-app-release-approval~ in the sibling [[file:examples.md][loom-examples]] repo.
 
 ** ~@loom/blueprint-runtime~ — declarative UI
 

@@ -578,12 +578,26 @@ stale *input* (K11.5), forged *approvals* (K12.2) and post-cancel resume (K8.2).
 know is which version of the data a human saw: the execution knows when *it* suspended, not what
 was on screen. So the View echoes `seenSequence` and you decide:
 
+The verdict belongs at the **trust boundary**, not in the flow: `seenSequence` is a claim by an
+untrusted client, and the head sequence it must be judged against is a property of the log — which
+the tool handler owns and `ctx` does not expose.
+
 ```ts
-const action = await ctx.suspend({ on: "TaskApproved" }) as SurfaceAction;
-if (isStale(action, currentSequence)) {
-  fail("staleDecision", { seen: action.seenSequence, current: currentSequence });  // ADR 0060
-}
+// In the approve tool's handler — evidence:
+const events = await eventStore.read(executionId);      // BEFORE resuming; a resume moves the head
+const headSequence = events.at(-1)?.sequence ?? 0;
+await runtime.resume(executionId, {
+  eventType: "TaskApproved",
+  payload: { ...action, stale: isStale(action, headSequence), headSequence },
+});
+
+// In the flow, at the gate — policy:
+const signal = (await ctx.suspend({ on: "TaskApproved" })) as { stale: boolean };
+if (signal.stale) ctx.ui.set("status", "re-review");   // this gate refuses; another could accept
 ```
+
+Declare a `staleDecision` channel on the step (ADR 0060) when you want the refusal recorded and
+branchable rather than handled inline.
 
 That is **evidence, not policy** — whether a lag invalidates a decision is domain-specific, so
 Loom supplies the number and stops. An action with *no* `seenSequence` counts as stale: unknown

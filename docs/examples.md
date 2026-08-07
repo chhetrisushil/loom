@@ -82,6 +82,21 @@ pnpm --filter @loom/db-observability start
   (`executionId:stepId`) plus `idempotent:false` route a crash mid-call to
   `EFFECT_INDOUBT` for an operator verdict rather than re-firing the client.
   Headless, offline.
+- **`mcp-app-release-approval`** — serves a Loom agent surface as an **MCP App**
+  (SEP-1865, `io.modelcontextprotocol/ui`) via `@loom/plugin-mcp-app` (ADR 0072).
+  The first consumer of the plugin, and deliberately end-to-end: a real MCP server
+  over HTTP, a real `McpClient`, and the **real published template** — fetched from
+  `ui://loom/surface-host` and executed in jsdom by a minimal host that bridges its
+  `postMessage` JSON-RPC. Shows the content-pinned template round-tripping its pin,
+  the `ambient`/app-only `loom.surface.since` cursor the View polls (the extension
+  has no server push), audience-scoped tool lists, and app-originated *journaled*
+  calls denied until a grant is presented. Its spine is **decision provenance**: a
+  release gate stays open while CI keeps reporting, so an approval clicked from a
+  stale view is refused (`seenSequence` → `isStale` at the trust boundary, policy in
+  the flow) until the View polls itself current. Writing it found two real plugin
+  bugs that string-level tests could not — the template never called the cursor it
+  was documented to poll, and its `List` branch read a prop the A2UI `list()` helper
+  never emits. Headless, offline.
 - **`appgen-brownfield`**, **`appgen-models`** — AI-driven app generation
   (`@loom/appgen`).
 

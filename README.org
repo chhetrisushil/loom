@@ -88,7 +88,7 @@ const decision = (await ctx.suspend({ on: "ApprovalGranted", correlationKey: inp
 await app.runtime.resume(executionId, { eventType: "ApprovalGranted", payload: { approved: true } });
 #+end_src
 
-→ New to Loom? Read [[file:docs/getting-started.md][Getting Started]] (5 minutes), then study [[file:examples/loom-starter][~examples/loom-starter~]] — the canonical app wiring ~defineConfig~, the folder convention, effect middleware, testing, evals, and deploy-simulation.
+→ New to Loom? Read [[file:docs/getting-started.md][Getting Started]] (5 minutes), then study ~examples/loom-starter~ — the canonical app wiring ~defineConfig~, the folder convention, effect middleware, testing, evals, and deploy-simulation.
 
 -----
 
@@ -168,7 +168,7 @@ Loom 2.0 generalizes the durable workflow runtime into an *execution kernel for 
 | *Kernel* | ~packages/~ | mechanism + ABI: ~core~, ~event-runtime~, ~snapshot-runtime~, ~replay-vm~, ~effect-runtime~, ~workflow-runtime~, ~scheduler~, ~wire-abi~ |
 | *SPI contracts* | ~packages/~ | the seams adapters implement: ~worker-runtime~, ~projection-runtime~, ~llm~, ~blueprint-runtime~, ~registry~, ~telemetry~, ~dispatcher~ |
 | *Advisory* | ~packages/~ | optional modules: ~reasoning~, ~memory~, ~agent~, ~planner~, ~intent~, ~capability~, ~saga~, ~orchestration~, ~analytics~, ~middleware~, ~app~, ~classify~ (data-sensitivity markers), ~compliance~ (GDPR subject rights), ~isolate~, ~verify~, ~spec~, ~conformance~, … |
-| *Plugins (1P adapters)* | ~plugins/~ | ~@loom/plugin-*~: ~sqlite~, ~postgres~, ~crypto~, ~content~ (content-store seam + batched ~getMany~ + caching), ~durable-state~, ~read-model~, ~sentinel~, ~audit-chain~, ~cloudrun~, ~worker-remote~, ~worker-server~, ~mcp~ (incl. ~mcpInvoke$~ dynamic dispatch), ~sandbox~ (QuickJS eval of LLM-authored scripts), ~a2a~, ~renderer-react~, ~renderer-terminal~ |
+| *Plugins (1P adapters)* | ~plugins/~ | ~@loom/plugin-*~: ~sqlite~, ~postgres~, ~crypto~, ~content~ (content-store seam + batched ~getMany~ + caching), ~durable-state~, ~read-model~, ~sentinel~, ~audit-chain~, ~cloudrun~, ~worker-remote~, ~worker-server~, ~mcp~ (client + server, incl. ~mcpInvoke$~ dynamic dispatch), ~mcp-app~ (MCP Apps egress), ~sandbox~ (QuickJS eval of LLM-authored scripts), ~a2a~, ~a2ui~, ~renderer-react~, ~renderer-terminal~ |
 | *Plugin authoring* | ~packages/~ | ~@loom/plugin-kit~ (typed presets), ~@loom/conformance~ (SPI conformance kits) |
 | *Tooling* | ~tools/~ | first-party dev-tooling (leaf, build/test/authoring only): ~cli~, ~compiler~, ~appgen~, ~appgen-model~, ~deploy-sim~, ~scaffold~, ~eval~, ~testing~, ~dst~, ~create-loom-app~ |
 
@@ -213,9 +213,11 @@ Storage backends are *presets* (~sqliteStorage()~, ~postgresStorage()~, …) tha
 | ~@loom/llm~                | Provider-agnostic LLM abstraction (Anthropic, OpenAI, custom) |
 | ~@loom/reasoning~          | *Reasoning Runtime* — model routing, pluggable confidence, elevation; routes logged via the decision seam |
 | ~@loom/agent~              | ReAct-style agent loop over your tools, composing the Reasoning Runtime |
-| ~@loom/plugin-mcp~         | Model Context Protocol client + tool discovery + ~mcpInvoke$~ *dynamic dispatch* — schema-hash pinning, typed ~schemaDrift~/~toolNotFound~ channels, principal-safe credentials, ~mcpDispatchIndex~ (ADR 0063) |
+| ~@loom/plugin-mcp~         | Model Context Protocol *client + server*. Client: tool discovery + ~mcpInvoke$~ *dynamic dispatch* — schema-hash pinning, typed ~schemaDrift~/~toolNotFound~ channels, principal-safe credentials, ~mcpDispatchIndex~ (ADR 0063); full-fidelity results (~structuredContent~/~_meta~/non-text blocks, in-band ~isError~). Server: ~createMcpServer~ exposes loom tools/resources to any MCP host, audience-scoped (ADR 0072) |
 | ~@loom/plugin-sandbox~     | Hardened QuickJS/WASM eval of content-addressed, LLM-authored reshaping scripts — in-engine limits, no ambient I/O, shape-hash validation (ADR 0064) |
 | ~@loom/plugin-a2a~         | Agent-to-Agent protocol client + server |
+| ~@loom/plugin-a2ui~        | Google *A2UI* (Agent-to-UI) egress — projects an agent surface onto the wire protocol, plus ~callFunction~ bidirectional RPC (ADR 0069/0070) |
+| ~@loom/plugin-mcp-app~     | *MCP Apps* (SEP-1865) egress — one static content-pinned surface-host template whose payload is the A2UI catalog model, plus an ~ambient~/app-only surface cursor and decision provenance across long-held gates (ADR 0072) |
 | ~@loom/capability~ · ~@loom/intent~ · ~@loom/planner~ | Flows as intent-addressable capabilities; NL intent routing; multi-step plan composition |
 | ~@loom/memory~             | Scoped agent memory + ~TieredMemory~ with replay-safe *logged recall* |
 
@@ -258,24 +260,32 @@ Storage backends are *presets* (~sqliteStorage()~, ~postgresStorage()~, …) tha
 
 Every example is offline-first (no API key needed — a deterministic mock LLM ships by default).
 
+The runnable examples live in the sibling repo [[https://github.com/chhetrisushil/loom-examples][~loom-examples~]] (cloned beside this one; they
+resolve ~@loom/*~ from ~../loom~ via pnpm ~overrides~). See [[file:docs/examples.md][docs/examples.md]] for the
+long-form catalogue — each example, the pattern it teaches, and the APIs/ADRs it exercises.
+
 | Example                    | What it shows |
 |----------------------------+---------------|
-| [[file:examples/loom-starter][~loom-starter~]] | *Start here.* The canonical app: ~defineConfig~ + folder convention (~loom gen~) + effect middleware + ~@loom/testing~ + evals + deploy-sim + the compute seam, in one compact release-approval flow |
-| [[file:examples/agent-network][~agent-network~]] | Headless Node — the whole agentic pipeline end to end: LLM → ReAct agent → MCP → A2A → intent → planner → memory → terminal surface |
-| [[file:examples/a2a-mesh][~a2a-mesh~]] | Headless Node — bidirectional interop with Google ADK / LangGraph / CrewAI over the open A2A protocol |
-| [[file:examples/cloud-command-center][~cloud-command-center~]] | React — durable incident response: suspend / approve / resume + streaming AI triage |
-| [[file:examples/angular-command-center][~angular-command-center~]] | The *same* workflow in Angular — the runtime carries zero framework imports (bring-your-own-renderer) |
-| [[file:examples/db-command-center][~db-command-center~]] | React — intent → planner → A2A dispatch → durable human approval, with custom widgets + render-side fiber (BYOR + BYOC) |
-| [[file:examples/db-command-center-wc][~db-command-center-wc~]] | The *same* app in vanilla Web Components — reuse the whole backend, swap only the render layer |
-| [[file:examples/db-command-center-server][~db-command-center-server~]] | The *same* app as server + client — durable runtime on a Node server (SQLite), WC client over HTTP + SSE (isomorphic deployment) |
-| [[file:examples/incident-war-room][~incident-war-room~]] | Git-style branching, live — fork the durable execution at a gate → simulate strategies concurrently → compare → *promote* the winner. Branch-only, no merge |
-| [[file:examples/schema-migration-planner][~schema-migration-planner~]] | The same branching on a second domain (schema migrations) + live per-branch simulation progress — proving the seam is domain-agnostic |
-| [[file:examples/agent-swarm][~agent-swarm~]] | Headless — a dynamic agent swarm wired from user intent: durable plan (~record-plan~ → ~PLAN_COMPOSED~) + parallel ~executeGraph~ fan-out (one execution per node) |
-| [[file:examples/compute-cloudrun][~compute-cloudrun~]] | The same flow on three interchangeable compute backends (in-process / remote-HTTP / Cloud Run), offline — a stateless worker resumes cross-backend |
-| [[file:examples/db-observability][~db-observability~]] | A dashboard *blueprint generated dynamically* from a user question + widget catalogue (WHAT/WHY split) — telemetry hydrated by a durable interpreter flow: ~fanout$~ → ~mcpInvoke$~ (schema-pinned) → ~sandboxEval$~, with a live schema-drift → typed-failure → in-band-repair demo |
-| [[file:examples/db-sentinel][~db-sentinel~]] | The perpetual-agent pattern — ~sentinelPreset()~: schedule-driven bounded runs with durable carry state, claim-checked telemetry, and pinned retention |
+| ~loom-starter~ | *Start here.* The canonical app: ~defineConfig~ + folder convention (~loom gen~) + effect middleware + ~@loom/testing~ + evals + deploy-sim + the compute seam, in one compact release-approval flow |
+| ~agent-network~ | Headless Node — the whole agentic pipeline end to end: LLM → ReAct agent → MCP → A2A → intent → planner → memory → terminal surface |
+| ~a2a-mesh~ | Headless Node — bidirectional interop with Google ADK / LangGraph / CrewAI over the open A2A protocol |
+| ~cloud-command-center~ | React — durable incident response: suspend / approve / resume + streaming AI triage |
+| ~angular-command-center~ | The *same* workflow in Angular — the runtime carries zero framework imports (bring-your-own-renderer) |
+| ~db-command-center~ | React — intent → planner → A2A dispatch → durable human approval, with custom widgets + render-side fiber (BYOR + BYOC) |
+| ~db-command-center-wc~ | The *same* app in vanilla Web Components — reuse the whole backend, swap only the render layer |
+| ~db-command-center-server~ | The *same* app as server + client — durable runtime on a Node server (SQLite), WC client over HTTP + SSE (isomorphic deployment) |
+| ~incident-war-room~ | Git-style branching, live — fork the durable execution at a gate → simulate strategies concurrently → compare → *promote* the winner. Branch-only, no merge |
+| ~schema-migration-planner~ | The same branching on a second domain (schema migrations) + live per-branch simulation progress — proving the seam is domain-agnostic |
+| ~agent-swarm~ | Headless — a dynamic agent swarm wired from user intent: durable plan (~record-plan~ → ~PLAN_COMPOSED~) + parallel ~executeGraph~ fan-out (one execution per node) |
+| ~compute-cloudrun~ | The same flow on three interchangeable compute backends (in-process / remote-HTTP / Cloud Run), offline — a stateless worker resumes cross-backend |
+| ~db-observability~ | A dashboard *blueprint generated dynamically* from a user question + widget catalogue (WHAT/WHY split) — telemetry hydrated by a durable interpreter flow: ~fanout$~ → ~mcpInvoke$~ (schema-pinned) → ~sandboxEval$~, with a live schema-drift → typed-failure → in-band-repair demo |
+| ~db-sentinel~ | The perpetual-agent pattern — ~sentinelPreset()~: schedule-driven bounded runs with durable carry state, claim-checked telemetry, and pinned retention |
+| ~mcp-app-release-approval~ | A surface served as an *MCP App* (SEP-1865) — real MCP server + client, and the published ~ui://~ template executed in a DOM. Content-pinned template, ~ambient~ app-only surface cursor (the extension has no server push), and decision provenance: an approval clicked from a stale view is refused until the View polls itself current |
 
 ** Running them
+
+From the sibling checkout — ~git clone git@github.com:chhetrisushil/loom-examples.git~
+beside this repo, then ~cd loom-examples && pnpm install~:
 
 #+begin_src sh
 # Headless (prints to the console)
