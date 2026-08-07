@@ -23,7 +23,14 @@ export { surfacePayload } from "./surfaceBridge";
 export type { SurfacePayload, SurfacePayloadOptions } from "./surfaceBridge";
 
 export { SURFACE_CURSOR_TOOL, surfaceCursorTool } from "./surfaceCursor";
-export type { SurfaceCursorInput, SurfaceCursorOptions } from "./surfaceCursor";
+export type {
+  SurfaceCursorInput,
+  SurfaceCursorOptions,
+  SurfaceCursorResult,
+} from "./surfaceCursor";
+
+export { SEEN_SEQUENCE_FIELD, isStale } from "./provenance";
+export type { SurfaceAction } from "./provenance";
 
 export { surfaceHostResource } from "./serve";
 export type { SurfaceHostResourceOptions } from "./serve";

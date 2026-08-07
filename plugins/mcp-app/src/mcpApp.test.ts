@@ -5,6 +5,7 @@ import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { McpClient, createMcpServer, servedEffect } from "@loom/plugin-mcp";
 import type { McpServer } from "@loom/plugin-mcp";
 import { afterEach, describe, expect, it } from "vitest";
+import { SEEN_SEQUENCE_FIELD, isStale } from "./provenance";
 import { surfaceHostResource } from "./serve";
 import { surfacePayload } from "./surfaceBridge";
 import { surfaceCursorTool } from "./surfaceCursor";
@@ -192,15 +193,65 @@ describe("the app-visibility surface cursor", () => {
     const full = (await tool.handler({ executionId: "x1" }, {} as never)) as {
       dataModel: Record<string, unknown>;
       sequence: number;
+      changed: boolean;
+      executionId: string;
     };
     expect(full.dataModel).toEqual({ title: "A", count: 3 });
     expect(full.sequence).toBe(2);
+    expect(full.changed).toBe(true);
+    // Carried explicitly so a View can poll without parsing it out of surfaceId.
+    expect(full.executionId).toBe("x1");
+  });
 
-    // A cursored read folds only the tail — the View merges it onto what it has.
-    const tail = (await tool.handler({ executionId: "x1", fromSequence: 2 }, {} as never)) as {
+  it("answers `changed: false` when the log has not advanced past the cursor", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await store.append(patch("x1", 1, [{ op: "set", path: "title", value: "A" }]));
+    await store.append(patch("x1", 2, [{ op: "set", path: "count", value: 3 }]));
+
+    const tool = surfaceCursorTool({ store, components: COMPONENTS, redact: [] });
+    const unchanged = (await tool.handler({ executionId: "x1", fromSequence: 2 }, {} as never)) as {
+      changed: boolean;
+      sequence: number;
+      dataModel?: unknown;
+    };
+    expect(unchanged.changed).toBe(false);
+    expect(unchanged.sequence).toBe(2);
+    // Nothing to repaint, so nothing is sent — this is what keeps polling cheap.
+    expect(unchanged.dataModel).toBeUndefined();
+  });
+
+  // A tail fold produces a partial state that only LOOKS like a state: a nested
+  // patch yields {a:{b:1}}, which a shallow merge splices over all of `a`, and a
+  // `remove` is indistinguishable from a key the tail never touched. So an
+  // advanced cursor returns the COMPLETE model, never a delta.
+  it("returns a complete model on change, not a mergeable delta", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await store.append(patch("x1", 1, [{ op: "set", path: "keep", value: "original" }]));
+    await store.append(patch("x1", 2, [{ op: "set", path: "nested", value: { a: 1, b: 2 } }]));
+
+    const tool = surfaceCursorTool({ store, components: COMPONENTS, redact: [] });
+    await store.append(patch("x1", 3, [{ op: "set", path: "nested.a", value: 9 }]));
+
+    const next = (await tool.handler({ executionId: "x1", fromSequence: 2 }, {} as never)) as {
+      changed: boolean;
       dataModel: Record<string, unknown>;
     };
-    expect(tail.dataModel).toEqual({ count: 3 });
+    expect(next.changed).toBe(true);
+    // `keep` predates the cursor and `nested.b` was untouched by the tail — both
+    // survive, which a delta-and-merge scheme would have lost.
+    expect(next.dataModel).toEqual({ keep: "original", nested: { a: 9, b: 2 } });
+  });
+
+  it("reflects a removal, which a delta could not have expressed", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await store.append(patch("x1", 1, [{ op: "set", path: "gone", value: "here" }]));
+    const tool = surfaceCursorTool({ store, components: COMPONENTS, redact: [] });
+    await store.append(patch("x1", 2, [{ op: "remove", path: "gone" }]));
+
+    const next = (await tool.handler({ executionId: "x1", fromSequence: 1 }, {} as never)) as {
+      dataModel: Record<string, unknown>;
+    };
+    expect(next.dataModel).not.toHaveProperty("gone");
   });
 
   it("rejects a missing executionId", async () => {
@@ -226,6 +277,67 @@ describe("the app-visibility surface cursor", () => {
     await expect(tool.handler({ executionId: "secret-exec" }, {} as never)).rejects.toThrow(
       /no surface for execution/
     );
+  });
+});
+
+// ── Decision provenance across a long suspension ────────────────────────────
+//
+// The kernel already refuses stale CODE (K11), stale input (K11.5), forged
+// approvals (K12.2). What it cannot know is which version of the data a human
+// was looking at when they clicked — the execution knows when IT suspended, not
+// what the user saw.
+describe("decision provenance", () => {
+  it("treats an action with no provenance as stale", () => {
+    // Unknown provenance is indistinguishable from arbitrarily old data;
+    // defaulting it to fresh would make the check vacuous for exactly the
+    // clients that most need it.
+    expect(isStale({}, 10)).toBe(true);
+    expect(isStale({ seenSequence: Number.NaN }, 10)).toBe(true);
+  });
+
+  it("is fresh when the View had folded the current sequence", () => {
+    expect(isStale({ seenSequence: 10 }, 10)).toBe(false);
+  });
+
+  it("is stale when the surface advanced after the View last rendered", () => {
+    expect(isStale({ seenSequence: 7 }, 10)).toBe(true);
+  });
+
+  it("allows a tolerance for surface chatter that cannot invalidate a decision", () => {
+    expect(isStale({ seenSequence: 7 }, 10, 3)).toBe(false);
+    expect(isStale({ seenSequence: 7 }, 11, 3)).toBe(true);
+  });
+
+  it("never reports a View that is somehow ahead as stale", () => {
+    expect(isStale({ seenSequence: 12 }, 10)).toBe(false);
+  });
+
+  it("names the field the template actually sends", () => {
+    expect(SEEN_SEQUENCE_FIELD).toBe("seenSequence");
+    expect(SURFACE_HOST_TEMPLATE).toContain(SEEN_SEQUENCE_FIELD);
+  });
+});
+
+describe("the template's client half", () => {
+  // D5 claimed the cursor closes the missing-server-push gap. That is only true
+  // end to end if the VIEW actually polls it.
+  it("polls the surface cursor and tracks its own sequence", () => {
+    expect(SURFACE_HOST_TEMPLATE).toContain("loom.surface.since");
+    expect(SURFACE_HOST_TEMPLATE).toContain("fromSequence");
+    expect(SURFACE_HOST_TEMPLATE).toContain("setInterval");
+  });
+
+  it("stops polling on teardown rather than leaking a timer", () => {
+    expect(SURFACE_HOST_TEMPLATE).toContain("clearInterval");
+    expect(SURFACE_HOST_TEMPLATE).toMatch(/ui\/resource-teardown[\s\S]{0,120}stopPolling/);
+  });
+
+  it("echoes the rendered sequence on a user action", () => {
+    expect(SURFACE_HOST_TEMPLATE).toMatch(/seenSequence:\s*sequence/);
+  });
+
+  it("ignores an unchanged cursor reply instead of repainting", () => {
+    expect(SURFACE_HOST_TEMPLATE).toMatch(/payload\.changed\s*===\s*false/);
   });
 });
 

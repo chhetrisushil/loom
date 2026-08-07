@@ -239,6 +239,47 @@ static template, its pin, the payload builder, and the cursor tool. Spec capabil
 `mcp-server`, `mcp-apps-ui-egress`, `effect-mode-boundary` (L2). Workspace green — 70 build
 tasks, 123 test tasks.
 
+## Follow-up (2026-08-08) — completing D5, and decision provenance
+
+The question "does a long-suspended resume need staleness checking?" exposed that **D5 was only
+half-built**, and the honest answer to the question itself is *no new kernel support*.
+
+**What the kernel already refuses.** `resume()` is stricter than it looks: K11 resolves the flow
+*code* (current, pinned-by-hash, migrated, or loud refusal), K11.5 resumes with the recorded
+migrated `_input`, K12.2 rejects a forged approval, K8.2 keeps cancel terminal. Stale *code*,
+*input shape*, and *authority* are covered. Nothing was added.
+
+**What it structurally cannot know.** The execution knows the sequence at which **it** suspended.
+It does not know the sequence **the human was looking at**. Across a gate held open for days
+while the surface keeps advancing those are different numbers, and only the second says whether
+the decision was informed. That is a provenance gap, not a kernel gap.
+
+**Resolution — evidence, not policy.** The View echoes `seenSequence` (the cursor it had folded)
+on every action; `isStale(action, currentSequence, tolerance?)` is the predicate. Whether a given
+lag *invalidates* a decision is domain-specific, so the framework deliberately supplies the
+number and stops. The natural way to act on it is an ADR 0060 typed channel (`staleDecision`),
+making staleness a recorded, replay-substituted, branchable outcome rather than an exception.
+Absent provenance counts as **stale**: an action with no `seenSequence` is indistinguishable from
+one made against arbitrarily old data, and defaulting unknown to "fresh" would make the check
+vacuous for exactly the clients that need it most.
+
+**Two defects in the original Step 2, now fixed.**
+
+1. *The template never polled.* It rendered once from `ui/notifications/tool-result` and never
+   called `loom.surface.since` at all. The cursor tool was built and tested server-side and D5's
+   claim was true of the server — but the client half was missing, so the gap D5 exists to close
+   was not actually closed end to end. The View now polls its own cursor and stops on teardown.
+2. *The template discarded `sequence`.* `adopt()` read `components`/`dataModel`/`surfaceId` and
+   dropped the rest, so the provenance the payload already carried was thrown away.
+
+**A correctness fix to the cursor's contract.** The first cut folded from `fromSequence` and left
+the View to merge. That is wrong: a tail fold produces a partial state that only *looks* like a
+state — a nested patch yields `{a:{b:1}}`, which a shallow merge splices over the whole of `a`,
+and a `remove` op is indistinguishable from a key the tail simply never touched. The cursor now
+returns either `{ changed: false }` or a **complete** model. The cheap tail read is kept purely
+for change *detection*, so the common no-change poll stays cheap while every payload that does
+come back is authoritative.
+
 ## Notes on what was rejected and why it mattered
 
 P-D ("it ships code") looked like the fatal objection — it is the exact property whose
