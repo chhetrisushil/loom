@@ -57,6 +57,12 @@ export const SURFACE_HOST_TEMPLATE = `<!-- @loom/plugin-mcp-app surface host (st
   var components = [];
   var nextId = 1;
   var pending = {};
+  // Decision provenance: the surface sequence this View has folded. Echoed on
+  // every action so a flow can tell what the user was actually looking at.
+  var sequence = 0;
+  var executionId = null;
+  var poller = null;
+  var POLL_MS = 2000;
 
   // ── JSON-RPC over postMessage (the extension's bridge) ────────────────────
   function send(msg) { window.parent.postMessage(msg, "*"); }
@@ -139,9 +145,20 @@ export const SURFACE_HOST_TEMPLATE = `<!-- @loom/plugin-mcp-app surface host (st
         el.addEventListener("click", function () {
           // A user action is a JOURNALED call: it names the action the surface
           // declared, and the server decides whether an app may make it.
-          notify("ui/notifications/size-changed", { width: document.body.scrollWidth, height: document.body.scrollHeight });
-          request("tools/call", { name: node.action, arguments: { surfaceId: model.__surfaceId, action: node.action } })
-            .catch(function () { /* the host surfaces the failure */ });
+          //
+          // seenSequence is the point of this: a gate can sit open for days
+          // while the surface advances, so the flow needs to know WHICH version
+          // of the data the human was looking at when they decided. Without it
+          // an approval is indistinguishable from one made against arbitrarily
+          // stale state.
+          request("tools/call", {
+            name: node.action,
+            arguments: {
+              surfaceId: model.__surfaceId,
+              action: node.action,
+              seenSequence: sequence
+            }
+          }).catch(function () { /* the host surfaces the failure */ });
         });
         return el;
       default:
@@ -159,10 +176,36 @@ export const SURFACE_HOST_TEMPLATE = `<!-- @loom/plugin-mcp-app surface host (st
 
   function adopt(payload) {
     if (!payload || typeof payload !== "object") return;
+    if (payload.changed === false) return; // cursor says nothing advanced
     if (Array.isArray(payload.components)) components = payload.components;
+    // The payload is always a COMPLETE model, never a delta — a partial surface
+    // fold cannot express a removal and cannot be merged without corrupting
+    // nested paths, so replacing wholesale is the correct move.
     if (payload.dataModel && typeof payload.dataModel === "object") model = payload.dataModel;
     if (typeof payload.surfaceId === "string") model.__surfaceId = payload.surfaceId;
+    if (typeof payload.executionId === "string") executionId = payload.executionId;
+    if (typeof payload.sequence === "number") sequence = payload.sequence;
     paint();
+  }
+
+  // The extension has no server push, so the View polls its own cursor. The
+  // no-change reply is cheap by design (the server only reads the tail past the
+  // cursor), which is what makes a poll this frequent acceptable.
+  function poll() {
+    if (executionId == null) return;
+    request("tools/call", {
+      name: "loom.surface.since",
+      arguments: { executionId: executionId, fromSequence: sequence }
+    }).then(function (res) {
+      adopt((res && res.structuredContent) || null);
+    }).catch(function () { /* transient; the next tick retries */ });
+  }
+
+  function startPolling() {
+    if (poller == null) poller = setInterval(poll, POLL_MS);
+  }
+  function stopPolling() {
+    if (poller != null) { clearInterval(poller); poller = null; }
   }
 
   window.addEventListener("message", function (event) {
@@ -181,6 +224,7 @@ export const SURFACE_HOST_TEMPLATE = `<!-- @loom/plugin-mcp-app surface host (st
       return;
     }
     if (msg.method === "ui/resource-teardown") {
+      stopPolling();
       send({ jsonrpc: "2.0", id: msg.id, result: {} });
       return;
     }
@@ -196,6 +240,7 @@ export const SURFACE_HOST_TEMPLATE = `<!-- @loom/plugin-mcp-app surface host (st
   }).then(function (res) {
     if (res && res.hostContext && res.hostContext.toolInfo) { /* reserved for future use */ }
     notify("ui/notifications/initialized", {});
+    startPolling();
   }).catch(function () { /* a host that refuses the handshake leaves the view inert */ });
 })();
 </script>`;

@@ -18,6 +18,11 @@ import type { ComponentInstance } from "@loom/plugin-a2ui";
 /** What the template receives as `structuredContent`. */
 export interface SurfacePayload {
   surfaceId: string;
+  /**
+   * The execution this surface belongs to. Carried explicitly so a View can poll
+   * the cursor without having to parse it back out of `surfaceId`.
+   */
+  executionId: string;
   /** The component tree — exactly one node must have `id: "root"`. */
   components: ComponentInstance[];
   /** The data model components bind into by JSON Pointer. */
@@ -74,6 +79,7 @@ export function surfacePayload(
 
   return {
     surfaceId: options.surfaceId ?? `${surface}:${options.executionId}`,
+    executionId: options.executionId,
     components: options.components,
     // Mask on the way out only — the fold above keeps true values so
     // increment/append/merge stay correct (the A2UISurfaceBridge discipline).

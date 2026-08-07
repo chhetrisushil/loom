@@ -49,9 +49,22 @@ export interface SurfaceCursorOptions {
 
 export interface SurfaceCursorInput {
   executionId: string;
-  /** Read from this sequence onward; omit or 0 for a full (re)hydrate. */
+  /**
+   * The sequence the caller has already folded. When the log has not advanced
+   * past it the answer is `{ changed: false }`; otherwise a full, authoritative
+   * payload comes back. Omit (or 0) for a first hydrate.
+   */
   fromSequence?: number;
 }
+
+/**
+ * A cursor read. Either "nothing new since your cursor" or a complete payload —
+ * never a delta, because a partial surface fold cannot express a removal and
+ * cannot be merged without corrupting nested paths.
+ */
+export type SurfaceCursorResult =
+  | { executionId: string; sequence: number; changed: false }
+  | (SurfacePayload & { changed: true });
 
 /** Highest sequence a single cursor read will fold, bounding one response. */
 const MAX_SEQUENCE = Number.MAX_SAFE_INTEGER;
@@ -77,7 +90,7 @@ export function surfaceCursorTool(options: SurfaceCursorOptions): McpServedTool 
     // channel, not a capability the agent should reason about.
     ui: { resourceUri: "ui://loom/surface-host", visibility: ["app"] },
     mode: "ambient",
-    async handler(args: unknown): Promise<SurfacePayload> {
+    async handler(args: unknown): Promise<SurfaceCursorResult> {
       const input = (args ?? {}) as Partial<SurfaceCursorInput>;
       if (typeof input.executionId !== "string" || input.executionId.length === 0) {
         throw new Error("executionId must be a non-empty string");
@@ -93,13 +106,31 @@ export function surfaceCursorTool(options: SurfaceCursorOptions): McpServedTool 
           ? Math.max(0, Math.floor(input.fromSequence))
           : 0;
 
-      const events = await readRangeOf(options.store, input.executionId, from, MAX_SEQUENCE);
-      return surfacePayload(events, {
+      // Cheap change-detection first: read only the tail past the caller's
+      // cursor. Nothing new ⇒ answer without folding anything.
+      const tail =
+        from > 0 ? await readRangeOf(options.store, input.executionId, from + 1, MAX_SEQUENCE) : [];
+      if (from > 0 && tail.length === 0) {
+        return { executionId: input.executionId, sequence: from, changed: false };
+      }
+
+      // Something advanced (or this is a first read), so fold the FULL history.
+      //
+      // Deliberately not "fold the tail and let the client merge". A tail fold
+      // produces a partial state that only *looks* like a state: a nested patch
+      // yields `{a:{b:1}}`, which a shallow merge would splice over the whole of
+      // `a`, and a `remove` op is indistinguishable from a key the tail simply
+      // never touched. Sending an authoritative full model is correct by
+      // construction; the tail read above is what keeps the common no-change
+      // poll cheap.
+      const events = await readRangeOf(options.store, input.executionId, 0, MAX_SEQUENCE);
+      const payload = surfacePayload(events, {
         executionId: input.executionId,
         components: options.components,
         redact: options.redact,
         ...(options.surface !== undefined && { surface: options.surface }),
       });
+      return { ...payload, changed: true };
     },
   };
 }
