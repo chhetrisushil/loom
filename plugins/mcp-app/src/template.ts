@@ -85,13 +85,17 @@ export const SURFACE_HOST_TEMPLATE = `<!-- @loom/plugin-mcp-app surface host (st
     return cur;
   }
   // A prop is a literal, or a binding { path }. Bindings never execute anything.
-  function value(prop) {
-    if (prop && typeof prop === "object" && typeof prop.path === "string") return resolvePointer(model, prop.path);
+  // scope defaults to the root data model; inside a List item it is the element.
+  function value(prop, scope) {
+    if (prop && typeof prop === "object" && typeof prop.path === "string") {
+      return resolvePointer(scope === undefined ? model : scope, prop.path);
+    }
     return prop;
   }
-  function text(prop) {
-    var v = value(prop);
-    return v == null ? "" : String(v);
+  function text(prop, scope) {
+    var v = value(prop, scope);
+    if (v == null) return "";
+    return typeof v === "object" ? JSON.stringify(v) : String(v);
   }
 
   function byId(id) {
@@ -102,37 +106,47 @@ export const SURFACE_HOST_TEMPLATE = `<!-- @loom/plugin-mcp-app surface host (st
   // ── Render ────────────────────────────────────────────────────────────────
   // textContent everywhere — a surface value is agent/user data and is never
   // interpreted as markup, so a data model can't inject DOM into the host page.
-  function render(node) {
+  //
+  // scope is the A2UI collection scope: inside a List item, bindings resolve
+  // against the current element rather than the root data model, so an item
+  // component can say bind("") for the element itself or bind("/name") for a
+  // field of it. Outside a list, scope IS the data model.
+  function render(node, scope) {
     if (!node) return null;
     var el;
     switch (node.component) {
       case "Text":
         el = document.createElement("div");
-        el.textContent = text(node.text);
+        el.textContent = text(node.text, scope);
         return el;
       case "Badge":
         el = document.createElement("span");
         el.className = "loom-badge";
-        el.textContent = text(node.label);
+        el.textContent = text(node.label, scope);
         return el;
       case "Row":
       case "Column":
         el = document.createElement("div");
         el.className = node.component === "Row" ? "loom-row" : "loom-col";
         (node.children || []).forEach(function (cid) {
-          var child = render(byId(cid));
+          var child = render(byId(cid), scope);
           if (child) el.appendChild(child);
         });
         return el;
       case "List": {
+        // A2UI's List declares its data and its item component together:
+        //   { component: "List", children: { path, componentId } }
+        // The array lives at children.path; each element is rendered by the
+        // component named in children.componentId, scoped to that element.
         el = document.createElement("div");
         el.className = "loom-col";
-        var items = value(node.items);
+        var spec = node.children || {};
+        var items = resolvePointer(model, spec.path);
+        var itemNode = byId(spec.componentId);
         if (Array.isArray(items)) {
           items.forEach(function (item) {
-            var line = document.createElement("div");
-            line.textContent = typeof item === "object" ? JSON.stringify(item) : String(item);
-            el.appendChild(line);
+            var line = render(itemNode, item);
+            if (line) el.appendChild(line);
           });
         }
         return el;
@@ -169,7 +183,7 @@ export const SURFACE_HOST_TEMPLATE = `<!-- @loom/plugin-mcp-app surface host (st
   function paint() {
     root.setAttribute("data-empty", components.length === 0 ? "true" : "false");
     root.textContent = "";
-    var tree = render(byId("root"));
+    var tree = render(byId("root"), model);
     if (tree) root.appendChild(tree);
     notify("ui/notifications/size-changed", { width: document.body.scrollWidth, height: document.body.scrollHeight });
   }
