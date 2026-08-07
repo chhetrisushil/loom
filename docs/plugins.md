@@ -75,12 +75,28 @@ imports, so the 1P/3P distinction stays purely organisational.
   state + claim-check + K10.6 pin policy) as one composition-time declaration, plus the
   `loom new sentinel` scaffold.
 - `@loom/plugin-audit-chain` — tamper-evident hash-chained `EventStore` wrapper.
-- `@loom/plugin-mcp` — MCP client + dynamic dispatch: `mcpInvoke$` mints steps whose tool
-  name/args/schema-pin are runtime data through ONE registered `mcp.invoke` effect; pinned
-  `jsonSchemaHash` verified per call → typed `schemaDrift`/`toolNotFound` channels; principals
-  ride `ctx.principal`/`secretRef`, never the log; `MCP_DISPATCHED` + `mcpDispatchIndex`
-  projection for the "which executions called tool X at schema H" query
-  ([ADR 0063](adr/0063-mcp-dynamic-dispatch.md)).
+- `@loom/plugin-mcp` — MCP **client + server**. Client: dynamic dispatch — `mcpInvoke$` mints
+  steps whose tool name/args/schema-pin are runtime data through ONE registered `mcp.invoke`
+  effect; pinned `jsonSchemaHash` verified per call → typed `schemaDrift`/`toolNotFound`
+  channels; principals ride `ctx.principal`/`secretRef`, never the log; `MCP_DISPATCHED` +
+  `mcpDispatchIndex` projection for the "which executions called tool X at schema H" query
+  ([ADR 0063](adr/0063-mcp-dynamic-dispatch.md)). Results preserve `structuredContent`, `_meta`
+  and non-text content blocks, and an in-band `isError` throws rather than returning a failure
+  as a value. Server: `createMcpServer` exposes Loom tools/resources to any MCP host (the
+  `createA2AServer` analogue) with audience-scoped listing/dispatch, and `servedEffect` routes a
+  call by its declared seam. Also carries MCP Apps (`io.modelcontextprotocol/ui`) declarations
+  and `ui://` resources with content-hash provenance — **carry, never render**
+  ([ADR 0072](adr/0072-mcp-apps-ui-extension-placement.md)).
+- `@loom/plugin-mcp-app` — MCP Apps (SEP-1865) **egress**: projects a Loom agent surface onto
+  the extension as ONE static, content-pinned surface-host template whose payload is the
+  existing A2UI catalog model — so MCP Apps is a second *transport binding* for a surface
+  protocol Loom already ships, not a second UI protocol, and the rendered UI is a pure function
+  of (pinned template hash, logged `structuredContent`). The extension has no server push, so an
+  `ambient`/app-visibility `loom.surface.since` cursor over `EventStore.readRange` is the View's
+  refresh channel; `seenSequence` + `isStale` carry decision provenance across a long
+  suspension. Egress redaction is required-by-configuration, never defaulted. The **host** role
+  (iframe, CSP, postMessage) is deliberately out of scope
+  ([ADR 0072](adr/0072-mcp-apps-ui-extension-placement.md)).
 - `@loom/plugin-sandbox` — hardened QuickJS-in-WASM eval of content-addressed, LLM-authored
   reshaping scripts: in-engine memory/CPU/wall-clock limits, no ambient I/O by construction,
   output shape-hash validation; `scriptMissing`/`limitExceeded`/`shapeMismatch` are typed
