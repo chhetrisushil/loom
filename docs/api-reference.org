@@ -13,7 +13,7 @@ New to Loom? Start with [[file:getting-started.md][Getting Started]] and the [[f
 4.  [[#replay-storage][Replay & storage]] — ~@loom/replay-vm~, ~@loom/event-runtime~, ~@loom/snapshot-runtime~
 5.  [[#effects][Effects]] (~@loom/effect-runtime~) — ~Effect~, ~EffectRuntime~, middleware, the four effect kinds, K2 capability ring + K12 delegation
 6.  [[#kernel-hardening][Kernel hardening & security]] — the K1–K12 / T1–T2 ring map + ~@loom/isolate~ (K7), ~@loom/plugin-crypto~ (K10), ~@loom/wire-abi~ (T2)
-7.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/agent-surface~, ~@loom/plugin-a2ui~, ~@loom/blueprint-runtime~, ~@loom/plugin-renderer-react~, ~@loom/plugin-renderer-terminal~
+7.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/agent-surface~, ~@loom/plugin-a2ui~, ~@loom/plugin-mcp-app~, ~@loom/blueprint-runtime~, ~@loom/plugin-renderer-react~, ~@loom/plugin-renderer-terminal~
 8.  [[#agentic][Agentic]] — ~@loom/llm~, ~@loom/reasoning~, ~@loom/agent~, ~@loom/plugin-mcp~, ~@loom/plugin-a2a~, ~@loom/capability~, ~@loom/intent~, ~@loom/planner~, ~@loom/memory~, ~@loom/orchestrator~
 9.  [[#compute][Compute & distribution]] — ~@loom/dispatcher~, ~@loom/worker-runtime~ (+ ~-local~/~-remote~), ~@loom/worker-server~, ~@loom/plugin-cloudrun~, ~@loom/plugin-postgres~, ~@loom/graph-executor~, ~@loom/scheduler~
 10. [[#dx][DX & tooling]] — ~@loom/analytics~, ~@loom/appgen~, ~@loom/appgen-model~, ~@loom/cli~, ~@loom/testing~, ~@loom/eval~, ~@loom/deploy-sim~, ~@loom/scaffold~, ~@loom/compiler~, ~@loom/telemetry~
@@ -126,7 +126,21 @@ interface FlowDefinition<TIn, TOut> {
 interface ToolDefinition<TIn, TOut> {
   readonly _tag: "ToolDefinition"; id: string; name: string; description: string;
   kind: EffectKind; inputSchema: ZodSchema<TIn>; outputSchema: ZodSchema<TOut>;
+  idempotent?: boolean;              // K9 delivery semantic
+  errors?: Record<string, ZodSchema>;// ADR 0060 declared failure channels
+  mode?: EffectMode;                 // ADR 0073 — which invocation seam (below)
 }
+// ADR 0073 — which side of the determinism boundary a tool may be invoked from.
+//   "journaled" — runs inside an execution; result recorded and replay-substituted.
+//   "ambient"   — an enrichment read (pagination, drill-down, a surface refetch) that
+//                 must NEVER append to the log; runs only via invokeTransient.
+// `execute` refuses an ambient effect; `invokeTransient` refuses a journaled one
+// (EffectModeViolationError). Undeclared = today's behaviour on both seams (G2).
+// A boundary CHECK, not a journaling mode: an ambient tool is not "an effect that
+// skips its journal" — it may not enter an execution at all, so there remains
+// exactly one replay model. Declaration lives here; the enforced copy is on the
+// registered effect (`new ToolEffect(fn, { mode })`).
+type EffectMode = "journaled" | "ambient";
 interface AgentDefinition {
   readonly _tag: "AgentDefinition"; id: string; name: string; description?: string;
   tools: ToolDefinition[]; policies?: PolicyDefinition[]; memoryId?: string;
@@ -935,6 +949,108 @@ const out = await ctx.execute({ _tag: "TaskDefinition", kind: "tool", id: "confi
 
 A side-effecting client function must **dedup on ~callId~** (effects are at-least-once, K9.1).
 
+** ~@loom/plugin-mcp-app~ — MCP Apps (SEP-1865) egress
+
+Projects a Loom agent surface onto the MCP Apps extension so any MCP host renders a Loom-driven
+UI ([[file:adr/0072-mcp-apps-ui-extension-placement.md][ADR 0072]]). Egress only — the host role is out of scope (D2).
+
+MCP Apps ships *code*, which is the property A2UI deliberately lacks. That is neutralised by
+never generating markup per flow: *one static template* renders a declarative payload — the
+existing A2UI catalog component tree — delivered as ~structuredContent~. So MCP Apps is a second
+*transport binding* for a surface protocol Loom already ships, not a second UI protocol, and the
+rendered UI is a pure function of (pinned template hash, logged ~structuredContent~).
+
+#+begin_src typescript
+const SURFACE_HOST_URI  = "ui://loom/surface-host";
+const SURFACE_HOST_MIME_TYPE = "text/html;profile=mcp-app";
+const SURFACE_HOST_TEMPLATE: string;          // the one static, dependency-free template
+
+function surfaceHostPin(template?: string): string          // `fnv1a64:<hex16>`
+function verifySurfaceHostPin(expected: string, template?: string): string  // throws TemplateDriftError
+function surfaceHostResource(opts?: { pin?; uri?; connectDomains?; resourceDomains? }): McpServedResource
+
+// Fold a loom event stream into the payload the template renders.
+function surfacePayload(events: readonly EventEnvelope[], options: {
+  executionId: string; components: ComponentInstance[];
+  redact: readonly string[];        // REQUIRED — see below
+  surface?: string; surfaceId?: string;
+}): SurfacePayload   // { surfaceId, executionId, components, dataModel, sequence }
+
+// The app-visibility cursor tool — the View's refresh channel.
+function surfaceCursorTool(options: {
+  store: EventStore; components: ComponentInstance[]; redact: readonly string[];
+  surface?: string; name?: string; authorize?(executionId): boolean | Promise<boolean>;
+}): McpServedTool     // mode: "ambient", ui.visibility: ["app"]
+
+type SurfaceCursorResult =
+  | { executionId: string; sequence: number; changed: false }
+  | (SurfacePayload & { changed: true });
+
+// Decision provenance across a long suspension.
+const SEEN_SEQUENCE_FIELD = "seenSequence";
+interface SurfaceAction { surfaceId: string; action: string; seenSequence?: number }
+function isStale(action: Pick<SurfaceAction, "seenSequence">, currentSequence: number, tolerance?: number): boolean
+#+end_src
+
+*** Pin the template
+
+~surfaceHostPin()~ delegates to ~@loom/plugin-mcp~'s ~hashResourceBody~ — the *same* function the
+ingress side applies to a fetched resource, so a pin captured at plan time equals what a reader
+recomputes. Two hashing implementations that mostly agree is how a pin stops detecting the drift
+it exists to detect ([[file:adr/0063-mcp-dynamic-dispatch.md][ADR 0063]] D1).
+
+*** Redaction is required, not defaulted
+
+~redact~ has no default. The payload crosses the trust boundary into a rendered iframe, and a
+list that quietly defaults to empty is a silent leak — "we forgot to configure it" would look
+identical to "there is nothing to mask". Pass ~[]~ to assert explicitly that nothing needs it.
+Masking happens on egress only; the fold keeps true values so ~increment~/~append~/~merge~ stay
+correct.
+
+*** No server push — the View polls its own cursor
+
+The extension has no server→View channel after ~ui/notifications/tool-result~. The only seam it
+offers is repeatable view-initiated ~tools/call~, so the template polls ~loom.surface.since~.
+This is polling and it is worse than SSE — the extension's limitation, contained behind one
+tool. A cursor read returns either ~{ changed: false }~ or a *complete* model, never a delta: a
+tail fold is a partial state that only looks like one (a nested patch yields ~{a:{b:1}}~, which a
+shallow merge splices over all of ~a~, and a ~remove~ is indistinguishable from untouched). The
+cheap tail read is kept purely for change detection.
+
+*** Staleness across a long suspension
+
+~resume()~ already refuses stale *code* (K11), stale *input* (K11.5), forged *approvals* (K12.2)
+and post-cancel resume (K8.2). What it cannot know is which version of the data a human was
+looking at: the execution knows when *it* suspended, not what the user saw. So the View echoes
+~seenSequence~ on every action and ~isStale~ is the predicate — *evidence, not policy*. Whether
+a lag invalidates a decision is domain-specific; express it as an [[file:adr/0060-typed-failure-channels.md][ADR 0060]] ~staleDecision~
+channel so it is recorded, replay-substituted, and branchable into re-confirmation.
+
+Absent provenance counts as **stale**: an action with no ~seenSequence~ is indistinguishable
+from one made against arbitrarily old data.
+
+#+begin_src typescript
+import { createMcpServer } from "@loom/plugin-mcp";
+import { surfaceCursorTool, surfaceHostResource, surfaceHostPin, isStale } from "@loom/plugin-mcp-app";
+
+const server = createMcpServer({
+  resources: [surfaceHostResource({ pin: PINNED })],       // verified before serving
+  tools: [
+    surfaceCursorTool({ store: eventStore, components: view, redact: ["customer.email"] }),
+    { name: "approve", inputSchema: {…}, mode: "journaled",
+      ui: { resourceUri: SURFACE_HOST_URI, visibility: ["model", "app"] },
+      handler: async (args) => runtime.resume(executionId, { eventType: "TaskApproved", payload: args }) },
+  ],
+  audienceOf: (req) => (isAppChannel(req) ? "app" : "model"),
+  authorizeAppJournaledCall: (tool, req) => verifyUserGrant(req, tool.name),   // default DENY
+});
+await server.start();
+
+// In the flow, at the gate:
+const action = await ctx.suspend({ on: "TaskApproved" }) as SurfaceAction;
+if (isStale(action, currentSequence)) fail("staleDecision", { seen: action.seenSequence, current: currentSequence });
+#+end_src
+
 See ~apps/playground~ (the "A2UI" tab — the ~ƒ callFunction~ button) for a live wiring.
 
 ** ~@loom/blueprint-runtime~ — declarative UI
@@ -1077,19 +1193,104 @@ function llmSkillSelector(provider: LlmProvider, maxSkills?: number): SkillSelec
 
 Emits ~SKILLS_SELECTED~ / ~AGENT_TOOL_CALL~ / ~AGENT_COMPLETED~ events via ~ctx.emit~.
 
-** ~@loom/plugin-mcp~ — Model Context Protocol
+** ~@loom/plugin-mcp~ — Model Context Protocol (client + server)
+
+*** Client
 
 #+begin_src typescript
 class McpClient {
-  constructor(config: { transport: "http"; url: string; headers?: Record<string, string> })
-  connect(): Promise<void>
+  constructor(config: {
+    transport: "http"; url: string; headers?: Record<string, string>;
+    protocolVersion?: string;   // default DEFAULT_MCP_PROTOCOL_VERSION ("2025-11-25")
+  })
+  readonly protocolVersion: string   // server's negotiated choice once known, else ours
+  connect(): Promise<void>           // handshake; advertises the `io.modelcontextprotocol/ui` extension
   listTools(): Promise<MappedMcpTool[]>
   registerInto(effectRuntime: EffectRuntime): Promise<ToolDefinition[]>   // discover + register as effects
-  callTool(name: string, input: unknown): Promise<unknown>
+
+  // FULL result — every content block, structuredContent, isError, _meta.
+  callToolResult(name, input, extraHeaders?): Promise<McpCallToolResult>
+  // Convenience projection: prefers structuredContent, else joins+parses text.
+  // THROWS on isError (MCP reports tool failures in band, as a successful
+  // JSON-RPC response — returning one as a value makes every error a success).
+  callTool(name: string, input: unknown, extraHeaders?): Promise<unknown>
+
+  listResources(): Promise<McpResourceDescriptor[]>
+  readResource(uri: string): Promise<McpResourceContents[]>
+  readUiResource(uri: string): Promise<McpUiResource | undefined>  // carries contentHash provenance
   disconnect(): Promise<void>
 }
 function mcpTool$(client: McpClient, toolName: string): StepDefinition<unknown, unknown>
 #+end_src
+
+Protocol version is declared per request — ~_meta["io.modelcontextprotocol/protocolVersion"]~
+plus the ~MCP-Protocol-Version~ header — and negotiated from the handshake result.
+
+*** MCP Apps (SEP-1865) ingress — carry, never render
+
+Loom is deliberately *not* an MCP Apps host ([[file:adr/0072-mcp-apps-ui-extension-placement.md][ADR 0072]] D2): iframe sandboxing, CSP
+synthesis, permissions policy and the sandbox-proxy architecture are browser-application
+concerns where a mistake is an XSS or exfiltration hole. What lives here is the plumbing —
+recognise a UI-bearing tool, fetch the declared ~ui://~ resource, and carry it with provenance
+so an application *can* render it.
+
+#+begin_src typescript
+const MCP_UI_EXTENSION_ID = "io.modelcontextprotocol/ui";
+const MCP_UI_SCHEME = "ui://";
+const MCP_UI_MIME_TYPE = "text/html;profile=mcp-app";
+
+interface McpUiToolMeta { resourceUri: string; visibility?: ("model" | "app")[] }
+interface McpUiResource {
+  uri: string; mimeType?: string; text?: string; blob?: string;
+  contentHash: string;            // `fnv1a64:<hex16>` — the pin
+  meta?: McpUiResourceMeta;       // csp / permissions / domain / prefersBorder
+}
+
+function uiMetaOf(meta: unknown): McpUiToolMeta | undefined  // rejects a non-`ui://` resourceUri
+function uiFromResult(result: McpCallToolResult): { meta?: McpUiToolMeta; embedded: McpResourceContents[] }
+function isAppVisible(ui?: McpUiToolMeta): boolean   // undeclared visibility ⇒ BOTH audiences
+function isModelVisible(ui?: McpUiToolMeta): boolean
+function hashResourceBody(contents: McpResourceContents): string
+#+end_src
+
+A ~ui~ declaration whose ~resourceUri~ is not a ~ui://~ URI is *refused* — a UI pointer to an
+arbitrary scheme is a confused-deputy fetch.
+
+*** Server
+
+#+begin_src typescript
+function createMcpServer(options?: {
+  tools?: readonly McpServedTool[]; resources?: readonly McpServedResource[];
+  port?: number; serverInfo?: { name: string; version: string }; protocolVersion?: string;
+  authorize?(req): boolean | Promise<boolean>;        // UNSET ⇒ UNAUTHENTICATED
+  audienceOf?(req): "model" | "app";                  // default "model"
+  authorizeAppJournaledCall?(tool, req): boolean | Promise<boolean>;  // default DENY
+}): McpServer   // start() / stop() / url
+
+interface McpServedTool {
+  name: string; description?: string;
+  inputSchema: Record<string, unknown>; outputSchema?: Record<string, unknown>;
+  ui?: McpUiToolMeta;      // resource linkage + visibility
+  mode?: EffectMode;       // ADR 0073 seam — routes journaled vs ambient
+  handler(args: unknown, ctx: McpCallContext): Promise<unknown>;
+}
+
+// Serve a registered effect, ROUTED BY ITS DECLARED SEAM: `ambient` dispatches
+// through invokeTransient; anything else through the supplied journaled path.
+function servedEffect(effectRuntime, toolId, spec): McpServedTool
+#+end_src
+
+Two boundaries the server owns:
+
+- *Audience.* The extension puts visibility enforcement on the *host* — the only party that
+  knows whether a ~tools/call~ came from the model or a rendered View — so a server cannot
+  derive it from the request. ~audienceOf~ is deployment-supplied (a distinct path, port, or
+  credential) and defaults to ~"model"~: absent an explicit boundary, app-only tools stay
+  unreachable rather than silently open. An audience-invisible tool is reported as *unknown*,
+  not forbidden — a "you may not call that" reply confirms the tool exists.
+- *Seam.* A View can call any tool the host proxies for it. Enrichment reads are harmless; a
+  call that appends to the log is a state transition requested by the user's UI, so an
+  app-originated call to a ~journaled~ tool is *denied by default*.
 
 ** ~@loom/plugin-a2a~ — Agent-to-Agent
 

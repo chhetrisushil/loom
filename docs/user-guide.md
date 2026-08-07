@@ -257,6 +257,38 @@ dispatches through the effect.
 
 ---
 
+### Journaled vs ambient effects (ADR 0073)
+
+Some calls belong in the log and some must never enter it. A resumption — an approval, a submit —
+is a durable fact. An **enrichment read** — a UI paginating a table, drilling into a row,
+refetching a surface — is driven by a human clicking, so its count and order are a function of
+user behaviour; journaling it makes replay a function of that behaviour too.
+
+`invokeTransient` has always been the ambient path (zero durable footprint *by construction* —
+the `EffectRuntime` holds no event store, journal, or fence). What was missing was the
+**declaration**: which side a tool belongs on was decided by the caller's entry point, so every
+new invocation surface had to hand-wire the routing.
+
+```ts
+const page = tool$({ id: "page", name: "page", description: "paginate", mode: "ambient", … });
+effects.register("page", new ToolEffect(fn, { mode: "ambient" }));   // the enforced copy
+
+await ctx.execute(page, { page: 2 });          // ✗ EffectModeViolationError
+await effects.invokeTransient("page", { page: 2 });   // ✓
+```
+
+`execute` refuses an `ambient` effect; `invokeTransient` refuses a `journaled` one. Undeclared
+tools are unaffected on both seams, so this is opt-in.
+
+It is a **boundary check, not a journaling mode**. An `ambient` tool is not "an effect that skips
+its journal" — that would be a second replay model inside one execution (the rejected DE-2
+durability class). It is one that may not enter an execution at all. The seam comes from the
+entry point, never from the context's contents, so a hand-built transient-*looking* context
+cannot spoof it.
+
+The payoff is that a surface can route from the declaration instead of an allowlist — which is
+exactly what `@loom/plugin-mcp`'s `servedEffect` does.
+
 ## 4. Suspend & resume
 
 `ctx.suspend()` writes a durable checkpoint and returns control to the caller. The execution now lives entirely in storage — the process can restart, and another machine can resume it.
@@ -481,6 +513,71 @@ the effect) or a `secretRef` in the input resolved by `redactionMiddleware` — 
 (string tokens are rejected unless `acceptResolvedTokens: true` asserts the middleware is
 wired). Dispatches emit `MCP_DISPATCHED`, indexed by the shipped `mcpDispatchIndex`
 projection for the "which executions called tool X at schema H" repair query.
+
+### Serving Loom over MCP, and MCP Apps UI (ADR 0072)
+
+Loom speaks MCP as a **server** too, so any MCP host (Claude, ChatGPT, an IDE) can consume Loom
+tools — the `createA2AServer` story for a much larger ecosystem. On top of that,
+`@loom/plugin-mcp-app` projects an agent surface onto the **MCP Apps** extension
+(`io.modelcontextprotocol/ui`), so a host renders a Loom-driven UI.
+
+MCP Apps ships HTML. Loom never generates it per flow: **one static, content-pinned template**
+renders a declarative payload — the same A2UI catalog component tree from §6 — delivered as
+`structuredContent`. The rendered UI is therefore a pure function of (pinned template hash,
+logged `structuredContent`), both of which are in the log.
+
+```ts
+import { createMcpServer } from "@loom/plugin-mcp";
+import { surfaceCursorTool, surfaceHostResource, isStale } from "@loom/plugin-mcp-app";
+
+const server = createMcpServer({
+  resources: [surfaceHostResource({ pin: PINNED_TEMPLATE_HASH })],   // verified before serving
+  tools: [
+    surfaceCursorTool({ store: eventStore, components: view, redact: ["customer.email"] }),
+    { name: "approve", inputSchema: {…}, mode: "journaled",
+      ui: { resourceUri: SURFACE_HOST_URI, visibility: ["model", "app"] },
+      handler: async (args) => runtime.resume(id, { eventType: "TaskApproved", payload: args }) },
+  ],
+  audienceOf: (req) => (isAppChannel(req) ? "app" : "model"),
+  authorizeAppJournaledCall: (tool, req) => verifyUserGrant(req, tool.name),
+});
+```
+
+Four things to get right:
+
+- **Redaction is required.** `redact` has no default — the payload crosses into a rendered
+  iframe, and a list that silently defaults to empty makes "we forgot" look like "nothing to
+  mask". Pass `[]` to assert the latter explicitly.
+- **Audience is deployment-supplied.** The extension puts visibility enforcement on the *host*,
+  so a server cannot tell a model call from a View call. `audienceOf` defaults to `"model"`:
+  absent an explicit boundary (a distinct path, port, or credential), app-only tools stay
+  unreachable rather than silently open.
+- **App→journaled calls are denied by default.** A View can call any tool the host proxies for
+  it. Enrichment is harmless, but a call that appends to the log is a state transition requested
+  by the *user's UI*, so it needs its own authority rather than the flow's.
+- **There is no server push.** The View polls the `ambient`, app-only `loom.surface.since`
+  cursor. It is worse than SSE — the extension's limitation, contained behind one tool.
+
+**Staleness across a long suspension.** `resume()` already refuses stale flow *code* (K11),
+stale *input* (K11.5), forged *approvals* (K12.2) and post-cancel resume (K8.2). What it cannot
+know is which version of the data a human saw: the execution knows when *it* suspended, not what
+was on screen. So the View echoes `seenSequence` and you decide:
+
+```ts
+const action = await ctx.suspend({ on: "TaskApproved" }) as SurfaceAction;
+if (isStale(action, currentSequence)) {
+  fail("staleDecision", { seen: action.seenSequence, current: currentSequence });  // ADR 0060
+}
+```
+
+That is **evidence, not policy** — whether a lag invalidates a decision is domain-specific, so
+Loom supplies the number and stops. An action with *no* `seenSequence` counts as stale: unknown
+provenance is indistinguishable from arbitrarily old data.
+
+Loom is deliberately **not** an MCP Apps host. Iframe sandboxing, CSP synthesis, permissions
+policy and the sandbox-proxy architecture are browser-application concerns where a mistake is an
+XSS or exfiltration hole. On ingress, `@loom/plugin-mcp` *carries* a UI-bearing tool result (the
+`ui://` URI plus a content hash) so an application can render it — carry, never render.
 
 ### A2A — agent-to-agent
 
@@ -722,6 +819,8 @@ Determinism is what makes resume, fork, and replay trustworthy. Keep these in mi
 - **Keep wiring static.** Register flows/effects explicitly (or via `loom gen`). No runtime globbing or env-conditional registration, or a remote worker/replay can't reconstruct the same graph (P5).
 - **Middleware must be replay-safe too.** Retries/jitter use deterministic hashing, not `Math.random`. Follow suit in custom middleware on replayable paths.
 - **Snapshots are an optimization, not truth.** The log is authoritative; snapshots only shorten the fold. Never store data *only* in a snapshot.
+- **Keep user-driven reads out of the log (ADR 0073).** A UI paginating a table or refetching a surface is driven by a human clicking, so its count and order are a function of user behaviour — journaling it makes replay one too. Declare such tools `mode: "ambient"` and call them through `invokeTransient`; `ctx.execute` then refuses them. Note this is a *boundary check*, not a durability class: an ambient tool may not enter an execution at all, so there is still exactly one replay model (§3).
+- **A resume knows less than you think.** `resume()` refuses stale flow *code* (K11), stale *input* (K11.5) and forged *approvals* (K12.2) — but it cannot know which version of the data a human was looking at when they decided, because the execution knows when *it* suspended, not what was on screen. For gates that stay open a long time, carry that provenance yourself (§7's `seenSequence`/`isStale`) and decide in-domain.
 - **The step-identity rule (ADR 0061).** Frames are keyed by step id, so `ctx.run` in a loop must mint a deterministic distinct id per iteration — `` `${id}#${index}` `` — or iteration 2+ silently replays iteration 1's output. The sequence of ids must be a pure function of *logged* inputs (the interpreter pattern: a statically compiled flow walking runtime-loaded plan data is fully replayable under this rule). `fanout$(ctx, baseStep, items)` (`@loom/orchestration`) does the minting for parallel fan-out; the compiler's `analyzeLoopIdentity` lint flags violations (manifest warnings via `loomPlugin()`/`loom check`, or `verify: { lint: { loopIdentityByFlow } }` at boot).
 
 ---
