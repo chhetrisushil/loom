@@ -244,6 +244,42 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "ADR 0063 — plugin placement per the ADR 0043 litmus (vendor-specific). Canonical hashing lives in @loom/core (one implementation for drift check + registry change detection). MCP_DISPATCHED is a userspace domain event (fold skips unknown types — no EVENT_SCHEMA bump).",
   },
   {
+    id: "effect-mode-boundary",
+    title: "Effect Mode Boundary (journaled vs ambient)",
+    package: "@loom/effect-runtime",
+    level: "L2",
+    summary:
+      "`tool$({ mode })` declares which side of the determinism boundary a tool may be invoked from. `execute` refuses an `ambient` effect; `invokeTransient` refuses a `journaled` one (EffectModeViolationError). Undeclared effects are byte-identical on both seams (G2).",
+    evidence: {
+      conformanceTest: "packages/effect-runtime/src/effectMode.test.ts",
+    },
+    note: "ADR 0073 — a boundary CHECK at the execute seam, not a journaling mode: KERNEL_ABI stays 1.1.0, no event type, one replay model. The rejected alternative (ambient = 'skip the journal inside an execution') is DE-2's durability class, a second semantic model inside one execution. Enforced by the entry point, not by context contents, so a transient-looking hand-built context cannot spoof it.",
+  },
+  {
+    id: "mcp-server",
+    title: "MCP Server",
+    package: "@loom/plugin-mcp",
+    level: "L2",
+    summary:
+      "Serves loom tools/resources over MCP JSON-RPC (initialize / tools/list / tools/call / resources/list / resources/read) — the A2AServer analogue for the MCP ecosystem. Audience-scoped listing and dispatch; app-originated calls to `journaled` tools denied by default.",
+    evidence: {
+      conformanceTest: "plugins/mcp-app/src/mcpApp.test.ts",
+    },
+    note: 'ADR 0072 D7 — the prerequisite the MCP Apps work sits on (loom previously spoke MCP as a client only). The UI extension gives the SERVER no in-band audience signal, so `audienceOf` is deployment-supplied and defaults to "model": absent an explicit boundary, app-only tools stay unreachable rather than silently open.',
+  },
+  {
+    id: "mcp-apps-ui-egress",
+    title: "MCP Apps `ui://` Egress",
+    package: "@loom/plugin-mcp-app",
+    level: "L2",
+    summary:
+      "Projects a loom agent surface onto MCP Apps (SEP-1865) as ONE static content-pinned surface-host template whose payload is the existing A2UI catalog model, plus an `ambient`/app-visibility surface cursor tool over EventStore.readRange that substitutes for the extension's missing server push.",
+    evidence: {
+      conformanceTest: "plugins/mcp-app/src/mcpApp.test.ts",
+    },
+    note: "ADR 0072 D4/D5 — egress only; the host role (iframe, CSP, postMessage) is rejected for this repo (D2). No per-flow HTML: the rendered UI is a pure function of (pinned template hash, logged structuredContent), and the pin uses the SAME hashResourceBody the ingress side applies, so a plan-time pin equals what a reader recomputes (ADR 0063 D1). Egress redaction is required-by-configuration, never defaulted.",
+  },
+  {
     id: "content-batch-resolution",
     title: "Batched Content Resolution",
     package: "@loom/plugin-content",

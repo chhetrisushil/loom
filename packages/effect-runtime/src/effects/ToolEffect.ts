@@ -1,4 +1,4 @@
-import type { Effect, EffectContext, ErrorChannelSchema } from "../types";
+import type { Effect, EffectContext, EffectMode, ErrorChannelSchema } from "../types";
 
 export interface ToolEffectOptions {
   /**
@@ -14,12 +14,19 @@ export interface ToolEffectOptions {
    * fallback sees it. Omit for legacy untyped failure semantics.
    */
   errors?: Record<string, ErrorChannelSchema>;
+  /**
+   * ADR 0072 — which invocation seam this tool belongs to. Pass the same value
+   * declared on the `tool$` contract; this registered copy is the enforced one.
+   * Omit to keep today's behaviour on both seams.
+   */
+  mode?: EffectMode;
 }
 
 export class ToolEffect<TIn = unknown, TOut = unknown> implements Effect<TIn, TOut> {
   readonly kind = "tool" as const;
   readonly idempotent?: boolean;
   readonly errors?: Record<string, ErrorChannelSchema>;
+  readonly mode?: EffectMode;
 
   constructor(
     private readonly fn: (input: TIn, ctx: EffectContext) => Promise<TOut>,
@@ -30,6 +37,9 @@ export class ToolEffect<TIn = unknown, TOut = unknown> implements Effect<TIn, TO
     }
     if (options.errors !== undefined) {
       this.errors = options.errors;
+    }
+    if (options.mode !== undefined) {
+      this.mode = options.mode;
     }
   }
 

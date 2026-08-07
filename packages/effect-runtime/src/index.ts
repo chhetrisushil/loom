@@ -4,11 +4,13 @@ export { ToolEffect, type ToolEffectOptions } from "./effects/ToolEffect";
 export { LlmEffect, type LlmEffectOptions } from "./effects/LlmEffect";
 export { HumanEffect } from "./effects/HumanEffect";
 export { A2AEffect } from "./effects/A2AEffect";
+export { EffectModeViolationError } from "./types";
 export type {
   Effect,
   EffectContext,
   EffectKind,
   EffectMiddleware,
+  EffectMode,
   EffectNext,
   ErrorChannelSchema,
   ResourceSnapshot,

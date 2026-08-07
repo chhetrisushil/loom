@@ -33,6 +33,7 @@ export type {
   AgentDefinition,
   AgentSkillDef,
   EffectKind,
+  EffectMode,
   FlowDefinition,
   HandlerFn,
   HandlerLoader,
