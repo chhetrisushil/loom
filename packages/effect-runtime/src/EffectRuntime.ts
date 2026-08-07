@@ -85,7 +85,7 @@ export class EffectRuntime {
       throw new Error(`No effect registered for toolId: "${toolId}"`);
     }
 
-    // The determinism-boundary check (ADR 0072). A declared mode pins the effect
+    // The determinism-boundary check (ADR 0073). A declared mode pins the effect
     // to one seam: `ambient` reads (pagination, drill-down, a surface refetch)
     // must never append to the log, and a `journaled` effect invoked transiently
     // would silently produce no durable fact. Undeclared effects are unaffected,

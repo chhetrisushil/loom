@@ -4,7 +4,7 @@ import { ToolEffect } from "./effects/ToolEffect";
 import { EffectModeViolationError } from "./types";
 import type { EffectContext } from "./types";
 
-// ── ADR 0072 — the determinism-boundary check ────────────────────────────────
+// ── ADR 0073 — the determinism-boundary check ────────────────────────────────
 //
 // A declared `mode` pins a tool to ONE invocation seam. The point is that a
 // surface which can invoke arbitrary tools (an MCP server serving a View's
@@ -21,7 +21,7 @@ function ctx(overrides: Partial<EffectContext> = {}): EffectContext {
   };
 }
 
-describe("effect mode boundary (ADR 0072)", () => {
+describe("effect mode boundary (ADR 0073)", () => {
   it("refuses an ambient effect inside an execution", async () => {
     const rt = new EffectRuntime();
     rt.register("page", new ToolEffect(async () => ({ rows: [] }), { mode: "ambient" }));

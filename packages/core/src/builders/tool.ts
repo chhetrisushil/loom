@@ -34,8 +34,8 @@ export interface ToolConfig<TIn, TOut> {
    */
   errors?: Record<string, z.ZodSchema>;
   /**
-   * Which side of the determinism boundary this tool may be invoked from —
-   * `"journaled"` (inside an execution, result recorded & replay-substituted) or
+   * ADR 0073 — which side of the determinism boundary this tool may be invoked
+   * from: `"journaled"` (inside an execution, result recorded & replay-substituted) or
    * `"ambient"` (transient read/enrichment only, zero durable footprint). Like
    * `idempotent`, declaration metadata: pass the same value to the registered
    * effect (`new ToolEffect(fn, { mode })`), where the boundary check reads it.

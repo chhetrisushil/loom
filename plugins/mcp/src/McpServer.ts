@@ -42,7 +42,7 @@ export interface McpServedTool {
    */
   ui?: McpUiToolMeta;
   /**
-   * ADR 0072 — which side of the determinism boundary this tool sits on.
+   * ADR 0073 — which side of the determinism boundary this tool sits on.
    * `"ambient"` = an enrichment read (pagination, drill-down, a surface refetch)
    * that must never append to the log; `"journaled"` = a call that produces a
    * durable fact. App-originated calls to a `journaled` tool are DENIED unless
