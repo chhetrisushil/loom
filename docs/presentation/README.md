@@ -29,6 +29,7 @@ optimize for continuation, not hydration.*
 | [`db-command-center-server-deck.md`](./db-command-center-server-deck.md) | Engineers / architects | The **same app as server + client** — durable runtime on a Node server (SQLite), Web-Components client over HTTP + SSE; Loom's isomorphic deployment model |
 | [`incident-war-room-deck.md`](./incident-war-room-deck.md) | Engineers / architects | **Git-style branching**, made a live experience — fork the durable execution at a gate into mutually-exclusive remediations, simulate each (concurrently), compare, and **promote** the winner. Branch-only, no merge |
 | [`schema-migration-planner-deck.md`](./schema-migration-planner-deck.md) | Engineers / architects | The **same branching seam on a second domain** — choosing a schema-migration strategy — proving it's domain-agnostic, plus **live per-branch simulation progress** (three shadow-migrations backfilling at once) |
+| [`porting-loom-deck.md`](./porting-loom-deck.md) | Architects / platform leads | **Proposal: build a Loom-class kernel in another language** — the ten invariants that *are* the port, what must be redesigned per host language (continuation strategy, concurrency, serialization), the permanent non-goals drawn from our rejection record, the seven executable fitness gates, and an M0–M7 build order |
 
 Suggested order: **leadership deck → live demo (Demo 0 + 1) → engineering deck → walkthrough** as
 depth requires. The demo script has 5 / 15 / 30‑minute variants.
