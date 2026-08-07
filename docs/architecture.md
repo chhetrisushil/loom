@@ -403,6 +403,14 @@ plan-proposed kernel changes (a `CHILD_COMPLETED` event and a `ctx.compensate` s
   the concurrency cap; drop-in `Scheduler`), and **execution-lifecycle authorization** (a pluggable
   `ExecutionAuthorizer` gating start/resume/cancel/query at the trust boundary → durable
   `EXECUTION_DENIED`).
+- **Post-hoc inspection** — `@loom/replay-inspector` ([ADR 0071](adr/0071-read-only-replay-inspector.md)):
+  snapshot-anchored state reconstruction at any log position, transition diffs, and projection
+  slices, all under the version the execution is *pinned* to. Read-only by type
+  (`Pick<EventStore, "read" | "readFrom" | "readRange">` — `append` and even `subscribe` are out
+  of scope), so it cannot perturb what it inspects. Two findings came out of building it: the
+  durable pin is `variables._flowHash`, **not** `ExecutionState.workflowVersion` (which
+  `foldState` seeds from currently-registered code), and projection state has no snapshot
+  representation, so a projection fold always replays from zero.
 - **Coordination primitives** — `@loom/live-query` (loadState + `EventStore.subscribe`),
   `@loom/orchestration` (spawn child workflows and durably await them via decide/suspend/resume + a
   completion-correlating supervisor — `awaitChild` for one, `awaitChildren` for a concurrent

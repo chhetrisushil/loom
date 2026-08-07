@@ -240,6 +240,7 @@ Storage backends are *presets* (~sqliteStorage()~, ~postgresStorage()~, …) tha
 | ~@loom/isolate~            | K7 data-plane isolation — untrusted tools in a scrubbed child process with brokered egress |
 | ~@loom/classify~ · ~@loom/compliance~ | Field-sensitivity markers (~secret()~/~sensitive()~) · GDPR subject export/erasure |
 | ~@loom/verify~ · ~@loom/spec~ · ~@loom/conformance~ | Pre-flight verification (determinism/replay/capability rules incl. the ADR 0061 loop-identity lint) · evidence-derived capability manifest (ADR 0035) · SPI conformance kits |
+| ~@loom/replay-inspector~   | Read-only replay inspector (ADR 0071) — state at any point, transition diffs, projection slices, under the execution's *pinned* version; no write path, by type |
 | ~@loom/wire-abi~           | T2 wire-level kernel ABI — language-neutral JSON-RPC projection of the K1 syscalls |
 
 *DX & tooling* (~tools/~)
