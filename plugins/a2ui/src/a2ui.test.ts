@@ -1,11 +1,12 @@
 import { SURFACE_PATCH } from "@loom/agent-surface";
 import type { SurfacePatch } from "@loom/agent-surface";
 import type { EventEnvelope } from "@loom/core";
-import type { Effect, EffectContext, EffectRuntime } from "@loom/effect-runtime";
+import { EffectModeViolationError, EffectRuntime } from "@loom/effect-runtime";
+import type { Effect, EffectContext } from "@loom/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { A2UISurfaceBridge } from "./A2UISurfaceBridge";
 import type { A2UICallFunctionInput } from "./callFunction";
-import { registerA2UICallFunction } from "./callFunction";
+import { A2UI_CALL_FUNCTION_TOOL_ID, registerA2UICallFunction } from "./callFunction";
 import { DEFAULT_CATALOG_ID, bind, column, text } from "./catalog";
 import type { A2UIServerMessage, CallFunctionPayload, FunctionResponsePayload } from "./messages";
 import { A2UI_VERSION } from "./messages";
@@ -440,5 +441,27 @@ describe("registerA2UICallFunction (grain B)", () => {
     await expect(
       cap.get().execute({ surfaceId: "ui:exec-1", name: "confirm" }, effectCtx())
     ).rejects.toThrow(/timed out after 20ms/);
+  });
+
+  // ADR 0073 — this effect's recovery story IS the journal: `idempotent: false`
+  // means a crash mid-call parks at EFFECT_INDOUBT, and the deterministic callId
+  // is `ctx.idempotencyKey`. Neither exists transiently, so the seam is pinned.
+  it("is declared journaled, and refuses a transient invocation", async () => {
+    const runtime = new EffectRuntime();
+    registerA2UICallFunction(runtime, {
+      call: async (req) => ({
+        surfaceId: req.surfaceId,
+        callId: req.callId,
+        name: req.name,
+        result: 1,
+      }),
+    });
+
+    await expect(
+      runtime.invokeTransient(A2UI_CALL_FUNCTION_TOOL_ID, {
+        surfaceId: "ui:exec-1",
+        name: "confirm",
+      })
+    ).rejects.toThrow(EffectModeViolationError);
   });
 });
