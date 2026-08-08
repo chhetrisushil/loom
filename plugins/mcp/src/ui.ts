@@ -26,6 +26,17 @@ export const MCP_UI_SCHEME = "ui://";
 export const MCP_UI_MIME_TYPE = "text/html;profile=mcp-app";
 
 /**
+ * The DEPRECATED flat tool-metadata key, superseded by `_meta.ui.resourceUri`.
+ *
+ * Kept because the reference SDK still emits BOTH forms from `registerAppTool`,
+ * so hosts that never migrated keep working against SDK-built servers — and
+ * silently render nothing for a server that sends only the nested block. Read
+ * both on ingress, write both on egress, until the flat form is removed before
+ * GA.
+ */
+export const MCP_UI_RESOURCE_URI_META_KEY = "ui/resourceUri";
+
+/**
  * Which callers may see a tool. `"model"` = offered to the agent; `"app"` =
  * callable by a rendered View. A host MUST reject a View's `tools/call` for a
  * tool lacking `"app"` — the mirror of that rule is enforced server-side by
@@ -99,15 +110,26 @@ export function isUiResourceUri(uri: unknown): uri is string {
  * arbitrary scheme is exactly the confused-deputy fetch this must not perform.
  */
 export function uiMetaOf(meta: unknown): McpUiToolMeta | undefined {
-  const ui = asRecord(asRecord(meta)?.ui);
-  if (ui === undefined || !isUiResourceUri(ui.resourceUri)) return undefined;
+  const record = asRecord(meta);
+  const ui = asRecord(record?.ui);
+  // A server that only speaks the deprecated flat form still declares a UI.
+  const flat = record?.[MCP_UI_RESOURCE_URI_META_KEY];
+  if (ui === undefined) {
+    return isUiResourceUri(flat) ? { resourceUri: flat } : undefined;
+  }
+  const resourceUri = isUiResourceUri(ui.resourceUri)
+    ? ui.resourceUri
+    : isUiResourceUri(flat)
+      ? flat
+      : undefined;
+  if (resourceUri === undefined) return undefined;
 
   const visibility = Array.isArray(ui.visibility)
     ? ui.visibility.filter((v): v is McpUiVisibility => v === "model" || v === "app")
     : undefined;
 
   return {
-    resourceUri: ui.resourceUri,
+    resourceUri,
     ...(visibility !== undefined && visibility.length > 0 && { visibility }),
   };
 }

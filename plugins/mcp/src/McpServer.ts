@@ -6,7 +6,13 @@ import {
   type McpCallToolResult,
   type McpResourceContents,
 } from "./types";
-import { MCP_UI_EXTENSION_ID, MCP_UI_MIME_TYPE, isAppVisible, isModelVisible } from "./ui";
+import {
+  MCP_UI_EXTENSION_ID,
+  MCP_UI_MIME_TYPE,
+  MCP_UI_RESOURCE_URI_META_KEY,
+  isAppVisible,
+  isModelVisible,
+} from "./ui";
 import type { McpUiResourceMeta, McpUiToolMeta } from "./ui";
 
 // ── The MCP server half ──────────────────────────────────────────────────────
@@ -201,7 +207,17 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
 
   function describeTool(tool: McpServedTool): Record<string, unknown> {
     const meta: Record<string, unknown> = {};
-    if (tool.ui !== undefined) meta.ui = tool.ui;
+    if (tool.ui !== undefined) {
+      meta.ui = tool.ui;
+      // Also emit the DEPRECATED flat key. The spec supersedes it with the
+      // nested `ui` block, but the reference SDK's `registerAppTool` still
+      // writes both — so every server built with it satisfies a host that has
+      // not migrated yet, and a host that reads only the flat key silently
+      // renders nothing for a server that omits it. Matching the SDK's wire
+      // output is what makes "spec-correct" and "actually renders" the same
+      // thing. Remove when the flat form is dropped before GA.
+      meta[MCP_UI_RESOURCE_URI_META_KEY] = tool.ui.resourceUri;
+    }
     return {
       name: tool.name,
       ...(tool.description !== undefined && { description: tool.description }),
