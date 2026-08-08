@@ -2,6 +2,12 @@
 
 Run all benches: `pnpm bench`. Per package: `pnpm --filter @loom/<pkg> bench`.
 
+Two kinds of bench live here. Most are `vitest bench` micro-benchmarks measuring the
+*latency* of one operation in a serial loop. The **throughput** harness
+(`tools/bench-throughput`) is different: it measures sustained ops/sec against a real
+Postgres with N writes in flight, which `vitest bench` cannot express. See
+[Durable write throughput](#durable-write-throughput-toolsbench-throughput).
+
 These baselines are the **no-regression gate** for the cooperative-scheduling work
 (see `packages/scheduler` and the plan). The render fast-path (`traverseBlueprint`)
 is deliberately left untouched; treat a >~2% regression on it as a failure.
@@ -112,3 +118,91 @@ does not scale with concurrency there); on real network stores with connection
 caps the single round-trip is the durable win. `CachingContentStore` layers
 cache-forever on top (content-addressed ⇒ immutable), with `delete`-evicts-first
 so erasure is never resurrected.
+
+## Durable write throughput (`tools/bench-throughput`)
+
+The first measured answer to "how many requests per second can Loom do". Run:
+`LOOM_TEST_POSTGRES_URL=... pnpm --filter @loom/bench-throughput bench` (skips cleanly
+without a database). Full method and knobs: `tools/bench-throughput/README.md`.
+
+Captured on Apple Silicon, Node 24, **loopback** PostgreSQL 17.2, 256B payloads. Loopback
+flatters the store — no network hop, shared page cache — so treat these as an upper bound
+for a single primary and re-capture on the host you intend to quote.
+
+### Append saturates at ~22K events/sec, and past c≈32 concurrency *hurts*
+
+| concurrency | events/sec | p50 ms | p99 ms | max ms |
+|---|---:|---:|---:|---:|
+| 1   | 5,473  | 0.17 | 0.35  | 0.46   |
+| 8   | **22,364** | 0.34 | 0.63 | 1.31 |
+| 32  | 22,356 | 1.40 | 1.95  | 3.42   |
+| 128 | 17,802 | 5.69 | 37.82 | 150.34 |
+
+Throughput plateaus by c=8 and *regresses* at c=128 while the tail blows out ~100×. Adding
+in-flight writes past the plateau buys latency, not capacity.
+
+### Batching is worth ~8×, and the sweet spot is bounded
+
+`appendMany` is **not a shipped path** — this is the counterfactual for adding it to the
+`EventStore` SPI, measured with the same fence guard and one `pg_notify` per batch tip.
+
+| batch | events/sec | vs shipped | p95 ms |
+|---|---:|---:|---:|
+| 1  | 15,821  | 0.7×  | 16.3 |
+| 4  | 69,456  | 3.1×  | 7.8 |
+| 16 | **183,141** | **8.2×** | 19.8 |
+| 64 | 143,857 | 6.4×  | 143.3 |
+
+Batch 16 is the knee; 64 regresses on both throughput and tail. A group-commit flush in
+`ExecutionJournal` bounded at ~16 envelopes is the single highest-leverage change
+available on the write path — one optional SPI method, no kernel semantics touched.
+
+### `pg_notify` costs ~37% of append throughput, and fan-out is linear in subscribers
+
+| variant (c=128) | events/sec | vs no-notify |
+|---|---:|---:|
+| append WITHOUT the `pg_notify` CTE | 30,884 | 1.00× |
+| append (shipped) | 19,453 | 0.63× |
+| append (shipped) + 16 idle `LISTEN` conns | 9,886 | **0.32×** |
+
+Sixteen *idle* listeners — subscribed to nothing in particular, doing no work — cut writer
+throughput in half. Measured delivery was exactly **16 notifications per appended event**:
+the channel has no server-side interest filter, so every node receives every event and
+discards what it does not want. This is an O(events × nodes) broadcast, and it degrades
+the writer, not just the readers. Interest-filtered or partitioned delivery is the
+prerequisite for horizontal scale-out, ahead of any sharding work.
+
+### End-to-end durable executions
+
+No-op effect, so this is kernel + store cost with nothing else in it. Events per execution
+(`2*steps + 2`) is asserted against rows actually written, so the events/sec column cannot
+drift.
+
+| flow | exec/sec | events/sec | p50 ms | p99 ms |
+|---|---:|---:|---:|---:|
+| 1 step (4 events)  | **5,695** | 22,781 | 11.0 | 15.2 |
+| 3 steps (8 events) | 2,488 | 19,901 | 21.3 | 70.7 |
+
+Both land at ~20–23K events/sec — the same ceiling as section A, which is the point: **the
+event log is the bottleneck, not the interpreter.** Execution throughput is just that
+ceiling divided by events per execution.
+
+### The transient path is not in the same regime
+
+| scenario | calls/sec | events written |
+|---|---:|---:|
+| `runtime.invokeTransient` (no-op effect) | **1,112,600** | 0 |
+
+ADR 0065 R1 holds under load: zero envelopes. ~195× the durable 1-step rate, because it
+writes nothing. On this path the kernel is not the constraint — the effect's own work is.
+
+### Takeaway for capacity planning
+
+- **Durable executions: ~5.7K/sec** per runtime + single Postgres primary for a 1-step
+  flow. 100K/sec of that shape is **18×** this capacity, and because every write lands on
+  the same log, that multiplier falls on Postgres — worker scale-out
+  (`PlacementDispatcher`, `worker-remote`, `cloudrun`) does not help.
+- Batched append (~8×) plus interest-filtered delivery gets a single primary into the
+  ~45–50K exec/sec range on these numbers. Past that needs a partitioned log.
+- **Stateless/transient: not a scaling problem.** One process already exceeds 100K/sec of
+  kernel overhead; size for the effect, not the runtime.
