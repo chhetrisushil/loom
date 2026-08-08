@@ -100,6 +100,20 @@ so the measurement is not just the page cache.
 **Compare p50, not ops/sec, on the long-log rows.** Throughput there carries tail-outlier
 noise across runs while p50 is stable to within a few percent.
 
+**G. Cross-execution coalescing (per-row fencing)** — the shape a store-level coalescer
+would actually use: one row per *distinct* execution, so section B's single fence guard
+becomes a join against `fences` and each execution in the batch gets its own `pg_notify`.
+**Not a shipped path.** Runs both unfenced (no `fences` rows — the G2 case, where the join
+matches nothing) and fenced (every execution has a row, the honest worst case). Compare
+against section B **at the same batch size**; the report does this automatically.
+
+**H. Multi-node fan-out (real subscriber processes)** — forks genuine subscriber processes
+(`subscriberChild.ts`), each holding a `PostgresEventStore` with live `subscribe()` calls,
+and sweeps writer throughput against node count. Unlike section C's idle `LISTEN`
+connections, this includes `onNotify`'s per-notification `SELECT` — the read amplification
+a real node pays. Reports delivered notifications per node per event, which should be
+exactly 1: that is the broadcast, confirmed rather than inferred.
+
 ## Reading the results
 
 Absolute numbers are host-relative — a laptop with a loopback Postgres has no network
@@ -109,3 +123,17 @@ whatever box you intend to quote numbers from.
 
 `ops/sec` for a batched row is round-trips/sec; `events/sec` is the column comparable
 across sections.
+
+Per-section noise, from repeated runs on a laptop:
+
+- **F** — ops/sec carries tail-outlier noise on long logs; compare p50, which is stable to
+  a few percent.
+- **G** — absolutes vary substantially run to run (up to ~2×). Compare the ratio against
+  section B at the same batch size, and repeat before quoting. The fenced-vs-unfenced delta
+  is *inside* that variance on this host — it flipped sign between two runs — so do not
+  read it as the cost of the `fences` join.
+- **H** — stable across runs, including the delivered-per-node-per-event figure.
+
+Scenario H's "nodes" are separate processes on one host. That captures the per-node
+`SELECT` amplification and the notify broadcast, but not network latency or a contended
+NIC; a genuinely distributed run would likely be worse, not better.
