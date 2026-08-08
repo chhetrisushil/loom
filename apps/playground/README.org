@@ -116,7 +116,7 @@ Need another package? Add it to ~package.json~ and run ~pnpm install~ from the r
 
 - *Keep it messy.* Stub schemas with ~z.any()~, hardcode inputs, log freely.
 - *Determinism.* Put anything non-deterministic (clocks, randomness, I/O) inside a ~handler$~/effect (its result is logged) — never in the runner's control flow, or replay/resume diverges.
-- *Copy from an example.* ~examples/loom-starter/~ is the canonical new-architecture app (~defineConfig~ + folder convention + middleware + tests + evals). ~examples/cloud-command-center/~ has a fuller React flow + custom projections.
+- *Copy from an example.* The example apps live in the sibling [[file:../../docs/examples.md][~loom-examples~]] repo (check it out beside ~loom~). ~loom-starter~ is the canonical new-architecture app (~defineConfig~ + folder convention + middleware + tests + evals); ~cloud-command-center~ has a fuller React flow + custom projections.
 - *Check the console.* The Console telemetry adapter prints every flow/step event.
 
 * Promoting work
@@ -124,7 +124,7 @@ Need another package? Add it to ~package.json~ and run ~pnpm install~ from the r
 Once something works here:
 
 1. Move reusable builders/types to the appropriate ~packages/*~.
-2. Move flow/projection/blueprint code into an example — [[file:../../examples/loom-starter][~examples/loom-starter~]] (folder convention) or ~examples/cloud-command-center~.
+2. Move flow/projection/blueprint code into an example in the sibling ~loom-examples~ repo — ~loom-starter~ (folder convention) or ~cloud-command-center~; see the [[file:../../docs/examples.md][examples catalogue]].
 3. Add tests with [[file:../../docs/user-guide.md][~@loom/testing~]] (~createTestApp~ / ~waitForPhase~).
 4. Build from the repo root: ~pnpm build~.
 

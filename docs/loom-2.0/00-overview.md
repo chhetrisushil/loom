@@ -171,7 +171,7 @@ flowchart TB
 | M1 Execution seam | `core`, `workflow-runtime` | [01](01-execution-and-decision-seams.md) |
 | M2 Decision seam | `workflow-runtime`, `replay-vm` | [01](01-execution-and-decision-seams.md) |
 | M3 Reasoning | `reasoning`, `intent`, `planner` | [02](02-reasoning-and-memory.md) |
-| M3.5 Scale-out storage | `store-postgres` | [03](03-compute-scheduling-storage.md) |
+| M3.5 Scale-out storage | `plugin-postgres` | [03](03-compute-scheduling-storage.md) |
 | M4 Compute placement | `dispatcher` | [03](03-compute-scheduling-storage.md) |
 | M5 Memory tiers | `memory` | [02](02-reasoning-and-memory.md) |
 | M6 Scheduler in hot path | `effect-runtime`, `scheduler` | [03](03-compute-scheduling-storage.md) |
@@ -188,7 +188,7 @@ flowchart TB
 | K7 data-plane isolation & egress | `isolate` | [04 §9](04-kernel-hardening.md#9-the-second-hardening-series--k7k12-t1t2-implemented) / [ADR 0019](../adr/0019-k7-data-plane-isolation-and-egress-control.md) |
 | K8 cancellation & deadlines | `effect-runtime`, `workflow-runtime` | [ADR 0020](../adr/0020-k8-cancellation-deadlines-bounded-effects.md) |
 | K9 idempotency & fencing | `effect-runtime`, `replay-vm` | [ADR 0021](../adr/0021-k9-effect-delivery-contract-idempotency-fencing.md) |
-| K10 log lifecycle / crypto-shred | `store-crypto` | [11](11-encryption-at-rest.md) / [ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md) |
+| K10 log lifecycle / crypto-shred | `plugin-crypto` | [11](11-encryption-at-rest.md) / [ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md) |
 | K11 flow-code versioning | `compiler`, `workflow-runtime` | [ADR 0023](../adr/0023-k11-flow-code-versioning-in-flight-executions.md) |
 | K12 identity & tenancy | `effect-runtime`, `workflow-runtime` | [ADR 0024](../adr/0024-k12-identity-tenancy-delegated-authority.md) |
 | T1 durable timers | `workflow-runtime` | [ADR 0025](../adr/0025-t1-durable-timers-and-scheduled-executions.md) |
@@ -235,7 +235,7 @@ flowchart TB
   replay["replay-vm (fold + event ABI, K5)"]
   events["event-runtime (SQLite EventStore + BranchRegistry)"]
   snap["snapshot-runtime"]
-  pg["store-postgres (M3.5)"]
+  pg["plugin-postgres (M3.5)"]
   effects["effect-runtime (isolation + K2 authz + M6 scheduling)"]
   mw["middleware (retry + K3 metering)"]
   wrt["workflow-runtime (ExecutionRuntime, ctx.execute/decide, K1 ABI)"]
@@ -244,7 +244,7 @@ flowchart TB
   reason["reasoning (M3, rankedRouter M10)"]
   mem["memory (M5 TieredMemory)"]
   disp["dispatcher (M4 Placement + K4 Supervising)"]
-  workers["worker-runtime* + platform-cloudrun"]
+  workers["worker-runtime* + plugin-cloudrun"]
   cap["capability (M7)"]
   agent["agent (M8)"]
   intent["intent + planner"]
@@ -269,7 +269,7 @@ flowchart TB
   reason --> analytics
 ```
 
-**New in 2.0:** `store-postgres`, `reasoning`, `analytics`, `appgen`. **Deepened:** `workflow-runtime`
+**New in 2.0:** `plugin-postgres`, `reasoning`, `analytics`, `appgen`. **Deepened:** `workflow-runtime`
 (execute/decide/ABI), `effect-runtime` (authz/metering-context/scheduling), `middleware` (metering),
 `dispatcher` (placement/supervision), `memory` (tiers), `capability` (versioning/deps/authz),
 `agent` (reasoning re-base), `intent`/`planner` (reasoning re-base).

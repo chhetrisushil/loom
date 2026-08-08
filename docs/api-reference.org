@@ -749,7 +749,7 @@ function shredSubject(keys: KeyStore, rawEventStore: EventStore, executionId: st
 class PayloadShreddedError extends Error { … }     // thrown on any read of a shredded subject
 #+end_src
 
-Pair with ~redactionMiddleware~/~secretRef~ (under [[#app][@loom/middleware]]) to keep secrets out of the log in the first place; ~store-crypto~ protects what *is* persisted.
+Pair with ~redactionMiddleware~/~secretRef~ (under [[#app][@loom/middleware]]) to keep secrets out of the log in the first place; ~@loom/plugin-crypto~ protects what *is* persisted.
 
 ** ~@loom/wire-abi~ — wire-level kernel ABI (T2)
 
@@ -1265,6 +1265,7 @@ so an application *can* render it.
 const MCP_UI_EXTENSION_ID = "io.modelcontextprotocol/ui";
 const MCP_UI_SCHEME = "ui://";
 const MCP_UI_MIME_TYPE = "text/html;profile=mcp-app";
+const MCP_UI_RESOURCE_URI_META_KEY = "ui/resourceUri";   // DEPRECATED flat form; see below
 
 interface McpUiToolMeta { resourceUri: string; visibility?: ("model" | "app")[] }
 interface McpUiResource {
@@ -1282,6 +1283,17 @@ function hashResourceBody(contents: McpResourceContents): string
 
 A ~ui~ declaration whose ~resourceUri~ is not a ~ui://~ URI is *refused* — a UI pointer to an
 arbitrary scheme is a confused-deputy fetch.
+
+**** Both meta forms, on both sides
+
+The spec's form is the nested ~_meta.ui.resourceUri~ block, but the reference SDK's
+~registerAppTool~ still emits the *deprecated flat* ~_meta["ui/resourceUri"]~ alongside it, so
+hosts that never migrated keep working. A host reading only the flat key therefore sees *no UI
+declaration at all* on a server that sends only the nested one, and silently falls back to
+rendering text — spec-correct and invisible at the same time. So Loom **writes both on egress**
+(~describeTool~) and **accepts either on ingress** (~uiMetaOf~): the nested block wins when the
+two disagree, and the flat key is held to the same ~ui://~ scheme rule. Both forms go away when
+the flat one is dropped before GA.
 
 *** Server
 
@@ -1318,6 +1330,28 @@ Two boundaries the server owns:
 - *Seam.* A View can call any tool the host proxies for it. Enrichment reads are harmless; a
   call that appends to the log is a state transition requested by the user's UI, so an
   app-originated call to a ~journaled~ tool is *denied by default*.
+
+**** Reachability as a REMOTE connector
+
+Two things a *hosted* client settles before it will talk to a server at all, both handled by the
+transport:
+
+- *OAuth discovery.* A remote host probes ~/.well-known/oauth-protected-resource~ (RFC 9728) and
+  friends to learn whether it must authenticate. A server without OAuth answers *404* for the
+  whole ~/.well-known/~ namespace, and answers it *above* the ~authorize~ gate — behind it, a
+  401 would be equally undecidable ("authenticate, somehow", with no way to learn how) and the
+  client gives up rather than falling back to connecting unauthenticated. ~GET~ on the MCP
+  endpoint itself still returns 405, which is correct for a server offering no SSE stream.
+- *Version negotiation.* ~initialize~ *negotiates* rather than asserting: a client that names a
+  dated revision gets that same revision back, because this surface — initialize / tools /
+  resources over JSON-RPC — is unchanged across every dated revision, so any well-formed version
+  a client names is one the transport genuinely speaks. A client told a version it did not ask
+  for is entitled to hang up. ~protocolVersion~ (the configured default) is the fallback only
+  when the request names nothing usable — absent, ~"latest"~, or older than ~2024-11-05~.
+
+Both are transport behaviour, not configuration: there is nothing to opt into. Neither is
+theoretical — with them a tunnelled server completes the handshake from a hosted client; without
+them it is unreachable no matter what it serves.
 
 ** ~@loom/plugin-a2a~ — Agent-to-Agent
 

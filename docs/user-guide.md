@@ -458,7 +458,7 @@ onClientMessage((m) => {
 
 It ships a default component catalog (`Text`/`Column`/`Row`/`List`/`Badge`/`Button`) plus `defineCatalog` for your own.
 
-**`callFunction` (bidirectional RPC).** The agent can also ask the client to run a named catalog function and answer with a `functionResponse` — reconciled with Loom's replay grain by the client's *result* re-entering as a recorded fact (no client-side effect runtime needed), keyed by a deterministic `callId`. Two grains ([ADR 0070](adr/0070-a2ui-callfunction-bidirectional-rpc.md); runnable in `examples/a2ui-callfunction`):
+**`callFunction` (bidirectional RPC).** The agent can also ask the client to run a named catalog function and answer with a `functionResponse` — reconciled with Loom's replay grain by the client's *result* re-entering as a recorded fact (no client-side effect runtime needed), keyed by a deterministic `callId`. Two grains ([ADR 0070](adr/0070-a2ui-callfunction-bidirectional-rpc.md); runnable as `a2ui-callfunction` in the sibling [`loom-examples`](examples.md) repo):
 
 - **Grain A** — a read, via a `ctx.suspend` gate: `bridge.callFunction(name, args, { callId })` → client answers → `bridge.ingestFunctionResponse(msg)` → `runtime.resume`. The `callId` must be deterministic **and** call-site-unique (e.g. `` `${executionId}:getLocale#1` ``).
 - **Grain B** — a side effect, via a delegated effect: `registerA2UICallFunction(app.effectRuntime, transport)`, then `await ctx.execute({ toolId: A2UI_CALL_FUNCTION_TOOL_ID, … }, input)`. Declared `idempotent: false`, so a crash mid-call parks at `EFFECT_INDOUBT` for an operator verdict. The `callId` is `ctx.idempotencyKey` (unique per step); a side-effecting client function must dedup on it (effects are at-least-once).
@@ -607,6 +607,28 @@ Loom is deliberately **not** an MCP Apps host. Iframe sandboxing, CSP synthesis,
 policy and the sandbox-proxy architecture are browser-application concerns where a mistake is an
 XSS or exfiltration hole. On ingress, `@loom/plugin-mcp` *carries* a UI-bearing tool result (the
 `ui://` URI plus a content hash) so an application can render it — carry, never render.
+
+**Connecting a hosted client to it.** Being spec-correct and being *reachable* are different
+properties, and two of them are settled before a hosted client will exchange a single tool call.
+Both are handled by the transport — there is nothing to configure — but they explain failures
+that otherwise look like the server serving nothing:
+
+- **OAuth discovery.** A remote host probes `/.well-known/oauth-protected-resource` (RFC 9728)
+  and friends to learn whether it must authenticate. A server without OAuth must answer **404**
+  — and answer it *above* the `authorize` gate, since a 401 there says "authenticate, somehow"
+  with no way to learn how. Only a 404 lets the client conclude there is no OAuth here and
+  connect unauthenticated. (`GET` on the MCP endpoint itself still returns 405: correct for a
+  server that offers no SSE stream.)
+- **Version negotiation.** `initialize` echoes back the dated revision the client asked for
+  rather than asserting the configured one; a client told a different version than it requested
+  is entitled to hang up. `protocolVersion` is the fallback only when the request names nothing
+  usable.
+
+The same "correct on the wire, invisible in practice" trap applies to the UI declaration itself:
+the reference SDK emits **both** the spec's nested `_meta.ui.resourceUri` and the deprecated flat
+`_meta["ui/resourceUri"]`, so a host that never migrated renders plain text for a server sending
+only the nested form. Loom writes both and reads either (nested wins on conflict, and the flat
+key is held to the same `ui://` scheme rule).
 
 ### A2A — agent-to-agent
 
@@ -824,8 +846,8 @@ By default, `start`/`resume` run in-process. A **dispatcher** decides placement;
 flowchart LR
   cfg["defineConfig({ dispatcher })"] --> D["ExecutionDispatcher"]
   D --> L["local (in-process)"]
-  D --> R["remote (HTTP → worker-server)"]
-  D --> C["Cloud Run (platform-cloudrun)"]
+  D --> R["remote (HTTP → plugin-worker-server)"]
+  D --> C["Cloud Run (plugin-cloudrun)"]
 ```
 
 - **Local:** `@loom/worker-runtime-local` — same process.
