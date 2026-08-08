@@ -192,23 +192,31 @@ that does not implement it leaves an orphaned snapshot. Folding that orphan woul
 erased state. Existence is now checked against sequence 0 (the bootstrap anchor,
 preserved by `truncatePrefix`, removed by `deleteExecution`) in one indexed row read.
 
-**The larger finding: `snapshotEvery` mostly does not fire. [measured]**
+**Also fixed: settle-time checkpointing. [measured]**
 
-Read cost still falls off ~4× across the sweep rather than staying flat. On a 102-event
-execution with `snapshotEvery: 2`, **exactly one snapshot is stored, at sequence 2** — every
-read folds a 99-event tail.
+The read fix alone left ~4× falloff. Cause: on a 102-event execution with
+`snapshotEvery: 2`, exactly one snapshot was stored, at sequence 2. `maybeSnapshot` fires
+only while the execution is still committing and skips while a save is in flight, so a fast
+execution checkpoints once near the start. `suspend` already checkpoints at its tip;
+completion did not.
 
-`maybeSnapshot` (`WorkflowRuntime.ts:1089`) triggers only on an exact `sequence % every === 0`
-**and** when no save is in flight. The first checkpoint starts an async save; cadence points
-passing while it is pending are skipped and, because the trigger needs an exact multiple,
-never retried. A fast execution commits its entire log inside that first save.
+Completion now takes the symmetric checkpoint, gated on `snapshotEvery` being set *and* the
+tail having reached it:
 
-For fast-completing executions this means **snapshots do not bound replay at all** — which
-caps this read fix, and undercuts any recovery-time argument resting on snapshot cadence.
-The fix is small (trigger on `sequence - lastSnapshotSequence >= every` instead of an exact
-multiple), but it is a real behavioural change: more snapshots means more write
-amplification on a write path that is already the bottleneck (section 1). Worth doing
-deliberately, with section F re-run on both sides.
+| 102-event log, p50 | |
+|---|---:|
+| before | 4.76 ms |
+| bounded read only | 2.93 ms |
+| **+ settle checkpoint** | **1.22 ms** |
+
+3.9× cumulative; tail folded on read goes 99 → 0. Cost is one extra snapshot write per
+completed execution whose tail reached the cadence — zero with `snapshotEvery` unset (the
+default). Residual ~1.6× is snapshot *state* size (50 frames vs 1), not log length.
+
+Worth recording what did **not** work: changing the trigger from an exact multiple to an
+interval — the obvious reading of the defect — is inert in both regimes (299 vs 300
+checkpoints on a slow workload; no effect at all on a fast one). Dropped rather than shipped
+unmeasured.
 
 ### 3.3 Batching — gated, and worth less than it looks
 

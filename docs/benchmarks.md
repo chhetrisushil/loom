@@ -234,24 +234,40 @@ here; the ops/sec column carries tail-outlier noise on the long-log case.
 **~1.6× faster at p50 on a 102-event log, and no regression on short ones** — as expected,
 since the un-snapshotted path still issues the same number of queries.
 
-### …but snapshot cadence is what caps the win — `snapshotEvery` mostly does not fire
+### …and a settle-time checkpoint, because `snapshotEvery` alone does not bound reads
 
-Read falloff across the sweep only improved from ~5.75× to ~4.17×, not to ~1×. Probing why
-turned up a separate and larger defect: on a 102-event execution with `snapshotEvery: 2`,
-**exactly one snapshot is stored, at sequence 2**, leaving a 99-event tail to fold on every
-read.
+The read fix above only got falloff from ~5.75× to ~4.17×, not to ~1×. Probing why turned
+up a second defect: on a 102-event execution with `snapshotEvery: 2`, **exactly one
+snapshot was stored, at sequence 2** — every read folded a 99-event tail.
 
-`maybeSnapshot` (`WorkflowRuntime.ts:1089`) fires only when `sequence % every === 0` **and**
-no save is in flight. The first checkpoint starts an async save; every cadence point that
-passes while it is pending is skipped, and because the trigger requires an exact multiple,
-a skipped point is never retried. A fast execution commits its whole log inside that first
-save, so it snapshots once, near the start. The code comment claims a skipped cadence is
-"caught by the next tick" — the next tick is another exact multiple, so in practice it is
-not.
+`maybeSnapshot` can only fire while the execution is still committing, and it skips while a
+save is in flight. A fast execution commits its entire log inside that first async save, so
+it checkpoints once, near the start, and nothing after completion ever revisits it.
+`suspend` already checkpoints at its tip; **completion did not**.
 
-Consequence: for fast-completing executions `snapshotEvery` does not bound replay at all,
-which caps both this read fix and any recovery-time claim that rests on snapshots. Not
-fixed here — it is a behavioural change with a real write-amplification trade-off.
+Adding the symmetric settle-time checkpoint — gated on `snapshotEvery` being set *and* the
+tail since the last checkpoint having reached it, so short executions and the default
+unset config are untouched:
+
+| 102-event log, p50 | reads/sec |
+|---|---:|
+| before both fixes | 4.76 ms · 3,077 |
+| bounded `foldState` read only | 2.93 ms · 4,297 |
+| **+ settle checkpoint** | **1.22 ms · 10,939** |
+
+**3.9× cumulative at p50**, and the snapshot now lands at the tip (tail folded on read: 99
+→ 0). Cost is exactly **one extra snapshot write per completed execution whose tail reached
+the cadence** — probed at 2 snapshots per execution rather than 1, and zero when
+`snapshotEvery` is unset.
+
+Residual falloff is ~1.6×, and is not log length: a 50-step execution's snapshot *state* is
+simply bigger to fetch and parse than a 1-step one (50 frames vs 1). That part is inherent.
+
+**What did NOT work, measured:** changing the cadence trigger from an exact multiple to an
+interval since the last checkpoint — the obvious reading of the defect. It is inert in both
+regimes. A fast execution has no commits left by the time the save resolves; a slow one lets
+the exact-multiple trigger keep up anyway (**299 vs 300** checkpoints over the same
+workload). It was dropped rather than shipped as unmeasured complexity.
 
 ### Takeaway for capacity planning
 
