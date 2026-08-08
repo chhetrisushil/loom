@@ -9,6 +9,7 @@ import {
   durableExecutions,
   makeRuntime,
   rawAppend,
+  readPath,
   transientInvocations,
 } from "./scenarios";
 
@@ -218,6 +219,39 @@ async function main(): Promise<void> {
       "## E. `invokeTransient` — the zero-write ceiling\n\n",
       `${table([transient], "calls")}\n\n`,
       `Events written during this scenario: **${afterTransient}** (ADR 0066 D2/R1 — must be 0).`,
+    ].join("")
+  );
+
+  // ── F. read path ────────────────────────────────────────────────────────────
+  // Sweeps log length with snapshot cadence FIXED. If reads are bounded by the snapshot,
+  // throughput stays roughly flat as the log grows behind it; if the whole log is being
+  // read, it falls off with length.
+  const READ_STEP_COUNTS = [1, 10, 50];
+  const readRows: Measurement[] = [];
+  const readBundle = makeRuntime(pool, 2); // snapshotEvery: 2 — a snapshot near the tip
+  for (const stepCount of READ_STEP_COUNTS) {
+    await truncate();
+    readRows.push(await readPath(readBundle, cfg, stepCount));
+  }
+  await readBundle.close();
+  await truncate();
+  const shortest = readRows[0];
+  const longest = readRows[readRows.length - 1];
+  const falloff =
+    shortest !== undefined && longest !== undefined && longest.opsPerSec > 0
+      ? shortest.opsPerSec / longest.opsPerSec
+      : Number.NaN;
+  const shortEvents = 2 * (READ_STEP_COUNTS[0] as number) + 2;
+  const longEvents = 2 * (READ_STEP_COUNTS[READ_STEP_COUNTS.length - 1] as number) + 2;
+  sections.push(
+    [
+      "## F. Read path (`runtime.loadState` over snapshotted executions)\n\n",
+      "Log length sweeps; `snapshotEvery` is fixed at 2. Bounded reads ⇒ roughly flat ",
+      "throughput across log lengths.\n\n",
+      `${table(readRows, "reads")}\n\n`,
+      `Falloff from a ${shortEvents}-event log to a ${longEvents}-event one `,
+      `(**${longEvents / shortEvents}× the events**): **${fmt(falloff, 2)}×** slower. `,
+      "Near 1× means snapshots bound the read; scaling with the log means they do not.",
     ].join("")
   );
 

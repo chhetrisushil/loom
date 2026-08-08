@@ -217,6 +217,42 @@ ceiling divided by events per execution.
 ADR 0066 D2/R1 holds under load: zero envelopes. ~195× the durable 1-step rate, because it
 writes nothing. On this path the kernel is not the constraint — the effect's own work is.
 
+### Read path: `loadState` no longer reads the whole log
+
+`foldState` used to read the ENTIRE log before checking for a snapshot, then throw that
+result away — so snapshots bounded the fold's CPU but not its I/O. Now it loads the
+snapshot first and reads only a bounded tail (plus a one-row existence anchor).
+
+Measured with `snapshotEvery: 2`, c=16, median of 3 runs. `p50` is the reliable signal
+here; the ops/sec column carries tail-outlier noise on the long-log case.
+
+| log length | before (p50) | after (p50) | before (reads/sec) | after (reads/sec) |
+|---|---:|---:|---:|---:|
+| 4 events   | 0.72 ms | 0.71 ms | 17,690 | 17,936 |
+| 102 events | 4.76 ms | **2.93 ms** | 3,077 | **4,297** |
+
+**~1.6× faster at p50 on a 102-event log, and no regression on short ones** — as expected,
+since the un-snapshotted path still issues the same number of queries.
+
+### …but snapshot cadence is what caps the win — `snapshotEvery` mostly does not fire
+
+Read falloff across the sweep only improved from ~5.75× to ~4.17×, not to ~1×. Probing why
+turned up a separate and larger defect: on a 102-event execution with `snapshotEvery: 2`,
+**exactly one snapshot is stored, at sequence 2**, leaving a 99-event tail to fold on every
+read.
+
+`maybeSnapshot` (`WorkflowRuntime.ts:1089`) fires only when `sequence % every === 0` **and**
+no save is in flight. The first checkpoint starts an async save; every cadence point that
+passes while it is pending is skipped, and because the trigger requires an exact multiple,
+a skipped point is never retried. A fast execution commits its whole log inside that first
+save, so it snapshots once, near the start. The code comment claims a skipped cadence is
+"caught by the next tick" — the next tick is another exact multiple, so in practice it is
+not.
+
+Consequence: for fast-completing executions `snapshotEvery` does not bound replay at all,
+which caps both this read fix and any recovery-time claim that rests on snapshots. Not
+fixed here — it is a behavioural change with a real write-amplification trade-off.
+
 ### Takeaway for capacity planning
 
 - **Durable executions: ~5.7K/sec** per runtime + single Postgres primary for a 1-step
