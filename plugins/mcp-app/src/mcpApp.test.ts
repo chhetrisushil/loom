@@ -359,6 +359,35 @@ describe("MCP server — audience and seam boundaries", () => {
     expect(res?.contentHash).toBe(surfaceHostPin());
   });
 
+  // Spec-correct is not the same as renders. The reference SDK emits BOTH the
+  // nested block and the deprecated flat key, so a host that never migrated
+  // still finds the link; a server that sends only the nested one is silently
+  // treated as having no UI at all.
+  it("publishes a tool's UI link in both the nested and the deprecated flat form", async () => {
+    const s = await serve({
+      tools: [
+        {
+          name: "summarize",
+          inputSchema: { type: "object" },
+          ui: { resourceUri: SURFACE_HOST_URI, visibility: ["model"] },
+          handler: async () => ({ ok: true }),
+        },
+      ],
+    });
+
+    const res = await fetch(s.url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    const body = (await res.json()) as {
+      result: { tools: { _meta: Record<string, unknown> }[] };
+    };
+    const meta = body.result.tools[0]._meta;
+    expect(meta.ui).toEqual({ resourceUri: SURFACE_HOST_URI, visibility: ["model"] });
+    expect(meta["ui/resourceUri"]).toBe(SURFACE_HOST_URI);
+  });
+
   it("hides app-only tools from the model and vice versa", async () => {
     const s = await serve({
       tools: [

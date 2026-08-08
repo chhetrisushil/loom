@@ -40,6 +40,7 @@ export type {
 export {
   MCP_UI_EXTENSION_ID,
   MCP_UI_MIME_TYPE,
+  MCP_UI_RESOURCE_URI_META_KEY,
   MCP_UI_SCHEME,
   hashResourceBody,
   isAppVisible,

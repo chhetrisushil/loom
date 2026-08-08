@@ -290,6 +290,27 @@ describe("Step 1 — ui metadata parsing", () => {
     expect(uiMetaOf({ ui: { resourceUri: "ui://ok" } })?.resourceUri).toBe("ui://ok");
   });
 
+  // The reference SDK's registerAppTool writes BOTH the nested block and the
+  // deprecated flat key, so servers in the wild carry either or both. Reading
+  // only the nested one silently misses a UI that is genuinely declared.
+  it("accepts the deprecated flat resourceUri key", () => {
+    expect(uiMetaOf({ "ui/resourceUri": "ui://legacy/host" })?.resourceUri).toBe(
+      "ui://legacy/host"
+    );
+    expect(uiMetaOf({ ui: { visibility: ["app"] }, "ui/resourceUri": "ui://legacy/host" })).toEqual(
+      {
+        resourceUri: "ui://legacy/host",
+        visibility: ["app"],
+      }
+    );
+    // The nested block still wins when both are present and disagree.
+    expect(
+      uiMetaOf({ ui: { resourceUri: "ui://new" }, "ui/resourceUri": "ui://old" })?.resourceUri
+    ).toBe("ui://new");
+    // …and the flat key is held to the same scheme rule as the nested one.
+    expect(uiMetaOf({ "ui/resourceUri": "https://evil.example.com/x" })).toBeUndefined();
+  });
+
   it("drops unknown visibility values rather than trusting them", () => {
     const ui = uiMetaOf({ ui: { resourceUri: "ui://a", visibility: ["app", "root", 7] } });
     expect(ui?.visibility).toEqual(["app"]);
