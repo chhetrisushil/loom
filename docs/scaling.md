@@ -168,7 +168,20 @@ kernel change, no event-schema change, no ADR conflict. Options, cheapest first:
    delivery stays the constraint.
 
 Option 1 alone should recover most of the fan-out cost. **[open]** — the specific recovery
-is unmeasured; the harness's scenario C already has the shape to measure it.
+is still unmeasured (nothing implements it yet), but the cost being recovered is now
+measured end-to-end. Scenario H forks **real subscriber processes** rather than idle
+listeners, so `onNotify`'s per-notification `SELECT` is included:
+
+| subscriber nodes | writer events/sec (2 runs) |
+|---|---:|
+| 0 | 18,096 · 21,175 |
+| 2 | 12,521 · 12,742 |
+| 4 | 8,275 · 10,223 |
+
+**2.19× / 2.07× writer throughput lost to 4 subscriber nodes**, with delivery confirmed at
+exactly 1 notification per node per event. For scale: 16 *idle* listeners cost ~1.97×, so
+**4 real nodes cost about what 16 idle ones did** — the gap is the per-event `SELECT`. The
+idle-listener approximation understated fan-out by roughly 4× per node.
 
 ### 3.2 The read path — fixed, and what it revealed
 
@@ -242,9 +255,16 @@ Against the gate, honestly:
 | 3. Transient architecture confirmed insufficient | ❌ Not addressed |
 
 **The 8.2× is only reachable by coalescing across executions** — merging many concurrent
-journals' appends into one multi-row INSERT. That is *not* ADR 0065's sketch, and it has a
-real unknown: a cross-execution batch needs a per-row fence check (a join against `fences`)
-rather than the single guard that was measured, and that cost is unquantified **[open]**.
+journals' appends into one multi-row INSERT. That is *not* ADR 0065's sketch, and it needs
+a per-row fence check (a join against `fences`) plus one notify per execution in the batch,
+rather than the single guard section B measured. That cost is now **[measured]** (scenario
+G): at a matched batch size the cross-execution shape runs at **0.55–0.65×** of the
+same-execution one across two runs — still roughly **4–8× over the shipped per-event
+append**, so a coalescer is viable, but budget ~0.6× of B's headline, not B's headline.
+
+Absolute numbers in that scenario are noisy; the fenced-vs-unfenced delta flips sign
+between runs and is inside run-to-run variance, so whether the `fences` join specifically
+is the expensive part remains **[open]**.
 It also belongs in a **store decorator**, not the journal — which is a better placement
 anyway (outside the kernel), and preserves ordering because each journal's FIFO still
 serializes its own events while the batcher only groups *independent* executions.
@@ -304,7 +324,14 @@ See `tools/bench-throughput/README.md`. Absolute numbers are host-relative — c
 relative movement between scenarios on one host, and re-capture a baseline on the hardware
 you intend to quote.
 
-Known gaps in the harness, if you extend it: no cross-execution coalescing scenario with
-per-row fencing (3.3), and no multi-node scenario (3.1's fan-out is measured with idle
-listeners on one host, not real subscribers on separate nodes). Section F covers the read
-path; note its ops/sec column carries tail-outlier noise on long logs, so compare p50.
+Scenario coverage: A–F as described above, plus **G** (cross-execution coalescing with
+per-row fencing) and **H** (multi-node fan-out with real forked subscriber processes).
+
+Reading notes: section F's ops/sec column carries tail-outlier noise on long logs — compare
+p50. Section G's absolutes are noisy run to run; compare the ratio against section B at the
+same batch size, and repeat runs before quoting a number. Section H is stable across runs.
+
+Remaining gap: every measurement is single-host loopback Postgres. Scenario H's "nodes" are
+separate processes on one machine, which captures the per-node `SELECT` amplification and
+the notify broadcast but not real network latency or a contended NIC. A genuinely
+distributed run would likely make the fan-out cost worse, not better.

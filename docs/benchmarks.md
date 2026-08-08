@@ -217,6 +217,61 @@ ceiling divided by events per execution.
 ADR 0066 D2/R1 holds under load: zero envelopes. ~195× the durable 1-step rate, because it
 writes nothing. On this path the kernel is not the constraint — the effect's own work is.
 
+### Cross-execution coalescing: viable, but not the same-execution headline
+
+Section B batches 16 events of ONE execution under a single fence guard — a shape the
+per-execution `ExecutionJournal` can never fill for short flows. The only shape that *can*
+fill a batch is a store-level coalescer merging appends across many concurrent executions,
+and that cannot use one guard: rows belong to different executions, so each needs its own
+fence check (a join against `fences`), and each execution in the batch needs its own
+`pg_notify`. This is the cost the guide previously recorded as unknown.
+
+Two full runs, c=128, one row per distinct execution:
+
+| batch | run 1 (events/sec) | run 2 (events/sec) |
+|---|---:|---:|
+| 4, fenced  | 56,618 | 24,365 |
+| 16, fenced | 141,141 | 80,209 |
+| 64, fenced | 115,514 | 182,974 |
+
+**Absolute numbers here are noisy — treat the ratio, not the value.** At a matched batch
+size of 64 the fenced cross-execution shape ran at **0.55× and 0.65×** of section B's
+same-execution batch across the two runs.
+
+So: a cross-execution coalescer is **viable** — roughly 4–8× over the shipped per-event
+append — but it does **not** reach section B's headline. Budget for about 0.6× of it once
+per-row fencing and per-execution notifies are paid.
+
+**What could not be resolved:** whether the `fences` join itself is the expensive part. The
+fenced-vs-unfenced delta flips sign between runs (unfenced faster at b=64 in run 1, slower
+in run 2), so it is inside run-to-run variance. Anyone wanting that number needs repeated
+runs on a quieter host than a laptop.
+
+None of this opens [ADR 0065](adr/0065-group-commit-deferred-evidence-gate.md)'s gate — it
+sizes a design, it does not demonstrate a real workload bottlenecked on event writes.
+
+### Multi-node fan-out: 4 real subscriber nodes cost more than 16 idle listeners
+
+Section C approximates fan-out with idle `LISTEN` connections in-process. A real node does
+more: it holds a `PostgresEventStore`, and `onNotify` issues a `SELECT` per notification to
+fetch the row. Measured with genuine forked subscriber processes, c=128:
+
+| subscriber nodes | run 1 | run 2 |
+|---|---:|---:|
+| 0 | 18,096 | 21,175 |
+| 2 | 12,521 | 12,742 |
+| 4 | 8,275 | 10,223 |
+
+Writer throughput falls **2.19× / 2.07×** from 0 to 4 nodes. Delivery was exactly **1
+notification per node per appended event** in both runs — the broadcast, confirmed
+end-to-end across processes rather than inferred.
+
+Put against section C: **16 idle listeners cost ~1.97×; just 4 real subscriber nodes cost
+~2.1×.** The difference is `onNotify`'s per-event `SELECT`. Fan-out is therefore roughly
+4× worse per node than the idle-listener approximation suggested, and the cost lands on the
+**writer**. This is the measurement that makes interest-filtered delivery the
+highest-priority change in [`scaling.md`](scaling.md).
+
 ### Read path: `loadState` no longer reads the whole log
 
 `foldState` used to read the ENTIRE log before checking for a snapshot, then throw that

@@ -3,13 +3,17 @@ import { Pool } from "pg";
 import type { Measurement } from "./harness";
 import {
   type BenchConfig,
+  appendWatched,
   appendWithoutNotify,
   attachListeners,
   batchedAppend,
+  crossExecutionBatch,
   durableExecutions,
   makeRuntime,
   rawAppend,
   readPath,
+  spawnSubscriberNodes,
+  subscribedExecutionIds,
   transientInvocations,
 } from "./scenarios";
 
@@ -255,6 +259,98 @@ async function main(): Promise<void> {
     ].join("")
   );
 
+  // ── G. cross-execution coalescing with per-row fencing ──────────────────────
+  const crossRows: Measurement[] = [];
+  for (const fenced of [false, true]) {
+    for (const b of cfg.batchSizes.filter((n) => n > 1)) {
+      await truncate();
+      crossRows.push(
+        await crossExecutionBatch(pool, cfg, batchConcurrency, { batchSize: b, fenced })
+      );
+    }
+  }
+  await truncate();
+  // Compare at the SAME batch size, not best-vs-best: the two shapes must differ only in
+  // the fence check and the notify count, or the ratio measures batch size instead.
+  const cmpBatch = Math.max(...cfg.batchSizes.filter((n) => n > 1), 0);
+  const bestCross = crossRows.find(
+    (m) => m.unitsPerOp === cmpBatch && m.label.includes("· fenced")
+  );
+  const bestSameExec = batchRows.find((m) => m.unitsPerOp === cmpBatch);
+  sections.push(
+    [
+      "## G. Cross-execution coalescing (per-row fencing)\n\n",
+      "The shape a store-level coalescer would actually use: one row per DISTINCT execution, ",
+      "so the single fence guard of section B is replaced by a join against `fences`, and one ",
+      "`pg_notify` fires per execution in the batch rather than one per batch. **Not a shipped ",
+      "path** — this is the cost section B left unmeasured.\n\n",
+      `${table(crossRows, "events")}\n\n`,
+      bestCross !== undefined && bestSameExec !== undefined
+        ? [
+            `At batch=${cmpBatch}: fenced cross-execution **${fmt(bestCross.unitsPerSec)} events/sec** `,
+            `vs **${fmt(bestSameExec.unitsPerSec)}** for section B's same-execution batch — `,
+            `**${fmt(bestCross.unitsPerSec / bestSameExec.unitsPerSec, 2)}×**. `,
+            "Same batch size, so the ratio isolates the per-row fence join plus the extra ",
+            "per-execution notifies. The unfenced rows are the G2 case: executions that never ",
+            "fence match nothing in the join and pay only for the notifies.\n\n",
+            "Absolutes in this section are noisy run to run — compare the ratio, and repeat ",
+            "before quoting a number.",
+          ].join("")
+        : "",
+    ].join("")
+  );
+
+  // ── H. multi-node fan-out with real subscriber processes ────────────────────
+  const fanoutRows: Measurement[] = [];
+  const fanoutNodeCounts = [0, 2, 4];
+  const deliveries: { nodes: number; delivered: number; appends: number }[] = [];
+  for (const nodeCount of fanoutNodeCounts) {
+    await truncate();
+    const ids = subscribedExecutionIds(batchConcurrency, `n${nodeCount}`);
+    const subs = await spawnSubscriberNodes(PG_URL, nodeCount, ids);
+    const m = await appendWatched(
+      bundle.eventStore,
+      cfg,
+      batchConcurrency,
+      ids,
+      `append · ${nodeCount} real subscriber node(s) · c=${batchConcurrency}`
+    );
+    // Cross-process delivery is asynchronous; let it drain before counting.
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const { delivered, nodes } = await subs.stop();
+    fanoutRows.push(m);
+    deliveries.push({ nodes, delivered, appends: m.ops + m.warmupOps });
+  }
+  await truncate();
+  const baseline = fanoutRows[0];
+  const worst = fanoutRows[fanoutRows.length - 1];
+  sections.push(
+    [
+      "## H. Multi-node fan-out (real subscriber processes)\n\n",
+      "Section C uses idle `LISTEN` connections in this process. These are genuine forked ",
+      "processes each holding a `PostgresEventStore` with live `subscribe()` calls, so ",
+      "`onNotify`'s per-notification `SELECT` is included — the read amplification a real ",
+      "node pays.\n\n",
+      `${table(fanoutRows, "events")}\n\n`,
+      "| nodes | notifications delivered | appends | per node per event |\n|---:|---:|---:|---:|\n",
+      deliveries
+        .map(
+          (d) =>
+            `| ${d.nodes} | ${fmt(d.delivered, 0)} | ${d.appends} | ` +
+            `${d.nodes === 0 ? "—" : fmt(d.delivered / d.nodes / Math.max(1, d.appends), 2)} |`
+        )
+        .join("\n"),
+      baseline !== undefined && worst !== undefined && worst.opsPerSec > 0
+        ? [
+            `\n\nWriter throughput with ${worst.concurrency} writers falls `,
+            `**${fmt(baseline.opsPerSec / worst.opsPerSec, 2)}×** from 0 to `,
+            `${fanoutNodeCounts[fanoutNodeCounts.length - 1]} subscriber nodes — the cost of `,
+            "fan-out landing on the WRITER, which is what makes this the scale-out blocker.",
+          ].join("")
+        : "",
+    ].join("")
+  );
+
   // ── projection ──────────────────────────────────────────────────────────────
   const bestAppend = best(appendRows);
   const bestBatch = best(batchRows);
@@ -274,7 +370,8 @@ async function main(): Promise<void> {
         `- Best batched throughput: **${fmt(bestBatch.unitsPerSec)} events/sec** `,
         `(batch=${bestBatch.unitsPerOp}) — `,
         `**${fmt(bestBatch.unitsPerSec / bestAppend.unitsPerSec, 2)}×** `,
-        "over the shipped per-event path, on the same database, for one added SPI method.",
+        "over the shipped per-event path — but see section G for the shape a coalescer could\n" +
+          "      actually reach, and ADR 0065 for the gate this does not open.",
       ].join("")
     );
   }

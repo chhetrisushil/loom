@@ -1,3 +1,5 @@
+import { type ChildProcess, fork } from "node:child_process";
+import { join } from "node:path";
 import type { EventEnvelope } from "@loom/core";
 import { flow$, step$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
@@ -379,5 +381,205 @@ export async function readPath(
     op: async ({ worker }) => {
       await bundle.runtime.loadState(ids[worker] as string);
     },
+  });
+}
+
+// ── G. Cross-execution coalescing, with PER-ROW fencing ───────────────────────
+//
+// The gap scenario B leaves open. B batches 16 events of ONE execution, so one fence
+// check covers the batch — but `ExecutionJournal` is per-execution and a short flow never
+// has 16 envelopes pending, so B's headline is unreachable from the journal (see
+// docs/scaling.md 3.3). The only shape that CAN fill a batch is a store-level coalescer
+// merging appends across many concurrent executions.
+//
+// That shape cannot use B's single guard: rows belong to different executions, so each
+// needs its own fence check — a join against `fences` instead of one scalar subquery.
+// This measures what that costs, which is the number the guide records as unknown.
+//
+// Two fence populations, because the codebase's G2 guarantee is that executions which
+// never fence pay nothing:
+//   - unfenced: no `fences` rows, the LEFT JOIN matches nothing (the cheap case)
+//   - fenced:   every execution has a fence row, so the join does real work (the honest
+//               worst case for a fencing deployment)
+//
+// One pg_notify per DISTINCT execution in the batch, not one per batch — a cross-execution
+// flush has to wake every execution's subscribers, and pretending otherwise would flatter
+// the result.
+
+const CROSS_BATCH_SQL = `
+  WITH batch AS (
+    SELECT * FROM jsonb_to_recordset($1::jsonb) AS x(
+      id text, workflow_id text, execution_id text, event_type text,
+      "sequence" bigint, "timestamp" bigint, payload jsonb, metadata jsonb, fence bigint
+    )
+  ), ins AS (
+    INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
+    SELECT b.id, b.workflow_id, b.execution_id, b.event_type, b."sequence", b."timestamp",
+           b.payload, b.metadata
+    FROM batch b
+    LEFT JOIN fences f ON f.execution_id = b.execution_id
+    WHERE COALESCE(f.fence, b.fence) <= b.fence
+    RETURNING execution_id, sequence
+  ), tips AS (
+    SELECT execution_id, MAX(sequence) AS tip FROM ins GROUP BY execution_id
+  )
+  SELECT pg_notify($2, json_build_array($3::text, execution_id, tip)::text) FROM tips`;
+
+export interface CrossBatchOptions {
+  batchSize: number;
+  /** Give every execution a `fences` row, so the per-row join actually matches. */
+  fenced: boolean;
+}
+
+/** Pre-create fence rows for the executions a fenced run will write to. */
+async function seedFences(pool: Pool, executionIds: string[]): Promise<void> {
+  if (executionIds.length === 0) return;
+  await pool.query(
+    `INSERT INTO fences (execution_id, fence)
+     SELECT unnest($1::text[]), 1
+     ON CONFLICT (execution_id) DO UPDATE SET fence = 1`,
+    [executionIds]
+  );
+}
+
+export async function crossExecutionBatch(
+  pool: Pool,
+  cfg: BenchConfig,
+  concurrency: number,
+  opts: CrossBatchOptions
+): Promise<Measurement> {
+  const { batchSize, fenced } = opts;
+  const payload = makePayload(cfg.payloadBytes);
+  const opsPerWorker = Math.max(1, Math.round(cfg.opsPerWorker / batchSize));
+  const tag = `${fenced ? "gf" : "gu"}${batchSize}-${RUN_TAG}`;
+  // Execution ids are fixed up front so fences can be seeded for exactly this set.
+  const idsFor = (worker: number): string[] =>
+    Array.from({ length: batchSize }, (_, k) => `${tag}-${worker}-${k}`);
+  if (fenced) {
+    const all: string[] = [];
+    for (let w = 0; w < concurrency; w++) all.push(...idsFor(w));
+    await seedFences(pool, all);
+  }
+  // The envelope's own token. Matches the seeded fence so rows are accepted; an unfenced
+  // run carries 0 and the COALESCE falls through to it.
+  const fenceToken = fenced ? 1 : 0;
+  return drive({
+    label: `cross-exec batch · b=${batchSize} · ${fenced ? "fenced" : "unfenced"} · c=${concurrency}`,
+    concurrency,
+    opsPerWorker,
+    warmupPerWorker: Math.max(1, Math.round(cfg.warmupPerWorker / batchSize)),
+    unitsPerOp: batchSize,
+    op: async ({ worker, n }) => {
+      const ids = idsFor(worker);
+      // One row per DISTINCT execution — the real coalescer shape: at concurrency C each
+      // of C journals contributes its single pending envelope to the flush.
+      const rows = ids.map((executionId) => ({
+        id: `${executionId}-${n}`,
+        workflow_id: "bench-flow",
+        execution_id: executionId,
+        event_type: "STEP_COMPLETED",
+        sequence: n,
+        timestamp: 1_700_000_000_000 + n,
+        payload,
+        metadata: null,
+        fence: fenceToken,
+      }));
+      await pool.query(CROSS_BATCH_SQL, [JSON.stringify(rows), NOTIFY_CHANNEL, "bench"]);
+    },
+  });
+}
+
+// ── H. Multi-node fan-out, with REAL subscriber processes ─────────────────────
+//
+// Scenario C approximates fan-out with idle LISTEN connections inside the bench's own
+// process. That captures the notification traffic but not what a node actually does with
+// it: a real subscriber holds a PostgresEventStore, and `onNotify` issues a SELECT per
+// delivered notification to fetch the row. This spawns genuine processes running the real
+// store, so the writer faces a realistic multi-node load and the per-event read
+// amplification is included rather than assumed.
+
+export interface SubscriberNodes {
+  /** Total notifications delivered across all nodes, once stopped. */
+  stop: () => Promise<{ delivered: number; nodes: number }>;
+}
+
+/**
+ * Fork `count` subscriber processes, each subscribing to every id in `executionIds`.
+ * Resolves once all of them report ready, so no node misses events the writer emits.
+ */
+export async function spawnSubscriberNodes(
+  pgUrl: string,
+  count: number,
+  executionIds: string[]
+): Promise<SubscriberNodes> {
+  if (count === 0) {
+    return { stop: async () => ({ delivered: 0, nodes: 0 }) };
+  }
+  // Sibling of this module in dist/ — the child is compiled alongside it.
+  const childPath = join(__dirname, "subscriberChild.js");
+  const children: ChildProcess[] = [];
+  await Promise.all(
+    Array.from({ length: count }, () => {
+      const child = fork(childPath, [pgUrl, executionIds.join(",")], { stdio: "inherit" });
+      children.push(child);
+      return new Promise<void>((resolve, reject) => {
+        child.once("message", (msg: { type?: string }) => {
+          if (msg?.type === "ready") resolve();
+        });
+        child.once("error", reject);
+        child.once("exit", (code) => {
+          if (code !== 0) reject(new Error(`subscriber node exited early with code ${code}`));
+        });
+      });
+    })
+  );
+
+  return {
+    stop: async () => {
+      const reports = await Promise.all(
+        children.map(
+          (child) =>
+            new Promise<number>((resolve) => {
+              child.once("message", (msg: { type?: string; delivered?: number }) => {
+                if (msg?.type === "report") resolve(msg.delivered ?? 0);
+              });
+              // Never hang the bench on a wedged child.
+              const timer = setTimeout(() => {
+                child.kill("SIGKILL");
+                resolve(0);
+              }, 10_000);
+              child.once("exit", () => clearTimeout(timer));
+              child.send({ type: "stop" });
+            })
+        )
+      );
+      return { delivered: reports.reduce((a, b) => a + b, 0), nodes: children.length };
+    },
+  };
+}
+
+/**
+ * Append to `concurrency` executions while `nodes` real subscriber processes watch them,
+ * and report the writer's throughput. Returns the ids written to so the caller can hand
+ * the same set to {@link spawnSubscriberNodes} beforehand.
+ */
+export function subscribedExecutionIds(concurrency: number, tag: string): string[] {
+  return Array.from({ length: concurrency }, (_, w) => `h-${tag}-${RUN_TAG}-${w}`);
+}
+
+export async function appendWatched(
+  store: PostgresEventStore,
+  cfg: BenchConfig,
+  concurrency: number,
+  ids: string[],
+  label: string
+): Promise<Measurement> {
+  const payload = makePayload(cfg.payloadBytes);
+  return drive({
+    label,
+    concurrency,
+    opsPerWorker: cfg.opsPerWorker,
+    warmupPerWorker: cfg.warmupPerWorker,
+    op: ({ worker, n }) => store.append(envelope(ids[worker] as string, n, payload)),
   });
 }
