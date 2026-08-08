@@ -170,16 +170,45 @@ kernel change, no event-schema change, no ADR conflict. Options, cheapest first:
 Option 1 alone should recover most of the fan-out cost. **[open]** — the specific recovery
 is unmeasured; the harness's scenario C already has the shape to measure it.
 
-### 3.2 Fix the read path — likely a bug, not a design change
+### 3.2 The read path — fixed, and what it revealed
 
-**Status: [code], unmeasured, small diff.**
+**Status: [measured]. Fixed; a larger adjacent defect is not.**
 
-Make `foldState` load the snapshot *first* and only read the tail; today it reads the whole
-log unconditionally (section 1). For long-running executions and any live-query subscriber
-this is the dominant read cost, and the fix does not change semantics — the fold input is
-identical, only the I/O to obtain it shrinks.
+`foldState` used to read the entire log before checking for a snapshot, then discard it —
+snapshots bounded fold CPU but not I/O. It now loads the snapshot first and reads a bounded
+tail plus a one-row existence anchor. Measured (`snapshotEvery: 2`, c=16, median of 3):
 
-Worth measuring before and after; the harness has no read scenario yet, which is a gap.
+| log length | p50 before | p50 after |
+|---|---:|---:|
+| 4 events | 0.72 ms | 0.71 ms |
+| 102 events | 4.76 ms | **2.93 ms** |
+
+~1.6× at p50 on a 102-event log, nothing lost on short ones.
+
+One subtlety worth knowing if you touch this: the full read was load-bearing for
+"no events ⇒ null". `LogLifecycle` deletes events and then calls
+`snapshotStore.deleteExecution?.()` — **optional** — so a retention sweep against a store
+that does not implement it leaves an orphaned snapshot. Folding that orphan would hand back
+erased state. Existence is now checked against sequence 0 (the bootstrap anchor,
+preserved by `truncatePrefix`, removed by `deleteExecution`) in one indexed row read.
+
+**The larger finding: `snapshotEvery` mostly does not fire. [measured]**
+
+Read cost still falls off ~4× across the sweep rather than staying flat. On a 102-event
+execution with `snapshotEvery: 2`, **exactly one snapshot is stored, at sequence 2** — every
+read folds a 99-event tail.
+
+`maybeSnapshot` (`WorkflowRuntime.ts:1089`) triggers only on an exact `sequence % every === 0`
+**and** when no save is in flight. The first checkpoint starts an async save; cadence points
+passing while it is pending are skipped and, because the trigger needs an exact multiple,
+never retried. A fast execution commits its entire log inside that first save.
+
+For fast-completing executions this means **snapshots do not bound replay at all** — which
+caps this read fix, and undercuts any recovery-time argument resting on snapshot cadence.
+The fix is small (trigger on `sequence - lastSnapshotSequence >= every` instead of an exact
+multiple), but it is a real behavioural change: more snapshots means more write
+amplification on a write path that is already the bottleneck (section 1). Worth doing
+deliberately, with section F re-run on both sides.
 
 ### 3.3 Batching — gated, and worth less than it looks
 
@@ -267,7 +296,7 @@ See `tools/bench-throughput/README.md`. Absolute numbers are host-relative — c
 relative movement between scenarios on one host, and re-capture a baseline on the hardware
 you intend to quote.
 
-Known gaps in the harness, if you extend it: no read-path scenario (3.2 is unmeasured), no
-cross-execution coalescing scenario with per-row fencing (3.3), and no multi-node scenario
-(3.1's fan-out is measured with idle listeners on one host, not real subscribers on
-separate nodes).
+Known gaps in the harness, if you extend it: no cross-execution coalescing scenario with
+per-row fencing (3.3), and no multi-node scenario (3.1's fan-out is measured with idle
+listeners on one host, not real subscribers on separate nodes). Section F covers the read
+path; note its ops/sec column carries tail-outlier noise on long logs, so compare p50.

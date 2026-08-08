@@ -90,6 +90,16 @@ A post-run assertion checks the events actually written against the assumed
 store, no journal, no fence (ADR 0066 D2/R1), asserted at 0 events written. The gap between
 D and E is what durability costs.
 
+**F. Read path** — `runtime.loadState` over seeded, snapshotted executions, sweeping log
+length with `snapshotEvery` fixed. Bounded reads ⇒ roughly flat throughput as the log grows
+behind the snapshot; falling throughput means the whole log is being read. Executions are
+seeded with real runs, so snapshot placement is whatever the runtime's own cadence produces
+— which is itself a finding (see `docs/benchmarks.md`). Each worker reads its own execution
+so the measurement is not just the page cache.
+
+**Compare p50, not ops/sec, on the long-log rows.** Throughput there carries tail-outlier
+noise across runs while p50 is stable to within a few percent.
+
 ## Reading the results
 
 Absolute numbers are host-relative — a laptop with a loopback Postgres has no network

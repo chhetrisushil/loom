@@ -260,14 +260,19 @@ export interface RuntimeBundle {
   close: () => Promise<void>;
 }
 
-export function makeRuntime(pool: Pool): RuntimeBundle {
+export function makeRuntime(pool: Pool, snapshotEvery?: number): RuntimeBundle {
   const eventStore = new PostgresEventStore(pool);
   const snapshotStore = new PostgresSnapshotStore(pool);
   const effectRuntime = new EffectRuntime();
   // No `mode` declared, so the same tool serves both the durable seam (scenario D) and
   // the ambient/transient seam (scenario E) — the comparison is like-for-like.
   effectRuntime.register("noop-tool", new ToolEffect(async () => ({ ok: true })));
-  const runtime = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime });
+  const runtime = new WorkflowRuntime({
+    eventStore,
+    snapshotStore,
+    effectRuntime,
+    ...(snapshotEvery !== undefined && { snapshotEvery }),
+  });
   return {
     runtime,
     eventStore,
@@ -316,6 +321,63 @@ export async function transientInvocations(
     warmupPerWorker: Math.max(1, Math.round(cfg.executionsPerWorker / 10)),
     op: async ({ global }) => {
       await bundle.runtime.invokeTransient("noop-tool", { i: global });
+    },
+  });
+}
+
+// ── F. Read path — loadState over snapshotted executions ──────────────────────
+//
+// Whether snapshots bound the READ, not just the fold. `foldState` folds
+// snapshot + bounded tail; the question this answers is whether cost stays flat as the
+// log grows behind that snapshot. Sweeping step count with `snapshotEvery` fixed is the
+// experiment: if reads are bounded, throughput is roughly flat across log lengths; if the
+// whole log is being read, it falls off linearly.
+//
+// Seeded with real runs (not synthetic rows) so snapshot placement is whatever the
+// runtime's own cadence produces.
+
+/** Seed `count` completed executions of `stepCount` steps; returns their ids. */
+async function seedExecutions(
+  bundle: RuntimeBundle,
+  stepCount: number,
+  count: number
+): Promise<string[]> {
+  const flow = benchFlow(stepCount);
+  bundle.runtime.registerFlow(flow.definition, flow.runner as FlowRunner<unknown, unknown>);
+  const ids: string[] = new Array(count);
+  // Bounded fan-out so seeding does not itself saturate the pool.
+  const LANES = 16;
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(LANES, count) }, async () => {
+      for (;;) {
+        const i = next++;
+        if (i >= count) return;
+        const handle = await bundle.runtime.start(flow, { i });
+        await handle.waitForCompletion();
+        ids[i] = handle.executionId;
+      }
+    })
+  );
+  return ids;
+}
+
+export async function readPath(
+  bundle: RuntimeBundle,
+  cfg: BenchConfig,
+  stepCount: number
+): Promise<Measurement> {
+  const eventsPerExecution = 2 * stepCount + 2;
+  // One execution per worker so concurrent reads do not all hit the same row set (which
+  // would measure the page cache rather than the read path).
+  const ids = await seedExecutions(bundle, stepCount, cfg.executionConcurrency);
+  return drive({
+    label: `runtime.loadState · ${stepCount} step(s) = ${eventsPerExecution} events · c=${cfg.executionConcurrency}`,
+    concurrency: cfg.executionConcurrency,
+    opsPerWorker: cfg.executionsPerWorker,
+    warmupPerWorker: Math.max(1, Math.round(cfg.executionsPerWorker / 10)),
+    op: async ({ worker }) => {
+      await bundle.runtime.loadState(ids[worker] as string);
     },
   });
 }

@@ -8,6 +8,7 @@ import type {
   TransientInvokeOptions,
 } from "@loom/effect-runtime";
 import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
+import { readRangeOf } from "@loom/event-runtime";
 // Import the pure sequence helper from the browser-safe subpath, not the barrel:
 // the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
 // would otherwise leak into every browser app that builds on the WorkflowRuntime.
@@ -839,16 +840,43 @@ export class WorkflowRuntime {
     return state;
   }
 
-  /** The un-authorized fold used by the kernel internally (cancel, timers, recovery). */
+  /**
+   * The un-authorized fold used by the kernel internally (cancel, timers, recovery).
+   *
+   * Snapshot FIRST, then a bounded tail — never the whole log. Reading the full log up
+   * front (as this once did) meant snapshots bounded the fold's CPU but not its I/O, so
+   * every `loadState` on a long execution paid O(log). That compounds badly: `liveQuery`
+   * re-folds on every event, making a live subscriber O(N) rows per event and O(N²) over
+   * an execution's lifetime.
+   *
+   * The full read was load-bearing for one thing, though — "no events ⇒ null". Dropping
+   * it naively would resurrect swept executions: `LogLifecycle` deletes events and then
+   * calls `snapshotStore.deleteExecution?.()`, which is OPTIONAL, so a retention sweep
+   * against a snapshot store that does not implement it leaves an ORPHANED snapshot
+   * behind. Folding that orphan would hand back state the sweep was supposed to erase.
+   *
+   * So existence is still checked — against sequence 0 rather than the whole log. That
+   * is the `EXECUTION_STARTED` bootstrap, which `truncatePrefix` explicitly preserves as
+   * the execution's metadata anchor and `deleteExecution` removes with everything else;
+   * "does sequence 0 exist" is therefore exactly "does this execution exist", in one
+   * indexed point-read. It doubles as the identity anchor the un-snapshotted path needs.
+   */
   private async foldState(executionId: string): Promise<ExecutionState | null> {
+    const snapshot = await this.snapshotStore.loadLatest(executionId);
+    if (snapshot !== null) {
+      // Confirm the execution still exists before trusting the snapshot (orphan case
+      // above). One row, not the log.
+      const anchor = await readRangeOf(this.eventStore, executionId, 0, 0);
+      if (anchor.length === 0) return null;
+      const tail = await this.eventStore.readFrom(executionId, snapshot.sequence + 1);
+      return new ReplayVM(tail, snapshot.state).getState();
+    }
+    // No snapshot: the log IS the bounded read (it is shorter than `snapshotEvery`, or
+    // snapshots are off), and it answers existence itself — no extra round-trip. Same
+    // query count as before on this path.
     const allEvents = await this.eventStore.read(executionId);
     if (allEvents.length === 0) {
       return null;
-    }
-    const snapshot = await this.snapshotStore.loadLatest(executionId);
-    if (snapshot) {
-      const tail = await this.eventStore.readFrom(executionId, snapshot.sequence + 1);
-      return new ReplayVM(tail, snapshot.state).getState();
     }
     const workflowId = allEvents[0]!.workflowId;
     const flow = this.flows.get(workflowId);
