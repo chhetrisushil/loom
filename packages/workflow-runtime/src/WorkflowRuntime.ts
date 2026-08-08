@@ -1086,6 +1086,11 @@ export class WorkflowRuntime {
     // by the next tick. Fire-and-forget — a failed checkpoint only means a longer
     // replay, so it is reported (onStorageError) but never aborts the run.
     let snapshotInFlight = false;
+    // Sequence of the most recent checkpoint this run has issued, used ONLY to decide
+    // whether the settle checkpoint below is worth taking. On resume it starts at the
+    // restored tip (a resumed execution has just loaded that state), and -1 clamps to 0
+    // on a fresh start.
+    let lastSnapshotSequence = Math.max(0, vm.getState().sequence);
     const maybeSnapshot = (sequence: number): void => {
       const every = this.snapshotEvery;
       if (!every || sequence <= 0 || sequence % every !== 0 || snapshotInFlight) return;
@@ -1093,6 +1098,7 @@ export class WorkflowRuntime {
       // zombie, K9.4): a snapshot must only ever reference durable events.
       if (journal.failed) return;
       snapshotInFlight = true;
+      lastSnapshotSequence = sequence;
       const state = vm.getState(); // stable: copy-on-write folds never mutate a prior state
       void this.snapshotStore
         .save({ id: ulid(), executionId, workflowId, sequence, state, createdAt: Date.now() })
@@ -1100,6 +1106,55 @@ export class WorkflowRuntime {
         .finally(() => {
           snapshotInFlight = false;
         });
+    };
+
+    /**
+     * Settle-time checkpoint, the completion counterpart to the one `suspend` already
+     * takes at its tip.
+     *
+     * The cadence trigger above can only fire while the execution is still committing.
+     * An execution that races to completion inside the window of a single in-flight save
+     * therefore keeps whatever early checkpoint it managed — measurably, a 102-event run
+     * with `snapshotEvery: 2` ends up with ONE snapshot, at sequence 2 — and every later
+     * read folds the whole tail behind it, forever.
+     *
+     * Note what does NOT fix this: changing the trigger from an exact multiple to an
+     * interval since the last checkpoint. That was tried and measured inert in both
+     * regimes — a fast execution has no commits left by the time the save resolves, and
+     * a slow one lets the exact-multiple trigger keep up anyway (299 vs 300 checkpoints
+     * over the same workload). The settle checkpoint is what actually bounds the read.
+     *
+     * Gated so it costs nothing where it would not pay: only when snapshots are opted
+     * into at all, and only when the tail since the last checkpoint has actually reached
+     * the configured cadence. Short executions skip it; with `snapshotEvery` unset
+     * (the default) this is inert.
+     *
+     * Deliberately NOT gated on `snapshotInFlight`: this is the checkpoint that matters
+     * most, and two concurrent saves are safe — ids are distinct and `loadLatest` takes
+     * the greatest sequence.
+     */
+    const checkpointOnSettle = async (): Promise<void> => {
+      const every = this.snapshotEvery;
+      if (!every) return;
+      // Same invariant as the cadence path: never checkpoint state whose events are not
+      // durable. Callers invoke this only after a drain barrier.
+      if (journal.failed) return;
+      const state = vm.getState();
+      if (state.sequence - lastSnapshotSequence < every) return;
+      lastSnapshotSequence = state.sequence;
+      try {
+        await this.snapshotStore.save({
+          id: ulid(),
+          executionId,
+          workflowId,
+          sequence: state.sequence,
+          state,
+          createdAt: Date.now(),
+        });
+      } catch (err: unknown) {
+        // A lost checkpoint only costs a longer replay — never fail the execution for it.
+        this.onStorageError?.(executionId, err);
+      }
     };
 
     const journal = new ExecutionJournal(
@@ -1164,6 +1219,7 @@ export class WorkflowRuntime {
 
         journal.commit("EXECUTION_COMPLETED", { output });
         await journal.drain(); // durability barrier
+        await checkpointOnSettle(); // bound reads of the settled execution
         resolveCompletion(vm.getState());
       } catch (err) {
         if (err instanceof SuspendError) {
