@@ -152,6 +152,9 @@
       "path": "tools/dst"
     },
     {
+      "path": "tools/bench-throughput"
+    },
+    {
       "path": "plugins/audit-chain"
     },
     {

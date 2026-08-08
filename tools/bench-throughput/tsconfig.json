@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.bench.ts"],
+  "references": [
+    { "path": "../../packages/core" },
+    { "path": "../../packages/effect-runtime" },
+    { "path": "../../packages/event-runtime" },
+    { "path": "../../packages/snapshot-runtime" },
+    { "path": "../../packages/workflow-runtime" },
+    { "path": "../../plugins/postgres" }
+  ]
+}
