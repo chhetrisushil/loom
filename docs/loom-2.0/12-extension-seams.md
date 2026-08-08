@@ -21,9 +21,12 @@ import { MyEventStore } from "./MyEventStore";
 runEventStoreConformance(() => new MyEventStore(/* … */), "MyEventStore");
 ```
 
-The kit exercises the **required** contract and skips **optional** methods a backend omits. The
-in-memory and SQLite reference impls both run these kits in
-`tools/testing/src/conformance.test.ts` — that is what pins the contracts.
+The kit exercises the **required** contract and skips **optional** methods a backend omits. Each
+reference impl runs the kits against itself — in-memory in
+[`packages/conformance/src/index.test.ts`](../../packages/conformance/src/index.test.ts) (which
+also pins the per-SPI version constants) and SQLite in
+[`plugins/sqlite/src/conformance.test.ts`](../../plugins/sqlite/src/conformance.test.ts) — and
+that is what pins the contracts.
 
 ## Storage seams
 

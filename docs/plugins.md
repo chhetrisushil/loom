@@ -48,14 +48,25 @@ privilege (a 3P plugin wires through the identical seams, it just isn't ours to 
 keep a bare `import "@loom/sdk"` lean and browser-safe, **native/heavy** plugins are re-exported
 via a **subpath**, not the main barrel:
 
-- Light 1P plugins (protocols, renderers) → `import { … } from "@loom/sdk"`.
-- Native/heavy 1P plugins → `import { SqliteEventStore } from "@loom/sdk/sqlite"`,
-  `import { postgresStorage } from "@loom/sdk/postgres"`.
+- Light 1P plugins (protocols, renderers) → `import { … } from "@loom/sdk"` — today
+  `@loom/plugin-a2a`, `@loom/plugin-mcp`, `@loom/plugin-renderer-terminal`.
+- Native/heavy 1P plugins → their own subpath: `import { SqliteEventStore } from "@loom/sdk/sqlite"`,
+  `import { postgresStorage } from "@loom/sdk/postgres"`,
+  `import { sandboxEval$ } from "@loom/sdk/sandbox"`.
+
+Plugins outside the barrel (renderers with a framework peer dependency, the compute adapters, the
+UI-protocol plugins) are imported by their own package name — being outside the barrel is a
+packaging call about weight and peer deps, not a tier.
 
 3P plugins are never in the barrel; you import them by their own name. Both remain explicit
 imports, so the 1P/3P distinction stays purely organisational.
 
 ### Current first-party plugins
+
+Eighteen, grouped by the seam each one fills. Storage and data first, then protocols, surfaces,
+and compute.
+
+**Storage & data**
 
 - `@loom/plugin-sqlite` — embedded SQLite `Event`/`Snapshot`/`Branch`/`Timer`/`DurableState`/
   `ReadModel`/`Content` stores + the `sqliteStorage()` preset.
@@ -71,10 +82,21 @@ imports, so the 1P/3P distinction stays purely organisational.
   extractors index domain events into a persisted, queryable store (kind + field-equality,
   keyset-paged); convergent ingestion from the live `onEvent` tail + watermark-incremental
   catch-up; a cache of the log, never an authority ([ADR 0058](adr/0058-read-model-plugin.md)).
+- `@loom/plugin-audit-chain` — tamper-evident hash-chained `EventStore` wrapper.
+
+**Composition patterns**
+
 - `@loom/plugin-sentinel` — `sentinelPreset()`: the perpetual-agent pattern (schedule + carry
   state + claim-check + K10.6 pin policy) as one composition-time declaration, plus the
   `loom new sentinel` scaffold.
-- `@loom/plugin-audit-chain` — tamper-evident hash-chained `EventStore` wrapper.
+- `@loom/plugin-sandbox` — hardened QuickJS-in-WASM eval of content-addressed, LLM-authored
+  reshaping scripts: in-engine memory/CPU/wall-clock limits, no ambient I/O by construction,
+  output shape-hash validation; `scriptMissing`/`limitExceeded`/`shapeMismatch` are typed
+  channels so a planner re-plans and replay never re-burns CPU
+  ([ADR 0064](adr/0064-sandbox-eval-plugin.md)).
+
+**Protocols**
+
 - `@loom/plugin-mcp` — MCP **client + server**. Client: dynamic dispatch — `mcpInvoke$` mints
   steps whose tool name/args/schema-pin are runtime data through ONE registered `mcp.invoke`
   effect; pinned `jsonSchemaHash` verified per call → typed `schemaDrift`/`toolNotFound`
@@ -84,9 +106,13 @@ imports, so the 1P/3P distinction stays purely organisational.
   and non-text content blocks, and an in-band `isError` throws rather than returning a failure
   as a value. Server: `createMcpServer` exposes Loom tools/resources to any MCP host (the
   `createA2AServer` analogue) with audience-scoped listing/dispatch, and `servedEffect` routes a
-  call by its declared seam. Also carries MCP Apps (`io.modelcontextprotocol/ui`) declarations
-  and `ui://` resources with content-hash provenance — **carry, never render**
-  ([ADR 0072](adr/0072-mcp-apps-ui-extension-placement.md)).
+  call by its declared seam. The transport answers OAuth-discovery probes under `/.well-known/`
+  with 404 above the authorize gate, and negotiates the protocol version on `initialize` rather
+  than asserting it — the two things a hosted client settles before it will talk to a remote
+  server at all. Also carries MCP Apps (`io.modelcontextprotocol/ui`) declarations and `ui://`
+  resources with content-hash provenance — **carry, never render** — writing both the nested and
+  the deprecated flat `_meta` UI form on egress and accepting either on ingress, because the
+  reference SDK emits both ([ADR 0072](adr/0072-mcp-apps-ui-extension-placement.md)).
 - `@loom/plugin-mcp-app` — MCP Apps (SEP-1865) **egress**: projects a Loom agent surface onto
   the extension as ONE static, content-pinned surface-host template whose payload is the
   existing A2UI catalog model — so MCP Apps is a second *transport binding* for a surface
@@ -97,11 +123,37 @@ imports, so the 1P/3P distinction stays purely organisational.
   suspension. Egress redaction is required-by-configuration, never defaulted. The **host** role
   (iframe, CSP, postMessage) is deliberately out of scope
   ([ADR 0072](adr/0072-mcp-apps-ui-extension-placement.md)).
-- `@loom/plugin-sandbox` — hardened QuickJS-in-WASM eval of content-addressed, LLM-authored
-  reshaping scripts: in-engine memory/CPU/wall-clock limits, no ambient I/O by construction,
-  output shape-hash validation; `scriptMissing`/`limitExceeded`/`shapeMismatch` are typed
-  channels so a planner re-plans and replay never re-burns CPU
-  ([ADR 0064](adr/0064-sandbox-eval-plugin.md)).
+- `@loom/plugin-a2a` — Agent-to-Agent protocol, **client + server**. `A2APeerClient` discovers a
+  remote agent's card and registers it as an ordinary Loom tool; `createA2AServer` publishes your
+  flows as an A2A agent (`/.well-known/agent.json`, `/tasks/send`) with `LoomAgentExecutor`
+  mapping execution status onto A2A task state.
+
+**Surfaces**
+
+- `@loom/plugin-a2ui` — projects a Loom agent surface onto the Google **A2UI** wire protocol v1.0
+  (`createSurface`/`updateDataModel`/`deleteSurface`), so any A2UI-compliant client renders a
+  Loom-driven UI. Egress + inbound actions + `callFunction` bidirectional RPC — the client's
+  *result* re-enters as a recorded fact under a deterministic `callId`, which is what keeps a
+  client-invoked function inside Loom's replay grain
+  ([ADRs 0069](adr/0069-a2ui-egress-adapter.md)–[0070](adr/0070-a2ui-callfunction-bidirectional-rpc.md)).
+  Continuous two-way binding sync is out of scope.
+- `@loom/plugin-renderer-react` — React blueprint renderer (`defaultRegistry`); React is a peer
+  dependency, so it stays out of the `@loom/sdk` barrel.
+- `@loom/plugin-renderer-terminal` — string/terminal blueprint renderer
+  (`renderBlueprintToString`), the second surface that proves blueprint delivery is
+  renderer-agnostic rather than React-shaped.
+
+**Compute**
+
+- `@loom/plugin-worker-remote` — `RemoteWorkerRuntime`: dispatches an `ExecutionPackage` to a
+  stateless worker's `POST /execute` and collects the `ExecutionResult`.
+- `@loom/plugin-worker-server` — `createWorkerServer`: the other half, and the container
+  entrypoint for remote/Cloud Run execution — runs one `ExecutionPackage` on an injected
+  `WorkerRuntime`.
+- `@loom/plugin-cloudrun` — Cloud Run adapter: `CloudRunWorkerRuntime` maps `DispatchMetadata`
+  onto a sizing config and resolves a service endpoint, with cloud specifics behind the
+  `CloudRunPlatform` SPI (`StaticCloudRunPlatform` runs the same path offline)
+  ([ADRs 0001–0005](adr/)).
 
 ## Scaffolding a plugin
 

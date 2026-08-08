@@ -72,7 +72,7 @@ complexity improvement with identical outputs — no behavior change, so they on
 |------|--------|-------|
 | `nextOccurrence` cron matching (`workflow-runtime/src/cron.ts`) | minute-by-minute scan | **field-jumping** — advance directly to the next matching field |
 | Reasoning model routing (`reasoning/src/router.ts`) | linear scan of routes per call | **prebuilt index** — O(1) tag lookup |
-| Crypto field walks (`store-crypto/src/crypto.ts`) | repeated full-object traversal | single-pass walk over marked paths |
+| Crypto field walks (`plugins/crypto/src/crypto.ts`) | repeated full-object traversal | single-pass walk over marked paths |
 | `deploy-sim` census | re-derived per flow | hoisted/linearized |
 
 These sit off the render fast-path and within the >~2% regression gate above.

@@ -64,7 +64,7 @@ export function parseRedact(flag: string | undefined): string[] {
 const USAGE = `loom — project-local commands for a Loom app
 
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
-  loom new   <flow|agent|tool|skill|schedule|memory|projection> <name> [--dir app] scaffold a file
+  loom new   <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app] scaffold a file
   loom plugin new <seam> <name> [--first-party] [--dir .]  scaffold a plugin package
   loom plugin check [--dir .] [--publish]         validate a plugin (--publish adds npm-readiness)
   loom plugin try --module <path> [--preset <name>] [--options <json>]  run a store plugin end-to-end

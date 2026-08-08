@@ -144,7 +144,7 @@ Loom 2.0 generalizes the durable workflow runtime into an *execution kernel for 
 | *Memory* (~@loom/memory~) | First-class tiers (working / episodic / semantic / procedural) with eviction/summarization/promotion + replay-safe *logged recall* |
 | *Compute placement* (~@loom/dispatcher~) | ~PlacementDispatcher~ routes each execution to a named target (local / remote-HTTP / Cloud Run) by policy |
 | *Scheduler* (~@loom/scheduler~ in the effect path) | Bounded concurrency + priority admission control; zero-overhead when unconfigured |
-| *Scale-out storage* (~@loom/store-postgres~) | Postgres event/snapshot/branch stores + cross-node live subscribe (~LISTEN/NOTIFY~) |
+| *Scale-out storage* (~@loom/plugin-postgres~) | Postgres event/snapshot/branch stores + cross-node live subscribe (~LISTEN/NOTIFY~) |
 | *Intelligence* (~@loom/analytics~) | Read-only analytics over the log + an opt-in, *logged* self-optimizing router + an advisory runtime-intelligence report |
 
 *The kernel-hardening rings* — what makes it genuinely a kernel:
@@ -343,7 +343,7 @@ Start at [[file:docs/README.md][docs/README.md]] (the index), then:
 - [[file:docs/plugins.md][Plugins]] — the 1P/3P plugin model, authoring guide, and the current first-party inventory
 - [[file:docs/spec/loom-kernel-specification.md][Kernel specification]] — the normative spec (syscall ABI, event model incl. typed failure channels, SPI contracts) + the [[file:docs/spec/compatibility-matrix.md][compatibility matrix]]
 - [[file:docs/api-reference.org][API Reference]] — exhaustive per-package API, including [[file:docs/api-reference.org][Kernel hardening & security]]
-- [[file:docs/adr/][ADRs]] — the decision history (0001–0065; [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][0016]] Loom 2.0 · [[file:docs/adr/0043-plugin-packaging-and-1p-3p-separation.md][0043]] plugin packaging · [[file:docs/adr/0051-perpetual-agents-placement-schedule-remodel.md][0051–0057]] perpetual agents · [[file:docs/adr/0060-typed-failure-channels.md][0060–0065]] the GenUI dynamic-execution series)
+- [[file:docs/adr/][ADRs]] — the decision history (0001–0073; [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][0016]] Loom 2.0 · [[file:docs/adr/0043-plugin-packaging-and-1p-3p-separation.md][0043]] plugin packaging · [[file:docs/adr/0051-perpetual-agents-placement-schedule-remodel.md][0051–0057]] perpetual agents · [[file:docs/adr/0060-typed-failure-channels.md][0060–0065]] the GenUI dynamic-execution series · [[file:docs/adr/0069-a2ui-egress-adapter.md][0069–0070]] A2UI egress + ~callFunction~ · [[file:docs/adr/0071-read-only-replay-inspector.md][0071]] the replay inspector · [[file:docs/adr/0072-mcp-apps-ui-extension-placement.md][0072–0073]] MCP Apps and the effect-mode boundary)
 - [[file:docs/presentation/loom-deck.md][Presentation]] — the flagship deck, plus the [[file:docs/presentation/loom-2.0-deck.md][Loom 2.0 deck]] (Marp)
 
 -----

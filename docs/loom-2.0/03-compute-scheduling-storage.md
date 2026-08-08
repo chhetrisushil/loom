@@ -273,7 +273,7 @@ The in-memory and SQLite stores are single-box. M3.5 adds a **Postgres** backend
 
 ### 4.1 The schema
 
-One idempotent migration bootstraps all four tables (any of the three stores can run it, so they compose on one database). `JSONB` for `payload`/`metadata`/`state`; `BIGINT` for `sequence`/timestamps (`packages/store-postgres/src/schema.ts:8-51`).
+One idempotent migration bootstraps all four tables (any of the three stores can run it, so they compose on one database). `JSONB` for `payload`/`metadata`/`state`; `BIGINT` for `sequence`/timestamps (`plugins/postgres/src/schema.ts:8-51`).
 
 ```mermaid
 erDiagram
@@ -314,11 +314,11 @@ erDiagram
   refs   ||--o{ lineage   : "fork DAG over executions"
 ```
 
-`events` carries a **`UNIQUE (execution_id, sequence)`** constraint and an index on `(execution_id, sequence ASC)`; `snapshots` indexes `(execution_id, sequence DESC)` for cheap latest-lookup. `refs` are the movable git-style branch pointers and `lineage` the immutable fork DAG edges (§ architecture 4.5, D10) — both backing the `BranchRegistry` upserts/pointer moves (`packages/store-postgres/src/PostgresBranchRegistry.ts`).
+`events` carries a **`UNIQUE (execution_id, sequence)`** constraint and an index on `(execution_id, sequence ASC)`; `snapshots` indexes `(execution_id, sequence DESC)` for cheap latest-lookup. `refs` are the movable git-style branch pointers and `lineage` the immutable fork DAG edges (§ architecture 4.5, D10) — both backing the `BranchRegistry` upserts/pointer moves (`plugins/postgres/src/PostgresBranchRegistry.ts`).
 
 ### 4.2 Single-writer-per-execution (D3) is the lock-free shard model
 
-The Postgres store preserves the D3 invariant that makes this scale cleanly: **sequences are still allocated by the in-process `ExecutionJournal`, not the database**. `append` never needs a read-then-write round-trip — the `EventStore` interface deliberately has *no* `nextSequence` (`packages/event-runtime/src/types.ts:9-14`) — so there is no allocation contention, and the `UNIQUE(execution_id, sequence)` constraint is a backstop that catches any accidental double-writer rather than a coordination mechanism (`packages/store-postgres/src/PostgresEventStore.ts:31-43`). Each execution is effectively its **own shard with one writer**; different executions never contend. This is precisely why a network store plugs in "cleanly" (architecture D3) — the design that made SQLite fast is the same design that makes Postgres horizontally scalable.
+The Postgres store preserves the D3 invariant that makes this scale cleanly: **sequences are still allocated by the in-process `ExecutionJournal`, not the database**. `append` never needs a read-then-write round-trip — the `EventStore` interface deliberately has *no* `nextSequence` (`packages/event-runtime/src/types.ts:9-14`) — so there is no allocation contention, and the `UNIQUE(execution_id, sequence)` constraint is a backstop that catches any accidental double-writer rather than a coordination mechanism (`plugins/postgres/src/PostgresEventStore.ts:31-43`). Each execution is effectively its **own shard with one writer**; different executions never contend. This is precisely why a network store plugs in "cleanly" (architecture D3) — the design that made SQLite fast is the same design that makes Postgres horizontally scalable.
 
 ### 4.3 Encoding: BIGINT → Number, JSONB payloads
 
@@ -326,13 +326,13 @@ node-postgres returns `int8` (BIGINT) as a **string**, so every row mapper coerc
 
 ### 4.4 `copyPrefix` runs entirely server-side
 
-`fork()` copies a log prefix into a new execution id. On Postgres this is a single `INSERT ... SELECT` that copies the prefix **entirely inside the database** — the `payload` JSONB stays server-side (no JS round-trip), `id`/`execution_id` are re-stamped, and provenance `metadata` is merged with the JSONB concat operator `||` (right-hand wins, like SQLite's `json_patch`). It is `O(P)` rows with *zero* JS (de)serialization (`packages/store-postgres/src/PostgresEventStore.ts:108-126`). `copyPrefix` is an *optional* `EventStore` method — a store that omits it falls back to a per-event `append` loop, so this is purely a performance fast-path (`packages/event-runtime/src/types.ts:20-32`).
+`fork()` copies a log prefix into a new execution id. On Postgres this is a single `INSERT ... SELECT` that copies the prefix **entirely inside the database** — the `payload` JSONB stays server-side (no JS round-trip), `id`/`execution_id` are re-stamped, and provenance `metadata` is merged with the JSONB concat operator `||` (right-hand wins, like SQLite's `json_patch`). It is `O(P)` rows with *zero* JS (de)serialization (`plugins/postgres/src/PostgresEventStore.ts:108-126`). `copyPrefix` is an *optional* `EventStore` method — a store that omits it falls back to a per-event `append` loop, so this is purely a performance fast-path (`packages/event-runtime/src/types.ts:20-32`).
 
 ### 4.5 Cross-node live subscribe via LISTEN/NOTIFY
 
-The in-memory and SQLite stores deliver `subscribe` synchronously in-process. Postgres must also deliver **across processes**, because two workers on two nodes may share one execution's log (e.g. a live projection on node B watching an execution driven on node A). It does this with Postgres `LISTEN`/`NOTIFY` on the `loom_events` channel (`packages/store-postgres/src/schema.ts:53-54`), plus a **`senderId` dedup** so a store never double-delivers events it published itself.
+The in-memory and SQLite stores deliver `subscribe` synchronously in-process. Postgres must also deliver **across processes**, because two workers on two nodes may share one execution's log (e.g. a live projection on node B watching an execution driven on node A). It does this with Postgres `LISTEN`/`NOTIFY` on the `loom_events` channel (`plugins/postgres/src/schema.ts:53-54`), plus a **`senderId` dedup** so a store never double-delivers events it published itself.
 
-Each store instance has a process-unique `senderId` (pid + counter, avoiding `Math.random` to keep library code deterministic — `packages/store-postgres/src/pool.ts:14-20`). On `append` it (a) fires same-process subscribers synchronously via `notifyLocal`, then (b) `pg_notify`s a JSON tag `[senderId, executionId, sequence]`. Every store lazily opens a *dedicated* `LISTEN` connection (a pooled client can't hold `LISTEN`) and, on each notification, **skips its own** `senderId` (already delivered locally), ignores executions it has no subscribers for, then fetches the one row by `(execution_id, sequence)` and fans it out locally (`PostgresEventStore.ts:62-88`, `154-204`).
+Each store instance has a process-unique `senderId` (pid + counter, avoiding `Math.random` to keep library code deterministic — `plugins/postgres/src/pool.ts:14-20`). On `append` it (a) fires same-process subscribers synchronously via `notifyLocal`, then (b) `pg_notify`s a JSON tag `[senderId, executionId, sequence]`. Every store lazily opens a *dedicated* `LISTEN` connection (a pooled client can't hold `LISTEN`) and, on each notification, **skips its own** `senderId` (already delivered locally), ignores executions it has no subscribers for, then fetches the one row by `(execution_id, sequence)` and fans it out locally (`PostgresEventStore.ts:62-88`, `154-204`).
 
 ```mermaid
 sequenceDiagram
@@ -356,7 +356,7 @@ sequenceDiagram
   SB->>Sub: handler(rowToEnvelope(row))
 ```
 
-The dedup is what keeps delivery **exactly-once per subscriber**: the appending node delivers locally *and* broadcasts, but its own listener recognises its `senderId` and drops the echo, so only *other* nodes act on the NOTIFY. `close()` tears down both the `LISTEN` client and the owned pool (`PostgresEventStore.ts:146-152`). The three stores can share one `Pool` (pass a built `Pool` as config) so a single connection pool serves events, snapshots, and refs (`packages/store-postgres/src/pool.ts:5-11`).
+The dedup is what keeps delivery **exactly-once per subscriber**: the appending node delivers locally *and* broadcasts, but its own listener recognises its `senderId` and drops the echo, so only *other* nodes act on the NOTIFY. `close()` tears down both the `LISTEN` client and the owned pool (`PostgresEventStore.ts:146-152`). The three stores can share one `Pool` (pass a built `Pool` as config) so a single connection pool serves events, snapshots, and refs (`plugins/postgres/src/pool.ts:5-11`).
 
 ---
 
