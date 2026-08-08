@@ -79,9 +79,9 @@ export async function rawAppend(
   });
 }
 
-// ── B. Batched append — the `appendMany` counterfactual ────────────────────────
+// ── B. Batched append — the `appendBatch` counterfactual ────────────────────────
 //
-// What an OPTIONAL `appendMany(envelopes[])` on the EventStore SPI would buy. Kept
+// What an OPTIONAL `appendBatch(envelopes[])` on the EventStore SPI would buy. Kept
 // apples-to-apples with the shipped statement: same fence guard (one check per batch —
 // every envelope in a journal flush belongs to ONE execution, so a single guard is
 // correct) and one pg_notify for the batch tip instead of one per event. `jsonb_to_recordset`
@@ -116,7 +116,7 @@ export async function batchedAppend(
   // of EVENTS — otherwise a bigger batch would just be doing more work.
   const opsPerWorker = Math.max(1, Math.round(cfg.opsPerWorker / batchSize));
   return drive({
-    label: `appendMany (counterfactual) · b=${batchSize} · c=${concurrency}`,
+    label: `appendBatch (counterfactual) · b=${batchSize} · c=${concurrency}`,
     concurrency,
     opsPerWorker,
     warmupPerWorker: Math.max(1, Math.round(cfg.warmupPerWorker / batchSize)),
@@ -301,7 +301,7 @@ export async function durableExecutions(
 
 // ── E. Transient invocation — the zero-write ceiling ──────────────────────────
 //
-// `invokeTransient` holds no event store, no journal, no fence (ADR 0065 R1): zero
+// `invokeTransient` holds no event store, no journal, no fence (ADR 0066 D2/R1): zero
 // envelopes by construction. Same runtime, same registered tool, same concurrency —
 // so the gap between this and scenario D is exactly what durability costs.
 

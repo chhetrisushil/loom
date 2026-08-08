@@ -48,7 +48,7 @@ database, never at anything you care about.
 | `LOOM_BENCH_OPS` | `200` | measured ops per worker |
 | `LOOM_BENCH_WARMUP` | `20` | unmeasured ops per worker before each measured phase |
 | `LOOM_BENCH_PAYLOAD_BYTES` | `256` | approximate event payload size |
-| `LOOM_BENCH_BATCHES` | `1,4,16,64` | batch sizes for the `appendMany` counterfactual |
+| `LOOM_BENCH_BATCHES` | `1,4,16,64` | batch sizes for the `appendBatch` counterfactual |
 | `LOOM_BENCH_LISTENERS` | `16` | idle `LISTEN` connections in the fan-out variant |
 | `LOOM_BENCH_EXEC_CONCURRENCY` | `64` | concurrency for the end-to-end scenarios |
 | `LOOM_BENCH_EXECS` | `40` | measured executions per worker |
@@ -61,11 +61,19 @@ shape: many concurrent executions, one serial writer each (the `ExecutionJournal
 invariant). A shared work queue would instead fan concurrent appends at a single
 execution, a contention profile the kernel never produces.
 
-**B. Batched append** — what an optional `appendMany(envelopes[])` on the `EventStore`
-SPI would buy. **Not a shipped path.** Kept honest against A: same fence guard (one check
-per batch is correct — every envelope in a journal flush belongs to one execution) and
-one `pg_notify` for the batch tip. Ops are scaled down by batch size so every level
-writes the same number of events.
+**B. Batched append** — what an optional `appendBatch(envelopes[])` on the `EventStore`
+SPI would buy. **Not a shipped path**, and not an open question: ADR 0065 froze this
+design and deferred it behind a three-part evidence gate. Kept honest against A: same
+fence guard (one check per batch is correct — every envelope in a journal flush belongs
+to one execution) and one `pg_notify` for the batch tip. Ops are scaled down by batch
+size so every level writes the same number of events.
+
+**This scenario measures the SQL shape, not an achievable journal batch.** `ExecutionJournal`
+is per-execution, so a 1-step flow (4 envelopes) can never fill a batch of 16 — and with a
+realistic slow effect the serial tail drains between envelopes, collecting one. Treat
+batch≥16 rows as an upper bound that only a *cross-execution* coalescer could reach, and
+note that such a coalescer needs a per-row fence check this scenario does not measure.
+See `docs/scaling.md` for the full argument.
 
 **C. `pg_notify` cost and `LISTEN` fan-out** — the shipped statement versus the same
 statement with the notify CTE removed, then with K idle listeners attached. Every append
@@ -79,7 +87,7 @@ A post-run assertion checks the events actually written against the assumed
 `2*steps + 2` per execution, so the events/sec column can't silently drift.
 
 **E. `invokeTransient`** — the zero-write ceiling. Same runtime, same tool, no event
-store, no journal, no fence (ADR 0065 R1), asserted at 0 events written. The gap between
+store, no journal, no fence (ADR 0066 D2/R1), asserted at 0 events written. The gap between
 D and E is what durability costs.
 
 ## Reading the results

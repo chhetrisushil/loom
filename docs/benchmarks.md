@@ -141,10 +141,13 @@ for a single primary and re-capture on the host you intend to quote.
 Throughput plateaus by c=8 and *regresses* at c=128 while the tail blows out ~100×. Adding
 in-flight writes past the plateau buys latency, not capacity.
 
-### Batching is worth ~8×, and the sweet spot is bounded
+### Batching: the SQL shape is worth up to 8×, but most of that is NOT reachable from the journal
 
-`appendMany` is **not a shipped path** — this is the counterfactual for adding it to the
-`EventStore` SPI, measured with the same fence guard and one `pg_notify` per batch tip.
+Batched append is **not a shipped path**, and it is not an open design question either:
+[ADR 0065](adr/0065-group-commit-deferred-evidence-gate.md) already froze the sketch
+(`appendBatch(envelopes[])`, drained inside `ExecutionJournal`'s serial tail) and deferred
+it behind a **three-part evidence gate**. What follows is evidence about the *SQL shape*,
+measured with the same fence guard and one `pg_notify` per batch tip:
 
 | batch | events/sec | vs shipped | p95 ms |
 |---|---:|---:|---:|
@@ -153,9 +156,27 @@ in-flight writes past the plateau buys latency, not capacity.
 | 16 | **183,141** | **8.2×** | 19.8 |
 | 64 | 143,857 | 6.4×  | 143.3 |
 
-Batch 16 is the knee; 64 regresses on both throughput and tail. A group-commit flush in
-`ExecutionJournal` bounded at ~16 envelopes is the single highest-leverage change
-available on the write path — one optional SPI method, no kernel semantics touched.
+**Read the 8.2× carefully — it is an upper bound on the statement, not on the design.**
+Every batch here holds 16 events *of one execution*, because that is what a single fence
+guard permits. But `ExecutionJournal` is **per-execution**: a 1-step flow emits 4 envelopes
+total, a 3-step flow 8. A journal-side batcher can therefore never assemble a 16-event
+batch for these flows — batch=4 (**3.1×**) is the hard ceiling for a 1-step flow, and even
+that requires all four envelopes to be enqueued before the serial tail drains, which only
+happens when the store is already saturated. With a realistic (slow, I/O-bound) effect,
+`STEP_STARTED` and `STEP_COMPLETED` are seconds apart and the queue drains between them,
+so a journal-side batch collects **one** envelope and wins nothing. This is precisely the
+"a 3-events-per-run workload cannot win" case ADR 0065's gate 2 calls out.
+
+The 8.2× is only reachable by coalescing **across** executions — many concurrent journals'
+appends merged into one multi-row INSERT — which is *not* ADR 0065's sketch, would belong
+in a store decorator rather than the kernel, and is **unmeasured**: a cross-execution batch
+needs a per-row fence check (a join against `fences`) instead of the single guard measured
+here, and that cost is unknown.
+
+**This bench does not open ADR 0065's gate.** Gate 1 wants event-write throughput to be the
+bottleneck *on a real workload*; this harness uses a no-op effect specifically to remove
+effect latency, which is the opposite. Gate 3 (transient architecture insufficient) is not
+addressed at all. Gate 2 is met only for the SQL shape, and contradicted for the journal.
 
 ### `pg_notify` costs ~37% of append throughput, and fan-out is linear in subscribers
 
@@ -193,7 +214,7 @@ ceiling divided by events per execution.
 |---|---:|---:|
 | `runtime.invokeTransient` (no-op effect) | **1,112,600** | 0 |
 
-ADR 0065 R1 holds under load: zero envelopes. ~195× the durable 1-step rate, because it
+ADR 0066 D2/R1 holds under load: zero envelopes. ~195× the durable 1-step rate, because it
 writes nothing. On this path the kernel is not the constraint — the effect's own work is.
 
 ### Takeaway for capacity planning
@@ -202,7 +223,15 @@ writes nothing. On this path the kernel is not the constraint — the effect's o
   flow. 100K/sec of that shape is **18×** this capacity, and because every write lands on
   the same log, that multiplier falls on Postgres — worker scale-out
   (`PlacementDispatcher`, `worker-remote`, `cloudrun`) does not help.
-- Batched append (~8×) plus interest-filtered delivery gets a single primary into the
-  ~45–50K exec/sec range on these numbers. Past that needs a partitioned log.
+- The best-evidenced headroom is **interest-filtered notify delivery** — measured, no SPI
+  change, no gate against it. Batching is gated (ADR 0065) and its journal-side form is
+  worth far less than the 8.2× headline; see the batching section above.
 - **Stateless/transient: not a scaling problem.** One process already exceeds 100K/sec of
   kernel overhead; size for the effect, not the runtime.
+- **Before quoting the 5.7K anywhere: it is a no-op-effect ceiling.** With a realistic
+  I/O-bound effect the write path is nowhere near the bottleneck — sustaining 5.7K exec/sec
+  of 2-second LLM steps would need ~11K concurrent executions, and concurrency, memory, and
+  the provider's rate limit bind first. Treat these numbers as *where the floor is*, not as
+  a throughput target any real workload approaches.
+
+See [`docs/scaling.md`](scaling.md) for what to do with all of this.

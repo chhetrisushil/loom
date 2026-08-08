@@ -137,7 +137,7 @@ async function main(): Promise<void> {
     `## A. \`PostgresEventStore.append\` — the shipped write path\n\n${table(appendRows, "events")}`
   );
 
-  // ── B. appendMany counterfactual ────────────────────────────────────────────
+  // ── B. appendBatch counterfactual ────────────────────────────────────────────
   const batchConcurrency = cfg.concurrencies[cfg.concurrencies.length - 1] as number;
   const batchRows: Measurement[] = [];
   for (const b of cfg.batchSizes) {
@@ -146,7 +146,7 @@ async function main(): Promise<void> {
   }
   sections.push(
     [
-      "## B. Batched append — the `appendMany` counterfactual\n\n",
+      "## B. Batched append — the `appendBatch` counterfactual\n\n",
       "Not a shipped path. Same fence guard, one `pg_notify` per batch instead of per event.\n",
       "`ops/sec` = round-trips/sec; `events/sec` is the comparable number against section A.\n\n",
       table(batchRows, "events"),
@@ -217,7 +217,7 @@ async function main(): Promise<void> {
     [
       "## E. `invokeTransient` — the zero-write ceiling\n\n",
       `${table([transient], "calls")}\n\n`,
-      `Events written during this scenario: **${afterTransient}** (ADR 0065 R1 — must be 0).`,
+      `Events written during this scenario: **${afterTransient}** (ADR 0066 D2/R1 — must be 0).`,
     ].join("")
   );
 
