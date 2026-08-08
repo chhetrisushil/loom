@@ -53,6 +53,7 @@ A Loom workflow is an ordinary `async` TypeScript function whose every meaningfu
 - [`api-reference.org`](api-reference.org) — exhaustive per-package API reference.
 - [`usage-compiler.org`](usage-compiler.org) — the optional `@loom/compiler` (build-time `handler$` extraction, resumability).
 - [`benchmarks.md`](benchmarks.md) — committed performance baselines.
+- [`scaling.md`](scaling.md) — capacity guide: which regime your workload is in, what scaling support ships today, and what each further change is waiting on.
 - [`examples/`](examples/) — reference walkthroughs (`acme-support`, a Postgres storage backend).
 
 ## Runnable examples
