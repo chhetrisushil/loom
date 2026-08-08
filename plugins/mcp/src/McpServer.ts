@@ -192,6 +192,20 @@ function toCallToolResult(value: unknown): McpCallToolResult {
   };
 }
 
+/** The oldest dated MCP revision this transport will echo back to a client. */
+const OLDEST_PROTOCOL_VERSION = "2024-11-05";
+const DATED_VERSION = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * The version to answer `initialize` with: the client's, when it asked for a
+ * dated revision this transport can speak, else the server's configured one.
+ */
+export function negotiateVersion(requested: unknown, configured: string): string {
+  if (typeof requested !== "string") return configured;
+  if (!DATED_VERSION.test(requested)) return configured;
+  return requested >= OLDEST_PROTOCOL_VERSION ? requested : configured;
+}
+
 export function createMcpServer(options: McpServerOptions = {}): McpServer {
   const port = options.port ?? 3002;
   const protocolVersion = options.protocolVersion ?? DEFAULT_MCP_PROTOCOL_VERSION;
@@ -251,8 +265,15 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
 
     switch (method) {
       case "initialize": {
+        // Negotiate, don't assert. The spec says a server that SUPPORTS the
+        // requested version must answer with that same version; a client that
+        // gets a different one is entitled to hang up. This surface —
+        // initialize / tools / resources over JSON-RPC — is unchanged across
+        // every dated revision, so any well-formed version a client asks for is
+        // one this server genuinely speaks. Only fall back to the configured
+        // version when the request names nothing usable.
         rpcResult(res, id, {
-          protocolVersion,
+          protocolVersion: negotiateVersion(params?.protocolVersion, protocolVersion),
           capabilities: {
             tools: {},
             resources: {},
@@ -365,6 +386,17 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
   const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse): void => {
     void (async () => {
       try {
+        // OAuth discovery probes (RFC 9728 and friends). A server that does not
+        // implement OAuth must answer 404 here, and must answer it BEFORE the
+        // authorize gate: 401 would say "authenticate, somehow" with no way to
+        // learn how, and 405 says the endpoint exists but is being asked wrong.
+        // Only 404 tells a client the truth — there is no OAuth on this resource —
+        // which is what lets it fall back to connecting unauthenticated.
+        const requestPath = (req.url ?? "/").split("?")[0] ?? "/";
+        if (requestPath.startsWith("/.well-known/")) {
+          send(res, 404, { error: "not found" });
+          return;
+        }
         if (req.method !== "POST") {
           send(res, 405, { error: "method not allowed" });
           return;

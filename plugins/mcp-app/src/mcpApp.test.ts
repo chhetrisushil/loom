@@ -388,6 +388,58 @@ describe("MCP server — audience and seam boundaries", () => {
     expect(meta["ui/resourceUri"]).toBe(SURFACE_HOST_URI);
   });
 
+  // A remote host probes for OAuth before it will talk to a server at all. With
+  // no OAuth here the only answer that lets it proceed is 404 — and it has to
+  // come out ABOVE the auth gate, or "no OAuth" is indistinguishable from
+  // "unauthorized" and the client has nowhere to go.
+  it("answers OAuth discovery probes with 404, even when authenticated", async () => {
+    const s = await serve({ authorize: () => false });
+    const probes = [
+      "/.well-known/oauth-protected-resource",
+      "/.well-known/oauth-protected-resource/mcp",
+      "/.well-known/oauth-authorization-server",
+      "/.well-known/openid-configuration",
+    ];
+    for (const probe of probes) {
+      const res = await fetch(`${s.url}${probe}`);
+      expect(res.status, probe).toBe(404);
+    }
+    // The MCP endpoint itself still rejects a GET — it offers no SSE stream.
+    expect((await fetch(s.url)).status).toBe(405);
+    // …and the auth gate is untouched for actual RPC.
+    const rpc = await fetch(s.url, { method: "POST", body: "{}" });
+    expect(rpc.status).toBe(401);
+  });
+
+  // A client that asks for 2025-11-25 and is answered 2026-01-26 is entitled to
+  // hang up. Every dated revision shares this JSON-RPC surface, so echoing the
+  // request is honest — and it is the difference between a remote connector
+  // completing its handshake and refusing the server outright.
+  it("echoes the protocol version a client asked for", async () => {
+    const s = await serve({ protocolVersion: "2026-01-26" });
+    const initialize = async (requested?: string) => {
+      const res = await fetch(s.url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: requested === undefined ? {} : { protocolVersion: requested },
+        }),
+      });
+      const body = (await res.json()) as { result: { protocolVersion: string } };
+      return body.result.protocolVersion;
+    };
+
+    expect(await initialize("2025-11-25")).toBe("2025-11-25");
+    expect(await initialize("2024-11-05")).toBe("2024-11-05");
+    // Nothing usable named ⇒ the server's own version, not a client's fiction.
+    expect(await initialize()).toBe("2026-01-26");
+    expect(await initialize("latest")).toBe("2026-01-26");
+    expect(await initialize("1999-01-01")).toBe("2026-01-26");
+  });
+
   it("hides app-only tools from the model and vice versa", async () => {
     const s = await serve({
       tools: [
