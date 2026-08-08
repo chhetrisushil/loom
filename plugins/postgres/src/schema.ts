@@ -1,12 +1,78 @@
 import type { Pool } from "pg";
 
-// One idempotent migration for all Loom store tables, mirroring the SQLite schema
-// (packages/event-runtime/src/schema.ts + snapshot-runtime). JSONB for payload /
-// metadata / state; BIGINT for sequence / timestamps (parsed back to JS numbers in
-// the row mappers, since node-postgres returns int8 as a string). Any of the three
-// stores can bootstrap the full schema, so they compose on one database.
+// Advisory-lock key for the migration, as the two-int form: ("LOOM" as ASCII, 1).
+// Application-defined and namespaced to this library, so it cannot collide with an
+// application's own advisory locks unless it picks the same pair deliberately.
+const MIGRATION_LOCK_NAMESPACE = 0x4c4f4f4d; // "LOOM"
+const MIGRATION_LOCK_ID = 1;
+
+// One in-flight/completed migration per Pool. Every store constructor calls migrate()
+// on its own pool, so without this a process sharing one pool across six stores would
+// issue the DDL six times. Keyed weakly so a discarded pool is not retained.
+const migrations = new WeakMap<Pool, Promise<void>>();
+
+/**
+ * One idempotent migration for all Loom store tables, mirroring the SQLite schema
+ * (packages/event-runtime/src/schema.ts + snapshot-runtime). JSONB for payload /
+ * metadata / state; BIGINT for sequence / timestamps (parsed back to JS numbers in
+ * the row mappers, since node-postgres returns int8 as a string). Any of the stores
+ * can bootstrap the full schema, so they compose on one database.
+ *
+ * **Concurrency-safe.** `CREATE TABLE IF NOT EXISTS` is NOT atomic in Postgres: two
+ * sessions can both pass the catalog check and both attempt the create, and the loser
+ * fails on `pg_type_typname_nsp_index` (duplicate key, SQLSTATE 23505) — or on
+ * `CREATE INDEX IF NOT EXISTS` with 42P07. That is reachable from the shipped happy
+ * path: every store constructor migrates, and `postgresStorage({ url })` builds a
+ * SEPARATE pool per store, so wiring Postgres against a fresh database fires several
+ * concurrent migrations by construction.
+ *
+ * Two layers, because they cover different cases:
+ *  - a transaction-scoped **advisory lock** serializes migration across sessions,
+ *    connections, and PROCESSES (the case that matters when a deployment scales out
+ *    and many nodes boot at once). The `_xact_` form releases on commit/rollback and
+ *    on a dropped connection, so a crashed migrator cannot wedge the lock.
+ *  - a per-Pool **memo** skips redundant DDL round-trips for stores sharing a pool.
+ *
+ * The memo is deliberately NOT sufficient on its own — the shipped preset uses
+ * distinct pools — and the lock is not made redundant by it.
+ */
 export async function migrate(pool: Pool): Promise<void> {
-  await pool.query(`
+  const inFlight = migrations.get(pool);
+  if (inFlight !== undefined) return inFlight;
+
+  const run = runMigration(pool);
+  migrations.set(pool, run);
+  // Never cache a rejection: a migration that failed (transient connection loss, a
+  // database not yet accepting connections) must be retryable by the next caller.
+  // The catch here only evicts — callers still observe the rejection via `run`.
+  run.catch(() => {
+    if (migrations.get(pool) === run) migrations.delete(pool);
+  });
+  return run;
+}
+
+async function runMigration(pool: Pool): Promise<void> {
+  // A dedicated client, not `pool.query`: the advisory lock and the DDL must run in
+  // ONE session and one transaction, which a pooled per-query checkout cannot promise.
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1, $2)", [
+      MIGRATION_LOCK_NAMESPACE,
+      MIGRATION_LOCK_ID,
+    ]);
+    await client.query(DDL);
+    await client.query("COMMIT");
+  } catch (err) {
+    // Best-effort rollback; the original error is what the caller needs to see.
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+const DDL = `
     CREATE TABLE IF NOT EXISTS events (
       id TEXT NOT NULL PRIMARY KEY,
       workflow_id TEXT NOT NULL,
@@ -100,8 +166,7 @@ export async function migrate(pool: Pool): Promise<void> {
       sequence BIGINT NOT NULL,
       PRIMARY KEY (model_id, execution_id)
     );
-  `);
-}
+  `;
 
 // The channel every EventStore instance LISTENs on for cross-node subscribe.
 export const NOTIFY_CHANNEL = "loom_events";
