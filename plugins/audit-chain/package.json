@@ -24,6 +24,7 @@
   "devDependencies": {
     "@loom/dst": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
+    "@loom/plugin-content": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@loom/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",

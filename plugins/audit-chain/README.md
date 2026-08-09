@@ -34,6 +34,16 @@ if (!v.ok) console.error(`log tampered at seq ${v.brokenAt}: ${v.reason}`);
 - **Cold-start safe** — a fresh wrapper instance continues the chain by reading the durable tail.
 - **Canonicalization** — `canonicalize` sorts keys recursively and omits `undefined`, so a tamper
   can't reorder keys to preserve a hash.
+- **Ordering vs content externalization (load-bearing)** — wrap the chain *outside*
+  `ContentResolvingEventStore`:
+  `hashChainedEventStore(new ContentResolvingEventStore(raw, content, { externalize }))`. Then
+  the chain covers the full payload and `verifyChain` re-reads it resolved, so rewriting an
+  externalized blob is detected. Inverted, the chain hashes only the content *ref* — the bytes
+  are outside everything it signed, and tampering passes silently. Both orderings compile and
+  behave identically otherwise, so `contentOrdering.test.ts` pins the difference. (This is also
+  why `ContentStore` has no verify-on-read obligation: the correct ordering gives blob
+  integrity for one hash per write instead of one per read, across the whole log rather than
+  just externalized fields.)
 - **Truncation tension (honest)** — `verifyChain` assumes an un-truncated log. K10 compaction
   (`truncatePrefix`) deletes prefix events and breaks the chain at the new head; verify (and archive)
   the full chain *before* truncating.

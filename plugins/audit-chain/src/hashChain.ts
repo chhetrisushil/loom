@@ -113,7 +113,26 @@ const chainOf = (e: EventEnvelope): ChainMetadata | undefined =>
 // fact) just cold-reads the tail again, which is correct, only slower.
 const TERMINAL_EVENTS = new Set(["EXECUTION_COMPLETED", "EXECUTION_FAILED", "EXECUTION_CANCELLED"]);
 
-/** Wrap a store so every append is hash-chained (and optionally HMAC-signed). */
+/**
+ * Wrap a store so every append is hash-chained (and optionally HMAC-signed).
+ *
+ * **Ordering matters when composing with `ContentResolvingEventStore`: the chain must be
+ * OUTSIDE content resolution.** The chain hashes the envelope it is handed at append, and
+ * `verifyChain` recomputes over whatever `inner.read()` returns:
+ *
+ * ```ts
+ * hashChainedEventStore(new ContentResolvingEventStore(raw, content, { externalize })) // ✅
+ * new ContentResolvingEventStore(hashChainedEventStore(raw), content, { externalize })  // ❌
+ * ```
+ *
+ * Outside, the chain covers the FULL payload and verification re-reads it resolved, so
+ * rewriting an externalized blob breaks the hash. Inside, the chain only ever sees the ref
+ * string — the bytes sit outside everything it hashed, and tampering with them is silent.
+ * Both orderings type-check and both pass every other test, so the difference is pinned in
+ * `contentOrdering.test.ts`. This is also why verify-on-read is not a `ContentStore` SPI
+ * obligation: the correct ordering already buys blob integrity, once per write rather than on
+ * every read.
+ */
 export function hashChainedEventStore(
   inner: EventStore,
   options: HashChainOptions = {}
