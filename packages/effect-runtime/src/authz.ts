@@ -238,19 +238,46 @@ export function verifyDelegation(secret: string, token: DelegatedGrant): boolean
 }
 
 /**
- * Attenuate a VERIFIED delegation to a narrower subset, re-signed for a new
- * holder — only capabilities already in the token survive (never broadening).
+ * Attenuate a delegation to a narrower subset, re-signed for a new holder — only
+ * capabilities already in the token survive, and the parent's expiry is inherited.
  * Requires the shared secret (the delegator/mint authority performs it); a
  * pure-holder chained-HMAC variant is a future option.
+ *
+ * "Never broadening" is enforced on BOTH axes:
+ *
+ *  - **Grants.** A capability absent from the parent cannot appear in the child. A parent
+ *    holding `"*"` may attenuate to any concrete subset (that is narrowing) — previously
+ *    such a subset was filtered against the literal `["*"]` array and came back EMPTY, so a
+ *    wildcard delegator could not attenuate at all.
+ *  - **Expiry.** The parent's `exp` is inherited, and `exp` may only be brought EARLIER.
+ *    This was the important one: `exp` used not to be propagated, so attenuating a token
+ *    that expired in an hour produced a child that **never expired** — narrowing the grant
+ *    set while silently making the token immortal.
+ *
+ * Throws on an unverifiable parent. The signature is what makes the grant set trustworthy,
+ * and this function holds the secret — so attenuating an unchecked token would launder a
+ * forged one into a validly signed child. The old contract merely *documented* that the
+ * caller must pass a verified token; a security primitive should not depend on that.
  */
 export function attenuateDelegation(
   secret: string,
   token: DelegatedGrant,
   issuedTo: string,
-  subset: string[]
+  subset: string[],
+  exp?: number
 ): DelegatedGrant {
-  const narrowed = subset.filter((g) => token.grants.includes(g));
-  return signDelegation(secret, issuedTo, narrowed);
+  if (!verifyDelegation(secret, token)) {
+    throw new Error(
+      "attenuateDelegation: parent delegation failed verification — refusing to sign a child from an unverified token"
+    );
+  }
+  const parentIsWildcard = token.grants.includes("*");
+  const narrowed = parentIsWildcard ? [...subset] : subset.filter((g) => token.grants.includes(g));
+  // Inherit the parent's expiry; an explicit `exp` may only tighten it.
+  const inherited = token.exp;
+  const nextExp =
+    inherited === undefined ? exp : exp === undefined ? inherited : Math.min(inherited, exp);
+  return signDelegation(secret, issuedTo, narrowed, nextExp);
 }
 
 import type { Scheduler } from "@loom/scheduler";
