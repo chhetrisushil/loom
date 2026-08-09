@@ -8,6 +8,7 @@ import {
   InMemoryAsyncEventStore,
   InMemoryBranchRegistry,
   InMemoryTimerStore,
+  ShardPlan,
   ShardedEventStore,
 } from "@loom/event-runtime";
 import type { LlmProvider } from "@loom/llm";
@@ -75,6 +76,29 @@ runEventStoreConformance(
 runEventStoreConformance(
   () => new ShardedEventStore(Array.from({ length: 4 }, () => new InMemoryAsyncEventStore())),
   "ShardedEventStore(4x InMemory)"
+);
+// ADR 0075 — plan-driven routing, and routing while a bucket is mid-migration, must both be
+// indistinguishable from an unsharded store. The migrating case is the interesting one: it
+// exercises the two-sided per-execution resolution on every contract case.
+runEventStoreConformance(
+  () =>
+    new ShardedEventStore(
+      Array.from({ length: 3 }, () => new InMemoryAsyncEventStore()),
+      {
+        plan: ShardPlan.uniform(3, 256),
+      }
+    ),
+  "ShardedEventStore(planned)"
+);
+runEventStoreConformance(
+  () =>
+    new ShardedEventStore(
+      Array.from({ length: 3 }, () => new InMemoryAsyncEventStore()),
+      {
+        plan: ShardPlan.uniform(2, 256).rebalanced(3),
+      }
+    ),
+  "ShardedEventStore(mid-migration)"
 );
 runEventStoreConformance(
   () =>
