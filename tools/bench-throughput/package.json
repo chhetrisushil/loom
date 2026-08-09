@@ -9,7 +9,8 @@
     "build": "tsc --build",
     "dev": "tsc --build --watch",
     "bench": "tsc --build && node dist/index.js",
-    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "hardware": "tsc --build && node dist/hardware.js"
   },
   "dependencies": {
     "@loom/core": "workspace:*",
