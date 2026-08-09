@@ -82,6 +82,9 @@ free, and shards may be heterogeneous. Consequences handled explicitly:
   fallback; same-shard forks keep the fast path.
 - Fencing is per-execution, so it shards with no coordination.
 - `BranchRegistry` stays **unsharded** — refs are global by nature and small.
+- Changing the shard count re-routes existing executions. Addressed as a follow-up in
+  [ADR 0075](0075-shard-rebalancing.md) (virtual buckets + a `migrating` bucket state);
+  without a `ShardPlan`, routing here is still fixed at construction.
 
 ### D4 — Interest-filtered delivery is a plugin concern, over a shared registry
 

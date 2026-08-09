@@ -313,7 +313,14 @@ The hard parts are not the routing:
   read models and retention sweeps consume them.
 - **Fencing** is per-execution, so it shards cleanly — but `BranchRegistry` and fork
   (`copyPrefix`) assume one database, and a cross-shard fork loses its server-side path.
-- **Rebalancing.** Moving an execution between shards mid-flight has no story.
+- **Rebalancing.** Solved by [ADR 0075](adr/0075-shard-rebalancing.md): supply a
+  `ShardPlan` and `plan.rebalanced(n)` marks the moved buckets `migrating`, which is a
+  routing change only — **nothing is copied**. Executions already on the source keep being
+  served there, new ones start on the destination, and the bucket drains by itself as
+  executions complete. Reassignment moves the theoretical minimum (~1/N of buckets, not the
+  ~80–89% a naive `bucket % shardCount` would). Two limits stand:
+  `migrateExecution()` cannot safely move a *live* execution, and fence state does not
+  travel across shards.
 
 Exhaust sections 3.1–3.3 and vertical scaling first. Most systems that think they need
 sharding need a read model and interest-filtered delivery.

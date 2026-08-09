@@ -104,6 +104,8 @@ Consequences to handle explicitly:
   per-event fallback (F10). Same-shard forks keep the fast path.
 - Fencing is per-execution, so it shards cleanly with no coordination.
 - `BranchRegistry` stays **unsharded** — it is small, and refs are global by nature.
+- Changing the shard count is out of scope here; rebalancing landed as
+  [ADR 0075](../adr/0075-shard-rebalancing.md).
 
 ### R5 — Interest-filtered delivery → **plugin** (`plugins/postgres`), on R1
 
