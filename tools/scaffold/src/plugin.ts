@@ -717,6 +717,15 @@ export function pluginFiles(
   if (seam === undefined) {
     throw new Error(`unknown seam "${seamKey}" — expected ${SEAM_KEYS.join(" | ")}`);
   }
+  // `name` is interpolated straight into a path AND a package name, and the caller writes
+  // every returned key to disk. Unvalidated, `loom plugin new store ../../x` scaffolds
+  // outside the target directory. A plugin name is a single npm-style token; anything with
+  // a separator or a leading dot is a mistake at best.
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
+    throw new Error(
+      `invalid plugin name "${name}" — use lowercase letters, digits and hyphens (no slashes, dots, or leading hyphen)`
+    );
+  }
   const dir = opts.firstParty ? `plugins/${name}` : `loom-plugin-${name}`;
   const packageName = opts.firstParty ? `@loom/plugin-${name}` : `loom-plugin-${name}`;
   return {

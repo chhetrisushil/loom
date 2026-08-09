@@ -1,4 +1,5 @@
 import { TypedFailure } from "@loom/core";
+import { InMemoryContentStore } from "@loom/plugin-content";
 import { describe, expect, it } from "vitest";
 import { SandboxEvalEffect } from "./SandboxEvalEffect";
 
@@ -9,14 +10,17 @@ const ctx = {
   attempt: 1,
   emit: () => {},
 };
-const reader = (script: string) => ({
-  get: async () => new TextEncoder().encode(script),
-});
-const run = (script: string, limits = {}) =>
-  new SandboxEvalEffect(reader(script), limits).execute(
-    { scriptRef: { __loomContent: "ref" }, input: {} },
+// Store the script for real: the effect now verifies the bytes against the address it was
+// pinned to, so a placeholder ref is (correctly) rejected before the script ever runs.
+const scripts = new InMemoryContentStore();
+const put = (script: string) => scripts.put(new TextEncoder().encode(script));
+const run = async (script: string, limits = {}) => {
+  const ref = await put(script);
+  return new SandboxEvalEffect(scripts, limits).execute(
+    { scriptRef: ref, input: {} },
     ctx as never
   );
+};
 
 describe("SandboxEvalEffect — output size limit", () => {
   it("kills a script that returns more than the ceiling", async () => {
@@ -35,9 +39,10 @@ describe("SandboxEvalEffect — output size limit", () => {
     const script = '(() => { const s = "x".repeat(1024*1024); return { blob: [s,s,s] }; })()';
     // Ordering matters: an oversized output is a limit kill, not a contract violation, so a
     // planner sees the channel that tells it to shrink the request.
+    const ref = await put(script);
     await expect(
-      new SandboxEvalEffect(reader(script), {}).execute(
-        { scriptRef: { __loomContent: "ref" }, input: {}, expectedOutputShapeHash: "nope" },
+      new SandboxEvalEffect(scripts, {}).execute(
+        { scriptRef: ref, input: {}, expectedOutputShapeHash: "nope" },
         ctx as never
       )
     ).rejects.toMatchObject({ channel: "limitExceeded", payload: { kind: "output" } });
