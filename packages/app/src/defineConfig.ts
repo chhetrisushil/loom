@@ -313,6 +313,23 @@ export interface LoomConfig {
    * declaration-only metadata, byte-identical (G2).
    */
   validateInput?: boolean;
+  /**
+   * Take a mid-run snapshot every N committed events, and a matching one at completion,
+   * bounding what a later `loadState`/resume has to fold.
+   *
+   * Forwarded verbatim to {@link WorkflowRuntime}. It is surfaced here because
+   * `defineConfig` builds the runtime, so an app wired the supported way had no way to
+   * set it at all — and settle-time checkpointing (`docs/scaling.md` §3.2) is gated on
+   * it, which left the larger half of that work unreachable rather than merely off by
+   * default.
+   *
+   * Omit (or 0) for today's behaviour: snapshots at suspend and fork only, and a
+   * `foldState` that reads the whole log. Worth setting once executions get long —
+   * measured at a 102-event log it is 4.76 ms → 1.22 ms p50; at 4 events it is nothing
+   * (0.72 → 0.71 ms), so short flows should not bother. Larger N means fewer snapshot
+   * writes and a longer worst-case replay.
+   */
+  snapshotEvery?: number;
   retention?: {
     /** Where each execution's events/snapshot are copied before deletion (A6). */
     archive?: ArchiveStores;
@@ -603,6 +620,7 @@ export function defineConfig(config: LoomConfig): LoomApp {
     ...(stores.branchRegistry !== undefined && { branchRegistry: stores.branchRegistry }),
     ...(config.timers !== undefined && { timerStore: config.timers.store }),
     ...(config.validateInput !== undefined && { validateInput: config.validateInput }),
+    ...(config.snapshotEvery !== undefined && { snapshotEvery: config.snapshotEvery }),
   });
 
   // Schedules come from the explicit `timers.schedules` list AND from `scheduleModules` (loom gen
