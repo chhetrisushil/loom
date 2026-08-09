@@ -69,20 +69,62 @@ function executionStatusToA2A(status: string): A2ATaskStatus {
   }
 }
 
+export interface InProcessA2ABusOptions {
+  /**
+   * Cap on retained task records. Every `submit` records a terminal status and its
+   * artifacts, and nothing removed them — so a long-lived agent process grew one entry per
+   * request forever, holding the artifact text with it. Oldest-first eviction past the cap;
+   * `getTask` returns `undefined` for a task evicted that way, which is the same answer it
+   * already gives for an unknown id.
+   *
+   * Default 1,000. Raise it if callers poll `getTask` long after `submit` resolves.
+   */
+  maxTasks?: number;
+}
+
 export class InProcessA2ABus {
   private readonly cards = new Map<string, AgentCard>();
   private readonly capabilities = new Map<string, Registration>();
   private readonly tasks = new Map<string, A2ATaskResult>();
   private readonly dispatcher: ExecutionDispatcher;
+  private readonly maxTasks: number;
+  /**
+   * Monotonic id counter. Deliberately NOT `tasks.size`, which this used to be: `size`
+   * shrinks when the cap above evicts, so ids would start repeating and a new task would
+   * collide with an old one on the event log. Adding eviction without this would have
+   * introduced that bug rather than fixed one.
+   *
+   * (There is no concurrency hazard in the old form: nothing awaits between reading `size`
+   * and inserting, so two dispatches cannot interleave there. Eviction is the whole reason.)
+   */
+  private issued = 0;
 
   constructor(
     runtime: WorkflowRuntime,
     // Placement is pluggable: default to running the fiber in-process on the
     // local runtime. Inject a remote/Cloud Run dispatcher to move it off-box
     // without touching this transport.
-    dispatcher?: ExecutionDispatcher
+    dispatcher?: ExecutionDispatcher,
+    options: InProcessA2ABusOptions = {}
   ) {
     this.dispatcher = dispatcher ?? new LocalDispatcher(new LocalWorkerRuntime(runtime));
+    this.maxTasks = Math.max(1, options.maxTasks ?? 1_000);
+  }
+
+  /** Record a task result, evicting oldest-first past the cap. */
+  private retainTask(id: string, result: A2ATaskResult): void {
+    this.tasks.delete(id);
+    this.tasks.set(id, result);
+    while (this.tasks.size > this.maxTasks) {
+      const oldest = this.tasks.keys().next();
+      if (oldest.done) break;
+      this.tasks.delete(oldest.value);
+    }
+  }
+
+  /** Retained task records. Exposed so a caller can assert the bus is not growing. */
+  get retainedTasks(): number {
+    return this.tasks.size;
   }
 
   registerAgent(card: AgentCard): this {
@@ -118,7 +160,7 @@ export class InProcessA2ABus {
       throw new Error(`No agent exposes capability "${capabilityId}"`);
     }
 
-    const executionId = options.executionId ?? `task-${capabilityId}-${this.tasks.size}`;
+    const executionId = options.executionId ?? `task-${capabilityId}-${this.issued++}`;
     const flowId = reg.flow.definition.id;
     // The A2A task envelope that would travel over the wire to the agent. In this
     // in-process transport we hand its input straight to the agent's flow.
@@ -127,14 +169,14 @@ export class InProcessA2ABus {
       message: { role: "user", parts: [{ type: "text", text: prompt }] },
       metadata: { capabilityId, agentId: reg.agentId },
     };
-    this.tasks.set(task.id, { id: task.id, status: "submitted" });
+    this.retainTask(task.id, { id: task.id, status: "submitted" });
 
     // Route the flow's live narration to the caller.
     const unsub = progressHub.onReport(executionId, (line) => options.onProgress?.(line));
 
     const setStatus = (status: A2ATaskStatus): void => {
       const prev = this.tasks.get(executionId);
-      this.tasks.set(executionId, { ...(prev ?? { id: executionId, status }), status });
+      this.retainTask(executionId, { ...(prev ?? { id: executionId, status }), status });
       options.onStatus?.(status);
     };
 
@@ -166,7 +208,7 @@ export class InProcessA2ABus {
       const status = executionStatusToA2A(result.state.status);
       const artifact = result.state.variables._output;
 
-      this.tasks.set(executionId, {
+      this.retainTask(executionId, {
         id: executionId,
         status,
         ...(status === "completed"

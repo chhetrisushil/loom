@@ -75,18 +75,56 @@ function recId(kind: string, subject: string, action: string): string {
   return `rec:${(h >>> 0).toString(16).padStart(8, "0")}`;
 }
 
-function evaluateSubject(
-  rec: Recommendation,
+/**
+ * Correlation index built ONCE for the whole report, rather than per recommendation.
+ *
+ * `evaluateSubject` used to re-scan every decision and every outcome for each
+ * recommendation — O(recommendations x (decisions + outcomes)) over an event log that grows
+ * without bound. Grouping decisions by choice and outcomes by correlation key makes each
+ * evaluation proportional to its OWN evidence instead of the whole log.
+ */
+interface CorrelationIndex {
+  /**
+   * choice -> the `executionId:decisionId` keys that chose it. Keyed by the RAW choice
+   * (`DecisionRecord.choice` is `unknown`), because the scan it replaces compared with
+   * `===`. Map lookup is SameValueZero, which agrees with `===` for every value a lookup
+   * by `rec.subject` (a string) can match.
+   */
+  chosenBy: Map<unknown, Set<string>>;
+  /** `executionId:decisionId` -> outcomes recorded against it. */
+  outcomesByDecision: Map<string, OutcomeRecord[]>;
+}
+
+function buildCorrelationIndex(
   decisions: DecisionRecord[],
   outcomes: OutcomeRecord[]
-): RecommendationOutcome {
-  // Correlate by execution + decision id so cross-execution id reuse can't cross-link.
-  const chosen = new Set(
-    decisions.filter((d) => d.choice === rec.subject).map((d) => `${d.executionId}:${d.decisionId}`)
-  );
-  const linked = outcomes.filter(
-    (o) => o.decisionId !== undefined && chosen.has(`${o.executionId}:${o.decisionId}`)
-  );
+): CorrelationIndex {
+  const chosenBy = new Map<unknown, Set<string>>();
+  for (const d of decisions) {
+    // Correlate by execution + decision id so cross-execution id reuse can't cross-link.
+    const key = `${d.executionId}:${d.decisionId}`;
+    const set = chosenBy.get(d.choice);
+    if (set === undefined) chosenBy.set(d.choice, new Set([key]));
+    else set.add(key);
+  }
+  const outcomesByDecision = new Map<string, OutcomeRecord[]>();
+  for (const o of outcomes) {
+    if (o.decisionId === undefined) continue;
+    const key = `${o.executionId}:${o.decisionId}`;
+    const list = outcomesByDecision.get(key);
+    if (list === undefined) outcomesByDecision.set(key, [o]);
+    else list.push(o);
+  }
+  return { chosenBy, outcomesByDecision };
+}
+
+function evaluateSubject(rec: Recommendation, index: CorrelationIndex): RecommendationOutcome {
+  const chosen = index.chosenBy.get(rec.subject) ?? new Set<string>();
+  const linked: OutcomeRecord[] = [];
+  for (const key of chosen) {
+    const found = index.outcomesByDecision.get(key);
+    if (found !== undefined) linked.push(...found);
+  }
   const successes = linked.filter((o) => o.success === true).length;
   return {
     recommendationId: rec.id,
@@ -170,11 +208,10 @@ export function advisoryPipeline(events: EventEnvelope[], opts?: AdvisoryOptions
   }
 
   // evaluate — only model-ranking recs have a decision subject to correlate against.
-  const decisions = decisionRecords(events);
-  const outcomes = outcomeRecords(events);
+  const index = buildCorrelationIndex(decisionRecords(events), outcomeRecords(events));
   const evaluations = recommendations
     .filter((r) => r.kind === "model-ranking")
-    .map((r) => evaluateSubject(r, decisions, outcomes));
+    .map((r) => evaluateSubject(r, index));
 
   return { observe, recommendations, evaluations, rankings };
 }
