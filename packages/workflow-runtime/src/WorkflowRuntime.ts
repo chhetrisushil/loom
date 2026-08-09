@@ -8,6 +8,7 @@ import type {
   TransientInvokeOptions,
 } from "@loom/effect-runtime";
 import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
+import { RESERVED_STREAM_PREFIX, isReservedStream } from "@loom/event-runtime";
 import { readRangeOf } from "@loom/event-runtime";
 // Import the pure sequence helper from the browser-safe subpath, not the barrel:
 // the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
@@ -124,6 +125,32 @@ export interface WorkflowRuntimeDeps {
    * Default: `Date.now` (unchanged, G2). Never fold-relevant.
    */
   now?: () => number;
+}
+
+/**
+ * Reject a caller-supplied executionId that squats the kernel's reserved control-stream
+ * namespace (`__loom_*`).
+ *
+ * `isReservedStream` existed only as a FILTER — enumerators, retention sweeps, and read-model
+ * indexing skip these ids — and nothing rejected one on the way in. Since an ingress adapter
+ * can pass a client-chosen id straight through (A2A maps `task.id` to the executionId
+ * verbatim), an external caller could start an execution inside `__loom_lifecycle__` or
+ * `__loom_erasure__`. Two consequences, both bad:
+ *
+ *  - it writes into the streams that RECORD retention and GDPR erasure, corrupting the audit
+ *    trail that exists to prove those happened;
+ *  - the execution is invisible to every enumerator, so retention never reclaims it and
+ *    compliance reports never see it — growth and evasion at once.
+ *
+ * Enforced here rather than in each adapter so it covers A2A, MCP, and anything added later.
+ * The kernel's own control writes go through `eventStore.append` directly and are unaffected.
+ */
+function assertNotReserved(executionId: string): void {
+  if (isReservedStream(executionId)) {
+    throw new Error(
+      `executionId "${executionId}" is reserved: "${RESERVED_STREAM_PREFIX}" prefixes the kernel's control streams`
+    );
+  }
 }
 
 export class WorkflowRuntime {
@@ -542,6 +569,7 @@ export class WorkflowRuntime {
     options?: RunOptions
   ): Promise<ExecutionHandle> {
     const executionId = options?.executionId ?? ulid();
+    assertNotReserved(executionId);
     const { definition, runner } = flow;
 
     // C.1 — gate the start (no execution exists yet, so no durable record).
@@ -608,6 +636,10 @@ export class WorkflowRuntime {
     resumeEvent: ResumeEvent,
     options?: RunOptions
   ): Promise<ExecutionHandle> {
+    // Guarded as well as `start`: a control stream is non-empty by construction, so without
+    // this a caller could inject a resume event straight into the retention/erasure audit
+    // trail even though creating one is now refused.
+    assertNotReserved(executionId);
     const allEvents = await this.eventStore.read(executionId);
     if (allEvents.length === 0) {
       throw new Error(`No execution found for id: ${executionId}`);

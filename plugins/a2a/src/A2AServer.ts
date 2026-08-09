@@ -23,6 +23,9 @@ export interface A2AServer {
 // Cap request bodies so an unauthenticated caller can't OOM the process by streaming a
 // huge (or endless) body into memory before parse. Matches the isolate broker's 10 MB cap.
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
+// `task.id` becomes the executionId, which is embedded in event ids and carried in the
+// Postgres NOTIFY payload (itself capped at ~8 KB). Generous for a ULID or a UUID.
+const MAX_TASK_ID_LENGTH = 200;
 
 function parseBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -88,10 +91,25 @@ export function createA2AServer(
 
         if (method === "POST" && url === "/tasks/send") {
           const task = (await parseBody(req)) as A2ATask;
-          // `task.id` becomes the executionId verbatim — reject a non-string so a caller
-          // can't squat/collide an execution id with an object/array.
+          // `task.id` becomes the executionId VERBATIM, so it is screened here rather than
+          // only deep in the kernel — a rejected id should read as a 400 from the adapter,
+          // not surface as a 500 from the runtime.
           if (typeof task?.id !== "string" || task.id.length === 0) {
             json(res, 400, { error: "task.id must be a non-empty string" });
+            return;
+          }
+          // The kernel reserves `__loom_*` for its own control streams (retention lifecycle,
+          // erasure). An execution created there both corrupts that audit trail and becomes
+          // invisible to every enumerator, so retention never reclaims it.
+          if (task.id.startsWith("__loom_")) {
+            json(res, 400, { error: 'task.id must not use the reserved "__loom_" prefix' });
+            return;
+          }
+          // Bound it: the id is embedded in every event id and travels in the Postgres
+          // NOTIFY payload, which is itself capped — an unbounded id turns into failing
+          // appends rather than a rejected request.
+          if (task.id.length > MAX_TASK_ID_LENGTH) {
+            json(res, 400, { error: `task.id exceeds ${MAX_TASK_ID_LENGTH} characters` });
             return;
           }
           const { id } = await executor.submit(task);
