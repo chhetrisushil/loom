@@ -8,6 +8,7 @@ export {
   FlowCodeMismatchError,
   FlowMigrationCheckError,
   InputValidationError,
+  ResumePayloadValidationError,
   StateMigrationError,
   StepTimeoutError,
   TIMER_FIRED,

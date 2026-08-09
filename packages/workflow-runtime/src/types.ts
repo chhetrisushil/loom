@@ -272,6 +272,27 @@ export class InputValidationError extends Error {
 }
 
 /**
+ * TR (ADR 0077) — `resume()`/`resumeAs()` refused a payload that does not satisfy
+ * the flow's declared `resumeSchemas` entry for that gate. Nothing was appended;
+ * the execution is untouched and still suspended, so a corrected payload can be
+ * sent. This is the shape counterpart to {@link ApprovalRejectedError}, which
+ * gates WHO may resume rather than WHAT they may send.
+ */
+export class ResumePayloadValidationError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly eventType: string,
+    readonly detail: string
+  ) {
+    super(
+      `resume of execution "${executionId}" refused: payload for gate "${eventType}" does not satisfy the flow's declared resumeSchemas entry — ${detail}`
+    );
+    this.name = "ResumePayloadValidationError";
+    Object.setPrototypeOf(this, ResumePayloadValidationError.prototype);
+  }
+}
+
+/**
  * K11.5 (ADR 0056) — the operator-supplied state transform threw during
  * `resumeAs`: the recorded input could not be migrated to the target flow's
  * contract. Nothing was appended; the execution is untouched. Fix the transform

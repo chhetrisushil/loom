@@ -1,4 +1,4 @@
-import type { ZodSchema } from "zod";
+import type { ZodSchema, ZodTypeAny } from "zod";
 import type { EventEnvelope } from "./event";
 
 export type EffectKind = "tool" | "llm" | "human" | "a2a";
@@ -175,6 +175,22 @@ export interface FlowDefinition<TIn = unknown, TOut = unknown> {
    * kernel-driven EXECUTION_CANCELLED. See `FlowConfig.deadlineMs` (flow$).
    */
   deadlineMs?: number;
+  /**
+   * TR (ADR 0077) — per-gate resume payload contracts, keyed by the resume event
+   * type a `ctx.suspend({ on })` gate waits for. Declaring one makes `resume()`
+   * (and `resumeAs()`) parse the payload against it BEFORE anything is appended,
+   * so a malformed payload is refused rather than becoming a permanent part of
+   * the log. The PARSED value (Zod defaults/transforms applied) is what is
+   * recorded, matching `validateInput`'s stated principle at the other entry
+   * point.
+   *
+   * Presence IS the opt-in: an absent map, or an event type with no entry, is
+   * today's behaviour byte-identically (G2). Declared per FLOW rather than at the
+   * `ctx.suspend` call site so the schema resolves from the registered definition
+   * without executing the flow body — which is what makes refuse-before-append
+   * possible at all.
+   */
+  resumeSchemas?: Readonly<Record<string, ZodTypeAny>>;
 }
 
 // ── Schedules (schedule$) — durable cron-style executions (T1.2) ─────────────

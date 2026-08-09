@@ -1,5 +1,5 @@
 import { SuspendError, flowContentHash } from "@loom/core";
-import type { EventEnvelope, ExecutionState } from "@loom/core";
+import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loom/core";
 import { LazyEffect } from "@loom/effect-runtime";
 import type {
   Effect,
@@ -25,6 +25,7 @@ import {
   FlowCodeMismatchError,
   FlowMigrationCheckError,
   InputValidationError,
+  ResumePayloadValidationError,
   StateMigrationError,
 } from "./types";
 import type {
@@ -407,6 +408,41 @@ export class WorkflowRuntime {
     };
   }
 
+  /**
+   * TR (ADR 0077) — parse a resume payload against the flow's declared gate contract.
+   *
+   * Returns the value to RECORD: the parsed one (Zod defaults/transforms applied) when a
+   * schema is declared for this gate, otherwise the payload untouched. Called before anything
+   * is appended, because a resume payload cannot be rejected retroactively — once it is in the
+   * log it is a permanent fold input.
+   *
+   * The event type is caller-controlled, so the lookup uses `Object.hasOwn` rather than plain
+   * indexing: `resumeSchemas["constructor"]` would otherwise resolve up the prototype chain to
+   * a function with no `safeParse`, turning a hostile event type into a TypeError (or, on a
+   * map built with a `toString` key, into a silently skipped gate).
+   */
+  private parseResumePayload(
+    executionId: string,
+    definition: FlowDefinition<unknown, unknown>,
+    resumeEvent: ResumeEvent
+  ): unknown {
+    const schemas = definition.resumeSchemas;
+    if (schemas === undefined || !Object.hasOwn(schemas, resumeEvent.eventType)) {
+      return resumeEvent.payload;
+    }
+    const schema = schemas[resumeEvent.eventType];
+    if (schema === undefined) return resumeEvent.payload;
+    const parsed = schema.safeParse(resumeEvent.payload);
+    if (!parsed.success) {
+      throw new ResumePayloadValidationError(
+        executionId,
+        resumeEvent.eventType,
+        parsed.error.issues.map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`).join("; ")
+      );
+    }
+    return parsed.data;
+  }
+
   // K11.1/.2 — resolve the flow CODE an execution must resume on:
   //  1. follow a durable migration pointer (`_migratedTo`, K11.3) if present;
   //  2. the current version when its hash matches the recorded one (or the log
@@ -710,6 +746,12 @@ export class WorkflowRuntime {
     // APPROVAL_GRANTED fact so "who approved" is evidence, not a claim.
     const approval = this.verifyApproval(executionId, resumeEvent);
 
+    // TR (ADR 0077) — shape AFTER identity: the authenticator must see the exact event the
+    // caller signed (a Zod transform could reshape it out from under a signature), and an
+    // unauthenticated caller learns nothing about the gate's contract. Both refuse before
+    // `execute`, so neither appends.
+    const resumePayload = this.parseResumePayload(executionId, resolved.definition, resumeEvent);
+
     return this.execute(
       executionId,
       workflowId,
@@ -718,8 +760,8 @@ export class WorkflowRuntime {
       effectiveInput,
       [
         ...(approval !== undefined ? [approval] : []),
-        { eventType: resumeEvent.eventType, payload: resumeEvent.payload },
-        { eventType: "EXECUTION_RESUMED", payload: resumeEvent.payload },
+        { eventType: resumeEvent.eventType, payload: resumePayload },
+        { eventType: "EXECUTION_RESUMED", payload: resumePayload },
       ],
       options?.fence,
       options?.deadlineMs ?? resolved.definition.deadlineMs,
@@ -821,6 +863,11 @@ export class WorkflowRuntime {
       stateMigrated = true;
     }
 
+    // TR (ADR 0077) — validate against the TARGET flow's gate contract: the execution is being
+    // resumed onto that code, so that code's declared shape is the one that must hold. Refuses
+    // before the EXECUTION_MIGRATED append, so a rejected payload leaves no migration behind.
+    const resumePayload = this.parseResumePayload(executionId, target.definition, resumeEvent);
+
     const recorded = state.variables._flowHash;
     return this.execute(
       executionId,
@@ -839,8 +886,8 @@ export class WorkflowRuntime {
             ...(stateMigrated && { migratedInput }),
           },
         },
-        { eventType: resumeEvent.eventType, payload: resumeEvent.payload },
-        { eventType: "EXECUTION_RESUMED", payload: resumeEvent.payload },
+        { eventType: resumeEvent.eventType, payload: resumePayload },
+        { eventType: "EXECUTION_RESUMED", payload: resumePayload },
       ],
       options.fence,
       options.deadlineMs ?? target.definition.deadlineMs,

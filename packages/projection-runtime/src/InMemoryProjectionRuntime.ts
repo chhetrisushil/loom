@@ -243,8 +243,12 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
     handlers: ProjectionFoldMap<unknown>,
     event: EventEnvelope
   ): void {
+    // Own-key lookup: the fold map is user-authored and the event type is caller-controlled,
+    // so `handlers["__proto__"]` would resolve to `Object.prototype` — truthy, defeating the
+    // `!handler` guard, and then called as a function. Mirrors `getHandler` in @loom/replay-vm.
+    if (!Object.hasOwn(handlers, event.eventType)) return;
     const handler = handlers[event.eventType];
-    if (!handler) return;
+    if (typeof handler !== "function") return;
     const key = this.stateKey(projection.id, event.executionId);
     const currentState = this.states.has(key) ? this.states.get(key) : projection.initialState;
     const nextState = handler(currentState, event);

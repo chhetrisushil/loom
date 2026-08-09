@@ -719,6 +719,12 @@ const handlers: Record<string, Handler> = {
 };
 
 export function getHandler(eventType: string): Handler | undefined {
+  // `Object.hasOwn`, not plain indexing: `eventType` is caller-controlled all the way from an
+  // ingress adapter (`runtime.resume`, and A2A `provideInput` passes a network-supplied
+  // ResumeEvent straight through), and `handlers["__proto__"]` resolves up the prototype chain
+  // to `Object.prototype` — TRUTHY, so `foldEvents`' `if (handler)` guard admits it and then
+  // calls a non-function. An unknown event type must fold to a no-op, whatever it is named.
+  if (!Object.hasOwn(handlers, eventType)) return undefined;
   return handlers[eventType];
 }
 

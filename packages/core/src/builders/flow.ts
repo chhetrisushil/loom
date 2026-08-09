@@ -19,6 +19,22 @@ export interface FlowConfig<TIn, TOut> {
    * execution; durable firing across idle suspension is T1's timer service.
    */
   deadlineMs?: number;
+  /**
+   * TR (ADR 0077) — resume payload contracts per gate: `resume event type →
+   * schema`. `resume()` parses the payload against the matching entry BEFORE
+   * appending, so a wrongly-shaped payload is refused instead of becoming a
+   * permanent fold input; the parsed value (defaults/transforms applied) is what
+   * is recorded. Absent, or no entry for the event type = today's behaviour,
+   * byte-identically (G2).
+   *
+   * ```ts
+   * resumeSchemas: {
+   *   ApprovalGranted: z.object({ approved: z.boolean(), approvedBy: z.string() }),
+   *   RemediationDecision: z.object({ approved: z.boolean(), strategy: z.string() }),
+   * }
+   * ```
+   */
+  resumeSchemas?: Readonly<Record<string, z.ZodTypeAny>>;
 }
 
 export function flow$<TIn = unknown, TOut = unknown>(
@@ -35,5 +51,6 @@ export function flow$<TIn = unknown, TOut = unknown>(
     ...(config.description !== undefined && { description: config.description }),
     ...(config.policies !== undefined && { policies: config.policies }),
     ...(config.deadlineMs !== undefined && { deadlineMs: config.deadlineMs }),
+    ...(config.resumeSchemas !== undefined && { resumeSchemas: config.resumeSchemas }),
   };
 }

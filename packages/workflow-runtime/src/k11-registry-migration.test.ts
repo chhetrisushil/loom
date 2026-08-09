@@ -6,7 +6,12 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
-import { FlowCodeMismatchError, FlowMigrationCheckError, StateMigrationError } from "./types";
+import {
+  FlowCodeMismatchError,
+  FlowMigrationCheckError,
+  ResumePayloadValidationError,
+  StateMigrationError,
+} from "./types";
 import type { FlowRunner, RegisteredFlow } from "./types";
 
 // ── K11.2 (version-aware registry, pinned resumption) + K11.3 (resumeAs) ──────
@@ -43,7 +48,8 @@ const publishV2 = step$({
 function gatedFlow(
   version: string,
   steps: Array<typeof collectV1>,
-  marker: { ranOn?: string }
+  marker: { ranOn?: string },
+  resumeSchemas?: Record<string, z.ZodTypeAny>
 ): RegisteredFlow<In, Out> {
   const runner: FlowRunner<In, Out> = async (ctx, input) => {
     for (const step of steps) {
@@ -61,6 +67,7 @@ function gatedFlow(
     inputSchema,
     outputSchema,
     steps,
+    ...(resumeSchemas !== undefined && { resumeSchemas }),
   };
   return { definition, runner };
 }
@@ -457,5 +464,72 @@ describe("K11.5 — contract-versioned state migration (ADR 0056)", () => {
     const after = await b.loadState("sm-1");
     const migrations = after?.variables._migrations as Array<{ stateMigrated?: boolean }>;
     expect(migrations?.[0]?.stateMigrated).toBeUndefined();
+  });
+});
+
+describe("TR (ADR 0077) — resumeAs validates against the TARGET flow's gate contract", () => {
+  async function suspendedOnUntypedV1() {
+    const a = bootRuntime();
+    const v1 = gatedFlow("1.0.0", [collectV1], {});
+    a.runtime.registerFlow(v1.definition, v1.runner);
+    const handle = await a.runtime.start(v1, { n: 1 }, { executionId: "mig-tr" });
+    await handle.waitForSuspend();
+    return a;
+  }
+
+  it("refuses a payload the target's contract rejects, leaving no migration behind", async () => {
+    const a = await suspendedOnUntypedV1();
+    const b = sharedRuntime(a);
+    // v1 declared no contract; the NEW code does. The execution is migrating onto that code,
+    // so that code's declared shape is the one that must hold.
+    const v2 = gatedFlow(
+      "2.0.0",
+      [collectV2],
+      {},
+      {
+        Approval: z.object({ approvedBy: z.string() }),
+      }
+    );
+    b.registerFlow(v2.definition, v2.runner);
+
+    const before = await a.eventStore.read("mig-tr");
+    await expect(
+      b.resumeAs(
+        "mig-tr",
+        FLOW,
+        { eventType: "Approval", payload: {} },
+        {
+          strategy: "operator-ack",
+        }
+      )
+    ).rejects.toThrow(ResumePayloadValidationError);
+
+    // Refused before the EXECUTION_MIGRATED append — no half-migrated execution.
+    expect(await a.eventStore.read("mig-tr")).toEqual(before);
+  });
+
+  it("accepts a conforming payload and records the parsed value", async () => {
+    const a = await suspendedOnUntypedV1();
+    const b = sharedRuntime(a);
+    const v2 = gatedFlow(
+      "2.0.0",
+      [collectV2],
+      {},
+      {
+        Approval: z.object({ approvedBy: z.string(), tier: z.number().default(3) }),
+      }
+    );
+    b.registerFlow(v2.definition, v2.runner);
+
+    const handle = await b.resumeAs(
+      "mig-tr",
+      FLOW,
+      { eventType: "Approval", payload: { approvedBy: "ops" } },
+      { strategy: "operator-ack" }
+    );
+    expect((await handle.waitForCompletion()).status).toBe("completed");
+
+    const approval = (await a.eventStore.read("mig-tr")).find((e) => e.eventType === "Approval");
+    expect(approval?.payload).toEqual({ approvedBy: "ops", tier: 3 });
   });
 });
