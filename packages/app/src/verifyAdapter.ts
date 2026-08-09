@@ -1,3 +1,4 @@
+import { collectUnreachableMarks } from "@loom/classify";
 import { flowContentHash } from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
 import { PlacementDispatcher } from "@loom/dispatcher";
@@ -11,6 +12,7 @@ import type {
   NonDeterministicCall,
   PlacementSpec,
   RuleName,
+  UnreachableMarkRef,
   VerifyInput,
   VerifyMode,
 } from "@loom/verify";
@@ -111,12 +113,31 @@ export function resolveVerifyInput(
       .map((s) => ({ toolId: s.toolId, capability: s.toolId, kind: "step" as const }));
     const nonDet = inputs.nonDeterministicByFlow?.[def.id];
     const loopIdent = inputs.loopIdentityByFlow?.[def.id];
+    // K10-R1 reachability: derived from the REAL step schemas here rather than supplied by a
+    // caller, so the check cannot be skipped by forgetting to wire it. An app with no marks
+    // under arrays yields an empty list and the rule is a no-op (G2).
+    const unreachableMarks: UnreachableMarkRef[] = [];
+    for (const step of def.steps) {
+      for (const channel of ["input", "output"] as const) {
+        const schema = channel === "input" ? step.inputSchema : step.outputSchema;
+        if (schema === undefined) continue;
+        for (const mark of collectUnreachableMarks(schema)) {
+          unreachableMarks.push({
+            path: mark.path,
+            dataClass: mark.dataClass,
+            stepId: step.id,
+            channel,
+          });
+        }
+      }
+    }
     flows.push({
       id: def.id,
       flowHash: flowContentHash(def),
       ...(effects.length > 0 && { effects }),
       ...(nonDet !== undefined && nonDet.length > 0 && { nonDeterministicCalls: nonDet }),
       ...(loopIdent !== undefined && loopIdent.length > 0 && { loopIdentityCalls: loopIdent }),
+      ...(unreachableMarks.length > 0 && { unreachableMarks }),
     });
   }
 

@@ -21,7 +21,8 @@ export type RuleName =
   | "suspension-safety"
   | "capability-compat"
   | "placement-compat"
-  | "resource-compat";
+  | "resource-compat"
+  | "classification-reachability";
 
 export interface Finding {
   readonly rule: RuleName;
@@ -81,6 +82,21 @@ export interface BudgetSpec {
   readonly ceilings?: Readonly<Record<string, number>>;
 }
 
+/**
+ * A `secret()`/`sensitive()`/`internal()` mark the dot-path sinks cannot address (K10-R1).
+ * Produced by `collectUnreachableMarks` in `@loom/classify`; the mark is silently inert —
+ * masking, field encryption and externalization all address scalar dot-paths, and none of
+ * them descend into array elements.
+ */
+export interface UnreachableMarkRef {
+  /** Where the mark sits, with `[]` per array crossing (e.g. `people[].ssn`). */
+  readonly path: string;
+  readonly dataClass: string;
+  /** Which schema it was declared on. */
+  readonly stepId: string;
+  readonly channel: "input" | "output";
+}
+
 export interface FlowSpec {
   readonly id: string;
   /** K11 content hash; absent means the flow cannot be pinned to a code version. */
@@ -95,6 +111,8 @@ export interface FlowSpec {
   readonly budget?: BudgetSpec;
   /** Whether the flow uses approval/resume (needs a `ResumeAuthenticator`, K12). */
   readonly usesApproval?: boolean;
+  /** K10-R1 marks that no egress sink can reach (absent ⇒ none; G2). */
+  readonly unreachableMarks?: readonly UnreachableMarkRef[];
 }
 
 export interface GrantSpec {

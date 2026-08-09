@@ -58,6 +58,9 @@
     },
     {
       "path": "../workflow-runtime"
+    },
+    {
+      "path": "../classify"
     }
   ]
 }

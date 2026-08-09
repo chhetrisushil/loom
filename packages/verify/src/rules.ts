@@ -205,6 +205,35 @@ const resourceCompat: Rule = (input) => {
   return findings;
 };
 
+/**
+ * classification-reachability — a `secret()`/`sensitive()`/`internal()` mark that no egress
+ * sink can address (K10-R1 / K10-R6).
+ *
+ * The dot-path sinks — telemetry scrubbing, field-level encryption, content externalization —
+ * address scalar paths and deliberately do not descend into array elements. A mark placed
+ * INSIDE an array element therefore collects no path and does nothing: the field is not
+ * masked on egress, not encrypted at rest, not externalized. The developer marked it and
+ * nothing said otherwise.
+ *
+ * `error`, not `warn`: the failure is silent, and the consequence is classified data leaving
+ * the trust boundary in the clear. The fix is mechanical — mark the array itself, which is
+ * the supported spelling and masks the whole element as a unit.
+ */
+const classificationReachability: Rule = (input) => {
+  const findings: Finding[] = [];
+  for (const flow of input.flows) {
+    for (const mark of flow.unreachableMarks ?? []) {
+      findings.push({
+        rule: "classification-reachability",
+        severity: "error",
+        message: `\`${mark.dataClass}()\` on "${mark.path}" (${mark.stepId} ${mark.channel}) sits under an array, where no egress sink can address it — it is masked nowhere, encrypted nowhere, externalized nowhere. Mark the array itself instead (K10-R1).`,
+        location: `${flow.id}:${mark.stepId}`,
+      });
+    }
+  }
+  return findings;
+};
+
 /** Two schema versions are compatible iff they share a major version. */
 function majorCompatible(a: string, b: string): boolean {
   return (a.split(".")[0] ?? a) === (b.split(".")[0] ?? b);
@@ -218,6 +247,7 @@ export const RULES: Record<RuleName, Rule> = {
   "capability-compat": capabilityCompat,
   "placement-compat": placementCompat,
   "resource-compat": resourceCompat,
+  "classification-reachability": classificationReachability,
 };
 
 /** Canonical rule order (matches ADR 0028). */
@@ -228,4 +258,5 @@ export const RULE_ORDER: readonly RuleName[] = [
   "capability-compat",
   "placement-compat",
   "resource-compat",
+  "classification-reachability",
 ];
