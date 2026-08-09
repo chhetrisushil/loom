@@ -27,6 +27,11 @@ export interface FlowConfig<TIn, TOut> {
    * is recorded. Absent, or no entry for the event type = today's behaviour,
    * byte-identically (G2).
    *
+   * CAREFUL — a strict schema changes what is PERSISTED, not only what is accepted:
+   * `z.object` strips keys it does not name, so a field your schema omits is dropped from the
+   * durable log permanently and silently. Model the extra fields (best — you get validation
+   * too), or `.passthrough()` when the payload carries an open envelope you do not own.
+   *
    * ```ts
    * resumeSchemas: {
    *   ApprovalGranted: z.object({ approved: z.boolean(), approvedBy: z.string() }),

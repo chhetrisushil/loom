@@ -185,7 +185,8 @@ export interface FlowDefinition<TIn = unknown, TOut = unknown> {
    * point.
    *
    * Presence IS the opt-in: an absent map, or an event type with no entry, is
-   * today's behaviour byte-identically (G2). Declared per FLOW rather than at the
+   * today's behaviour byte-identically (G2). Note that a strict `z.object` STRIPS unknown
+   * keys, so declaring a contract also decides what is persisted — see `FlowConfig`. Declared per FLOW rather than at the
    * `ctx.suspend` call site so the schema resolves from the registered definition
    * without executing the flow body — which is what makes refuse-before-append
    * possible at all.

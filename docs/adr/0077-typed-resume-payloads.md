@@ -149,6 +149,23 @@ is recorded, so defaults and transforms are durable rather than re-derived on ev
 
 Apps that declare nothing are unchanged, byte for byte.
 
+**The sharp edge, found while applying this across the examples:** "the parsed value is what is
+recorded" means a strict `z.object` **strips** keys it does not name, so declaring a contract
+also decides what is *persisted*. A field omitted from the schema is dropped from the durable
+log permanently, with nothing to warn you and no way to repair it afterwards — the events are
+already folded. Two payloads in the examples legitimately carry an open envelope (an A2UI
+`functionResponse`, and a bridge-normalized client action alongside the app's own field), and a
+naive schema would have silently erased it. Modelling the extra fields is preferred, since it
+buys validation as well as retention; `.passthrough()` is the escape hatch for envelopes the
+app does not own. Documented in the user guide and in the `flow$` JSDoc, and pinned by tests
+asserting both behaviours against the durable log.
+
+A second, softer trap: gate names are not evidence of gate payloads. Across the examples a gate
+called `ApprovalGranted` turned out to receive `{ approvedBy, approvedAt }` with no `approved`
+field, and another received a bare `{ approved }` from one caller. The casts had asserted a
+shape nobody was sending. Writing the schema is what surfaced it — which is the point, but it
+means the first schema must be derived from the real `resume` call sites, not from the name.
+
 The `as unknown as` casts at the 11 example gate sites can now be replaced by a declaration
 that is actually enforced. That migration is not part of this ADR — the examples live in a
 sibling repo — but it is the reason this exists.

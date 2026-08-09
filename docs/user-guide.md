@@ -342,6 +342,20 @@ A payload that does not satisfy its gate's schema is refused with `ResumePayload
 
 Opt-in by presence: no map, or no entry for that event type, is exactly today's behaviour. `resumeAs` validates against the **target** flow's map, since that is the code being resumed onto.
 
+> **Careful: a strict schema changes what gets persisted.** "The parsed value is what gets recorded" cuts both ways — `z.object` **strips** keys it does not name, so a field absent from your schema is dropped from the durable log *permanently*, with no warning. Declaring a gate contract is a decision about what is stored, not only about what is accepted.
+>
+> ```ts
+> // Caller sends: { approvedBy: "ops", a2ui: { surfaceId, action, context } }
+>
+> z.object({ approvedBy: z.string() })                  // log keeps { approvedBy } — a2ui GONE
+> z.object({ approvedBy: z.string() }).passthrough()    // log keeps both
+> z.object({ approvedBy: z.string(), a2ui: A2uiAction })// log keeps both, and checks a2ui
+> ```
+>
+> Prefer modelling the extra fields — you get validation as well as retention. Reach for `.passthrough()` when the payload legitimately carries an open envelope you do not own (an A2UI `functionResponse`, a webhook body) and cannot enumerate. Because the stripped write is durable, this is not something you can fix after the fact: the events are already folded.
+>
+> **And model what callers actually send, not what the gate name suggests.** Grep your `runtime.resume` call sites first. In the examples repo, a gate named `ApprovalGranted` turned out to receive `{ approvedBy, approvedAt }` with no `approved` field at all, and another received a bare `{ approved }` from one caller and `{ approved, approvedBy }` from a second — the "obvious" schema would have refused every real resume those apps send. A cast hid that for as long as it existed; a schema is where it surfaces.
+
 **Mechanics.** On resume the runner re-runs from the top. Every step that already completed is replayed from its logged `STEP_COMPLETED` (the effect does not run again); when execution reaches the original `suspend()`, that call *returns the resume payload* and the flow proceeds. This is deterministic replay (see [Architecture §4.3](architecture.md#43-suspend--resume)).
 
 **Recovery.** A crash mid-flight is just a resume: on redispatch the runtime folds durable state and, if still `running`, resumes; if already terminal, returns as-is. No step re-runs. `loadState(id)` folds state without running.

@@ -188,6 +188,38 @@ describe("resumeSchemas — typed resume payloads (TR, ADR 0077)", () => {
     expect(resumed?.payload).toEqual({ shape: "unchecked", n: 1 });
   });
 
+  it("STRIPS unknown keys — a strict schema changes what is durably recorded", async () => {
+    // The sharp edge of "the parsed value is what is recorded": `z.object` strips by default,
+    // so a field the schema does not name is dropped from the log PERMANENTLY. Nothing warns.
+    // Declaring a contract is therefore a decision about what gets persisted, not only about
+    // what is accepted.
+    const s = setup({ ApprovalGranted: z.object({ approvedBy: z.string() }) });
+    const executionId = await startAndSuspend(s);
+    const handle = await s.runtime.resume(
+      executionId,
+      resumeWith({ approvedBy: "ops", envelope: { callId: "c-1", surfaceId: "ui:1" } })
+    );
+    await handle.waitForCompletion();
+
+    const gate = (await s.eventStore.read(executionId)).find(
+      (e) => e.eventType === "ApprovalGranted"
+    );
+    expect(gate?.payload).toEqual({ approvedBy: "ops" }); // `envelope` is gone, for good
+  });
+
+  it("keeps unknown keys under `.passthrough()` — the fix for open envelopes", async () => {
+    const s = setup({ ApprovalGranted: z.object({ approvedBy: z.string() }).passthrough() });
+    const executionId = await startAndSuspend(s);
+    const payload = { approvedBy: "ops", envelope: { callId: "c-1", surfaceId: "ui:1" } };
+    const handle = await s.runtime.resume(executionId, resumeWith(payload));
+    await handle.waitForCompletion();
+
+    const gate = (await s.eventStore.read(executionId)).find(
+      (e) => e.eventType === "ApprovalGranted"
+    );
+    expect(gate?.payload).toEqual(payload);
+  });
+
   it("does not resolve a gate contract up the prototype chain", async () => {
     // `eventType` is caller-controlled and reaches the map as a key. Plain indexing would find
     // `Object.prototype.constructor` — a function with no `safeParse` — turning a hostile event
