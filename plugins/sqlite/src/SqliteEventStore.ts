@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
 import type { EventStore } from "@loom/event-runtime";
+import { SubscriberRegistry } from "@loom/event-runtime";
 import Database from "better-sqlite3";
 import { migrate } from "./schema";
 
@@ -31,7 +32,7 @@ export class SqliteEventStore implements EventStore {
   private readonly db: Database.Database;
   private pageFirstStmt: Database.Statement | undefined;
   private pageAfterStmt: Database.Statement | undefined;
-  private readonly subscribers = new Map<string, Set<(event: EventEnvelope) => void>>();
+  private readonly subscribers = new SubscriberRegistry();
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
@@ -65,6 +66,41 @@ export class SqliteEventStore implements EventStore {
     );
 
     this.notify(envelope.executionId, envelope);
+  }
+
+  /**
+   * ADR 0074 D1 — bulk append in ONE transaction. better-sqlite3's `transaction()` wrapper
+   * is synchronous and rolls back on throw, which gives the required atomicity directly:
+   * a UNIQUE(execution_id, sequence) violation part-way aborts the whole statement group,
+   * so no execution is left with a hole.
+   *
+   * Subscribers fire only after the transaction commits — a subscriber must never observe
+   * a batch that could still roll back.
+   */
+  async appendBatch(envelopes: readonly EventEnvelope[]): Promise<void> {
+    if (envelopes.length === 0) return;
+    const stmt = this.db.prepare<
+      [string, string, string, string, number, number, string, string | null]
+    >(`
+      INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const insertAll = this.db.transaction((batch: readonly EventEnvelope[]) => {
+      for (const envelope of batch) {
+        stmt.run(
+          envelope.id,
+          envelope.workflowId,
+          envelope.executionId,
+          envelope.eventType,
+          envelope.sequence,
+          envelope.timestamp,
+          JSON.stringify(envelope.payload),
+          envelope.metadata !== undefined ? JSON.stringify(envelope.metadata) : null
+        );
+      }
+    });
+    insertAll(envelopes);
+    for (const envelope of envelopes) this.notify(envelope.executionId, envelope);
   }
 
   async read(executionId: string): Promise<EventEnvelope[]> {
@@ -128,17 +164,7 @@ export class SqliteEventStore implements EventStore {
     executionId: string,
     handler: (event: EventEnvelope) => void
   ): Promise<() => void> {
-    if (!this.subscribers.has(executionId)) {
-      this.subscribers.set(executionId, new Set());
-    }
-    const handlers = this.subscribers.get(executionId)!;
-    handlers.add(handler);
-    return () => {
-      handlers.delete(handler);
-      if (handlers.size === 0) {
-        this.subscribers.delete(executionId);
-      }
-    };
+    return this.subscribers.add(executionId, handler);
   }
 
   async deleteExecution(executionId: string): Promise<void> {
@@ -191,12 +217,7 @@ export class SqliteEventStore implements EventStore {
     this.db.close();
   }
 
-  private notify(executionId: string, event: EventEnvelope): void {
-    const handlers = this.subscribers.get(executionId);
-    if (handlers) {
-      for (const handler of handlers) {
-        handler(event);
-      }
-    }
+  private notify(_executionId: string, event: EventEnvelope): void {
+    this.subscribers.emit(event);
   }
 }

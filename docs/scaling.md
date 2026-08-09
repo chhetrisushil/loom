@@ -133,9 +133,16 @@ and log scans on the read path.
 
 This ordering deliberately does **not** lead with the biggest headline multiplier.
 
-### 3.1 Interest-filtered notify delivery — the best-evidenced win available
+### 3.1 Interest-filtered notify delivery — SHIPPED (ADR 0074 D4)
 
-**Status: no gate against it, no SPI change, measured. Do this one first.**
+**Status: implemented.** `PostgresEventStore` now publishes and LISTENs on bucketed
+channels (`notifyBuckets`, default 16), so a node receives only the buckets it holds
+subscriptions for. `notifyBuckets: 1` keeps the legacy single-channel behaviour verbatim as
+a rolling-upgrade escape hatch. The backend-independent half — the subscriber registry and
+the interest set a transport narrows on — is `SubscriberRegistry` in
+`packages/event-runtime`, so a bring-your-own backend writes only its transport.
+
+The measurements below are what motivated it.
 
 Every append fires `pg_notify` on a single global channel, and every subscribing node
 receives every event and filters client-side **[code]**. The measured cost **[measured]**:
@@ -231,10 +238,19 @@ interval — the obvious reading of the defect — is inert in both regimes (299
 checkpoints on a slow workload; no effect at all on a fast one). Dropped rather than shipped
 unmeasured.
 
-### 3.3 Batching — gated, and worth less than it looks
+### 3.3 Batching — SHIPPED as a decorator (ADR 0074 D2), worth 2.3–4.3×
 
-**Status: designed, frozen, deferred behind a three-part evidence gate (ADR 0065). The
-current benchmarks do NOT open that gate.**
+**Status: implemented as `CoalescingEventStore` + the optional `appendBatch` SPI hook.**
+Measured end to end on Postgres: **2.3×** at the default `maxBatch: 16`, **4.3×** at 64.
+Opt-in — inert unless wired into `storage`.
+
+ADR 0074 records why this is outside ADR 0065's gate rather than a bypass of it: the gate
+guarded speculative machinery *inside the kernel* changing durability semantics for
+everyone, and a composable store decorator that changes no semantics is a different object.
+ADR 0065's gate itself remains unopened — no real workload has been shown bottlenecked on
+event writes.
+
+The analysis below explains why the journal-side placement it froze does not work.
 
 The headline is 8.2× (183K events/sec at batch=16) **[measured]**, and it is easy to
 misread. That batch holds 16 events *of one execution*. But `ExecutionJournal` is
@@ -276,9 +292,15 @@ from the 8.2× alone.
 Do **not** reintroduce durability classes, ephemeral runs, or flush-boundary semantics.
 ADR 0065 rejected those on invariants, not on cost — no benchmark reopens them.
 
-### 3.4 Log partitioning — last, and only with a demonstrated need
+### 3.4 Log partitioning — SHIPPED as a decorator (ADR 0074 D3)
 
-**Status: [open]. Nothing exists. Do not start here.**
+**Status: implemented as `ShardedEventStore`.** Routes by `hash(executionId)` over N inner
+stores, needs **zero backend cooperation**, and shards may be heterogeneous. Enumeration is
+scatter-gather preserving the lexicographic contract; cross-shard fork degrades to the
+per-event fallback; an optional capability is advertised only if every shard has it.
+
+Still the LAST thing to reach for — exhaust 3.1–3.3 and vertical scaling first. The
+analysis below of what it costs you remains accurate.
 
 Sharding `events` by `hash(execution_id)` across primaries is the only thing that lifts the
 single-primary ceiling. The good news is placement: a `ShardedEventStore` decorator routing
