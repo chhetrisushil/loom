@@ -138,8 +138,48 @@ for a single primary and re-capture on the host you intend to quote.
 | 32  | 22,356 | 1.40 | 1.95  | 3.42   |
 | 128 | 17,802 | 5.69 | 37.82 | 150.34 |
 
-Throughput plateaus by c=8 and *regresses* at c=128 while the tail blows out ~100×. Adding
-in-flight writes past the plateau buys latency, not capacity.
+Throughput plateaus by c=8; adding in-flight writes past that buys latency, not capacity.
+
+**Correction:** the c=128 row was first read as a regression. A wider sweep (below) shows it
+is noise — raw append throughput is flat from c=8 to c=1024.
+
+### Concurrency above 128: throughput flat, latency linear
+
+| conc | events/sec | p50 ms | p99 ms |
+|---:|---:|---:|---:|
+| 8 | 20,271 | 0.32 | 1.7 |
+| 32 | 17,055 | 1.51 | 7.2 |
+| 128 | 19,194 | 6.02 | 13.7 |
+| 256 | 21,389 | 11.74 | 13.6 |
+| 512 | 15,639 | 24.01 | 109.0 |
+| 1024 | 20,169 | 48.10 | 73.1 |
+
+Textbook saturated-resource behaviour: throughput pinned at ~20K events/sec across a 128×
+concurrency range, while p50 latency grows linearly (0.32 → 48 ms). Past c≈8 every extra
+in-flight write is queueing, not work.
+
+### …but execution-layer concurrency scales to ~512, because executions are mostly idle
+
+Raw-append concurrency and *execution* concurrency are different things, and conflating them
+is easy. An execution with a slow effect spends almost all its time not writing, so
+concurrency there buys real throughput. 1-step flow, 100 ms effect:
+
+| conc | exec/sec | events/sec | Little's Law | efficiency | p50 ms | p99 ms |
+|---:|---:|---:|---:|---:|---:|---:|
+| 32 | 291 | 1,162 | 320 | 91% | 105 | 116 |
+| 128 | 1,173 | 4,691 | 1,280 | 92% | 104 | 115 |
+| 512 | 4,025 | 16,100 | 5,120 | 79% | 107 | 147 |
+| 1024 | 3,704 | 14,818 | 10,240 | 36% | 195 | 506 |
+| 2048 | 4,955 | 19,821 | 20,480 | 24% | 381 | 441 |
+
+Near-linear to **c=512** at ~90% of Little's Law, with p50 latency still at the effect's own
+100 ms. Past that it plateaus in a noisy 3.7–5K exec/sec band — ~16–20K events/sec, i.e.
+exactly the write ceiling from the table above — and the extra concurrency shows up as
+latency (p50 105 → 381 ms), not throughput.
+
+**Practical reading:** on this hardware a 1-step, 100 ms-effect workload saturates at
+**~4,000–5,000 exec/sec around c=512**. Earlier guidance extrapolated ~5,500 exec/sec at
+c≈550 from the write ceiling alone; the measured plateau is ~25% below that.
 
 ### Batching: the SQL shape is worth up to 8×, but most of that is NOT reachable from the journal
 
