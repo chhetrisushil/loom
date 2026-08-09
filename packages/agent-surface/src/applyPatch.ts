@@ -6,6 +6,27 @@ function splitPath(path: string): string[] {
   return path === "" ? [] : path.split(".");
 }
 
+// Reserved keys, matching the kernel fold's `RESERVED_FOLD_KEYS`
+// (`replay-vm/src/eventHandlers.ts`). The writers below use the assignment form
+// (`clone[head] = …`) on a plain object, so `clone["__proto__"] = x` would invoke the
+// prototype setter and re-parent that state object — after which every later property
+// lookup on it traverses a value that came in over the wire.
+//
+// It matters here specifically because this is the CONSUMER side: patches arrive as
+// SURFACE_PATCH event payloads, and a surface can be fed from outside the process
+// (the A2UI ingress path, MCP apps). The kernel fold already refuses these keys; this
+// standalone folder folds the same events and must agree.
+//
+// Unlike the kernel, which throws, an unsafe path is a NO-OP: this module's contract is
+// "pure and total — an unknown op is a no-op so forward-compatible producers never crash a
+// consumer", and a UI store must not be crashable by a malformed patch.
+const RESERVED_PATH_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function hasReservedSegment(parts: readonly string[]): boolean {
+  for (const part of parts) if (RESERVED_PATH_KEYS.has(part)) return true;
+  return false;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -68,6 +89,9 @@ function removeIn(state: SurfaceState, parts: string[]): SurfaceState {
 // immutability is preserved); only arrays this batch just created are pushed to.
 function applyOne(state: SurfaceState, patch: SurfacePatch, owned: WeakSet<object>): SurfaceState {
   const parts = splitPath(patch.path);
+  // Drop the whole patch rather than sanitising the path: a patch that names a reserved
+  // key is malformed, and silently retargeting it somewhere else would be worse.
+  if (hasReservedSegment(parts)) return state;
   switch (patch.op) {
     case "set":
       return updateIn(state, parts, () => patch.value);
