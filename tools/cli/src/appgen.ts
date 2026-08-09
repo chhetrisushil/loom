@@ -420,7 +420,13 @@ async function writeFile(
       overwrite = true;
       break;
     }
-    dest = path.isAbsolute(choice.newPath) ? choice.newPath : path.join(dir, choice.newPath);
+    // Contain the RENAME too. The initial `dest` is checked, but this branch used to honour
+    // an absolute path outright and otherwise `path.join` without a check — so the guard was
+    // one prompt away from being bypassed. `AppgenIO` is injectable, so "a human typed it"
+    // is not a guarantee the code can rely on; a programmatic resolver supplies this string
+    // just as easily. Someone who genuinely wants to write elsewhere runs appgen with a
+    // different `--dir`, which is the honest way to say so.
+    dest = resolveInside(dir, choice.newPath);
   }
 
   if (skip) {

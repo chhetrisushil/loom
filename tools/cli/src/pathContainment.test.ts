@@ -51,3 +51,18 @@ describe("plugin scaffolder — the name is not a path", () => {
     expect(Object.keys(files).every((k) => k.startsWith("plugins/my-store/"))).toBe(true);
   });
 });
+
+// The rename branch is a SECOND entry point into the same write. It used to honour an
+// absolute path outright, and otherwise joined without a check — so the containment guard on
+// the initial path was one prompt away from being bypassed.
+describe("appgen — the rename branch is contained too", () => {
+  it("refuses a rename that escapes, absolute or relative", () => {
+    for (const bad of ["/etc/passwd", "../escape.ts", "a/../../../x.ts"]) {
+      expect(() => resolveInside(ROOT, bad)).toThrow(/outside the target directory/);
+    }
+  });
+
+  it("accepts a rename that stays inside", () => {
+    expect(resolveInside(ROOT, "src/renamed.ts")).toBe(path.join(ROOT, "src/renamed.ts"));
+  });
+});
