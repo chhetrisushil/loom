@@ -378,7 +378,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     this.emit(eventType, { delta, done });
   }
 
-  suspend(_config: SuspendConfig): Promise<never> {
+  suspend<T = never>(_config: SuspendConfig): Promise<T> {
     // During resume replay, gates that were already resumed pass through IN
     // ORDER, each receiving ITS OWN recorded payload — the fold's ordered
     // `_resumePayloads` list (1.16.0, ADR 0057). The i-th suspend call in a
@@ -394,7 +394,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (this.suspendPassthroughsConsumed < recorded.length) {
       const payload = recorded[this.suspendPassthroughsConsumed];
       this.suspendPassthroughsConsumed++;
-      return Promise.resolve(payload) as unknown as Promise<never>;
+      return Promise.resolve(payload) as Promise<T>;
     }
     throw new SuspendError(_config);
   }
