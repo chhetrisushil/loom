@@ -89,9 +89,11 @@ export interface BudgetSpec {
  * them descend into array elements.
  */
 export interface UnreachableMarkRef {
-  /** Where the mark sits, with `[]` per array crossing (e.g. `people[].ssn`). */
+  /** Where the mark sits, e.g. `byId.<record>.ssn` — a location, not an addressable path. */
   readonly path: string;
   readonly dataClass: string;
+  /** The container that strands it: `record`, `union`, `tuple`, `intersection`, … */
+  readonly container: string;
   /** Which schema it was declared on. */
   readonly stepId: string;
   readonly channel: "input" | "output";

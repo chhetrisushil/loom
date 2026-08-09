@@ -6,29 +6,71 @@ import { collectUnreachableMarks } from "./unreachable";
 
 // The detector audits `collectMarkedPaths`, so the two must agree on what is reachable.
 // A false positive here is worse than the gap it reports: it would tell a developer their
-// working mark is broken. So most of these assert the detector against what masking
+// working mark is broken. So the reachable cases assert the detector against what masking
 // ACTUALLY does, not against a hand-written expectation.
 const masks = (schema: z.ZodTypeAny, value: unknown): unknown =>
   maskPaths(value, [...pathsOfClass(schema, "sensitive"), ...pathsOfClass(schema, "internal")]);
 
 describe("collectUnreachableMarks", () => {
-  it("finds a mark inside an array element — the silent no-op", () => {
+  it("stays silent for marks under arrays — those are reachable now", () => {
     const schema = z.object({ people: z.array(z.object({ ssn: sensitive(z.string()) })) });
-    expect(collectUnreachableMarks(schema)).toEqual([
-      { path: "people[].ssn", dataClass: "sensitive", reason: "under-array" },
-    ]);
-    // Confirm the gap is real rather than assumed: masking leaves the value untouched.
-    const masked = masks(schema, { people: [{ ssn: "123-45-6789" }] }) as {
-      people: { ssn: string }[];
-    };
-    expect(masked.people[0]?.ssn).toBe("123-45-6789");
+    expect(collectUnreachableMarks(schema)).toEqual([]);
+    // Not merely assumed reachable: masking really reaches it.
+    expect(masks(schema, { people: [{ ssn: "123-45-6789" }, { ssn: "9" }] })).toEqual({
+      people: [{ ssn: "[redacted]" }, { ssn: "[redacted]" }],
+    });
   });
 
-  it("stays silent when the ARRAY itself is marked — the supported spelling", () => {
-    const schema = z.object({ people: sensitive(z.array(z.object({ ssn: z.string() }))) });
-    expect(collectUnreachableMarks(schema)).toEqual([]);
-    // And that spelling genuinely masks.
-    expect(masks(schema, { people: [{ ssn: "123" }] })).toEqual({ people: "[redacted]" });
+  it("finds a mark under a record — the remaining silent no-op", () => {
+    const schema = z.object({ byId: z.record(z.object({ ssn: sensitive(z.string()) })) });
+    expect(collectUnreachableMarks(schema)).toEqual([
+      { path: "byId.<record>.ssn", dataClass: "sensitive", container: "record" },
+    ]);
+    // Confirm the gap is real rather than assumed: masking leaves the value untouched.
+    const masked = masks(schema, { byId: { a: { ssn: "123-45-6789" } } }) as {
+      byId: Record<string, { ssn: string }>;
+    };
+    expect(masked.byId.a?.ssn).toBe("123-45-6789");
+  });
+
+  it("finds marks under a union, a tuple and an intersection", () => {
+    const union = z.object({
+      v: z.union([z.object({ k: secret(z.string()) }), z.object({ n: z.number() })]),
+    });
+    expect(collectUnreachableMarks(union)).toEqual([
+      { path: "v.<union>.k", dataClass: "secret", container: "union" },
+    ]);
+
+    const tuple = z.object({ pair: z.tuple([z.string(), z.object({ e: sensitive(z.string()) })]) });
+    expect(collectUnreachableMarks(tuple)).toEqual([
+      { path: "pair.<tuple>.e", dataClass: "sensitive", container: "tuple" },
+    ]);
+
+    const inter = z.object({
+      both: z.intersection(z.object({ a: internal(z.string()) }), z.object({ b: z.string() })),
+    });
+    expect(collectUnreachableMarks(inter)).toEqual([
+      { path: "both.<intersection>.a", dataClass: "internal", container: "intersection" },
+    ]);
+  });
+
+  it("reaches marks stranded under a record nested inside an array", () => {
+    // Arrays are traversable, records are not — the array crossing must not mask the blocker.
+    const schema = z.object({
+      rows: z.array(z.object({ meta: z.record(z.object({ k: secret(z.string()) })) })),
+    });
+    expect(collectUnreachableMarks(schema)).toEqual([
+      { path: "rows[].meta.<record>.k", dataClass: "secret", container: "record" },
+    ]);
+  });
+
+  it("names the OUTERMOST blocker when containers nest", () => {
+    // Fixing the inner one changes nothing while the outer record still strands it.
+    const schema = z.object({
+      m: z.record(z.union([z.object({ s: sensitive(z.string()) }), z.string()])),
+    });
+    const [found] = collectUnreachableMarks(schema);
+    expect(found?.container).toBe("record");
   });
 
   it("stays silent for ordinary reachable marks", () => {
@@ -49,46 +91,26 @@ describe("collectUnreachableMarks", () => {
     });
   });
 
-  it("reports every class, not just sensitive", () => {
-    const schema = z.object({
-      rows: z.array(z.object({ k: secret(z.string()), n: internal(z.number()) })),
-    });
-    expect(collectUnreachableMarks(schema)).toEqual([
-      { path: "rows[].k", dataClass: "secret", reason: "under-array" },
-      { path: "rows[].n", dataClass: "internal", reason: "under-array" },
-    ]);
-  });
-
   it("sees through optional / nullable / default wrappers, as the walker does", () => {
     const schema = z.object({
-      a: z.array(z.object({ x: sensitive(z.string()).optional() })).optional(),
+      a: z.record(z.object({ x: sensitive(z.string()).optional() })).optional(),
       b: z.object({ y: sensitive(z.string()).nullable() }),
     });
-    const found = collectUnreachableMarks(schema);
-    expect(found).toEqual([{ path: "a[].x", dataClass: "sensitive", reason: "under-array" }]);
+    expect(collectUnreachableMarks(schema)).toEqual([
+      { path: "a.<record>.x", dataClass: "sensitive", container: "record" },
+    ]);
     // `b.y` is reachable and really is masked, so it must not be reported.
     expect(masks(schema, { b: { y: "secret" } })).toEqual({ b: { y: "[redacted]" } });
-  });
-
-  it("handles nested and array-of-array shapes", () => {
-    const schema = z.object({
-      teams: z.array(z.object({ members: z.array(z.object({ ssn: sensitive(z.string()) })) })),
-      grid: z.array(z.array(z.object({ v: internal(z.string()) }))),
-    });
-    expect(collectUnreachableMarks(schema)).toEqual([
-      { path: "teams[].members[].ssn", dataClass: "sensitive", reason: "under-array" },
-      { path: "grid[][].v", dataClass: "internal", reason: "under-array" },
-    ]);
   });
 
   it("does not double-report a mark nested inside a marked object", () => {
     // The outer mark already covers the subtree — reporting the inner one would tell a
     // developer to fix something the coarser mark handles.
     const schema = z.object({
-      rows: z.array(sensitive(z.object({ ssn: sensitive(z.string()) }))),
+      rows: z.record(sensitive(z.object({ ssn: sensitive(z.string()) }))),
     });
     expect(collectUnreachableMarks(schema)).toEqual([
-      { path: "rows[]", dataClass: "sensitive", reason: "under-array" },
+      { path: "rows.<record>", dataClass: "sensitive", container: "record" },
     ]);
   });
 
@@ -96,5 +118,7 @@ describe("collectUnreachableMarks", () => {
     expect(collectUnreachableMarks(z.object({ a: z.string() }))).toEqual([]);
     expect(collectUnreachableMarks(z.string())).toEqual([]);
     expect(collectUnreachableMarks(z.array(z.string()))).toEqual([]);
+    // An unmarked record is not a finding — only a stranded MARK is.
+    expect(collectUnreachableMarks(z.object({ m: z.record(z.string()) }))).toEqual([]);
   });
 });

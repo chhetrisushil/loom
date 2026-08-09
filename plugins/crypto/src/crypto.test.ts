@@ -57,4 +57,35 @@ describe("field-level AES-256-GCM envelope (K10.2)", () => {
     expect(input.items[0]?.secret).toBe("a"); // original array + element untouched
     expect(out.items[1]).toBe(input.items[1]); // untouched element shared
   });
+
+  it("encrypts EVERY element behind a `[]` path, and only the marked field (#260)", () => {
+    const key = randomBytes(32);
+    const input = {
+      people: [
+        { ssn: "111-11-1111", id: "a" },
+        { ssn: "222-22-2222", id: "b" },
+      ],
+      note: "plain",
+    };
+    const out = mapPaths(input, ["people[].ssn"], (v) => encryptValue(key, v)) as typeof input;
+
+    expect(Array.isArray(out.people)).toBe(true);
+    expect(out.people).toHaveLength(2);
+    for (const [i, person] of out.people.entries()) {
+      expect(hasEnvelope(person.ssn)).toBe(true);
+      // Round-trips to the original plaintext — the whole point of encrypting at append.
+      expect(decryptValue(key, person.ssn)).toBe(input.people[i]?.ssn);
+    }
+    // Unmarked siblings untouched.
+    expect(out.people[0]?.id).toBe("a");
+    expect(out.note).toBe("plain");
+    // Input never mutated.
+    expect(input.people[0]?.ssn).toBe("111-11-1111");
+  });
+
+  it("leaves a `[]` path alone when it does not resolve", () => {
+    const input = { people: "not-an-array", other: 1 };
+    expect(mapPaths(input, ["people[].ssn"], () => "X")).toEqual(input);
+    expect(mapPaths({ other: 1 }, ["people[].ssn"], () => "X")).toEqual({ other: 1 });
+  });
 });

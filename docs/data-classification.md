@@ -42,6 +42,26 @@ A marker survives being wrapped afterwards — `sensitive(z.string()).optional()
 treated as a unit (its whole subtree is encrypted together; inner marks are not also
 emitted — the coarser mark wins).
 
+### Marks inside arrays
+
+Marking a field inside a list of records works, at any depth
+([ADR 0076](adr/0076-wildcard-classification-paths.md)):
+
+```ts
+const output = z.object({
+  people: z.array(z.object({ ssn: sensitive(z.string()), id: z.string() })),
+});
+```
+
+The derived path is `people[].ssn`, where `[]` is an **array crossing**: every element is
+masked, encrypted and externalized independently, and unmarked siblings (`id`) are untouched.
+The crossing composes — `teams[].members[].ssn` and `grid[][].v` both work — and resolves
+against the actual value, so a path that does not resolve (absent field, or a non-array) is
+simply skipped.
+
+Marking the array *itself* is still supported and means something different: the whole array
+is covered as one unit, so masking yields `"[redacted]"` in place of the list.
+
 ## Deriving the wiring
 
 The kernel stays ignorant of the taxonomy (G3 — the vocabulary lives here, the mechanism
@@ -160,5 +180,9 @@ index (T3). See the [K10/T3 evaluation](requirements/2026-07-13-k10-t3-critical-
 
 - **Manifest-level sensitivity (K10-R1.3)** — deferred. Runtime enforcement is load-bearing;
   a static manifest surface is a nicety over real compiler work.
-- **Array-element paths** — the dot-path sinks address scalar paths; mark the scalar field
-  inside an array element's object instead of the array.
+- **Record / union / tuple / intersection members** — the dot-path sinks walk objects and
+  arrays only. A mark inside a `z.record` value, a `z.union` branch, a `z.tuple` member or
+  either side of a `z.intersection` collects no path and does nothing. Mark the container
+  itself, or restructure it as an object or array. The
+  [`classification-reachability`](verification.md) check fails the build on this rather than
+  letting it fail silently.

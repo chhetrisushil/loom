@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { expandPaths, hasWildcard } from "@loom/classify";
 
 // ── ADR 0046 — content-addressed references ───────────────────────────────────
 //
@@ -139,8 +140,11 @@ export async function mapPathsAsync(
   transform: (value: unknown) => Promise<unknown>
 ): Promise<unknown> {
   if (paths.length === 0 || typeof root !== "object" || root === null) return root;
+  // `[]` segments are resolved against the concrete value first, so a mark inside an array
+  // element reaches every element (#260). Paths without one pass through untouched.
+  const targets = hasWildcard(paths) ? expandPaths(root, paths) : paths;
   const out = shallowCopy(root);
-  for (const path of paths) {
+  for (const path of targets) {
     const segs = path.split(".");
     let src = root as Record<string, unknown>;
     let dst = out;

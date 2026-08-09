@@ -99,8 +99,10 @@ function effectiveMark<T>(schema: z.ZodTypeAny, markOf: (node: z.ZodTypeAny) => 
  * {@link externalized} marker. Walks an object schema, and for every node whose `markOf`
  * returns a value emits `{ path, mark }`, recursing through nested objects and transparent
  * wrappers. A marked *object* is reported at its own path and NOT descended into (the coarser
- * mark wins — a marked address object is treated as a unit). Array-element recursion is out of
- * scope: the dot-path sinks address scalar paths. Deterministic: schema-declaration order (P2).
+ * mark wins — a marked address object is treated as a unit). Recurses THROUGH arrays with a
+ * `[]` crossing segment (`people[].ssn`), which the sinks expand against the concrete value
+ * (#260) — a mark inside an array element used to collect no path and silently do nothing.
+ * Deterministic: schema-declaration order (P2).
  */
 export function collectMarkedPaths<T>(
   schema: z.ZodTypeAny,
@@ -113,7 +115,14 @@ export function collectMarkedPaths<T>(
     out.push({ path: prefix, mark });
     return out;
   }
-  const shape = objectShape(chain(schema).inner);
+  const inner = chain(schema).inner;
+  const element = arrayElement(inner);
+  if (element !== undefined) {
+    // Cross the array. The prefix gains `[]`, so `people` + element mark `ssn` yields
+    // `people[].ssn`; a mark on the ELEMENT type itself yields `people[]`.
+    return collectMarkedPaths(element, markOf, `${prefix}[]`);
+  }
+  const shape = objectShape(inner);
   if (shape !== undefined) {
     for (const [key, child] of Object.entries(shape)) {
       const childPath = prefix === "" ? key : `${prefix}.${key}`;
@@ -121,6 +130,13 @@ export function collectMarkedPaths<T>(
     }
   }
   return out;
+}
+
+/** The element type, if this node is an array. */
+function arrayElement(node: z.ZodTypeAny): z.ZodTypeAny | undefined {
+  const def = (node as { _def?: { typeName?: string; type?: unknown } })._def;
+  if (def?.typeName !== "ZodArray") return undefined;
+  return def.type as z.ZodTypeAny | undefined;
 }
 
 /** A classified leaf/subtree and its dot-path from the walked root. */
