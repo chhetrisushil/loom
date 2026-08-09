@@ -82,7 +82,9 @@ and compute.
   extractors index domain events into a persisted, queryable store (kind + field-equality,
   keyset-paged); convergent ingestion from the live `onEvent` tail + watermark-incremental
   catch-up; a cache of the log, never an authority ([ADR 0058](adr/0058-read-model-plugin.md)).
-- `@loom/plugin-audit-chain` — tamper-evident hash-chained `EventStore` wrapper.
+- `@loom/plugin-audit-chain` — tamper-evident hash-chained `EventStore` wrapper. Wrap it
+  *outside* `ContentResolvingEventStore` if you use both — inverted, the chain hashes only the
+  content ref and a rewritten blob verifies clean (see the plugin README).
 
 **Composition patterns**
 

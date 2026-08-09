@@ -1280,6 +1280,9 @@ importers:
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../../packages/effect-runtime
+      '@loom/plugin-content':
+        specifier: workspace:*
+        version: link:../content
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime

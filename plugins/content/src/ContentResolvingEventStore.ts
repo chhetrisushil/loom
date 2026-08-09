@@ -32,6 +32,11 @@ export interface ContentResolvingEventStoreOptions {
  * re-wrap needed. A read of an execution whose externalized bytes were erased throws
  * {@link ContentMissingError} — replay fails loudly, never silently diverges (G1).
  *
+ * **Composing with `@loom/plugin-audit-chain`:** wrap this store INSIDE the hash chain —
+ * `hashChainedEventStore(new ContentResolvingEventStore(...))`. Chained the other way round
+ * the chain hashes only the ref string, so a rewritten blob verifies clean. See
+ * `hashChainedEventStore`'s note and `contentOrdering.test.ts`.
+ *
  * **Reclamation caveat (v1):** `deleteExecution`/`truncatePrefix` remove the log's events but
  * do NOT delete the referenced blobs — refcounted blob GC (forks share content) is a separate
  * step, deferred per ADR 0046's risks. Erase content explicitly via `contentStore.delete(ref)`.
