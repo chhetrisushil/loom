@@ -66,10 +66,18 @@ a direct consequence: **worker scale-out does not raise it.** `PlacementDispatch
 `worker-remote`, and `cloudrun` move *compute*; every one of those workers still writes to
 the same log.
 
-**Concurrency past c≈8 buys latency, not capacity. [measured]** Throughput plateaus at
-c=8 (22.4K events/sec) and *regresses* at c=128 (17.8K) while p99 goes 0.63ms → 37.8ms.
-If you are tuning pool sizes upward hoping for throughput, you are trading tail latency for
-nothing.
+**Write-path concurrency past c≈8 buys latency, not capacity. [measured]** Raw append
+throughput is flat at ~20K events/sec from c=8 all the way to c=1024, while p50 latency
+grows linearly (0.32 ms → 48 ms). If you are tuning pool sizes upward hoping for throughput,
+you are trading tail latency for nothing. (An earlier reading of this as *regressing* at
+c=128 was noise; the wider sweep shows a flat plateau.)
+
+**Execution-layer concurrency is a different thing, and it does scale. [measured]** An
+execution with a slow effect is barely writing at all, so concurrency there buys real
+throughput: a 1-step flow with a 100 ms effect scales near-linearly to **c=512** at ~90% of
+Little's Law (4,025 exec/sec), then plateaus at ~4–5K exec/sec — the write ceiling — with
+further concurrency converting to latency (p50 105 → 381 ms). Do not read the write-path
+result as a reason to cap execution concurrency at 8.
 
 **Reads do not benefit from snapshots today. [code]** `WorkflowRuntime.foldState`
 (`packages/workflow-runtime/src/WorkflowRuntime.ts:843`) unconditionally calls
