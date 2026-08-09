@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import * as http from "node:http";
+import { BadRequestError, exposeError } from "@loom/core";
 import type { EffectMode } from "@loom/core";
 import type { EffectRuntime } from "@loom/effect-runtime";
 import {
@@ -94,6 +96,16 @@ export interface McpServerOptions {
    */
   audienceOf?: (req: http.IncomingMessage) => McpAudience;
   /**
+   * Called with the real error behind a transport-level JSON-RPC internal error, alongside
+   * the `errorId` the caller was given. The response carries no internal detail, so this is
+   * the only place it surfaces.
+   *
+   * Note this is NOT the path a failing tool takes — a tool failure is an in-band `isError`
+   * result carrying the tool's own message, which is MCP's contract and is what lets a model
+   * react to it.
+   */
+  onError?: (errorId: string, err: unknown) => void;
+  /**
    * Admit an app-originated call to a `journaled` tool. Default: DENY.
    *
    * This is the "journaled vs ambient" boundary at the surface. A View can call
@@ -148,8 +160,8 @@ function parseBody(req: http.IncomingMessage): Promise<unknown> {
     req.on("end", () => {
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString("utf-8")) as unknown);
-      } catch (err) {
-        reject(err);
+      } catch {
+        reject(new BadRequestError("request body is not valid JSON"));
       }
     });
     req.on("error", (err: Error) => reject(err));
@@ -419,7 +431,21 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
         }
         await handleRpc(body, req, res);
       } catch (err) {
-        rpcError(res, null, JSON_RPC_INTERNAL, String(err));
+        // Transport-level failure — distinct from a tool failure, which is reported in-band
+        // with the tool's own message. Nothing internal goes on the wire; the detail reaches
+        // the operator through `onError`, correlated by id.
+        const exposed = exposeError(err, randomUUID);
+        if (exposed.internal !== undefined) {
+          options.onError?.(exposed.body.errorId as string, exposed.internal);
+          rpcError(
+            res,
+            null,
+            JSON_RPC_INTERNAL,
+            `internal error (errorId: ${exposed.body.errorId})`
+          );
+        } else {
+          rpcError(res, null, JSON_RPC_INVALID_REQUEST, exposed.body.error);
+        }
       }
     })();
   });

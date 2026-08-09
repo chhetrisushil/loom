@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import * as http from "node:http";
+import { BadRequestError, exposeError } from "@loom/core";
 import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 import { LoomAgentExecutor } from "./AgentExecutor";
 import type { A2ATask, AgentCard } from "./types";
@@ -12,6 +14,12 @@ export interface A2AServerOptions {
    * scheme (shared secret, mTLS, …); the server supplies the gate.
    */
   authorize?: (req: http.IncomingMessage) => boolean | Promise<boolean>;
+  /**
+   * Called with the real error behind a 500, alongside the `errorId` the caller was given.
+   * The response itself carries no internal detail, so this is the only place it surfaces —
+   * wire it to your logger or the detail is simply lost.
+   */
+  onError?: (errorId: string, err: unknown) => void;
 }
 
 export interface A2AServer {
@@ -35,7 +43,7 @@ function parseBody(req: http.IncomingMessage): Promise<unknown> {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
         req.destroy();
-        reject(new Error(`request body exceeds ${MAX_BODY_BYTES} bytes`));
+        reject(new BadRequestError(`request body exceeds ${MAX_BODY_BYTES} bytes`));
         return;
       }
       chunks.push(chunk);
@@ -44,8 +52,9 @@ function parseBody(req: http.IncomingMessage): Promise<unknown> {
       try {
         const raw = Buffer.concat(chunks);
         resolve(JSON.parse(raw.toString("utf-8")) as unknown);
-      } catch (err) {
-        reject(err);
+      } catch {
+        // The caller's own malformed JSON — safe to name, and useless to hide.
+        reject(new BadRequestError("request body is not valid JSON"));
       }
     });
     req.on("error", (err: Error) => reject(err));
@@ -135,7 +144,11 @@ export function createA2AServer(
 
         json(res, 404, { error: "not found" });
       } catch (err) {
-        json(res, 500, { error: String(err) });
+        const exposed = exposeError(err, randomUUID);
+        if (exposed.internal !== undefined) {
+          options.onError?.(exposed.body.errorId as string, exposed.internal);
+        }
+        json(res, exposed.status, exposed.body);
       }
     })();
   });

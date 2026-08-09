@@ -29,6 +29,8 @@ export {
   TypedFailure,
   WorkflowNotFoundError,
 } from "./types/errors";
+export { BadRequestError, exposeError } from "./types/exposure";
+export type { ExposedError } from "./types/exposure";
 export type {
   AgentDefinition,
   AgentSkillDef,

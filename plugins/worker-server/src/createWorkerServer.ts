@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import * as http from "node:http";
+import { BadRequestError, exposeError } from "@loom/core";
 import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
 
 export interface WorkerServerOptions {
@@ -13,6 +15,11 @@ export interface WorkerServerOptions {
    * `/health` is always open.
    */
   authorize?: (req: http.IncomingMessage) => boolean | Promise<boolean>;
+  /**
+   * Called with the real error behind a 500, alongside the `errorId` the caller was given.
+   * The response carries no internal detail, so this is the only place it surfaces.
+   */
+  onError?: (errorId: string, err: unknown) => void;
 }
 
 export interface WorkerServer {
@@ -36,7 +43,7 @@ function parseBody(req: http.IncomingMessage): Promise<unknown> {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
         req.destroy();
-        reject(new Error(`request body exceeds ${MAX_BODY_BYTES} bytes`));
+        reject(new BadRequestError(`request body exceeds ${MAX_BODY_BYTES} bytes`));
         return;
       }
       chunks.push(chunk);
@@ -45,8 +52,8 @@ function parseBody(req: http.IncomingMessage): Promise<unknown> {
       try {
         const raw = Buffer.concat(chunks).toString("utf-8");
         resolve(raw.length === 0 ? {} : (JSON.parse(raw) as unknown));
-      } catch (err) {
-        reject(err);
+      } catch {
+        reject(new BadRequestError("request body is not valid JSON"));
       }
     });
     req.on("error", (err: Error) => reject(err));
@@ -143,7 +150,11 @@ export function createWorkerServer(
 
         json(res, 404, { error: "not found" });
       } catch (err) {
-        json(res, 500, { error: String(err instanceof Error ? err.message : err) });
+        const exposed = exposeError(err, randomUUID);
+        if (exposed.internal !== undefined) {
+          options.onError?.(exposed.body.errorId as string, exposed.internal);
+        }
+        json(res, exposed.status, exposed.body);
       }
     })();
   });

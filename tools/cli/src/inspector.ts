@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import * as http from "node:http";
+import { exposeError } from "@loom/core";
 import type { EventStore } from "@loom/event-runtime";
 import { describeState, foldAt } from "./core";
 import { buildTrace } from "./trace";
@@ -51,9 +53,19 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
  */
 export function serveInspector(
   eventStore: EventStore,
-  options: { port?: number } = {}
+  options: { port?: number; host?: string } = {}
 ): InspectorServer {
   let resolvedPort = options.port ?? 0;
+  // Bind to loopback by default.
+  //
+  // `server.listen(port)` with no host binds ALL interfaces, and this server has no
+  // authentication and serves `/api/trace/:id` — an execution's entire durable log,
+  // including every step input and output. Running `loom inspect` on a laptop therefore
+  // published the complete event history to anyone who could reach the port, while the
+  // startup banner said "http://localhost:…" and implied otherwise.
+  //
+  // Exposing it is now an explicit choice (`host: "0.0.0.0"`), not the default.
+  const host = options.host ?? "127.0.0.1";
 
   const server = http.createServer((req, res): void => {
     void (async () => {
@@ -87,21 +99,29 @@ export function serveInspector(
         }
         json(res, 404, { error: "not found" });
       } catch (err) {
-        json(res, 500, { error: String(err instanceof Error ? err.message : err) });
+        const exposed = exposeError(err, randomUUID);
+        if (exposed.internal !== undefined) {
+          // A dev tool, but the same rule: the response says nothing internal, and the
+          // detail goes where the operator is already looking.
+          console.error(`[inspector] ${exposed.body.errorId}`, exposed.internal);
+        }
+        json(res, exposed.status, exposed.body);
       }
     })();
   });
 
   return {
     get url() {
-      return `http://localhost:${resolvedPort}`;
+      // Report the interface actually bound, so the banner cannot claim loopback while
+      // listening on everything.
+      return `http://${host === "0.0.0.0" || host === "::" ? "0.0.0.0" : "localhost"}:${resolvedPort}`;
     },
     get port() {
       return resolvedPort;
     },
     start() {
       return new Promise<void>((resolve) => {
-        server.listen(options.port ?? 0, () => {
+        server.listen(options.port ?? 0, host, () => {
           const addr = server.address();
           if (addr !== null && typeof addr === "object") resolvedPort = addr.port;
           resolve();
