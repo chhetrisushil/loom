@@ -184,5 +184,5 @@ index (T3). See the [K10/T3 evaluation](requirements/2026-07-13-k10-t3-critical-
   arrays only. A mark inside a `z.record` value, a `z.union` branch, a `z.tuple` member or
   either side of a `z.intersection` collects no path and does nothing. Mark the container
   itself, or restructure it as an object or array. The
-  [`classification-reachability`](verification.md) check fails the build on this rather than
+  [`classification-reachability`](adr/0028-runtime-verification.md) check fails the build on this rather than
   letting it fail silently.

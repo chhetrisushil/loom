@@ -293,6 +293,55 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "TS-10 (ADR 0062) — the read-side sequel to ADR 0059's putStream. Optional-method + conformance-skip idiom; interactive budget p95 ≤ 150ms for ≤ 50 refs (asserted in batchedResolution.test.ts against an injected-latency backend).",
   },
   {
+    id: "storage-scale-out",
+    title: "Storage Scale-Out Decorators",
+    package: "@loom/event-runtime",
+    level: "L2",
+    summary:
+      "CoalescingEventStore (cross-execution append batching, per-row fencing preserved) and ShardedEventStore (hash-routed fan-out over N backends) as EventStore DECORATORS — so a BYO store inherits scale-out without implementing it (EVENT_STORE_SPI 1.3.0 appendBatch, optional-with-fallback).",
+    evidence: {
+      conformanceTest: "packages/event-runtime/src/scaleDecorators.test.ts",
+    },
+    note: "ADR 0074 — capability in packages, optimization in plugins. L2 not L4: the committed bench (tools/bench-throughput) measures the LOG, not these decorators specifically, so the L4 bar is not met on this capability's own evidence.",
+  },
+  {
+    id: "shard-rebalancing",
+    title: "Shard Rebalancing",
+    package: "@loom/event-runtime",
+    level: "L2",
+    summary:
+      "Virtual buckets + minimal-movement reassignment + lazy drain, so a sharded log can grow its shard count without a stop-the-world migration and without a coordinator.",
+    evidence: {
+      conformanceTest: "packages/event-runtime/src/shardRebalance.test.ts",
+    },
+    note: "ADR 0075 — builds on 0074. Minimal-movement is asserted exactly (a naive `bucket % shardCount` moved 80-89% of buckets); reads fall back to the previous plan until a bucket drains.",
+  },
+  {
+    id: "classification-path-reach",
+    title: "Classification Path Reach (array crossings)",
+    package: "@loom/classify",
+    level: "L2",
+    summary:
+      "`[]` array-crossing segments in classification dot-paths, expanded once against the concrete value (expandPaths) so telemetry masking, field-level encryption and content externalization all reach marks inside array elements.",
+    evidence: {
+      conformanceTest: "packages/classify/src/expand.test.ts",
+    },
+    note: "ADR 0076 — closes a SILENT gap: a sensitive() mark inside an array element collected no path, so it was masked nowhere, encrypted nowhere, externalized nowhere. The @loom/verify `classification-reachability` rule now covers only what remains unaddressable (record/union/tuple/intersection).",
+  },
+  {
+    id: "typed-resume-payloads",
+    title: "Typed Resume Payloads",
+    package: "@loom/workflow-runtime",
+    level: "L3",
+    summary:
+      "Per-gate resume contracts (`flow$({ resumeSchemas })`) parsed BEFORE the append, so a wrongly-shaped resume is refused instead of becoming a permanent fold input; the parsed value is what is recorded. `ctx.suspend<T>` types the call site.",
+    evidence: {
+      conformanceTest: "packages/workflow-runtime/src/resumeSchemas.test.ts",
+      usedIn: "loom-examples: all 19 ctx.suspend gate sites",
+    },
+    note: "ADR 0077 — the shape counterpart to K12.2's identity gate (which authenticates WHO may resume, never WHAT they send). KERNEL_ABI unchanged 1.1.0: no syscall added, and ctx.suspend's type parameter is erased. Opt-in by presence (G2).",
+  },
+  {
     id: "step-identity-guardrails",
     title: "Step Identity & Interpreter Pattern",
     package: "@loom/workflow-runtime",

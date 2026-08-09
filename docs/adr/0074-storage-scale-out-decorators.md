@@ -2,9 +2,9 @@
 
 - Status: **Accepted** (2026-08-09)
 - Date: 2026-08-09
-- Builds on: [ADR 0043](0043-plugin-packaging.md) (adapters live in `plugins/`),
+- Builds on: [ADR 0043](0043-plugin-packaging-and-1p-3p-separation.md) (adapters live in `plugins/`),
   [ADR 0065](0065-group-commit-deferred-evidence-gate.md) (group-commit deferral — amended
-  here on placement), [ADR 0033](0033-event-store-spi.md) (the `EventStore` SPI and its
+  here on placement), [ADR 0033](0033-spi-conformance-contracts.md) (the `EventStore` SPI and its
   optional-with-fallback discipline), K12.5 `TenantScopedEventStore` (the decorator
   precedent), and the measured baselines in [`benchmarks.md`](../benchmarks.md).
 - Requirements: [storage scale-out with BYO parity](../requirements/2026-08-09-storage-scale-out-byo-parity.md).
