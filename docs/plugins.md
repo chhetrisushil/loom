@@ -198,15 +198,15 @@ loom plugin try --module ./loom-plugin-my-backend/dist/index.js \
 ## Authoring a plugin (worked example: a storage backend)
 
 ```ts
-// 1. implement the SPI (or reuse an existing store)
-import type { EventStore, SnapshotStore } from "@loom/event-runtime";
+// 1. implement the SPI (or reuse an existing store). Each SPI lives in its OWN package.
+import type { EventStore } from "@loom/event-runtime";
+import type { CustomStorage } from "@loom/plugin-kit";
+import type { SnapshotStore } from "@loom/snapshot-runtime";
 
-// 2. export a preset returning the shape defineConfig accepts
-export function myStorage(opts: { url: string }): {
-  kind: "custom";
-  eventStore: EventStore;
-  snapshotStore: SnapshotStore;
-} {
+// 2. export a preset returning the shape defineConfig accepts. Name the CONTRACT TYPE
+//    rather than re-declaring its shape: a copied shape silently stops matching when the
+//    contract evolves, whereas the imported type turns that into a compile error.
+export function myStorage(opts: { url: string }): CustomStorage {
   return { kind: "custom", eventStore: new MyEventStore(opts.url), snapshotStore: new MySnapshotStore(opts.url) };
 }
 ```

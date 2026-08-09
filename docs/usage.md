@@ -300,6 +300,16 @@ const runner: FlowRunner<{ target: string }, { applied: boolean }> = async (ctx,
 };
 ```
 
+The type argument is **erased at runtime** — it types the call site and nothing more. Declare the
+same schema on the flow so the runtime actually parses the payload *before* appending it:
+
+```ts
+flow$({ /* … */ resumeSchemas: { ApprovalGranted: ApprovalDecision } });
+```
+
+A wrongly-shaped resume is then refused with `ResumePayloadValidationError` and nothing is
+written, leaving the execution suspended and resumable ([ADR 0077](adr/0077-typed-resume-payloads.md)).
+
 For **policy-driven** gates (auto-approve low risk, escalate the rest), use the composable `decideApproval` primitive:
 
 ```ts

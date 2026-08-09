@@ -62,6 +62,10 @@ simply skipped.
 Marking the array *itself* is still supported and means something different: the whole array
 is covered as one unit, so masking yields `"[redacted]"` in place of the list.
 
+Writing a *fourth* sink? `@loom/classify` exports `expandPaths(root, paths)` and
+`hasWildcard(paths)` — resolve `[]` against the value with those rather than teaching another
+walker about arrays, so array semantics stay in one place.
+
 ## Deriving the wiring
 
 The kernel stays ignorant of the taxonomy (G3 — the vocabulary lives here, the mechanism
