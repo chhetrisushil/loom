@@ -1,0 +1,136 @@
+# ADR 0074 — Storage scale-out as composable decorators, not backend features
+
+- Status: **Accepted** (2026-08-09)
+- Date: 2026-08-09
+- Builds on: [ADR 0043](0043-plugin-packaging.md) (adapters live in `plugins/`),
+  [ADR 0065](0065-group-commit-deferred-evidence-gate.md) (group-commit deferral — amended
+  here on placement), [ADR 0033](0033-event-store-spi.md) (the `EventStore` SPI and its
+  optional-with-fallback discipline), K12.5 `TenantScopedEventStore` (the decorator
+  precedent), and the measured baselines in [`benchmarks.md`](../benchmarks.md).
+- Requirements: [storage scale-out with BYO parity](../requirements/2026-08-09-storage-scale-out-byo-parity.md).
+- Part of: the kernel/1P/3P triage discipline (P10 — bias outward). **KERNEL_ABI unchanged
+  (1.1.0); EVENT_SCHEMA unchanged (1.17.0)** — no syscall, no event type, no fold change.
+  `EVENT_STORE_SPI_VERSION` 1.2.0 → **1.3.0** (one additive optional method).
+
+## Context
+
+The measured durable ceiling is ~5.7K exec/sec against a single Postgres primary, and the
+**event log is the bottleneck, not the interpreter** — 1-step and 3-step flows differ 2.3×
+in exec/sec but both land at ~20–23K events/sec. Worker scale-out cannot raise that: every
+worker writes the same log.
+
+The obvious response is to make `PostgresEventStore` faster. That fails a requirement we
+hold explicitly: **an app that brings its own `EventStore` must get the scaling benefit
+too.** `defineConfig` accepts `storage: { kind: "custom", eventStore, … }` precisely so
+backends are symmetric (ADR 0043); scaling work that lands only in the first-party Postgres
+plugin makes that symmetry a lie.
+
+## Decision
+
+**Capability in packages; optimization in plugins.**
+
+A mechanism that composes over *any* `EventStore` is a decorator in
+`packages/event-runtime`. A plugin's only job is implementing an optional SPI hook
+efficiently for its backend. Optional hooks always ship with a working fallback, so a
+backend that implements nothing still runs correctly — it simply does not get that hook's
+win.
+
+This is not a new pattern. `TenantScopedEventStore` (K12.5) is already exactly this: a
+decorator in `packages/event-runtime` that works over any backend. So are `readRange`,
+`copyPrefix`, `listExecutionsPage`, and `ContentStore.getMany` — every one optional, every
+one with a fallback.
+
+### D1 — `appendBatch?(envelopes[])` joins the SPI (additive, optional)
+
+Equivalent to N sequential `append` calls; atomic (all-or-nothing); fencing honoured **per
+envelope**, not per batch. Callers use `appendBatchOf(store, envelopes)`, which prefers the
+hook and otherwise loops `append` — so absence is byte-identical to today.
+
+Fencing per envelope is the load-bearing detail. A same-execution batch can share one fence
+check; a **cross**-execution batch cannot, because rows belong to different executions. The
+SPI is specified for the general case so a backend cannot implement the cheap version and
+silently break fencing for the coalescer.
+
+### D2 — `CoalescingEventStore` merges appends ACROSS executions
+
+This **amends ADR 0065's frozen sketch**, which placed group commit inside
+`ExecutionJournal`'s serial tail. That placement is now measured unworkable: the journal is
+per-execution, a 1-step flow emits 4 envelopes, and with a realistic slow effect the tail
+drains between `STEP_STARTED` and `STEP_COMPLETED` so a journal-side batch collects **one**
+envelope. ADR 0065's own gate 2 names this case — "a 3-events-per-run workload cannot win".
+
+A store decorator sees all executions at once and can fill a batch. Measured at 0.55–0.65×
+of the same-execution batch shape, still ~4–8× over per-event append.
+
+Two safety properties, by construction:
+
+- **Ordering.** Each `ExecutionJournal` still serializes its own execution (D3 unchanged).
+  The coalescer only ever groups envelopes from *independent* executions, and preserves
+  per-execution arrival order within a batch.
+- **Durability.** An `append` promise resolves only after its batch has committed — never
+  early. Every `drain()` barrier keeps exactly the meaning it has today. A bounded linger
+  window plus a flush-on-fill ensures a batch cannot wait indefinitely.
+
+### D3 — `ShardedEventStore` routes by `hash(executionId)`
+
+Zero backend cooperation required, so a BYO store gets the full horizontal-scale story
+free, and shards may be heterogeneous. Consequences handled explicitly:
+
+- `listExecutions` / `listExecutionsPage` become scatter-gather with a **k-way merge**; the
+  SPI's lexicographic contract is preserved.
+- Cross-shard `copyPrefix` has no server-side path and degrades to the documented per-event
+  fallback; same-shard forks keep the fast path.
+- Fencing is per-execution, so it shards with no coordination.
+- `BranchRegistry` stays **unsharded** — refs are global by nature and small.
+
+### D4 — Interest-filtered delivery is a plugin concern, over a shared registry
+
+The local-subscriber map, self-send dedupe, and local fan-out are backend-independent and
+were triplicated across the in-memory, SQLite, and Postgres stores. They become
+`SubscriberRegistry` in `packages/event-runtime`.
+
+What remains genuinely backend-specific is which topics/channels to subscribe upstream. For
+Postgres that is bucketed `LISTEN loom_events_<hash % N>` instead of one global channel,
+which fixes an O(events × nodes) broadcast whose cost lands on the **writer**: 4 real
+subscriber nodes cost 2.07–2.19× writer throughput, with delivery measured at exactly 1
+notification per node per event. A backend on Redis/NATS/Kafka gets the same property
+natively from topics; `SubscriberRegistry` is what makes it cheap for them to write.
+
+### D5 — Conformance is how BYO parity stays honest
+
+`runEventStoreConformance` gains `appendBatch` coverage — equivalence, atomicity, fencing,
+empty input — skipped when the method is absent. A third-party author runs the same suite
+the first-party stores run. Without this, "bring your own storage benefits too" is a claim;
+with it, it is testable.
+
+## Relationship to ADR 0065
+
+ADR 0065 deferred **engine-side** group commit behind a three-part evidence gate and froze a
+journal-side sketch. This ADR:
+
+- **Amends its placement finding**: the journal-side sketch is measured unable to fill a
+  batch. Anyone implementing group commit should build D2, not that sketch.
+- **Does not claim to open its gate.** Gate 1 (a real workload measurably bottlenecked on
+  event writes) and gate 3 (transient architecture insufficient) remain unmet; every number
+  here comes from a no-op effect, which is precisely what gate 1 excludes.
+
+D2 is nevertheless built rather than deferred, because it is a different object from what
+was gated. ADR 0065 guarded against speculative machinery *inside the kernel* changing
+durability semantics for everyone. `CoalescingEventStore` is opt-in composition: it is not
+in the kernel, it is inert unless explicitly wired into `storage`, it changes no durability
+semantics (D2), and it is one more decorator alongside `TenantScopedEventStore` and
+`EncryptingEventStore`. The risk the gate exists to manage is not present.
+
+What ADR 0065 rejected on **invariants** — durability classes, ephemeral runs,
+flush-boundary semantics — stays rejected. No benchmark reopens those.
+
+## Consequences
+
+- `EVENT_STORE_SPI_VERSION` 1.2.0 → 1.3.0. Backends need do nothing; implementing
+  `appendBatch` is how they opt into the batching win.
+- Composition order matters and is documented: sharding outermost, then coalescing, then
+  tenant scoping / encryption / content resolution, then the backend.
+- Kernel untouched. `KERNEL_ABI` 1.1.0, `EVENT_SCHEMA_VERSION` 1.17.0, `ExecutionJournal`'s
+  single-writer invariant unchanged.
+- The honest limits are recorded in the requirements doc §5: no real-workload validation,
+  single-host measurements, and R5's benefit unmeasured until it exists.

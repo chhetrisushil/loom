@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
+import { SubscriberRegistry } from "./SubscriberRegistry";
 import { StaleFenceError, fenceOf } from "./fencing";
 import { lowerBoundBySequence, sliceBySequence } from "./sequenceRange";
 import type { EventStore } from "./types";
@@ -22,7 +23,7 @@ export interface InMemoryAsyncEventStoreOptions {
  */
 export class InMemoryAsyncEventStore implements EventStore {
   private readonly log = new Map<string, EventEnvelope[]>();
-  private readonly subscribers = new Map<string, Set<(e: EventEnvelope) => void>>();
+  private readonly subscribers = new SubscriberRegistry();
   private readonly fences = new Map<string, number>();
   private readonly latencyMs: number;
   private readonly failAppendWhen:
@@ -41,6 +42,33 @@ export class InMemoryAsyncEventStore implements EventStore {
 
   async append(envelope: EventEnvelope): Promise<void> {
     await this.tick();
+    this.assertAppendable(envelope);
+    this.commit(envelope);
+    this.subscribers.emit(envelope);
+  }
+
+  /**
+   * ADR 0074 D1 — the reference implementation of the `appendBatch` contract, and what a
+   * bring-your-own backend can read to see what it has to honour.
+   *
+   * One `tick()` for the whole batch, because the point of the method is one round-trip.
+   * Atomicity is why validation is a separate pass: EVERY envelope is checked before ANY
+   * is committed, so a fenced-out or rejected envelope leaves the log exactly as it was
+   * rather than half-applied. Fencing is checked per envelope, since a batch may span
+   * executions.
+   */
+  async appendBatch(envelopes: readonly EventEnvelope[]): Promise<void> {
+    if (envelopes.length === 0) return;
+    await this.tick();
+    for (const envelope of envelopes) this.assertAppendable(envelope);
+    for (const envelope of envelopes) this.commit(envelope);
+    // Fan out only once the whole batch has landed — a subscriber must never observe a
+    // partially applied batch.
+    for (const envelope of envelopes) this.subscribers.emit(envelope);
+  }
+
+  /** Throws if this envelope may not land (K9.4 fencing, or an injected failure). */
+  private assertAppendable(envelope: EventEnvelope): void {
     // K9.4 — fencing: once a token has been acquired for this execution, an
     // append missing the current token is a zombie write and is rejected.
     const currentFence = this.fences.get(envelope.executionId);
@@ -56,6 +84,10 @@ export class InMemoryAsyncEventStore implements EventStore {
         ? verdict
         : new Error(typeof verdict === "string" ? verdict : `append rejected: ${envelope.id}`);
     }
+  }
+
+  /** Insert into the execution's log, keeping it sorted by sequence. */
+  private commit(envelope: EventEnvelope): void {
     const list = this.log.get(envelope.executionId) ?? [];
     // Keep each execution's log sorted by sequence so reads can binary-search.
     // Appends are normally monotonic (a plain end-push); only an out-of-order
@@ -69,8 +101,6 @@ export class InMemoryAsyncEventStore implements EventStore {
       list.splice(lowerBoundBySequence(list, envelope.sequence), 0, envelope);
     }
     this.log.set(envelope.executionId, list);
-    const handlers = this.subscribers.get(envelope.executionId);
-    if (handlers) for (const h of handlers) h(envelope);
   }
 
   async read(executionId: string): Promise<EventEnvelope[]> {
@@ -171,13 +201,7 @@ export class InMemoryAsyncEventStore implements EventStore {
     handler: (event: EventEnvelope) => void
   ): Promise<() => void> {
     await this.tick();
-    const set = this.subscribers.get(executionId) ?? new Set();
-    set.add(handler);
-    this.subscribers.set(executionId, set);
-    return () => {
-      set.delete(handler);
-      if (set.size === 0) this.subscribers.delete(executionId);
-    };
+    return this.subscribers.add(executionId, handler);
   }
 
   async close(): Promise<void> {
