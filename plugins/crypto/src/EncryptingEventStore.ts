@@ -52,6 +52,19 @@ export function isShredded(value: unknown): value is { $shredded: true } {
  * the wrapper composes with K9.4 and fork(); `copyPrefix` copies CIPHERTEXT
  * verbatim, which is why a fork must share the parent's subject to stay readable.
  */
+/**
+ * Own-key lookup for a caller-controlled event type. Plain indexing would resolve
+ * `"__proto__"`/`"constructor"` up the prototype chain to a truthy non-config value, which then
+ * flows into code expecting an array (or a function). An unrecognised event type must be a
+ * no-op whatever it is named.
+ */
+function pathsFor(
+  map: Record<string, readonly string[]>,
+  eventType: string
+): readonly string[] | undefined {
+  return Object.hasOwn(map, eventType) ? map[eventType] : undefined;
+}
+
 export class EncryptingEventStore implements EventStore {
   private readonly sensitive: Record<string, readonly string[]>;
   private readonly subjectOf: (e: Pick<EventEnvelope, "executionId" | "workflowId">) => string;
@@ -91,7 +104,7 @@ export class EncryptingEventStore implements EventStore {
   }
 
   async append(envelope: EventEnvelope): Promise<void> {
-    const paths = this.sensitive[envelope.eventType];
+    const paths = pathsFor(this.sensitive, envelope.eventType);
     if (paths === undefined || paths.length === 0) {
       return this.inner.append(envelope); // unmarked → verbatim (A4)
     }
@@ -114,13 +127,13 @@ export class EncryptingEventStore implements EventStore {
       // (K10-R4): hand OFF-log consumers a { $shredded } placeholder instead of throwing.
       if (this.onShredded === "throw") throw new PayloadShreddedError(subjectId, executionId);
       return events.map((e, i) => {
-        const paths = this.sensitive[e.eventType];
+        const paths = pathsFor(this.sensitive, e.eventType);
         if (paths === undefined || !encrypted[i]) return e;
         return { ...e, payload: mapPaths(e.payload, paths, () => SHREDDED) };
       });
     }
     return events.map((e, i) => {
-      const paths = this.sensitive[e.eventType];
+      const paths = pathsFor(this.sensitive, e.eventType);
       if (paths === undefined || !encrypted[i]) return e;
       return { ...e, payload: mapPaths(e.payload, paths, (v) => decryptValue(key, v)) };
     });
@@ -141,7 +154,7 @@ export class EncryptingEventStore implements EventStore {
     // Live subscribers get decrypted events too (best-effort: a subscription
     // delivering after a shred surfaces the raw envelope rather than throwing).
     return this.inner.subscribe(executionId, (event: EventEnvelope) => {
-      const paths = this.sensitive[event.eventType];
+      const paths = pathsFor(this.sensitive, event.eventType);
       if (paths === undefined || !hasEnvelope(event.payload)) {
         handler(event);
         return;

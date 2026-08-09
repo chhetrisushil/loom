@@ -192,3 +192,47 @@ describe("ReplayVM", () => {
     expect(next.frames.b?.status).toBe("completed");
   });
 });
+
+describe("prototype-chain event types fold to a no-op", () => {
+  // `eventType` is caller-controlled all the way from an ingress adapter: `runtime.resume`
+  // takes it verbatim, and A2A `provideInput` forwards a network-supplied ResumeEvent. Plain
+  // `handlers[eventType]` resolves `"__proto__"` to `Object.prototype` — TRUTHY, so the
+  // `if (handler)` guard admitted it and the fold then called a non-function, turning a
+  // hostile event name into a TypeError out of the kernel's most load-bearing function.
+  const HOSTILE = ["__proto__", "constructor", "toString", "hasOwnProperty", "valueOf"];
+
+  it("does not throw, and leaves state untouched", () => {
+    for (const eventType of HOSTILE) {
+      const base = foldEvents([makeEvent("e1", 0, "EXECUTION_STARTED", { input: { a: 1 } })], {
+        executionId: "e1",
+      });
+      const withHostile = foldEvents(
+        [
+          makeEvent("e1", 0, "EXECUTION_STARTED", { input: { a: 1 } }),
+          makeEvent("e1", 1, eventType, { evil: true }),
+        ],
+        { executionId: "e1" }
+      );
+      // Unrecognised → no-op, exactly like any other unknown event type. Sequence still
+      // advances, because every event advances it.
+      expect(withHostile.status).toBe(base.status);
+      expect(withHostile.variables).toEqual(base.variables);
+      expect(withHostile.sequence).toBe(1);
+    }
+  });
+
+  it("is identical to an ordinary unknown event type", () => {
+    const shape = (eventType: string) =>
+      foldEvents(
+        [
+          makeEvent("e1", 0, "EXECUTION_STARTED", { input: {} }),
+          makeEvent("e1", 1, eventType, { x: 1 }),
+        ],
+        { executionId: "e1" }
+      );
+    const reference = shape("SOME_UNKNOWN_APP_EVENT");
+    for (const eventType of HOSTILE) {
+      expect(shape(eventType)).toEqual(reference);
+    }
+  });
+});

@@ -41,6 +41,19 @@ export interface ContentResolvingEventStoreOptions {
  * do NOT delete the referenced blobs — refcounted blob GC (forks share content) is a separate
  * step, deferred per ADR 0046's risks. Erase content explicitly via `contentStore.delete(ref)`.
  */
+/**
+ * Own-key lookup for a caller-controlled event type. Plain indexing would resolve
+ * `"__proto__"`/`"constructor"` up the prototype chain to a truthy non-config value, which then
+ * flows into code expecting an array (or a function). An unrecognised event type must be a
+ * no-op whatever it is named.
+ */
+function pathsFor(
+  map: Record<string, readonly string[]>,
+  eventType: string
+): readonly string[] | undefined {
+  return Object.hasOwn(map, eventType) ? map[eventType] : undefined;
+}
+
 export class ContentResolvingEventStore implements EventStore {
   private readonly externalize: Record<string, readonly string[]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
@@ -84,7 +97,7 @@ export class ContentResolvingEventStore implements EventStore {
   }
 
   async append(envelope: EventEnvelope): Promise<void> {
-    const paths = this.externalize[envelope.eventType];
+    const paths = pathsFor(this.externalize, envelope.eventType);
     if (paths === undefined || paths.length === 0) {
       return this.inner.append(envelope); // unmarked → verbatim (G2)
     }

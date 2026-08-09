@@ -325,6 +325,23 @@ await runtime.resume(executionId, {
 });
 ```
 
+**Typing the gate (ADR 0077).** That cast is a claim, not a check — nothing verifies the payload a caller sends, and once it is appended it is a permanent fold input that cannot be rejected retroactively. Declare the contract on the flow and `resume()` parses it **before** anything is written:
+
+```ts
+flow$({
+  id: "remediate-lag",
+  // …
+  resumeSchemas: {
+    ApprovalGranted: z.object({ approved: z.boolean(), approvedBy: z.string() }),
+    RemediationDecision: z.object({ approved: z.boolean(), strategy: z.string() }),
+  },
+})
+```
+
+A payload that does not satisfy its gate's schema is refused with `ResumePayloadValidationError`, naming the offending field; **nothing is appended** and the execution stays suspended, so a corrected payload still lands. The *parsed* value (Zod defaults and transforms applied) is what gets recorded — the same principle `validateInput` applies at `start()`. Declared per flow rather than at the `ctx.suspend` call site so the schema resolves without running the flow body, which is what makes refuse-before-append possible.
+
+Opt-in by presence: no map, or no entry for that event type, is exactly today's behaviour. `resumeAs` validates against the **target** flow's map, since that is the code being resumed onto.
+
 **Mechanics.** On resume the runner re-runs from the top. Every step that already completed is replayed from its logged `STEP_COMPLETED` (the effect does not run again); when execution reaches the original `suspend()`, that call *returns the resume payload* and the flow proceeds. This is deterministic replay (see [Architecture §4.3](architecture.md#43-suspend--resume)).
 
 **Recovery.** A crash mid-flight is just a resume: on redispatch the runtime folds durable state and, if still `running`, resumes; if already terminal, returns as-is. No step re-runs. `loadState(id)` folds state without running.
