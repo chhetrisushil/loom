@@ -24,6 +24,18 @@ export interface SandboxLimits {
   interruptBudget?: number;
   /** Wall-clock ceiling for a single eval. Default 1_000ms. */
   wallClockMs?: number;
+  /**
+   * Ceiling on the JSON size of the value a script may return. Default 1 MiB.
+   *
+   * The other three limits bound what a script may CONSUME; this bounds what it may
+   * EMIT. A script's return value becomes the step's output and therefore a durable
+   * `STEP_COMPLETED` payload in an append-only log — so an adversarial script could bloat
+   * the immutable log with megabytes per call, which is exactly the concern that already
+   * caps script-authored error text at 2 KB on the failure path. The success path was
+   * unbounded (measured: a trivial script returning 5 MB), bounded in practice only by the
+   * VM heap ceiling.
+   */
+  maxOutputBytes?: number;
 }
 
 /** Static description of a sandbox executor (P5 — wiring is static). */
@@ -54,6 +66,6 @@ export type SandboxEvalInputValue = z.infer<typeof SandboxEvalInput>;
 /** Declared failure channels (ADR 0060). */
 export const SANDBOX_ERRORS = {
   scriptMissing: z.object({ ref: z.string() }),
-  limitExceeded: z.object({ kind: z.enum(["cpu", "memory", "wallClock"]) }),
+  limitExceeded: z.object({ kind: z.enum(["cpu", "memory", "wallClock", "output"]) }),
   shapeMismatch: z.object({ expected: z.string(), observed: z.string() }),
 };

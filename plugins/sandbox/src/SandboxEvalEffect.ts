@@ -19,6 +19,7 @@ import type { SandboxLimits, ScriptReader } from "./types";
 const DEFAULT_MEMORY_BYTES = 32 * 1024 * 1024;
 const DEFAULT_INTERRUPT_BUDGET = 10_000;
 const DEFAULT_WALL_CLOCK_MS = 1_000;
+const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 export class SandboxEvalEffect implements Effect {
   readonly kind = "tool" as const;
@@ -37,6 +38,7 @@ export class SandboxEvalEffect implements Effect {
       memoryBytes: limits.memoryBytes ?? DEFAULT_MEMORY_BYTES,
       interruptBudget: limits.interruptBudget ?? DEFAULT_INTERRUPT_BUDGET,
       wallClockMs: limits.wallClockMs ?? DEFAULT_WALL_CLOCK_MS,
+      maxOutputBytes: limits.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
     };
   }
 
@@ -56,6 +58,17 @@ export class SandboxEvalEffect implements Effect {
 
     this.module ??= await getQuickJS();
     const output = this.evalInFreshRuntime(script, call.input, ctx);
+
+    // Bound what the script EMITS, not just what it consumes. The return value becomes a
+    // durable STEP_COMPLETED payload, so an unbounded one lets a script bloat an
+    // append-only log — the same threat the 2 KB cap on error text already addresses.
+    // Checked before the shape check so an oversized output is reported as the resource
+    // kill it is, rather than as a shape mismatch.
+    const outputBytes =
+      output === undefined ? 0 : Buffer.byteLength(JSON.stringify(output), "utf8");
+    if (outputBytes > this.limits.maxOutputBytes) {
+      fail("limitExceeded", { kind: "output" });
+    }
 
     if (call.expectedOutputShapeHash !== undefined) {
       const observed = shapeHash(output);
