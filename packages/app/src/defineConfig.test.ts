@@ -16,6 +16,7 @@ import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime
 import type { BranchRegistry } from "@loom/event-runtime";
 import { InMemorySecretResolver, isSecretRef, retryMiddleware, secretRef } from "@loom/middleware";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -843,5 +844,79 @@ describe("defineConfig — agent auto-wiring (a2a / agentSurface, opt-in)", () =
     });
     expect(app.schedules.map((s) => s.id)).toEqual(["nightly"]);
     expect(onWarn).toHaveBeenCalledWith(expect.stringContaining("will not fire"));
+  });
+});
+
+// A snapshot store that records what it was asked to save, so cadence is observable
+// without a database.
+class CountingSnapshotStore implements SnapshotStore {
+  readonly saves: Snapshot[] = [];
+  async save(s: Snapshot): Promise<void> {
+    this.saves.push(s);
+  }
+  async loadLatest(id: string): Promise<Snapshot | null> {
+    const mine = this.saves.filter((s) => s.executionId === id);
+    return mine.length > 0 ? (mine[mine.length - 1] ?? null) : null;
+  }
+  async loadAt(): Promise<Snapshot | null> {
+    return null;
+  }
+  async loadLatestBefore(): Promise<Snapshot | null> {
+    return null;
+  }
+  async close(): Promise<void> {}
+}
+
+function buildWithCadence(snapshotEvery?: number): {
+  app: ReturnType<typeof defineConfig>;
+  snapshots: CountingSnapshotStore;
+} {
+  const snapshots = new CountingSnapshotStore();
+  const app = defineConfig({
+    storage: {
+      kind: "custom",
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: snapshots,
+    },
+    flows: [gatedFlow()],
+    ...(snapshotEvery !== undefined && { snapshotEvery }),
+  });
+  registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+  return { app, snapshots };
+}
+
+describe("defineConfig — snapshotEvery", () => {
+  it("forwards the cadence to the runtime it builds", async () => {
+    // Before this key existed, an app wired through defineConfig could not set the
+    // cadence at all, which also made settle-time checkpointing (gated on it)
+    // unreachable rather than merely off by default.
+    const { app, snapshots } = buildWithCadence(2);
+
+    const handle = await app.runtime.start(gatedFlow(), { incidentId: "i1" });
+    const suspended = await handle.waitForSuspend();
+    await new Promise((r) => setTimeout(r, 0)); // fire-and-forget saves drain
+
+    // MID-RUN saves specifically. `suspend` checkpoints at its own tip whatever the
+    // cadence, so asserting `saves.length > 0` here would hold with the option ignored
+    // entirely — it has to be the saves BEFORE the suspension that prove forwarding.
+    const midRun = snapshots.saves.filter((s) => s.sequence < suspended.sequence);
+    expect(midRun.length).toBeGreaterThan(0);
+    for (const s of midRun) expect(s.sequence % 2).toBe(0);
+    await app.close();
+  });
+
+  it("is the CAUSE of those snapshots — omitted, the mid-run cadence stays off", async () => {
+    // The control. `suspend` checkpoints at its tip regardless, so the comparison is
+    // against mid-run saves specifically: without a cadence there must be none before
+    // the suspension's own.
+    const { app, snapshots } = buildWithCadence(undefined);
+
+    const handle = await app.runtime.start(gatedFlow(), { incidentId: "i1" });
+    const suspended = await handle.waitForSuspend();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const midRun = snapshots.saves.filter((s) => s.sequence < suspended.sequence);
+    expect(midRun).toEqual([]);
+    await app.close();
   });
 });
