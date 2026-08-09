@@ -244,6 +244,12 @@ unmeasured.
 Measured end to end on Postgres: **2.3×** at the default `maxBatch: 16`, **4.3×** at 64.
 Opt-in — inert unless wired into `storage`.
 
+**Is your workload even write-bound?** Wrap your store in `ProfilingEventStore` and add
+`effectTimingMiddleware` to your effect runtime, run real traffic, and compare
+`totalWriteMs` against `totalEffectMs`. The measured crossover is ~2–3 ms of effect latency
+(see [benchmarks](benchmarks.md)); above it, batching cannot help you. Typical agent/LLM
+effects sit 30–1000× above it.
+
 ADR 0074 records why this is outside ADR 0065's gate rather than a bypass of it: the gate
 guarded speculative machinery *inside the kernel* changing durability semantics for
 everyone, and a composable store decorator that changes no semantics is a different object.

@@ -1,3 +1,5 @@
+export { effectTimingMiddleware } from "./profile";
+export type { EffectProfile, EffectProfiler } from "./profile";
 export { retryMiddleware, type RetryOptions } from "./retry";
 export {
   claimCheckMiddleware,

@@ -345,6 +345,42 @@ regimes. A fast execution has no commits left by the time the save resolves; a s
 the exact-multiple trigger keep up anyway (**299 vs 300** checkpoints over the same
 workload). It was dropped rather than shipped as unmeasured complexity.
 
+### Profiling for ADR 0065 gate 1: where the write/effect crossover actually is
+
+[ADR 0065](adr/0065-group-commit-deferred-evidence-gate.md) gate 1 asks for a **real
+workload** where event-write throughput — not effect latency — is the **measured**
+bottleneck, and insists on a profile rather than intuition. `ProfilingEventStore`
+(`@loom/event-runtime`) and `effectTimingMiddleware` (`@loom/middleware`) are the
+instruments for answering that on *your* traffic; both are decorators/middleware, so they
+are inert until wired.
+
+Sweeping synthetic effect latency locates the boundary. c=32, Postgres, aggregate work-time
+attribution:
+
+| effect latency | events/exec | exec/sec | effect ms | write ms | write share | verdict |
+|---:|---:|---:|---:|---:|---:|---|
+| 0 ms | 4 | 4,158 | 22 | 4,820 | 99.6% | write-bound |
+| 1 ms | 4 | 5,585 | 346 | 3,605 | 91.2% | write-bound |
+| 1 ms | 22 | 1,001 | 6,093 | 20,392 | 77.0% | write-bound |
+| **5 ms** | 4 | 4,902 | 3,008 | 2,176 | **42.0%** | effect-bound |
+| 25 ms | 22 | 120 | 41,436 | 14,083 | 25.4% | effect-bound |
+| 100 ms | 22 | 31 | 161,837 | 13,767 | 7.8% | effect-bound |
+
+**The crossover sits at roughly 2–3 ms of effect latency.** Below it the write path
+dominates; above it, it does not, and batching the write path cannot help however large the
+raw event rate looks.
+
+That number is the useful output, and it points **away** from the gate for typical Loom
+workloads. An LLM call, an agent step, or a remote tool invocation is 100 ms to seconds —
+30× to 1000× above the crossover, landing at 8–25% write share. For those, effect latency is
+the constraint and always will be.
+
+Caveats on the method: the share is of *aggregate work time* (writes and effects both run
+concurrently, so each column can exceed wall time), which is a first-order attribution
+rather than a critical-path analysis. `ExecutionJournal` also queues appends on a serial
+tail, so a sharper signal for a borderline workload is time blocked at `drain()` barriers —
+not yet instrumented.
+
 ### Takeaway for capacity planning
 
 - **Durable executions: ~5.7K/sec** per runtime + single Postgres primary for a 1-step

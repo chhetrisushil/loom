@@ -2,7 +2,7 @@
   "name": "@loom/bench-throughput",
   "version": "0.0.1",
   "private": true,
-  "description": "Sustained-throughput harness for Loom's durable write path — measures events/sec and executions/sec against a real Postgres under concurrency, plus the appendBatch counterfactual and the pg_notify fan-out cost. Test/dev-only; imported by no runtime package.",
+  "description": "Sustained-throughput harness for Loom's durable write path \u2014 measures events/sec and executions/sec against a real Postgres under concurrency, plus the appendBatch counterfactual and the pg_notify fan-out cost. Test/dev-only; imported by no runtime package.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
@@ -19,7 +19,8 @@
     "@loom/snapshot-runtime": "workspace:*",
     "@loom/workflow-runtime": "workspace:*",
     "pg": "^8.13.0",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "@loom/middleware": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
