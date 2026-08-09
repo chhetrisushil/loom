@@ -39,6 +39,14 @@ unwired — default is `off`).
   `PlacementDispatcher` target, and that target's worker supports the required effect kinds.
 - **resource-compat** — every budget dimension a flow declares is actually metered by the wired
   `meteringMiddleware`; a ceiling is present where a budget is declared.
+- **classification-reachability** — a `secret()`/`sensitive()`/`internal()` mark (K10-R1) that
+  no egress sink can address. The dot-path sinks — telemetry scrubbing, field-level
+  encryption, content externalization — address scalar paths and deliberately do not descend
+  into array elements, so a mark placed *inside* an array element collects no path and does
+  nothing: not masked, not encrypted, not externalized. Silent, and the consequence is
+  classified data leaving in the clear, so it is an `error`. The fix is mechanical — mark the
+  array itself, which masks the element as a unit. Added after the package audit surfaced the
+  gap (issue #260); detection lives in `@loom/classify` beside the walker it audits.
 
 (Note: **migration-safety** from the requirements list collapses into replay-safety — in the
 stateless-worker model resume *is* migration, so there is nothing extra to check.)

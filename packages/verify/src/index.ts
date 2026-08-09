@@ -12,6 +12,7 @@ export type {
   EffectRef,
   BudgetSpec,
   FlowSpec,
+  UnreachableMarkRef,
   GrantSpec,
   PlacementSpec,
   VerifyInput,

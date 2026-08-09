@@ -12,3 +12,5 @@ export {
 export type { ClassifiedPath, DataClass } from "./classify";
 export { externalized, externalizedPaths, isExternalized } from "./external";
 export { REDACTED, maskPaths } from "./redact";
+export { collectUnreachableMarks } from "./unreachable";
+export type { UnreachableMark } from "./unreachable";
