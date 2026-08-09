@@ -114,6 +114,21 @@ connections, this includes `onNotify`'s per-notification `SELECT` — the read a
 a real node pays. Reports delivered notifications per node per event, which should be
 exactly 1: that is the broadcast, confirmed rather than inferred.
 
+## Comparing hosts
+
+`pnpm --filter @loom/bench-throughput hardware` emits one self-describing markdown report —
+CPU, memory, Postgres version and settings, **database round-trip time**, and the four
+measurements that characterise a host: where the write path saturates, the durable execution
+ceiling, Little's-Law efficiency under a realistic effect, and where the write/effect
+crossover sits.
+
+It is deliberately narrower and faster than the A–H suite: those characterise the *system*,
+this characterises the *host*, and it has to finish in minutes on a box billed by the hour.
+
+Captured baselines live in `baselines/`, one file per host, verbatim. Diff them directly.
+Check the round-trip line first — a loopback database is ≲0.1 ms and a networked one is not,
+which explains most disagreements between hosts.
+
 ## Reading the results
 
 Absolute numbers are host-relative — a laptop with a loopback Postgres has no network
