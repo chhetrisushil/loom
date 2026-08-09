@@ -112,7 +112,14 @@ load-bearing, plus the global guardrails that gate every additive capability:
   `TIMER_FIRED` resume that survives restart (T1). The scheduled time is in the log — wall-clock
   drift never enters the fold.
 - Resume MAY be authority-gated: a `ResumeAuthenticator` verdict is recorded as `APPROVAL_GRANTED`
-  (K12); a rejected resume never reaches the log.
+  (K12); a rejected resume never reaches the log. That gate authenticates **who** may resume.
+- Resume MAY additionally be **shape**-gated: a flow MAY declare `resumeSchemas` (`on` → schema,
+  ADR 0077). When an entry exists for the resume's event type the payload MUST be parsed BEFORE
+  anything is appended, the PARSED value (defaults/transforms applied) MUST be what is recorded,
+  and a failing parse MUST refuse with nothing appended — leaving the execution suspended and
+  resumable. Absent map or absent entry = unchanged behaviour (G2). Shape is checked AFTER
+  identity, so an authenticator sees the exact event the caller signed. `resumeAs` validates
+  against the TARGET flow's map.
 - On replay, resumed gates pass through **in order, each with its own recorded payload** (the
   `_resumePayloads` fold, ADR 0057); a gate beyond the recorded resumes parks as before.
 - `resumeAs` (K11.3) MAY carry an operator-supplied state transform (K11.5, ADR 0056): the

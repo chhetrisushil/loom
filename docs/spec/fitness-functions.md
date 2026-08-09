@@ -26,6 +26,7 @@
 | 6 | **Conformance passed** | A storage/dispatch SPI implementation honours its contract. | `run<Spi>Conformance` kits (`@loom/conformance`). Each implementation runs the kit against itself — in-memory (`packages/conformance/src/index.test.ts`, which also pins the per-SPI version constants), SQLite (`plugins/sqlite/src/conformance.test.ts`), and the `durable-state`/`read-model`/`content`/`crypto`/`worker-runtime-local` packages in kind. `loom plugin check` enforces that a 3P plugin wires a kit too. |
 | 7 | **Compiler validation passed** | Flows are structurally valid and non-determinism is caught pre-dispatch. | `@loom/compiler` (`analyzeNonDeterminism`), `@loom/verify` (`loom verify`), `validateFlowGraph` (`@loom/app`), `loom check`. |
 | + | **Maturity is self-checking** | A capability's badge can't claim evidence it lacks. | `@loom/spec` `spec.test.ts` (asserts each capability's version constant / conformance test / bench actually exists). |
+| + | **Maturity is complete** | Shipped work can't skip declaring a badge — the converse of the row above. Every accepted ADR is a declared capability or is explicitly listed as grading nothing. | `@loom/spec` `spec.test.ts` (`capability coverage`). Added after ADRs 0074–0077 landed in one day with no entry, making four shipped capabilities invisible in the generated docs. |
 
 ## Adding a capability
 

@@ -58,6 +58,10 @@ Plugins outside the barrel (renderers with a framework peer dependency, the comp
 UI-protocol plugins) are imported by their own package name — being outside the barrel is a
 packaging call about weight and peer deps, not a tier.
 
+The barrel also re-exports a few non-plugin packages that are part of the public surface —
+notably `@loom/registry` (`AgentRegistry`/`globalAgentRegistry`, the agent-card registry the A2A
+peer client reads), which has no plugin of its own but is imported through `@loom/sdk`.
+
 3P plugins are never in the barrel; you import them by their own name. Both remain explicit
 imports, so the 1P/3P distinction stays purely organisational.
 
