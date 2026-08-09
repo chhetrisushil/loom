@@ -6,6 +6,8 @@ export type { MigrationResult, ShardedEventStoreOptions } from "./ShardedEventSt
 export { ShardPlan, DEFAULT_BUCKETS } from "./ShardPlan";
 export type { ShardPlacement, ShardPlanJSON } from "./ShardPlan";
 export { SubscriberRegistry, bucketOf } from "./SubscriberRegistry";
+export { ProfilingEventStore } from "./ProfilingEventStore";
+export type { WriteProfile } from "./ProfilingEventStore";
 export { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";
 export type { InMemoryAsyncEventStoreOptions } from "./InMemoryAsyncEventStore";
 export type { EventStore, EventStoreOptions, ExecutionEnumerable, ExecutionPage } from "./types";
