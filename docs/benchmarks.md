@@ -272,6 +272,27 @@ Put against section C: **16 idle listeners cost ~1.97×; just 4 real subscriber 
 **writer**. This is the measurement that makes interest-filtered delivery the
 highest-priority change in [`scaling.md`](scaling.md).
 
+### Coalescing, as shipped (ADR 0074)
+
+The measurements above sized a *counterfactual*. These are the implementation:
+`CoalescingEventStore` over `PostgresEventStore.appendBatch`, including everything the real
+path pays — the per-row fence JOIN, per-envelope `pg_notify`, and the all-or-nothing guard.
+c=64, 4000 events, median of 3 runs:
+
+| configuration | events/sec | vs shipped |
+|---|---:|---:|
+| per-event `append` | 18,190 | 1.0× |
+| `CoalescingEventStore` (default `maxBatch: 16`) | 42,110 | **2.3×** |
+| `CoalescingEventStore` (`maxBatch: 64`) | 78,122 | **4.3×** |
+
+Note the default is the conservative one. The earlier "knee at 16, regression at 64" came
+from the same-execution statement shape in section B; the cross-execution shape behaves
+differently and 64 is faster here. Tail latency at 64 is unmeasured, which is why the
+default stays at 16 — raise it deliberately, with your own p99 in hand.
+
+This is the honest bottom line on batching: **2.3–4.3× measured end to end**, not section
+B's 8.2×. That number was always an upper bound on a statement, not on a design.
+
 ### Read path: `loadState` no longer reads the whole log
 
 `foldState` used to read the ENTIRE log before checking for a snapshot, then throw that

@@ -1,5 +1,6 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import type { BranchRegistry, EventStore } from "@loom/event-runtime";
+import { appendBatchOf } from "@loom/event-runtime";
 import { ReplayVM } from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
@@ -21,6 +22,13 @@ export interface RetentionPolicy {
   /** Keep a terminal execution this long after its last event, then reclaim it. */
   terminalTtlMs: number;
 }
+
+/**
+ * Envelopes per archive round-trip. Bounded so a long execution cannot turn a
+ * bounded-memory sweep into an unbounded one; large enough that the round-trip saving is
+ * the dominant effect.
+ */
+const ARCHIVE_CHUNK = 256;
 
 /** Where an execution is copied before deletion (A6 — archive-before-delete). */
 export interface ArchiveStores {
@@ -124,7 +132,18 @@ export class LogLifecycle {
 
     if (this.options.archive !== undefined) {
       const archive = this.options.archive;
-      for (const event of events) await archive.eventStore.append(event);
+      // ADR 0074 R7 — one round-trip per chunk instead of one per event. Reclamation has
+      // to keep pace with ingest or the log grows without bound, and a serialized
+      // per-event append loop is orders of magnitude short of that. `appendBatchOf` falls
+      // back to that loop when the archive backend has no `appendBatch`, so this is a
+      // straight improvement for backends that implement the hook and a no-op for the rest.
+      //
+      // Chunked rather than one giant batch: an execution's log can be arbitrarily long,
+      // and a single statement carrying all of it would trade a bounded-memory sweep for
+      // an unbounded one — the opposite of what the paged enumeration exists for.
+      for (let i = 0; i < events.length; i += ARCHIVE_CHUNK) {
+        await appendBatchOf(archive.eventStore, events.slice(i, i + ARCHIVE_CHUNK));
+      }
       if (archive.snapshotStore !== undefined) {
         const snap = await this.snapshotStore.loadLatest(executionId);
         if (snap !== null) await archive.snapshotStore.save(snap);

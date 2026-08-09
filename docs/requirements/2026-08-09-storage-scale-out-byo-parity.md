@@ -1,6 +1,8 @@
 # Storage scale-out with bring-your-own-backend parity
 
-- Status: **Accepted** — [ADR 0074](../adr/0074-storage-scale-out-decorators.md).
+- Status: **Accepted and implemented** — [ADR 0074](../adr/0074-storage-scale-out-decorators.md).
+  R1–R8 all shipped; measured result in [benchmarks](../benchmarks.md) (coalescing 2.3–4.3×
+  end to end on Postgres).
 - Method: the ADR 0051 discipline — a placement verdict (kernel / package / 1P plugin /
   3P plugin) per item, judged against the best userland alternative, bias outward (P10).
   Every throughput claim below is measured (`tools/bench-throughput`,
@@ -60,8 +62,16 @@ Not kernel: no syscall, no event type, no fold.
 ### R2 — `appendBatch?` on the `EventStore` SPI → **package** (SPI) + **plugin** (impl)
 
 Optional method, `EVENT_STORE_SPI_VERSION` 1.2.0 → **1.3.0**. Semantics: equivalent to N
-sequential `append` calls, atomic (all-or-nothing), fencing honoured per envelope. Absent ⇒
-callers fall back to per-event `append` via `appendBatchOf`, byte-identically (F10).
+sequential `append` calls, **atomic per execution**, fencing honoured per envelope, empty
+input a no-op. Absent ⇒ callers fall back to per-event `append` via `appendBatchOf`,
+byte-identically (F10).
+
+*Amended during implementation.* This was first specified as whole-batch atomic;
+conformance caught that `ShardedEventStore` cannot provide it, since separate executions
+live on separate logs. Nor is it needed — a batch only groups INDEPENDENT executions, so
+nothing in it depends on anything else in it. What a fold depends on is no holes within one
+log, i.e. atomicity per execution. A single transactional backend gets whole-batch
+atomicity for free; the contract does not require it.
 
 This is the one item a BYO backend must act on to benefit. The win *is* the single
 round-trip; nothing above the store boundary can synthesize it. Implementation is typically

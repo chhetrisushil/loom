@@ -1539,6 +1539,9 @@ importers:
         specifier: ^8.13.0
         version: 8.22.0
     devDependencies:
+      '@loom/conformance':
+        specifier: workspace:*
+        version: link:../../packages/conformance
       '@loom/plugin-sqlite':
         specifier: workspace:*
         version: link:../sqlite
