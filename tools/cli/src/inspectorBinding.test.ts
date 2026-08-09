@@ -2,7 +2,7 @@ import { createConnection } from "node:net";
 import { networkInterfaces } from "node:os";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
-import { serveInspector } from "./inspector";
+import { INSPECTOR_PAGE_FOR_TEST, serveInspector } from "./inspector";
 
 // The inspector serves `/api/trace/:id` — an execution's ENTIRE durable log, every step
 // input and output — with no authentication. `server.listen(port)` with no host binds all
@@ -64,6 +64,26 @@ describe("inspector — network exposure", () => {
       }
     } finally {
       await server.stop();
+    }
+  });
+});
+
+// `eventType` is free-form log data: `ctx.emit(type, …)` is flow-authored, and the A2A
+// `provideInput` path takes a ResumeEvent whose eventType comes from the caller. Building
+// markup from it let stored content execute in the inspector page — which can read
+// /api/trace/* for EVERY execution and exfiltrate it.
+describe("inspector — timeline rendering", () => {
+  it("does not build the timeline with innerHTML", () => {
+    expect(INSPECTOR_PAGE_FOR_TEST).not.toMatch(/timeline'\)\.innerHTML\s*=/);
+    expect(INSPECTOR_PAGE_FOR_TEST).toContain("sp.textContent=");
+  });
+
+  it("routes event-derived text through textContent only", () => {
+    // Every place eventType appears must be a textContent assignment, never string-concatenated
+    // markup.
+    for (const line of INSPECTOR_PAGE_FOR_TEST.split("\n").filter((l) => l.includes("eventType"))) {
+      expect(line).toMatch(/textContent/);
+      expect(line).not.toMatch(/<span/);
     }
   });
 });

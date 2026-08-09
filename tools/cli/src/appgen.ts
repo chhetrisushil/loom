@@ -304,12 +304,12 @@ export async function cmdAppgen(
       await writeFile({ path: c.path, contents: c.contents }, opts.dir, io, result);
     }
     for (const e of plan.edits) {
-      const dest = path.join(opts.dir, e.path);
+      const dest = resolveInside(opts.dir, e.path);
       io.write(dest, e.after);
       result.overwritten.push(dest);
     }
     for (const d of plan.deletes) {
-      const dest = path.join(opts.dir, d.path);
+      const dest = resolveInside(opts.dir, d.path);
       fs.rmSync(dest, { force: true });
       result.deleted.push(dest);
     }
@@ -374,13 +374,38 @@ export function renderPlan(
 }
 
 /** Write one generated file under `dir`, applying per-file conflict resolution. */
+/**
+ * Resolve a plan-supplied relative path inside `dir`, refusing anything that escapes it.
+ *
+ * Every path here comes from a ChangeSpec — which is produced by a PLANNER (optionally an
+ * LLM) or replayed from a `--from-spec` lockfile on disk. Neither is trustworthy input, and
+ * `path.join(dir, "../../../tmp/x")` resolves to `/tmp/x`: the joins below were an arbitrary
+ * file WRITE, and `plan.deletes` an arbitrary `rmSync`, anywhere the CLI user could reach.
+ *
+ * `path.relative` is the check rather than a `startsWith("..")` on the raw string, so `a/../..`
+ * and absolute paths are caught after normalisation rather than by pattern.
+ */
+export function resolveInside(dir: string, relative: string): string {
+  const root = path.resolve(dir);
+  const dest = path.resolve(root, relative);
+  const rel = path.relative(root, dest);
+  // `rel.startsWith("..")` would be the obvious check and is subtly wrong: it also rejects a
+  // legitimate file whose NAME begins with two dots (`..hidden.ts`). Compare the segment.
+  if (rel === "" || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    throw new Error(
+      `appgen: refusing to touch "${relative}" — it resolves outside the target directory (${root})`
+    );
+  }
+  return dest;
+}
+
 async function writeFile(
   file: GeneratedFile,
   dir: string,
   io: AppgenIO,
   result: AppgenResult
 ): Promise<void> {
-  let dest = path.join(dir, file.path);
+  let dest = resolveInside(dir, file.path);
   let overwrite = false;
   let skip = false;
 

@@ -32,8 +32,14 @@ async function load(){const id=document.getElementById('exec').value;
  trace=await r.json();document.getElementById('meta').textContent='workflow '+trace.workflowId+' — '+trace.finalStatus;
  const s=document.getElementById('slider');s.max=trace.timeline.length-1;s.value=trace.timeline.length-1;show();}
 async function show(){if(!trace)return;const i=+document.getElementById('slider').value;
- document.getElementById('timeline').innerHTML=trace.timeline.map((e,j)=>
-  '<span class="ev'+(e.suspend?' suspend':'')+(j===i?' cur':'')+'">#'+e.sequence+' '+e.eventType+'</span>').join(' ');
+ const tl=document.getElementById('timeline');tl.textContent='';
+ trace.timeline.forEach((e,j)=>{const sp=document.createElement('span');
+  sp.className='ev'+(e.suspend?' suspend':'')+(j===i?' cur':'');
+  /* textContent, not innerHTML: eventType is log data. ctx.emit() and the A2A
+     provideInput path both put caller-influenced strings there, so building markup
+     from it let stored content run with access to /api/trace/* — every event log. */
+  sp.textContent='#'+e.sequence+' '+e.eventType;
+  tl.appendChild(sp);tl.appendChild(document.createTextNode(' '));});
  const seq=trace.timeline[i].sequence;
  const r=await fetch('/api/state/'+encodeURIComponent(trace.executionId)+'/'+seq);
  document.getElementById('state').textContent=await r.text();}
@@ -135,3 +141,6 @@ export function serveInspector(
     },
   };
 }
+
+/** Exported for tests: the page is a literal, so its DOM sinks are assertable. */
+export const INSPECTOR_PAGE_FOR_TEST = PAGE;

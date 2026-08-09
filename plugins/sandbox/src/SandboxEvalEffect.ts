@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { fail } from "@loom/core";
 import type { Effect, EffectContext, ErrorChannelSchema } from "@loom/effect-runtime";
 import { type QuickJSWASMModule, getQuickJS } from "quickjs-emscripten";
@@ -20,6 +21,22 @@ const DEFAULT_MEMORY_BYTES = 32 * 1024 * 1024;
 const DEFAULT_INTERRUPT_BUDGET = 10_000;
 const DEFAULT_WALL_CLOCK_MS = 1_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
+
+/** Throw unless `bytes` hash to `address` (`sha256:<hex>`, the ContentRef format). */
+function assertContentAddress(bytes: Uint8Array, address: string): void {
+  const [algorithm, expected] = address.split(":", 2);
+  if (algorithm !== "sha256" || expected === undefined) {
+    // Refuse rather than skip: an address this code cannot check is an unverifiable script,
+    // and silently running it would make the guarantee decorative.
+    throw new Error(`sandbox: unsupported script content address "${address}" (expected sha256:)`);
+  }
+  const actual = createHash("sha256").update(bytes).digest("hex");
+  if (actual !== expected) {
+    throw new Error(
+      `sandbox: script bytes do not match their content address (pinned sha256:${expected}, got sha256:${actual})`
+    );
+  }
+}
 
 export class SandboxEvalEffect implements Effect {
   readonly kind = "tool" as const;
@@ -54,6 +71,18 @@ export class SandboxEvalEffect implements Effect {
     if (bytes === null) {
       fail("scriptMissing", { ref: call.scriptRef.__loomContent });
     }
+    // Verify the bytes against the address they were fetched by.
+    //
+    // The ref is content-ADDRESSED and the contract calls that "immutable provenance" — but
+    // `ContentStore.get` carries no obligation to return bytes that hash to the ref, so a
+    // buggy or tampered backend could serve different SOURCE than the pin names, and this
+    // effect would execute it. Cheap next to spinning up a VM, and this is the one consumer
+    // that runs the bytes rather than merely reading them.
+    //
+    // An integrity failure is an environment violation, not a domain outcome, so it throws
+    // rather than completing on a declared channel (the same reasoning as a ReferenceError
+    // for `fetch`/`require`).
+    assertContentAddress(bytes, call.scriptRef.__loomContent);
     const script = new TextDecoder().decode(bytes);
 
     this.module ??= await getQuickJS();
