@@ -3,10 +3,12 @@ import { DISPATCHER_SPI_VERSION, LocalDispatcher } from "@loom/dispatcher";
 import { GrantTable } from "@loom/effect-runtime";
 import {
   BRANCH_REGISTRY_SPI_VERSION,
+  CoalescingEventStore,
   EVENT_STORE_SPI_VERSION,
   InMemoryAsyncEventStore,
   InMemoryBranchRegistry,
   InMemoryTimerStore,
+  ShardedEventStore,
 } from "@loom/event-runtime";
 import type { LlmProvider } from "@loom/llm";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
@@ -62,6 +64,26 @@ class FakeWorker implements WorkerRuntime {
 // Durable backends (SQLite, Postgres) run the SAME kits in their own packages; that
 // is the point: a third-party backend proves conformance the same way.
 runEventStoreConformance(() => new InMemoryAsyncEventStore(), "InMemoryAsyncEventStore");
+
+// ADR 0074 — the scale decorators run the SAME suite as a backend. That is the strongest
+// statement available about a decorator: it is indistinguishable from the store it wraps,
+// including through the composition the ADR documents (sharding outermost).
+runEventStoreConformance(
+  () => new CoalescingEventStore(new InMemoryAsyncEventStore()),
+  "CoalescingEventStore(InMemory)"
+);
+runEventStoreConformance(
+  () => new ShardedEventStore(Array.from({ length: 4 }, () => new InMemoryAsyncEventStore())),
+  "ShardedEventStore(4x InMemory)"
+);
+runEventStoreConformance(
+  () =>
+    new ShardedEventStore([
+      new CoalescingEventStore(new InMemoryAsyncEventStore()),
+      new CoalescingEventStore(new InMemoryAsyncEventStore()),
+    ]),
+  "Sharded(Coalescing(InMemory))"
+);
 runSnapshotStoreConformance(() => new InMemoryAsyncSnapshotStore(), "InMemoryAsyncSnapshotStore");
 runBranchRegistryConformance(() => new InMemoryBranchRegistry(), "InMemoryBranchRegistry");
 runExecutionDispatcherConformance(() => new LocalDispatcher(new FakeWorker()), "LocalDispatcher");

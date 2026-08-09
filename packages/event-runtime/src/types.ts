@@ -12,8 +12,12 @@ export type { EventEnvelope };
  * 1.2.0: added optional `listExecutionsPage()` (SP-1, db-copilot infra #184 — keyset-paged
  *   enumeration so maintenance passes run in bounded memory at year scale). Consumers use
  *   {@link iterateExecutionIds}, which prefers pages and falls back to `listExecutions()`.
+ * 1.3.0: added optional `appendBatch()` (ADR 0074 D1 — one round-trip for many envelopes,
+ *   which is what lets `CoalescingEventStore` raise the write ceiling). Consumers use
+ *   {@link appendBatchOf}, which prefers it and falls back to a per-envelope `append` loop,
+ *   so a backend that omits it is byte-identical to before.
  */
-export const EVENT_STORE_SPI_VERSION = "1.2.0";
+export const EVENT_STORE_SPI_VERSION = "1.3.0";
 
 /**
  * Reserved-stream prefix. Control facts (retention `__loom_lifecycle__`, erasure
@@ -40,6 +44,37 @@ export function isReservedStream(executionId: string): boolean {
  */
 export interface EventStore {
   append(envelope: EventEnvelope): Promise<void>;
+  /**
+   * OPTIONAL bulk append (ADR 0074 D1, SPI 1.3.0). Semantically **equivalent to calling
+   * `append` once per envelope, in array order**, but in one round-trip — which is the
+   * entire point, and the only part a caller cannot synthesize above the store boundary.
+   *
+   * Contract a backend MUST honour:
+   * - **Atomic PER EXECUTION.** All envelopes for a given executionId land, or none of
+   *   them do. That is the property a fold depends on: a partial write within one log
+   *   could leave a hole (sequence 6 durable, 5 missing), which no fold expects. A prefix
+   *   is fine — the run simply stops there.
+   *
+   *   Whole-batch atomicity across DIFFERENT executions is explicitly **not** required.
+   *   {@link ShardedEventStore} cannot provide it — separate executions live on separate
+   *   logs — and nothing needs it: a batch only ever groups INDEPENDENT executions, so
+   *   nothing in it depends on anything else in it. A backend backed by a single
+   *   transactional store will get whole-batch atomicity for free; do not rely on it.
+   * - **Fencing per envelope, not per batch.** Envelopes may belong to DIFFERENT
+   *   executions (that is exactly what {@link CoalescingEventStore} produces), so each is
+   *   checked against its own execution's fence. Rejecting when any envelope is fenced out
+   *   is correct; silently dropping just the fenced rows is not.
+   * - **Reject, don't half-report.** If any envelope fails, the returned promise rejects —
+   *   so a caller never reads a partial write as success. `CoalescingEventStore` propagates
+   *   that rejection to every writer in the batch.
+   * - **Empty input is a no-op**, not an error.
+   *
+   * A store that omits it is byte-identical to today — callers use {@link appendBatchOf},
+   * which falls back to a sequential `append` loop. Implementing it is how a
+   * bring-your-own backend opts into the batching win; `runEventStoreConformance` covers
+   * the contract above so that implementation is verifiable.
+   */
+  appendBatch?(envelopes: readonly EventEnvelope[]): Promise<void>;
   read(executionId: string): Promise<EventEnvelope[]>;
   readFrom(executionId: string, fromSequence: number): Promise<EventEnvelope[]>;
   /**
@@ -171,6 +206,25 @@ export async function* iterateExecutionIds(
 
 export interface EventStoreOptions {
   dbPath: string;
+}
+
+/**
+ * Append many envelopes through a store that may or may not implement the optional
+ * `appendBatch` fast-path (ADR 0074 D1). Uses the single round-trip when available, else
+ * falls back to a sequential `append` loop — so callers never branch on the capability.
+ *
+ * The fallback is deliberately **sequential**, not `Promise.all`: `append` is
+ * order-sensitive per execution, and a parallel loop would also lose the all-or-nothing
+ * property that the native path guarantees. The fallback is a correctness-preserving
+ * degradation, not a performance one — it wins nothing, and is not meant to.
+ */
+export async function appendBatchOf(
+  store: EventStore,
+  envelopes: readonly EventEnvelope[]
+): Promise<void> {
+  if (envelopes.length === 0) return;
+  if (store.appendBatch !== undefined) return store.appendBatch(envelopes);
+  for (const envelope of envelopes) await store.append(envelope);
 }
 
 /**

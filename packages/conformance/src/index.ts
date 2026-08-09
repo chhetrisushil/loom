@@ -134,6 +134,75 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       }
       await store.close();
     });
+
+    // ── appendBatch (OPTIONAL, SPI 1.3.0 / ADR 0074 D1) ──────────────────────
+    //
+    // These are what make "a bring-your-own backend benefits from the scaling work too" a
+    // testable claim rather than an aspiration: implement the hook, run this suite, know
+    // you got the contract right. Every case is skipped when the method is absent.
+
+    it("appendBatch (if implemented) is equivalent to N sequential appends", async () => {
+      const store = factory();
+      if (store.appendBatch === undefined) return void (await store.close());
+      await store.appendBatch([evt("b", 0, "EXECUTION_STARTED"), evt("b", 1), evt("b", 2)]);
+      const read = await store.read("b");
+      expect(read.map((e) => e.sequence)).toEqual([0, 1, 2]);
+      expect(read.map((e) => e.eventType)).toEqual([
+        "EXECUTION_STARTED",
+        "STEP_COMPLETED",
+        "STEP_COMPLETED",
+      ]);
+      await store.close();
+    });
+
+    it("appendBatch (if implemented) spans executions — the coalescer's actual shape", async () => {
+      const store = factory();
+      if (store.appendBatch === undefined) return void (await store.close());
+      // A cross-execution batch is what CoalescingEventStore produces; a backend that only
+      // handles same-execution batches would pass the test above and fail here.
+      await store.appendBatch([evt("m", 0), evt("n", 0), evt("m", 1), evt("n", 1)]);
+      expect((await store.read("m")).map((e) => e.sequence)).toEqual([0, 1]);
+      expect((await store.read("n")).map((e) => e.sequence)).toEqual([0, 1]);
+      await store.close();
+    });
+
+    it("appendBatch (if implemented) treats empty input as a no-op", async () => {
+      const store = factory();
+      if (store.appendBatch === undefined) return void (await store.close());
+      await expect(store.appendBatch([])).resolves.toBeUndefined();
+      await store.close();
+    });
+
+    it("appendBatch (if implemented) is atomic PER EXECUTION — no holes in one log", async () => {
+      const store = factory();
+      if (store.appendBatch === undefined || store.acquireFence === undefined) {
+        return void (await store.close());
+      }
+      // Fence "f" forward, then batch a VALID envelope (carrying the token) with an
+      // INVALID one (missing it) for the SAME execution. Per-execution atomicity means
+      // neither may land: committing only the second would leave sequence 1 durable with
+      // sequence 0 missing — a hole no fold expects.
+      const fence = await store.acquireFence("f");
+      await expect(
+        store.appendBatch([{ ...evt("f", 0), metadata: { fence } }, evt("f", 1)])
+      ).rejects.toThrow();
+      expect(await store.read("f")).toEqual([]);
+      await store.close();
+    });
+
+    it("appendBatch (if implemented) honours fencing per envelope", async () => {
+      const store = factory();
+      if (store.appendBatch === undefined || store.acquireFence === undefined) {
+        return void (await store.close());
+      }
+      const fence = await store.acquireFence("f");
+      // Carrying the current token, the batch lands; the fence is per envelope, so an
+      // unfenced execution in the same batch is unaffected.
+      await store.appendBatch([{ ...evt("f", 0), metadata: { fence } }, evt("unfenced", 0)]);
+      expect((await store.read("f")).map((e) => e.sequence)).toEqual([0]);
+      expect((await store.read("unfenced")).map((e) => e.sequence)).toEqual([0]);
+      await store.close();
+    });
   });
 }
 
