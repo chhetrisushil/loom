@@ -309,12 +309,17 @@ Leave it **undeclared** when both seams are legitimate — that is a real answer
 `ctx.suspend()` writes a durable checkpoint and returns control to the caller. The execution now lives entirely in storage — the process can restart, and another machine can resume it.
 
 ```ts
-const decision = (await ctx.suspend({
+const ApprovalDecision = z.object({ approved: z.boolean(), approvedBy: z.string() });
+type ApprovalDecision = z.infer<typeof ApprovalDecision>;
+
+const decision = await ctx.suspend<ApprovalDecision>({
   on: "ApprovalGranted",           // logical event you'll resume with
   correlationKey: input.target,     // used to route the resume to this execution
   timeout: 24 * 60 * 60 * 1000,     // optional; drives a timeout condition
-})) as { approved: boolean; approvedBy: string };
+});
 ```
+
+The type parameter names what the gate delivers; it defaults to `never`, so omitting it is exactly the old behaviour. But it is a **claim, not a check** — erased at runtime. Declare the same schema in `resumeSchemas` (below) and the two share one source: the runtime enforces it, and the runner is typed by it.
 
 Resume from anywhere:
 
@@ -325,15 +330,15 @@ await runtime.resume(executionId, {
 });
 ```
 
-**Typing the gate (ADR 0077).** That cast is a claim, not a check — nothing verifies the payload a caller sends, and once it is appended it is a permanent fold input that cannot be rejected retroactively. Declare the contract on the flow and `resume()` parses it **before** anything is written:
+**Enforcing the gate (ADR 0077).** The type argument above buys static safety and nothing else — nothing verifies the payload a caller actually sends, and once it is appended it is a permanent fold input that cannot be rejected retroactively. Declare the contract on the flow and `resume()` parses it **before** anything is written:
 
 ```ts
 flow$({
   id: "remediate-lag",
   // …
   resumeSchemas: {
-    ApprovalGranted: z.object({ approved: z.boolean(), approvedBy: z.string() }),
-    RemediationDecision: z.object({ approved: z.boolean(), strategy: z.string() }),
+    ApprovalGranted: ApprovalDecision,          // the same schema the runner is typed by
+    RemediationDecision: RemediationDecision,
   },
 })
 ```

@@ -85,7 +85,25 @@ export interface ExecutionContext {
     options?: { limit?: number }
   ): Promise<TResults>;
 
-  suspend(config: SuspendConfig): Promise<never>;
+  /**
+   * Park the execution durably until a matching resume arrives.
+   *
+   * The type parameter names the payload the gate delivers. It defaults to `never` — which is
+   * assignable to anything, so every existing call site is unchanged — but naming it removes
+   * the `as unknown as T` cast that every gate otherwise needs:
+   *
+   * ```ts
+   * const ApprovalDecision = z.object({ approved: z.boolean(), approvedBy: z.string() });
+   * type ApprovalDecision = z.infer<typeof ApprovalDecision>;
+   *
+   * const decision = await ctx.suspend<ApprovalDecision>({ on: "ApprovalGranted" });
+   * ```
+   *
+   * The type argument is a CLAIM, not a check — it is erased at runtime. Pair it with the same
+   * schema in `flow$({ resumeSchemas })` (ADR 0077) so the runtime actually parses the payload
+   * before appending it; then the static type and the enforced contract share one declaration.
+   */
+  suspend<T = never>(config: SuspendConfig): Promise<T>;
 
   // T1 — durable sleep (ABI 1.1.0). The execution suspends with the absolute
   // wake time recorded in the log; a wired TimerService fires the wake as a

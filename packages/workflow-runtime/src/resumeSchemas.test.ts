@@ -220,6 +220,45 @@ describe("resumeSchemas — typed resume payloads (TR, ADR 0077)", () => {
     expect(gate?.payload).toEqual(payload);
   });
 
+  it("delivers the payload through the generic form, no cast at the call site", async () => {
+    // `ctx.suspend<T>` names what the gate delivers. The type argument is erased, so this
+    // asserts the RUNTIME half — the value really does arrive; the type-level half is proven
+    // where a type-checker sees real source (the examples repo, whose `pnpm build` runs tsc
+    // over the flows). Test files here are excluded from tsc, so a type assertion in this file
+    // would pass vacuously.
+    const eventStore = new InMemoryAsyncEventStore();
+    const effects = new EffectRuntime();
+    effects.register("t", new ToolEffect(async () => ({})));
+    const runtime = new WorkflowRuntime({
+      eventStore,
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: effects,
+    });
+    const definition = buildFlow({ ApprovalGranted: APPROVAL });
+    const runner: FlowRunner<{ id: string }, Record<string, never>> = async (ctx, input) => {
+      // No `as unknown as` — the payload's fields are reachable directly.
+      const decision = await ctx.suspend<z.infer<typeof APPROVAL>>({
+        on: "ApprovalGranted",
+        correlationKey: input.id,
+      });
+      seen = { by: decision.approvedBy, tier: decision.tier, ok: decision.approved };
+      return {};
+    };
+    let seen: { by: string; tier: number; ok: boolean } | undefined;
+    runtime.registerFlow(definition, runner as FlowRunner<unknown, unknown>);
+
+    const started = await runtime.start({ definition, runner } as never, { id: "g-1" });
+    await started.waitForSuspend();
+    const resumed = await runtime.resume(started.executionId, {
+      eventType: "ApprovalGranted",
+      payload: { approved: true, approvedBy: "ops" },
+    });
+    await resumed.waitForCompletion();
+
+    // The Zod default landed too — the runner sees the PARSED value, not the raw payload.
+    expect(seen).toEqual({ by: "ops", tier: 1, ok: true });
+  });
+
   it("does not resolve a gate contract up the prototype chain", async () => {
     // `eventType` is caller-controlled and reaches the map as a key. Plain indexing would find
     // `Object.prototype.constructor` — a function with no `safeParse` — turning a hostile event
