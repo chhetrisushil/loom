@@ -120,6 +120,9 @@ import { z } from "zod";
 import { step$, handler$, flow$ } from "@loom/core";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 
+const ApprovalDecision = z.object({ approved: z.boolean(), approvedBy: z.string() });
+type ApprovalDecision = z.infer<typeof ApprovalDecision>;
+
 const applyStep = step$({
   id: "apply",
   name: "Apply change",
@@ -132,12 +135,14 @@ const runner: FlowRunner<{ target: string }, { applied: boolean; approvedBy?: st
   async (ctx, input) => {
     ctx.ui.set("phase", "awaiting-approval");
 
-    // Durable checkpoint: persists, returns control to the caller.
-    const decision = (await ctx.suspend({
+    // Durable checkpoint: persists, returns control to the caller. The type argument
+    // names what the gate delivers; declare the same schema in `resumeSchemas` on the
+    // flow so the runtime actually parses it before appending (ADR 0077).
+    const decision = await ctx.suspend<ApprovalDecision>({
       on: "ApprovalGranted",
       correlationKey: input.target,
       timeout: 24 * 60 * 60 * 1000, // 24h
-    })) as { approved: boolean; approvedBy: string };
+    });
 
     if (!decision.approved) {
       ctx.ui.set("phase", "rejected");
@@ -161,6 +166,9 @@ export const approveFlow: RegisteredFlow<
     inputSchema: z.object({ target: z.string() }),
     outputSchema: z.object({ applied: z.boolean() }),
     steps: [applyStep],
+    // The gate's contract: `resume()` parses the payload against this BEFORE appending it,
+    // so a wrongly-shaped approval is refused rather than becoming a permanent fold input.
+    resumeSchemas: { ApprovalGranted: ApprovalDecision },
   }),
   runner,
 };

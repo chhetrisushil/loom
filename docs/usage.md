@@ -283,14 +283,17 @@ This is the backbone of the `db-command-center` example: **intent â†’ planner â†
 The signature Loom move: pause at a durable checkpoint, wait for a human, resume.
 
 ```ts
+const ApprovalDecision = z.object({ approved: z.boolean(), approvedBy: z.string() });
+type ApprovalDecision = z.infer<typeof ApprovalDecision>;
+
 const runner: FlowRunner<{ target: string }, { applied: boolean }> = async (ctx, input) => {
   ctx.ui.set("phase", "awaiting-approval");
 
-  const decision = (await ctx.suspend({
+  const decision = await ctx.suspend<ApprovalDecision>({
     on: "ApprovalGranted",
     correlationKey: input.target,     // routes the resume event
     timeout: 24 * 60 * 60 * 1000,     // 24h
-  })) as { approved: boolean; approvedBy: string };
+  });
 
   if (!decision.approved) return { applied: false };
   return ctx.run(applyStep, { target: input.target });

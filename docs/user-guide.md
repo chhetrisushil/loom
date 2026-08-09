@@ -628,7 +628,7 @@ await runtime.resume(executionId, {
 });
 
 // In the flow, at the gate — policy:
-const signal = (await ctx.suspend({ on: "TaskApproved" })) as { stale: boolean };
+const signal = await ctx.suspend<{ stale: boolean }>({ on: "TaskApproved" });
 if (signal.stale) ctx.ui.set("status", "re-review");   // this gate refuses; another could accept
 ```
 
