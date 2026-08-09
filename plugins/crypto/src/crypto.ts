@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { expandPaths, hasWildcard } from "@loom/classify";
 
 // ── K10.2 — field-level AES-256-GCM envelope ─────────────────────────────────
 //
@@ -81,8 +82,11 @@ export function mapPaths(
   transform: (value: unknown) => unknown
 ): unknown {
   if (paths.length === 0 || typeof root !== "object" || root === null) return root;
+  // `[]` segments are resolved against the concrete value first, so a mark inside an array
+  // element reaches every element (#260). Paths without one pass through untouched.
+  const targets = hasWildcard(paths) ? expandPaths(root, paths) : paths;
   const out = shallowCopy(root);
-  for (const path of paths) {
+  for (const path of targets) {
     const segs = path.split(".");
     let src = root as Record<string, unknown>; // reads from the ORIGINAL
     let dst = out; // writes into the copied spine

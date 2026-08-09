@@ -1,3 +1,4 @@
+import { expandPaths, hasWildcard } from "./expand";
 // ── K10-R6 — the shared egress-masking primitive ──────────────────────────────
 //
 // One structural path-masker, used by every egress surface (telemetry adapters, agent-surface
@@ -15,6 +16,13 @@ export const REDACTED = "[redacted]" as const;
  * roots at an object (an array/primitive root has nothing to address), so those are returned
  * as-is. Paths are applied independently; a shared prefix is copied once.
  */
+/** Copy one spine node, preserving arrays. */
+function shallowCopy(value: object): Record<string, unknown> {
+  return Array.isArray(value)
+    ? ([...value] as unknown as Record<string, unknown>)
+    : { ...(value as Record<string, unknown>) };
+}
+
 export function maskPaths(
   root: unknown,
   paths: readonly string[],
@@ -22,7 +30,9 @@ export function maskPaths(
 ): unknown {
   if (typeof root !== "object" || root === null || Array.isArray(root)) return root;
   const out: Record<string, unknown> = { ...(root as Record<string, unknown>) };
-  for (const path of paths) {
+  // `[]` segments are resolved against the concrete value first (#260); a path without one
+  // passes through untouched, so pre-existing behaviour is unchanged.
+  for (const path of hasWildcard(paths) ? expandPaths(root, paths) : paths) {
     const segs = path.split(".");
     let src = root as Record<string, unknown>;
     let dst = out;
@@ -36,7 +46,9 @@ export function maskPaths(
       }
       // Copy this spine node once (first path to reach it); later paths sharing the prefix
       // descend into the already-copied node.
-      if (dst[seg] === child) dst[seg] = { ...(child as Record<string, unknown>) };
+      // Copy arrays AS arrays. `{ ...array }` would yield an object with numeric keys —
+      // harmless while paths never crossed arrays, corrupting now that they do.
+      if (dst[seg] === child) dst[seg] = shallowCopy(child as object);
       src = child as Record<string, unknown>;
       dst = dst[seg] as Record<string, unknown>;
     }

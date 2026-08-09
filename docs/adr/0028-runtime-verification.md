@@ -41,12 +41,15 @@ unwired — default is `off`).
   `meteringMiddleware`; a ceiling is present where a budget is declared.
 - **classification-reachability** — a `secret()`/`sensitive()`/`internal()` mark (K10-R1) that
   no egress sink can address. The dot-path sinks — telemetry scrubbing, field-level
-  encryption, content externalization — address scalar paths and deliberately do not descend
-  into array elements, so a mark placed *inside* an array element collects no path and does
-  nothing: not masked, not encrypted, not externalized. Silent, and the consequence is
-  classified data leaving in the clear, so it is an `error`. The fix is mechanical — mark the
-  array itself, which masks the element as a unit. Added after the package audit surfaced the
-  gap (issue #260); detection lives in `@loom/classify` beside the walker it audits.
+  encryption, content externalization — walk objects and arrays, but do not descend into a
+  record's values, a union's branches, a tuple's members or an intersection's sides. A mark
+  under one of those collects no path and does nothing: not masked, not encrypted, not
+  externalized. Silent, and the consequence is classified data leaving in the clear, so it is
+  an `error`. The fix is to mark the container itself, or restructure it as an object or
+  array. Added after the package audit surfaced the gap (issue #260); detection lives in
+  `@loom/classify` beside the walker it audits. Arrays were originally unaddressable too and
+  were the rule's first target; [ADR 0076](0076-wildcard-classification-paths.md) made them
+  reachable, narrowing this rule to what remains.
 
 (Note: **migration-safety** from the requirements list collapses into replay-safety — in the
 stateless-worker model resume *is* migration, so there is nothing extra to check.)

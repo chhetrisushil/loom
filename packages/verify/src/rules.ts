@@ -210,14 +210,14 @@ const resourceCompat: Rule = (input) => {
  * sink can address (K10-R1 / K10-R6).
  *
  * The dot-path sinks — telemetry scrubbing, field-level encryption, content externalization —
- * address scalar paths and deliberately do not descend into array elements. A mark placed
- * INSIDE an array element therefore collects no path and does nothing: the field is not
- * masked on egress, not encrypted at rest, not externalized. The developer marked it and
- * nothing said otherwise.
+ * walk objects and arrays. They do NOT descend into a record's values, a union's branches, a
+ * tuple's members or an intersection's sides. A mark placed under one of those collects no
+ * path and does nothing: the field is not masked on egress, not encrypted at rest, not
+ * externalized. The developer marked it and nothing said otherwise.
  *
  * `error`, not `warn`: the failure is silent, and the consequence is classified data leaving
- * the trust boundary in the clear. The fix is mechanical — mark the array itself, which is
- * the supported spelling and masks the whole element as a unit.
+ * the trust boundary in the clear. The fix is to mark the container itself — which covers the
+ * subtree as a unit — or to restructure it as an object or array, both of which are walked.
  */
 const classificationReachability: Rule = (input) => {
   const findings: Finding[] = [];
@@ -226,7 +226,7 @@ const classificationReachability: Rule = (input) => {
       findings.push({
         rule: "classification-reachability",
         severity: "error",
-        message: `\`${mark.dataClass}()\` on "${mark.path}" (${mark.stepId} ${mark.channel}) sits under an array, where no egress sink can address it — it is masked nowhere, encrypted nowhere, externalized nowhere. Mark the array itself instead (K10-R1).`,
+        message: `\`${mark.dataClass}()\` on "${mark.path}" (${mark.stepId} ${mark.channel}) sits under a \`${mark.container}\`, which no egress sink can address — it is masked nowhere, encrypted nowhere, externalized nowhere. Mark the \`${mark.container}\` itself instead, or restructure it as an object or array (K10-R1).`,
         location: `${flow.id}:${mark.stepId}`,
       });
     }

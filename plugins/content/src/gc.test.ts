@@ -168,3 +168,38 @@ describe("pinByEventKinds (K10.6 execution-level predicate)", () => {
     expect(await livePinned("wake-2")).toBe(false); // telemetry only, no findings
   });
 });
+
+describe("refs inside arrays (#260)", () => {
+  it("marks refs held in array elements — pinning and reclaiming both depend on it", async () => {
+    // Externalizing a `docs[].body` path puts refs INSIDE an array for the first time
+    // (ADR 0076). The mark phase must see through the array or it would orphan live blobs.
+    // Both citations are older than the TTL, so retention here rests ENTIRELY on the walk
+    // finding them — a sweep that never looked inside the array would reclaim `a`/`b` too.
+    const content = new InMemoryContentStore();
+    const a = await content.put(bytes("body A"));
+    const b = await content.put(bytes("body B"));
+    const stale = await content.put(bytes("an old telemetry sample"));
+
+    const OLD = NOW - 300 * DAY;
+    const events = new InMemoryAsyncEventStore();
+    await events.append(
+      evt("e1", 0, "STEP_COMPLETED", { output: { docs: [{ body: a }, { body: b }] } }, OLD)
+    );
+    await events.append(evt("e1", 1, "TELEMETRY", { samples: [{ blob: stale }] }, OLD));
+
+    const report = await sweepUnpinnedContent({
+      eventStores: [events],
+      contentStore: content,
+      pinnedEventTypes: ["STEP_COMPLETED"],
+      olderThanMs: 30 * DAY,
+      now: NOW,
+    });
+
+    // Pinned through the array crossing.
+    expect(await content.get(a)).not.toBeNull();
+    expect(await content.get(b)).not.toBeNull();
+    // And the control: an unpinned ref inside an array IS found, and is reclaimed.
+    expect(report.reclaimed).toContain(stale.__loomContent);
+    expect(await content.get(stale)).toBeNull();
+  });
+});

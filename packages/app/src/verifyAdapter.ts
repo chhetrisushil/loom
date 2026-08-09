@@ -115,7 +115,7 @@ export function resolveVerifyInput(
     const loopIdent = inputs.loopIdentityByFlow?.[def.id];
     // K10-R1 reachability: derived from the REAL step schemas here rather than supplied by a
     // caller, so the check cannot be skipped by forgetting to wire it. An app with no marks
-    // under arrays yields an empty list and the rule is a no-op (G2).
+    // stranded under records/unions/tuples yields an empty list and the rule is a no-op (G2).
     const unreachableMarks: UnreachableMarkRef[] = [];
     for (const step of def.steps) {
       for (const channel of ["input", "output"] as const) {
@@ -125,6 +125,7 @@ export function resolveVerifyInput(
           unreachableMarks.push({
             path: mark.path,
             dataClass: mark.dataClass,
+            container: mark.container,
             stepId: step.id,
             channel,
           });

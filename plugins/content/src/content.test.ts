@@ -33,6 +33,63 @@ function setup() {
   return { inner, content, store };
 }
 
+describe("externalization across arrays (#260)", () => {
+  it("externalizes every element behind a `[]` path and resolves them all back", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const content = new InMemoryContentStore();
+    const store = new ContentResolvingEventStore(inner, content, {
+      externalize: { STEP_COMPLETED: ["output.docs[].body"] },
+    });
+    const payload = {
+      output: {
+        docs: [
+          { body: "…long text A…", id: "a" },
+          { body: "…long text B…", id: "b" },
+        ],
+      },
+    };
+    await store.append(ev("e1", 0, "STEP_COMPLETED", payload));
+
+    // The log holds refs, not bodies — one blob per distinct element.
+    const [stored] = await inner.read("e1");
+    const logged = stored?.payload as { output: { docs: { body: unknown; id: string }[] } };
+    expect(Array.isArray(logged.output.docs)).toBe(true);
+    expect(logged.output.docs.map((d) => isContentRef(d.body))).toEqual([true, true]);
+    expect(logged.output.docs.map((d) => d.id)).toEqual(["a", "b"]); // siblings untouched
+    expect(content.size).toBe(2);
+
+    // Reading resolves them, so the fold is identical to the un-externalized payload (G1).
+    const [resolved] = await store.read("e1");
+    expect(resolved?.payload).toEqual(payload);
+  });
+
+  it("dedups identical elements to one blob, as content addressing implies", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const content = new InMemoryContentStore();
+    const store = new ContentResolvingEventStore(inner, content, {
+      externalize: { STEP_COMPLETED: ["output.docs[].body"] },
+    });
+    await store.append(
+      ev("e1", 0, "STEP_COMPLETED", { output: { docs: [{ body: "same" }, { body: "same" }] } })
+    );
+    expect(content.size).toBe(1);
+    const [resolved] = await store.read("e1");
+    expect(resolved?.payload).toEqual({ output: { docs: [{ body: "same" }, { body: "same" }] } });
+  });
+
+  it("is inert when the `[]` path does not resolve", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const content = new InMemoryContentStore();
+    const store = new ContentResolvingEventStore(inner, content, {
+      externalize: { STEP_COMPLETED: ["output.docs[].body"] },
+    });
+    const payload = { output: { other: 1 } };
+    await store.append(ev("e1", 0, "STEP_COMPLETED", payload));
+    expect(content.size).toBe(0);
+    expect((await store.read("e1"))[0]?.payload).toEqual(payload);
+  });
+});
+
 describe("ContentResolvingEventStore (ADR 0046)", () => {
   it("externalizes marked fields to the content store; the log holds only a ref", async () => {
     const { inner, content, store } = setup();
