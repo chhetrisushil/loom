@@ -25,6 +25,8 @@ export interface WorkerServer {
 // Cap request bodies so an unauthenticated caller can't OOM the process by streaming a
 // huge (or endless) body into memory before parse. Matches the isolate broker's 10 MB cap.
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
+/** Routes reachable without the authorizer. Everything else is gated when one is wired. */
+const OPEN_ROUTES = new Set(["/health"]);
 
 function parseBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -88,8 +90,12 @@ export function createWorkerServer(
           return;
         }
 
-        // Gate the mutating routes when an authorizer is wired. `/health` stays open.
-        if (options.authorize !== undefined && (url === "/execute" || url === "/cancel")) {
+        // Gate EVERYTHING except an explicit open allowlist, rather than naming the routes
+        // to protect. The previous form gated `/execute` and `/cancel` by name, so adding a
+        // route meant remembering to add it to the gate too — and forgetting left it
+        // unauthenticated. Inverting it makes a new route authenticated by default, which is
+        // the direction to fail in. (`A2AServer` already gates this way.)
+        if (options.authorize !== undefined && !OPEN_ROUTES.has(url)) {
           if (!(await options.authorize(req))) {
             json(res, 401, { error: "unauthorized" });
             return;
