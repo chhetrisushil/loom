@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
-import { describe, expect, it } from "vitest";
+import { Pool } from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PostgresEventStore } from "./PostgresEventStore";
 import { PostgresSnapshotStore } from "./PostgresSnapshotStore";
 
@@ -120,5 +121,122 @@ describe("a pool from another copy of pg (or no pg at all)", () => {
     } as never);
     await store.close();
     expect(ended).toBe(false);
+  });
+});
+
+// ── The same claim, against a real database ─────────────────────────────────
+//
+// The fakes above prove the stores never step outside the pool surface. They cannot prove
+// the borrowed pool actually talks to Postgres correctly, because nothing above connects.
+// This does, using a plain object that delegates to a real pool: `instanceof Pool` is
+// false for it — exactly as it is for a pool from a second copy of `pg` — while every
+// call reaches a live server. Same gating as the rest of the suite.
+
+const PG_URL = process.env.LOOM_TEST_POSTGRES_URL;
+const suite = PG_URL ? describe : describe.skip;
+
+const SCHEMA = "loom_foreign_pool_test";
+
+suite("a borrowed pool against a real database", () => {
+  let real: Pool;
+  /** Delegates to `real`, but is not a `Pool` — the store cannot tell, and must not care. */
+  let borrowed: object;
+
+  beforeAll(async () => {
+    const admin = new Pool({ connectionString: PG_URL });
+    try {
+      await admin.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+      await admin.query(`CREATE SCHEMA ${SCHEMA}`);
+    } finally {
+      await admin.end();
+    }
+    real = new Pool({ connectionString: PG_URL, options: `-c search_path=${SCHEMA}` });
+    borrowed = {
+      query: (...args: unknown[]) => (real.query as (...a: unknown[]) => unknown)(...args),
+      connect: () => real.connect(),
+      end: () => real.end(),
+      options: real.options,
+    };
+  });
+
+  afterAll(async () => {
+    await real.end().catch(() => {});
+    const admin = new Pool({ connectionString: PG_URL });
+    try {
+      await admin.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+    } finally {
+      await admin.end();
+    }
+  });
+
+  it("migrates, appends and reads back through it", async () => {
+    expect(borrowed instanceof Pool).toBe(false); // the premise
+    const store = new PostgresEventStore(borrowed as never);
+    const e: EventEnvelope = {
+      id: "fp-1",
+      workflowId: "w",
+      executionId: "fp-x1",
+      eventType: "EXECUTION_STARTED",
+      sequence: 0,
+      timestamp: 1,
+      payload: { hello: "world" },
+    };
+    await store.append(e);
+
+    const read = await store.read("fp-x1");
+    expect(read).toHaveLength(1);
+    expect(read[0]?.id).toBe("fp-1");
+    expect(read[0]?.payload).toEqual({ hello: "world" });
+  });
+
+  it("round-trips a snapshot through it", async () => {
+    const snapshots = new PostgresSnapshotStore(borrowed as never);
+    await snapshots.save({
+      id: "fp-s1",
+      executionId: "fp-x1",
+      workflowId: "w",
+      sequence: 0,
+      state: { status: "running" } as never,
+      createdAt: 2,
+    });
+    const latest = await snapshots.loadLatest("fp-x1");
+    expect(latest?.id).toBe("fp-s1");
+  });
+
+  it("opens its LISTEN session from a borrowed pool's options, and receives cross-node", async () => {
+    // The second `instanceof Pool`, which lived in `ensureListener`. A pooled client
+    // cannot hold LISTEN, so the store opens a dedicated Client — and the only place to
+    // get connection parameters is the pool's `options`. That check was unreachable while
+    // `toPool` refused foreign pools; accepting them without fixing it would have handed
+    // the pool OBJECT to `new Client(…)`, which is the original bug verbatim.
+    const reader = new PostgresEventStore(borrowed as never, { notifyBuckets: 8 });
+    const writer = new PostgresEventStore(
+      { connectionString: PG_URL, options: `-c search_path=${SCHEMA}` },
+      { notifyBuckets: 8 }
+    );
+    const seen: number[] = [];
+    await reader.subscribe("fp-notify", (e) => seen.push(e.sequence));
+    await writer.append({
+      id: "fp-n0",
+      workflowId: "w",
+      executionId: "fp-notify",
+      eventType: "EXECUTION_STARTED",
+      sequence: 0,
+      timestamp: 1,
+      payload: {},
+    });
+    // Cross-process delivery is asynchronous.
+    await new Promise((r) => setTimeout(r, 500));
+    expect(seen).toEqual([0]);
+    await writer.close();
+    await reader.close();
+  });
+
+  it("leaves the lent pool open after close()", async () => {
+    const store = new PostgresEventStore(borrowed as never);
+    await store.close();
+    // Still usable: close() ended nothing, because the store never owned it.
+    const { rows } = await real.query("SELECT 1 AS ok");
+    expect(rows[0]).toEqual({ ok: 1 });
   });
 });
