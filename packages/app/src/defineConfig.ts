@@ -270,6 +270,24 @@ export interface LoomConfig {
   /** Extra event observer, fired after projection + telemetry. */
   onEvent?: (event: EventEnvelope) => void;
   /**
+   * Fired when a durable write rejects. Forwarded verbatim to {@link WorkflowRuntime},
+   * which reports two different kinds through it:
+   *
+   * - an **event** append that rejects — the run is aborted regardless and
+   *   `waitForCompletion`/`waitForSuspend` reject with a `StorageWriteError`, so this
+   *   hook is only logging/metrics;
+   * - a **snapshot** save that rejects — fire-and-forget, so this hook is the ONLY
+   *   channel. Nothing else observes it and the run continues unharmed.
+   *
+   * The second is why this is surfaced here alongside {@link LoomConfig.snapshotEvery}.
+   * Setting a cadence turns on a mid-run checkpoint whose failure is otherwise silent:
+   * the execution keeps running, replay quietly stops being bounded, and the only
+   * symptom is a `loadState` that gets slower over time. Cheap against an in-memory or
+   * local store; a real risk against a network-backed or quota-limited one — which is
+   * exactly the storage a cadence is worth setting for.
+   */
+  onStorageError?: (executionId: string, err: unknown) => void;
+  /**
    * T1 — durable timers. Wire a {@link TimerStore} (`InMemoryTimerStore`,
    * `SqliteTimerStore`/`PostgresTimerStore` beside your event store) and the app
    * runs a {@link TimerService}: `ctx.sleep`/`ctx.sleepUntil` — and
@@ -621,6 +639,7 @@ export function defineConfig(config: LoomConfig): LoomApp {
     ...(config.timers !== undefined && { timerStore: config.timers.store }),
     ...(config.validateInput !== undefined && { validateInput: config.validateInput }),
     ...(config.snapshotEvery !== undefined && { snapshotEvery: config.snapshotEvery }),
+    ...(config.onStorageError !== undefined && { onStorageError: config.onStorageError }),
   });
 
   // Schedules come from the explicit `timers.schedules` list AND from `scheduleModules` (loom gen

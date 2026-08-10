@@ -60,10 +60,16 @@ export interface WorkflowRuntimeDeps {
    */
   branchRegistry?: BranchRegistry;
   /**
-   * Optional observability hook fired when a durable event write rejects (a new
-   * failure mode of the async storage layer). The run is aborted and
-   * waitForCompletion/waitForSuspend reject with a StorageWriteError regardless;
-   * this is purely for logging/metrics.
+   * Optional observability hook fired when a durable write rejects (a failure mode of
+   * the async storage layer). It reports two kinds, and they are not equally optional:
+   *
+   * - an **event** append — the run is aborted and waitForCompletion/waitForSuspend
+   *   reject with a StorageWriteError regardless, so this is purely logging/metrics;
+   * - a **snapshot** save (both the {@link WorkflowRuntimeDeps.snapshotEvery} cadence
+   *   and the settle checkpoint) — fire-and-forget by design, since a lost checkpoint
+   *   only means a longer replay. That makes this hook the ONLY channel: unwired, a
+   *   store that fails every save is indistinguishable from one that takes none, and
+   *   the cadence silently stops bounding replay.
    */
   onStorageError?: (executionId: string, err: unknown) => void;
   /**
@@ -1341,10 +1347,25 @@ export class WorkflowRuntime {
             state,
             createdAt: Date.now(),
           };
-          await this.snapshotStore.save(snap);
-          // T1 — schedule the durable wake ONLY after the suspension (and its
-          // snapshot) are durable, so a timer can never fire into a log that
-          // doesn't yet record the suspend.
+          try {
+            await this.snapshotStore.save(snap);
+          } catch (err: unknown) {
+            // Same policy as the cadence and settle checkpoints: a lost snapshot costs a
+            // longer replay, never correctness — EXECUTION_SUSPENDED is already durable
+            // (drained above), so this execution IS suspended whether or not the
+            // checkpoint landed, and a resume folds from the log instead.
+            //
+            // This is the one save on the run loop nobody awaits, which is what made it
+            // different in kind: an escaping rejection skipped `resolveSuspend` below, so
+            // a snapshot store that rejected here left `waitForSuspend`/`waitForCompletion`
+            // pending FOREVER and surfaced only as an unhandled rejection. A transient
+            // blip in a network-backed SnapshotStore wedged the execution.
+            this.onStorageError?.(executionId, err);
+          }
+          // T1 — schedule the durable wake ONLY after the suspension is durable, so a
+          // timer can never fire into a log that doesn't yet record the suspend. The
+          // snapshot is a replay optimization and is deliberately NOT part of that
+          // invariant — the log is what a woken execution reads.
           if (this.timerStore !== undefined && wakeAt !== undefined) {
             try {
               await this.timerStore.schedule({ executionId, wakeAt });

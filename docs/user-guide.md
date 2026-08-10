@@ -365,11 +365,23 @@ Opt-in by presence: no map, or no entry for that event type, is exactly today's 
 
 **Recovery.** A crash mid-flight is just a resume: on redispatch the runtime folds durable state and, if still `running`, resumes; if already terminal, returns as-is. No step re-runs. `loadState(id)` folds state without running.
 
-**Bounding replay.** For long executions, set `snapshotEvery` so a resume folds only the tail after the latest snapshot:
+**Bounding replay.** For long executions, set `snapshotEvery` so a resume folds only the tail after the latest snapshot. It is a `defineConfig` key, so it does not cost you the composition root — and it is storage-agnostic, applying to whatever `EventStore`/`SnapshotStore` pair you wired (`kind: "memory"`, `sqliteStorage()`, `postgresStorage()`, or your own preset):
 
 ```ts
+defineConfig({
+  storage: { kind: "custom", eventStore, snapshotStore }, // …or any preset
+  snapshotEvery: 100,
+  // Snapshot saves are fire-and-forget — a lost checkpoint costs replay time, not
+  // correctness, so nothing rejects and no event records it. Wire this or a failing
+  // snapshot store is indistinguishable from one taking no snapshots at all.
+  onStorageError: (executionId, err) => logger.warn({ executionId, err }),
+});
+
+// Hand-wiring takes the same two options:
 new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime, snapshotEvery: 100 });
 ```
+
+Worth setting once executions get long: measured at a 102-event log it is 4.76 ms → 1.22 ms p50; at 4 events it is nothing (0.72 → 0.71 ms), so short flows should not bother. Larger *N* means fewer snapshot writes and a longer worst-case replay. See [scaling §3.2](scaling.md) for the measurements.
 
 ### Child workflows (`@loom/orchestration`)
 
@@ -767,6 +779,8 @@ interface LoomConfig {
   dispatcher?: ExecutionDispatcher;    // where executions run
   onEvent?: (event: EventEnvelope) => void;
   onWarn?: (message: string) => void;
+  snapshotEvery?: number;              // mid-run checkpoint cadence — bounds the replay tail (any backend)
+  onStorageError?: (executionId: string, err: unknown) => void; // durable-write failures; the ONLY channel a failed snapshot has
   projectionRuntime?: ProjectionRuntime;
   catalog?: CatalogLike;
   manifest?: ManifestView;

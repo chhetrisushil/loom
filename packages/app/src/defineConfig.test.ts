@@ -920,3 +920,79 @@ describe("defineConfig — snapshotEvery", () => {
     await app.close();
   });
 });
+
+/** A snapshot store whose every save rejects — the failure `onStorageError` alone sees. */
+class FailingSnapshotStore implements SnapshotStore {
+  readonly attempts: number[] = [];
+  async save(s: Snapshot): Promise<void> {
+    this.attempts.push(s.sequence);
+    throw new Error("snapshot backend unavailable");
+  }
+  async loadLatest(): Promise<Snapshot | null> {
+    return null;
+  }
+  async loadAt(): Promise<Snapshot | null> {
+    return null;
+  }
+  async loadLatestBefore(): Promise<Snapshot | null> {
+    return null;
+  }
+  async close(): Promise<void> {}
+}
+
+function buildWithFailingSnapshots(onStorageError?: (executionId: string, err: unknown) => void): {
+  app: ReturnType<typeof defineConfig>;
+  snapshots: FailingSnapshotStore;
+} {
+  const snapshots = new FailingSnapshotStore();
+  const app = defineConfig({
+    storage: {
+      kind: "custom",
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: snapshots,
+    },
+    flows: [gatedFlow()],
+    snapshotEvery: 2,
+    ...(onStorageError !== undefined && { onStorageError }),
+  });
+  registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+  return { app, snapshots };
+}
+
+describe("defineConfig — onStorageError", () => {
+  it("forwards the hook, the only channel a failed checkpoint has", async () => {
+    // Snapshot saves are fire-and-forget (a lost checkpoint costs replay time, not
+    // correctness), so nothing else observes them: no rejection, no event, no status
+    // change. Unforwarded, `snapshotEvery` against a store that fails every save is
+    // indistinguishable from one taking no snapshots at all.
+    const errors: { executionId: string; err: unknown }[] = [];
+    const { app, snapshots } = buildWithFailingSnapshots((executionId, err) => {
+      errors.push({ executionId, err });
+    });
+
+    const handle = await app.runtime.start(gatedFlow(), { incidentId: "i1" });
+    const suspended = await handle.waitForSuspend();
+    await new Promise((r) => setTimeout(r, 0)); // fire-and-forget saves settle
+
+    expect(snapshots.attempts.length).toBeGreaterThan(0); // the cadence did fire
+    expect(errors.length).toBeGreaterThan(0); // …and every rejection reached the app
+    expect(errors[0]?.executionId).toBe(suspended.executionId);
+    expect((errors[0]?.err as Error).message).toBe("snapshot backend unavailable");
+    await app.close();
+  });
+
+  it("unwired, the same failures leave no trace — which is why it must be settable", async () => {
+    // The control, and the reason this is worth a config key rather than a note: with
+    // no hook the run is byte-identical to a healthy one. It suspends, its state is
+    // correct, nothing rejects — while replay silently stops being bounded.
+    const { app, snapshots } = buildWithFailingSnapshots(undefined);
+
+    const handle = await app.runtime.start(gatedFlow(), { incidentId: "i1" });
+    const suspended = await handle.waitForSuspend();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(snapshots.attempts.length).toBeGreaterThan(0);
+    expect(suspended.status).toBe("suspended"); // unharmed, and unaware
+    await app.close();
+  });
+});

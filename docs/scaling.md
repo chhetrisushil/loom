@@ -112,7 +112,7 @@ Loom's own triage discipline (P10, bias outward) demands.
 | capability | what it gives you | where |
 |---|---|---|
 | **Payload externalization** | Large payloads move out of the hot `events` table into a content store; `getMany` batches resolution (~44× over serialized reads) | `plugins/content` (ADR 0062) |
-| **Snapshot cadence** | `snapshotEvery` bounds replay tail length | `WorkflowRuntime` |
+| **Snapshot cadence** | `snapshotEvery` bounds replay tail length; pair it with `onStorageError`, the only channel a failed checkpoint has | `defineConfig` or `WorkflowRuntime` |
 | **Log compaction** | `truncatePrefix` drops the pre-snapshot prefix (keeps seq 0 as anchor) | `EventStore` SPI |
 | **Retention sweeps** | `deleteExecution` + keyset-paged `listExecutionsPage` for bounded-memory maintenance at year scale | SPI 1.2.0 |
 | **Read models** | Durable cross-execution index so queries stop scanning logs; idempotent rows + per-execution watermarks | `plugins/read-model` (ADR 0058) |

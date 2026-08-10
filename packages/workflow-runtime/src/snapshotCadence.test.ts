@@ -204,3 +204,115 @@ describe("snapshot cadence — an execution faster than its snapshot store", () 
     expect(snapshotStore.saves).toHaveLength(0); // unchanged default behavior
   });
 });
+
+// ── A snapshot store that rejects ────────────────────────────────────────────
+//
+// Every checkpoint is fire-and-forget by design: a lost snapshot costs replay time, not
+// correctness, so a failing save must degrade the execution, never stop it. Three of the
+// four save sites already held that line. The suspend-time save did not — it sat on the
+// run loop, which nobody awaits, so its rejection skipped `resolveSuspend` and left
+// `waitForSuspend`/`waitForCompletion` pending forever, visible only as an unhandled
+// rejection. That is the failure mode a network-backed SnapshotStore actually has.
+
+class RejectingSnapshotStore implements SnapshotStore {
+  readonly attempts: number[] = [];
+  async save(s: Snapshot): Promise<void> {
+    this.attempts.push(s.sequence);
+    throw new Error("snapshot backend unavailable");
+  }
+  async loadLatest(): Promise<Snapshot | null> {
+    return null;
+  }
+  async loadAt(): Promise<Snapshot | null> {
+    return null;
+  }
+  async loadLatestBefore(): Promise<Snapshot | null> {
+    return null;
+  }
+  async close(): Promise<void> {}
+}
+
+const GATE = "Gate";
+const gatedSteps = [step$({ id: "g0", name: "G0", toolId: "t", ...io })];
+const gatedFlow = {
+  definition: {
+    _tag: "FlowDefinition",
+    id: "gated",
+    name: "Gated",
+    version: "1.0.0",
+    ...io,
+    steps: gatedSteps,
+  },
+  runner: async (ctx) => {
+    for (const s of gatedSteps) await ctx.run(s, {});
+    await ctx.suspend({ on: GATE });
+    return { done: true };
+  },
+} as RegisteredFlow;
+
+describe("snapshot cadence — a snapshot store that rejects", () => {
+  const buildRuntime = (
+    snapshotStore: SnapshotStore,
+    onStorageError?: (executionId: string, err: unknown) => void
+  ) => {
+    const effects = new EffectRuntime();
+    effects.register("t", new ToolEffect(async () => ({})));
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore,
+      effectRuntime: effects,
+      snapshotEvery: 2,
+      ...(onStorageError !== undefined && { onStorageError }),
+    });
+    runtime.registerFlow(gatedFlow.definition, gatedFlow.runner);
+    return runtime;
+  };
+
+  it("suspends anyway when the suspend-time checkpoint rejects", async () => {
+    // The regression. EXECUTION_SUSPENDED is drained before the save, so the execution
+    // IS durably suspended whether or not the checkpoint lands — a resume just folds the
+    // log instead of a snapshot. Before the fix this call never settled.
+    const snapshotStore = new RejectingSnapshotStore();
+    const runtime = buildRuntime(snapshotStore);
+
+    const handle = await runtime.start(gatedFlow, {});
+    const state = await handle.waitForSuspend();
+
+    expect(state.status).toBe("suspended");
+    expect(state.suspendedOn?.on).toBe(GATE);
+    expect(snapshotStore.attempts.length).toBeGreaterThan(0); // it really did try
+  });
+
+  it("still resumes to completion — a lost checkpoint costs replay, not correctness", async () => {
+    const snapshotStore = new RejectingSnapshotStore();
+    const runtime = buildRuntime(snapshotStore);
+
+    const handle = await runtime.start(gatedFlow, {});
+    const suspended = await handle.waitForSuspend();
+    const resumed = await runtime.resume(suspended.executionId, {
+      eventType: GATE,
+      payload: {},
+    });
+    const final = await resumed.waitForCompletion();
+
+    expect(final.status).toBe("completed");
+  });
+
+  it("reports every rejected save through onStorageError", async () => {
+    // The hook is the only channel these have: nothing rejects, no event is recorded,
+    // and the execution's own status is identical to a healthy run.
+    const errors: { executionId: string; err: unknown }[] = [];
+    const snapshotStore = new RejectingSnapshotStore();
+    const runtime = buildRuntime(snapshotStore, (executionId, err) => {
+      errors.push({ executionId, err });
+    });
+
+    const handle = await runtime.start(gatedFlow, {});
+    const state = await handle.waitForSuspend();
+    await tick();
+
+    expect(errors.length).toBe(snapshotStore.attempts.length);
+    expect(errors.every((e) => e.executionId === state.executionId)).toBe(true);
+    expect((errors[0]?.err as Error).message).toBe("snapshot backend unavailable");
+  });
+});
