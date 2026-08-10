@@ -29,6 +29,13 @@ interface ActiveProjection {
 const LAZY_BUFFER_LIMIT = 10_000;
 
 /**
+ * How many least-recently-touched executions eviction will step over looking for an
+ * unsubscribed one. Bounds the per-event cost of `touch`; see its comment for why giving up
+ * (and sitting one entry over the cap) is the right failure direction.
+ */
+const EVICTION_SCAN_LIMIT = 64;
+
+/**
  * A registered selector-subscription (see {@link InMemoryProjectionRuntime.subscribeSelector}).
  * `last` holds the previously-seen slice so we can fire only on change; it is seeded from
  * current state at subscribe time (change-only semantics — no initial call).
@@ -92,12 +99,49 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
     this.execOrder.delete(executionId);
   }
 
+  /** True if anything is currently subscribed to any projection of this execution. */
+  private hasSubscribers(executionId: string): boolean {
+    for (const projectionId of this.projections.keys()) {
+      const key = this.stateKey(projectionId, executionId);
+      if (this.subscribers.has(key) || this.selectorSubscribers.has(key)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Drop an execution's retained STATE only — never its subscriber registries.
+   *
+   * The distinction is the whole point. `forget` is an explicit "this execution is done"
+   * from a caller who knows it; eviction is a cache decision the caller never made, and
+   * dropping a live subscriber's registry there does not degrade — it disconnects. The
+   * handler set is captured by closure in `subscribe`, so once the map entry is gone
+   * `notify` looks up a key that no longer exists and that subscriber never fires again.
+   */
+  private evictState(executionId: string): void {
+    for (const projectionId of this.projections.keys()) {
+      this.states.delete(this.stateKey(projectionId, executionId));
+    }
+    this.execOrder.delete(executionId);
+  }
+
   private touch(executionId: string): void {
     this.execOrder.delete(executionId);
     this.execOrder.set(executionId, true);
-    if (this.execOrder.size > this.maxExecutions) {
-      const oldest = this.execOrder.keys().next().value;
-      if (oldest !== undefined) this.forget(oldest);
+    if (this.execOrder.size <= this.maxExecutions) return;
+    // Evict least-recently-touched first, but SKIP anything with a live subscriber:
+    // evicting a state someone is folding into resets it to `initialState`, which is
+    // corruption rather than a cache miss (the same rule `AgentSurfaceRuntime` follows).
+    //
+    // The scan is bounded rather than exhaustive: if the oldest entries are all subscribed,
+    // giving up costs one over-cap entry, while scanning on would make `touch` — which runs
+    // once per event — O(retained). Over the cap is the safe direction; `forget` is the
+    // explicit remedy.
+    let examined = 0;
+    for (const candidate of this.execOrder.keys()) {
+      if (examined++ >= EVICTION_SCAN_LIMIT) return;
+      if (this.hasSubscribers(candidate)) continue;
+      this.evictState(candidate);
+      return;
     }
   }
 
@@ -148,7 +192,11 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
     handlers.add(wrapper);
     return () => {
       handlers.delete(wrapper);
-      if (handlers.size === 0) {
+      // Only retire the map entry if it is still OUR set. After an explicit `forget`, a later
+      // subscriber installs a fresh set under the same key; without this identity check a
+      // stale unsubscribe would empty its own orphaned set and then delete the live one,
+      // silently disconnecting a subscriber that did nothing wrong.
+      if (handlers.size === 0 && this.subscribers.get(key) === handlers) {
         this.subscribers.delete(key);
       }
     };
@@ -178,7 +226,8 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
     set.add(entry);
     return () => {
       set!.delete(entry);
-      if (set!.size === 0) {
+      // Same identity check as `subscribe` — never retire a set that is no longer ours.
+      if (set!.size === 0 && this.selectorSubscribers.get(key) === set) {
         this.selectorSubscribers.delete(key);
       }
     };
@@ -250,7 +299,11 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
     const handler = handlers[event.eventType];
     if (typeof handler !== "function") return;
     const key = this.stateKey(projection.id, event.executionId);
-    const currentState = this.states.has(key) ? this.states.get(key) : projection.initialState;
+    // One `get` on the hot path (this runs per event per projection); `has` is consulted only
+    // in the rare case where the retained state is itself `undefined`.
+    const retained = this.states.get(key);
+    const currentState =
+      retained !== undefined || this.states.has(key) ? retained : projection.initialState;
     const nextState = handler(currentState, event);
     this.states.set(key, nextState);
     this.notify(key, nextState);

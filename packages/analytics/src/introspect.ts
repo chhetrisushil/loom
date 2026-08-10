@@ -128,7 +128,12 @@ export function executionNodes(events: EventEnvelope[]): ExecutionNode[] {
     for (const e of ordered) {
       if (e.eventType === "EXECUTION_STARTED") startedAt = e.timestamp;
       if (e.eventType === "STEP_STARTED") steps += 1;
-      const terminal = TERMINAL[e.eventType];
+      // Own-key lookup: `eventType` is caller-controlled (a resume carries the caller's own
+      // event type into the log), and `TERMINAL["__proto__"]` resolves up the prototype chain
+      // to `Object.prototype` — not `undefined`, so the guard below would admit it and report
+      // the execution as terminal with an object for a status. The sibling `TERMINAL_STEP`
+      // reads are inside a `switch` on known types and cannot be reached this way.
+      const terminal = Object.hasOwn(TERMINAL, e.eventType) ? TERMINAL[e.eventType] : undefined;
       if (terminal !== undefined) {
         status = terminal;
         completedAt = e.timestamp;
