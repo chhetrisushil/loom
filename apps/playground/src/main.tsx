@@ -98,7 +98,7 @@ const app = defineConfig({
   projectionRuntime,
   surfaces: ["ui"],
   catalog,
-  telemetry: [ConsoleTelemetryAdapter, ReactAdapter],
+  observability: { telemetry: [ConsoleTelemetryAdapter, ReactAdapter] },
 });
 
 const eventStore = app.stores.eventStore;

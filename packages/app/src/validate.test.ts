@@ -67,8 +67,8 @@ describe("defineConfig({ validate })", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [badFlow],
-      validate: true,
-      onWarn: (m) => warnings.push(m),
+      observability: { onWarn: (m) => warnings.push(m) },
+      checks: { validate: true },
     });
     expect(warnings.some((w) => w.includes("unregistered-tool"))).toBe(true);
     await app.close();
@@ -76,7 +76,7 @@ describe("defineConfig({ validate })", () => {
 
   it('validate: "error" throws on a missing effect', () => {
     expect(() =>
-      defineConfig({ storage: { kind: "memory" }, flows: [badFlow], validate: "error" })
+      defineConfig({ storage: { kind: "memory" }, flows: [badFlow], checks: { validate: "error" } })
     ).toThrow(/validation failed/);
   });
 
@@ -85,8 +85,8 @@ describe("defineConfig({ validate })", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [goodFlow],
-      validate: true,
-      onWarn: (m) => warnings.push(m),
+      observability: { onWarn: (m) => warnings.push(m) },
+      checks: { validate: true },
     });
     expect(warnings).toEqual([]);
     await app.close();

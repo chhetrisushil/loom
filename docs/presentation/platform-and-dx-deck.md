@@ -177,7 +177,7 @@ loom deploy check --logs prod-logs/ --config dist/app.js   →  ✓ safe to prom
 ## Run anywhere — the compute seam
 
 ```
-defineConfig({ dispatcher })
+defineConfig({ execution: { dispatcher } })
    └─ ExecutionDispatcher ─┬─ local     (in-process)
                            ├─ remote    (HTTP → stateless worker-server)
                            └─ Cloud Run (platform-cloudrun)

@@ -93,8 +93,8 @@ describe("defineConfig({ verify }) boot gate", () => {
       defineConfig({
         storage: { kind: "memory" },
         flows: [flow()],
-        authorizer: partialGrants,
-        verify: "error",
+        security: { authorizer: partialGrants },
+        checks: { verify: "error" },
       })
     ).toThrow(/remediation-tool/);
   });
@@ -104,9 +104,9 @@ describe("defineConfig({ verify }) boot gate", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [flow()],
-      authorizer: partialGrants,
-      verify: "warn",
-      onWarn: (m) => warnings.push(m),
+      security: { authorizer: partialGrants },
+      observability: { onWarn: (m) => warnings.push(m) },
+      checks: { verify: "warn" },
     });
     expect(warnings.join("\n")).toContain("capability-compat");
     expect(app.verify().ok).toBe(false);
@@ -117,8 +117,8 @@ describe("defineConfig({ verify }) boot gate", () => {
       defineConfig({
         storage: { kind: "memory" },
         flows: [flow()],
-        authorizer: fullGrants,
-        verify: "error",
+        security: { authorizer: fullGrants },
+        checks: { verify: "error" },
       })
     ).not.toThrow();
   });
@@ -127,7 +127,7 @@ describe("defineConfig({ verify }) boot gate", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [flow()],
-      authorizer: fullGrants,
+      security: { authorizer: fullGrants },
     });
     const report = app.verify();
     expect(report.ok).toBe(true);
@@ -135,7 +135,11 @@ describe("defineConfig({ verify }) boot gate", () => {
   });
 
   it("skips capability-compat entirely when no authorizer is wired", () => {
-    const app = defineConfig({ storage: { kind: "memory" }, flows: [flow()], verify: "error" });
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow()],
+      checks: { verify: "error" },
+    });
     expect(app.verify().findings.filter((f) => f.rule === "capability-compat")).toHaveLength(0);
   });
 });
@@ -199,7 +203,7 @@ describe("verify — K12 resume authentication", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [gatedFlow()],
-      resumeAuthenticator: authenticator,
+      security: { resumeAuthenticator: authenticator },
     });
     expect(app.runtime.hasResumeAuthenticator()).toBe(true);
     expect(app.verify().findings.filter((f) => f.rule === "suspension-safety")).toHaveLength(0);
@@ -207,14 +211,18 @@ describe("verify — K12 resume authentication", () => {
 
   it('boots or refuses to boot accordingly under verify:"error"', () => {
     expect(() =>
-      defineConfig({ storage: { kind: "memory" }, flows: [gatedFlow()], verify: "error" })
+      defineConfig({
+        storage: { kind: "memory" },
+        flows: [gatedFlow()],
+        checks: { verify: "error" },
+      })
     ).toThrow(/ResumeAuthenticator/);
     expect(() =>
       defineConfig({
         storage: { kind: "memory" },
         flows: [gatedFlow()],
-        resumeAuthenticator: authenticator,
-        verify: "error",
+        security: { resumeAuthenticator: authenticator },
+        checks: { verify: "error" },
       })
     ).not.toThrow();
   });

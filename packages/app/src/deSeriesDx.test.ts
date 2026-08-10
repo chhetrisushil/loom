@@ -44,12 +44,16 @@ describe("defineConfig verify.lint plumbing (ADR 0061 / issue #82)", () => {
     defineConfig({
       storage: { kind: "memory" },
       flows: [flow()],
-      onWarn: (m) => warnings.push(m),
-      verify: {
-        mode: "warn",
-        lint: {
-          loopIdentityByFlow: {
-            interp: [{ callee: "run", loopKind: "ForOfStatement", reason: "static-step-in-loop" }],
+      observability: { onWarn: (m) => warnings.push(m) },
+      checks: {
+        verify: {
+          mode: "warn",
+          lint: {
+            loopIdentityByFlow: {
+              interp: [
+                { callee: "run", loopKind: "ForOfStatement", reason: "static-step-in-loop" },
+              ],
+            },
           },
         },
       },
@@ -64,12 +68,14 @@ describe("defineConfig verify.lint plumbing (ADR 0061 / issue #82)", () => {
       defineConfig({
         storage: { kind: "memory" },
         flows: [flow()],
-        onWarn: (m) => warnings.push(m),
-        verify: {
-          mode: "error",
-          lint: {
-            nonDeterministicByFlow: {
-              interp: [{ callee: "Date.now", insideDecide: false, location: "interp" }],
+        observability: { onWarn: (m) => warnings.push(m) },
+        checks: {
+          verify: {
+            mode: "error",
+            lint: {
+              nonDeterministicByFlow: {
+                interp: [{ callee: "Date.now", insideDecide: false, location: "interp" }],
+              },
             },
           },
         },
@@ -109,8 +115,10 @@ describe("defineConfig registerEffects seam (ADR 0063/0064 DX)", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [flow()],
-      registerEffects: (effects) => {
-        effects.register("mcp.invoke", new ToolEffect(async () => ({ ok: true })));
+      execution: {
+        registerEffects: (effects) => {
+          effects.register("mcp.invoke", new ToolEffect(async () => ({ ok: true })));
+        },
       },
     });
     expect(app.effectRuntime.has("mcp.invoke")).toBe(true);

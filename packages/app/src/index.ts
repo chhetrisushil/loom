@@ -3,7 +3,6 @@ export {
   normalizeConfig,
   type CatalogLike,
   type ChecksOptions,
-  type DeprecatedFlatOptions,
   type DurabilityOptions,
   type ExecutionOptions,
   type LoomApp,

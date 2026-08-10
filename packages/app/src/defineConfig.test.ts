@@ -78,8 +78,8 @@ describe("defineConfig — flowModules + manifest cross-check", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flowModules: [flowsModule],
-      manifest: { flows: { gated: { warnings: [] }, missing: { warnings: [] } } },
-      onWarn: (m) => warnings.push(m),
+      observability: { onWarn: (m) => warnings.push(m) },
+      checks: { manifest: { flows: { gated: { warnings: [] }, missing: { warnings: [] } } } },
     });
     registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
 
@@ -122,7 +122,7 @@ describe("defineConfig", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [gatedFlow()],
-      effectMiddleware: [retryMiddleware({ maxRetries: 2, sleep: async () => {} })],
+      execution: { effectMiddleware: [retryMiddleware({ maxRetries: 2, sleep: async () => {} })] },
     });
     registerToolEffects(app.effectRuntime, flaky);
 
@@ -142,7 +142,7 @@ describe("defineConfig", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [gatedFlow()],
-      effectMiddleware: [spy],
+      execution: { effectMiddleware: [spy] },
     });
     registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
 
@@ -166,7 +166,7 @@ describe("defineConfig", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [gatedFlow()],
-      telemetry: [{ onFlowComplete }],
+      observability: { telemetry: [{ onFlowComplete }] },
     });
     registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
     const handle = await app.runtime.start(gatedFlow(), { incidentId: "i1" });
@@ -309,7 +309,11 @@ describe("defineConfig — secrets (K10-R2)", () => {
     } as RegisteredFlow;
 
     const resolver = new InMemorySecretResolver(new Map([["vault-key", "sk_live_REAL"]]));
-    const app = defineConfig({ storage: { kind: "memory" }, flows: [flow], secrets: { resolver } });
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow],
+      security: { secrets: { resolver } },
+    });
 
     let toolSawKey: unknown;
     app.effectRuntime.register(
@@ -363,7 +367,7 @@ describe("defineConfig — egress scrubbing (K10-R6)", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [flow],
-      telemetry: [{ onStepComplete: (i) => stepOutputs.push(i.output) }],
+      observability: { telemetry: [{ onStepComplete: (i) => stepOutputs.push(i.output) }] },
     });
     app.effectRuntime.register(
       "lookup-tool",
@@ -399,11 +403,13 @@ describe("defineConfig — compliance / subject rights (T3)", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [flow],
-      compliance: {
-        subjectOf: (e) =>
-          e.eventType === "EXECUTION_STARTED"
-            ? (e.payload as { input?: { incidentId?: string } }).input?.incidentId
-            : undefined,
+      security: {
+        compliance: {
+          subjectOf: (e) =>
+            e.eventType === "EXECUTION_STARTED"
+              ? (e.payload as { input?: { incidentId?: string } }).input?.incidentId
+              : undefined,
+        },
       },
     });
     registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
@@ -445,14 +451,16 @@ describe("defineConfig — compliance / subject rights (T3)", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [flow],
-      compliance: {
-        subjectOf: (e) =>
-          e.eventType === "EXECUTION_STARTED"
-            ? (e.payload as { input?: { incidentId?: string } }).input?.incidentId
-            : undefined,
-        erase: {
-          shred: async (subjectId, executionIds) => {
-            shredCalls.push([subjectId, executionIds]);
+      security: {
+        compliance: {
+          subjectOf: (e) =>
+            e.eventType === "EXECUTION_STARTED"
+              ? (e.payload as { input?: { incidentId?: string } }).input?.incidentId
+              : undefined,
+          erase: {
+            shred: async (subjectId, executionIds) => {
+              shredCalls.push([subjectId, executionIds]);
+            },
           },
         },
       },
@@ -472,8 +480,8 @@ describe("defineConfig — compliance / subject rights (T3)", () => {
   it("eraseSubject rejects when erasure is not configured", async () => {
     const app = defineConfig({
       storage: { kind: "memory" },
-      flows: [gatedFlow()],
-      compliance: { subjectOf: () => undefined }, // index but no erase
+      flows: [gatedFlow()], // index but no erase,
+      security: { compliance: { subjectOf: () => undefined } },
     });
     await expect(app.eraseSubject("x")).rejects.toThrow(/eraseSubject requires/);
     await app.close();
@@ -492,13 +500,15 @@ describe("defineConfig — compliance / subject rights (T3)", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [flow],
-      compliance: {
-        // subject = incidentId; tenant = a field carried on the same input.
-        subjectOf: (e) =>
-          e.eventType === "EXECUTION_STARTED"
-            ? (e.payload as { input?: { incidentId?: string } }).input?.incidentId
-            : undefined,
-        tenantOf: (e) => (e.payload as { input?: { tenant?: string } }).input?.tenant,
+      security: {
+        compliance: {
+          // subject = incidentId; tenant = a field carried on the same input.
+          subjectOf: (e) =>
+            e.eventType === "EXECUTION_STARTED"
+              ? (e.payload as { input?: { incidentId?: string } }).input?.incidentId
+              : undefined,
+          tenantOf: (e) => (e.payload as { input?: { tenant?: string } }).input?.tenant,
+        },
       },
     });
     registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
@@ -569,7 +579,7 @@ describe("defineConfig — agent auto-wiring (a2a / agentSurface, opt-in)", () =
     const app = defineConfig({
       storage: { kind: "memory" },
       agents: [triage],
-      onWarn: (m) => warns.push(m),
+      observability: { onWarn: (m) => warns.push(m) },
     });
     expect(app.bus.agentCards()).toHaveLength(0); // not on the bus
     expect(() => app.projectionRuntime.getState("triage", "x")).toThrow(/not registered/); // no surface
@@ -664,7 +674,7 @@ describe("defineConfig — agent auto-wiring (a2a / agentSurface, opt-in)", () =
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [guarded],
-      onEvent: (e) => events.push(e.eventType),
+      observability: { onEvent: (e) => events.push(e.eventType) },
     });
     registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
     const handle = await app.runtime.start(guarded, { incidentId: "i1" });
@@ -696,7 +706,7 @@ describe("defineConfig — agent auto-wiring (a2a / agentSurface, opt-in)", () =
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [ok],
-      onEvent: (e) => events.push(e.eventType),
+      observability: { onEvent: (e) => events.push(e.eventType) },
     });
     registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
     const handle = await app.runtime.start(ok, { incidentId: "i1" });
@@ -734,7 +744,7 @@ describe("defineConfig — agent auto-wiring (a2a / agentSurface, opt-in)", () =
       catalog,
       agents: [sre],
       capabilityAgents: { assess: "sre" },
-      onEvent: (e) => events.push(e.eventType),
+      observability: { onEvent: (e) => events.push(e.eventType) },
     });
     registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
     // The agent runs its capability flow; effects execute under that flow's workflowId,
@@ -840,7 +850,7 @@ describe("defineConfig — agent auto-wiring (a2a / agentSurface, opt-in)", () =
     const app = defineConfig({
       storage: { kind: "memory" },
       scheduleModules: [{ NightlySchedule: nightly }],
-      onWarn,
+      observability: { onWarn },
     });
     expect(app.schedules.map((s) => s.id)).toEqual(["nightly"]);
     expect(onWarn).toHaveBeenCalledWith(expect.stringContaining("will not fire"));
@@ -879,7 +889,7 @@ function buildWithCadence(snapshotEvery?: number): {
       snapshotStore: snapshots,
     },
     flows: [gatedFlow()],
-    ...(snapshotEvery !== undefined && { snapshotEvery }),
+    ...(snapshotEvery !== undefined && { durability: { snapshotEvery } }),
   });
   registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
   return { app, snapshots };
@@ -952,8 +962,8 @@ function buildWithFailingSnapshots(onStorageError?: (executionId: string, err: u
       snapshotStore: snapshots,
     },
     flows: [gatedFlow()],
-    snapshotEvery: 2,
-    ...(onStorageError !== undefined && { onStorageError }),
+    ...(onStorageError !== undefined && { observability: { onStorageError } }),
+    durability: { snapshotEvery: 2 },
   });
   registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
   return { app, snapshots };
@@ -1011,8 +1021,10 @@ describe("defineConfig — executionAuthorizer / onExecutionDenied", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [gatedFlow()],
-      executionAuthorizer: deny,
-      ...(denied !== undefined && { onExecutionDenied: denied }),
+      security: {
+        executionAuthorizer: deny,
+        ...(denied !== undefined && { onExecutionDenied: denied }),
+      },
     });
     registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
     return app;
@@ -1058,8 +1070,8 @@ describe("defineConfig — now", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [gatedFlow()],
-      now: () => fixed,
-      onEvent: (e) => seen.push(e.timestamp),
+      observability: { onEvent: (e) => seen.push(e.timestamp) },
+      execution: { now: () => fixed },
     });
     registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
 

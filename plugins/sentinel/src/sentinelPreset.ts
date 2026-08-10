@@ -55,7 +55,7 @@ export interface SentinelPreset<TState> {
   schedule: ScheduleDefinition;
   /** Carry state: `load(ctx)` at wake, `save(ctx, next, loaded.revision)` at rest. */
   state: SentinelStateHandle<TState>;
-  /** Wire into `defineConfig({ effectMiddleware: preset.middleware })`. */
+  /** Wire into `defineConfig({ execution: { effectMiddleware: preset.middleware } })`. */
   middleware: EffectMiddleware[];
   /** The K10.6 pin policy — feed to the sweep and `retention.pinned`. */
   pinnedEventTypes: readonly string[];

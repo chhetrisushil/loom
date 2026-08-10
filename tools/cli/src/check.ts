@@ -24,7 +24,7 @@ export function checkManifest(manifest: CheckManifest): CheckResult {
 /**
  * `loom check --manifest <path>` — static flow-graph checks over the compiler
  * manifest (no app load). Richer checks (missing effects, dangling capability
- * maps) run at boot via `defineConfig({ validate: true })`, where the live
+ * maps) run at boot via `defineConfig({ checks: { validate: true } })`, where the live
  * runtime is available.
  */
 export function cmdCheck(manifestPath: string): { text: string; result: CheckResult } {

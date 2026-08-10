@@ -78,7 +78,7 @@ export function wireGrantsIntoConfig(
   splices.push({
     start: closeBrace,
     end: closeBrace,
-    text: `  authorizer: new GrantTable({\n${grantLines}\n  }),\n`,
+    text: `  security: { authorizer: new GrantTable({\n${grantLines}\n  }) },\n`,
   });
 
   let after = src;

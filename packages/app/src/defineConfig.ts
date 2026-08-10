@@ -349,67 +349,13 @@ export interface ChecksOptions {
 }
 
 /**
- * The flat spellings of every option that now lives in a group. Still accepted so no app
- * has to move on this release's schedule, and every one is `@deprecated` so an editor says
- * where it went. Setting BOTH spellings for the same option throws — there is no sensible
- * precedence between two deliberate answers, and picking one silently is how a security
- * option ends up not applied.
- *
- * Delete this block (and `normalizeConfig`'s conflict pass) to complete the migration.
- */
-export interface DeprecatedFlatOptions {
-  /** @deprecated Moved to `security.authorizer`; still accepted, removed in a future release. */
-  authorizer?: SecurityOptions["authorizer"];
-  /** @deprecated Moved to `security.policies`; still accepted, removed in a future release. */
-  policies?: SecurityOptions["policies"];
-  /** @deprecated Moved to `security.secrets`; still accepted, removed in a future release. */
-  secrets?: SecurityOptions["secrets"];
-  /** @deprecated Moved to `security.resumeAuthenticator`; still accepted, removed in a future release. */
-  resumeAuthenticator?: SecurityOptions["resumeAuthenticator"];
-  /** @deprecated Moved to `security.executionAuthorizer`; still accepted, removed in a future release. */
-  executionAuthorizer?: SecurityOptions["executionAuthorizer"];
-  /** @deprecated Moved to `security.onExecutionDenied`; still accepted, removed in a future release. */
-  onExecutionDenied?: SecurityOptions["onExecutionDenied"];
-  /** @deprecated Moved to `security.compliance`; still accepted, removed in a future release. */
-  compliance?: SecurityOptions["compliance"];
-  /** @deprecated Moved to `observability.telemetry`; still accepted, removed in a future release. */
-  telemetry?: ObservabilityOptions["telemetry"];
-  /** @deprecated Moved to `observability.onEvent`; still accepted, removed in a future release. */
-  onEvent?: ObservabilityOptions["onEvent"];
-  /** @deprecated Moved to `observability.onWarn`; still accepted, removed in a future release. */
-  onWarn?: ObservabilityOptions["onWarn"];
-  /** @deprecated Moved to `observability.onStorageError`; still accepted, removed in a future release. */
-  onStorageError?: ObservabilityOptions["onStorageError"];
-  /** @deprecated Moved to `durability.snapshotEvery`; still accepted, removed in a future release. */
-  snapshotEvery?: DurabilityOptions["snapshotEvery"];
-  /** @deprecated Moved to `durability.retention`; still accepted, removed in a future release. */
-  retention?: DurabilityOptions["retention"];
-  /** @deprecated Moved to `execution.dispatcher`; still accepted, removed in a future release. */
-  dispatcher?: ExecutionOptions["dispatcher"];
-  /** @deprecated Moved to `execution.effectMiddleware`; still accepted, removed in a future release. */
-  effectMiddleware?: ExecutionOptions["effectMiddleware"];
-  /** @deprecated Moved to `execution.registerEffects`; still accepted, removed in a future release. */
-  registerEffects?: ExecutionOptions["registerEffects"];
-  /** @deprecated Moved to `execution.now`; still accepted, removed in a future release. */
-  now?: ExecutionOptions["now"];
-  /** @deprecated Moved to `execution.validateInput`; still accepted, removed in a future release. */
-  validateInput?: ExecutionOptions["validateInput"];
-  /** @deprecated Moved to `checks.validate`; still accepted, removed in a future release. */
-  validate?: ChecksOptions["validate"];
-  /** @deprecated Moved to `checks.verify`; still accepted, removed in a future release. */
-  verify?: ChecksOptions["verify"];
-  /** @deprecated Moved to `checks.manifest`; still accepted, removed in a future release. */
-  manifest?: ChecksOptions["manifest"];
-}
-
-/**
  * The single, static description of a Loom app. It is deliberately declarative
  * and side-effect-free to read: `defineConfig` turns it into the same runtime +
  * transport you would otherwise hand-assemble, so a resume / remote worker
  * reconstructs an identical wiring (determinism). It does NOT build app-specific
  * conductor logic (the Orchestrator) or HTTP routes.
  */
-export interface LoomConfig extends DeprecatedFlatOptions {
+export interface LoomConfig {
   storage: StorageConfig;
   /** Projection runtime to fold events into UI surfaces. Default in-memory. */
   projectionRuntime?: ProjectionRuntime;
@@ -636,13 +582,13 @@ function buildStores(storage: StorageConfig): LoomStores {
  * Every option in one flat internal shape, whichever spelling the app used.
  *
  * The dual surface stops here: `defineConfig`'s body reads this and never asks whether an
- * option arrived grouped or flat. That is the point of normalizing at the boundary — the
- * 100-odd reads below cannot drift from each other, and deleting the deprecated flat block
- * later touches this function and nothing else.
+ * option came from. Groups are how an app WRITES the config; this is how the file reads
+ * it, and keeping the two separate means moving an option between groups is a change to
+ * `GROUPED_OPTIONS` and nothing else.
  */
 type ResolvedConfig = Omit<
   LoomConfig,
-  keyof DeprecatedFlatOptions | "security" | "observability" | "durability" | "execution" | "checks"
+  "security" | "observability" | "durability" | "execution" | "checks"
 > &
   SecurityOptions &
   ObservabilityOptions &
@@ -671,32 +617,35 @@ const GROUPED_OPTIONS = [
 ] as const;
 
 /**
- * Collapse the grouped and flat spellings into one shape.
+ * Flatten the groups into the one shape `defineConfig`'s body reads.
  *
- * Setting both for the same option THROWS. There is no sensible precedence between two
- * deliberate answers, and quietly preferring one is how `security.authorizer` ends up
- * ignored because a flat `authorizer` survived a refactor — a silent downgrade of exactly
- * the options least likely to be exercised by a test.
+ * The grouping is presentation: it decides how an app WRITES the config, not how this
+ * file consumes it. Normalizing once at the boundary means the ~100 reads below never ask
+ * which group an option came from, so moving an option between groups is a change to this
+ * table and nothing else.
  */
 export function normalizeConfig(config: LoomConfig): ResolvedConfig {
-  const resolved = { ...config } as Record<string, unknown>;
-  const conflicts: string[] = [];
+  const supplied = config as unknown as Record<string, unknown>;
+  const resolved = { ...supplied };
+  const moved: string[] = [];
   for (const [group, options] of GROUPED_OPTIONS) {
-    const bag = config[group] as Record<string, unknown> | undefined;
+    const bag = supplied[group] as Record<string, unknown> | undefined;
     delete resolved[group];
-    if (bag === undefined) continue;
     for (const option of options) {
-      if (bag[option] === undefined) continue;
-      if (config[option] !== undefined) {
-        conflicts.push(`\`${option}\` (also set as \`${group}.${option}\`)`);
-        continue;
-      }
-      resolved[option] = bag[option];
+      // A pre-grouping spelling. TypeScript rejects it on an object literal, but a config
+      // built up dynamically — or any JS caller — reaches here typed as nothing at all,
+      // and `{...supplied}` would have carried it through and quietly WORKED. Removing the
+      // declaration without this makes the option removed in the types and live in the
+      // runtime, which is the worst of both: no editor help, no error, and an app that
+      // breaks whenever the spread stops covering for it.
+      if (supplied[option] !== undefined) moved.push(`\`${option}\` → \`${group}.${option}\``);
+      delete resolved[option];
+      if (bag?.[option] !== undefined) resolved[option] = bag[option];
     }
   }
-  if (conflicts.length > 0) {
+  if (moved.length > 0) {
     throw new Error(
-      `defineConfig: ${conflicts.join(", ")} — each option is set both flat and grouped. The flat spelling is deprecated; keep the grouped one and remove the other.`
+      `defineConfig: ${moved.join(", ")} — these options now live in a group. Move them, or pin @loom/app to the previous version.`
     );
   }
   return resolved as unknown as ResolvedConfig;

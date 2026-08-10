@@ -183,10 +183,12 @@ const logging: EffectMiddleware = async (ctx, input, next) => {
 const app = defineConfig({
   storage: { kind: "memory" },
   flows: [myFlow],
-  effectMiddleware: [
-    logging,
-    retryMiddleware({ maxRetries: 3, baseDelayMs: 200, factor: 2, jitter: true }),
-  ],
+  execution: {
+    effectMiddleware: [
+      logging,
+      retryMiddleware({ maxRetries: 3, baseDelayMs: 200, factor: 2, jitter: true }),
+    ],
+  },
 });
 ```
 
@@ -370,11 +372,11 @@ Opt-in by presence: no map, or no entry for that event type, is exactly today's 
 ```ts
 defineConfig({
   storage: { kind: "custom", eventStore, snapshotStore }, // …or any preset
-  snapshotEvery: 100,
+  durability: { snapshotEvery: 100 },
   // Snapshot saves are fire-and-forget — a lost checkpoint costs replay time, not
   // correctness, so nothing rejects and no event records it. Wire this or a failing
   // snapshot store is indistinguishable from one taking no snapshots at all.
-  onStorageError: (executionId, err) => logger.warn({ executionId, err }),
+  observability: { onStorageError: (executionId, err) => logger.warn({ executionId, err }) },
 });
 
 // Hand-wiring takes the same two options:
@@ -397,7 +399,7 @@ import {
 const holder: { supervisor?: ReturnType<typeof superviseChildren> } = {};
 const runtime = new WorkflowRuntime({
   eventStore, snapshotStore, effectRuntime,
-  onEvent: (e) => holder.supervisor?.onEvent(e),
+  observability: { onEvent: (e) => holder.supervisor?.onEvent(e) },
 });
 holder.supervisor = superviseChildren({ runtime, flows: { build: buildFlow, smoke: smokeFlow } });
 ```
@@ -556,9 +558,11 @@ import { registerSandboxEval, sandboxEval$ } from "@loom/plugin-sandbox";
 
 const app = defineConfig({
   // …
-  registerEffects: (effects) => {
-    registerMcpInvoke(mcpClient, effects, { server: "metrics" });
-    registerSandboxEval(effects, contentStore);
+  execution: {
+    registerEffects: (effects) => {
+      registerMcpInvoke(mcpClient, effects, { server: "metrics" });
+      registerSandboxEval(effects, contentStore);
+    },
   },
 });
 
@@ -719,7 +723,7 @@ you declare or re-export each construct. A tool's runnable **effect** is still r
 > events never fire never loads its code (the same lazy-chunk trick as `handler$`).
 >
 > `policy$` is the one builder **not** `loom gen`-discovered: it **is** enforced (a `PolicyAuthorizer`
-> reads each flow's `policies` + `defineConfig({ policies })` — see below), but it's carried *inline on
+> reads each flow's `policies` + `defineConfig({ security: { policies } })` — see below), but it's carried *inline on
 > the flow definition* rather than in an `app/policies/*` folder, so there's nothing to generate.
 
 ---
@@ -763,17 +767,17 @@ defineConfig({
 });
 ```
 
-Every grouped option is still accepted at the top level, marked `@deprecated` so your editor points at its new home. Setting **both** spellings for one option throws at `defineConfig` — there is no sensible precedence between two deliberate answers, and silently preferring one is how a `security` option ends up not applied. Mixing is fine per option; you do not have to move an app all at once.
+**Migrating.** These options used to sit at the top level. Passing one there now throws at `defineConfig`, naming the option and its new home — a message rather than a silent no-op, because an ignored `security` option is the kind of failure a passing test suite will not show you. TypeScript rejects it on an object literal; the runtime check is what catches a config assembled dynamically, or any JavaScript caller.
+
+```ts
+// before                          // now
+defineConfig({ authorizer })       defineConfig({ security: { authorizer } })
+defineConfig({ telemetry })        defineConfig({ observability: { telemetry } })
+```
 
 ```ts
 interface LoomConfig {
-  // ── Grouped ──
-  security?: SecurityOptions;
-  observability?: ObservabilityOptions;
-  durability?: DurabilityOptions;
-  execution?: ExecutionOptions;
-  checks?: ChecksOptions;
-  // ── Flat (each also available in a group above, where marked) ──
+  // ── What the app IS ──
   storage:
     | { kind: "memory" }
     // Bring your own backend, used verbatim. Concrete backends are presets returning
@@ -793,34 +797,50 @@ interface LoomConfig {
   memoryStore?: MemoryStore;           // backing store for app.memory (default in-memory)
   projectionModules?: ProjectionModule[]; // from `loom gen`: projection$ defs → projection runtime (lazy fold code)
   projections?: ProjectionDefinition[];   // projections registered directly (in addition to projectionModules)
-  policies?: PolicyDefinition[];       // app-global policy$ enforced via PolicyAuthorizer (composes under authorizer)
-  effectMiddleware?: EffectMiddleware[];
-  validate?: boolean | "warn" | "error";
+  projectionRuntime?: ProjectionRuntime;
   agents?: (AgentCard | AgentDefinition)[]; // cards register verbatim; agent$ defs auto-wire behind flags
   capabilityAgents?: Record<string, string>;
   a2a?: boolean;   // opt-in: auto-derive+register an AgentCard per agent$ definition (toAgentCard)
   agentSurface?: boolean;  // opt-in: auto-register an agent surface per agent (surfaceId = agent.id)
-  telemetry?: TelemetryAdapter[];      // auto-scrubbed for sensitive()/internal() fields (K10-R6)
-  dispatcher?: ExecutionDispatcher;    // where executions run
-  onEvent?: (event: EventEnvelope) => void;
-  onWarn?: (message: string) => void;
-  snapshotEvery?: number;              // mid-run checkpoint cadence — bounds the replay tail (any backend)
-  onStorageError?: (executionId: string, err: unknown) => void; // durable-write failures; the ONLY channel a failed snapshot has
-  projectionRuntime?: ProjectionRuntime;
   catalog?: CatalogLike;
-  manifest?: ManifestView;
-  // ── Data protection (see §K10/T3 below + docs/data-classification.md, docs/compliance.md)
-  secrets?: { resolver: SecretResolver };                       // K10-R2 secret redaction
-  retention?: { archive?: ArchiveStores; pinned?: PinPredicate }; // K10.1 lifecycle + K10.6 pin seam
-  validateInput?: boolean;                                      // parse inputSchema at start() (ADR 0051 D7)
-  resumeAuthenticator?: ResumeAuthenticator;                    // K12.2 — authenticates approval resumes; verify errors without it
-  executionAuthorizer?: ExecutionAuthorizer;                    // C.1 — gates start/resume/cancel for principal-carrying calls
-  onExecutionDenied?: (r: ExecutionAuthzRequest, reason?: string) => void; // C.1 audit hook
-  now?: () => number;                                           // injectable clock for envelope timestamps (DST/simulation)
-  compliance?: {                                                // T3 data-subject rights
-    subjectOf: SubjectResolver;
-    tenantOf?: TenantResolver;                                  // T3-R2.4 tenant partition
-    erase?: { shred: Shredder };                                // Art. 17 erasure
+  timers?: { store: TimerStore; schedules?: ScheduleDefinition[]; pollMs?: number;
+             fenced?: boolean; warmLeadMs?: number };         // T1 durable timers + cron
+
+  // ── Cross-cutting concerns ──
+  security?: {
+    authorizer?: CapabilityAuthorizer;   // K2 capability ring — gates EFFECTS
+    policies?: PolicyDefinition[];       // app-global policy$ (composes UNDER authorizer)
+    secrets?: { resolver: SecretResolver };  // K10-R2 secret redaction
+    resumeAuthenticator?: ResumeAuthenticator;  // K12.2 — authenticates approval resumes
+    executionAuthorizer?: ExecutionAuthorizer;  // C.1 — gates the execution LIFECYCLE
+    onExecutionDenied?: (r: ExecutionAuthzRequest, reason?: string) => void;
+    compliance?: {                       // T3 data-subject rights
+      subjectOf: SubjectResolver;
+      tenantOf?: TenantResolver;         // T3-R2.4 tenant partition
+      erase?: { shred: Shredder };       // Art. 17 erasure
+    };
+  };
+  observability?: {
+    telemetry?: TelemetryAdapter[];      // auto-scrubbed for sensitive()/internal() fields (K10-R6)
+    onEvent?: (event: EventEnvelope) => void;
+    onWarn?: (message: string) => void;
+    onStorageError?: (executionId: string, err: unknown) => void; // the ONLY channel a failed snapshot has
+  };
+  durability?: {
+    snapshotEvery?: number;              // mid-run checkpoint cadence — bounds the replay tail (any backend)
+    retention?: { archive?: ArchiveStores; pinned?: PinPredicate }; // K10.1 lifecycle + K10.6 pin seam
+  };
+  execution?: {
+    dispatcher?: ExecutionDispatcher;    // where executions run
+    effectMiddleware?: EffectMiddleware[];
+    registerEffects?: (effects: EffectRuntime) => void;
+    now?: () => number;                  // injectable clock for envelope timestamps (DST/simulation)
+    validateInput?: boolean;             // parse inputSchema at start() (ADR 0051 D7)
+  };
+  checks?: {
+    validate?: boolean | "warn" | "error";  // boot-time flow-graph check
+    verify?: VerifyConfig;                  // pre-flight fitness rules
+    manifest?: ManifestView;                // cross-check against the compiler manifest
   };
 }
 
@@ -838,7 +858,7 @@ interface LoomApp {
 }
 ```
 
-`validate` runs the boot-time flow-graph check (missing effect for a step's `toolId`, dangling capability→agent) — `"warn"` logs, `"error"` throws. Same engine as `loom check` ([ADR 0012](adr/0012-flow-graph-validation.md)).
+`checks.validate` runs the boot-time flow-graph check (missing effect for a step's `toolId`, dangling capability→agent) — `"warn"` logs, `"error"` throws. Same engine as `loom check` ([ADR 0012](adr/0012-flow-graph-validation.md)).
 
 **Manual wiring** (no `defineConfig`) is fully supported — everything above is sugar over `new WorkflowRuntime({...})`, `new EffectRuntime([...middleware])`, and a projection runtime.
 
@@ -923,7 +943,7 @@ By default, `start`/`resume` run in-process. A **dispatcher** decides placement;
 
 ```mermaid
 flowchart LR
-  cfg["defineConfig({ dispatcher })"] --> D["ExecutionDispatcher"]
+  cfg["defineConfig({ execution: { dispatcher } })"] --> D["ExecutionDispatcher"]
   D --> L["local (in-process)"]
   D --> R["remote (HTTP → plugin-worker-server)"]
   D --> C["Cloud Run (plugin-cloudrun)"]
@@ -1025,13 +1045,13 @@ The `EffectRuntime` is the authority boundary. Give it a least-privilege `GrantT
 import { EffectRuntime, GrantTable } from "@loom/effect-runtime";
 
 const effectRuntime = new EffectRuntime([], {
-  authorizer: new GrantTable({ "incident-flow": ["metrics-tool", "logs-tool"] }), // grant only these
+  security: { authorizer: new GrantTable({ "incident-flow": ["metrics-tool", "logs-tool"] }) }, // grant only these
 });
 // …or via defineConfig({ authorizer: new GrantTable({ … }) }).
 // Any other toolId this flow invokes → CapabilityDeniedError, EFFECT_DENIED logged.
 ```
 
-**Declarative policies (`policy$`).** A `GrantTable` is imperative wiring; `policy$` is the declarative companion enforced through the *same* ring by a `PolicyAuthorizer`. Attach policies to a flow (`flow$({ policies: [...] })`) or app-globally (`defineConfig({ policies: [...] })`) — `defineConfig` reads them and builds the authorizer automatically.
+**Declarative policies (`policy$`).** A `GrantTable` is imperative wiring; `policy$` is the declarative companion enforced through the *same* ring by a `PolicyAuthorizer`. Attach policies to a flow (`flow$({ policies: [...] })`) or app-globally (`defineConfig({ security: { policies: [...] } })`) — `defineConfig` reads them and builds the authorizer automatically.
 
 ```ts
 import { policy$ } from "@loom/core";
@@ -1347,7 +1367,7 @@ readModels.register({
 
 const app = defineConfig({
   // the live tail rides the same in-process feed projections use:
-  onEvent: (e) => readModels.handleEvent(e),
+  observability: { onEvent: (e) => readModels.handleEvent(e) },
   /* … */
 });
 await readModels.catchUp([app.stores.eventStore /*, archiveStore */]); // watermark-incremental
@@ -1473,7 +1493,7 @@ multi-tenant isolation) and get a live subject index + export + erasure:
 
 ```ts
 const app = defineConfig({ storage, flows,
-  compliance: { subjectOf: (e) => e.payload.input?.userId, erase: { shred } } });
+  security: { compliance: { subjectOf: (e) => e.payload.input?.userId, erase: { shred } } } });
 
 await app.exportSubject("user-42");             // Art. 15 access + Art. 20 portability
 await app.eraseSubject("user-42");              // Art. 17 — liveness-gated (never shreds a live fold)
@@ -1498,11 +1518,11 @@ await runtime.start(flow, input, { principal: { tenant: "acme", actor: "alice" }
 // K12.2 — verify approvals so "who approved" is evidence, not a claim. A `defineConfig`
 // key as well as a WorkflowRuntime dep; pre-flight verification ERRORS on a flow that
 // declares `resumeSchemas` with nothing wired here (suspension-safety, K12):
-defineConfig({ …, resumeAuthenticator: {
+defineConfig({ …, security: { resumeAuthenticator: {
   verify: (event) => event.eventType === "ApprovalGranted" && isValid(event)
     ? { status: "verified", actor: event.payload.approvedBy, verifiedBy: "sso.acme" }
     : { status: "rejected", reason: "unverified approval" },
-}});
+} } });
 // a rejected/forged approval REFUSES the resume (ApprovalRejectedError); a verified
 // one records a durable APPROVAL_GRANTED { actor, verifiedBy } fact.
 
@@ -1634,7 +1654,7 @@ const triage = capability$({ id: "triage", intent: "Triage an incident", inputSc
   version: "2.1.0", dependencies: ["fetch-metrics", "fetch-logs"] });
 
 const catalog = new CapabilityCatalog({
-  authorizer: { authorize: (req) => req.principal === "oncall" ? { allowed: true } : { allowed: false, reason: "oncall only" } },
+  security: { authorizer: { authorize: (req) => req.principal === "oncall" ? { allowed: true } : { allowed: false, reason: "oncall only" } } },
 });
 catalog.register(triage)/* … */;
 
