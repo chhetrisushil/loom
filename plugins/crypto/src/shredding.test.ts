@@ -203,3 +203,49 @@ describe("K10.2 — G2: unmarked stores are pass-throughs", () => {
     expect(await store.read("e1")).toEqual(await inner.read("e1")); // untouched
   });
 });
+
+// ── A keystore that fails on the live path must not take the process down ────
+//
+// `subscribe` decrypts each delivered event, and the key lookup is a real one — a KMS or a
+// table, not memory. Nothing awaits that decrypt (it runs from the inner store's subscribe
+// callback), so a rejection escaping it is UNHANDLED and Node terminates the process by
+// default. The sibling `ContentResolvingEventStore` already degrades to the raw envelope
+// for a failed blob fetch; this is the same contract for a failed key.
+
+describe("EncryptingEventStore.subscribe — a failing key lookup", () => {
+  /** A keystore whose reads reject, as a network-backed one does on a bad day. */
+  function brokenKeys() {
+    const real = new InMemoryKeyStore();
+    return {
+      ...real,
+      get: async (): Promise<never> => {
+        throw new Error("kms unavailable");
+      },
+      getOrCreate: real.getOrCreate.bind(real),
+      destroy: real.destroy.bind(real),
+    };
+  }
+
+  it("delivers the raw envelope rather than rejecting into nothing", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const store = new EncryptingEventStore(inner, brokenKeys() as never, {
+      sensitive: SENSITIVE,
+    });
+
+    const seen: EventEnvelope[] = [];
+    await store.subscribe("x1", (e) => seen.push(e));
+    // Append through the INNER store so the payload arrives already enveloped-or-not
+    // without needing a working key to write it.
+    // The tag must be the REAL one: `hasEnvelope` gates the decrypt path, so a placeholder
+    // would take the early return and the test would pass without exercising the fix at all.
+    await inner.append(
+      ev("x1", 0, "STEP_COMPLETED", {
+        output: { ssn: { __loomEnc: "loom/aes-256-gcm", iv: "", tag: "", data: "" } },
+      })
+    );
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.executionId).toBe("x1");
+  });
+});

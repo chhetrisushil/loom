@@ -83,3 +83,80 @@ describe("liveQuery", () => {
     expect(seen.length).toBe(countAtUnsub); // no further deliveries
   });
 });
+
+// ── A background re-fold that fails must not take the process down ───────────
+//
+// `subscribe` re-folds on every event from inside the store's subscribe callback. Nothing
+// awaits that call, so a rejection escaping it is UNHANDLED — and Node terminates the
+// process by default. A store read that fails, or an `onState` callback that throws, is an
+// ordinary bad day; it must cost one update, not the node.
+
+describe("liveQuery — a failing background re-fold", () => {
+  const stateFor = (id: string): ExecutionState =>
+    ({ executionId: id, status: "running", sequence: 1 }) as ExecutionState;
+
+  /** A reader that succeeds for the first fold and rejects for every one after it. */
+  function flakyReader(fail: { now: boolean }) {
+    return {
+      loadState: async (id: string): Promise<ExecutionState | null> => {
+        if (fail.now) throw new Error("store unavailable");
+        return stateFor(id);
+      },
+    };
+  }
+
+  it("reports the failure and stays subscribed instead of rejecting", async () => {
+    const eventStore = new InMemoryAsyncEventStore();
+    const fail = { now: false };
+    const errors: unknown[] = [];
+    const lq = liveQuery({
+      eventStore,
+      reader: flakyReader(fail),
+      onError: (e) => errors.push(e),
+    });
+
+    const seen: ExecutionState[] = [];
+    const unsubscribe = await lq.subscribe("x1", (s) => seen.push(s));
+    expect(seen).toHaveLength(1); // the initial fold, awaited by us
+
+    fail.now = true;
+    await eventStore.append({
+      id: "e1",
+      workflowId: "w",
+      executionId: "x1",
+      eventType: "STEP_COMPLETED",
+      sequence: 0,
+      timestamp: 1,
+      payload: {},
+    });
+    await new Promise((r) => setTimeout(r, 0)); // let the background fold settle
+
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0])).toContain("store unavailable");
+
+    // Still live: a later event folds again once the store recovers.
+    fail.now = false;
+    await eventStore.append({
+      id: "e2",
+      workflowId: "w",
+      executionId: "x1",
+      eventType: "STEP_COMPLETED",
+      sequence: 1,
+      timestamp: 2,
+      payload: {},
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen.length).toBeGreaterThan(1);
+    unsubscribe();
+  });
+
+  it("still surfaces a first-fold failure to the caller, who awaited it", async () => {
+    // The distinction the fix rests on: only the BACKGROUND fold is caught. The initial
+    // one is awaited by `subscribe`'s caller and stays theirs to handle.
+    const lq = liveQuery({
+      eventStore: new InMemoryAsyncEventStore(),
+      reader: flakyReader({ now: true }),
+    });
+    await expect(lq.subscribe("x1", () => {})).rejects.toThrow("store unavailable");
+  });
+});

@@ -28,6 +28,16 @@ export interface LiveQuery {
 export interface LiveQueryDeps {
   eventStore: EventStore;
   reader: StateReader;
+  /**
+   * Reports a BACKGROUND re-fold that failed — a store read that rejected, or an `onState`
+   * callback that threw. Those run from the store's subscribe callback with nothing
+   * awaiting them, so without this the rejection is unhandled and the process exits.
+   *
+   * The subscription stays live: one failed re-fold costs that update, and the next event
+   * folds from the log again. Unset, failures are swallowed — never rethrown, because
+   * there is no caller left to catch them.
+   */
+  onError?: (err: unknown) => void;
 }
 
 /** Build a {@link LiveQuery} over a store + a state reader (typically the runtime). */
@@ -62,7 +72,10 @@ export function liveQuery(deps: LiveQueryDeps): LiveQuery {
       };
 
       const unsubscribe = await deps.eventStore.subscribe(executionId, (_e: EventEnvelope) => {
-        void pump();
+        // Background re-fold: nothing awaits it, so it must never escape as an unhandled
+        // rejection. The FIRST fold below is different — the caller awaits `subscribe`, so
+        // a failure there is theirs to see and is deliberately left to propagate.
+        void pump().catch((err: unknown) => deps.onError?.(err));
       });
       // Emit the current state immediately so a subscriber isn't blind until the next event.
       await pump();

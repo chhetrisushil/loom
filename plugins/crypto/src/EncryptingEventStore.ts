@@ -159,13 +159,25 @@ export class EncryptingEventStore implements EventStore {
         handler(event);
         return;
       }
-      void this.keys.get(this.subjectOf(event)).then((key) => {
-        handler(
-          key === null
-            ? event
-            : { ...event, payload: mapPaths(event.payload, paths, (v) => decryptValue(key, v)) }
-        );
-      });
+      // Nothing awaits this — it is driven by the inner store's subscribe callback — so an
+      // escaping rejection is UNHANDLED and terminates the process by default. `keys.get`
+      // is a real lookup (a KMS or table, not memory) and `decryptValue` throws on a
+      // ciphertext it cannot open, so both are reachable on an ordinary bad day.
+      //
+      // Degrading to the RAW envelope is what the comment above already promises for a
+      // shredded subject, and what the sibling `ContentResolvingEventStore` does for a
+      // failed blob fetch: deliver the event with its sensitive fields still enveloped
+      // rather than drop the subscriber — or the node.
+      void this.keys
+        .get(this.subjectOf(event))
+        .then((key) => {
+          handler(
+            key === null
+              ? event
+              : { ...event, payload: mapPaths(event.payload, paths, (v) => decryptValue(key, v)) }
+          );
+        })
+        .catch(() => handler(event));
     });
   }
 

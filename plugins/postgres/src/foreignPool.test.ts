@@ -240,3 +240,32 @@ suite("a borrowed pool against a real database", () => {
     expect(rows[0]).toEqual({ ok: 1 });
   });
 });
+
+// ── A notification fetch that fails must not take the process down ───────────
+//
+// `onNotify` fetches the row a NOTIFY points at, so it rejects on any database blip.
+// It runs from pg's `notification` emitter callback with nothing awaiting it, so an
+// escaping rejection is UNHANDLED — and Node terminates the process by default. Normal
+// cross-node traffic during a hiccup would take the node down.
+
+describe("cross-node notification delivery — a failing fetch", () => {
+  it("swallows the failure instead of rejecting into nothing", async () => {
+    const { pool } = recordingPool();
+    const failing = {
+      ...pool,
+      query: (sql: string) =>
+        sql.includes("SELECT * FROM events")
+          ? Promise.reject(new Error("connection terminated"))
+          : Promise.resolve({ rows: [], rowCount: 0 }),
+    };
+    const store = new PostgresEventStore(failing as never);
+    await store.subscribe("x1", () => {});
+
+    // Drive the private handler the emitter calls, with a payload naming a subscribed
+    // execution so it reaches the row fetch.
+    const onNotify = (store as unknown as { onNotify(raw: string): Promise<void> }).onNotify;
+    await expect(
+      onNotify.call(store, JSON.stringify(["other-sender", "x1", 0]))
+    ).resolves.toBeUndefined();
+  });
+});
