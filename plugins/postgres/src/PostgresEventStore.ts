@@ -1,8 +1,8 @@
 import type { EventEnvelope } from "@loom/core";
 import { StaleFenceError, SubscriberRegistry, bucketOf, fenceOf } from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
-import { Client, type Notification, Pool, type PoolConfig } from "pg";
-import { type PgConfig, nextSenderId, toPool } from "./pool";
+import { Client, type Notification } from "pg";
+import { type PgConfig, type PoolLike, nextSenderId, toClientConfig, toPool } from "./pool";
 import { NOTIFY_CHANNEL, migrate } from "./schema";
 
 export interface PostgresEventStoreOptions {
@@ -60,7 +60,7 @@ function rowToEnvelope(row: EventRow): EventEnvelope {
  * notifications it published itself to avoid double delivery.
  */
 export class PostgresEventStore implements EventStore {
-  private readonly pool: Pool;
+  private readonly pool: PoolLike;
   private readonly ownsPool: boolean;
   private readonly ready: Promise<void>;
   private readonly subscribers: SubscriberRegistry;
@@ -416,13 +416,17 @@ export class PostgresEventStore implements EventStore {
   // Lazily open a dedicated LISTEN connection (a pooled client can't hold LISTEN).
   private ensureListener(): Promise<void> {
     if (this.listenerReady !== undefined) return this.listenerReady;
-    const cfg = this.connConfig;
-    const clientConfig: string | PoolConfig =
-      typeof cfg === "string"
-        ? cfg
-        : cfg instanceof Pool
-          ? (cfg.options as PoolConfig)
-          : (cfg as PoolConfig);
+    const clientConfig = toClientConfig(this.connConfig);
+    if (clientConfig === undefined) {
+      // A pool-like that exposes no `options`, so there are no connection parameters to
+      // open a second session with. Everything else keeps working — the log stays
+      // authoritative and same-process subscribers are still served synchronously; only
+      // cross-node NOTIFY delivery is unavailable. Memoize the give-up so we do not
+      // re-derive it on every interest change, and let `queueChannel`'s optional call
+      // on `this.listener` no-op.
+      this.listenerReady = Promise.resolve();
+      return this.listenerReady;
+    }
     const client =
       typeof clientConfig === "string"
         ? new Client({ connectionString: clientConfig })

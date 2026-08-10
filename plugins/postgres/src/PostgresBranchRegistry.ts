@@ -1,6 +1,5 @@
 import type { BranchRef, BranchRegistry, LineageRecord } from "@loom/event-runtime";
-import type { Pool } from "pg";
-import { type PgConfig, toPool } from "./pool";
+import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 
 interface RefRow {
@@ -47,7 +46,7 @@ type Now = () => number;
 
 /** Postgres-backed {@link BranchRegistry}. Same contract as the SQLite store. */
 export class PostgresBranchRegistry implements BranchRegistry {
-  private readonly pool: Pool;
+  private readonly pool: PoolLike;
   private readonly ownsPool: boolean;
   private readonly ready: Promise<void>;
   private readonly now: Now;

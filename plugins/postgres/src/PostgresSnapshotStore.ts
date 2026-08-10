@@ -1,7 +1,6 @@
 import type { ExecutionState } from "@loom/core";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
-import type { Pool } from "pg";
-import { type PgConfig, toPool } from "./pool";
+import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 
 interface SnapshotRow {
@@ -26,7 +25,7 @@ function rowToSnapshot(row: SnapshotRow): Snapshot {
 
 /** Postgres-backed {@link SnapshotStore}. Same contract as the SQLite store. */
 export class PostgresSnapshotStore implements SnapshotStore {
-  private readonly pool: Pool;
+  private readonly pool: PoolLike;
   private readonly ownsPool: boolean;
   private readonly ready: Promise<void>;
 

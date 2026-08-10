@@ -1,7 +1,6 @@
 import type { DurableStateRecord, DurableStateStore } from "@loom/plugin-durable-state";
 import { RevisionConflictError } from "@loom/plugin-durable-state";
-import type { Pool } from "pg";
-import { type PgConfig, toPool } from "./pool";
+import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 
 interface DurableStateRow {
@@ -20,7 +19,7 @@ interface DurableStateRow {
  * nodes without explicit locking.
  */
 export class PostgresDurableStateStore implements DurableStateStore {
-  private readonly pool: Pool;
+  private readonly pool: PoolLike;
   private readonly ownsPool: boolean;
   private readonly ready: Promise<void>;
 
