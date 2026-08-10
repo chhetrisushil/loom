@@ -140,7 +140,7 @@ const SEAMS: Record<string, SeamDef> = {
   dispatcher: {
     key: "dispatcher",
     title: "Compute placement (ExecutionDispatcher)",
-    wiring: "dispatcher: new <Name>Dispatcher({ /* … */ })",
+    wiring: "execution: { dispatcher: new <Name>Dispatcher({ /* … */ }) }",
     spiDeps: ["@loom/dispatcher"],
     conformance: ["runExecutionDispatcherConformance"],
     index: (name) => {
@@ -203,7 +203,7 @@ const SEAMS: Record<string, SeamDef> = {
   telemetry: {
     key: "telemetry",
     title: "Telemetry adapter (flow/step lifecycle hooks)",
-    wiring: "telemetry: [<name>Telemetry({ /* … */ })]",
+    wiring: "observability: { telemetry: [<name>Telemetry({ /* … */ })] }",
     spiDeps: ["@loom/telemetry"],
     conformance: [],
     index: (name) => {
@@ -219,7 +219,7 @@ const SEAMS: Record<string, SeamDef> = {
         "",
         "/**",
         " * A `TelemetryAdapter`. Every hook is optional — implement the ones you care about.",
-        ` * Wire it as \`telemetry: [${c}Telemetry()]\`; \`defineConfig\` composes multiple.`,
+        ` * Wire it as \`observability: { telemetry: [${c}Telemetry()] }\`; \`defineConfig\` composes multiple.`,
         " */",
         `export function ${c}Telemetry(options: ${P}TelemetryOptions = {}): TelemetryAdapter {`,
         "  const emit: (line: string) => void = options.sink ?? (() => {});",
@@ -266,7 +266,7 @@ const SEAMS: Record<string, SeamDef> = {
   middleware: {
     key: "middleware",
     title: "Effect middleware (wrap every effect execution)",
-    wiring: "effectMiddleware: [<name>Middleware({ /* … */ })]",
+    wiring: "execution: { effectMiddleware: [<name>Middleware({ /* … */ })] }",
     spiDeps: ["@loom/effect-runtime"],
     conformance: [],
     index: (name) => {
@@ -283,7 +283,7 @@ const SEAMS: Record<string, SeamDef> = {
         "/**",
         " * An `EffectMiddleware` — an onion layer over every effect. `middleware[0]` is",
         " * outermost. It runs only for non-completed steps, so it is replay-safe. Wire as",
-        ` * \`effectMiddleware: [${c}Middleware()]\`; order is behavioural, so document where`,
+        ` * \`execution: { effectMiddleware: [${c}Middleware()] }\`; order is behavioural, so document where`,
         " * yours belongs relative to retry/metering.",
         " */",
         `export function ${c}Middleware(options: ${P}MiddlewareOptions = {}): EffectMiddleware {`,
@@ -437,7 +437,7 @@ const SEAMS: Record<string, SeamDef> = {
   worker: {
     key: "worker",
     title: "Worker runtime (run an execution on some compute)",
-    wiring: "dispatcher: new LocalDispatcher(new <Name>Worker())",
+    wiring: "execution: { dispatcher: new LocalDispatcher(new <Name>Worker()) }",
     spiDeps: ["@loom/worker-runtime"],
     conformance: ["runWorkerRuntimeConformance"],
     index: (name) => {
@@ -535,7 +535,7 @@ const SEAMS: Record<string, SeamDef> = {
   authorizer: {
     key: "authorizer",
     title: "Capability authorizer (allow/deny each effect)",
-    wiring: "authorizer: new <Name>Authorizer()",
+    wiring: "security: { authorizer: new <Name>Authorizer() }",
     spiDeps: ["@loom/effect-runtime"],
     conformance: ["runCapabilityAuthorizerConformance"],
     index: (name) => {

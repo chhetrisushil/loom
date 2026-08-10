@@ -150,7 +150,7 @@ Re-run `loom gen` whenever you add or remove any construct. Exit `0` on a succes
 
 **Projections load their fold code on demand** ([ADR 0049](adr/0049-projection-on-demand-fold-code.md)). When the `@loom/compiler` plugin builds a `projection$`, it extracts the whole `handlers` fold map into its own `import()` chunk (exactly like `handler$`/`instructions$`) and records the handled event-type keys. At runtime the projection stays **code-dormant** until an event whose type it folds first fires — then it imports the chunk once (buffering until ready) and folds normally after. A projection whose events never fire never loads its code. Uncompiled (dev), the handlers are inline and eager.
 
-> `policy$` is **not** `loom gen`-discovered: it **is** enforced (a `PolicyAuthorizer` reads each flow's `policies` + `defineConfig({ policies })` — see the [user guide](user-guide.md#7-agents-tools--a2a)), but it's carried *inline on the flow definition*, not from an `app/policies/*` folder, so there's no separate module to generate. Discovery stays gated on "a runtime consumes a discovered *file*."
+> `policy$` is **not** `loom gen`-discovered: it **is** enforced (a `PolicyAuthorizer` reads each flow's `policies` + `defineConfig({ security: { policies } })` — see the [user guide](user-guide.md#7-agents-tools--a2a)), but it's carried *inline on the flow definition*, not from an `app/policies/*` folder, so there's no separate module to generate. Discovery stays gated on "a runtime consumes a discovered *file*."
 
 ### `loom appgen <intent> | --from <file> | --from-spec <file> [--dir .] [flags]`
 
@@ -209,7 +209,7 @@ Planning runs through a cheap-first elevation ladder (`--model-big <spec>` names
 
 ### `loom check --manifest <path>`
 
-Static flow-graph validation from a **compiler manifest** — no app is loaded and nothing executes. It catches issues the type system can't: a step whose `toolId` has no registered effect, a capability routed to a missing agent, and similar graph defects. This is the same engine `defineConfig({ validate })` runs at boot ([ADR 0012](adr/0012-flow-graph-validation.md)).
+Static flow-graph validation from a **compiler manifest** — no app is loaded and nothing executes. It catches issues the type system can't: a step whose `toolId` has no registered effect, a capability routed to a missing agent, and similar graph defects. This is the same engine `defineConfig({ checks: { validate } })` runs at boot ([ADR 0012](adr/0012-flow-graph-validation.md)).
 
 ```bash
 npx loom check --manifest loom-manifest.json

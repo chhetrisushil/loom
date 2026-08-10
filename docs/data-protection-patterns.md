@@ -35,9 +35,11 @@ Not legal advice.*
 
    ```ts
    defineConfig({
-     retention: {
-       archive: { eventStore: archiveEvents, snapshotStore: archiveSnaps }, // K10.1
-       pinned: preset.pinPredicate(eventStore),                              // K10.6
+     durability: {
+       retention: {
+         archive: { eventStore: archiveEvents, snapshotStore: archiveSnaps }, // K10.1
+         pinned: preset.pinPredicate(eventStore),                             // K10.6
+       },
      },
    });
    // operator cadence (nothing prunes on a timer):

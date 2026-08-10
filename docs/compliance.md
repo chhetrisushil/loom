@@ -25,7 +25,7 @@ event stream. `defineConfig` wires it live:
 const app = defineConfig({
   storage: sqliteStorage({ path: "app.db" }),
   flows: [signupFlow],
-  compliance: { subjectOf },
+  security: { compliance: { subjectOf } },
 });
 
 app.subjectIndex?.executionsOf("user-42"); // ["exec-a", "exec-b"]
@@ -46,9 +46,11 @@ aren't), so read it from input/metadata:
 const app = defineConfig({
   storage: sqliteStorage({ path: "app.db" }),
   flows: [signupFlow],
-  compliance: {
-    subjectOf: (e) => e.payload.input?.userId,
-    tenantOf: (e) => e.payload.input?.tenant, // partition key
+  security: {
+    compliance: {
+      subjectOf: (e) => e.payload.input?.userId,
+      tenantOf: (e) => e.payload.input?.tenant, // partition key
+    },
   },
 });
 
@@ -87,14 +89,16 @@ become unrecoverable (K10.2). Wire the shredder to the crypto plugin:
 const app = defineConfig({
   storage: { kind: "custom", eventStore: encryptingStore, snapshotStore },
   flows: [signupFlow],
-  compliance: {
-    subjectOf,
-    erase: {
-      // MUST be idempotent (no-op if already erased).
-      shred: async (subjectId, executionIds) => {
-        if ((await keys.get(subjectId)) !== null) {
-          await shredSubject(keys, rawEventStore, executionIds[0], { subjectId, executionIds });
-        }
+  security: {
+    compliance: {
+      subjectOf,
+      erase: {
+        // MUST be idempotent (no-op if already erased).
+        shred: async (subjectId, executionIds) => {
+          if ((await keys.get(subjectId)) !== null) {
+            await shredSubject(keys, rawEventStore, executionIds[0], { subjectId, executionIds });
+          }
+        },
       },
     },
   },

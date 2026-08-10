@@ -89,14 +89,14 @@ each only to events that carry it, so unioning across differently-shaped steps i
 
 ### Secrets, wired in one line (K10-R2)
 
-`defineConfig({ secrets })` installs the redaction seam automatically, so `secret()`-marked
+`defineConfig({ security: { secrets } })` installs the redaction seam automatically, so `secret()`-marked
 fields never reach the log — both directions, no kernel change:
 
 ```ts
 const app = defineConfig({
   storage: sqliteStorage({ path: "app.db" }),
   flows: [chargeFlow],
-  secrets: { resolver: myVaultResolver }, // resolve(id) → value; store(id, value) for output
+  security: { secrets: { resolver: myVaultResolver } }, // resolve(id) → value; store(id, value)
 });
 ```
 
@@ -112,7 +112,7 @@ The kernel hot-path substitution (automatic, before `STEP_STARTED`) is deliberat
 ### Egress scrubbing (K10-R6)
 
 Telemetry is a **separate egress**: a step's `input`/`output` are shipped to Datadog / an
-OTel collector / a dashboard — outside the trust boundary. `defineConfig({ telemetry })`
+OTel collector / a dashboard — outside the trust boundary. `defineConfig({ observability: { telemetry } })`
 automatically wraps your adapters so `sensitive()` and `internal()` fields are masked
 (`[redacted]`) before any adapter sees them — derived from the registered steps, no extra
 wiring:
@@ -121,7 +121,7 @@ wiring:
 const app = defineConfig({
   storage: sqliteStorage({ path: "app.db" }),
   flows: [lookupFlow],
-  telemetry: [datadogAdapter], // sees { ssn: "[redacted]", ok: true }, never the plaintext
+  observability: { telemetry: [datadogAdapter] }, // sees { ssn: "[redacted]" }, never the plaintext
 });
 ```
 
@@ -156,7 +156,7 @@ masking to `[redacted]`):
 
 Redaction is a **data-shaping** middleware: it must run *outermost* of any middleware that
 inspects or transforms effect I/O, so a secret is resolved for the tool (input) and redacted
-from the result (output) before anything else sees the value. `defineConfig({ secrets })`
+from the result (output) before anything else sees the value. `defineConfig({ security: { secrets } })`
 wires it outermost for you (it is `unshift`-ed ahead of `effectMiddleware`), so you only need
 to think about order when composing `redactionMiddleware` **by hand** — put it first:
 

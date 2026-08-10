@@ -198,7 +198,7 @@ interface Effect<TIn, TOut> {
 
 Same execution + replay semantics for all four. **AI calls are just effects** — so they're durable too.
 
-**Middleware** wraps every effect as a composable `(ctx, input, next) => …` chain (the HTTP-middleware model): `retryMiddleware` (`@loom/middleware`) adds exponential backoff + **deterministic** jitter and never retries a suspension. Wire it once via `defineConfig({ effectMiddleware })`.
+**Middleware** wraps every effect as a composable `(ctx, input, next) => …` chain (the HTTP-middleware model): `retryMiddleware` (`@loom/middleware`) adds exponential backoff + **deterministic** jitter and never retries a suspension. Wire it once via `defineConfig({ execution: { effectMiddleware } })`.
 
 ---
 
@@ -394,7 +394,7 @@ All opt-in; existing renderers behave exactly as before.
 A placement seam between orchestration and the runtime lets the **same flows** run in-process, over HTTP, or on Cloud Run — the core stays cloud-agnostic:
 
 ```
-defineConfig({ dispatcher })
+defineConfig({ execution: { dispatcher } })
    └─ ExecutionDispatcher ─┬─ local     (@loom/worker-runtime-local, in-process)
                            ├─ remote    (HTTP → @loom/worker-server)
                            └─ Cloud Run (@loom/plugin-cloudrun)

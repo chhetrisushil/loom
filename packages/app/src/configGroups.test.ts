@@ -42,7 +42,7 @@ class CountingSnapshotStore implements SnapshotStore {
   async close(): Promise<void> {}
 }
 
-describe("normalizeConfig — one shape from two spellings", () => {
+describe("normalizeConfig — groups in, one flat shape out", () => {
   it("lifts every grouped option to the flat internal shape", () => {
     const authorizer = new GrantTable({ f: ["t"] });
     const onWarn = () => {};
@@ -64,43 +64,30 @@ describe("normalizeConfig — one shape from two spellings", () => {
     expect("durability" in resolved).toBe(false);
   });
 
-  it("passes the flat spelling through untouched", () => {
-    const resolved = normalizeConfig({ storage: { kind: "memory" }, snapshotEvery: 7 });
-    expect(resolved.snapshotEvery).toBe(7);
+  it("REFUSES a pre-grouping flat option, naming where it went", () => {
+    // TypeScript rejects this on an object literal, but a config built dynamically — or
+    // any JS caller — arrives untyped. Without this the spread would carry the key
+    // through and it would quietly keep working: removed in the types, live at runtime.
+    expect(() =>
+      normalizeConfig({ storage: { kind: "memory" }, authorizer: new GrantTable({}) } as never)
+    ).toThrow(/`authorizer` → `security.authorizer`/);
   });
 
-  it("mixes the two freely — grouping is per option, not per app", () => {
-    const resolved = normalizeConfig({
-      storage: { kind: "memory" },
-      security: { policies: [] },
-      snapshotEvery: 3, // still flat
-    });
-    expect(resolved.policies).toEqual([]);
-    expect(resolved.snapshotEvery).toBe(3);
-  });
-
-  it("REFUSES an option set both ways, naming it and both spellings", () => {
-    // No sensible precedence between two deliberate answers — and quietly preferring one
-    // is how `security.authorizer` ends up ignored because a flat one survived a refactor.
+  it("reports every moved option at once, not just the first", () => {
     expect(() =>
       normalizeConfig({
         storage: { kind: "memory" },
-        authorizer: new GrantTable({}),
-        security: { authorizer: new GrantTable({}) },
-      })
-    ).toThrow(/`authorizer` \(also set as `security.authorizer`\)/);
-  });
-
-  it("reports every conflict at once, not just the first", () => {
-    expect(() =>
-      normalizeConfig({
-        storage: { kind: "memory" },
-        snapshotEvery: 1,
-        durability: { snapshotEvery: 2 },
+        snapshotEvery: 2,
         validateInput: true,
-        execution: { validateInput: false },
-      })
+      } as never)
     ).toThrow(/snapshotEvery(.|\n)*validateInput/);
+  });
+
+  it("does not confuse a group's own option with the flat one it replaced", () => {
+    // `durability.snapshotEvery` must not trip the refusal that `snapshotEvery` does.
+    expect(() =>
+      normalizeConfig({ storage: { kind: "memory" }, durability: { snapshotEvery: 2 } })
+    ).not.toThrow();
   });
 
   it("leaves an option set in neither place undefined", () => {

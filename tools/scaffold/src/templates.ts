@@ -286,7 +286,7 @@ export function appFiles(appName: string): Record<string, string> {
       "  toolModules, // discovered tool definitions on app.tools; register effects yourself",
       "  skillModules, // discovered skills registered into app.skills (app.skills.find(query))",
       "  projectionModules, // discovered projections folded into the projection runtime",
-      "  effectMiddleware: middleware,",
+      "  execution: { effectMiddleware: middleware },",
       "});",
       "",
     ].join("\n"),

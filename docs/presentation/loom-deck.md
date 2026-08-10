@@ -200,7 +200,7 @@ A pure fold at a chosen sequence *is* time-travel. A replayed log *is* an eval. 
 ## Run anywhere — the same flow
 
 ```
-  defineConfig({ dispatcher })
+  defineConfig({ execution: { dispatcher } })
         │
         ▼
   ExecutionDispatcher ──► local (in-process)
