@@ -996,3 +996,78 @@ describe("defineConfig — onStorageError", () => {
     await app.close();
   });
 });
+
+// ── The remaining WorkflowRuntime deps defineConfig had never forwarded ───────
+//
+// All three are runtime-constructor-only with no setter, so an app assembled the
+// supported way could not set them at all. `resumeAuthenticator` is covered by
+// verify.test.ts, where the K12 rule that demands it now actually fires.
+
+describe("defineConfig — executionAuthorizer / onExecutionDenied", () => {
+  const mallory = [{ id: "mallory" }] as never;
+  const deny = { authorize: () => ({ allowed: false, reason: "not on the list" }) };
+
+  const build = (denied?: (r: unknown, reason?: string) => void) => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [gatedFlow()],
+      executionAuthorizer: deny,
+      ...(denied !== undefined && { onExecutionDenied: denied }),
+    });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+    return app;
+  };
+
+  it("refuses a principal-carrying start the authorizer denies", async () => {
+    // Unforwarded, this start SUCCEEDED — there was no way to gate an execution's
+    // lifecycle from defineConfig at all.
+    const app = build();
+    await expect(
+      app.runtime.start(gatedFlow(), { incidentId: "i1" }, { principal: mallory })
+    ).rejects.toThrow(/denied/);
+    await app.close();
+  });
+
+  it("fires the audit hook with the refused request and reason", async () => {
+    const denials: { request: unknown; reason?: string }[] = [];
+    const app = build((request, reason) => denials.push({ request, reason }));
+    await expect(
+      app.runtime.start(gatedFlow(), { incidentId: "i1" }, { principal: mallory })
+    ).rejects.toThrow();
+    expect(denials).toHaveLength(1);
+    expect(denials[0]?.reason).toBe("not on the list");
+    await app.close();
+  });
+
+  it("leaves principal-less calls alone — the kernel's own machinery still runs", async () => {
+    // The trust-boundary model, restated as a test: the gate applies only to calls that
+    // carry a principal, so TimerService and recovery are unaffected.
+    const app = build();
+    const handle = await app.runtime.start(gatedFlow(), { incidentId: "i1" });
+    expect((await handle.waitForSuspend()).status).toBe("suspended");
+    await app.close();
+  });
+});
+
+describe("defineConfig — now", () => {
+  it("stamps event envelopes from the injected clock", async () => {
+    // DST/simulation: envelope timestamps were the one clock Loom's time-injection
+    // principle did not reach through defineConfig.
+    const fixed = 1_700_000_000_000;
+    const seen: number[] = [];
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [gatedFlow()],
+      now: () => fixed,
+      onEvent: (e) => seen.push(e.timestamp),
+    });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+
+    const handle = await app.runtime.start(gatedFlow(), { incidentId: "i1" });
+    await handle.waitForSuspend();
+
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((t) => t === fixed)).toBe(true);
+    await app.close();
+  });
+});

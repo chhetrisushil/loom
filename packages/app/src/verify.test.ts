@@ -139,3 +139,83 @@ describe("defineConfig({ verify }) boot gate", () => {
     expect(app.verify().findings.filter((f) => f.rule === "capability-compat")).toHaveLength(0);
   });
 });
+
+// ── K12 — the approval check, which used to be unreachable ───────────────────
+//
+// `suspension-safety` has always carried a rule for this: a flow that can be resumed by
+// an externally-supplied event, with no ResumeAuthenticator behind it, accepts
+// unauthenticated resumes. It read two FlowSpec fields NOTHING populated, so it could
+// not fire for any app — a green report meant only that the question was never asked.
+
+/** A flow declaring a resume gate contract (ADR 0077) — externally resumable. */
+function gatedFlow(): RegisteredFlow {
+  return {
+    definition: {
+      _tag: "FlowDefinition",
+      id: "gated",
+      name: "gated",
+      version: "1.0.0",
+      inputSchema: incident,
+      outputSchema: resolved,
+      steps: [metricsStep, remediationStep],
+      resumeSchemas: { ApprovalGranted: z.object({ approved: z.boolean() }) },
+    },
+    runner,
+  } as RegisteredFlow;
+}
+
+const authenticator = { verify: () => ({ status: "not-applicable" }) as const };
+
+describe("verify — K12 resume authentication", () => {
+  it("derives usesApproval from declared resume gates", () => {
+    const app = defineConfig({ storage: { kind: "memory" }, flows: [gatedFlow()] });
+    expect(resolveVerifyInput(app.runtime).flows[0]?.usesApproval).toBe(true);
+  });
+
+  it("leaves a flow with no resume gates alone", () => {
+    const app = defineConfig({ storage: { kind: "memory" }, flows: [flow()] });
+    expect(resolveVerifyInput(app.runtime).flows[0]?.usesApproval).toBeUndefined();
+  });
+
+  it("ERRORS when a resumable flow has no authenticator wired", () => {
+    // The finding that could not previously be produced.
+    const app = defineConfig({ storage: { kind: "memory" }, flows: [gatedFlow()] });
+    const report = app.verify();
+    const finding = report.findings.find((f) => f.rule === "suspension-safety");
+    expect(finding?.severity).toBe("error");
+    expect(finding?.message).toContain("no ResumeAuthenticator is wired");
+    expect(report.ok).toBe(false);
+  });
+
+  it("reports the wiring from the RUNTIME, not from a caller's claim", () => {
+    // The reason this is read off the runtime: a rule you satisfy by asserting you wired
+    // something is a rule that passes for the app that forgot.
+    const app = defineConfig({ storage: { kind: "memory" }, flows: [gatedFlow()] });
+    expect(app.runtime.hasResumeAuthenticator()).toBe(false);
+    expect(resolveVerifyInput(app.runtime).resumeAuthenticatorWired).toBe(false);
+  });
+
+  it("clears once an authenticator is wired", () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [gatedFlow()],
+      resumeAuthenticator: authenticator,
+    });
+    expect(app.runtime.hasResumeAuthenticator()).toBe(true);
+    expect(app.verify().findings.filter((f) => f.rule === "suspension-safety")).toHaveLength(0);
+  });
+
+  it('boots or refuses to boot accordingly under verify:"error"', () => {
+    expect(() =>
+      defineConfig({ storage: { kind: "memory" }, flows: [gatedFlow()], verify: "error" })
+    ).toThrow(/ResumeAuthenticator/);
+    expect(() =>
+      defineConfig({
+        storage: { kind: "memory" },
+        flows: [gatedFlow()],
+        resumeAuthenticator: authenticator,
+        verify: "error",
+      })
+    ).not.toThrow();
+  });
+});

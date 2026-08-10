@@ -56,7 +56,14 @@ import {
 import type { TelemetryAdapter } from "@loom/telemetry";
 import { type VerificationReport, runVerification, verify as runVerify } from "@loom/verify";
 import { LogLifecycle, TimerService, WorkflowRuntime } from "@loom/workflow-runtime";
-import type { ArchiveStores, PinPredicate, RegisteredFlow } from "@loom/workflow-runtime";
+import type {
+  ArchiveStores,
+  ExecutionAuthorizer,
+  ExecutionAuthzRequest,
+  PinPredicate,
+  RegisteredFlow,
+  ResumeAuthenticator,
+} from "@loom/workflow-runtime";
 import { InProcessA2ABus } from "./InProcessA2ABus";
 import {
   type AgentModule,
@@ -287,6 +294,40 @@ export interface LoomConfig {
    * exactly the storage a cadence is worth setting for.
    */
   onStorageError?: (executionId: string, err: unknown) => void;
+  /**
+   * K12.2 — authenticates approval-type resume events. A resume the authenticator rejects
+   * is REFUSED (a forged approval never resumes); a verified one records a durable
+   * `APPROVAL_GRANTED` fact, so "who approved" is evidence rather than a claim.
+   *
+   * Surfaced here because it was otherwise unreachable: it is a {@link WorkflowRuntime}
+   * dep with no setter, so an app assembled by `defineConfig` could not authenticate
+   * resumes at all. Pre-flight verification errors on a flow that declares resume gates
+   * with nothing wired here (`suspension-safety`, K12).
+   */
+  resumeAuthenticator?: ResumeAuthenticator;
+  /**
+   * C.1 — authorizes execution lifecycle operations (`start`/`resume`/`cancel`, and the
+   * public `loadState`), consulted only for calls that carry a `principal`.
+   *
+   * SECURITY CONTRACT, restated from {@link WorkflowRuntime} because this is where it is
+   * now wired: principal-less calls bypass the gate BY DESIGN, so the kernel's own
+   * machinery (TimerService, recovery) keeps working. The integrator is therefore
+   * responsible for attaching an authenticated principal to every externally-originated
+   * call. This is edge-enforced policy, not a substitute for authenticating the caller.
+   *
+   * Distinct from {@link authorizer}, which gates EFFECTS (the K2 capability ring). This
+   * one gates the execution's lifecycle; an app that needs both wires both.
+   */
+  executionAuthorizer?: ExecutionAuthorizer;
+  /** C.1 — audit/telemetry hook fired whenever {@link executionAuthorizer} refuses. */
+  onExecutionDenied?: (request: ExecutionAuthzRequest, reason?: string) => void;
+  /**
+   * Injectable clock for event-envelope timestamps (DST/simulation). Loom's
+   * time-injection principle already covered timers and suspend wake times; envelope
+   * timestamps were the gap, and they are what retention windows and content-GC citation
+   * ages read. Default `Date.now`. Never fold-relevant.
+   */
+  now?: () => number;
   /**
    * T1 — durable timers. Wire a {@link TimerStore} (`InMemoryTimerStore`,
    * `SqliteTimerStore`/`PostgresTimerStore` beside your event store) and the app
@@ -640,6 +681,16 @@ export function defineConfig(config: LoomConfig): LoomApp {
     ...(config.validateInput !== undefined && { validateInput: config.validateInput }),
     ...(config.snapshotEvery !== undefined && { snapshotEvery: config.snapshotEvery }),
     ...(config.onStorageError !== undefined && { onStorageError: config.onStorageError }),
+    ...(config.resumeAuthenticator !== undefined && {
+      resumeAuthenticator: config.resumeAuthenticator,
+    }),
+    ...(config.executionAuthorizer !== undefined && {
+      executionAuthorizer: config.executionAuthorizer,
+    }),
+    ...(config.onExecutionDenied !== undefined && {
+      onExecutionDenied: config.onExecutionDenied,
+    }),
+    ...(config.now !== undefined && { now: config.now }),
   });
 
   // Schedules come from the explicit `timers.schedules` list AND from `scheduleModules` (loom gen
