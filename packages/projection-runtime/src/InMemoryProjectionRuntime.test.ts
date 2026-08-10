@@ -184,6 +184,67 @@ describe("InMemoryProjectionRuntime — retention (leak fix)", () => {
     expect(rt.getState<S>("step-counter", "c").completedSteps).toBe(1);
   });
 
+  it("never evicts an execution something is SUBSCRIBED to", () => {
+    // Eviction is a cache decision the caller never made. Dropping a state that is being
+    // folded into resets it to `initialState` — corruption, not a cache miss.
+    const rt = new InMemoryProjectionRuntime({ maxExecutions: 2 });
+    rt.register(stepCounterProjection);
+    rt.handleEvent(makeEvent("a", 1, "STEP_COMPLETED"));
+    rt.subscribe<S>("step-counter", "a", () => {});
+    rt.handleEvent(makeEvent("b", 1, "STEP_COMPLETED"));
+    rt.handleEvent(makeEvent("c", 1, "STEP_COMPLETED")); // "a" is oldest but subscribed
+
+    expect(rt.getState<S>("step-counter", "a").completedSteps).toBe(1); // survived
+    expect(rt.getState<S>("step-counter", "b").completedSteps).toBe(0); // evicted instead
+  });
+
+  it("keeps DELIVERING to a subscriber whose execution came up for eviction", () => {
+    // The harm eviction used to do was not only losing state: `forget` also dropped the
+    // subscriber registry, and the handler set is captured by closure — so `notify` looked
+    // up a key that no longer existed and the subscriber went silent forever.
+    const rt = new InMemoryProjectionRuntime({ maxExecutions: 2 });
+    rt.register(stepCounterProjection);
+    const seen: S[] = [];
+    rt.handleEvent(makeEvent("a", 1, "STEP_COMPLETED"));
+    rt.subscribe<S>("step-counter", "a", (s) => seen.push(s));
+    rt.handleEvent(makeEvent("b", 1, "STEP_COMPLETED"));
+    rt.handleEvent(makeEvent("c", 1, "STEP_COMPLETED")); // eviction pass runs
+
+    rt.handleEvent(makeEvent("a", 2, "STEP_COMPLETED"));
+    expect(seen).toEqual([{ completedSteps: 2 }]); // still connected
+  });
+
+  it("an explicit forget() still drops state AND subscribers (the caller asked)", () => {
+    // The counterpart: `forget` is a deliberate "this execution is done", so it keeps its
+    // full meaning. Only EVICTION is narrowed to state.
+    const rt = new InMemoryProjectionRuntime();
+    rt.register(stepCounterProjection);
+    const seen: S[] = [];
+    rt.subscribe<S>("step-counter", "x", (s) => seen.push(s));
+    rt.handleEvent(makeEvent("x", 1, "STEP_COMPLETED"));
+    expect(seen).toHaveLength(1);
+    rt.forget("x");
+    rt.handleEvent(makeEvent("x", 2, "STEP_COMPLETED"));
+    expect(seen).toHaveLength(1); // unchanged — the caller detached it
+  });
+
+  it("a stale unsubscribe cannot disconnect a later subscriber on the same key", () => {
+    // After `forget`, a new subscriber installs a FRESH set under the same key. The old
+    // closure still holds the orphaned one; without an identity check, emptying it would
+    // delete the live entry and silence a subscriber that did nothing wrong.
+    const rt = new InMemoryProjectionRuntime();
+    rt.register(stepCounterProjection);
+    const stale = rt.subscribe<S>("step-counter", "x", () => {});
+    rt.forget("x");
+
+    const seen: S[] = [];
+    rt.subscribe<S>("step-counter", "x", (s) => seen.push(s));
+    stale(); // the orphaned subscription retires
+
+    rt.handleEvent(makeEvent("x", 1, "STEP_COMPLETED"));
+    expect(seen).toEqual([{ completedSteps: 1 }]);
+  });
+
   it("keeps a re-touched execution alive (LRU recency)", () => {
     const rt = new InMemoryProjectionRuntime({ maxExecutions: 2 });
     rt.register(stepCounterProjection);

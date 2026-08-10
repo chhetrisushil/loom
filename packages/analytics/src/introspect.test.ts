@@ -159,3 +159,27 @@ describe("formatIntrospection", () => {
     expect(formatIntrospection(introspect(log()), "bogus")).toContain('unknown graph "bogus"');
   });
 });
+
+describe("executionNodes — a hostile event type", () => {
+  // `eventType` is caller-controlled: `runtime.resume(id, { eventType, payload })` writes the
+  // caller's own string into the durable log, and every lens then reads it back. A plain
+  // `TERMINAL[eventType]` lookup resolves "__proto__" up the prototype chain to
+  // `Object.prototype` — not `undefined`, so the terminal-status guard admitted it and the
+  // execution was reported terminal with an object for a status.
+  it("does not treat __proto__ as a terminal status", () => {
+    seq = 0;
+    const [node] = executionNodes([ev("EXECUTION_STARTED", 0, { input: {} }), ev("__proto__", 5)]);
+    expect(node?.status).toBe("running");
+    expect(node?.completedAt).toBeUndefined();
+  });
+
+  it("still reports a real terminal event", () => {
+    seq = 0;
+    const [node] = executionNodes([
+      ev("EXECUTION_STARTED", 0, { input: {} }),
+      ev("EXECUTION_COMPLETED", 9),
+    ]);
+    expect(node?.status).toBe("completed");
+    expect(node?.completedAt).toBe(9);
+  });
+});
