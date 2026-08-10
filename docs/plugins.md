@@ -75,6 +75,15 @@ and compute.
 - `@loom/plugin-sqlite` — embedded SQLite `Event`/`Snapshot`/`Branch`/`Timer`/`DurableState`/
   `ReadModel`/`Content` stores + the `sqliteStorage()` preset.
 - `@loom/plugin-postgres` — network Postgres stores (LISTEN/NOTIFY) + `postgresStorage()`.
+  **Bring your own pool:** the stores accept any object satisfying `PoolLike` — `query`,
+  `connect`, `end`, and optionally `options` — so a pool from a *different copy of `pg`*
+  (the normal state for a `link:`/`file:` consumer, where each side resolves its own), or an
+  API-compatible one from a serverless driver or an instrumented wrapper, is borrowed rather
+  than refused. A borrowed pool is never `end()`ed by a store's `close()`. `postgresPool()`
+  is still exported for a caller who wants a real `pg.Pool` from this package — the sizing
+  surface (`totalCount` and friends) that `PoolLike` deliberately omits. Without `options`,
+  the dedicated `LISTEN` session cannot be opened and cross-node delivery degrades; the log
+  stays authoritative and same-process subscribers are unaffected.
 - `@loom/plugin-crypto` — field-level crypto-shredding store wrappers (K10) + `KeyStore` SPI.
 - `@loom/plugin-content` — content-store seam: `ContentResolvingEventStore` externalizes marked
   payload fields to a content-addressed side store + `ContentStore` SPI ([ADR 0046](adr/0046-content-store-seam-thin-authoritative-log.md)).

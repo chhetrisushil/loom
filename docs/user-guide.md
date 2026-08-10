@@ -1047,7 +1047,7 @@ import { EffectRuntime, GrantTable } from "@loom/effect-runtime";
 const effectRuntime = new EffectRuntime([], {
   security: { authorizer: new GrantTable({ "incident-flow": ["metrics-tool", "logs-tool"] }) }, // grant only these
 });
-// …or via defineConfig({ authorizer: new GrantTable({ … }) }).
+// …or via defineConfig({ security: { authorizer: new GrantTable({ … }) } }).
 // Any other toolId this flow invokes → CapabilityDeniedError, EFFECT_DENIED logged.
 ```
 
@@ -1389,7 +1389,7 @@ lifecycle without ever creating a silent third behavior between "replays identic
 "fails loudly".
 
 **Pinning (K10.6, ADR 0055).** Retention consults an optional `PinPredicate`
-(`defineConfig({ retention: { pinned } })`) before reclaiming an execution — `pinByEventKinds(store,
+(`defineConfig({ durability: { retention: { pinned } } })`) before reclaiming an execution — `pinByEventKinds(store,
 ["FINDING_RECORDED"])` pins runs carrying your designated domain events. The companion
 `sweepUnpinnedContent` (in `@loom/plugin-content`) reclaims content-store blobs on a TTL while
 refs cited by pinned event kinds survive — across archival, re-derived from the log on every
@@ -1480,8 +1480,13 @@ const output = z.object({
   doc: externalized(z.object({…})),  // stored in a content store, log keeps a ref (ADR 0046)
 });
 
-// One config key wires secret redaction; telemetry egress is auto-scrubbed for marked fields:
-const app = defineConfig({ storage, flows, secrets: { resolver }, telemetry: [datadog] });
+// One key wires secret redaction; telemetry egress is auto-scrubbed for marked fields:
+const app = defineConfig({
+  storage,
+  flows,
+  security: { secrets: { resolver } },
+  observability: { telemetry: [datadog] },
+});
 ```
 
 See **[Data classification](data-classification.md)** for the full taxonomy + derive helpers,
