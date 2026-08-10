@@ -1382,6 +1382,55 @@ A read model is a **cache of the log with a watermark, never an authority**: dro
 untouched. Ingestion converges from any mix of live tail, catch-up scans, and multiple nodes
 (idempotent rows + monotonic per-execution watermarks — no global event order required).
 
+### Live queries: watching one execution as it runs (`@loom/live-query`)
+
+Read models answer questions **across** executions. A live query is the other axis: the state
+of **one** execution, pushed again every time an event lands — a progress view, a dashboard
+panel, an SSE stream.
+
+It needs no syscall and no new event type. `loadState` already folds an execution's durable
+state on demand (bounded by snapshots), and `EventStore.subscribe` already says when something
+changed; a live query is the two composed, which keeps it a read-model concern (P10) rather
+than a kernel primitive.
+
+```ts
+import { liveQuery } from "@loom/live-query";
+
+const lq = liveQuery({
+  eventStore: app.stores.eventStore,
+  reader: app.runtime,                        // anything with `loadState` satisfies StateReader
+  onError: (err) => logger.warn({ err }),     // background re-folds — see below
+});
+
+await lq.snapshot(executionId);               // fold once, now (null if unknown)
+
+const unsubscribe = await lq.subscribe(executionId, (state) => {
+  render(state);                              // current state immediately, then on every event
+});
+// …later
+unsubscribe();
+```
+
+**Coalesced, latest-wins.** Only one re-fold is ever in flight. Events arriving during a fold
+set a dirty flag and cause exactly **one** more fold afterwards, so a burst of N events costs
+O(1) extra folds rather than N — and a subscriber never sees a stale state arrive after a
+newer one. `subscribe` also pushes once immediately, so a caller is not blind until the next
+event.
+
+**Two different failure paths, deliberately.** The first fold happens inside `subscribe`,
+which you await — so if the store is unreachable, `subscribe` rejects and the failure is
+yours to handle. Every later re-fold runs from the store's subscribe callback with nothing
+awaiting it; those go to `onError`, and the subscription **stays live** — one failed re-fold
+costs that update, and the next event folds from the log again.
+
+> Wire `onError` in a long-lived process. Those background folds cannot reject to a caller,
+> so without it a failing store read (or an `onState` callback that throws) is swallowed —
+> and before it existed, it was an unhandled rejection, which terminates the process by
+> default.
+
+`reader` is typed as `StateReader` — just `loadState` — so a live query works over the
+runtime, a remote read façade, or a test double, without depending on the whole runtime.
+
 ### Log lifecycle: crypto-shredding, retention & compaction (K10)
 
 "Replay forever" collides with GDPR erasure and bounded storage. K10 gives the log a
