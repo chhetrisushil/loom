@@ -788,6 +788,10 @@ interface LoomConfig {
   secrets?: { resolver: SecretResolver };                       // K10-R2 secret redaction
   retention?: { archive?: ArchiveStores; pinned?: PinPredicate }; // K10.1 lifecycle + K10.6 pin seam
   validateInput?: boolean;                                      // parse inputSchema at start() (ADR 0051 D7)
+  resumeAuthenticator?: ResumeAuthenticator;                    // K12.2 — authenticates approval resumes; verify errors without it
+  executionAuthorizer?: ExecutionAuthorizer;                    // C.1 — gates start/resume/cancel for principal-carrying calls
+  onExecutionDenied?: (r: ExecutionAuthzRequest, reason?: string) => void; // C.1 audit hook
+  now?: () => number;                                           // injectable clock for envelope timestamps (DST/simulation)
   compliance?: {                                                // T3 data-subject rights
     subjectOf: SubjectResolver;
     tenantOf?: TenantResolver;                                  // T3-R2.4 tenant partition
@@ -1466,8 +1470,10 @@ interpret them, so Loom stays generic).
 await runtime.start(flow, input, { principal: { tenant: "acme", actor: "alice" } });
 // your CapabilityAuthorizer reads req.principal.tenant / .actor to decide.
 
-// K12.2 — verify approvals so "who approved" is evidence, not a claim:
-new WorkflowRuntime({ …, resumeAuthenticator: {
+// K12.2 — verify approvals so "who approved" is evidence, not a claim. A `defineConfig`
+// key as well as a WorkflowRuntime dep; pre-flight verification ERRORS on a flow that
+// declares `resumeSchemas` with nothing wired here (suspension-safety, K12):
+defineConfig({ …, resumeAuthenticator: {
   verify: (event) => event.eventType === "ApprovalGranted" && isValid(event)
     ? { status: "verified", actor: event.payload.approvedBy, verifiedBy: "sso.acme" }
     : { status: "rejected", reason: "unverified approval" },

@@ -380,6 +380,20 @@ export class WorkflowRuntime {
   }
 
   /**
+   * Whether a {@link ResumeAuthenticator} is wired (K12.2) — read by pre-flight
+   * verification, which errors when a flow declares resume gates and nothing
+   * authenticates the events that open them.
+   *
+   * Deliberately derived from the runtime rather than declared by the caller assembling
+   * the check: a fitness rule you can satisfy by *asserting* you wired something is a
+   * rule that passes for the app that forgot. Read-only and boolean — it exposes that
+   * one is present, never the authenticator itself.
+   */
+  hasResumeAuthenticator(): boolean {
+    return this.resumeAuthenticator !== undefined;
+  }
+
+  /**
    * Advisory pre-warm (latency-only, off the durable path): spin up the cold
    * resources a flow's FIRST step will need — a K7 isolated child process, an
    * LLM provider connection — ahead of the run, so the initial latency the

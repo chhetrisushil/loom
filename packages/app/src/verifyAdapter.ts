@@ -95,10 +95,21 @@ export interface VerifyAdapterInputs {
  *   permissive).
  * - **placement** — only when the dispatcher is a `PlacementDispatcher` (its `targetNames`).
  * - **eventSchemaVersion** — the app's `EVENT_SCHEMA_VERSION`.
+ * - **usesApproval / resumeAuthenticatorWired** — the flow's declared `resumeSchemas`, and
+ *   whether the runtime holds a `ResumeAuthenticator`. Both are read here rather than
+ *   accepted as inputs, so the K12 check cannot be silenced by a caller that forgets — or
+ *   satisfied by one that merely claims to have wired it.
  *
  * Non-determinism analysis is fed via `inputs.nonDeterministicByFlow` (from
  * `@loom/compiler`'s `analyzeNonDeterminism`, issue #82). Still not derivable from the
- * definition: suspend-point `correlationKey`/`wakeAt` detail, per-flow `computeTarget`, budgets.
+ * definition: per-flow `computeTarget` and budgets.
+ *
+ * **`FlowSpec.suspends` is still unpopulated, and that matters.** Suspend points live in
+ * the runner BODY, not the definition, so nothing here can see their `correlationKey` or
+ * `wakeAt`. Two of `suspension-safety`'s three checks read that array and therefore never
+ * fire for any app built through this adapter — a clean report says nothing about them.
+ * Only the K12 approval check above is live. Populating it needs body analysis of the
+ * same kind `nonDeterministicByFlow` already arrives by.
  */
 export function resolveVerifyInput(
   runtime: WorkflowRuntime,
@@ -132,6 +143,18 @@ export function resolveVerifyInput(
         }
       }
     }
+    // K12 — a flow declaring resume gates (`resumeSchemas`, ADR 0077) can be advanced by
+    // an externally-supplied event, so the suspension-safety rule wants a
+    // ResumeAuthenticator behind it. Derived here, like `unreachableMarks` above, rather
+    // than accepted from the caller.
+    //
+    // CONSERVATIVE, and knowingly so: `resumeSchemas` is opt-in, so a flow that suspends
+    // without declaring gate contracts still reports nothing. That direction is the safe
+    // one — this never invents a finding for a flow that cannot be resumed — but it does
+    // mean a clean report is not proof that no flow resumes. Closing that needs static
+    // analysis of the runner body, which is also what `FlowSpec.suspends` waits on; see
+    // the note on `resolveVerifyInput`.
+    const usesApproval = Object.keys(def.resumeSchemas ?? {}).length > 0;
     flows.push({
       id: def.id,
       flowHash: flowContentHash(def),
@@ -139,6 +162,7 @@ export function resolveVerifyInput(
       ...(nonDet !== undefined && nonDet.length > 0 && { nonDeterministicCalls: nonDet }),
       ...(loopIdent !== undefined && loopIdent.length > 0 && { loopIdentityCalls: loopIdent }),
       ...(unreachableMarks.length > 0 && { unreachableMarks }),
+      ...(usesApproval && { usesApproval }),
     });
   }
 
@@ -152,6 +176,7 @@ export function resolveVerifyInput(
   return {
     flows,
     eventSchemaVersion: EVENT_SCHEMA_VERSION,
+    resumeAuthenticatorWired: runtime.hasResumeAuthenticator(),
     ...(grants !== undefined && { grants }),
     ...(placement !== undefined && { placement }),
     ...(inputs.meteredDimensions !== undefined && { meteredDimensions: inputs.meteredDimensions }),
