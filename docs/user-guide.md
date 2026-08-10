@@ -747,8 +747,33 @@ The full stack in action: `db-command-center` (in the [examples catalogue](examp
 
 `defineConfig(config: LoomConfig): LoomApp`.
 
+**Grouped options.** Cross-cutting concerns are namespaced, so the flat list stays about *what is in your app* rather than every knob it has:
+
+```ts
+defineConfig({
+  storage: postgresStorage({ url }),   // what the app IS — flat
+  flows, surfaces, skills, projections,
+
+  security:      { authorizer, policies, secrets, resumeAuthenticator,
+                   executionAuthorizer, onExecutionDenied, compliance },
+  observability: { telemetry, onEvent, onWarn, onStorageError },
+  durability:    { snapshotEvery, retention },
+  execution:     { dispatcher, effectMiddleware, registerEffects, now, validateInput },
+  checks:        { validate, verify, manifest },
+});
+```
+
+Every grouped option is still accepted at the top level, marked `@deprecated` so your editor points at its new home. Setting **both** spellings for one option throws at `defineConfig` — there is no sensible precedence between two deliberate answers, and silently preferring one is how a `security` option ends up not applied. Mixing is fine per option; you do not have to move an app all at once.
+
 ```ts
 interface LoomConfig {
+  // ── Grouped ──
+  security?: SecurityOptions;
+  observability?: ObservabilityOptions;
+  durability?: DurabilityOptions;
+  execution?: ExecutionOptions;
+  checks?: ChecksOptions;
+  // ── Flat (each also available in a group above, where marked) ──
   storage:
     | { kind: "memory" }
     // Bring your own backend, used verbatim. Concrete backends are presets returning

@@ -118,13 +118,298 @@ export type StorageConfig =
     };
 
 /**
+ * Everything that decides whether an operation is ALLOWED, in one place — because these
+ * compose and are easy to half-wire. `authorizer` gates EFFECTS (the K2 capability ring);
+ * `executionAuthorizer` gates an execution's LIFECYCLE; `resumeAuthenticator` gates the
+ * events that reopen a suspended one. An app can need all three, and needing one is not
+ * evidence it has the others.
+ */
+export interface SecurityOptions {
+  /**
+   * Capability protection ring (K2). When set, every effect is authorized against
+   * it and ungranted effects are denied (least-privilege). Omit for permissive.
+   * e.g. `new GrantTable({ "my-flow": ["metrics-tool", "logs-tool"] })`.
+   */
+  authorizer?: CapabilityAuthorizer;
+  /**
+   * App-global `policy$` definitions enforced on EVERY effect via a `PolicyAuthorizer`.
+   * Per-flow policies are read automatically from each flow's `policies` (`flow$`); these
+   * `policies` apply on top of them, everywhere. A policy composes UNDER {@link authorizer}
+   * (both must allow — defense in depth), so it can tighten a grant but never widen it.
+   * Enforcement is deny-wins; a flow with no governing policy is unaffected (opt-in).
+   */
+  policies?: PolicyDefinition[];
+  /**
+   * K10-R2 — secret handling. Wiring a resolver installs {@link redactionMiddleware} on the
+   * effect path (outermost), so:
+   *  - `secretRef(...)` values in step INPUT are resolved to the real value for the tool
+   *    while the log keeps only the reference (the secret never enters STEP_STARTED); and
+   *  - step OUTPUT fields marked `secret()` (K10-R1) are replaced by a reference before
+   *    STEP_COMPLETED — derived automatically from the registered flows' step schemas.
+   *
+   * Omitting the key installs nothing (G2). This is the low-risk half of K10-R2; automatic
+   * substitution inside the kernel hot path remains deliberately deferred.
+   */
+  secrets?: {
+    /** Resolves secret references to real values (back it with a vault/KMS in production). */
+    resolver: SecretResolver;
+  };
+  /**
+   * K12.2 — authenticates approval-type resume events. A resume the authenticator rejects
+   * is REFUSED (a forged approval never resumes); a verified one records a durable
+   * `APPROVAL_GRANTED` fact, so "who approved" is evidence rather than a claim.
+   *
+   * Surfaced here because it was otherwise unreachable: it is a {@link WorkflowRuntime}
+   * dep with no setter, so an app assembled by `defineConfig` could not authenticate
+   * resumes at all. Pre-flight verification errors on a flow that declares resume gates
+   * with nothing wired here (`suspension-safety`, K12).
+   */
+  resumeAuthenticator?: ResumeAuthenticator;
+  /**
+   * C.1 — authorizes execution lifecycle operations (`start`/`resume`/`cancel`, and the
+   * public `loadState`), consulted only for calls that carry a `principal`.
+   *
+   * SECURITY CONTRACT, restated from {@link WorkflowRuntime} because this is where it is
+   * now wired: principal-less calls bypass the gate BY DESIGN, so the kernel's own
+   * machinery (TimerService, recovery) keeps working. The integrator is therefore
+   * responsible for attaching an authenticated principal to every externally-originated
+   * call. This is edge-enforced policy, not a substitute for authenticating the caller.
+   *
+   * Distinct from {@link authorizer}, which gates EFFECTS (the K2 capability ring). This
+   * one gates the execution's lifecycle; an app that needs both wires both.
+   */
+  executionAuthorizer?: ExecutionAuthorizer;
+  /** C.1 — audit/telemetry hook fired whenever {@link executionAuthorizer} refuses. */
+  onExecutionDenied?: (request: ExecutionAuthzRequest, reason?: string) => void;
+  /**
+   * T3 (GDPR/CCPA-enabling) — data-subject rights. Supply a {@link SubjectResolver} (given an
+   * event, the data subject it concerns — usually read off EXECUTION_STARTED input, e.g. the
+   * userId) to maintain a live subject index over the event stream, exposing
+   * `app.subjectIndex` and `app.exportSubject(subjectId)` (Art. 15 access / Art. 20
+   * portability). Omitting the key builds nothing (G2). Not legal advice.
+   */
+  compliance?: {
+    subjectOf: SubjectResolver;
+    /**
+     * T3-R2.4 — partition the subject index by tenant so two tenants sharing a subject id are
+     * never merged (a cross-tenant access/erasure leak). Given an event, return its tenant —
+     * the tenant is not persisted in events by default, so read it from input/metadata. Omit
+     * for a single-tenant app.
+     */
+    tenantOf?: TenantResolver;
+    /**
+     * T3 Phase B — enable `app.eraseSubject` (Art. 17). Wire `shred` to the crypto plugin's
+     * `shredSubject` (bound to the KeyStore + raw store); it MUST be idempotent (no-op when a
+     * subject is already erased). Erasure is liveness-gated: shredded now if the subject's
+     * executions are all terminal, else parked (durable `ERASURE_PENDING`) and auto-completed
+     * when the last live execution terminates — never shredding a fold in flight.
+     */
+    erase?: { shred: Shredder };
+  };
+}
+
+/**
+ * Where the app's own signal goes. None of these change behaviour; every one of them is
+ * the difference between a failure you can see and a failure you cannot — `onStorageError`
+ * especially, which is the ONLY channel a failed snapshot has.
+ */
+export interface ObservabilityOptions {
+  /** Telemetry adapters, composed and wired to the event stream. */
+  telemetry?: TelemetryAdapter[];
+  /** Extra event observer, fired after projection + telemetry. */
+  onEvent?: (event: EventEnvelope) => void;
+  /** Sink for boot-time warnings (manifest cross-check + validation). Default `console.warn`. */
+  onWarn?: (message: string) => void;
+  /**
+   * Fired when a durable write rejects. Forwarded verbatim to {@link WorkflowRuntime},
+   * which reports two different kinds through it:
+   *
+   * - an **event** append that rejects — the run is aborted regardless and
+   *   `waitForCompletion`/`waitForSuspend` reject with a `StorageWriteError`, so this
+   *   hook is only logging/metrics;
+   * - a **snapshot** save that rejects — fire-and-forget, so this hook is the ONLY
+   *   channel. Nothing else observes it and the run continues unharmed.
+   *
+   * The second is why this is surfaced here alongside {@link LoomConfig.snapshotEvery}.
+   * Setting a cadence turns on a mid-run checkpoint whose failure is otherwise silent:
+   * the execution keeps running, replay quietly stops being bounded, and the only
+   * symptom is a `loadState` that gets slower over time. Cheap against an in-memory or
+   * local store; a real risk against a network-backed or quota-limited one — which is
+   * exactly the storage a cadence is worth setting for.
+   */
+  onStorageError?: (executionId: string, err: unknown) => void;
+}
+
+/**
+ * How much log a restart has to fold, and how long it is kept. Both trade write cost for
+ * read cost; see `docs/scaling.md` for the measurements.
+ */
+export interface DurabilityOptions {
+  /**
+   * Take a mid-run snapshot every N committed events, and a matching one at completion,
+   * bounding what a later `loadState`/resume has to fold.
+   *
+   * Forwarded verbatim to {@link WorkflowRuntime}. It is surfaced here because
+   * `defineConfig` builds the runtime, so an app wired the supported way had no way to
+   * set it at all — and settle-time checkpointing (`docs/scaling.md` §3.2) is gated on
+   * it, which left the larger half of that work unreachable rather than merely off by
+   * default.
+   *
+   * Omit (or 0) for today's behaviour: snapshots at suspend and fork only, and a
+   * `foldState` that reads the whole log. Worth setting once executions get long —
+   * measured at a 102-event log it is 4.76 ms → 1.22 ms p50; at 4 events it is nothing
+   * (0.72 → 0.71 ms), so short flows should not bother. Larger N means fewer snapshot
+   * writes and a longer worst-case replay.
+   */
+  snapshotEvery?: number;
+  retention?: {
+    /** Where each execution's events/snapshot are copied before deletion (A6). */
+    archive?: ArchiveStores;
+    /**
+     * K10.6 — pin predicate: retention exempts executions this returns `true`
+     * for (outcome `"pinned"`). The kernel supplies the gate; what pins is
+     * policy (G3) — e.g. `pinByEventKinds(store, ["FINDING_RECORDED"])` from
+     * `@loom/plugin-content`.
+     */
+    pinned?: PinPredicate;
+  };
+}
+
+/**
+ * How and where the work runs: placement, the effect chain wrapped around every call,
+ * boundary parsing, and the clock. Storage-agnostic — none of it names a backend.
+ */
+export interface ExecutionOptions {
+  /** Placement dispatcher for the bus (default: in-process). e.g. Cloud Run. */
+  dispatcher?: ExecutionDispatcher;
+  /** Static, ordered effect middleware (retries, logging, …). */
+  effectMiddleware?: EffectMiddleware[];
+  /**
+   * DX (ADR 0063/0064 follow-up) — composition-time effect registration hook,
+   * called once with the constructed `EffectRuntime` before any execution
+   * starts. The seam that makes single-effect dispatchers compose declaratively:
+   * `registerEffects: (fx) => { registerMcpInvoke(client, fx); registerSandboxEval(fx, store); }`.
+   * Discovery (`toolModules`) supplies tool *metadata*; this supplies the
+   * runnable effects. Static wiring (P5) — the hook runs at boot, never later.
+   */
+  registerEffects?: (effects: EffectRuntime) => void;
+  /**
+   * Injectable clock for event-envelope timestamps (DST/simulation). Loom's
+   * time-injection principle already covered timers and suspend wake times; envelope
+   * timestamps were the gap, and they are what retention windows and content-GC citation
+   * ages read. Default `Date.now`. Never fold-relevant.
+   */
+  now?: () => number;
+  /**
+   * K10.1 — log-lifecycle wiring. Presence exposes `app.lifecycle` (a {@link LogLifecycle})
+   * for explicit, non-background retention/compaction passes (the spec's anti-hidden-thread
+   * stance — an operator or `loom retention run` drives it; nothing prunes on a timer). The
+   * branch-integrity guard is wired automatically when the storage backend supplies a
+   * `branchRegistry`. Supply `archive` for archive-before-delete (A6). Omitting the key is
+   * byte-identical to not wiring it (G2) — `app.lifecycle` is still available, unarchived.
+   */
+  /**
+   * ADR 0051 D7 — opt-in input validation at start. When true, every entry path
+   * (direct starts, schedule occurrences, A2A submits) parses the flow's declared
+   * `inputSchema` at the boundary: invalid input refuses with a typed
+   * `InputValidationError` before anything is appended, and the parsed value
+   * (Zod defaults/transforms applied) is what runs and is recorded. Omitted =
+   * declaration-only metadata, byte-identical (G2).
+   */
+  validateInput?: boolean;
+}
+
+/**
+ * Pre-flight checks that run at composition time, before anything executes. All opt-in,
+ * all refuse-early rather than fail-later.
+ */
+export interface ChecksOptions {
+  /**
+   * Run structural flow-graph validation at boot (missing effects, dangling
+   * capability→agent maps). `true`/`"warn"` reports via `onWarn`; `"error"`
+   * throws on the first error. See {@link validateFlowGraph}.
+   */
+  validate?: boolean | "warn" | "error";
+  /**
+   * Pre-flight runtime verification (`@loom/verify`). Runs read-only, off-log checks over
+   * the resolved app **at boot, before any execution starts**. `"error"` throws on an
+   * error-severity finding; `"warn"` reports via {@link onWarn}; `"off"` (the default)
+   * is byte-identical to not wiring verify (G2). Use the object form to declare the
+   * metered resource dimensions or restrict the rule set. The strongest check today is
+   * capability-compat (a step's effect must be granted in the K2 `GrantTable`).
+   * `app.verify()` re-runs the same checks on demand (used by `loom verify`).
+   */
+  verify?: VerifyConfig;
+  /**
+   * Optional compiler manifest to cross-check against — any flow the compiler saw
+   * but that isn't registered (or that carries a compiler warning) is reported
+   * via `onWarn` at boot rather than failing at dispatch.
+   */
+  manifest?: ManifestView;
+}
+
+/**
+ * The flat spellings of every option that now lives in a group. Still accepted so no app
+ * has to move on this release's schedule, and every one is `@deprecated` so an editor says
+ * where it went. Setting BOTH spellings for the same option throws — there is no sensible
+ * precedence between two deliberate answers, and picking one silently is how a security
+ * option ends up not applied.
+ *
+ * Delete this block (and `normalizeConfig`'s conflict pass) to complete the migration.
+ */
+export interface DeprecatedFlatOptions {
+  /** @deprecated Moved to `security.authorizer`; still accepted, removed in a future release. */
+  authorizer?: SecurityOptions["authorizer"];
+  /** @deprecated Moved to `security.policies`; still accepted, removed in a future release. */
+  policies?: SecurityOptions["policies"];
+  /** @deprecated Moved to `security.secrets`; still accepted, removed in a future release. */
+  secrets?: SecurityOptions["secrets"];
+  /** @deprecated Moved to `security.resumeAuthenticator`; still accepted, removed in a future release. */
+  resumeAuthenticator?: SecurityOptions["resumeAuthenticator"];
+  /** @deprecated Moved to `security.executionAuthorizer`; still accepted, removed in a future release. */
+  executionAuthorizer?: SecurityOptions["executionAuthorizer"];
+  /** @deprecated Moved to `security.onExecutionDenied`; still accepted, removed in a future release. */
+  onExecutionDenied?: SecurityOptions["onExecutionDenied"];
+  /** @deprecated Moved to `security.compliance`; still accepted, removed in a future release. */
+  compliance?: SecurityOptions["compliance"];
+  /** @deprecated Moved to `observability.telemetry`; still accepted, removed in a future release. */
+  telemetry?: ObservabilityOptions["telemetry"];
+  /** @deprecated Moved to `observability.onEvent`; still accepted, removed in a future release. */
+  onEvent?: ObservabilityOptions["onEvent"];
+  /** @deprecated Moved to `observability.onWarn`; still accepted, removed in a future release. */
+  onWarn?: ObservabilityOptions["onWarn"];
+  /** @deprecated Moved to `observability.onStorageError`; still accepted, removed in a future release. */
+  onStorageError?: ObservabilityOptions["onStorageError"];
+  /** @deprecated Moved to `durability.snapshotEvery`; still accepted, removed in a future release. */
+  snapshotEvery?: DurabilityOptions["snapshotEvery"];
+  /** @deprecated Moved to `durability.retention`; still accepted, removed in a future release. */
+  retention?: DurabilityOptions["retention"];
+  /** @deprecated Moved to `execution.dispatcher`; still accepted, removed in a future release. */
+  dispatcher?: ExecutionOptions["dispatcher"];
+  /** @deprecated Moved to `execution.effectMiddleware`; still accepted, removed in a future release. */
+  effectMiddleware?: ExecutionOptions["effectMiddleware"];
+  /** @deprecated Moved to `execution.registerEffects`; still accepted, removed in a future release. */
+  registerEffects?: ExecutionOptions["registerEffects"];
+  /** @deprecated Moved to `execution.now`; still accepted, removed in a future release. */
+  now?: ExecutionOptions["now"];
+  /** @deprecated Moved to `execution.validateInput`; still accepted, removed in a future release. */
+  validateInput?: ExecutionOptions["validateInput"];
+  /** @deprecated Moved to `checks.validate`; still accepted, removed in a future release. */
+  validate?: ChecksOptions["validate"];
+  /** @deprecated Moved to `checks.verify`; still accepted, removed in a future release. */
+  verify?: ChecksOptions["verify"];
+  /** @deprecated Moved to `checks.manifest`; still accepted, removed in a future release. */
+  manifest?: ChecksOptions["manifest"];
+}
+
+/**
  * The single, static description of a Loom app. It is deliberately declarative
  * and side-effect-free to read: `defineConfig` turns it into the same runtime +
  * transport you would otherwise hand-assemble, so a resume / remote worker
  * reconstructs an identical wiring (determinism). It does NOT build app-specific
  * conductor logic (the Orchestrator) or HTTP routes.
  */
-export interface LoomConfig {
+export interface LoomConfig extends DeprecatedFlatOptions {
   storage: StorageConfig;
   /** Projection runtime to fold events into UI surfaces. Default in-memory. */
   projectionRuntime?: ProjectionRuntime;
@@ -205,20 +490,6 @@ export interface LoomConfig {
   projectionModules?: ProjectionModule[];
   /** Projection definitions registered directly (in addition to any from `projectionModules`). */
   projections?: ProjectionDefinition[];
-  /**
-   * Optional compiler manifest to cross-check against — any flow the compiler saw
-   * but that isn't registered (or that carries a compiler warning) is reported
-   * via `onWarn` at boot rather than failing at dispatch.
-   */
-  manifest?: ManifestView;
-  /** Sink for boot-time warnings (manifest cross-check + validation). Default `console.warn`. */
-  onWarn?: (message: string) => void;
-  /**
-   * Run structural flow-graph validation at boot (missing effects, dangling
-   * capability→agent maps). `true`/`"warn"` reports via `onWarn`; `"error"`
-   * throws on the first error. See {@link validateFlowGraph}.
-   */
-  validate?: boolean | "warn" | "error";
   /** Capability catalog registered into the runtime + wired to agents. */
   catalog?: CatalogLike;
   /**
@@ -245,89 +516,6 @@ export interface LoomConfig {
    * `surfaces: [...]` is unaffected. Harmless (empty projection) for agents that never emit.
    */
   agentSurface?: boolean;
-  /** Static, ordered effect middleware (retries, logging, …). */
-  effectMiddleware?: EffectMiddleware[];
-  /**
-   * DX (ADR 0063/0064 follow-up) — composition-time effect registration hook,
-   * called once with the constructed `EffectRuntime` before any execution
-   * starts. The seam that makes single-effect dispatchers compose declaratively:
-   * `registerEffects: (fx) => { registerMcpInvoke(client, fx); registerSandboxEval(fx, store); }`.
-   * Discovery (`toolModules`) supplies tool *metadata*; this supplies the
-   * runnable effects. Static wiring (P5) — the hook runs at boot, never later.
-   */
-  registerEffects?: (effects: EffectRuntime) => void;
-  /**
-   * Capability protection ring (K2). When set, every effect is authorized against
-   * it and ungranted effects are denied (least-privilege). Omit for permissive.
-   * e.g. `new GrantTable({ "my-flow": ["metrics-tool", "logs-tool"] })`.
-   */
-  authorizer?: CapabilityAuthorizer;
-  /**
-   * App-global `policy$` definitions enforced on EVERY effect via a `PolicyAuthorizer`.
-   * Per-flow policies are read automatically from each flow's `policies` (`flow$`); these
-   * `policies` apply on top of them, everywhere. A policy composes UNDER {@link authorizer}
-   * (both must allow — defense in depth), so it can tighten a grant but never widen it.
-   * Enforcement is deny-wins; a flow with no governing policy is unaffected (opt-in).
-   */
-  policies?: PolicyDefinition[];
-  /** Telemetry adapters, composed and wired to the event stream. */
-  telemetry?: TelemetryAdapter[];
-  /** Placement dispatcher for the bus (default: in-process). e.g. Cloud Run. */
-  dispatcher?: ExecutionDispatcher;
-  /** Extra event observer, fired after projection + telemetry. */
-  onEvent?: (event: EventEnvelope) => void;
-  /**
-   * Fired when a durable write rejects. Forwarded verbatim to {@link WorkflowRuntime},
-   * which reports two different kinds through it:
-   *
-   * - an **event** append that rejects — the run is aborted regardless and
-   *   `waitForCompletion`/`waitForSuspend` reject with a `StorageWriteError`, so this
-   *   hook is only logging/metrics;
-   * - a **snapshot** save that rejects — fire-and-forget, so this hook is the ONLY
-   *   channel. Nothing else observes it and the run continues unharmed.
-   *
-   * The second is why this is surfaced here alongside {@link LoomConfig.snapshotEvery}.
-   * Setting a cadence turns on a mid-run checkpoint whose failure is otherwise silent:
-   * the execution keeps running, replay quietly stops being bounded, and the only
-   * symptom is a `loadState` that gets slower over time. Cheap against an in-memory or
-   * local store; a real risk against a network-backed or quota-limited one — which is
-   * exactly the storage a cadence is worth setting for.
-   */
-  onStorageError?: (executionId: string, err: unknown) => void;
-  /**
-   * K12.2 — authenticates approval-type resume events. A resume the authenticator rejects
-   * is REFUSED (a forged approval never resumes); a verified one records a durable
-   * `APPROVAL_GRANTED` fact, so "who approved" is evidence rather than a claim.
-   *
-   * Surfaced here because it was otherwise unreachable: it is a {@link WorkflowRuntime}
-   * dep with no setter, so an app assembled by `defineConfig` could not authenticate
-   * resumes at all. Pre-flight verification errors on a flow that declares resume gates
-   * with nothing wired here (`suspension-safety`, K12).
-   */
-  resumeAuthenticator?: ResumeAuthenticator;
-  /**
-   * C.1 — authorizes execution lifecycle operations (`start`/`resume`/`cancel`, and the
-   * public `loadState`), consulted only for calls that carry a `principal`.
-   *
-   * SECURITY CONTRACT, restated from {@link WorkflowRuntime} because this is where it is
-   * now wired: principal-less calls bypass the gate BY DESIGN, so the kernel's own
-   * machinery (TimerService, recovery) keeps working. The integrator is therefore
-   * responsible for attaching an authenticated principal to every externally-originated
-   * call. This is edge-enforced policy, not a substitute for authenticating the caller.
-   *
-   * Distinct from {@link authorizer}, which gates EFFECTS (the K2 capability ring). This
-   * one gates the execution's lifecycle; an app that needs both wires both.
-   */
-  executionAuthorizer?: ExecutionAuthorizer;
-  /** C.1 — audit/telemetry hook fired whenever {@link executionAuthorizer} refuses. */
-  onExecutionDenied?: (request: ExecutionAuthzRequest, reason?: string) => void;
-  /**
-   * Injectable clock for event-envelope timestamps (DST/simulation). Loom's
-   * time-injection principle already covered timers and suspend wake times; envelope
-   * timestamps were the gap, and they are what retention windows and content-GC citation
-   * ages read. Default `Date.now`. Never fold-relevant.
-   */
-  now?: () => number;
   /**
    * T1 — durable timers. Wire a {@link TimerStore} (`InMemoryTimerStore`,
    * `SqliteTimerStore`/`PostgresTimerStore` beside your event store) and the app
@@ -345,101 +533,17 @@ export interface LoomConfig {
     /** Advisory: pre-warm a scheduled flow's first effect this many ms before it fires. */
     warmLeadMs?: number;
   };
-  /**
-   * Pre-flight runtime verification (`@loom/verify`). Runs read-only, off-log checks over
-   * the resolved app **at boot, before any execution starts**. `"error"` throws on an
-   * error-severity finding; `"warn"` reports via {@link onWarn}; `"off"` (the default)
-   * is byte-identical to not wiring verify (G2). Use the object form to declare the
-   * metered resource dimensions or restrict the rule set. The strongest check today is
-   * capability-compat (a step's effect must be granted in the K2 `GrantTable`).
-   * `app.verify()` re-runs the same checks on demand (used by `loom verify`).
-   */
-  verify?: VerifyConfig;
-  /**
-   * K10.1 — log-lifecycle wiring. Presence exposes `app.lifecycle` (a {@link LogLifecycle})
-   * for explicit, non-background retention/compaction passes (the spec's anti-hidden-thread
-   * stance — an operator or `loom retention run` drives it; nothing prunes on a timer). The
-   * branch-integrity guard is wired automatically when the storage backend supplies a
-   * `branchRegistry`. Supply `archive` for archive-before-delete (A6). Omitting the key is
-   * byte-identical to not wiring it (G2) — `app.lifecycle` is still available, unarchived.
-   */
-  /**
-   * ADR 0051 D7 — opt-in input validation at start. When true, every entry path
-   * (direct starts, schedule occurrences, A2A submits) parses the flow's declared
-   * `inputSchema` at the boundary: invalid input refuses with a typed
-   * `InputValidationError` before anything is appended, and the parsed value
-   * (Zod defaults/transforms applied) is what runs and is recorded. Omitted =
-   * declaration-only metadata, byte-identical (G2).
-   */
-  validateInput?: boolean;
-  /**
-   * Take a mid-run snapshot every N committed events, and a matching one at completion,
-   * bounding what a later `loadState`/resume has to fold.
-   *
-   * Forwarded verbatim to {@link WorkflowRuntime}. It is surfaced here because
-   * `defineConfig` builds the runtime, so an app wired the supported way had no way to
-   * set it at all — and settle-time checkpointing (`docs/scaling.md` §3.2) is gated on
-   * it, which left the larger half of that work unreachable rather than merely off by
-   * default.
-   *
-   * Omit (or 0) for today's behaviour: snapshots at suspend and fork only, and a
-   * `foldState` that reads the whole log. Worth setting once executions get long —
-   * measured at a 102-event log it is 4.76 ms → 1.22 ms p50; at 4 events it is nothing
-   * (0.72 → 0.71 ms), so short flows should not bother. Larger N means fewer snapshot
-   * writes and a longer worst-case replay.
-   */
-  snapshotEvery?: number;
-  retention?: {
-    /** Where each execution's events/snapshot are copied before deletion (A6). */
-    archive?: ArchiveStores;
-    /**
-     * K10.6 — pin predicate: retention exempts executions this returns `true`
-     * for (outcome `"pinned"`). The kernel supplies the gate; what pins is
-     * policy (G3) — e.g. `pinByEventKinds(store, ["FINDING_RECORDED"])` from
-     * `@loom/plugin-content`.
-     */
-    pinned?: PinPredicate;
-  };
-  /**
-   * K10-R2 — secret handling. Wiring a resolver installs {@link redactionMiddleware} on the
-   * effect path (outermost), so:
-   *  - `secretRef(...)` values in step INPUT are resolved to the real value for the tool
-   *    while the log keeps only the reference (the secret never enters STEP_STARTED); and
-   *  - step OUTPUT fields marked `secret()` (K10-R1) are replaced by a reference before
-   *    STEP_COMPLETED — derived automatically from the registered flows' step schemas.
-   *
-   * Omitting the key installs nothing (G2). This is the low-risk half of K10-R2; automatic
-   * substitution inside the kernel hot path remains deliberately deferred.
-   */
-  secrets?: {
-    /** Resolves secret references to real values (back it with a vault/KMS in production). */
-    resolver: SecretResolver;
-  };
-  /**
-   * T3 (GDPR/CCPA-enabling) — data-subject rights. Supply a {@link SubjectResolver} (given an
-   * event, the data subject it concerns — usually read off EXECUTION_STARTED input, e.g. the
-   * userId) to maintain a live subject index over the event stream, exposing
-   * `app.subjectIndex` and `app.exportSubject(subjectId)` (Art. 15 access / Art. 20
-   * portability). Omitting the key builds nothing (G2). Not legal advice.
-   */
-  compliance?: {
-    subjectOf: SubjectResolver;
-    /**
-     * T3-R2.4 — partition the subject index by tenant so two tenants sharing a subject id are
-     * never merged (a cross-tenant access/erasure leak). Given an event, return its tenant —
-     * the tenant is not persisted in events by default, so read it from input/metadata. Omit
-     * for a single-tenant app.
-     */
-    tenantOf?: TenantResolver;
-    /**
-     * T3 Phase B — enable `app.eraseSubject` (Art. 17). Wire `shred` to the crypto plugin's
-     * `shredSubject` (bound to the KeyStore + raw store); it MUST be idempotent (no-op when a
-     * subject is already erased). Erasure is liveness-gated: shredded now if the subject's
-     * executions are all terminal, else parked (durable `ERASURE_PENDING`) and auto-completed
-     * when the last live execution terminates — never shredding a fold in flight.
-     */
-    erase?: { shred: Shredder };
-  };
+  // ── Grouped options ───────────────────────────────────────────────────────
+  /** See {@link SecurityOptions}. */
+  security?: SecurityOptions;
+  /** See {@link ObservabilityOptions}. */
+  observability?: ObservabilityOptions;
+  /** See {@link DurabilityOptions}. */
+  durability?: DurabilityOptions;
+  /** See {@link ExecutionOptions}. */
+  execution?: ExecutionOptions;
+  /** See {@link ChecksOptions}. */
+  checks?: ChecksOptions;
 }
 
 export interface LoomStores {
@@ -529,6 +633,76 @@ function buildStores(storage: StorageConfig): LoomStores {
 }
 
 /**
+ * Every option in one flat internal shape, whichever spelling the app used.
+ *
+ * The dual surface stops here: `defineConfig`'s body reads this and never asks whether an
+ * option arrived grouped or flat. That is the point of normalizing at the boundary — the
+ * 100-odd reads below cannot drift from each other, and deleting the deprecated flat block
+ * later touches this function and nothing else.
+ */
+type ResolvedConfig = Omit<
+  LoomConfig,
+  keyof DeprecatedFlatOptions | "security" | "observability" | "durability" | "execution" | "checks"
+> &
+  SecurityOptions &
+  ObservabilityOptions &
+  DurabilityOptions &
+  ExecutionOptions &
+  ChecksOptions;
+
+/** Options that moved into a group, paired with the group that now owns them. */
+const GROUPED_OPTIONS = [
+  [
+    "security",
+    [
+      "authorizer",
+      "policies",
+      "secrets",
+      "resumeAuthenticator",
+      "executionAuthorizer",
+      "onExecutionDenied",
+      "compliance",
+    ],
+  ],
+  ["observability", ["telemetry", "onEvent", "onWarn", "onStorageError"]],
+  ["durability", ["snapshotEvery", "retention"]],
+  ["execution", ["dispatcher", "effectMiddleware", "registerEffects", "now", "validateInput"]],
+  ["checks", ["validate", "verify", "manifest"]],
+] as const;
+
+/**
+ * Collapse the grouped and flat spellings into one shape.
+ *
+ * Setting both for the same option THROWS. There is no sensible precedence between two
+ * deliberate answers, and quietly preferring one is how `security.authorizer` ends up
+ * ignored because a flat `authorizer` survived a refactor — a silent downgrade of exactly
+ * the options least likely to be exercised by a test.
+ */
+export function normalizeConfig(config: LoomConfig): ResolvedConfig {
+  const resolved = { ...config } as Record<string, unknown>;
+  const conflicts: string[] = [];
+  for (const [group, options] of GROUPED_OPTIONS) {
+    const bag = config[group] as Record<string, unknown> | undefined;
+    delete resolved[group];
+    if (bag === undefined) continue;
+    for (const option of options) {
+      if (bag[option] === undefined) continue;
+      if (config[option] !== undefined) {
+        conflicts.push(`\`${option}\` (also set as \`${group}.${option}\`)`);
+        continue;
+      }
+      resolved[option] = bag[option];
+    }
+  }
+  if (conflicts.length > 0) {
+    throw new Error(
+      `defineConfig: ${conflicts.join(", ")} — each option is set both flat and grouped. The flat spelling is deprecated; keep the grouped one and remove the other.`
+    );
+  }
+  return resolved as unknown as ResolvedConfig;
+}
+
+/**
  * Assemble a Loom app from a static config: stores, an EffectRuntime wired with
  * middleware, a projection runtime with surfaces, telemetry, the WorkflowRuntime,
  * registered flows, and the A2A bus with agent/capability routes. Returns the
@@ -537,7 +711,8 @@ function buildStores(storage: StorageConfig): LoomStores {
  * This is sugar over the existing DI: everything it returns can also be hand-
  * built, and hand-wiring keeps working unchanged.
  */
-export function defineConfig(config: LoomConfig): LoomApp {
+export function defineConfig(rawConfig: LoomConfig): LoomApp {
+  const config = normalizeConfig(rawConfig);
   const stores = buildStores(config.storage);
 
   // K10-R2 — secret redaction runs OUTERMOST on the effect path (it must resolve input
