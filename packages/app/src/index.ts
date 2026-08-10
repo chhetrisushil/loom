@@ -1,9 +1,16 @@
 export {
   defineConfig,
+  normalizeConfig,
   type CatalogLike,
+  type ChecksOptions,
+  type DeprecatedFlatOptions,
+  type DurabilityOptions,
+  type ExecutionOptions,
   type LoomApp,
   type LoomConfig,
   type LoomStores,
+  type ObservabilityOptions,
+  type SecurityOptions,
   type StorageConfig,
 } from "./defineConfig";
 export {
