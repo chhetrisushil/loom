@@ -1,5 +1,5 @@
 import type { CustomStorage } from "@loom/plugin-kit";
-import type { Pool } from "pg";
+import type { Pool, PoolConfig } from "pg";
 import { PostgresBranchRegistry } from "./PostgresBranchRegistry";
 import { PostgresEventStore } from "./PostgresEventStore";
 import { PostgresSnapshotStore } from "./PostgresSnapshotStore";
@@ -62,7 +62,19 @@ export function postgresStorage(options: PostgresStorageOptions): CustomStorage 
   };
 }
 
-/** Build a shared pool for callers assembling the Postgres stores by hand. */
-export function postgresPool(config: PgConfig): Pool {
-  return toPool(config).pool;
+/**
+ * Build a shared pool for callers assembling the Postgres stores by hand.
+ *
+ * No longer load-bearing for cross-copy wiring — the stores accept any structurally
+ * compatible pool now, so a consumer that resolves its own `pg` can pass that pool
+ * directly (see `toPool`). What this still gives you is a real `pg.Pool` from THIS
+ * package: `totalCount`/`idleCount` and the rest of the surface `PoolLike` deliberately
+ * omits, for a caller that wants to instrument or size the pool it shares.
+ *
+ * Takes connection parameters rather than a {@link PgConfig}: handing it an existing pool
+ * was only ever an identity function, and accepting one would force the return type down
+ * to `PoolLike`, losing exactly the surface this exists to expose.
+ */
+export function postgresPool(config: string | PoolConfig): Pool {
+  return toPool(config).pool as Pool;
 }

@@ -1,6 +1,5 @@
 import type { TimerRecord, TimerStore } from "@loom/event-runtime";
-import type { Pool } from "pg";
-import { type PgConfig, toPool } from "./pool";
+import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 
 interface TimerRow {
@@ -17,7 +16,7 @@ interface TimerRow {
  * the TimerService runs `fenced`).
  */
 export class PostgresTimerStore implements TimerStore {
-  private readonly pool: Pool;
+  private readonly pool: PoolLike;
   private readonly ownsPool: boolean;
   private readonly ready: Promise<void>;
 

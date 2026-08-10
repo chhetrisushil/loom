@@ -5,8 +5,7 @@ import type {
   ReadModelStore,
 } from "@loom/plugin-read-model";
 import { clampQueryLimit, parseQueryCursor } from "@loom/plugin-read-model";
-import type { Pool } from "pg";
-import { type PgConfig, toPool } from "./pool";
+import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 
 interface RowRecord {
@@ -28,7 +27,7 @@ interface RowRecord {
  * over a GIN index; keyset pagination uses row-value comparison.
  */
 export class PostgresReadModelStore implements ReadModelStore {
-  private readonly pool: Pool;
+  private readonly pool: PoolLike;
   private readonly ownsPool: boolean;
   private readonly ready: Promise<void>;
 

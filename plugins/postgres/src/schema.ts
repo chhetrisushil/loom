@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { PoolLike } from "./pool";
 
 // Advisory-lock key for the migration, as the two-int form: ("LOOM" as ASCII, 1).
 // Application-defined and namespaced to this library, so it cannot collide with an
@@ -9,7 +9,7 @@ const MIGRATION_LOCK_ID = 1;
 // One in-flight/completed migration per Pool. Every store constructor calls migrate()
 // on its own pool, so without this a process sharing one pool across six stores would
 // issue the DDL six times. Keyed weakly so a discarded pool is not retained.
-const migrations = new WeakMap<Pool, Promise<void>>();
+const migrations = new WeakMap<PoolLike, Promise<void>>();
 
 /**
  * One idempotent migration for all Loom store tables, mirroring the SQLite schema
@@ -36,7 +36,7 @@ const migrations = new WeakMap<Pool, Promise<void>>();
  * The memo is deliberately NOT sufficient on its own — the shipped preset uses
  * distinct pools — and the lock is not made redundant by it.
  */
-export async function migrate(pool: Pool): Promise<void> {
+export async function migrate(pool: PoolLike): Promise<void> {
   const inFlight = migrations.get(pool);
   if (inFlight !== undefined) return inFlight;
 
@@ -51,7 +51,7 @@ export async function migrate(pool: Pool): Promise<void> {
   return run;
 }
 
-async function runMigration(pool: Pool): Promise<void> {
+async function runMigration(pool: PoolLike): Promise<void> {
   // A dedicated client, not `pool.query`: the advisory lock and the DDL must run in
   // ONE session and one transaction, which a pooled per-query checkout cannot promise.
   const client = await pool.connect();
