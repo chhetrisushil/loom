@@ -784,13 +784,25 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
           shred: config.compliance.erase.shred,
         })
       : undefined;
-  void eraseCoordinator?.loadParked();
+  // Both erasure calls read (and eventually write) the durable store, so both reject on an
+  // ordinary storage failure — and nothing awaits either, so an escaping rejection is
+  // UNHANDLED and Node terminates the process by default. A blip while reading the parked
+  // list at boot, or while folding one event, would take the whole app down.
+  //
+  // Reported rather than swallowed: an erasure that did not complete is a compliance fact
+  // someone has to know about. It stays parked durably (`ERASURE_PENDING`), so the next
+  // terminal event for that subject retries it.
+  const warnErasure = (err: unknown): void => {
+    const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+    warn(`erasure coordinator: ${String(err)} — the request stays parked and will retry`);
+  };
+  void eraseCoordinator?.loadParked().catch(warnErasure);
 
   const onEvent = (event: EventEnvelope): void => {
     projectionRuntime.handleEvent(event);
     subjectIndex?.handleEvent(event); // index BEFORE coordinator (it reads the index)
     // Fire-and-forget: a parked erasure completes asynchronously once its last fold ends.
-    void eraseCoordinator?.handleEvent(event);
+    void eraseCoordinator?.handleEvent(event).catch(warnErasure);
     telemetryHook?.(event);
     config.onEvent?.(event);
   };

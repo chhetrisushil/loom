@@ -13,7 +13,7 @@ import {
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectMiddleware } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
-import type { BranchRegistry } from "@loom/event-runtime";
+import type { BranchRegistry, EventStore } from "@loom/event-runtime";
 import { InMemorySecretResolver, isSecretRef, retryMiddleware, secretRef } from "@loom/middleware";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
@@ -1080,6 +1080,59 @@ describe("defineConfig — now", () => {
 
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.every((t) => t === fixed)).toBe(true);
+    await app.close();
+  });
+});
+
+// ── An erasure fold that fails must not take the process down ────────────────
+//
+// The erase coordinator reads (and writes) the durable store, so both `loadParked` at boot
+// and `handleEvent` per event reject on an ordinary storage failure. Nothing awaits either
+// — they are fire-and-forget from the composition root and the onEvent hook — so an
+// escaping rejection is UNHANDLED, and Node terminates the process by default.
+
+describe("defineConfig — a failing erase coordinator", () => {
+  /** An event store whose reads reject, as a network-backed one does on a bad day. */
+  function unreadableStore(): EventStore {
+    const inner = new InMemoryAsyncEventStore();
+    return new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === "read") {
+          return async () => {
+            throw new Error("store unavailable");
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as EventStore;
+  }
+
+  const compliance = {
+    subjectOf: (e: EventEnvelope) =>
+      e.eventType === "EXECUTION_STARTED"
+        ? (e.payload as { input?: { incidentId?: string } }).input?.incidentId
+        : undefined,
+    erase: { shred: async () => {} },
+  };
+
+  it("reports the boot-time failure through onWarn instead of rejecting into nothing", async () => {
+    const warnings: string[] = [];
+    const app = defineConfig({
+      storage: {
+        kind: "custom",
+        eventStore: unreadableStore(),
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+      },
+      flows: [gatedFlow()],
+      security: { compliance },
+      observability: { onWarn: (m) => warnings.push(m) },
+    });
+    await new Promise((r) => setTimeout(r, 0)); // let the fire-and-forget settle
+
+    expect(warnings.some((w) => w.includes("erasure coordinator"))).toBe(true);
+    expect(warnings.some((w) => w.includes("store unavailable"))).toBe(true);
+    // …and the app is still usable: a failed parked-list read is not fatal.
+    expect(app.runtime).toBeDefined();
     await app.close();
   });
 });

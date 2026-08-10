@@ -436,6 +436,7 @@ export class PostgresEventStore implements EventStore {
       await client.connect();
       client.on("notification", (msg: Notification) => {
         if (msg.payload === undefined) return;
+        // Safe to leave unawaited: `onNotify` is documented never to reject.
         void this.onNotify(msg.payload);
       });
       // No blanket LISTEN. Channels are subscribed per bucket, on demand, by
@@ -444,7 +445,25 @@ export class PostgresEventStore implements EventStore {
     return this.listenerReady;
   }
 
+  /**
+   * Handle one NOTIFY. **Never rejects** — the guarantee lives here rather than at the call
+   * site because the only caller is an emitter callback that cannot await it: an escaping
+   * rejection would be UNHANDLED, and Node terminates the process by default. A database
+   * blip on the cross-node delivery path would take the node down.
+   *
+   * Swallowing is the right degradation, and the one this file already applies to a failed
+   * LISTEN: the log is authoritative, so a dropped notification costs a subscriber its live
+   * wake-up, not correctness — the event is read on the next delivery or fold.
+   */
   private async onNotify(raw: string): Promise<void> {
+    try {
+      await this.deliverNotified(raw);
+    } catch {
+      // Intentionally silent; see above.
+    }
+  }
+
+  private async deliverNotified(raw: string): Promise<void> {
     let sender: string;
     let executionId: string;
     let sequence: number;
