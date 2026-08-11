@@ -99,3 +99,93 @@ describe("M2 — Decision seam (ctx.decide / DECISION_RECORDED)", () => {
     expect((final.variables._output as { model: string }).model).toBe("model-1");
   });
 });
+
+// ADR 0079 (T2) — `decide` must carry the observation and the policy stamp through to
+// the durable event. This is the whole kernel change: without it the log records only
+// (action, reward) and no contextual policy is learnable from it afterwards.
+describe("ADR 0079 — context + policy on the decision seam", () => {
+  it("writes context and policy into DECISION_RECORDED, and omits them when unused", async () => {
+    const eventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const runtime = new WorkflowRuntime({
+      eventStore,
+      snapshotStore,
+      effectRuntime: new EffectRuntime(),
+    });
+
+    const runner: FlowRunner<{ id: string }, { model: string }> = async (ctx, input) => {
+      const model = await ctx.decide("route", () => "opus", {
+        context: { intent: "summarize", tokens: 4096, tenant: input.id },
+        policy: { id: "linucb", version: "3", propensity: 0.7 },
+      });
+      await ctx.decide("plain", () => "unstamped");
+      return { model };
+    };
+    runtime.registerFlow(makeFlow(runner).definition, runner);
+
+    const handle = await runtime.start(makeFlow(runner), { id: "acme" });
+    await handle.waitForCompletion();
+
+    const decisions = (await eventStore.read(handle.executionId))
+      .filter((e) => e.eventType === "DECISION_RECORDED")
+      .map((e) => e.payload as Record<string, unknown>);
+
+    expect(decisions[0]).toEqual({
+      decisionId: "route",
+      choice: "opus",
+      context: { intent: "summarize", tokens: 4096, tenant: "acme" },
+      policy: { id: "linucb", version: "3", propensity: 0.7 },
+    });
+    // A decision no policy produced must stay exactly as it was before 1.18.0 —
+    // the fields are opt-in by presence, never defaulted in.
+    expect(decisions[1]).toEqual({ decisionId: "plain", choice: "unstamped" });
+  });
+
+  it("does not make the observation a replay input — the decider stays uncalled", async () => {
+    const eventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const effectRuntime = new EffectRuntime();
+    effectRuntime.register(
+      "finalize-tool",
+      new ToolEffect(vi.fn().mockResolvedValue({ done: true }))
+    );
+
+    // Each call returns something new, so a wrongly re-consulted decider is visible.
+    let calls = 0;
+    const decider = vi.fn(() => `model-${++calls}`);
+
+    // The context CHANGES between the two runs (a policy that has since learned more).
+    // Replay must still serve the originally recorded choice.
+    const makeRunner =
+      (tokens: number, version: string): FlowRunner<{ id: string }, { model: string }> =>
+      async (ctx) => {
+        const model = await ctx.decide("route", () => decider(), {
+          context: { tokens },
+          policy: { id: "linucb", version, propensity: 0.7 },
+        });
+        await ctx.suspend({ on: "Approved" });
+        await ctx.run(finalizeStep, { model });
+        return { model };
+      };
+
+    const first = makeRunner(4096, "3");
+    const runtime1 = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime });
+    runtime1.registerFlow(makeFlow(first).definition, first);
+    const handle1 = await runtime1.start(makeFlow(first), { id: "x" });
+    await handle1.waitForSuspend();
+    expect(decider).toHaveBeenCalledTimes(1);
+
+    const second = makeRunner(999_999, "4");
+    const runtime2 = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime });
+    runtime2.registerFlow(makeFlow(second).definition, second);
+    const handle2 = await runtime2.resume(handle1.executionId, {
+      eventType: "Approved",
+      payload: {},
+    });
+    const final = await handle2.waitForCompletion();
+
+    expect(final.status).toBe("completed");
+    expect(decider).toHaveBeenCalledTimes(1); // never re-consulted
+    expect((final.variables._output as { model: string }).model).toBe("model-1");
+  });
+});

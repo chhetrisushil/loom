@@ -70,7 +70,7 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._cancelReason` | `EXECUTION_CANCELLED` | cancel reason |
 | `variables._resumePayload` | `EXECUTION_RESUMED` | LATEST resume payload (legacy key, kept for pre-1.16 snapshots) |
 | `variables._resumePayloads` | `EXECUTION_RESUMED` | ORDERED list of every resume payload — gate *i* passes through with payload *i* on replay (1.16.0, ADR 0057) |
-| `variables._decisions` | `DECISION_RECORDED` | `Record<decisionId, { choice, rationale?, source? }>` |
+| `variables._decisions` | `DECISION_RECORDED` | `Record<decisionId, { choice, rationale?, source?, alternatives?, estimatedCostUsd?, estimatedLatencyMs?, confidence?, context?, policy? }>` — only `choice` is ever read back (P9) |
 | `variables._denials` | `EFFECT_DENIED` | `Array<{ toolId, stepId?, reason? }>` |
 | `variables._executionDenials` | `EXECUTION_DENIED` | `Array<{ op, reason?, actor? }>` — refused lifecycle ops (C.1) |
 | `variables._resources` | `RESOURCE_METERED` / `QUOTA_EXCEEDED` | `{ tokens, costUsd, ms, count, exceeded? }` |
@@ -249,13 +249,22 @@ execution `status` (except via the ordinary `STEP_FAILED` that a denial / quota 
 triggers downstream).
 
 #### `DECISION_RECORDED`
-- **Introduced:** Loom 2.0 — P9, the Decision seam.
+- **Introduced:** Loom 2.0 — P9, the Decision seam. Extended twice, both additive: the D1
+  materialization fields in 1.10.0 (ADR 0030) and `context`/`policy` in 1.18.0 (ADR 0079).
 - **Emitted by:** `ctx.decide` on first run (`WorkflowContext.ts:116`).
-- **Payload:** `{ decisionId: string; choice: unknown; rationale?: unknown; source?: string }`
-- **Folds into:** `variables._decisions[decisionId] = { choice, rationale?, source? }` (merged
+- **Payload:** `{ decisionId: string; choice: unknown; rationale?: unknown; source?: string;
+  alternatives?: unknown; estimatedCostUsd?: number; estimatedLatencyMs?: number;
+  confidence?: number; context?: Record<string, unknown>;
+  policy?: { id: string; version: string; propensity?: number } }`
+- **Folds into:** `variables._decisions[decisionId] = { choice, …every present field }` (merged
   onto any existing `_decisions` map). On replay, `vm.hasDecision(id)` / `vm.getDecision(id)`
   serve `.choice` so the decider is never re-consulted — this is what keeps replay a pure fold
   while outcomes improve run-to-run.
+- **Every field but `choice` is DESCRIPTIVE**: folded verbatim, never read back by
+  `getDecision`, so no amount of added metadata can change what replay does (P9). `context`
+  is the observation the policy keyed on and `policy.propensity` is `P(chosen | context)` —
+  together they turn the log into a `(state, action, propensity)` dataset that
+  [`@loom/learning`](../../packages/learning/README.md) mines for off-policy evaluation.
 - Handler: `eventHandlers.ts:171`.
 
 #### `EFFECT_DENIED`
@@ -492,7 +501,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts:311`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.17.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060) — all additive, NO new event kinds
+export const EVENT_SCHEMA_VERSION = "1.18.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079) — all additive, NO new event kinds
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

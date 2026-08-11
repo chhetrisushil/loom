@@ -1,6 +1,7 @@
 # Continuous Learning / RL — Placement Evaluation
 
-- Status: **Verdicts recorded; nothing built.** Scoping document only.
+- Status: **Verdicts recorded; T1–T4 all shipped.** ADRs [0078](../adr/0078-exploration-in-the-routing-seam.md),
+  [0079](../adr/0079-decision-context-and-policy.md), [0080](../adr/0080-learning-substrate.md).
 - Evaluates: the proposal that loom provide reinforcement learning as a
   first-class framework capability, so agentic apps built on loom improve
   continuously.
@@ -191,7 +192,7 @@ Small, pure win. **Worth doing regardless of the RL decision.**
 silently change every existing deployment, which is the same class of mistake
 being fixed. Non-collapse is available and documented, not automatic.
 
-### T2 — The kernel touch: make decisions learnable
+### T2 — The kernel touch: make decisions learnable — **DONE** ([ADR 0079](../adr/0079-decision-context-and-policy.md))
 
 Additive, alongside the existing D1 descriptive fields on `DecideOptions`:
 
@@ -205,7 +206,7 @@ This turns the log from *"what was chosen"* into a genuine `(s, a, π)` dataset;
 unchanged. **Everything else in this proposal can live outside the kernel
 precisely because of this field.**
 
-### T3 — `@loom/learning` (1P) — the differentiator
+### T3 — `@loom/learning` (1P) — the differentiator — **DONE** ([ADR 0080](../adr/0080-learning-substrate.md))
 
 - **`trajectories(events)`** — a read lens like every other analytics lens,
   folding `DECISION_RECORDED` + `OUTCOME_RECORDED` +
@@ -226,10 +227,13 @@ precisely because of this field.**
   scenario. Policies are versioned artifacts, pinned per deployment; rollback is
   a re-pin.
 
-### T4 — 3P learners
+### T4 — 3P learners — **DONE**
 
-`../loom-plugins` gets a contextual-bandit implementation as the reference.
-Vendors (fine-tune services, eval platforms) implement the same SPI.
+`../loom-plugins` ships `loom-plugin-linucb`: disjoint LinUCB with Sherman–Morrison
+rank-1 updates (O(d²), no matrix inversion) and an ε-greedy layer that reports
+exact propensities. It is the reference proof that the SPI is sufficient for a
+real contextual learner. Vendors (fine-tune services, eval platforms) implement
+the same interface.
 
 ---
 
@@ -276,10 +280,10 @@ Two DX rules to hold firm on:
 Noted while reading; not part of the verdict, but they affect anything built on
 top of this loop.
 
-| # | Finding | Location |
-|---|---|---|
-| F1 | `appendAudit` is unbounded, so the `_outcomes` list grows without limit inside a single execution's state. Fine for a request-scoped flow; a slow leak for a perpetual sentinel execution. | `packages/replay-vm/src/eventHandlers.ts:62-70`, `:405` |
-| F2 | `Outcome.decisionId` being optional is what will quietly make any learning built on top of it wrong. It should be **required** on the learning path. | `packages/analytics/src/outcomes.ts:29` |
+| # | Finding | Location | Status |
+|---|---|---|---|
+| F1 | `appendAudit` is unbounded, so the `_outcomes` list grows without limit inside a single execution's state. Fine for a request-scoped flow; a slow leak for a perpetual sentinel execution. | `packages/replay-vm/src/eventHandlers.ts:62-70`, `:405` | open |
+| F2 | `Outcome.decisionId` being optional is what will quietly make any learning built on top of it wrong. It should be **required** on the learning path. | `packages/analytics/src/outcomes.ts:29` | mitigated — `trajectories` only credits a decision when `decisionId` is set, and `loom learn report` names its absence as a blocking gap. The field is still optional on the type. |
 
 ---
 
@@ -291,6 +295,15 @@ top of this loop.
 - One small additive kernel field unlocks contextual learning; everything else
   stays outward.
 - Fix the greedy router first — it is a standalone win and a cautionary example.
-  **Done** ([ADR 0078](../adr/0078-exploration-in-the-routing-seam.md)); T2–T4
-  remain unbuilt.
-- Keep the math outside the framework.
+  **Done** ([ADR 0078](../adr/0078-exploration-in-the-routing-seam.md)).
+- Keep the math outside the framework. **Done**: the only learner in the tree is
+  third-party, behind a one-method SPI.
+
+### What shipped
+
+| Tier | Landed as | Contract impact |
+|---|---|---|
+| T1 | `ucb1` / `epsilonGreedy` / `minSamples` / `halfLifeMs` | none |
+| T2 | `context` + `policy` on `DECISION_RECORDED` | EVENT_SCHEMA 1.17.0 → **1.18.0**; KERNEL_ABI unchanged |
+| T3 | `@loom/learning` + `loom learn report\|eval` + `runPolicyConformance` | none (read-only) |
+| T4 | `loom-plugin-linucb` (sibling repo) | none (3P) |

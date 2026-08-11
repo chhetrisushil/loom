@@ -319,6 +319,10 @@ export class WorkflowContextImpl implements WorkflowContext {
         estimatedLatencyMs: opts.estimatedLatencyMs,
       }),
       ...(opts?.confidence !== undefined && { confidence: opts.confidence }),
+      // ADR 0079 — the learning half of the D1 metadata: what the policy SAW and
+      // which policy it was. Descriptive only; `getDecision` still returns `choice`.
+      ...(opts?.context !== undefined && { context: opts.context }),
+      ...(opts?.policy !== undefined && { policy: opts.policy }),
     });
 
     return choice;

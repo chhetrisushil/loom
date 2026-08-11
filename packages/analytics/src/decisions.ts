@@ -20,6 +20,10 @@ export interface DecisionRecord {
   estimatedCostUsd?: number;
   estimatedLatencyMs?: number;
   confidence?: number;
+  /** ADR 0079 — the observation the decider saw (the `s` in `(s, a, r)`). */
+  context?: Record<string, unknown>;
+  /** ADR 0079 — which policy chose, and with what probability. */
+  policy?: { id: string; version: string; propensity?: number };
   executionId: string;
   sequence: number;
   timestamp: number;
@@ -47,6 +51,8 @@ function decisionFrom(e: EventEnvelope): DecisionRecord {
     ...(p.estimatedCostUsd !== undefined && { estimatedCostUsd: p.estimatedCostUsd }),
     ...(p.estimatedLatencyMs !== undefined && { estimatedLatencyMs: p.estimatedLatencyMs }),
     ...(p.confidence !== undefined && { confidence: p.confidence }),
+    ...(p.context !== undefined && { context: p.context }),
+    ...(p.policy !== undefined && { policy: p.policy }),
     executionId: e.executionId,
     sequence: e.sequence,
     timestamp: e.timestamp,

@@ -567,6 +567,40 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
+  packages/learning:
+    dependencies:
+      '@loom/analytics':
+        specifier: workspace:*
+        version: link:../analytics
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../event-runtime
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../snapshot-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../workflow-runtime
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+
   packages/live-query:
     dependencies:
       '@loom/core':
@@ -1950,6 +1984,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../../packages/event-runtime
+      '@loom/learning':
+        specifier: workspace:*
+        version: link:../../packages/learning
       '@loom/llm':
         specifier: workspace:*
         version: link:../../packages/llm

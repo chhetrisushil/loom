@@ -13,6 +13,7 @@ import { cmdGen, cmdNew } from "./gen";
 import { serveInspector } from "./inspector";
 import { cmdIntrospect } from "./introspect";
 import { cmdCompat, cmdKernelManifest } from "./kernel";
+import { cmdLearnEval, cmdLearnReport } from "./learn";
 import { cmdLintClaimCheck } from "./lintClaimCheck";
 import { cmdOptimize } from "./optimize";
 import { cmdPluginCheck, cmdPluginNew, cmdPluginSeams } from "./plugin";
@@ -83,6 +84,9 @@ const USAGE = `loom — project-local commands for a Loom app
   loom profile --db <path> <executionId>          flame graph + latency breakdown
   loom introspect --db <path> <executionId> [--graph N]  execution/task/decision/resource graphs
   loom optimize --db <path> <executionId>         advisory optimization report (recommendations)
+  loom learn report --db <path> [executionId]     trajectories, per-arm rewards, learning coverage
+  loom learn eval --db <path> --policy <module> [--min-steps N] [executionId]
+                                                  shadow-evaluate a candidate policy on real logs
   loom kernel-manifest [--json] [--emit-docs <dir>]  kernel version + maturity manifest
   loom compat --abi <v> --event-schema <v> [...]  validate a deployment's contract versions
   loom debug --db <path> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
@@ -188,6 +192,27 @@ async function main(argv: string[]): Promise<number> {
       const executionId = requirePositional(positionals, "executionId");
       console.log(await cmdOptimize(flags.db!, executionId));
       return 0;
+    }
+    case "learn": {
+      const sub = requirePositional(positionals, "report|eval");
+      requireFlag(flags, "db");
+      if (sub === "report") {
+        console.log(await cmdLearnReport(flags.db!, positionals[1]));
+        return 0;
+      }
+      if (sub === "eval") {
+        requireFlag(flags, "policy");
+        const { text, ok } = await cmdLearnEval(flags.db!, flags.policy!, {
+          ...(positionals[1] !== undefined && { executionId: positionals[1] }),
+          ...(flags["min-steps"] !== undefined && {
+            minSteps: Number.parseInt(flags["min-steps"], 10),
+          }),
+        });
+        console.log(text);
+        return ok ? 0 : 1;
+      }
+      console.error(`unknown subcommand "learn ${sub}" — expected report|eval`);
+      return 2;
     }
     case "kernel-manifest": {
       console.log(

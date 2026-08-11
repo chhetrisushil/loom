@@ -1013,3 +1013,78 @@ export function runReadModelStoreConformance(
     });
   });
 }
+
+/**
+ * Prove a {@link Policy} (`@loom/learning`) conforms to the SPI (ADR 0080).
+ *
+ * The kit pins the *shape and safety* of a policy, never its quality — what it
+ * chooses is the plugin's business, and a policy that chooses badly is still
+ * conformant. What is NOT negotiable is the propensity contract: a policy that
+ * misreports `P(chosen | context)` silently biases every off-policy evaluation
+ * computed from its logs, and nothing downstream can detect it. That is why the
+ * distribution check below exists.
+ *
+ * `contexts` should be representative observations your policy will really see.
+ */
+export function runPolicyConformance<A>(
+  factory: () => {
+    id: string;
+    version: string;
+    select(
+      context: Record<string, unknown>,
+      actions: readonly A[]
+    ): { action: A; propensity?: number };
+  },
+  actions: readonly A[],
+  contexts: readonly Record<string, unknown>[],
+  label = "Policy"
+): void {
+  if (actions.length < 2) throw new Error("runPolicyConformance: need at least 2 actions");
+  if (contexts.length === 0) throw new Error("runPolicyConformance: need at least 1 context");
+  const first = contexts[0] as Record<string, unknown>;
+
+  describe(`${label} conformance (Policy SPI)`, () => {
+    it("declares a non-empty id and version", () => {
+      const p = factory();
+      expect(typeof p.id).toBe("string");
+      expect(p.id.length).toBeGreaterThan(0);
+      expect(typeof p.version).toBe("string");
+      expect(p.version.length).toBeGreaterThan(0);
+    });
+
+    it("always chooses from the action set it was given", () => {
+      const p = factory();
+      for (const context of contexts) {
+        expect(actions).toContain(p.select(context, actions).action);
+      }
+    });
+
+    it("returns the only action when there is exactly one", () => {
+      const only = [actions[0] as A];
+      expect(factory().select(first, only).action).toBe(only[0]);
+    });
+
+    it("reports a propensity in (0,1] when it reports one at all", () => {
+      const p = factory();
+      for (const context of contexts) {
+        const { propensity } = p.select(context, actions);
+        if (propensity === undefined) continue;
+        expect(propensity).toBeGreaterThan(0);
+        expect(propensity).toBeLessThanOrEqual(1);
+      }
+    });
+
+    it("does not mutate the context or the action set it is handed", () => {
+      const context = { ...first };
+      const given = [...actions];
+      factory().select(context, given);
+      expect(context).toEqual(first);
+      expect(given).toEqual([...actions]);
+    });
+
+    it("survives an unfamiliar action without throwing (new arms appear in production)", () => {
+      const p = factory();
+      expect(() => p.select(first, actions)).not.toThrow();
+    });
+  });
+}

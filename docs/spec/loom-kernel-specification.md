@@ -76,7 +76,7 @@ load-bearing, plus the global guardrails that gate every additive capability:
   `(state, event) => state`; a `__proto__` container key MUST be rejected (fold hardening).
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
-  the pinned type set MUST change together. The current version is **1.17.0** — after the
+  the pinned type set MUST change together. The current version is **1.18.0** — after the
   K10.1/T3 audit facts (1.13.0/1.14.0), the perpetual-agents series added two additive MINORs
   with **no new event kinds**: 1.15.0 extends `EXECUTION_MIGRATED` with an optional
   `migratedInput` payload field (K11.5 contract-versioned state migration — the fold replaces
@@ -85,7 +85,12 @@ load-bearing, plus the global guardrails that gate every additive capability:
   multi-gate suspend fix, ADR 0057). The GenUI/DE series added 1.17.0 (ADR 0060, again no new
   event kind): optional `channel`/`payload` fields on `STEP_FAILED` — a **typed failure** on a
   contract-declared error channel, folded into the frame as `errorChannel`/`errorPayload`.
-  Logs that never migrate state, resume twice, or fail typed replay byte-identically.
+  The learning substrate added 1.18.0 (ADR 0079, no new event kind): optional `context` and
+  `policy` fields on `DECISION_RECORDED` — the observation a policy saw and the policy that
+  saw it (with the propensity that makes unbiased off-policy evaluation possible), folded
+  verbatim into `_decisions` and never read back by `getDecision`.
+  Logs that never migrate state, resume twice, fail typed, or record a policy replay
+  byte-identically.
 
 ### 4.1 Typed failure channels (ADR 0060)
 
