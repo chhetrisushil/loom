@@ -169,16 +169,27 @@ why it belongs in the L1 payload rather than in a later package.
 
 ## 6. What to build, ranked by value / cost
 
-### T1 — Make the existing loop correct
+### T1 — Make the existing loop correct — **DONE** ([ADR 0078](../adr/0078-exploration-in-the-routing-seam.md))
 
 Small, pure win. **Worth doing regardless of the RL decision.**
 
-- Exploration wrappers in `@loom/reasoning`: `epsilonGreedy(policy, ε)`,
-  `thompson(stats)`, `ucb1(stats)`. ~60 lines.
-- `outcomeAnalytics` already returns `count` — have `rankedRouter` respect a
-  `minSamples` floor and fall back to `tagRouter` below it.
-- Recency decay in `rankFromOutcomes`. Non-stationarity is real: model quality
-  changes under you when a provider ships a new checkpoint.
+- Exploration in `@loom/reasoning`: `ucb1(stats)` and `epsilonGreedy(inner, {
+  epsilon, rng })`. **Thompson was dropped** — it needs Bernoulli or bounded
+  rewards and `score` is unbounded by contract, while UCB1 covers the same need
+  *deterministically*, which is worth more in a replay-first runtime than the
+  marginal empirical edge.
+- `outcomeAnalytics` already returns `count` — `rankedRouter` now takes
+  `ArmStats[]` and respects a `minSamples` floor, falling back to `tagRouter`
+  below it. Setting the floor without counts throws rather than silently
+  no-opping.
+- Recency decay in `outcomeAnalytics`/`rankFromOutcomes` via `halfLifeMs`, with
+  `now` defaulting to the newest outcome in the log rather than the wall clock,
+  so a ranking stays a pure function of its input. Non-stationarity is real:
+  model quality changes under you when a provider ships a new checkpoint.
+
+`rankedRouter` stays pure-exploit **by default** — implicit exploration would
+silently change every existing deployment, which is the same class of mistake
+being fixed. Non-collapse is available and documented, not automatic.
 
 ### T2 — The kernel touch: make decisions learnable
 
@@ -280,4 +291,6 @@ top of this loop.
 - One small additive kernel field unlocks contextual learning; everything else
   stays outward.
 - Fix the greedy router first — it is a standalone win and a cautionary example.
+  **Done** ([ADR 0078](../adr/0078-exploration-in-the-routing-seam.md)); T2–T4
+  remain unbuilt.
 - Keep the math outside the framework.
