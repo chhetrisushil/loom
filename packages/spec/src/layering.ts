@@ -39,6 +39,10 @@ export const SPI_PACKAGES: readonly string[] = [
   "@loom/registry",
   "@loom/telemetry",
   "@loom/dispatcher",
+  // Defines the `Policy` SPI (ADR 0080). Listed so `loom plugin check` holds a
+  // policy plugin to the same peer-dependency rule as every other seam — without
+  // it the check passes vacuously for the one seam consumed from flow code.
+  "@loom/learning",
 ];
 
 /** Packages that must stay free of any `plugins/*` dependency (kernel ∪ SPI). */

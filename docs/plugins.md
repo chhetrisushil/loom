@@ -182,8 +182,16 @@ loom plugin new store my-backend --first-party # first-party: ./plugins/my-backe
 ```
 
 Seams: `store`, `dispatcher`, `telemetry`, `middleware`, `timer`, `projection`, `worker`, `llm`,
-`authorizer`. Then implement
+`authorizer`, `policy`. Then implement
 the SPI, un-comment the conformance test, and run your formatter.
+
+**`policy` is the one seam that is not a `defineConfig` contributor.** Every other seam is
+passed to the composition root; a `Policy` ([ADR 0080](adr/0080-learning-substrate.md)) is
+consumed from *flow code* via `decideWithPolicy(ctx, id, policy, context, actions)`. That is
+deliberate — the runtime never learns a policy exists, so a learned choice can only reach a run
+through `ctx.decide`, where it is recorded, replayable and auditable. Everything else about
+authoring one is identical: same naming, same peer-dependency rule, same conformance
+requirement (`runPolicyConformance`).
 
 Validate it against the contract at any time:
 

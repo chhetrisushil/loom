@@ -63,8 +63,27 @@ describe("pluginFiles", () => {
       "worker",
       "llm",
       "authorizer",
+      "policy",
     ]);
     const text = listSeams();
     for (const k of SEAM_KEYS) expect(text).toContain(k);
+  });
+
+  it("scaffolds a policy plugin wired to the conformance kit", () => {
+    const files = pluginFiles("policy", "foo", { firstParty: false });
+    const index = files["loom-plugin-foo/src/index.ts"]!;
+    expect(index).toContain("implements Policy<A>");
+    expect(index).toContain("propensity");
+    expect(files["loom-plugin-foo/src/index.test.ts"]).toContain("runPolicyConformance");
+    expect(files["loom-plugin-foo/package.json"]).toContain("@loom/learning");
+  });
+
+  it("tells a policy author it is NOT a defineConfig seam", () => {
+    // Every other seam wires through the composition root; this one is consumed
+    // from flow code. Saying "defineConfig" here would send authors looking for a
+    // config key that does not exist.
+    const text = listSeams();
+    expect(text).toMatch(/policy[\s\S]*NOT defineConfig/);
+    expect(text).toContain("decideWithPolicy(");
   });
 });
