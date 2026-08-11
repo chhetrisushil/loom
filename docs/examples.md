@@ -64,6 +64,21 @@ pnpm --filter @loom/db-observability start
 - **`cloud-command-center`** — a command-center built with the `@loom/compiler`
   `loomPlugin()` (build-time `handler$` extraction + resumability).
 
+### Learning
+
+- **`learning-router`** — the **continuous-learning loop end to end**, and the honest
+  reasons it usually fails. A triage flow routes each ticket through a **third-party**
+  LinUCB policy via `decideWithPolicy` (recording `context` + `propensity`, ADR 0079);
+  the offline half mines the log with `trajectories`, trains a candidate, evaluates it
+  against **real traffic it never served** (SNIPS, `evaluatePolicy`), and runs
+  `promotionGate` (ADR 0080). Two moments carry the example: the gate **refuses a +0.37
+  lift** because it rests on ~9 effectively-independent steps, and passes only after a
+  canary round pools more evidence; and the same executions logged with a bare
+  `ctx.decide` yield `evaluated: 0` — they still receive *terminal* credit, so the steps
+  look scored while being attributable to nothing. Delivered quality goes 0.53 → 0.83 on
+  identical tickets. Headless, deterministic (seeded PRNG). **Needs the `../loom-plugins`
+  checkout too**, for `loom-plugin-linucb`.
+
 ### UI / generation
 
 - **`a2ui-dashboard`**, **`angular-command-center`** — renderer/UI surface variants
