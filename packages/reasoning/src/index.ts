@@ -1,5 +1,12 @@
 export { ReasoningRuntime } from "./ReasoningRuntime";
-export { tagRouter, fixedRouter, rankedRouter } from "./router";
+export { tagRouter, fixedRouter, rankedRouter, ucb1, epsilonGreedy } from "./router";
+export type {
+  ArmStats,
+  EpsilonGreedyOptions,
+  RankedRouterOptions,
+  Rankings,
+  Ucb1Options,
+} from "./router";
 export { stopReasonConfidence, validatorConfidence, constantConfidence } from "./confidence";
 export type {
   ConfidenceSignal,

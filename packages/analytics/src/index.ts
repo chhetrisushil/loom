@@ -19,7 +19,12 @@ export type {
   RuntimeRecommendations,
 } from "./intelligence";
 export { recordOutcome, outcomeAnalytics, rankFromOutcomes } from "./outcomes";
-export type { Outcome, OutcomeSink, OutcomeStats } from "./outcomes";
+export type {
+  Outcome,
+  OutcomeAnalyticsOptions,
+  OutcomeSink,
+  OutcomeStats,
+} from "./outcomes";
 export {
   decisionRecords,
   outcomeRecords,

@@ -259,13 +259,17 @@ Because the signal is just a `ConfidenceSignal` interface, you can bring log-pro
 
 ## R5 — Routers
 
-The `Router` interface decides the **initial** route (elevation then walks the tier ladder). Three implementations ship (`packages/reasoning/src/router.ts`):
+The `Router` interface decides the **initial** route (elevation then walks the tier ladder). Five implementations ship (`packages/reasoning/src/router.ts`):
 
 - **`tagRouter`** (the default) — **cheap-first**: the lowest-tier route whose `tags` include the request's `strategy`, else the lowest-tier route overall. This is what makes the ladder start at Gemma and climb only under pressure.
 - **`fixedRouter(modelId)`** — always selects a specific model id; throws if it isn't in the route set. Handy for tests and for pinning a strategy to one model.
-- **`rankedRouter(rankings)`** *(M10, learned)* — a self-optimizing router. Given a ranking (e.g. from `@loom/analytics` `rankModels`, mined from historical logs), it prefers the highest-ranked route that exists and **falls back to `tagRouter` (cheap-first) for unranked requests**. Because it is consulted inside `reason()` through `ctx.decide`, its learned choice is recorded as a durable decision (P9) — auditable and override-able, never silently autonomous (P10). This is the seam where the system gets smarter run-to-run without breaking any past replay; see the **intelligence / self-optimization doc** for how rankings are mined.
+- **`rankedRouter(rankings, opts?)`** *(M10, learned)* — a self-optimizing router. Given a ranking (e.g. from `@loom/analytics` `rankModels`/`outcomeAnalytics`, mined from historical logs), it prefers the highest-ranked route that exists and **falls back to `tagRouter` (cheap-first) for unranked requests**. Because it is consulted inside `reason()` through `ctx.decide`, its learned choice is recorded as a durable decision (P9) — auditable and override-able, never silently autonomous (P10). This is the seam where the system gets smarter run-to-run without breaking any past replay; see the **intelligence / self-optimization doc** for how rankings are mined.
 
-All three satisfy the same `select(req, routes) => ModelRoute` contract, so swapping routing policy is a one-line config change (`ReasoningRuntimeConfig.router`).
+  ⚠️ **Pure exploit.** It never tries an arm to learn about it, so a ranking mined from a log it produced narrows over time — the arms it stops choosing stop producing outcomes. Pass `ArmStats[]` (what `outcomeAnalytics` returns) with `{ minSamples }` so thin evidence can't outvote thick evidence, and reach for one of the two below if you want the loop to keep learning ([ADR 0078](../adr/0078-exploration-in-the-routing-seam.md)).
+- **`ucb1(stats, opts?)`** *(recommended for a live loop)* — scores each arm `mean + c·sqrt(2·ln N / n)`. An unsampled arm scores `+Infinity` and is guaranteed a trial; a lucky `n=1` arm can't pin the router because its rivals keep their own large bonus until they're tried too. **Deterministic — no RNG**, so the same evidence always yields the same route.
+- **`epsilonGreedy(inner, { epsilon, rng? })`** — with probability `epsilon`, ignore `inner` and sample a route uniformly. The simple escape hatch for any exploit-only router; `rng` is injectable for tests and DST runs.
+
+All five satisfy the same `select(req, routes) => ModelRoute` contract, so swapping routing policy is a one-line config change (`ReasoningRuntimeConfig.router`).
 
 ## R6 — Decision logging (P9) & re-basing intent/planner
 
