@@ -45,6 +45,7 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
 | `a2a-mesh`, `agent-network` | Agent-to-agent mesh / networking | `@loom/plugin-a2a`, `A2AEffect` |
 | `a2ui-dashboard`, `angular-command-center` | UI / renderer surface variants | `@loom/agent-surface`, renderers |
 | `a2ui-egress` | Project a surface onto the Google A2UI wire protocol | `@loom/plugin-a2ui` `A2UISurfaceBridge`, `ingestAction` |
+| `learning-router` | The continuous-learning loop end to end (online → offline → gate) | `@loom/learning` `decideWithPolicy`/`trajectories`/`evaluatePolicy`/`promotionGate`, 3P `loom-plugin-linucb` |
 | `appgen-brownfield`, `appgen-models` | AI-driven app generation | `@loom/appgen` |
 
 ## Working in this repo
