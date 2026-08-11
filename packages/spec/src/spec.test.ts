@@ -196,6 +196,12 @@ const NOT_A_CAPABILITY = new Set([
   // router). Grades nothing the registry tracks, for the same reason ADR 0018 —
   // the learning seam it amends — is listed here.
   "0078",
+  // 0079/0080 — the learning substrate. 0079 is two descriptive payload fields on
+  // an existing event (graded by the event-schema contract, not a capability);
+  // 0080 is a read-only 1P package plus a 3P policy, i.e. placement, not a runtime
+  // subsystem. Same reasoning as 0018/0030 above.
+  "0079",
+  "0080",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

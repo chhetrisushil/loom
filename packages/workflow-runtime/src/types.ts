@@ -34,6 +34,34 @@ export interface DecideOptions {
   estimatedLatencyMs?: number;
   /** Confidence in the choice (convention: 0–1). */
   confidence?: number;
+  /**
+   * ADR 0079 — the OBSERVATION the decider saw: the features a policy keyed its
+   * choice on. Without it the log records only `(action, reward)` and the most
+   * anything can learn is a global per-key mean; with it the log is a genuine
+   * `(state, action)` dataset and a CONTEXTUAL policy becomes learnable offline.
+   *
+   * Descriptive like every other D1 field — folded verbatim, never read back by
+   * `getDecision`, so `choice` remains the sole replay input (P9 untouched).
+   * Keep it small and JSON-serializable: it is written to the durable log on
+   * every decision.
+   */
+  context?: Record<string, unknown>;
+  /**
+   * ADR 0079 — WHICH policy produced the choice, and how likely it was to.
+   * `propensity` (the probability this policy assigned the chosen action) is what
+   * makes unbiased off-policy evaluation possible later; it cannot be
+   * reconstructed after the fact, so an exploring policy must log it at decision
+   * time or its data is only ever usable for agreement counting.
+   */
+  policy?: DecisionPolicyStamp;
+}
+
+/** Provenance for a policy-produced decision (ADR 0079). */
+export interface DecisionPolicyStamp {
+  id: string;
+  version: string;
+  /** P(chosen action | context) under the policy that chose it. Convention: (0,1]. */
+  propensity?: number;
 }
 
 // Loom 2.0: the execution-facing context. `execute` is the generalized durable

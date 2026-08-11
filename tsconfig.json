@@ -198,6 +198,9 @@
     },
     {
       "path": "plugins/sentinel"
+    },
+    {
+      "path": "packages/learning"
     }
   ]
 }

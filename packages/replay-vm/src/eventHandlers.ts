@@ -273,6 +273,11 @@ const handlers: Record<string, Handler> = {
       estimatedCostUsd?: number;
       estimatedLatencyMs?: number;
       confidence?: number;
+      // ADR 0079 — the observation the policy saw and which policy saw it. Same
+      // descriptive contract as the fields above: folded verbatim, never a replay
+      // input. Absence = legacy (or a decision no policy produced).
+      context?: Record<string, unknown>;
+      policy?: { id: string; version: string; propensity?: number };
     };
     assertSafeKey(payload.decisionId);
     const existing = (state.variables._decisions as Record<string, unknown> | undefined) ?? {};
@@ -294,6 +299,8 @@ const handlers: Record<string, Handler> = {
               estimatedLatencyMs: payload.estimatedLatencyMs,
             }),
             ...(payload.confidence !== undefined && { confidence: payload.confidence }),
+            ...(payload.context !== undefined && { context: payload.context }),
+            ...(payload.policy !== undefined && { policy: payload.policy }),
           },
         },
       },
@@ -769,7 +776,13 @@ export function getHandler(eventType: string): Handler | undefined {
 //   ADR 0060 — typed failure channels). Folded into frame `errorChannel`/`errorPayload`;
 //   presence makes the execute seam SUBSTITUTE the recorded failure on replay instead of
 //   re-executing the step. A log that never fails typed replays byte-identically.
-export const EVENT_SCHEMA_VERSION = "1.17.0";
+// 1.18.0: additive optional DECISION_RECORDED payload fields `context`, `policy` (T2,
+//   ADR 0079 — the observation a policy saw and the policy that saw it, incl. the
+//   propensity that makes unbiased off-policy evaluation possible). Same descriptive
+//   contract as the 1.10.0 D1 fields: folded verbatim into `_decisions`, NEVER read by
+//   getDecision, so `choice` stays the sole replay input. A log whose decisions carry
+//   neither field replays byte-identically.
+export const EVENT_SCHEMA_VERSION = "1.18.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
