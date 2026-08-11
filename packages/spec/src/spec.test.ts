@@ -192,6 +192,10 @@ const NOT_A_CAPABILITY = new Set([
   "0071",
   "0072",
   "0073",
+  // A routing-policy fix inside the advisory plane (exploration for the learned
+  // router). Grades nothing the registry tracks, for the same reason ADR 0018 —
+  // the learning seam it amends — is listed here.
+  "0078",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {
