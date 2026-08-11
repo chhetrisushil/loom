@@ -14,7 +14,11 @@ interface SeamDef {
   /** CLI key, e.g. "store". */
   key: string;
   title: string;
-  /** How it wires into `defineConfig` (shown to the author). */
+  /**
+   * How an app wires it, shown to the author. Usually a `defineConfig` key; a
+   * seam whose implementation is consumed from flow code rather than from the
+   * composition root says so instead of implying a config key that doesn't exist.
+   */
   wiring: string;
   /** SPI packages the plugin depends on (besides `@loom/core`). */
   spiDeps: string[];
@@ -577,6 +581,81 @@ const SEAMS: Record<string, SeamDef> = {
         '      stepId: "s",',
         "    });",
         '    expect(typeof d.allowed).toBe("boolean");',
+        "  });",
+        "});",
+        "",
+      ].join("\n");
+    },
+  },
+
+  policy: {
+    key: "policy",
+    title: "Learned policy (choose an action from an observation)",
+    // The one seam that is NOT a defineConfig contributor. A policy is consumed
+    // from flow code, deliberately: ADR 0080 keeps the runtime unaware that a
+    // policy exists, so a learned choice can only ever reach a run through
+    // `ctx.decide` — recorded, replayable, auditable.
+    wiring:
+      "decideWithPolicy(ctx, id, new <Name>Policy(), context, actions)  — flow code, NOT defineConfig",
+    spiDeps: ["@loom/learning"],
+    conformance: ["runPolicyConformance"],
+    index: (name) => {
+      const P = pascal(name);
+      return [
+        'import type { Policy, PolicyChoice, PolicyContext } from "@loom/learning";',
+        "",
+        "/**",
+        " * A `Policy` — given an observation, choose one of the offered actions.",
+        " *",
+        " * Consumed from flow code via `decideWithPolicy(ctx, id, policy, context, actions)`,",
+        " * which records the choice as a durable decision along with the context and the",
+        " * propensity. There is no `defineConfig` key: the runtime never learns a policy",
+        " * exists (ADR 0080).",
+        " *",
+        " * Two contracts to honour:",
+        " *  - `select` must be PURE and cheap. It runs before `ctx.decide`, so on replay it",
+        " *    is called and its answer discarded.",
+        " *  - `propensity` is `P(chosen | context)` and must be EXACT. Nothing downstream",
+        " *    can detect a misreported one, and it biases every later off-policy estimate.",
+        " *    Return 1 only if this policy is genuinely deterministic — a log written that",
+        " *    way holds no counterfactuals and can never evaluate the next candidate.",
+        " */",
+        `export class ${P}Policy<A = string> implements Policy<A> {`,
+        `  readonly id = "${name}";`,
+        "  /** Bump when you retrain. A policy object is one immutable snapshot. */",
+        '  readonly version = "1";',
+        "",
+        "  select(context: PolicyContext, actions: readonly A[]): PolicyChoice<A> {",
+        "    if (actions.length === 0) {",
+        `      throw new Error("${P}Policy: no actions to choose from");`,
+        "    }",
+        "    // Replace with your algorithm. Train offline from `trajectories(events)`",
+        "    // and ship the result as a NEW version.",
+        "    void context;",
+        "    return { action: actions[0] as A, propensity: 1 };",
+        "  }",
+        "}",
+        "",
+      ].join("\n");
+    },
+    test: (name) => {
+      const P = pascal(name);
+      return [
+        'import { runPolicyConformance } from "@loom/conformance";',
+        'import { describe, expect, it } from "vitest";',
+        `import { ${P}Policy } from "./index";`,
+        "",
+        "// The SPI kit: proves the shape and the propensity contract, never the quality",
+        "// of what you choose. Pass observations representative of what you will see.",
+        "runPolicyConformance<string>(",
+        `  () => new ${P}Policy<string>(),`,
+        '  ["a", "b", "c"],',
+        "  [{ feature: 0 }, { feature: 1 }]",
+        ");",
+        "",
+        `describe("${P}Policy", () => {`,
+        '  it("chooses from the offered actions", () => {',
+        `    expect(["a", "b"]).toContain(new ${P}Policy<string>().select({}, ["a", "b"]).action);`,
         "  });",
         "});",
         "",
