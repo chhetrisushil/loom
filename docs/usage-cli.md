@@ -264,6 +264,20 @@ npx loom verify --config dist/app.js
 npx loom verify --config dist/app.js --manifest loom-manifest.json
 ```
 
+Most rules need no configuration. One does: **`effect-class`** (ADR 0084) only runs when the app
+declares its class vocabulary, because the taxonomy is a product decision rather than loom's —
+
+```ts
+defineConfig({
+  checks: { verify: { mode: "error", effectClasses: ["read-only", "local-write", "external-write", "irreversible"] } },
+});
+```
+
+— and each flow declares its ceiling with `flow$({ effectClass })`, each step the class of the
+effect it performs with `step$({ effectClass })`. Omit the vocabulary and the rule is a no-op.
+A flow that declares a ceiling but reaches unclassified steps is reported as **only partially
+verified** rather than passing clean.
+
 > If the config's own `defineConfig` sets `checks: { verify: "error" }`, requiring the module throws at boot; the CLI catches that and prints it. This command exists for on-demand verification **independent** of the config's own mode.
 
 ### `loom lint claim-check [--dir .]`
