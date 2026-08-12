@@ -207,6 +207,8 @@ const NOT_A_CAPABILITY = new Set([
   // same reason the other rejection/deferral ADRs are listed here.
   "0081",
   "0082",
+  // 0083 — a review rule for 1P surface growth. No runtime subsystem to grade.
+  "0083",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

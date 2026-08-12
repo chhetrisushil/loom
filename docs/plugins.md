@@ -25,6 +25,22 @@ A Loom plugin:
 5. ships **conformance tests** for each SPI it implements (`@loom/conformance`);
 6. is **sugar, never a gate** — everything it does, you can also hand-wire into `defineConfig`.
 
+## Should it exist at all?
+
+The contract above says what a plugin *is*; [ADR 0043](adr/0043-plugin-packaging-and-1p-3p-separation.md)'s
+litmus says whether a thing is a plugin or belongs in the kernel. Neither asks whether it should
+be **first-party surface**, which is a separate question with its own rule:
+
+> **The second-consumer rule** ([ADR 0083](adr/0083-second-consumer-rule.md)) — before a
+> workload-derived requirement becomes a 1P package, a new `@loom/verify` rule, a new seam, or an
+> exported *vocabulary*, name a second **unrelated** consumer of the same mechanism. If you
+> cannot, it is application code: land it in the consuming app (or `loom-examples`) and say what
+> would change the verdict.
+
+It gates 1P surface only — a 3P plugin is its author's business — and it is applied **in review,
+against a claim written in the proposing ADR**, not by the author's own judgement. "Obviously
+generic" is a missing answer, not a passing one.
+
 ## First-party (1P) vs third-party (3P)
 
 The split is **organisational, not mechanical** — both use the identical contract and the kernel
