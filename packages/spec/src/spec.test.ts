@@ -202,6 +202,11 @@ const NOT_A_CAPABILITY = new Set([
   // subsystem. Same reasoning as 0018/0030 above.
   "0079",
   "0080",
+  // 0081/0082 — placement verdicts on the Companion workload: a rejected promotion
+  // and a deferral-behind-evidence. Neither ships a runtime subsystem to grade, the
+  // same reason the other rejection/deferral ADRs are listed here.
+  "0081",
+  "0082",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {
