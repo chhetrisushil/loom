@@ -62,7 +62,11 @@ export function parseRedact(flag: string | undefined): string[] {
         .filter(Boolean);
 }
 
-const USAGE = `loom — project-local commands for a Loom app
+/**
+ * The usage summary — also the CLI's reference contract. `docs/usage-cli.md` reproduces this
+ * block verbatim and a test asserts the two match, so a new command cannot land undocumented.
+ */
+export const USAGE = `loom — project-local commands for a Loom app
 
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
   loom new   <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app] scaffold a file

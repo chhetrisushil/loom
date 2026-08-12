@@ -12,12 +12,17 @@ The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`
 
 1. [The command set](#the-command-set)
 2. [Scaffold & wire: `new`, `gen`, `appgen`](#scaffold--wire-new-gen-appgen)
-3. [Validate before you run: `check`](#validate-before-you-run-check)
+3. [Validate before you run: `check`, `verify`, `lint`](#validate-before-you-run-check-verify-lint)
 4. [Observe a run: `logs`, `debug`, `inspect`](#observe-a-run-logs-debug-inspect)
-5. [Ship safely: `eval`, `deploy check`](#ship-safely-eval-deploy-check)
-6. [Cheat sheet](#cheat-sheet)
-7. [Exit codes & scripting](#exit-codes--scripting)
-8. [Programmatic use](#programmatic-use)
+5. [Analyze a run: `profile`, `introspect`, `optimize`](#analyze-a-run-profile-introspect-optimize)
+6. [Learn from the log: `learn report`, `learn eval`](#learn-from-the-log-learn-report-learn-eval)
+7. [Ship safely: `eval`, `deploy check`](#ship-safely-eval-deploy-check)
+8. [Data protection: `retention run`, `sweep content`, `compliance report`](#data-protection-retention-run-sweep-content-compliance-report)
+9. [Deployment contracts: `kernel-manifest`, `compat`](#deployment-contracts-kernel-manifest-compat)
+10. [Author a plugin: `plugin …`](#author-a-plugin-plugin-)
+11. [Cheat sheet](#cheat-sheet)
+12. [Exit codes & scripting](#exit-codes--scripting)
+13. [Programmatic use](#programmatic-use)
 
 ---
 
@@ -29,30 +34,48 @@ The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`
 loom — project-local commands for a Loom app
 
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
-  loom new   <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app]  scaffold a file (folder convention)
-  loom appgen <intent> [--dir .] [--dry-run] [--check] [--model <spec>]  NL → new project or brownfield edits
+  loom new   <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app] scaffold a file
+  loom plugin new <seam> <name> [--first-party] [--dir .]  scaffold a plugin package
+  loom plugin check [--dir .] [--publish]         validate a plugin (--publish adds npm-readiness)
+  loom plugin try --module <path> [--preset <name>] [--options <json>]  run a store plugin end-to-end
+  loom plugin search <term>                       find plugins on npm (keyword loom-plugin)
+  loom plugin seams                               list the seams a plugin can target
+  loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]  NL → new project or edits
+                                                  (--dry-run previews; --check typechecks after apply)
+  loom appgen ... --model <spec> [--model-big <spec>]  plan with a model of your choice
+                                                  (anthropic:<m> / openai:<m> / gemini:<m> / a .gguf path)
+  loom appgen --from-spec <file> [--dir .]        replay a .loom/appgen/<ts>.spec.json (no model)
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
-  loom verify --config <module> [--manifest <path>]  pre-flight runtime verification (@loom/verify); the compiler manifest's ADR 0061 loopIdentity findings are auto-injected (explicit --manifest, or loom-manifest.json beside the config / in the cwd)
+  loom lint claim-check [--dir .]                 CC-5: flag claim-check reach-through inside flows
+  loom verify --config <module> [--manifest <path>]  pre-flight runtime verification (@loom/verify)
+                                                  (auto-reads loom-manifest.json loopIdentity findings, ADR 0061)
   loom logs  --db <path> <executionId> [--redact a,b]   print the event timeline
-  loom debug --db <path> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
   loom profile --db <path> <executionId>          flame graph + latency breakdown
   loom introspect --db <path> <executionId> [--graph N]  execution/task/decision/resource graphs
-  loom optimize --db <path> <executionId>         advisory optimization report
+  loom optimize --db <path> <executionId>         advisory optimization report (recommendations)
+  loom learn report --db <path> [executionId]     trajectories, per-arm rewards, learning coverage
+  loom learn eval --db <path> --policy <module> [--min-steps N] [executionId]
+                                                  shadow-evaluate a candidate policy on real logs
+  loom kernel-manifest [--json] [--emit-docs <dir>]  kernel version + maturity manifest
+  loom compat --abi <v> --event-schema <v> [...]  validate a deployment's contract versions
+  loom debug --db <path> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
   loom eval  --dir <path>                         replay golden logs vs expectations
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
-  loom lint claim-check [--dir .]                 CC-5: flag claim-check reach-through inside flows
   loom retention run --db <path> --snap <path> [--ttl ms] [--apply]  reclaim aged terminal executions
-  loom sweep content --db <path> --content <path> [--archive-db <path>] [--pin KIND,KIND] [--ttl ms] [--apply]  K10.6 pinned blob sweep (dry-run default)
+  loom sweep content --db <path> --content <path> [--archive-db <path>] [--pin KIND,KIND] [--ttl ms] [--apply]  K10.6 pinned blob sweep
   loom compliance report --db <path> --subject-path <p> [--tenant-path <p>]  data-subject inventory
   loom inspect --db <path> [--port N]             web inspector (timeline + slider)
+
+New project?  →  npm create loom-app
 ```
 
 > Data-protection commands: `--redact a,b` masks output dot-paths from `logs`/`debug` (K10-R6);
-> `retention run` (dry-run by default, `--apply` to reclaim) and `compliance report` (subject
-> inventory) sweep the store via the `listExecutions` SPI. `kernel-manifest` and `compat`
-> (deployment-contract tooling) and `plugin …` (plugin authoring) have their own sections below.
+> `retention run`, `sweep content` (both dry-run by default, `--apply` to reclaim) and
+> `compliance report` (subject inventory) sweep the store via the `listExecutions` SPI.
 
-There are no global flags — each command declares its own. The recurring ones are `--db <path>` (a SQLite event-store file), `--dir <path>` (a directory, defaulting to `app` for `gen`/`new`), and `--at <N>` (a sequence number). An unknown command prints the usage to stderr and exits `1`.
+There are no global flags — each command declares its own. The recurring ones are `--db <path>` (a SQLite event-store file), `--dir <path>` (a directory, defaulting to `app` for `gen`/`new` and `.` elsewhere), and `--at <N>` (a sequence number). An unknown command prints the usage to stderr and exits `1`.
+
+Several commands are **two words** — the first positional selects the subcommand: `deploy check`, `lint claim-check`, `retention run`, `sweep content`, `compliance report`, `learn report|eval`, and `plugin new|check|try|search|seams`.
 
 > **The `--db` commands need SQLite storage.** `logs`, `debug`, and `inspect` read a durable log, so your app must persist one. Wire `storage: { kind: "sqlite", dir: ".loom" }` in [`defineConfig`](usage.md#step-3--wire-the-app-with-defineconfig) — the event store is then at `.loom/events.db`. In-memory apps leave nothing to inspect.
 
@@ -68,13 +91,13 @@ Scaffolds a single file from a template.
 
 | Argument / flag | Required | Default | Meaning |
 |---|---|---|---|
-| `<kind>` | yes | — | `flow`, `agent`, `tool`, `skill`, `schedule`, `memory`, or `projection` |
+| `<kind>` | yes | — | `flow`, `agent`, `tool`, `skill`, `schedule`, `memory`, `projection`, or `sentinel` (any other kind is an error) |
 | `<name>` | yes | — | the human name, e.g. `greet` |
 | `--dir` | no | `app` | base directory the subfolders go under |
 
 ```bash
 npx loom new flow greet          # → creates app/flows/greet/flow.ts
-npx loom new sentinel pg-lag     # → a complete schedule-driven sentinel starter (@loom/plugin-sentinel)
+npx loom new sentinel pg-lag     # → app/flows/pg-lag/flow.ts — a schedule-driven sentinel starter (@loom/plugin-sentinel)
 npx loom new agent triager       # → creates app/agents/triager.ts
 npx loom new skill refunds       # → creates app/skills/refunds.ts
 npx loom new schedule nightly    # → creates app/schedules/nightly.ts
@@ -205,7 +228,9 @@ Planning runs through a cheap-first elevation ladder (`--model-big <spec>` names
 
 ---
 
-## Validate before you run: `check`
+## Validate before you run: `check`, `verify`, `lint`
+
+Three static gates, in increasing order of what they need: `check` reads only a compiler manifest, `verify` loads your built config, `lint` reads source files.
 
 ### `loom check --manifest <path>`
 
@@ -221,6 +246,39 @@ Output is either `✓ no issues` (exit `0`) or one line per problem followed by 
   ✗ flow "investigate": step "triage" references unknown effect "triage-llm"
 
 1 issue(s)
+```
+
+### `loom verify --config <module> [--manifest <path>]`
+
+Pre-flight **runtime** verification over a built app ([`@loom/verify`](../packages/verify)). Unlike `check`, this one loads real wiring: the config module must export a `LoomApp` — the result of `defineConfig({…})` — as its **default export or as `app`**. The command calls `app.verify()`, which is read-only and off-log, prints the report, and exits `1` on any error-severity finding.
+
+| Flag | Required | Meaning |
+|---|---|---|
+| `--config` | yes | path to the **built** config module (JS), or run the CLI under `tsx` |
+| `--manifest` | no | a compiler manifest; **auto-discovered** if omitted |
+
+The compiler manifest's per-flow `loopIdentity` findings (ADR 0061 — a loop-scoped `ctx.run`/`ctx.execute` whose step id can't vary per iteration) are **auto-injected** into the determinism rule. Pass `--manifest` explicitly, or leave it off and a `loom-manifest.json` next to the config module — or in the cwd — is picked up automatically.
+
+```bash
+npx loom verify --config dist/app.js
+npx loom verify --config dist/app.js --manifest loom-manifest.json
+```
+
+> If the config's own `defineConfig` sets `checks: { verify: "error" }`, requiring the module throws at boot; the CLI catches that and prints it. This command exists for on-demand verification **independent** of the config's own mode.
+
+### `loom lint claim-check [--dir .]`
+
+Source lint for the claim-check contract (CC-5, [ADR 0054](adr/0054-claim-check-middleware.md)). Only modules that *define flows* are scanned — a file containing `flow$(`, `step$(`, or `handler$(` — since the rules are about the determinism boundary:
+
+| Rule | Flags |
+|---|---|
+| `resolve-inside-flow` | `resolveClaimCheck` referenced where flows are defined — replay never resolves a ref, so flow control fed by resolved payload content diverges |
+| `forged-envelope` | a hand-written `__loomClaimCheck:` literal — envelopes are minted by the middleware from stored bytes; a forged one cites content that may not exist |
+
+Branching on the **envelope itself** (`isClaimCheck`, the `digest`, `size`) is the sanctioned pattern and is never flagged. `--dir` defaults to `.`. Exit `0` when there are no findings, `1` otherwise.
+
+```bash
+npx loom lint claim-check --dir app
 ```
 
 ---
@@ -276,6 +334,80 @@ npx loom inspect --db .loom/events.db
 ```
 
 Enter an execution id in the page, then drag the slider to walk the run. Under the hood it serves `/api/trace/:executionId` (the timeline render model) and `/api/state/:executionId/:sequence` (the same folded state as `loom debug --at`). `loom dev` is an identical alias.
+
+---
+
+## Analyze a run: `profile`, `introspect`, `optimize`
+
+Three read-only lenses from [`@loom/analytics`](../packages/analytics), all with the same shape: `--db <path>` plus a positional `<executionId>`. They fold one execution's log and print — nothing is mutated, no effect re-runs. An unknown id prints `(no execution "<id>")` and still exits `0`.
+
+### `loom profile --db <path> <executionId>`
+
+A flame graph plus latency breakdown for one execution — "DevTools for Loom" in the terminal ([ADR 0029](adr/0029-runtime-observability-profiler.md)). Use it to find which step actually owns the wall clock.
+
+```bash
+npx loom profile --db .loom/events.db 01J8…
+```
+
+### `loom introspect --db <path> <executionId> [--graph <name>]`
+
+The runtime introspection facade ([ADR 0031](adr/0031-runtime-introspection-facade.md)): the **execution**, **task**, **decision**, and **resource** graphs folded from the log. `--graph <name>` prints just one; omit it for all four.
+
+```bash
+npx loom introspect --db .loom/events.db 01J8…
+npx loom introspect --db .loom/events.db 01J8… --graph decision
+```
+
+### `loom optimize --db <path> <executionId>`
+
+The advisory optimization report ([ADR 0034](adr/0034-advisory-optimization-pipeline.md)) — observe → analyze → recommend → evaluate → learn over one execution's log. **Advisory only**: it emits recommendations and mutates nothing. Adopting one is an explicit `ctx.decide` you write in app code, so the choice stays on the log.
+
+```bash
+npx loom optimize --db .loom/events.db 01J8…
+```
+
+---
+
+## Learn from the log: `learn report`, `learn eval`
+
+The offline half of the learning loop ([ADR 0080](adr/0080-learning-substrate.md), [`@loom/learning`](../packages/learning)). Both are read-only over the log and run out of band — neither touches a live execution, and adopting a policy remains an explicit wiring change in application code.
+
+Both take `--db <path>` and an **optional positional `<executionId>`**. Omit it to sweep every execution — which requires the store to implement the optional `listExecutions` SPI (1.1.0); a store without it errors and asks for an explicit id.
+
+### `loom learn report --db <path> [executionId]`
+
+What the log can — and cannot — teach. Folds `DECISION_RECORDED` into trajectories and reports decision-step coverage (how many steps carry a `context`, how many carry a `policy.propensity`), reward attribution (`direct` / `terminal` / `none`), and per-arm evidence best-first — the same shape `@loom/reasoning`'s `ucb1` consumes.
+
+It also prints **blocking gaps** — e.g. no outcome naming a `decisionId`, meaning rewards are aggregated globally rather than per decision. Read this before you write a policy: it tells you whether off-policy evaluation is even possible on the log you have.
+
+```bash
+npx loom learn report --db .loom/events.db            # every execution
+npx loom learn report --db .loom/events.db 01J8…      # just one
+```
+
+Prints `(no events)` or `(no decisions recorded — nothing to learn from)` when there's nothing to fold. Always exits `0`.
+
+### `loom learn eval --db <path> --policy <module> [--min-steps N] [executionId]`
+
+Shadow-evaluate a **candidate policy** against historical traffic — SNIPS off-policy evaluation, then the promotion gate. Nothing is promoted; the exit code *is* the verdict.
+
+| Flag | Required | Meaning |
+|---|---|---|
+| `--policy` | yes | module exporting a `Policy` as `policy` or as the default export (needs `id`, `version`, `select`) |
+| `--min-steps` | no | the promotion gate's minimum decision-step evidence |
+
+The module path may be relative (resolved against the cwd) or absolute. A module that doesn't export a usable `Policy` fails with a message and exit `1`.
+
+```bash
+npx loom learn eval --db .loom/events.db --policy dist/policies/linucb.js --min-steps 500
+```
+
+```text
+  GATE: refused
+    - only 120 decision steps (min 500)
+```
+
+Exit `0` when the gate passes, `1` when it refuses — so it drops straight into a promotion pipeline.
 
 ---
 
@@ -339,23 +471,57 @@ npx loom deploy check --logs logs/ --config dist/app.js
 
 ---
 
-## Data protection: `retention run`, `compliance report`
+## Data protection: `retention run`, `sweep content`, `compliance report`
 
-Operator sweeps over a stored log, both built on the `listExecutions` store-SPI (1.1.0). Reserved
+Operator sweeps over a stored log, built on the `listExecutions` store-SPI (1.1.0). Reserved
 control streams (`__loom_*`) are filtered automatically. See [data classification](data-classification.md) and [compliance](compliance.md).
+
+**Nothing prunes on a timer** — the operator drives every sweep, and both reclaiming commands are **dry-run by default**.
 
 ### `loom retention run --db <events.db> --snap <snap.db> [--ttl <ms>] [--apply]`
 
 Reclaim terminal executions older than the TTL (K10.1). **Dry run by default** — it reports
 `would-reclaim` / `kept` / `not-terminal` per execution; `--apply` performs the deletion via
 `LogLifecycle` (branch-integrity guard + `EXECUTION_ARCHIVED`/`EXECUTION_DELETED` control facts
-included) and reports `reclaimed` / `blocked-by-branch` / … Nothing prunes on a timer — the
-operator drives it.
+included) and reports `reclaimed` / `blocked-by-branch` / …
+
+> **`--ttl` defaults to `0`**, which makes *every* terminal execution eligible. Unlike
+> `sweep content` (30 days), there is no grace period here — always pass an explicit TTL
+> before `--apply`.
 
 ```bash
 npx loom retention run --db .loom/events.db --snap .loom/snapshots.db --ttl 7776000000   # dry run (90 days)
 npx loom retention run --db .loom/events.db --snap .loom/snapshots.db --ttl 7776000000 --apply
 ```
+
+### `loom sweep content --db <events.db> --content <content.db> [--archive-db <path>] [--pin KIND,KIND] [--ttl <ms>] [--apply]`
+
+The operator surface for the K10.6 **pinned blob sweep** ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md)) — content-store garbage collection for claim-check payloads whose log references have aged out.
+
+| Flag | Required | Default | Meaning |
+|---|---|---|---|
+| `--db` | yes | — | the event store — pins are re-derived from it every sweep (mark-and-sweep) |
+| `--content` | yes | — | the content store being reclaimed |
+| `--archive-db` | no | — | also scan an archived event store, so evidence cited by findings in archived runs stays pinned |
+| `--pin` | no | — | comma-separated event **kinds** to treat as pinning |
+| `--ttl` | no | `2592000000` (30 days) | age threshold in ms |
+| `--apply` | no | dry run | actually erase |
+
+```bash
+npx loom sweep content --db .loom/events.db --content .loom/content.db          # dry run, 30-day ttl
+npx loom sweep content --db .loom/events.db --content .loom/content.db --apply
+```
+
+```text
+content sweep DRY RUN (pass --apply to erase) — ttl 2592000000ms — pins: (none)
+  executions scanned: 412
+  refs seen: 1180   pinned: 934
+  would-reclaim (246):
+    sha256:9f2c…
+    … +226 more
+```
+
+At most 20 addresses are listed, then `… +N more`. Pins are recomputed from the log on **every** sweep, so a run that becomes pinned between sweeps is protected without any bookkeeping.
 
 ### `loom compliance report --db <path> --subject-path <dotpath> [--tenant-path <dotpath>]`
 
@@ -370,33 +536,208 @@ npx loom compliance report --db .loom/events.db --subject-path input.userId
 
 ---
 
+## Deployment contracts: `kernel-manifest`, `compat`
+
+The kernel-governance surface ([ADR 0035](adr/0035-kernel-governance-layer.md), [`@loom/spec`](../packages/spec)). Neither reads a log — they report and check the **versioned contracts** a deployment depends on.
+
+### `loom kernel-manifest [--json] [--emit-docs <dir>]`
+
+Prints this kernel's manifest: the version constants plus capability maturity.
+
+```bash
+npx loom kernel-manifest
+```
+
+```text
+Loom kernel manifest
+  kernel ABI      1.1.0   (10 syscalls)
+  event schema    1.18.0  (29 event types)
+  wire ABI        1.0.0
+  event store SPI 1.3.0
+  snapshot SPI    1.0.0
+  branch SPI      1.0.0
+  dispatcher SPI  1.0.0
+  compiler manif. 1
+  capabilities    36 (see loom kernel-manifest --json)
+```
+
+| Flag | Meaning |
+|---|---|
+| `--json` | print the aggregate manifest as JSON (including every capability) instead of the text summary |
+| `--emit-docs <dir>` | regenerate `compatibility-matrix.md` and `maturity.md` **into `<dir>`** from the manifest, so the published docs can't drift from the code |
+
+```bash
+npx loom kernel-manifest --json > kernel-manifest.json
+npx loom kernel-manifest --emit-docs docs/spec     # → "wrote docs/spec/compatibility-matrix.md and docs/spec/maturity.md"
+```
+
+> `--emit-docs` takes a **directory**, not a file — the two filenames are fixed. Always exits `0`.
+
+### `loom compat --abi <v> --event-schema <v> [...]`
+
+Validate a deployment's declared contract versions against this kernel's manifest — a deploy gate. **Omitted contracts are not checked**, so pass only what your deployment pins.
+
+| Flag | Contract |
+|---|---|
+| `--abi` | kernel ABI |
+| `--event-schema` | event schema |
+| `--wire` | wire ABI |
+| `--event-store-spi` | event-store SPI |
+| `--snapshot-store-spi` | snapshot-store SPI |
+| `--branch-registry-spi` | branch-registry SPI |
+| `--dispatcher-spi` | dispatcher SPI |
+| `--compiler-manifest` | compiler-manifest version |
+
+```bash
+npx loom compat --abi 1.1.0 --event-schema 1.18.0 --event-store-spi 1.3.0
+```
+
+```text
+compatible ✓ — all declared versions share the kernel's major line
+```
+
+A major-version mismatch prints one `✗ <component>: <reason>` line per issue and exits `1`.
+
+---
+
+## Author a plugin: `plugin …`
+
+Plugin authoring tooling ([ADR 0043](adr/0043-plugin-packaging-and-1p-3p-separation.md)). First-party plugins are `@loom/plugin-*` and live in this repo; third-party plugins are `loom-plugin-*` and live in your own — `--first-party` selects which naming and layout the scaffold uses.
+
+### `loom plugin seams`
+
+Lists the seams a plugin can target, each with its title, whether a conformance kit exists, and the exact `defineConfig` line that wires it:
+
+```bash
+npx loom plugin seams
+```
+
+```text
+Loom plugin seams (loom plugin new <seam> <name>):
+
+  store       Durable storage backend (EventStore + SnapshotStore [+ BranchRegistry]) (conformance ✓)
+              wire: storage: <name>Storage({ /* … */ })
+  dispatcher  Compute placement (ExecutionDispatcher) (conformance ✓)
+              wire: execution: { dispatcher: new <Name>Dispatcher({ /* … */ }) }
+  …
+```
+
+The current seams are **`store`**, **`dispatcher`**, **`telemetry`**, **`middleware`**, **`timer`**, **`projection`**, **`worker`**, **`llm`**, **`authorizer`**, and **`policy`**. Note that `policy` is wired in **flow code** (`decideWithPolicy(ctx, id, policy, context, actions)`), not in `defineConfig`.
+
+### `loom plugin new <seam> <name> [--first-party] [--dir .]`
+
+Scaffolds a plugin package for a seam: a `package.json`, `tsconfig.json`, a preset/SPI stub, a conformance-wired test, and a README. It **never overwrites** an existing file.
+
+| Argument / flag | Required | Default | Meaning |
+|---|---|---|---|
+| `<seam>` | yes | — | one of the seams above |
+| `<name>` | yes | — | the bare name — `redis` becomes `loom-plugin-redis`, or `@loom/plugin-redis` with `--first-party` |
+| `--first-party` (`--1p`) | no | third-party | first-party naming + monorepo layout (`workspace:*` deps) |
+| `--dir` | no | `.` | where the package directory is created |
+
+```bash
+npx loom plugin new store redis                 # → loom-plugin-redis/
+npx loom plugin new store redis --first-party   # → packages/… as @loom/plugin-redis
+```
+
+Exit `0` when at least one file was written, `1` when everything was skipped (the package already exists). The scaffold's conformance test ships commented out — un-comment it once your SPI impl is real, and run your formatter over the generated files.
+
+### `loom plugin check [--dir .] [--publish]`
+
+Validates a plugin package and prints one `✓` / `⚠` / `✗` line per finding, then a verdict. `--publish` adds npm-readiness checks on top of the structural ones. Exit `0` when there are no errors (warnings don't fail), `1` otherwise. The directory may also be given positionally — `loom plugin check ./loom-plugin-redis` — with `--dir` winning if both are present.
+
+```bash
+npx loom plugin check --dir ./loom-plugin-redis --publish
+```
+
+```text
+  ✓ package name loom-plugin-redis matches the third-party convention
+  ⚠ no test imports @loom/conformance — prove your SPI impl with the conformance kit (if one exists for your seam)
+
+plugin check: passed (0 error, 1 warn)
+```
+
+### `loom plugin try --module <path> [--preset <name>] [--options <json>]`
+
+End-to-end smoke test for a **store** plugin: imports your built module, calls its storage preset, runs a smoke flow against it, and asserts the run completed, events persisted, and the execution **replays from the durable store**.
+
+| Flag | Required | Meaning |
+|---|---|---|
+| `--module` | yes | path to the plugin's **built** module |
+| `--preset` | no | the preset export to call; defaults to the first exported `*Storage` function |
+| `--options` | no | a JSON string passed to the preset |
+
+```bash
+npx loom plugin try --module ./loom-plugin-redis/dist/index.js --options '{"url":"redis://localhost:6379"}'
+```
+
+```text
+  ✓ smoke flow completed (preset redisStorage)
+  ✓ persisted 6 events
+  ✓ replays from the durable store
+
+plugin try: passed
+```
+
+Exit `0` only when all three pass. If no exported function is found and `--preset` was omitted, it errors and asks for one.
+
+### `loom plugin search <term>`
+
+Finds published plugins on npm by the `loom-plugin` keyword. The search term is everything after `search`, so it may be several words.
+
+```bash
+npx loom plugin search postgres
+```
+
+---
+
 ## Cheat sheet
 
 | Command | Purpose | Key flags | Exit `1` when |
 |---|---|---|---|
-| `loom new <kind> <name>` | scaffold a flow/agent/tool file | `--dir app` | file already exists |
+| `loom new <kind> <name>` | scaffold a flow/agent/tool/… file | `--dir app` | file already exists |
 | `loom gen` | regenerate `loom.gen.ts` | `--dir app` | (write failure) |
-| `loom appgen <intent>` | brownfield-aware NL → new project or surgical edits (scan→plan→apply→validate) | `--dry-run`, `--yes`, `--check`, `--from <file>`, `--from-spec <file>`, `--model <spec>`, `--offline`, `--dir .` | no intent supplied |
+| `loom appgen <intent>` | brownfield-aware NL → new project or surgical edits (scan→plan→apply→validate) | `--dry-run`, `--yes`, `--check`, `--from <file>`, `--from-spec <file>`, `--model <spec>`, `--offline`, `--dir .` | no intent supplied; `--check` typecheck fails |
 | `loom check` | static flow-graph validation | `--manifest` *(req)* | issues found |
-| `loom logs` | print the event timeline | `--db` *(req)* | error |
-| `loom debug` | folded state at / after a sequence | `--db` *(req)*, `--at N` | error |
+| `loom verify` | pre-flight runtime verification over a built app | `--config` *(req)*, `--manifest` | any error-severity finding |
+| `loom lint claim-check` | claim-check reach-through lint (CC-5) | `--dir .` | any finding |
+| `loom logs` | print the event timeline | `--db` *(req)*, `--redact` | error |
+| `loom debug` | folded state at / after a sequence | `--db` *(req)*, `--at N`, `--redact` | error |
 | `loom inspect` (`dev`) | web timeline + time-travel slider | `--db` *(req)*, `--port 0` | error |
+| `loom profile` | flame graph + latency breakdown | `--db` *(req)* | error |
+| `loom introspect` | execution/task/decision/resource graphs | `--db` *(req)*, `--graph <name>` | error |
+| `loom optimize` | advisory optimization report | `--db` *(req)* | error |
+| `loom learn report` | decision coverage + per-arm rewards | `--db` *(req)* | error |
+| `loom learn eval` | shadow-evaluate a candidate policy | `--db` *(req)*, `--policy` *(req)*, `--min-steps N` | promotion gate refuses |
 | `loom eval` | replay golden logs vs expectations | `--dir` *(req)* | any golden fails |
 | `loom deploy check` | replay logs vs new flow defs | `--logs` *(req)*, `--config` *(req)* | resume-breaking change |
+| `loom retention run` | reclaim aged terminal executions | `--db` *(req)*, `--snap` *(req)*, `--ttl`, `--apply` | error |
+| `loom sweep content` | K10.6 pinned blob sweep | `--db` *(req)*, `--content` *(req)*, `--archive-db`, `--pin`, `--ttl`, `--apply` | error |
+| `loom compliance report` | data-subject inventory | `--db` *(req)*, `--subject-path` *(req)*, `--tenant-path` | error |
+| `loom kernel-manifest` | kernel version + maturity manifest | `--json`, `--emit-docs <dir>` | (never) |
+| `loom compat` | validate a deployment's contract versions | `--abi`, `--event-schema`, … | major-version mismatch |
+| `loom plugin new` | scaffold a plugin package | `--first-party`, `--dir .` | every file already existed |
+| `loom plugin check` | validate a plugin package | `--dir .`, `--publish` | any error-level finding |
+| `loom plugin try` | run a store plugin end-to-end | `--module` *(req)*, `--preset`, `--options` | any smoke assertion fails |
+| `loom plugin search` / `seams` | discover plugins / list seams | — | (never) |
 
-A typical loop: `loom new` → write the flow → `loom gen` → `loom check` → run it → `loom logs` / `loom debug` / `loom inspect` → `loom eval` and `loom deploy check` in CI before promoting.
+A typical loop: `loom new` → write the flow → `loom gen` → `loom check` → `loom verify` → run it → `loom logs` / `loom debug` / `loom profile` / `loom inspect` → `loom eval` and `loom deploy check` in CI before promoting.
 
 ---
 
 ## Exit codes & scripting
 
-Every command returns `0` on success and `1` on failure (missing required flag, unreadable input, unknown command, or a "not clean" verdict from `check`/`eval`/`deploy check`). `logs`/`debug` write to stdout, errors to stderr. That makes the gates drop straight into CI:
+Commands return `0` on success and `1` on failure (missing required flag, unreadable input, unknown command, or a "not clean" verdict from `check`/`verify`/`lint`/`eval`/`deploy check`/`compat`/`learn eval`/`plugin check`/`plugin try`). The one other code is `2`, returned by `loom learn` when the subcommand is neither `report` nor `eval`. Reports go to stdout, errors to stderr. That makes the gates drop straight into CI:
 
 ```bash
 npx loom check --manifest loom-manifest.json \
+  && npx loom verify --config dist/app.js \
+  && npx loom lint claim-check --dir app \
   && npx loom eval --dir evals/ \
   && npx loom deploy check --logs logs/ --config dist/app.js
 ```
+
+The purely-informational commands (`logs`, `debug`, `profile`, `introspect`, `optimize`, `learn report`, `kernel-manifest`, `plugin seams`, `plugin search`) exit `0` whenever they ran — including when the execution id doesn't exist. Don't gate on them; gate on the verdict commands above.
 
 Note that `inspect`/`dev` start a long-lived server and stay in the foreground until Ctrl-C — don't put them in a non-interactive gate.
 
@@ -404,7 +745,7 @@ Note that `inspect`/`dev` start a long-lived server and stay in the foreground u
 
 ## Programmatic use
 
-Every command is also a pure function exported from `@loom/cli`, so you can build the same checks into your own scripts or tests without shelling out:
+The core commands are also exported as functions from `@loom/cli`, so you can build the same checks into your own scripts or tests without shelling out:
 
 ```ts
 import { cmdLogs, cmdDebug, cmdEval, cmdCheck, cmdGen, cmdNew, cmdAppgen,
@@ -415,7 +756,9 @@ const { report } = cmdEval("evals/");
 if (!report.ok) process.exit(1);
 ```
 
-See the **[API reference → `@loom/cli`](api-reference.org)** for the full export surface (`foldAt`, `formatLog`, `describeState`, `evaluateGoldens`, `discoverFlows`, `runDeployCheck`, …).
+See the **[API reference → `@loom/cli`](api-reference.org)** for the full export surface (`foldAt`, `formatLog`, `describeState`, `evaluateGoldens`, `discoverFlows`, `buildTrace`, `runDeployCheck`, …).
+
+> The public export surface is a **subset** of the command set. The newer commands — `verify`, `lint claim-check`, `profile`, `introspect`, `optimize`, `learn …`, `kernel-manifest`, `compat`, `plugin …`, `retention run`, `sweep content`, `compliance report` — are reachable through the binary only. Their underlying logic lives in the packages they wrap (`@loom/verify`, `@loom/analytics`, `@loom/learning`, `@loom/spec`, `@loom/compliance`), so import from there rather than from `@loom/cli`.
 
 ---
 
