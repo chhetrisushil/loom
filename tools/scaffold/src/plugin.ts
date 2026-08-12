@@ -15,6 +15,12 @@ interface SeamDef {
   key: string;
   title: string;
   /**
+   * The SPI interface this seam is defined by. Load-bearing beyond documentation:
+   * `seamDocs.test.ts` asserts every seam has a row naming it in the canonical SPI
+   * map, so a seam cannot ship without appearing where implementers look for it.
+   */
+  spi: string;
+  /**
    * How an app wires it, shown to the author. Usually a `defineConfig` key; a
    * seam whose implementation is consumed from flow code rather than from the
    * composition root says so instead of implying a config key that doesn't exist.
@@ -33,6 +39,7 @@ interface SeamDef {
 const SEAMS: Record<string, SeamDef> = {
   store: {
     key: "store",
+    spi: "EventStore",
     title: "Durable storage backend (EventStore + SnapshotStore [+ BranchRegistry])",
     wiring: "storage: <name>Storage({ /* … */ })",
     spiDeps: ["@loom/event-runtime", "@loom/snapshot-runtime", "@loom/plugin-kit"],
@@ -143,6 +150,7 @@ const SEAMS: Record<string, SeamDef> = {
 
   dispatcher: {
     key: "dispatcher",
+    spi: "ExecutionDispatcher",
     title: "Compute placement (ExecutionDispatcher)",
     wiring: "execution: { dispatcher: new <Name>Dispatcher({ /* … */ }) }",
     spiDeps: ["@loom/dispatcher"],
@@ -206,6 +214,7 @@ const SEAMS: Record<string, SeamDef> = {
 
   telemetry: {
     key: "telemetry",
+    spi: "TelemetryAdapter",
     title: "Telemetry adapter (flow/step lifecycle hooks)",
     wiring: "observability: { telemetry: [<name>Telemetry({ /* … */ })] }",
     spiDeps: ["@loom/telemetry"],
@@ -269,6 +278,7 @@ const SEAMS: Record<string, SeamDef> = {
 
   middleware: {
     key: "middleware",
+    spi: "EffectMiddleware",
     title: "Effect middleware (wrap every effect execution)",
     wiring: "execution: { effectMiddleware: [<name>Middleware({ /* … */ })] }",
     spiDeps: ["@loom/effect-runtime"],
@@ -332,6 +342,7 @@ const SEAMS: Record<string, SeamDef> = {
 
   timer: {
     key: "timer",
+    spi: "TimerStore",
     title: "Durable timer store (T1 scheduled wakes)",
     wiring: "timers: { store: new <Name>TimerStore() }",
     spiDeps: ["@loom/event-runtime"],
@@ -382,6 +393,7 @@ const SEAMS: Record<string, SeamDef> = {
 
   projection: {
     key: "projection",
+    spi: "ProjectionRuntime",
     title: "Projection runtime (custom read-model backend)",
     wiring: "projectionRuntime: new <Name>ProjectionRuntime()",
     spiDeps: ["@loom/projection-runtime"],
@@ -440,6 +452,7 @@ const SEAMS: Record<string, SeamDef> = {
 
   worker: {
     key: "worker",
+    spi: "WorkerRuntime",
     title: "Worker runtime (run an execution on some compute)",
     wiring: "execution: { dispatcher: new LocalDispatcher(new <Name>Worker()) }",
     spiDeps: ["@loom/worker-runtime"],
@@ -495,6 +508,7 @@ const SEAMS: Record<string, SeamDef> = {
 
   llm: {
     key: "llm",
+    spi: "LlmProvider",
     title: "LLM provider (model backend)",
     wiring: "createLlmEffect({ provider: new <Name>Provider() })",
     spiDeps: ["@loom/llm"],
@@ -538,6 +552,7 @@ const SEAMS: Record<string, SeamDef> = {
 
   authorizer: {
     key: "authorizer",
+    spi: "CapabilityAuthorizer",
     title: "Capability authorizer (allow/deny each effect)",
     wiring: "security: { authorizer: new <Name>Authorizer() }",
     spiDeps: ["@loom/effect-runtime"],
@@ -590,6 +605,7 @@ const SEAMS: Record<string, SeamDef> = {
 
   policy: {
     key: "policy",
+    spi: "Policy",
     title: "Learned policy (choose an action from an observation)",
     // The one seam that is NOT a defineConfig contributor. A policy is consumed
     // from flow code, deliberately: ADR 0080 keeps the runtime unaware that a
@@ -665,6 +681,11 @@ const SEAMS: Record<string, SeamDef> = {
 };
 
 export const SEAM_KEYS = Object.keys(SEAMS);
+
+/** seam key → SPI interface name. Consumed by the seam/doc coverage fitness test. */
+export const SEAM_SPI: Record<string, string> = Object.fromEntries(
+  Object.entries(SEAMS).map(([k, v]) => [k, v.spi])
+);
 
 /** Human-readable seam list for `loom plugin seams`. */
 export function listSeams(): string {
