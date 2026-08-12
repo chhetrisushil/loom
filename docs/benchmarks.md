@@ -72,7 +72,7 @@ subscriber calls from O(events) → O(microtask flushes).
 
 Algorithmic wins on paths that are hit per-tick or per-append. Each is a strict
 complexity improvement with identical outputs — no behavior change, so they only
-*widen* the no-regression margin. See [ADR 0015](adr/0015-dsa-performance-optimizations.md#amendments).
+*widen* the no-regression margin. See [ADR 0015](adr/0015-dsa-performance-optimizations.md#amendments-second-dsa-pass-pr-63-2026-07-10).
 
 | Path | Before | After |
 |------|--------|-------|

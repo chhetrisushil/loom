@@ -1689,7 +1689,7 @@ const plan = applyChanges(changeSpec, appModel); // { creates, edits, deletes, s
 // A CLI/editor writes the plan; output is ordinary Loom code with TODO handlers to fill in.
 ```
 
-From the CLI: `loom appgen "<intent>" [--dry-run] [--yes] [--check] [--from-spec <file>] [--model <gguf>]`. `--dry-run` renders a real unified diff; each apply records a replayable `.loom/appgen/<ts>.spec.json` lockfile (`--from-spec` reproduces it with no model). The intent grammar adds `delete <name>`, `delete step <s> from <flow>`, and `grant <tool> to <cap>` to the base directives. See [`docs/usage-cli.md`](usage-cli.md#loom-appgen-intent--from-file--from-spec-file--dir--flags).
+From the CLI: `loom appgen "<intent>" [--dry-run] [--yes] [--check] [--from-spec <file>] [--model <gguf>]`. `--dry-run` renders a real unified diff; each apply records a replayable `.loom/appgen/<ts>.spec.json` lockfile (`--from-spec` reproduces it with no model). The intent grammar adds `delete <name>`, `delete step <s> from <flow>`, and `grant <tool> to <cap>` to the base directives. See [`docs/usage-cli.md`](usage-cli.md#loom-appgen-intent----from-file----from-spec-file---dir--flags).
 
 The generated app follows the same folder convention as `create-loom-app` / `loom new` / `loom gen` (reusing `@loom/scaffold`). The deterministic parser is a small **directive grammar**; the only "understanding" is that one stage producing a `ChangeSpec`, and codegen stays pure and template-based (P4/P5 preserved).
 
