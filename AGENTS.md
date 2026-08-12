@@ -18,6 +18,7 @@ They consume this repo's **unpublished** `@loom/*` packages from a sibling
 ```
 workspace/
 ├── loom/            # this repo:        pnpm install && pnpm build
+├── loom-plugins/    # 3P plugins.       Only `learning-router` needs it.
 └── loom-examples/   # git clone, then:  pnpm install   (link: → ../loom)
 ```
 
