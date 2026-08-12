@@ -122,3 +122,16 @@ The forward-requirements acceptance record (Requirement 1) noted three sub-check
   *inside* a handler is already safe; only orchestration code that re-executes on replay can
   diverge. Auto-extraction of runner bodies into the manifest is a further follow-up; the analyzer
   + feed path are in place.
+
+## Amendments (effect classes, ADR 0084)
+
+A **seventh rule**, `effect-class`, joined the set: a flow may not reach an effect whose declared
+class exceeds the flow's own, composed conservatively as the max over everything reachable. The
+class *vocabulary* is app-supplied (`checks: { verify: { effectClasses } }`) — loom checks the
+ordering it is given rather than defining one (ADR 0083).
+
+It sits deliberately beside `capability-compat` rather than inside it, because the two answer
+different questions: `capability-compat` asks whether K2 grants the capability at all, while
+`effect-class` asks whether the flow reached something worse than it promised. A **granted**
+capability can still bust the class, and K2 will not stop it — the finding says so, which is the
+reconciliation made operational. See [ADR 0084](0084-effect-classes-static-ceiling-k2-floor.md).
