@@ -20,7 +20,7 @@ import {
   routeFromSpec,
 } from "./appgen";
 import { checkManifest } from "./check";
-import { resolveIntent } from "./cli";
+import { USAGE, resolveIntent } from "./cli";
 import { parseRedact } from "./cli";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { cmdComplianceReport } from "./compliance";
@@ -900,5 +900,36 @@ describe("appgen --model provider resolution (any model of your choice)", () => 
       expect(() => routeFromSpec("anthropic:x", 0, undefined, fakeM)).toThrow(/ANTHROPIC_API_KEY/);
     });
     expect(() => routeFromSpec("cohere:x", 0, undefined, fakeM)).toThrow(/unrecognized provider/);
+  });
+});
+
+// ── The reference doc is a fitness function, not prose ────────────────────────
+//
+// `docs/usage-cli.md` reproduces USAGE verbatim in its first fenced block. Left
+// unguarded it drifts silently — a new command lands, the doc doesn't move, and
+// nothing is red. Assert the two are byte-identical so adding a command forces
+// the doc edit in the same change.
+describe("docs/usage-cli.md", () => {
+  const doc = join(__dirname, "..", "..", "..", "docs", "usage-cli.md");
+
+  it("reproduces the CLI usage summary verbatim", () => {
+    const md = readFileSync(doc, "utf8");
+    const block = /```text\n([\s\S]*?)```/.exec(md);
+    expect(block, "no ```text block in usage-cli.md").not.toBeNull();
+    expect(block![1]).toBe(USAGE);
+  });
+
+  it("documents every command the dispatcher accepts", () => {
+    const md = readFileSync(doc, "utf8");
+    const commands = readFileSync(join(__dirname, "cli.ts"), "utf8")
+      .split("\n")
+      .flatMap((line) => /^\s{4}case "([a-z][a-z-]*)":/.exec(line)?.[1] ?? [])
+      .filter((c) => c !== "help");
+    // Guard against a vacuous pass: if the dispatcher is ever restructured so the
+    // regex matches nothing, this loop would silently assert nothing at all.
+    expect(commands.length).toBeGreaterThan(15);
+    for (const command of commands) {
+      expect(md, `\`loom ${command}\` undocumented`).toContain(`loom ${command}`);
+    }
   });
 });
