@@ -31,6 +31,16 @@ export interface PromotionThresholds {
   maxAgreement?: number;
   /** Require an unbiased estimator. Default true — agreement alone is not evidence. */
   requireEstimate?: boolean;
+  /**
+   * Minimum number of contributing units (users/tenants) for a POOLED evaluation.
+   *
+   * Set this whenever evidence is pooled across units to work around a thin
+   * per-unit exploration budget: it is the check that stops "8 weeks across 40
+   * users" from silently being "8 weeks of one enthusiastic user". Requires
+   * `unitOf` at extraction — a report with no unit attribution FAILS this gate
+   * rather than passing it vacuously.
+   */
+  minUnits?: number;
 }
 
 export interface PromotionVerdict {
@@ -76,6 +86,25 @@ export function promotionGate(
     reasons.push(
       `effective sample size ${report.effectiveSampleSize.toFixed(1)} is below the required ${minEffective}`
     );
+  }
+  if (thresholds.minUnits !== undefined) {
+    if (report.units === undefined) {
+      reasons.push(
+        "minUnits was set but the evaluation carries no unit attribution — pass `unitOf` to trajectories(), or the pooled evidence cannot be distinguished from one unit's"
+      );
+    } else {
+      if (report.units < thresholds.minUnits) {
+        reasons.push(`only ${report.units} contributing unit(s) (need ${thresholds.minUnits})`);
+      }
+      if (
+        report.unitEffectiveSampleSize !== undefined &&
+        report.unitEffectiveSampleSize < thresholds.minUnits
+      ) {
+        reasons.push(
+          `effective unit sample size ${report.unitEffectiveSampleSize.toFixed(1)} is below the required ${thresholds.minUnits} — the pool is wide but the evidence is not`
+        );
+      }
+    }
   }
   if (report.agreement > maxAgreement) {
     reasons.push(

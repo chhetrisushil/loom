@@ -69,6 +69,10 @@ export function evaluatePolicy<A>(
   let clippedSteps = 0;
   let deterministicLogging = 0;
   let fallbackActionSets = 0;
+  // Per-unit accumulators. Pooling several units' logs is what makes a thin
+  // per-unit exploration budget usable; it is also how one heavy unit quietly
+  // becomes the whole estimate, so every unit's contribution is tracked.
+  const perUnit = new Map<string, { weightedReward: number; weightSum: number }>();
 
   for (const t of trajectories) {
     for (const step of t.steps) {
@@ -106,6 +110,12 @@ export function evaluatePolicy<A>(
       weightedReward += w * step.reward;
       weightSum += w;
       weightSquares += w * w;
+      if (t.unit !== undefined) {
+        const u = perUnit.get(t.unit) ?? { weightedReward: 0, weightSum: 0 };
+        u.weightedReward += w * step.reward;
+        u.weightSum += w;
+        perUnit.set(t.unit, u);
+      }
     }
   }
 
@@ -121,6 +131,24 @@ export function evaluatePolicy<A>(
     estimatedValue = weightedReward / weightSum;
     // Kish's ESS: (Σw)² / Σw². How many equally-weighted steps this estimate is worth.
     effectiveSampleSize = (weightSum * weightSum) / weightSquares;
+  }
+
+  // ── Unit-level (cluster-robust) statistics ─────────────────────────────────
+  let units: number | undefined;
+  let unitEstimatedValue: number | undefined;
+  let unitEffectiveSampleSize: number | undefined;
+  let maxUnitWeightShare: number | undefined;
+  const contributing = [...perUnit.values()].filter((u) => u.weightSum > 0);
+  if (contributing.length > 0) {
+    units = contributing.length;
+    // Equal weight per unit — "what is this worth for a typical unit", as opposed
+    // to `estimatedValue`, which is dominated by whichever unit supplied the weight.
+    unitEstimatedValue =
+      contributing.reduce((acc, u) => acc + u.weightedReward / u.weightSum, 0) / units;
+    const total = contributing.reduce((acc, u) => acc + u.weightSum, 0);
+    const squares = contributing.reduce((acc, u) => acc + u.weightSum * u.weightSum, 0);
+    unitEffectiveSampleSize = (total * total) / squares;
+    maxUnitWeightShare = Math.max(...contributing.map((u) => u.weightSum)) / total;
   }
 
   if (evaluated === 0) {
@@ -159,6 +187,31 @@ export function evaluatePolicy<A>(
       `${fallbackActionSets} step(s) had only one candidate action, so agreement there was guaranteed and means nothing`
     );
   }
+  if (units !== undefined) {
+    if (maxUnitWeightShare !== undefined && maxUnitWeightShare > 0.5) {
+      warnings.push(
+        `one unit supplies ${(maxUnitWeightShare * 100).toFixed(0)}% of the importance weight — this is that unit's estimate wearing a pooled label`
+      );
+    }
+    if (unitEffectiveSampleSize !== undefined && unitEffectiveSampleSize < units / 2) {
+      warnings.push(
+        `effective UNIT sample size ${unitEffectiveSampleSize.toFixed(1)} is under half of the ${units} contributing units — pooling widened the log but not the evidence`
+      );
+    }
+    if (
+      unitEstimatedValue !== undefined &&
+      estimatedValue !== undefined &&
+      Math.abs(unitEstimatedValue - estimatedValue) > 0.1 * Math.max(1e-9, Math.abs(estimatedValue))
+    ) {
+      warnings.push(
+        `pooled (${estimatedValue.toFixed(4)}) and per-unit (${unitEstimatedValue.toFixed(4)}) estimates differ by more than 10% — the population is heterogeneous and the pooled number does not describe a typical unit`
+      );
+    }
+  } else if (evaluated > 0) {
+    warnings.push(
+      "no unit attribution — pooled evidence cannot be distinguished from one unit's, and the effective sample size below treats steps within a unit as independent. Pass `unitOf` to trajectories()"
+    );
+  }
 
   return {
     policy: { id: policy.id, version: policy.version },
@@ -170,6 +223,10 @@ export function evaluatePolicy<A>(
     estimator,
     ...(estimatedValue !== undefined && { lift: estimatedValue - loggedValue }),
     ...(effectiveSampleSize !== undefined && { effectiveSampleSize }),
+    ...(units !== undefined && { units }),
+    ...(unitEstimatedValue !== undefined && { unitEstimatedValue }),
+    ...(unitEffectiveSampleSize !== undefined && { unitEffectiveSampleSize }),
+    ...(maxUnitWeightShare !== undefined && { maxUnitWeightShare }),
     warnings,
   };
 }
@@ -193,6 +250,18 @@ export function formatEvalReport(report: EvalReport): string {
   }
   if (report.effectiveSampleSize !== undefined) {
     lines.push(`  effective samples   ${report.effectiveSampleSize.toFixed(1)}`);
+  }
+  if (report.units !== undefined) {
+    lines.push(`  units pooled        ${report.units}`);
+    if (report.unitEstimatedValue !== undefined) {
+      lines.push(`  per-unit value      ${report.unitEstimatedValue.toFixed(4)}`);
+    }
+    if (report.unitEffectiveSampleSize !== undefined) {
+      lines.push(`  effective units     ${report.unitEffectiveSampleSize.toFixed(1)}`);
+    }
+    if (report.maxUnitWeightShare !== undefined) {
+      lines.push(`  largest unit share  ${(report.maxUnitWeightShare * 100).toFixed(0)}%`);
+    }
   }
   const { noContext, noActions, noReward } = report.skipped;
   if (noContext + noActions + noReward > 0) {
