@@ -2,7 +2,9 @@
 
 - Status: **Verdicts recorded. Both proposed kernel promotions rejected; net kernel change
   is zero.** ADRs [0081](../adr/0081-long-lived-suspensions-no-promotion.md),
-  [0082](../adr/0082-substitutive-replay-deferred.md).
+  [0082](../adr/0082-substitutive-replay-deferred.md). §5 additionally **adds** four
+  requirements (CN-1…CN-4) that were not in the submission — the consent precondition created by
+  adopting §5.2's pooling resolution.
 - Evaluates: [the platform requirements as submitted](2026-08-12-companion-ambient-execution-platform.md).
 - Method: the ADR 0051 discipline — a placement verdict per series, judged against the best
   userland alternative, bias outward (P10). Every claim in the submission was verified against
@@ -223,7 +225,7 @@ concluded.
 
 ---
 
-## 5. The propensity defect
+## 5. The learning series: one defect, one collision, one precondition
 
 ### 5.1 The corrected PO-3 and LP-4
 
@@ -325,13 +327,71 @@ returns it) so a thin estimate is visibly thin at the gate rather than in produc
 
 ---
 
+### 5.3 Pooling has a consent precondition — CN-1…CN-4
+
+**These are requirements this evaluation ADDS**, not verdicts on submitted ones. Adopting §5.2's
+pooling resolution creates an obligation the submission and the PRD both leave implicit: LP-3
+says "consenting users" and nothing defines, records, or enforces the consent. They follow the
+submission's conventions (ID, strength, layer, `Accept:`) so they can be tracked alongside it.
+
+The line they defend: Companion PV-5 forbids *an employer-deployed mode, an aggregate manager
+view, or comparative ranking across users*. It does not forbid aggregate computation. The
+distinguishing test is whether any output **ranks, compares, or attributes to an identifiable
+person**. `@loom/learning` holds up its end — a report exposes a unit *count*, a mean of per-unit
+estimates, an effective sample size and the largest single share, and **never a unit
+identifier**, enforced by an invariant test verified to fail against a deliberately injected
+per-unit field. Everything below is the application's end.
+
+**CN-1** MUST — layer `app` — A unit's inclusion in a pooled evaluation set requires a **durable
+consent grant** recording scope, timestamp, and revocability. The grant is a *decision* per EL-6
+— it records something that happened outside any projection — so it is logged, auditable and
+replayable rather than asserted in configuration.
+- *Accept:* for any evaluation, every contributing unit resolves to a grant that was in force
+  over the evaluated window.
+
+**CN-2** MUST — layer `app` — Consent is enforced when the pooled event set is **assembled**, not
+when the report is produced. This is the PRD's own PV-1 instinct — *drop at capture, do not
+redact after* — applied to pooling: a report that omits a revoked unit while the pooled log still
+contains it has a window and a backup. Loom's existing mechanism is per-unit scoped stores
+(`TenantScopedEventStore`), with any cross-scope read an explicit, granted operation.
+- *Accept:* revoke a unit's grant and re-assemble; that unit's steps are absent from the input to
+  `trajectories()` — not merely absent from the report.
+
+**CN-3** MUST — layer `app` — A **k-anonymity floor** governs whether any aggregate may leave the
+boundary, distinct from and never lower than `promotionGate`'s `minUnits`.
+- *Rationale:* `minUnits` is an **evidence** threshold — is this estimate worth believing.
+  A privacy floor is a **disclosure** threshold — is this aggregate still about a group. They
+  answer different questions, and conflating them means tuning one silently moves the other.
+- *Accept:* with fewer than *k* contributing units, evaluation refuses rather than returning a
+  report with suppressed fields.
+
+**CN-4** MUST — layer `app` — Revocation is handled through a **consent epoch**, and a promotion
+manifest records that epoch plus a unit **count** — **never a unit list**.
+- *Rationale:* the naive fix defeats itself. Recording *which* units contributed, so that
+  affected policies can be identified on revocation, turns every promotion artifact into a
+  durable record of who was in the evaluation set — a privacy liability created by the privacy
+  feature. The epoch is the indirection that avoids it: revocation bumps the epoch, and policies
+  carrying a stale epoch are **flagged for re-evaluation**, not auto-rolled-back — silently
+  reverting a policy on a revocation is its own user-visible harm. Pair with bounded-window
+  consent so claims on data expire rather than accumulate.
+- *Accept:* revoking a unit's consent flags every policy whose manifest carries an earlier epoch;
+  and no manifest anywhere contains a unit identifier.
+
+**Not required, deliberately:** nothing in CN-1…CN-4 is loom's. `unitOf` is a mechanism, and
+`policyManifest` already carries the unit count via the embedded report, so an application can
+supply an epoch in its own artifact today without any framework change.
+
 ## 6. Recommended actions
 
 1. **Fix PO-3 and LP-4** — corrected text in §5.1 above. Everything in LP-6 depends on it and
    the loss is irreversible.
-2. **Quantify IN-1** before designing it — a target observation write rate, compared against the
+2. **Adopt CN-1…CN-4 before pooling reaches real users** (§5.3). Pooling is now implemented in
+   `@loom/learning`, which makes the consent gap the binding constraint rather than a
+   hypothetical one — and CN-2 in particular has to be designed in, since enforcing consent at
+   report time instead of at assembly is not retrofittable.
+3. **Quantify IN-1** before designing it — a target observation write rate, compared against the
    measured append ceiling.
-3. **Run LQ-2 as a benchmark** (ADR 0081's gate) rather than scoping a promotion.
-4. **Re-cite C1's TS-series references** to ADR 0046 / 0054 / 0062 so the fourth document does
+4. **Run LQ-2 as a benchmark** (ADR 0081's gate) rather than scoping a promotion.
+5. **Re-cite C1's TS-series references** to ADR 0046 / 0054 / 0062 so the fourth document does
    not repeat them.
-5. **Add K2 reconciliation to EF** — static class as upper bound, grant table as runtime floor.
+6. **Add K2 reconciliation to EF** — static class as upper bound, grant table as runtime floor.

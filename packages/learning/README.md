@@ -133,6 +133,30 @@ means the population is heterogeneous and the pooled number describes nobody.
 `minUnits` **fails closed**: a report with no unit attribution does not pass the gate vacuously,
 it fails it, with a message telling you to pass `unitOf`.
 
+### A report never names a unit
+
+This is a **deliberate constraint, not an implementation detail.** Pooling is defensible because
+it produces statistics *about policies* — never visibility into *people*. So the per-unit map is
+local to `evaluatePolicy`, and only aggregates leave: a count, a mean of per-unit estimates, an
+effective sample size, and the largest single share. **No unit identifier appears in an
+`EvalReport` or in its rendering**, including inside warning strings, which is where a computed
+value is most likely to drag an id along with it.
+
+An invariant test enforces it — pooling with distinctively-named units and asserting neither the
+serialized report nor `formatEvalReport` output contains any of them. It has been verified to
+fail against a deliberately injected `perUnitEstimates` field, because a guard nobody has watched
+fail is indistinguishable from a comment.
+
+Two consequences worth knowing before you extend this:
+
+- **Do not add a per-unit-keyed field** to `EvalReport`, however useful it would be for
+  debugging. That is the line between an evaluation set and a ranking of people, and it is the
+  one change that would make pooling indefensible.
+- **Consent is upstream of this package.** `unitOf` is a mechanism; deciding *whose* data may
+  enter a pool, enforcing it when the event set is assembled, and handling revocation are
+  application concerns. Filtering at assembly rather than at report time is the same discipline
+  as classifying sensitive fields at capture rather than redacting after.
+
 ## The `Policy` SPI
 
 One method. No training hook, no lifecycle:

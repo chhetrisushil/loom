@@ -579,3 +579,66 @@ describe("pooled evaluation across units", () => {
     expect(text).toMatch(/largest unit share/);
   });
 });
+
+describe("privacy invariant: a report never names a unit", () => {
+  // Pooling is defensible only because it yields statistics ABOUT POLICIES, never
+  // visibility into people. That holds by construction today — the per-unit map is
+  // local and only aggregates escape — and this test is what keeps it true the day
+  // someone adds `perUnitEstimates` because it would help debugging. The invariant
+  // is currently unenforced elsewhere, which is the same shape as every other
+  // guard in this repo that was true but unchecked.
+  const unitId = (i: number) => `unit-DO-NOT-LEAK-${i}`;
+
+  function pooled(units: number, stepsPerUnit: number, heavy?: { unit: number; steps: number }) {
+    seq = 0;
+    const out: EventEnvelope[] = [];
+    for (let u = 0; u < units; u++) {
+      const n = heavy?.unit === u ? heavy.steps : stepsPerUnit;
+      for (let i = 0; i < n; i++) {
+        const exec = `${unitId(u)}-x${i}`;
+        out.push(
+          decision(exec, "route", "opus", {
+            context: { u: unitId(u), t: i },
+            alternatives: ["gemma", "opus"],
+            policy: { id: "logger", version: "1", propensity: 0.2 },
+          })
+        );
+        out.push(ev(exec, "OUTCOME_RECORDED", { key: "opus", score: 0.9, decisionId: "route" }));
+      }
+    }
+    return trajectories<string>(out, { unitOf: (_id, ctx) => ctx?.u as string | undefined });
+  }
+
+  function assertNoUnitEscapes(report: ReturnType<typeof evaluatePolicy>, units: number) {
+    // Rendered text as well as the object: warnings interpolate computed values, and
+    // that is the likeliest place for an id to end up.
+    const surface = `${JSON.stringify(report)}\n${formatEvalReport(report)}`;
+    expect(surface).not.toMatch(/DO-NOT-LEAK/);
+    for (let u = 0; u < units; u++) expect(surface).not.toContain(unitId(u));
+  }
+
+  it("a clean pool reports aggregates only", () => {
+    const ts = pooled(6, 3);
+    // Control: the ids ARE on the trajectories, so they were available to leak.
+    expect(ts.map((t) => t.unit)).toContain(unitId(0));
+
+    const report = evaluatePolicy(ts, fixed("p", "opus"));
+    // …and the report is non-trivial, so this cannot pass by everything being undefined.
+    expect(report.units).toBe(6);
+    expect(report.estimatedValue).toBeDefined();
+    expect(report.unitEstimatedValue).toBeDefined();
+    expect(report.unitEffectiveSampleSize).toBeDefined();
+
+    assertNoUnitEscapes(report, 6);
+  });
+
+  it("a pool dominated by one unit names the share, never the unit", () => {
+    // The dangerous case: this fires the "one unit supplies N%" warning, so a naive
+    // implementation would reach for the unit's identity to make the message useful.
+    const report = evaluatePolicy(pooled(8, 1, { unit: 0, steps: 200 }), fixed("p", "opus"));
+
+    expect(report.maxUnitWeightShare as number).toBeGreaterThan(0.9);
+    expect(report.warnings.join(" ")).toMatch(/one unit supplies/);
+    assertNoUnitEscapes(report, 8);
+  });
+});
