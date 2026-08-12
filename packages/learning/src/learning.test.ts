@@ -452,3 +452,130 @@ describe("decideWithPolicy", () => {
     expect(ctx.emitted).toHaveLength(1); // nothing new was recorded
   });
 });
+
+describe("pooled evaluation across units", () => {
+  /**
+   * `users` × `stepsPerUser` explorer decisions. `heavy` (if given) gets
+   * `heavySteps` instead — the "one enthusiastic user" case.
+   */
+  function pooledLog(opts: {
+    users: number;
+    stepsPerUser: number;
+    heavy?: string;
+    heavySteps?: number;
+    rewardFor?: (unit: string) => number;
+  }): EventEnvelope[] {
+    seq = 0;
+    const out: EventEnvelope[] = [];
+    for (let u = 0; u < opts.users; u++) {
+      const unit = `user-${u}`;
+      const n = unit === opts.heavy ? (opts.heavySteps ?? opts.stepsPerUser) : opts.stepsPerUser;
+      for (let i = 0; i < n; i++) {
+        const exec = `${unit}-x${i}`;
+        out.push(
+          decision(exec, "route", "opus", {
+            context: { unit, t: i },
+            alternatives: ["gemma", "opus"],
+            policy: { id: "logger", version: "1", propensity: 0.2 },
+          })
+        );
+        out.push(
+          ev(exec, "OUTCOME_RECORDED", {
+            key: "opus",
+            score: opts.rewardFor?.(unit) ?? 0.9,
+            decisionId: "route",
+          })
+        );
+      }
+    }
+    return out;
+  }
+
+  const byContextUnit = {
+    unitOf: (_id: string, ctx?: Record<string, unknown>) => ctx?.unit as string | undefined,
+  };
+
+  it("attributes each execution to its unit and counts the pool", () => {
+    const ts = trajectories<string>(pooledLog({ users: 5, stepsPerUser: 4 }), byContextUnit);
+    expect(new Set(ts.map((t) => t.unit)).size).toBe(5);
+
+    const report = evaluatePolicy(ts, fixed("p", "opus"));
+    expect(report.units).toBe(5);
+    expect(report.evaluated).toBe(20);
+    expect(report.unitEstimatedValue).toBeCloseTo(0.9);
+  });
+
+  it("pooling turns a thin per-unit budget into a usable one — the LP-8/LP-6 fix", () => {
+    // 2 exploratory decisions per unit is uselessly thin alone…
+    const alone = evaluatePolicy(
+      trajectories<string>(pooledLog({ users: 1, stepsPerUser: 2 }), byContextUnit),
+      fixed("p", "opus")
+    );
+    expect(promotionGate(alone, { minSteps: 50 }).ok).toBe(false);
+
+    // …but 40 units at 2 each is 80 steps of real evidence.
+    const pooled = evaluatePolicy(
+      trajectories<string>(pooledLog({ users: 40, stepsPerUser: 2 }), byContextUnit),
+      fixed("p", "opus")
+    );
+    expect(pooled.evaluated).toBe(80);
+    expect(pooled.units).toBe(40);
+    expect(promotionGate(pooled, { minSteps: 50, minEffectiveSamples: 10, minUnits: 20 }).ok).toBe(
+      true
+    );
+  });
+
+  it("refuses a pool that is really one enthusiastic user", () => {
+    // 20 users, but one supplies 400 of the 419 decisions.
+    const ts = trajectories<string>(
+      pooledLog({ users: 20, stepsPerUser: 1, heavy: "user-0", heavySteps: 400 }),
+      byContextUnit
+    );
+    const report = evaluatePolicy(ts, fixed("p", "opus"));
+
+    expect(report.units).toBe(20);
+    // Step-level ESS looks reassuring; unit-level ESS tells the truth.
+    expect(report.effectiveSampleSize as number).toBeGreaterThan(300);
+    expect(report.unitEffectiveSampleSize as number).toBeLessThan(2);
+    expect(report.maxUnitWeightShare as number).toBeGreaterThan(0.9);
+    expect(report.warnings.join(" ")).toMatch(/wearing a pooled label/);
+    expect(promotionGate(report, { minSteps: 100, minUnits: 10 }).ok).toBe(false);
+  });
+
+  it("flags a heterogeneous population where the pooled number describes nobody", () => {
+    // Half the users get 0.9, half get 0.1, and one heavy user drags the pool.
+    const ts = trajectories<string>(
+      pooledLog({
+        users: 10,
+        stepsPerUser: 2,
+        heavy: "user-0",
+        heavySteps: 200,
+        rewardFor: (u) => (u === "user-0" ? 0.1 : 0.9),
+      }),
+      byContextUnit
+    );
+    const report = evaluatePolicy(ts, fixed("p", "opus"));
+    expect(report.estimatedValue as number).toBeLessThan(0.3); // dragged down by the heavy unit
+    expect(report.unitEstimatedValue as number).toBeGreaterThan(0.7); // the typical unit
+    expect(report.warnings.join(" ")).toMatch(/population is heterogeneous/);
+  });
+
+  it("says so when no unit attribution was recorded, and fails a minUnits gate", () => {
+    const ts = trajectories<string>(pooledLog({ users: 5, stepsPerUser: 4 })); // no unitOf
+    const report = evaluatePolicy(ts, fixed("p", "opus"));
+
+    expect(report.units).toBeUndefined();
+    expect(report.warnings.join(" ")).toMatch(/no unit attribution/);
+    const verdict = promotionGate(report, { minSteps: 10, minUnits: 5 });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reasons.join(" ")).toMatch(/no unit attribution/);
+  });
+
+  it("renders the pooled statistics", () => {
+    const ts = trajectories<string>(pooledLog({ users: 6, stepsPerUser: 3 }), byContextUnit);
+    const text = formatEvalReport(evaluatePolicy(ts, fixed("p", "opus")));
+    expect(text).toMatch(/units pooled\s+6/);
+    expect(text).toMatch(/effective units/);
+    expect(text).toMatch(/largest unit share/);
+  });
+});

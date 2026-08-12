@@ -303,9 +303,18 @@ wrong lesson.
 
 Three resolutions, in preference order:
 
-1. **Pool across consenting users.** LP-3 already specifies pooled priors; pool the *evaluation
-   set* too. This multiplies exploratory volume by cohort size and costs no additional
-   per-user interruption.
+1. **Pool across consenting users** — **now implemented**. LP-3 already specifies pooled priors;
+   pool the *evaluation set* too. This multiplies exploratory volume by cohort size and costs no
+   additional per-user interruption, and importance weighting stays valid even though each user
+   ran a different policy, because every step carries the propensity that generated it.
+
+   `trajectories(events, { unitOf })` attributes each execution to a unit, and `evaluatePolicy`
+   then reports `units`, a **cluster-robust** `unitEstimatedValue` (mean of per-unit estimates,
+   equally weighted), `unitEffectiveSampleSize`, and `maxUnitWeightShare` — because the same
+   pooling that fixes the volume problem is how a pooled estimate silently becomes one heavy
+   user's. `promotionGate({ minUnits })` gates on it and **fails closed** when unit attribution
+   is absent. Note that `effectiveSampleSize` alone overstates pooled evidence: it treats steps
+   within a user as independent, which they are not.
 2. **Lengthen the evaluation window** beyond 8 weeks for the M4 gate specifically, and say so in
    KC-4.1 rather than discovering it at the gate.
 3. **Raise exploration** — the last resort, since LP-8 exists to protect goodwill and

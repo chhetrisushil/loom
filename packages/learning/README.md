@@ -97,6 +97,42 @@ printing a confident number.
 
 ---
 
+## Pooling across units
+
+Off-policy evaluation is gated by **exploration volume, not log length**. If a product caps
+exploration to protect the user — say two exploratory decisions per person per week — then eight
+weeks of history yields ~16 counterfactual steps per person. Non-exploratory steps carry weight
+≈ 1 and only inform the estimate where the candidate *agrees* with the incumbent, so a candidate
+that meaningfully differs is judged on those ~16. The gate then refuses for thin evidence, which
+is correct and reads as "the new policy lost".
+
+The fix is to pool the **evaluation set** across consenting units. Importance weighting handles
+this correctly even when each unit ran a *different* policy, because every step carries the
+propensity that actually generated it.
+
+```ts
+const ts = trajectories(events, { unitOf: (_id, ctx) => ctx?.tenant as string });
+const report = evaluatePolicy(ts, candidate);
+promotionGate(report, { minSteps: 5_000, minUnits: 20 });
+```
+
+Pooling is also how a pooled estimate quietly becomes one heavy unit's estimate, so the report
+carries unit-level statistics whenever `unit` is set:
+
+| Field | What it tells you |
+|---|---|
+| `units` | how broad the evidence is |
+| `unitEstimatedValue` | the **cluster-robust** estimate — mean of each unit's own SNIPS value, equally weighted. What the policy is worth for a *typical* unit |
+| `unitEffectiveSampleSize` | how many **units** the estimate rests on. `effectiveSampleSize` treats steps within a unit as independent — they are not — so it overstates pooled evidence |
+| `maxUnitWeightShare` | the largest single unit's share of the importance weight |
+
+Three warnings fire on the ways pooling misleads: one unit supplying most of the weight; a unit
+ESS far below the unit count; and a material gap between the pooled and per-unit estimates, which
+means the population is heterogeneous and the pooled number describes nobody.
+
+`minUnits` **fails closed**: a report with no unit attribution does not pass the gate vacuously,
+it fails it, with a message telling you to pass `unitOf`.
+
 ## The `Policy` SPI
 
 One method. No training hook, no lifecycle:

@@ -85,6 +85,16 @@ export interface TrajectoryStep<A = unknown> {
 /** One execution's decisions, in order, with its terminal result. */
 export interface Trajectory<A = unknown> {
   executionId: string;
+  /**
+   * The unit this execution belongs to — a user, tenant, or cohort member.
+   *
+   * Pooling several units' logs into one evaluation is how a thin per-unit
+   * exploration budget becomes a usable evidence base. It is also how a pooled
+   * estimate quietly becomes one heavy unit's estimate, so evaluation reports
+   * unit-level statistics whenever this is set. Populate via
+   * {@link TrajectoryOptions.unitOf}.
+   */
+  unit?: string;
   steps: TrajectoryStep<A>[];
   /** Terminal reward for the execution as a whole, if one could be determined. */
   terminalReward?: number;
@@ -114,6 +124,12 @@ export interface TrajectoryOptions {
    * one, and summing the two double-counts.
    */
   terminalCreditOnScored?: boolean;
+  /**
+   * Attribute each execution to a unit (user/tenant). Receives the execution id
+   * and the context of its first recorded decision, which covers both the common
+   * case (the unit is a context feature) and an external id → unit map.
+   */
+  unitOf?: (executionId: string, firstContext?: PolicyContext) => string | undefined;
 }
 
 /** How a candidate policy's value was estimated. */
@@ -143,6 +159,29 @@ export interface EvalReport {
    * REALLY resting on. Far below `evaluated` means one or two lucky steps dominate it.
    */
   effectiveSampleSize?: number;
+  /**
+   * Distinct units (users/tenants) contributing weight, when trajectories carry a
+   * `unit`. Pooling is what makes a small per-unit exploration budget usable, so
+   * this is the number that says how broad the evidence actually is.
+   */
+  units?: number;
+  /**
+   * Cluster-robust estimate: the mean of each unit's OWN SNIPS estimate, equally
+   * weighted per unit. Answers "what would this policy be worth for a typical
+   * unit", where `estimatedValue` answers "…across the pooled step population" and
+   * is dominated by whichever unit contributed most weight. A material gap between
+   * the two means the population is heterogeneous and the pooled number is
+   * misleading.
+   */
+  unitEstimatedValue?: number;
+  /**
+   * Kish effective sample size over per-unit total weights — how many UNITS the
+   * estimate rests on. `effectiveSampleSize` treats steps within a unit as
+   * independent, which they are not, so it overstates the evidence under pooling.
+   */
+  unitEffectiveSampleSize?: number;
+  /** Largest single unit's share of total importance weight, in [0,1]. */
+  maxUnitWeightShare?: number;
   /** Everything that makes this report weaker than it looks. Never empty by default. */
   warnings: string[];
 }
