@@ -209,6 +209,9 @@ const NOT_A_CAPABILITY = new Set([
   "0082",
   // 0083 — a review rule for 1P surface growth. No runtime subsystem to grade.
   "0083",
+  // 0084 — effect classes ride the existing @loom/verify seam (ADR 0028's capability
+  // is what the registry grades); this ADR adds a rule, not a subsystem.
+  "0084",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

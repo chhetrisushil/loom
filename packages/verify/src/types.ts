@@ -22,7 +22,8 @@ export type RuleName =
   | "capability-compat"
   | "placement-compat"
   | "resource-compat"
-  | "classification-reachability";
+  | "classification-reachability"
+  | "effect-class";
 
 export interface Finding {
   readonly rule: RuleName;
@@ -75,6 +76,8 @@ export interface EffectRef {
   readonly capability: string;
   /** Optional effect kind (step/llm/tool/…) used for placement compatibility. */
   readonly kind?: string;
+  /** EF — the effect's declared class, from the app's `effectClasses` ordering. */
+  readonly effectClass?: string;
 }
 
 export interface BudgetSpec {
@@ -108,6 +111,11 @@ export interface FlowSpec {
   readonly loopIdentityCalls?: readonly LoopIdentityCall[];
   readonly suspends?: readonly SuspendPoint[];
   readonly effects?: readonly EffectRef[];
+  /**
+   * EF-1 — the flow's declared effect-class CEILING. A value from the app's
+   * `effectClasses` ordering; absent ⇒ the effect-class rule skips this flow (G2).
+   */
+  readonly effectClass?: string;
   /** `ExecutionPolicy.computeTarget`, if the flow pins a placement lane. */
   readonly computeTarget?: string;
   readonly budget?: BudgetSpec;
@@ -132,6 +140,15 @@ export interface PlacementSpec {
 
 export interface VerifyInput {
   readonly flows: readonly FlowSpec[];
+  /**
+   * EF — the app's effect-class vocabulary, **ascending severity** (e.g.
+   * `["read-only","local-write","external-write","irreversible"]`).
+   *
+   * Loom owns the mechanism, never the taxonomy: what the classes ARE is a
+   * product decision, so the list is supplied by the app (ADR 0083). Absent ⇒
+   * the effect-class rule is a no-op.
+   */
+  readonly effectClasses?: readonly string[];
   /** K2 grants. Absent means no `GrantTable` is wired — capability-compat is skipped (G2). */
   readonly grants?: GrantSpec;
   /** Registered `PlacementDispatcher` targets. Absent means default local placement. */

@@ -41,6 +41,14 @@ export type VerifyConfig =
       readonly meteredDimensions?: readonly string[];
       /** Restrict to a subset of rules; defaults to all. */
       readonly rules?: readonly RuleName[];
+      /**
+       * EF — the app's effect-class vocabulary, **ascending severity**, e.g.
+       * `["read-only","local-write","external-write","irreversible"]`. Declaring it
+       * turns on the `effect-class` rule; omitting it keeps the rule a no-op (G2).
+       * The taxonomy is yours: loom checks the ordering you supply, it does not
+       * define one (ADR 0083).
+       */
+      readonly effectClasses?: readonly string[];
       /** Compiler lint findings (nondeterminism issue #82, loop identity ADR 0061). */
       readonly lint?: VerifyLintInputs;
     };
@@ -48,6 +56,7 @@ export type VerifyConfig =
 export interface NormalizedVerify {
   readonly mode: VerifyMode;
   readonly meteredDimensions?: readonly string[];
+  readonly effectClasses?: readonly string[];
   readonly rules?: readonly RuleName[];
   readonly lint?: VerifyLintInputs;
 }
@@ -60,12 +69,19 @@ export function normalizeVerify(v: VerifyConfig | undefined): NormalizedVerify |
     mode: v.mode ?? "warn",
     ...(v.meteredDimensions !== undefined && { meteredDimensions: v.meteredDimensions }),
     ...(v.rules !== undefined && { rules: v.rules }),
+    ...(v.effectClasses !== undefined && { effectClasses: v.effectClasses }),
     ...(v.lint !== undefined && { lint: v.lint }),
   };
 }
 
 export interface VerifyAdapterInputs {
   readonly authorizer?: CapabilityAuthorizer;
+  /**
+   * EF — the app's effect-class vocabulary, ascending severity. Supplied because
+   * the taxonomy is a product decision, not loom's (ADR 0083). Absent ⇒ the
+   * effect-class rule is a no-op.
+   */
+  readonly effectClasses?: readonly string[];
   readonly dispatcher?: ExecutionDispatcher;
   readonly meteredDimensions?: readonly string[];
   /**
@@ -121,7 +137,15 @@ export function resolveVerifyInput(
     if (def === undefined) continue;
     const effects = def.steps
       .filter((s): s is typeof s & { toolId: string } => s.toolId !== undefined)
-      .map((s) => ({ toolId: s.toolId, capability: s.toolId, kind: "step" as const }));
+      .map((s) => ({
+        toolId: s.toolId,
+        capability: s.toolId,
+        kind: "step" as const,
+        // EF — read from the REAL step definition, never accepted from a caller, so
+        // the effect-class rule cannot be satisfied by an app that merely claims a
+        // class (same discipline as unreachableMarks / usesApproval below).
+        ...(s.effectClass !== undefined && { effectClass: s.effectClass }),
+      }));
     const nonDet = inputs.nonDeterministicByFlow?.[def.id];
     const loopIdent = inputs.loopIdentityByFlow?.[def.id];
     // K10-R1 reachability: derived from the REAL step schemas here rather than supplied by a
@@ -159,6 +183,7 @@ export function resolveVerifyInput(
       id: def.id,
       flowHash: flowContentHash(def),
       ...(effects.length > 0 && { effects }),
+      ...(def.effectClass !== undefined && { effectClass: def.effectClass }),
       ...(nonDet !== undefined && nonDet.length > 0 && { nonDeterministicCalls: nonDet }),
       ...(loopIdent !== undefined && loopIdent.length > 0 && { loopIdentityCalls: loopIdent }),
       ...(unreachableMarks.length > 0 && { unreachableMarks }),
@@ -180,5 +205,6 @@ export function resolveVerifyInput(
     ...(grants !== undefined && { grants }),
     ...(placement !== undefined && { placement }),
     ...(inputs.meteredDimensions !== undefined && { meteredDimensions: inputs.meteredDimensions }),
+    ...(inputs.effectClasses !== undefined && { effectClasses: inputs.effectClasses }),
   };
 }

@@ -227,3 +227,97 @@ describe("verify — K12 resume authentication", () => {
     ).not.toThrow();
   });
 });
+
+// ── EF — the rule must FIRE for a real defineConfig app ───────────────────────
+//
+// A verify rule whose inputs no producer populates evaluates `undefined && …` and
+// can never produce a finding, while still counting as coverage in `report.checked`.
+// That has happened here before (FlowSpec.suspends is still dead for this reason).
+// These tests exist so `effect-class` cannot join it: they go through the real
+// builders and the real adapter, not a hand-built VerifyInput.
+describe("effect-class reaches the rule through defineConfig", () => {
+  const io = { inputSchema: incident, outputSchema: z.object({ ok: z.boolean() }) };
+  const readStep = step$({ id: "read", toolId: "read-tool", effectClass: "read-only", ...io });
+  const postStep = step$({ id: "post", toolId: "post-tool", effectClass: "external-write", ...io });
+  const unclassified = step$({ id: "mystery", toolId: "mystery-tool", ...io });
+
+  const efFlow = (
+    id: string,
+    effectClass: string,
+    steps: ReturnType<typeof step$>[]
+  ): RegisteredFlow =>
+    ({
+      definition: {
+        _tag: "FlowDefinition",
+        id,
+        name: id,
+        version: "1.0.0",
+        inputSchema: incident,
+        outputSchema: resolved,
+        steps,
+        effectClass,
+      },
+      runner: (async () => ({ resolved: true })) as unknown as FlowRunner<unknown, unknown>,
+    }) as RegisteredFlow;
+
+  const CLASSES = ["read-only", "local-write", "external-write", "irreversible"];
+
+  it("carries the step's and the flow's class into VerifyInput", () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [efFlow("audit", "read-only", [readStep, postStep])],
+      checks: { verify: { mode: "off", effectClasses: CLASSES } },
+    });
+    const input = resolveVerifyInput(app.runtime, { effectClasses: CLASSES });
+    const spec = input.flows.find((f) => f.id === "audit");
+    expect(spec?.effectClass).toBe("read-only");
+    expect(spec?.effects?.map((e) => e.effectClass)).toEqual(["read-only", "external-write"]);
+    expect(input.effectClasses).toEqual(CLASSES);
+  });
+
+  it("a read-only flow that reaches an external write fails app.verify()", () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [efFlow("audit", "read-only", [readStep, postStep])],
+      checks: { verify: { mode: "warn", effectClasses: CLASSES } },
+    });
+    const report = app.verify();
+    const ef = report.findings.filter((f) => f.rule === "effect-class");
+    expect(ef).toHaveLength(1);
+    expect(ef[0]?.severity).toBe("error");
+    expect(ef[0]?.location).toBe("audit:post-tool");
+    expect(report.ok).toBe(false);
+  });
+
+  it("names the K2 interaction using the app's real GrantTable", () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [efFlow("audit", "read-only", [postStep])],
+      security: { authorizer: new GrantTable({ audit: ["post-tool"] }) },
+      checks: { verify: { mode: "warn", effectClasses: CLASSES } },
+    });
+    const ef = app.verify().findings.filter((f) => f.rule === "effect-class");
+    expect(ef[0]?.message).toMatch(/IS granted, so K2 will not stop it at runtime/);
+  });
+
+  it("an unclassified step makes the flow only partially verified, never silently clean", () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [efFlow("audit", "read-only", [unclassified])],
+      checks: { verify: { mode: "warn", effectClasses: CLASSES } },
+    });
+    const ef = app.verify().findings.filter((f) => f.rule === "effect-class");
+    expect(ef).toHaveLength(1);
+    expect(ef[0]?.severity).toBe("warn");
+    expect(ef[0]?.message).toMatch(/only partially verified/);
+  });
+
+  it("is byte-identical when the app declares no vocabulary (G2)", () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [efFlow("audit", "read-only", [postStep])],
+      checks: { verify: { mode: "warn" } },
+    });
+    expect(app.verify().findings.filter((f) => f.rule === "effect-class")).toEqual([]);
+  });
+});

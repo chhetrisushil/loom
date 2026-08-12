@@ -124,6 +124,8 @@ export interface StepDefinition<TIn = unknown, TOut = unknown> {
   timeoutMs?: number;
   /** DE-4 — declared failure channels (see {@link ToolDefinition.errors}). Step declaration wins over the registered effect's. */
   errors?: Record<string, ZodSchema>;
+  /** EF — the class of side effect this step's tool performs (app-supplied vocabulary). */
+  effectClass?: string;
 }
 
 // ── Tasks (ctx.execute) — the generalized unit of durable work (Loom 2.0) ─────
@@ -192,6 +194,8 @@ export interface FlowDefinition<TIn = unknown, TOut = unknown> {
    * possible at all.
    */
   resumeSchemas?: Readonly<Record<string, ZodTypeAny>>;
+  /** EF-1 — the flow's declared effect-class ceiling (app-supplied vocabulary). */
+  effectClass?: string;
 }
 
 // ── Schedules (schedule$) — durable cron-style executions (T1.2) ─────────────
