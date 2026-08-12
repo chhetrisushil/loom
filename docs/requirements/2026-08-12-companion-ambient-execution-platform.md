@@ -1,9 +1,9 @@
 # Loom Platform Requirements — Ambient Personal Execution Companion
 
 - Submitted: 2026-08-12. Derived from Companion PRD v1.0 (KP-1…KP-8).
-- Status: **As submitted.** Verdicts, corrections and revised layer assignments are in the
-  [evaluation](2026-08-12-companion-platform-evaluation.md); this file is the unmodified
-  proposal it judges.
+- Status: **As submitted**, with one clearly-marked editorial erratum at PO-3 (§9) — the body is
+  otherwise unmodified. Verdicts, corrections and revised layer assignments are in the
+  [evaluation](2026-08-12-companion-platform-evaluation.md); this file is the proposal it judges.
 - Source: the Companion PRD ("Ambient Personal Execution Companion", Product, v1.0) is a
   *product* document for a separate product and is not captured here. Its §15 KP-1…KP-8 are
   the loom-facing extract, reproduced in the traceability appendix below.
@@ -387,6 +387,11 @@ outcomes, not durable mutable state. Posterior state is recomputable from the lo
 action taken, channel)` as a *decision* record per EL-6. The draw is a nondeterministic value
 consumed by orchestration and is recorded through the existing determinism boundary — no new
 mechanism.
+
+> **⚠ ERRATUM (editorial insertion, not part of the submission).** As written, PO-3 records the
+> wrong quantity and PO-4 is not computable from its output. The corrected requirement is in the
+> [evaluation §5.1](2026-08-12-companion-platform-evaluation.md#51-the-corrected-po-3-and-lp-4).
+> Do not implement the paragraph above.
 
 **PO-4** MUST — layer `app` — *Scoring* off-policy evaluation: a candidate policy is evaluated
 against recorded trajectories by importance-weighting recorded outcomes under the recorded

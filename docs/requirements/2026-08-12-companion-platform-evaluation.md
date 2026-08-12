@@ -221,10 +221,105 @@ concluded.
 
 ---
 
-## 5. Recommended actions
+---
 
-1. **Fix PO-3 in the PRD** (Companion LP-4): log the propensity, not just the randomisation
-   draw. Everything in LP-6 depends on it and the loss is irreversible.
+## 5. The propensity defect
+
+### 5.1 The corrected PO-3 and LP-4
+
+#### Why the submitted text is wrong
+
+PO-3 records the **randomisation draw**. Importance weighting needs the **propensity** —
+`P(action taken | context)` under the policy that took it. These are different objects:
+
+- the *draw* is the sample (`0.37`);
+- the *propensity* is the probability mass the policy assigned to what it chose. Under ε-greedy
+  over `k` actions that is `ε/k + (1−ε)·1[a = argmax]`.
+
+Recovering the propensity from the draw requires the policy's **internal state at decision
+time** — which arm was `argmax` for that context, under that model version. That state is not
+durable, and for a policy that has since been retrained it no longer exists. So the propensity
+must be written at decision time or it is gone permanently. A log that records only draws
+supports agreement counting and nothing else: `evaluatePolicy` will report
+`estimator: "agreement-only"` and refuse to produce a value estimate, which is the correct
+behaviour and also a total loss of the capability LP-6 exists for.
+
+#### Corrected PO-3
+
+> **PO-3** MUST — layer `app` — Every policy decision writes, as a *decision* record per EL-6:
+> the **context vector** the policy saw; the **action taken** and its channel; the **propensity**
+> — `P(action taken | context)` under the policy that took it; and the **policy identity and
+> version**. The randomisation draw MAY also be recorded for reproducibility, but is not a
+> substitute for the propensity.
+>
+> A deterministic policy records propensity `1` — and a log written entirely that way contains
+> no counterfactuals and can never support an unbiased estimate of the *next* candidate, so a
+> policy intended to keep learning MUST retain a non-zero exploration probability (see the
+> tension in §5.2).
+>
+> - *Mechanism:* none new, as the original PO-3 correctly anticipated — `ctx.decide`'s
+>   `policy: { id, version, propensity }` (ADR 0079), populated automatically by
+>   `decideWithPolicy` (`@loom/learning`, ADR 0080).
+> - *Accept:* over a sample of recorded decisions, the propensities the policy reports across
+>   an action set sum to `1 ± tolerance`; and `evaluatePolicy` over the log reports
+>   `estimator: "snips"`, not `"agreement-only"`.
+
+#### Corrected Companion LP-4
+
+> **LP-4** [M4] **MUST** Interventions are micro-randomised at decision points, and **the
+> probability the policy assigned to the action it took** — `P(action | context)`, the
+> propensity — is written to the event log alongside the action, not merely the randomisation
+> draw.
+> - *Rationale:* the propensity is what makes intervention effects causally identifiable and
+>   LP-6 computable. It exists only at decision time: a draw plus a since-retrained policy
+>   cannot reconstruct it, and no later analysis recovers it. This is the one requirement in the
+>   document whose omission is **silent and permanent** — nothing downstream can detect a log
+>   that lacks it until someone tries to evaluate against it.
+> - *Accept:* an off-policy evaluation over ≥ 8 weeks of recorded history returns an unbiased
+>   value estimate, not an agreement rate.
+
+### 5.2 A tension the submission and the PRD both miss: LP-8 vs LP-6
+
+Fixing PO-3 makes off-policy evaluation *possible*. It does not make LP-6's acceptance criterion
+*achievable*, because two other requirements are in conflict:
+
+- **LP-8** caps exploration at **≤ 2 exploratory interruptions per user per week**.
+- **LP-6** requires a candidate policy be scored against **≥ 8 weeks** of recorded history.
+- **KC-4.1** gates M4 on the learned policy beating the baseline in that evaluation, *before* any
+  online deployment.
+
+Eight weeks at two per week is **16 exploratory decisions per user**. Non-exploratory steps are
+still usable — they carry propensity ≈ 1 and weight ≈ 1 — but they only inform the estimate where
+the candidate *agrees* with the incumbent's argmax. All the counterfactual information, and
+therefore all of the lift resolution, comes from the exploratory steps. A candidate that
+meaningfully differs from the incumbent will be evaluated on roughly those 16 high-weight steps,
+and the effective sample size will collapse accordingly.
+
+This is not hypothetical: it is exactly the failure the `learning-router` example was built to
+demonstrate, where a **+0.37 lift resting on ~9 effective samples is correctly refused** by the
+promotion gate. At LP-8's budget, KC-4.1 will most likely fail not because the policy is bad but
+because the evidence is thin — and reading that as "the learned policy did not win" would be the
+wrong lesson.
+
+Three resolutions, in preference order:
+
+1. **Pool across consenting users.** LP-3 already specifies pooled priors; pool the *evaluation
+   set* too. This multiplies exploratory volume by cohort size and costs no additional
+   per-user interruption.
+2. **Lengthen the evaluation window** beyond 8 weeks for the M4 gate specifically, and say so in
+   KC-4.1 rather than discovering it at the gate.
+3. **Raise exploration** — the last resort, since LP-8 exists to protect goodwill and
+   "exploration that costs goodwill is not free" is the correct instinct.
+
+Whichever is chosen, **report effective sample size alongside any lift** (`evaluatePolicy`
+returns it) so a thin estimate is visibly thin at the gate rather than in production.
+
+---
+
+## 6. Recommended actions
+
+1. **Fix PO-3 and LP-4** — corrected text in §5.1 above. Everything in LP-6 depends on it and
+   the loss is irreversible.
 2. **Quantify IN-1** before designing it — a target observation write rate, compared against the
    measured append ceiling.
 3. **Run LQ-2 as a benchmark** (ADR 0081's gate) rather than scoping a promotion.
