@@ -245,3 +245,122 @@ describe("formatReport", () => {
     expect(text).toContain("warning(s)");
   });
 });
+
+// ── EF — effect classes (static ceiling) + K2 reconciliation ──────────────────
+describe("effect-class rule", () => {
+  const CLASSES = ["read-only", "local-write", "external-write", "irreversible"] as const;
+  const run = (input: Partial<VerifyInput>) =>
+    verify({ flows: [], effectClasses: [...CLASSES], ...input } as VerifyInput).findings.filter(
+      (f) => f.rule === "effect-class"
+    );
+
+  const flow = (
+    effectClass: string | undefined,
+    effects: { toolId: string; effectClass?: string }[]
+  ) => ({
+    id: "f",
+    ...(effectClass !== undefined && { effectClass }),
+    effects: effects.map((e) => ({
+      toolId: e.toolId,
+      capability: e.toolId,
+      kind: "step" as const,
+      ...(e.effectClass !== undefined && { effectClass: e.effectClass }),
+    })),
+  });
+
+  it("passes when every reachable effect is within the declared class", () => {
+    expect(
+      run({
+        flows: [
+          flow("local-write", [
+            { toolId: "read", effectClass: "read-only" },
+            { toolId: "save", effectClass: "local-write" },
+          ]),
+        ],
+      })
+    ).toEqual([]);
+  });
+
+  it("fails when a reachable effect exceeds the declared class", () => {
+    const f = run({
+      flows: [flow("read-only", [{ toolId: "post", effectClass: "external-write" }])],
+    });
+    expect(f).toHaveLength(1);
+    expect(f[0]?.severity).toBe("error");
+    expect(f[0]?.message).toMatch(
+      /declares effect class "read-only" but reaches "post", classed "external-write"/
+    );
+    expect(f[0]?.location).toBe("f:post");
+  });
+
+  it("composes conservatively — the worst reachable effect decides", () => {
+    const f = run({
+      flows: [
+        flow("local-write", [
+          { toolId: "a", effectClass: "read-only" },
+          { toolId: "b", effectClass: "irreversible" },
+          { toolId: "c", effectClass: "local-write" },
+        ]),
+      ],
+    });
+    expect(f.map((x) => x.location)).toEqual(["f:b"]);
+  });
+
+  // ── K2 reconciliation ──────────────────────────────────────────────────────
+  it("says when K2 will NOT stop the violation, because the capability is granted", () => {
+    const f = run({
+      flows: [flow("read-only", [{ toolId: "post", effectClass: "external-write" }])],
+      grants: { grants: { f: ["post"] } },
+    });
+    expect(f[0]?.message).toMatch(/IS granted, so K2 will not stop it at runtime/);
+  });
+
+  it("says when K2 would also deny it", () => {
+    const f = run({
+      flows: [flow("read-only", [{ toolId: "post", effectClass: "external-write" }])],
+      grants: { grants: { f: ["other"] } },
+    });
+    expect(f[0]?.message).toMatch(/K2 would also deny it/);
+  });
+
+  it("stays silent about K2 when no GrantTable is wired", () => {
+    const f = run({
+      flows: [flow("read-only", [{ toolId: "post", effectClass: "external-write" }])],
+    });
+    expect(f[0]?.message).not.toMatch(/K2/);
+  });
+
+  // ── Cannot pass vacuously ──────────────────────────────────────────────────
+  it("warns rather than passing when reachable effects carry no class", () => {
+    const f = run({ flows: [flow("read-only", [{ toolId: "mystery" }])] });
+    expect(f).toHaveLength(1);
+    expect(f[0]?.severity).toBe("warn");
+    expect(f[0]?.message).toMatch(
+      /1 reachable effect\(s\) carry no class — the declaration is only partially verified/
+    );
+  });
+
+  it("rejects a class name outside the configured ordering (catches typos)", () => {
+    expect(run({ flows: [flow("read-onyl", [])] })[0]?.message).toMatch(
+      /not in the configured ordering/
+    );
+    expect(
+      run({ flows: [flow("read-only", [{ toolId: "x", effectClass: "extrenal-write" }])] })[0]
+        ?.message
+    ).toMatch(/Effect "x" declares effect class "extrenal-write"/);
+  });
+
+  // ── G2: unwired is byte-identical ──────────────────────────────────────────
+  it("is a no-op when the app declares no vocabulary", () => {
+    const input = {
+      flows: [flow("anything", [{ toolId: "x", effectClass: "nonsense" }])],
+    } as VerifyInput;
+    expect(verify(input).findings.filter((f) => f.rule === "effect-class")).toEqual([]);
+  });
+
+  it("is a no-op for a flow that declares no class", () => {
+    expect(
+      run({ flows: [flow(undefined, [{ toolId: "post", effectClass: "irreversible" }])] })
+    ).toEqual([]);
+  });
+});

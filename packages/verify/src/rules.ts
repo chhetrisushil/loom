@@ -240,6 +240,101 @@ function majorCompatible(a: string, b: string): boolean {
 }
 
 /** All rules, keyed by name. */
+/**
+ * effect-class (EF) — a flow may not reach an effect whose declared class exceeds
+ * the class the flow itself declared. Static, whole-flow, conservative by
+ * composition: the flow's effective class is the max over everything it reaches.
+ *
+ * The class VOCABULARY is app-supplied (`input.effectClasses`, ascending
+ * severity). Loom owns the mechanism, not the taxonomy — what the classes ARE is
+ * a product decision (ADR 0083).
+ *
+ * **K2 reconciliation.** The `GrantTable` is an INDEPENDENT protection ring. It
+ * answers "may this principal invoke this tool at all"; it never answers "does
+ * this tool exceed what the flow promised". So a granted effect that busts the
+ * declared class is invisible to K2 — the finding says so explicitly, because
+ * that is precisely why this rule exists beside `capability-compat` rather than
+ * inside it. Static class = declared upper bound; grants = runtime floor.
+ */
+const effectClass: Rule = (input) => {
+  const findings: Finding[] = [];
+  const order = input.effectClasses;
+  if (order === undefined || order.length === 0) return findings; // G2: unwired ⇒ no-op
+  const rank = new Map(order.map((c, i) => [c, i]));
+  const ladder = order.join(" < ");
+
+  const grantSpec = input.grants;
+  /** true = granted, false = denied, undefined = no GrantTable wired (K2 permissive). */
+  const grantedTo = (flowId: string, capability: string): boolean | undefined => {
+    if (grantSpec === undefined) return undefined;
+    const principal = grantSpec.principalOf ? grantSpec.principalOf(flowId) : flowId;
+    const granted = grantSpec.grants[principal];
+    if (granted === "*") return true;
+    return granted === undefined ? false : granted.includes(capability);
+  };
+
+  for (const flow of input.flows) {
+    const declared = flow.effectClass;
+    if (declared === undefined) continue; // opt-in per flow (G2)
+    const declaredRank = rank.get(declared);
+    if (declaredRank === undefined) {
+      findings.push({
+        rule: "effect-class",
+        severity: "error",
+        message: `Flow "${flow.id}" declares effect class "${declared}", which is not in the configured ordering [${ladder}].`,
+        location: flow.id,
+      });
+      continue;
+    }
+
+    let unclassified = 0;
+    for (const effect of flow.effects ?? []) {
+      const ec = effect.effectClass;
+      if (ec === undefined) {
+        unclassified += 1;
+        continue;
+      }
+      const effectRank = rank.get(ec);
+      if (effectRank === undefined) {
+        findings.push({
+          rule: "effect-class",
+          severity: "error",
+          message: `Effect "${effect.toolId}" declares effect class "${ec}", which is not in the configured ordering [${ladder}].`,
+          location: `${flow.id}:${effect.toolId}`,
+        });
+        continue;
+      }
+      if (effectRank > declaredRank) {
+        const granted = grantedTo(flow.id, effect.capability);
+        const k2 =
+          granted === true
+            ? " The capability IS granted, so K2 will not stop it at runtime — this check is the only thing that will."
+            : granted === false
+              ? " (K2 would also deny it: the capability is not granted to this principal.)"
+              : "";
+        findings.push({
+          rule: "effect-class",
+          severity: "error",
+          message: `Flow "${flow.id}" declares effect class "${declared}" but reaches "${effect.toolId}", classed "${ec}".${k2}`,
+          location: `${flow.id}:${effect.toolId}`,
+        });
+      }
+    }
+
+    // Without this the rule passes VACUOUSLY on a flow whose effects carry no
+    // class — a green report would claim a verification nobody performed.
+    if (unclassified > 0) {
+      findings.push({
+        rule: "effect-class",
+        severity: "warn",
+        message: `Flow "${flow.id}" declares effect class "${declared}", but ${unclassified} reachable effect(s) carry no class — the declaration is only partially verified.`,
+        location: flow.id,
+      });
+    }
+  }
+  return findings;
+};
+
 export const RULES: Record<RuleName, Rule> = {
   determinism,
   "replay-safety": replaySafety,
@@ -248,6 +343,7 @@ export const RULES: Record<RuleName, Rule> = {
   "placement-compat": placementCompat,
   "resource-compat": resourceCompat,
   "classification-reachability": classificationReachability,
+  "effect-class": effectClass,
 };
 
 /** Canonical rule order (matches ADR 0028). */
@@ -259,4 +355,5 @@ export const RULE_ORDER: readonly RuleName[] = [
   "placement-compat",
   "resource-compat",
   "classification-reachability",
+  "effect-class",
 ];

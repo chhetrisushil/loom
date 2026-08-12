@@ -1008,6 +1008,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       ...(verifyCfg?.meteredDimensions !== undefined && {
         meteredDimensions: verifyCfg.meteredDimensions,
       }),
+      ...(verifyCfg?.effectClasses !== undefined && { effectClasses: verifyCfg.effectClasses }),
       ...(Object.keys(nonDeterministicByFlow).length > 0 && { nonDeterministicByFlow }),
       ...(Object.keys(loopIdentityByFlow).length > 0 && { loopIdentityByFlow }),
     });

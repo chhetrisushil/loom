@@ -11,6 +11,14 @@ export interface StepConfig<TIn, TOut> {
   id: string;
   name?: string;
   toolId?: string;
+  /**
+   * EF — the class of side effect this step's tool performs, from the app's
+   * `checks.effectClasses` ordering (e.g. `"external-write"`). Descriptive
+   * metadata: read by `@loom/verify`'s `effect-class` rule at composition time,
+   * never by the runtime. Absent ⇒ the step is unclassified and the rule reports
+   * the flow as only partially verified rather than passing it silently.
+   */
+  effectClass?: string;
   handler?: HandlerSpec<TIn, TOut>;
   inputSchema: z.ZodSchema<TIn>;
   outputSchema: z.ZodSchema<TOut>;
@@ -34,6 +42,7 @@ export function step$<TIn = unknown, TOut = unknown>(
     ...(config.retry !== undefined && { retry: config.retry }),
     ...(config.timeoutMs !== undefined && { timeoutMs: config.timeoutMs }),
     ...(config.errors !== undefined && { errors: config.errors }),
+    ...(config.effectClass !== undefined && { effectClass: config.effectClass }),
   };
 }
 
