@@ -41,7 +41,7 @@ const childFlow = {
     inputSchema: z.object({ n: z.number() }),
     outputSchema: z.object({ v: z.number() }),
     steps: [],
-  } satisfies FlowDefinition<any, any>,
+  } satisfies FlowDefinition<{ n: number }, { v: number }>,
   runner: childRunner,
 } as RegisteredFlow;
 const parentRunner: FlowRunner<{ n: number }, { fromChild: number }> = async (ctx, input) => {
@@ -61,7 +61,7 @@ const parentFlow = {
     inputSchema: z.object({ n: z.number() }),
     outputSchema: z.object({ fromChild: z.number() }),
     steps: [],
-  } satisfies FlowDefinition<any, any>,
+  } satisfies FlowDefinition<{ n: number }, { fromChild: number }>,
   runner: parentRunner,
 } as RegisteredFlow;
 

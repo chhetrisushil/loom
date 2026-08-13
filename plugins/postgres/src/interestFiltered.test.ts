@@ -105,8 +105,9 @@ suite("interest-filtered NOTIFY delivery", () => {
     const store = new PostgresEventStore(track(new Pool(scoped())), { notifyBuckets: 8 });
     const un = await store.subscribe(ID("a"), () => {});
     // The store's listener is its own dedicated connection; ask that session what it holds.
-    // biome-ignore lint/suspicious/noExplicitAny: reading the private listener client is
-    // the only way to assert against the real session rather than a proxy for it.
+    // Reading the private client is the only way to assert against the real session rather
+    // than a proxy for it.
+    // biome-ignore lint/suspicious/noExplicitAny: private listener client — see above
     const listener = (store as any).listener as { query: Pool["query"] };
     const during = await listener.query("SELECT channel FROM pg_listening_channels() AS channel");
     expect(during.rows.length).toBe(1);
