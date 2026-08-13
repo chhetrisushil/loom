@@ -214,10 +214,23 @@ because a framework that writes into your system prompt is doing the very thing 
 
 ### Producing taint
 
-`registerMcpInvoke(client, runtime, { taintResults: true })` taints every MCP tool result with
-`mcp:<server>/<toolName>`. It is opt-in because it changes the step's output *shape* — consumers
-call `unwrapTainted()` to compute with it, and that friction is deliberate: every unwrap is a
-visible place where provenance stops travelling.
+Two producers ship, both opt-in:
+
+| Producer | Origin | What it taints |
+|---|---|---|
+| `registerMcpInvoke(client, runtime, { taintResults: true })` | `mcp:<server>/<toolName>` | the whole result — `mcpInvoke$` yields `unknown`, so there is no field to single out |
+| `new A2APeerClient({ url, taintResults: true })` | `a2a:<toolId>` | `content` only — `raw` carries task state that feeds control flow |
+
+They differ deliberately. Tainting the *whole* value means consumers call `unwrapTainted()` to
+compute with it, and that friction is the point — every unwrap is a visible place where provenance
+stops travelling. But where the output type already separates the flattened text from the
+structured result, tainting only the text puts the friction on the prompt path and leaves
+control-flow code alone: `peer.content` drops straight into an `LlmMessage` slot where the guard
+sees it, with no ceremony at the call site.
+
+For the A2A peer the flag's *literal type* selects the output type
+(`A2APeerOutput` vs `TaintedA2APeerOutput`), so a caller who does not opt in compiles exactly as
+before rather than being handed a union to narrow.
 
 ### Limits, stated plainly
 

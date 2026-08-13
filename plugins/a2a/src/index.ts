@@ -5,8 +5,10 @@ export type {
   A2APeerConfig,
   A2APeerInput,
   A2APeerOutput,
+  A2APeerOutputFor,
   MappedA2APeer,
   PeerAgentRegistrar,
+  TaintedA2APeerOutput,
 } from "./A2APeerClient";
 export { createA2AServer } from "./A2AServer";
 export type { A2AServerOptions, A2AServer } from "./A2AServer";

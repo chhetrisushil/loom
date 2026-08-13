@@ -136,6 +136,28 @@ alone.
   cannot see it. This is the same limit every taint system in a language without runtime string
   tainting has. The mitigation is that unwrapping is one greppable call.
 
+## Follow-up (2026-08-14) — the second producer, and a shape the first could not use
+
+`A2APeerClient` gains the same opt-in. A peer agent writes its own artifact text and is exactly as
+trustworthy as whoever operates it, which is the case D1's second-consumer argument named.
+
+It taints **`content` only**, not the whole output, where `mcpInvoke$` taints everything. That is
+not an inconsistency: `mcpInvoke$` yields `unknown` and has no field to single out, while
+`A2APeerOutput` already separates the flattened text from `raw` (task state and artifact metadata,
+which feed control flow). Tainting the whole object would force `unwrapTainted()` on code that
+never touches a prompt — friction in the wrong place — whereas tainting the text puts it exactly
+on the prompt path: `peer.content` drops straight into an `LlmMessage` slot where the guard sees
+it, with no ceremony at the call site.
+
+**The flag's literal type selects the output type** (`A2APeerConfig<TTaint extends boolean>` →
+`A2APeerOutputFor<TTaint>`), so a caller who does not opt in keeps `A2APeerOutput` and compiles
+unchanged — meeting the standard this ADR set for `LlmRequest`. A `boolean` (flag known only at
+runtime) distributes to the union, which is the honest answer. The runtime `outputSchema` accepts
+both shapes, since one schema backs both settings.
+
+Verified against a temporary tsconfig that does **not** exclude tests, because loom test files are
+not tsc-checked and a type-level assertion in one is otherwise decoration.
+
 ## Evidence
 
 `packages/llm/src/untrusted.test.ts` (13) covers each refusal position, the fence-breakout cases,
