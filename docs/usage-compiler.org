@@ -11,6 +11,7 @@
 | ~skill$~ ~instructions$~ bodies | Inlined in the bundle | Extracted to lazy chunks, loaded when the skill is selected |
 | Step effects               | Must register manually    | Auto-registered by ~registerFlow()~         |
 | Flow graph validation      | Runtime errors only       | Warnings printed at build time              |
+| Pre-flight verification    | Rules you must hand-feed your own source to | ~loopIdentity~/~nonDeterministic~/~runnerReach~ emitted into the manifest, auto-injected by ~loom verify~ |
 | Client state restoration   | Round-trip to EventStore  | Seed from serialized snapshot, zero network |
 
 The compiler is a dev dependency — no compiler code is included in the application bundle.
@@ -160,6 +161,16 @@ At the end of every build, the plugin emits a ~loom-manifest.json~ file into you
       "warnings": [
         "Step \"apply-remediation\" in flow \"investigate-incident\" has neither a handler$ nor a toolId — it must be registered manually."
       ],
+      "nonDeterministic": [
+        { "callee": "Date.now", "insideDecide": false, "location": "src/flows/investigate-incident.ts:31" }
+      ],
+      "runnerReach": {
+        "steps": [{ "stepId": "apply-remediation", "toolId": "remediation-tool" }],
+        "unresolved": [
+          { "expr": "planStep", "kind": "step", "location": "src/flows/investigate-incident.ts:44" }
+        ],
+        "suspends": [{ "id": "approval", "timed": true, "wakeAt": false }]
+      },
       "module": "src/flows/investigate-incident.ts"
     }
   },
@@ -204,8 +215,36 @@ effect registry, not the chunkMap, is their load-bearing map).
 The ~analyzeLoopIdentity~ export (a sibling of ~analyzeNonDeterminism~; same
 source-region contract) flags ~ctx.run~/~ctx.execute~ inside loop bodies whose step id
 cannot vary per iteration — the silent-corruption case where iteration 2+ replays
-iteration 1's memoized output. Feed its findings to ~@loom/verify~ via
-~FlowSpec.loopIdentityCalls~; they surface as ~determinism~-rule warnings.
+iteration 1's memoized output. They surface as ~determinism~-rule warnings.
+
+** The three source analyses the transform emits
+
+You do not feed these to ~@loom/verify~ by hand. The transform already has the parsed
+source (and memoizes per module), so it runs all three and writes them into each flow's
+manifest entry; ~loom verify~ auto-injects them from a discovered ~loom-manifest.json~,
+and ~defineConfig~ accepts them directly.
+
+| Manifest field    | Analyzer               | Feeds                                                   |
+|-------------------+------------------------+---------------------------------------------------------|
+| ~loopIdentity~    | ~analyzeLoopIdentity~  | ~determinism~ (ADR 0061)                                 |
+| ~nonDeterministic~| ~analyzeNonDeterminism~| ~determinism~                                            |
+| ~runnerReach~     | ~analyzeRunnerReach~   | ~capability-compat~, ~effect-class~, ~suspension-safety~ (ADR 0086) |
+
+~analyzeRunnerReach(source)~ returns ~{ steps, unresolved, suspends }~. It resolves a
+~ctx.run~ target by *shape* — a call whose first argument is an object literal with a
+string-literal ~toolId~ — so a project wrapper or a locally curried factory resolves too.
+A target it cannot resolve (an import from another module, a minted id like
+~mcpInvoke$("hydrate#0")~) is *reported* in ~unresolved~, never dropped: the three rules
+turn each into a ~warn~ so a partial analysis never reads as a complete one.
+~ctx.sleep~/~sleepUntil~ are deliberately not recorded as suspend points — the kernel
+authors their condition, so treating them as user-authored would manufacture findings
+about code nobody wrote.
+
+Because the transform feeds whole *modules*, ~analyzeNonDeterminism~ is called with
+~{ skipMemoized: true }~ there: a module holds runner bodies *and* ~handler$~ bodies, and
+a ~Math.random()~ inside a handler is safe by construction — the handler's result is
+written to ~STEP_COMPLETED~ and served from the log on replay. Calling the analyzer
+directly keeps the plain "analyze the region you give me" contract.
 
 * Feature 3 — Resumability
 

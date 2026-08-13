@@ -323,7 +323,7 @@ The intelligence pipeline, all composable and all running *inside* durable flows
 - **`@loom/memory`** — scoped, TTL/size-bounded agent memory.
 - **`@loom/orchestrator`** — composable `decideApproval` (risk gate) + `dispatchPlan` primitives ([ADR 0013](adr/0013-orchestrator-primitives.md)).
 
-### 5.5 Compute & distribution (`@loom/dispatcher`, `@loom/worker-runtime*`, `@loom/worker-server`, `@loom/plugin-cloudrun`, `@loom/graph-executor`, `@loom/scheduler`)
+### 5.5 Compute & distribution (`@loom/dispatcher`, `@loom/worker-runtime*`, `@loom/plugin-worker-remote`, `@loom/plugin-worker-server`, `@loom/plugin-cloudrun`, `@loom/graph-executor`, `@loom/scheduler`)
 
 Placement is a seam between the orchestrator and the runtime, so executions can run **anywhere** without touching the core ([ADRs 0001–0005](adr/)):
 

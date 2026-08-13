@@ -36,21 +36,25 @@ Intent → Planner → Workflow → Agent → Effect → Event Log
 
 ---
 
-## Package map (~40 packages)
+## Package map (~70 across three tiers: `packages/` · `plugins/` · `tools/`)
 
 **Core runtime** — `core` (builders/types), `workflow-runtime`, `effect-runtime`, `event-runtime`, `snapshot-runtime`, `replay-vm`, `projection-runtime`
 
 **Composition & effects** — `app` (**`defineConfig`**), `middleware` (retry/logging), `registry`
 
-**UI** — `blueprint-runtime`, `renderer-react`, `renderer-terminal`, `agent-surface`
+**UI** — `blueprint-runtime`, `agent-surface`, `plugin-renderer-react`, `plugin-renderer-terminal`
 
-**Agentic** — `llm`, `agent`, `mcp`, `a2a` · **Intelligence** — `capability`, `intent`, `planner`, `memory`, `orchestrator`
+**Agentic** — `llm`, `agent`, `plugin-mcp`, `plugin-a2a` · **Intelligence** — `capability`, `intent`, `planner`, `memory`, `orchestrator`, `reasoning`, `learning`, `analytics`
 
-**Compute / distribution** — `dispatcher`, `worker-runtime` (`-local`/`-remote`), `worker-server`, `platform-cloudrun`, `graph-executor`, `scheduler`
+**Compute / distribution** — `dispatcher`, `worker-runtime` (`-local`), `plugin-worker-remote`, `plugin-worker-server`, `plugin-cloudrun`, `graph-executor`, `scheduler`, `fair-scheduler`
 
-**DX / tooling** — `cli` (`loom`), `testing`, `eval`, `deploy-sim`, `scaffold`, `compiler`, `telemetry`, `sdk`
+**Storage & data protection** — `plugin-sqlite`, `plugin-postgres`, `plugin-content`, `plugin-crypto`, `plugin-audit-chain`, `classify`, `compliance`, `isolate`
 
-<!-- Presenter: everything is re-exported from @loom/sdk; apps import from there. The compute + DX groups are the newest additions. -->
+**Checks & governance** — `verify` (8 pre-flight rules), `spec` (kernel manifest + maturity), `conformance` (SPI kits), `replay-inspector`
+
+**DX / tooling** — `cli` (`loom`), `testing`, `eval`, `deploy-sim`, `scaffold`, `compiler`, `dst`, `appgen`, `telemetry`, `sdk`
+
+<!-- Presenter: everything is re-exported from @loom/sdk; apps import from there. Adapters live in plugins/ under the @loom/plugin-* name (ADR 0043); tools/ is dev-time only (ADR 0047). -->
 
 ---
 
@@ -120,9 +124,9 @@ const app = defineConfig({
   storage: { kind: "sqlite", dir: ".loom", branching: true },
   surfaces: ["mission"],
   flowModules,                                   // from `loom gen` (folder convention)
-  effectMiddleware: [retryMiddleware({ maxRetries: 3 })],  // (ctx, input, next) chain
+  execution: { effectMiddleware: [retryMiddleware({ maxRetries: 3 })] },  // (ctx, input, next)
   agents, capabilityAgents,                      // A2A routing
-  validate: "warn",                              // static flow-graph checks at boot
+  checks: { validate: "warn" },                  // static flow-graph checks at boot
 });
 // → { runtime, effectRuntime, projectionRuntime, bus, stores, close }
 ```

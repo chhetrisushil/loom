@@ -125,7 +125,7 @@ The forward-requirements acceptance record (Requirement 1) noted three sub-check
 
 ## Amendments (effect classes, ADR 0084)
 
-A **seventh rule**, `effect-class`, joined the set: a flow may not reach an effect whose declared
+An **eighth rule**, `effect-class`, joined the set: a flow may not reach an effect whose declared
 class exceeds the flow's own, composed conservatively as the max over everything reachable. The
 class *vocabulary* is app-supplied (`checks: { verify: { effectClasses } }`) — loom checks the
 ordering it is given rather than defining one (ADR 0083).
@@ -135,3 +135,27 @@ different questions: `capability-compat` asks whether K2 grants the capability a
 `effect-class` asks whether the flow reached something worse than it promised. A **granted**
 capability can still bust the class, and K2 will not stop it — the finding says so, which is the
 reconciliation made operational. See [ADR 0084](0084-effect-classes-static-ceiling-k2-floor.md).
+
+## Amendments (runner-body reach, ADR 0086)
+
+**The V1 wording of `suspension-safety` above is superseded.** Its `suspends` input had no
+producer until [ADR 0086](0086-runner-body-reach-analysis.md) added runner-body reach analysis,
+and populating it showed two of its three checks were wrong:
+
+- **The blanket `correlationKey` error is gone.** `WorkflowRuntime.resume` routes by
+  `executionId`; nothing in the runtime matches on `correlationKey`, which is metadata for an
+  external dispatcher holding a business key. The check would have errored on every idiomatic
+  `ctx.suspend({ on: "Approved" })`, including this repo's own tests.
+- **The `wakeAt` check is conditional on a wired `TimerStore`**, read from the real wiring
+  (`runtime.hasTimerStore()`), because the runtime derives `wakeAt` from a suspend's `timeout`
+  when one is present.
+
+`capability-compat`, `effect-class` and `suspension-safety` also gained a `warn` naming the
+runner-body targets the analysis could not resolve, and `FlowSpec.reachAnalyzed` separates
+"analyzed and complete" from "never analyzed" — without which an app that never wired the
+compiler would look maximally verified. The "auto-extraction of runner bodies into the manifest"
+follow-up noted above is **done**: the compiler transform emits `loopIdentity`,
+`nonDeterministic` and `runnerReach`, and `loom verify` auto-injects all three.
+
+The rule set stands at **eight** — the seven listed under V1 above plus `effect-class`.
+`RULE_ORDER` in `@loom/verify` is the executable list; this one is a description of it.

@@ -104,7 +104,7 @@ interface ExecutionContext {
     pairs: { [K in keyof T]: [StepDefinition<unknown, T[K]>, unknown] },
     options?: { limit?: number }
   ): Promise<T>;
-  suspend(config: { on: string; timeout?: number; correlationKey?: string }): Promise<never>;
+  suspend<T = never>(config: { on: string; timeout?: number; correlationKey?: string }): Promise<T>;
   emit(eventType: string, payload: unknown): void;
   stream(eventType: string, delta: string, done?: boolean): void;
   readonly ui: SurfaceEmitter; // .set / .merge / .append
@@ -316,7 +316,7 @@ type ApprovalDecision = z.infer<typeof ApprovalDecision>;
 
 const decision = await ctx.suspend<ApprovalDecision>({
   on: "ApprovalGranted",           // logical event you'll resume with
-  correlationKey: input.target,     // used to route the resume to this execution
+  correlationKey: input.target,     // metadata for an external dispatcher; resume() routes by executionId
   timeout: 24 * 60 * 60 * 1000,     // optional; drives a timeout condition
 });
 ```
@@ -904,9 +904,11 @@ const provider = process.env.RECORD ? recordingProvider(realLlm, cassette) : rep
 
 ```
 loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
-loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
-loom appgen <intent> [--dir .] [--dry-run] [--check] [--model <gguf>]  NL → new project or brownfield edits
+loom new   <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name>  scaffold a file
+loom appgen <intent> [--dir .] [--dry-run] [--check] [--model <spec>]  NL → new project or brownfield edits
+loom doctor [--dir .] [--config <module>] [--manifest <path>]  run every pre-flight check that can run
 loom check --manifest <path>                    static flow-graph checks
+loom verify --config <module> [--manifest <path>]  pre-flight runtime verification (@loom/verify)
 loom logs  --db <path> <executionId>            print the event timeline
 loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
 loom eval  --dir <path>                         replay golden logs vs expectations
@@ -914,9 +916,12 @@ loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
 loom inspect --db <path> [--port N]             web inspector (timeline + slider)
 ```
 
+(Plus `profile` / `introspect` / `optimize`, `learn report|eval`, `compat` / `kernel-manifest`, `retention run` / `sweep content` / `compliance report`, and the `plugin …` family — the CLI guide has all of them.)
+
 - **`logs` / `debug` / `inspect`** operate directly on a SQLite event DB — no app load needed. `debug --at N` folds the exact state at sequence *N* (time-travel); `inspect` serves a web timeline with a slider using the same fold.
 - **`gen` / `new`** implement the folder convention via **build-time codegen** (a static `loom.gen.ts`), not runtime globbing ([ADR 0011](adr/0011-folder-convention-codegen.md)). **`appgen`** turns a natural-language intent into a static Loom app *in the same folder convention* (`app/flows/<id>/flow.ts` + `app/loom.gen.ts` + `app/config.ts`, or a full project) via [`@loom/appgen`](../tools/appgen) — deterministic and offline, with no model call at generate time or in the output.
-- **`eval` / `deploy check` / `check`** are CI gates (§12).
+- **`doctor`** is the front door for the three pre-flight gates: it discovers each one's input, runs what it can, and **names what it skipped and why** — a skipped check never reads as a pass. Build with the Loom compiler and `verify` gets the manifest's three source analyses (non-determinism, loop identity, runner-body reach) injected automatically; nothing is hand-plumbed.
+- **`eval` / `deploy check` / `check` / `verify`** are CI gates (§12).
 
 For a command-by-command walkthrough with flags, exit codes, and example output, see the **[CLI Usage Guide](usage-cli.md)**.
 
@@ -950,7 +955,7 @@ flowchart LR
 ```
 
 - **Local:** `@loom/worker-runtime-local` — same process.
-- **Remote:** `@loom/plugin-worker-remote` posts an `ExecutionPackage` to `@loom/worker-server`'s `POST /execute`; the stateless worker rebuilds all state from shared stores.
+- **Remote:** `@loom/plugin-worker-remote` posts an `ExecutionPackage` to `@loom/plugin-worker-server`'s `POST /execute`; the stateless worker rebuilds all state from shared stores.
 - **Cloud Run:** `@loom/plugin-cloudrun` maps dispatch metadata to sizing; see [`plugins/cloudrun/deploy.md`](../plugins/cloudrun/deploy.md).
 - **Fan-out:** `@loom/graph-executor` runs graph nodes as per-node executions (one writer each), joined via lineage.
 
@@ -1071,6 +1076,32 @@ policy$({
 
 Evaluation is **deny-wins**; a policy composes **under** the `authorizer` (both must allow — defense in depth), so it can tighten a grant but never widen it, and a flow with no governing policy is unaffected. Enforcement keys on `workflowId` (the flow is the unit of authority, like `GrantTable`). Policies come from three places: each flow's `policies` (`flows` / `flowModules`), app-global `config.policies`, and **agent-attached** `agent$({ policies })` — a capability-bound agent runs a flow (via `capabilityAgents`), so its policies bind to that flow's `workflowId` and are enforced whenever the agent runs it. *(A flow supplied only through a `catalog` but not wired to a policy source uses the grant model.)*
 
+### Effect classes: a static ceiling beside the runtime floor (ADR 0084)
+
+Grants are a **runtime floor** — may this flow invoke this tool at all. Effect classes are a
+**static ceiling** — may this flow reach something *worse than it declared*. They are separate
+questions, so a granted capability can still bust the class and K2 will not stop it. `@loom/verify`'s
+`effect-class` rule catches that before the run starts.
+
+The class **vocabulary is yours** — Loom checks the ordering you give it rather than defining one:
+
+```ts
+defineConfig({
+  checks: {
+    verify: {
+      mode: "error",
+      effectClasses: ["read-only", "local-write", "external-write", "irreversible"], // ascending severity
+    },
+  },
+});
+```
+
+Then each flow declares its ceiling with `flow$({ effectClass: "local-write" })` and each step the
+class of the effect it performs with `step$({ effectClass })`. A flow's effective class is the max
+over everything it reaches, composed conservatively. Omit the vocabulary and the rule is a no-op; a
+flow that declares a ceiling but reaches *unclassified* steps is reported as **only partially
+verified** rather than passing clean. See [`loom verify`](usage-cli.md#loom-verify---config-module---manifest-path).
+
 ### Resource accounting & quotas (K3)
 
 `meteringMiddleware` meters each effect (tokens/$/latency) onto the log and enforces a budget by admission control.
@@ -1169,6 +1200,32 @@ brokered `ctx.fetch`: the allowlist is enforced **before any connection** (durab
 **resolve-and-pin** (DNS-rebind safe). The runner also blocks ambient network modules
 (`require("http")` throws) as defense-in-depth — for hostile-code-grade confinement add
 OS-layer sandboxing (netns/seccomp/container egress) around the worker.
+
+### Untrusted content: the integrity axis (ADR 0085)
+
+K7 governs what leaves. The opposite direction — what may *enter an instruction position* — needs a
+different mechanism, because integrity is a property of a **value**, not a field: the same
+`summary: string` is trustworthy when your flow computed it and untrusted when a third-party MCP
+server returned it, and which one it is is only knowable at runtime.
+
+So taint is attached to the value, at ingress, by whoever acquired it:
+
+```ts
+import { tainted, unwrapTainted } from "@loom/classify";
+
+const doc = tainted(await fetchThirdPartyDoc(), "mcp:acme/fetch_doc");
+```
+
+The wrapper is plain JSON, so it survives the log verbatim and **a replay hands back a value that is
+still tainted**. `@loom/llm`'s `guardRequest` then runs inside every `createLlmEffect`,
+unconditionally: tainted content may appear only in a `user` message, and only fenced as
+`<untrusted-input origin="…">`. A system message, an assistant turn, or a tool name/description
+throws `UntrustedContentError`.
+
+Two producers ship, both opt-in: `registerMcpInvoke(client, runtime, { taintResults: true })` and
+`new A2APeerClient({ url, taintResults: true })`. The **refusal is structural**; the **fence is only
+a label** — put `UNTRUSTED_CONTENT_SYSTEM_NOTE` in your system prompt so the model knows what the tag
+means. Full treatment in [data classification](data-classification.md#the-integrity-axis--untrusted-content-adr-0085).
 
 ### Pre-warming (latency, advisory)
 
@@ -1650,8 +1707,8 @@ K1/K5 pins from "the fold understands these types" to "the fold produces exactly
 
 ```ts
 import { analyze, runtimeIntelligence } from "@loom/analytics";
-import { rankModels } from "@loom/analytics";
-import { rankedRouter } from "@loom/reasoning";
+import { rankModels, outcomeAnalytics } from "@loom/analytics";
+import { ucb1, rankedRouter, epsilonGreedy } from "@loom/reasoning";
 
 const events = await eventStore.read(executionId);
 const a = analyze(events);   // { execution, cost, reasoning, failure }
@@ -1659,15 +1716,50 @@ a.cost.costUsd;              // total metered spend
 a.reasoning.routes;         // { gemma: 3, opus: 1, … } model-route frequency
 a.failure.failedSteps;      // which steps failed
 
-// Self-optimization (opt-in, LOGGED, auditable): rank models from history, feed a learned router.
-const rankings = rankModels(historicalEvents);
-const reasoning = new ReasoningRuntime({ routes, router: rankedRouter(rankings) });
+// Self-optimization (opt-in, LOGGED, auditable): mine outcomes from history, feed a learned router.
+// outcomeAnalytics returns { key, rank, count }[] — evidence that CARRIES its sample count, which is
+// what lets a router tell thin evidence from thick. `halfLifeMs` decays stale outcomes.
+const stats = outcomeAnalytics(historicalEvents, { halfLifeMs: 14 * 24 * 3600_000 });
+const reasoning = new ReasoningRuntime({ routes, router: ucb1(stats) });
 // …its choices still flow through ctx.decide → DECISION_RECORDED, so nothing is silently autonomous.
 
 // Runtime intelligence: an advisory report (never mutates the fold).
 const report = runtimeIntelligence(events);
 report.recommendations; // { modelRankings, hotFailures, suggestedBudgetUsd }
 ```
+
+**Do not feed a ranking to a bare `rankedRouter` in a live loop** ([ADR 0078](adr/0078-exploration-in-the-routing-seam.md)).
+Pure argmax with no exploration, no sample floor, and no recency weighting is a textbook bandit
+collapse — and the feedback edge makes it self-sealing, because the arms the router stops choosing
+stop producing outcomes, so the next ranking mined from the log is *even more* confident about an arm
+that got lucky once. A loop that destroys its own evidence looks healthy the whole time. Use:
+
+- **`ucb1(stats, { exploration, fallback })`** — the recommended default. Scores
+  `mean + c·√(2·ln N / n)`, so an unsampled arm is guaranteed a trial and a lucky `n = 1` arm cannot
+  pin the router. **Deterministic — no RNG**, so replay is unaffected.
+- **`epsilonGreedy(inner, …)`** — when you want a fixed exploration budget around another router.
+- **`rankedRouter(rankings, { minSamples, fallback })`** — still fine for a *frozen* ranking; arms
+  below `minSamples` count as unranked so thin evidence cannot outvote thick evidence.
+
+### Learning from the log offline (`@loom/learning`, ADR 0080)
+
+Online exploration is only half the loop. `DECISION_RECORDED` carries `context` and
+`policy.propensity` (EVENT_SCHEMA 1.18.0, [ADR 0079](adr/0079-decision-context-and-policy.md)) — the
+observation the policy keyed on, and `P(chosen | context)`. **Propensity cannot be reconstructed
+after the fact**, which is why it is logged rather than derived: together they turn the log into a
+`(state, action, propensity)` dataset.
+
+`@loom/learning` mines it: `trajectories` extracts the episodes, `evaluatePolicy` runs SNIPS
+off-policy evaluation of a *candidate* policy against traffic it never served, and `promotionGate`
+refuses a promotion on thin evidence. The learning **algorithm** stays third-party behind the
+one-method `Policy` SPI (`select(context, actions)`); a policy reaches a run through
+`decideWithPolicy` → `ctx.decide`, so a learned choice is still recorded and replayable. Run it from
+the CLI with `loom learn report` / `loom learn eval`.
+
+Off-policy evaluation is gated by **exploration volume**, not log length: usable effective sample
+size scales with explore-rate × window, so a thin exploration budget over a long window yields few
+counterfactual steps and the gate correctly refuses — which reads like "the candidate lost" but is
+"there is not enough evidence yet". Pooled reports never name an individual unit.
 
 ---
 

@@ -112,10 +112,17 @@ load-bearing, plus the global guardrails that gate every additive capability:
 
 - `ctx.suspend(config)` durably parks an execution; `config` is `SuspendConfig`
   (`packages/workflow-runtime/src/types.ts`): `{ on, timeout?, correlationKey?, wakeAt? }`.
-- A suspension MUST carry a `correlationKey` so its resume event can be routed. A **timed** suspend
-  (`sleep`/`sleepUntil`/`suspend({timeout})`) MUST record a durable `wakeAt`, fired as a
-  `TIMER_FIRED` resume that survives restart (T1). The scheduled time is in the log — wall-clock
-  drift never enters the fold.
+- Resume routing is by **`executionId`**: `WorkflowRuntime.resume(executionId, event)` addresses the
+  parked execution directly, and nothing in the runtime matches on `correlationKey`. A
+  `correlationKey` is OPTIONAL metadata for an external dispatcher that holds a business key instead
+  of an execution id. *(A normative "MUST carry a `correlationKey`" here, and the `@loom/verify` rule
+  that enforced it, were both wrong; ADR 0086 removed the rule once the input that would have made it
+  fire finally existed.)*
+- A **timed** suspend (`sleep`/`sleepUntil`/`suspend({timeout})`) MUST record a durable `wakeAt`,
+  fired as a `TIMER_FIRED` resume that survives restart (T1). The scheduled time is in the log —
+  wall-clock drift never enters the fold. When a `TimerStore` is wired the runtime DERIVES `wakeAt`
+  from a suspend's `timeout`, so `suspend({ on, timeout })` satisfies this; without one, the timed
+  suspend is silently never woken, which is what `suspension-safety` reports.
 - Resume MAY be authority-gated: a `ResumeAuthenticator` verdict is recorded as `APPROVAL_GRANTED`
   (K12); a rejected resume never reaches the log. That gate authenticates **who** may resume.
 - Resume MAY additionally be **shape**-gated: a flow MAY declare `resumeSchemas` (`on` → schema,

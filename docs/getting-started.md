@@ -275,5 +275,5 @@ describe("approve flow", () => {
 
 **The three moves to remember:**
 1. `ctx.run(step, input)` — do a unit of work (recorded, replay-safe).
-2. `ctx.suspend({ on, correlationKey })` — pause durably for a human/signal.
+2. `ctx.suspend<T>({ on })` — pause durably for a human/signal (pair the type argument with a `resumeSchemas` entry, so the claim is also checked).
 3. `runtime.fork(id, sequence)` — branch from any point to explore alternatives.
