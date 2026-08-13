@@ -518,7 +518,7 @@ flowchart TB
 | **Storage backends** | `plugin-sqlite`, `plugin-postgres`, `plugin-durable-state`, `plugin-read-model` |
 | **Governance / verification** | `spec` (the kernel manifest + layering guard), `conformance` (SPI kits), `verify`, `replay-inspector` (ADR 0071) |
 | **Kernel hardening / security** | `effect-runtime` (K2 authz + K12 delegation), `middleware` (K3 metering, K6 safety, K10 redaction, K12 nested budgets), `isolate` (K7 data-plane isolation & egress), `plugin-crypto` (K10 encryption & crypto-shredding), `event-runtime`/`snapshot-runtime` (K12 tenant scoping), `wire-abi` (T2), `telemetry` (K10-R6 egress scrubbing) |
-| **Data protection & compliance** | `classify` (K10-R1 `secret`/`sensitive`/`internal`/`externalized` markers), `compliance` (T3 subject index + export + erasure, tenant-scoped), `plugin-content` (ADR 0046 content-store seam) — see [data classification](data-classification.md) & [compliance](compliance.md) |
+| **Data protection & compliance** | `classify` (K10-R1 `secret`/`sensitive`/`internal`/`externalized` markers + the ADR 0085 `tainted()` integrity axis), `compliance` (T3 subject index + export + erasure, tenant-scoped), `plugin-content` (ADR 0046 content-store seam) — see [data classification](data-classification.md) & [compliance](compliance.md) |
 | **Intelligence / DX** | `analytics`, `appgen` (provider-agnostic planner), `appgen-model` (optional local `.gguf` option), `cli`, `eval`, `deploy-sim`, `testing`, `scaffold`, `compiler`, `telemetry` |
 | **Three-direction arc** | `dst` (simulation testing), `plugin-audit-chain` + `fair-scheduler` + execution-authz in `workflow-runtime` (multi-tenant isolation), `live-query` + `orchestration` + `saga` (coordination) — ADRs 0036–0041 |
 

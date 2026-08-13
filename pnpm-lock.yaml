@@ -634,6 +634,9 @@ importers:
 
   packages/llm:
     dependencies:
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../classify
       '@loom/core':
         specifier: workspace:*
         version: link:../core
@@ -1477,6 +1480,9 @@ importers:
 
   plugins/mcp:
     dependencies:
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../../packages/classify
       '@loom/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -1490,6 +1496,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../../packages/event-runtime
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../../packages/llm
       '@loom/middleware':
         specifier: workspace:*
         version: link:../../packages/middleware

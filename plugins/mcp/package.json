@@ -18,12 +18,14 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@loom/classify": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@loom/event-runtime": "workspace:*",
+    "@loom/llm": "workspace:*",
     "@loom/middleware": "workspace:*",
     "@loom/replay-vm": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",

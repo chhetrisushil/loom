@@ -329,6 +329,20 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "ADR 0076 — closes a SILENT gap: a sensitive() mark inside an array element collected no path, so it was masked nowhere, encrypted nowhere, externalized nowhere. The @loom/verify `classification-reachability` rule now covers only what remains unaddressable (record/union/tuple/intersection).",
   },
   {
+    id: "untrusted-content-integrity",
+    title: "Untrusted-Content Integrity Axis",
+    package: "@loom/classify",
+    level: "L2",
+    summary:
+      "`tainted(value, origin)` attaches provenance to a VALUE at ingress (plain JSON, so it survives the log and replay). `guardRequest` runs inside every createLlmEffect and REFUSES tainted content in system / assistant / tool-description position, fencing it in a `user` message. Producer: `registerMcpInvoke({ taintResults })`.",
+    evidence: {
+      conformanceTest: "packages/llm/src/untrusted.test.ts",
+      usedIn:
+        "plugins/mcp/src/taintedIngress.test.ts — a real flow whose MCP tool returns an injection payload",
+    },
+    note: "ADR 0085 — a value wrapper, NOT a fourth schema marker: confidentiality is a property of a field (static, forever), integrity is a property of a value (acquired at runtime from a specific origin), and a marker that guesses reads as coverage. The check is unconditional because a gate defaulting to off protects exactly the apps that never think about it; the opt-in sits on the producer, where tainting changes the output shape. The REFUSAL is structural; the FENCE is a label a model can be talked across — do not sell the second as the first.",
+  },
+  {
     id: "typed-resume-payloads",
     title: "Typed Resume Payloads",
     package: "@loom/workflow-runtime",
