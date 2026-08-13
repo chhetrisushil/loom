@@ -280,6 +280,71 @@ returns either `{ changed: false }` or a **complete** model. The cheap tail read
 for change *detection*, so the common no-change poll stays cheap while every payload that does
 come back is authoritative.
 
+## Follow-up (2026-08-14) — D3 was true of the client and false of the log
+
+Re-examining this ADR against a fresh question ("what would it take to consume interactive UI
+from a *third-party* server?") turned up that **D3's ingress half was unreachable from a flow**.
+
+`plugins/mcp/src/ui.ts` shipped complete and fully tested — `uiMetaOf`, `uiFromResult`,
+`toUiResource`, `readUiResource` with its `contentHash` pin. It had **zero production callers**.
+All three step seams dispatched through `callTool` (`mcpInvoke$.ts:176`, `mcpTool$.ts:12`,
+`McpClient.ts:268`), the convenience projection that resolves to `structuredContent`-or-text and
+drops `_meta` — where `_meta.ui.resourceUri` lives — along with every non-text content block. So
+a UI-bearing third-party result was flattened before the log could record that a UI existed, and
+`uiFromResult`, the function whose entire job is spotting one, was called only from a test.
+
+D3's sentence "carry the resource URI and content hash **through the log** with provenance" was
+therefore true of `McpClient` and false of the log. `MCP_DISPATCHED` carried no UI fields, and
+`mapTool` computed `tool.ui` and discarded it.
+
+**Why it passed review.** `ingress.test.ts` exercises `McpClient` directly — a level no flow
+traverses. That is the vacuous-check shape this repo has now hit repeatedly: a gate tested at a
+level nothing on the live path reaches. The negative test that would have caught it (dispatch a
+UI-bearing result **through `mcpInvoke$`** and assert the UI is observable) did not exist, and
+now does — `plugins/mcp/src/uiDispatch.test.ts`, written against the effect, never the client.
+
+**What changed.** Three things, all still inside the D1 envelope — KERNEL_ABI 1.1.0 and
+EVENT_SCHEMA both untouched:
+
+- `resultFidelity: "value" | "full"` on all three seams. Default stays `"value"`: a step's
+  output shape is a durable contract — what STEP_COMPLETED records, what downstream steps
+  destructure, what a replay substitutes — so widening it by default would silently change every
+  existing consumer's payload.
+- `MCP_UI_OBSERVED`, a userspace domain event (fold skips it, per the ADR 0063 D4 precedent),
+  carrying `{ toolName, resourceUri, contentHash?, pin }`. A **separate** event rather than a
+  field on `MCP_DISPATCHED`, because that one is emitted *before* the call so a failed attempt
+  stays indexed for proactive repair, and UI provenance is only knowable *after* it — folding
+  them would have meant moving the emit and silently dropping failures from the repair index.
+- `projectToolResult` / `throwIfToolError`, extracted from `callTool` so the fidelity path and
+  the convenience path share one projection and one in-band-`isError` guard. We had told callers
+  to prefer `callToolResult` for anything beyond text and given them no guard to go with it,
+  which is how the `isError` defect this ADR already fixed once would have come back.
+
+The pin has four explicit states — `embedded` (inlined, free), `resolved` (`resolveUi` fetched
+it), `not-requested`, `unresolvable` — because an absent `contentHash` is otherwise ambiguous
+between *not asked for* and *asked for and unavailable*, and a pin is a correctness device.
+Resolution is opt-in since it costs a `resources/read` per dispatch; an inlined resource is
+hashed for free and needs no flag. A resource that cannot be fetched is recorded, never fatal —
+the tool call already succeeded and its side effect already happened.
+
+**D2 re-examined and upheld.** The host role stays out of this repo, unchanged and for the
+original reason. A headless postMessage-bridge package was reconsidered on the A2UI precedent
+(`A2UISurfaceBridge` is 1P on exactly the "message state machine, not a DOM concern" argument)
+and rejected on two counts: no second unrelated consumer exists (ADR 0083 — `renderer-terminal`
+cannot render HTML, and `renderer-react` and "the embedding app" are one consumer), and the
+split is not clean, since `ui/open-link`, `ui/request-display-mode` and the permissions block
+only mean anything in a browser. A headless bridge would ship the safe half under a name
+implying coverage of the dangerous half.
+
+**One correction to D6.** S3 disposes of `ui/update-model-context` as content "tainted by
+classification (`@loom/classify`)". That mechanism does not exist in that direction:
+`classify`'s `DataClass` is `secret`/`sensitive`/`internal`, a **confidentiality** axis governing
+what may *leave*, plus `externalized()` for where a value is stored. There is no integrity/taint
+axis governing what may *enter* a prompt. The disposition is currently unimplementable as
+written. The gap is real but not MCP-Apps-shaped — it is identical for any third-party MCP
+result, any A2A peer response, and any fetched document — so it is tracked separately rather
+than folded in here.
+
 ## Notes on what was rejected and why it mattered
 
 P-D ("it ships code") looked like the fatal objection — it is the exact property whose

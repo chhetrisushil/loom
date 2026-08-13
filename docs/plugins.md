@@ -133,9 +133,12 @@ and compute.
   effect; pinned `jsonSchemaHash` verified per call → typed `schemaDrift`/`toolNotFound`
   channels; principals ride `ctx.principal`/`secretRef`, never the log; `MCP_DISPATCHED` +
   `mcpDispatchIndex` projection for the "which executions called tool X at schema H" query
-  ([ADR 0063](adr/0063-mcp-dynamic-dispatch.md)). Results preserve `structuredContent`, `_meta`
-  and non-text content blocks, and an in-band `isError` throws rather than returning a failure
-  as a value. Server: `createMcpServer` exposes Loom tools/resources to any MCP host (the
+  ([ADR 0063](adr/0063-mcp-dynamic-dispatch.md)). An in-band `isError` throws rather than
+  returning a failure as a value. A step yields the convenience projection
+  (`structuredContent`, else joined-and-parsed text) by default and the whole `CallToolResult`
+  under `resultFidelity: "full"` — the only shape in which `_meta` and non-text content blocks
+  survive, and therefore the only one in which a UI declaration is visible to a flow. Server:
+  `createMcpServer` exposes Loom tools/resources to any MCP host (the
   `createA2AServer` analogue) with audience-scoped listing/dispatch, and `servedEffect` routes a
   call by its declared seam. The transport answers OAuth-discovery probes under `/.well-known/`
   with 404 above the authorize gate, and negotiates the protocol version on `initialize` rather
@@ -143,7 +146,11 @@ and compute.
   server at all. Also carries MCP Apps (`io.modelcontextprotocol/ui`) declarations and `ui://`
   resources with content-hash provenance — **carry, never render** — writing both the nested and
   the deprecated flat `_meta` UI form on egress and accepting either on ingress, because the
-  reference SDK emits both ([ADR 0072](adr/0072-mcp-apps-ui-extension-placement.md)).
+  reference SDK emits both ([ADR 0072](adr/0072-mcp-apps-ui-extension-placement.md)). A dispatch
+  whose result declares a UI records `MCP_UI_OBSERVED` with the resource URI and an explicit
+  `pin` — `embedded` (inlined, hashed for free), `resolved` (`resolveUi` fetched it),
+  `not-requested`, or `unresolvable` — so "no pin" is never ambiguous between *not asked for*
+  and *asked for and unavailable*.
 - `@loom/plugin-mcp-app` — MCP Apps (SEP-1865) **egress**: projects a Loom agent surface onto
   the extension as ONE static, content-pinned surface-host template whose payload is the
   existing A2UI catalog model — so MCP Apps is a second *transport binding* for a surface

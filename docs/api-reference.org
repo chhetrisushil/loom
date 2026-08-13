@@ -1232,8 +1232,9 @@ class McpClient {
   })
   readonly protocolVersion: string   // server's negotiated choice once known, else ours
   connect(): Promise<void>           // handshake; advertises the `io.modelcontextprotocol/ui` extension
-  listTools(): Promise<MappedMcpTool[]>
-  registerInto(effectRuntime: EffectRuntime): Promise<ToolDefinition[]>   // discover + register as effects
+  listTools(options?: { resultFidelity?: "value" | "full" }): Promise<MappedMcpTool[]>
+  registerInto(effectRuntime: EffectRuntime,
+               options?: { resultFidelity?: "value" | "full" }): Promise<ToolDefinition[]>
 
   // FULL result — every content block, structuredContent, isError, _meta.
   callToolResult(name, input, extraHeaders?): Promise<McpCallToolResult>
@@ -1247,8 +1248,20 @@ class McpClient {
   readUiResource(uri: string): Promise<McpUiResource | undefined>  // carries contentHash provenance
   disconnect(): Promise<void>
 }
-function mcpTool$(client: McpClient, toolName: string): StepDefinition<unknown, unknown>
+function mcpTool$(client: McpClient, toolName: string,
+                  options?: { resultFidelity?: "value" | "full" }): StepDefinition<unknown, unknown>
+
+// The ONE result→value projection, and the ONE place an in-band isError throws.
+// `callTool` is `projectToolResult(name, await callToolResult(...))`; a caller that
+// needs the full result must not re-implement either half.
+function projectToolResult(name: string, result: McpCallToolResult): unknown
+function throwIfToolError(name: string, result: McpCallToolResult): void
 #+end_src
+
+~resultFidelity~ defaults to ~"value"~ on every seam, because a step's output shape is a durable
+contract — it is what STEP_COMPLETED records, what downstream steps destructure, and what a
+replay substitutes. ~"full"~ is the only shape in which ~_meta~ (where MCP Apps hangs
+~ui.resourceUri~) and non-text content blocks survive.
 
 Protocol version is declared per request — ~_meta["io.modelcontextprotocol/protocolVersion"]~
 plus the ~MCP-Protocol-Version~ header — and negotiated from the handshake result.
@@ -1283,6 +1296,32 @@ function hashResourceBody(contents: McpResourceContents): string
 
 A ~ui~ declaration whose ~resourceUri~ is not a ~ui://~ URI is *refused* — a UI pointer to an
 arbitrary scheme is a confused-deputy fetch.
+
+**** Observable from the log, not just from the client
+
+A dispatch whose result declares a UI emits ~MCP_UI_OBSERVED~ — a userspace domain event the
+fold skips, like ~MCP_DISPATCHED~ — so the declaration reaches the *log* rather than only the
+client API:
+
+#+begin_src typescript
+const MCP_UI_OBSERVED = "MCP_UI_OBSERVED";
+type McpUiPin = "embedded" | "resolved" | "not-requested" | "unresolvable";
+interface McpUiObservedPayload {
+  toolName: string; resourceUri: string; contentHash?: string; pin: McpUiPin;
+}
+#+end_src
+
+The declaration is read from the result's ~_meta.ui~, then an inlined ~ui://~ content block, then
+the tool's static ~tools/list~ declaration — decreasing authority. An *inlined* resource is
+pinned for free; a declared-but-absent one costs an extra ~resources/read~ and is therefore
+fetched only under ~registerMcpInvoke(..., { resolveUi: true })~. The four ~pin~ states exist
+because "no ~contentHash~" would otherwise be ambiguous between *not asked for* and *asked for
+and unavailable*, and a pin is a correctness device. A resource that cannot be fetched never
+fails the dispatch — the tool call already succeeded and its side effect already happened.
+
+Note the emit is a SEPARATE event rather than a field on ~MCP_DISPATCHED~: that one is emitted
+*before* the call so a failed attempt stays indexed for proactive repair, and UI provenance is
+only knowable *after* it.
 
 **** Both meta forms, on both sides
 

@@ -4,7 +4,9 @@ import { ToolEffect } from "@loom/effect-runtime";
 import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
 import { z } from "zod";
 import type { McpClient } from "./McpClient";
-import type { MappedMcpTool } from "./types";
+import { projectToolResult, throwIfToolError } from "./McpClient";
+import type { MappedMcpTool, McpCallToolResult, McpResultFidelity } from "./types";
+import { toUiResource, uiFromResult } from "./ui";
 
 // ── ADR 0063 — MCP dynamic dispatch with schema-hash pinning ─────────────────
 //
@@ -24,6 +26,43 @@ export const MCP_INVOKE_TOOL_ID = "mcp.invoke";
  * projection ({@link mcpDispatchIndex}) — never by parsing argument blobs.
  */
 export const MCP_DISPATCHED = "MCP_DISPATCHED";
+
+/**
+ * Userspace domain event recorded when a dispatched tool's result carries an
+ * MCP Apps (`io.modelcontextprotocol/ui`) declaration — the resource URI, and
+ * the content-hash pin when one could be obtained.
+ *
+ * A SEPARATE event rather than a field on {@link MCP_DISPATCHED}, for two
+ * reasons. `MCP_DISPATCHED` is emitted BEFORE the call so a failed attempt is
+ * still indexed for proactive repair; UI provenance is only knowable after it,
+ * and moving the emit to close that gap would silently drop failures from the
+ * repair index. And a UI is the exception, not the rule — most dispatches carry
+ * none, and an always-present-but-usually-empty field reads as coverage.
+ *
+ * The fold skips unknown types, so this is no EVENT_SCHEMA change (ADR 0063 D4).
+ */
+export const MCP_UI_OBSERVED = "MCP_UI_OBSERVED";
+
+/**
+ * How the `contentHash` on {@link MCP_UI_OBSERVED} was obtained — or why there
+ * isn't one. Four explicit states rather than an absent field, because "no
+ * pin" is ambiguous between *not asked for*, *asked for and unavailable*, and
+ * *free because the server inlined it*, and a pin is a correctness device.
+ *
+ * - `embedded` — the result inlined the `ui://` resource; hashed at no cost.
+ * - `resolved` — `resolveUi` was set and `resources/read` returned a body.
+ * - `not-requested` — a UI was declared; `resolveUi` was off, so it was not fetched.
+ * - `unresolvable` — `resolveUi` was set and the server produced no body.
+ */
+export type McpUiPin = "embedded" | "resolved" | "not-requested" | "unresolvable";
+
+export interface McpUiObservedPayload {
+  toolName: string;
+  resourceUri: string;
+  /** `fnv1a64:<hex16>` over the resource body; absent unless `pin` says otherwise. */
+  contentHash?: string;
+  pin: McpUiPin;
+}
 
 export const SchemaDriftPayload = z.object({
   toolName: z.string(),
@@ -93,6 +132,27 @@ export interface McpInvokeOptions {
    * string tokens are rejected loudly. Default false (safe).
    */
   acceptResolvedTokens?: boolean;
+  /**
+   * What a dispatched step yields — see {@link McpResultFidelity}. Default
+   * `"value"`; set `"full"` to observe `_meta.ui`, embedded `ui://` resources,
+   * or non-text content blocks from a flow.
+   *
+   * Independent of {@link resolveUi}: the effect always reads the full result
+   * internally (that is where a UI declaration lives), and this option only
+   * decides what it hands back.
+   */
+  resultFidelity?: McpResultFidelity;
+  /**
+   * Fetch a declared-but-not-inlined `ui://` resource to pin its content hash
+   * on {@link MCP_UI_OBSERVED}. Costs ONE extra `resources/read` per dispatch
+   * that declares a UI, which is why it is opt-in rather than the default; an
+   * INLINED resource is hashed for free and needs no flag.
+   *
+   * A failed or empty read never fails the dispatch — the tool call already
+   * succeeded and its side effect already happened. The gap is recorded as
+   * `pin: "unresolvable"` instead.
+   */
+  resolveUi?: boolean;
 }
 
 /**
@@ -106,6 +166,7 @@ export function registerMcpInvoke(
   options: McpInvokeOptions = {}
 ): ToolEffect {
   const ttlMs = options.toolsTtlMs ?? 60_000;
+  const fidelity = options.resultFidelity ?? "value";
   const tokenToHeaders =
     options.tokenToHeaders ?? ((token: string) => ({ authorization: `Bearer ${token}` }));
 
@@ -173,13 +234,74 @@ export function registerMcpInvoke(
         schemaHash: tool.schemaHash,
         ...(options.server !== undefined && { server: options.server }),
       });
-      return client.callTool(call.toolName, call.args, headers);
+
+      // ADR 0072 D3 — read the FULL result unconditionally. A UI declaration
+      // lives in `_meta.ui` or an embedded `ui://` content block, and both are
+      // erased by the convenience projection, so a `callTool` here would make
+      // the whole ingress layer unobservable from the log (which is exactly
+      // what it was). Fidelity decides only what is HANDED BACK.
+      const result = await client.callToolResult(call.toolName, call.args, headers);
+      throwIfToolError(call.toolName, result);
+
+      const observed = await observeUi(client, call.toolName, tool, result, options.resolveUi);
+      if (observed !== undefined) ctx.emit(MCP_UI_OBSERVED, observed);
+
+      return fidelity === "full" ? result : projectToolResult(call.toolName, result);
     },
     { errors: MCP_INVOKE_ERRORS }
   );
 
   effectRuntime.register(MCP_INVOKE_TOOL_ID, effect);
   return effect;
+}
+
+/**
+ * The MCP Apps declaration this dispatch carried, if any — the ADR 0072 D3
+ * "carry, never render" half, made observable from the log.
+ *
+ * A UI can be declared in three places, and they are consulted in decreasing
+ * authority: the RESULT's `_meta.ui` (what this call actually returned), an
+ * inlined `ui://` content block, then the TOOL's static declaration from
+ * `tools/list`. Returns `undefined` when none of them names one, so a
+ * non-UI dispatch emits nothing at all rather than an empty marker.
+ */
+async function observeUi(
+  client: McpClient,
+  toolName: string,
+  tool: MappedMcpTool,
+  result: McpCallToolResult,
+  resolveUi: boolean | undefined
+): Promise<McpUiObservedPayload | undefined> {
+  const { meta, embedded } = uiFromResult(result);
+  const resourceUri = meta?.resourceUri ?? embedded[0]?.uri ?? tool.ui?.resourceUri;
+  if (resourceUri === undefined) return undefined;
+
+  // Inlined body ⇒ pin for free, no round-trip. `toUiResource` rather than a
+  // local hash call, so egress, ingress and this path share ONE hashing
+  // implementation (the ADR 0063 D1 lesson — a second one that mostly agrees
+  // is how a pin silently stops detecting drift).
+  const inlined = embedded.find((r) => r.uri === resourceUri);
+  if (inlined !== undefined) {
+    return {
+      toolName,
+      resourceUri,
+      contentHash: toUiResource(inlined).contentHash,
+      pin: "embedded",
+    };
+  }
+
+  if (resolveUi !== true) return { toolName, resourceUri, pin: "not-requested" };
+
+  // The dispatch already succeeded and its side effect already happened; a
+  // template we cannot fetch is a provenance gap, never a retroactive failure.
+  try {
+    const fetched = await client.readUiResource(resourceUri);
+    return fetched === undefined
+      ? { toolName, resourceUri, pin: "unresolvable" }
+      : { toolName, resourceUri, contentHash: fetched.contentHash, pin: "resolved" };
+  } catch {
+    return { toolName, resourceUri, pin: "unresolvable" };
+  }
 }
 
 /**

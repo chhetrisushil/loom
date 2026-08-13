@@ -10,6 +10,7 @@ import {
   type McpCallToolResult,
   type McpResourceContents,
   type McpResourceDescriptor,
+  type McpResultFidelity,
   type McpServerConfig,
   type McpTool,
 } from "./types";
@@ -139,13 +140,27 @@ export class McpClient {
     }
   }
 
-  async listTools(): Promise<MappedMcpTool[]> {
+  /**
+   * Every tool the server offers, each mapped to a Loom `ToolDefinition` +
+   * effect. `resultFidelity` governs what those effects yield — see
+   * {@link McpResultFidelity}; the definitions and schema pins are unaffected.
+   */
+  async listTools(options: { resultFidelity?: McpResultFidelity } = {}): Promise<MappedMcpTool[]> {
     const result = await this.rpc<{ tools: McpTool[] }>("tools/list");
-    return (result.tools ?? []).map((mcpTool) => this.mapTool(mcpTool));
+    const fidelity = options.resultFidelity ?? "value";
+    return (result.tools ?? []).map((mcpTool) => this.mapTool(mcpTool, fidelity));
   }
 
-  async registerInto(effectRuntime: EffectRuntime): Promise<ToolDefinition[]> {
-    const mapped = await this.listTools();
+  /**
+   * Register every server tool as a Loom effect. Pass
+   * `{ resultFidelity: "full" }` when results may carry a UI declaration or
+   * non-text content that the default projection would discard.
+   */
+  async registerInto(
+    effectRuntime: EffectRuntime,
+    options: { resultFidelity?: McpResultFidelity } = {}
+  ): Promise<ToolDefinition[]> {
+    const mapped = await this.listTools(options);
     for (const { definition, effect } of mapped) {
       effectRuntime.register(definition.id, effect);
     }
@@ -193,21 +208,7 @@ export class McpClient {
     input: unknown,
     extraHeaders?: Record<string, string>
   ): Promise<unknown> {
-    const result = await this.callToolResult(name, input, extraHeaders);
-
-    if (result.isError === true) {
-      throw new Error(`MCP tool "${name}" failed: ${textOf(result).slice(0, MAX_ERROR_TEXT)}`);
-    }
-    if (result.structuredContent !== undefined) {
-      return result.structuredContent;
-    }
-
-    const textContent = textOf(result);
-    try {
-      return JSON.parse(textContent) as unknown;
-    } catch {
-      return textContent;
-    }
+    return projectToolResult(name, await this.callToolResult(name, input, extraHeaders));
   }
 
   // ── Resources ──────────────────────────────────────────────────────────────
@@ -255,7 +256,7 @@ export class McpClient {
     }
   }
 
-  private mapTool(mcpTool: McpTool): MappedMcpTool {
+  private mapTool(mcpTool: McpTool, fidelity: McpResultFidelity): MappedMcpTool {
     const definition = tool$({
       id: mcpTool.name,
       name: mcpTool.name,
@@ -265,7 +266,12 @@ export class McpClient {
       outputSchema: z.unknown() as z.ZodType<unknown>,
     });
 
-    const effect = new ToolEffect((input: unknown) => this.callTool(mcpTool.name, input));
+    const effect = new ToolEffect(async (input: unknown) => {
+      if (fidelity === "value") return this.callTool(mcpTool.name, input);
+      const result = await this.callToolResult(mcpTool.name, input);
+      throwIfToolError(mcpTool.name, result);
+      return result;
+    });
     const ui = uiMetaOf(mcpTool._meta);
 
     return {
@@ -276,6 +282,47 @@ export class McpClient {
       schemaHash: jsonSchemaHash(mcpTool.inputSchema),
       ...(ui !== undefined && { ui }),
     };
+  }
+}
+
+/**
+ * The `callToolResult` → single-value projection, and the ONE place an in-band
+ * `isError` becomes a throw.
+ *
+ * Split out of `callTool` because a caller that needs the full result for its
+ * own reasons — `mcpInvoke$` reads `_meta.ui` off it — must not have to
+ * re-implement either half. Two projections that mostly agree is how a
+ * convenience path and a fidelity path silently diverge (the ADR 0063 D1
+ * warning, in its result-shaped form).
+ *
+ * Resolution order: `structuredContent` wins when present; otherwise text
+ * blocks are joined and JSON-parsed, falling back to the raw string. Non-text
+ * blocks are not representable — that is what the full result is for.
+ */
+export function projectToolResult(name: string, result: McpCallToolResult): unknown {
+  throwIfToolError(name, result);
+  if (result.structuredContent !== undefined) {
+    return result.structuredContent;
+  }
+  const textContent = textOf(result);
+  try {
+    return JSON.parse(textContent) as unknown;
+  } catch {
+    return textContent;
+  }
+}
+
+/**
+ * Throw on an in-band tool failure. MCP reports tool errors as a SUCCESSFUL
+ * JSON-RPC response carrying `isError: true`, so a full-fidelity caller that
+ * skips this check turns every tool error into a plausible-looking success —
+ * the exact defect the ADR 0072 implementation pass fixed in `callTool`.
+ * Exported because `callToolResult` is the documented path for anything beyond
+ * text, and it hands back the flag rather than acting on it.
+ */
+export function throwIfToolError(name: string, result: McpCallToolResult): void {
+  if (result.isError === true) {
+    throw new Error(`MCP tool "${name}" failed: ${textOf(result).slice(0, MAX_ERROR_TEXT)}`);
   }
 }
 
