@@ -670,7 +670,7 @@ describe("loom CLI", () => {
       writeFileSync(join(sub, "app.js"), ECHOING_APP);
       writeFileSync(join(sub, "loom-manifest.json"), MANIFEST);
       const { text, result } = await cmdVerify(join(sub, "app.js"));
-      expect(text).toContain("loop-identity findings for 1 flow(s)");
+      expect(text).toContain("loop-identity for 1 flow(s) (ADR 0061)");
       expect(result.findings.map((f) => f.message)).toEqual(["loop-identity: interp"]);
     });
 

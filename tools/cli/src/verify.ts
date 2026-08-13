@@ -30,22 +30,71 @@ interface LoopIdentityFinding {
   location?: string;
 }
 
-/** The subset of the compiler manifest this command reads. */
-interface VerifyManifest {
-  flows?: Record<string, { loopIdentity?: LoopIdentityFinding[] }>;
+interface NonDeterministicFinding {
+  callee: string;
+  insideDecide: boolean;
+  location?: string;
 }
 
-/** Extract the per-flow loop-identity findings from a compiler manifest. Pure. */
+interface RunnerReachEntry {
+  steps: Array<{ stepId?: string; toolId: string }>;
+  unresolved: Array<{ expr: string; kind: "step" | "suspend"; location?: string }>;
+  suspends: Array<{ id?: string; correlationKey?: string; timed?: boolean; wakeAt?: boolean }>;
+}
+
+/** The subset of the compiler manifest this command reads. */
+interface VerifyManifest {
+  flows?: Record<
+    string,
+    {
+      loopIdentity?: LoopIdentityFinding[];
+      nonDeterministic?: NonDeterministicFinding[];
+      runnerReach?: RunnerReachEntry;
+    }
+  >;
+}
+
+/** Everything the manifest can feed the rules, extracted per flow. Pure. */
+export interface ManifestLint {
+  loopIdentityByFlow: Record<string, LoopIdentityFinding[]>;
+  nonDeterministicByFlow: Record<string, NonDeterministicFinding[]>;
+  runnerReachByFlow: Record<string, RunnerReachEntry>;
+}
+
+/**
+ * Extract every per-flow analysis the compiler recorded.
+ *
+ * All three need the runner SOURCE, which only the compiler has. Reading them
+ * from the manifest is what makes the determinism, capability-compat,
+ * effect-class and suspension-safety rules work without an application
+ * hand-plumbing its own source into a linter — a wiring step that, measured
+ * across 22 shipped examples, nobody performed.
+ */
+export function lintFromManifest(manifest: VerifyManifest): ManifestLint {
+  const out: ManifestLint = {
+    loopIdentityByFlow: {},
+    nonDeterministicByFlow: {},
+    runnerReachByFlow: {},
+  };
+  for (const [flowId, flow] of Object.entries(manifest.flows ?? {})) {
+    if (flow.loopIdentity !== undefined && flow.loopIdentity.length > 0) {
+      out.loopIdentityByFlow[flowId] = flow.loopIdentity;
+    }
+    if (flow.nonDeterministic !== undefined && flow.nonDeterministic.length > 0) {
+      out.nonDeterministicByFlow[flowId] = flow.nonDeterministic;
+    }
+    if (flow.runnerReach !== undefined) {
+      out.runnerReachByFlow[flowId] = flow.runnerReach;
+    }
+  }
+  return out;
+}
+
+/** Back-compat projection of {@link lintFromManifest}. */
 export function loopIdentityFromManifest(
   manifest: VerifyManifest
 ): Record<string, LoopIdentityFinding[]> {
-  const byFlow: Record<string, LoopIdentityFinding[]> = {};
-  for (const [flowId, flow] of Object.entries(manifest.flows ?? {})) {
-    if (flow.loopIdentity !== undefined && flow.loopIdentity.length > 0) {
-      byFlow[flowId] = flow.loopIdentity;
-    }
-  }
-  return byFlow;
+  return lintFromManifest(manifest).loopIdentityByFlow;
 }
 
 /** Explicit path, or auto-detect `loom-manifest.json` beside the config / in the cwd. */
@@ -78,20 +127,28 @@ export async function cmdVerify(
   // ADR 0061 — auto-read the compiler manifest's loopIdentity findings, if any.
   const resolved = resolveManifestPath(configPath, manifestPath);
   let banner = "";
-  let loopIdentityByFlow: Record<string, LoopIdentityFinding[]> | undefined;
+  let lint: ManifestLint | undefined;
   if (resolved !== undefined) {
     const manifest = JSON.parse(fs.readFileSync(resolved, "utf-8")) as VerifyManifest;
-    const findings = loopIdentityFromManifest(manifest);
-    const flowCount = Object.keys(findings).length;
-    if (flowCount > 0) {
-      loopIdentityByFlow = findings;
-      banner = `[manifest] ${resolved}: loop-identity findings for ${flowCount} flow(s) injected (ADR 0061)\n`;
+    const found = lintFromManifest(manifest);
+    const parts: string[] = [];
+    const n = (r: Record<string, unknown>) => Object.keys(r).length;
+    if (n(found.loopIdentityByFlow) > 0) {
+      parts.push(`loop-identity for ${n(found.loopIdentityByFlow)} flow(s) (ADR 0061)`);
+    }
+    if (n(found.nonDeterministicByFlow) > 0) {
+      parts.push(`non-determinism for ${n(found.nonDeterministicByFlow)} flow(s)`);
+    }
+    if (n(found.runnerReachByFlow) > 0) {
+      parts.push(`runner reach for ${n(found.runnerReachByFlow)} flow(s) (ADR 0086)`);
+    }
+    if (parts.length > 0) {
+      lint = found;
+      banner = `[manifest] ${resolved}: ${parts.join(", ")} injected\n`;
     }
   }
 
-  const report = app.verify(
-    loopIdentityByFlow !== undefined ? { lint: { loopIdentityByFlow } } : undefined
-  );
+  const report = app.verify(lint !== undefined ? { lint } : undefined);
   const text = banner + formatReport(report);
   await app.close?.();
   return { text, result: report };

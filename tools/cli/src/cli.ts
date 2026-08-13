@@ -9,6 +9,7 @@ import { cmdCheck } from "./check";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { cmdComplianceReport } from "./compliance";
 import { cmdDeployCheck } from "./deploy";
+import { cmdDoctor } from "./doctor";
 import { cmdGen, cmdNew } from "./gen";
 import { serveInspector } from "./inspector";
 import { cmdIntrospect } from "./introspect";
@@ -80,6 +81,8 @@ export const USAGE = `loom — project-local commands for a Loom app
   loom appgen ... --model <spec> [--model-big <spec>]  plan with a model of your choice
                                                   (anthropic:<m> / openai:<m> / gemini:<m> / a .gguf path)
   loom appgen --from-spec <file> [--dir .]        replay a .loom/appgen/<ts>.spec.json (no model)
+  loom doctor [--dir .] [--config <module>] [--manifest <path>]  run every pre-flight check that
+                                                  can run, and report which ones could NOT
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom lint claim-check [--dir .]                 CC-5: flag claim-check reach-through inside flows
   loom verify --config <module> [--manifest <path>]  pre-flight runtime verification (@loom/verify)
@@ -170,6 +173,15 @@ async function main(argv: string[]): Promise<number> {
     case "check": {
       requireFlag(flags, "manifest");
       const { text, result } = cmdCheck(flags.manifest!);
+      console.log(text);
+      return result.ok ? 0 : 1;
+    }
+    case "doctor": {
+      const { text, result } = await cmdDoctor({
+        ...(flags.dir !== undefined && { dir: flags.dir }),
+        ...(flags.config !== undefined && { config: flags.config }),
+        ...(flags.manifest !== undefined && { manifest: flags.manifest }),
+      });
       console.log(text);
       return result.ok ? 0 : 1;
     }
