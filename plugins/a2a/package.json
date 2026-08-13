@@ -22,12 +22,14 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@loom/classify": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
     "@loom/workflow-runtime": "workspace:*"
   },
   "devDependencies": {
     "@loom/event-runtime": "workspace:*",
+    "@loom/llm": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",

@@ -1,3 +1,5 @@
+import type { TaintedValue } from "@loom/classify";
+import { tainted } from "@loom/classify";
 import { tool$ } from "@loom/core";
 import type { AgentDefinition, ToolDefinition } from "@loom/core";
 import { agent$ } from "@loom/core";
@@ -17,7 +19,7 @@ import type { A2ATask, A2ATaskResult, AgentCard } from "./types";
  * and registered into an `EffectRuntime` so Loom agents, steps and the planner
  * can invoke it like any other tool.
  */
-export interface A2APeerConfig {
+export interface A2APeerConfig<TTaint extends boolean = false> {
   /** Base URL of the remote A2A agent (no trailing path). */
   url: string;
   /** Extra headers (auth etc.) sent on discovery and every task call. */
@@ -28,6 +30,28 @@ export interface A2APeerConfig {
   pollIntervalMs?: number;
   /** Override the registered tool id. Defaults to a slug of the card name. */
   toolId?: string;
+  /**
+   * Mark the peer's `content` as untrusted (ADR 0085), stamped `a2a:<toolId>`.
+   * The prompt boundary in `@loom/llm` then REFUSES it in any instruction
+   * position — system prompt, assistant turn, tool description — and fences it
+   * in a `user` message.
+   *
+   * A peer agent writes its own artifact text, and a peer is exactly as
+   * trustworthy as whoever operates it. This is the switch that makes that fact
+   * travel with the value.
+   *
+   * Only `content` is tainted, not the whole output — unlike `mcpInvoke$`,
+   * whose result is opaque. `raw` carries task state and artifact metadata that
+   * feeds control flow, and forcing an `unwrapTainted()` on code that never
+   * touches a prompt would be friction in the wrong place. `content` is the
+   * flattened text, so `peer.content` drops straight into an `LlmMessage` slot
+   * where the guard sees it.
+   *
+   * Typed, not just documented: the flag's literal type selects the output
+   * type, so a caller that does not opt in sees `A2APeerOutput` exactly as
+   * before and compiles unchanged.
+   */
+  taintResults?: TTaint;
 }
 
 /** Friendly input accepted by a peer tool — a plain prompt plus optional context. */
@@ -42,11 +66,26 @@ export interface A2APeerOutput {
   raw: A2ATaskResult;
 }
 
+/** {@link A2APeerOutput} under `taintResults` — the text carries its provenance. */
+export interface TaintedA2APeerOutput {
+  content: TaintedValue<string>;
+  raw: A2ATaskResult;
+}
+
+/**
+ * The output shape implied by the `taintResults` flag. A `boolean` (rather than
+ * a literal) distributes to the union, which is the honest answer when the flag
+ * is only known at runtime.
+ */
+export type A2APeerOutputFor<TTaint extends boolean> = TTaint extends true
+  ? TaintedA2APeerOutput
+  : A2APeerOutput;
+
 /** The trio produced when mapping a remote agent: card, tool definition, effect. */
-export interface MappedA2APeer {
+export interface MappedA2APeer<TTaint extends boolean = false> {
   card: AgentCard;
-  definition: ToolDefinition<A2APeerInput, A2APeerOutput>;
-  effect: Effect<A2APeerInput, A2APeerOutput>;
+  definition: ToolDefinition<A2APeerInput, A2APeerOutputFor<TTaint>>;
+  effect: Effect<A2APeerInput, A2APeerOutputFor<TTaint>>;
 }
 
 /**
@@ -72,10 +111,15 @@ const peerInputSchema = z.object({
   context: z.unknown().optional(),
 }) as z.ZodType<A2APeerInput>;
 
+// `content` validates BOTH shapes because one schema backs both flag settings.
+// It is the runtime contract; the conditional type is what narrows it per caller.
 const peerOutputSchema = z.object({
-  content: z.string(),
+  content: z.union([
+    z.string(),
+    z.object({ __loomTainted: z.object({ origin: z.string() }), value: z.string() }),
+  ]),
   raw: z.unknown(),
-}) as z.ZodType<A2APeerOutput>;
+});
 
 /** Fetch a remote agent's AgentCard from its well-known discovery endpoint. */
 export async function fetchAgentCard(
@@ -91,10 +135,10 @@ export async function fetchAgentCard(
   return (await resp.json()) as AgentCard;
 }
 
-export class A2APeerClient {
+export class A2APeerClient<TTaint extends boolean = false> {
   private card: AgentCard | undefined;
 
-  constructor(private readonly config: A2APeerConfig) {}
+  constructor(private readonly config: A2APeerConfig<TTaint>) {}
 
   /** Fetch and cache the remote AgentCard. */
   async discover(): Promise<AgentCard> {
@@ -105,18 +149,18 @@ export class A2APeerClient {
   }
 
   /** Discover the peer and build its Loom tool definition + effect (no registration). */
-  async map(): Promise<MappedA2APeer> {
+  async map(): Promise<MappedA2APeer<TTaint>> {
     const card = await this.discover();
     const toolId = this.config.toolId ?? slug(card.name);
-    const effect = this.buildEffect();
+    const effect = this.buildEffect(toolId);
 
-    const definition = tool$<A2APeerInput, A2APeerOutput>({
+    const definition = tool$<A2APeerInput, A2APeerOutputFor<TTaint>>({
       id: toolId,
       name: card.name,
       description: describe(card),
       kind: "a2a",
       inputSchema: peerInputSchema,
-      outputSchema: peerOutputSchema,
+      outputSchema: peerOutputSchema as unknown as z.ZodType<A2APeerOutputFor<TTaint>>,
     });
 
     return { card, definition, effect };
@@ -129,7 +173,7 @@ export class A2APeerClient {
   async registerInto(
     effectRuntime: EffectRuntime,
     registry?: PeerAgentRegistrar
-  ): Promise<ToolDefinition<A2APeerInput, A2APeerOutput>> {
+  ): Promise<ToolDefinition<A2APeerInput, A2APeerOutputFor<TTaint>>> {
     const { card, definition, effect } = await this.map();
     effectRuntime.register(definition.id, effect);
 
@@ -150,7 +194,7 @@ export class A2APeerClient {
   }
 
   /** Adapter effect: friendly input -> A2ATask -> underlying client -> flattened output. */
-  private buildEffect(): Effect<A2APeerInput, A2APeerOutput> {
+  private buildEffect(toolId: string): Effect<A2APeerInput, A2APeerOutputFor<TTaint>> {
     const clientOptions: A2AClientOptions = {
       ...(this.config.headers !== undefined && { headers: this.config.headers }),
       ...(this.config.timeoutMs !== undefined && { timeoutMs: this.config.timeoutMs }),
@@ -160,8 +204,8 @@ export class A2APeerClient {
     };
     const client = createA2AClientEffect(this.config.url, clientOptions);
 
-    return new A2AEffect<A2APeerInput, A2APeerOutput>(
-      async (input: A2APeerInput, ctx: EffectContext): Promise<A2APeerOutput> => {
+    return new A2AEffect<A2APeerInput, A2APeerOutputFor<TTaint>>(
+      async (input: A2APeerInput, ctx: EffectContext): Promise<A2APeerOutputFor<TTaint>> => {
         const task: A2ATask = {
           // Deterministic id derived from the execution so replays stay stable.
           id: `${ctx.executionId}:${ctx.stepId}`,
@@ -170,7 +214,14 @@ export class A2APeerClient {
         };
 
         const result = await client.execute(task, ctx);
-        return { content: artifactText(result), raw: result };
+        const content = artifactText(result);
+        // Taint at INGRESS — the wrapper IS the step output, so it is what
+        // STEP_COMPLETED records and what a replay hands back. The cast is the
+        // one place the conditional return type cannot be proved structurally.
+        return {
+          content: this.config.taintResults === true ? tainted(content, `a2a:${toolId}`) : content,
+          raw: result,
+        } as A2APeerOutputFor<TTaint>;
       }
     );
   }

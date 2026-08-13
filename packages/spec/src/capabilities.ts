@@ -334,7 +334,7 @@ export const CAPABILITIES: readonly Capability[] = [
     package: "@loom/classify",
     level: "L2",
     summary:
-      "`tainted(value, origin)` attaches provenance to a VALUE at ingress (plain JSON, so it survives the log and replay). `guardRequest` runs inside every createLlmEffect and REFUSES tainted content in system / assistant / tool-description position, fencing it in a `user` message. Producer: `registerMcpInvoke({ taintResults })`.",
+      "`tainted(value, origin)` attaches provenance to a VALUE at ingress (plain JSON, so it survives the log and replay). `guardRequest` runs inside every createLlmEffect and REFUSES tainted content in system / assistant / tool-description position, fencing it in a `user` message. Producers (both opt-in): `registerMcpInvoke({ taintResults })` taints the whole result; `A2APeerClient({ taintResults })` taints `content` only, its flag's literal type selecting the output type.",
     evidence: {
       conformanceTest: "packages/llm/src/untrusted.test.ts",
       usedIn:
