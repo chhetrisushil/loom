@@ -1,10 +1,11 @@
 import { LlmEffect } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
-import type { LlmProvider, LlmRequest, LlmResponse } from "./types";
+import type { LlmProvider, LlmRequestInput, LlmResponse } from "./types";
+import { guardRequest } from "./untrusted";
 
 export interface CreateLlmEffectOptions<TIn, TOut> {
   provider: LlmProvider;
-  buildRequest: (input: TIn, ctx: EffectContext) => LlmRequest;
+  buildRequest: (input: TIn, ctx: EffectContext) => LlmRequestInput;
   parseResponse?: (response: LlmResponse, input: TIn) => TOut;
 }
 
@@ -14,7 +15,10 @@ export function createLlmEffect<TIn = string, TOut = string>(
   const parse = options.parseResponse ?? ((r: LlmResponse) => r.content as unknown as TOut);
   return new LlmEffect<TIn, TOut>(
     async (input: TIn, ctx: EffectContext) => {
-      const request = options.buildRequest(input, ctx);
+      // The integrity check at the prompt boundary: tainted content is refused
+      // outside a `user` message and fenced inside one, and what comes back is
+      // plain strings — so no provider has to know taint exists.
+      const request = guardRequest(options.buildRequest(input, ctx));
       // K8.1 — forward the effect's cooperative-cancellation signal to the
       // provider (unless buildRequest already set one), so a cancelled/timed-out
       // execution severs the in-flight HTTP call instead of orphaning it.

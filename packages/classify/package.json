@@ -1,7 +1,7 @@
 {
   "name": "@loom/classify",
   "version": "0.0.1",
-  "description": "Data-protection classification for Loom — the sensitive()/secret()/internal() authoring markers + a schema walker, so a field is classified ONCE at its schema and every mechanism (crypto, redaction, egress) derives its wiring from that. Kernel stays ignorant of the taxonomy (G3).",
+  "description": "Data-handling vocabulary for Loom — the sensitive()/secret()/internal() confidentiality markers + a schema walker, so a field is classified ONCE at its schema and every mechanism (crypto, redaction, egress) derives its wiring from that; plus the integrity axis (tainted()/unwrapTainted()), which attaches provenance to a VALUE at ingress because trustworthiness is not a property a schema can know. Kernel stays ignorant of both (G3).",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

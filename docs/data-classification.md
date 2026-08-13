@@ -172,6 +172,62 @@ This is a documented convention, not a hard boot-validator (K10-R3.2 was softene
 middleware-order validator is ceremony over opaque closures). Getting it wrong degrades
 redaction, not correctness of the fold.
 
+## The integrity axis — untrusted content (ADR 0085)
+
+Everything above is a **confidentiality** axis: it governs what may *leave*. There is an
+opposite direction — what may *enter* an instruction position — and it does not work the same
+way, so it does not use a marker.
+
+Confidentiality is a property of a **field**: `ssn` is sensitive in every execution, forever, so
+declaring it once at the schema is exactly right. Integrity is a property of a **value**: the same
+`summary: string` is trustworthy when your flow computed it and untrusted when a third-party MCP
+server returned it, and which one it is cannot be known until runtime. So taint is attached to the
+value, at ingress, by the code that acquired it:
+
+```ts
+import { tainted, unwrapTainted } from "@loom/classify";
+
+const doc = tainted(await fetchThirdPartyDoc(), "mcp:acme/fetch_doc");
+```
+
+The wrapper is plain JSON (`{ __loomTainted: { origin }, value }` — the same structural trick as
+K10.3's `secretRef`), so it survives the log verbatim and a **replay hands back a value that is
+still tainted**.
+
+### What it buys you
+
+`@loom/llm`'s `guardRequest` runs inside every `createLlmEffect`, unconditionally, between
+`buildRequest` and the provider:
+
+> **Tainted content may appear only in a `user` message, and only fenced.**
+
+`request.system`, a `role: "system"` message, a `role: "assistant"` turn, and any tool
+`name`/`description` all throw `UntrustedContentError`. In a `user` message the content is wrapped
+as `<untrusted-input origin="…">…</untrusted-input>`, with any forged closing tag escaped so the
+content cannot move its own boundary.
+
+Two halves, and they are not equally strong. The **refusal is structural** — after the guard runs,
+third-party bytes are not in an instruction slot. The **fence is a label** — a model can still be
+talked across it. Put [`UNTRUSTED_CONTENT_SYSTEM_NOTE`](adr/0085-untrusted-content-integrity-axis.md)
+in your system prompt so the model knows what the tag means; the guard will not write it for you,
+because a framework that writes into your system prompt is doing the very thing this prevents.
+
+### Producing taint
+
+`registerMcpInvoke(client, runtime, { taintResults: true })` taints every MCP tool result with
+`mcp:<server>/<toolName>`. It is opt-in because it changes the step's output *shape* — consumers
+call `unwrapTainted()` to compute with it, and that friction is deliberate: every unwrap is a
+visible place where provenance stops travelling.
+
+### Limits, stated plainly
+
+- Taint travels on **values**, not through string concatenation. `` `${unwrapTainted(doc)} …` ``
+  produces a plain string the guard cannot see. Unwrapping is one greppable call, which is the
+  whole mitigation.
+- It applies to content ingested **after** you turn a producer on. Existing logs replay untainted,
+  because the fact was never recorded — you cannot infer from a logged string which third party
+  wrote it.
+
 ## Triage (why a package, not the kernel)
 
 `@loom/classify` is a small **authoring-tier** package above the kernel. The taxonomy is

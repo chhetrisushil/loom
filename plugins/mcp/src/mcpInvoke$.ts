@@ -1,3 +1,4 @@
+import { tainted } from "@loom/classify";
 import { fail, projection$, step$ } from "@loom/core";
 import type { EventEnvelope, ProjectionDefinition, StepDefinition } from "@loom/core";
 import { ToolEffect } from "@loom/effect-runtime";
@@ -153,6 +154,23 @@ export interface McpInvokeOptions {
    * `pin: "unresolvable"` instead.
    */
   resolveUi?: boolean;
+  /**
+   * Wrap every result as untrusted (`@loom/classify`'s `tainted`), stamped with
+   * origin `mcp:<server>/<toolName>`. The prompt boundary in `@loom/llm` then
+   * REFUSES that content in any instruction position — system prompt, assistant
+   * turn, tool description — and fences it in a `user` message.
+   *
+   * A third-party MCP server writes the text its tools return, so any of it may
+   * be an instruction aimed at whatever model reads it next. This is the switch
+   * that makes that fact travel with the value instead of being a comment in a
+   * design doc.
+   *
+   * Off by default because it changes the step's output SHAPE: consumers see
+   * `{ __loomTainted, value }` and must `unwrapTainted()` to compute with it.
+   * That friction is the point — every unwrap is a visible place where
+   * provenance stops travelling.
+   */
+  taintResults?: boolean;
 }
 
 /**
@@ -246,7 +264,13 @@ export function registerMcpInvoke(
       const observed = await observeUi(client, call.toolName, tool, result, options.resolveUi);
       if (observed !== undefined) ctx.emit(MCP_UI_OBSERVED, observed);
 
-      return fidelity === "full" ? result : projectToolResult(call.toolName, result);
+      const value = fidelity === "full" ? result : projectToolResult(call.toolName, result);
+      // Taint at INGRESS — the moment third-party content crosses in. The
+      // wrapper IS the step output, so it is what STEP_COMPLETED records and
+      // what a replay hands back; tainting anywhere later would be a guess.
+      return options.taintResults === true
+        ? tainted(value, `mcp:${options.server ?? "server"}/${call.toolName}`)
+        : value;
     },
     { errors: MCP_INVOKE_ERRORS }
   );
