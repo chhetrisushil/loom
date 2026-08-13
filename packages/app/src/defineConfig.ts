@@ -1002,6 +1002,14 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       ...verifyCfg?.lint?.loopIdentityByFlow,
       ...extraLint?.loopIdentityByFlow,
     };
+    // ADR 0086. Missing here meant the reach analysis was unreachable from the
+    // only wiring an app actually uses — `resolveVerifyInput` took it, but
+    // nothing routed it there. A capability the happy path cannot reach is the
+    // same defect as one with no producer.
+    const runnerReachByFlow = {
+      ...verifyCfg?.lint?.runnerReachByFlow,
+      ...extraLint?.runnerReachByFlow,
+    };
     return resolveVerifyInput(runtime, {
       ...(authorizer !== undefined && { authorizer }),
       ...(config.dispatcher !== undefined && { dispatcher: config.dispatcher }),
@@ -1011,6 +1019,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       ...(verifyCfg?.effectClasses !== undefined && { effectClasses: verifyCfg.effectClasses }),
       ...(Object.keys(nonDeterministicByFlow).length > 0 && { nonDeterministicByFlow }),
       ...(Object.keys(loopIdentityByFlow).length > 0 && { loopIdentityByFlow }),
+      ...(Object.keys(runnerReachByFlow).length > 0 && { runnerReachByFlow }),
     });
   };
   const verifyOptions = verifyCfg?.rules !== undefined ? { rules: verifyCfg.rules } : undefined;

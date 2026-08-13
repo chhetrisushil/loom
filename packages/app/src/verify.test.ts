@@ -456,3 +456,45 @@ describe("runner-body reach reaches the rules", () => {
     expect(resolveVerifyInput(runtime).timerStoreWired).toBe(false);
   });
 });
+
+describe("the wiring an app actually uses", () => {
+  // Finding #1 of the DX pass: `runnerReachByFlow` reached `resolveVerifyInput`
+  // and nothing routed it there from `defineConfig`, so ADR 0086's analysis was
+  // unreachable from the only path an app takes. Same defect as a capability
+  // with no producer, one tier up.
+  it("verify.lint.runnerReachByFlow reaches the rules through defineConfig", () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [undeclaredFlow()],
+      security: { authorizer: partialGrants },
+      checks: {
+        verify: {
+          mode: "off",
+          lint: { runnerReachByFlow: { gated: analyzeRunnerReach(RUNNER_SOURCE, "gated") } },
+        },
+      },
+    });
+    const errs = app
+      .verify()
+      .findings.filter((f) => f.rule === "capability-compat" && f.severity === "error");
+    expect(errs.map((e) => e.message).join()).toContain("remediation-tool");
+  });
+
+  it("app.verify({ lint }) merges over the configured lint, same as the other two analyses", () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [undeclaredFlow()],
+      security: { authorizer: partialGrants },
+      checks: { verify: { mode: "off" } },
+    });
+    // Nothing configured ⇒ the bound applies and the report is clean-but-blind…
+    expect(app.verify().findings.filter((f) => f.rule === "capability-compat")).toHaveLength(0);
+    // …injected at call time (which is how `loom verify` supplies the manifest) ⇒ caught.
+    const injected = app.verify({
+      lint: { runnerReachByFlow: { gated: analyzeRunnerReach(RUNNER_SOURCE, "gated") } },
+    });
+    expect(
+      injected.findings.filter((f) => f.rule === "capability-compat" && f.severity === "error")
+    ).toHaveLength(1);
+  });
+});

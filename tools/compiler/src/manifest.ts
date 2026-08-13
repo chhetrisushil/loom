@@ -17,6 +17,29 @@ export interface ManifestFlow {
    */
   loopIdentity?: Array<{ callee: string; loopKind: string; reason: string; location?: string }>;
   /**
+   * Issue #82 — non-deterministic calls in this flow's module, and whether each
+   * sits inside a `ctx.decide`/`ctx.execute` boundary. Feed to `@loom/verify`
+   * via `FlowSpec.nonDeterministicCalls`; additive manifest field.
+   */
+  nonDeterministic?: Array<{ callee: string; insideDecide: boolean; location?: string }>;
+  /**
+   * ADR 0086 — runner-body reach: resolved `ctx.run` targets, `ctx.suspend`
+   * conditions, and the targets analysis could NOT resolve. Feeds
+   * `FlowSpec.effects` / `suspends` / `unresolvedReach`, which is what lets
+   * capability-compat, effect-class and suspension-safety see past the flow's
+   * DECLARED steps — and state their own coverage when they cannot.
+   */
+  runnerReach?: {
+    steps: Array<{ stepId?: string; toolId: string }>;
+    unresolved: Array<{ expr: string; kind: "step" | "suspend"; location?: string }>;
+    suspends: Array<{
+      id?: string;
+      correlationKey?: string;
+      timed?: boolean;
+      wakeAt?: boolean;
+    }>;
+  };
+  /**
    * The source module that declared this flow (relative to the project root).
    * Enables tooling and `@loom/app`'s manifest cross-check to know where a flow
    * lives. Registration itself stays a static import (see `registerFlowsFrom`) —
@@ -107,6 +130,9 @@ export function buildManifest(
       module,
       ...(flow.loopIdentityFindings !== undefined &&
         flow.loopIdentityFindings.length > 0 && { loopIdentity: flow.loopIdentityFindings }),
+      ...(flow.nonDeterministicCalls !== undefined &&
+        flow.nonDeterministicCalls.length > 0 && { nonDeterministic: flow.nonDeterministicCalls }),
+      ...(flow.runnerReach !== undefined && { runnerReach: flow.runnerReach }),
     };
   }
 

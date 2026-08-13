@@ -2,6 +2,8 @@ import MagicString from "magic-string";
 import ts from "typescript";
 import { shortHash } from "./hash";
 import { type LoopStepIdentityFinding, analyzeLoopIdentityNode } from "./loopIdentity";
+import { type NonDeterministicCall, analyzeNode } from "./nondeterminism";
+import { type RunnerReach, analyzeReachNode } from "./runnerReach";
 import type {
   ExtractedChunk,
   FlowEntry,
@@ -316,6 +318,20 @@ function collectFlows(
     loopFindings ??= analyzeLoopIdentityNode(sourceFile);
     return loopFindings;
   };
+  // The other two source-region analyses, memoized the same way: each needs the
+  // runner SOURCE, and the compiler is the only thing that has it. Producing
+  // them here is what turns the determinism, capability-compat, effect-class and
+  // suspension-safety rules from hand-wired into on-by-default.
+  let nonDetCalls: NonDeterministicCall[] | undefined;
+  const lintNonDeterminism = (): NonDeterministicCall[] => {
+    nonDetCalls ??= analyzeNode(sourceFile);
+    return nonDetCalls;
+  };
+  let reach: RunnerReach | undefined;
+  const analyzeReach = (): RunnerReach => {
+    reach ??= analyzeReachNode(sourceFile);
+    return reach;
+  };
 
   ts.forEachChild(sourceFile, function visit(node: ts.Node): void {
     // Match a `flow$(...)` call WHEREVER it appears — not only as a direct variable
@@ -365,6 +381,12 @@ function collectFlows(
         const suspendPoints = detectSuspendPoints(_sourceText, stepIds, pluginState);
 
         const findings = lintLoopIdentity();
+        const nonDet = lintNonDeterminism();
+        const flowReach = analyzeReach();
+        const hasReach =
+          flowReach.steps.length > 0 ||
+          flowReach.unresolved.length > 0 ||
+          flowReach.suspends.length > 0;
         pluginState.flows.set(flowId, {
           id: flowId,
           version: version ?? "0.0.0",
@@ -372,6 +394,8 @@ function collectFlows(
           suspendPoints,
           sourceFile: absolutePath,
           ...(findings.length > 0 && { loopIdentityFindings: findings }),
+          ...(nonDet.length > 0 && { nonDeterministicCalls: nonDet }),
+          ...(hasReach && { runnerReach: flowReach }),
         } satisfies FlowEntry);
       }
     }

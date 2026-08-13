@@ -45,6 +45,8 @@ loom — project-local commands for a Loom app
   loom appgen ... --model <spec> [--model-big <spec>]  plan with a model of your choice
                                                   (anthropic:<m> / openai:<m> / gemini:<m> / a .gguf path)
   loom appgen --from-spec <file> [--dir .]        replay a .loom/appgen/<ts>.spec.json (no model)
+  loom doctor [--dir .] [--config <module>] [--manifest <path>]  run every pre-flight check that
+                                                  can run, and report which ones could NOT
   loom check --manifest <path>                    static flow-graph checks (compiler manifest)
   loom lint claim-check [--dir .]                 CC-5: flag claim-check reach-through inside flows
   loom verify --config <module> [--manifest <path>]  pre-flight runtime verification (@loom/verify)
