@@ -394,6 +394,19 @@ export class WorkflowRuntime {
   }
 
   /**
+   * Whether a `TimerStore` is wired. Read by pre-flight verification: with one,
+   * a suspend's `wakeAt` is DERIVED from its `timeout`, so `suspend({ timeout })`
+   * wakes across a restart; without one it silently does not (T1). Same
+   * discipline as {@link hasResumeAuthenticator} — the check reads the real
+   * wiring rather than accepting a caller's claim about it.
+   *
+   * Not a syscall: KERNEL_SYSCALLS and KERNEL_ABI_VERSION are untouched.
+   */
+  hasTimerStore(): boolean {
+    return this.timerStore !== undefined;
+  }
+
+  /**
    * Advisory pre-warm (latency-only, off the durable path): spin up the cold
    * resources a flow's FIRST step will need — a K7 isolated child process, an
    * LLM provider connection — ahead of the run, so the initial latency the

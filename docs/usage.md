@@ -87,7 +87,7 @@ Inside a runner you have the full `WorkflowContext`:
 |---|---|
 | `ctx.run(step, input)` | Execute a step (recorded, replay-safe, exactly-once) |
 | `ctx.parallel(pairs, { limit })` | Run steps concurrently, order-preserving |
-| `ctx.suspend({ on, correlationKey, timeout })` | Durable pause for a human/signal |
+| `ctx.suspend({ on, correlationKey, timeout })` | Durable pause for a human/signal. `resume()` routes by **executionId**; `correlationKey` is metadata for an external dispatcher that knows a business key instead |
 | `ctx.emit(type, payload)` | Emit a domain event into the log |
 | `ctx.stream(type, delta, done?)` | Stream token/deltas (e.g. LLM output) |
 | `ctx.ui.set/merge/append(path, …)` | Push updates to a UI surface (agent-surface) |
@@ -293,7 +293,7 @@ const runner: FlowRunner<{ target: string }, { applied: boolean }> = async (ctx,
 
   const decision = await ctx.suspend<ApprovalDecision>({
     on: "ApprovalGranted",
-    correlationKey: input.target,     // routes the resume event
+    correlationKey: input.target,     // business key for an external dispatcher
     timeout: 24 * 60 * 60 * 1000,     // 24h
   });
 

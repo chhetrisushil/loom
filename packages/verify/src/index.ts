@@ -13,6 +13,7 @@ export type {
   BudgetSpec,
   FlowSpec,
   UnreachableMarkRef,
+  UnresolvedReachRef,
   GrantSpec,
   PlacementSpec,
   VerifyInput,

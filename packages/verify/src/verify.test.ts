@@ -87,19 +87,98 @@ describe("replay-safety rule", () => {
   });
 });
 
+describe("the reach bound is stated, not implied", () => {
+  // capability-compat, effect-class and suspension-safety all answer "does
+  // everything this flow reaches satisfy X". Each is only as good as the
+  // reachable set, and silence about a hole in that set turns a green report
+  // into an overclaim.
+  it("capability-compat warns when a ctx.run target could not be resolved", () => {
+    const report = verify({
+      ...cleanInput(
+        cleanFlow({
+          reachAnalyzed: true,
+          unresolvedReach: [{ expr: "mcpInvoke$(…)", kind: "step" }],
+        })
+      ),
+      grants: { grants: { checkout: "*" } },
+    });
+    const f = report.findings.filter((x) => x.rule === "capability-compat");
+    expect(f).toHaveLength(1);
+    expect(f[0]?.severity).toBe("warn");
+    expect(f[0]?.message).toContain("mcpInvoke$(…)");
+    // A warn, so a report with only this stays ok — an unresolved target is a
+    // limit of the analysis, not a defect in the app.
+    expect(report.ok).toBe(true);
+  });
+
+  it("says nothing when reach analysis resolved everything", () => {
+    const report = verify({
+      ...cleanInput(cleanFlow({ reachAnalyzed: true })),
+      grants: { grants: { checkout: "*" } },
+    });
+    expect(report.findings.filter((x) => x.rule === "capability-compat")).toHaveLength(0);
+  });
+
+  it("truncates a long unresolved list rather than printing all of it", () => {
+    const many = Array.from({ length: 7 }, (_, i) => ({ expr: `s${i}`, kind: "step" as const }));
+    const report = verify({
+      ...cleanInput(cleanFlow({ reachAnalyzed: true, unresolvedReach: many })),
+      grants: { grants: { checkout: "*" } },
+    });
+    expect(report.findings[0]?.message).toContain("+4 more");
+  });
+});
+
 describe("suspension-safety rule", () => {
-  it("flags a suspend with no correlationKey", () => {
+  // A suspend with no correlationKey used to be an ERROR reading "a resume event
+  // cannot be routed to it". `WorkflowRuntime.resume(executionId, event)` routes
+  // by executionId and nothing matches on correlationKey at all, so that was
+  // simply false — invisible only because `FlowSpec.suspends` had no producer.
+  // Populating the input is what made it visible; the check is gone.
+  it("does NOT flag a suspend that declares no correlationKey", () => {
     const report = verify(cleanInput(cleanFlow({ suspends: [{ id: "wait" }] })));
+    expect(report.findings.filter((f) => f.rule === "suspension-safety")).toHaveLength(0);
+  });
+
+  it("flags a timed suspend with no wakeAt when no TimerStore is wired", () => {
+    const report = verify(
+      cleanInput(cleanFlow({ suspends: [{ id: "late", timed: true, wakeAt: false }] }))
+    );
     expect(report.findings).toContainEqual(
-      expect.objectContaining({ rule: "suspension-safety", location: "checkout:wait" })
+      expect.objectContaining({ rule: "suspension-safety", severity: "error" })
     );
   });
 
-  it("flags a timed suspend with no wakeAt", () => {
+  it("does NOT flag it when a TimerStore IS wired — wakeAt is derived from timeout there", () => {
+    const report = verify({
+      ...cleanInput(cleanFlow({ suspends: [{ id: "late", timed: true, wakeAt: false }] })),
+      timerStoreWired: true,
+    });
+    expect(report.findings.filter((f) => f.rule === "suspension-safety")).toHaveLength(0);
+  });
+
+  it("warns when a suspend condition could not be read statically", () => {
+    // A flow that suspends must not look like a flow that does not.
     const report = verify(
-      cleanInput(cleanFlow({ suspends: [{ correlationKey: "k", timed: true, wakeAt: false }] }))
+      cleanInput(
+        cleanFlow({
+          reachAnalyzed: true,
+          unresolvedReach: [{ expr: "gateCondition", kind: "suspend" }],
+        })
+      )
     );
-    expect(report.findings.some((f) => f.rule === "suspension-safety")).toBe(true);
+    expect(report.findings).toContainEqual(
+      expect.objectContaining({ rule: "suspension-safety", severity: "warn" })
+    );
+  });
+
+  it("ignores an unresolved STEP target — it says nothing about suspend safety", () => {
+    const report = verify(
+      cleanInput(
+        cleanFlow({ reachAnalyzed: true, unresolvedReach: [{ expr: "charge", kind: "step" }] })
+      )
+    );
+    expect(report.findings.filter((f) => f.rule === "suspension-safety")).toHaveLength(0);
   });
 
   it("flags approval flows with no ResumeAuthenticator", () => {

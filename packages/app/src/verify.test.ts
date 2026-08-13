@@ -1,5 +1,7 @@
+import { analyzeRunnerReach } from "@loom/compiler";
 import { step$ } from "@loom/core";
 import { GrantTable } from "@loom/effect-runtime";
+import { verify } from "@loom/verify";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -319,5 +321,138 @@ describe("effect-class reaches the rule through defineConfig", () => {
       checks: { verify: { mode: "warn" } },
     });
     expect(app.verify().findings.filter((f) => f.rule === "effect-class")).toEqual([]);
+  });
+});
+
+// ── The reach bound, end to end ──────────────────────────────────────────────
+//
+// The rules were only ever as good as `FlowDefinition.steps`, and a step invoked
+// through `ctx.run` without being declared there was invisible to
+// capability-compat and effect-class. These drive the adapter — the level a real
+// app traverses — rather than a hand-built VerifyInput, which is the discipline
+// that keeps a rule from going quietly dead.
+
+/** The same flow, but declaring NO steps — everything is reached from the body. */
+function undeclaredFlow(): RegisteredFlow {
+  return {
+    definition: {
+      _tag: "FlowDefinition",
+      id: "gated",
+      name: "gated",
+      version: "1.0.0",
+      inputSchema: incident,
+      outputSchema: resolved,
+      steps: [],
+    },
+    runner,
+  } as RegisteredFlow;
+}
+
+const RUNNER_SOURCE = `
+  const metricsStep = step$({ id: "fetch-metrics", toolId: "metrics-tool" });
+  const remediationStep = step$({ id: "apply-remediation", toolId: "remediation-tool" });
+  const runner = async (ctx, input) => {
+    await ctx.run(metricsStep, input);
+    await ctx.run(remediationStep, input);
+  };
+`;
+
+describe("runner-body reach reaches the rules", () => {
+  it("an ungranted step invoked via ctx.run but NOT declared is invisible without reach analysis", () => {
+    // The bound, demonstrated. This is the control for everything below.
+    const { runtime } = defineConfig({
+      storage: { kind: "memory" },
+      flows: [undeclaredFlow()],
+      security: { authorizer: partialGrants },
+    });
+    const report = verify(resolveVerifyInput(runtime, { authorizer: partialGrants }));
+    expect(report.findings.filter((f) => f.rule === "capability-compat")).toHaveLength(0);
+    expect(report.ok).toBe(true); // clean, and wrong
+  });
+
+  it("with reach analysis the same ungranted step is caught", () => {
+    const { runtime } = defineConfig({
+      storage: { kind: "memory" },
+      flows: [undeclaredFlow()],
+      security: { authorizer: partialGrants },
+    });
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: partialGrants,
+        runnerReachByFlow: { gated: analyzeRunnerReach(RUNNER_SOURCE, "gated") },
+      })
+    );
+    const errs = report.findings.filter(
+      (f) => f.rule === "capability-compat" && f.severity === "error"
+    );
+    expect(errs).toHaveLength(1);
+    expect(errs[0]?.message).toContain("remediation-tool");
+    expect(report.ok).toBe(false);
+  });
+
+  it("does not double-count a step that is both declared and reached", () => {
+    const { runtime } = defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow()],
+      security: { authorizer: partialGrants },
+    });
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: partialGrants,
+        runnerReachByFlow: { gated: analyzeRunnerReach(RUNNER_SOURCE, "gated") },
+      })
+    );
+    expect(
+      report.findings.filter((f) => f.rule === "capability-compat" && f.severity === "error")
+    ).toHaveLength(1);
+  });
+
+  it("populates suspends, which had no producer at all", () => {
+    const { runtime } = defineConfig({ storage: { kind: "memory" }, flows: [undeclaredFlow()] });
+    const input = resolveVerifyInput(runtime, {
+      runnerReachByFlow: {
+        gated: analyzeRunnerReach(`
+          const r = async (ctx) => { await ctx.suspend({ on: "Late", timeout: 5000 }); };
+        `),
+      },
+    });
+    expect(input.flows[0]?.suspends).toEqual([{ id: "Late", timed: true }]);
+    // …and with no TimerStore wired, that is a real T1 defect.
+    const report = verify(input);
+    expect(report.findings).toContainEqual(
+      expect.objectContaining({ rule: "suspension-safety", severity: "error" })
+    );
+  });
+
+  it("carries the unresolved targets so the rules can bound their claim", () => {
+    const { runtime } = defineConfig({
+      storage: { kind: "memory" },
+      flows: [undeclaredFlow()],
+      security: { authorizer: fullGrants },
+    });
+    const input = resolveVerifyInput(runtime, {
+      authorizer: fullGrants,
+      runnerReachByFlow: {
+        gated: analyzeRunnerReach(`
+          const r = async (ctx) => { await ctx.run(mcpInvoke$("hydrate#0"), {}); };
+        `),
+      },
+    });
+    expect(input.flows[0]?.reachAnalyzed).toBe(true);
+    expect(input.flows[0]?.unresolvedReach).toHaveLength(1);
+    const report = verify(input);
+    expect(report.findings).toContainEqual(
+      expect.objectContaining({ rule: "capability-compat", severity: "warn" })
+    );
+  });
+
+  it("reachAnalyzed is absent when no analysis was supplied — not the same as 'nothing unresolved'", () => {
+    const { runtime } = defineConfig({ storage: { kind: "memory" }, flows: [flow()] });
+    expect(resolveVerifyInput(runtime).flows[0]?.reachAnalyzed).toBeUndefined();
+  });
+
+  it("timerStoreWired is read from the runtime, never accepted from a caller", () => {
+    const { runtime } = defineConfig({ storage: { kind: "memory" }, flows: [flow()] });
+    expect(resolveVerifyInput(runtime).timerStoreWired).toBe(false);
   });
 });
