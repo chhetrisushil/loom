@@ -180,6 +180,51 @@ When the gate is met, the work lands as a **1P plugin** (ADR 0043: an adapter th
 because of a specific external system is a plugin), keeping the churn blast radius at the
 edge — the same bet ADR 0069 made on A2UI.
 
+### D8 — "3P" is where the host BELONGS, which is not the same as saying build one (2026-08-14)
+
+D2 sends the host role to "the embedding application or `plugins/renderer-react`; packaged, it
+is **3P** in `../loom-plugins`." That answers *where it would go* and quietly leaves *whether to
+put anything there* unanswered. Asked directly, the answer is **not yet, and not in that shape**.
+
+**It implements no seam.** `../loom-plugins`' own contract is that a plugin "contributes a
+concrete implementation of an existing Loom **seam**" and contributes "only to existing seams".
+An MCP Apps host is an iframe sandbox plus a postMessage JSON-RPC bridge for a protocol in which
+loom is not a participant — a view's `tools/call` returns to the third-party server, not through
+loom. Packaged as `loom-plugin-*`, the "loom" would be branding rather than architecture, and it
+would be the second entry in that repo needing an asterisk about `defineConfig` (the first,
+`loom-plugin-linucb`, at least uses the `policy` seam).
+
+**The framing that DOES fit a seam** is narrower and better: a widget renderer registered into
+`RendererRegistry` (`@loom/blueprint-runtime`), making a third-party UI a widget inside a loom
+blueprint. In that shape the plugin's job is exactly the part only loom can do:
+
+- verify the **pin** before mounting — `MCP_UI_OBSERVED` now carries `(resourceUri, contentHash)`
+  in the durable log, so a replay cannot silently render different markup than the original run;
+- label the frame with that provenance;
+- route a view-initiated `tools/call` back through `mcpInvoke$` under a **distinct principal**,
+  which is D6/S2's requirement in enforceable form;
+- **taint** whatever the view sends back (`ui/message`, `ui/update-model-context`) per
+  [ADR 0085](0085-untrusted-content-integrity-axis.md), so it cannot reach an instruction
+  position. That option did not exist when this ADR was written.
+
+Every item there is provenance and authority. None is browser security.
+
+**What such a plugin must NOT do is reimplement the sandbox** — CSP synthesis from
+`_meta.ui.csp`, permissions policy, the double-iframe proxy. D2's original reasoning stands, and
+a second argument decides it: a solo-maintained 3P package that lags a churning spec is **worse
+than nothing**, because it is installed by people who believe it sandboxes correctly. An
+unmaintained store adapter fails loudly; an unmaintained sandbox fails silently, in the
+attacker's favour. Delegate that to a host library from the MCP UI ecosystem.
+
+**The trigger, and why not now.** Direction B's economics are unchanged (§1): the third-party
+server owns the UI *and* the interactions, so loom is largely a passthrough and the value is the
+pin plus the authority boundary. Start it when a real application needs to display a third-party
+MCP app — as **app code first**, because it is genuinely a React component — and promote it to a
+3P package when a *second* application needs it. That is the second-consumer discipline
+([ADR 0083](0083-second-consumer-rule.md)) applied at the 3P tier: a lower bar than 1P, but not
+zero, and it is the difference between a package that exists because someone needed it twice and
+one that exists because 3P looked like the tidy place to put it.
+
 ## Consequences
 
 - **Steps 0–1 (D3) proceed immediately** and are independently valuable: they fix live

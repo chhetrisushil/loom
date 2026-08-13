@@ -277,7 +277,7 @@ export const CAPABILITIES: readonly Capability[] = [
     evidence: {
       conformanceTest: "plugins/mcp-app/src/mcpApp.test.ts",
     },
-    note: "ADR 0072 D4/D5 — egress only; the host role (iframe, CSP, postMessage) is rejected for this repo (D2). No per-flow HTML: the rendered UI is a pure function of (pinned template hash, logged structuredContent), and the pin uses the SAME hashResourceBody the ingress side applies, so a plan-time pin equals what a reader recomputes (ADR 0063 D1). Egress redaction is required-by-configuration, never defaulted.",
+    note: "ADR 0072 D4/D5 — egress only; the host role (iframe, CSP, postMessage) is rejected for this repo (D2), and D8 declines to package one as 3P until a real consumer needs it — it implements no seam, and the part that IS Loom-shaped is pin verification, not sandboxing. No per-flow HTML: the rendered UI is a pure function of (pinned template hash, logged structuredContent), and the pin uses the SAME hashResourceBody the ingress side applies, so a plan-time pin equals what a reader recomputes (ADR 0063 D1). Egress redaction is required-by-configuration, never defaulted.",
   },
   {
     id: "content-batch-resolution",
