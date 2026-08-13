@@ -42,3 +42,45 @@ describe("analyzeNonDeterminism", () => {
     expect(analyzeNonDeterminism("async (ctx) => ctx.run(step, { a: 1 })")).toEqual([]);
   });
 });
+
+// ── Whole-module analysis must not flag memoized regions ─────────────────────
+//
+// Caught by reading the playground's generated manifest rather than trusting a
+// green suite: feeding the analyzer a whole flow MODULE reported
+// `Math.random()` from inside a `handler$` body, which is safe by construction —
+// its result is written to STEP_COMPLETED and served from the log on replay.
+// A false positive on correct code is the fastest way to get a linter switched off.
+
+describe("skipMemoized", () => {
+  const MODULE = `
+    const fetchData = step$({
+      id: "fetch",
+      handler: handler$(async (input) => {
+        return { items: Math.floor(Math.random() * 50), at: Date.now() };
+      }),
+    });
+    const runner = async (ctx) => {
+      const jitter = Math.random();
+      await ctx.run(fetchData, { jitter });
+    };
+  `;
+
+  it("reports only the runner's call, not the handler's", () => {
+    const calls = analyzeNonDeterminism(MODULE, undefined, { skipMemoized: true });
+    expect(calls).toEqual([{ callee: "Math.random", insideDecide: false }]);
+  });
+
+  it("without the flag, the handler's calls come back too — the old behaviour is intact", () => {
+    const calls = analyzeNonDeterminism(MODULE);
+    expect(calls.map((c) => c.callee).sort()).toEqual(["Date.now", "Math.random", "Math.random"]);
+  });
+
+  it("still sees a decide boundary in the runner when memoized regions are skipped", () => {
+    const calls = analyzeNonDeterminism(
+      `const r = async (ctx) => { await ctx.decide("seed", () => Math.random()); };`,
+      undefined,
+      { skipMemoized: true }
+    );
+    expect(calls).toEqual([{ callee: "Math.random", insideDecide: true }]);
+  });
+});
