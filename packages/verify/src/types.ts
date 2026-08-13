@@ -102,6 +102,22 @@ export interface UnreachableMarkRef {
   readonly channel: "input" | "output";
 }
 
+/**
+ * A `ctx.run`/`ctx.suspend` target in the runner body that static analysis could
+ * not resolve — an imported binding, a minted step (`mcpInvoke$("…")`), an
+ * element access. Produced by `@loom/compiler`'s `analyzeRunnerReach`.
+ *
+ * It exists so the reach-bounded rules can say "partially verified" instead of
+ * reporting clean. Reachability is what `capability-compat`, `effect-class` and
+ * `suspension-safety` are all bounded by, and silence about the bound is what
+ * makes a green report overclaim.
+ */
+export interface UnresolvedReachRef {
+  readonly expr: string;
+  readonly kind: "step" | "suspend";
+  readonly location?: string;
+}
+
 export interface FlowSpec {
   readonly id: string;
   /** K11 content hash; absent means the flow cannot be pinned to a code version. */
@@ -123,6 +139,20 @@ export interface FlowSpec {
   readonly usesApproval?: boolean;
   /** K10-R1 marks that no egress sink can reach (absent ⇒ none; G2). */
   readonly unreachableMarks?: readonly UnreachableMarkRef[];
+  /**
+   * Runner-body `ctx.run`/`ctx.suspend` targets that could not be resolved.
+   * Absent or empty ⇒ reach analysis was complete for this flow (or was never
+   * run, which is the same thing from the rules' point of view: no claim either
+   * way — see `reachAnalyzed`).
+   */
+  readonly unresolvedReach?: readonly UnresolvedReachRef[];
+  /**
+   * Whether runner-body reach analysis ran for this flow at all. Distinguishes
+   * "analyzed, everything resolved" from "never analyzed", which
+   * `unresolvedReach: []` alone cannot. Without it, an app that never wired the
+   * compiler would look maximally verified.
+   */
+  readonly reachAnalyzed?: boolean;
 }
 
 export interface GrantSpec {
@@ -156,6 +186,12 @@ export interface VerifyInput {
   /** Dimensions the wired `meteringMiddleware` covers (e.g. `["tokens","costUsd","ms"]`). */
   readonly meteredDimensions?: readonly string[];
   readonly resumeAuthenticatorWired?: boolean;
+  /**
+   * Whether a `TimerStore` is wired. When it is, `WorkflowRuntime` derives
+   * `wakeAt` from a suspend's `timeout`, so a timeout without an explicit wakeAt
+   * is correct rather than a defect.
+   */
+  readonly timerStoreWired?: boolean;
   /** The app's `EVENT_SCHEMA_VERSION` (K5). */
   readonly eventSchemaVersion?: string;
   /** The schema version of a prior log this app may resume, if known. */

@@ -226,6 +226,9 @@ importers:
       '@loom/classify':
         specifier: workspace:*
         version: link:../classify
+      '@loom/compiler':
+        specifier: workspace:*
+        version: link:../../tools/compiler
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

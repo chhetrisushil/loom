@@ -1,4 +1,4 @@
-import type { Finding, RuleName, VerifyInput } from "./types";
+import type { Finding, FlowSpec, RuleName, VerifyInput } from "./types";
 
 /** A rule is a pure function of the input to a (possibly empty) list of findings. */
 export type Rule = (input: VerifyInput) => Finding[];
@@ -64,28 +64,46 @@ const replaySafety: Rule = (input) => {
 };
 
 /**
- * suspension-safety — every suspend needs a correlationKey to route its resume; a timed
- * suspend needs a durable wakeAt to fire across a restart (T1); approval flows need a
- * ResumeAuthenticator so resume events are authenticated (K12).
+ * suspension-safety — a timed suspend must be able to wake across a restart (T1);
+ * approval flows need a ResumeAuthenticator so resume events are authenticated (K12).
+ *
+ * **Two corrections landed when `FlowSpec.suspends` finally got a producer**, and
+ * both are worth stating because a check nothing populates is also a check
+ * nobody can see is wrong.
+ *
+ * 1. *The blanket correlationKey error was removed.* It read "a resume event
+ *    cannot be routed to it" — but `WorkflowRuntime.resume(executionId, event)`
+ *    routes by **executionId**, and nothing in the runtime matches on
+ *    `correlationKey` at all. It is metadata for an external dispatcher that
+ *    knows a business key instead of an execution id. Every idiomatic
+ *    `ctx.suspend({ on: "Approved" })` would have become an error the moment the
+ *    input was populated — a false positive on the majority of real code, which
+ *    is how a verifier gets switched off.
+ * 2. *The wakeAt check is now conditional on the timer store.* When a `TimerStore`
+ *    is wired, `WorkflowRuntime` DERIVES `wakeAt` from `timeout` at suspend time,
+ *    so `suspend({ on, timeout })` is correct there and broken only without one.
  */
 const suspensionSafety: Rule = (input) => {
   const findings: Finding[] = [];
   for (const flow of input.flows) {
+    // Only suspend-shaped gaps matter here: an unresolvable `ctx.run` target
+    // says nothing about whether this flow's suspends are safe.
+    const unresolvedSuspends = (flow.unresolvedReach ?? []).filter((u) => u.kind === "suspend");
+    if (unresolvedSuspends.length > 0) {
+      findings.push({
+        rule: "suspension-safety",
+        severity: "warn",
+        message: `Flow "${flow.id}": ${unresolvedSuspends.length} suspend condition(s) are built outside the call and could not be read statically; their timer safety is unverified.`,
+        location: flow.id,
+      });
+    }
     for (const s of flow.suspends ?? []) {
       const where = s.id ? `${flow.id}:${s.id}` : flow.id;
-      if (!s.correlationKey) {
+      if (s.timed && !s.wakeAt && input.timerStoreWired !== true) {
         findings.push({
           rule: "suspension-safety",
           severity: "error",
-          message: `suspend() in "${where}" declares no correlationKey; a resume event cannot be routed to it.`,
-          location: where,
-        });
-      }
-      if (s.timed && !s.wakeAt) {
-        findings.push({
-          rule: "suspension-safety",
-          severity: "error",
-          message: `Timed suspend in "${where}" records no wakeAt; the timer will not fire across a restart (T1).`,
+          message: `Timed suspend in "${where}" declares a timeout but no wakeAt, and no TimerStore is wired to derive one; the timer will not fire across a restart (T1).`,
           location: where,
         });
       }
@@ -111,6 +129,7 @@ const capabilityCompat: Rule = (input) => {
   const grantSpec = input.grants;
   if (!grantSpec) return findings;
   for (const flow of input.flows) {
+    findings.push(...reachCoverage(flow, "capability-compat", "grant coverage"));
     const principal = grantSpec.principalOf ? grantSpec.principalOf(flow.id) : flow.id;
     const granted = grantSpec.grants[principal];
     for (const effect of flow.effects ?? []) {
@@ -234,6 +253,40 @@ const classificationReachability: Rule = (input) => {
   return findings;
 };
 
+/**
+ * The reach bound, stated as a finding instead of left implicit.
+ *
+ * `capability-compat`, `effect-class` and `suspension-safety` all answer a
+ * question of the form "does everything this flow reaches satisfy X". Each is
+ * only as good as the set of things known to be reachable, and that set has two
+ * holes: a `ctx.run` target static analysis could not resolve, and a runner that
+ * was never analyzed at all.
+ *
+ * Silence about the bound is what turns a green report into an overclaim — the
+ * same failure the `effect-class` unclassified-effects warn exists to prevent.
+ * `warn`, not `error`: an unresolved target is a limit of the analysis, not a
+ * defect in the app, and an app with no compiler wired must stay usable.
+ */
+function reachCoverage(flow: FlowSpec, rule: RuleName, what: string): Finding[] {
+  const unresolved = flow.unresolvedReach ?? [];
+  if (unresolved.length > 0) {
+    const sample = unresolved
+      .slice(0, 3)
+      .map((u) => `\`${u.expr}\``)
+      .join(", ");
+    const more = unresolved.length > 3 ? `, +${unresolved.length - 3} more` : "";
+    return [
+      {
+        rule,
+        severity: "warn",
+        message: `Flow "${flow.id}": ${unresolved.length} runner-body target(s) could not be resolved (${sample}${more}), so ${what} is checked only over what is declared or resolvable.`,
+        location: flow.id,
+      },
+    ];
+  }
+  return [];
+}
+
 /** Two schema versions are compatible iff they share a major version. */
 function majorCompatible(a: string, b: string): boolean {
   return (a.split(".")[0] ?? a) === (b.split(".")[0] ?? b);
@@ -320,6 +373,8 @@ const effectClass: Rule = (input) => {
         });
       }
     }
+
+    findings.push(...reachCoverage(flow, "effect-class", "the declared ceiling"));
 
     // Without this the rule passes VACUOUSLY on a flow whose effects carry no
     // class — a green report would claim a verification nobody performed.

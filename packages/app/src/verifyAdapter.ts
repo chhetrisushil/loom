@@ -12,7 +12,9 @@ import type {
   NonDeterministicCall,
   PlacementSpec,
   RuleName,
+  SuspendPoint,
   UnreachableMarkRef,
+  UnresolvedReachRef,
   VerifyInput,
   VerifyMode,
 } from "@loom/verify";
@@ -31,6 +33,27 @@ import type { WorkflowRuntime } from "@loom/workflow-runtime";
 export interface VerifyLintInputs {
   readonly nonDeterministicByFlow?: Readonly<Record<string, readonly NonDeterministicCall[]>>;
   readonly loopIdentityByFlow?: Readonly<Record<string, readonly LoopIdentityCall[]>>;
+  /**
+   * Runner-body reach analysis, from `@loom/compiler`'s `analyzeRunnerReach`.
+   *
+   * Supplies the two things the `FlowDefinition` structurally cannot: steps
+   * invoked via `ctx.run` without being declared in `steps`, and the suspend
+   * points that `FlowSpec.suspends` had no producer for. A flow present in this
+   * map is marked `reachAnalyzed`, which is what lets the rules distinguish
+   * "analyzed and complete" from "never analyzed".
+   */
+  readonly runnerReachByFlow?: Readonly<Record<string, RunnerReachInput>>;
+}
+
+/**
+ * Structural mirror of `@loom/compiler`'s `RunnerReach`. Declared here so
+ * `@loom/app` does not depend on the compiler (which is a build-time tool), the
+ * same way `NonDeterministicCall` already arrives.
+ */
+export interface RunnerReachInput {
+  readonly steps?: readonly { readonly stepId?: string; readonly toolId: string }[];
+  readonly unresolved?: readonly UnresolvedReachRef[];
+  readonly suspends?: readonly SuspendPoint[];
 }
 
 export type VerifyConfig =
@@ -92,6 +115,14 @@ export interface VerifyAdapterInputs {
    */
   readonly nonDeterministicByFlow?: Readonly<Record<string, readonly NonDeterministicCall[]>>;
   /**
+   * Per-flow runner-body reach, from `@loom/compiler`'s `analyzeRunnerReach`.
+   * Supplies steps invoked via `ctx.run` that the `FlowDefinition` does not
+   * declare, the suspend points `FlowSpec.suspends` had no producer for, and the
+   * targets the analysis could NOT resolve — which is what lets the reach-bounded
+   * rules state their own limit instead of reporting clean.
+   */
+  readonly runnerReachByFlow?: Readonly<Record<string, RunnerReachInput>>;
+  /**
    * ADR 0061 — per-flow loop step-identity findings, feeding the determinism rule's
    * loop-identity warnings. Produce from `@loom/compiler`'s `analyzeLoopIdentity` (or read
    * the compiler manifest's per-flow `loopIdentity` field, which carries the same shape).
@@ -135,7 +166,12 @@ export function resolveVerifyInput(
   for (const id of runtime.getFlowIds()) {
     const def = runtime.getFlow(id)?.definition;
     if (def === undefined) continue;
-    const effects = def.steps
+    const effects: {
+      toolId: string;
+      capability: string;
+      kind: "step";
+      effectClass?: string;
+    }[] = def.steps
       .filter((s): s is typeof s & { toolId: string } => s.toolId !== undefined)
       .map((s) => ({
         toolId: s.toolId,
@@ -179,10 +215,34 @@ export function resolveVerifyInput(
     // analysis of the runner body, which is also what `FlowSpec.suspends` waits on; see
     // the note on `resolveVerifyInput`.
     const usesApproval = Object.keys(def.resumeSchemas ?? {}).length > 0;
+
+    // Runner-body reach (issue: the "reachable = DECLARED steps" bound). A step
+    // invoked through `ctx.run` without being listed in `steps` is invisible to
+    // capability-compat and effect-class; a suspend point is invisible to
+    // suspension-safety no matter what, because it lives in the body by
+    // construction. Merge what the analysis resolved, and carry what it could
+    // NOT resolve so the rules can bound their own claim.
+    const reach = inputs.runnerReachByFlow?.[def.id];
+    const declaredToolIds = new Set(effects.map((e) => e.toolId));
+    for (const step of reach?.steps ?? []) {
+      if (declaredToolIds.has(step.toolId)) continue; // already covered by the declaration
+      declaredToolIds.add(step.toolId);
+      effects.push({
+        toolId: step.toolId,
+        capability: step.toolId,
+        kind: "step" as const,
+      });
+    }
+    const unresolvedReach = reach?.unresolved ?? [];
+    const suspends = reach?.suspends ?? [];
+
     flows.push({
       id: def.id,
       flowHash: flowContentHash(def),
       ...(effects.length > 0 && { effects }),
+      ...(reach !== undefined && { reachAnalyzed: true }),
+      ...(unresolvedReach.length > 0 && { unresolvedReach }),
+      ...(suspends.length > 0 && { suspends }),
       ...(def.effectClass !== undefined && { effectClass: def.effectClass }),
       ...(nonDet !== undefined && nonDet.length > 0 && { nonDeterministicCalls: nonDet }),
       ...(loopIdent !== undefined && loopIdent.length > 0 && { loopIdentityCalls: loopIdent }),
@@ -202,6 +262,7 @@ export function resolveVerifyInput(
     flows,
     eventSchemaVersion: EVENT_SCHEMA_VERSION,
     resumeAuthenticatorWired: runtime.hasResumeAuthenticator(),
+    timerStoreWired: runtime.hasTimerStore(),
     ...(grants !== undefined && { grants }),
     ...(placement !== undefined && { placement }),
     ...(inputs.meteredDimensions !== undefined && { meteredDimensions: inputs.meteredDimensions }),

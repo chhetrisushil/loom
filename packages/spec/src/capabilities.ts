@@ -343,6 +343,20 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "ADR 0085 — a value wrapper, NOT a fourth schema marker: confidentiality is a property of a field (static, forever), integrity is a property of a value (acquired at runtime from a specific origin), and a marker that guesses reads as coverage. The check is unconditional because a gate defaulting to off protects exactly the apps that never think about it; the opt-in sits on the producer, where tainting changes the output shape. The REFUSAL is structural; the FENCE is a label a model can be talked across — do not sell the second as the first.",
   },
   {
+    id: "runner-body-reach",
+    title: "Runner-Body Reach Analysis",
+    package: "@loom/compiler",
+    level: "L2",
+    summary:
+      "`analyzeRunnerReach` reads a flow runner's ctx.run targets and ctx.suspend conditions, closing the 'reachable = DECLARED steps' bound that limited capability-compat, effect-class and suspension-safety. Targets it cannot resolve are REPORTED, so each rule states its own coverage instead of reporting clean.",
+    evidence: {
+      conformanceTest: "tools/compiler/src/runnerReach.test.ts",
+      usedIn:
+        "packages/app/src/verify.test.ts — driven through defineConfig, with a control showing the bound",
+    },
+    note: "ADR 0086 — populating FlowSpec.suspends (which had NO producer) proved two suspension-safety checks wrong: the blanket correlationKey error was false (resume routes by executionId, nothing matches on correlationKey) and would have fired on most correct code; the wakeAt check is real only when no TimerStore is wired, since the runtime derives wakeAt from timeout when one is. A check nothing populates is also a check nobody can see is wrong.",
+  },
+  {
     id: "typed-resume-payloads",
     title: "Typed Resume Payloads",
     package: "@loom/workflow-runtime",
