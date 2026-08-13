@@ -324,7 +324,11 @@ function collectFlows(
   // suspension-safety rules from hand-wired into on-by-default.
   let nonDetCalls: NonDeterministicCall[] | undefined;
   const lintNonDeterminism = (): NonDeterministicCall[] => {
-    nonDetCalls ??= analyzeNode(sourceFile);
+    // Whole MODULE, so memoized handler$ bodies must be excluded: a step
+    // handler's Math.random is logged and served on replay, and reporting it
+    // would be a false positive on correct code — the fastest way to get a
+    // linter switched off.
+    nonDetCalls ??= analyzeNode(sourceFile, undefined, { skipMemoized: true });
     return nonDetCalls;
   };
   let reach: RunnerReach | undefined;
