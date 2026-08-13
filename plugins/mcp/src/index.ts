@@ -1,4 +1,4 @@
-export { McpClient } from "./McpClient";
+export { McpClient, projectToolResult, throwIfToolError } from "./McpClient";
 export { createMcpServer, servedEffect } from "./McpServer";
 export type {
   McpAudience,
@@ -13,6 +13,7 @@ export {
   MCP_DISPATCHED,
   MCP_INVOKE_ERRORS,
   MCP_INVOKE_TOOL_ID,
+  MCP_UI_OBSERVED,
   McpInvokeInput,
   SchemaDriftPayload,
   ToolNotFoundPayload,
@@ -24,6 +25,8 @@ export type {
   McpDispatchIndexState,
   McpInvokeInputValue,
   McpInvokeOptions,
+  McpUiObservedPayload,
+  McpUiPin,
 } from "./mcpInvoke$";
 export { DEFAULT_MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_META_KEY } from "./types";
 export type {
@@ -34,6 +37,7 @@ export type {
   McpContentBlock,
   McpResourceContents,
   McpResourceDescriptor,
+  McpResultFidelity,
 } from "./types";
 
 // MCP Apps (SEP-1865) ingress awareness — carry, never render (ADR 0072 D2/D3).

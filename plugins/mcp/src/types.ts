@@ -31,6 +31,23 @@ export interface McpServerConfig {
   protocolVersion?: string;
 }
 
+/**
+ * What a step seam yields as its output.
+ *
+ * - `"value"` (default) — the convenience projection: `structuredContent`, else
+ *   joined-and-parsed text. Everything else is dropped, including `_meta` and
+ *   every non-text content block.
+ * - `"full"` — the whole {@link McpCallToolResult}. Required to observe an MCP
+ *   Apps declaration (`_meta.ui`), an embedded `ui://` resource, or image/audio
+ *   content, since none of those are representable in the projection.
+ *
+ * `"value"` remains the default because the output shape is a contract: it is
+ * what STEP_COMPLETED records, what downstream steps destructure, and what a
+ * replay substitutes. Widening it by default would change every existing
+ * consumer's payload silently.
+ */
+export type McpResultFidelity = "value" | "full";
+
 // ── Tool results (MCP `CallToolResult`) ──────────────────────────────────────
 
 /**

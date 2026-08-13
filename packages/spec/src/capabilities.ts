@@ -237,11 +237,11 @@ export const CAPABILITIES: readonly Capability[] = [
     package: "@loom/plugin-mcp",
     level: "L2",
     summary:
-      "ONE registered `mcp.invoke` effect; tool name/args/schema-pin are runtime data on dynamically-minted steps. Pinned jsonSchemaHash verified per call → typed schemaDrift/toolNotFound channels; principals ride ctx.principal/secretRef, never the log; MCP_DISPATCHED indexed by projection.",
+      'ONE registered `mcp.invoke` effect; tool name/args/schema-pin are runtime data on dynamically-minted steps. Pinned jsonSchemaHash verified per call → typed schemaDrift/toolNotFound channels; principals ride ctx.principal/secretRef, never the log; MCP_DISPATCHED indexed by projection. Opt-in `resultFidelity: "full"` yields the whole CallToolResult, and a UI-bearing result records MCP_UI_OBSERVED with an explicit four-state pin.',
     evidence: {
       conformanceTest: "plugins/mcp/src/mcpInvoke.test.ts",
     },
-    note: "ADR 0063 — plugin placement per the ADR 0043 litmus (vendor-specific). Canonical hashing lives in @loom/core (one implementation for drift check + registry change detection). MCP_DISPATCHED is a userspace domain event (fold skips unknown types — no EVENT_SCHEMA bump).",
+    note: "ADR 0063 — plugin placement per the ADR 0043 litmus (vendor-specific). Canonical hashing lives in @loom/core (one implementation for drift check + registry change detection). MCP_DISPATCHED/MCP_UI_OBSERVED are userspace domain events (fold skips unknown types — no EVENT_SCHEMA bump). ADR 0072 follow-up (plugins/mcp/src/uiDispatch.test.ts): the ingress UI layer was reachable only from McpClient, because every step seam dispatched through the projection that erases `_meta` — asserted now through the EFFECT, which is the level a flow actually traverses.",
   },
   {
     id: "effect-mode-boundary",
