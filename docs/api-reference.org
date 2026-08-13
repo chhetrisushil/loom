@@ -15,7 +15,7 @@ New to Loom? Start with [[file:getting-started.md][Getting Started]] and the [[f
 6.  [[#kernel-hardening][Kernel hardening & security]] — the K1–K12 / T1–T2 ring map + ~@loom/isolate~ (K7), ~@loom/plugin-crypto~ (K10), ~@loom/wire-abi~ (T2)
 7.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/agent-surface~, ~@loom/plugin-a2ui~, ~@loom/plugin-mcp-app~, ~@loom/blueprint-runtime~, ~@loom/plugin-renderer-react~, ~@loom/plugin-renderer-terminal~
 8.  [[#agentic][Agentic]] — ~@loom/llm~, ~@loom/reasoning~, ~@loom/agent~, ~@loom/plugin-mcp~, ~@loom/plugin-a2a~, ~@loom/capability~, ~@loom/intent~, ~@loom/planner~, ~@loom/memory~, ~@loom/orchestrator~
-9.  [[#compute][Compute & distribution]] — ~@loom/dispatcher~, ~@loom/worker-runtime~ (+ ~-local~/~-remote~), ~@loom/worker-server~, ~@loom/plugin-cloudrun~, ~@loom/plugin-postgres~, ~@loom/graph-executor~, ~@loom/scheduler~
+9.  [[#compute][Compute & distribution]] — ~@loom/dispatcher~, ~@loom/worker-runtime~ (+ ~-local~), ~@loom/plugin-worker-remote~, ~@loom/plugin-worker-server~, ~@loom/plugin-cloudrun~, ~@loom/plugin-postgres~, ~@loom/graph-executor~, ~@loom/scheduler~
 10. [[#dx][DX & tooling]] — ~@loom/analytics~, ~@loom/appgen~, ~@loom/appgen-model~, ~@loom/cli~, ~@loom/testing~, ~@loom/eval~, ~@loom/deploy-sim~, ~@loom/scaffold~, ~@loom/compiler~, ~@loom/telemetry~
 11. [[#errors][Errors]]
 
@@ -1567,7 +1567,7 @@ class SupervisingDispatcher implements ExecutionDispatcher {
 class CircuitOpenError extends Error { readonly key: string; }
 #+end_src
 
-** ~@loom/worker-server~ — the stateless HTTP worker
+** ~@loom/plugin-worker-server~ — the stateless HTTP worker
 
 #+begin_src typescript
 function createWorkerServer(worker: WorkerRuntime, options?: { port?: number }): WorkerServer   // POST /execute, GET /health
@@ -1679,17 +1679,19 @@ class GemmaProvider implements LlmProvider { /* node-llama-cpp, load/unload per 
 
 ** ~@loom/cli~ — the ~loom~ command
 
-#+begin_example
-loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
-loom new   <flow|agent|tool> <name> [--dir app] scaffold a file (folder convention)
-loom appgen <intent> [--dir .] [--dry-run] [--check] [--model <gguf>]  NL → new project or brownfield edits
-loom check --manifest <path>                    static flow-graph checks (compiler manifest)
-loom logs  --db <path> <executionId>            print the event timeline
-loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
-loom eval  --dir <path>                         replay golden logs vs expectations
-loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
-loom inspect --db <path> [--port N]             web inspector (timeline + slider)
-#+end_example
+The command set is documented — and kept in sync with ~loom --help~ — in
+[[file:usage-cli.md][the CLI reference]]. It is deliberately *not* re-listed here: a second
+copy of the command table is a second thing to forget. Broad strokes:
+
+| Group                    | Commands                                                        |
+|--------------------------+-----------------------------------------------------------------|
+| scaffold & wire          | ~gen~, ~new~, ~appgen~                                           |
+| validate before you run  | ~doctor~, ~check~, ~verify~, ~lint claim-check~                  |
+| observe / analyze a run  | ~logs~, ~debug~, ~inspect~, ~profile~, ~introspect~, ~optimize~  |
+| learn from the log       | ~learn report~, ~learn eval~                                     |
+| ship safely              | ~eval~, ~deploy check~, ~compat~, ~kernel-manifest~              |
+| data protection          | ~retention run~, ~sweep content~, ~compliance report~            |
+| author a plugin          | ~plugin seams~ / ~new~ / ~check~ / ~try~ / ~search~              |
 
 Every command has a pure, testable core exported from ~@loom/cli~: ~foldAt(events, sequence?)~, ~formatLog(events)~, ~describeState(state)~, ~evaluateGoldens(goldens)~, ~buildTrace(events)~, ~checkManifest(manifest)~, ~discoverFlows(dir)~ / ~cmdGen(dir)~ / ~cmdNew(kind, name, dir)~, ~loadLogs(dir)~ / ~runDeployCheck(logs, resolver)~, ~serveInspector(eventStore, { port? })~, ~parseArgs(argv)~.
 
@@ -1748,6 +1750,13 @@ function appFiles(appName: string): Record<string, string>      // used by creat
 function loomPlugin(): Plugin                                    // Vite plugin: handler$ extraction, flow-graph analysis
 function buildManifest(state: PluginState, outDir?: string, root?: string): LoomManifest
 interface LoomManifest { version: "1"; flows: Record<string, ManifestFlow>; skills: Record<string, ManifestSkill>; flowModules: string[]; }
+
+// Source analyses the transform emits into each flow's manifest entry, auto-injected by `loom verify`:
+function analyzeNonDeterminism(source: string, location?: string, options?: AnalyzeOptions): NonDeterministicCall[]  // → `nonDeterministic`
+function analyzeLoopIdentity(source: string, location?: string): LoopStepIdentityFinding[]                          // → `loopIdentity` (ADR 0061)
+function analyzeRunnerReach(source: string, location?: string): RunnerReach                                         // → `runnerReach`  (ADR 0086)
+interface AnalyzeOptions { skipMemoized?: boolean }   // whole-module callers skip memoized handler$ bodies
+interface RunnerReach { steps: RunnerStepRef[]; unresolved: UnresolvedReach[]; suspends: RunnerSuspend[]; }
 // Serialization utils: fnv1a32(input) / shortHash(input).  CLI bin: `loom-compile`.
 #+end_src
 
@@ -1796,6 +1805,31 @@ class PayloadShreddedError extends Error         { /* subject key destroyed */ }
 class FlowCodeMismatchError extends Error        { /* pinned flowContentHash drifted */ }                    // K11 — @loom/workflow-runtime
 class FlowMigrationCheckError extends Error      { /* resumeAs replay-check refused */ }                     // K11 — @loom/workflow-runtime
 class CapabilityInvokeDeniedError extends Error  { readonly capabilityId: string; readonly reason: string; } // M7 — @loom/capability
+#+end_src
+
+*Execution lifecycle & resume* — thrown by ~@loom/workflow-runtime~ unless noted:
+
+#+begin_src typescript
+class InputValidationError extends Error         { readonly workflowId: string; readonly executionId: string; readonly detail: string; }  // validateInput refused the start input
+class ApprovalRejectedError extends Error        { readonly executionId: string; readonly reason: string; }   // a resume carried a rejection
+class ExecutionDeniedError extends Error         { readonly op: ExecutionOp; readonly executionId: string; readonly reason?: string; }  // ADR 0039 lifecycle authz
+class ResumePayloadValidationError extends Error { readonly executionId: string; readonly eventType: string; readonly detail: string; }  // ADR 0077 resumeSchemas
+class StateMigrationError extends Error          { readonly executionId: string; readonly toFlowId: string; readonly detail: string; }   // K11.5 state migration on resume
+class StepTimeoutError extends Error             { readonly stepId: string; readonly timeoutMs: number; }     // K8 bounded effects
+class StaleFenceError extends Error              { readonly executionId: string; readonly staleFence: number | undefined; readonly currentFence: number; }  // K9.4 — @loom/event-runtime
+class EffectModeViolationError extends Error     { readonly toolId: string; readonly declared: EffectMode; readonly attempted: "journaled" | "ambient"; }   // ADR 0073 — @loom/effect-runtime
+#+end_src
+
+*Checks, content & plugins*:
+
+#+begin_src typescript
+class VerificationError extends Error            { readonly report: VerificationReport; }                     // checks.verify === "error" — @loom/verify
+class UntrustedContentError extends Error        { readonly position: string; readonly origin: string; }      // ADR 0085 taint in an instruction slot — @loom/llm
+class ContentMissingError extends Error          { readonly contentAddress: string; readonly executionId?: string; }  // ADR 0046 — @loom/plugin-content
+class RevisionConflictError extends Error        { readonly key: string; readonly expectedRevision: number; readonly actualRevision: number; }  // @loom/plugin-durable-state
+class StateContractMismatchError extends Error   { readonly contractId: string; readonly storedVersion: number; readonly expectedVersion: number; }  // @loom/plugin-durable-state
+class TemplateDriftError extends Error           { /* pinned MCP Apps template no longer matches */ }         // ADR 0072 — @loom/plugin-mcp-app
+class InspectorBudgetError extends Error         { /* read-only replay exceeded its budget */ }               // ADR 0071 — @loom/replay-inspector
 #+end_src
 
 -----

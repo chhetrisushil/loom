@@ -12,7 +12,7 @@ The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`
 
 1. [The command set](#the-command-set)
 2. [Scaffold & wire: `new`, `gen`, `appgen`](#scaffold--wire-new-gen-appgen)
-3. [Validate before you run: `check`, `verify`, `lint`](#validate-before-you-run-check-verify-lint)
+3. [Validate before you run: `doctor`, `check`, `verify`, `lint`](#validate-before-you-run-doctor-check-verify-lint)
 4. [Observe a run: `logs`, `debug`, `inspect`](#observe-a-run-logs-debug-inspect)
 5. [Analyze a run: `profile`, `introspect`, `optimize`](#analyze-a-run-profile-introspect-optimize)
 6. [Learn from the log: `learn report`, `learn eval`](#learn-from-the-log-learn-report-learn-eval)
@@ -230,9 +230,38 @@ Planning runs through a cheap-first elevation ladder (`--model-big <spec>` names
 
 ---
 
-## Validate before you run: `check`, `verify`, `lint`
+## Validate before you run: `doctor`, `check`, `verify`, `lint`
 
-Three static gates, in increasing order of what they need: `check` reads only a compiler manifest, `verify` loads your built config, `lint` reads source files.
+Three static gates, in increasing order of what they need: `check` reads only a compiler manifest, `verify` loads your built config, `lint` reads source files. `loom doctor` is the front door that runs whichever of the three it can find inputs for — start there.
+
+### `loom doctor [--dir .] [--config <module>] [--manifest <path>]`
+
+Runs every pre-flight check whose input it can discover, and **reports the ones it could not run and why**. It adds no checking capability of its own; it exists because three commands with three different inputs meant a developer had to know all three existed before running one.
+
+| Input | Discovered from | Enables |
+|---|---|---|
+| compiler manifest | `--manifest`, else `loom-manifest.json` or `dist/loom-manifest.json` under `--dir` | `loom check` |
+| built config module | `--config`, else `loom.config.js` / `loom.config.mjs` / `dist/loom.config.js` / `dist/config.js` | `loom verify` |
+| source tree | `--dir` (defaults to `.`) | `loom lint claim-check` |
+
+```bash
+npx loom doctor
+```
+
+```text
+loom doctor
+
+  ✓ flow-graph (loom check)
+      loom-manifest.json
+  – runtime verification (loom verify)
+      no built config module found — pass --config <module> exporting a LoomApp (build to JS first, or run under tsx)
+  ✓ claim-check reach-through (loom lint)
+      .
+
+passed, but 1 check(s) could not run — coverage is partial
+```
+
+A **skipped check never fails the run**, but it never reads as a pass either: `all checks passed` and `passed, but N check(s) could not run — coverage is partial` are deliberately different strings, so a green `doctor` can't be cited as evidence for a check that never ran. Exit `1` only when a check actually **fails**.
 
 ### `loom check --manifest <path>`
 
@@ -259,7 +288,15 @@ Pre-flight **runtime** verification over a built app ([`@loom/verify`](../packag
 | `--config` | yes | path to the **built** config module (JS), or run the CLI under `tsx` |
 | `--manifest` | no | a compiler manifest; **auto-discovered** if omitted |
 
-The compiler manifest's per-flow `loopIdentity` findings (ADR 0061 — a loop-scoped `ctx.run`/`ctx.execute` whose step id can't vary per iteration) are **auto-injected** into the determinism rule. Pass `--manifest` explicitly, or leave it off and a `loom-manifest.json` next to the config module — or in the cwd — is picked up automatically.
+The compiler manifest carries **three** per-flow source analyses, and all of them are **auto-injected** — you never hand-plumb runner source into a linter:
+
+| Manifest field | Feeds | Catches |
+|---|---|---|
+| `loopIdentity` ([ADR 0061](adr/0061-step-identity-interpreter-guardrails.md)) | `determinism` | a loop-scoped `ctx.run`/`ctx.execute` whose step id can't vary per iteration |
+| `nonDeterministic` | `determinism` | `Date.now`/`Math.random`/bare `fetch` reachable outside `ctx.decide`/`ctx.execute` |
+| `runnerReach` ([ADR 0086](adr/0086-runner-body-reach-analysis.md)) | `capability-compat`, `effect-class`, `suspension-safety` | steps and suspend points reached from the runner body without being declared in `FlowDefinition.steps` |
+
+Pass `--manifest` explicitly, or leave it off and a `loom-manifest.json` next to the config module — or in the cwd — is picked up automatically. Reach analysis also reports what it **could not** resolve (a `ctx.run` target imported from another module, a minted step id) as a `warn` on each of the three rules, so a partial analysis never reads as a complete one.
 
 ```bash
 npx loom verify --config dist/app.js
@@ -714,6 +751,7 @@ npx loom plugin search postgres
 | `loom new <kind> <name>` | scaffold a flow/agent/tool/… file | `--dir app` | file already exists |
 | `loom gen` | regenerate `loom.gen.ts` | `--dir app` | (write failure) |
 | `loom appgen <intent>` | brownfield-aware NL → new project or surgical edits (scan→plan→apply→validate) | `--dry-run`, `--yes`, `--check`, `--from <file>`, `--from-spec <file>`, `--model <spec>`, `--offline`, `--dir .` | no intent supplied; `--check` typecheck fails |
+| `loom doctor` | run every pre-flight check whose input it can find, and name the ones it skipped | `--dir .`, `--config`, `--manifest` | any check fails (never for a skip) |
 | `loom check` | static flow-graph validation | `--manifest` *(req)* | issues found |
 | `loom verify` | pre-flight runtime verification over a built app | `--config` *(req)*, `--manifest` | any error-severity finding |
 | `loom lint claim-check` | claim-check reach-through lint (CC-5) | `--dir .` | any finding |
@@ -737,13 +775,13 @@ npx loom plugin search postgres
 | `loom plugin try` | run a store plugin end-to-end | `--module` *(req)*, `--preset`, `--options` | any smoke assertion fails |
 | `loom plugin search` / `seams` | discover plugins / list seams | — | (never) |
 
-A typical loop: `loom new` → write the flow → `loom gen` → `loom check` → `loom verify` → run it → `loom logs` / `loom debug` / `loom profile` / `loom inspect` → `loom eval` and `loom deploy check` in CI before promoting.
+A typical loop: `loom new` → write the flow → `loom gen` → `loom doctor` (or `loom check` → `loom verify` individually) → run it → `loom logs` / `loom debug` / `loom profile` / `loom inspect` → `loom eval` and `loom deploy check` in CI before promoting.
 
 ---
 
 ## Exit codes & scripting
 
-Commands return `0` on success and `1` on failure (missing required flag, unreadable input, unknown command, or a "not clean" verdict from `check`/`verify`/`lint`/`eval`/`deploy check`/`compat`/`learn eval`/`plugin check`/`plugin try`). The one other code is `2`, returned by `loom learn` when the subcommand is neither `report` nor `eval`. Reports go to stdout, errors to stderr. That makes the gates drop straight into CI:
+Commands return `0` on success and `1` on failure (missing required flag, unreadable input, unknown command, or a "not clean" verdict from `doctor`/`check`/`verify`/`lint`/`eval`/`deploy check`/`compat`/`learn eval`/`plugin check`/`plugin try` — note `doctor` fails only on a failing check, never on a skipped one). The one other code is `2`, returned by `loom learn` when the subcommand is neither `report` nor `eval`. Reports go to stdout, errors to stderr. That makes the gates drop straight into CI:
 
 ```bash
 npx loom check --manifest loom-manifest.json \

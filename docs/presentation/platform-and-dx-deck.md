@@ -67,9 +67,9 @@ const app = defineConfig({
   storage: { kind: "sqlite", dir: ".loom", branching: true },
   surfaces: ["mission", "telemetry"],
   flowModules,                          // from `loom gen` (folder convention)
-  effectMiddleware: [retryMiddleware({ maxRetries: 3 })],
+  execution: { effectMiddleware: [retryMiddleware({ maxRetries: 3 })] },
   agents, capabilityAgents,             // A2A routing
-  validate: "warn",                     // static flow-graph checks at boot
+  checks: { validate: "warn" },         // static flow-graph checks at boot
 });
 // → { runtime, effectRuntime, projectionRuntime, bus, stores, close }
 ```

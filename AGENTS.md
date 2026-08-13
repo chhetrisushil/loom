@@ -40,12 +40,15 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
 | `agent-swarm` | Dynamic agent swarm wired from user intent | `executeGraph` fan-out, `PLAN_COMPOSED` |
 | `compute-cloudrun` | One flow across in-process / remote / Cloud Run backends | dispatcher + worker-runtime SPI · ADR 0001–0005 |
 | `db-command-center` | intent → planner → A2A agentic app (React UI) | `intent`, `planner`, `@loom/plugin-a2a` |
-| `db-command-center-server` / `-wc` | Server + web-component surfaces of the above | A2A server, `@loom/a2ui` |
+| `db-command-center-server` / `-wc` | Server + web-component surfaces of the above | A2A server, `@loom/agent-surface` |
 | `cloud-command-center` | Command-center built with the `@loom/compiler` `loomPlugin()` | `handler$` extraction, resumability |
 | `db-sentinel` | Perpetual-agent / sentinel pattern | `sentinelPreset`, `@loom/plugin-durable-state` |
 | `a2a-mesh`, `agent-network` | Agent-to-agent mesh / networking | `@loom/plugin-a2a`, `A2AEffect` |
 | `a2ui-dashboard`, `angular-command-center` | UI / renderer surface variants | `@loom/agent-surface`, renderers |
 | `a2ui-egress` | Project a surface onto the Google A2UI wire protocol | `@loom/plugin-a2ui` `A2UISurfaceBridge`, `ingestAction` |
+| `a2ui-callfunction` | Bidirectional RPC: a client function driven from a flow, two grains | `callFunction` via suspend gate / delegated effect · ADR 0070 |
+| `mcp-app-release-approval` | Serve an agent surface as an **MCP App** (SEP-1865), real server + real template | `@loom/plugin-mcp-app`, `createMcpServer` · ADR 0072 |
+| `child-orchestration` | Cross-execution orchestration — fan-out, all-or-nothing gate, single child | `awaitChildren` / `awaitAll` / `awaitChild` · `@loom/orchestration` |
 | `learning-router` | The continuous-learning loop end to end (online → offline → gate) | `@loom/learning` `decideWithPolicy`/`trajectories`/`evaluatePolicy`/`promotionGate`, 3P `loom-plugin-linucb` |
 | `appgen-brownfield`, `appgen-models` | AI-driven app generation | `@loom/appgen` |
 

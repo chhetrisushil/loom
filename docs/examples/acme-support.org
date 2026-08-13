@@ -50,8 +50,8 @@ export const app = defineConfig({
   surfaces: ["ticket", "form"],
   flows: [ResolveTicketFlow],
   catalog,
-  effectMiddleware: [retryMiddleware({ maxRetries: 3 })],
-  telemetry: [/* your adapters */],
+  execution: { effectMiddleware: [retryMiddleware({ maxRetries: 3 })] },
+  observability: { telemetry: [/* your adapters */] },
 });
 #+end_src
 
@@ -129,7 +129,7 @@ Because effect outputs live in the log, a recorded run replays deterministically
 with no live LLM/tool calls:
 
 #+begin_src ts
-import { replayAsFixture, goldenFixture, scoreRun } from "@loom/eval";
+import { replayAsFixture, diffRuns, scoreRun } from "@loom/eval";
 // replay a captured run and assert it reaches the recorded outputs;
 // diff against a golden log; score the folded state for quality.
 #+end_src

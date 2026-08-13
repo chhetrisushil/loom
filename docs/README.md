@@ -7,7 +7,7 @@ Start here. The docs are a progressive funnel — read top to bottom, or jump to
 | **[Getting Started](getting-started.md)** | Go from zero to a running, suspend/resume flow in ~5 minutes. |
 | **[Usage Guide](usage.md)** | Build a realistic app step by step (steps → flow → config → suspend/resume → agents → branching → ship). |
 | **[User Guide](user-guide.md)** | Look up a specific feature: fork, A2A, middleware, projections, testing, CLI, compute… |
-| **[CLI Usage Guide](usage-cli.md)** | Drive the `loom` command: scaffold (`new`/`gen`), validate (`check`), observe (`logs`/`debug`/`inspect`), data protection (`retention run`/`compliance report`), and gate a deploy (`eval`/`deploy check`). |
+| **[CLI Usage Guide](usage-cli.md)** | Drive the `loom` command: scaffold (`new`/`gen`/`appgen`), validate (`doctor`/`check`/`verify`/`lint`), observe (`logs`/`debug`/`inspect`), data protection (`retention run`/`compliance report`), and gate a deploy (`eval`/`deploy check`). |
 | **[Data classification](data-classification.md)** | Field-sensitivity markers (`secret()`/`sensitive()`/`internal()`/`externalized()`) that drive encryption, redaction, and egress scrubbing (K10-R1/R6). |
 | **[Compliance](compliance.md)** | GDPR/CCPA-enabling: subject index, data export (Art. 15/20), and erasure (Art. 17), tenant-scoped (T3). |
 | **[Data-protection patterns](data-protection-patterns.md)** | The assembly order for long-running observer agents: redaction, shredding, pinned retention, tenant scoping, residency. |
@@ -15,7 +15,7 @@ Start here. The docs are a progressive funnel — read top to bottom, or jump to
 | **[Architecture](architecture.md)** | Understand the mission, core principles (P1–P11), the runtime model, and *why* each decision was made. |
 | **[Loom 2.0 deep-dives](loom-2.0/00-overview.md)** | The execution-kernel evolution in full detail: data structures, algorithms, and diagrams for every subsystem. |
 | **[Presentation](presentation/loom-deck.md)** | Present Loom — the flagship deck (Marp). More decks in [`presentation/`](presentation/). |
-| **[ADRs](adr/)** | Read the full decision history (0001–0084), one record per decision — including rejections (e.g. ADR 0067). |
+| **[ADRs](adr/)** | Read the full decision history (0001–0086), one record per decision — including rejections (e.g. ADR 0067). |
 | **[Requirements](requirements/)** | Recorded requirement sets — the kernel-hardening series [K7–K12, T1–T2](requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md) and its code-grounded [evaluation & amendments](requirements/2026-07-10-kernel-hardening-evaluation.md) (all eight accepted with amendments, all implemented). |
 
 ## Loom 2.0 — the execution kernel
@@ -48,6 +48,17 @@ The four arcs since have all landed **outside** the kernel — `KERNEL_ABI` is s
 
 - **Learning, and the placement of it** ([ADRs 0078–0084](adr/)) — [0078](adr/0078-exploration-in-the-routing-seam.md) fixed a learned router that collapsed onto whichever arm got lucky first; [0079](adr/0079-decision-context-and-policy.md) added `context` and `policy.propensity` to `DECISION_RECORDED` (the one quantity that cannot be reconstructed later), and [0080](adr/0080-learning-substrate.md) built `@loom/learning` on top: trajectories, SNIPS off-policy evaluation against real traffic, and a promotion gate — while the learning *algorithm* stays third-party behind a one-method SPI. Then the Companion workload arrived asking for two kernel promotions and got neither: [0081](adr/0081-long-lived-suspensions-no-promotion.md) found month-long suspensions already work (retention only reaps *terminal* runs, and nothing polls), and [0082](adr/0082-substitutive-replay-deferred.md) deferred substitutive replay until someone shows a fork-from-prefix branch cannot answer the same question. That review also exposed an asymmetry — a strong antibody against kernel growth and none against first-party surface growth — so [0083](adr/0083-second-consumer-rule.md) added the second-consumer rule. What that workload *did* get is [0084](adr/0084-effect-classes-static-ceiling-k2-floor.md): **effect classes** as a static ceiling — a flow may not reach an effect worse than it declared — sitting beside K2's runtime floor rather than inside it, because a *granted* capability can still bust the class and nothing at runtime would notice. `KERNEL_ABI` unchanged throughout; `EVENT_SCHEMA` moved once, additively, to 1.18.0.
 
+- **Two axes that only existed on paper** ([ADRs 0085–0086](adr/)) —
+  [0085](adr/0085-untrusted-content-integrity-axis.md) added the **integrity** axis beside
+  classification's confidentiality one: integrity is a property of a *value*, not a field, so
+  `tainted()` wraps third-party bytes at ingress and `@loom/llm`'s `guardRequest` refuses them in
+  every instruction position, fencing them in a `user` message. The refusal is structural; the
+  fence is only a label, and the doc says which is which. Then
+  [0086](adr/0086-runner-body-reach-analysis.md) closed the *"reachable = declared steps"* bound
+  that limited three `@loom/verify` rules — and populating `suspension-safety`'s never-fed input
+  proved two of its three checks wrong, one of which would have errored on the majority of
+  correct code. A check whose input nothing populates is also a check nobody can see is wrong.
+
 ## The one-paragraph version
 
 A Loom workflow is an ordinary `async` TypeScript function whose every meaningful step is recorded to a durable, append-only **event log**. State is `fold(events)` — a pure, deterministic reconstruction — so an execution can **pause for a human, resume on another machine, replay bit-for-bit, fork to explore alternatives, and be evaluated against its own history**. The durable log is the moat; durability, resumability, replay, branching, evals, and time-travel debugging are all just *lenses on it*.
@@ -56,6 +67,8 @@ A Loom workflow is an ordinary `async` TypeScript function whose every meaningfu
 
 - [`api-reference.org`](api-reference.org) — exhaustive per-package API reference.
 - [`usage-compiler.org`](usage-compiler.org) — the optional `@loom/compiler` (build-time `handler$` extraction, resumability).
+- [`plugins.md`](plugins.md) — authoring a plugin: the seam list, `loom plugin new`, and the 1P/3P split.
+- [`transient-interpreter.md`](transient-interpreter.md) — the transient/interpreter grain (`invokeTransient`, dynamic step minting).
 - [`benchmarks.md`](benchmarks.md) — committed performance baselines.
 - [`scaling.md`](scaling.md) — capacity guide: which regime your workload is in, what scaling support ships today, and what each further change is waiting on.
 - [`examples/`](examples/) — reference walkthroughs (`acme-support`, a Postgres storage backend).

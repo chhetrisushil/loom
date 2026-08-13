@@ -16,13 +16,21 @@ lives (K2 authority, K9 delivery, K11 versioning). This package shifts those fai
 |---|---|
 | `determinism` | non-deterministic calls (`Date.now`, `Math.random`, bare `fetch`) reachable outside `ctx.decide`/`ctx.execute` → replay diverges (P2) |
 | `replay-safety` | missing flow content hash (K11); event-schema major mismatch vs. a prior log (K5) |
-| `suspension-safety` | a `suspend()` with no `correlationKey`; a timed suspend with no `wakeAt` (T1); approval flows with no `ResumeAuthenticator` (K12) |
+| `suspension-safety` | a timed suspend with no `wakeAt` **when a `TimerStore` is wired** (T1); approval flows with no `ResumeAuthenticator` (K12). The blanket `correlationKey` error was removed in [ADR 0086](../../docs/adr/0086-runner-body-reach-analysis.md) — `resume()` routes by `executionId` |
 | `capability-compat` | an effect requiring a capability not in the `GrantTable` (K2) |
 | `placement-compat` | a `computeTarget` that resolves to no registered dispatcher target; an effect kind a target doesn't support |
 | `resource-compat` | a declared budget dimension that nothing meters (K3); a budget with no ceiling |
+| `classification-reachability` | a `secret()`/`sensitive()`/`internal()` mark under a record/union/tuple/intersection, which no egress sink can address — masked nowhere, encrypted nowhere, externalized nowhere (K10-R1, [ADR 0076](../../docs/adr/0076-wildcard-classification-paths.md)) |
+| `effect-class` | a flow reaching an effect whose declared class exceeds the flow's own ceiling ([ADR 0084](../../docs/adr/0084-effect-classes-static-ceiling-k2-floor.md)); no-op until the app declares its class vocabulary |
 
 (`migration-safety` from the requirements folds into `replay-safety` — in the stateless-worker
 model, resume *is* migration.)
+
+`capability-compat`, `effect-class` and `suspension-safety` all ask *"does everything this flow
+reaches satisfy X"*, so each is bounded by what is known to be reachable. Each emits an additional
+`warn` naming the runner-body targets the analysis could **not** resolve
+([ADR 0086](../../docs/adr/0086-runner-body-reach-analysis.md)) — silence about a hole in the
+reachable set is what turns a green report into an overclaim.
 
 ## Usage
 
@@ -33,10 +41,13 @@ model, resume *is* migration.)
 const app = defineConfig({
   storage: { kind: "memory" },
   flows,
-  authorizer: new GrantTable({ "my-flow": ["metrics-tool"] }),
-  verify: "error", // "off" (default) | "warn" | "error"
-  //  or the object form to declare metered dimensions / restrict rules:
-  //  verify: { mode: "warn", meteredDimensions: ["tokens", "costUsd", "ms"] },
+  security: { authorizer: new GrantTable({ "my-flow": ["metrics-tool"] }) },
+  checks: {
+    verify: "error", // "off" (default) | "warn" | "error"
+    //  or the object form to declare metered dimensions / the effect-class vocabulary
+    //  / restrict the rule set:
+    //  verify: { mode: "warn", meteredDimensions: ["tokens", "costUsd", "ms"] },
+  },
 });
 
 // 2. On demand — app.verify() re-runs the same checks (this is what `loom verify` calls).
@@ -68,10 +79,16 @@ runVerification(mode, () => buildInput()); // "off" skips buildInput entirely
 dependency-free on purpose so the rules stay pure and testable; the config→`VerifyInput`
 adapter lives in `@loom/app`.
 
-**Known feed gaps (documented, not silent):** the `@loom/compiler` manifest emits no
-non-deterministic-call analysis yet, so the `determinism` rule is inert when fed from config;
-suspend-point `correlationKey`/`wakeAt`, per-flow `computeTarget`, and budgets aren't in the
-`FlowDefinition` today either. The load-bearing check from config is **capability-compat**.
+**What feeds each rule.** Build with the `@loom/compiler` and the manifest carries three per-flow
+source analyses — `loopIdentity` (ADR 0061), `nonDeterministic`, and `runnerReach` (ADR 0086) —
+which `loom verify` auto-injects from a discovered `loom-manifest.json`, and which `defineConfig`
+accepts directly. That puts `determinism`, `capability-compat`, `effect-class` and
+`suspension-safety` on without the developer hand-feeding their own runner source to a linter.
+
+**Remaining feed gaps (documented, not silent):** per-flow `computeTarget` and resource budgets
+are not in the `FlowDefinition` today, so `placement-compat` and `resource-compat` only see what a
+caller supplies structurally. A `ctx.run` target imported from another module resolves only as
+*unresolved* — reported as a `warn`, never dropped.
 
 ## Guarantees
 

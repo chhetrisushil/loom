@@ -9,6 +9,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The verify tier stops needing hand-plumbed source, and gains a front door.** The compiler
+  transform now emits all three per-flow source analyses into `loom-manifest.json` —
+  `loopIdentity` ([ADR 0061](docs/adr/0061-step-identity-interpreter-guardrails.md)),
+  `nonDeterministic`, and `runnerReach` ([ADR 0086](docs/adr/0086-runner-body-reach-analysis.md)) —
+  and `loom verify` auto-injects them from a discovered manifest, so `determinism`,
+  `capability-compat`, `effect-class` and `suspension-safety` are on whenever you build with the
+  Loom compiler rather than requiring a developer to feed their own runner source to a linter.
+  New **`loom doctor`** runs every pre-flight check whose input it can discover and **names the
+  ones it skipped and why** — "all checks passed" and "passed, but N check(s) could not run —
+  coverage is partial" are deliberately different strings. Whole-module analysis skips memoized
+  `handler$` bodies (`{ skipMemoized: true }`): a handler's result is served from the log on
+  replay, so non-determinism inside one is safe by construction.
+- **Runner-body reach analysis, and two `suspension-safety` checks it proved wrong**
+  ([ADR 0086](docs/adr/0086-runner-body-reach-analysis.md)). `capability-compat`, `effect-class`
+  and `suspension-safety` previously defined "what a flow reaches" as its *declared* steps, so a
+  step invoked through `ctx.run` was invisible and `FlowSpec.suspends` had no producer at all.
+  `analyzeRunnerReach` resolves `ctx.run` targets by shape and **reports what it could not
+  resolve** as a `warn` on each rule. Populating the input showed the blanket `correlationKey`
+  error was wrong (`resume` routes by `executionId`) — removed — and that the `wakeAt` check must
+  be conditional on a wired `TimerStore`. `KERNEL_ABI`/`EVENT_SCHEMA` unchanged.
+- **The integrity axis: untrusted content as a value, refused at the prompt boundary**
+  ([ADR 0085](docs/adr/0085-untrusted-content-integrity-axis.md)). `tainted()`/`unwrapTainted()`
+  in `@loom/classify` wrap third-party bytes in plain JSON that survives the log verbatim, so a
+  replay hands back a value that is *still* tainted. `@loom/llm`'s `guardRequest` runs inside
+  every `createLlmEffect` and throws `UntrustedContentError` if tainted content reaches a system
+  message, an assistant turn, or a tool name/description; in a `user` message it is fenced as
+  `<untrusted-input origin="…">`. Two opt-in producers ship: `registerMcpInvoke(…, {
+  taintResults: true })` and `new A2APeerClient({ …, taintResults: true })`.
+- **Effect classes — a static ceiling beside K2's runtime floor**
+  ([ADR 0084](docs/adr/0084-effect-classes-static-ceiling-k2-floor.md)). An eighth `@loom/verify`
+  rule: a flow may not reach an effect whose declared class exceeds its own, composed
+  conservatively as the max over everything reachable. The class *vocabulary* is app-supplied
+  (`checks: { verify: { effectClasses } }`) — loom checks the ordering it is given rather than
+  defining one. A **granted** capability can still bust the class, and K2 will not stop it; the
+  finding says so.
+- **`@loom/learning` — the substrate for continuous learning, not the learner**
+  (ADRs [0078](docs/adr/0078-exploration-in-the-routing-seam.md)–[0080](docs/adr/0080-learning-substrate.md)).
+  `context` and `policy` (including `propensity`) now ride `DECISION_RECORDED`
+  (**EVENT_SCHEMA 1.18.0**; `KERNEL_ABI` untouched), which is what makes off-policy evaluation
+  possible at all — propensity cannot be reconstructed after the fact. Ships trajectory
+  extraction, SNIPS evaluation with unit-level ESS and a cluster-robust estimate for pooling
+  across units, a promotion gate, the third-party `Policy` SPI (the one seam consumed from flow
+  code rather than `defineConfig`), and `loom learn report` / `loom learn eval`. The router's
+  greedy collapse onto one lucky arm is fixed with `ucb1`/`epsilonGreedy`. Pooled reports never
+  name a unit — asserted by an invariant test that injects a leak.
+- **Storage scale-out as composable decorators** (ADRs
+  [0074](docs/adr/0074-storage-scale-out-decorators.md)–[0075](docs/adr/0075-shard-rebalancing.md))
+  — sharding, batching and rebalancing (virtual buckets, lazy drain, no coordinator) layered over
+  any `EventStore` rather than built into one backend. `EVENT_STORE_SPI_VERSION` → 1.3.0.
+  Measured ceilings and the method are written up in [`docs/scaling.md`](docs/scaling.md).
+- **Two boundaries that looked enforced and were not.** Array crossings in classification paths
+  now expand late and walk once ([ADR 0076](docs/adr/0076-wildcard-classification-paths.md)),
+  and resume payloads get per-gate contracts enforced **before** the append —
+  `flow$({ resumeSchemas })` plus a generic `ctx.suspend<T>`
+  ([ADR 0077](docs/adr/0077-typed-resume-payloads.md), `ResumePayloadValidationError`).
+- **`@loom/replay-inspector` — read-only replay** ([ADR 0071](docs/adr/0071-read-only-replay-inspector.md),
+  IX series): inspect an execution's replay without a live runtime, bounded by an explicit budget
+  (`InspectorBudgetError`).
+- **MCP Apps (SEP-1865) placement** ([ADR 0072](docs/adr/0072-mcp-apps-ui-extension-placement.md)):
+  ingress fidelity plus `createMcpServer`, and `ui://` egress as one static, content-pinned
+  surface-host template in `@loom/plugin-mcp-app` (`TemplateDriftError`). The **host** role is
+  where a third party belongs, not a reason for loom to build one.
+- **Effect mode — `journaled` vs `ambient`** ([ADR 0073](docs/adr/0073-effect-mode-journaled-vs-ambient.md)):
+  a declaration plus a boundary check (`EffectModeViolationError`) that keeps user-driven
+  enrichment reads out of the durable log.
+- **The second-consumer rule** ([ADR 0083](docs/adr/0083-second-consumer-rule.md)) — before a
+  workload-derived requirement becomes a first-party package, verify rule, seam, or exported
+  vocabulary, name a second unrelated consumer. Recorded because this repo had a strong antibody
+  against kernel growth and none against first-party surface growth.
+- **Two kernel promotions refused, with evidence gates recorded rather than scheduled**:
+  long-lived suspensions need a benchmark, not a promotion
+  ([ADR 0081](docs/adr/0081-long-lived-suspensions-no-promotion.md)), and substitutive replay is
+  deferred until branch-from-prefix is eliminated
+  ([ADR 0082](docs/adr/0082-substitutive-replay-deferred.md)).
+
 - **A2UI `callFunction` (bidirectional RPC) in `@loom/plugin-a2ui`.** The A2UI adapter now covers the
   agent→client `callFunction` leg (the agent invokes a named catalog function; the client answers with a
   `functionResponse`), promoting the surface deferred in ADR 0069. Two composition grains on

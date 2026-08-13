@@ -4,7 +4,7 @@
 - Date: 2026-08-14
 - Builds on: runtime verification ([ADR 0028](0028-runtime-verification.md)), effect classes
   ([ADR 0084](0084-effect-classes-static-ceiling-k2-floor.md)), the step-identity rule
-  ([ADR 0061](0061-dynamic-step-minting.md))
+  ([ADR 0061](0061-step-identity-interpreter-guardrails.md))
 - **KERNEL_ABI unchanged (1.1.0); EVENT_SCHEMA unchanged.** A build-time analysis, two
   `FlowSpec` fields, and one read-only accessor that is not a syscall.
 

@@ -46,7 +46,7 @@ const app = defineConfig({
   projectionRuntime,
   surfaces: ["ui"],                      // the A2UI surface ctx.ui.* targets
   catalog,                              // registers the flow as a capability
-  telemetry: [ConsoleTelemetryAdapter, ReactAdapter],
+  observability: { telemetry: [ConsoleTelemetryAdapter, ReactAdapter] },
 });
 
 // → app.runtime · app.effectRuntime · app.projectionRuntime · app.bus · app.stores
