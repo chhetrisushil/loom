@@ -165,11 +165,19 @@ describe("K9 — in-doubt parking (K9.3, idempotent: false)", () => {
     });
   });
 
-  it("re-parks on a non-verdict redispatch without duplicating the audit fact", async () => {
+  it("re-parks on a non-verdict resume without duplicating the audit fact", async () => {
     const { mkEffect, eventStore, inner, snapshots } = await parkedAfterCrash();
 
+    // Delivered to the gate the execution is parked on (#305 — a resume names the gate it
+    // answers, and EXECUTION_RECOVERED re-drives a CRASHED execution, which a parked one is
+    // not; the real dispatcher agrees, returning `null` rather than resuming a suspended
+    // execution). The payload is deliberately not a verdict: `readInDoubtVerdict` matches on
+    // SHAPE, so an operator who resumes without one simply re-parks.
     const runtime3 = boot(eventStore, snapshots, mkEffect());
-    const handle = await runtime3.resume(EXEC, RECOVERY);
+    const handle = await runtime3.resume(EXEC, {
+      eventType: EFFECT_INDOUBT_RESOLVED,
+      payload: { note: "still investigating" },
+    });
     const state = await handle.waitForSuspend();
 
     expect(state.status).toBe("suspended");

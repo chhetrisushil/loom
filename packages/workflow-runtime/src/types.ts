@@ -18,6 +18,16 @@ export interface SuspendConfig {
 export const TIMER_FIRED = "TIMER_FIRED";
 
 /**
+ * The resume eventType a dispatcher re-drives a CRASHED execution with: not a
+ * gate, so it addresses a `running`/`pending` execution rather than a suspended
+ * one, and it folds to a no-op (there is no handler of this name — the log
+ * records only the EXECUTION_RESUMED beside it). Raised by
+ * `LocalWorkerRuntime.resolveHandle`; it is not a signal an external caller has
+ * any reason to send, and the resume gate refuses it on a parked execution.
+ */
+export const EXECUTION_RECOVERED = "EXECUTION_RECOVERED";
+
+/**
  * Options for {@link ExecutionContext.decide}. Shared by the interface and the impl so
  * the two cannot drift. `rationale`/`source` are provenance; the rest are the ADR 0030
  * D1 materialization fields — DESCRIPTIVE metadata recorded alongside the choice but
@@ -335,6 +345,44 @@ export class ResumePayloadValidationError extends Error {
     );
     this.name = "ResumePayloadValidationError";
     Object.setPrototypeOf(this, ResumePayloadValidationError.prototype);
+  }
+}
+
+/**
+ * Why a resume was refused before anything was appended. Machine-readable so a
+ * caller can tell a RETRIABLE refusal from a permanent one without matching on
+ * message text — `not-suspended` is the only one worth retrying (a suspend that
+ * has not become readable yet on an async store), and `@loom/orchestration`
+ * does exactly that when a child outruns its parent's suspend.
+ */
+export type ResumeRefusalReason =
+  /** The event type names a kernel event, which only the kernel may write. */
+  | "kernel-event-type"
+  /** The execution is not parked at a gate (already running, terminal, …). */
+  | "not-suspended"
+  /** The event type is not the gate the execution is parked on. */
+  | "gate-mismatch";
+
+/**
+ * The resume ingress gate refused. Nothing was appended: the execution is
+ * exactly as it was, so a corrected resume can be sent.
+ *
+ * This is the THIRD resume gate, beside {@link ApprovalRejectedError} (WHO may
+ * resume, K12) and {@link ResumePayloadValidationError} (WHAT shape they may
+ * send, ADR 0077). This one gates WHICH event may be delivered, and to an
+ * execution in WHICH state — the two questions that were unasked while
+ * `eventType` travelled from an ingress adapter into the log verbatim.
+ */
+export class ResumeRefusedError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly eventType: string,
+    readonly reason: ResumeRefusalReason,
+    detail: string
+  ) {
+    super(`resume of execution "${executionId}" refused (${reason}): ${detail}`);
+    this.name = "ResumeRefusedError";
+    Object.setPrototypeOf(this, ResumeRefusedError.prototype);
   }
 }
 

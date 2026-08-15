@@ -123,6 +123,28 @@ load-bearing, plus the global guardrails that gate every additive capability:
   wall-clock drift never enters the fold. When a `TimerStore` is wired the runtime DERIVES `wakeAt`
   from a suspend's `timeout`, so `suspend({ on, timeout })` satisfies this; without one, the timed
   suspend is silently never woken, which is what `suspension-safety` reports.
+- Resume is **ingress**-gated, always and un-opt-outably (#304/#305). `eventType` is caller-supplied
+  — A2A `provideInput` and the wire-ABI `execution.resume` both hand a network-supplied
+  `ResumeEvent` straight to `resume()` — and the log folds by NAME, so this gate decides WHICH event
+  may be delivered and to an execution in WHICH state:
+  - A resume event type MUST NOT be a kernel event type (`knownEventTypes()`, the K5-governed set).
+    A caller-supplied `STEP_COMPLETED` forges a step outcome the completed short-circuit then serves
+    without running the effect; `EXECUTION_MIGRATED` rewrites the K11 code pin and `_input`;
+    `APPROVAL_GRANTED` forges the very evidence the authenticator exists to produce. `TIMER_FIRED`
+    is the sole exception — the kernel raises it itself.
+  - The execution MUST be `suspended`, and the event type MUST be the gate it is parked on
+    (`suspendedOn.on`). A **timed** suspend is additionally wakeable by `TIMER_FIRED`, since
+    `suspend({ on, timeout })` means either wake; that allowance is keyed on the recorded `wakeAt`,
+    so an untimed gate is not wakeable by a synthetic timer event.
+  - `EXECUTION_RECOVERED` is the one non-gate resume: a dispatcher re-driving a CRASHED execution,
+    so it addresses a `running`/`pending` one and MUST be refused on a parked or terminal execution.
+  - All of these MUST refuse with nothing appended. Refusal is fold-identical for every legitimate
+    log (G2): a non-kernel event type already folds to a no-op, so the resume-typed event never
+    contributed to state unless it collided with a kernel name.
+  - `resumeAs` enforces the kernel-namespace rule only. The recorded gate belongs to the code being
+    migrated AWAY from, and migrating a crashed execution onto fixed code is the documented exit
+    from a `FlowCodeMismatchError`, so neither the parked-state nor the gate-name rule can hold
+    there. It is an operator API: no ingress adapter reaches it.
 - Resume MAY be authority-gated: a `ResumeAuthenticator` verdict is recorded as `APPROVAL_GRANTED`
   (K12); a rejected resume never reaches the log. That gate authenticates **who** may resume.
 - Resume MAY additionally be **shape**-gated: a flow MAY declare `resumeSchemas` (`on` → schema,
@@ -130,8 +152,12 @@ load-bearing, plus the global guardrails that gate every additive capability:
   anything is appended, the PARSED value (defaults/transforms applied) MUST be what is recorded,
   and a failing parse MUST refuse with nothing appended — leaving the execution suspended and
   resumable. Absent map or absent entry = unchanged behaviour (G2). Shape is checked AFTER
-  identity, so an authenticator sees the exact event the caller signed. `resumeAs` validates
-  against the TARGET flow's map.
+  identity, so an authenticator sees the exact event the caller signed; the ingress gate sits
+  between them, for the same reason — its gate-mismatch refusal names the gate, which an
+  unauthenticated caller has no business learning. `resumeAs` validates against the TARGET flow's
+  map. Note the shape gate is keyed on the caller's event type, so it is load-bearing only because
+  the ingress gate already requires that type to BE the parked gate: without it a declared schema
+  was evaded by renaming the event.
 - On replay, resumed gates pass through **in order, each with its own recorded payload** (the
   `_resumePayloads` fold, ADR 0057); a gate beyond the recorded resumes parks as before.
 - `resumeAs` (K11.3) MAY carry an operator-supplied state transform (K11.5, ADR 0056): the

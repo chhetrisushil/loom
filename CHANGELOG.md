@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The resume ingress gate: a caller-supplied `eventType` no longer writes kernel state, and a
+  resume must name the gate it answers** ([#304](https://github.com/chhetrisushil/loom/issues/304),
+  [#305](https://github.com/chhetrisushil/loom/issues/305)). `eventType` travels from an ingress
+  adapter — A2A `provideInput` and the wire-ABI `execution.resume` both forward a network-supplied
+  `ResumeEvent` — into the log verbatim, and the fold dispatches by NAME. A resume typed
+  `STEP_COMPLETED` therefore forged a step outcome that the completed short-circuit served
+  *without running the effect*; `EXECUTION_MIGRATED` rewrote the K11 code pin and `_input` (and
+  could wedge an execution permanently); `APPROVAL_GRANTED` wrote the K12.2 evidence the
+  authenticator exists to produce, while the authenticator was rejecting the honest attempt.
+  Separately, `suspendedOn.on` was folded and read by nothing, so any name resumed any gate —
+  which also skipped the ADR 0077 `resumeSchemas` lookup, since that keys off the caller's event
+  type: a declared shape gate was evaded by renaming the event. And `resume()` refused only a
+  *cancelled* execution, so a completed one was still writable.
+
+  `resume()` now refuses, before anything is appended, an event type in the K5-governed
+  `knownEventTypes()` set, an execution that is not `suspended`, and an event type that is not the
+  parked gate. Refusal is **fold-identical for every legitimate log** (G2): a non-kernel event type
+  already folded to a no-op. `TIMER_FIRED` remains allowed as the kernel's own wake, and a *timed*
+  suspend is wakeable by it whatever its gate is called; `EXECUTION_RECOVERED` remains the
+  dispatcher's re-drive of a crashed execution and is now refused on a parked one. `resumeAs`
+  enforces the kernel-namespace rule only — the recorded gate belongs to the code being migrated
+  away from. New `ResumeRefusedError` carries a machine-readable `reason`; `@loom/orchestration`
+  retries the one transient reason (`not-suspended`, a parent whose suspend is not yet readable on
+  an async store) instead of matching message text. `KERNEL_ABI`/`EVENT_SCHEMA` unchanged.
+
+  **Behavioural tightening, not a pure fix:** an app resuming with a name that does not match its
+  `suspend({ on })` was succeeding by accident and will now be refused.
+
 ### Added
 
 - **The verify tier stops needing hand-plumbed source, and gains a front door.** The compiler
