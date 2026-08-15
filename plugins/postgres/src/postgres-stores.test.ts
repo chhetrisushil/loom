@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EventEnvelope, ExecutionState } from "@loom/core";
+import { DuplicateSequenceError } from "@loom/event-runtime";
 import { SqliteEventStore } from "@loom/plugin-sqlite";
 
 import { foldEvents } from "@loom/replay-vm";
@@ -78,9 +79,18 @@ suite("@loom/plugin-postgres", () => {
       expect(event?.metadata).toEqual({ traceId: "abc123" });
     });
 
-    it("rejects duplicate (executionId, sequence) pairs", async () => {
+    it("rejects a distinct envelope claiming an occupied (executionId, sequence)", async () => {
+      // `makeEnvelope` derives the id from (executionId, sequence), so appending it twice
+      // collides on the id PRIMARY KEY first — this case was named for a constraint it
+      // never reached, and `.rejects.toThrow()` could not tell the difference. A DISTINCT
+      // id is what makes the second write test `UNIQUE (execution_id, sequence)`, and the
+      // error type is what proves WHICH constraint refused it.
       await store.append(makeEnvelope("e4", 0));
-      await expect(store.append(makeEnvelope("e4", 0))).rejects.toThrow();
+      const intruder = { ...makeEnvelope("e4", 0), id: "evt-e4-0-second" };
+      await expect(store.append(intruder)).rejects.toThrow(DuplicateSequenceError);
+      const read = await store.read("e4");
+      expect(read).toHaveLength(1);
+      expect(read[0]?.id).toBe("evt-e4-0");
     });
 
     it("lifecycle (K10.1/.4): deleteExecution removes all; truncatePrefix keeps sequence 0", async () => {

@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`(executionId, sequence)` is unique in every backend, and the contract now says so**
+  ([#306](https://github.com/chhetrisushil/loom/issues/306)). SQLite and Postgres enforce
+  `UNIQUE (execution_id, sequence)`; `InMemoryAsyncEventStore` — which is not a test double but
+  `defineConfig`'s `kind: "memory"` backend, the one an app gets when no store plugin is wired —
+  accepted both writes and interleaved them into the log. Not covered by fencing: fencing engages
+  only once a token has been *acquired*, while sequences are allocated per-process from folded
+  state (`ExecutionJournal` seeds from `vm.getState().sequence` and increments locally), so two
+  unfenced writers recovering the same execution allocate the same next sequence with neither one
+  a zombie. `appendBatch` additionally validates the batch against **itself** — two envelopes
+  claiming one slot conflict only with each other, so a check against stored rows alone admits the
+  pair.
+
+  All three backends now reject with a shared `DuplicateSequenceError`, so a caller need not know
+  which store it is talking to (or match driver text) to recognise a lost sequence race. The
+  mapping is narrowed by constraint, since both tables also key `id` and a re-used envelope id is
+  a different bug.
+
+  The gap was never a missing suite — `runEventStoreConformance` exists (ADR 0033) and all three
+  stores already ran it. It was a missing **clause**: the portable contract said nothing about
+  uniqueness, so a backend could omit the check and still conform. Three cases added there, which
+  is what makes every backend (including a third-party one) agree. Two pre-existing tests named
+  "rejects duplicate (executionId, sequence)" were rewritten: both built their two envelopes with
+  the same derived id, so they collided on the id primary key and never reached the constraint
+  they were named for — `.rejects.toThrow()` could not tell the difference.
+
 - **The resume ingress gate: a caller-supplied `eventType` no longer writes kernel state, and a
   resume must name the gate it answers** ([#304](https://github.com/chhetrisushil/loom/issues/304),
   [#305](https://github.com/chhetrisushil/loom/issues/305)). `eventType` travels from an ingress

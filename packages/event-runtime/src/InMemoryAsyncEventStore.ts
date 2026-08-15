@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
 import { SubscriberRegistry } from "./SubscriberRegistry";
+import { DuplicateSequenceError } from "./duplicateSequence";
 import { StaleFenceError, fenceOf } from "./fencing";
 import { lowerBoundBySequence, sliceBySequence } from "./sequenceRange";
 import type { EventStore } from "./types";
@@ -60,14 +61,32 @@ export class InMemoryAsyncEventStore implements EventStore {
   async appendBatch(envelopes: readonly EventEnvelope[]): Promise<void> {
     if (envelopes.length === 0) return;
     await this.tick();
-    for (const envelope of envelopes) this.assertAppendable(envelope);
+    // A batch must be checked against ITSELF as well as the log: two envelopes claiming
+    // the same slot are both appendable against the durable state, and only the pairwise
+    // check catches them. Tracked per execution and only for repeats, so the common
+    // single-execution monotonic batch allocates nothing.
+    let claimed: Map<string, Set<number>> | undefined;
+    for (const envelope of envelopes) {
+      this.assertAppendable(envelope);
+      const seen = claimed?.get(envelope.executionId);
+      if (seen?.has(envelope.sequence) === true) {
+        throw new DuplicateSequenceError(envelope.executionId, envelope.sequence);
+      }
+      claimed ??= new Map();
+      const set = seen ?? new Set<number>();
+      set.add(envelope.sequence);
+      claimed.set(envelope.executionId, set);
+    }
     for (const envelope of envelopes) this.commit(envelope);
     // Fan out only once the whole batch has landed — a subscriber must never observe a
     // partially applied batch.
     for (const envelope of envelopes) this.subscribers.emit(envelope);
   }
 
-  /** Throws if this envelope may not land (K9.4 fencing, or an injected failure). */
+  /**
+   * Throws if this envelope may not land: a duplicate `(executionId, sequence)`, K9.4
+   * fencing, or an injected failure.
+   */
   private assertAppendable(envelope: EventEnvelope): void {
     // K9.4 — fencing: once a token has been acquired for this execution, an
     // append missing the current token is a zombie write and is rejected.
@@ -76,6 +95,18 @@ export class InMemoryAsyncEventStore implements EventStore {
       const fence = fenceOf(envelope);
       if (fence === undefined || fence < currentFence) {
         throw new StaleFenceError(envelope.executionId, fence, currentFence);
+      }
+    }
+    // #306 — the same `UNIQUE (execution_id, sequence)` both SQL backends enforce. Not a
+    // redundant belt beside fencing: fencing engages only once a token has been ACQUIRED,
+    // and sequences are allocated per-process from folded state, so two unfenced writers
+    // recovering the same execution allocate the same next sequence with neither a zombie.
+    // O(log n) against the sorted log — `commit` maintains that order for exactly this.
+    const list = this.log.get(envelope.executionId);
+    if (list !== undefined) {
+      const at = lowerBoundBySequence(list, envelope.sequence);
+      if (at < list.length && (list[at] as EventEnvelope).sequence === envelope.sequence) {
+        throw new DuplicateSequenceError(envelope.executionId, envelope.sequence);
       }
     }
     const verdict = this.failAppendWhen?.(envelope);

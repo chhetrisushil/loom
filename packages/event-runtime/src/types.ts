@@ -43,6 +43,18 @@ export function isReservedStream(executionId: string): boolean {
  * so a backend never needs a read-then-write round-trip to append.
  */
 export interface EventStore {
+  /**
+   * Append one envelope.
+   *
+   * `(executionId, sequence)` is UNIQUE and a backend MUST enforce it, rejecting with
+   * {@link DuplicateSequenceError}. This is not covered by fencing: fencing engages only
+   * once a token has been ACQUIRED for the execution, while sequences are allocated
+   * per-process from folded state (see the note above), so two unfenced writers recovering
+   * the same execution allocate the same next sequence with neither one a zombie. A
+   * backend that accepts both silently interleaves them into a log that every fold reads
+   * as truth. The SQL backends get this from a table constraint; a backend without one
+   * checks explicitly.
+   */
   append(envelope: EventEnvelope): Promise<void>;
   /**
    * OPTIONAL bulk append (ADR 0074 D1, SPI 1.3.0). Semantically **equivalent to calling
@@ -67,6 +79,10 @@ export interface EventStore {
    * - **Reject, don't half-report.** If any envelope fails, the returned promise rejects —
    *   so a caller never reads a partial write as success. `CoalescingEventStore` propagates
    *   that rejection to every writer in the batch.
+   * - **Uniqueness within the batch, too.** Two envelopes claiming the same
+   *   `(executionId, sequence)` are each appendable against the durable log and conflict
+   *   only with each other, so a backend that validates solely against stored rows admits
+   *   the pair. Checking the batch against itself is part of the contract.
    * - **Empty input is a no-op**, not an error.
    *
    * A store that omits it is byte-identical to today — callers use {@link appendBatchOf},

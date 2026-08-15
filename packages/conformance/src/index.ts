@@ -8,7 +8,7 @@ import type {
   TimerRecord,
   TimerStore,
 } from "@loom/event-runtime";
-import { readRangeOf } from "@loom/event-runtime";
+import { DuplicateSequenceError, readRangeOf } from "@loom/event-runtime";
 import type { LlmProvider, LlmStreamChunk } from "@loom/llm";
 import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
@@ -70,6 +70,54 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       const store = factory();
       for (let i = 0; i < 5; i++) await store.append(evt("x", i));
       expect((await readRangeOf(store, "x", 1, 3)).map((e) => e.sequence)).toEqual([1, 2, 3]);
+      await store.close();
+    });
+
+    // ── uniqueness (#306) ────────────────────────────────────────────────────
+    //
+    // The clause the contract was missing, which is why a backend could omit the check and
+    // still "conform": SQLite and Postgres enforce `UNIQUE (execution_id, sequence)`, the
+    // reference in-memory store used to accept both writes and interleave them. Two
+    // unfenced writers recovering the same execution allocate the SAME next sequence
+    // (`ExecutionJournal` seeds from folded state and increments in-process), so this is
+    // reachable without either writer being a fenced-out zombie.
+    //
+    // Note the DISTINCT envelope ids: the SQL backends also key `id`, and reusing one would
+    // pass this test against the wrong constraint.
+    it("rejects a second envelope claiming an occupied (executionId, sequence)", async () => {
+      const store = factory();
+      await store.append(evt("u", 0));
+      await expect(
+        store.append({ ...evt("u", 0), id: "u-0-second", payload: { intruder: true } })
+      ).rejects.toThrow(DuplicateSequenceError);
+      // Rejected, not merely reported: the winner is intact and alone.
+      const read = await store.read("u");
+      expect(read).toHaveLength(1);
+      expect(read[0]?.id).toBe("u-0");
+      await store.close();
+    });
+
+    it("appendBatch (if implemented) rejects a duplicate against the log, atomically", async () => {
+      const store = factory();
+      if (store.appendBatch === undefined) return void (await store.close());
+      await store.append(evt("ub", 0));
+      await expect(
+        store.appendBatch([{ ...evt("ub", 0), id: "ub-0-second" }, evt("ub", 1)])
+      ).rejects.toThrow(DuplicateSequenceError);
+      // The VALID envelope in the batch must not have landed either.
+      expect((await store.read("ub")).map((e) => e.sequence)).toEqual([0]);
+      await store.close();
+    });
+
+    it("appendBatch (if implemented) rejects a duplicate WITHIN the batch", async () => {
+      const store = factory();
+      if (store.appendBatch === undefined) return void (await store.close());
+      // Neither envelope conflicts with the durable log — only with each other. A backend
+      // that validates solely against stored rows passes the case above and fails here.
+      await expect(
+        store.appendBatch([evt("uc", 0), { ...evt("uc", 0), id: "uc-0-second" }])
+      ).rejects.toThrow(DuplicateSequenceError);
+      expect(await store.read("uc")).toEqual([]);
       await store.close();
     });
 
