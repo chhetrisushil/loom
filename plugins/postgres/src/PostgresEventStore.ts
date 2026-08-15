@@ -1,5 +1,11 @@
 import type { EventEnvelope } from "@loom/core";
-import { StaleFenceError, SubscriberRegistry, bucketOf, fenceOf } from "@loom/event-runtime";
+import {
+  DuplicateSequenceError,
+  StaleFenceError,
+  SubscriberRegistry,
+  bucketOf,
+  fenceOf,
+} from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import { Client, type Notification } from "pg";
 import { type PgConfig, type PoolLike, nextSenderId, toClientConfig, toPool } from "./pool";
@@ -20,6 +26,28 @@ export interface PostgresEventStoreOptions {
    * upgrade or a deployment that wants the old semantics. Default 16.
    */
   notifyBuckets?: number;
+}
+
+/**
+ * #306 — normalize the `UNIQUE (execution_id, sequence)` violation (SQLSTATE 23505) to the
+ * portable {@link DuplicateSequenceError}, so a caller need not know which backend it is
+ * talking to (or match on driver text) to recognise a lost sequence race.
+ *
+ * Narrowed by CONSTRAINT NAME, which node-postgres surfaces on the error: the table also
+ * has a primary key on `id`, and a duplicate id is a different bug (a re-used envelope id)
+ * that must not be reported as a sequence conflict. Postgres auto-names the unnamed table
+ * constraint `events_execution_id_sequence_key`; the check reads the columns out of it
+ * rather than pinning the whole generated name.
+ */
+function isDuplicateSequenceViolation(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const { code, constraint } = err as { code?: unknown; constraint?: unknown };
+  if (code !== "23505") return false;
+  return (
+    typeof constraint === "string" &&
+    constraint.includes("execution_id") &&
+    constraint.includes("sequence")
+  );
 }
 
 interface EventRow {
@@ -99,28 +127,37 @@ export class PostgresEventStore implements EventStore {
     // 0 rows, the outer SELECT returns 0 rows, pg_notify is never called, and rowCount === 0
     // still signals the stale fence exactly as before.
     const notifyTag = JSON.stringify([this.senderId, envelope.executionId, envelope.sequence]);
-    const result = await this.pool.query(
-      `WITH ins AS (
+    const result = await this.pool
+      .query(
+        `WITH ins AS (
          INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
          SELECT $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb
          WHERE COALESCE((SELECT fence FROM fences WHERE execution_id = $3), $9::bigint) <= $9::bigint
          RETURNING execution_id
        )
        SELECT pg_notify($10, $11) FROM ins`,
-      [
-        envelope.id,
-        envelope.workflowId,
-        envelope.executionId,
-        envelope.eventType,
-        envelope.sequence,
-        envelope.timestamp,
-        JSON.stringify(envelope.payload),
-        envelope.metadata !== undefined ? JSON.stringify(envelope.metadata) : null,
-        fence,
-        this.channelFor(envelope.executionId),
-        notifyTag,
-      ]
-    );
+        [
+          envelope.id,
+          envelope.workflowId,
+          envelope.executionId,
+          envelope.eventType,
+          envelope.sequence,
+          envelope.timestamp,
+          JSON.stringify(envelope.payload),
+          envelope.metadata !== undefined ? JSON.stringify(envelope.metadata) : null,
+          fence,
+          this.channelFor(envelope.executionId),
+          notifyTag,
+        ]
+      )
+      .catch((err: unknown) => {
+        // #306 — the slot was taken. Distinct from the fence rejection below, which is a
+        // zero-row insert rather than a constraint violation.
+        if (isDuplicateSequenceViolation(err)) {
+          throw new DuplicateSequenceError(envelope.executionId, envelope.sequence, err);
+        }
+        throw err;
+      });
     if (result.rowCount === 0) {
       const { rows } = await this.pool.query<{ fence: string }>(
         "SELECT fence FROM fences WHERE execution_id = $1",
@@ -181,8 +218,9 @@ export class PostgresEventStore implements EventStore {
     // per-event `append`: a cross-node subscriber sees every event, not just the last of a
     // batch. It costs nothing extra — `pg_notify` is transactional, so these are delivered
     // only if the statement commits, and they ride the same round-trip.
-    const { rows: notified } = await this.pool.query<{ inserted: number }>(
-      `WITH batch AS (
+    const { rows: notified } = await this.pool
+      .query<{ inserted: number }>(
+        `WITH batch AS (
          SELECT * FROM jsonb_to_recordset($1::jsonb) AS x(
            id text, workflow_id text, execution_id text, event_type text,
            "sequence" bigint, "timestamp" bigint, payload jsonb, metadata jsonb,
@@ -205,8 +243,15 @@ export class PostgresEventStore implements EventStore {
               pg_notify(b.channel, json_build_array($2::text, b.execution_id, b."sequence")::text)
        FROM batch b
        WHERE NOT EXISTS (SELECT 1 FROM rejected)`,
-      [JSON.stringify(rows), this.senderId]
-    );
+        [JSON.stringify(rows), this.senderId]
+      )
+      .catch(async (err: unknown) => {
+        // #306 — a taken slot, in the batch or already in the log. The statement is atomic,
+        // so nothing landed; locate the offender for an error that names the actual conflict
+        // rather than the constraint. Failure path only, so the extra round-trip is free.
+        if (isDuplicateSequenceViolation(err)) throw await this.duplicateIn(envelopes, err);
+        throw err;
+      });
     if (notified.length !== envelopes.length || notified[0]?.inserted !== envelopes.length) {
       // Nothing landed. Identify the offending envelope for a useful error — this is the
       // failure path, so an extra round-trip is fine.
@@ -229,6 +274,35 @@ export class PostgresEventStore implements EventStore {
     }
     // Same-process subscribers fire synchronously, matching `append`'s contract.
     for (const envelope of envelopes) this.notifyLocal(envelope.executionId, envelope);
+  }
+
+  /**
+   * Which envelope in a rejected batch claimed a taken `(executionId, sequence)` — either
+   * because the log already held it, or because another envelope in the SAME batch did.
+   * One query for the whole batch; the statement rolled back, so a slot occupied now was
+   * occupied before.
+   */
+  private async duplicateIn(envelopes: readonly EventEnvelope[], cause: unknown): Promise<Error> {
+    const { rows } = await this.pool.query<{ execution_id: string; sequence: string }>(
+      `SELECT e.execution_id, e.sequence FROM events e
+         JOIN jsonb_to_recordset($1::jsonb) AS c(execution_id text, "sequence" bigint)
+           ON c.execution_id = e.execution_id AND c."sequence" = e.sequence`,
+      [
+        JSON.stringify(
+          envelopes.map((e) => ({ execution_id: e.executionId, sequence: e.sequence }))
+        ),
+      ]
+    );
+    const occupied = new Set(rows.map((r) => `${r.execution_id} ${Number(r.sequence)}`));
+    const claimed = new Set<string>();
+    for (const e of envelopes) {
+      const key = `${e.executionId} ${e.sequence}`;
+      if (occupied.has(key) || claimed.has(key)) {
+        return new DuplicateSequenceError(e.executionId, e.sequence, cause);
+      }
+      claimed.add(key);
+    }
+    return cause instanceof Error ? cause : new Error(String(cause));
   }
 
   async read(executionId: string): Promise<EventEnvelope[]> {

@@ -1,8 +1,24 @@
 import type { EventEnvelope } from "@loom/core";
 import type { EventStore } from "@loom/event-runtime";
-import { SubscriberRegistry } from "@loom/event-runtime";
+import { DuplicateSequenceError, SubscriberRegistry } from "@loom/event-runtime";
 import Database from "better-sqlite3";
 import { migrate } from "./schema";
+
+/**
+ * #306 — normalize the `UNIQUE (execution_id, sequence)` violation to the portable
+ * {@link DuplicateSequenceError} every backend raises, so a caller need not know which
+ * store it is talking to (or match on driver text) to recognise a lost sequence race.
+ *
+ * Narrowed to THAT constraint by name: the table also has a PRIMARY KEY on `id`, and a
+ * duplicate id is a different bug (a re-used envelope id) that must not be reported as a
+ * sequence conflict. Anything else propagates untouched.
+ */
+function isDuplicateSequenceViolation(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code;
+  if (typeof code !== "string" || !code.startsWith("SQLITE_CONSTRAINT")) return false;
+  return err.message.includes("execution_id") && err.message.includes("sequence");
+}
 
 interface EventRow {
   id: string;
@@ -54,16 +70,23 @@ export class SqliteEventStore implements EventStore {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    stmt.run(
-      envelope.id,
-      envelope.workflowId,
-      envelope.executionId,
-      envelope.eventType,
-      envelope.sequence,
-      envelope.timestamp,
-      JSON.stringify(envelope.payload),
-      envelope.metadata !== undefined ? JSON.stringify(envelope.metadata) : null
-    );
+    try {
+      stmt.run(
+        envelope.id,
+        envelope.workflowId,
+        envelope.executionId,
+        envelope.eventType,
+        envelope.sequence,
+        envelope.timestamp,
+        JSON.stringify(envelope.payload),
+        envelope.metadata !== undefined ? JSON.stringify(envelope.metadata) : null
+      );
+    } catch (err) {
+      if (isDuplicateSequenceViolation(err)) {
+        throw new DuplicateSequenceError(envelope.executionId, envelope.sequence, err);
+      }
+      throw err;
+    }
 
     this.notify(envelope.executionId, envelope);
   }
@@ -99,8 +122,38 @@ export class SqliteEventStore implements EventStore {
         );
       }
     });
-    insertAll(envelopes);
+    try {
+      insertAll(envelopes);
+    } catch (err) {
+      if (isDuplicateSequenceViolation(err)) {
+        // SQLite names the constraint, not the row, so locate the offender ourselves —
+        // an error that cannot say WHICH slot was taken sends the reader back to the log.
+        // Error path only, so the extra query costs nothing on the hot path. The
+        // transaction has rolled back, so a slot found occupied now was occupied before.
+        throw this.duplicateIn(envelopes, err);
+      }
+      throw err;
+    }
     for (const envelope of envelopes) this.notify(envelope.executionId, envelope);
+  }
+
+  /**
+   * Which envelope in a rejected batch claimed a taken `(executionId, sequence)` — either
+   * because the log already held it, or because another envelope in the SAME batch did.
+   */
+  private duplicateIn(envelopes: readonly EventEnvelope[], cause: unknown): Error {
+    const taken = this.db.prepare<[string, number], { one: number }>(
+      "SELECT 1 AS one FROM events WHERE execution_id = ? AND sequence = ?"
+    );
+    const claimed = new Set<string>();
+    for (const e of envelopes) {
+      const key = `${e.executionId}\u0000${e.sequence}`;
+      if (claimed.has(key) || taken.get(e.executionId, e.sequence) !== undefined) {
+        return new DuplicateSequenceError(e.executionId, e.sequence, cause);
+      }
+      claimed.add(key);
+    }
+    return cause instanceof Error ? cause : new Error(String(cause));
   }
 
   async read(executionId: string): Promise<EventEnvelope[]> {

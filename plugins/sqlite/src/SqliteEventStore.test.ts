@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EventEnvelope } from "@loom/core";
+import { DuplicateSequenceError } from "@loom/event-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqliteEventStore } from "./SqliteEventStore";
 
@@ -94,9 +95,31 @@ describe("SqliteEventStore", () => {
   });
 
   describe("UNIQUE constraint", () => {
-    it("rejects duplicate (executionId, sequence) pairs", async () => {
+    // `makeEnvelope` derives the id from (executionId, sequence), so appending it twice
+    // collides on the id PRIMARY KEY first — this case was named for a constraint it never
+    // reached, and `.rejects.toThrow()` could not tell the difference. A DISTINCT id is
+    // what makes the second write test `UNIQUE (execution_id, sequence)`, and the error
+    // type is what proves WHICH constraint refused it.
+    it("rejects a distinct envelope claiming an occupied (executionId, sequence)", async () => {
       await store.append(makeEnvelope("exec-4", 0));
-      await expect(store.append(makeEnvelope("exec-4", 0))).rejects.toThrow();
+      const intruder = { ...makeEnvelope("exec-4", 0), id: "evt-exec-4-0-second" };
+      await expect(store.append(intruder)).rejects.toThrow(DuplicateSequenceError);
+      const read = await store.read("exec-4");
+      expect(read).toHaveLength(1);
+      expect(read[0]?.id).toBe("evt-exec-4-0");
+    });
+
+    it("leaves a duplicate ENVELOPE ID as its own (unmapped) violation", async () => {
+      // The other constraint on the table. A re-used envelope id is a different bug, and
+      // reporting it as a sequence conflict would send the reader hunting the wrong race.
+      await store.append(makeEnvelope("exec-4b", 0));
+      const sameId = { ...makeEnvelope("exec-4b", 1), id: "evt-exec-4b-0" };
+      const err = await store.append(sameId).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(DuplicateSequenceError);
     });
   });
 
