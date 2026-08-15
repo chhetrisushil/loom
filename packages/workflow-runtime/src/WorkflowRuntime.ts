@@ -14,19 +14,22 @@ import { readRangeOf } from "@loom/event-runtime";
 // the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
 // would otherwise leak into every browser app that builds on the WorkflowRuntime.
 import { sliceBySequence } from "@loom/event-runtime/sequence";
-import { ReplayVM } from "@loom/replay-vm";
+import { EVENT_SCHEMA_VERSION, ReplayVM, knownEventTypes } from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { WorkflowContextImpl } from "./WorkflowContext";
 import {
   ApprovalRejectedError,
+  EXECUTION_RECOVERED,
   ExecutionDeniedError,
   FlowCodeMismatchError,
   FlowMigrationCheckError,
   InputValidationError,
   ResumePayloadValidationError,
+  ResumeRefusedError,
   StateMigrationError,
+  TIMER_FIRED,
 } from "./types";
 import type {
   ExecutionAuthorizer,
@@ -41,6 +44,13 @@ import type {
   ResumeEvent,
   RunOptions,
 } from "./types";
+
+/**
+ * The kernel's own event namespace (#304). Built once from the K5-governed list the
+ * conformance test pins, so a new event type is covered the moment it is registered —
+ * a hand-kept denylist here would be the drift the pinned list exists to prevent.
+ */
+const KERNEL_EVENT_TYPES: ReadonlySet<string> = new Set(knownEventTypes());
 
 /** An event to commit through the journal before the flow runner starts. */
 interface BootstrapEvent {
@@ -422,6 +432,105 @@ export class WorkflowRuntime {
     this.effectRuntime.warm(first.toolId ?? first.id);
   }
 
+  /**
+   * The resume INGRESS gate (#304/#305). `eventType` is caller-controlled all the way
+   * from an ingress adapter — A2A `provideInput` and the wire-ABI `execution.resume`
+   * both hand a network-supplied {@link ResumeEvent} straight to `resume()` — and it
+   * was appended into the log verbatim. Two things were never asked:
+   *
+   * 1. **Is this a kernel event?** `handlers` folds by NAME, so a resume typed
+   *    `STEP_COMPLETED` forged a step outcome that the completed short-circuit then
+   *    served without running the effect; `EXECUTION_MIGRATED` rewrote the K11 code
+   *    pin and `_input`; `APPROVAL_GRANTED` forged the K12.2 evidence the
+   *    authenticator exists to produce. `getHandler` already hardened the *unknown*
+   *    name (`__proto__`) and stopped one step short of the known ones.
+   * 2. **Is this the gate the execution is parked on?** `suspendedOn.on` was folded
+   *    and then read by nothing, so any name resumed any gate — which also skipped
+   *    the ADR 0077 `resumeSchemas` lookup, since that keys off the caller's
+   *    `eventType`. A declared shape gate was evaded by renaming the event.
+   *
+   * Refusing is fold-identical for every legitimate log: a non-kernel `eventType`
+   * already folds to a no-op, so today's resume-typed event contributes nothing
+   * unless it collides with a kernel name (G2).
+   *
+   * `EXECUTION_RECOVERED` is the one non-gate resume: a dispatcher re-driving a
+   * crashed execution, which is `running`/`pending` and has no `suspendedOn`.
+   */
+  private assertResumable(
+    executionId: string,
+    state: ExecutionState,
+    event: ResumeEvent,
+    /**
+     * `resumeAs` checks the kernel namespace and stops there. The recorded gate
+     * belongs to the code being migrated AWAY from — a target flow may legitimately
+     * have renamed or dropped it — and an operator migrating a crashed execution onto
+     * fixed code is the documented exit from {@link FlowCodeMismatchError}, so
+     * neither the parked-state nor the gate-name check can hold there. It is also an
+     * operator API: no ingress adapter reaches it (A2A `provideInput` and the wire ABI
+     * both call `resume`), and it already demands a registered target flow and an
+     * explicit strategy.
+     */
+    checks: "all" | "kernel-namespace-only" = "all"
+  ): void {
+    const { eventType } = event;
+
+    if (eventType === EXECUTION_RECOVERED && checks === "all") {
+      // Crash recovery, not a gate. A parked or terminal execution has nothing to
+      // re-drive, so this is refused everywhere the dispatcher would not send it.
+      if (state.status !== "running" && state.status !== "pending") {
+        throw new ResumeRefusedError(
+          executionId,
+          eventType,
+          "not-suspended",
+          `recovery re-drive addresses a crashed (running/pending) execution; this one is "${state.status}"`
+        );
+      }
+      return;
+    }
+
+    // Checked BEFORE state, because it holds regardless of state: no reachable
+    // condition makes a caller-supplied kernel event legitimate. TIMER_FIRED is the
+    // one governed exception — the kernel raises it itself to wake a timed suspend,
+    // and the gate check below still requires the execution to be parked on it.
+    if (eventType !== TIMER_FIRED && KERNEL_EVENT_TYPES.has(eventType)) {
+      throw new ResumeRefusedError(
+        executionId,
+        eventType,
+        "kernel-event-type",
+        `"${eventType}" is a kernel event type (EVENT_SCHEMA ${EVENT_SCHEMA_VERSION}); only the kernel writes those, and folding a caller-supplied one would forge kernel state. Name the gate something outside the kernel namespace.`
+      );
+    }
+
+    if (checks === "kernel-namespace-only") return;
+
+    if (state.status !== "suspended") {
+      throw new ResumeRefusedError(
+        executionId,
+        eventType,
+        "not-suspended",
+        `the execution is "${state.status}", not parked at a gate. Nothing was appended.`
+      );
+    }
+
+    const condition = state.suspendedOn;
+    // A TIMED suspend has TWO legitimate wakes, and `on` names only one of them:
+    // `suspend({ on: "Approval", timeout })` is answered either by the approval or by
+    // the timer, which fires as TIMER_FIRED whatever the gate is called (the runtime
+    // derives `wakeAt` from `timeout` when a TimerStore is wired, T1/A3). Keyed on the
+    // recorded `wakeAt`, so an UNTIMED gate is not wakeable by a synthetic timer event.
+    const timedWake = eventType === TIMER_FIRED && condition?.wakeAt !== undefined;
+    if (condition?.on !== eventType && !timedWake) {
+      throw new ResumeRefusedError(
+        executionId,
+        eventType,
+        "gate-mismatch",
+        `the execution is parked on "${condition?.on ?? "<unknown>"}"${
+          condition?.wakeAt !== undefined ? ` (or ${TIMER_FIRED}, a timed suspend)` : ""
+        }. A resume must name the gate it answers — the flow's declared resumeSchemas entry is looked up by this name, so a mismatched one would also skip the shape check (ADR 0077).`
+      );
+    }
+  }
+
   // K12.2 — verify an approval-gating resume event. Returns an APPROVAL_GRANTED
   // bootstrap event to record when verified; `undefined` for an ordinary resume;
   // throws ApprovalRejectedError when the authenticator rejects it (forged).
@@ -779,6 +888,12 @@ export class WorkflowRuntime {
     // APPROVAL_GRANTED fact so "who approved" is evidence, not a claim.
     const approval = this.verifyApproval(executionId, resumeEvent);
 
+    // #304/#305 — the ingress gate: WHICH event, to an execution in WHICH state. Placed
+    // after the authenticator for the same reason the shape check is (below): the
+    // gate-mismatch message names the gate the execution is parked on, which an
+    // unauthenticated caller has no business learning.
+    this.assertResumable(executionId, vm.getState(), resumeEvent);
+
     // TR (ADR 0077) — shape AFTER identity: the authenticator must see the exact event the
     // caller signed (a Zod transform could reshape it out from under a signature), and an
     // unauthenticated caller learns nothing about the gate's contract. Both refuse before
@@ -895,6 +1010,12 @@ export class WorkflowRuntime {
       }
       stateMigrated = true;
     }
+
+    // #304 — the kernel namespace is closed here too: a migration is still a caller-supplied
+    // event landing in the log, and `EXECUTION_MIGRATED` is precisely the type that rewrites
+    // the K11 code pin. The gate-name and parked-state checks do NOT apply (see
+    // `assertResumable`), so this is the namespace check alone.
+    this.assertResumable(executionId, state, resumeEvent, "kernel-namespace-only");
 
     // TR (ADR 0077) — validate against the TARGET flow's gate contract: the execution is being
     // resumed onto that code, so that code's declared shape is the one that must hold. Refuses

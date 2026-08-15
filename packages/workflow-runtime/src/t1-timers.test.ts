@@ -180,13 +180,21 @@ describe("T1.1 — ctx.sleep / ctx.sleepUntil record the wake in the log", () =>
     const handle = await app.runtime.start(flow, { n: 1 }, { executionId: "t1-5" });
     await handle.waitForSuspend();
 
-    // An operator resumes by hand before the poller gets there.
-    const resumed = await app.runtime.resume("t1-5", { eventType: "ManualWake", payload: {} });
+    // An operator resumes by hand before the poller gets there. The gate a sleep parks on
+    // IS `TIMER_FIRED` (#305 — a resume names the gate it answers, so an arbitrary
+    // "ManualWake" no longer wakes a sleeper); the operator delivers that gate early. The
+    // marker payload is what distinguishes the hand delivery from the poller's.
+    const resumed = await app.runtime.resume("t1-5", {
+      eventType: "TIMER_FIRED",
+      payload: { by: "operator" },
+    });
     await resumed.waitForCompletion();
 
     await service.tick(Date.now() + 50);
     const events = await app.eventStore.read("t1-5");
-    expect(events.some((e: EventEnvelope) => e.eventType === "TIMER_FIRED")).toBe(false);
+    const fired = events.filter((e: EventEnvelope) => e.eventType === "TIMER_FIRED");
+    expect(fired).toHaveLength(1); // the poller did NOT fire a second one
+    expect(fired[0]?.payload).toEqual({ by: "operator" });
     expect(await app.timerStore.due(Number.MAX_SAFE_INTEGER)).toEqual([]); // retired anyway
   });
 });

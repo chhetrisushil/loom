@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
 import { fail } from "@loom/core";
+import { ResumeRefusedError } from "@loom/workflow-runtime";
 import type { ExecutionContext, RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 
 // ── Cross-execution orchestration (child workflows) ───────────────────────────
@@ -336,19 +337,28 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     }
   };
 
-  // Resume the parent, retrying a transient "No execution found". A completed child proves
-  // its parent exists and is suspended-on-CHILD_DONE, but under an async event store (e.g.
-  // Postgres) a just-written suspend can briefly not be readable when the child completes
-  // almost instantly — a read-after-write visibility gap the durability gate bounds but a
-  // slower store can still exceed. Without the retry the resume throws and the parent hangs
-  // forever. Bounded backoff (~1s) backstops the gate; a genuinely missing parent still
-  // surfaces via onError after the retries. `payload` is `{ output }` for a single child or
-  // `{ outputs }` for a group.
+  // Resume the parent, retrying a transient failure. A completed child proves its parent
+  // exists and is suspended-on-CHILD_DONE, but under an async event store (e.g. Postgres) a
+  // just-written suspend can briefly not be readable when the child completes almost
+  // instantly — a read-after-write visibility gap the durability gate bounds but a slower
+  // store can still exceed. Without the retry the resume throws and the parent hangs forever.
+  // Bounded backoff (~1s) backstops the gate; a genuinely missing parent still surfaces via
+  // onError after the retries. `payload` is `{ output }` for a single child or `{ outputs }`
+  // for a group.
+  //
+  // TWO shapes of the same gap, both retriable: the parent's log may not be readable at all
+  // ("No execution found"), or it may be readable but not yet folded to `suspended` — which
+  // the resume ingress gate (#305) now refuses with `reason: "not-suspended"` rather than
+  // resuming a still-running parent. Matching on the machine-readable reason, not the
+  // message: every other refusal (gate-mismatch, kernel-event-type) is permanent and
+  // retrying it would just delay a real error by a second.
   const resumeParent = async (parentId: string, payload: unknown, attempt = 0): Promise<void> => {
     try {
       await deps.runtime.resume(parentId, { eventType: CHILD_DONE, payload });
     } catch (err) {
-      const transient = err instanceof Error && /No execution found/.test(err.message);
+      const transient =
+        (err instanceof Error && /No execution found/.test(err.message)) ||
+        (err instanceof ResumeRefusedError && err.reason === "not-suspended");
       if (transient && attempt < 10) {
         await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
         return resumeParent(parentId, payload, attempt + 1);

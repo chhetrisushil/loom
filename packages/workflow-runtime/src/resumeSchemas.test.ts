@@ -5,7 +5,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
-import { ResumePayloadValidationError } from "./types";
+import { ResumePayloadValidationError, ResumeRefusedError } from "./types";
 import type { FlowRunner, RegisteredFlow, ResumeEvent } from "./types";
 
 // ── TR (ADR 0077) — typed resume payloads ─────────────────────────────────────
@@ -263,13 +263,32 @@ describe("resumeSchemas — typed resume payloads (TR, ADR 0077)", () => {
     // `eventType` is caller-controlled and reaches the map as a key. Plain indexing would find
     // `Object.prototype.constructor` — a function with no `safeParse` — turning a hostile event
     // type into a TypeError instead of an ordinary un-gated resume.
-    const s = setup({ ApprovalGranted: APPROVAL });
-    const executionId = await startAndSuspend(s);
-
+    //
+    // The ingress gate (#305) now refuses a name that is not the gate BEFORE the lookup runs,
+    // so reaching `parseResumePayload` with a hostile key means parking the execution on that
+    // name — which a flow author is free to do, and which is the only route left to the
+    // hazard. The map deliberately does NOT declare it: `hasOwn` false is the un-gated path.
     for (const hostile of ["constructor", "__proto__", "toString"]) {
+      const s = setup({ ApprovalGranted: APPROVAL }, hostile);
+      const executionId = await startAndSuspend(s);
       const attempt = s.runtime.resume(executionId, resumeWith({ x: 1 }, hostile));
       // Whatever happens, it must not be a crash from calling a non-schema.
       await expect(attempt).resolves.toBeDefined();
+    }
+  });
+
+  it("refuses a hostile event type outright when it is not the gate (#305)", async () => {
+    // The prototype-chain guard above is the second line of defence. The first is that a
+    // caller-supplied name reaches the map at all only when it names the parked gate.
+    const s = setup({ ApprovalGranted: APPROVAL });
+    const executionId = await startAndSuspend(s);
+    const before = await s.eventStore.read(executionId);
+
+    for (const hostile of ["constructor", "__proto__", "toString"]) {
+      await expect(
+        s.runtime.resume(executionId, resumeWith({ x: 1 }, hostile))
+      ).rejects.toThrowError(ResumeRefusedError);
+      expect(await s.eventStore.read(executionId)).toEqual(before);
     }
   });
 });
