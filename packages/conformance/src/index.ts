@@ -8,7 +8,7 @@ import type {
   TimerRecord,
   TimerStore,
 } from "@loom/event-runtime";
-import { DuplicateSequenceError, readRangeOf } from "@loom/event-runtime";
+import { DuplicateEnvelopeIdError, DuplicateSequenceError, readRangeOf } from "@loom/event-runtime";
 import type { LlmProvider, LlmStreamChunk } from "@loom/llm";
 import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
@@ -118,6 +118,46 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
         store.appendBatch([evt("uc", 0), { ...evt("uc", 0), id: "uc-0-second" }])
       ).rejects.toThrow(DuplicateSequenceError);
       expect(await store.read("uc")).toEqual([]);
+      await store.close();
+    });
+
+    // The events table's OTHER key (#309), required WITHIN an execution.
+    //
+    // Cross-execution id uniqueness is deliberately NOT required, for the same reason
+    // whole-batch atomicity across executions is not: {@link ShardedEventStore} cannot
+    // provide it — separate executions live on separate backing stores, and no shard can
+    // see another's ids. A single-log backend (SQLite, Postgres, one in-memory store) gets
+    // store-wide uniqueness from its `PRIMARY KEY (id)` and is free to be stricter; a
+    // caller must not depend on it.
+    it("rejects a second envelope re-using an id within an execution", async () => {
+      const store = factory();
+      await store.append(evt("v", 0));
+      await expect(store.append({ ...evt("v", 1), id: "v-0" })).rejects.toThrow(
+        DuplicateEnvelopeIdError
+      );
+      expect((await store.read("v")).map((e) => e.sequence)).toEqual([0]);
+      await store.close();
+    });
+
+    it("frees an id when its event is deleted, so the slot can be re-used", async () => {
+      const store = factory();
+      if (store.deleteExecution === undefined) return void (await store.close());
+      await store.append(evt("del", 0));
+      await store.deleteExecution("del");
+      // The id index must not outlive the events it indexes: an erased execution that
+      // cannot be re-created is a leak with a user-visible symptom.
+      await expect(store.append(evt("del", 0))).resolves.toBeUndefined();
+      expect(await store.read("del")).toHaveLength(1);
+      await store.close();
+    });
+
+    it("appendBatch (if implemented) rejects a duplicate id WITHIN the batch", async () => {
+      const store = factory();
+      if (store.appendBatch === undefined) return void (await store.close());
+      await expect(
+        store.appendBatch([evt("ud", 0), { ...evt("ud", 1), id: "ud-0" }])
+      ).rejects.toThrow(DuplicateEnvelopeIdError);
+      expect(await store.read("ud")).toEqual([]);
       await store.close();
     });
 

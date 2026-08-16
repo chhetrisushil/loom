@@ -46,14 +46,29 @@ export interface EventStore {
   /**
    * Append one envelope.
    *
-   * `(executionId, sequence)` is UNIQUE and a backend MUST enforce it, rejecting with
-   * {@link DuplicateSequenceError}. This is not covered by fencing: fencing engages only
-   * once a token has been ACQUIRED for the execution, while sequences are allocated
-   * per-process from folded state (see the note above), so two unfenced writers recovering
-   * the same execution allocate the same next sequence with neither one a zombie. A
-   * backend that accepts both silently interleaves them into a log that every fold reads
-   * as truth. The SQL backends get this from a table constraint; a backend without one
-   * checks explicitly.
+   * A log has TWO uniqueness constraints, and a backend MUST enforce both — rejecting,
+   * never overwriting and never silently treating the second write as a re-delivery:
+   *
+   * - **`(executionId, sequence)`**, rejected with {@link DuplicateSequenceError}. Not
+   *   covered by fencing: fencing engages only once a token has been ACQUIRED for the
+   *   execution, while sequences are allocated per-process from folded state (see the note
+   *   above), so two unfenced writers recovering the same execution allocate the same next
+   *   sequence with neither one a zombie. A backend that accepts both silently interleaves
+   *   them into a log that every fold reads as truth.
+   * - **`id`**, rejected with {@link DuplicateEnvelopeIdError}. Required WITHIN an
+   *   execution. Store-wide uniqueness is what `PRIMARY KEY (id)` gives a single-log
+   *   backend, and those are free to be stricter, but it is explicitly **not required** —
+   *   {@link ShardedEventStore} cannot provide it (separate executions live on separate
+   *   backing stores, and no shard sees another's ids), the same carve-out `appendBatch`
+   *   makes for cross-execution atomicity. A backend that indexes ids separately must free
+   *   them when the events they name are deleted or compacted away, or an erased execution
+   *   can never be re-created.
+   *
+   * The two are different failures and must not be reported as each other: a taken
+   * sequence means another writer reached that slot (a lost race, retryable by re-reading
+   * and re-allocating), while a taken id means the same envelope identity was minted twice
+   * (a bug in whatever produced it). The SQL backends get both from table constraints; a
+   * backend without them checks explicitly.
    */
   append(envelope: EventEnvelope): Promise<void>;
   /**
@@ -80,9 +95,10 @@ export interface EventStore {
    *   so a caller never reads a partial write as success. `CoalescingEventStore` propagates
    *   that rejection to every writer in the batch.
    * - **Uniqueness within the batch, too.** Two envelopes claiming the same
-   *   `(executionId, sequence)` are each appendable against the durable log and conflict
-   *   only with each other, so a backend that validates solely against stored rows admits
-   *   the pair. Checking the batch against itself is part of the contract.
+   *   `(executionId, sequence)` — or the same `id` — are each appendable against the
+   *   durable log and conflict only with each other, so a backend that validates solely
+   *   against stored rows admits the pair. Checking the batch against itself is part of
+   *   the contract.
    * - **Empty input is a no-op**, not an error.
    *
    * A store that omits it is byte-identical to today — callers use {@link appendBatchOf},

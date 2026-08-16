@@ -91,14 +91,23 @@ describe("fanout$ (ADR 0061 D4)", () => {
     const survivors = new Set(["hydrate#0", "hydrate#2"]);
     const prefix: EventEnvelope[] = [];
     let seq = 0;
+    // Re-stamp the id with the sequence, not just the sequence. The journal derives ids as
+    // `${executionId}-${sequence}`, so renumbering while keeping the original ids builds a
+    // log no real store could hold — the surviving events would carry ids belonging to
+    // sequences that are no longer theirs, and recovery's next id would collide with one of
+    // them. Both SQL backends would reject such a log outright.
+    const keep = (e: EventEnvelope): void => {
+      prefix.push({ ...e, sequence: seq, id: `fan-${seq}` });
+      seq++;
+    };
     for (const e of events) {
       if (e.eventType === "EXECUTION_STARTED") {
-        prefix.push({ ...e, sequence: seq++ });
+        keep(e);
       } else if (
         (e.eventType === "STEP_STARTED" || e.eventType === "STEP_COMPLETED") &&
         survivors.has((e.payload as { stepId: string }).stepId)
       ) {
-        prefix.push({ ...e, sequence: seq++ });
+        keep(e);
       }
     }
     const store = new InMemoryAsyncEventStore();

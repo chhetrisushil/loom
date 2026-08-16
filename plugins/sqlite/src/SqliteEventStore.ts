@@ -1,6 +1,10 @@
 import type { EventEnvelope } from "@loom/core";
 import type { EventStore } from "@loom/event-runtime";
-import { DuplicateSequenceError, SubscriberRegistry } from "@loom/event-runtime";
+import {
+  DuplicateEnvelopeIdError,
+  DuplicateSequenceError,
+  SubscriberRegistry,
+} from "@loom/event-runtime";
 import Database from "better-sqlite3";
 import { migrate } from "./schema";
 
@@ -14,10 +18,24 @@ import { migrate } from "./schema";
  * sequence conflict. Anything else propagates untouched.
  */
 function isDuplicateSequenceViolation(err: unknown): boolean {
+  if (!isConstraintViolation(err)) return false;
+  return err.message.includes("execution_id") && err.message.includes("sequence");
+}
+
+/**
+ * #309 — the table's OTHER key: `PRIMARY KEY (id)`. Distinguished from the sequence
+ * constraint by the column named in the violation, so each maps to its own error and
+ * neither is reported as the other.
+ */
+function isDuplicateIdViolation(err: unknown): boolean {
+  if (!isConstraintViolation(err)) return false;
+  return err.message.includes("events.id") && !err.message.includes("execution_id");
+}
+
+function isConstraintViolation(err: unknown): err is Error {
   if (!(err instanceof Error)) return false;
   const code = (err as { code?: unknown }).code;
-  if (typeof code !== "string" || !code.startsWith("SQLITE_CONSTRAINT")) return false;
-  return err.message.includes("execution_id") && err.message.includes("sequence");
+  return typeof code === "string" && code.startsWith("SQLITE_CONSTRAINT");
 }
 
 interface EventRow {
@@ -85,6 +103,9 @@ export class SqliteEventStore implements EventStore {
       if (isDuplicateSequenceViolation(err)) {
         throw new DuplicateSequenceError(envelope.executionId, envelope.sequence, err);
       }
+      if (isDuplicateIdViolation(err)) {
+        throw new DuplicateEnvelopeIdError(envelope.id, envelope.executionId, err);
+      }
       throw err;
     }
 
@@ -125,7 +146,7 @@ export class SqliteEventStore implements EventStore {
     try {
       insertAll(envelopes);
     } catch (err) {
-      if (isDuplicateSequenceViolation(err)) {
+      if (isDuplicateSequenceViolation(err) || isDuplicateIdViolation(err)) {
         // SQLite names the constraint, not the row, so locate the offender ourselves —
         // an error that cannot say WHICH slot was taken sends the reader back to the log.
         // Error path only, so the extra query costs nothing on the hot path. The
@@ -138,20 +159,31 @@ export class SqliteEventStore implements EventStore {
   }
 
   /**
-   * Which envelope in a rejected batch claimed a taken `(executionId, sequence)` — either
-   * because the log already held it, or because another envelope in the SAME batch did.
+   * Which envelope in a rejected batch claimed something already taken — a
+   * `(executionId, sequence)` slot or an envelope `id`, either because the log already held
+   * it or because another envelope in the SAME batch did. Slot first, so a writer that lost
+   * a sequence race is told THAT rather than told about the id its own naming convention
+   * derived from the sequence it lost.
    */
   private duplicateIn(envelopes: readonly EventEnvelope[], cause: unknown): Error {
     const taken = this.db.prepare<[string, number], { one: number }>(
       "SELECT 1 AS one FROM events WHERE execution_id = ? AND sequence = ?"
     );
+    const idTaken = this.db.prepare<[string], { one: number }>(
+      "SELECT 1 AS one FROM events WHERE id = ?"
+    );
+    const claimedIds = new Set<string>();
     const claimed = new Set<string>();
     for (const e of envelopes) {
       const key = `${e.executionId}\u0000${e.sequence}`;
       if (claimed.has(key) || taken.get(e.executionId, e.sequence) !== undefined) {
         return new DuplicateSequenceError(e.executionId, e.sequence, cause);
       }
+      if (claimedIds.has(e.id) || idTaken.get(e.id) !== undefined) {
+        return new DuplicateEnvelopeIdError(e.id, e.executionId, cause);
+      }
       claimed.add(key);
+      claimedIds.add(e.id);
     }
     return cause instanceof Error ? cause : new Error(String(cause));
   }

@@ -27,3 +27,30 @@ export class DuplicateSequenceError extends Error {
     Object.setPrototypeOf(this, DuplicateSequenceError.prototype);
   }
 }
+
+/**
+ * An envelope re-used an `id` that is already in the log. Ids are unique **across the
+ * whole store**, not per execution — both SQL backends key `id` as the events table's
+ * PRIMARY KEY — and every backend rejects a collision rather than storing the second
+ * envelope or silently treating it as a re-delivery of the first.
+ *
+ * The other of the events table's two keys, and a genuinely different failure from
+ * {@link DuplicateSequenceError}: a taken SEQUENCE means another writer reached that slot
+ * in this execution's log (a lost race), while a taken ID means the same envelope identity
+ * was minted twice (a bug in whatever produced it). Reporting either as the other sends
+ * the reader hunting the wrong problem, which is why they are separate types.
+ */
+export class DuplicateEnvelopeIdError extends Error {
+  constructor(
+    readonly envelopeId: string,
+    readonly executionId: string,
+    /** The driver error this was normalized from, when there was one. */
+    readonly cause?: unknown
+  ) {
+    super(
+      `duplicate envelope id "${envelopeId}" (execution "${executionId}"): event ids are unique across the store, and that one is already taken`
+    );
+    this.name = "DuplicateEnvelopeIdError";
+    Object.setPrototypeOf(this, DuplicateEnvelopeIdError.prototype);
+  }
+}
