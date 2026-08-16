@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Envelope ids are unique too, and a re-used one is its own error**
+  ([#309](https://github.com/chhetrisushil/loom/issues/309)). The sibling of #306 on the events
+  table's other key: both SQL backends declare `PRIMARY KEY (id)`, `InMemoryAsyncEventStore` had no
+  equivalent check, and two envelopes sharing an `id` both landed. All three backends now reject
+  with `DuplicateEnvelopeIdError` — deliberately a **different type** from `DuplicateSequenceError`,
+  because they are different failures: a taken sequence means another writer reached that slot (a
+  lost race, retryable by re-reading and re-allocating), a taken id means the same envelope identity
+  was minted twice (a bug in whatever produced it). Ids are conventionally derived from
+  `${executionId}-${sequence}`, so a lost slot race trips both constraints; the sequence is
+  reported, being the actionable one.
+
+  The in-memory store keeps an id index, which has to be maintained everywhere the log changes,
+  not just on append: `deleteExecution` and `truncatePrefix` free the ids of the events they drop
+  (an index outliving its events makes an erased execution impossible to re-create, and leaks
+  across a retention sweep), and `copyPrefix` claims the ids of the events it copies — rejecting,
+  all-or-nothing, if a re-stamped id collides.
+
+  **Uniqueness is required within an execution; cross-execution is explicitly not.**
+  `ShardedEventStore` cannot provide it — separate executions live on separate backing stores and
+  no shard sees another's ids — the same carve-out `appendBatch` already makes for cross-execution
+  atomicity. A single-log backend gets store-wide uniqueness from its primary key and is free to be
+  stricter (the in-memory store is); a caller must not depend on it.
+
+  The new clause found one more thing: `fanout.test.ts` built its crash-residue fixture by
+  renumbering sequences while keeping the original ids, so the surviving events carried ids
+  belonging to sequences that were no longer theirs — a log neither SQL backend would have
+  accepted. The fixture now re-stamps both.
+
 - **`(executionId, sequence)` is unique in every backend, and the contract now says so**
   ([#306](https://github.com/chhetrisushil/loom/issues/306)). SQLite and Postgres enforce
   `UNIQUE (execution_id, sequence)`; `InMemoryAsyncEventStore` — which is not a test double but

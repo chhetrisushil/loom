@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
 import {
+  DuplicateEnvelopeIdError,
   DuplicateSequenceError,
   StaleFenceError,
   SubscriberRegistry,
@@ -40,14 +41,25 @@ export interface PostgresEventStoreOptions {
  * rather than pinning the whole generated name.
  */
 function isDuplicateSequenceViolation(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
+  const constraint = uniqueViolationConstraint(err);
+  return constraint?.includes("execution_id") === true && constraint.includes("sequence");
+}
+
+/**
+ * #309 — the table's OTHER key: `id TEXT NOT NULL PRIMARY KEY`, which Postgres names
+ * `events_pkey`. Distinguished from the sequence constraint by name, so each maps to its
+ * own error and neither is reported as the other.
+ */
+function isDuplicateIdViolation(err: unknown): boolean {
+  return uniqueViolationConstraint(err)?.endsWith("_pkey") === true;
+}
+
+/** The constraint a 23505 (unique_violation) names, or `undefined` for anything else. */
+function uniqueViolationConstraint(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined;
   const { code, constraint } = err as { code?: unknown; constraint?: unknown };
-  if (code !== "23505") return false;
-  return (
-    typeof constraint === "string" &&
-    constraint.includes("execution_id") &&
-    constraint.includes("sequence")
-  );
+  if (code !== "23505" || typeof constraint !== "string") return undefined;
+  return constraint;
 }
 
 interface EventRow {
@@ -156,6 +168,9 @@ export class PostgresEventStore implements EventStore {
         if (isDuplicateSequenceViolation(err)) {
           throw new DuplicateSequenceError(envelope.executionId, envelope.sequence, err);
         }
+        if (isDuplicateIdViolation(err)) {
+          throw new DuplicateEnvelopeIdError(envelope.id, envelope.executionId, err);
+        }
         throw err;
       });
     if (result.rowCount === 0) {
@@ -249,7 +264,9 @@ export class PostgresEventStore implements EventStore {
         // #306 — a taken slot, in the batch or already in the log. The statement is atomic,
         // so nothing landed; locate the offender for an error that names the actual conflict
         // rather than the constraint. Failure path only, so the extra round-trip is free.
-        if (isDuplicateSequenceViolation(err)) throw await this.duplicateIn(envelopes, err);
+        if (isDuplicateSequenceViolation(err) || isDuplicateIdViolation(err)) {
+          throw await this.duplicateIn(envelopes, err);
+        }
         throw err;
       });
     if (notified.length !== envelopes.length || notified[0]?.inserted !== envelopes.length) {
@@ -277,30 +294,42 @@ export class PostgresEventStore implements EventStore {
   }
 
   /**
-   * Which envelope in a rejected batch claimed a taken `(executionId, sequence)` — either
-   * because the log already held it, or because another envelope in the SAME batch did.
-   * One query for the whole batch; the statement rolled back, so a slot occupied now was
-   * occupied before.
+   * Which envelope in a rejected batch claimed something already taken — a
+   * `(executionId, sequence)` slot or an envelope `id`, either because the log already held
+   * it or because another envelope in the SAME batch did. One query for the whole batch;
+   * the statement rolled back, so anything occupied now was occupied before. Slot reported
+   * before id, so a writer that lost a sequence race is told THAT rather than told about
+   * the id its own naming convention derived from the sequence it lost.
    */
   private async duplicateIn(envelopes: readonly EventEnvelope[], cause: unknown): Promise<Error> {
-    const { rows } = await this.pool.query<{ execution_id: string; sequence: string }>(
-      `SELECT e.execution_id, e.sequence FROM events e
-         JOIN jsonb_to_recordset($1::jsonb) AS c(execution_id text, "sequence" bigint)
-           ON c.execution_id = e.execution_id AND c."sequence" = e.sequence`,
+    const { rows } = await this.pool.query<{
+      execution_id: string;
+      sequence: string;
+      id: string;
+    }>(
+      `SELECT e.execution_id, e.sequence, e.id FROM events e
+         JOIN jsonb_to_recordset($1::jsonb) AS c(execution_id text, "sequence" bigint, id text)
+           ON (c.execution_id = e.execution_id AND c."sequence" = e.sequence) OR c.id = e.id`,
       [
         JSON.stringify(
-          envelopes.map((e) => ({ execution_id: e.executionId, sequence: e.sequence }))
+          envelopes.map((e) => ({ execution_id: e.executionId, sequence: e.sequence, id: e.id }))
         ),
       ]
     );
-    const occupied = new Set(rows.map((r) => `${r.execution_id} ${Number(r.sequence)}`));
-    const claimed = new Set<string>();
+    const occupiedSlots = new Set(rows.map((r) => `${r.execution_id} ${Number(r.sequence)}`));
+    const occupiedIds = new Set(rows.map((r) => r.id));
+    const claimedSlots = new Set<string>();
+    const claimedIds = new Set<string>();
     for (const e of envelopes) {
-      const key = `${e.executionId} ${e.sequence}`;
-      if (occupied.has(key) || claimed.has(key)) {
+      const slot = `${e.executionId} ${e.sequence}`;
+      if (occupiedSlots.has(slot) || claimedSlots.has(slot)) {
         return new DuplicateSequenceError(e.executionId, e.sequence, cause);
       }
-      claimed.add(key);
+      if (occupiedIds.has(e.id) || claimedIds.has(e.id)) {
+        return new DuplicateEnvelopeIdError(e.id, e.executionId, cause);
+      }
+      claimedSlots.add(slot);
+      claimedIds.add(e.id);
     }
     return cause instanceof Error ? cause : new Error(String(cause));
   }

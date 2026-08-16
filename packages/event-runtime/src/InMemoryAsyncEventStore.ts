@@ -1,9 +1,9 @@
 import type { EventEnvelope } from "@loom/core";
 import { SubscriberRegistry } from "./SubscriberRegistry";
-import { DuplicateSequenceError } from "./duplicateSequence";
 import { StaleFenceError, fenceOf } from "./fencing";
 import { lowerBoundBySequence, sliceBySequence } from "./sequenceRange";
 import type { EventStore } from "./types";
+import { DuplicateEnvelopeIdError, DuplicateSequenceError } from "./writeConflicts";
 
 export interface InMemoryAsyncEventStoreOptions {
   /** Artificial per-operation delay (ms) to model network latency. Default 0. */
@@ -24,6 +24,21 @@ export interface InMemoryAsyncEventStoreOptions {
  */
 export class InMemoryAsyncEventStore implements EventStore {
   private readonly log = new Map<string, EventEnvelope[]>();
+  /**
+   * #309 — every envelope id in the store, the index behind the `id` PRIMARY KEY both SQL
+   * backends have. GLOBAL, not per-execution, because that is what the SQL constraint is:
+   * two executions may not share an envelope id either.
+   *
+   * It has to be maintained everywhere the log changes, not just on append — a stale entry
+   * after a delete would refuse a legitimate re-append forever, and an un-removed one is a
+   * leak in a store whose whole job is to be re-created cheaply in tests. The removal side
+   * is only correct BECAUSE the invariant holds: an id belongs to exactly one envelope, so
+   * dropping the ids of the events being dropped cannot orphan someone else's claim.
+   *
+   * Costs one hash-table slot per event; the id strings themselves are already retained by
+   * the envelopes in `log`, so this is not a second copy of the data.
+   */
+  private readonly ids = new Set<string>();
   private readonly subscribers = new SubscriberRegistry();
   private readonly fences = new Map<string, number>();
   private readonly latencyMs: number;
@@ -62,20 +77,26 @@ export class InMemoryAsyncEventStore implements EventStore {
     if (envelopes.length === 0) return;
     await this.tick();
     // A batch must be checked against ITSELF as well as the log: two envelopes claiming
-    // the same slot are both appendable against the durable state, and only the pairwise
-    // check catches them. Tracked per execution and only for repeats, so the common
-    // single-execution monotonic batch allocates nothing.
-    let claimed: Map<string, Set<number>> | undefined;
+    // the same slot — or the same id — are both appendable against the durable state, and
+    // only the pairwise check catches them. Tracked lazily, so the common single-execution
+    // monotonic batch allocates nothing.
+    let claimedSlots: Map<string, Set<number>> | undefined;
+    let claimedIds: Set<string> | undefined;
     for (const envelope of envelopes) {
       this.assertAppendable(envelope);
-      const seen = claimed?.get(envelope.executionId);
+      const seen = claimedSlots?.get(envelope.executionId);
       if (seen?.has(envelope.sequence) === true) {
         throw new DuplicateSequenceError(envelope.executionId, envelope.sequence);
       }
-      claimed ??= new Map();
+      if (claimedIds?.has(envelope.id) === true) {
+        throw new DuplicateEnvelopeIdError(envelope.id, envelope.executionId);
+      }
+      claimedSlots ??= new Map();
       const set = seen ?? new Set<number>();
       set.add(envelope.sequence);
-      claimed.set(envelope.executionId, set);
+      claimedSlots.set(envelope.executionId, set);
+      claimedIds ??= new Set();
+      claimedIds.add(envelope.id);
     }
     for (const envelope of envelopes) this.commit(envelope);
     // Fan out only once the whole batch has landed — a subscriber must never observe a
@@ -84,8 +105,8 @@ export class InMemoryAsyncEventStore implements EventStore {
   }
 
   /**
-   * Throws if this envelope may not land: a duplicate `(executionId, sequence)`, K9.4
-   * fencing, or an injected failure.
+   * Throws if this envelope may not land: a duplicate `(executionId, sequence)`, a
+   * duplicate envelope `id`, K9.4 fencing, or an injected failure.
    */
   private assertAppendable(envelope: EventEnvelope): void {
     // K9.4 — fencing: once a token has been acquired for this execution, an
@@ -109,6 +130,12 @@ export class InMemoryAsyncEventStore implements EventStore {
         throw new DuplicateSequenceError(envelope.executionId, envelope.sequence);
       }
     }
+    // #309 — the events table's OTHER key. Checked after the slot, so a writer that lost a
+    // sequence race is told that (the actionable failure) rather than being told about the
+    // id its own naming convention derived from the sequence it lost.
+    if (this.ids.has(envelope.id)) {
+      throw new DuplicateEnvelopeIdError(envelope.id, envelope.executionId);
+    }
     const verdict = this.failAppendWhen?.(envelope);
     if (verdict) {
       throw verdict instanceof Error
@@ -119,6 +146,7 @@ export class InMemoryAsyncEventStore implements EventStore {
 
   /** Insert into the execution's log, keeping it sorted by sequence. */
   private commit(envelope: EventEnvelope): void {
+    this.ids.add(envelope.id);
     const list = this.log.get(envelope.executionId) ?? [];
     // Keep each execution's log sorted by sequence so reads can binary-search.
     // Appends are normally monotonic (a plain end-push); only an out-of-order
@@ -164,15 +192,31 @@ export class InMemoryAsyncEventStore implements EventStore {
     await this.tick();
     const src = this.log.get(fromExecutionId) ?? [];
     const dst = this.log.get(toExecutionId) ?? [];
+    // Built fully before anything is published, so a rejected copy leaves the target
+    // untouched — the same all-or-nothing shape the SQL backends get from their INSERT
+    // … SELECT, which would abort on the primary key rather than half-populate a fork.
+    const copied: EventEnvelope[] = [];
     for (const e of src) {
       if (e.sequence > throughSequence) continue;
       // Re-stamp only; no payload (de)serialization.
-      dst.push({
+      const stamped = {
         ...e,
         executionId: toExecutionId,
         id: `${toExecutionId}-${e.sequence}`,
         metadata: { ...e.metadata, ...metadata },
-      });
+      };
+      // #309 — the re-stamped ids must be as unique as any other. A fork into a target
+      // that already holds events is a broken fork, and this is where it surfaces; the
+      // check also keeps the id index single-owner, which is what makes removal on
+      // delete/truncate safe.
+      if (this.ids.has(stamped.id)) {
+        throw new DuplicateEnvelopeIdError(stamped.id, toExecutionId);
+      }
+      copied.push(stamped);
+    }
+    for (const e of copied) {
+      this.ids.add(e.id);
+      dst.push(e);
     }
     this.log.set(toExecutionId, dst);
   }
@@ -186,6 +230,9 @@ export class InMemoryAsyncEventStore implements EventStore {
 
   async deleteExecution(executionId: string): Promise<void> {
     await this.tick();
+    // Release the ids too, or a re-created execution could never re-append the events it
+    // just erased — and the index would grow forever across a retention sweep.
+    for (const e of this.log.get(executionId) ?? []) this.ids.delete(e.id);
     this.log.delete(executionId);
     this.fences.delete(executionId);
   }
@@ -221,10 +268,12 @@ export class InMemoryAsyncEventStore implements EventStore {
     const list = this.log.get(executionId);
     if (list === undefined) return;
     // Preserve sequence 0 (bootstrap anchor); drop (0..throughSequence].
-    this.log.set(
-      executionId,
-      list.filter((e) => e.sequence === 0 || e.sequence > throughSequence)
-    );
+    const kept: EventEnvelope[] = [];
+    for (const e of list) {
+      if (e.sequence === 0 || e.sequence > throughSequence) kept.push(e);
+      else this.ids.delete(e.id); // compacted away — its id is free again
+    }
+    this.log.set(executionId, kept);
   }
 
   async subscribe(
@@ -236,6 +285,7 @@ export class InMemoryAsyncEventStore implements EventStore {
   }
 
   async close(): Promise<void> {
+    this.ids.clear();
     this.log.clear();
     this.subscribers.clear();
   }

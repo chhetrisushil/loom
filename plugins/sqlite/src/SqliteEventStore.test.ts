@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EventEnvelope } from "@loom/core";
-import { DuplicateSequenceError } from "@loom/event-runtime";
+import { DuplicateEnvelopeIdError, DuplicateSequenceError } from "@loom/event-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqliteEventStore } from "./SqliteEventStore";
 
@@ -109,17 +109,19 @@ describe("SqliteEventStore", () => {
       expect(read[0]?.id).toBe("evt-exec-4-0");
     });
 
-    it("leaves a duplicate ENVELOPE ID as its own (unmapped) violation", async () => {
-      // The other constraint on the table. A re-used envelope id is a different bug, and
-      // reporting it as a sequence conflict would send the reader hunting the wrong race.
+    it("reports a duplicate ENVELOPE ID as its own error, not as a sequence conflict", async () => {
+      // The other constraint on the table (#309). A re-used envelope id is a different bug
+      // — the identity was minted twice, rather than a slot race being lost — and reporting
+      // it as a sequence conflict would send the reader hunting the wrong problem.
       await store.append(makeEnvelope("exec-4b", 0));
       const sameId = { ...makeEnvelope("exec-4b", 1), id: "evt-exec-4b-0" };
       const err = await store.append(sameId).then(
         () => undefined,
         (e: unknown) => e
       );
-      expect(err).toBeInstanceOf(Error);
+      expect(err).toBeInstanceOf(DuplicateEnvelopeIdError);
       expect(err).not.toBeInstanceOf(DuplicateSequenceError);
+      expect((await store.read("exec-4b")).map((e) => e.sequence)).toEqual([0]);
     });
   });
 

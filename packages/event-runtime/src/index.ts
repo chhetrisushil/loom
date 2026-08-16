@@ -20,7 +20,7 @@ export {
   EVENT_STORE_SPI_VERSION,
 } from "./types";
 export { StaleFenceError, fenceOf } from "./fencing";
-export { DuplicateSequenceError } from "./duplicateSequence";
+export { DuplicateEnvelopeIdError, DuplicateSequenceError } from "./writeConflicts";
 export { lowerBoundBySequence, sliceBySequence } from "./sequenceRange";
 export { InMemoryBranchRegistry } from "./InMemoryBranchRegistry";
 export type { InMemoryBranchRegistryOptions } from "./InMemoryBranchRegistry";
