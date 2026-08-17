@@ -233,6 +233,29 @@ export function resolveVerifyInput(
         kind: "step" as const,
       });
     }
+
+    // R3 — the OTHER way a capability is reachable without being a declared step:
+    // a menu behind one step. An `agentStep$` is a single step whose loop may call
+    // any tool in the agent's `tools`, chosen by a model at run time; an A2A step
+    // is the same shape over a peer's skills. Read from the REAL step definitions,
+    // like everything else here, so the check cannot be satisfied by a caller who
+    // simply declines to declare the menu.
+    //
+    // These effects carry NO effectClass, and that is the point: a class lives on a
+    // step declaration and there is no per-tool one to inherit, so the flow lands in
+    // ADR 0084's "N reachable effects carry no class" warn instead of passing
+    // vacuously. Partially verified is the honest report; silently clean was not.
+    for (const step of def.steps) {
+      for (const reachable of step.reachableTools ?? []) {
+        if (declaredToolIds.has(reachable.id)) continue;
+        declaredToolIds.add(reachable.id);
+        effects.push({
+          toolId: reachable.id,
+          capability: reachable.id,
+          kind: (reachable.kind ?? "step") as "step",
+        });
+      }
+    }
     const unresolvedReach = reach?.unresolved ?? [];
     const suspends = reach?.suspends ?? [];
 

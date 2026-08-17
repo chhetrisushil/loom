@@ -50,6 +50,7 @@ export type {
   ProjectionHandlers,
   ProjectionHandlersRef,
   ProjectionHandlersSpec,
+  ReachableTool,
   ScheduleDefinition,
   RetryPolicy,
   SkillDefinition,

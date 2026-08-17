@@ -3,6 +3,7 @@ import type {
   HandlerFn,
   HandlerRef,
   HandlerSpec,
+  ReachableTool,
   RetryPolicy,
   StepDefinition,
 } from "../types/definitions";
@@ -26,6 +27,12 @@ export interface StepConfig<TIn, TOut> {
   timeoutMs?: number;
   /** DE-4 — declared failure channels (channel → payload schema); see {@link StepDefinition.errors}. */
   errors?: Record<string, z.ZodSchema>;
+  /**
+   * Capabilities this step can reach at run time without declaring each as a step —
+   * an agent's tool menu, an A2A peer's skills. See {@link ReachableTool}. Read by
+   * `@loom/verify`; absent ⇒ nothing added, and the flow verifies exactly as before.
+   */
+  reachableTools?: readonly ReachableTool[];
 }
 
 export function step$<TIn = unknown, TOut = unknown>(
@@ -43,6 +50,7 @@ export function step$<TIn = unknown, TOut = unknown>(
     ...(config.timeoutMs !== undefined && { timeoutMs: config.timeoutMs }),
     ...(config.errors !== undefined && { errors: config.errors }),
     ...(config.effectClass !== undefined && { effectClass: config.effectClass }),
+    ...(config.reachableTools !== undefined && { reachableTools: config.reachableTools }),
   };
 }
 

@@ -206,8 +206,16 @@ should fail on today's `main`.
 
 `resolveVerifyInput` builds `FlowSpec.effects` from `FlowDefinition.steps` plus runner-body reach
 (`packages/app/src/verifyAdapter.ts:174-232`, [ADR 0086](../adr/0086-runner-body-reach-analysis.md)).
-An `agentStep$` contributes exactly **one** effect: itself. `AgentDefinition.tools` — a statically
-declared list that *is* the agent's reachable effect set — is read by nothing in `@loom/verify`.
+`AgentDefinition.tools` — a statically declared list that *is* the agent's reachable effect set —
+is read by nothing in `@loom/verify`.
+
+**Correction, found while implementing this (2026-08-18):** an earlier draft said an `agentStep$`
+contributes exactly *one* effect, itself. It contributes **zero**. `agentStep$` calls `step$`
+without a `toolId` (`packages/agent/src/agentStep$.ts`), and the adapter filters on
+`s.toolId !== undefined`, so the step drops out of the effect set entirely — the first
+implementation test asserted `undefined`, not a one-element list. The finding is therefore stronger
+than written: a flow whose only step is an agent contributed no effects at all, and every rule over
+`flow.effects` iterated an empty list.
 
 Consequences on any flow containing an agent:
 
