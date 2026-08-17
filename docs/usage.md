@@ -81,16 +81,22 @@ export const investigateFlow: RegisteredFlow<In, Out> = {
 };
 ```
 
-Inside a runner you have the full `WorkflowContext`:
+Inside a runner you have the full `ExecutionContext` (`WorkflowContext` is an alias). Every call states its **durability** — whether it puts a fact in the log that replay must serve — because that is the cost you cannot undo later:
 
 | Call | Purpose |
 |---|---|
-| `ctx.run(step, input)` | Execute a step (recorded, replay-safe, exactly-once) |
-| `ctx.parallel(pairs, { limit })` | Run steps concurrently, order-preserving |
-| `ctx.suspend({ on, correlationKey, timeout })` | Durable pause for a human/signal. `resume()` routes by **executionId**; `correlationKey` is metadata for an external dispatcher that knows a business key instead |
-| `ctx.emit(type, payload)` | Emit a domain event into the log |
-| `ctx.stream(type, delta, done?)` | Stream token/deltas (e.g. LLM output) |
-| `ctx.ui.set/merge/append(path, …)` | Push updates to a UI surface (agent-surface) |
+| `ctx.execute(task, input)` | Run any task kind to durable completion — **recorded** as `STEP_STARTED`/`STEP_COMPLETED` and served from the log on replay, never re-executed. The generalized primitive |
+| `ctx.run(step, input)` | The step-shaped alias for `execute` — **recorded**, replay-safe, exactly-once |
+| `ctx.parallel(pairs, { limit })` | Run steps concurrently; each is **recorded** on its own, and results return in *input* order regardless of completion order (load-bearing for replay) |
+| `ctx.decide(id, decider, opts?)` | **Recorded** advisory choice (`DECISION_RECORDED`) — on replay the recorded choice is returned and `decider` is never called, so routing can change run-to-run while any single run stays pure (P9) |
+| `ctx.negotiateBudget(dim, request, opts?)` | **Recorded** budget grant through the decision seam — advisory and replay-safe; enforcement stays with metering middleware (`QUOTA_EXCEEDED`) |
+| `ctx.suspend({ on, correlationKey, timeout })` | **Durable** pause for a human/signal. `resume()` routes by **executionId**; `correlationKey` is metadata for an external dispatcher that knows a business key instead |
+| `ctx.sleep(ms)` / `ctx.sleepUntil(wakeAt)` | **Durable** timer suspension — the absolute wake time is in the log, so restarts survive it and wall-clock drift never enters the fold |
+| `ctx.emit(type, payload)` | Append a domain event — **durable**, folded on replay, and load-bearing forever |
+| `ctx.stream(type, delta, done?)` | Stream incremental output (e.g. LLM output). **Each call appends a durable event** — chunk at a semantic granularity (sentence / tool call), not per token; for per-token feedback use `@loom/live-query` `subscribe` or `progressHub` instead |
+| `ctx.ui.set/merge/append(path, …)` | Push updates to a UI surface (agent-surface) — **durable per patch**, so the same granularity rule as `ctx.stream` applies |
+
+`ctx.executionId` and `ctx.workflowId` are plain identity fields — nothing is written, so durability does not apply.
 
 ---
 
