@@ -2,7 +2,7 @@ import { isTainted, taintOf, tainted, unwrapTainted } from "@loom/classify";
 import type { AgentDefinition, ToolDefinition } from "@loom/core";
 import { loadInstructions } from "@loom/core";
 import type { EffectContext, EffectRuntime } from "@loom/effect-runtime";
-import { LlmEffect } from "@loom/effect-runtime";
+import { CapabilityDeniedError, EffectModeViolationError, LlmEffect } from "@loom/effect-runtime";
 import type {
   LlmContent,
   LlmMessageInput,
@@ -184,6 +184,19 @@ export class AgentRunner {
         try {
           return await effectRuntime.execute(toolCall.name, toolCall.input, ctx);
         } catch (err) {
+          // R4 — an AUTHORITY error is not a tool error. Swallowing it into a
+          // result hands the model "not authorized", which it reads as feedback:
+          // it reformulates and probes a neighbouring tool, turning one denial
+          // into a search over the grant table. `EFFECT_DENIED` is durably logged
+          // either way, but auditable is not the same as stopped, so a denial is
+          // terminal for the turn.
+          //
+          // The blanket catch below stays, because it is right for everything
+          // else: a timing-out API or a malformed argument IS feedback the model
+          // can act on. The fix is telling the two apart.
+          if (err instanceof CapabilityDeniedError || err instanceof EffectModeViolationError) {
+            throw err;
+          }
           return { error: String(err) };
         }
       };
