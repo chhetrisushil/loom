@@ -112,6 +112,25 @@ export interface ToolDefinition<TIn = unknown, TOut = unknown> {
   mode?: EffectMode;
 }
 
+/**
+ * A capability a step can invoke at run time WITHOUT declaring it as a step of its
+ * own — the menu behind a single declared unit.
+ *
+ * The motivating case is an agent: `agentStep$` is one step whose loop may call any
+ * tool in `AgentDefinition.tools`, chosen by a model at run time. `@loom/verify` had
+ * no way to see that menu, so a flow hosting an agent contributed an empty effect
+ * set and every static check over it passed vacuously.
+ *
+ * Deliberately not agent-shaped. An A2A peer's `AgentCard.skills` is the same
+ * thing — a declared capability menu reachable through one step — so this stays a
+ * plain list of ids that any such producer can populate.
+ */
+export interface ReachableTool {
+  id: string;
+  /** The tool's `EffectKind`, when the producer knows it (placement compatibility). */
+  kind?: EffectKind;
+}
+
 export interface StepDefinition<TIn = unknown, TOut = unknown> {
   readonly _tag: "StepDefinition";
   id: string;
@@ -126,6 +145,13 @@ export interface StepDefinition<TIn = unknown, TOut = unknown> {
   errors?: Record<string, ZodSchema>;
   /** EF — the class of side effect this step's tool performs (app-supplied vocabulary). */
   effectClass?: string;
+  /**
+   * Capabilities reachable THROUGH this step (see {@link ReachableTool}). Read by
+   * `@loom/verify` via `resolveVerifyInput`; never read by the runtime, which
+   * authorizes each call by `toolId` at the K2 floor regardless. Absent ⇒ nothing
+   * added to the effect set, so every existing flow verifies identically (G2).
+   */
+  reachableTools?: readonly ReachableTool[];
 }
 
 // ── Tasks (ctx.execute) — the generalized unit of durable work (Loom 2.0) ─────
