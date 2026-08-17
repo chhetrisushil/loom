@@ -1,8 +1,17 @@
+import { isTainted, taintOf, tainted, unwrapTainted } from "@loom/classify";
 import type { AgentDefinition, ToolDefinition } from "@loom/core";
 import { loadInstructions } from "@loom/core";
 import type { EffectContext, EffectRuntime } from "@loom/effect-runtime";
 import { LlmEffect } from "@loom/effect-runtime";
-import type { LlmMessage, LlmProvider, LlmResponse, LlmToolCall, LlmToolSpec } from "@loom/llm";
+import type {
+  LlmContent,
+  LlmMessageInput,
+  LlmProvider,
+  LlmResponse,
+  LlmToolCall,
+  LlmToolSpecInput,
+} from "@loom/llm";
+import { guardRequest } from "@loom/llm";
 import type { MemoryRuntime } from "@loom/memory";
 import type { ReasoningRuntime } from "@loom/reasoning";
 import { parallelLimit, throwIfAborted } from "@loom/scheduler";
@@ -38,6 +47,26 @@ export interface AgentConfig {
   // them to the system prompt, and adds their tools to the model's tool menu.
   skills?: SkillRegistry;
   skillSelector?: SkillSelector;
+}
+
+/**
+ * Render one tool result as the message content fed back to the model, KEEPING the
+ * taint on the outside of the serialization.
+ *
+ * A plain `JSON.stringify` of a tainted result is worse than an unenforced marker —
+ * it is an erased one. `{__loomTainted, value}` flattens into ordinary text, so
+ * `isTainted` is false afterwards and no guard added later, including one at the
+ * provider, can recover the provenance. Stringifying the UNWRAPPED value and
+ * re-tainting the string keeps the fact alive to the prompt boundary, where
+ * `guardRequest` fences it.
+ */
+function toolResultContent(toolName: string, toolOutput: unknown): LlmContent {
+  if (!isTainted(toolOutput)) {
+    return JSON.stringify({ tool: toolName, result: toolOutput });
+  }
+  const origin = taintOf(toolOutput)?.origin ?? "unknown";
+  const body = JSON.stringify({ tool: toolName, result: unwrapTainted(toolOutput) });
+  return tainted(body, origin);
 }
 
 export class AgentRunner {
@@ -86,16 +115,20 @@ export class AgentRunner {
         toolDefs.push(t);
       }
     }
-    const toolSpecs: LlmToolSpec[] = toolDefs.map((t) => ({
+    // Tool names and descriptions are read as instructions by every provider, and
+    // with MCP dynamic dispatch (ADR 0063) a description is third-party bytes. Carry
+    // them as `LlmContent` so `guardRequest` sees any taint and REFUSES it, instead
+    // of a `string` annotation asserting a cleanliness nothing checked.
+    const toolSpecs: LlmToolSpecInput[] = toolDefs.map((t) => ({
       name: t.id,
-      description: t.description,
+      description: t.description as LlmContent,
       inputSchema: {},
     }));
 
     const memoryId = definition.memoryId;
     const memoryScope = input.memoryScope ?? ctx.executionId;
 
-    const messages: LlmMessage[] = [];
+    const messages: LlmMessageInput[] = [];
 
     // Recall prior memory for this agent+scope, if configured.
     if (memory !== undefined && memoryId !== undefined) {
@@ -193,10 +226,7 @@ export class AgentRunner {
           toolOutput,
         });
 
-        messages.push({
-          role: "user",
-          content: JSON.stringify({ tool: toolCall.name, result: toolOutput }),
-        });
+        messages.push({ role: "user", content: toolResultContent(toolCall.name, toolOutput) });
       }
     }
 
@@ -222,20 +252,29 @@ export class AgentRunner {
   // With only a `provider`, the original bare-provider path is preserved exactly.
   private async complete(
     args: {
-      messages: LlmMessage[];
-      toolSpecs: LlmToolSpec[];
-      system?: string;
+      messages: LlmMessageInput[];
+      toolSpecs: LlmToolSpecInput[];
+      system?: LlmContent;
       signal?: AbortSignal;
     },
     ctx: EffectContext,
     iteration: number
   ): Promise<Pick<LlmResponse, "content" | "stopReason"> & { toolCalls?: LlmToolCall[] }> {
-    const request = {
+    // R2 — the prompt boundary. `guardRequest` refuses tainted content in every
+    // instruction position (system, assistant, tool name/description) and fences it
+    // in `user` messages, handing providers plain strings. It runs unconditionally:
+    // a check that defaults to off protects exactly the applications that never
+    // think about it, and an untainted request comes back structurally unchanged.
+    //
+    // This is the site ADR 0085 always described and never reached — `guardRequest`
+    // lived only inside `createLlmEffect`, which had no production consumer, while
+    // the agent assembled prompts from third-party bytes on a path of its own.
+    const request = guardRequest({
       messages: args.messages,
       ...(args.toolSpecs.length > 0 && { tools: args.toolSpecs }),
       ...(args.system !== undefined && { system: args.system }),
       ...(args.signal !== undefined && { signal: args.signal }),
-    };
+    });
 
     if (this.config.reasoning !== undefined) {
       const decide = async <T>(id: string, decider: () => T | Promise<T>): Promise<T> => {

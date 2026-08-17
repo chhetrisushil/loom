@@ -19,6 +19,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@loom/classify": "workspace:*",
     "@loom/llm": "workspace:*"
   },
   "devDependencies": {

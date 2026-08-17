@@ -334,13 +334,13 @@ export const CAPABILITIES: readonly Capability[] = [
     package: "@loom/classify",
     level: "L2",
     summary:
-      "`tainted(value, origin)` attaches provenance to a VALUE at ingress (plain JSON, so it survives the log and replay). `guardRequest` runs inside every createLlmEffect and REFUSES tainted content in system / assistant / tool-description position, fencing it in a `user` message. Producers (both opt-in): `registerMcpInvoke({ taintResults })` taints the whole result; `A2APeerClient({ taintResults })` taints `content` only, its flag's literal type selecting the output type.",
+      "`tainted(value, origin)` attaches provenance to a VALUE at ingress (plain JSON, so it survives the log and replay). `guardRequest` REFUSES tainted content in system / assistant / tool-description position and fences it in a `user` message, and it runs at every site that hands a request to an `LlmProvider`: `createLlmEffect`, `AgentRunner.complete`, and `ReasoningRuntime.call`. Producers (both opt-in): `registerMcpInvoke({ taintResults })` taints the whole result; `A2APeerClient({ taintResults })` taints `content` only, its flag's literal type selecting the output type.",
     evidence: {
       conformanceTest: "packages/llm/src/untrusted.test.ts",
       usedIn:
-        "plugins/mcp/src/taintedIngress.test.ts — a real flow whose MCP tool returns an injection payload",
+        "packages/agent/src/promptBoundary.test.ts + packages/reasoning/src/promptBoundary.test.ts — the agent and reasoning paths, each asserted to fence a tainted tool result and refuse a tainted description; plugins/mcp/src/taintedIngress.test.ts — a real flow whose MCP tool returns an injection payload",
     },
-    note: "ADR 0085 — a value wrapper, NOT a fourth schema marker: confidentiality is a property of a field (static, forever), integrity is a property of a value (acquired at runtime from a specific origin), and a marker that guesses reads as coverage. The check is unconditional because a gate defaulting to off protects exactly the apps that never think about it; the opt-in sits on the producer, where tainting changes the output shape. The REFUSAL is structural; the FENCE is a label a model can be talked across — do not sell the second as the first.",
+    note: "ADR 0085 — a value wrapper, NOT a fourth schema marker: confidentiality is a property of a field (static, forever), integrity is a property of a value (acquired at runtime from a specific origin), and a marker that guesses reads as coverage. The check is unconditional because a gate defaulting to off protects exactly the apps that never think about it; the opt-in sits on the producer, where tainting changes the output shape. The REFUSAL is structural; the FENCE is a label a model can be talked across — do not sell the second as the first. AMENDED (R2, 2026-08-18): this entry previously said the guard ran inside every `createLlmEffect` — true, and not load-bearing, because `createLlmEffect` had NO production consumer while `AgentRunner` and `ReasoningRuntime` called `provider.complete` directly. The agent path additionally ERASED the evidence (`JSON.stringify` flattened the envelope, so `isTainted` was false downstream and no later guard could recover the origin). Both paths now guard; the erasure is fixed by re-tainting the serialized body.",
   },
   {
     id: "runner-body-reach",

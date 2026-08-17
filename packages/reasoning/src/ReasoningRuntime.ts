@@ -1,4 +1,5 @@
 import type { LlmResponse } from "@loom/llm";
+import { guardRequest } from "@loom/llm";
 import { stopReasonConfidence } from "./confidence";
 import { tagRouter } from "./router";
 import type {
@@ -128,14 +129,22 @@ export class ReasoningRuntime {
       const hit = this.cache?.get(cacheKey);
       if (hit !== undefined) return hit;
     }
-    const res = await route.provider.complete({
-      messages: req.messages,
-      ...(req.system !== undefined && { system: req.system }),
-      ...(req.tools !== undefined && { tools: req.tools }),
-      ...(req.maxTokens !== undefined && { maxTokens: req.maxTokens }),
-      ...(req.temperature !== undefined && { temperature: req.temperature }),
-      ...(signal !== undefined && { signal }),
-    });
+    // R2 — the prompt boundary, on the reasoning path. This is the single site where
+    // this runtime hands a request to a provider, so it is the one place the check
+    // belongs. `ReasoningRequest` types its content as `string`, but a `string`
+    // annotation is a claim, not a check: a tainted MCP tool description reaches
+    // here through exactly such a field. `guardRequest` refuses taint in every
+    // instruction position and returns an untainted request unchanged.
+    const res = await route.provider.complete(
+      guardRequest({
+        messages: req.messages,
+        ...(req.system !== undefined && { system: req.system }),
+        ...(req.tools !== undefined && { tools: req.tools }),
+        ...(req.maxTokens !== undefined && { maxTokens: req.maxTokens }),
+        ...(req.temperature !== undefined && { temperature: req.temperature }),
+        ...(signal !== undefined && { signal }),
+      })
+    );
     if (cacheKey !== undefined) this.cache?.set(cacheKey, res);
     return res;
   }
