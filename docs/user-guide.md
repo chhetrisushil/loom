@@ -136,12 +136,20 @@ const [metrics, logs] = await ctx.parallel(
 ctx.emit("assessment_complete", { riskLevel: "high" });
 ```
 
-**Stream** incremental output (e.g. LLM tokens) — deltas surface live but the final result is what's recorded:
+**Stream** incremental output (e.g. LLM output). Each call appends a **durable event** — that is what makes a stream replay-deterministic, and it means the delta count is a permanent cost of the log. So choose a semantic granularity (a sentence, a tool call, a section), not one call per model token:
 
 ```ts
-ctx.stream("triage_tokens", token);        // …deltas…
-ctx.stream("triage_tokens", "", true);     // done
+for await (const chunk of provider.stream(request)) {
+  sentence += chunk.delta;
+  if (endsSentence(sentence)) {
+    ctx.stream("triage_output", sentence);   // one durable event per sentence
+    sentence = "";
+  }
+}
+ctx.stream("triage_output", "", true);       // done
 ```
+
+For genuinely per-token UI feedback, don't put it in the log: tail the execution with `liveQuery(deps).subscribe(executionId, cb)` (`@loom/live-query`), or narrate with `progressHub.report(ctx.executionId, line)` (`@loom/app`). Both are transient, so nothing becomes load-bearing for replay.
 
 ---
 
