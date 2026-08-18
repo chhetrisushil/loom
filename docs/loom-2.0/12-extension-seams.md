@@ -62,7 +62,7 @@ staged separately from the storage kits.)*
 
 | Seam | Interface | Role | Reference / examples |
 |---|---|---|---|
-| **LLM** | `LlmProvider` (`@loom/llm`) | A model backend — `complete`, optional `stream`/`warm`. Wired via `createLlmEffect({ provider })` or an agent's `provider`. Conformance: `runLlmProviderConformance` | `AnthropicProvider`, `OpenAiProvider`, `GeminiProvider` |
+| **LLM** | `LlmProvider` (`@loom/llm`) | A model backend — `complete`, optional `stream`/`warm`. A `stream` MUST end with exactly one terminal chunk, and whatever outcome it reports there (`toolCalls`/`stopReason`/`usage`, all optional) MUST equal what `complete` returns for the same request — fold a stream with `assembleStream`. Wired via `createLlmEffect({ provider })` or an agent's `provider`. Conformance: `runLlmProviderConformance` | `AnthropicProvider`, `OpenAiProvider`, `GeminiProvider` |
 | **Telemetry** | `TelemetryAdapter` (`@loom/telemetry`) | Spans/metrics over the event stream | OpenTelemetry adapter sketch |
 | **Projection** | `ProjectionRuntime` (`@loom/projection-runtime`) | Fold events into read models / UI surfaces | `InMemoryProjectionRuntime` |
 

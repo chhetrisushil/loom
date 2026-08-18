@@ -459,6 +459,27 @@ protection ring, doubling the hole R2 exists to close.
 merits: it converts a silent divergence between two provider paths into a checked contract, whether
 or not anything streams yet.
 
+**Shipped (2026-08-18).** `LlmStreamChunk` carries optional `toolCalls`/`stopReason`/`usage` on the
+terminal chunk; `assembleStream`/`collectStream` fold a stream into the `LlmResponse` it represents
+and refuse a malformed one (no terminal chunk, two of them, or one that is not last);
+`runLlmProviderConformance` gained the parity case plus a terminate-exactly-once case. Both
+providers now read the frames they were discarding — Anthropic's `input_json_delta` and
+`message_delta`, OpenAI's `delta.tool_calls` and `stream_options: { include_usage: true }`.
+
+Two things learned in the implementation, worth keeping:
+
+1. **The stop-reason mapping was duplicated per provider**, once in `complete` and once (absent) in
+   `stream`. Both now share one `normalizeStopReason`/`normalizeFinishReason` — a duplicated mapping
+   is precisely where two paths to one outcome drift, so the parity contract is enforced
+   structurally as well as by test.
+2. **The fixture is part of the check.** The conformance suite's echo provider streams text only, so
+   every parity assertion took its "not reported" branch and the suite proved only that text
+   matched. A second fixture that *does* report the outcome was needed before the contract tested
+   anything — the same vacuous-input pattern as §2.2, one level up.
+
+Unparsable tool arguments are surfaced as `{ __unparsedArguments }` rather than dropped: a silently
+discarded tool call is indistinguishable, to the agent loop, from a model that chose not to act.
+
 ### 2.9 R9 — there is no streaming LLM effect, so two accepted items have no mechanism
 
 `createLlmEffect` calls `provider.complete` and nothing else

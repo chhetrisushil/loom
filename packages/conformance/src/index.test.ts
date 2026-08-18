@@ -145,5 +145,31 @@ const echoProvider: LlmProvider = {
 };
 runLlmProviderConformance(() => echoProvider, "EchoLlmProvider");
 
+// A provider that REPORTS the outcome on its terminal chunk — the shape an agent
+// turn needs. Without one of these in the fixture set, the parity assertions all
+// take their "not reported" branch and the suite proves only that text matches.
+const richProvider: LlmProvider = {
+  async complete() {
+    return {
+      content: "thinking",
+      toolCalls: [{ id: "c1", name: "lookup", input: { q: "x" } }],
+      stopReason: "tool_use",
+      usage: { inputTokens: 7, outputTokens: 3 },
+    };
+  },
+  async *stream() {
+    yield { delta: "think", done: false };
+    yield { delta: "ing", done: false };
+    yield {
+      delta: "",
+      done: true,
+      toolCalls: [{ id: "c1", name: "lookup", input: { q: "x" } }],
+      stopReason: "tool_use" as const,
+      usage: { inputTokens: 7, outputTokens: 3 },
+    };
+  },
+};
+runLlmProviderConformance(() => richProvider, "RichLlmProvider");
+
 // --- CapabilityAuthorizer: the reference GrantTable. ---
 runCapabilityAuthorizerConformance(() => new GrantTable({ w: ["t"] }), "GrantTable");
