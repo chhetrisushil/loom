@@ -128,6 +128,31 @@ can serve. No new mechanism, and nothing in `@loom/memory` needs to change.
 
 `agentStep$` remains available for adopters who want neither half.
 
+**Shipped (2026-08-18) — [ADR 0087](../adr/0087-durable-agent-loop.md).** `agentLoop$(ctx, config,
+input)` is a runner-body construct: one durable frame per turn, ids minted `#turn:<i>` /
+`#turn:<i>:tool:<j>`, the model call resolved through the `EffectRuntime` by `modelToolId`, and
+`requireApproval` parking the execution on a gate *before* a destructive tool runs. `agentStep$` is
+retained and not deprecated — one frame instead of 2N, for adopters who want none of it.
+
+Resolving the model through an effect id also closes **the half of R2 the direct-guard fix could not
+reach**: `AgentRunner` guards its prompt boundary but still calls the provider directly, whereas the
+loop gets the whole ring — K2, metering, retry, `idempotencyKey`, K9 in-doubt — not just the
+integrity check.
+
+**Three things deliberately left out**, each recorded in ADR 0087 D6 because a partial version would
+read as coverage:
+
+- **the per-turn summarize pass** (the second half of the log-growth answer above) — a lossy,
+  nondeterministic summary has to be journaled through `ctx.execute` to be replay-safe, which is its
+  own behaviour with its own failure modes;
+- **skill selection** — a per-turn *choice*, so doing it right means `ctx.decide`; selecting live
+  and unrecorded would reintroduce the exact unevaluable-log problem R1 exists to fix;
+- **reasoning-runtime routing** through `ctx.decide`, which stays with `AgentRunner` for now.
+
+So the "No `ctx.decide` per turn" row above is only *half* discharged: the loop can reach the
+decision seam, and nothing in it uses the seam yet. Worth saying plainly, since R1 was listed as
+buying evaluable per-turn decisions and what it actually bought is the ability to have them.
+
 **Not the same operation as run rotation.** Worth recording, because the analogy is tempting and
 wrong: this is *not* RC-1 `rotate$` carry-forward seen from another layer, and it must not be
 made to wait on it. `rotate$` is deferred with nothing scheduled behind two evidence walls, one of

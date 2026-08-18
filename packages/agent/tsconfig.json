@@ -14,6 +14,10 @@
     { "path": "../llm" },
     { "path": "../memory" },
     { "path": "../reasoning" },
-    { "path": "../scheduler" }
+    { "path": "../event-runtime" },
+    { "path": "../replay-vm" },
+    { "path": "../scheduler" },
+    { "path": "../snapshot-runtime" },
+    { "path": "../workflow-runtime" }
   ]
 }
