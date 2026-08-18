@@ -343,6 +343,20 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "ADR 0085 — a value wrapper, NOT a fourth schema marker: confidentiality is a property of a field (static, forever), integrity is a property of a value (acquired at runtime from a specific origin), and a marker that guesses reads as coverage. The check is unconditional because a gate defaulting to off protects exactly the apps that never think about it; the opt-in sits on the producer, where tainting changes the output shape. The REFUSAL is structural; the FENCE is a label a model can be talked across — do not sell the second as the first. AMENDED (R2, 2026-08-18): this entry previously said the guard ran inside every `createLlmEffect` — true, and not load-bearing, because `createLlmEffect` had NO production consumer while `AgentRunner` and `ReasoningRuntime` called `provider.complete` directly. The agent path additionally ERASED the evidence (`JSON.stringify` flattened the envelope, so `isTainted` was false downstream and no later guard could recover the origin). Both paths now guard; the erasure is fixed by re-tainting the serialized body.",
   },
   {
+    id: "durable-agent-loop",
+    title: "Durable Agent Loop",
+    package: "@loom/agent",
+    level: "L2",
+    summary:
+      "`agentLoop$(ctx, config, input)` runs a ReAct loop from a RUNNER BODY, one durable frame per turn: ids minted `#turn:<i>` / `#turn:<i>:tool:<j>` per the ADR 0061 identity rule, the model call resolved through the EffectRuntime by `modelToolId` (so K2, metering, retry, idempotency and `guardRequest` all apply), and `requireApproval` parking the execution on a gate BEFORE a destructive tool runs. `agentStep$` is retained as the cheap opaque form — one frame instead of 2N.",
+    evidence: {
+      conformanceTest: "packages/agent/src/agentLoopCrash.test.ts",
+      usedIn:
+        "packages/agent/src/agentLoopApproval.test.ts — mid-loop HITL parking before the effect, approved and refused",
+    },
+    note: "ADR 0087 — nothing was missing from the kernel; the loop was on the wrong side of it. A step handler receives `StepHandlerContext` (emit, and nothing else), so 40 model calls were ONE frame, approval had to be hoisted out of the agent, and DECISION_RECORDED was hand-emitted in a shape @loom/learning cannot evaluate. Per-turn durability grows the log with conversation length: the two mitigations already ship (ADR 0054 claim-check for bytes, TieredMemory summarization for turns), and the summarize pass is deliberately NOT wired yet because a lossy nondeterministic summary must be journaled to stay replay-safe. Skill selection is likewise left out until it can go through ctx.decide.",
+  },
+  {
     id: "runner-body-reach",
     title: "Runner-Body Reach Analysis",
     package: "@loom/compiler",

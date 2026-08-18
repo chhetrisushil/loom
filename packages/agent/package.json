@@ -22,9 +22,13 @@
     "@loom/core": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
     "@loom/llm": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
     "@loom/memory": "workspace:*",
     "@loom/reasoning": "workspace:*",
-    "@loom/scheduler": "workspace:*"
+    "@loom/replay-vm": "workspace:*",
+    "@loom/scheduler": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
