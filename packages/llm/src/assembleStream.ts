@@ -121,7 +121,22 @@ export async function collectStream(
   stream: AsyncIterable<LlmStreamChunk>,
   options: CollectStreamOptions = {}
 ): Promise<LlmResponse> {
-  const chunks: LlmStreamChunk[] = [];
+  // Only three facts about the stream survive the fold — the text, the terminal
+  // chunk's outcome, and the shape checks — so nothing retains the chunks
+  // themselves. A long generation would otherwise hold one small object per
+  // delta for its whole duration, times every concurrent stream.
+  let count = 0;
+  let terminals = 0;
+  let last: LlmStreamChunk | undefined;
+  // Running state, maintained per chunk rather than recomputed per chunk. The
+  // first cut rebuilt the text with `chunks.map(...).join("")` and rescanned for
+  // usage on EVERY delta, which is O(n²) over a generation: 4,000 deltas cost
+  // ~90ms of pure copying, and `streamTokenBudget`'s `checkEvery` could not help
+  // because the expensive part ran before the guard was ever consulted.
+  // Appending to a string is amortized O(1); tracking the last reported usage is
+  // O(1). The guard is now the only cost per delta.
+  let text = "";
+  let usage: LlmStreamChunk["usage"];
   // A guard breach is NOT an interruption, and the two are easy to confuse: a
   // guard that severs typically aborts the execution too, so by the time the
   // catch below runs, `signal.aborted` is true and the budget error would be
@@ -131,15 +146,18 @@ export async function collectStream(
   let guardError: unknown;
   try {
     for await (const chunk of stream) {
-      chunks.push(chunk);
+      count += 1;
+      last = chunk;
+      if (chunk.done) terminals += 1;
+      text += chunk.delta;
+      // Providers report usage late; keep the most recent one seen.
+      if (chunk.usage !== undefined) usage = chunk.usage;
       if (chunk.delta !== "") options.onDelta?.(chunk.delta);
       if (options.guard !== undefined) {
-        let usage: LlmStreamChunk["usage"];
-        for (const c of chunks) if (c.usage !== undefined) usage = c.usage;
         try {
           options.guard({
-            text: chunks.map((c) => c.delta).join(""),
-            deltas: chunks.length,
+            text,
+            deltas: count,
             ...(usage !== undefined && { usage }),
           });
         } catch (err) {
@@ -151,17 +169,25 @@ export async function collectStream(
   } catch (err) {
     if (guardError !== undefined) throw guardError;
     if (options.signal?.aborted === true) {
-      // Usage from the last chunk that reported any — providers send it late, so
-      // an early abort simply has none, which is different from "zero".
-      let usage: LlmStreamChunk["usage"];
-      for (const c of chunks) if (c.usage !== undefined) usage = c.usage;
       const partial: InterruptedGeneration = {
-        content: chunks.map((c) => c.delta).join(""),
+        content: text,
         ...(usage !== undefined && { usage }),
       };
       fail(LLM_INTERRUPTED, partial, "generation interrupted");
     }
     throw err;
   }
-  return assembleStream(chunks);
+  // Same contract as `assembleStream`, checked against the counters rather than
+  // a retained array.
+  if (terminals === 0) throw new MalformedStreamError("no terminal chunk (none had done: true)");
+  if (terminals > 1) {
+    throw new MalformedStreamError(`${terminals} terminal chunks (exactly one is allowed)`);
+  }
+  if (last?.done !== true) throw new MalformedStreamError("the terminal chunk is not last");
+  return {
+    content: text,
+    ...(last.toolCalls !== undefined && { toolCalls: last.toolCalls }),
+    stopReason: last.stopReason ?? "end_turn",
+    ...(last.usage !== undefined && { usage: last.usage }),
+  };
 }

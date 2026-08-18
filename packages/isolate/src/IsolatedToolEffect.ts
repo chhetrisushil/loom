@@ -28,7 +28,13 @@ import type { ChildToParent, IsolatedToolSpec, ParentToChild } from "./types";
  * Runs are serialized per child (one in flight); the process stays warm
  * across calls and respawns on death.
  */
+/** Concurrent brokered fetches allowed when a tool does not set its own bound. */
+const DEFAULT_MAX_CONCURRENT_FETCHES = 16;
+
 export class IsolatedToolEffect implements Effect {
+  /** K7.3 — brokered fetches currently open for this tool (see `maxConcurrentFetches`). */
+  private inFlightFetches = 0;
+
   readonly kind = "tool" as const;
   readonly idempotent?: boolean;
 
@@ -191,6 +197,22 @@ export class IsolatedToolEffect implements Effect {
     init: Parameters<typeof brokeredFetch>[3],
     ctx: EffectContext
   ): Promise<void> {
+    // K7.3 — volume, the half the allowlist does not cover. Counted BEFORE the
+    // request is opened, and released in `finally`, so a refusal costs nothing
+    // and a crash cannot strand a slot.
+    const limit = this.spec.maxConcurrentFetches ?? DEFAULT_MAX_CONCURRENT_FETCHES;
+    if (this.inFlightFetches >= limit) {
+      const reason = `exceeded ${limit} concurrent brokered fetches`;
+      ctx.emit("EGRESS_DENIED", {
+        toolId: this.spec.id,
+        stepId: ctx.stepId,
+        target: url,
+        reason,
+      });
+      child.send({ type: "fetch-result", fetchId, ok: false, error: reason } as ParentToChild);
+      return;
+    }
+    this.inFlightFetches += 1;
     try {
       const res = await brokeredFetch(this.spec.id, this.allowlist, url, init);
       const reply: ParentToChild = {
@@ -220,6 +242,8 @@ export class IsolatedToolEffect implements Effect {
         error: String(err),
       };
       child.send(reply);
+    } finally {
+      this.inFlightFetches -= 1;
     }
   }
 }

@@ -41,14 +41,24 @@ export interface ChunkDeltasOptions {
   isBoundary?: (buffer: string) => boolean;
 }
 
-const DEFAULT_BOUNDARY = /[.!?]["')\]]?\s$|\n/;
+// Anchored at the END and applied to a short tail, not the whole buffer: the
+// buffer is only reset when a boundary is found, so a model that emits no
+// punctuation makes it grow — and re-scanning a growing buffer once per delta is
+// quadratic. Four characters is enough for `?"` + a space.
+const DEFAULT_BOUNDARY = /[.!?]["')\]]?\s$/;
+const TAIL = 4;
 
 export function chunkDeltas(
   emit: (text: string) => void,
   options: ChunkDeltasOptions = {}
 ): ChunkedSink {
   const minChars = options.minChars ?? 1;
-  const isBoundary = options.isBoundary ?? ((buffer: string) => DEFAULT_BOUNDARY.test(buffer));
+  const isBoundary =
+    options.isBoundary ??
+    ((buffer: string) =>
+      // A newline is a boundary wherever it lands in the delta just appended;
+      // sentence punctuation only matters at the very end.
+      buffer.endsWith("\n") || DEFAULT_BOUNDARY.test(buffer.slice(-TAIL)));
   let buffer = "";
 
   return {
