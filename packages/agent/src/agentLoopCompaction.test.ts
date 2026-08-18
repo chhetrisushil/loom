@@ -95,17 +95,13 @@ function boot(compact: boolean, summaries: string[] = []) {
     return { content: out.content };
   };
   runtime.registerFlow(flowDef, runner as FlowRunner<unknown, unknown>);
-  const flow: RegisteredFlow = {
-    definition: flowDef,
-    runner: runner as FlowRunner<unknown, unknown>,
-  };
-  return { runtime, flow, seen, summaries };
+  return { runtime, flowDef, seen, summaries };
 }
 
 describe("the loop can bound its own transcript", () => {
   it("folds older turns into a summary once the threshold is crossed", async () => {
-    const { runtime, flow, seen, summaries } = boot(true);
-    const handle = await runtime.start(flow, {});
+    const { runtime, flowDef, seen, summaries } = boot(true);
+    const handle = await runtime.start(flowDef, {});
     await handle.waitForCompletion();
 
     expect(summaries.length).toBeGreaterThan(0);
@@ -119,8 +115,8 @@ describe("the loop can bound its own transcript", () => {
   });
 
   it("grows without bound when compaction is not configured (G2)", async () => {
-    const { runtime, flow, seen } = boot(false);
-    const handle = await runtime.start(flow, {});
+    const { runtime, flowDef, seen } = boot(false);
+    const handle = await runtime.start(flowDef, {});
     await handle.waitForCompletion();
 
     const last = seen[seen.length - 1];
@@ -130,8 +126,8 @@ describe("the loop can bound its own transcript", () => {
   });
 
   it("journals the summary as its own task, so replay serves it", async () => {
-    const { runtime, flow } = boot(true);
-    const handle = await runtime.start(flow, {}, { executionId: "c1" });
+    const { runtime, flowDef } = boot(true);
+    const handle = await runtime.start(flowDef, {}, { executionId: "c1" });
     await handle.waitForCompletion();
     const state = await runtime.loadState("c1");
 

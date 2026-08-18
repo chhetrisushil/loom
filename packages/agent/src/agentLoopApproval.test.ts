@@ -86,13 +86,13 @@ function boot() {
   };
   runtime.registerFlow(flowDef, runner as FlowRunner<unknown, unknown>);
   const flow: RegisteredFlow = { definition: flowDef, runner: runner as FlowRunner };
-  return { runtime, flow, dropped };
+  return { runtime, flowDef, dropped };
 }
 
 describe("agentLoop$ can stop mid-loop for approval (R1)", () => {
   it("parks BEFORE the tool runs, and runs it once approved", async () => {
-    const { runtime, flow, dropped } = boot();
-    const handle = await runtime.start(flow, {});
+    const { runtime, flowDef, dropped } = boot();
+    const handle = await runtime.start(flowDef, {});
     const suspended = await handle.waitForSuspend();
 
     expect(suspended.status).toBe("suspended");
@@ -109,8 +109,8 @@ describe("agentLoop$ can stop mid-loop for approval (R1)", () => {
   });
 
   it("feeds a refusal back to the model instead of running the tool", async () => {
-    const { runtime, flow, dropped } = boot();
-    const handle = await runtime.start(flow, {});
+    const { runtime, flowDef, dropped } = boot();
+    const handle = await runtime.start(flowDef, {});
     await handle.waitForSuspend();
 
     const resumed = await runtime.resume(handle.executionId, {

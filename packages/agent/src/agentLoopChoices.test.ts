@@ -97,11 +97,7 @@ function boot(opts: {
     return { content: out.content };
   };
   runtime.registerFlow(flowDef, runner as FlowRunner<unknown, unknown>);
-  const flow: RegisteredFlow = {
-    definition: flowDef,
-    runner: runner as FlowRunner<unknown, unknown>,
-  };
-  return { runtime, flow, seen };
+  return { runtime, flowDef, seen };
 }
 
 /** A selector whose answer CHANGES between calls — a stand-in for a model. */
@@ -118,7 +114,7 @@ describe("the loop records its choices (P9)", () => {
   it("records the selected skills, and serves them on replay", async () => {
     const store = new InMemoryAsyncEventStore();
     const first = boot({ selector: driftingSelector(), eventStore: store });
-    const handle = await first.runtime.start(first.flow, {}, { executionId: "x1" });
+    const handle = await first.runtime.start(first.flowDef, {}, { executionId: "x1" });
     await handle.waitForCompletion();
 
     // Turn 1 was asked WITH the skill's instructions.
@@ -135,7 +131,7 @@ describe("the loop records its choices (P9)", () => {
     // prompt than the one whose answer is in the log.
     const store = new InMemoryAsyncEventStore();
     const first = boot({ selector: driftingSelector(), eventStore: store });
-    const handle = await first.runtime.start(first.flow, {}, { executionId: "x1" });
+    const handle = await first.runtime.start(first.flowDef, {}, { executionId: "x1" });
     await handle.waitForCompletion();
 
     const events = await store.read("x1");
@@ -158,8 +154,8 @@ describe("the loop records its choices (P9)", () => {
     for (const n of ["one", "two", "three"]) {
       await memory.remember("working", "x1", { role: "user", content: n });
     }
-    const { runtime, flow, seen } = boot({ memory });
-    const handle = await runtime.start(flow, {}, { executionId: "x1" });
+    const { runtime, flowDef, seen } = boot({ memory });
+    const handle = await runtime.start(flowDef, {}, { executionId: "x1" });
     await handle.waitForCompletion();
 
     const contents = (seen[0]?.messages ?? []).map((m) => m.content).join("|");
@@ -171,8 +167,8 @@ describe("the loop records its choices (P9)", () => {
   });
 
   it("is unchanged when neither is configured (G2)", async () => {
-    const { runtime, flow, seen } = boot({});
-    const handle = await runtime.start(flow, {}, { executionId: "x1" });
+    const { runtime, flowDef, seen } = boot({});
+    const handle = await runtime.start(flowDef, {}, { executionId: "x1" });
     await handle.waitForCompletion();
     expect(seen[0]?.system).toBe("be terse");
     expect(seen[0]?.messages).toHaveLength(1);

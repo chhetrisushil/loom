@@ -103,18 +103,14 @@ function boot(eventStore = new InMemoryAsyncEventStore()) {
     return { content: out.content };
   };
   runtime.registerFlow(flowDef, runner as FlowRunner<unknown, unknown>);
-  const flow: RegisteredFlow = {
-    definition: flowDef,
-    runner: runner as FlowRunner<unknown, unknown>,
-  };
 
-  return { runtime, modelCalls, toolCalls, eventStore, flow };
+  return { runtime, modelCalls, toolCalls, eventStore, flowDef };
 }
 
 describe("agentLoop$ is durable per turn (R1)", () => {
   it("runs the loop to an answer, one frame per turn", async () => {
-    const { runtime, modelCalls, toolCalls, flow } = boot();
-    const handle = await runtime.start(flow, { prompt: "go" }, { executionId: "ask-1" });
+    const { runtime, modelCalls, toolCalls, flowDef } = boot();
+    const handle = await runtime.start(flowDef, { prompt: "go" }, { executionId: "ask-1" });
     const state = await handle.waitForCompletion();
 
     expect(state.status).toBe("completed");
@@ -123,8 +119,8 @@ describe("agentLoop$ is durable per turn (R1)", () => {
   });
 
   it("journals each turn as its own task, with identity-rule ids", async () => {
-    const { runtime, eventStore, flow } = boot();
-    const handle = await runtime.start(flow, { prompt: "go" }, { executionId: "ask-1" });
+    const { runtime, eventStore, flowDef } = boot();
+    const handle = await runtime.start(flowDef, { prompt: "go" }, { executionId: "ask-1" });
     await handle.waitForCompletion();
 
     const started = (await eventStore.read(handle.executionId))
@@ -147,7 +143,7 @@ describe("agentLoop$ is durable per turn (R1)", () => {
     // fresh process (new effect instances, so the counters start at zero).
     const first = boot();
     const handle = await first.runtime.start(
-      first.flow,
+      first.flowDef,
       { prompt: "go" },
       { executionId: "ask-1" }
     );
