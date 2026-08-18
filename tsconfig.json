@@ -1,6 +1,11 @@
 {
   "files": [],
   "references": [
+    { "path": "plugins/sandbox" },
+    { "path": "plugins/crypto" },
+    { "path": "packages/wire-abi" },
+    { "path": "packages/scheduler" },
+    { "path": "packages/isolate" },
     {
       "path": "packages/core"
     },

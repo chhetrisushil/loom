@@ -56,6 +56,15 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
 
 - Package manager: `pnpm@9.14.4` (pinned; use `corepack`). Build: `pnpm build`
   (turbo). Test: `pnpm test`. Lint: `pnpm lint` (biome).
+- **A package's tests import its siblings' built `dist`**, which is what a consumer
+  gets — so that is what `pnpm test` checks. The cost lands on the inner loop: edit
+  a dependency's source and the dependent's tests will not see it until you rebuild,
+  while the sourcemaps still point at `src` with pre-edit line numbers, so the
+  failure reads as a mystery rather than a stale build. Use **`pnpm test:src`**
+  (`LOOM_TEST_SRC=1`) to resolve siblings to source for immediate feedback. Not the
+  default, because the two answers differ and CI wants the one that ships.
+- Vitest config lives once, in `vitest.shared.ts`; each package's
+  `vitest.config.ts` is a two-line re-export so turbo can run tests per package.
 - All changes land on a feature branch via PR (never commit to `main` directly).
 - ADRs in `docs/adr/`; the recipe docs in `docs/` cross-link the examples that
   demonstrate them (e.g. `docs/transient-interpreter.md` → `db-observability`).
