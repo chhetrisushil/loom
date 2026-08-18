@@ -30,7 +30,7 @@ A **capability** is Loom's unit of application composition: a runnable flow wrap
 
 ### 1.1 `CapabilityDefinition` + version + dependencies
 
-The definition ([`packages/capability/src/types.ts:8`](../../packages/capability/src/types.ts)) is a plain object — no base class (P6):
+The definition ([`packages/capability/src/types.ts`](../../packages/capability/src/types.ts)) is a plain object — no base class (P6):
 
 ```ts
 export interface CapabilityDefinition<TIn = unknown, TOut = unknown> {
@@ -53,14 +53,14 @@ You build one with `capability$(config)` ([`packages/capability/src/capability$.
 
 ### 1.2 `CapabilityCatalog.resolve(id)` — transitive topological resolution
 
-The `CapabilityCatalog` ([`packages/capability/src/CapabilityCatalog.ts:21`](../../packages/capability/src/CapabilityCatalog.ts)) is the registry: capabilities can be listed, keyword-searched (a deterministic offline fallback for intent routing when no LLM is supplied — see `find` at [`CapabilityCatalog.ts:78`](../../packages/capability/src/CapabilityCatalog.ts)), registered into a `WorkflowRuntime`, and invoked by id.
+The `CapabilityCatalog` ([`packages/capability/src/CapabilityCatalog.ts`](../../packages/capability/src/CapabilityCatalog.ts)) is the registry: capabilities can be listed, keyword-searched (a deterministic offline fallback for intent routing when no LLM is supplied — see `find` at [`CapabilityCatalog.ts`](../../packages/capability/src/CapabilityCatalog.ts)), registered into a `WorkflowRuntime`, and invoked by id.
 
-`resolve(id)` ([`CapabilityCatalog.ts:40`](../../packages/capability/src/CapabilityCatalog.ts)) returns a capability's **transitive dependencies in dependency-first (topological) order**, with the capability itself last — the exact order you would deploy or warm them in. It is a depth-first post-order traversal with two safety nets:
+`resolve(id)` ([`CapabilityCatalog.ts`](../../packages/capability/src/CapabilityCatalog.ts)) returns a capability's **transitive dependencies in dependency-first (topological) order**, with the capability itself last — the exact order you would deploy or warm them in. It is a depth-first post-order traversal with two safety nets:
 
 - **Missing-dependency detection.** If a referenced id is not registered, it throws `Missing capability dependency: "<id>" (needed by "<parent>")` — the error names the parent so you can find the dangling edge.
 - **Cycle detection.** A `stack` set tracks the *current* recursion path; re-entering an id already on the stack throws `Capability dependency cycle: a -> b -> a`. A separate `done` set memoizes fully-resolved nodes so a diamond (a shared dependency reached by two paths) is visited once, not treated as a cycle.
 
-**The algorithm** (paraphrasing [`CapabilityCatalog.ts:44-61`](../../packages/capability/src/CapabilityCatalog.ts)):
+**The algorithm** (paraphrasing [`CapabilityCatalog.ts`](../../packages/capability/src/CapabilityCatalog.ts)):
 
 ```text
 resolve(id):
@@ -115,7 +115,7 @@ M7 adds a second, **distinct** protection ring. It is important not to conflate 
 
 The K2 ring decides *what a flow that is already running is allowed to do*. The M7 ring decides *whether that flow is allowed to start in the first place* — front-door admission versus in-house permissions.
 
-The types ([`packages/capability/src/types.ts:29-53`](../../packages/capability/src/types.ts)):
+The types ([`packages/capability/src/types.ts`](../../packages/capability/src/types.ts)):
 
 ```ts
 export interface CapabilityInvokeRequest  { capabilityId: string; principal?: string; input?: unknown; }
@@ -125,7 +125,7 @@ export interface CapabilityInvokeAuthorizer { authorize(req: CapabilityInvokeReq
 export class CapabilityInvokeDeniedError extends Error { /* carries capabilityId + reason */ }
 ```
 
-Wire it through `CapabilityCatalogOptions.authorizer` ([`CapabilityCatalog.ts:13`](../../packages/capability/src/CapabilityCatalog.ts)). `invoke(runtime, id, input, { principal })` ([`CapabilityCatalog.ts:106`](../../packages/capability/src/CapabilityCatalog.ts)) consults the authorizer *before* starting the flow: a denied decision throws `CapabilityInvokeDeniedError(id, reason)` and **no execution is created** (nothing is appended to the log — there is nothing to run yet). Like K2, the ring is **opt-in**: omit the authorizer and every invoke is allowed (unchanged permissive default, P5-compatible).
+Wire it through `CapabilityCatalogOptions.authorizer` ([`CapabilityCatalog.ts`](../../packages/capability/src/CapabilityCatalog.ts)). `invoke(runtime, id, input, { principal })` ([`CapabilityCatalog.ts`](../../packages/capability/src/CapabilityCatalog.ts)) consults the authorizer *before* starting the flow: a denied decision throws `CapabilityInvokeDeniedError(id, reason)` and **no execution is created** (nothing is appended to the log — there is nothing to run yet). Like K2, the ring is **opt-in**: omit the authorizer and every invoke is allowed (unchanged permissive default, P5-compatible).
 
 ```mermaid
 sequenceDiagram
@@ -149,11 +149,20 @@ sequenceDiagram
 
 ## 2. Agent runtime re-based (M8, P8)
 
-`@loom/agent` is a ReAct-style, tool-using loop that runs *inside* a durable flow (as an `LlmEffect`, so replay serves its result from the log). M8's headline change: the agent's model call is **re-based onto the `ReasoningRuntime`** so routing and elevation are decided (and logged) by the reasoning plane, while the agent stays thin. The bare-provider path is preserved byte-for-byte.
+`@loom/agent` is a ReAct-style, tool-using loop that runs *inside* a durable flow. M8's headline change: the agent's model call is **re-based onto the `ReasoningRuntime`** so routing and elevation are decided (and logged) by the reasoning plane, while the agent stays thin. The bare-provider path is preserved byte-for-byte.
+
+> **Since ADR 0087 there are two ways to run the loop, and this chapter describes the first.**
+> `agentStep$` wraps the whole loop in ONE `LlmEffect`, so replay serves the whole thing from a
+> single frame — cheap, and everything below applies to it. `agentLoop$` instead runs from a
+> **runner body**, one durable frame per turn: a crash costs one turn rather than all of them, the
+> model call resolves through the `EffectRuntime` (so K2, metering and K9 in-doubt apply to it), and
+> the loop can `suspend` mid-flight for human approval. See
+> [ADR 0087](../adr/0087-durable-agent-loop.md) and the
+> [user guide](../user-guide.md#running-the-loop-agentstep-or-agentloop) for the trade-off.
 
 ### 2.1 `AgentConfig`
 
-From [`packages/agent/src/AgentRunner.ts:13`](../../packages/agent/src/AgentRunner.ts):
+From [`packages/agent/src/AgentRunner.ts`](../../packages/agent/src/AgentRunner.ts):
 
 ```ts
 export interface AgentConfig {
@@ -170,25 +179,25 @@ export interface AgentConfig {
 }
 ```
 
-The constructor ([`AgentRunner.ts:47`](../../packages/agent/src/AgentRunner.ts)) enforces that **exactly one model access is supplied** — `provider` *or* `reasoning` — throwing `AgentRunner requires a "provider" or a "reasoning" runtime` if neither is given.
+The constructor ([`AgentRunner.ts`](../../packages/agent/src/AgentRunner.ts)) enforces that **exactly one model access is supplied** — `provider` *or* `reasoning` — throwing `AgentRunner requires a "provider" or a "reasoning" runtime` if neither is given.
 
 ### 2.2 The ReAct loop
 
-A `run(input, ctx)` turn ([`AgentRunner.ts:55`](../../packages/agent/src/AgentRunner.ts)) proceeds in these stages:
+A `run(input, ctx)` turn ([`AgentRunner.ts`](../../packages/agent/src/AgentRunner.ts)) proceeds in these stages:
 
-1. **Skill selection.** If a `SkillRegistry` is supplied, a `SkillSelector` (deterministic by default → replay-safe) picks the relevant skills, the choice is recorded via `ctx.emit("SKILLS_SELECTED", …)` ([`AgentRunner.ts:65`](../../packages/agent/src/AgentRunner.ts)), and **only** the selected skills' instruction bodies are lazy-loaded and their tools pulled in.
-2. **Tool menu.** The model's tool menu = the agent's own tools plus any tools the selected skills bring, de-duplicated by id with the agent's own tools winning ([`AgentRunner.ts:81`](../../packages/agent/src/AgentRunner.ts)).
-3. **Memory recall.** If the agent's `definition.memoryId` is set and a `MemoryRuntime` is provided, prior turns for `memoryScope` (default: `ctx.executionId`) are read back into the message list ([`AgentRunner.ts:101`](../../packages/agent/src/AgentRunner.ts)).
-4. **LLM loop.** Up to `maxIterations`, with an abort checkpoint (`throwIfAborted(ctx.signal)`) before each expensive round-trip ([`AgentRunner.ts:123`](../../packages/agent/src/AgentRunner.ts)). Each iteration calls `complete(...)` (§2.3). If the model returns `end_turn` or no tool calls, the loop breaks.
-5. **Tool execution.** Requested tool calls run through the `EffectRuntime` (so they are logged & isolated). Sequential by default; `parallelTools` opts into concurrent execution capped by `parallelLimit`, which **preserves the model's tool-call order** in results — so event emission and replay stay deterministic regardless of completion order ([`AgentRunner.ts:159`](../../packages/agent/src/AgentRunner.ts)). Each result is recorded, emitted as `AGENT_TOOL_CALL`, and fed back into the message list *in tool-call order* ([`AgentRunner.ts:178`](../../packages/agent/src/AgentRunner.ts)).
-6. **Memory append.** After the loop, this turn's prompt and answer are appended to memory ([`AgentRunner.ts:204`](../../packages/agent/src/AgentRunner.ts)), and `AGENT_COMPLETED` is emitted.
+1. **Skill selection.** If a `SkillRegistry` is supplied, a `SkillSelector` (deterministic by default → replay-safe) picks the relevant skills, the choice is recorded via `ctx.emit("SKILLS_SELECTED", …)` ([`AgentRunner.ts`](../../packages/agent/src/AgentRunner.ts)), and **only** the selected skills' instruction bodies are lazy-loaded and their tools pulled in.
+2. **Tool menu.** The model's tool menu = the agent's own tools plus any tools the selected skills bring, de-duplicated by id with the agent's own tools winning ([`AgentRunner.ts`](../../packages/agent/src/AgentRunner.ts)).
+3. **Memory recall.** If the agent's `definition.memoryId` is set and a `MemoryRuntime` is provided, prior turns for `memoryScope` (default: `ctx.executionId`) are read back into the message list ([`AgentRunner.ts`](../../packages/agent/src/AgentRunner.ts)).
+4. **LLM loop.** Up to `maxIterations`, with an abort checkpoint (`throwIfAborted(ctx.signal)`) before each expensive round-trip ([`AgentRunner.ts`](../../packages/agent/src/AgentRunner.ts)). Each iteration calls `complete(...)` (§2.3). If the model returns `end_turn` or no tool calls, the loop breaks.
+5. **Tool execution.** Requested tool calls run through the `EffectRuntime` (so they are logged & isolated). Sequential by default; `parallelTools` opts into concurrent execution capped by `parallelLimit`, which **preserves the model's tool-call order** in results — so event emission and replay stay deterministic regardless of completion order ([`AgentRunner.ts`](../../packages/agent/src/AgentRunner.ts)). Each result is recorded, emitted as `AGENT_TOOL_CALL`, and fed back into the message list *in tool-call order* ([`AgentRunner.ts`](../../packages/agent/src/AgentRunner.ts)).
+6. **Memory append.** After the loop, this turn's prompt and answer are appended to memory ([`AgentRunner.ts`](../../packages/agent/src/AgentRunner.ts)), and `AGENT_COMPLETED` is emitted.
 
 ### 2.3 Re-basing the model call — the `complete()` helper
 
-The whole M8 change is isolated in one private helper, `complete()` ([`AgentRunner.ts:223`](../../packages/agent/src/AgentRunner.ts)):
+The whole M8 change is isolated in one private helper, `complete()` ([`AgentRunner.ts`](../../packages/agent/src/AgentRunner.ts)):
 
-- **With `reasoning` (preferred).** It builds a `decide(id, decider)` closure that runs the decider and emits `ctx.emit("DECISION_RECORDED", { decisionId: id, choice, source: "agent" })` ([`AgentRunner.ts:241`](../../packages/agent/src/AgentRunner.ts)), then calls `reasoning.reason({ ...request, strategy: "agent" }, { decide, decisionKey: \`agent:turn:${iteration}\` })`. The reasoning runtime therefore does the routing/elevation heavy-lifting; each route/elevation becomes a durable `DECISION_RECORDED` fact **tagged `source:"agent"`** (distinguishing agent-driven routes from flow-level ones in analytics — see §3). The `decisionKey` namespaces decisions per turn so multiple iterations don't collide.
-- **With only a `provider`.** It calls `provider.complete(request)` directly ([`AgentRunner.ts:258`](../../packages/agent/src/AgentRunner.ts)) — the original path, unchanged.
+- **With `reasoning` (preferred).** It builds a `decide(id, decider)` closure that runs the decider and emits `ctx.emit("DECISION_RECORDED", { decisionId: id, choice, source: "agent" })` ([`AgentRunner.ts`](../../packages/agent/src/AgentRunner.ts)), then calls `reasoning.reason({ ...request, strategy: "agent" }, { decide, decisionKey: \`agent:turn:${iteration}\` })`. The reasoning runtime therefore does the routing/elevation heavy-lifting; each route/elevation becomes a durable `DECISION_RECORDED` fact **tagged `source:"agent"`** (distinguishing agent-driven routes from flow-level ones in analytics — see §3). The `decisionKey` namespaces decisions per turn so multiple iterations don't collide.
+- **With only a `provider`.** It calls `provider.complete(request)` directly ([`AgentRunner.ts`](../../packages/agent/src/AgentRunner.ts)) — the original path, unchanged.
 
 No short-circuit is needed inside `complete()`: on replay the *entire* agent step (an `LlmEffect`) is served from the log, so the recorded decisions and the final content come back verbatim (P9 keeps replay a pure fold — P2 is untouched). This is the P8 "isomorphic core, pluggable edges" story applied to model access: the agent depends only on an interface-shaped seam, and you plug in either a bare provider or a full reasoning runtime.
 
@@ -261,10 +270,10 @@ export interface Analytics {
 
 What each mines:
 
-- **`executionAnalytics`** ([`analyze.ts:52`](../../packages/analytics/src/analyze.ts)) — counts `STEP_STARTED/COMPLETED/FAILED/CANCELLED`, notes suspension and resumes, records terminal status.
-- **`costAnalytics`** ([`analyze.ts:95`](../../packages/analytics/src/analyze.ts)) — sums `tokens`/`costUsd`/`ms` from each `RESOURCE_METERED` fact (the K3 metering middleware) and flips `quotaExceeded` on `QUOTA_EXCEEDED`.
-- **`reasoningAnalytics`** ([`analyze.ts:111`](../../packages/analytics/src/analyze.ts)) — over `DECISION_RECORDED`: tallies each string `choice` into `routes`, counts decisions whose `decisionId` contains `"elevate"`, and buckets by `source` (so agent-driven vs flow-driven routes are separable — see §2.3).
-- **`failureAnalytics`** ([`analyze.ts:124`](../../packages/analytics/src/analyze.ts)) — collects `failedSteps` (from `STEP_FAILED`), `deniedTools` (from `EFFECT_DENIED`), and a `quotaExceeded` count.
+- **`executionAnalytics`** ([`analyze.ts`](../../packages/analytics/src/analyze.ts)) — counts `STEP_STARTED/COMPLETED/FAILED/CANCELLED`, notes suspension and resumes, records terminal status.
+- **`costAnalytics`** ([`analyze.ts`](../../packages/analytics/src/analyze.ts)) — sums `tokens`/`costUsd`/`ms` from each `RESOURCE_METERED` fact (the K3 metering middleware) and flips `quotaExceeded` on `QUOTA_EXCEEDED`.
+- **`reasoningAnalytics`** ([`analyze.ts`](../../packages/analytics/src/analyze.ts)) — over `DECISION_RECORDED`: tallies each string `choice` into `routes`, counts decisions whose `decisionId` contains `"elevate"`, and buckets by `source` (so agent-driven vs flow-driven routes are separable — see §2.3).
+- **`failureAnalytics`** ([`analyze.ts`](../../packages/analytics/src/analyze.ts)) — collects `failedSteps` (from `STEP_FAILED`), `deniedTools` (from `EFFECT_DENIED`), and a `quotaExceeded` count.
 
 Everything the public API exposes is re-exported from [`packages/analytics/src/index.ts`](../../packages/analytics/src/index.ts).
 
@@ -285,10 +294,10 @@ flowchart LR
 
 M10 turns the M9 lenses into *optimizers* ([`packages/analytics/src/intelligence.ts`](../../packages/analytics/src/intelligence.ts)):
 
-- **`rankModels(events)`** ([`intelligence.ts:10`](../../packages/analytics/src/intelligence.ts)) — returns `reasoningAnalytics(events).routes`, i.e. each model id → how often it was the chosen route. This is a proxy for "which models actually got used and (implicitly) trusted."
-- **`hotFailures(events, limit = 5)`** ([`intelligence.ts:15`](../../packages/analytics/src/intelligence.ts)) — the "what's flaky" lens: most-failing step ids, most-frequent first.
+- **`rankModels(events)`** ([`intelligence.ts`](../../packages/analytics/src/intelligence.ts)) — returns `reasoningAnalytics(events).routes`, i.e. each model id → how often it was the chosen route. This is a proxy for "which models actually got used and (implicitly) trusted."
+- **`hotFailures(events, limit = 5)`** ([`intelligence.ts`](../../packages/analytics/src/intelligence.ts)) — the "what's flaky" lens: most-failing step ids, most-frequent first.
 
-The learned router lives in `@loom/reasoning`. **`rankedRouter(rankings)`** ([`packages/reasoning/src/router.ts:27`](../../packages/reasoning/src/router.ts)) is a `Router` that, given a ranking (typically from `rankModels`), **prefers the highest-ranked route that exists**, falling back to cheap-first `tagRouter` for unranked requests:
+The learned router lives in `@loom/reasoning`. **`rankedRouter(rankings)`** ([`packages/reasoning/src/router.ts`](../../packages/reasoning/src/router.ts)) is a `Router` that, given a ranking (typically from `rankModels`), **prefers the highest-ranked route that exists**, falling back to cheap-first `tagRouter` for unranked requests:
 
 ```ts
 export function rankedRouter(rankings: Record<string, number>): Router {
@@ -303,7 +312,7 @@ export function rankedRouter(rankings: Record<string, number>): Router {
 }
 ```
 
-Crucially, `rankedRouter` is used *inside* `ReasoningRuntime` where its `select(...)` is wrapped by `ctx.decide` (the route is emitted as `DECISION_RECORDED`, [`ReasoningRuntime.ts:55`](../../packages/reasoning/src/ReasoningRuntime.ts)). So the "learned" preference is **auditable and override-able, never silently autonomous** (P10): you can see exactly which model it picked and why, replay serves the same choice, and a human or a `fixedRouter` can override it. Optimization changes *future outcomes*; it never rewrites the past.
+Crucially, `rankedRouter` is used *inside* `ReasoningRuntime` where its `select(...)` is wrapped by `ctx.decide` (the route is emitted as `DECISION_RECORDED`, [`ReasoningRuntime.ts`](../../packages/reasoning/src/ReasoningRuntime.ts)). So the "learned" preference is **auditable and override-able, never silently autonomous** (P10): you can see exactly which model it picked and why, replay serves the same choice, and a human or a `fixedRouter` can override it. Optimization changes *future outcomes*; it never rewrites the past.
 
 #### The learning seam — closing the loop (M12)
 
@@ -317,7 +326,7 @@ This closes the P9 loop operationally: outcomes feed back into routing, so the s
 
 ### 3.3 M11 — `runtimeIntelligence`: one advisory report
 
-`runtimeIntelligence(events, options?)` ([`intelligence.ts:52`](../../packages/analytics/src/intelligence.ts)) composes M9 analytics + M10 optimizers into a single **advisory** `RuntimeIntelligenceReport`:
+`runtimeIntelligence(events, options?)` ([`intelligence.ts`](../../packages/analytics/src/intelligence.ts)) composes M9 analytics + M10 optimizers into a single **advisory** `RuntimeIntelligenceReport`:
 
 ```ts
 export interface RuntimeRecommendations {
@@ -332,7 +341,7 @@ export interface RuntimeIntelligenceReport {
 }
 ```
 
-`options.budgetHeadroom` (default `1.5`) sets the margin over observed spend; `options.failureLimit` (default `5`) caps `hotFailures`. `suggestedBudgetUsd` is only present when something was actually metered ([`intelligence.ts:61`](../../packages/analytics/src/intelligence.ts)).
+`options.budgetHeadroom` (default `1.5`) sets the margin over observed spend; `options.failureLimit` (default `5`) caps `hotFailures`. `suggestedBudgetUsd` is only present when something was actually metered ([`intelligence.ts`](../../packages/analytics/src/intelligence.ts)).
 
 The emphasis, restated because it is the whole point: this report is **read-only and never mutates the fold** — it is the advisory plane (P10). To *act* on it, you feed `recommendations.modelRankings` into `rankedRouter` and pass `ctx.decide`; only then does anything change, and that change is a logged decision (P9). The loop is a full circle over the same log:
 

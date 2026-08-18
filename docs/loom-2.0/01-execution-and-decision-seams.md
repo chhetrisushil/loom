@@ -46,7 +46,7 @@ skin-deep where it matters most:
 - The wire events **stay `STEP_*`** (`STEP_STARTED` / `STEP_COMPLETED` / …), so logs written
   before Loom 2.0 fold byte-identically. This is additive-by-design (see [K5](10-event-schema-reference.md)).
 - `ctx.run(step)` is now **exactly** `ctx.execute(step)` — a one-line alias with zero
-  behaviour change (`packages/workflow-runtime/src/WorkflowContext.ts:97`).
+  behaviour change (`packages/workflow-runtime/src/WorkflowContext.ts`).
 
 Loom 2.0 has **two spines**, each a thin seam over the existing durable core:
 
@@ -355,7 +355,7 @@ classDiagram
 ## 3. `ctx.execute` — the generalized durable primitive
 
 `ctx.execute(task, input)` is the single durable-work primitive
-(`packages/workflow-runtime/src/WorkflowContext.ts:48`). It:
+(`packages/workflow-runtime/src/WorkflowContext.ts`). It:
 
 1. **Replay short-circuit.** If the VM already has a *completed* frame for `task.id`
    (`vm.hasCompleted(id)`), return the recorded output (`vm.getOutput(id)`) **without running
@@ -378,7 +378,7 @@ classDiagram
      log; `EXECUTION_CANCELLED` owns execution-level status);
    - any other throw → `STEP_FAILED { stepId, error }` then re-throw.
 
-`ctx.run` is the alias (`WorkflowContext.ts:97`):
+`ctx.run` is the alias (`WorkflowContext.ts`):
 
 ```ts
 run<TIn, TOut>(step: StepDefinition<TIn, TOut>, input: TIn): Promise<TOut> {
@@ -440,7 +440,7 @@ but every such choice is emitted as a durable `DECISION_RECORDED` fact and **ser
 on replay**, exactly as completed effects are.
 
 `ctx.decide` is the deliberate **twin of `execute`'s replay short-circuit**
-(`packages/workflow-runtime/src/WorkflowContext.ts:105`):
+(`packages/workflow-runtime/src/WorkflowContext.ts`):
 
 ```ts
 async decide<T>(
@@ -463,7 +463,7 @@ async decide<T>(
 ```
 
 The short-circuit reads `variables._decisions` via the VM
-(`packages/replay-vm/src/ReplayVM.ts:26`): `hasDecision(id)` checks presence,
+(`packages/replay-vm/src/ReplayVM.ts`): `hasDecision(id)` checks presence,
 `getDecision(id)` returns the recorded `.choice`.
 
 ### 4.1 "Learned decisions, but logged" — why replay stays deterministic
@@ -573,7 +573,7 @@ the contract**.
 | `stream` | call | 1.0.0 | emit an incremental delta event |
 | `ui` | accessor | 1.0.0 | drive durable, replayable UI surfaces (A2UI) |
 
-_(Source of truth: `KERNEL_SYSCALLS` at `packages/workflow-runtime/src/abi.ts:29`.)_
+_(Source of truth: `KERNEL_SYSCALLS` at `packages/workflow-runtime/src/abi.ts`.)_
 
 Two syscalls are new in Loom 2.0's conceptual model but ship at ABI `1.0.0`: `execute` (the
 generalization `run` now aliases) and `decide` (the Decision seam). Because `run` is preserved
@@ -590,7 +590,7 @@ The durable-timer seam (T1) then added `sleep` and `sleepUntil` as a clean **MIN
 
 There is **exactly one `ExecutionJournal` per live execution**, and it is the *sole* sequence
 allocator and the *only* thing that calls `eventStore.append`
-(`packages/workflow-runtime/src/ExecutionJournal.ts:22`). `commit()` is **synchronous**: it
+(`packages/workflow-runtime/src/ExecutionJournal.ts`). `commit()` is **synchronous**: it
 allocates the next sequence (`++this.seq`), folds the envelope into the VM
 (`vm.applyEvent` — authoritative), fires the live-projection `onEvent`, enqueues the durable
 write onto a serial FIFO promise tail, and fires the snapshot-cadence hook. `drain()` is the
