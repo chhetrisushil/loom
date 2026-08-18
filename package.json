@@ -14,7 +14,8 @@
     "fitness": "pnpm build && pnpm typecheck && pnpm lint && pnpm test",
     "present": "npx @marp-team/marp-cli@latest -s docs/presentation/",
     "link:global": "cd tools/cli && pnpm link --global && cd ../compiler && pnpm link --global && cd ../create-loom-app && pnpm link --global",
-    "unlink:global": "pnpm rm --global @loom/cli @loom/compiler @loom/create-loom-app"
+    "unlink:global": "pnpm rm --global @loom/cli @loom/compiler @loom/create-loom-app",
+    "test:src": "LOOM_TEST_SRC=1 turbo test"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

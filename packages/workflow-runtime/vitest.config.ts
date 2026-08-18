@@ -1,6 +1,3 @@
-import { defineConfig } from "vitest/config";
+import { loomTest } from "../../vitest.shared";
 
-export default defineConfig({
-  resolve: { conditions: ["require", "default"] },
-  test: { environment: "node" },
-});
+export default loomTest();

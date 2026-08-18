@@ -1,11 +1,8 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vitest/config";
+import { loomTest } from "../../vitest.shared";
 
-export default defineConfig({
+// The only package that renders components: jsdom + the react plugin.
+export default loomTest({
   plugins: [react()],
-  resolve: { conditions: ["require", "default"] },
-  test: {
-    environment: "jsdom",
-    globals: true,
-  },
+  test: { environment: "jsdom", globals: true },
 });
