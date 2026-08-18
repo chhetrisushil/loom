@@ -329,6 +329,13 @@ export class AgentRunner {
     });
 
     if (this.config.reasoning !== undefined) {
+      // A HAND-EMITTED decision, and knowingly so: a step handler has `emit` and
+      // nothing else, so this records the route as a fact but cannot have it
+      // SERVED on replay — a re-run re-routes, and if routing improves
+      // run-to-run the replayed run can take a different route than the one
+      // whose answer is recorded. `agentLoop$` passes the real `ctx.decide` and
+      // does not have this limitation; it is the reason to prefer it for any
+      // agent whose routing matters.
       const decide = async <T>(id: string, decider: () => T | Promise<T>): Promise<T> => {
         const choice = await decider();
         ctx.emit("DECISION_RECORDED", { decisionId: id, choice, source: "agent" });
