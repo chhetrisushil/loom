@@ -10,6 +10,7 @@ import type {
 } from "@loom/event-runtime";
 import { DuplicateEnvelopeIdError, DuplicateSequenceError, readRangeOf } from "@loom/event-runtime";
 import type { LlmProvider, LlmStreamChunk } from "@loom/llm";
+import { assembleStream } from "@loom/llm";
 import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
@@ -606,7 +607,21 @@ export function runWorkerRuntimeConformance(
 
 /**
  * Prove an {@link LlmProvider} conforms: `complete` returns `content` + a valid
- * `stopReason`; `stream` (when supported) yields chunks terminated by `done`.
+ * `stopReason`; `stream` (when supported) yields chunks terminated by `done` AND
+ * assembles to the same outcome `complete` returns.
+ *
+ * **The parity contract (R8).** A streamed result MUST equal the completed one —
+ * the same discipline ADR 0059 D1 applies to content ("the streamed address ≡ the
+ * whole-buffer address"), for the model call. Without it the two paths drift, and
+ * the drift shows up as an agent that behaves differently once streaming is
+ * switched on: a `stream` that reports no `toolCalls` turns a tool-using turn into
+ * a text answer, and one that reports no `usage` meters nothing.
+ *
+ * The outcome fields stay OPTIONAL, so a text-only streaming provider still
+ * conforms. What is checked is honesty: whatever IS reported must match. Note this
+ * requires a provider that answers the same request the same way — true of the
+ * offline fakes this suite is meant to be run against, not of a live model at
+ * temperature.
  */
 export function runLlmProviderConformance(factory: () => LlmProvider, label = "LlmProvider"): void {
   const req = { messages: [{ role: "user" as const, content: "hi" }] };
@@ -624,6 +639,42 @@ export function runLlmProviderConformance(factory: () => LlmProvider, label = "L
       for await (const c of provider.stream(req)) chunks.push(c);
       expect(chunks.length).toBeGreaterThan(0);
       expect(chunks[chunks.length - 1]?.done).toBe(true);
+    });
+
+    it("stream terminates exactly once, and only at the end", async () => {
+      // `assembleStream` refuses anything else, so a provider that ends twice (or
+      // early) would fail at the point of use rather than here.
+      const provider = factory();
+      if (provider.stream === undefined) return;
+      const chunks: LlmStreamChunk[] = [];
+      for await (const c of provider.stream(req)) chunks.push(c);
+      expect(chunks.filter((c) => c.done)).toHaveLength(1);
+      expect(() => assembleStream(chunks)).not.toThrow();
+    });
+
+    it("a streamed result equals the completed one (parity)", async () => {
+      const provider = factory();
+      if (provider.stream === undefined) return;
+      const completed = await provider.complete(req);
+      const chunks: LlmStreamChunk[] = [];
+      for await (const c of provider.stream(req)) chunks.push(c);
+      const streamed = assembleStream(chunks);
+
+      // Content is the whole point of streaming: concatenated deltas must be the
+      // same text the completed call returned.
+      expect(streamed.content).toBe(completed.content);
+
+      // The outcome fields are checked only where the stream reports them —
+      // absent means "not reported", which is allowed; a DIFFERENT value is not.
+      if (streamed.stopReason !== undefined && chunks.some((c) => c.stopReason !== undefined)) {
+        expect(streamed.stopReason).toBe(completed.stopReason);
+      }
+      if (streamed.toolCalls !== undefined) {
+        expect(streamed.toolCalls).toEqual(completed.toolCalls);
+      }
+      if (streamed.usage !== undefined) {
+        expect(streamed.usage).toEqual(completed.usage);
+      }
     });
   });
 }

@@ -1,4 +1,23 @@
-import type { LlmProvider, LlmRequest, LlmResponse, LlmStreamChunk } from "../types";
+import type { LlmProvider, LlmRequest, LlmResponse, LlmStreamChunk, LlmToolCall } from "../types";
+
+/**
+ * OpenAI's `finish_reason` → the SPI's. ONE implementation shared by `complete`
+ * and `stream`: a duplicated mapping is where two paths to one outcome start
+ * disagreeing, which is what the conformance parity check exists to catch.
+ */
+function normalizeFinishReason(raw: unknown): LlmResponse["stopReason"] {
+  return raw === "tool_calls" ? "tool_use" : raw === "length" ? "max_tokens" : "end_turn";
+}
+
+/** Parse tool arguments, surfacing malformed JSON rather than dropping the call. */
+function parseArguments(argsJson: string): unknown {
+  if (argsJson === "") return {};
+  try {
+    return JSON.parse(argsJson) as unknown;
+  } catch {
+    return { __unparsedArguments: argsJson };
+  }
+}
 
 export interface OpenAiProviderConfig {
   apiKey?: string;
@@ -14,7 +33,14 @@ interface OpenAiChoice {
       function: { name: string; arguments: string };
     }>;
   };
-  delta?: { content?: string | null };
+  delta?: {
+    content?: string | null;
+    tool_calls?: Array<{
+      index: number;
+      id?: string;
+      function?: { name?: string; arguments?: string };
+    }>;
+  };
   finish_reason?: string | null;
 }
 
@@ -81,15 +107,10 @@ export class OpenAiProvider implements LlmProvider {
     const toolCalls = (choice.message.tool_calls ?? []).map((tc) => ({
       id: tc.id,
       name: tc.function.name,
-      input: JSON.parse(tc.function.arguments) as unknown,
+      input: parseArguments(tc.function.arguments),
     }));
 
-    const stopReason =
-      choice.finish_reason === "tool_calls"
-        ? "tool_use"
-        : choice.finish_reason === "length"
-          ? "max_tokens"
-          : "end_turn";
+    const stopReason = normalizeFinishReason(choice.finish_reason);
 
     return {
       content,
@@ -111,7 +132,13 @@ export class OpenAiProvider implements LlmProvider {
         "content-type": "application/json",
         authorization: `Bearer ${this.apiKey}`,
       },
-      body: JSON.stringify(this.buildBody(request, true)),
+      // `include_usage` is what makes the streamed path able to report the token
+      // counts the completed path always did — without it K3 meters nothing when
+      // streaming, and K8.4 has no mid-flight signal to sever on.
+      body: JSON.stringify({
+        ...this.buildBody(request, true),
+        stream_options: { include_usage: true },
+      }),
       ...(request.signal !== undefined && { signal: request.signal }),
     });
 
@@ -125,6 +152,26 @@ export class OpenAiProvider implements LlmProvider {
     const decoder = new TextDecoder();
     let buffer = "";
 
+    // Accumulated so the TERMINAL chunk reports what `complete` would have.
+    // Tool-call arguments stream as fragments keyed by `index` and are only valid
+    // JSON once concatenated, so they are parsed at the end, never per delta.
+    const openCalls = new Map<number, { id: string; name: string; argsJson: string }>();
+    let stopReason: LlmResponse["stopReason"] | undefined;
+    let usage: { inputTokens: number; outputTokens: number } | undefined;
+
+    const terminal = (): LlmStreamChunk => {
+      const toolCalls: LlmToolCall[] = [...openCalls.entries()]
+        .sort((a, b) => a[0] - b[0]) // by stream index, so order matches `complete`
+        .map(([, c]) => ({ id: c.id, name: c.name, input: parseArguments(c.argsJson) }));
+      return {
+        delta: "",
+        done: true,
+        ...(toolCalls.length > 0 && { toolCalls }),
+        ...(stopReason !== undefined && { stopReason }),
+        ...(usage !== undefined && { usage }),
+      };
+    };
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -137,24 +184,44 @@ export class OpenAiProvider implements LlmProvider {
         if (!line.startsWith("data: ")) continue;
         const json = line.slice(6).trim();
         if (json === "[DONE]") {
-          yield { delta: "", done: true };
+          yield terminal();
           return;
         }
         try {
           const chunk = JSON.parse(json) as OpenAiChatResponse;
-          const delta = chunk.choices[0]?.delta?.content ?? "";
-          const isFinished = chunk.choices[0]?.finish_reason != null;
+          // The usage-only chunk (`include_usage`) arrives AFTER the finished
+          // choice and carries an empty `choices` array, so it must be read before
+          // any early return on finish_reason — which is why the terminal chunk is
+          // emitted at [DONE], not at the finish.
+          if (chunk.usage !== undefined) {
+            usage = {
+              inputTokens: chunk.usage.prompt_tokens,
+              outputTokens: chunk.usage.completion_tokens,
+            };
+          }
+          const choice = chunk.choices[0];
+          const delta = choice?.delta?.content ?? "";
+          for (const tc of choice?.delta?.tool_calls ?? []) {
+            const open = openCalls.get(tc.index) ?? { id: "", name: "", argsJson: "" };
+            if (tc.id !== undefined) open.id = tc.id;
+            if (tc.function?.name !== undefined) open.name = tc.function.name;
+            if (tc.function?.arguments !== undefined) open.argsJson += tc.function.arguments;
+            openCalls.set(tc.index, open);
+          }
+          if (choice?.finish_reason != null) {
+            stopReason = normalizeFinishReason(choice.finish_reason);
+          }
           if (delta !== "") {
             yield { delta, done: false };
-          }
-          if (isFinished) {
-            yield { delta: "", done: true };
-            return;
           }
         } catch {
           // skip malformed SSE lines
         }
       }
     }
+
+    // The stream ended without an explicit [DONE] (some gateways omit it): the
+    // terminal chunk is still owed, or `assembleStream` would reject the stream.
+    yield terminal();
   }
 }

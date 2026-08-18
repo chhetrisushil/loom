@@ -63,9 +63,29 @@ export interface LlmResponse {
   usage?: { inputTokens: number; outputTokens: number };
 }
 
+/**
+ * One increment of a streamed completion.
+ *
+ * The outcome fields ride the TERMINAL chunk (`done: true`). Without them a stream
+ * can carry prose to a human and nothing else — a ReAct loop branches on
+ * `toolCalls` and `stopReason`, and metering needs `usage` — which is why the
+ * streaming path could not back an agent turn while it yielded `{ delta, done }`
+ * alone.
+ *
+ * All three are OPTIONAL: a provider that streams text only leaves them undefined
+ * and is unchanged (G2). What is NOT optional is honesty — when a field IS
+ * reported it must equal what `complete` would have returned for the same request.
+ * `runLlmProviderConformance` pins exactly that (see {@link assembleStream}).
+ */
 export interface LlmStreamChunk {
   delta: string;
   done: boolean;
+  /** Tool calls the model made, assembled from the stream. Terminal chunk only. */
+  toolCalls?: LlmToolCall[];
+  /** Why generation stopped. Terminal chunk only. */
+  stopReason?: LlmResponse["stopReason"];
+  /** Token accounting — what K3 meters and what K8.4 needs to sever mid-flight. Terminal chunk only. */
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 export interface LlmProvider {

@@ -1,4 +1,14 @@
-import type { LlmProvider, LlmRequest, LlmResponse, LlmStreamChunk } from "../types";
+import type { LlmProvider, LlmRequest, LlmResponse, LlmStreamChunk, LlmToolCall } from "../types";
+
+/**
+ * Anthropic's `stop_reason` → the SPI's. ONE implementation, used by both
+ * `complete` and `stream`: a duplicated mapping is exactly where two paths to one
+ * outcome start disagreeing, which is what the conformance parity check exists to
+ * catch and what this makes structurally impossible.
+ */
+function normalizeStopReason(raw: unknown): LlmResponse["stopReason"] {
+  return raw === "tool_use" ? "tool_use" : raw === "max_tokens" ? "max_tokens" : "end_turn";
+}
 
 export interface AnthropicProviderConfig {
   apiKey?: string;
@@ -92,12 +102,7 @@ export class AnthropicProvider implements LlmProvider {
       .filter((b): b is AnthropicToolUseBlock => b.type === "tool_use")
       .map((b) => ({ id: b.id, name: b.name, input: b.input }));
 
-    const stopReason =
-      data.stop_reason === "tool_use"
-        ? "tool_use"
-        : data.stop_reason === "max_tokens"
-          ? "max_tokens"
-          : "end_turn";
+    const stopReason = normalizeStopReason(data.stop_reason);
 
     return {
       content,
@@ -131,6 +136,25 @@ export class AnthropicProvider implements LlmProvider {
     const decoder = new TextDecoder();
     let buffer = "";
 
+    // Accumulated across the stream so the TERMINAL chunk can report the same
+    // outcome `complete` would have. Tool-call arguments arrive as `input_json_delta`
+    // fragments that are only valid JSON once concatenated, so a block is parsed at
+    // `content_block_stop`, not per delta.
+    const toolCalls: LlmToolCall[] = [];
+    const openBlocks = new Map<number, { id: string; name: string; argsJson: string }>();
+    let stopReason: LlmResponse["stopReason"] | undefined;
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
+
+    const terminal = (): LlmStreamChunk => ({
+      delta: "",
+      done: true,
+      ...(toolCalls.length > 0 && { toolCalls }),
+      ...(stopReason !== undefined && { stopReason }),
+      ...(inputTokens !== undefined &&
+        outputTokens !== undefined && { usage: { inputTokens, outputTokens } }),
+    });
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -143,18 +167,58 @@ export class AnthropicProvider implements LlmProvider {
         if (!line.startsWith("data: ")) continue;
         const json = line.slice(6).trim();
         if (json === "[DONE]") {
-          yield { delta: "", done: true };
+          yield terminal();
           return;
         }
         try {
           const event = JSON.parse(json) as Record<string, unknown>;
-          if (event.type === "content_block_delta") {
+          if (event.type === "content_block_start") {
+            const block = event.content_block as Record<string, unknown> | undefined;
+            if (block?.type === "tool_use") {
+              openBlocks.set(Number(event.index), {
+                id: String(block.id ?? ""),
+                name: String(block.name ?? ""),
+                argsJson: "",
+              });
+            }
+          } else if (event.type === "content_block_delta") {
             const delta = event.delta as Record<string, unknown> | undefined;
             if (delta?.type === "text_delta") {
               yield { delta: String(delta.text ?? ""), done: false };
+            } else if (delta?.type === "input_json_delta") {
+              const open = openBlocks.get(Number(event.index));
+              if (open !== undefined) open.argsJson += String(delta.partial_json ?? "");
             }
+          } else if (event.type === "content_block_stop") {
+            const open = openBlocks.get(Number(event.index));
+            if (open !== undefined) {
+              openBlocks.delete(Number(event.index));
+              // An empty argument object streams as no deltas at all, which is `{}`,
+              // not a parse error.
+              let input: unknown = {};
+              try {
+                input = open.argsJson === "" ? {} : JSON.parse(open.argsJson);
+              } catch {
+                // Malformed arguments are reported as-is rather than dropped: the
+                // agent loop must be able to see WHY a call could not be made.
+                input = { __unparsedArguments: open.argsJson };
+              }
+              toolCalls.push({ id: open.id, name: open.name, input });
+            }
+          } else if (event.type === "message_delta") {
+            // Carries the stop reason and the OUTPUT token count (input tokens came
+            // with message_start).
+            const delta = event.delta as Record<string, unknown> | undefined;
+            stopReason = normalizeStopReason(delta?.stop_reason);
+            const usage = event.usage as Record<string, unknown> | undefined;
+            if (usage?.output_tokens !== undefined) outputTokens = Number(usage.output_tokens);
+          } else if (event.type === "message_start") {
+            const message = event.message as Record<string, unknown> | undefined;
+            const usage = message?.usage as Record<string, unknown> | undefined;
+            if (usage?.input_tokens !== undefined) inputTokens = Number(usage.input_tokens);
+            if (usage?.output_tokens !== undefined) outputTokens = Number(usage.output_tokens);
           } else if (event.type === "message_stop") {
-            yield { delta: "", done: true };
+            yield terminal();
             return;
           }
         } catch {

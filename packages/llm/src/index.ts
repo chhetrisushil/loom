@@ -23,5 +23,6 @@ export { OpenAiProvider } from "./providers/OpenAiProvider";
 export type { OpenAiProviderConfig } from "./providers/OpenAiProvider";
 export { GeminiProvider } from "./providers/GeminiProvider";
 export type { GeminiProviderConfig } from "./providers/GeminiProvider";
+export { MalformedStreamError, assembleStream, collectStream } from "./assembleStream";
 export { createLlmEffect } from "./createLlmEffect";
 export type { CreateLlmEffectOptions } from "./createLlmEffect";
