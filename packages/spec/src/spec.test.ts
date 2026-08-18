@@ -138,7 +138,12 @@ const NOT_A_CAPABILITY = new Set([
   "0017",
   "0018",
   "0019",
-  "0020",
+  // 0020 — K8 (cancellation/deadlines/bounded effects) is BADGED: see the
+  // `cancellation-deadlines` capability. It was exempted here under "no runtime
+  // subsystem to grade", which was never true of it. The same is true of its
+  // neighbours 0019/0021-0024 (K7 isolation, K9 delivery, K10 lifecycle, K11
+  // versioning, K12 identity) — all still exempted, all genuinely runtime
+  // subsystems, each needing its own evidence and level judgment.
   "0021",
   "0022",
   "0023",

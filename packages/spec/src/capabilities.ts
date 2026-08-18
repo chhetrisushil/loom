@@ -134,6 +134,20 @@ export const CAPABILITIES: readonly Capability[] = [
     },
   },
   {
+    id: "cancellation-deadlines",
+    title: "Cancellation, Deadlines & Bounded Effects",
+    package: "@loom/workflow-runtime",
+    level: "L3",
+    summary:
+      "The kernel's kill path, end to end (K8). `EffectContext.signal` reaches every effect and the built-in LLM/tool/A2A effects forward it to providers; `ExecutionRuntime.cancel(executionId)` fences then appends a durable `EXECUTION_CANCELLED` that replay reconstructs at the same sequence; declared deadlines (`ExecutionPolicy.deadlineMs`, step `timeoutMs`) are enforced BY THE KERNEL against the logged `EXECUTION_STARTED`, never wall-clock at re-run; cancellation crosses the dispatch seam (`WorkerRuntime.cancel`, worker-server `POST /cancel`) as best-effort delivery with durable-fact settlement; and `streamTokenBudget` severs a streaming generation mid-flight on an estimated token budget, emitting the same `QUOTA_EXCEEDED` fact metering writes.",
+    evidence: {
+      conformanceTest: "packages/workflow-runtime/src/k8-cancellation.test.ts",
+      usedIn:
+        "plugins/worker-server/src/crossSeamCancel.integration.test.ts — cancellation across the dispatch seam; packages/middleware/src/streamTokenBudget.test.ts — K8.4 mid-stream severance",
+    },
+    note: "ADR 0020 — every other K3 enforcement point is ADMISSION CONTROL (it decides whether the next effect runs); K8.4 is the only one that acts inside a call already in flight, which is why it waited on streaming effects and landed only with ADR 0087's series. A5 predicted it could not be middleware (right — middleware sees the effect once, at the end) and proposed an `EffectContext` usage-reporter hook (wrong — both wired providers report usage once, at the end, so such a hook could only fire where metering already reads the number). What ships observes the only thing a stream reports continuously, its own output, and names the estimate AS an estimate in the type, the reason and the default. Not L4: no committed bench — the acceptance criterion is a latency claim (<1s) that no bench pins, and provider forwarding is best-effort anyway (A7), so the honest ceiling is L3 via the cross-seam integration.",
+  },
+  {
     id: "verification",
     title: "Runtime Verification",
     package: "@loom/verify",
