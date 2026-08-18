@@ -260,13 +260,42 @@ ordinary tool errors and wrong for authority errors; the fix is to tell them apa
 
 ### 2.5 R5 — Sub-agent spawn does not attenuate authority
 
-`awaitChild` starts a child execution carrying the principal it is given. K12.4 `DelegatedGrant`
-exists precisely for verifiable attenuated delegation. Nothing in `@loom/agent` or
-`@loom/orchestration` wires the two together, so a spawned sub-agent runs with the full authority
-of its parent.
+K12.4 `DelegatedGrant` exists precisely for verifiable attenuated delegation. Nothing in
+`@loom/agent` or `@loom/orchestration` wired the two together.
 
-**Verdict: 1P package (`@loom/orchestration` wiring). No kernel change** — the mechanism is
-already built and already checked at the callee. Only the default is wrong.
+**Correction, found while implementing this (2026-08-18).** This section said `awaitChild` "starts
+a child execution carrying the principal it is given", and that a sub-agent "runs with the full
+authority of its parent". Both are wrong. `superviseChildren` started children with
+`runtime.start(flow, input, { executionId: childId })` — **no principal at all**. So the parent's
+identity never reached the child, and what that meant depended entirely on the authorizer:
+
+- the default `GrantTable` keys on `req.workflowId` (`authz.ts:83`), so a child was authorized as
+  *its own flow* — neither the parent's authority nor an attenuation of it;
+- a principal-keyed authorizer saw no principal and failed closed;
+- execution-authz (C.1) gates start/resume/cancel/query on the principal, where *unset ⇒ every
+  operation is permitted*, so a child was unauthenticated at that gate.
+
+The real gap was therefore that **the principal chain did not propagate to children at all**, and
+attenuation is the step after: you cannot narrow what was never passed. The callee half of the
+claim does hold — `DelegationAuthorizer` verifies signature, expiry, holder-binding and the
+intersection with the callee's own grants — so the mechanism was genuinely built and genuinely
+unreachable.
+
+**Verdict: 1P package (`@loom/orchestration` wiring). No kernel change.** Shipped as: the parent
+names the conferred subset (`awaitChild({ …, grants })`), and a supervisor wired with
+`delegation: { secret }` mints the signed, holder-bound token **at start time**.
+
+**Why the mint is not at the spawn decision.** The obvious design records the signed
+`DelegatedGrant` in the spawn `DECISION_RECORDED`, which would put a bearer credential into an
+append-only log that is archived and retained — and one written there cannot be rotated out of the
+copies. So the log carries the *subset* (plain effect ids: a description of authority, not a means
+of exercising it) and the token is minted from it at start and never persisted. A re-mint after
+recovery is identical, because both inputs — subset and child id — come from the log. `expiresAt`
+is absolute for the same reason; a TTL would re-mint differently after a crash.
+
+Unwired in either direction — no `grants` on the spawn, or no secret on the supervisor — no token
+is minted and children start exactly as before (G2). A supervisor that cannot mint must not
+half-enforce, so an inert subset is inert rather than restrictive.
 
 ### 2.6 R6 — an interrupted generation's partial output is discarded
 
