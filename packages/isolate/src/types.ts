@@ -26,6 +26,19 @@ export interface IsolatedToolSpec {
    * env — an execution cannot name, enumerate, or copy other tools' secrets.
    */
   env?: Record<string, string>;
+  /**
+   * K7.3 — the most brokered fetches that may be IN FLIGHT for this tool at once.
+   * Default 16.
+   *
+   * The allowlist bounds WHERE a request may go; this bounds HOW MANY. Without
+   * it a tool — untrusted by construction, which is the whole premise of the
+   * isolate — can issue fetches in a loop without awaiting them and drive
+   * unbounded concurrent host-side requests at an allowlisted target, each with
+   * a parent-side promise behind it. Excess is refused with `EGRESS_DENIED`,
+   * the same durable fact an allowlist miss produces, because it is the same
+   * kind of event: the boundary said no.
+   */
+  maxConcurrentFetches?: number;
   /** Kill the child (non-cooperatively) if a run exceeds this. */
   timeoutMs?: number;
   /** K9.3 delivery semantic, same as ToolEffect's. */

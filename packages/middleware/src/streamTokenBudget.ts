@@ -36,9 +36,20 @@ export interface StreamTokenBudgetOptions {
   /** Swap in a real tokenizer. Default {@link estimateTokensByChars}. */
   estimate?: TokenEstimator;
   /**
-   * Check at most every N deltas. Estimation is O(text), so checking on every
-   * token of a long generation is quadratic; the default of 8 keeps the guard
-   * cheap while still severing within a few tokens of the ceiling.
+   * Check at most every N deltas.
+   *
+   * The DEFAULT estimator is O(1) — `text.length / 4`, and `.length` is a field
+   * read — so with it this knob buys almost nothing. It exists for a real
+   * tokenizer, which scans the text and is therefore O(text) per call: at every
+   * delta that would be quadratic over a generation, and every 8 still divides
+   * the same quadratic by 8 rather than removing it. If you pass a scanning
+   * estimator, prefer one that can score an increment.
+   *
+   * (An earlier version of this comment credited `checkEvery` with bounding a
+   * cost that lived in `collectStream`, not here — the caller rebuilt the whole
+   * text per delta before this guard was ever consulted, so the knob could not
+   * have helped. That is fixed; the note stays because the reasoning it corrects
+   * is easy to repeat.)
    */
   checkEvery?: number;
 }
