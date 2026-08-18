@@ -332,6 +332,22 @@ document's own recommendation. The negative test to write first is therefore *"a
 `STEP_FAILED` payload carries the text produced so far"*, which is unwritable until R9 lands, and
 that unwritability is the signal.
 
+**Shipped (2026-08-18), and it carries more than the text.** `AGENT_INTERRUPTED` (`@loom/agent`)
+carries `{ content, iterations, toolCallLog }`. The partial generation was the stated target, but
+implementing it made the larger loss obvious: the **completed tool calls** are the expensive,
+already-paid-for half of a turn, and they were being discarded by the same abort. A stop that lands
+while the agent is between turns loses no tokens at all and still loses every tool call — so the
+capture wraps the whole loop rather than the model call, and the interruption is caught in one place
+whether it arrived from the pre-turn checkpoint, a long-running tool, or mid-generation.
+
+Composed carefully with the two neighbours: only an abort is an interruption. An authority denial
+still propagates untouched (R4 — terminal by design, not lost work), and an ordinary failure still
+propagates untouched (a broken run, not an interrupted one), each with its own test.
+
+The accumulate-and-capture loop lives once, in `@loom/llm`'s `collectStream`, shared by
+`createLlmEffect` and `AgentRunner` — two copies would be two chances to differ about what
+"interrupted" means, and the whole point is that the partial survives identically either way.
+
 **Bounded deliberately.** This keeps the partial generation as a *value*. It is not
 mid-stream resume, which §3.3 rejects permanently — the durable unit stays the turn. Note also that
 K8.4 (mid-stream budget severance) is not an open question but a *reserved* one: ADR 0020 records

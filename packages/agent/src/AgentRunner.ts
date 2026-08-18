@@ -1,6 +1,6 @@
 import { isTainted, taintOf, tainted, unwrapTainted } from "@loom/classify";
 import type { AgentDefinition, ToolDefinition } from "@loom/core";
-import { loadInstructions } from "@loom/core";
+import { TypedFailure, fail, loadInstructions } from "@loom/core";
 import type { EffectContext, EffectRuntime } from "@loom/effect-runtime";
 import { CapabilityDeniedError, EffectModeViolationError, LlmEffect } from "@loom/effect-runtime";
 import type {
@@ -11,7 +11,7 @@ import type {
   LlmToolCall,
   LlmToolSpecInput,
 } from "@loom/llm";
-import { guardRequest } from "@loom/llm";
+import { LLM_INTERRUPTED, collectStream, guardRequest } from "@loom/llm";
 import type { MemoryRuntime } from "@loom/memory";
 import type { ReasoningRuntime } from "@loom/reasoning";
 import { parallelLimit, throwIfAborted } from "@loom/scheduler";
@@ -47,6 +47,39 @@ export interface AgentConfig {
   // them to the system prompt, and adds their tools to the model's tool menu.
   skills?: SkillRegistry;
   skillSelector?: SkillSelector;
+  /**
+   * Consume the provider's `stream` for each turn instead of `complete` (R9).
+   * Opt-in: the outcome is identical by the R8 parity contract, but the wire call
+   * is not. Falls back to `complete` when the provider cannot stream.
+   *
+   * Beyond live output, this is what gives an INTERRUPTED turn a partial to keep
+   * (R6): on the `complete` path an abort throws with the response body unread,
+   * so there is nothing to hand back.
+   */
+  stream?: boolean;
+  /**
+   * Transient sink for deltas. Never journaled — routing a token stream through
+   * `ctx.stream` is durable per delta, and is a granularity choice the author
+   * makes deliberately (R7).
+   */
+  onDelta?: (delta: string) => void;
+}
+
+/** The channel an interrupted agent run fails on (ADR 0060). */
+export const AGENT_INTERRUPTED = "agentInterrupted";
+
+/**
+ * What the turn had produced when the stop landed. The tool calls are the point:
+ * they are the expensive, already-paid-for half of the work, and re-running the
+ * agent from nothing repeats every one of them.
+ */
+export interface InterruptedAgentRun {
+  /** Partial text from the interrupted generation. Empty unless `stream` is on. */
+  content: string;
+  /** Turns begun before the interruption. */
+  iterations: number;
+  /** Tool calls that completed, in the model's order. */
+  toolCallLog: AgentStep[];
 }
 
 /**
@@ -150,97 +183,122 @@ export class AgentRunner {
     let iterations = 0;
     let lastContent = "";
 
-    while (iterations < this.maxIterations) {
-      // Interruption checkpoint: bail before spending another (expensive) LLM
-      // round-trip if the execution was cancelled.
-      throwIfAborted(ctx.signal);
-      iterations++;
-
-      const response = await this.complete(
-        {
-          messages,
-          toolSpecs,
-          ...(effectiveSystem !== undefined && { system: effectiveSystem }),
-          ...(ctx.signal !== undefined && { signal: ctx.signal }),
-        },
-        ctx,
-        iterations
+    // R6 — everything the turn produced, carried out on an ADR 0060 channel if a
+    // stop lands. The interruption can arrive from three places (the checkpoint
+    // below, a tool that took too long, or mid-generation), and the work already
+    // done is worth the same in all three, so the capture wraps the whole loop
+    // rather than each site.
+    const interrupted = (err: unknown): never => {
+      const partial =
+        err instanceof TypedFailure && err.channel === LLM_INTERRUPTED
+          ? ((err.payload as { content?: string }).content ?? "")
+          : "";
+      fail(
+        AGENT_INTERRUPTED,
+        { content: partial, iterations, toolCallLog } satisfies InterruptedAgentRun,
+        "agent run interrupted"
       );
+    };
 
-      lastContent = response.content;
-
-      if (response.stopReason === "end_turn" || !response.toolCalls?.length) {
-        break;
-      }
-
-      messages.push({ role: "assistant", content: response.content || "(tool calls)" });
-
-      const toolCalls = response.toolCalls;
-
-      // Execute a single tool call, swallowing errors into a result object so a
-      // failing tool never rejects the batch (keeps behaviour identical between
-      // sequential and parallel modes).
-      const runToolCall = async (toolCall: (typeof toolCalls)[number]): Promise<unknown> => {
-        try {
-          return await effectRuntime.execute(toolCall.name, toolCall.input, ctx);
-        } catch (err) {
-          // R4 — an AUTHORITY error is not a tool error. Swallowing it into a
-          // result hands the model "not authorized", which it reads as feedback:
-          // it reformulates and probes a neighbouring tool, turning one denial
-          // into a search over the grant table. `EFFECT_DENIED` is durably logged
-          // either way, but auditable is not the same as stopped, so a denial is
-          // terminal for the turn.
-          //
-          // The blanket catch below stays, because it is right for everything
-          // else: a timing-out API or a malformed argument IS feedback the model
-          // can act on. The fix is telling the two apart.
-          if (err instanceof CapabilityDeniedError || err instanceof EffectModeViolationError) {
-            throw err;
-          }
-          return { error: String(err) };
-        }
-      };
-
-      let toolOutputs: unknown[];
-      if (this.parallelTools !== false) {
+    try {
+      while (iterations < this.maxIterations) {
+        // Interruption checkpoint: bail before spending another (expensive) LLM
+        // round-trip if the execution was cancelled.
         throwIfAborted(ctx.signal);
-        const limit =
-          typeof this.parallelTools === "number" ? this.parallelTools : toolCalls.length;
-        // parallelLimit preserves input order in the result array.
-        toolOutputs = await parallelLimit(
-          toolCalls.map((tc) => () => runToolCall(tc)),
-          { limit, ...(ctx.signal !== undefined && { signal: ctx.signal }) }
+        iterations++;
+
+        const response = await this.complete(
+          {
+            messages,
+            toolSpecs,
+            ...(effectiveSystem !== undefined && { system: effectiveSystem }),
+            ...(ctx.signal !== undefined && { signal: ctx.signal }),
+          },
+          ctx,
+          iterations
         );
-      } else {
-        toolOutputs = [];
-        for (const toolCall of toolCalls) {
+
+        lastContent = response.content;
+
+        if (response.stopReason === "end_turn" || !response.toolCalls?.length) {
+          break;
+        }
+
+        messages.push({ role: "assistant", content: response.content || "(tool calls)" });
+
+        const toolCalls = response.toolCalls;
+
+        // Execute a single tool call, swallowing errors into a result object so a
+        // failing tool never rejects the batch (keeps behaviour identical between
+        // sequential and parallel modes).
+        const runToolCall = async (toolCall: (typeof toolCalls)[number]): Promise<unknown> => {
+          try {
+            return await effectRuntime.execute(toolCall.name, toolCall.input, ctx);
+          } catch (err) {
+            // R4 — an AUTHORITY error is not a tool error. Swallowing it into a
+            // result hands the model "not authorized", which it reads as feedback:
+            // it reformulates and probes a neighbouring tool, turning one denial
+            // into a search over the grant table. `EFFECT_DENIED` is durably logged
+            // either way, but auditable is not the same as stopped, so a denial is
+            // terminal for the turn.
+            //
+            // The blanket catch below stays, because it is right for everything
+            // else: a timing-out API or a malformed argument IS feedback the model
+            // can act on. The fix is telling the two apart.
+            if (err instanceof CapabilityDeniedError || err instanceof EffectModeViolationError) {
+              throw err;
+            }
+            return { error: String(err) };
+          }
+        };
+
+        let toolOutputs: unknown[];
+        if (this.parallelTools !== false) {
           throwIfAborted(ctx.signal);
-          toolOutputs.push(await runToolCall(toolCall));
+          const limit =
+            typeof this.parallelTools === "number" ? this.parallelTools : toolCalls.length;
+          // parallelLimit preserves input order in the result array.
+          toolOutputs = await parallelLimit(
+            toolCalls.map((tc) => () => runToolCall(tc)),
+            { limit, ...(ctx.signal !== undefined && { signal: ctx.signal }) }
+          );
+        } else {
+          toolOutputs = [];
+          for (const toolCall of toolCalls) {
+            throwIfAborted(ctx.signal);
+            toolOutputs.push(await runToolCall(toolCall));
+          }
+        }
+
+        // Record, emit, and feed results back in the model's tool-call order —
+        // deterministic regardless of which tool finished first.
+        for (let i = 0; i < toolCalls.length; i++) {
+          const toolCall = toolCalls[i]!;
+          const toolOutput = toolOutputs[i];
+
+          toolCallLog.push({
+            iteration: iterations,
+            toolName: toolCall.name,
+            toolInput: toolCall.input,
+            toolOutput,
+          });
+
+          ctx.emit("AGENT_TOOL_CALL", {
+            iteration: iterations,
+            toolName: toolCall.name,
+            toolInput: toolCall.input,
+            toolOutput,
+          });
+
+          messages.push({ role: "user", content: toolResultContent(toolCall.name, toolOutput) });
         }
       }
-
-      // Record, emit, and feed results back in the model's tool-call order —
-      // deterministic regardless of which tool finished first.
-      for (let i = 0; i < toolCalls.length; i++) {
-        const toolCall = toolCalls[i]!;
-        const toolOutput = toolOutputs[i];
-
-        toolCallLog.push({
-          iteration: iterations,
-          toolName: toolCall.name,
-          toolInput: toolCall.input,
-          toolOutput,
-        });
-
-        ctx.emit("AGENT_TOOL_CALL", {
-          iteration: iterations,
-          toolName: toolCall.name,
-          toolInput: toolCall.input,
-          toolOutput,
-        });
-
-        messages.push({ role: "user", content: toolResultContent(toolCall.name, toolOutput) });
-      }
+    } catch (err) {
+      // Only a STOP is an interruption. An authority denial (R4) and an ordinary
+      // failure both propagate untouched: the first is terminal by design, the
+      // second is not lost work but a broken run.
+      if (ctx.signal?.aborted === true) interrupted(err);
+      throw err;
     }
 
     // Remember this turn (the user's prompt and the agent's answer).
@@ -307,7 +365,19 @@ export class AgentRunner {
     }
 
     // Guarded by the constructor: provider is defined when reasoning is not.
-    const res = await (this.config.provider as LlmProvider).complete(request);
+    const provider = this.config.provider as LlmProvider;
+    // R9/R6 — the streamed turn. Same outcome by the R8 parity contract, so the
+    // loop below branches on exactly what it always did; what changes is that
+    // deltas reach the sink live, and an abort mid-generation surfaces the text
+    // produced so far instead of discarding it. Falls back when the provider
+    // cannot stream, so opting in is never a runtime failure.
+    const res =
+      this.config.stream === true && provider.stream !== undefined
+        ? await collectStream(provider.stream(request), {
+            ...(args.signal !== undefined && { signal: args.signal }),
+            ...(this.config.onDelta !== undefined && { onDelta: this.config.onDelta }),
+          })
+        : await provider.complete(request);
     return {
       content: res.content,
       stopReason: res.stopReason,
