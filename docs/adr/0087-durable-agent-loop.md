@@ -83,22 +83,39 @@ That is a genuine cost and it is not free. It has two halves and both already sh
 - **turns per conversation** — `TieredMemory`'s `summarizeAfter` and its injectable `Summarizer`:
   lossy, by summarization.
 
-Neither is invented here. The second is **not yet wired into the loop** — see D6.
+Neither is invented here. The second is wired into the loop as a RECORDED task — see D6.
 
-### D6 — What this deliberately does NOT do
+### D6 — What the first cut deliberately did NOT do (all since landed)
 
-- **Skill selection.** `SkillRegistry` selection is a per-turn *choice*; doing it correctly means
-  `ctx.decide`, so replay serves the same set. Half-wiring it (selecting live, unrecorded) would
-  reintroduce exactly the unevaluable-log problem this ADR exists to fix. Left out until it can be
-  done through the decision seam.
-- **The per-turn summarize pass.** D5's second half belongs in the loop body, but it is a separate
-  behaviour with its own failure modes (a lossy, nondeterministic summary must be journaled through
-  `ctx.execute` to be replay-safe). Deferred rather than approximated.
-- **Reasoning-runtime routing.** `AgentRunner`'s `reasoning` path stays where it is. Routing through
-  `ctx.decide` from the loop is the right shape and is a follow-up.
+The three items below were held back from the initial implementation because a partial version of
+each would have read as coverage. All three shipped in the follow-on (2026-08-18), and the reason
+each was deferred turned out to shape its design — recorded here because that is the useful part:
 
-Each of these is a place where a partial implementation would read as coverage. They are named here
-so the absence is a recorded decision rather than an oversight.
+- **Skill selection** now runs through `ctx.decide`, so replay serves the set that ran. This closes
+  a hole `llmSkillSelector` documented against itself ("the LLM decision is not recorded"): an
+  unrecorded selection means a replayed run can rebuild a *different prompt* than the one whose
+  answer is in the log.
+- **Memory recall** likewise, via `TieredMemory.recall({ decide })` and bounded by `recallLimit` —
+  the fix for the "unbounded recall" cost, where conversation length was a hard wall rather than a
+  cost curve.
+- **The per-turn summarize pass** runs through `ctx.execute` against a `compaction.toolId`, which is
+  precisely why it was deferred: a summary is lossy and nondeterministic, so computing it in the
+  loop body would make the reconstructed transcript depend on *when* you replayed. As a recorded
+  task it is journaled once and served from the log. A test asserts the `:compact` frame exists;
+  replacing the recorded task with an inline computation fails it.
+
+**Reasoning-runtime routing** through `ctx.decide` remains with `AgentRunner` and is still open.
+
+### D7 — Streaming granularity is the author's choice, and now an easy one
+
+`chunkDeltas(emit, { minChars })` batches provider deltas to a semantic boundary before handing
+them on. The advice in `docs/usage.md` — chunk at a sentence, not a token — was advice until
+something made it easy to follow, and it matters because a sink is not always transient:
+`ctx.stream` appends a durable event per call, so a token-granular stream through it is the same
+fold economics ST-R rejected, arriving through the sanctioned door. Wrapping the sink turns the
+delta count from a property of the provider's tokenizer into a decision.
+
+Transient sinks (`@loom/live-query`, `progressHub`) do not need it — there, per-token is free.
 
 ## Consequences
 
@@ -106,6 +123,8 @@ so the absence is a recorded decision rather than an oversight.
   log, and individually authorized. A crash costs one turn.
 - Approval, streaming and per-turn decisions become reachable for the first time — R1 was the
   precondition for all three, which is why it is the largest item and the last of the small ones.
+  All three are now USED, not merely reachable: skills and recall through `ctx.decide`, compaction
+  through `ctx.execute`, granularity through `chunkDeltas`.
 - The log grows with conversation length for adopters who opt in. Documented, with the two existing
   mitigations named; `agentStep$` remains for those who want neither.
 - `@loom/agent` gains a dependency on `@loom/workflow-runtime` for `ExecutionContext` — the same
@@ -118,3 +137,9 @@ so the absence is a recorded decision rather than an oversight.
   identity-rule ids; recovery after a mid-loop crash re-runs ONLY the unfinished turn.
 - `agentLoopApproval.test.ts` — the gate parks before the effect (nothing destructive has run while
   a human decides), an approval runs it, a refusal reaches the model and the run settles.
+- `agentLoopChoices.test.ts` — a DRIFTING selector (different answer on the second call) proves the
+  point: without the seam a replay rebuilds a prompt without the skill; with it, the recorded set is
+  served. Plus recall bounded by `recallLimit`, and a G2 control where neither is configured.
+- `agentLoopCompaction.test.ts` — the transcript folds once the threshold is crossed and stops
+  tracking conversation length; the summary is its own `:compact` frame; an un-configured loop still
+  grows (the behaviour being bounded). Plus `chunkDeltas` boundary, `minChars` and flush behaviour.

@@ -1,4 +1,5 @@
 import type { AgentDefinition, ToolDefinition } from "@loom/core";
+import { loadInstructions } from "@loom/core";
 import type {
   LlmContent,
   LlmMessageInput,
@@ -6,7 +7,10 @@ import type {
   LlmToolCall,
   LlmToolSpecInput,
 } from "@loom/llm";
+import type { TieredMemory } from "@loom/memory";
 import type { ExecutionContext } from "@loom/workflow-runtime";
+import type { SkillRegistry } from "./SkillRegistry";
+import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { toolResultContent } from "./toolResultContent";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
@@ -69,6 +73,55 @@ export interface AgentLoopConfig {
   requireApproval?: ApprovalPolicy;
   /** Gate name for approvals. Pair with `flow$({ resumeSchemas })` to parse the payload (ADR 0077). */
   approvalGate?: string;
+  /**
+   * Skills to select from. The selection is RECORDED through `ctx.decide`, so
+   * replay serves the set that actually ran rather than re-selecting.
+   *
+   * That is what makes a model-driven selector safe here. `llmSkillSelector`
+   * carried the caveat in its own comment — "the LLM decision is not recorded" —
+   * and an unrecorded selection means a replayed run can rebuild a DIFFERENT
+   * prompt than the one whose answer is in the log.
+   */
+  skills?: SkillRegistry;
+  skillSelector?: SkillSelector;
+  /**
+   * Conversation memory, recalled through `ctx.decide` for the same reason: a
+   * store that changed between the run and the replay would silently change the
+   * prompt.
+   */
+  memory?: TieredMemory;
+  /** Memory tier to recall from. Default `"working"`. */
+  memoryTier?: string;
+  /** Scope key. Default the execution id, so a run remembers its own conversation. */
+  memoryScope?: string;
+  /**
+   * How many recalled entries reach the prompt, newest first. Unset ⇒ ALL of
+   * them, which is the hard wall `AgentRunner` still has: conversation length
+   * stops being a cost curve and becomes a limit. Set it.
+   */
+  recallLimit?: number;
+  /**
+   * Fold older messages into one summary when the transcript grows past
+   * `afterMessages`, keeping the newest `keepRecent` intact.
+   *
+   * This is the second half of the log-growth answer (ADR 0087 D5): claim-check
+   * bounds the BYTES per turn, this bounds the TURNS per conversation. It was
+   * deferred from R1 for a specific reason, and that reason shapes the design —
+   * a summary is lossy and nondeterministic, so it cannot simply be computed in
+   * the loop body. It runs through `ctx.execute` against `toolId`, which makes it
+   * a recorded task: journaled once, served from the log on replay, so a
+   * re-run reconstructs the SAME compacted transcript rather than re-summarizing
+   * into a different one.
+   *
+   * The effect receives `{ messages }` and returns `{ summary: string }`.
+   */
+  compaction?: {
+    toolId: string;
+    /** Compact once the transcript exceeds this many messages. */
+    afterMessages: number;
+    /** How many of the newest messages to leave untouched. Default 4. */
+    keepRecent?: number;
+  };
 }
 
 const DEFAULT_GATE = "AgentToolApproval";
@@ -108,21 +161,71 @@ export async function agentLoop$(
   const gate = config.approvalGate ?? DEFAULT_GATE;
   const idPrefix = config.definition.id;
 
-  // Skills are deliberately not resolved here: `SkillRegistry` selection is a
-  // per-turn CHOICE, and doing it right means `ctx.decide` so replay serves the
-  // same set. That is a follow-up with its own shape, not a thing to half-wire.
-  const system = config.systemPrompt;
+  // ── The choices, recorded (P9) ─────────────────────────────────────────────
+  // Both of these change what the model is asked and neither is derivable from
+  // the log, which is exactly what `ctx.decide` is for: the decider runs once,
+  // its result is journaled, and replay serves the recorded value.
 
-  const tools = toolSpecsFor(config.definition.tools);
-  const messages: LlmMessageInput[] = [
-    {
-      role: "user",
-      content:
-        input.context != null
-          ? `Context: ${JSON.stringify(input.context)}\n\n${input.prompt}`
-          : input.prompt,
-    },
-  ];
+  const skillTools: ToolDefinition[] = [];
+  const skillInstructions: string[] = [];
+  if (config.skills !== undefined && config.skills.all().length > 0) {
+    const selector = config.skillSelector ?? deterministicSkillSelector();
+    const registry = config.skills;
+    const selected = await ctx.decide<string[]>(`${idPrefix}#skills`, () =>
+      selector.select(input, registry)
+    );
+    for (const id of selected) {
+      const skill = registry.get(id);
+      if (skill === undefined) continue;
+      skillInstructions.push(await loadInstructions(skill.instructions));
+      if (skill.tools !== undefined) skillTools.push(...skill.tools);
+    }
+  }
+
+  const system =
+    skillInstructions.length > 0
+      ? [config.systemPrompt, ...skillInstructions]
+          .filter((s) => s != null && s !== "")
+          .join("\n\n")
+      : config.systemPrompt;
+
+  // The agent's tools plus whatever the selected skills bring, deduped by id
+  // (the agent's own win).
+  const toolDefs: ToolDefinition[] = [...config.definition.tools];
+  const seenToolIds = new Set(toolDefs.map((t) => t.id));
+  for (const t of skillTools) {
+    if (!seenToolIds.has(t.id)) {
+      seenToolIds.add(t.id);
+      toolDefs.push(t);
+    }
+  }
+  const tools = toolSpecsFor(toolDefs);
+
+  const messages: LlmMessageInput[] = [];
+  if (config.memory !== undefined) {
+    const tier = config.memoryTier ?? "working";
+    const scope = config.memoryScope ?? ctx.executionId;
+    const recalled = await config.memory.recall(tier, scope, {
+      ...(config.recallLimit !== undefined && { limit: config.recallLimit }),
+      // Bound, not passed bare: `ctx.decide` is a method, and handing the
+      // reference over detaches it from the context that owns the frame table.
+      decide: (id, decider) => ctx.decide(id, decider),
+      decisionKey: `${idPrefix}#recall`,
+    });
+    for (const entry of recalled) {
+      messages.push({
+        role: entry.role === "assistant" ? "assistant" : "user",
+        content: String(entry.content),
+      });
+    }
+  }
+  messages.push({
+    role: "user",
+    content:
+      input.context != null
+        ? `Context: ${JSON.stringify(input.context)}\n\n${input.prompt}`
+        : input.prompt,
+  });
 
   const toolCallLog: AgentStep[] = [];
   let iterations = 0;
@@ -131,6 +234,26 @@ export async function agentLoop$(
   while (iterations < maxIterations) {
     const turn = iterations;
     iterations++;
+
+    // Compact BEFORE the turn's model call, so the summary is what gets asked
+    // — compacting after would journal a transcript the model never saw.
+    const compaction = config.compaction;
+    if (compaction !== undefined && messages.length > compaction.afterMessages) {
+      const keep = compaction.keepRecent ?? 4;
+      const fold = messages.slice(0, messages.length - keep);
+      const recent = messages.slice(messages.length - keep);
+      const { summary } = (await ctx.execute(
+        {
+          _tag: "TaskDefinition",
+          kind: "memory",
+          id: `${idPrefix}#turn:${turn}:compact`,
+          toolId: compaction.toolId,
+        },
+        { messages: fold }
+      )) as { summary: string };
+      messages.length = 0;
+      messages.push({ role: "user", content: `Summary of earlier turns: ${summary}` }, ...recent);
+    }
 
     // One durable frame per turn. On recovery this is served from the log for
     // every turn that completed — the crash at turn 39 costs turn 39, not 1..39.
