@@ -58,3 +58,5 @@ export {
   type SafetyOptions,
   type SchemaLike,
 } from "./safety";
+export { estimateTokensByChars, streamTokenBudget } from "./streamTokenBudget";
+export type { StreamTokenBudgetOptions, TokenEstimator } from "./streamTokenBudget";
