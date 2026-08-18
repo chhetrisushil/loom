@@ -6,6 +6,8 @@ export { deterministicSkillSelector, llmSkillSelector } from "./SkillSelector";
 export type { SkillSelector } from "./SkillSelector";
 export { agentLoop$ } from "./agentLoop$";
 export type { AgentLoopConfig, AgentModelCall, ApprovalPolicy } from "./agentLoop$";
+export { chunkDeltas } from "./chunkDeltas";
+export type { ChunkDeltasOptions, ChunkedSink } from "./chunkDeltas";
 export { createAgentModelEffect } from "./createAgentModelEffect";
 export { agentStep$ } from "./agentStep$";
 export type { AgentStepConfig } from "./agentStep$";
