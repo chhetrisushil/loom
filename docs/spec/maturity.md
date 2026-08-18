@@ -26,6 +26,7 @@ by a conformance test; `L4` requires a committed bench; `L2`/`L3` require a pass
 | Projection Runtime | `L4` | @loom/projection-runtime | test · bench |
 | Reasoning Router | `L4` | @loom/reasoning | test · bench |
 | Runtime Verification | `L4` | @loom/verify | test · bench |
+| Cancellation, Deadlines & Bounded Effects | `L3` | @loom/workflow-runtime | test · used: plugins/worker-server/src/crossSeamCancel.integration.test.ts — cancellation across the dispatch seam; packages/middleware/src/streamTokenBudget.test.ts — K8.4 mid-stream severance |
 | Compiler | `L3` | @loom/compiler | `COMPILER_MANIFEST_VERSION` · test · used: loom-starter, examples/* |
 | Decision Materialization | `L3` | @loom/analytics | test · used: advisoryPipeline + loom introspect |
 | Tiered Memory | `L3` | @loom/memory | test · used: examples/db-command-center |
@@ -57,6 +58,7 @@ by a conformance test; `L4` requires a committed bench; `L2`/`L3` require a pass
 - **Deterministic Simulation Testing** (`L4`): Test/dev-only harness, not a wire contract → cannot be L5; L4 via its append-overhead bench. Production overhead is structurally zero (no runtime package imports it).
 - **Per-Tenant Fair Scheduler** (`L4`): Implements the existing Scheduler interface (drops into any consumer); L4 via its Infinity-fast-path bench. Not L5 — the scheduler is ephemeral, not a durable/wire contract.
 - **Runtime Verification** (`L4`): No ABI version constant (it is a tool, not a wire contract) → cannot be L5; L4 via its zero-overhead bench.
+- **Cancellation, Deadlines & Bounded Effects** (`L3`): ADR 0020 — every other K3 enforcement point is ADMISSION CONTROL (it decides whether the next effect runs); K8.4 is the only one that acts inside a call already in flight, which is why it waited on streaming effects and landed only with ADR 0087's series. A5 predicted it could not be middleware (right — middleware sees the effect once, at the end) and proposed an `EffectContext` usage-reporter hook (wrong — both wired providers report usage once, at the end, so such a hook could only fire where metering already reads the number). What ships observes the only thing a stream reports continuously, its own output, and names the estimate AS an estimate in the type, the reason and the default. Not L4: no committed bench — the acceptance criterion is a latency claim (<1s) that no bench pins, and provider forwarding is best-effort anyway (A7), so the honest ceiling is L3 via the cross-seam integration.
 - **Compiler** (`L3`): Manifest schema is versioned but not conformance-PINNED like the semver ABIs → L3, not L5.
 - **Decision Materialization** (`L3`): Proposed as L4, but has no dedicated bench → evidence-derived L3.
 - **Typed Resume Payloads** (`L3`): ADR 0077 — the shape counterpart to K12.2's identity gate (which authenticates WHO may resume, never WHAT they send). KERNEL_ABI unchanged 1.1.0: no syscall added, and ctx.suspend's type parameter is erased. Opt-in by presence (G2).
