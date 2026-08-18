@@ -8,6 +8,7 @@ import type {
   LlmToolSpecInput,
 } from "@loom/llm";
 import type { TieredMemory } from "@loom/memory";
+import type { ReasoningRuntime } from "@loom/reasoning";
 import type { ExecutionContext } from "@loom/workflow-runtime";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
@@ -57,7 +58,29 @@ export interface AgentLoopConfig {
    * `idempotencyKey`, K9 in-doubt — on the most expensive and least reliable call
    * the agent makes. Register `createAgentModelEffect(provider)` under it.
    */
-  modelToolId: string;
+  modelToolId?: string;
+  /**
+   * Route the turn through the Reasoning Runtime instead of a fixed effect, with
+   * the route and every elevation recorded as REAL decisions.
+   *
+   * `AgentRunner` fakes this seam: it builds a local `decide` that runs the
+   * decider and hand-emits DECISION_RECORDED through `emit`. That is a fact in
+   * the log and it is NOT served on replay, so a re-run re-routes — and if
+   * routing improves run-to-run, which is the point of a Reasoning Runtime, the
+   * replayed run can take a different route than the one whose answer is
+   * recorded. A bare log that LOOKS scored while being unevaluable is exactly
+   * what the `learning-router` example exists to demonstrate.
+   *
+   * From a runner body the real seam is in reach, so this passes `ctx.decide`.
+   *
+   * **The trade-off, stated rather than hidden.** On this path the model call is
+   * made by the Reasoning Runtime's own routes, so it does NOT pass through the
+   * `EffectRuntime`: `guardRequest` still runs (R2 guards `ReasoningRuntime.call`),
+   * but K2 authorization, metering and K9 in-doubt do not apply to it. The
+   * `modelToolId` path gets the full ring and no routing. Pick per agent; they
+   * are alternatives, and one of the two is required.
+   */
+  reasoning?: ReasoningRuntime;
   systemPrompt?: string;
   maxIterations?: number;
   /**
@@ -157,6 +180,11 @@ export async function agentLoop$(
   config: AgentLoopConfig,
   input: AgentInput
 ): Promise<AgentOutput> {
+  if (config.modelToolId === undefined && config.reasoning === undefined) {
+    // Refused up front rather than running zero turns and returning an empty
+    // answer, which is what an absent model access would otherwise look like.
+    throw new Error("agentLoop$ requires a `modelToolId` or a `reasoning` runtime");
+  }
   const maxIterations = config.maxIterations ?? 10;
   const gate = config.approvalGate ?? DEFAULT_GATE;
   const idPrefix = config.definition.id;
@@ -231,52 +259,9 @@ export async function agentLoop$(
   let iterations = 0;
   let lastContent = "";
 
-  while (iterations < maxIterations) {
-    const turn = iterations;
-    iterations++;
-
-    // Compact BEFORE the turn's model call, so the summary is what gets asked
-    // — compacting after would journal a transcript the model never saw.
-    const compaction = config.compaction;
-    if (compaction !== undefined && messages.length > compaction.afterMessages) {
-      const keep = compaction.keepRecent ?? 4;
-      const fold = messages.slice(0, messages.length - keep);
-      const recent = messages.slice(messages.length - keep);
-      const { summary } = (await ctx.execute(
-        {
-          _tag: "TaskDefinition",
-          kind: "memory",
-          id: `${idPrefix}#turn:${turn}:compact`,
-          toolId: compaction.toolId,
-        },
-        { messages: fold }
-      )) as { summary: string };
-      messages.length = 0;
-      messages.push({ role: "user", content: `Summary of earlier turns: ${summary}` }, ...recent);
-    }
-
-    // One durable frame per turn. On recovery this is served from the log for
-    // every turn that completed — the crash at turn 39 costs turn 39, not 1..39.
-    const response = (await ctx.execute(
-      {
-        _tag: "TaskDefinition",
-        kind: "llm",
-        id: `${idPrefix}#turn:${turn}`,
-        toolId: config.modelToolId,
-      },
-      {
-        messages,
-        ...(tools.length > 0 && { tools }),
-        ...(system !== undefined && { system }),
-      } satisfies AgentModelCall
-    )) as LlmResponse;
-
-    lastContent = response.content;
-    if (response.stopReason === "end_turn" || !response.toolCalls?.length) break;
-
-    messages.push({ role: "assistant", content: response.content || "(tool calls)" });
-
-    for (const [j, toolCall] of response.toolCalls.entries()) {
+  /** Execute one turn's tool calls: gate, run, record, feed back. Shared by both paths. */
+  const runToolCalls = async (calls: readonly LlmToolCall[], turn: number): Promise<void> => {
+    for (const [j, toolCall] of calls.entries()) {
       let output: unknown;
 
       // Mid-loop HITL. The gate is BEFORE the effect, so a declined call never
@@ -316,6 +301,79 @@ export async function agentLoop$(
       });
       messages.push({ role: "user", content: toolResultContent(toolCall.name, output) });
     }
+  };
+
+  while (iterations < maxIterations) {
+    const turn = iterations;
+    iterations++;
+
+    // Compact BEFORE the turn's model call, so the summary is what gets asked
+    // — compacting after would journal a transcript the model never saw.
+    const compaction = config.compaction;
+    if (compaction !== undefined && messages.length > compaction.afterMessages) {
+      const keep = compaction.keepRecent ?? 4;
+      const fold = messages.slice(0, messages.length - keep);
+      const recent = messages.slice(messages.length - keep);
+      const { summary } = (await ctx.execute(
+        {
+          _tag: "TaskDefinition",
+          kind: "memory",
+          id: `${idPrefix}#turn:${turn}:compact`,
+          toolId: compaction.toolId,
+        },
+        { messages: fold }
+      )) as { summary: string };
+      messages.length = 0;
+      messages.push({ role: "user", content: `Summary of earlier turns: ${summary}` }, ...recent);
+    }
+
+    const turnRequest = {
+      messages,
+      ...(tools.length > 0 && { tools }),
+      ...(system !== undefined && { system }),
+    } satisfies AgentModelCall;
+
+    // Routed turn: the route and each elevation are recorded through the REAL
+    // decision seam, so a replay takes the route that ran.
+    if (config.reasoning !== undefined) {
+      const routed = await config.reasoning.reason(
+        { ...turnRequest, strategy: "agent" },
+        {
+          decide: (id, decider) => ctx.decide(id, decider),
+          decisionKey: `${idPrefix}#turn:${turn}`,
+        }
+      );
+      lastContent = routed.content;
+      if (routed.stopReason === "end_turn" || !routed.toolCalls?.length) break;
+      messages.push({ role: "assistant", content: routed.content || "(tool calls)" });
+      await runToolCalls(routed.toolCalls, turn);
+      continue;
+    }
+
+    // One durable frame per turn. On recovery this is served from the log for
+    // every turn that completed — the crash at turn 39 costs turn 39, not 1..39.
+    const response = (await ctx.execute(
+      {
+        _tag: "TaskDefinition",
+        kind: "llm",
+        id: `${idPrefix}#turn:${turn}`,
+        // Non-null by the constructor guard: one of `modelToolId` / `reasoning`
+        // is required, and the reasoning path returned above.
+        toolId: config.modelToolId as string,
+      },
+      {
+        messages,
+        ...(tools.length > 0 && { tools }),
+        ...(system !== undefined && { system }),
+      } satisfies AgentModelCall
+    )) as LlmResponse;
+
+    lastContent = response.content;
+    if (response.stopReason === "end_turn" || !response.toolCalls?.length) break;
+
+    messages.push({ role: "assistant", content: response.content || "(tool calls)" });
+
+    await runToolCalls(response.toolCalls, turn);
   }
 
   return { content: lastContent, toolCallLog, iterations };

@@ -1,4 +1,13 @@
-import type { LlmMessage, LlmProvider, LlmResponse, LlmToolCall, LlmToolSpec } from "@loom/llm";
+import type {
+  LlmContent,
+  LlmMessage,
+  LlmMessageInput,
+  LlmProvider,
+  LlmResponse,
+  LlmToolCall,
+  LlmToolSpec,
+  LlmToolSpecInput,
+} from "@loom/llm";
 
 // A decision sink shaped exactly like `ExecutionContext.decide` (minus opts). When a
 // flow passes `ctx.decide`, each route/elevation becomes a durable DECISION_RECORDED
@@ -19,11 +28,15 @@ export interface ModelRoute {
 }
 
 export interface ReasoningRequest {
-  messages: LlmMessage[];
-  system?: string;
+  // The INPUT side of the prompt boundary: content may still carry taint, because
+  // `ReasoningRuntime.call` runs `guardRequest` before any provider sees it (R2).
+  // Typing these as plain strings was a claim the runtime never checked — and a
+  // tainted MCP tool description arrives through exactly such a field.
+  messages: LlmMessageInput[];
+  system?: LlmContent;
   /** Picks a route by tag and namespaces the logged decisions. */
   strategy?: string;
-  tools?: LlmToolSpec[];
+  tools?: LlmToolSpecInput[];
   maxTokens?: number;
   temperature?: number;
   signal?: AbortSignal;

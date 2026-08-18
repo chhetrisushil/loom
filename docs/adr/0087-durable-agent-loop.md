@@ -104,7 +104,17 @@ each was deferred turned out to shape its design — recorded here because that 
   task it is journaled once and served from the log. A test asserts the `:compact` frame exists;
   replacing the recorded task with an inline computation fails it.
 
-**Reasoning-runtime routing** through `ctx.decide` remains with `AgentRunner` and is still open.
+- **Reasoning-runtime routing** now passes the real `ctx.decide` into `reason()`, so the route and
+  every elevation are decisions replay serves. `AgentRunner` fakes the seam — it hand-emits
+  `DECISION_RECORDED` through `emit`, which records the route as a fact but cannot have it served,
+  so a re-run re-routes. A test proves the difference: swap the real seam for the hand-emitted one
+  and a replay takes `strong` where the log says `cheap`.
+
+  The trade-off is stated rather than hidden: on the routed path the model call is made by the
+  Reasoning Runtime's own routes, so `guardRequest` still runs but K2, metering and K9 in-doubt do
+  not apply to it. `modelToolId` gets the full ring and no routing. They are alternatives, and one
+  of the two is required — an absent model access is refused up front rather than running zero
+  turns and returning an empty answer.
 
 ### D7 — Streaming granularity is the author's choice, and now an easy one
 

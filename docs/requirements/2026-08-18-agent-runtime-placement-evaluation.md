@@ -147,11 +147,14 @@ read as coverage:
   own behaviour with its own failure modes;
 - **skill selection** — a per-turn *choice*, so doing it right means `ctx.decide`; selecting live
   and unrecorded would reintroduce the exact unevaluable-log problem R1 exists to fix;
-- **reasoning-runtime routing** through `ctx.decide`, which stays with `AgentRunner` for now.
+All three landed in the follow-on, along with **reasoning-runtime routing**: `agentLoop$` passes the
+real `ctx.decide` into `reason()`, so the route and every elevation are decisions replay serves.
+`AgentRunner`'s hand-emitted version records the route as a fact that replay ignores — a re-run
+re-routes, which is the failure the `learning-router` example exists to demonstrate.
 
-So the "No `ctx.decide` per turn" row above is only *half* discharged: the loop can reach the
-decision seam, and nothing in it uses the seam yet. Worth saying plainly, since R1 was listed as
-buying evaluable per-turn decisions and what it actually bought is the ability to have them.
+So the "No `ctx.decide` per turn" row above is now discharged, and it is worth being precise about
+what that means: the loop does not invent decisions of its own, it puts the ones an agent already
+makes — which skills, what memory, which model — through the seam that records them.
 
 **Not the same operation as run rotation.** Worth recording, because the analogy is tempting and
 wrong: this is *not* RC-1 `rotate$` carry-forward seen from another layer, and it must not be
