@@ -90,18 +90,14 @@ function boot(opts: { flip?: { value: boolean }; eventStore?: InMemoryAsyncEvent
     return { content: out.content };
   };
   runtime.registerFlow(flowDef, runner as FlowRunner<unknown, unknown>);
-  const flow: RegisteredFlow = {
-    definition: flowDef,
-    runner: runner as FlowRunner<unknown, unknown>,
-  };
-  return { runtime, flow, used };
+  return { runtime, flowDef, used };
 }
 
 describe("the loop routes through the decision seam", () => {
   it("records the route as a served decision", async () => {
     const store = new InMemoryAsyncEventStore();
-    const { runtime, flow, used } = boot({ eventStore: store });
-    const handle = await runtime.start(flow, {}, { executionId: "r1" });
+    const { runtime, flowDef, used } = boot({ eventStore: store });
+    const handle = await runtime.start(flowDef, {}, { executionId: "r1" });
     await handle.waitForCompletion();
 
     expect(used).toEqual(["cheap"]);
@@ -115,7 +111,7 @@ describe("the loop routes through the decision seam", () => {
     const store = new InMemoryAsyncEventStore();
     const flip = { value: false };
     const first = boot({ flip, eventStore: store });
-    const handle = await first.runtime.start(first.flow, {}, { executionId: "r1" });
+    const handle = await first.runtime.start(first.flowDef, {}, { executionId: "r1" });
     await handle.waitForCompletion();
     expect(first.used).toEqual(["cheap"]);
 

@@ -741,14 +741,49 @@ export class WorkflowRuntime {
     );
   }
 
+  /**
+   * Resolve what `start` was handed. A definition or id is looked up in the
+   * registry; anything unregistered fails with the call that fixes it, because
+   * "Property 'runner' is missing" is a description of the shape rather than of
+   * the mistake.
+   */
+  private resolveFlow<TIn, TOut>(
+    flow: RegisteredFlow<TIn, TOut> | FlowDefinition<TIn, TOut> | string
+  ): RegisteredFlow<TIn, TOut> {
+    if (typeof flow === "string" || (flow as FlowDefinition)._tag === "FlowDefinition") {
+      const id = typeof flow === "string" ? flow : (flow as FlowDefinition).id;
+      const registered = this.flows.get(id);
+      if (registered === undefined) {
+        throw new Error(
+          `Flow "${id}" is not registered — call registerFlow(definition, runner) before start(), or pass { definition, runner }.`
+        );
+      }
+      return registered as RegisteredFlow<TIn, TOut>;
+    }
+    return flow as RegisteredFlow<TIn, TOut>;
+  }
+
+  /**
+   * Start an execution.
+   *
+   * `flow` may be a {@link RegisteredFlow}, a bare `FlowDefinition`, or a flow id —
+   * the last two resolve through `registerFlow`, which already keeps every
+   * definition with its runner. Accepting only the pair meant a caller who had
+   * just registered a flow still had to rebuild `{ definition, runner }` by hand
+   * to start it, and passing the definition failed with a structural error
+   * listing missing properties rather than saying what to do.
+   *
+   * A `RegisteredFlow` still does NOT require prior registration: passing the
+   * pair directly starts it as before.
+   */
   async start<TIn = unknown, TOut = unknown>(
-    flow: RegisteredFlow<TIn, TOut>,
+    flow: RegisteredFlow<TIn, TOut> | FlowDefinition<TIn, TOut> | string,
     input: TIn,
     options?: RunOptions
   ): Promise<ExecutionHandle> {
     const executionId = options?.executionId ?? ulid();
     assertNotReserved(executionId);
-    const { definition, runner } = flow;
+    const { definition, runner } = this.resolveFlow(flow);
 
     // C.1 — gate the start (no execution exists yet, so no durable record).
     const startDenial = this.authzDenial("start", executionId, definition.id, options?.principal);
