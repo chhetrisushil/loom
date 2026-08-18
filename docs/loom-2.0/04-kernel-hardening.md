@@ -48,11 +48,11 @@ Two properties of the durable core underwrite all five: **[P2 — deterministic,
 
 ## K1 — Kernel ABI (the syscall surface)
 
-A framework becomes a kernel when userspace can depend on a **narrow, versioned boundary** that will not shift under it. In Loom the `ExecutionContext` (`ctx`) *is* that boundary: everything a flow, agent, or step can ask the durable core to do goes through it. K1 does one thing — it **names and versions** that surface so applications can build against it and CI can catch drift ([`abi.ts:1`](../../packages/workflow-runtime/src/abi.ts)).
+A framework becomes a kernel when userspace can depend on a **narrow, versioned boundary** that will not shift under it. In Loom the `ExecutionContext` (`ctx`) *is* that boundary: everything a flow, agent, or step can ask the durable core to do goes through it. K1 does one thing — it **names and versions** that surface so applications can build against it and CI can catch drift ([`abi.ts`](../../packages/workflow-runtime/src/abi.ts)).
 
 ### The syscall table
 
-`KERNEL_ABI_VERSION` is a semver string (`"1.1.0"` — 1.1.0 added the T1 timer syscalls, an additive MINOR bump exactly as the compatibility rule prescribes), and `KERNEL_SYSCALLS` is the pinned table of calls the kernel exposes ([`abi.ts:14`](../../packages/workflow-runtime/src/abi.ts), [`abi.ts:29`](../../packages/workflow-runtime/src/abi.ts)):
+`KERNEL_ABI_VERSION` is a semver string (`"1.1.0"` — 1.1.0 added the T1 timer syscalls, an additive MINOR bump exactly as the compatibility rule prescribes), and `KERNEL_SYSCALLS` is the pinned table of calls the kernel exposes ([`abi.ts`](../../packages/workflow-runtime/src/abi.ts), [`abi.ts`](../../packages/workflow-runtime/src/abi.ts)):
 
 | Syscall | Kind | Since | Summary |
 |---|---|---|---|
@@ -67,11 +67,11 @@ A framework becomes a kernel when userspace can depend on a **narrow, versioned 
 | `stream` | call | 1.0.0 | emit an incremental delta event |
 | `ui` | accessor | 1.0.0 | drive durable, replayable UI surfaces (A2UI) |
 
-Each entry records its `kind` (`"call"` for a method, `"accessor"` for a property object such as `ui`), the ABI version it was `since`, and a one-line `summary` ([`abi.ts:18`](../../packages/workflow-runtime/src/abi.ts)). `KERNEL_ABI` bundles the version and the table into one exported object ([`abi.ts:45`](../../packages/workflow-runtime/src/abi.ts)).
+Each entry records its `kind` (`"call"` for a method, `"accessor"` for a property object such as `ui`), the ABI version it was `since`, and a one-line `summary` ([`abi.ts`](../../packages/workflow-runtime/src/abi.ts)). `KERNEL_ABI` bundles the version and the table into one exported object ([`abi.ts`](../../packages/workflow-runtime/src/abi.ts)).
 
 ### The compatibility guarantee
 
-The versioning rule is the same contract a syscall ABI makes ([`abi.ts:6`](../../packages/workflow-runtime/src/abi.ts)):
+The versioning rule is the same contract a syscall ABI makes ([`abi.ts`](../../packages/workflow-runtime/src/abi.ts)):
 
 - **Adding a syscall → MINOR bump.** Existing userspace is untouched; new code opts into the new call.
 - **Removing or renaming a syscall, or changing its meaning → MAJOR break.** This must be deliberate — it cannot happen by accident.
@@ -82,9 +82,9 @@ Everything *below* the syscall boundary (the event schema, the stores, the sched
 
 The guarantee is enforced by [`abi.test.ts`](../../packages/workflow-runtime/src/abi.test.ts), which does three things:
 
-1. asserts `KERNEL_ABI_VERSION` is semver-shaped and that `KERNEL_ABI` re-exports the same table ([`abi.test.ts:58`](../../packages/workflow-runtime/src/abi.test.ts));
-2. **starts a real flow, captures the live `ExecutionContext`, and checks every declared syscall is actually present with the right kind** — a `call` must be a function, an `accessor` must be defined ([`abi.test.ts:64`](../../packages/workflow-runtime/src/abi.test.ts)). The declared surface can never drift away from the real one;
-3. pins the exact sorted syscall set, so removing or renaming one fails CI ([`abi.test.ts:76`](../../packages/workflow-runtime/src/abi.test.ts)).
+1. asserts `KERNEL_ABI_VERSION` is semver-shaped and that `KERNEL_ABI` re-exports the same table ([`abi.test.ts`](../../packages/workflow-runtime/src/abi.test.ts));
+2. **starts a real flow, captures the live `ExecutionContext`, and checks every declared syscall is actually present with the right kind** — a `call` must be a function, an `accessor` must be defined ([`abi.test.ts`](../../packages/workflow-runtime/src/abi.test.ts)). The declared surface can never drift away from the real one;
+3. pins the exact sorted syscall set, so removing or renaming one fails CI ([`abi.test.ts`](../../packages/workflow-runtime/src/abi.test.ts)).
 
 ### The userspace ↔ kernel boundary
 
@@ -121,35 +121,35 @@ Userspace never reaches past the ABI into the journal or the store; it makes sys
 
 ## K2 — Capability protection ring
 
-A hardware kernel enforces authority with an MMU: userspace *cannot* touch memory it was not granted. A library has no MMU — but Loom has one place through which **every side effect must pass**: `EffectRuntime.execute`. Because every tool call, LLM call, human wait, and agent-to-agent call is keyed by `toolId` and dispatched here, this is the one boundary a *library* can genuinely enforce ([`authz.ts:1`](../../packages/effect-runtime/src/authz.ts)). K2 turns that chokepoint into an **authority ring**.
+A hardware kernel enforces authority with an MMU: userspace *cannot* touch memory it was not granted. A library has no MMU — but Loom has one place through which **every side effect must pass**: `EffectRuntime.execute`. Because every tool call, LLM call, human wait, and agent-to-agent call is keyed by `toolId` and dispatched here, this is the one boundary a *library* can genuinely enforce ([`authz.ts`](../../packages/effect-runtime/src/authz.ts)). K2 turns that chokepoint into an **authority ring**.
 
 ### Data structures
 
-The protection ring is deliberately small and **pure/synchronous**, so the check is deterministic and replay-safe — the same request always yields the same decision ([`authz.ts:23`](../../packages/effect-runtime/src/authz.ts)):
+The protection ring is deliberately small and **pure/synchronous**, so the check is deterministic and replay-safe — the same request always yields the same decision ([`authz.ts`](../../packages/effect-runtime/src/authz.ts)):
 
-- **`CapabilityRequest`** — what is being attempted: `{ toolId, executionId, workflowId, stepId }` ([`authz.ts:11`](../../packages/effect-runtime/src/authz.ts)).
-- **`CapabilityDecision`** — the verdict: `{ allowed: boolean, reason?: string }` ([`authz.ts:18`](../../packages/effect-runtime/src/authz.ts)).
-- **`CapabilityAuthorizer`** — the ring interface: `authorize(req) => decision` ([`authz.ts:25`](../../packages/effect-runtime/src/authz.ts)). Pluggable — you can supply your own principal model, ACL, or policy engine.
-- **`CapabilityDeniedError`** — thrown on denial, carrying the `toolId` and `reason` ([`authz.ts:29`](../../packages/effect-runtime/src/authz.ts)).
-- **`GrantTable`** — the built-in **least-privilege** authorizer: a static `Record<principal, effectId[]>` where `"*"` grants all and anything not listed is denied ([`authz.ts:55`](../../packages/effect-runtime/src/authz.ts)). By default the *principal* is the `workflowId` — a flow is the unit of authority — but `GrantTableOptions.principal` lets you key on `executionId` or any field ([`authz.ts:40`](../../packages/effect-runtime/src/authz.ts), [`authz.ts:64`](../../packages/effect-runtime/src/authz.ts)).
+- **`CapabilityRequest`** — what is being attempted: `{ toolId, executionId, workflowId, stepId }` ([`authz.ts`](../../packages/effect-runtime/src/authz.ts)).
+- **`CapabilityDecision`** — the verdict: `{ allowed: boolean, reason?: string }` ([`authz.ts`](../../packages/effect-runtime/src/authz.ts)).
+- **`CapabilityAuthorizer`** — the ring interface: `authorize(req) => decision` ([`authz.ts`](../../packages/effect-runtime/src/authz.ts)). Pluggable — you can supply your own principal model, ACL, or policy engine.
+- **`CapabilityDeniedError`** — thrown on denial, carrying the `toolId` and `reason` ([`authz.ts`](../../packages/effect-runtime/src/authz.ts)).
+- **`GrantTable`** — the built-in **least-privilege** authorizer: a static `Record<principal, effectId[]>` where `"*"` grants all and anything not listed is denied ([`authz.ts`](../../packages/effect-runtime/src/authz.ts)). By default the *principal* is the `workflowId` — a flow is the unit of authority — but `GrantTableOptions.principal` lets you key on `executionId` or any field ([`authz.ts`](../../packages/effect-runtime/src/authz.ts), [`authz.ts`](../../packages/effect-runtime/src/authz.ts)).
 
-The authorizer is passed to the runtime via `EffectRuntimeOptions.authorizer` ([`authz.ts:80`](../../packages/effect-runtime/src/authz.ts)).
+The authorizer is passed to the runtime via `EffectRuntimeOptions.authorizer` ([`authz.ts`](../../packages/effect-runtime/src/authz.ts)).
 
 Three kernel-grade properties fall out of this design:
 
-- **Least-privilege by default.** `GrantTable` denies anything not explicitly granted — an unlisted principal has *no* authority ([`authz.ts:67`](../../packages/effect-runtime/src/authz.ts)).
-- **Unforgeable grants.** An execution cannot grant itself a capability; grants live only in the authorizer, wired statically at boot ([P5](../architecture.md#p5--wiring-is-static-and-replay-safe)) and cannot be mutated at runtime ([`authz.ts:6`](../../packages/effect-runtime/src/authz.ts), [`authz.ts:49`](../../packages/effect-runtime/src/authz.ts)).
-- **Pluggable principal.** The mapping from request to principal is a function you provide ([`authz.ts:46`](../../packages/effect-runtime/src/authz.ts)).
+- **Least-privilege by default.** `GrantTable` denies anything not explicitly granted — an unlisted principal has *no* authority ([`authz.ts`](../../packages/effect-runtime/src/authz.ts)).
+- **Unforgeable grants.** An execution cannot grant itself a capability; grants live only in the authorizer, wired statically at boot ([P5](../architecture.md#p5--wiring-is-static-and-replay-safe)) and cannot be mutated at runtime ([`authz.ts`](../../packages/effect-runtime/src/authz.ts), [`authz.ts`](../../packages/effect-runtime/src/authz.ts)).
+- **Pluggable principal.** The mapping from request to principal is a function you provide ([`authz.ts`](../../packages/effect-runtime/src/authz.ts)).
 
 ### The algorithm — authorize before run
 
-`EffectRuntime.execute` runs the ring **first**, before it even looks up the effect in its registry, so that probing for an unregistered effect is denied too ([`EffectRuntime.ts:38`](../../packages/effect-runtime/src/EffectRuntime.ts)):
+`EffectRuntime.execute` runs the ring **first**, before it even looks up the effect in its registry, so that probing for an unregistered effect is denied too ([`EffectRuntime.ts`](../../packages/effect-runtime/src/EffectRuntime.ts)):
 
-1. If an `authorizer` is configured, build a `CapabilityRequest` from the effect context and call `authorize` ([`EffectRuntime.ts:41`](../../packages/effect-runtime/src/EffectRuntime.ts)).
-2. If **denied**: the effect **never runs**. The runtime emits an `EFFECT_DENIED` durable fact and throws `CapabilityDeniedError` ([`EffectRuntime.ts:48`](../../packages/effect-runtime/src/EffectRuntime.ts)). That thrown error propagates to the surrounding step, which fails via the normal `STEP_FAILED` path.
-3. If **allowed**: the effect+middleware chain proceeds as usual ([`EffectRuntime.ts:55`](../../packages/effect-runtime/src/EffectRuntime.ts)).
+1. If an `authorizer` is configured, build a `CapabilityRequest` from the effect context and call `authorize` ([`EffectRuntime.ts`](../../packages/effect-runtime/src/EffectRuntime.ts)).
+2. If **denied**: the effect **never runs**. The runtime emits an `EFFECT_DENIED` durable fact and throws `CapabilityDeniedError` ([`EffectRuntime.ts`](../../packages/effect-runtime/src/EffectRuntime.ts)). That thrown error propagates to the surrounding step, which fails via the normal `STEP_FAILED` path.
+3. If **allowed**: the effect+middleware chain proceeds as usual ([`EffectRuntime.ts`](../../packages/effect-runtime/src/EffectRuntime.ts)).
 
-The `EFFECT_DENIED` event folds into a reserved `variables._denials` audit list — a pure audit fact that does *not* itself change frame/execution status (the following `STEP_FAILED` owns that) ([`eventHandlers.ts:200`](../../packages/replay-vm/src/eventHandlers.ts)). So on replay, a denied run reconstructs its denial exactly: the ring's verdict is a logged fact, not a re-decision.
+The `EFFECT_DENIED` event folds into a reserved `variables._denials` audit list — a pure audit fact that does *not* itself change frame/execution status (the following `STEP_FAILED` owns that) ([`eventHandlers.ts`](../../packages/replay-vm/src/eventHandlers.ts)). So on replay, a denied run reconstructs its denial exactly: the ring's verdict is a logged fact, not a re-decision.
 
 ```mermaid
 sequenceDiagram
@@ -172,39 +172,39 @@ sequenceDiagram
 
 ### Opt-in
 
-Enforcement is deliberately **opt-in**. If no `authorizer` is wired, `execute` skips the ring entirely and behaves exactly as Loom 1.x did — the permissive default ([`EffectRuntime.ts:41`](../../packages/effect-runtime/src/EffectRuntime.ts), [`authz.ts:9`](../../packages/effect-runtime/src/authz.ts)). You turn the protection ring on only where you need least-privilege, and pay nothing where you do not.
+Enforcement is deliberately **opt-in**. If no `authorizer` is wired, `execute` skips the ring entirely and behaves exactly as Loom 1.x did — the permissive default ([`EffectRuntime.ts`](../../packages/effect-runtime/src/EffectRuntime.ts), [`authz.ts`](../../packages/effect-runtime/src/authz.ts)). You turn the protection ring on only where you need least-privilege, and pay nothing where you do not.
 
 ---
 
 ## K3 — Resource accounting & quotas
 
-A kernel meters the scarce resource and refuses work that would exceed a quota. For a general OS the scarce resource is CPU, memory, and file descriptors. For **intelligent software it is tokens, dollars, and latency** — not CPU cycles ([`metering.ts:3`](../../packages/middleware/src/metering.ts)). K3 provides both halves of a kernel's resource story: **accounting** (meter what every effect spends) and **admission control** (refuse the next effect once a budget is spent).
+A kernel meters the scarce resource and refuses work that would exceed a quota. For a general OS the scarce resource is CPU, memory, and file descriptors. For **intelligent software it is tokens, dollars, and latency** — not CPU cycles ([`metering.ts`](../../packages/middleware/src/metering.ts)). K3 provides both halves of a kernel's resource story: **accounting** (meter what every effect spends) and **admission control** (refuse the next effect once a budget is spent).
 
 ### Where the running total lives
 
-Each effect's context carries a `resources` snapshot — the running totals for the owning execution *before* this effect ([`types.ts:36`](../../packages/effect-runtime/src/types.ts)):
+Each effect's context carries a `resources` snapshot — the running totals for the owning execution *before* this effect ([`types.ts`](../../packages/effect-runtime/src/types.ts)):
 
 ```ts
 interface ResourceSnapshot { tokens: number; costUsd: number; ms: number; count: number; exceeded?: boolean }
 ```
 
-Critically, this snapshot is **not** ambient state — it is threaded in from `variables._resources`, which is itself the deterministic fold of `RESOURCE_METERED` events ([`types.ts:5`](../../packages/effect-runtime/src/types.ts)). The total an effect sees is therefore a pure function of the log. When accounting is not wired, `resources` is `undefined`, so effects that never meter pay nothing ([`types.ts:33`](../../packages/effect-runtime/src/types.ts)).
+Critically, this snapshot is **not** ambient state — it is threaded in from `variables._resources`, which is itself the deterministic fold of `RESOURCE_METERED` events ([`types.ts`](../../packages/effect-runtime/src/types.ts)). The total an effect sees is therefore a pure function of the log. When accounting is not wired, `resources` is `undefined`, so effects that never meter pay nothing ([`types.ts`](../../packages/effect-runtime/src/types.ts)).
 
 ### `meteringMiddleware(pricing, budget?)`
 
-The metering middleware is an ordinary effect middleware — the same `(ctx, input, next)` shape as retry — so it composes into the existing chain ([`metering.ts:70`](../../packages/middleware/src/metering.ts)). It does two jobs per effect:
+The metering middleware is an ordinary effect middleware — the same `(ctx, input, next)` shape as retry — so it composes into the existing chain ([`metering.ts`](../../packages/middleware/src/metering.ts)). It does two jobs per effect:
 
-**1. Admission control (before running).** If a `budget` is set and the pre-effect `ctx.resources` is already over it, the effect is *refused*: emit `QUOTA_EXCEEDED` and throw `QuotaExceededError` ([`metering.ts:74`](../../packages/middleware/src/metering.ts)). `overBudget` compares the running totals against `maxCostUsd`/`maxTokens` ([`metering.ts:52`](../../packages/middleware/src/metering.ts)).
+**1. Admission control (before running).** If a `budget` is set and the pre-effect `ctx.resources` is already over it, the effect is *refused*: emit `QUOTA_EXCEEDED` and throw `QuotaExceededError` ([`metering.ts`](../../packages/middleware/src/metering.ts)). `overBudget` compares the running totals against `maxCostUsd`/`maxTokens` ([`metering.ts`](../../packages/middleware/src/metering.ts)).
 
-**2. Metering (after running).** Otherwise it measures the effect's wall-time, computes a `ResourceDelta` from the `Pricing` function, and emits a `RESOURCE_METERED` fact with the tokens/cost/ms spent ([`metering.ts:82`](../../packages/middleware/src/metering.ts)).
+**2. Metering (after running).** Otherwise it measures the effect's wall-time, computes a `ResourceDelta` from the `Pricing` function, and emits a `RESOURCE_METERED` fact with the tokens/cost/ms spent ([`metering.ts`](../../packages/middleware/src/metering.ts)).
 
-The supporting types ([`metering.ts:13`](../../packages/middleware/src/metering.ts)):
+The supporting types ([`metering.ts`](../../packages/middleware/src/metering.ts)):
 
-- **`Pricing`** — `(info: MeterInfo) => ResourceDelta`: your cost model, e.g. `tokens × rate` for an LLM ([`metering.ts:28`](../../packages/middleware/src/metering.ts)).
-- **`ResourceDelta`** — `{ tokens?, costUsd?, ms? }`: what one call spent ([`metering.ts:13`](../../packages/middleware/src/metering.ts)).
-- **`Budget`** — `{ maxTokens?, maxCostUsd? }`: the per-execution quota ([`metering.ts:30`](../../packages/middleware/src/metering.ts)).
-- **`QuotaExceededError`** — thrown on admission-control denial, carrying the `reason` ([`metering.ts:43`](../../packages/middleware/src/metering.ts)).
-- **`llmUsageTokens(result)`** — a helper that reads `{ usage: { inputTokens, outputTokens } }` off an `LlmResponse`-shaped result, so a `Pricing` for LLM effects is a one-liner ([`metering.ts:63`](../../packages/middleware/src/metering.ts)).
+- **`Pricing`** — `(info: MeterInfo) => ResourceDelta`: your cost model, e.g. `tokens × rate` for an LLM ([`metering.ts`](../../packages/middleware/src/metering.ts)).
+- **`ResourceDelta`** — `{ tokens?, costUsd?, ms? }`: what one call spent ([`metering.ts`](../../packages/middleware/src/metering.ts)).
+- **`Budget`** — `{ maxTokens?, maxCostUsd? }`: the per-execution quota ([`metering.ts`](../../packages/middleware/src/metering.ts)).
+- **`QuotaExceededError`** — thrown on admission-control denial, carrying the `reason` ([`metering.ts`](../../packages/middleware/src/metering.ts)).
+- **`llmUsageTokens(result)`** — a helper that reads `{ usage: { inputTokens, outputTokens } }` off an `LlmResponse`-shaped result, so a `Pricing` for LLM effects is a one-liner ([`metering.ts`](../../packages/middleware/src/metering.ts)).
 
 ```mermaid
 flowchart TD
@@ -222,9 +222,9 @@ flowchart TD
 
 Both accounting and enforcement are **replay-safe**, and this is the whole point of doing it on the log rather than in a counter:
 
-- **Metered facts live in the log.** Every `RESOURCE_METERED` event folds the delta into the running `_resources` total (`tokens += …`, `costUsd += …`, `ms += …`, `count += 1`) ([`eventHandlers.ts:223`](../../packages/replay-vm/src/eventHandlers.ts)). The total is *derived*, never stored ambiently.
-- **The total comes from a deterministic fold.** Because the pre-effect snapshot each middleware sees is `fold(events).variables._resources`, two replays of the same log meter and admission-control identically. Metering runs only when an effect *actually* executes — completed steps short-circuit before `EffectRuntime.execute`, so replayed runs never re-meter work already in the log ([`types.ts:64`](../../packages/effect-runtime/src/types.ts)).
-- **Quota trips are logged too.** `QUOTA_EXCEEDED` folds `_resources.exceeded = true` — a pure audit fact; the following `STEP_FAILED` fails the step ([`eventHandlers.ts:247`](../../packages/replay-vm/src/eventHandlers.ts)).
+- **Metered facts live in the log.** Every `RESOURCE_METERED` event folds the delta into the running `_resources` total (`tokens += …`, `costUsd += …`, `ms += …`, `count += 1`) ([`eventHandlers.ts`](../../packages/replay-vm/src/eventHandlers.ts)). The total is *derived*, never stored ambiently.
+- **The total comes from a deterministic fold.** Because the pre-effect snapshot each middleware sees is `fold(events).variables._resources`, two replays of the same log meter and admission-control identically. Metering runs only when an effect *actually* executes — completed steps short-circuit before `EffectRuntime.execute`, so replayed runs never re-meter work already in the log ([`types.ts`](../../packages/effect-runtime/src/types.ts)).
+- **Quota trips are logged too.** `QUOTA_EXCEEDED` folds `_resources.exceeded = true` — a pure audit fact; the following `STEP_FAILED` fails the step ([`eventHandlers.ts`](../../packages/replay-vm/src/eventHandlers.ts)).
 
 The kernel does not "remember" your budget in memory; it *recomputes* it from the log every time, which is exactly why a resume on another machine enforces the same quota.
 
@@ -232,10 +232,10 @@ The kernel does not "remember" your budget in memory; it *recomputes* it from th
 
 ## K4 — Fault supervision
 
-A kernel supervises its subsystems: it restarts a crashed driver, backs off, and isolates a component that keeps failing so it cannot take the system down. Loom's supervision seam is the **`SupervisingDispatcher`** in `@loom/dispatcher` ([`SupervisingDispatcher.ts:54`](../../packages/dispatcher/src/SupervisingDispatcher.ts)). It is a composite `ExecutionDispatcher` that wraps any child dispatcher (`LocalDispatcher`, `PlacementDispatcher`, the Cloud Run adapter) with two policies:
+A kernel supervises its subsystems: it restarts a crashed driver, backs off, and isolates a component that keeps failing so it cannot take the system down. Loom's supervision seam is the **`SupervisingDispatcher`** in `@loom/dispatcher` ([`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts)). It is a composite `ExecutionDispatcher` that wraps any child dispatcher (`LocalDispatcher`, `PlacementDispatcher`, the Cloud Run adapter) with two policies:
 
-- **Restart / backoff** — a *throwing* dispatch is retried up to `maxRestarts` times with exponential backoff (`backoffMs × backoffFactor ** attempt`). A returned `"failed"` result is a normal outcome, not a restartable error ([`SupervisingDispatcher.ts:13`](../../packages/dispatcher/src/SupervisingDispatcher.ts), [`SupervisingDispatcher.ts:78`](../../packages/dispatcher/src/SupervisingDispatcher.ts)).
-- **Per-key circuit breaker** — after `threshold` consecutive dispatch failures the circuit **opens** and further dispatches to that key fail fast with `CircuitOpenError` until a `cooldownMs` half-open trial, so a flaky model/tool/worker is not hammered ([`SupervisingDispatcher.ts:4`](../../packages/dispatcher/src/SupervisingDispatcher.ts), [`SupervisingDispatcher.ts:110`](../../packages/dispatcher/src/SupervisingDispatcher.ts)). The key defaults to `pkg.flowId` — a per-flow breaker.
+- **Restart / backoff** — a *throwing* dispatch is retried up to `maxRestarts` times with exponential backoff (`backoffMs × backoffFactor ** attempt`). A returned `"failed"` result is a normal outcome, not a restartable error ([`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts), [`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts)).
+- **Per-key circuit breaker** — after `threshold` consecutive dispatch failures the circuit **opens** and further dispatches to that key fail fast with `CircuitOpenError` until a `cooldownMs` half-open trial, so a flaky model/tool/worker is not hammered ([`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts), [`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts)). The key defaults to `pkg.flowId` — a per-flow breaker.
 
 ```mermaid
 stateDiagram-v2
@@ -248,7 +248,7 @@ stateDiagram-v2
   HalfOpen --> Open: trial fails (re-open immediately)
 ```
 
-This promotes the runtime's ad-hoc retry/redispatch into a *named* supervision seam, and it composes over the existing dispatchers unchanged. The circuit also surfaces through `health()`, which reports `circuits-open: <keys>` and marks the dispatcher unhealthy while any circuit is open ([`SupervisingDispatcher.ts:96`](../../packages/dispatcher/src/SupervisingDispatcher.ts)).
+This promotes the runtime's ad-hoc retry/redispatch into a *named* supervision seam, and it composes over the existing dispatchers unchanged. The circuit also surfaces through `health()`, which reports `circuits-open: <keys>` and marks the dispatcher unhealthy while any circuit is open ([`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts)).
 
 > **Full treatment:** supervision sits in the compute/scheduling layer alongside placement, workers, and the cooperative scheduler. See **[03 — Compute, Scheduling & Storage](03-compute-scheduling-storage.md)** for how `SupervisingDispatcher` fits the dispatcher SPI, how it interacts with `WorkerRuntime` redispatch, and the crash-recovery path. This section is the kernel-ring summary; the compute doc is the deep dive.
 
@@ -256,22 +256,22 @@ This promotes the runtime's ad-hoc retry/redispatch into a *named* supervision s
 
 ## K5 — Event-schema ABI governance
 
-If K1 is the *in-memory* ABI (the syscall surface), **the event log is the kernel's *on-disk* ABI**. State is `fold(events)`, and stored logs must replay across deploys — a log written last month must fold correctly against this month's binary ([`eventHandlers.ts:727`](../../packages/replay-vm/src/eventHandlers.ts)). K5 names and versions **the set of event types the fold understands**, so that set cannot drift silently.
+If K1 is the *in-memory* ABI (the syscall surface), **the event log is the kernel's *on-disk* ABI**. State is `fold(events)`, and stored logs must replay across deploys — a log written last month must fold correctly against this month's binary ([`eventHandlers.ts`](../../packages/replay-vm/src/eventHandlers.ts)). K5 names and versions **the set of event types the fold understands**, so that set cannot drift silently.
 
 ### `EVENT_SCHEMA_VERSION` and `knownEventTypes()`
 
-`EVENT_SCHEMA_VERSION` is the semver of the on-disk schema, and `knownEventTypes()` returns the sorted list of every event type that has a fold handler ([`eventHandlers.ts:768`](../../packages/replay-vm/src/eventHandlers.ts)) — it is derived directly from the `handlers` map, so the *declared* schema can never diverge from what the fold *actually* handles.
+`EVENT_SCHEMA_VERSION` is the semver of the on-disk schema, and `knownEventTypes()` returns the sorted list of every event type that has a fold handler ([`eventHandlers.ts`](../../packages/replay-vm/src/eventHandlers.ts)) — it is derived directly from the `handlers` map, so the *declared* schema can never diverge from what the fold *actually* handles.
 
 The version moves with every additive change, so this page does not restate it; the current value and the per-version changelog live in **[10 — Event Schema Reference](10-event-schema-reference.md)** beside the constant itself.
 
-The governance rule mirrors K1 ([`eventHandlers.ts:727`](../../packages/replay-vm/src/eventHandlers.ts)):
+The governance rule mirrors K1 ([`eventHandlers.ts`](../../packages/replay-vm/src/eventHandlers.ts)):
 
 - **Adding an event type → additive (MINOR bump).** Old logs still fold; new logs use the new type.
 - **Removing or repurposing one → MAJOR break.** It changes how *historical* logs fold, so it must be deliberate.
 
 ### The governance test pinning the event types
 
-[`eventSchema.test.ts`](../../packages/replay-vm/src/eventSchema.test.ts) pins the exact set of **29** event types the fold understands and fails CI if `knownEventTypes()` differs ([`eventSchema.test.ts:46`](../../packages/replay-vm/src/eventSchema.test.ts)). The pinned set is the union of the durable core's events, the Loom 2.0/2.1 kernel-ring events, and the data-lifecycle and multi-tenant facts added since:
+[`eventSchema.test.ts`](../../packages/replay-vm/src/eventSchema.test.ts) pins the exact set of **29** event types the fold understands and fails CI if `knownEventTypes()` differs ([`eventSchema.test.ts`](../../packages/replay-vm/src/eventSchema.test.ts)). The pinned set is the union of the durable core's events, the Loom 2.0/2.1 kernel-ring events, and the data-lifecycle and multi-tenant facts added since:
 
 | Category | Event types |
 |---|---|

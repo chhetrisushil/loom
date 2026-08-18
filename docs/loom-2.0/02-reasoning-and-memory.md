@@ -47,7 +47,7 @@ The runtime is built as **four composable stages** — `route → call → score
 
 Because the runtime lives in the advisory plane, its routing and elevation choices are recorded through the [decision seam](01-execution-and-decision-seams.md) when a flow passes `ctx.decide` (P9). This is the crux: **routing may improve run-to-run, yet any single execution replays bit-for-bit** because the route/elevation choices are served from the log, not recomputed. The kernel never learns that a Reasoning Runtime exists — it is an optional module (P10), and the simple `ctx.run(step)` path stays a zero-overhead one-liner.
 
-Source: `packages/reasoning/src/ReasoningRuntime.ts:25` (`ReasoningRuntime` class), `:48` (`reason`).
+Source: `packages/reasoning/src/ReasoningRuntime.ts` (`ReasoningRuntime` class), `:48` (`reason`).
 
 ## R2 — Data structures
 
@@ -184,7 +184,7 @@ classDiagram
 
 ## R3 — The `reason()` pipeline
 
-`reason(req, opts)` runs the four stages in order (`ReasoningRuntime.ts:48`). At construction time the routes are **sorted once by tier** (`:37`) so elevation is a simple forward scan.
+`reason(req, opts)` runs the four stages in order (`ReasoningRuntime.ts`). At construction time the routes are **sorted once by tier** (`:37`) so elevation is a simple forward scan.
 
 **Step by step:**
 
@@ -287,11 +287,11 @@ Standalone callers (outside a durable flow) get `identityDecide`, which just run
 
 ### Re-basing intent and planner onto reasoning
 
-Both `@loom/intent` and `@loom/planner` were re-based to **prefer** the Reasoning Runtime while keeping their offline, deterministic fallbacks intact. The pattern is identical in each (`IntentRuntime.ts:91`, `PlannerRuntime.ts:80`): a private `complete()` helper picks its LLM path in strict preference order:
+Both `@loom/intent` and `@loom/planner` were re-based to **prefer** the Reasoning Runtime while keeping their offline, deterministic fallbacks intact. The pattern is identical in each (`IntentRuntime.ts`, `PlannerRuntime.ts`): a private `complete()` helper picks its LLM path in strict preference order:
 
 1. **`reasoning`** (preferred) — routes the call through `ReasoningRuntime.reason(...)`, gaining model routing + confidence-based elevation "for free."
 2. **`provider`** (fallback) — a bare `LlmProvider.complete(...)`.
-3. **offline heuristic** (final fallback) — for intent, a **keyword matcher** over the catalog (`routeWithKeywords`, `IntentRuntime.ts:59`); for planner, a **keyword-ranked heuristic** (`planWithHeuristic`, `PlannerRuntime.ts:50`).
+3. **offline heuristic** (final fallback) — for intent, a **keyword matcher** over the catalog (`routeWithKeywords`, `IntentRuntime.ts`); for planner, a **keyword-ranked heuristic** (`planWithHeuristic`, `PlannerRuntime.ts`).
 
 ```ts
 // IntentRuntime.ts — the preference ladder, condensed
@@ -331,7 +331,7 @@ Agents need memory that outlives a single turn, but a flat, unbounded scratchpad
 
 `TieredMemory` gives you **many named tiers, each with its own eviction/summarization policy**, plus **promotion** between tiers and **logged recall** through the decision seam. It is built *on top of* `MemoryRuntime` (composition over replacement, P6/P4): each tier is registered as an ordinary `MemoryDefinition` in an underlying `MemoryRuntime`, so the tiers inherit the base runtime's `ttlMs`/`maxEntries` eviction and add summarization and promotion on top.
 
-Source: `packages/memory/src/TieredMemory.ts:69` (`TieredMemory`), `packages/memory/src/MemoryRuntime.ts:10` (`MemoryRuntime`).
+Source: `packages/memory/src/TieredMemory.ts` (`TieredMemory`), `packages/memory/src/MemoryRuntime.ts` (`MemoryRuntime`).
 
 ## M2 — Data structures
 
@@ -339,7 +339,7 @@ Source: `packages/memory/src/TieredMemory.ts:69` (`TieredMemory`), `packages/mem
 
 - **`MemoryEntry`** — a single remembered item: an optional `role`, arbitrary `content` (a message, a tool result, a fact), and a `timestamp` used for TTL eviction.
 - **`MemoryStore`** — the pluggable, **async-first** storage backend (`append`/`read`/`clear`, all keyed by a string). `InMemoryMemoryStore` is the default; the async signature means Redis / a DB / a vector store are real implementations, not afterthoughts.
-- **`MemoryRuntime`** — holds named memory definitions and enforces each one's `ttlMs`/`maxEntries` policy on read and write. Memory is addressed by **`(memoryId, scope)`** — `scope` is typically an `executionId`, `conversationId`, or `userId`, so one definition serves many concurrent sessions. `prune` (`MemoryRuntime.ts:44`) drops entries older than `ttlMs` then keeps the newest `maxEntries`; `evict` (`:59`) rewrites the stored list to the pruned view so eviction is durable, not just a read-time filter.
+- **`MemoryRuntime`** — holds named memory definitions and enforces each one's `ttlMs`/`maxEntries` policy on read and write. Memory is addressed by **`(memoryId, scope)`** — `scope` is typically an `executionId`, `conversationId`, or `userId`, so one definition serves many concurrent sessions. `prune` (`MemoryRuntime.ts`) drops entries older than `ttlMs` then keeps the newest `maxEntries`; `evict` (`:59`) rewrites the stored list to the pruned view so eviction is durable, not just a read-time filter.
 
 **Tier layer** (`TieredMemory.ts`):
 
@@ -401,7 +401,7 @@ classDiagram
   MemoryStore --> MemoryEntry : stores
 ```
 
-The canonical tiers (`DEFAULT_TIERS`, `TieredMemory.ts:50`) map cleanly onto the classic memory taxonomy, each with a deliberately different bound:
+The canonical tiers (`DEFAULT_TIERS`, `TieredMemory.ts`) map cleanly onto the classic memory taxonomy, each with a deliberately different bound:
 
 ```mermaid
 flowchart TB
@@ -420,7 +420,7 @@ flowchart TB
 
 ## M3 — Algorithms (remember, recall, promote, summarize)
 
-**`remember(tier, scope, entry)`** (`TieredMemory.ts:102`) — validate the tier, append through the base runtime (stamping `timestamp` from the injectable clock), then **auto-summarize** if the tier declares `summarizeAfter`. So a `working`-tier write transparently keeps the tier bounded without the caller thinking about it.
+**`remember(tier, scope, entry)`** (`TieredMemory.ts`) — validate the tier, append through the base runtime (stamping `timestamp` from the injectable clock), then **auto-summarize** if the tier declares `summarizeAfter`. So a `working`-tier write transparently keeps the tier bounded without the caller thinking about it.
 
 **`recall(tier, scope, opts)`** (`:115`) — read the tier's pruned entries from the base runtime (TTL + `maxEntries` already applied) and optionally slice to the newest `opts.limit`. If `opts.decide` is supplied, the *entire read* is wrapped in `decide(key, read)` so the recalled set is recorded durably — see [M4](#m4--logged-recall--the-determinism-fix). This is the one method whose behavior is outcome-affecting, hence the seam.
 

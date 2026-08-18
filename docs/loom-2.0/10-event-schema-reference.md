@@ -51,9 +51,9 @@ Two properties fall out of this loop and govern everything below:
   compatibility possible.)
 - **Every handler is `(state, event) => state`** and never mutates in place — it returns a new
   state via copy-on-write (untouched frames are shared by reference; see `withFrame` at
-  `packages/replay-vm/src/eventHandlers.ts:10`). Every handler also sets `updatedAt = event.timestamp`.
+  `packages/replay-vm/src/eventHandlers.ts`). Every handler also sets `updatedAt = event.timestamp`.
 
-The default seed (`packages/replay-vm/src/foldEvents.ts:4`):
+The default seed (`packages/replay-vm/src/foldEvents.ts`):
 
 ```ts
 { status: "pending", frames: {}, variables: {}, sequence: -1, startedAt: 0, updatedAt: 0 }
@@ -99,7 +99,7 @@ capability/authority, K3 = resource metering, P9 = the Decision seam).
 #### `EXECUTION_STARTED`
 - **Introduced:** 1.x core; `flowHash` payload field added in 1.4.0 (K11.1, additive — folds
   treat absence as legacy, per the K5 payload-extension rule).
-- **Emitted by:** `WorkflowRuntime.start()` as the sequence-0 bootstrap event (`WorkflowRuntime.ts:148`).
+- **Emitted by:** `WorkflowRuntime.start()` as the sequence-0 bootstrap event (`WorkflowRuntime.ts`).
 - **Payload:** `{ input?: unknown; flowHash?: string }`
 - **Folds into:** `status → "running"`; `startedAt = event.timestamp`; if `input` is present,
   `variables._input = input`; if `flowHash` is present, `variables._flowHash = flowHash` —
@@ -107,30 +107,30 @@ capability/authority, K3 = resource metering, P9 = the Decision seam).
   @loom/core). Resume/recovery compares it against the registered flow and refuses a
   mismatch (`FlowCodeMismatchError`) instead of silently folding the log with changed code;
   logs without a recorded hash resume unchecked (G2).
-- Handler: `eventHandlers.ts:19`.
+- Handler: `eventHandlers.ts`.
 
 #### `EXECUTION_COMPLETED`
 - **Introduced:** 1.x core.
-- **Emitted by:** `WorkflowRuntime.execute()` after the runner returns (`WorkflowRuntime.ts:475`).
+- **Emitted by:** `WorkflowRuntime.execute()` after the runner returns (`WorkflowRuntime.ts`).
 - **Payload:** `{ output?: unknown }`
 - **Folds into:** `status → "completed"`; if `output` is present, `variables._output = output`.
-- Handler: `eventHandlers.ts:262`.
+- Handler: `eventHandlers.ts`.
 
 #### `EXECUTION_FAILED`
 - **Introduced:** 1.x core.
 - **Emitted by:** `WorkflowRuntime.execute()` when the runner throws a non-suspend, non-cancel,
-  non-storage error (`WorkflowRuntime.ts:518`).
+  non-storage error (`WorkflowRuntime.ts`).
 - **Payload:** `{ error?: unknown }` (a `String(err)` in practice)
 - **Folds into:** `status → "failed"`; if `error` is present, `variables._error = error`.
-- Handler: `eventHandlers.ts:274`.
+- Handler: `eventHandlers.ts`.
 
 #### `EXECUTION_CANCELLED`
 - **Introduced:** 1.x core.
-- **Emitted by:** the `cancel()` closure on the execution handle (`WorkflowRuntime.ts:465`). Owns
+- **Emitted by:** the `cancel()` closure on the execution handle (`WorkflowRuntime.ts`). Owns
   the execution-level status (a preceding `STEP_CANCELLED` only marks the in-flight frame).
 - **Payload:** `{ reason?: unknown }` (a `String(reason)` in practice)
 - **Folds into:** `status → "cancelled"`; if `reason` is present, `variables._cancelReason = reason`.
-- Handler: `eventHandlers.ts:286`.
+- Handler: `eventHandlers.ts`.
 
 #### `EXECUTION_DENIED`
 - **Introduced:** 1.12.0 (C.1 — execution-lifecycle authorization, ADR 0039).
@@ -151,29 +151,29 @@ generalization.
 
 #### `STEP_STARTED`
 - **Introduced:** 1.x core.
-- **Emitted by:** `ctx.execute` before running the effect (`WorkflowContext.ts:57`).
+- **Emitted by:** `ctx.execute` before running the effect (`WorkflowContext.ts`).
 - **Payload:** `{ stepId: string; input?: unknown }`
 - **Folds into:** `frames[stepId]` = a fresh frame `{ stepId, status: "running", attempts:
   (existing.attempts ?? 0) + 1, startedAt: event.timestamp, firstStartedAt, input? }`. The
   `attempts` increment is what makes a retry observable. `firstStartedAt` (K8.3, additive)
   preserves the FIRST attempt's logged start across re-runs — step deadlines (`timeoutMs`)
   anchor to it, so crash recovery never resets a step's clock.
-- Handler: `eventHandlers.ts:32`.
+- Handler: `eventHandlers.ts`.
 
 #### `STEP_COMPLETED`
 - **Introduced:** 1.x core.
-- **Emitted by:** `ctx.execute` on effect success (`WorkflowContext.ts:93`).
+- **Emitted by:** `ctx.execute` on effect success (`WorkflowContext.ts`).
 - **Payload:** `{ stepId: string; output?: unknown }`
 - **Folds into:** `frames[stepId].status → "completed"`; `completedAt = event.timestamp`;
   preserves the prior frame's `attempts`, `startedAt`, `input`; sets `output` when present. This
   frame is what `vm.hasCompleted(id)` / `vm.getOutput(id)` read for the **replay short-circuit**
   (exactly-once effects).
-- Handler: `eventHandlers.ts:49`.
+- Handler: `eventHandlers.ts`.
 
 #### `STEP_FAILED`
 - **Introduced:** 1.x core; `channel`/`payload` added 1.17.0 (DE-4, ADR 0060).
 - **Emitted by:** `ctx.execute` when the effect throws (non-suspend, non-cancel)
-  (`WorkflowContext.ts:89`).
+  (`WorkflowContext.ts`).
 - **Payload:** `{ stepId: string; error?: unknown; channel?: string; payload?: unknown }` —
   `channel`/`payload` present only for a **typed failure** on a contract-declared error
   channel; the payload is Zod-validated against the channel schema and capped at 16 KiB
@@ -183,17 +183,17 @@ generalization.
   also sets `errorChannel`/`errorPayload`, which the execute seam SUBSTITUTES on replay —
   the effect is never re-invoked and the flow re-takes the same catch branch). This is the
   only `STEP_*` event that also moves the *execution* status.
-- Handler: `eventHandlers.ts:68`.
+- Handler: `eventHandlers.ts`.
 
 #### `STEP_CANCELLED`
 - **Introduced:** 1.x core.
 - **Emitted by:** `ctx.execute` when the effect rejects and `signal.aborted` is true
-  (`WorkflowContext.ts:86`).
+  (`WorkflowContext.ts`).
 - **Payload:** `{ stepId: string }`
 - **Folds into:** `frames[stepId].status → "cancelled"` **only** — deliberately does **not**
   touch execution `status` (the surrounding `EXECUTION_CANCELLED` owns that; this must not
   overwrite it). Preserves `attempts`, `startedAt`, `input`.
-- Handler: `eventHandlers.ts:87`.
+- Handler: `eventHandlers.ts`.
 
 #### `STEP_RETRYING`
 - **Introduced:** 1.x core (emitted by retry middleware).
@@ -201,7 +201,7 @@ generalization.
 - **Folds into:** `frames[stepId]` = `{ stepId, status: "pending", attempts: payload.attempt,
   input? }` — resets the frame to `pending` and stamps the upcoming attempt number ahead of the
   next `STEP_STARTED`.
-- Handler: `eventHandlers.ts:107`.
+- Handler: `eventHandlers.ts`.
 
 ### 2.3 Parallel events
 
@@ -211,35 +211,35 @@ generalization.
 - **Folds into:** for each `stepId`, a `pending` frame `{ stepId, status: "pending", attempts: 0,
   startedAt: event.timestamp }`. (The handler builds one fresh `frames` container and writes each
   new frame into it directly.)
-- Handler: `eventHandlers.ts:123`.
+- Handler: `eventHandlers.ts`.
 
 #### `PARALLEL_COMPLETED`
 - **Introduced:** 1.x core.
 - **Payload:** `{}` (no fields read).
 - **Folds into:** nothing but `updatedAt` — a pure marker event; the individual `STEP_COMPLETED`
   events carry the real per-branch state.
-- Handler: `eventHandlers.ts:139`.
+- Handler: `eventHandlers.ts`.
 
 ### 2.4 Suspend / resume events
 
 #### `EXECUTION_SUSPENDED`
 - **Introduced:** 1.x core (P3 — suspension is a first-class outcome).
 - **Emitted by:** `WorkflowRuntime.execute()` when the runner throws `SuspendError`
-  (`WorkflowRuntime.ts:480`).
+  (`WorkflowRuntime.ts`).
 - **Payload:** `{ condition: { on: string; timeout?: number; correlationKey?: string } }`
 - **Folds into:** `status → "suspended"`; `suspendedOn = payload.condition`.
-- Handler: `eventHandlers.ts:143`.
+- Handler: `eventHandlers.ts`.
 
 #### `EXECUTION_RESUMED`
 - **Introduced:** 1.x core.
 - **Emitted by:** `WorkflowRuntime.resume()` as a bootstrap event after the caller's resume event
-  (`WorkflowRuntime.ts:193`).
+  (`WorkflowRuntime.ts`).
 - **Payload:** the resume payload (any shape).
 - **Folds into:** `status → "running"`; **removes** `suspendedOn`; if the payload is present,
   `variables._resumePayload = payload`. That reserved key is consumed by `ctx.suspend`'s
   replay-passthrough so execution continues *past* the original suspend point
-  (`WorkflowContext.ts:150`).
-- Handler: `eventHandlers.ts:155`.
+  (`WorkflowContext.ts`).
+- Handler: `eventHandlers.ts`.
 
 ### 2.5 Loom 2.0 advisory events
 
@@ -251,7 +251,7 @@ triggers downstream).
 #### `DECISION_RECORDED`
 - **Introduced:** Loom 2.0 — P9, the Decision seam. Extended twice, both additive: the D1
   materialization fields in 1.10.0 (ADR 0030) and `context`/`policy` in 1.18.0 (ADR 0079).
-- **Emitted by:** `ctx.decide` on first run (`WorkflowContext.ts:116`).
+- **Emitted by:** `ctx.decide` on first run (`WorkflowContext.ts`).
 - **Payload:** `{ decisionId: string; choice: unknown; rationale?: unknown; source?: string;
   alternatives?: unknown; estimatedCostUsd?: number; estimatedLatencyMs?: number;
   confidence?: number; context?: Record<string, unknown>;
@@ -265,7 +265,7 @@ triggers downstream).
   is the observation the policy keyed on and `policy.propensity` is `P(chosen | context)` —
   together they turn the log into a `(state, action, propensity)` dataset that
   [`@loom/learning`](../../packages/learning/README.md) mines for off-policy evaluation.
-- Handler: `eventHandlers.ts:171`.
+- Handler: `eventHandlers.ts`.
 
 #### `EFFECT_DENIED`
 - **Introduced:** Loom 2.0 — K2, the authority boundary. The `EffectRuntime` refused an ungranted
@@ -274,7 +274,7 @@ triggers downstream).
 - **Folds into:** appends `{ toolId, stepId?, reason? }` to `variables._denials`. **Pure audit** —
   it does not change frame/execution status; the step still fails via the `STEP_FAILED` that
   follows (from the `CapabilityDeniedError`).
-- Handler: `eventHandlers.ts:200`.
+- Handler: `eventHandlers.ts`.
 
 #### `RESOURCE_METERED`
 - **Introduced:** Loom 2.0 — K3, resource metering (the scarce resource for intelligent software
@@ -284,8 +284,8 @@ triggers downstream).
   `{ tokens += tokens?, costUsd += costUsd?, ms += ms?, count += 1, exceeded? (sticky) }`. Because
   the total is a deterministic fold of logged facts, quota admission control replays identically.
   `ctx.execute` reads this total into `effectCtx.resources` so middleware can enforce budgets
-  (`WorkflowContext.ts:68`).
-- Handler: `eventHandlers.ts:223`.
+  (`WorkflowContext.ts`).
+- Handler: `eventHandlers.ts`.
 
 #### `QUOTA_EXCEEDED`
 - **Introduced:** Loom 2.0 — K3, budget admission control. The execution exceeded its budget, so
@@ -293,7 +293,7 @@ triggers downstream).
 - **Payload:** `{ reason?: string }`
 - **Folds into:** marks `variables._resources.exceeded = true` (and records `reason?`), preserving
   the running totals. **Pure audit** — the step fails via the `STEP_FAILED` that follows.
-- Handler: `eventHandlers.ts:247`.
+- Handler: `eventHandlers.ts`.
 
 #### `SAFETY_BLOCKED`
 - **Introduced:** Loom 2.1 — K6, the behavioral-safety ring ([ADR 0017](../adr/0017-k6-behavioral-safety-ring.md)).
@@ -498,7 +498,7 @@ to the same numbers, because both are pure folds of logged facts (P2 / P9).
 
 The set of event types the fold understands **is** the kernel's on-disk ABI: stored logs must
 replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 names and versions
-that set (`packages/replay-vm/src/eventHandlers.ts:311`).
+that set (`packages/replay-vm/src/eventHandlers.ts`).
 
 ```ts
 export const EVENT_SCHEMA_VERSION = "1.18.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079) — all additive, NO new event kinds

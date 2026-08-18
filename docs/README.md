@@ -59,6 +59,24 @@ The four arcs since have all landed **outside** the kernel — `KERNEL_ABI` is s
   proved two of its three checks wrong, one of which would have errored on the majority of
   correct code. A check whose input nothing populates is also a check nobody can see is wrong.
 
+- **Loom as an agent runtime** ([ADR 0087](adr/0087-durable-agent-loop.md)) — a placement
+  evaluation asked whether Loom could host an agent runtime without touching the kernel, and
+  answered that at the kernel layer it already is one: the gap was that `@loom/agent` ran the ReAct
+  loop on the wrong side of two boundaries — inside a step handler, so it had no syscalls, and
+  outside the `EffectRuntime`, so it had no protection ring. **Nine gaps, all 1P, kernel unchanged.**
+  `agentLoop$` runs the loop from a *runner body*: one durable frame per turn, ids minted per the
+  ADR 0061 identity rule, the model call resolved through the `EffectRuntime`, and a gate that parks
+  the execution *before* a destructive tool runs. Its choices — which skills, what memory, which
+  model — go through `ctx.decide`, so a replay reconstructs the prompt that actually ran rather than
+  re-deciding. Alongside it: the prompt-boundary guard now runs where prompts are actually built
+  (it had no production consumer, and the agent path *erased* taint rather than merely ignoring it);
+  an agent's declared tool menu became its reachable effect set, so `effect-class` and
+  `capability-compat` stopped passing vacuously over agent flows; a capability denial became
+  terminal for the turn instead of retryable feedback; a spawned child can be conferred *less*
+  authority than the flow it runs; the streaming SPI gained a **streamed ≡ completed** conformance
+  contract; and K8.4 — the last unimplemented piece of [ADR 0020](adr/0020-k8-cancellation-deadlines-bounded-effects.md) —
+  now severs a runaway generation *while it generates*.
+
 ## The one-paragraph version
 
 A Loom workflow is an ordinary `async` TypeScript function whose every meaningful step is recorded to a durable, append-only **event log**. State is `fold(events)` — a pure, deterministic reconstruction — so an execution can **pause for a human, resume on another machine, replay bit-for-bit, fork to explore alternatives, and be evaluated against its own history**. The durable log is the moat; durability, resumability, replay, branching, evals, and time-travel debugging are all just *lenses on it*.
