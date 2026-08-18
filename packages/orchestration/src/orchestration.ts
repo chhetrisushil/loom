@@ -1,5 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import { fail } from "@loom/core";
+import type { PrincipalChain } from "@loom/effect-runtime";
+import { signDelegation } from "@loom/effect-runtime";
 import { ResumeRefusedError } from "@loom/workflow-runtime";
 import type { ExecutionContext, RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 
@@ -82,12 +84,23 @@ export function depthOf(executionId: string): number {
   return depth;
 }
 
-/** Marker + spec recorded by `awaitChild` and read by the supervisor. */
+/**
+ * Marker + spec recorded by `awaitChild` and read by the supervisor.
+ *
+ * `grants` is the capability SUBSET the parent confers on this child (K12.4). It is
+ * a list of effect ids — not a token, not a secret, not an identity — because it is
+ * written to an append-only log that is archived and retained. The signed
+ * `DelegatedGrant` is minted from it at start time and never persisted; see
+ * {@link SupervisorDeps.delegation}.
+ */
 interface SpawnChoice {
   __orchestration: true;
   childId: string;
   flowId: string;
   input: unknown;
+  grants?: readonly string[];
+  /** Absolute epoch-ms expiry for the minted token. Absolute, so a re-mint on recovery is identical. */
+  expiresAt?: number;
 }
 
 function asSpawnChoice(value: unknown): SpawnChoice | undefined {
@@ -105,6 +118,9 @@ interface GroupMember {
   childId: string;
   flowId: string;
   input: unknown;
+  /** The capability subset conferred on THIS member (see {@link SpawnChoice.grants}). */
+  grants?: readonly string[];
+  expiresAt?: number;
 }
 
 /**
@@ -151,7 +167,21 @@ function asGroupChoice(value: unknown): GroupSpawnChoice | undefined {
  */
 export async function awaitChild<TOut = unknown>(
   ctx: Pick<ExecutionContext, "executionId" | "decide" | "suspend">,
-  spec: { key: string; flowId: string; input: unknown; maxDepth?: number }
+  spec: {
+    key: string;
+    flowId: string;
+    input: unknown;
+    maxDepth?: number;
+    /**
+     * K12.4 — the capability subset this child may use. Recorded (as plain effect
+     * ids) and turned into a signed, holder-bound `DelegatedGrant` by a supervisor
+     * wired with `delegation`. Omit for today's behaviour: no token, and the child
+     * is authorized by its own flow's grants alone.
+     */
+    grants?: readonly string[];
+    /** Absolute epoch-ms expiry for the conferred authority. Absolute so a re-mint on recovery is identical. */
+    expiresAt?: number;
+  }
 ): Promise<TOut> {
   const childId = childIdFor(ctx.executionId, spec.key);
   if (spec.maxDepth !== undefined) {
@@ -165,6 +195,8 @@ export async function awaitChild<TOut = unknown>(
     childId,
     flowId: spec.flowId,
     input: spec.input,
+    ...(spec.grants !== undefined && { grants: spec.grants }),
+    ...(spec.expiresAt !== undefined && { expiresAt: spec.expiresAt }),
   }));
   const resumed = (await ctx.suspend({ on: CHILD_DONE, correlationKey: childId })) as unknown as {
     output?: TOut;
@@ -200,7 +232,14 @@ export async function awaitChildren<TOut = unknown>(
   ctx: Pick<ExecutionContext, "executionId" | "decide" | "suspend">,
   group: {
     key: string;
-    children: readonly { flowId: string; input: unknown }[];
+    /** `grants`/`expiresAt` are PER MEMBER (K12.4) — a fan-out over heterogeneous children
+     *  rarely wants one subset for all of them, and a shared default would be the wrong one. */
+    children: readonly {
+      flowId: string;
+      input: unknown;
+      grants?: readonly string[];
+      expiresAt?: number;
+    }[];
     maxDepth?: number;
   }
 ): Promise<ChildResult<TOut>[]> {
@@ -213,6 +252,8 @@ export async function awaitChildren<TOut = unknown>(
     childId: childIdFor(ctx.executionId, `${group.key}#${i}`),
     flowId: c.flowId,
     input: c.input,
+    ...(c.grants !== undefined && { grants: c.grants }),
+    ...(c.expiresAt !== undefined && { expiresAt: c.expiresAt }),
   }));
   if (group.maxDepth !== undefined) {
     const depth = depthOf(members[0]!.childId);
@@ -272,11 +313,43 @@ export interface SupervisorDeps {
   flows: Record<string, RegisteredFlow>;
   /** Fired on a supervision failure (start/resume rejection). */
   onError?: (err: unknown) => void;
+  /**
+   * K12.4 — mint an attenuated `DelegatedGrant` for children whose spawn conferred
+   * a `grants` subset, and start them holding it (`principal.actor = childId`, which
+   * is what `DelegationAuthorizer`'s holder-binding check requires).
+   *
+   * The MINT happens here, not at the spawn decision, so the signed token never
+   * enters the log: an append-only, archived, retained log is the wrong place for a
+   * bearer credential, and one written there cannot be rotated out of the copies.
+   * The log carries the SUBSET (plain effect ids), which is a description of
+   * authority rather than a means of exercising it — and a re-mint after recovery is
+   * identical, because both inputs (subset, child id) come from the log.
+   *
+   * Unset ⇒ no token is ever minted and every child starts exactly as before (G2).
+   */
+  delegation?: { secret: string };
 }
 
 export interface ChildSupervisor {
   /** Wire this into `WorkflowRuntimeDeps.onEvent` (it sees every execution's events). */
   onEvent(event: EventEnvelope): void;
+}
+
+/**
+ * Start options for a child: its fixed execution id, plus — when the spawn conferred a
+ * subset AND the supervisor holds the delegation secret — a freshly minted, holder-bound
+ * `DelegatedGrant`. `actor` is the child's own execution id, which is what
+ * `DelegationAuthorizer` compares against `token.issuedTo` so a captured token cannot be
+ * presented by anyone else.
+ */
+function childStartOptions(
+  childId: string,
+  spec: { grants?: readonly string[]; expiresAt?: number },
+  delegation: { secret: string } | undefined
+): { executionId: string; principal?: PrincipalChain } {
+  if (delegation === undefined || spec.grants === undefined) return { executionId: childId };
+  const token = signDelegation(delegation.secret, childId, [...spec.grants], spec.expiresAt);
+  return { executionId: childId, principal: { actor: childId, delegation: token } };
 }
 
 /**
@@ -291,7 +364,10 @@ export interface ChildSupervisor {
  */
 export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   // childId → spec, learned from DECISION_RECORDED before the parent's suspend lands.
-  const specs = new Map<string, { flowId: string; input: unknown }>();
+  const specs = new Map<
+    string,
+    { flowId: string; input: unknown; grants?: readonly string[]; expiresAt?: number }
+  >();
   // childIds (and groupIds) already started this process (idempotency within the runtime).
   const started = new Set<string>();
   // groupId → live aggregation for a parallel spawn: its members, their SETTLED results
@@ -373,7 +449,12 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         const choice = (event.payload as { choice?: unknown }).choice;
         const single = asSpawnChoice(choice);
         if (single !== undefined) {
-          specs.set(single.childId, { flowId: single.flowId, input: single.input });
+          specs.set(single.childId, {
+            flowId: single.flowId,
+            input: single.input,
+            ...(single.grants !== undefined && { grants: single.grants }),
+            ...(single.expiresAt !== undefined && { expiresAt: single.expiresAt }),
+          });
           return;
         }
         const group = asGroupChoice(choice);
@@ -421,7 +502,11 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
               if (flow === undefined || started.has(member.childId)) continue;
               started.add(member.childId);
               await deps.runtime
-                .start(flow, member.input, { executionId: member.childId })
+                .start(
+                  flow,
+                  member.input,
+                  childStartOptions(member.childId, member, deps.delegation)
+                )
                 .catch(fail);
             }
           })();
@@ -445,7 +530,9 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         const parentId = parentOf(childId);
         void (async () => {
           await waitParentDurable(parentId);
-          await deps.runtime.start(flow, spec.input, { executionId: childId }).catch(fail);
+          await deps.runtime
+            .start(flow, spec.input, childStartOptions(childId, spec, deps.delegation))
+            .catch(fail);
         })();
         return;
       }
