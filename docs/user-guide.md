@@ -551,6 +551,109 @@ const dbaAgent = agent$({
 
 `@loom/agent` runs a ReAct-style reason→act loop over an agent's tools; `@loom/plugin-mcp` discovers external tools via the Model Context Protocol.
 
+### Running the loop: `agentStep$` or `agentLoop$`
+
+There are two ways to run that loop, and the choice is a real trade-off rather than a default plus a variant.
+
+**`agentStep$` — one opaque frame.** The whole loop is a single `step$`, so the execution log gets one `STEP_STARTED`/`STEP_COMPLETED` pair no matter how many turns it took. Cheap, and the right choice when a turn is not worth recovering individually. The costs are structural, because a step *handler* receives `StepHandlerContext` — `emit`, and nothing else:
+
+- a crash at turn 39 re-runs all 39, since the frame is the unit of recovery;
+- the agent cannot pause for approval, so a human gate has to sit outside the agent entirely;
+- routing choices can be emitted as facts but not *recorded as decisions*, so a replay re-decides.
+
+```ts
+import { agentStep$ } from "@loom/agent";
+
+const ask = agentStep$({ id: "ask-dba", agent: dbaAgent, provider, effectRuntime });
+```
+
+**`agentLoop$` — one durable frame per turn.** An ordinary function over `ExecutionContext`, called from a runner body. Each turn is its own task, so a crash costs one turn; the model call resolves through the `EffectRuntime`, so K2 authorization, metering, retry, `idempotencyKey` and K9 in-doubt all apply to it; and the loop can `suspend` mid-flight for approval.
+
+```ts
+import { agentLoop$, createAgentModelEffect } from "@loom/agent";
+
+// The model is an effect, which is what puts it inside the protection ring.
+effects.register("model", createAgentModelEffect(provider));
+
+runtime.registerFlow(askFlow, async (ctx, input) =>
+  agentLoop$(ctx, { definition: dbaAgent, modelToolId: "model" }, { prompt: input.question })
+);
+```
+
+**What it costs:** per-turn durability journals each turn's message array, so the log grows with conversation length. Two mitigations, both already in the box — claim-check middleware bounds the *bytes* per turn, and `compaction` bounds the *turns* (below). An adopter who wants neither keeps `agentStep$`.
+
+See [ADR 0087](adr/0087-durable-agent-loop.md).
+
+### Pausing for a human
+
+`requireApproval` parks the execution on a gate **before** the tool runs — the point of asking. A refusal comes back to the model as a tool result rather than an exception, because a human declining is information the agent can settle on, not an error:
+
+```ts
+agentLoop$(ctx, {
+  definition: dbaAgent,
+  modelToolId: "model",
+  requireApproval: (call) => call.name !== "drop-table",  // false ⇒ ask first
+  approvalGate: "AgentToolApproval",                       // resume with { approved: boolean }
+}, input);
+```
+
+Pair the gate with `flow$({ resumeSchemas })` so the resume payload is parsed before it lands — see [§4 Suspend & resume](#4-suspend--resume) and [ADR 0077](adr/0077-typed-resume-payloads.md).
+
+### Recorded choices: skills, memory, routing
+
+Three things an agent decides change what the model is asked, and none is derivable from the log. Each goes through `ctx.decide`, so a replay reconstructs the prompt that **actually ran** rather than re-deciding:
+
+```ts
+agentLoop$(ctx, {
+  definition: dbaAgent,
+  modelToolId: "model",
+  skills, skillSelector,          // which skills are relevant
+  memory, recallLimit: 20,        // what conversation history to recall — BOUND it
+  // or: reasoning,               // which model tier answers, plus each elevation
+}, input);
+```
+
+`recallLimit` matters more than it looks: without it, every remembered entry reaches the prompt and conversation length becomes a hard wall rather than a cost curve.
+
+Use `reasoning` **or** `modelToolId`, not both. The Reasoning Runtime routes and elevates across model tiers and records every choice — but it makes the model call through its own routes, so the request is still guarded at the prompt boundary while K2, metering and K9 in-doubt do not apply to it. `modelToolId` gets the full ring and no routing.
+
+### Bounding what the log carries
+
+`compaction` folds older turns into a summary once the transcript passes a threshold. It runs through `ctx.execute` against an effect you register, deliberately: a summary is lossy and nondeterministic, so it has to be a *recorded fact* or a replay would rebuild a different transcript than the one that ran.
+
+```ts
+effects.register("summarize", new ToolEffect(async ({ messages }) => ({ summary: await fold(messages) })));
+
+agentLoop$(ctx, {
+  definition: dbaAgent,
+  modelToolId: "model",
+  compaction: { toolId: "summarize", afterMessages: 40, keepRecent: 8 },
+}, input);
+```
+
+### Streaming, interruption and budgets
+
+The model effect can consume the provider's stream instead of waiting for the whole completion. The outcome is identical either way — conformance pins that a streamed result equals what `complete` returns — so what streaming buys is live output and a partial to keep when a generation is interrupted:
+
+```ts
+import { chunkDeltas } from "@loom/agent";
+import { streamTokenBudget } from "@loom/middleware";
+
+const sink = chunkDeltas((text) => progressHub.report(ctx.executionId, text), { minChars: 40 });
+
+effects.register("model", createAgentModelEffect(provider, {
+  stream: true,
+  onDelta: sink.push,
+}));
+```
+
+Three things worth knowing:
+
+- **The delta sink is transient.** Route it to `@loom/live-query` or `progressHub` and per-token is free. Route it to `ctx.stream` and every delta becomes a **durable event** — use `chunkDeltas` to emit at sentence granularity instead of per token.
+- **An interrupted turn keeps its work.** A stop mid-generation fails on the `agentInterrupted` channel carrying `{ content, iterations, toolCallLog }` — the partial text *and* the tool calls already paid for, rather than discarding both.
+- **A runaway generation can be severed while it generates** (K8.4). Pass `guard: streamTokenBudget({ maxTokens })` to `createLlmEffect` and a breach emits `QUOTA_EXCEEDED` and aborts the call mid-stream, instead of letting it finish and denying the next one. The token count is an *estimate* from the text so far — severing at roughly the right point beats exact accounting that arrives after the money is spent.
+
+
 ### Dynamic MCP dispatch & sandboxed reshaping (ADR 0063/0064)
 
 For blueprint/interpreter-style flows whose tool calls are **data** (a saved manifest names
