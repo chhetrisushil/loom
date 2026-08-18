@@ -1,3 +1,4 @@
+import { fail } from "@loom/core";
 import type { LlmResponse, LlmStreamChunk } from "./types";
 
 // ── The streamed-≡-completed contract ─────────────────────────────────────────
@@ -52,9 +53,69 @@ export function assembleStream(chunks: readonly LlmStreamChunk[]): LlmResponse {
   };
 }
 
-/** `assembleStream` over a live stream — drains it, then folds. */
-export async function collectStream(stream: AsyncIterable<LlmStreamChunk>): Promise<LlmResponse> {
+/**
+ * The channel an interrupted generation fails on (ADR 0060). Its payload is
+ * {@link InterruptedGeneration} — the text produced before the abort, which is
+ * usually the most expensive artifact the turn made and was previously discarded:
+ * `complete` + abort throws with the response body unread, so there is nothing to
+ * keep. Only a call that has been accumulating deltas has a partial to hand back.
+ *
+ * Declare it in the owning contract's `errors:` map to get the ADR 0060 treatment
+ * (recorded as `STEP_FAILED { channel, payload }`, substituted on replay);
+ * undeclared, it degrades to an ordinary failure exactly as before.
+ */
+export const LLM_INTERRUPTED = "llmInterrupted";
+
+export interface InterruptedGeneration {
+  /** Deltas received before the abort, concatenated. May be empty. */
+  content: string;
+  /** Usage, if the provider reported any before the interruption. */
+  usage?: { inputTokens: number; outputTokens: number };
+}
+
+export interface CollectStreamOptions {
+  /** When this is aborted, the partial is captured instead of being thrown away. */
+  signal?: AbortSignal;
+  /** Transient sink for deltas as they arrive. Never journaled by this function. */
+  onDelta?: (delta: string) => void;
+}
+
+/**
+ * `assembleStream` over a live stream — drains it, feeds deltas out as they
+ * arrive, and folds what arrived.
+ *
+ * With a `signal`, an abort mid-generation is NOT a lost generation: what was
+ * produced is captured as an {@link LLM_INTERRUPTED} typed failure. Anything else
+ * propagates untyped, so a transport failure stays one — K9 retries the turn
+ * whole, and a network blip never reads as a user stop.
+ *
+ * Shared by `createLlmEffect` and `AgentRunner` deliberately: two copies of an
+ * accumulate-and-capture loop is two chances to differ about what "interrupted"
+ * means, and the whole point is that the partial survives identically either way.
+ */
+export async function collectStream(
+  stream: AsyncIterable<LlmStreamChunk>,
+  options: CollectStreamOptions = {}
+): Promise<LlmResponse> {
   const chunks: LlmStreamChunk[] = [];
-  for await (const chunk of stream) chunks.push(chunk);
+  try {
+    for await (const chunk of stream) {
+      chunks.push(chunk);
+      if (chunk.delta !== "") options.onDelta?.(chunk.delta);
+    }
+  } catch (err) {
+    if (options.signal?.aborted === true) {
+      // Usage from the last chunk that reported any — providers send it late, so
+      // an early abort simply has none, which is different from "zero".
+      let usage: LlmStreamChunk["usage"];
+      for (const c of chunks) if (c.usage !== undefined) usage = c.usage;
+      const partial: InterruptedGeneration = {
+        content: chunks.map((c) => c.delta).join(""),
+        ...(usage !== undefined && { usage }),
+      };
+      fail(LLM_INTERRUPTED, partial, "generation interrupted");
+    }
+    throw err;
+  }
   return assembleStream(chunks);
 }

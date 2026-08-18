@@ -1,8 +1,9 @@
 import { TypedFailure } from "@loom/core";
 import type { EffectContext } from "@loom/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
-import { LLM_INTERRUPTED, createLlmEffect } from "./createLlmEffect";
-import type { InterruptedGeneration } from "./createLlmEffect";
+import { LLM_INTERRUPTED } from "./assembleStream";
+import type { InterruptedGeneration } from "./assembleStream";
+import { createLlmEffect } from "./createLlmEffect";
 import type { LlmProvider, LlmStreamChunk } from "./types";
 
 // ── R9 — the streaming LLM effect ─────────────────────────────────────────────

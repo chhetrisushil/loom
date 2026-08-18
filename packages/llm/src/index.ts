@@ -23,6 +23,12 @@ export { OpenAiProvider } from "./providers/OpenAiProvider";
 export type { OpenAiProviderConfig } from "./providers/OpenAiProvider";
 export { GeminiProvider } from "./providers/GeminiProvider";
 export type { GeminiProviderConfig } from "./providers/GeminiProvider";
-export { MalformedStreamError, assembleStream, collectStream } from "./assembleStream";
-export { LLM_INTERRUPTED, createLlmEffect } from "./createLlmEffect";
-export type { CreateLlmEffectOptions, InterruptedGeneration } from "./createLlmEffect";
+export {
+  LLM_INTERRUPTED,
+  MalformedStreamError,
+  assembleStream,
+  collectStream,
+} from "./assembleStream";
+export type { CollectStreamOptions, InterruptedGeneration } from "./assembleStream";
+export { createLlmEffect } from "./createLlmEffect";
+export type { CreateLlmEffectOptions } from "./createLlmEffect";
