@@ -2,9 +2,10 @@
 
 - Status: **Verdicts recorded. Net kernel change is zero — KERNEL_ABI stays 1.1.0 and
   EVENT_SCHEMA stays 1.18.0.** Nine gaps accepted, all at the 1P-package layer (one an additive SPI
-  MINOR; one additive optional field on the effect seam, which is not the syscall ABI); five
-  proposals rejected as app code, as correctly-absent mechanisms, or as already-recorded rejections.
-  No ADR is proposed by this document — §5 lists the ones the accepted work would need.
+  MINOR; `@loom/effect-runtime` untouched — the field once planned for R9 was dropped on
+  implementation, §2.9); five proposals rejected as app code, as correctly-absent mechanisms, or as
+  already-recorded rejections. No ADR is proposed by this document — §5 lists the ones the accepted
+  work would need.
 - Question evaluated: *can Loom support an agent runtime while keeping the execution kernel
   intact, and at which layer does each missing piece belong — kernel, a new seam, a package,
   a 1P plugin, or a 3P plugin?*
@@ -57,7 +58,7 @@ seam, or a new plugin.
 | **R6** | An interrupted generation's partial output is discarded, not journaled | 1P package — `@loom/agent`; **needs R9 first** | no | small |
 | **R7** | `ctx.stream` journals one event per delta, so token-granular streaming bloats the log | 1P — `@loom/agent` + docs guidance | no | small (**docs half done**) |
 | **R8** | The streaming SPI drops `toolCalls` / `stopReason` / `usage`, so it cannot carry an agent turn | 1P — `@loom/llm` SPI + `@loom/conformance` | no, additive SPI MINOR | small |
-| **R9** | No streaming LLM effect, so R6 and K8.4 have no mechanism | 1P — `@loom/llm` + `@loom/agent`; **needs R2 + R8** | no new syscall; one additive `EffectContext` field | medium |
+| **R9** | No streaming LLM effect, so R6 has no mechanism | 1P — `@loom/llm`; **needs R2 + R8** | no — `effect-runtime` untouched (the planned field was dropped, §2.9) | medium |
 | — | A `Session` / `Conversation` construct | **app code** — rejected, §3.1 | — | — |
 | — | Mid-flight message injection into a live run | **app code** — rejected, §3.2 | — | — |
 | — | Token-level resumability | **rejected permanently**, §3.3 | — | — |
@@ -510,9 +511,9 @@ The effect consumes `provider.stream` internally, accumulates, and returns one a
 | Invariant | Why, and the test |
 |---|---|
 | **One durable outcome** | Exactly one `STEP_COMPLETED` carrying the assembled response — journal shape byte-identical to the non-streaming effect. R8's parity contract guarantees this at the SPI; the effect must not widen it. Test: fold equality between a streamed and a completed run of the same request. |
-| **Replay does not re-emit** | A completed effect is served from the log and never re-executed, so a tail attached to a *replay* sees no tokens. This is true of every effect, but streaming is where authors expect otherwise, so it needs stating in the docs and a test that asserts silence on replay. |
+| **Replay does not re-emit** | A completed effect is served from the log and never re-executed, so a tail attached to a *replay* sees no tokens. This is true of every effect, but streaming is where authors expect otherwise, so it needs stating in the docs. Covered by the runtime's own test rather than duplicated — see below. |
 | **Abort captures the buffer** | On `ctx.signal`, the accumulated text becomes the [ADR 0060](../adr/0060-typed-failure-channels.md) typed-failure payload — this is what populates R6. Test: interrupt mid-generation, assert the payload carries the text produced so far. |
-| **Usage as it goes** | The incremental usage R8 adds feeds K8.4's severance. ADR 0020 is specific that this is **"a usage-reporter hook, not middleware"** — middleware sees the effect once, at the end, which is exactly too late. |
+| **Usage as it goes** | ~~The incremental usage R8 adds feeds K8.4's severance via a usage-reporter hook.~~ **Dropped on implementation** — both providers report usage once, at the end, so the hook could only ever fire where metering already reads the number. See below. |
 | **A dead stream is in-doubt, not resumable** | A stream that dies mid-generation is a K9 in-doubt effect: retry re-runs the whole turn under the same `idempotencyKey`. No mid-stream resume — §3.3 is unaffected. |
 
 **The one place this touches `@loom/effect-runtime`.** K8.4's usage-reporter needs a way for an
@@ -522,6 +523,31 @@ in-flight effect to report incremental spend, which is an additive optional fiel
 not the syscall ABI: `KERNEL_SYSCALLS` (`packages/workflow-runtime`) is untouched, so KERNEL_ABI
 stays 1.1.0. This is the only item in this document that touches `effect-runtime` at all, and it is
 worth re-checking against that package when it lands rather than assuming this paragraph.
+
+**Shipped (2026-08-18) — with the `EffectContext` field DROPPED, and that is the finding.** The
+paragraph above was written before checking when providers actually report usage. Both report it
+**once, at the end**: Anthropic in `message_delta` immediately before `message_stop`, OpenAI in a
+usage-only chunk after the finished choice. So an `EffectContext.reportUsage` hook would fire exactly
+once, at the moment the effect is about to return the same number in its response — where metering
+middleware already reads it. A hook that can only ever fire at the end is not a mid-flight
+mechanism; shipping one would have been a surface that *reads* as capability without providing any,
+which is the pattern §2.2 and §2.8 are both about. So `effect-runtime` is untouched, and this
+document now has **no** item that touches it.
+
+**K8.4 therefore stays untriggered, and should be said plainly rather than quietly claimed.** Its
+condition ("streaming effects exist") is now met, but its mechanism needs incremental usage, which
+no wired provider reports. What R9 does give it is the place to plug in: a provider that reports
+usage mid-stream would feed it through the same accumulation loop, and until one does, an
+application that wants mid-flight severance has a better lever anyway — `onDelta` plus its own
+`AbortSignal`, which needs no new seam and lets the app decide what "too much" means.
+
+**One invariant is covered rather than duplicated.** "Replay does not re-emit" is a property of the
+runtime, not of this effect: `packages/app/src/defineConfig.test.ts` ("middleware is NOT re-invoked
+for replayed/completed steps") already proves a completed step is served from the log, and anything
+inside the effect body — including the delta sink — inherits it. Re-proving it here would have meant
+a new dependency edge from a package that has both a runtime and a provider, purely to restate a
+tested property. It is documented on `onDelta` instead, because the expectation it violates
+(a UI tailing a resumed run sees no tokens) is real.
 
 **What this still does not license.** Deltas do not enter the log by default. An author who routes
 them through `ctx.stream` opts into per-delta durability and owes the granularity choice R7 names;
