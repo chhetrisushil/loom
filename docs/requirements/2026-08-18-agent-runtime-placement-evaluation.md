@@ -55,8 +55,8 @@ seam, or a new plugin.
 | **R3** | `@loom/verify` has no notion of an agent's tool menu | 1P packages — `@loom/verify` + `@loom/app` | no | small |
 | **R4** | A capability denial is fed back to the model as a retryable result | 1P package — `@loom/agent` | no | ~5 lines |
 | **R5** | Sub-agent spawn does not attenuate authority | 1P package — `@loom/orchestration` wiring | no | small |
-| **R6** | An interrupted generation's partial output is discarded, not journaled | 1P package — `@loom/agent`; **needs R9 first** | no | small |
-| **R7** | `ctx.stream` journals one event per delta, so token-granular streaming bloats the log | 1P — `@loom/agent` + docs guidance | no | small (**docs half done**) |
+| **R6** | An interrupted generation's partial output is discarded, not journaled | 1P package — `@loom/agent` (shipped, after R9) | no | small |
+| **R7** | `ctx.stream` journals one event per delta, so token-granular streaming bloats the log | 1P — `@loom/agent` + docs guidance | no | small (shipped: docs + `chunkDeltas`) |
 | **R8** | The streaming SPI drops `toolCalls` / `stopReason` / `usage`, so it cannot carry an agent turn | 1P — `@loom/llm` SPI + `@loom/conformance` | no, additive SPI MINOR | small |
 | **R9** | No streaming LLM effect, so R6 has no mechanism | 1P — `@loom/llm`; **needs R2 + R8** | no — `effect-runtime` untouched (the planned field was dropped, §2.9) | medium |
 | — | A `Session` / `Conversation` construct | **app code** — rejected, §3.1 | — | — |

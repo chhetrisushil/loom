@@ -7,7 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The agent loop is a runner body, and the seams it can now reach are wired**
+  ([ADR 0087](docs/adr/0087-durable-agent-loop.md)). `agentStep$` wrapped the whole ReAct loop in
+  one `step$({ handler })`, and a handler receives `StepHandlerContext` — `emit`, and nothing else.
+  So forty model calls and N tool calls were ONE frame (a crash at turn 39 re-ran all 39), approval
+  had to be hoisted out of the agent entirely, and routing choices were hand-emitted in a shape
+  `@loom/learning` cannot evaluate. Nothing was missing from the kernel; the loop was on the wrong
+  side of it.
+
+  `agentLoop$(ctx, config, input)` is an ordinary function over `ExecutionContext`, called from a
+  runner body, issuing `ctx.execute` per turn with ids minted `#turn:<i>` / `#turn:<i>:tool:<j>` per
+  the [ADR 0061](docs/adr/0061-step-identity-interpreter-guardrails.md) identity rule. The model
+  call resolves through the `EffectRuntime` by `modelToolId`, so K2, metering, retry,
+  `idempotencyKey` and K9 in-doubt all apply to it. `requireApproval` parks the execution on a gate
+  BEFORE a destructive tool runs, and a refusal is fed back to the model as a tool result rather
+  than thrown — a human declining is information the agent can settle on.
+
+  Its choices go through the decision seam: skill selection and memory recall via `ctx.decide`
+  (so a replay reconstructs the prompt that actually ran, not the one a re-selection would build),
+  compaction via `ctx.execute` (a lossy, nondeterministic summary has to be a recorded fact), and
+  Reasoning-Runtime routing likewise. `agentStep$` is retained and NOT deprecated: one frame instead
+  of 2N, for an agent that wants none of this.
+
+- **A streamed model call that is still one durable outcome.** `LlmStreamChunk` carries optional
+  `toolCalls`/`stopReason`/`usage` on its terminal chunk — without them a stream could carry prose
+  to a human and nothing else, since a ReAct loop branches on exactly those. `assembleStream` /
+  `collectStream` fold a stream into the `LlmResponse` it represents, and
+  `runLlmProviderConformance` pins the contract that makes two paths to one outcome safe: **a
+  streamed result MUST equal what `complete` returns** — [ADR 0059](docs/adr/0059-content-put-stream.md)
+  D1's streamed-≡-buffered discipline applied to the model call. `createLlmEffect({ stream: true })`
+  consumes it internally: deltas reach a transient sink, the journal sees one `STEP_COMPLETED`, and
+  an interrupted generation keeps its partial text on an ADR 0060 channel instead of discarding it.
+
+- **K8.4 — a runaway generation is severed while it generates**
+  ([ADR 0020](docs/adr/0020-k8-cancellation-deadlines-bounded-effects.md) A8). Every other K3 gate
+  is admission control: it decides whether the NEXT effect runs, so a model that emits 100K tokens
+  was billed in full and stopped afterwards. `streamTokenBudget(budget)` (`@loom/middleware`) guards
+  `collectStream`, estimating output tokens from the text so far plus what `ctx.resources` already
+  metered, and on breach emits `QUOTA_EXCEEDED` — the same durable fact `meteringMiddleware`
+  writes — then throws `QuotaExceededError`. The estimate is named as an estimate in the type, in
+  the reason, and in the default; final metering still uses the provider's own numbers.
+
 ### Fixed
+
+- **The prompt-boundary guard runs where prompts are actually built.**
+  [ADR 0085](docs/adr/0085-untrusted-content-integrity-axis.md)'s protection did not cover the
+  agent: `guardRequest` ran only inside `createLlmEffect`, which had no production consumer, while
+  `AgentRunner` and `ReasoningRuntime` called `provider.complete` directly. The agent path was worse
+  than unguarded — `JSON.stringify` of a tool result flattened the taint envelope into ordinary
+  text, so `isTainted` was false downstream and no guard added later could recover the origin.
+  Evidence erased, not merely unused. Both paths now guard, and a tool result keeps its taint
+  outside the serialization.
+
+- **An agent's declared tool menu is its reachable effect set.** `resolveVerifyInput` read
+  `AgentDefinition.tools` nowhere, and an `agentStep$` declares no `toolId` of its own — so a flow
+  whose only step was an agent contributed NO effects, and `capability-compat`, `effect-class` and
+  ADR 0084's unclassified-effects warn all passed vacuously over it. `StepDefinition.reachableTools`
+  declares the menu reachable THROUGH a step; `agentStep$` populates it from the agent's tools.
+
+- **A capability denial is terminal for the turn.** `AgentRunner` swallowed every throw into
+  `{ error }` and handed it to the model, which reads "not authorized", reformulates, and probes a
+  neighbouring tool — turning one denial into a search over the grant table. `EFFECT_DENIED` was
+  always logged, but auditable is not the same as stopped.
+
+- **A spawned child can be given less authority than the flow it runs.** `superviseChildren` started
+  children with no principal at all, so K12.4's `DelegatedGrant` — which verifies signature, expiry,
+  holder-binding and the intersection with the callee's own grants — had nothing to check.
+  `awaitChild({ grants })` names the conferred subset and a supervisor wired with
+  `delegation: { secret }` mints the token at start time, bound to the child's own execution id.
+  The signed token is never written to the log: an append-only, archived log is the wrong place for
+  a bearer credential, so the log records the subset and the mint is re-derived on recovery.
 
 - **Envelope ids are unique too, and a re-used one is its own error**
   ([#309](https://github.com/chhetrisushil/loom/issues/309)). The sibling of #306 on the events
