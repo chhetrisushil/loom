@@ -65,6 +65,20 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
   default, because the two answers differ and CI wants the one that ships.
 - Vitest config lives once, in `vitest.shared.ts`; each package's
   `vitest.config.ts` is a two-line re-export so turbo can run tests per package.
+- **`pnpm build` (turbo) runs 71 separate `tsc --build` processes**, one per
+  package, and per-process startup dominates: the cold profile is flat, with tiny
+  packages costing nearly as much as large ones. `pnpm build:fast` is the same
+  graph in ONE process via project references. Measured on this repo:
+
+  | | `pnpm build` (turbo) | `pnpm build:fast` |
+  | --- | --- | --- |
+  | cold | 22.9s wall / 132.5s CPU | **6.1s / 9.8s** |
+  | after editing `@loom/core` | 8.4s (63 of 72 tasks re-ran) | **0.54s** |
+  | no-op | 0.69s (full turbo cache) | ~0.3s |
+
+  Use `build:fast` for the edit-rebuild loop. `pnpm build` stays canonical because
+  turbo's per-package cache is what the `test` task's `^build` dependency reads —
+  CI has no remote cache, so it pays the cold number on every run.
 - All changes land on a feature branch via PR (never commit to `main` directly).
 - ADRs in `docs/adr/`; the recipe docs in `docs/` cross-link the examples that
   demonstrate them (e.g. `docs/transient-interpreter.md` → `db-observability`).

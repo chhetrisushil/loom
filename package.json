@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "turbo build",
+    "build:fast": "tsc --build",
     "dev": "turbo dev",
     "test": "turbo test",
     "bench": "turbo bench",
