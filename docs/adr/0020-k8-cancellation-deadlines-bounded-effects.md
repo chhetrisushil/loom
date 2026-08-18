@@ -7,8 +7,8 @@
   anchored to the logged `EXECUTION_STARTED`, metering-on-abort (A2), retry×abort (A3),
   K8.5 cross-seam propagation (`WorkerRuntime.cancel?` SPI, worker-server `POST /cancel`,
   `RemoteWorkerRuntime.cancel`, dispatcher forwarding — best-effort delivery, durable-fact
-  settlement). **K8.4 mid-stream budget remains conditional on streaming effects existing**
-  (none do; binds when they land, via a usage-reporter hook, not middleware). Amendments
+  settlement). **K8.4 landed 2026-08-18** — see A8; the original "no streaming effects exist"
+  condition was met by ADR 0087's series and the enforcement now ships. Amendments
   below applied.)
 - Date: 2026-07-10
 - Requirements: [K8 in the kernel-hardening requirements](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md#k8--cancellation-deadlines--bounded-effects) — priority **P0**
@@ -85,9 +85,46 @@ Adopted per the [K8 evaluation](../requirements/2026-07-10-kernel-hardening-eval
 - **A5 — K8.4 is conditional**: no streaming effects exist today; mid-stream budget
   enforcement binds when they land and cannot be middleware (middleware can't observe
   stream progress) — it needs a usage-reporter hook on `EffectContext` or the provider
-  stream adapter.
+  stream adapter. *(Superseded by A8 — the condition was met and the second half of this
+  sentence turned out to be half right: not middleware, but not an `EffectContext` hook
+  either.)*
 - **A6 — ordering**: K8.5 lands after K9.4 — fence the lease, *then* append
   `EXECUTION_CANCELLED`, or a zombie's late `STEP_COMPLETED` races the cancel fact.
 - **A7 — settlement truth**: provider forwarding is best-effort; the kernel guarantee is
   durable-fact settlement. The "<1 s" acceptance criterion binds for built-in effects, not
   arbitrary third-party providers that ignore the signal.
+- **A8 — K8.4, implemented 2026-08-18.** The condition ("no streaming effects exist") was met
+  by the agent-runtime series: `createLlmEffect({ stream: true })` consumes `provider.stream`
+  internally ([ADR 0087](0087-durable-agent-loop.md) and the R8/R9 items of
+  [the evaluation](../requirements/2026-08-18-agent-runtime-placement-evaluation.md)).
+
+  A5 was right that this cannot be middleware, and wrong about the alternative. An
+  `EffectContext` usage-reporter hook was designed and then **dropped**: both wired providers
+  report usage exactly ONCE, at the end (Anthropic in `message_delta` before `message_stop`,
+  OpenAI in a trailing usage-only chunk), so such a hook could only ever fire where metering
+  middleware already reads the number. A hook that cannot fire mid-flight is not a mid-flight
+  mechanism.
+
+  What ships instead observes the only thing a stream *does* report continuously — its own
+  output. `streamTokenBudget(budget)` (`@loom/middleware`) builds a guard that
+  `collectStream` calls after every delta; it ESTIMATES output tokens from the text so far,
+  adds what `ctx.resources` says the execution already spent, and on breach emits
+  `QUOTA_EXCEEDED` and throws `QuotaExceededError` — severing the HTTP call through the same
+  abort path K8.1 established.
+
+  **The estimate is named as an estimate**, in the type, in the `QUOTA_EXCEEDED` reason, and
+  in the default (`chars / 4`, swappable for a real tokenizer). That is the honest shape: a
+  budget guard that severs at roughly the right point is worth far more than exact accounting
+  that arrives after the money is spent, but it must not be reported as exact. Final metering
+  is unchanged and still uses the provider's reported usage.
+
+  Consequence worth stating: enforcement is only as fine-grained as the delta rate, and a
+  provider that streams one enormous chunk gets one check. The floor is unchanged from before
+  K8.4 (admission control still denies the successor), so this strictly improves on it.
+
+  One thing the implementation found, worth recording because it is the kind of
+  confusion that survives review: a guard that severs typically aborts the execution
+  too, so by the time the stream's catch runs, `signal.aborted` is already true — and
+  the budget error was being rewritten into an "interrupted" typed failure, losing the
+  reason. A caller has to be able to tell *a human stopped this* from *this cost too
+  much*. The guard's own error is now remembered and rethrown untouched.

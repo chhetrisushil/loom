@@ -29,6 +29,10 @@ export {
   assembleStream,
   collectStream,
 } from "./assembleStream";
-export type { CollectStreamOptions, InterruptedGeneration } from "./assembleStream";
+export type {
+  CollectStreamOptions,
+  InterruptedGeneration,
+  StreamProgress,
+} from "./assembleStream";
 export { createLlmEffect } from "./createLlmEffect";
 export type { CreateLlmEffectOptions } from "./createLlmEffect";

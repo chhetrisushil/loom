@@ -1,6 +1,7 @@
 import { LlmEffect } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
 import { collectStream } from "./assembleStream";
+import type { StreamProgress } from "./assembleStream";
 import type {
   LlmProvider,
   LlmRequest,
@@ -42,6 +43,16 @@ export interface CreateLlmEffectOptions<TIn, TOut> {
    * effect, but streaming is where authors expect otherwise.
    */
   onDelta?: (delta: string, ctx: EffectContext) => void;
+  /**
+   * K8.4 — a mid-flight guard, called after every delta; THROW to sever the
+   * generation. Curried over the effect context so it can read `ctx.resources`
+   * and emit a durable fact before throwing.
+   *
+   * `@loom/middleware`'s `streamTokenBudget(budget)` is the budget-shaped one.
+   * Streaming-only by nature: `complete` produces nothing to observe until it is
+   * already finished, which is the whole reason K8.4 waited on streaming effects.
+   */
+  guard?: (ctx: EffectContext) => (progress: StreamProgress) => void;
 }
 
 export function createLlmEffect<TIn = string, TOut = string>(
@@ -71,6 +82,7 @@ export function createLlmEffect<TIn = string, TOut = string>(
             ...(options.onDelta !== undefined && {
               onDelta: (delta: string) => options.onDelta?.(delta, ctx),
             }),
+            ...(options.guard !== undefined && { guard: options.guard(ctx) }),
           })
         : options.provider.complete(request));
 

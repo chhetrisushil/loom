@@ -114,3 +114,57 @@ describe("parity is a real check, not a shape", () => {
     expect(streamed.usage).toBeUndefined();
   });
 });
+
+describe("collectStream's mid-flight guard (K8.4's seam)", () => {
+  async function* endless(): AsyncIterable<LlmStreamChunk> {
+    for (let i = 0; i < 1000; i++) yield { delta: "tok", done: false };
+    yield { delta: "", done: true };
+  }
+
+  it("calls the guard after every delta, with the text so far", async () => {
+    const seen: { text: string; deltas: number }[] = [];
+    await collectStream(
+      (async function* () {
+        yield text("a");
+        yield text("b");
+        yield { delta: "", done: true } as LlmStreamChunk;
+      })(),
+      { guard: (p) => seen.push({ text: p.text, deltas: p.deltas }) }
+    );
+    expect(seen.map((s) => s.text)).toEqual(["a", "ab", "ab"]);
+  });
+
+  it("a throwing guard SEVERS the stream — the whole point of K8.4", async () => {
+    // Without this the generation runs to completion and the budget is enforced
+    // after the money is spent, which is admission control, not severance.
+    let delivered = 0;
+    const err = await collectStream(endless(), {
+      onDelta: () => {
+        delivered++;
+      },
+      guard: (p) => {
+        if (p.deltas >= 5) throw new Error("budget");
+      },
+    }).catch((e) => e);
+
+    expect((err as Error).message).toBe("budget");
+    expect(delivered).toBe(5); // not 1000
+  });
+
+  it("a guard throw is NOT an interruption, even under an abort signal", async () => {
+    // The distinction matters: an interruption keeps the partial as a value on a
+    // typed channel; a budget breach must surface as the budget error so the
+    // caller can tell "a human stopped this" from "this cost too much".
+    const controller = new AbortController();
+    controller.abort();
+    const err = await collectStream(endless(), {
+      signal: controller.signal,
+      guard: () => {
+        throw new Error("budget");
+      },
+    }).catch((e) => e);
+
+    expect((err as Error).message).toBe("budget");
+    expect((err as { channel?: string }).channel).toBeUndefined();
+  });
+});
