@@ -364,9 +364,10 @@ annotations, pins, and agent references survive edits to the view"*, and §5.2's
 operations (add node, rebind, reorder) depend on it. TRD PR-3's edit-then-approve needs the same.
 
 Two smaller consequences of the same code: two structurally identical widgets in one blueprint
-collide on `id` (duplicate React keys); and `customWidget$` accepts an explicit `id` while
-**none of the eight built-in builders do** — so on the 1P path a stable id cannot be supplied at
-all. The fix is an optional `id` on the builders.
+collide on `id` (duplicate React keys); and while `customWidget$` accepts an explicit `id` — as
+does `StreamingText`, alone among the eight built-in builders — **the other seven do not**, so on
+the 1P path a stable id usually cannot be supplied at all. The fix is an optional `id` on the
+remaining builders, and `StreamingText` already shows the shape.
 
 Separately, and worth stating plainly: a 32-bit non-cryptographic hash is an **identity, not a
 content address**. If a blueprint hash is to be the audit anchor for *"what was on screen when
