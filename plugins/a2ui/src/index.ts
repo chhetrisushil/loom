@@ -42,6 +42,14 @@ export type {
 export { A2UISurfaceBridge } from "./A2UISurfaceBridge";
 export type { A2UISurfaceBridgeOptions } from "./A2UISurfaceBridge";
 
+export { validateComponents, validateFunctionCall, describeFindings } from "./conformance";
+export type {
+  A2UIFinding,
+  A2UIFindingCode,
+  A2UIValidation,
+  ValidateComponentsOptions,
+} from "./conformance";
+
 export { A2UI_CALL_FUNCTION_TOOL_ID, registerA2UICallFunction } from "./callFunction";
 export type {
   A2UICallFunctionInput,

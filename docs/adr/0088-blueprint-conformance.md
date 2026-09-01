@@ -2,7 +2,7 @@
 
 - Status: **Accepted — implemented** (2026-09-01)
 - Date: 2026-09-01
-- Resolves: **W1a / W1b** of the
+- Resolves: **W1a–W1e** of the
   [product portfolio evaluation](../requirements/2026-09-01-product-portfolio-evaluation.md) §9
 - Builds on: the second-consumer rule ([ADR 0083](0083-second-consumer-rule.md)),
   effect classes ([ADR 0084](0084-effect-classes-static-ceiling-k2-floor.md)) for the
@@ -100,13 +100,84 @@ artifact into a copy of one viewer's data. The allow-list is exact rather than h
 same reason a heuristic would be worse than nothing: a rule that flags `DataTable.columns` as a
 payload gets switched off, and a switched-off rule protects nobody.
 
-### D5 — What this does NOT do
+### D5 — The same hole existed on the egress path, twice (W1c)
+
+`A2UISurfaceBridge` took a `catalogId: string`, stamped it on every `createSurface`, and checked
+nothing against it. And catalogues declare the `functions` an agent may invoke on the client
+([ADR 0070](0070-a2ui-callfunction-bidirectional-rpc.md)) — nothing compared a `callFunction` to
+them either.
+
+Three decisions:
+
+- **Naming a catalogue without supplying it is refused at construction.** `catalog?: A2UICatalog`
+  is the option that matters; `catalogId` alone now throws unless it is the default (which
+  `defaultCatalog` backs). Leaving a path where an app can name a catalogue and skip the check
+  would rebuild the hole this ADR closes, and construction is the earliest point at which the
+  failure can be attributed to the code that caused it.
+- **A catalogue that declares no `functions` is a refusal, not a permission.** Treating "no
+  declaration" as "unverifiable, therefore allowed" is exactly how a declared vocabulary ends up
+  enforcing nothing. This immediately caught three of the plugin's own tests calling
+  `callFunction` against `defaultCatalog`, which declares none.
+- **`recompose()` throws; `validateComponents()` reports.** A bridge that silently emitted nothing
+  for a bad tree would turn an authoring bug into a surface that never updates — the silent
+  omission the whole seam exists to prevent. Callers that want to degrade run the validator first.
+
+**`updateComponents` now has a producer.** Its payload type has been declared, exported and in the
+server-message union since the adapter shipped, with the comment *"defined for completeness"* and
+nothing emitting one — so a session's component tree was fixed for its lifetime and no panel could
+be added to a surface already open. `recompose(components)` emits it. Before the session opens it
+emits nothing and the new tree becomes what the pending `createSurface` carries; there is no client
+to update yet, and sending an update for a surface the client has never seen is the wrong message,
+not a missing one. That is also why `requireRoot` is checked at construction and not on recompose:
+an `updateComponents` batch may legitimately replace a subtree, and a check that rejects correct
+usage gets turned off.
+
+Component **props** are checked as an allow-list of declared keys only when the entry declares
+`properties`; an entry that declares none yields an explicit `unchecked-props` **warn** rather than
+a silent pass. A2UI property schemas are JSON-Schema `$ref`s into a shared types document, so this
+module checks keys and makes no claim about values — a partial check announcing itself as complete
+would be worse than none.
+
+**The third instance was in the example that exists to demonstrate the feature.**
+`a2ui-callfunction` authors `CHECKOUT_CATALOG` with both its functions declared, exports it, and
+never passes it to the bridge. Its own suite passed while `pnpm start` threw, because the suite
+drives the flow and the transport and never touches the egress seam. Fixed in
+[loom-examples#23](https://github.com/chhetrisushil/loom-examples/pull/23), with the coverage that
+would have caught it.
+
+### D6 — Stable node identity, and a place to record who placed a node (W1d, W1e)
+
+**W1d.** All eight widget builders now accept an optional `id` (`StreamingText` always did; the
+other seven did not). The derived `stableId` hashes kind + props, so editing any prop
+*re-identifies* the node — remounting it and breaking anything keyed on it. That is correct for a
+view authored once and wrong for one a composer revises. `id` is destructured out of `props`, so
+it never trips `undeclared-prop`. The helper's comment now also states plainly that the derived id
+is a 32-bit identity, **not** a content address, and must not be used as an audit anchor.
+
+**W1e.** `SurfacePatchPayload` gains an optional `by: PatchProvenance`. "Why is this panel here" is
+answerable only if something recorded the answer when it was placed, and there was nowhere to
+record it: `ctx.emit` takes no metadata, so provenance could only go *inside* the patched value,
+polluting the data model the client binds to.
+
+It rides the payload instead — `SURFACE_PATCH` is a userspace domain event that the fold skips, so
+this is additive by construction and **EVENT_SCHEMA is untouched**. `surfaceProvenanceProjection()`
+folds it into path → author, because patches are ordered events and "who last wrote this path" is
+therefore a projection, not a second store. `provenanceOf()` falls back to the nearest recorded
+ancestor: a composer that places a whole panel in one patch records the panel, so asking who placed
+a leaf has to walk up to the placement that actually happened. An unattributed patch records
+nothing — synthesising an author would be worse than leaving the question open.
+
+Provenance is **not** forwarded to clients. The bridge reads `patches` only, so an internal agent
+id or model version never reaches a viewer; there is a test asserting the wire bytes.
+
+`SurfaceEmitter.as(by)` returns an attributed view rather than adding an argument to six methods
+that most callers would leave off.
+
+### D7 — What this does NOT do
 
 - It does not close `Widget.kind`. The type stays `string` and `customWidget$` still works;
   closure is a property of *validating against a catalogue*, not of the type. An app that never
   calls `validateBlueprint` is exactly as unchecked as before (G2).
-- It does not touch the a2ui bridge. Validating on egress is **W1c** and lands with
-  `recompose()`, because the check and the structural-update seam are the same seam.
 - It does not make the two 1P renderers agree. `renderBlueprintToString` ignores `widget.kind`
   entirely and flattens every widget to `title: value`; that is legitimate for a text surface but
   it means *"two people looking at one blueprint see the same thing"* is false across surfaces.
@@ -118,6 +189,12 @@ payload gets switched off, and a switched-off rule protects nobody.
   `builtinCatalog`, `BUILTIN_CATALOG_ID` and their types. No existing signature changed.
 - `@loom/plugin-renderer-react` gains three renderers and a coverage test that fails the build if
   a kind is added to `builtinCatalog` without one.
+- `@loom/plugin-a2ui` gains `validateComponents`, `validateFunctionCall`, `describeFindings`,
+  `A2UISurfaceBridge.recompose()` and a `catalog` option. **Two breaking changes, both loud:**
+  passing `catalogId` for a catalogue you do not supply now throws at construction, and
+  `callFunction` throws for a name the catalogue does not declare. Neither can fail silently.
+- `@loom/agent-surface` gains `PatchProvenance`, `surfaceProvenanceProjection`, `provenanceOf` and
+  `SurfaceEmitter.as`. All additive; a log written without `by` folds identically.
 - Every check is verified by its **negative** case — each was individually disabled and the suite
   went red for it — because a declared check and an enforced one look identical in a green suite.
 - Second-consumer rule: satisfied three times before a line was written (CON P3/§5.1/§9.1,
