@@ -239,3 +239,62 @@ describe("catalogCoverage", () => {
     expect(report.extra).toEqual(["Heatmap"]);
   });
 });
+
+// ── Stable node identity ──────────────────────────────────────────────────────
+
+describe("widget builders — an explicit id survives a revision", () => {
+  it("keeps the id across a prop edit, where the derived id would change", () => {
+    // The derived id is a hash of kind + props, so editing any prop
+    // re-identifies the node — remounting it and breaking anything keyed on it.
+    const before = MetricCard({
+      title: "CPU",
+      binding: { projectionId: "cpu", path: "current" },
+    });
+    const afterDerived = MetricCard({
+      title: "CPU",
+      binding: { projectionId: "cpu", path: "current" },
+      unit: "%",
+    });
+    expect(afterDerived.id).not.toBe(before.id);
+
+    const pinned = MetricCard({
+      id: "cpu-headline",
+      title: "CPU",
+      binding: { projectionId: "cpu", path: "current" },
+    });
+    const revised = MetricCard({
+      id: "cpu-headline",
+      title: "CPU",
+      binding: { projectionId: "cpu", path: "current" },
+      unit: "%",
+    });
+    expect(revised.id).toBe(pinned.id);
+  });
+
+  it("keeps `id` out of props, so it is never mistaken for an undeclared payload", () => {
+    const widget = DataTable({
+      id: "slow-queries",
+      title: "Slow queries",
+      binding: { projectionId: "queries", path: "slow" },
+    });
+    expect(Object.keys(widget.props)).not.toContain("id");
+    expect(validateBlueprint(bp([widget], ["queries"]), builtinCatalog).ok).toBe(true);
+  });
+
+  it("gives two otherwise-identical widgets distinct ids when they are supplied", () => {
+    // The duplicate-node-id finding is a real defect of the DERIVED id, not an
+    // unavoidable property of blueprints.
+    const b = { projectionId: "cpu", path: "current" };
+    const report = validateBlueprint(
+      bp(
+        [
+          MetricCard({ id: "a", title: "CPU", binding: b }),
+          MetricCard({ id: "z", title: "CPU", binding: b }),
+        ],
+        ["cpu"]
+      ),
+      builtinCatalog
+    );
+    expect(report.ok).toBe(true);
+  });
+});

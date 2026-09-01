@@ -7,7 +7,9 @@ import {
 import type { SurfacePatch, SurfacePatchPayload, SurfaceState } from "@loom/agent-surface";
 import { maskPaths } from "@loom/classify";
 import type { EventEnvelope } from "@loom/core";
-import { DEFAULT_CATALOG_ID } from "./catalog";
+import { DEFAULT_CATALOG_ID, defaultCatalog } from "./catalog";
+import type { A2UICatalog } from "./catalog";
+import { describeFindings, validateComponents, validateFunctionCall } from "./conformance";
 import { A2UI_VERSION } from "./messages";
 import type {
   A2UIClientMessage,
@@ -29,7 +31,20 @@ export interface A2UISurfaceBridgeOptions {
    * so concurrent executions/surfaces stay addressable on a shared connection.
    */
   a2uiSurfaceId?: string;
-  /** Catalog the emitted `component` types are drawn from. */
+  /**
+   * The catalogue the emitted `component` types are drawn from. Defaults to
+   * `defaultCatalog`. Supplying it is what makes `catalogId` a claim the bridge
+   * can check rather than a label it merely stamps.
+   */
+  catalog?: A2UICatalog;
+  /**
+   * The catalogue id, when the catalogue itself is not supplied.
+   *
+   * Naming a catalogue without supplying it is REFUSED at construction: the
+   * bridge would otherwise stamp an id it cannot verify a single component
+   * against, which is the defect this option's checking exists to close. Pass
+   * `catalog` instead; `catalogId` is then redundant and must agree with it.
+   */
   catalogId?: string;
   /**
    * The component tree (the "view"). Exactly one node must have `id: "root"`.
@@ -62,8 +77,9 @@ export class A2UISurfaceBridge {
   private readonly surface: string;
   private readonly executionId: string;
   private readonly a2uiSurfaceId: string;
+  private readonly catalog: A2UICatalog;
   private readonly catalogId: string;
-  private readonly components: ComponentInstance[];
+  private components: ComponentInstance[];
   private readonly surfaceProperties: Record<string, unknown> | undefined;
   private readonly redact: readonly string[];
 
@@ -74,10 +90,69 @@ export class A2UISurfaceBridge {
     this.surface = options.surface ?? DEFAULT_SURFACE;
     this.executionId = options.executionId;
     this.a2uiSurfaceId = options.a2uiSurfaceId ?? `${this.surface}:${this.executionId}`;
-    this.catalogId = options.catalogId ?? DEFAULT_CATALOG_ID;
+    this.catalog = options.catalog ?? defaultCatalog;
+    if (options.catalog === undefined && options.catalogId !== undefined) {
+      if (options.catalogId !== DEFAULT_CATALOG_ID) {
+        throw new Error(
+          `A2UISurfaceBridge: catalogId "${options.catalogId}" was named but the catalogue was not supplied, so no component can be checked against it. Pass \`catalog\` instead.`
+        );
+      }
+    } else if (options.catalogId !== undefined && options.catalogId !== this.catalog.id) {
+      throw new Error(
+        `A2UISurfaceBridge: catalogId "${options.catalogId}" disagrees with the supplied catalogue's id "${this.catalog.id}".`
+      );
+    }
+    this.catalogId = this.catalog.id;
+    // The initial tree carries the whole view, so it must name its root. Checked
+    // here rather than on first emit: construction is the earliest point at which
+    // the failure can be attributed to the code that caused it.
+    this.assertConformant(options.components, true);
     this.components = options.components;
     this.surfaceProperties = options.surfaceProperties;
     this.redact = options.redact ?? [];
+  }
+
+  /**
+   * Refuse a component tree the declared catalogue does not cover. Throws rather
+   * than dropping the message: a bridge that silently emitted nothing would turn
+   * an authoring bug into a surface that never updates, which is the silent
+   * omission this whole seam exists to prevent. Callers that want to degrade
+   * instead can run `validateComponents` first and act on the report.
+   */
+  private assertConformant(components: readonly ComponentInstance[], requireRoot: boolean): void {
+    const report = validateComponents(components, this.catalog, { requireRoot });
+    if (!report.ok) {
+      throw new Error(
+        `A2UISurfaceBridge: component tree does not conform to catalogue "${this.catalog.id}" — ${describeFindings(report)}`
+      );
+    }
+  }
+
+  /**
+   * Replace the surface's component tree — the STRUCTURAL update, as opposed to
+   * the data updates `handleEvent` produces.
+   *
+   * This is what a recomposition is: a new panel beside an existing one, an
+   * agent's proposal rendered into a surface already open, a view the user edited
+   * before approving. A2UI models it as `updateComponents`, whose payload type
+   * this plugin has always declared and never produced — so until now the
+   * component tree was fixed for the life of a session.
+   *
+   * Before the session is open there is no client to update: the new tree simply
+   * becomes the one the pending `createSurface` will carry, and no message is
+   * emitted. That is why the root requirement is checked at construction and not
+   * here — an `updateComponents` batch may legitimately replace a subtree.
+   */
+  recompose(components: ComponentInstance[]): A2UIServerMessage[] {
+    this.assertConformant(components, false);
+    this.components = components;
+    if (!this.opened) return [];
+    return [
+      {
+        version: A2UI_VERSION,
+        updateComponents: { surfaceId: this.a2uiSurfaceId, components },
+      },
+    ];
   }
 
   /** The A2UI surfaceId this bridge emits/accepts on the wire. */
@@ -202,6 +277,13 @@ export class A2UISurfaceBridge {
     args: unknown,
     opts: { callId: string; callableFrom?: string }
   ): A2UIServerMessage {
+    // A catalogue is the client's contract for what it will answer. Emitting a
+    // call it never declared produces a request no compliant client can honour,
+    // and the flow then waits on a response that is not coming.
+    const report = validateFunctionCall(name, this.catalog);
+    if (!report.ok) {
+      throw new Error(`A2UISurfaceBridge: ${describeFindings(report)}`);
+    }
     return {
       version: A2UI_VERSION,
       callFunction: {

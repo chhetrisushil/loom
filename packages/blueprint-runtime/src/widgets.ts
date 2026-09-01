@@ -1,5 +1,13 @@
 import type { DataBinding, Widget } from "./types";
 
+// A derived id, used when the caller supplies none. It is an IDENTITY, not a
+// content address: a 32-bit non-cryptographic hash, scoped to one blueprint.
+// Never treat it as an audit anchor for "which view was this" — use a real digest
+// (`contentAddress` in @loom/plugin-content) for that.
+//
+// Because it is derived from the props, it CHANGES when any prop changes. That is
+// correct for a view that is authored once and wrong for one a composer revises,
+// which is why every builder accepts an explicit `id`.
 function stableId(kind: string, props: object): string {
   const str = kind + JSON.stringify(props, Object.keys(props as Record<string, unknown>).sort());
   let hash = 0;
@@ -14,13 +22,20 @@ export interface MetricCardProps {
   binding: DataBinding;
   unit?: string;
   format?: "number" | "percent" | "bytes";
+  /**
+   * Stable node id. Supply it when a composer will REVISE this view: the derived
+   * id is a hash of kind + props, so editing any prop re-identifies the node —
+   * remounting it, and breaking anything keyed on it (a pin, an annotation, an
+   * agent's reference to it).
+   */
+  id?: string;
 }
 
 export function MetricCard(props: MetricCardProps): Widget {
-  const { title, ...rest } = props;
+  const { title, id, ...rest } = props;
   return {
     _tag: "Widget",
-    id: stableId("MetricCard", props),
+    id: id ?? stableId("MetricCard", props),
     kind: "MetricCard",
     title,
     props: rest,
@@ -32,13 +47,20 @@ export interface TimelineProps {
   title?: string;
   binding: DataBinding;
   maxItems?: number;
+  /**
+   * Stable node id. Supply it when a composer will REVISE this view: the derived
+   * id is a hash of kind + props, so editing any prop re-identifies the node —
+   * remounting it, and breaking anything keyed on it (a pin, an annotation, an
+   * agent's reference to it).
+   */
+  id?: string;
 }
 
 export function Timeline(props: TimelineProps): Widget {
-  const { title, ...rest } = props;
+  const { title, id, ...rest } = props;
   return {
     _tag: "Widget",
-    id: stableId("Timeline", props),
+    id: id ?? stableId("Timeline", props),
     kind: "Timeline",
     ...(title !== undefined && { title }),
     props: rest,
@@ -51,13 +73,20 @@ export interface ApprovalCardProps {
   binding: DataBinding;
   approveLabel?: string;
   rejectLabel?: string;
+  /**
+   * Stable node id. Supply it when a composer will REVISE this view: the derived
+   * id is a hash of kind + props, so editing any prop re-identifies the node —
+   * remounting it, and breaking anything keyed on it (a pin, an annotation, an
+   * agent's reference to it).
+   */
+  id?: string;
 }
 
 export function ApprovalCard(props: ApprovalCardProps): Widget {
-  const { title, ...rest } = props;
+  const { title, id, ...rest } = props;
   return {
     _tag: "Widget",
-    id: stableId("ApprovalCard", props),
+    id: id ?? stableId("ApprovalCard", props),
     kind: "ApprovalCard",
     title,
     props: rest,
@@ -68,13 +97,20 @@ export function ApprovalCard(props: ApprovalCardProps): Widget {
 export interface StatusBadgeProps {
   title?: string;
   binding: DataBinding;
+  /**
+   * Stable node id. Supply it when a composer will REVISE this view: the derived
+   * id is a hash of kind + props, so editing any prop re-identifies the node —
+   * remounting it, and breaking anything keyed on it (a pin, an annotation, an
+   * agent's reference to it).
+   */
+  id?: string;
 }
 
 export function StatusBadge(props: StatusBadgeProps): Widget {
-  const { title, ...rest } = props;
+  const { title, id, ...rest } = props;
   return {
     _tag: "Widget",
-    id: stableId("StatusBadge", props),
+    id: id ?? stableId("StatusBadge", props),
     kind: "StatusBadge",
     ...(title !== undefined && { title }),
     props: rest,
@@ -86,13 +122,20 @@ export interface ProgressBarProps {
   title?: string;
   binding: DataBinding;
   max?: number;
+  /**
+   * Stable node id. Supply it when a composer will REVISE this view: the derived
+   * id is a hash of kind + props, so editing any prop re-identifies the node —
+   * remounting it, and breaking anything keyed on it (a pin, an annotation, an
+   * agent's reference to it).
+   */
+  id?: string;
 }
 
 export function ProgressBar(props: ProgressBarProps): Widget {
-  const { title, ...rest } = props;
+  const { title, id, ...rest } = props;
   return {
     _tag: "Widget",
-    id: stableId("ProgressBar", props),
+    id: id ?? stableId("ProgressBar", props),
     kind: "ProgressBar",
     ...(title !== undefined && { title }),
     props: rest,
@@ -104,13 +147,20 @@ export interface DataTableProps {
   title?: string;
   binding: DataBinding;
   columns?: string[];
+  /**
+   * Stable node id. Supply it when a composer will REVISE this view: the derived
+   * id is a hash of kind + props, so editing any prop re-identifies the node —
+   * remounting it, and breaking anything keyed on it (a pin, an annotation, an
+   * agent's reference to it).
+   */
+  id?: string;
 }
 
 export function DataTable(props: DataTableProps): Widget {
-  const { title, ...rest } = props;
+  const { title, id, ...rest } = props;
   return {
     _tag: "Widget",
-    id: stableId("DataTable", props),
+    id: id ?? stableId("DataTable", props),
     kind: "DataTable",
     ...(title !== undefined && { title }),
     props: rest,
@@ -122,13 +172,20 @@ export interface AlertCardProps {
   title?: string;
   binding: DataBinding;
   severity?: "info" | "warning" | "error" | "critical";
+  /**
+   * Stable node id. Supply it when a composer will REVISE this view: the derived
+   * id is a hash of kind + props, so editing any prop re-identifies the node —
+   * remounting it, and breaking anything keyed on it (a pin, an annotation, an
+   * agent's reference to it).
+   */
+  id?: string;
 }
 
 export function AlertCard(props: AlertCardProps): Widget {
-  const { title, ...rest } = props;
+  const { title, id, ...rest } = props;
   return {
     _tag: "Widget",
-    id: stableId("AlertCard", props),
+    id: id ?? stableId("AlertCard", props),
     kind: "AlertCard",
     ...(title !== undefined && { title }),
     props: rest,

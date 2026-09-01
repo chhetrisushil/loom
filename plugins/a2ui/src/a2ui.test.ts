@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { A2UISurfaceBridge } from "./A2UISurfaceBridge";
 import type { A2UICallFunctionInput } from "./callFunction";
 import { A2UI_CALL_FUNCTION_TOOL_ID, registerA2UICallFunction } from "./callFunction";
-import { DEFAULT_CATALOG_ID, bind, column, text } from "./catalog";
+import { DEFAULT_CATALOG_ID, bind, column, defaultCatalog, defineCatalog, text } from "./catalog";
 import type { A2UIServerMessage, CallFunctionPayload, FunctionResponsePayload } from "./messages";
 import { A2UI_VERSION } from "./messages";
 import { dotPathToParts, dotPathToPointer } from "./pointer";
@@ -53,6 +53,22 @@ const view = [column("root", ["status"]), text("status", bind("/status"))];
 
 function newBridge(over: Partial<Parameters<typeof makeBridge>[0]> = {}) {
   return makeBridge({ executionId: "exec-1", components: view, ...over });
+}
+
+// A catalogue that declares the client-callable functions these tests invoke.
+// `defaultCatalog` declares none — and a catalogue that declares nothing callable
+// is a refusal, not a blanket permission, so `callFunction` needs this.
+const callableCatalog = defineCatalog({
+  ...defaultCatalog,
+  functions: {
+    getLocale: { name: "getLocale" },
+    ping: { name: "ping" },
+    f: { name: "f" },
+  },
+});
+
+function callableBridge(over: Partial<Parameters<typeof makeBridge>[0]> = {}) {
+  return newBridge({ catalog: callableCatalog, ...over });
 }
 function makeBridge(o: {
   executionId: string;
@@ -232,7 +248,7 @@ const asCallFunction = (m: A2UIServerMessage) =>
 
 describe("A2UISurfaceBridge — callFunction / ingestFunctionResponse", () => {
   it("callFunction emits a well-formed request with this surface's id and the caller's callId", () => {
-    const b = newBridge();
+    const b = callableBridge();
     const msg = b.callFunction("getLocale", { hint: "browser" }, { callId: "exec-1:step-7" });
     expect(msg.version).toBe(A2UI_VERSION);
     expect(asCallFunction(msg)).toEqual({
@@ -244,7 +260,7 @@ describe("A2UISurfaceBridge — callFunction / ingestFunctionResponse", () => {
   });
 
   it("callFunction omits args when undefined and forwards callableFrom", () => {
-    const b = newBridge();
+    const b = callableBridge();
     const msg = b.callFunction("ping", undefined, { callId: "c1", callableFrom: "root" });
     expect(asCallFunction(msg)).toEqual({
       surfaceId: "ui:exec-1",
@@ -257,8 +273,8 @@ describe("A2UISurfaceBridge — callFunction / ingestFunctionResponse", () => {
   it("callId is a pure echo of the caller's key — stable across bridge instances (replay-safe)", () => {
     // The bridge is clock/random-free: two independently constructed bridges for
     // the same execution produce byte-identical requests for the same callId.
-    const a = newBridge();
-    const b = newBridge();
+    const a = callableBridge();
+    const b = callableBridge();
     const ma = asCallFunction(a.callFunction("f", { x: 1 }, { callId: "exec-1:s1" }));
     const mb = asCallFunction(b.callFunction("f", { x: 1 }, { callId: "exec-1:s1" }));
     expect(ma).toEqual(mb);

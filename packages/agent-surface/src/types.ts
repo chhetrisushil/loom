@@ -26,10 +26,34 @@ export type SurfacePatch =
   | { op: "remove"; path: string }
   | { op: "increment"; path: string; by?: number };
 
+/**
+ * Who placed a patch — the provenance of one change to the surface.
+ *
+ * "Why is this panel here" is only answerable if something recorded the answer at
+ * the moment it was placed, and there was nowhere to record it: `ctx.emit` takes
+ * no metadata, so the only place provenance could go was INSIDE the patched
+ * value, where it pollutes the very data model the client binds to.
+ *
+ * It rides the payload instead. `SURFACE_PATCH` is a userspace domain event — the
+ * fold skips it — so this is additive by construction: EVENT_SCHEMA is untouched,
+ * and a log written without it folds identically.
+ *
+ * It is deliberately NOT forwarded to clients. The A2UI bridge reads `patches`
+ * only, so an internal agent id never reaches a viewer.
+ */
+export interface PatchProvenance {
+  /** The author: an agent id, a model identifier, a user id. */
+  by: string;
+  /** Free-form detail — a model version, an evidence ref, a tool call id. */
+  note?: string;
+}
+
 export interface SurfacePatchPayload {
   // Which surface this batch targets. Absent means DEFAULT_SURFACE.
   surface?: string;
   patches: SurfacePatch[];
+  /** Who placed these patches. Absent means unattributed, which is a normal state. */
+  by?: PatchProvenance;
 }
 
 // The client-side UI state tree an agent mutates via patches.

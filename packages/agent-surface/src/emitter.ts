@@ -1,5 +1,5 @@
 import { DEFAULT_SURFACE, SURFACE_PATCH } from "./types";
-import type { SurfacePatch } from "./types";
+import type { PatchProvenance, SurfacePatch } from "./types";
 
 // The producer half of the protocol. Any context that can emit events (a
 // WorkflowContext, a step's EffectContext, an agent) can drive the UI through
@@ -18,18 +18,33 @@ export interface SurfaceEmitter {
   increment(path: string, by?: number): void;
   // Emit an arbitrary batch of patches atomically (one event).
   patch(patches: SurfacePatch[]): void;
+  /**
+   * A view of this emitter that attributes its patches to `by`.
+   *
+   * Provenance is per-author, not per-call: an agent stamps itself once and every
+   * patch it makes carries it, rather than every method growing an extra
+   * argument that most callers would leave off.
+   *
+   *   const planner = ctx.ui.as({ by: "planner-agent", note: "model=opus-5" });
+   *   planner.set("panels.why", { ... });
+   */
+  as(by: PatchProvenance): SurfaceEmitter;
 }
 
 type EmitFn = (eventType: string, payload: unknown) => void;
 
 export function createSurfaceEmitter(
   emit: EmitFn,
-  surface: string = DEFAULT_SURFACE
+  surface: string = DEFAULT_SURFACE,
+  // Named `author` rather than `by` so it cannot be confused with `increment`'s
+  // `by`, which is an amount.
+  author?: PatchProvenance
 ): SurfaceEmitter {
   const send = (patches: SurfacePatch[]): void => {
-    emit(SURFACE_PATCH, { surface, patches });
+    emit(SURFACE_PATCH, { surface, patches, ...(author !== undefined && { by: author }) });
   };
   return {
+    as: (next) => createSurfaceEmitter(emit, surface, next),
     set: (path, value) => send([{ op: "set", path, value }]),
     merge: (path, value) => send([{ op: "merge", path, value }]),
     append: (path, value) => send([{ op: "append", path, value }]),
