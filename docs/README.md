@@ -10,12 +10,14 @@ Start here. The docs are a progressive funnel — read top to bottom, or jump to
 | **[CLI Usage Guide](usage-cli.md)** | Drive the `loom` command: scaffold (`new`/`gen`/`appgen`), validate (`doctor`/`check`/`verify`/`lint`), observe (`logs`/`debug`/`inspect`), data protection (`retention run`/`compliance report`), and gate a deploy (`eval`/`deploy check`). |
 | **[Data classification](data-classification.md)** | Field-sensitivity markers (`secret()`/`sensitive()`/`internal()`/`externalized()`) that drive encryption, redaction, and egress scrubbing (K10-R1/R6). |
 | **[Compliance](compliance.md)** | GDPR/CCPA-enabling: subject index, data export (Art. 15/20), and erasure (Art. 17), tenant-scoped (T3). |
+| **[Composed surfaces](composed-surfaces.md)** | Record a runtime-composed UI as a durable artifact: validate → content-address → `ctx.emit` → replay, with pinning, and what not to do. |
+| **[Transient manifest interpreter](transient-interpreter.md)** | Run a hot, content-addressed read path with zero events, escalating to a durable run only when a repair must be recorded. |
 | **[Data-protection patterns](data-protection-patterns.md)** | The assembly order for long-running observer agents: redaction, shredding, pinned retention, tenant scoping, residency. |
 | **[Acceptance governance](acceptance-governance.md)** | The self-quieting loop: OUTCOME_RECORDED → rankFromOutcomes → rankedRouter — proactivity trained by usage. |
 | **[Architecture](architecture.md)** | Understand the mission, core principles (P1–P11), the runtime model, and *why* each decision was made. |
 | **[Loom 2.0 deep-dives](loom-2.0/00-overview.md)** | The execution-kernel evolution in full detail: data structures, algorithms, and diagrams for every subsystem. |
 | **[Presentation](presentation/loom-deck.md)** | Present Loom — the flagship deck (Marp). More decks in [`presentation/`](presentation/). |
-| **[ADRs](adr/)** | Read the full decision history (0001–0086), one record per decision — including rejections (e.g. ADR 0067). |
+| **[ADRs](adr/)** | Read the full decision history (0001–0088), one record per decision — including rejections (e.g. ADR 0067). |
 | **[Requirements](requirements/)** | Recorded requirement sets — the kernel-hardening series [K7–K12, T1–T2](requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md) and its code-grounded [evaluation & amendments](requirements/2026-07-10-kernel-hardening-evaluation.md) (all eight accepted with amendments, all implemented). |
 
 ## Loom 2.0 — the execution kernel
