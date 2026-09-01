@@ -1,0 +1,241 @@
+import { describe, expect, it } from "vitest";
+import { RendererRegistry } from "./RendererRegistry";
+import { builtinCatalog, defineWidgetCatalog, validateBlueprint } from "./catalog";
+import { catalogCoverage } from "./coverage";
+import { customWidget$ } from "./customWidget";
+import { grid, stack } from "./layout";
+import type { Blueprint, Layout, Widget } from "./types";
+import { DataTable, MetricCard, StatusBadge } from "./widgets";
+
+const bp = (children: Array<Widget | Layout>, projections: string[]): Blueprint => ({
+  _tag: "Blueprint",
+  id: "test",
+  title: "Test",
+  layout: stack({ children }),
+  projections,
+});
+
+const codes = (r: { findings: readonly { code: string }[] }) => r.findings.map((f) => f.code);
+
+// ── The positive baseline ─────────────────────────────────────────────────────
+
+describe("validateBlueprint — a well-formed composition", () => {
+  it("passes a blueprint built from the built-in builders", () => {
+    const report = validateBlueprint(
+      bp(
+        [
+          MetricCard({
+            title: "CPU",
+            binding: { projectionId: "cpu", path: "current" },
+            unit: "%",
+          }),
+          DataTable({
+            title: "Slow queries",
+            binding: { projectionId: "queries", path: "slow" },
+            columns: ["statement", "calls"],
+          }),
+        ],
+        ["cpu", "queries"]
+      ),
+      builtinCatalog
+    );
+
+    expect(report.ok).toBe(true);
+    expect(report.findings).toEqual([]);
+    expect(report.widgets).toBe(2);
+  });
+
+  it("does not mistake the reserved `binding` prop for an undeclared payload", () => {
+    // Every built-in builder duplicates the declared binding into `props`. If the
+    // allow-list did not reserve that key, every built-in widget in existence
+    // would report an undeclared prop — the check would fail closed on itself.
+    const widget = MetricCard({
+      title: "CPU",
+      binding: { projectionId: "cpu", path: "current" },
+    });
+    expect(Object.keys(widget.props)).toContain("binding");
+    expect(validateBlueprint(bp([widget], ["cpu"]), builtinCatalog).ok).toBe(true);
+  });
+
+  it("walks nested layouts, not just the top level", () => {
+    const report = validateBlueprint(
+      bp(
+        [grid({ columns: 2, children: [customWidget$({ kind: "Heatmap", props: {} })] })],
+        ["cpu"]
+      ),
+      builtinCatalog
+    );
+    expect(report.widgets).toBe(1);
+    expect(codes(report)).toContain("unknown-kind");
+  });
+});
+
+// ── The negative cases: each one is the acceptance criterion for a check ──────
+
+describe("validateBlueprint — closure (a composer may only name audited components)", () => {
+  it("FAILS a kind the catalogue does not define", () => {
+    const report = validateBlueprint(
+      bp([customWidget$({ kind: "Heatmap", props: { buckets: 20 } })], ["cpu"]),
+      builtinCatalog
+    );
+
+    expect(report.ok).toBe(false);
+    expect(codes(report)).toEqual(["unknown-kind"]);
+    expect(report.findings[0]?.kind).toBe("Heatmap");
+  });
+
+  it("reports ONE finding for one unknown kind, not a cascade", () => {
+    // Without an entry there is no allow-list and no binding requirement, so
+    // follow-on findings would be invented. One defect, one finding.
+    const report = validateBlueprint(
+      bp([customWidget$({ kind: "Heatmap", props: { a: 1, b: 2, c: 3 } })], []),
+      builtinCatalog
+    );
+    expect(report.findings).toHaveLength(1);
+  });
+});
+
+describe("validateBlueprint — bindings, not data (the exfiltration property)", () => {
+  it("FAILS an undeclared prop — this is how fetched data gets inlined", () => {
+    const report = validateBlueprint(
+      bp(
+        [
+          customWidget$({
+            kind: "MetricCard",
+            binding: { projectionId: "cpu", path: "current" },
+            props: { unit: "%", rows: [{ host: "db-1", pct: 91 }] },
+          }),
+        ],
+        ["cpu"]
+      ),
+      builtinCatalog
+    );
+
+    expect(report.ok).toBe(false);
+    expect(codes(report)).toEqual(["undeclared-prop"]);
+    expect(report.findings[0]?.message).toContain("rows");
+  });
+
+  it("FAILS a data-bearing component with no binding — it would render blank", () => {
+    const report = validateBlueprint(
+      bp([customWidget$({ kind: "StatusBadge", props: {} })], []),
+      builtinCatalog
+    );
+
+    expect(report.ok).toBe(false);
+    expect(codes(report)).toEqual(["missing-binding"]);
+  });
+
+  it("WARNS, without failing, on a binding a component declares it does not take", () => {
+    const decorative = defineWidgetCatalog({
+      id: "test.v1",
+      entries: [{ kind: "Divider", props: [], binding: "none" }],
+    });
+    const report = validateBlueprint(
+      bp(
+        [
+          customWidget$({
+            kind: "Divider",
+            binding: { projectionId: "cpu", path: "x" },
+            props: {},
+          }),
+        ],
+        ["cpu"]
+      ),
+      decorative
+    );
+
+    expect(report.ok).toBe(true);
+    expect(codes(report)).toEqual(["unexpected-binding"]);
+  });
+});
+
+describe("validateBlueprint — silent omission", () => {
+  it("FAILS a binding to a projection the blueprint never declares", () => {
+    // Renderers hydrate only `blueprint.projections`, so this widget resolves to
+    // undefined and renders blank. Nothing else in the system reports it.
+    const report = validateBlueprint(
+      bp([MetricCard({ title: "CPU", binding: { projectionId: "cpu", path: "current" } })], []),
+      builtinCatalog
+    );
+
+    expect(report.ok).toBe(false);
+    expect(codes(report)).toEqual(["undeclared-projection"]);
+  });
+
+  it("FAILS two widgets that share an id", () => {
+    // `stableId` derives the id from kind + props, so two structurally identical
+    // widgets collide — and the id is also the renderer's key.
+    const one = MetricCard({ title: "CPU", binding: { projectionId: "cpu", path: "current" } });
+    const two = MetricCard({ title: "CPU", binding: { projectionId: "cpu", path: "current" } });
+    expect(one.id).toBe(two.id);
+
+    const report = validateBlueprint(bp([one, two], ["cpu"]), builtinCatalog);
+    expect(report.ok).toBe(false);
+    expect(codes(report)).toEqual(["duplicate-node-id"]);
+  });
+});
+
+describe("validateBlueprint — it is a report, not an exception", () => {
+  it("never throws, and returns every finding in one pass", () => {
+    const report = validateBlueprint(
+      bp(
+        [
+          customWidget$({ kind: "Heatmap", props: {} }),
+          customWidget$({ kind: "StatusBadge", props: {} }),
+          MetricCard({ title: "CPU", binding: { projectionId: "nope", path: "x" } }),
+        ],
+        []
+      ),
+      builtinCatalog
+    );
+
+    expect(report.ok).toBe(false);
+    expect(codes(report).sort()).toEqual([
+      "missing-binding",
+      "undeclared-projection",
+      "unknown-kind",
+    ]);
+  });
+
+  it("counts widgets, so an empty composition is distinguishable from a passing one", () => {
+    // `ok: true` over zero widgets is not evidence that a composer works. A
+    // first-attempt validation RATE needs this denominator.
+    const report = validateBlueprint(bp([], []), builtinCatalog);
+    expect(report.ok).toBe(true);
+    expect(report.widgets).toBe(0);
+  });
+});
+
+// ── Coverage: the other direction ─────────────────────────────────────────────
+
+describe("catalogCoverage", () => {
+  it("FAILS when a catalogue kind has no renderer", () => {
+    const registry = new RendererRegistry<string>().register("MetricCard", "r");
+    const report = catalogCoverage(builtinCatalog, registry);
+
+    expect(report.ok).toBe(false);
+    expect(report.missing).toContain("DataTable");
+    expect(report.missing).not.toContain("MetricCard");
+  });
+
+  it("passes when every catalogue kind is registered", () => {
+    const registry = new RendererRegistry<string>();
+    for (const entry of builtinCatalog.entries) registry.register(entry.kind, "r");
+    expect(catalogCoverage(builtinCatalog, registry)).toEqual({
+      ok: true,
+      missing: [],
+      extra: [],
+    });
+  });
+
+  it("reports a renderer outside the catalogue without failing on it", () => {
+    const registry = new RendererRegistry<string>();
+    for (const entry of builtinCatalog.entries) registry.register(entry.kind, "r");
+    registry.register("Heatmap", "r");
+
+    const report = catalogCoverage(builtinCatalog, registry);
+    expect(report.ok).toBe(true);
+    expect(report.extra).toEqual(["Heatmap"]);
+  });
+});

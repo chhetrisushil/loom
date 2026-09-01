@@ -210,6 +210,18 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "L2 (tested; opt-in, byte-identical when unwired). Enforced only when a call carries a principal (trust-boundary model) — a boundary check, not a syscall, so no KERNEL_ABI change; adds EXECUTION_DENIED (EVENT_SCHEMA 1.12.0).",
   },
   {
+    id: "blueprint-conformance",
+    title: "Blueprint Conformance",
+    package: "@loom/blueprint-runtime",
+    level: "L2",
+    summary:
+      "validateBlueprint checks a composed blueprint against a declared widget catalogue (closure + bindings-not-data + silent-omission checks, findings never throws); catalogCoverage checks the other direction, that a renderer implements everything the catalogue declares.",
+    evidence: {
+      conformanceTest: "packages/blueprint-runtime/src/catalog.test.ts",
+    },
+    note: "ADR 0088. Pure functions over JSON-serializable values — no syscall, no event type, KERNEL_ABI/EVENT_SCHEMA untouched (P10). The catalogue vocabulary is the APP's (the ADR 0084 pattern); builtinCatalog is loom's own eight widgets, not a mandate. catalogCoverage is wired into plugins/renderer-react's suite and immediately found the live gap it was written for — WidgetKind declared 8 kinds, defaultRegistry registered 5, and a test ASSERTED the placeholder string, pinning it as intended. L2 not L3: validateBlueprint is opt-in and no shipped example calls it yet; egress-side validation and the a2ui catalogue are W1c, not this ADR.",
+  },
+  {
     id: "live-query",
     title: "Live Query",
     package: "@loom/live-query",
