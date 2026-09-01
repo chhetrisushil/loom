@@ -31,6 +31,19 @@ function formatValue(value: unknown): string {
 // traverseBlueprint<string> walker — the same tree, a different surface. This
 // demonstrates the proposal's multi-surface delivery: web (React), terminal,
 // and any other target share one blueprint and one projection state map.
+//
+// This renderer is deliberately KIND-BLIND: it never reads `widget.kind`, and
+// flattens every widget to `title: value`. That is legitimate for a text surface
+// — a terminal cannot draw a progress bar — but it has a consequence worth
+// stating rather than leaving implied. It cannot fail on an unknown kind, because
+// it never looks; where the React renderer degrades visibly (a placeholder for a
+// kind it cannot render, caught ahead of time by `catalogCoverage`), this one
+// degrades SILENTLY, by dropping the semantics.
+//
+// So "two people looking at one blueprint see the same thing" holds for the data
+// and not for the presentation. Anything that depends on cross-surface agreement
+// — a shared incident view, two responders on a call — needs a renderer that
+// covers the catalogue (ADR 0088), which this one does not claim to.
 export function renderBlueprintToString(
   blueprint: Blueprint,
   stateMap: Map<string, unknown>

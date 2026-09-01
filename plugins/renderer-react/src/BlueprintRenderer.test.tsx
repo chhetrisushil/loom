@@ -135,7 +135,7 @@ describe("BlueprintRenderer", () => {
           {
             _tag: "Widget" as const,
             id: "unknown-1",
-            kind: "DataTable" as const,
+            kind: "Sparkline" as const,
             props: {},
             binding: { projectionId: "metrics", path: "cpu.current" },
           },
@@ -153,6 +153,6 @@ describe("BlueprintRenderer", () => {
       />
     );
 
-    expect(screen.getByText("[No renderer for DataTable]")).not.toBeNull();
+    expect(screen.getByText("[No renderer for Sparkline]")).not.toBeNull();
   });
 });
