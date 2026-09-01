@@ -192,6 +192,10 @@ Three items. One is worth building now.
 
 ### W1 — Blueprint conformance: enforce the catalogue that is already declared **(recommended)**
 
+> **Scope revised in Part II §9** — Part II found four further defects on the same surface and
+> W1 absorbs them (W1a–W1e). This section states the original catalogue finding; §9 is the
+> current scope.
+
 **The finding.** Loom has two component-vocabulary paths and neither is closed:
 
 - `@loom/blueprint-runtime` — `Widget.kind` is *"widened to `string` so custom renderers can
@@ -281,3 +285,197 @@ mining as a projection (`@loom/projection-runtime`) · knowledge graph (3P).
 The portfolio's real risk is not platform capability. It is **C1** — one product is about to write
 months of logs that cannot answer the question the product exists to answer, and nothing in the
 system will report the loss until someone tries to evaluate against them.
+
+---
+
+---
+
+# Part II — GenUI: a focused evaluation of the composition surface
+
+Added 2026-09-01, before implementing W1. All three submissions are GenUI products, so W1 was
+scoped against the catalogue alone. Reading the whole surface — `@loom/blueprint-runtime`,
+`@loom/agent-surface`, `plugins/a2ui`, `plugins/renderer-react`, `plugins/renderer-terminal`,
+`plugins/mcp-app`, and the `db-observability` reference example — found **five** defects, of which
+the catalogue is one. **Still no kernel change, and no new package**: `KERNEL_ABI` 1.1.0,
+`EVENT_SCHEMA` 1.18.0, and `SURFACE_PATCH` is a userspace domain event (not in
+`knownEventTypes()`), so its payload is additive by construction.
+
+The conclusion is that **W1 was scoped too narrowly**, not that anything new is needed.
+
+## 6. The structural finding: loom's GenUI makes the structure static and the data dynamic
+
+There are two composition models in the repo and they do not meet:
+
+| | `@loom/blueprint-runtime` | `@loom/agent-surface` |
+|---|---|---|
+| Unit | `Blueprint` — layout tree of `Widget`s with `DataBinding`s | `SurfaceState` — an untyped state tree |
+| Produced by | `blueprint$(...)` in app code | `SURFACE_PATCH` events from a flow/agent |
+| Durable? | **No.** A plain value. Never emitted, never hashed, never replayed | **Yes.** Ordered, folded, replayable |
+| Carries | structure | data |
+
+`agentSurfaceProjection()` joins them by making surface state bindable, so the supported form of
+dynamism is **stream data into a fixed structure**. Every 1P affordance points that way:
+`SurfacePatch` ops are `set / merge / append / remove / increment` over *values*; there is no
+structural op.
+
+GenUI inverts this. The thing composed at runtime **is the structure**, and a runtime-composed
+structure has no durable channel today. The reference example shows the consequence:
+`db-observability`'s `DashboardComposer.answer()` returns `{ …, blueprint }` as an in-memory
+value, the composer runs **in the browser**, and `App.tsx` hands the result straight to
+`<BlueprintRenderer blueprint={result.blueprint} …>`. Nothing is logged, nothing is addressable,
+and `blueprint$` derives the id from the topic string, so two
+different compositions about CPU collide on one id.
+
+This does **not** need a new primitive. `ctx.emit("BLUEPRINT_COMPOSED", { ref })` with a `sha256:`
+ContentStore address is the whole mechanism, and that is exactly **W2**. What is missing is the
+typed half: nothing validates that a blueprint read back off the log is a well-formed blueprint
+drawn from a known catalogue — which is **W1**. G1 therefore collapses into W1 + W2 and adds no
+surface of its own. Recorded here because three documents assumed platform support for it.
+
+## 7. Five defects
+
+### G2 — `updateComponents` is declared, exported, and unreachable
+
+`A2UISurfaceBridge` takes `components: ComponentInstance[]` as a **constructor option**, sends it
+once inside `createSurface`, and thereafter emits only `updateDataModel`. There is no method that
+changes the component tree.
+
+Meanwhile `messages.ts` defines `UpdateComponentsPayload`, includes it in the `A2UIServerMessage`
+union, and `index.ts` exports it — with the comment *"the `updateComponents` type is defined for
+completeness."* The `a2ui-egress` example even carries a render case for it that can never fire.
+[ADR 0069](../adr/0069-a2ui-egress-adapter.md) names `updateComponents` as part of the protocol it
+adapts and records **no decision to omit it**, so this is an unrecorded omission rather than a
+scope cut.
+
+Consequence: **recomposition cannot be expressed on the egress path at all.** CON §4.3 (*"a new
+panel appears beside the existing surface"*), CON §4.5 (proposal surfaces), and TRD PR-3 (*edit
+the proposed automation, then approve*) are all structural updates to a live surface. Second
+consumer satisfied; the fix is one method (`recompose(components)`), and it must land with W1
+because the catalogue check belongs at exactly that seam.
+
+### G3 — Node identity is content-derived, so every edit re-identifies the node
+
+`stableId(kind, props)` hashes kind + props with a 32-bit `Math.imul` rolling hash. Change one
+prop and the widget's `id` changes — which is also its React `key`, so the component remounts, and
+any annotation, pin, or agent reference keyed on that id breaks.
+
+CON §5.2 requires the opposite in as many words: *"Nodes retain identity across revisions, so
+annotations, pins, and agent references survive edits to the view"*, and §5.2's semantic
+operations (add node, rebind, reorder) depend on it. TRD PR-3's edit-then-approve needs the same.
+
+Two smaller consequences of the same code: two structurally identical widgets in one blueprint
+collide on `id` (duplicate React keys); and `customWidget$` accepts an explicit `id` while
+**none of the eight built-in builders do** — so on the 1P path a stable id cannot be supplied at
+all. The fix is an optional `id` on the builders.
+
+Separately, and worth stating plainly: a 32-bit non-cryptographic hash is an **identity, not a
+content address**. If a blueprint hash is to be the audit anchor for *"what was on screen when
+this change was approved"* (CON §5.6), it must be a real digest. `contentAddress()` in
+`@loom/plugin-content` already computes `sha256:` and should be the only thing used for that.
+
+### G4 — Per-node provenance has no channel
+
+CON §5.2 and §8.1 require every node to record who placed it — user, agent, model version,
+evidence, tool call. TRD PR-5 needs the same for *"why did you suggest this?"*.
+
+`ctx.emit(eventType, payload)` takes **no metadata argument**, and `SurfacePatchPayload` is
+`{ surface?, patches }` with no provenance slot. So provenance can only be smuggled inside the
+patched *value*, where it pollutes the data model the client binds to.
+
+On the surface path this is otherwise nearly free: *"which patch last wrote this path"* is a
+projection over the log, because patches are ordered events. One optional field —
+`by` on `SurfacePatchPayload` — makes CON §5.2 and TRD PR-5 computable. `SURFACE_PATCH` is a
+userspace domain event, so **`EVENT_SCHEMA` is unchanged**.
+
+There is already an in-repo precedent for exactly this kind of evidence:
+`plugins/mcp-app/src/provenance.ts`. See §8.
+
+### G5 — No renderer conformance contract, and the two 1P renderers disagree
+
+- `WidgetKind` declares **eight** built-in widgets. The React `defaultRegistry` registers
+  **five**. `ProgressBar`, `DataTable` and `AlertCard` have no 1P React renderer, and an
+  unregistered kind renders as the literal string `[No renderer for <kind>]` — per viewer, at
+  render time. `BlueprintRenderer.test.tsx` **asserts that string for `DataTable`**, so the gap is
+  pinned as intended behaviour rather than flagged as one.
+- `renderBlueprintToString` (terminal) never reads `widget.kind` at all — it prints
+  `title: value` for every widget. It cannot fail on an unknown kind because it never looks; it
+  silently flattens the semantics instead.
+
+So loom's own vocabulary is not fully rendered by loom's own renderer, and its two 1P renderers
+degrade in opposite directions — one visibly, one invisibly. CON's trust model rests on *"two
+responders on a call are guaranteed to be looking at the same thing"* (§4.3) and on P7's one
+artifact / two projections. That guarantee is currently untested, and for three of eight built-ins
+it is false.
+
+This is the second half of W1: the conformance check has **two** directions —
+blueprint → catalogue (does the composer name only known kinds) and catalogue → registry (does
+this renderer cover the catalogue). The second one fails today, on shipped code, with no product
+involved.
+
+### G6 — The catalogue itself (W1 as already recorded), with new evidence
+
+The reference example had to hand-roll the closure W1 proposes: `catalogue.ts` defines
+`CatalogueEntry[]` with `build: () => Widget`, the model names an **entry id** rather than a
+`kind`, and `catalogueEntry(id)` **throws** on an unknown id. That indirection is a good pattern
+and confirms the need — but as app code it is re-invented per app, it is unavailable on the a2ui
+egress path, it cannot express CON §4.7's *"degrade to a typed table and file a gap"* (a throw is
+not a finding), and it cannot produce TRD **KC-2.2**'s number, because you cannot compute a
+first-attempt validation rate from an exception.
+
+## 8. What is already strong, and should not be rebuilt
+
+Two of these are better than the submissions that ask for them.
+
+- **The transient hydration-plan interpreter** — `db-observability/src/hydration.ts`, on
+  ADRs [0060](../adr/0060-typed-failure-channels.md)/[0061](../adr/0061-step-identity-interpreter-guardrails.md)/[0063](../adr/0063-mcp-dynamic-dispatch.md)/[0064](../adr/0064-sandbox-eval-plugin.md)/[0065](../adr/0065-group-commit-deferred-evidence-gate.md)
+  and `invokeTransient` ([ADR 0066](../adr/0066-transient-effect-invocation-facade.md)). An
+  immutable plan whose nodes each pin an MCP tool's **input-schema hash**, a **content-addressed
+  reshape script**, and an **expected output shape hash**, walked by plain code through
+  `invokeTransient` — **zero events on the read path** — crossing the determinism boundary only
+  when a pin drifts, at which point a durable run records `SCHEMA_REPAIRED`.
+  This *is* CON §5.4 ("no model in the render path"; "render latency is a cache lookup") already
+  built, and it answers two things CON leaves open: §4.7's **stale binding** state and §14's
+  *"source schema changes that alter meaning → explicit migration"*. Loom's answer is a pinned
+  hash verified per call plus a recorded repair.
+- **Decision provenance across a long suspension** — `plugins/mcp-app/src/provenance.ts`:
+  `SEEN_SEQUENCE_FIELD` and `isStale()` carry *the surface sequence the human had rendered when
+  they clicked*. **This is stronger than CON §4.5/§8.2 asks for.** CON requires a diff, evidence
+  links and a blast-radius view, but never asks whether the human was looking at current data —
+  and for a gate open across days of surface churn, that is the question. Note also that
+  `isStale` treats **absent** provenance as stale, which is the vacuous-check discipline applied
+  correctly, and that the module deliberately stops at supplying the number rather than imposing
+  a TTL (P10).
+- **Per-widget selector subscription** ([ADR 0068](../adr/0068-projection-selector-subscription.md),
+  `useWidgetValue` / `subscribeSelector`) — the render-path story for wide dashboards.
+- **Egress redaction on both surface paths** — `agentSurfaceProjection({ redact })` masks in the
+  fold; the a2ui bridge masks on egress while keeping true values internally so `increment` /
+  `append` stay correct. Path-based and app-declared, not IAM-derived — which is the honest limit
+  of CON §5.5's per-viewer hydration today.
+- **Prototype-pollution hardening** on `applySurfacePatch` (`__proto__` / `constructor` /
+  `prototype` dropped whole, at any depth).
+- **`traverseBlueprintAsync`** — the interruptible, incremental-commit walker CON §4.7 needs for
+  *"panels appear as their bindings resolve, with the arrangement settled first"*. It exists, it
+  is opt-in, and it self-documents that **no production renderer ships against it yet**. Not a
+  defect; a validated extension point with no consumer.
+
+## 9. Revised W1
+
+W1 stays **1P, no kernel, no new package**, and absorbs G2–G5. Sequenced so each step has a
+negative test before the next lands:
+
+| | Change | Serves |
+|---|---|---|
+| **W1a** | `validateBlueprint(blueprint, catalog)` in `@loom/blueprint-runtime` — returns findings, never throws, so a missing component can degrade *and* file a gap. Two checks: every `kind` is in the catalogue; every data-bearing widget carries a `DataBinding` and no unbound payload in `props` (CON P4 — the exfiltration boundary, not a style rule) | CON P3/P4, TRD KC-2.2, G6 |
+| **W1b** | Catalogue → registry coverage check, and register (or remove) `ProgressBar` / `DataTable` / `AlertCard`. Replace the `[No renderer for …]` assertion with a coverage assertion | G5 |
+| **W1c** | `A2UISurfaceBridge.recompose(components)` emitting `updateComponents`, validated against the declared `catalogId` on the way out | G2, CON §4.3/§4.5, TRD PR-3 |
+| **W1d** | Optional `id` on the eight built-in widget builders; document that a composer supplies stable ids and that `stableId` is an identity, not a content address | G3, CON §5.2 |
+| **W1e** | Optional `by` (provenance) on `SurfacePatchPayload`, plus a projection that answers "which patch last wrote this path" | G4, CON §5.2/§8.1, TRD PR-5 |
+
+**Acceptance is the negative case throughout**, per the standing rule that *declared* and
+*enforced* look identical in a green suite: a blueprint naming an unlisted `kind` must fail
+validation; the bridge must emit **nothing** for an off-catalogue component, asserted on the
+message stream rather than a return value; and the registry-coverage test must fail if a
+`WidgetKind` is added without a renderer.
+
+**W1a–W1b are the ones worth doing first** — they are the only two that fail on shipped code with
+no product involved.
