@@ -7,19 +7,38 @@ import { InMemoryContentStore } from "@loom/plugin-content";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner } from "@loom/workflow-runtime";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { SANDBOX_TOOL_ID, registerSandboxEval, sandboxEval$ } from "./sandboxEval$";
 import { shapeHash } from "./shape";
+import type { SandboxSpec } from "./types";
 
 // ── ADR 0064 — the sandbox security test list (the audit's executable form) ──
+//
+// ADR 0089 added a second place scripts can run. The list below is therefore run
+// against BOTH engines rather than copied: a guard that holds in-process and not
+// on a worker is the exact failure the shared `evalInFreshRuntime` exists to make
+// impossible, and only running it twice proves it.
 
 const encoder = new TextEncoder();
 
-async function boot(limits?: Parameters<typeof registerSandboxEval>[2]) {
+const ENGINES: { name: string; workers: SandboxSpec["workers"] }[] = [
+  { name: "in-process", workers: {} },
+  { name: "worker pool", workers: { count: 2 } },
+];
+
+/** Effects that may hold live threads; closed after each test or vitest never exits. */
+const opened: { close: () => Promise<void> }[] = [];
+
+afterEach(async () => {
+  await Promise.all(opened.splice(0).map((e) => e.close()));
+});
+
+async function boot(spec: SandboxSpec = {}) {
   const scripts = new InMemoryContentStore();
   const effects = new EffectRuntime();
-  const effect = registerSandboxEval(effects, scripts, limits);
+  const effect = registerSandboxEval(effects, scripts, spec);
+  opened.push(effect);
   await effect.warm();
   return { scripts, effects, effect };
 }
@@ -47,9 +66,11 @@ async function expectChannel(p: Promise<unknown>, channel: string): Promise<Type
   throw new Error(`expected typed failure on channel "${channel}"`);
 }
 
-describe("sandboxEval (ADR 0064)", () => {
+describe.each(ENGINES)("sandboxEval (ADR 0064) — $name", ({ workers }) => {
+  const bootEngine = (spec: SandboxSpec = {}) => boot({ ...spec, workers });
+
   it("evaluates a reshaping script deterministically over the injected input", async () => {
-    const { scripts, effects } = await boot();
+    const { scripts, effects } = await bootEngine();
     const ref = await put(
       scripts,
       "(() => ({ series: input.rows.map((r) => ({ t: r[0], v: r[1] * 2 })) }))()"
@@ -75,7 +96,7 @@ describe("sandboxEval (ADR 0064)", () => {
   });
 
   it("kills a runaway loop on the CPU interrupt budget", async () => {
-    const { scripts, effects } = await boot({
+    const { scripts, effects } = await bootEngine({
       limits: { interruptBudget: 50, wallClockMs: 60_000 },
     });
     const ref = await put(scripts, "while (true) {}");
@@ -87,7 +108,7 @@ describe("sandboxEval (ADR 0064)", () => {
   });
 
   it("kills an allocation bomb on the memory limit", async () => {
-    const { scripts, effects } = await boot({
+    const { scripts, effects } = await bootEngine({
       limits: { memoryBytes: 4 * 1024 * 1024, interruptBudget: 1_000_000, wallClockMs: 60_000 },
     });
     const ref = await put(scripts, `let a = "x"; while (true) { a += a; } a`);
@@ -99,7 +120,7 @@ describe("sandboxEval (ADR 0064)", () => {
   });
 
   it("kills on the wall clock when the interrupt budget is generous", async () => {
-    const { scripts, effects } = await boot({
+    const { scripts, effects } = await bootEngine({
       limits: { interruptBudget: Number.MAX_SAFE_INTEGER, wallClockMs: 50 },
     });
     const ref = await put(scripts, "while (true) {}");
@@ -111,7 +132,7 @@ describe("sandboxEval (ADR 0064)", () => {
   });
 
   it("has no ambient I/O: fetch/require/process/setTimeout are ReferenceErrors (deliberately untyped)", async () => {
-    const { scripts, effects } = await boot();
+    const { scripts, effects } = await bootEngine();
     for (const code of [
       `fetch("http://example.com")`,
       `require("node:fs")`,
@@ -126,7 +147,7 @@ describe("sandboxEval (ADR 0064)", () => {
   });
 
   it("validates the output shape against the pinned hash and fails typed on mismatch", async () => {
-    const { scripts, effects } = await boot();
+    const { scripts, effects } = await bootEngine();
     const ref = await put(scripts, `(() => ({ type: "timeseries", data: [{ t: 1, v: 2 }] }))()`);
     const expected = shapeHash({ type: "timeseries", data: [{ t: 1, v: 2 }] });
 
@@ -148,7 +169,7 @@ describe("sandboxEval (ADR 0064)", () => {
   });
 
   it("MEM-MEDIUM: a script completing with a Promise does not crash on double-dispose", async () => {
-    const { scripts, effects } = await boot();
+    const { scripts, effects } = await bootEngine();
     // `vm.dump` of a Promise disposes the handle itself (quickjs-emscripten 0.31);
     // the alive-guard must prevent QuickJSUseAfterFree.
     const ref = await put(scripts, "Promise.resolve(42)");
@@ -159,7 +180,7 @@ describe("sandboxEval (ADR 0064)", () => {
   });
 
   it("fails typed on an erased script (scriptMissing)", async () => {
-    const { scripts, effects } = await boot();
+    const { scripts, effects } = await bootEngine();
     const ref = await put(scripts, "1 + 1");
     await scripts.delete(ref);
     const failure = await expectChannel(
@@ -168,7 +189,9 @@ describe("sandboxEval (ADR 0064)", () => {
     );
     expect(failure.payload).toEqual({ ref: ref.__loomContent });
   });
+});
 
+describe("sandboxEval — replay", () => {
   it("DE-4 integration: a recorded shapeMismatch replays with ZERO re-evaluation", async () => {
     const scripts = new InMemoryContentStore();
     const ref = await put(scripts, "(() => ({ ok: true }))()");

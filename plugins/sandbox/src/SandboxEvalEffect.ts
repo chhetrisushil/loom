@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import { fail } from "@loom/core";
 import type { Effect, EffectContext, ErrorChannelSchema } from "@loom/effect-runtime";
 import { type QuickJSWASMModule, getQuickJS } from "quickjs-emscripten";
+import { SandboxWorkerPool } from "./SandboxWorkerPool";
+import { type EvalLimits, type EvalOutcome, evalInFreshRuntime } from "./evalCore";
 import { shapeHash } from "./shape";
 import { SANDBOX_ERRORS, SandboxEvalInput, type SandboxEvalInputValue } from "./types";
-import type { SandboxLimits, ScriptReader } from "./types";
+import type { SandboxLimits, SandboxWorkers, ScriptReader } from "./types";
 
 // ── ADR 0064 — the hardened eval effect ──────────────────────────────────────
 //
@@ -46,10 +48,13 @@ export class SandboxEvalEffect implements Effect {
 
   private module: QuickJSWASMModule | undefined;
   private readonly limits: Required<SandboxLimits>;
+  /** Present only when the caller opted into worker threads (ADR 0089). */
+  private readonly pool: SandboxWorkerPool | undefined;
 
   constructor(
     private readonly scripts: ScriptReader,
-    limits: SandboxLimits = {}
+    limits: SandboxLimits = {},
+    workers: SandboxWorkers = {}
   ) {
     this.limits = {
       memoryBytes: limits.memoryBytes ?? DEFAULT_MEMORY_BYTES,
@@ -57,11 +62,37 @@ export class SandboxEvalEffect implements Effect {
       wallClockMs: limits.wallClockMs ?? DEFAULT_WALL_CLOCK_MS,
       maxOutputBytes: limits.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
     };
+    this.pool =
+      workers.count === undefined || workers.count === 0
+        ? undefined
+        : new SandboxWorkerPool({
+            size: workers.count,
+            ...(workers.hardKillGraceMs !== undefined && {
+              hardKillGraceMs: workers.hardKillGraceMs,
+            }),
+          });
   }
 
-  /** Advisory pre-warm (M6): compile the WASM module — the real cold-start cost. */
+  /**
+   * Advisory pre-warm (M6): compile the WASM module — the real cold-start cost.
+   * In worker mode this spawns the threads and compiles the module on each, so
+   * no request pays the thread spawn either.
+   */
   async warm(): Promise<void> {
+    if (this.pool !== undefined) {
+      await this.pool.warm();
+      return;
+    }
     this.module ??= await getQuickJS();
+  }
+
+  /**
+   * Shut the worker pool down. No-op in-process. A pool holds live threads, so a
+   * host that never calls this keeps the process alive — the same contract as
+   * `IsolatedToolEffect.close()`.
+   */
+  async close(): Promise<void> {
+    await this.pool?.close();
   }
 
   async execute(rawInput: unknown, ctx: EffectContext): Promise<unknown> {
@@ -85,8 +116,9 @@ export class SandboxEvalEffect implements Effect {
     assertContentAddress(bytes, call.scriptRef.__loomContent);
     const script = new TextDecoder().decode(bytes);
 
-    this.module ??= await getQuickJS();
-    const output = this.evalInFreshRuntime(script, call.input, ctx);
+    const outcome = await this.evaluate(script, call.input, ctx);
+    if (!outcome.ok) this.mapFailure(outcome, ctx);
+    const output = outcome.value;
 
     // Bound what the script EMITS, not just what it consumes. The return value becomes a
     // durable STEP_COMPLETED payload, so an unbounded one lets a script bloat an
@@ -108,92 +140,43 @@ export class SandboxEvalEffect implements Effect {
     return output;
   }
 
-  private evalInFreshRuntime(script: string, input: unknown, ctx: EffectContext): unknown {
-    const module = this.module;
-    if (module === undefined) throw new Error("sandbox: engine not initialized");
-
-    const runtime = module.newRuntime();
-    // Which guard tripped — the interrupt handler is the ONLY thing that can
-    // stop a synchronous runaway loop, so wall-clock rides it too.
-    let tripped: "cpu" | "wallClock" | undefined;
-    let ticks = 0;
-    runtime.setMemoryLimit(this.limits.memoryBytes);
-
-    const vm = runtime.newContext();
-    try {
-      // The ONLY thing the VM sees: a JSON-marshaled `input` global — seeded as
-      // a STRING parsed in-VM (audit PERF-B4: evalCode of an object literal
-      // makes the engine parse the input as JS source, slower than JSON.parse
-      // and — before the fix — charged against the caller's interrupt budget).
-      // No fetch, no require, no process, no timers — capability-empty by
-      // construction.
-      const json = vm.newString(JSON.stringify(input ?? null));
-      vm.setProp(vm.global, "__loomInputJson", json);
-      json.dispose();
-      const seed = vm.evalCode(
-        "globalThis.input = JSON.parse(globalThis.__loomInputJson); delete globalThis.__loomInputJson;"
-      );
-      if (seed.error !== undefined) {
-        const err = vm.dump(seed.error) as { message?: string };
-        seed.error.dispose();
-        throw new Error(`sandbox: input marshalling failed: ${err.message ?? "unknown"}`);
-      }
-      seed.value.dispose();
-
-      // Install the guards AFTER seeding, so the user script alone pays the
-      // interrupt budget and wall clock.
-      const deadline = Date.now() + this.limits.wallClockMs;
-      runtime.setInterruptHandler(() => {
-        if (ctx.signal?.aborted === true) return true;
-        if (Date.now() > deadline) {
-          tripped = "wallClock";
-          return true;
-        }
-        if (++ticks > this.limits.interruptBudget) {
-          tripped = "cpu";
-          return true;
-        }
-        return false;
-      });
-
-      const result = vm.evalCode(script);
-      if (result.error !== undefined) {
-        const err = vm.dump(result.error) as { name?: string; message?: string };
-        result.error.dispose();
-        this.mapEngineError(err, tripped, ctx);
-      }
-      const output = vm.dump(result.value) as unknown;
-      // Audit MEM-MEDIUM — `dump` DISPOSES the handle itself when the value is
-      // a Promise (verified against quickjs-emscripten 0.31 internals); an
-      // unconditional dispose then throws QuickJSUseAfterFree. Guard on alive.
-      if (result.value.alive) result.value.dispose();
-      return output;
-    } finally {
-      // Audit MEM-MEDIUM corollary — if vm.dispose() ever throws, the runtime's
-      // WASM-heap allocation must still be reclaimed (this.module is a process
-      // singleton; a skipped runtime.dispose() leaks the heap permanently).
-      try {
-        vm.dispose();
-      } finally {
-        runtime.dispose();
-      }
+  /**
+   * Run the script on whichever engine is wired, and return the SAME outcome
+   * type either way. The engines share `evalInFreshRuntime`, so a guard cannot
+   * mean one thing in-process and another on a worker; only the thread differs.
+   */
+  private async evaluate(script: string, input: unknown, ctx: EffectContext): Promise<EvalOutcome> {
+    const limits: EvalLimits = {
+      memoryBytes: this.limits.memoryBytes,
+      interruptBudget: this.limits.interruptBudget,
+      wallClockMs: this.limits.wallClockMs,
+    };
+    if (this.pool !== undefined) {
+      return this.pool.run(script, input, limits, ctx.signal);
     }
+    this.module ??= await getQuickJS();
+    return evalInFreshRuntime(
+      this.module,
+      script,
+      input,
+      limits,
+      () => ctx.signal?.aborted === true
+    );
   }
 
-  private mapEngineError(
-    err: { name?: string; message?: string },
-    tripped: "cpu" | "wallClock" | undefined,
-    ctx: EffectContext
-  ): never {
-    // Audit SEC-5 — script-authored text flows into the durable STEP_FAILED
-    // record; bound it so an adversarial script cannot bloat the immutable log.
-    const message = `${err.name ?? "Error"}: ${err.message ?? "unknown"}`.slice(0, 2048);
+  /**
+   * Outcome → channel. The one place the vocabulary lives: worker mode reports
+   * what happened and this decides what it MEANS, so the boundary carries no
+   * policy (K7.5 — the kernel side keeps authorize/meter/validate).
+   */
+  private mapFailure(outcome: Extract<EvalOutcome, { ok: false }>, ctx: EffectContext): never {
+    const message = outcome.message;
     if (ctx.signal?.aborted === true) {
       // Cancellation is the kernel's outcome (STEP_CANCELLED), not a channel.
       throw ctx.signal.reason instanceof Error ? ctx.signal.reason : new Error(message);
     }
-    if (tripped !== undefined) {
-      fail("limitExceeded", { kind: tripped });
+    if (outcome.tripped !== undefined) {
+      fail("limitExceeded", { kind: outcome.tripped });
     }
     if (/out of memory|memory limit/i.test(message)) {
       fail("limitExceeded", { kind: "memory" });
