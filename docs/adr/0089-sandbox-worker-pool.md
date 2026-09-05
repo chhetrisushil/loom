@@ -77,7 +77,19 @@ concurrency.
 The grace (default 2000 ms) exists because the in-VM clock is the *primary*
 guard and this is the backstop. It must leave room for the legitimate work the
 clock does not cover: marshalling a `maxOutputBytes`-sized result (~25 ms at
-4 MiB) and, on a cold worker, the WASM compile.
+4 MiB).
+
+**Worker startup is excluded from the deadline**, which is armed only after the
+worker acknowledges its WASM module compiled. `wallClockMs` bounds the script;
+charging the engine's boot to it turns a slow host into
+`limitExceeded { wallClock }` — a resource kill that routes to drift-repair,
+where an LLM rewrites a script that was never the problem. This is a live path,
+not a first-request edge case: a hard kill leaves a *cold* worker behind, so the
+run right after a kill is exactly the one that would pay. The first version of
+this ADR got it wrong and CI caught it (25 ms cold start locally, enough more on
+a shared runner to eat a 100 ms budget); the guard is now self-calibrating
+against the machine it runs on rather than a fixed number that passes anywhere
+fast.
 
 ### D5 — Payloads cross as transferred JSON bytes, not structured clones
 

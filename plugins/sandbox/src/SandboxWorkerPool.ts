@@ -50,6 +50,8 @@ interface PendingRun {
 interface Slot {
   worker: Worker;
   busy: boolean;
+  /** Has this worker compiled its WASM module and acknowledged? */
+  ready: boolean;
   /** Settles the in-flight run non-cooperatively (death / close); cleared when it settles. */
   settle: ((outcome: EvalOutcome | Error) => void) | undefined;
 }
@@ -90,25 +92,42 @@ export class SandboxWorkerPool {
    */
   async warm(): Promise<void> {
     await Promise.all(
-      Array.from({ length: this.options.size }, (_, i) => {
-        const slot = this.ensureSlot(i);
-        return new Promise<void>((resolve, reject) => {
-          const onMessage = (msg: FromWorker): void => {
-            if (msg.type !== "ready") return;
-            slot.worker.off("message", onMessage);
-            slot.worker.off("error", onError);
-            resolve();
-          };
-          const onError = (err: Error): void => {
-            slot.worker.off("message", onMessage);
-            reject(err);
-          };
-          slot.worker.on("message", onMessage);
-          slot.worker.once("error", onError);
-          slot.worker.postMessage({ type: "warm" } satisfies ToWorker);
-        });
-      })
+      Array.from({ length: this.options.size }, (_, i) => this.ensureReady(this.ensureSlot(i)))
     );
+  }
+
+  /**
+   * Resolve once this worker has compiled its WASM module.
+   *
+   * Called before every eval, not only from `warm()`, because a worker's cold
+   * start must NOT be charged against the script's wall clock. It is the engine
+   * starting up, not the script running long, and conflating them turns a slow
+   * boot into `limitExceeded { wallClock }` — a resource kill that routes to
+   * drift-repair, where an LLM rewrites a script that was never the problem. A
+   * cold worker is the norm after a hard kill, so this is a live path, not a
+   * first-request edge case.
+   */
+  private ensureReady(slot: Slot): Promise<void> {
+    if (slot.ready) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const onMessage = (msg: FromWorker): void => {
+        if (msg.type !== "ready") return;
+        cleanup();
+        slot.ready = true;
+        resolve();
+      };
+      const onError = (err: Error): void => {
+        cleanup();
+        reject(err);
+      };
+      const cleanup = (): void => {
+        slot.worker.off("message", onMessage);
+        slot.worker.off("error", onError);
+      };
+      slot.worker.on("message", onMessage);
+      slot.worker.once("error", onError);
+      slot.worker.postMessage({ type: "warm" } satisfies ToWorker);
+    });
   }
 
   /** Terminate every worker. Runs still in flight reject; the pool is not reusable. */
@@ -169,7 +188,7 @@ export class SandboxWorkerPool {
     // Hardening, not a requirement — the sandbox wants the plain Node it was
     // compiled for, and it brings its own limits rather than the host's flags.
     const worker = new Worker(workerEntry(), { execArgv: [] });
-    const slot: Slot = { worker, busy: false, settle: undefined };
+    const slot: Slot = { worker, busy: false, ready: false, settle: undefined };
     // A dead worker must not strand the run it was serving, and the slot has to
     // be usable again — the next dispatch spawns a replacement.
     const onDeath = (err: Error): void => {
@@ -200,9 +219,33 @@ export class SandboxWorkerPool {
       this.release(slot);
       return;
     }
+    // Claim the slot BEFORE any await, or a second run can be handed the same
+    // worker while this one is still waiting for it to warm.
+    slot.busy = true;
+    if (!slot.ready) {
+      this.ensureReady(slot).then(
+        () => this.begin(slot, run),
+        (err: Error) => {
+          slot.busy = false;
+          run.reject(err);
+          this.replace(slot);
+        }
+      );
+      return;
+    }
+    this.begin(slot, run);
+  }
+
+  /** Send the eval and arm the deadline. The worker is ready; the clock is the script's. */
+  private begin(slot: Slot, run: PendingRun): void {
+    if (run.signal?.aborted === true) {
+      slot.busy = false;
+      run.reject(abortReason(run.signal));
+      this.release(slot);
+      return;
+    }
 
     const runId = this.nextRunId++;
-    slot.busy = true;
 
     let settled = false;
 
