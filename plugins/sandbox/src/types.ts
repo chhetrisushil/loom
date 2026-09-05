@@ -38,11 +38,40 @@ export interface SandboxLimits {
   maxOutputBytes?: number;
 }
 
+/**
+ * Where scripts evaluate (ADR 0089). Opt-in: omitted or `count: 0` keeps the
+ * in-process engine, which is what every existing consumer gets.
+ */
+export interface SandboxWorkers {
+  /**
+   * Worker threads to run scripts on. QuickJS evaluation is synchronous and
+   * cannot yield, so in-process it blocks the caller's event loop for up to
+   * `wallClockMs` and a concurrency-limited fanout is fictitious — N evals
+   * still run one after another. A pool fixes both, and adds the hard kill the
+   * in-engine guards cannot do (see `hardKillGraceMs`).
+   *
+   * Requires the package to have been BUILT: the worker entry is compiled
+   * output, resolved next to the pool module.
+   */
+  count?: number;
+  /**
+   * Grace past `wallClockMs` before a worker is terminated outright. Default
+   * 2000 ms. The in-VM wall clock is a SOFT bound — it is only checked when
+   * QuickJS invokes the interrupt handler, so a script allocating heavily
+   * between callbacks runs past it. This is the backstop that ends that class,
+   * so it must still leave room for the legitimate work the clock does not
+   * cover: marshalling a `maxOutputBytes`-sized result, and the WASM compile on
+   * a cold worker.
+   */
+  hardKillGraceMs?: number;
+}
+
 /** Static description of a sandbox executor (P5 — wiring is static). */
 export interface SandboxSpec {
   /** The effect id this executor registers under. Default `"sandbox.eval"`. */
   id?: string;
   limits?: SandboxLimits;
+  workers?: SandboxWorkers;
 }
 
 /** The step input: which script (by content address), what input, what shape to expect back. */

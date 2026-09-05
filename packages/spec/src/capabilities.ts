@@ -251,11 +251,11 @@ export const CAPABILITIES: readonly Capability[] = [
     package: "@loom/plugin-sandbox",
     level: "L2",
     summary:
-      "QuickJS-in-WASM eval of content-addressed, LLM-authored reshaping scripts: in-engine memory/CPU/wall-clock limits, no ambient I/O by construction, output shape-hash validation — typed scriptMissing/limitExceeded/shapeMismatch channels.",
+      "QuickJS-in-WASM eval of content-addressed, LLM-authored reshaping scripts: in-engine memory/CPU/wall-clock limits, no ambient I/O by construction, output shape-hash validation — typed scriptMissing/limitExceeded/shapeMismatch channels. Opt-in worker-thread evaluation keeps a synchronous eval off the caller's event loop and adds the hard kill the in-engine guards cannot do.",
     evidence: {
       conformanceTest: "plugins/sandbox/src/sandbox.test.ts",
     },
-    note: "ADR 0064 — engine choice: quickjs-emscripten (capability-EMPTY VM vs @loom/isolate's subtractively-scrubbed child process; the isolation CONTRACT follows IsolatedToolSpec). idempotent:true (pure function of script+input); resource kills are typed so replay never re-burns CPU. Written once, audited once — the security test list is the audit's executable form.",
+    note: "ADR 0064 — engine choice: quickjs-emscripten (capability-EMPTY VM vs @loom/isolate's subtractively-scrubbed child process; the isolation CONTRACT follows IsolatedToolSpec). idempotent:true (pure function of script+input); resource kills are typed so replay never re-burns CPU. Written once, audited once — the security test list is the audit's executable form. ADR 0089 adds an opt-in worker pool (`workers`, off by default): both engines share ONE `evalInFreshRuntime`, so the 0064 security list is parameterized over them rather than copied, and the pool contributes what the in-engine guards structurally cannot — a hard kill for a script that never reaches the interrupt handler (measured: 790ms against a 50ms wall clock, one interrupt callback). Pool evidence: plugins/sandbox/src/workerPool.test.ts.",
   },
   {
     id: "mcp-dynamic-dispatch",

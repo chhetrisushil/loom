@@ -1,0 +1,76 @@
+import { type TransferListItem, parentPort } from "node:worker_threads";
+import { type QuickJSWASMModule, getQuickJS } from "quickjs-emscripten";
+import { evalInFreshRuntime } from "./evalCore";
+import type { FromWorker, ToWorker } from "./workerProtocol";
+
+// ── ADR 0089 — the worker-side entrypoint ────────────────────────────────────
+//
+// The whole file: compile QuickJS once, then evaluate one script at a time on
+// this thread instead of the caller's. It deliberately holds NO state between
+// runs beyond the compiled WASM module — every eval still gets a fresh runtime
+// from the shared `evalInFreshRuntime`, so worker mode cannot diverge from
+// in-process mode on any guard.
+//
+// Nothing here decides outcomes. A guard kill comes back as `tripped` and the
+// parent maps it to a typed channel, because the channel vocabulary is kernel
+// policy and the parent is the kernel side of this boundary (K7.5).
+
+const port = parentPort;
+if (port === null) throw new Error("sandbox worker: no parentPort (not spawned as a Worker)");
+
+const send = (msg: FromWorker, transfer: TransferListItem[] = []): void => {
+  port.postMessage(msg, transfer);
+};
+
+// NOT named `module`: this file compiles to CommonJS, where `module` is already
+// bound by the wrapper. A top-level `let module` is a redeclaration SyntaxError,
+// and Node's answer to a file that will not parse as CommonJS is to reparse it as
+// ESM — where the compiled `exports.` prologue then fails. The symptom names
+// neither the variable nor the line.
+let quickjs: QuickJSWASMModule | undefined;
+
+const decoder = new TextDecoder();
+const encoder = new TextEncoder();
+
+/** Encode into a fresh, non-pooled buffer — a transfer detaches it, so it may not be shared. */
+function toTransferable(json: string): Uint8Array {
+  return encoder.encode(json);
+}
+
+async function handle(msg: ToWorker): Promise<void> {
+  if (msg.type === "warm") {
+    quickjs ??= await getQuickJS();
+    send({ type: "ready" });
+    return;
+  }
+
+  const runId = msg.runId;
+  try {
+    quickjs ??= await getQuickJS();
+    const input = JSON.parse(decoder.decode(msg.inputJson)) as unknown;
+    const outcome = evalInFreshRuntime(quickjs, msg.script, input, msg.limits);
+    if (!outcome.ok) {
+      send(
+        outcome.tripped === undefined
+          ? { type: "failure", runId, message: outcome.message }
+          : { type: "failure", runId, message: outcome.message, tripped: outcome.tripped }
+      );
+      return;
+    }
+    if (outcome.value === undefined) {
+      send({ type: "result", runId, outputJson: null });
+      return;
+    }
+    const bytes = toTransferable(JSON.stringify(outcome.value));
+    send({ type: "result", runId, outputJson: bytes }, [bytes.buffer as ArrayBuffer]);
+  } catch (err) {
+    // A throw here is the WORKER failing, not the script: the module would not
+    // compile, or a value would not marshal. Untyped by design — same reasoning
+    // as an environment violation inside the VM.
+    send({ type: "fatal", runId, message: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+port.on("message", (msg: ToWorker) => {
+  void handle(msg);
+});
