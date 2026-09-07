@@ -100,7 +100,7 @@ runtime  ─await→  journal.drain()   at durability barriers:
                     • before waitForSuspend + snapshot save
 ```
 
-- **Any backend**: `EventStore`/`SnapshotStore`/`BranchRegistry`/`MemoryStore` are Promise-returning. SQLite + in-memory ship; Postgres/Redis/DynamoDB are first-class.
+- **Any backend**: `EventStore`/`SnapshotStore`/`BranchRegistry`/`TimerStore`/`MemoryStore` are Promise-returning, each with a published conformance kit. In-memory, SQLite and Postgres all ship; a third-party backend proves itself by running the same kit (`loom-plugin-vector` does, for `MemoryStore`, by cosine similarity rather than an index).
 - **Sync `ctx.emit`/`ctx.ui` preserved**: the journal folds in memory synchronously; durable writes flush in order at barriers. No `nextSequence` round-trip — the sequencer is in-memory.
 - **New failure mode**: a rejected `append` aborts the run → `StorageWriteError` at the barrier + `onStorageError` hook. Never fabricated into the log.
 - Reference: `docs/examples/postgres-backend/` (`LISTEN/NOTIFY`) · `InMemoryAsyncEventStore` proves it in the async test suite.

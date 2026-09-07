@@ -48,6 +48,67 @@ function seamsMissingFromGuide(guideText: string): string[] {
   return SEAM_KEYS.filter((key) => !list.includes(`\`${key}\``));
 }
 
+/**
+ * Conformance kits absent from the SPI map, DELIBERATELY and for now.
+ *
+ * The map's "Conformance kit" column is how an implementer learns a backend can be
+ * proved rather than argued about, and it had drifted in both directions: the Timers
+ * row said "— (future)" while `runTimerStoreConformance` had shipped and SQLite was
+ * running it, and the compute section said a dispatcher kit "is a natural follow-up"
+ * with `runExecutionDispatcherConformance` already exported.
+ *
+ * These six have kits and no row at all, because the seams themselves are not in the
+ * map yet — writing those rows means describing each seam's required surface, which is
+ * a research job and not a rename. Listed rather than silent: the allowlist converts
+ * "we forgot" into "we decided", in a reviewable diff, the way @loom/spec's
+ * NOT_A_CAPABILITY does for ADRs.
+ */
+const KIT_WITHOUT_A_MAP_ROW = new Set([
+  "runContentStoreConformance", // content-store seam (ADR 0046)
+  "runDurableStateStoreConformance", // durable carry state (ADR 0051 D2)
+  "runReadModelStoreConformance", // cross-execution read models (RM)
+  "runKeyStoreConformance", // K10 envelope encryption
+  "runProjectionRuntimeConformance", // listed in the map's Observability table, no kit column
+  "runCapabilityAuthorizerConformance", // listed in the Effect & policy table, no kit column
+]);
+
+/** Every `run*Conformance` @loom/conformance exports. Read as text — no dependency on it. */
+function exportedKits(): string[] {
+  const source = readFileSync(resolve(REPO_ROOT, "packages/conformance/src/index.ts"), "utf8");
+  return [...source.matchAll(/export function (run\w*Conformance)/g)].map((m) => m[1] as string);
+}
+
+describe("conformance-kit/doc coverage (fitness)", () => {
+  it("finds the kits (the sweep itself can't silently match nothing)", () => {
+    expect(exportedKits().length).toBeGreaterThan(10);
+  });
+
+  it("every conformance kit is named in the SPI map, or listed as not-yet-mapped", () => {
+    const mapText = doc(SPI_MAP);
+    const undocumented = exportedKits().filter(
+      (kit) => !mapText.includes(kit) && !KIT_WITHOUT_A_MAP_ROW.has(kit)
+    );
+    expect(
+      undocumented,
+      `these kits exist and the map does not mention them, so a backend author cannot find them:\n${undocumented.join("\n")}`
+    ).toEqual([]);
+  });
+
+  it("the map names no kit that does not exist", () => {
+    const kits = new Set(exportedKits());
+    const named = [...doc(SPI_MAP).matchAll(/`(run\w*Conformance)`/g)].map((m) => m[1] as string);
+    expect(named.length).toBeGreaterThan(3);
+    expect(named.filter((kit) => !kits.has(kit))).toEqual([]);
+  });
+
+  it("the allowlist is live — no entry for a kit that is now mapped", () => {
+    // Otherwise it rots into a list of things that ARE documented, and the next
+    // undocumented kit hides behind a stale exemption.
+    const mapText = doc(SPI_MAP);
+    expect([...KIT_WITHOUT_A_MAP_ROW].filter((kit) => mapText.includes(kit))).toEqual([]);
+  });
+});
+
 describe("seam/doc coverage (fitness)", () => {
   it("every seam has a row naming its SPI in the extension-seams map", () => {
     expect(seamsMissingFromSpiMap(doc(SPI_MAP))).toEqual([]);
