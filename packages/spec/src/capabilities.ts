@@ -533,13 +533,15 @@ export const CAPABILITIES: readonly Capability[] = [
     id: "knowledge",
     title: "Document Corpora",
     package: "@loom/knowledge",
-    level: "L2",
+    level: "L3",
     summary:
       "KnowledgeBase over a memory tier: upsert/sync/remove by document, provenance-preserving prompt assembly, and decidable citation checking (ADR 0091).",
     evidence: {
       conformanceTest: "packages/knowledge/src/KnowledgeBase.test.ts",
+      usedIn:
+        "loom-examples: db-sentinel (a runbook corpus edited mid-year — a March finding replays to March's guidance after the corpus is emptied), runbook-recall (RAG, migrated off its hand-written chunker/prompt builder)",
     },
-    note: "ADR 0091 — the package owns exactly one thing: the mapping from a DOCUMENT (the unit a corpus is edited in) to the PASSAGES it is searched in, so a revision supersedes its predecessor instead of duplicating it. Storage is `MemoryStore`'s, ranking is the backend's, reproducibility is `ctx.decide`'s, safety is ADR 0085's. NOT a seam: there is nothing to plug — an alternative KnowledgeBase would differ only in its manifest layout, and the seam it would need is one layer down. L2 and not L3 until a second consumer beyond the package's own suite exercises it (ADR 0083).",
+    note: "ADR 0091 — the package owns exactly one thing: the mapping from a DOCUMENT (the unit a corpus is edited in) to the PASSAGES it is searched in, so a revision supersedes its predecessor instead of duplicating it. Storage is `MemoryStore`'s, ranking is the backend's, reproducibility is `ctx.decide`'s, safety is ADR 0085's. NOT a seam: there is nothing to plug — an alternative KnowledgeBase would differ only in its manifest layout, and the seam it would need is one layer down. The second consumer (ADR 0083) is db-sentinel, chosen because it is UNLIKE the first: runbook-recall ingests once and asks once, where an append-only corpus and an upsertable one are indistinguishable — which is exactly how the gap this package closes survived ADR 0090.",
   },
   {
     id: "placement-adapters",
