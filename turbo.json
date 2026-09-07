@@ -7,7 +7,12 @@
     },
     "test": {
       "dependsOn": ["^build"],
-      "outputs": []
+      "outputs": [],
+      // Part of the CACHE KEY, not just passed through. Without this, a cached
+      // "passed" from a run with no database is replayed verbatim for a run that
+      // has one — turbo reports FULL TURBO and the Postgres suites never execute.
+      // Same for LOOM_TEST_SRC, where the cached run resolved the other tree.
+      "env": ["LOOM_TEST_POSTGRES_URL", "LOOM_TEST_SRC"]
     },
     "bench": {
       "dependsOn": ["^build"],
