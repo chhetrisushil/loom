@@ -1154,6 +1154,8 @@ export function runReadModelStoreConformance(
 }
 
 export interface MemoryEntryLike {
+  /** OPTIONAL caller-assigned identity. Every backend MUST round-trip it. */
+  id?: string;
   role?: string;
   content: unknown;
   timestamp: number;
@@ -1167,6 +1169,8 @@ export interface MemoryStoreLike {
   replace?(key: string, entries: readonly MemoryEntryLike[]): Promise<void>;
   /** OPTIONAL: relevance retrieval, best first. */
   search?(key: string, query: string, opts?: { limit?: number }): Promise<MemoryEntryLike[]>;
+  /** OPTIONAL: delete the listed ids from a key, keeping the survivors in append order. */
+  remove?(key: string, ids: readonly string[]): Promise<void>;
   /** OPTIONAL: release backend resources. */
   close?(): Promise<void>;
 }
@@ -1185,8 +1189,16 @@ export interface MemoryStoreLike {
  *  - an ABSENT `role` must read back absent, not `null`. A nullable column round-trips
  *    `{ content }` into `{ role: null, content }`, which is a different prompt.
  *
- * `replace` and `search` are optional and skipped when a backend omits them. `replace`
- * must be equivalent to clear-then-append-all, including on an absent key.
+ * `replace`, `search` and `remove` are optional and skipped when a backend omits them.
+ * `replace` must be equivalent to clear-then-append-all, including on an absent key.
+ *
+ * `MemoryEntry.id` is NOT optional to support (ADR 0091). It is the fourth thing a SQL
+ * backend gets wrong on the first attempt, and in the same way `role` was: a store that
+ * decomposes an entry into columns drops a field nobody told it to keep, and every case
+ * that only checks `content` stays green. The id case is required for backends WITHOUT
+ * `remove` too, because that is precisely when it matters — those are removed from by
+ * read-filter-`replace` above the SPI, which matches on the id `read` gives back, so a
+ * dropped id turns a deletion into a silent no-op rather than an error.
  *
  * The `search` cases pin the CONTRACT and not the ranking: results are a subset of
  * `read(key)`, terms are OR-ed (a longer question must not return less), `role` and
@@ -1475,6 +1487,141 @@ export function runMemoryStoreConformance(
       await store.replace("k", [entry("current fact")]);
       expect(await store.search("k", "superseded")).toEqual([]);
       expect((await store.search("k", "current")).map((e) => e.content)).toEqual(["current fact"]);
+      await store.close?.();
+    });
+
+    // ── Entry identity (REQUIRED — ADR 0091) ─────────────────────────────────
+
+    it("round-trips a caller-assigned id; an absent id stays absent", async () => {
+      const store = factory();
+      await store.append("k", { id: "doc-1#0", content: "first chunk", timestamp: 42 });
+      await store.append("k", { content: "no id", timestamp: 43 });
+      const [identified, anonymous] = await store.read("k");
+      expect(identified).toEqual({ id: "doc-1#0", content: "first chunk", timestamp: 42 });
+      expect(anonymous).toEqual({ content: "no id", timestamp: 43 });
+      // Same rule as `role`: a nullable column must not turn `{ content }` into
+      // `{ id: null, content }`. An id read back as null matches no removal and
+      // equals no other entry, so it is worse than useless — it is undetectable.
+      expect("id" in (anonymous as object)).toBe(false);
+      await store.close?.();
+    });
+
+    it("an id is metadata, not searchable text (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.search === undefined) return void (await store.close?.());
+      await store.append("k", { id: "RB-101", content: "checkpoint tuning", timestamp: 1_000 });
+      // By the same rule that excludes `role` and the taint wrapper's `origin`: ids are
+      // assigned per document, so indexing them makes a document's own id a term that
+      // matches every one of its chunks and nothing else's — a phantom retrieval mode
+      // that looks like relevance.
+      expect(await store.search("k", "RB-101")).toEqual([]);
+      expect((await store.search("k", "checkpoint")).map((e) => e.content)).toEqual([
+        "checkpoint tuning",
+      ]);
+      await store.close?.();
+    });
+
+    it("replace preserves ids (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.replace === undefined) return void (await store.close?.());
+      await store.replace("k", [
+        { id: "a", content: "one", timestamp: 1 },
+        { content: "two", timestamp: 2 },
+      ]);
+      const rows = await store.read("k");
+      expect(rows.map((e) => e.id)).toEqual(["a", undefined]);
+      // The rewrite path is how a store without `remove` deletes. Losing ids there
+      // would make the FIRST removal work and every later one silently miss.
+      expect("id" in (rows[1] as object)).toBe(false);
+      await store.close?.();
+    });
+
+    // ── remove (OPTIONAL) ────────────────────────────────────────────────────
+
+    it("remove deletes the named entries and keeps the survivors in append order (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.remove === undefined) return void (await store.close?.());
+      for (const [id, content] of [
+        ["a", "first"],
+        ["b", "second"],
+        ["c", "third"],
+      ] as const) {
+        await store.append("k", { id, content, timestamp: 1_000 });
+      }
+      await store.remove("k", ["b"]);
+      // Order is the point: deleting from the middle must not reshuffle what is left,
+      // or a conversation re-reads out of sequence after one entry is retracted.
+      expect((await store.read("k")).map((e) => e.content)).toEqual(["first", "third"]);
+      await store.close?.();
+    });
+
+    it("remove is idempotent, ignores unknown ids, and reads an empty list as nothing (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.remove === undefined) return void (await store.close?.());
+      await store.append("k", { id: "a", content: "keep", timestamp: 1_000 });
+      await store.remove("k", ["missing"]);
+      await store.remove("k", []); // MUST NOT be read as "all"
+      await store.remove("absent-key", ["a"]);
+      expect((await store.read("k")).map((e) => e.content)).toEqual(["keep"]);
+      await store.remove("k", ["a"]);
+      await store.remove("k", ["a"]); // idempotent: a retried ingest re-runs this
+      expect(await store.read("k")).toEqual([]);
+      await store.close?.();
+    });
+
+    it("remove never touches an entry that has no id (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.remove === undefined) return void (await store.close?.());
+      await store.append("k", { content: "anonymous", timestamp: 1_000 });
+      await store.append("k", { id: "a", content: "identified", timestamp: 1_000 });
+      // A backend matching on a NULL id column (`id IN (...)` with a null-safe operator,
+      // or a JS `undefined` colliding with a missing map entry) would take both.
+      await store.remove("k", ["a", "undefined", "null", ""]);
+      expect((await store.read("k")).map((e) => e.content)).toEqual(["anonymous"]);
+      await store.close?.();
+    });
+
+    it("remove takes every entry sharing an id, and is scoped to one key (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.remove === undefined) return void (await store.close?.());
+      await store.append("a", { id: "dup", content: "one", timestamp: 1_000 });
+      await store.append("a", { id: "dup", content: "two", timestamp: 1_000 });
+      await store.append("b", { id: "dup", content: "other key", timestamp: 1_000 });
+      // Uniqueness is the caller's to keep; the SPI does not require an index for it.
+      // Removing only one of a duplicated pair would leave a survivor that no id can
+      // ever address again — a leak with a name.
+      await store.remove("a", ["dup"]);
+      expect(await store.read("a")).toEqual([]);
+      expect((await store.read("b")).map((e) => e.content)).toEqual(["other key"]);
+      await store.close?.();
+    });
+
+    it("a key emptied by remove reads as [] and accepts appends again (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.remove === undefined) return void (await store.close?.());
+      await store.append("k", { id: "a", content: "gone", timestamp: 1_000 });
+      await store.remove("k", ["a"]);
+      expect(await store.read("k")).toEqual([]);
+      await store.append("k", { id: "b", content: "fresh", timestamp: 1_000 });
+      expect((await store.read("k")).map((e) => e.content)).toEqual(["fresh"]);
+      await store.close?.();
+    });
+
+    it("remove takes entries out of the search index too (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.remove === undefined || store.search === undefined) {
+        return void (await store.close?.());
+      }
+      await store.append("k", { id: "old", content: "superseded runbook step", timestamp: 1_000 });
+      await store.append("k", { id: "new", content: "current runbook step", timestamp: 1_000 });
+      await store.remove("k", ["old"]);
+      // The whole reason `remove` exists: a revised document whose old revision stays
+      // retrievable is worse than one that was never removable, because retrieval then
+      // returns both and a citation cannot say which is live.
+      expect((await store.search("k", "runbook")).map((e) => e.content)).toEqual([
+        "current runbook step",
+      ]);
+      expect(await store.search("k", "superseded")).toEqual([]);
       await store.close?.();
     });
   });

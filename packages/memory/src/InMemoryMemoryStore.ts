@@ -20,6 +20,24 @@ export class InMemoryMemoryStore implements MemoryStore {
   }
 
   /**
+   * Remove by id in one pass with a Set membership test — O(entries + ids), not
+   * O(entries x ids), because a corpus removal names every chunk of a document at once.
+   *
+   * Rebuilds the list rather than splicing: `read` hands out the stored array itself,
+   * so mutating it in place would edit a list a caller may still be holding.
+   */
+  async remove(key: string, ids: readonly string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const list = this.entries.get(key);
+    if (list === undefined) return;
+    const doomed = new Set(ids);
+    const kept = list.filter((entry) => entry.id === undefined || !doomed.has(entry.id));
+    if (kept.length === list.length) return;
+    if (kept.length === 0) this.entries.delete(key);
+    else this.entries.set(key, kept);
+  }
+
+  /**
    * Reference relevance search: sum of the IDF of the query terms an entry contains,
    * ties broken by recency. Deliberately simple and deliberately NOT a hidden search
    * engine — it exists so `recallRelevant` works on the default store and so the kit

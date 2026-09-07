@@ -184,6 +184,13 @@ const DDL = `
     -- that agree on what a term is. An expression index, so the column stays the source.
     CREATE INDEX IF NOT EXISTS idx_memory_entries_fts
       ON memory_entries USING GIN (to_tsvector('simple', text));
+    -- Removal by entry id (ADR 0091). An EXPRESSION index over the stored JSON, not a
+    -- column: the entry is already persisted whole, so an id round-trips with no schema
+    -- change and no migration of existing rows -- and a column would be a second copy
+    -- able to disagree with the one the SPI actually reads back. Partial, because only
+    -- corpus entries carry an id and indexing the NULLs would be most of the table.
+    CREATE INDEX IF NOT EXISTS idx_memory_entries_id
+      ON memory_entries (key, (entry->>'id')) WHERE entry->>'id' IS NOT NULL;
   `;
 
 // The channel every EventStore instance LISTENs on for cross-node subscribe.

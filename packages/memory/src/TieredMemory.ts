@@ -112,6 +112,18 @@ export class TieredMemory {
     return Object.keys(this.tiers);
   }
 
+  /**
+   * The configured policy for a tier, or `undefined` if there is no such tier.
+   *
+   * Exposed because "does this tier evict?" is a question a CALLER can need to answer
+   * before it writes: data whose correctness depends on the whole set being present —
+   * a document's passages, a ledger — cannot live in a bounded tier, and the alternative
+   * to asking is discovering it as a corpus that returns fragments of itself.
+   */
+  tierPolicy(tier: string): TierPolicy | undefined {
+    return this.tiers[tier];
+  }
+
   private assertTier(tier: string): void {
     if (!(tier in this.tiers)) {
       throw new Error(`Unknown memory tier: "${tier}" (have: ${this.tierNames.join(", ")})`);
@@ -214,5 +226,22 @@ export class TieredMemory {
   async clear(tier: string, scope: string): Promise<void> {
     this.assertTier(tier);
     await this.runtime.clear(tier, scope);
+  }
+
+  /**
+   * Forget specific entries by id, leaving the rest of the tier's scope intact.
+   *
+   * `clear` is the whole scope, which is the right verb for a conversation and the wrong
+   * one for a corpus: a `semantic` tier is shared by every document in it, so revising one
+   * of them cannot mean dropping all of them. Ids are the caller's — see
+   * {@link MemoryEntry.id} — and removal is idempotent, so a retried ingest is safe.
+   *
+   * NOT routed through `decide`: unlike recall, this writes rather than reads, so it is
+   * not an input to a prompt that a replay has to reproduce. A replay re-reads the store
+   * as it is now, which is exactly why `recallRelevant` records what it retrieved.
+   */
+  async forget(tier: string, scope: string, ids: readonly string[]): Promise<void> {
+    this.assertTier(tier);
+    await this.runtime.remove(tier, scope, ids);
   }
 }

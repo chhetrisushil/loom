@@ -28,4 +28,5 @@ export * from "@loom/capability";
 export * from "@loom/intent";
 export * from "@loom/planner";
 export * from "@loom/memory";
+export * from "@loom/knowledge";
 export * from "@loom/plugin-renderer-terminal";
