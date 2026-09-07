@@ -9,10 +9,20 @@ import { ContentMissingError } from "./errors";
 
 // ── ADR 0062 — batch-scoped two-phase resolution ──────────────────────────────
 
-/** Latency-injecting decorator: per-call latency, so round-trip counts are measurable. */
+/**
+ * Latency-injecting decorator: per-call latency, so round-trip counts are measurable.
+ *
+ * It also records peak CONCURRENCY, which is what "coalesced" actually means. Asserting
+ * that instead of elapsed time matters: the wall-clock version compared against a 20 ×
+ * 5ms serialized floor with only a 2× margin, so a busy machine could drift past it and
+ * fail a claim that was never about the clock. Peak in-flight is a property of the code
+ * under test — serialized resolution can only ever reach 1.
+ */
 class LatencyStore implements ContentStore {
   gets = 0;
   getManys = 0;
+  inFlight = 0;
+  maxInFlight = 0;
   constructor(
     private readonly inner: InMemoryContentStore,
     private readonly latencyMs: number,
@@ -21,8 +31,7 @@ class LatencyStore implements ContentStore {
     if (supportsGetMany) {
       this.getMany = async (refs: readonly ContentRef[]) => {
         this.getManys++;
-        await sleep(this.latencyMs);
-        return this.inner.getMany(refs);
+        return this.track(() => this.inner.getMany(refs));
       };
     }
   }
@@ -32,8 +41,19 @@ class LatencyStore implements ContentStore {
   }
   async get(ref: ContentRef): Promise<Uint8Array | null> {
     this.gets++;
-    await sleep(this.latencyMs);
-    return this.inner.get(ref);
+    return this.track(() => this.inner.get(ref));
+  }
+
+  /** Hold a call open for `latencyMs`, recording how many are open at once. */
+  private async track<T>(run: () => Promise<T>): Promise<T> {
+    this.inFlight++;
+    this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+    try {
+      await sleep(this.latencyMs);
+      return await run();
+    } finally {
+      this.inFlight--;
+    }
   }
   delete(ref: ContentRef): Promise<void> {
     return this.inner.delete(ref);
@@ -79,13 +99,12 @@ describe("batched reference resolution (TS-10, ADR 0062)", () => {
 
   it("falls back to coalesced parallel gets on a store without getMany", async () => {
     const { store, content } = await seeded(5, false, 20);
-    const t0 = performance.now();
     const events = await store.read("x-1");
-    const elapsed = performance.now() - t0;
     expect(events).toHaveLength(20);
     expect(content.gets).toBe(20);
-    // Coalesced (parallel) — nowhere near the 20 × 5ms serialized floor.
-    expect(elapsed).toBeLessThan(50);
+    // All twenty open at once — the property "coalesced" names. A serialized fallback
+    // reaches 1 here however fast the machine is, and this one reaches 20 however slow.
+    expect(content.maxInFlight).toBe(20);
   });
 
   it("duplicate refs are fetched once but decoded per-occurrence (no aliasing)", async () => {
