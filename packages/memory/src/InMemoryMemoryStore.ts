@@ -1,4 +1,5 @@
 import { searchableText, tokenize } from "./searchText";
+import { clampSearchLimit } from "./types";
 import type { MemoryEntry, MemorySearchOptions, MemoryStore } from "./types";
 
 export class InMemoryMemoryStore implements MemoryStore {
@@ -55,6 +56,6 @@ export class InMemoryMemoryStore implements MemoryStore {
 
     // Descending score; a tie goes to the more recently appended entry.
     scored.sort((a, b) => b.score - a.score || b.index - a.index);
-    return scored.slice(0, opts.limit ?? 20).map((s) => s.entry);
+    return scored.slice(0, clampSearchLimit(opts.limit)).map((s) => s.entry);
   }
 }

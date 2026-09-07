@@ -22,6 +22,34 @@ describe("searchableText", () => {
     expect(text).not.toContain("rows");
   });
 
+  it("survives content no shallower than JSON itself accepts", () => {
+    // 5,000 deep is still JSON-serializable, so it satisfies the documented `content`
+    // contract and every durable backend's own JSON.stringify — and it used to blow the
+    // call stack here, failing the write for a value the store had already promised to take.
+    let deep: unknown = "needle";
+    for (let i = 0; i < 5_000; i++) deep = { nested: deep };
+    expect(() => JSON.stringify(deep)).not.toThrow(); // the premise
+    expect(() => searchableText({ content: deep, timestamp: 1 })).not.toThrow();
+  });
+
+  it("terminates on cyclic content instead of recursing forever", () => {
+    // The in-memory store keeps the object by reference, so a cycle is accepted at
+    // `append` and only detonates later, inside an unrelated `search`.
+    const cyclic: Record<string, unknown> = { note: "replica lag" };
+    cyclic.self = cyclic;
+    const text = searchableText({ content: cyclic, timestamp: 1 });
+    expect(text).toContain("replica lag");
+  });
+
+  it("indexes deep content as far as the cap, rather than refusing it", () => {
+    // Degrade, do not reject: an index that throws makes legal content unstorable.
+    let deep: unknown = "buried";
+    for (let i = 0; i < 5_000; i++) deep = { nested: deep };
+    const text = searchableText({ content: { top: "surface", deep }, timestamp: 1 });
+    expect(text).toContain("surface"); // what is above the cap is still findable
+    expect(text).not.toContain("buried"); // what is below it is not
+  });
+
   it("excludes role and timestamp — metadata is not content", () => {
     expect(searchableText({ role: "assistant", content: "hello", timestamp: 1234 })).toBe("hello");
   });

@@ -124,3 +124,26 @@ describe("SupervisingDispatcher — circuit breaker", () => {
     expect(child.cancelled).toEqual(["x"]);
   });
 });
+
+describe("circuit bookkeeping is bounded", () => {
+  it("forgets a circuit once it succeeds, whatever the key function", async () => {
+    // Every key must FAIL first — a success alone never creates an entry, so a test that
+    // only dispatches happy calls proves nothing about the map. Odd calls throw, even
+    // calls succeed, so each key is created by a failure and then resolved by a success.
+    const child = new ScriptedDispatcher((n) => (n % 2 === 1 ? "throw" : "ok"));
+    // The shape that leaks: a key with per-execution cardinality, which the policy hook
+    // invites by handing the whole ExecutionPackage to the key function.
+    const dispatcher = new SupervisingDispatcher(child, {
+      sleep: noSleep,
+      policy: { circuit: { threshold: 5, cooldownMs: 1_000, key: (p) => p.executionId } },
+    });
+    const circuits = (dispatcher as unknown as { circuits: Map<string, unknown> }).circuits;
+
+    for (let i = 0; i < 200; i++) {
+      await expect(dispatcher.dispatch(pkg(`x-${i}`))).rejects.toThrow("dispatch boom");
+      expect(circuits.size).toBe(1); // the failure is remembered while it matters
+      await dispatcher.dispatch(pkg(`x-${i}`)); // …and forgotten once resolved
+      expect(circuits.size).toBe(0);
+    }
+  });
+});
