@@ -111,7 +111,7 @@ Traditional frameworks optimize for **hydration** (rebuild state on every reques
 
 - **~70 packages** in a typed monorepo across three tiers — framework (`packages/`), first-party adapters (`plugins/`), dev tooling (`tools/`)
 - **Full test suite green** across every package — with a testing kit, replayable evals, and deploy-simulation as CI gates
-- **22 runnable reference apps** (in the sibling `loom-examples` repo), all offline (no API key needed). Highlights:
+- **23 runnable reference apps** (in the sibling `loom-examples` repo), all offline (no API key needed). Highlights:
   - **loom-starter** — the quickstart: one small app wiring the whole toolchain (`defineConfig`, folder convention, testing, evals, deploy-sim)
   - **Cloud Command Center** (React) — durable incident response, streaming AI triage, human approval — *the same runtime* also runs in **Angular** and **Web Components**
   - **Agent Network** (headless) — LLM → agent → MCP → A2A → intent → planner → memory → terminal, end to end

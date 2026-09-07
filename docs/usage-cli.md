@@ -687,8 +687,9 @@ Loom kernel manifest
   snapshot SPI    1.0.0
   branch SPI      1.0.0
   dispatcher SPI  1.0.0
+  memory SPI      2.0.0
   compiler manif. 1
-  capabilities    36 (see loom kernel-manifest --json)
+  capabilities    42 (see loom kernel-manifest --json)
 ```
 
 | Flag | Meaning |
