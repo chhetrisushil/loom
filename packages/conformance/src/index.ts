@@ -1195,6 +1195,12 @@ export interface MemoryStoreLike {
  * ranks first is the backend's business — BM25, `ts_rank` and the reference scorer
  * disagree, and a kit that pinned an order would be pinning an implementation.
  *
+ * "A cleared or replaced key stops matching" and "a query matching nothing returns []"
+ * are free for an inverted index and are the two cases a SIMILARITY backend has to
+ * design for: cosine is defined against every entry, so an unthresholded ranking is
+ * never empty. That is a floor to choose, not a reason to exempt the backend — the
+ * third-party `loom-plugin-vector` passes this kit unmodified.
+ *
  * Note what a portable kit CANNOT reach: a backend that joins its index back to the rows
  * satisfies the clear/replace cases structurally, index maintenance or not. That the index
  * is truly maintained (rather than growing forever behind a join that hides it) is a

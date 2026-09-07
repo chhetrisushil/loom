@@ -56,6 +56,17 @@ export interface MemoryStore {
    *
    * RANKING itself is the backend's business — BM25, `ts_rank` and the reference
    * scorer disagree, and a kit that pinned an order would be pinning an implementation.
+   *
+   * A SIMILARITY BACKEND MUST CHOOSE A FLOOR. The requirement above that a query
+   * matching nothing returns `[]` is free for an inverted index — a term is present
+   * or it is not — and is the one real design decision for a vector store, where
+   * cosine similarity is defined against EVERY stored entry. Ranked and
+   * unthresholded, `search(key, "unrelated")` returns the whole scope in order,
+   * least-unrelated first, and is never empty on a non-empty scope. So "matches"
+   * has to mean something, and for such a backend the only available meaning is a
+   * minimum score. Expose it: the right value is a property of the embedding model,
+   * not of the store, and it does not transfer between models.
+   * (`loom-plugin-vector`, third-party, is the worked example.)
    */
   search?(key: string, query: string, opts?: MemorySearchOptions): Promise<MemoryEntry[]>;
   /**
