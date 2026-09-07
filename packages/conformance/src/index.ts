@@ -1165,6 +1165,8 @@ export interface MemoryStoreLike {
   clear(key: string): Promise<void>;
   /** OPTIONAL: atomic whole-list rewrite (empty ⇒ the key is dropped). */
   replace?(key: string, entries: readonly MemoryEntryLike[]): Promise<void>;
+  /** OPTIONAL: relevance retrieval, best first. */
+  search?(key: string, query: string, opts?: { limit?: number }): Promise<MemoryEntryLike[]>;
   /** OPTIONAL: release backend resources. */
   close?(): Promise<void>;
 }
@@ -1183,8 +1185,20 @@ export interface MemoryStoreLike {
  *  - an ABSENT `role` must read back absent, not `null`. A nullable column round-trips
  *    `{ content }` into `{ role: null, content }`, which is a different prompt.
  *
- * `replace` is optional and skipped when a backend omits it; where it exists it must
- * be equivalent to clear-then-append-all, including on an absent key.
+ * `replace` and `search` are optional and skipped when a backend omits them. `replace`
+ * must be equivalent to clear-then-append-all, including on an absent key.
+ *
+ * The `search` cases pin the CONTRACT and not the ranking: results are a subset of
+ * `read(key)`, terms are OR-ed (a longer question must not return less), `role` and
+ * `timestamp` are metadata and never searchable text, a user's question is not a query
+ * language, and a cleared or replaced key stops matching. Which of two matching entries
+ * ranks first is the backend's business — BM25, `ts_rank` and the reference scorer
+ * disagree, and a kit that pinned an order would be pinning an implementation.
+ *
+ * Note what a portable kit CANNOT reach: a backend that joins its index back to the rows
+ * satisfies the clear/replace cases structurally, index maintenance or not. That the index
+ * is truly maintained (rather than growing forever behind a join that hides it) is a
+ * backend-specific assertion, and belongs in the backend's own suite.
  */
 export function runMemoryStoreConformance(
   factory: () => MemoryStoreLike,
@@ -1319,6 +1333,121 @@ export function runMemoryStoreConformance(
       await store.replace("k", [entry("kept")]);
       await store.append("k", entry("later"));
       expect((await store.read("k")).map((e) => e.content)).toEqual(["kept", "later"]);
+      await store.close?.();
+    });
+
+    it("search returns matching entries and only matching entries (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.search === undefined) return void (await store.close?.());
+      await store.append("k", entry("the replica lag alert fired"));
+      await store.append("k", entry("someone renamed a column"));
+      const hits = await store.search("k", "replica lag");
+      expect(hits.map((e) => e.content)).toEqual(["the replica lag alert fired"]);
+      await store.close?.();
+    });
+
+    it("search matches ANY term, not all of them (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.search === undefined) return void (await store.close?.());
+      await store.append("k", entry("vacuum finished"));
+      // A question mentioning things the entry never says must not hide the entry: a
+      // longer question returning fewer memories is the failure mode of AND-ing terms.
+      const hits = await store.search("k", "why did the vacuum take so long on tuesday");
+      expect(hits.map((e) => e.content)).toEqual(["vacuum finished"]);
+      await store.close?.();
+    });
+
+    it("search is scoped to one key (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.search === undefined) return void (await store.close?.());
+      await store.append("a", entry("shared-term in a"));
+      await store.append("b", entry("shared-term in b"));
+      const hits = await store.search("a", "shared");
+      expect(hits.map((e) => e.content)).toEqual(["shared-term in a"]);
+      await store.close?.();
+    });
+
+    it("search finds a term nested inside structured content (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.search === undefined) return void (await store.close?.());
+      await store.append("k", entry({ tool: "psql", result: { rows: [{ note: "deadlock" }] } }));
+      expect(await store.search("k", "deadlock")).toHaveLength(1);
+      await store.close?.();
+    });
+
+    it("search does not match on role or timestamp (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.search === undefined) return void (await store.close?.());
+      // Metadata is not content. Indexing `role` makes every assistant turn a hit for
+      // "assistant"; indexing the timestamp makes an epoch millisecond a searchable token.
+      await store.append("k", { role: "assistant", content: "no keyword here", timestamp: 1234 });
+      expect(await store.search("k", "assistant")).toEqual([]);
+      expect(await store.search("k", "1234")).toEqual([]);
+      await store.close?.();
+    });
+
+    it("search returns [] for a query that matches nothing, an empty query, and an absent key (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.search === undefined) return void (await store.close?.());
+      await store.append("k", entry("something"));
+      expect(await store.search("k", "unrelated")).toEqual([]);
+      expect(await store.search("k", "   ?!  ")).toEqual([]); // no terms at all
+      expect(await store.search("absent", "something")).toEqual([]);
+      await store.close?.();
+    });
+
+    it("search accepts a query carrying search-engine syntax as plain words (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.search === undefined) return void (await store.close?.());
+      // A user question is not a query language. Unescaped, these reach FTS5/tsquery as
+      // operators and either throw a syntax error or silently mean something else.
+      await store.append("k", entry("index bloat on orders"));
+      for (const query of ['"bloat" AND', "bloat*", "bloat NEAR orders", "-bloat", "bloat | (:"]) {
+        expect((await store.search("k", query)).length).toBeGreaterThan(0);
+      }
+      await store.close?.();
+    });
+
+    it("search honours limit (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.search === undefined) return void (await store.close?.());
+      for (let i = 0; i < 5; i++) await store.append("k", entry(`alert number ${i}`));
+      expect(await store.search("k", "alert", { limit: 2 })).toHaveLength(2);
+      await store.close?.();
+    });
+
+    it("search results are a subset of the key's entries (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.search === undefined) return void (await store.close?.());
+      await store.append("k", entry("checkpoint tuning"));
+      await store.append("k", entry("checkpoint spike"));
+      const all = await store.read("k");
+      for (const hit of await store.search("k", "checkpoint")) {
+        expect(all).toContainEqual(hit);
+      }
+      await store.close?.();
+    });
+
+    it("clear removes entries from the search index too (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.search === undefined) return void (await store.close?.());
+      await store.append("k", entry("forgettable fact"));
+      await store.clear("k");
+      // A cleared key must stop matching. Backends that search an index directly, rather
+      // than joining back to the rows, fail this the moment they forget to maintain it.
+      expect(await store.search("k", "forgettable")).toEqual([]);
+      await store.close?.();
+    });
+
+    it("replace updates the search index (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.search === undefined || store.replace === undefined) {
+        return void (await store.close?.());
+      }
+      await store.append("k", entry("superseded fact"));
+      await store.replace("k", [entry("current fact")]);
+      expect(await store.search("k", "superseded")).toEqual([]);
+      expect((await store.search("k", "current")).map((e) => e.content)).toEqual(["current fact"]);
       await store.close?.();
     });
   });

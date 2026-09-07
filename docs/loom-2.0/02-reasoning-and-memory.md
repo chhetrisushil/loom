@@ -338,7 +338,7 @@ Source: `packages/memory/src/TieredMemory.ts` (`TieredMemory`), `packages/memory
 **Base layer** (`packages/memory/src/types.ts`, `MemoryRuntime.ts`):
 
 - **`MemoryEntry`** — a single remembered item: an optional `role`, arbitrary `content` (a message, a tool result, a fact), and a `timestamp` used for TTL eviction.
-- **`MemoryStore`** — the pluggable, **async-first** storage backend (`append`/`read`/`clear`, all keyed by a string; optional `replace`/`close`). A key names an *ordered list*, read back in **append** order — entries routinely share a timestamp, so ordering by it would reshuffle a conversation. `InMemoryMemoryStore` is the default and loses everything on restart; `SqliteMemoryStore` / `PostgresMemoryStore` (in the store plugins) are the durable backends, and the async signature means Redis / a vector store are real implementations, not afterthoughts. Durable backends round-trip an entry through JSON, so `content` must be JSON-serializable. All of them run `runMemoryStoreConformance`.
+- **`MemoryStore`** — the pluggable, **async-first** storage backend (`append`/`read`/`clear`, all keyed by a string; optional `replace`/`search`/`close`). A key names an *ordered list*, read back in **append** order — entries routinely share a timestamp, so ordering by it would reshuffle a conversation. `InMemoryMemoryStore` is the default and loses everything on restart; `SqliteMemoryStore` / `PostgresMemoryStore` (in the store plugins) are the durable backends, and the async signature means Redis / a vector store are real implementations, not afterthoughts. Durable backends round-trip an entry through JSON, so `content` must be JSON-serializable. All of them run `runMemoryStoreConformance`.
 - **`MemoryRuntime`** — holds named memory definitions and enforces each one's `ttlMs`/`maxEntries` policy on read and write. Memory is addressed by **`(memoryId, scope)`** — `scope` is typically an `executionId`, `conversationId`, or `userId`, so one definition serves many concurrent sessions. `prune` (`MemoryRuntime.ts`) drops entries older than `ttlMs` then keeps the newest `maxEntries`; `evict` rewrites the stored list to the pruned view so eviction is durable, not just a read-time filter — through the store's atomic `replace` when it has one, because the clear-then-re-append fallback would let a crash mid-eviction lose the whole scope.
 
 **Tier layer** (`TieredMemory.ts`):
@@ -347,6 +347,8 @@ Source: `packages/memory/src/TieredMemory.ts` (`TieredMemory`), `packages/memory
 - **`Summarizer`** — `(entries) => content`. Injectable: swap in an LLM/reasoning summarizer; the default is deterministic and offline (`{ summarized: n, items: [...] }`).
 - **`TieredMemoryConfig`** — `tiers` (a `Record<string, TierPolicy>`), optional `store`, `summarizer`, and `now` (an injectable clock, so tests are deterministic).
 - **`RecallOptions`** — `limit` (newest N), plus `decide` + `decisionKey` for [logged recall](#m4--logged-recall--the-determinism-fix).
+- **`RecallRelevantOptions`** — the same, except `decide` is **required**. `TieredMemory.recallRelevant(tier, scope, query, …)` ranks a tier by relevance to a question instead of returning its tail, which is the only way to use a `semantic`/`procedural` tier (neither evicts, so their "newest N" means nothing). Recency recall re-reads a list the caller mostly controls; relevance recall ranks over a corpus that grows, so the set it returns for one question genuinely differs between the run and its replay — requiring `decide` makes that a compile-time property rather than advice. An unrecorded query (ops, a CLI, a test) calls the store's `search` directly, where the bypass is visible.
+- **`searchableText` / `tokenize`** — the exported projection a backend indexes (the string and number *leaves* of `content` — not `role`, not the timestamp, not object keys) and the term splitter (lowercase, non-alphanumeric split, no stemming). Exported because *what text is searched* and *what counts as a term* are contract: a backend indexing something else would still return matches, just to a different question than the app asked.
 - **`DEFAULT_TIERS`** — the canonical tier set from the proposal.
 
 ```mermaid
@@ -387,6 +389,7 @@ classDiagram
     +read(key) MemoryEntry[]
     +clear(key)
     +replace(key, entries)?
+    +search(key, query, opts)?
     +close()?
   }
   class MemoryEntry {

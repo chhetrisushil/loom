@@ -1,4 +1,5 @@
-import type { MemoryEntry, MemoryStore } from "@loom/memory";
+import type { MemoryEntry, MemorySearchOptions, MemoryStore } from "@loom/memory";
+import { searchableText, tokenize } from "@loom/memory";
 import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 
@@ -21,6 +22,10 @@ interface EntryRow {
  * ordered explicitly so the serial values follow list order rather than trusting the
  * planner to emit rows in array order).
  *
+ * `search` ranks with `ts_rank` over a GIN-indexed `to_tsvector('simple', text)`, where the
+ * text is `searchableText(entry)` — the same projection the other backends index, so a query
+ * means the same thing whichever one an app is wired to.
+ *
  * Concurrent appends to ONE key from two nodes interleave by assigned `seq`, which need
  * not match commit order. That is benign for a memory list (both entries are present, and
  * neither node's own appends can reorder relative to each other) and is the same latitude
@@ -42,10 +47,10 @@ export class PostgresMemoryStore implements MemoryStore {
     await this.ready;
     // Explicit stringify + ::jsonb: the pg driver mis-serializes top-level JS arrays as
     // Postgres arrays, and an entry's `content` is frequently one.
-    await this.pool.query("INSERT INTO memory_entries (key, entry) VALUES ($1, $2::jsonb)", [
-      key,
-      JSON.stringify(entry),
-    ]);
+    await this.pool.query(
+      "INSERT INTO memory_entries (key, entry, text) VALUES ($1, $2::jsonb, $3)",
+      [key, JSON.stringify(entry), searchableText(entry)]
+    );
   }
 
   async read(key: string): Promise<MemoryEntry[]> {
@@ -70,10 +75,14 @@ export class PostgresMemoryStore implements MemoryStore {
       await client.query("DELETE FROM memory_entries WHERE key = $1", [key]);
       if (entries.length > 0) {
         await client.query(
-          `INSERT INTO memory_entries (key, entry)
-             SELECT $1, e FROM unnest($2::jsonb[]) WITH ORDINALITY AS t(e, ord)
+          `INSERT INTO memory_entries (key, entry, text)
+             SELECT $1, e, x FROM unnest($2::jsonb[], $3::text[]) WITH ORDINALITY AS t(e, x, ord)
              ORDER BY t.ord`,
-          [key, entries.map((entry) => JSON.stringify(entry))]
+          [
+            key,
+            entries.map((entry) => JSON.stringify(entry)),
+            entries.map((entry) => searchableText(entry)),
+          ]
         );
       }
       await client.query("COMMIT");
@@ -84,6 +93,24 @@ export class PostgresMemoryStore implements MemoryStore {
     } finally {
       client.release();
     }
+  }
+
+  async search(key: string, query: string, opts: MemorySearchOptions = {}): Promise<MemoryEntry[]> {
+    await this.ready;
+    const terms = tokenize(query);
+    if (terms.length === 0) return [];
+    // OR-ed terms, and safe to interpolate into a tsquery because `tokenize` yields only
+    // alphanumerics — `plainto_tsquery` would AND them instead, so a longer question would
+    // return fewer memories, which is backwards.
+    const tsquery = terms.join(" | ");
+    const { rows } = await this.pool.query<EntryRow>(
+      `SELECT entry FROM memory_entries
+        WHERE key = $1 AND to_tsvector('simple', text) @@ to_tsquery('simple', $2)
+        ORDER BY ts_rank(to_tsvector('simple', text), to_tsquery('simple', $2)) DESC, seq DESC
+        LIMIT $3`,
+      [key, tsquery, opts.limit ?? 20]
+    );
+    return rows.map((row) => row.entry);
   }
 
   async close(): Promise<void> {

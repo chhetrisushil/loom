@@ -174,9 +174,16 @@ const DDL = `
     CREATE TABLE IF NOT EXISTS memory_entries (
       seq BIGSERIAL PRIMARY KEY,
       key TEXT NOT NULL,
-      entry JSONB NOT NULL
+      entry JSONB NOT NULL,
+      text TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_memory_entries_key ON memory_entries (key, seq ASC);
+    -- Relevance search over searchableText(entry). The 'simple' configuration neither
+    -- stems nor drops stopwords, which keeps it language-neutral and close to how SQLite's
+    -- unicode61 tokenizer and @loom/memory's own tokenize() split text -- three backends
+    -- that agree on what a term is. An expression index, so the column stays the source.
+    CREATE INDEX IF NOT EXISTS idx_memory_entries_fts
+      ON memory_entries USING GIN (to_tsvector('simple', text));
   `;
 
 // The channel every EventStore instance LISTENs on for cross-node subscribe.

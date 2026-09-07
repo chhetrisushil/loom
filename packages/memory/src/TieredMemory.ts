@@ -33,6 +33,25 @@ export interface TieredMemoryConfig {
   now?: () => number;
 }
 
+export interface RecallRelevantOptions {
+  /** Return at most N entries (best first). Defaults to the store's own default of 20. */
+  limit?: number;
+  /**
+   * REQUIRED, unlike on {@link RecallOptions} — and that difference is the point.
+   *
+   * Recency recall re-reads a list the caller mostly controls; relevance recall ranks
+   * over a corpus that grows (the `semantic`/`procedural` tiers never evict), so the set
+   * it returns for the same question genuinely changes between the run and its replay.
+   * Recorded through `decide` (P9), a replay is served the entries that ACTUALLY reached
+   * the prompt. Requiring it here makes that a compile-time property rather than advice.
+   *
+   * If you truly want an unrecorded query — an ops lookup, a CLI, a test — call the
+   * store's `search` directly. That bypass should be visible in the code.
+   */
+  decide: DecideFn;
+  decisionKey?: string;
+}
+
 export interface RecallOptions {
   /** Return only the newest N entries. */
   limit?: number;
@@ -123,6 +142,28 @@ export class TieredMemory {
       return opts.decide(key, read);
     }
     return read();
+  }
+
+  /**
+   * Recall by RELEVANCE to a question rather than by recency — the tier equivalent of
+   * `MemoryStore.search`, and the only way to use a `semantic`/`procedural` tier without
+   * loading it (neither evicts, so their "tail" means nothing).
+   *
+   * Always routed through `decide`, so what was retrieved is a recorded fact.
+   */
+  async recallRelevant(
+    tier: string,
+    scope: string,
+    query: string,
+    opts: RecallRelevantOptions
+  ): Promise<MemoryEntry[]> {
+    this.assertTier(tier);
+    const key = opts.decisionKey ?? `recallRelevant:${tier}:${scope}:${query}`;
+    return opts.decide(key, () =>
+      this.runtime.search(tier, scope, query, {
+        ...(opts.limit !== undefined && { limit: opts.limit }),
+      })
+    );
   }
 
   /** Copy (or move) entries matching `filter` from one tier to another. Returns the count. */
