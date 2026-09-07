@@ -115,6 +115,8 @@ const app = defineConfig({
 });
 
 // app.runtime, app.effectRuntime, app.projectionRuntime, app.bus, app.stores, app.close()
+// app.memory (MemoryRuntime) · app.knowledge(scope) (a document corpus over the same store)
+// app.skills, app.tools, app.schedules, app.lifecycle, app.verify()
 ```
 
 `LoomConfig` fields you'll use most:
@@ -127,20 +129,26 @@ const app = defineConfig({
 | `agentModules` / `toolModules` / `skillModules` | `agent$` / `tool$` / `skill$` definitions discovered by `loom gen` (value-shape); agents fold into `agents` (auto-wired behind `a2a`/`agentSurface`), tools are exposed on `app.tools`, skills register into `app.skills` |
 | `scheduleModules` / `memoryModules` | `schedule$` / `memory$` definitions discovered by `loom gen`; schedules merge into `app.schedules` + fire via the `TimerService` (needs `timers.store`), memories register into `app.memory` |
 | `skills` / `memories` | `skill$` / `memory$` definitions registered directly (in addition to the `*Modules`) |
-| `memoryStore` | backing `MemoryStore` for `app.memory`. Defaults to in-memory — **agent memory is lost on restart** unless you pass a durable one: `new SqliteMemoryStore(".loom/events.db")` (`@loom/plugin-sqlite`) or `new PostgresMemoryStore(url)` (`@loom/plugin-postgres`). Memory is stored separately from the durable log. Both durable backends implement the optional `search` (FTS5 / `tsvector`), which is what `TieredMemory.recallRelevant` needs |
-| `effectMiddleware` | cross-cutting effect wrappers (retries, metering, safety, redaction… — see Step 11) |
-| `authorizer` | capability protection ring — deny ungranted effects (K2; see Step 11) |
-| `policies` | app-global `policy$` definitions enforced via a `PolicyAuthorizer` (composes under `authorizer`; per-flow policies read from each flow's `policies`) |
+| `memoryStore` | backing `MemoryStore` for `app.memory` **and every corpus `app.knowledge(scope)` opens**. Defaults to in-memory — **agent memory is lost on restart** unless you pass a durable one: `new SqliteMemoryStore(".loom/events.db")` (`@loom/plugin-sqlite`) or `new PostgresMemoryStore(url)` (`@loom/plugin-postgres`). Memory is stored separately from the durable log. Both durable backends implement the optional `search` (FTS5 / `tsvector`), which `TieredMemory.recallRelevant` needs, and `remove` ([ADR 0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md), `MEMORY_STORE_SPI_VERSION` 2.0.0) |
+| `projections` / `projectionModules` | `projection$` definitions (explicit, or discovered by `loom gen`) folded into surfaces |
+| `catalog` | the widget catalogue a model-composed blueprint is validated against (`validateBlueprint`, [ADR 0088](adr/0088-blueprint-conformance.md)) |
 | `timers` | durable timers + `schedule$` cron occurrences (T1; see Step 11) |
-| `validate` | `false \| "warn" \| "error"` — boot-time flow-graph validation |
 | `agents` / `capabilityAgents` | A2A agent cards (or `agent$` definitions — see `a2a`/`agentSurface`) + capability→agent routing |
 | `a2a` | opt-in: auto-derive + register an `AgentCard` for each `agent$` definition in `agents` (no hand-built cards). Off ⇒ wire cards manually as before |
 | `agentSurface` | opt-in: auto-register an agent surface per agent (`surfaceId = agent.id`). Off ⇒ register `surfaces` manually |
-| `dispatcher` | where executions run (in-process / remote / Cloud Run) |
-| `onEvent` | tap every committed event (telemetry, custom projections) |
-| `secrets` | `{ resolver }` — wire secret redaction: resolve `secretRef` input + redact `secret()` output (K10-R2; see [data classification](data-classification.md)) |
-| `retention` | `{ archive? }` — expose `app.lifecycle` for `loom retention run` (K10.1); archive-before-delete |
-| `compliance` | `{ subjectOf, tenantOf?, erase?: { shred } }` — subject index + `app.exportSubject`/`app.eraseSubject` (T3; see [compliance](compliance.md)) |
+
+**Cross-cutting concerns are grouped**, so the list above stays about *what is in your app* rather
+than every knob it has. The flat spellings were removed rather than deprecated — `defineConfig`
+throws and names the replacement, so a stale config fails at boot instead of silently losing an
+option:
+
+| Group | Options |
+|---|---|
+| `execution` | `dispatcher` (where executions run — in-process / remote / Cloud Run), `effectMiddleware` (retries, metering, safety, redaction… — see Step 11), `registerEffects`, `validateInput`, `now` |
+| `security` | `authorizer` (capability protection ring — deny ungranted effects, K2), `policies` (app-global `policy$` via a `PolicyAuthorizer`), `secrets` (`{ resolver }` — resolve `secretRef` input + redact `secret()` output, K10-R2; see [data classification](data-classification.md)), `compliance` (`{ subjectOf, tenantOf?, erase?: { shred } }` — subject index + `app.exportSubject`/`app.eraseSubject`, T3; see [compliance](compliance.md)), `executionAuthorizer`, `resumeAuthenticator`, `onExecutionDenied` |
+| `observability` | `onEvent` (tap every committed event), `telemetry`, `onWarn`, `onStorageError` |
+| `durability` | `retention` (`{ archive? }` — expose `app.lifecycle` for `loom retention run`, K10.1), `snapshotEvery` |
+| `checks` | `validate` (`false \| "warn" \| "error"` — boot-time flow-graph validation), `verify`, `manifest` |
 
 > Prefer manual wiring? You can construct `new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime, onEvent })` directly — `defineConfig` is sugar over exactly that (P6: nothing is hidden).
 
