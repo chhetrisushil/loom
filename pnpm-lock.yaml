@@ -207,6 +207,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/knowledge':
+        specifier: workspace:*
+        version: link:../knowledge
       '@loom/memory':
         specifier: workspace:*
         version: link:../memory
@@ -2066,6 +2069,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../../packages/event-runtime
+      '@loom/knowledge':
+        specifier: workspace:*
+        version: link:../../packages/knowledge
       '@loom/learning':
         specifier: workspace:*
         version: link:../../packages/learning

@@ -113,7 +113,19 @@ export async function cmdDoctor(opts: {
     }
   }
 
-  // 3. Claim-check reach-through (CC-5) over the source tree.
+  // 3. The memory store behind `app.memory` and every corpus. Two failure modes, both
+  //    silent at boot and loud (or worse, quiet) much later.
+  if (config === undefined) {
+    checks.push({
+      name: "memory store (durability + relevance recall)",
+      status: "skipped",
+      detail: "no built config module found — pass --config <module> exporting a LoomApp",
+    });
+  } else {
+    checks.push(memoryStoreCheck(config));
+  }
+
+  // 4. Claim-check reach-through (CC-5) over the source tree.
   try {
     const { findings } = cmdLintClaimCheck(dir);
     checks.push({
@@ -131,6 +143,51 @@ export async function cmdDoctor(opts: {
 
   const result: DoctorResult = { checks, ok: !checks.some((c) => c.status === "failed") };
   return { text: formatDoctor(result), result };
+}
+
+/**
+ * Is the configured memory store durable, and can it retrieve by relevance?
+ *
+ * The default is an in-memory store, which is right for a test and is the shape ADR 0090
+ * opened with: an agent that restarted remembered nothing, and nothing said so. That is
+ * reported as a SKIP rather than a failure, because a browser app or a test suite wants
+ * exactly that — but the skip names it, so a partial-coverage line appears instead of a
+ * clean bill of health.
+ *
+ * A store that IS configured and has no `search` is a failure. `recallRelevant` and
+ * `KnowledgeBase.retrieve` refuse such a store at run time rather than degrading to the
+ * newest N (ADR 0090 D3), so the app is one relevance query away from throwing — and
+ * somebody chose that backend deliberately, which is what makes it a misconfiguration
+ * rather than a default.
+ */
+function memoryStoreCheck(configPath: string): DoctorCheck {
+  const name = "memory store (durability + relevance recall)";
+  try {
+    const mod = require(path.resolve(configPath)) as { default?: unknown; app?: unknown };
+    const app = (mod.default ?? mod.app ?? mod) as {
+      stores?: { memoryStore?: { search?: unknown } };
+    };
+    const store = app.stores?.memoryStore;
+    if (store === undefined) {
+      return {
+        name,
+        status: "skipped",
+        detail:
+          "no `memoryStore` configured — agent memory and any corpus live in the in-memory default and are LOST ON RESTART; pass memoryStore: new SqliteMemoryStore(...) to persist them",
+      };
+    }
+    if (typeof store.search !== "function") {
+      return {
+        name,
+        status: "failed",
+        detail:
+          "the configured memoryStore does not implement the optional `search` — recallRelevant() and KnowledgeBase.retrieve() REFUSE such a store rather than degrading to the newest N, so any relevance retrieval will throw at run time",
+      };
+    }
+    return { name, status: "ok", detail: "configured, durable, and implements search()" };
+  } catch (err) {
+    return { name, status: "failed", detail: String(err) };
+  }
 }
 
 const GLYPH: Record<DoctorStatus, string> = { ok: "✓", failed: "✗", skipped: "–" };
