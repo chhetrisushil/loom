@@ -102,7 +102,9 @@ pnpm --filter @loom/db-observability start
   exactly the one revised document, the withdrawn procedure stops retrieving rather than
   ranking below its replacement, a retired runbook stops being cited with no corpus
   rebuild, and a March finding replays to **March's** guidance after the corpus has been
-  emptied outright.
+  emptied outright. It also **writes back** what it learned — each finding becomes a document in
+  the same corpus it reads from, stamped with its own `source`, so the wiki's nightly reconcile
+  reports it as `retained` instead of deleting it.
 
 ### UI / generation
 

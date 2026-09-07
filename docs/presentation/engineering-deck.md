@@ -142,13 +142,19 @@ const app = defineConfig({
 The `ctx` handed to every flow runner:
 
 ```ts
-await ctx.run(step, input)          // execute a step (memoized on replay)
+await ctx.execute(task, input)      // the generalized durable primitive (step/llm/agent/tool/ui)
+await ctx.run(step, input)          // the step-shaped alias (memoized on replay)
 await ctx.parallel([[a, i], [b, j]])// run steps concurrently
+await ctx.decide(key, () => choose())// a learned choice, recorded — replay serves the choice
 await ctx.suspend({ on: "ApprovalGranted", correlationKey, timeout })
+await ctx.sleep(60_000)             // durable timer (or ctx.sleepUntil(absoluteMs))
 ctx.emit("DOMAIN_EVENT", payload)   // durable custom event
 ctx.stream("TOKEN", delta, done)    // token streaming
 ctx.ui.set("phase", "triaging")     // agent-surface — drive the UI (durable patch)
 ```
+
+That is the whole surface: **`KERNEL_SYSCALLS`**, versioned by `KERNEL_ABI_VERSION` and pinned by
+a conformance test. Adding one is a MINOR bump; removing one is MAJOR.
 
 Every call is an **event** — durable, ordered, replayable.
 

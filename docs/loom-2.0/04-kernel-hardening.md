@@ -97,7 +97,7 @@ flowchart TB
 
   subgraph ABI["🚪 Kernel ABI — KERNEL_SYSCALLS (versioned, pinned)"]
     S1["execute · run · parallel"]
-    S2["suspend"]
+    S2["suspend · sleep · sleepUntil"]
     S3["decide"]
     S4["emit · stream · ui"]
   end
