@@ -998,8 +998,9 @@ interface LoomConfig {
   scheduleModules?: ScheduleModule[];  // from `loom gen`: schedule$ defs → app.schedules + TimerService
   memoryModules?: MemoryModule[];      // from `loom gen`: memory$ defs → registered into app.memory
   memories?: MemoryDefinition[];       // memory defs registered directly (in addition to memoryModules)
-  memoryStore?: MemoryStore;           // backing store for app.memory (default in-memory — lost on
-                                       // restart; SqliteMemoryStore/PostgresMemoryStore persist it)
+  memoryStore?: MemoryStore;           // backing store for app.memory AND every app.knowledge(scope)
+                                       // corpus (default in-memory — lost on restart;
+                                       // SqliteMemoryStore/PostgresMemoryStore persist it)
   projectionModules?: ProjectionModule[]; // from `loom gen`: projection$ defs → projection runtime (lazy fold code)
   projections?: ProjectionDefinition[];   // projections registered directly (in addition to projectionModules)
   projectionRuntime?: ProjectionRuntime;
@@ -1054,11 +1055,20 @@ interface LoomApp {
   effectRuntime: EffectRuntime;
   projectionRuntime: ProjectionRuntime;
   bus: InProcessA2ABus;
-  stores: { eventStore: EventStore; snapshotStore: SnapshotStore; branchRegistry?: BranchRegistry };
+  stores: {                                                     // memoryStore present only when CONFIGURED
+    eventStore: EventStore; snapshotStore: SnapshotStore;
+    branchRegistry?: BranchRegistry; memoryStore?: MemoryStore;
+  };
+  tools: ToolDefinition[];                                      // from toolModules (metadata)
+  skills: SkillRegistry;                                        // app.skills.find(query) — offline selection
+  schedules: ScheduleDefinition[];                              // from scheduleModules + timers.schedules
+  memory: MemoryRuntime;                                        // every memory$ definition, over memoryStore
+  knowledge(scope, options?): KnowledgeBase;                    // a document corpus over the same store (ADR 0091)
   lifecycle: LogLifecycle;                                      // K10.1 retention/compaction
   subjectIndex?: SubjectIndex;                                  // T3 (when compliance wired)
   exportSubject(id: string, o?: { includeEvents?: boolean; tenant?: string }): Promise<SubjectExport>;
   eraseSubject(id: string, tenant?: string): Promise<EraseSubjectResult>;
+  verify(o?: { lint?: VerifyLintInputs }): VerificationReport;   // re-run pre-flight on demand (read-only)
   close(): Promise<void>;
 }
 ```
@@ -1121,11 +1131,11 @@ loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
 loom inspect --db <path> [--port N]             web inspector (timeline + slider)
 ```
 
-(Plus `profile` / `introspect` / `optimize`, `learn report|eval`, `compat` / `kernel-manifest`, `retention run` / `sweep content` / `compliance report`, and the `plugin …` family — the CLI guide has all of them.)
+(Plus `profile` / `introspect` / `optimize`, `learn report|eval`, `compat` / `kernel-manifest`, `retention run` / `sweep content` / `compliance report`, `knowledge sync|list|search`, `lint claim-check`, `dev`, and the `plugin …` family — the CLI guide has all of them.)
 
 - **`logs` / `debug` / `inspect`** operate directly on a SQLite event DB — no app load needed. `debug --at N` folds the exact state at sequence *N* (time-travel); `inspect` serves a web timeline with a slider using the same fold.
 - **`gen` / `new`** implement the folder convention via **build-time codegen** (a static `loom.gen.ts`), not runtime globbing ([ADR 0011](adr/0011-folder-convention-codegen.md)). **`appgen`** turns a natural-language intent into a static Loom app *in the same folder convention* (`app/flows/<id>/flow.ts` + `app/loom.gen.ts` + `app/config.ts`, or a full project) via [`@loom/appgen`](../tools/appgen) — deterministic and offline, with no model call at generate time or in the output.
-- **`doctor`** is the front door for the three pre-flight gates: it discovers each one's input, runs what it can, and **names what it skipped and why** — a skipped check never reads as a pass. Build with the Loom compiler and `verify` gets the manifest's three source analyses (non-determinism, loop identity, runner-body reach) injected automatically; nothing is hand-plumbed.
+- **`doctor`** is the front door for the pre-flight gates — the flow-graph check, the `@loom/verify` rules, the memory store (durable? can it retrieve by relevance?), and the claim-check lint. It discovers each one's input, runs what it can, and **names what it skipped and why** — a skipped check never reads as a pass. Build with the Loom compiler and `verify` gets the manifest's three source analyses (non-determinism, loop identity, runner-body reach) injected automatically; nothing is hand-plumbed.
 - **`eval` / `deploy check` / `check` / `verify`** are CI gates (§12).
 
 For a command-by-command walkthrough with flags, exit codes, and example output, see the **[CLI Usage Guide](usage-cli.md)**.
@@ -1240,6 +1250,16 @@ const context = await mem.recall("semantic", scope, { limit: 10, decide: ctx.dec
 - **Tiers + policies.** `TierPolicy` = `{ ttlMs?, maxEntries? }` (eviction) **or** `{ summarizeAfter? }` (summarization — folds the oldest entries into a summary, auto-run on `remember`, with a pluggable `Summarizer`).
 - **Logged recall (the determinism fix).** Passing `ctx.decide` records the recalled set so replay serves the **same** entries even if the store later changed — non-deterministic recall can no longer break P2.
 - **Promotion.** Lift salient entries between tiers (`copy` or `move`).
+- **Relevance recall.** `recallRelevant(tier, scope, query, { decide })` ranks a tier against a
+  question instead of returning its tail — the only way to use `semantic`/`procedural`, which never
+  evict, so their "newest N" means nothing. `decide` is REQUIRED here (not optional as in `recall`):
+  what a relevance query returns changes as the corpus does, so recording it is what keeps a replay
+  on the prompt that actually ran. It needs a store implementing `search`, and **fails loudly** on
+  one that does not rather than degrading to the tail ([ADR 0090](adr/0090-knowledge-is-retrieval-over-memory.md)).
+- **Forgetting one thing.** `forget(tier, scope, ids)` removes entries by id, leaving the rest of the
+  scope — `clear` is the whole scope, which is right for a conversation and wrong for a corpus
+  ([ADR 0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md)). Corpus lifecycle on top of it
+  is [`@loom/knowledge`](#knowledge-a-corpus-of-documents) — see §8.
 
 ---
 
