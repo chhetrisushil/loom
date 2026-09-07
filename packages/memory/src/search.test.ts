@@ -23,13 +23,43 @@ describe("searchableText", () => {
   });
 
   it("survives content no shallower than JSON itself accepts", () => {
-    // 5,000 deep is still JSON-serializable, so it satisfies the documented `content`
-    // contract and every durable backend's own JSON.stringify — and it used to blow the
-    // call stack here, failing the write for a value the store had already promised to take.
-    let deep: unknown = "needle";
-    for (let i = 0; i < 5_000; i++) deep = { nested: deep };
-    expect(() => JSON.stringify(deep)).not.toThrow(); // the premise
-    expect(() => searchableText({ content: deep, timestamp: 1 })).not.toThrow();
+    // The invariant, not a depth: indexing must never fail on content the store's own
+    // serializer accepts, because every durable backend writes `JSON.stringify(entry)`
+    // and `searchableText(entry)` in the same call.
+    //
+    // CALIBRATED AT RUNTIME rather than pinned to a number. Both limits are the same call
+    // stack, so where they sit depends on the host — a hard-coded depth passed here and
+    // failed on CI, where JSON.stringify gives out sooner. Probe for the deepest structure
+    // JSON accepts, then require the index to accept it too.
+    const nest = (depth: number): unknown => {
+      let value: unknown = "needle";
+      for (let i = 0; i < depth; i++) value = { nested: value };
+      return value;
+    };
+    const serializable = (depth: number): boolean => {
+      try {
+        JSON.stringify(nest(depth));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    // Binary-search JSON's actual ceiling. A coarse ladder is not enough: the test only
+    // discriminates near that ceiling, where the recursive walk's larger frames give out
+    // and JSON's do not, so landing well below it would pass against the old code too.
+    let low = 1;
+    let high = 1;
+    while (serializable(high) && high < 1_000_000) high *= 2;
+    low = Math.floor(high / 2);
+    while (high - low > 64) {
+      const mid = Math.floor((low + high) / 2);
+      if (serializable(mid)) low = mid;
+      else high = mid;
+    }
+    const deepest = low;
+    expect(deepest).toBeGreaterThan(512); // above MAX_DEPTH, so the walk is exercised
+    expect(serializable(deepest)).toBe(true); // the premise, on THIS host
+    expect(() => searchableText({ content: nest(deepest), timestamp: 1 })).not.toThrow();
   });
 
   it("terminates on cyclic content instead of recursing forever", () => {
