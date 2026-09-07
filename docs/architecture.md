@@ -310,18 +310,19 @@ flowchart LR
   PR --> R3["terminal"]
 ```
 
-### 5.4 Agentic layer (`@loom/agent`, `@loom/plugin-a2a`, `@loom/llm`, `@loom/plugin-mcp`, `@loom/capability`, `@loom/intent`, `@loom/planner`, `@loom/memory`)
+### 5.4 Agentic layer (`@loom/agent`, `@loom/plugin-a2a`, `@loom/llm`, `@loom/plugin-mcp`, `@loom/reasoning`, `@loom/capability`, `@loom/intent`, `@loom/planner`, `@loom/memory`, `@loom/knowledge`)
 
 The intelligence pipeline, all composable and all running *inside* durable flows:
 - **`@loom/llm`** — provider-agnostic model abstraction (`LlmProvider`), with `AnthropicProvider`, `OpenAiProvider`, and `GeminiProvider` shipped (and a VCR provider for tests); any provider drops in.
 - **`@loom/agent`** — a ReAct-style tool-using loop; a `SkillRegistry` selects `skill$` skills whose instruction bodies load lazily.
 - **`@loom/plugin-mcp`** — Model Context Protocol client for external tools.
 - **`@loom/plugin-a2a`** — Agent-to-Agent protocol (client + server): call external agents (ADK, LangGraph, CrewAI) and expose Loom flows to them; `LoomAgentExecutor` adapts a flow into a stateless A2A task ([ADR 0007](adr/0007-manifest-and-a2a-adapter.md)). `defineConfig({ a2a: true })` auto-advertises every `agent$` as a discoverable card (no hand-built card table).
+- **`@loom/reasoning`** — the decision seam's policy side (M3, [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md)): model routing, elevation and confidence, plus the exploration strategies (`ucb1`, `epsilonGreedy`) a learned router draws from ([ADR 0078](adr/0078-exploration-in-the-routing-seam.md)). Every choice it makes goes through `ctx.decide`, so it is advisory at author time and a recorded fact at run time.
 - **`@loom/capability`** — flows exposed as intent-addressable capabilities.
 - **`@loom/intent`** — routes natural-language intent to a capability.
 - **`@loom/planner`** — turns a goal into an ordered capability plan.
-- **`@loom/memory`** — scoped, TTL/size-bounded agent memory, over a pluggable `MemoryStore` (in-memory by default; `SqliteMemoryStore`/`PostgresMemoryStore` make it survive a restart and add relevance `search`, which `TieredMemory.recallRelevant` turns into a recorded decision).
-- **`@loom/knowledge`** — document corpora over a memory tier ([ADR 0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md)): `KnowledgeBase` upserts and `sync`s DOCUMENTS onto the PASSAGES they are searched in (so a revision supersedes its predecessor rather than duplicating it), `groundedRequest` assembles a prompt that keeps retrieved passages in the one position `guardRequest` accepts, and `checkCitations` rejects a citation to a document that was never retrieved. It owns no storage and no ranking — both are the `MemoryStore`'s.
+- **`@loom/memory`** — scoped, TTL/size-bounded agent memory, over a pluggable `MemoryStore` (in-memory by default; `SqliteMemoryStore`/`PostgresMemoryStore` make it survive a restart and add relevance `search`, which `TieredMemory.recallRelevant` turns into a recorded decision). An entry carries an optional caller-assigned `id` that every backend must round-trip, and the optional `remove` deletes by it — the verb a MUTABLE corpus needs, since `search` ranks within one key while a document is a subset of it ([ADR 0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md), `MEMORY_STORE_SPI_VERSION` 2.0.0).
+- **`@loom/knowledge`** — document corpora over a memory tier ([ADR 0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md)): `KnowledgeBase` upserts and `sync`s DOCUMENTS onto the PASSAGES they are searched in (so a revision supersedes its predecessor rather than duplicating it), `groundedRequest` assembles a prompt that keeps retrieved passages in the one position `guardRequest` accepts, and `checkCitations` rejects a citation to a document that was never retrieved. It owns no storage and no ranking — both are the `MemoryStore`'s. A corpus may have several writers (`source`): a reconcile only ever deletes its own documents, so what an agent learned from feedback survives the nightly sync of an authored corpus.
 - **`@loom/orchestrator`** — composable `decideApproval` (risk gate) + `dispatchPlan` primitives ([ADR 0013](adr/0013-orchestrator-primitives.md)).
 
 ### 5.5 Compute & distribution (`@loom/dispatcher`, `@loom/worker-runtime*`, `@loom/plugin-worker-remote`, `@loom/plugin-worker-server`, `@loom/plugin-cloudrun`, `@loom/graph-executor`, `@loom/scheduler`)
@@ -363,7 +364,7 @@ The rings noted inline above (K2/K3/K6) are part of a larger set that makes Loom
 
 ```mermaid
 flowchart TB
-  Sys["Minimal kernel — K1 syscall ABI · K5 event-schema governance<br/>execute · run · decide · parallel · suspend · sleep · emit"]
+  Sys["Minimal kernel — K1 syscall ABI · K5 event-schema governance<br/>execute · run · decide · parallel · suspend<br/>sleep · sleepUntil · emit · stream · ui"]
 
   subgraph Rings["Enforcement rings — opt-in, byte-identical when unwired (P10)"]
     K2["K2 authority → EFFECT_DENIED"]
@@ -421,7 +422,7 @@ plan-proposed kernel changes (a `CHILD_COMPLETED` event and a `ctx.compensate` s
 
 ```mermaid
 flowchart TB
-  Sys["Stable syscall surface — KERNEL_ABI 1.1.0 (unchanged)<br/>execute · run · decide · parallel · suspend · sleep · emit"]
+  Sys["Stable syscall surface — KERNEL_ABI 1.1.0 (unchanged)<br/>execute · run · decide · parallel · suspend<br/>sleep · sleepUntil · emit · stream · ui"]
 
   subgraph Iso["Multi-tenant isolation (Direction C)"]
     AZ["execution-lifecycle authz → EXECUTION_DENIED (only schema touch: 1.12.0)"]
@@ -453,7 +454,8 @@ DST is the throughline the other two lean on: audit-chain integrity, and saga's 
 The workspace is split by tier (ADR 0043): **`packages/`** holds the kernel (mechanism/ABI), the
 SPI-contract packages, and the advisory modules; **`tools/`** holds first-party *dev-tooling* —
 leaf packages consumed only at build/test/authoring time (`cli`, `compiler`, `appgen`,
-`appgen-model`, `deploy-sim`, `scaffold`, `eval`, `testing`, `dst`, `create-loom-app`);
+`appgen-model`, `deploy-sim`, `scaffold`, `eval`, `testing`, `dst`, `bench-throughput`,
+`create-loom-app`);
 **`plugins/`** holds the first-party *adapters* — concrete backends for a specific external system — as `@loom/plugin-*`
 (`sqlite`, `postgres`, `crypto`, `content`, `durable-state`, `read-model`, `sentinel`,
 `audit-chain`, `cloudrun`, `worker-remote`, `worker-server`, `mcp`, `a2a`, `renderer-react`,
@@ -511,16 +513,16 @@ flowchart TB
 | Group | Packages |
 |---|---|
 | **Core runtime** | `core`, `workflow-runtime`, `replay-vm`, `event-runtime`, `snapshot-runtime` |
-| **Composition** | `app` (`defineConfig`), `registry` |
+| **Composition** | `app` (`defineConfig`), `registry`, `sdk` (the public re-export barrel) |
 | **Effects** | `effect-runtime`, `middleware` |
 | **Projection / UI** | `projection-runtime`, `agent-surface`, `blueprint-runtime`, `plugin-a2ui`, `plugin-renderer-react`, `plugin-renderer-terminal` |
-| **Agentic** | `agent`, `llm`, `reasoning`, `capability`, `intent`, `planner`, `memory`, `orchestrator`, `plugin-a2a`, `plugin-mcp`, `plugin-mcp-app`, `plugin-sandbox` |
+| **Agentic** | `agent`, `llm`, `reasoning`, `capability`, `intent`, `planner`, `memory`, `knowledge`, `orchestrator`, `plugin-a2a`, `plugin-mcp`, `plugin-mcp-app`, `plugin-sandbox`, `plugin-sentinel` (the perpetual-agent pattern as one preset) |
 | **Compute / distribution** | `dispatcher`, `worker-runtime`, `worker-runtime-local`, `graph-executor`, `scheduler`, `plugin-worker-remote`, `plugin-worker-server`, `plugin-cloudrun` |
 | **Storage backends** | `plugin-sqlite`, `plugin-postgres`, `plugin-durable-state`, `plugin-read-model` |
 | **Governance / verification** | `spec` (the kernel manifest + layering guard), `conformance` (SPI kits), `verify`, `replay-inspector` (ADR 0071) |
 | **Kernel hardening / security** | `effect-runtime` (K2 authz + K12 delegation), `middleware` (K3 metering, K6 safety, K10 redaction, K12 nested budgets), `isolate` (K7 data-plane isolation & egress), `plugin-crypto` (K10 encryption & crypto-shredding), `event-runtime`/`snapshot-runtime` (K12 tenant scoping), `wire-abi` (T2), `telemetry` (K10-R6 egress scrubbing) |
 | **Data protection & compliance** | `classify` (K10-R1 `secret`/`sensitive`/`internal`/`externalized` markers + the ADR 0085 `tainted()` integrity axis), `compliance` (T3 subject index + export + erasure, tenant-scoped), `plugin-content` (ADR 0046 content-store seam) — see [data classification](data-classification.md) & [compliance](compliance.md) |
-| **Intelligence / DX** | `analytics`, `appgen` (provider-agnostic planner), `appgen-model` (optional local `.gguf` option), `cli`, `eval`, `deploy-sim`, `testing`, `scaffold`, `compiler`, `telemetry` |
+| **Intelligence / DX** | `analytics`, `learning` (off-policy evaluation + the 3P `Policy` seam, ADR 0080), `appgen` (provider-agnostic planner), `appgen-model` (optional local `.gguf` option), `cli`, `eval`, `deploy-sim`, `testing`, `scaffold`, `compiler`, `bench-throughput`, `telemetry` |
 | **Three-direction arc** | `dst` (simulation testing), `plugin-audit-chain` + `fair-scheduler` + execution-authz in `workflow-runtime` (multi-tenant isolation), `live-query` + `orchestration` + `saga` (coordination) — ADRs 0036–0041 |
 
 > **Adapter packages carry the `plugin-` prefix and live in [`plugins/`](../plugins/), not `packages/`** — the 1P/3P separation of [ADR 0043](adr/0043-plugin-packaging-and-1p-3p-separation.md). A CI guard fails the build if a kernel or SPI package takes a dependency on one. See [the plugin guide](plugins.md) for the full first-party inventory.
