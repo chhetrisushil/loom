@@ -61,7 +61,16 @@ export class MemoryRuntime {
   }
 
   // Rewrite the stored list to `entries` (empty ⇒ the key is dropped).
+  //
+  // Prefers the store's atomic `replace` when it has one: on a durable backend the
+  // clear-then-re-append fallback is a window in which eviction — the routine path —
+  // can lose the whole scope to a crash. The fallback is still the contract for
+  // backends without it (including the in-memory default, which has no crash to lose).
   private async persist(key: string, entries: MemoryEntry[]): Promise<void> {
+    if (this.store.replace !== undefined) {
+      await this.store.replace(key, entries);
+      return;
+    }
     await this.store.clear(key);
     for (const entry of entries) await this.store.append(key, entry);
   }

@@ -3,6 +3,7 @@ import {
   runContentStoreConformance,
   runDurableStateStoreConformance,
   runEventStoreConformance,
+  runMemoryStoreConformance,
   runReadModelStoreConformance,
   runSnapshotStoreConformance,
   runTimerStoreConformance,
@@ -11,6 +12,7 @@ import { SqliteBranchRegistry } from "./SqliteBranchRegistry";
 import { SqliteContentStore } from "./SqliteContentStore";
 import { SqliteDurableStateStore } from "./SqliteDurableStateStore";
 import { SqliteEventStore } from "./SqliteEventStore";
+import { SqliteMemoryStore } from "./SqliteMemoryStore";
 import { SqliteReadModelStore } from "./SqliteReadModelStore";
 import { SqliteSnapshotStore } from "./SqliteSnapshotStore";
 import { SqliteTimerStore } from "./SqliteTimerStore";
@@ -28,3 +30,4 @@ runDurableStateStoreConformance(
 
 runReadModelStoreConformance(() => new SqliteReadModelStore(":memory:"), "SqliteReadModelStore");
 runContentStoreConformance(() => new SqliteContentStore(":memory:"), "SqliteContentStore");
+runMemoryStoreConformance(() => new SqliteMemoryStore(":memory:"), "SqliteMemoryStore");

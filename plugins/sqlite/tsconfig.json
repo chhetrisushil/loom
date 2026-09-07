@@ -14,6 +14,9 @@
       "path": "../../packages/event-runtime"
     },
     {
+      "path": "../../packages/memory"
+    },
+    {
       "path": "../../packages/snapshot-runtime"
     },
     {
