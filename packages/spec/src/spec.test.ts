@@ -77,6 +77,7 @@ describe("capability maturity — evidence is real (badges can't rot)", () => {
       "SNAPSHOT_STORE_SPI_VERSION",
       "BRANCH_REGISTRY_SPI_VERSION",
       "DISPATCHER_SPI_VERSION",
+      "MEMORY_STORE_SPI_VERSION",
       "COMPILER_MANIFEST_VERSION",
     ]);
     for (const c of CAPABILITIES) {

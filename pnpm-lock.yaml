@@ -1080,6 +1080,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@loom/replay-vm':
         specifier: workspace:*
         version: link:../replay-vm

@@ -1,6 +1,7 @@
 import { COMPILER_MANIFEST_VERSION } from "@loom/compiler";
 import { DISPATCHER_SPI_VERSION } from "@loom/dispatcher";
 import { BRANCH_REGISTRY_SPI_VERSION, EVENT_STORE_SPI_VERSION } from "@loom/event-runtime";
+import { MEMORY_STORE_SPI_VERSION } from "@loom/memory";
 import { EVENT_SCHEMA_VERSION, knownEventTypes } from "@loom/replay-vm";
 import { SNAPSHOT_STORE_SPI_VERSION } from "@loom/snapshot-runtime";
 import { WIRE_ABI_VERSION } from "@loom/wire-abi";
@@ -26,6 +27,7 @@ export interface KernelManifest {
     snapshotStore: string;
     branchRegistry: string;
     dispatcher: string;
+    memoryStore: string;
   };
   /** The compiler manifest schema version. */
   compilerManifest: { version: string };
@@ -48,6 +50,7 @@ export function kernelManifest(): KernelManifest {
       snapshotStore: SNAPSHOT_STORE_SPI_VERSION,
       branchRegistry: BRANCH_REGISTRY_SPI_VERSION,
       dispatcher: DISPATCHER_SPI_VERSION,
+      memoryStore: MEMORY_STORE_SPI_VERSION,
     },
     compilerManifest: { version: COMPILER_MANIFEST_VERSION },
   };
@@ -67,6 +70,7 @@ export interface DeploymentVersions {
   snapshotStoreSpi?: string;
   branchRegistrySpi?: string;
   dispatcherSpi?: string;
+  memoryStoreSpi?: string;
   compilerManifest?: string;
 }
 
@@ -98,6 +102,7 @@ export function checkCompatibility(actual: DeploymentVersions): CompatReport {
     ["snapshotStoreSpi", actual.snapshotStoreSpi, m.spis.snapshotStore],
     ["branchRegistrySpi", actual.branchRegistrySpi, m.spis.branchRegistry],
     ["dispatcherSpi", actual.dispatcherSpi, m.spis.dispatcher],
+    ["memoryStoreSpi", actual.memoryStoreSpi, m.spis.memoryStore],
     ["compilerManifest", actual.compilerManifest, m.compilerManifest.version],
   ];
   const issues: CompatIssue[] = [];

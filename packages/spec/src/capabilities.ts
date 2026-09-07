@@ -518,14 +518,15 @@ export const CAPABILITIES: readonly Capability[] = [
     id: "memory",
     title: "Tiered Memory",
     package: "@loom/memory",
-    level: "L3",
+    level: "L5",
     summary:
-      "M5 working/episodic/semantic/procedural tiers with deterministic recall, over a MemoryStore SPI with durable SQLite/Postgres backends and optional relevance search (ADR 0090).",
+      "M5 working/episodic/semantic/procedural tiers with deterministic recall, over a versioned MemoryStore SPI with durable SQLite/Postgres backends and optional relevance search (ADR 0090).",
     evidence: {
+      versionConstant: "MEMORY_STORE_SPI_VERSION",
       conformanceTest: "packages/memory/src/conformance.test.ts",
       usedIn: "loom-examples: runbook-recall, agent-network",
     },
-    note: "ADR 0090 — `search` is proven portable by FOUR independent implementations of one kit (in-memory IDF, SQLite FTS5, Postgres tsvector, and the 3P loom-plugin-vector's cosine similarity), which is what makes the seam a contract rather than a description of an inverted index. Still L3, not L5: the SPI has no versioned `*_VERSION` constant, so nothing pins it across a breaking change.",
+    note: "ADR 0090 — `search` is proven portable by FOUR independent implementations of one kit (in-memory IDF, SQLite FTS5, Postgres tsvector, and the 3P loom-plugin-vector's cosine similarity), which is what makes the seam a contract rather than a description of an inverted index. L3 → L5 once MEMORY_STORE_SPI_VERSION landed: the level bar is a versioned contract pinned by a conformance kit, and this seam is the first whose implementations live OUTSIDE this repo, which is what made an unversioned contract an actual hazard rather than a formality. As with every SPI here, nothing forces the constant to be bumped when the shape changes — the version is a declaration, the kit is the check.",
   },
   {
     id: "placement-adapters",
