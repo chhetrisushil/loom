@@ -43,6 +43,14 @@ export const SPI_PACKAGES: readonly string[] = [
   // policy plugin to the same peer-dependency rule as every other seam — without
   // it the check passes vacuously for the one seam consumed from flow code.
   "@loom/learning",
+  // Defines the `MemoryStore` SPI (ADR 0090/0091) plus the in-memory reference. It was
+  // missing here for as long as the seam has existed, so `loom plugin check` reported a
+  // green "SPI packages are peer dependencies" to every memory backend while being unable
+  // to see the one package that matters to it. A bundled copy is not a duplicate kernel
+  // here, it is a duplicate CONTRACT: `searchableText`, `tokenize` and `clampSearchLimit`
+  // decide what a backend indexes and what counts as a term, so a plugin carrying its own
+  // copy can answer a different question than the app asked and still pass conformance.
+  "@loom/memory",
 ];
 
 /** Packages that must stay free of any `plugins/*` dependency (kernel ∪ SPI). */

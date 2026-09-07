@@ -136,6 +136,26 @@ implementation would differ only in its manifest layout. The user's request name
 least a package"; the honest answer is that the package is the right half of that disjunction, and
 the seam it would have needed already exists one layer down.
 
+### D5 — What a passage puts in the index is part of the package's contract
+
+A store indexes the string and number LEAVES of an entry's `content`, so the shape a passage
+is stored in decides what it matches. Three of its five fields are therefore stored
+differently from how they are returned:
+
+- `docId` and `index` are **not stored in `content` at all**. Storing them would make a
+  document's own id a term matching all of its passages, and the chunk ordinal a term
+  making `search("0")` match the first passage of every document in the corpus. Both are
+  the widening that made a tainted value's `origin` unindexable (ADR 0090 D2), and both are
+  what the SPI already forbids for `MemoryEntry.id`. They survive in the entry id —
+  `docId#index`, required to round-trip and never indexed — which is the second place that
+  requirement earns its keep. A corpus entry with no parseable passage id is REFUSED on
+  read rather than yielding `docId: undefined`, which would flow straight into a citation.
+- `title` and `meta` ARE indexed, deliberately for the first and by the same rule for the
+  second. A question is often phrased in a document's title. `meta` is the caller's own
+  vocabulary, which makes it useful as a filter and surprising as a relevance term: a
+  `{ team: "payments" }` stamped on 300 documents makes "payments" match all 300. Pinned by
+  a test rather than left to be discovered.
+
 ## Consequences
 
 **`sync` is proportional to documents, not to the corpus.** One manifest read (ids, counts and
@@ -149,6 +169,16 @@ invisible until the corpus is large. The plugin-authoring guidance is now "imple
 the backend can express a delete", and both first-party SQL backends do it in one indexed
 statement — with the SQLite suite asserting the query plan actually USES that index, since an
 index the planner ignores turns the fast path back into the slow one with extra steps.
+
+**`@loom/memory` was missing from `SPI_PACKAGES`**, and had been for as long as the seam
+existed. `loom plugin check` reported a green "SPI packages are peer dependencies" to every
+memory backend while being structurally unable to see the one package that matters to it —
+the same vacuity the list's `@loom/learning` entry was added to fix. For this seam a bundled
+copy is not a duplicate kernel but a duplicate CONTRACT: `searchableText`, `tokenize` and
+`clampSearchLimit` decide what a backend indexes and what counts as a term, so a plugin
+carrying its own copy can answer a different question than the app asked and still pass
+conformance. Fixed here because ADR 0091 is what made a third-party memory backend likely
+enough to matter.
 
 **The manifest occupies a second scope** (`<scope>::docs`) in the same tier. Anything walking a
 tier's scopes sees it. Keeping it in the corpus scope was the alternative and it is worse: a
@@ -172,3 +202,9 @@ manifest row in a searchable corpus is an entry that matches queries and answers
   `remove` cases.
 - `plugins/sqlite/src/SqliteMemoryStore.test.ts` — `remove` maintaining the FTS index (the kit
   cannot see this: the search join hides a stale index), and the `EXPLAIN QUERY PLAN` assertion.
+- `packages/knowledge/src/KnowledgeBase.test.ts` — the searchable projection of a passage
+  (D5), pinned in both directions: `docId`/`index` absent from `searchableText`, `title`/`meta`
+  present.
+- `tools/cli/src/plugin.ts` via `SPI_PACKAGES` — verified by running `checkPlugin` over a
+  manifest that bundles `@loom/memory` and watching the warning appear, since a rule that
+  cannot fire looks exactly like one that passes.

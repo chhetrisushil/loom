@@ -1,4 +1,4 @@
-export { KnowledgeBase } from "./KnowledgeBase";
+export { KnowledgeBase, openKnowledgeBase } from "./KnowledgeBase";
 // Note: `DecideFn` is deliberately NOT re-exported — it is the same structural type as
 // `@loom/memory`'s and `@loom/reasoning`'s (all three mirror `ctx.decide`), and exporting
 // more than one of them collides in the `@loom/sdk` barrel. Pass `ctx.decide` directly.

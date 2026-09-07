@@ -875,7 +875,7 @@ a DOCUMENT — the unit people edit — to the PASSAGES it is searched in. `@loo
 mapping and nothing else (storage stays the `MemoryStore`'s, ranking stays the backend's):
 
 ```ts
-const kb = new KnowledgeBase({ memory, scope: "runbooks" });   // tier defaults to "semantic"
+const kb = openKnowledgeBase(store, { scope: "runbooks" });   // tier defaults to "semantic"
 
 await kb.sync(await loadRunbooksFromWiki());   // write what changed, remove what the source dropped
 const passages = await kb.retrieve(question, { decide: ctx.decide, limit: 3 });
@@ -897,10 +897,17 @@ rather than refuses, and the reason retrieved text can never reach an instructio
 cites a document that was not retrieved, which — because the retrieval is recorded — is the one
 hallucination here that is decidable rather than judged.
 
-The tier must not evict (`semantic` and `procedural` are unbounded by default, which is why they
-are the right ones): under `ttlMs`/`maxEntries` a document would silently retrieve as a fragment of
-itself. Chunking is yours to choose — `packParagraphs()` is a reasonable default and most of
-retrieval quality lives in that decision.
+`openKnowledgeBase` builds the one-tier, never-evicting memory a corpus needs; use the
+`KnowledgeBase` constructor with your own `TieredMemory` when the corpus shares a memory with
+something else (a conversation in `episodic`, say). Either way the tier must not evict — under
+`ttlMs`/`maxEntries` a document would silently retrieve as a fragment of itself, and the
+constructor refuses one that does.
+
+Chunking is yours to choose: `packParagraphs()` is a reasonable default, and most of retrieval
+quality lives in that decision. So does what you put in `meta` — it travels onto every passage and
+is INDEXED like any other content, which makes it a useful filter (`retrieve("payments")` finds the
+team's documents) and a surprising relevance term (a `{ team: "payments" }` on 300 documents makes
+"payments" match all 300). A document's id and a passage's ordinal are deliberately *not* indexed.
 
 `@loom/orchestrator` packages the recurring route→plan→dispatch→gate loop as composable functions (`dispatchPlan`, `decideApproval`) — use them where they fit; drop to primitives where they don't ([ADR 0013](adr/0013-orchestrator-primitives.md)).
 
