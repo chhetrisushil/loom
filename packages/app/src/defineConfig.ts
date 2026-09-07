@@ -621,7 +621,7 @@ type ResolvedConfig = Omit<
   ChecksOptions;
 
 /** Options that moved into a group, paired with the group that now owns them. */
-const GROUPED_OPTIONS = [
+export const GROUPED_OPTIONS = [
   [
     "security",
     [
