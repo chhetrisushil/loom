@@ -35,18 +35,15 @@ that is what pins the contracts.
 | **Event log** | `EventStore` (`@loom/event-runtime`) | `append`, `read`, `readFrom`, `subscribe`, `close` | `readRange`, `acquireFence` (K9.4), `copyPrefix` (fork fast-path), `deleteExecution`/`truncatePrefix` (K10) | `InMemoryAsyncEventStore`, `SqliteEventStore`, `PostgresEventStore` | `runEventStoreConformance` |
 | **Snapshots** | `SnapshotStore` (`@loom/snapshot-runtime`) | `save`, `loadLatest`, `loadAt`, `loadLatestBefore`, `close` | `deleteExecution` (K10.1) | `InMemoryAsyncSnapshotStore`, `SqliteSnapshotStore`, `PostgresSnapshotStore` | `runSnapshotStoreConformance` |
 | **Branches** | `BranchRegistry` (`@loom/event-runtime`) | `putRef`, `getRef`, `listRefs`, `moveTip`, `promote`, `deleteRef`, `recordLineage`, `getLineage`, `children`, `close` | — | `InMemoryBranchRegistry`, `SqliteBranchRegistry`, `PostgresBranchRegistry` | `runBranchRegistryConformance` |
-| **Timers** | `TimerStore` (`@loom/event-runtime`) | `putTimer`, `dueTimers`, `deleteTimer`, `close` | fencing (multi-node) | `InMemoryTimerStore`, `SqliteTimerStore`, `PostgresTimerStore` | — (future) |
+| **Timers** | `TimerStore` (`@loom/event-runtime`) | `putTimer`, `dueTimers`, `deleteTimer`, `close` | fencing (multi-node) | `InMemoryTimerStore`, `SqliteTimerStore`, `PostgresTimerStore` | `runTimerStoreConformance` |
 | **Memory** | `MemoryStore` (`@loom/memory`) | `append`, `read`, `clear` — a key names an ORDERED LIST, read back in APPEND order | `replace` (atomic whole-list rewrite, so eviction cannot lose a scope), `search` (relevance retrieval over `searchableText`, OR-ed terms, ranking left to the backend), `close` | `InMemoryMemoryStore` (IDF scorer), `SqliteMemoryStore` (FTS5), `PostgresMemoryStore` (`tsvector`), `loom-plugin-vector` (cosine, 3P) | `runMemoryStoreConformance` |
 
 ## Compute seams
 
-| Seam | Interface | Required | Reference impls |
-|---|---|---|---|
-| **Dispatch** | `ExecutionDispatcher` (`@loom/dispatcher`) | `dispatch`, `cancel`, `health` | `LocalDispatcher`, `PlacementDispatcher` (routing), `SupervisingDispatcher` (K4 circuit-breaker) |
-| **Worker** | `WorkerRuntime` (`@loom/worker-runtime`) | `allocate`, `execute`, `release` (`cancel` optional) | `LocalWorkerRuntime`, `RemoteWorkerRuntime`, `CloudRunWorkerRuntime` |
-
-*(A dispatcher conformance kit is a natural follow-up; it needs a mock `WorkerRuntime`, so it is
-staged separately from the storage kits.)*
+| Seam | Interface | Required | Reference impls | Conformance kit |
+|---|---|---|---|---|
+| **Dispatch** | `ExecutionDispatcher` (`@loom/dispatcher`) | `dispatch`, `cancel`, `health` | `LocalDispatcher`, `PlacementDispatcher` (routing), `SupervisingDispatcher` (K4 circuit-breaker) | `runExecutionDispatcherConformance` |
+| **Worker** | `WorkerRuntime` (`@loom/worker-runtime`) | `allocate`, `execute`, `release` (`cancel` optional) | `LocalWorkerRuntime`, `RemoteWorkerRuntime`, `CloudRunWorkerRuntime` | `runWorkerRuntimeConformance` |
 
 ## Effect & policy seams
 
