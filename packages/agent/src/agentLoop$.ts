@@ -235,9 +235,9 @@ export async function agentLoop$(
     const scope = config.memoryScope ?? ctx.executionId;
     const recalled = await config.memory.recall(tier, scope, {
       ...(config.recallLimit !== undefined && { limit: config.recallLimit }),
-      // Bound, not passed bare: `ctx.decide` is a method, and handing the
-      // reference over detaches it from the context that owns the frame table.
-      decide: (id, decider) => ctx.decide(id, decider),
+      // Passed bare: the context binds `decide` in its constructor, exactly so
+      // that a helper taking it as an option gets a working function.
+      decide: ctx.decide,
       decisionKey: `${idPrefix}#recall`,
     });
     for (const entry of recalled) {
@@ -339,7 +339,7 @@ export async function agentLoop$(
       const routed = await config.reasoning.reason(
         { ...turnRequest, strategy: "agent" },
         {
-          decide: (id, decider) => ctx.decide(id, decider),
+          decide: ctx.decide,
           decisionKey: `${idPrefix}#turn:${turn}`,
         }
       );
