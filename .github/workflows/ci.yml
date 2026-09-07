@@ -27,14 +27,16 @@ jobs:
           POSTGRES_DB: loomtest
         ports:
           - 5432:5432
-        # The conformance suite opens 32 pools (one schema per case, for isolation);
-        # the default ceiling of 100 connections is uncomfortably close.
+        # `options` are docker-create flags, not server flags — a service container
+        # takes no command, so `-c max_connections=…` cannot go here (it makes
+        # `docker create` exit 125). It is not needed: the conformance suite opens
+        # 32 pools for schema isolation but fills them lazily, and a measured run
+        # peaks at 51 backends against the image's default ceiling of 100.
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-          -c max_connections=300
 
     steps:
       - name: Checkout
