@@ -925,6 +925,15 @@ Either way the tier must not evict — under `ttlMs`/`maxEntries` a document wou
 as a fragment of itself, and the constructor refuses one that does. `app.knowledge` also refuses a
 tier that a registered `memory$` would evict, since both run over the same store.
 
+**A corpus can have more than one writer**, and that is what `source` is for. An agent that
+writes down what it learned from feedback puts documents in the same scope as an authored corpus
+— and `sync` is a destructive reconcile, so a nightly wiki job would delete every one of them.
+Stamp each writer's documents (`sync(docs, { source: "wiki" })`, `putDoc(learned, { source:
+"agent" })`) and a reconcile only ever touches its own; the rest come back in the result as
+`retained`, so the protection is visible rather than silent. Two writers claiming the SAME
+document id is refused loudly, because silently re-stamping would make each one delete the
+other's revision on alternate syncs.
+
 Operating a corpus from outside the app is `loom knowledge` — `sync` a directory into it (a dry
 run by default, because the reconcile also DELETES what the directory no longer contains), `list`
 what it holds, and `search` it to find out why retrieval returned what it did. See the

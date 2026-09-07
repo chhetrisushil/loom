@@ -59,10 +59,11 @@ loom — project-local commands for a Loom app
   loom learn report --db <path> [executionId]     trajectories, per-arm rewards, learning coverage
   loom learn eval --db <path> --policy <module> [--min-steps N] [executionId]
                                                   shadow-evaluate a candidate policy on real logs
-  loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--apply]
+  loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--source <s>] [--apply]
                                                   reconcile a directory into a corpus
                                                   (dry run by default; --apply also REMOVES
-                                                   documents the directory no longer has)
+                                                   documents the directory no longer has —
+                                                   but never another writer's, see --source)
   loom knowledge list --config <mod> --scope <s>  what the corpus holds
   loom knowledge search --config <mod> --scope <s> "<query>" [--limit N]
                                                   ask the corpus (operator query — not recorded)
@@ -616,11 +617,17 @@ input `verify` and `deploy check` take. All three subcommands **refuse an app wi
 configured `memoryStore`**: that app's corpus lives in the in-memory default, so this process
 would ingest into a store it throws away on exit and print a successful-looking summary.
 
-### `loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--max-bytes N] [--apply]`
+### `loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--max-bytes N] [--source <s>] [--apply]`
 
 Reconciles a directory of documents into the corpus: write what changed, leave what did not,
 **remove what the directory no longer contains**. That last clause is why it is a dry run by
 default — `--apply` deletes as well as writes.
+
+**`--source` when the corpus has more than one writer.** A reconcile deletes what it owns, and
+this command owns a directory. An agent that writes down what it learned from feedback owns its
+own documents — without `--source` on both sides, one nightly directory sync would delete every
+one of them, since they are not in the set the directory produced and never will be. Documents
+another writer owns are reported as `kept (another writer's)` and never touched.
 
 The document id is the path relative to `--dir`, which is what makes a second run recognise the
 same document; the title is the file's first markdown heading, or its filename. Symlinks are not
@@ -846,7 +853,7 @@ npx loom plugin search postgres
 | `loom retention run` | reclaim aged terminal executions | `--db` *(req)*, `--snap` *(req)*, `--ttl`, `--apply` | error |
 | `loom sweep content` | K10.6 pinned blob sweep | `--db` *(req)*, `--content` *(req)*, `--archive-db`, `--pin`, `--ttl`, `--apply` | error |
 | `loom compliance report` | data-subject inventory | `--db` *(req)*, `--subject-path` *(req)*, `--tenant-path` | error |
-| `loom knowledge sync` | reconcile a directory into a corpus | `--config` *(req)*, `--scope` *(req)*, `--dir` *(req)*, `--ext`, `--max-bytes`, `--apply` | error |
+| `loom knowledge sync` | reconcile a directory into a corpus | `--config` *(req)*, `--scope` *(req)*, `--dir` *(req)*, `--ext`, `--max-bytes`, `--source`, `--apply` | error |
 | `loom knowledge list` | what the corpus holds | `--config` *(req)*, `--scope` *(req)* | error |
 | `loom knowledge search` | ask the corpus (not recorded) | `--config` *(req)*, `--scope` *(req)*, `--limit` | error |
 | `loom kernel-manifest` | kernel version + maturity manifest | `--json`, `--emit-docs <dir>` | (never) |
