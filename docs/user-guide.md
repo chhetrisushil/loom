@@ -866,7 +866,43 @@ await mem.recallRelevant("semantic", userId, question, { decide: ctx.decide, lim
 requires `decide`: what a relevance query returns changes as the corpus grows, so recording it
 is what keeps the replayed prompt the one that actually ran. It needs a store implementing
 `search` (both durable backends do, as does the in-memory default) and fails loudly on one that
-does not — a silent fall back to the tail would look like retrieval and quietly answer worse. `@loom/orchestrator` packages the recurring route→plan→dispatch→gate loop as composable functions (`dispatchPlan`, `decideApproval`) — use them where they fit; drop to primitives where they don't ([ADR 0013](adr/0013-orchestrator-primitives.md)).
+does not — a silent fall back to the tail would look like retrieval and quietly answer worse.
+
+### Knowledge: a corpus of documents
+
+A knowledge base is a `semantic` tier plus one thing memory alone cannot express: the mapping from
+a DOCUMENT — the unit people edit — to the PASSAGES it is searched in. `@loom/knowledge` owns that
+mapping and nothing else (storage stays the `MemoryStore`'s, ranking stays the backend's):
+
+```ts
+const kb = new KnowledgeBase({ memory, scope: "runbooks" });   // tier defaults to "semantic"
+
+await kb.sync(await loadRunbooksFromWiki());   // write what changed, remove what the source dropped
+const passages = await kb.retrieve(question, { decide: ctx.decide, limit: 3 });
+
+const answer = await ctx.execute(AnswerTask, groundedRequest({
+  instructions: "Answer strictly from the passages provided; cite the runbook id.",
+  question,
+  passages,
+}));
+return { answer: answer.text, cited: assertGrounded(answer.citations, passages) };
+```
+
+Three things are doing real work there. `sync` is a reconcile, not an append: re-ingesting an
+unchanged corpus writes nothing, a revised document supersedes its own old passages instead of
+sitting beside them, and a document deleted upstream stops answering questions. `groundedRequest`
+puts each passage in a `user` message with its taint intact — the shape `guardRequest` fences
+rather than refuses, and the reason retrieved text can never reach an instruction position
+([ADR 0085](adr/0085-untrusted-content-integrity-axis.md)). `assertGrounded` throws if the answer
+cites a document that was not retrieved, which — because the retrieval is recorded — is the one
+hallucination here that is decidable rather than judged.
+
+The tier must not evict (`semantic` and `procedural` are unbounded by default, which is why they
+are the right ones): under `ttlMs`/`maxEntries` a document would silently retrieve as a fragment of
+itself. Chunking is yours to choose — `packParagraphs()` is a reasonable default and most of
+retrieval quality lives in that decision.
+
+`@loom/orchestrator` packages the recurring route→plan→dispatch→gate loop as composable functions (`dispatchPlan`, `decideApproval`) — use them where they fit; drop to primitives where they don't ([ADR 0013](adr/0013-orchestrator-primitives.md)).
 
 The full stack in action: `db-command-center` (in the [examples catalogue](examples.md)).
 

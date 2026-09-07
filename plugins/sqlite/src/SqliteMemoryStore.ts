@@ -20,6 +20,11 @@ interface EntryRow {
  * rewrites a list on every TTL/maxEntries eviction, and a crash between the delete and the
  * re-insert would make routine eviction the thing that loses the scope.
  *
+ * `remove` (ADR 0091) is one indexed `DELETE` matching `json_extract(entry, '$.id')` — the
+ * id is read from the stored JSON rather than duplicated into a column, so nothing can
+ * drift between what `read` returns and what a delete matches, and a database written
+ * before this shipped needs no migration.
+ *
  * `search` rides an FTS5 index over `searchableText(entry)`, held in an EXTERNAL-CONTENT
  * table so the text is indexed but not stored twice, and synchronised by triggers so a
  * `clear`/`replace` cannot leave the index describing entries that no longer exist. FTS5's
@@ -30,6 +35,7 @@ export class SqliteMemoryStore implements MemoryStore {
   private readonly appendStmt: Database.Statement;
   private readonly readStmt: Database.Statement;
   private readonly clearStmt: Database.Statement;
+  private readonly removeStmt: Database.Statement;
   private readonly searchStmt: Database.Statement;
   private readonly replaceTxn: (key: string, entries: readonly MemoryEntry[]) => void;
 
@@ -47,6 +53,13 @@ export class SqliteMemoryStore implements MemoryStore {
         );
         CREATE INDEX IF NOT EXISTS idx_memory_entries_key
           ON memory_entries (key, seq ASC);
+        -- Removal by entry id (ADR 0091). An EXPRESSION index over the stored JSON, not
+        -- a column: the entry is already persisted whole, so an id round-trips with no
+        -- schema change and no migration of rows written before this shipped -- and a
+        -- column would be a second copy able to disagree with the one a read returns.
+        CREATE INDEX IF NOT EXISTS idx_memory_entries_id
+          ON memory_entries (key, json_extract(entry, '$.id'))
+          WHERE json_extract(entry, '$.id') IS NOT NULL;
 
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
           text, content='memory_entries', content_rowid='seq'
@@ -67,6 +80,14 @@ export class SqliteMemoryStore implements MemoryStore {
         "SELECT entry FROM memory_entries WHERE key = ? ORDER BY seq ASC"
       );
       this.clearStmt = this.db.prepare("DELETE FROM memory_entries WHERE key = ?");
+      // `json_each` over ONE json-array parameter, not a generated `IN (?,?,?…)`: a
+      // document with 200 chunks would otherwise be a 200-placeholder statement that has
+      // never been prepared before, and better-sqlite3 caches by SQL text.
+      this.removeStmt = this.db.prepare(
+        `DELETE FROM memory_entries
+          WHERE key = ?
+            AND json_extract(entry, '$.id') IN (SELECT value FROM json_each(?))`
+      );
       this.searchStmt = this.db.prepare(
         `SELECT e.entry FROM memory_fts
            JOIN memory_entries e ON e.seq = memory_fts.rowid
@@ -100,6 +121,20 @@ export class SqliteMemoryStore implements MemoryStore {
 
   async replace(key: string, entries: readonly MemoryEntry[]): Promise<void> {
     this.replaceTxn(key, entries);
+  }
+
+  /**
+   * Delete by entry id. The FTS index needs no special handling: rows are deleted, so the
+   * existing AFTER DELETE trigger takes them out of `memory_fts` — which is the reason
+   * this is a row delete and not a rewrite of the `entry` JSON.
+   *
+   * An entry with no id has `json_extract(...) IS NULL`, and `NULL IN (...)` is NULL —
+   * never true — so anonymous entries cannot be removed by any list of ids, including one
+   * containing the strings "null" or "undefined".
+   */
+  async remove(key: string, ids: readonly string[]): Promise<void> {
+    if (ids.length === 0) return;
+    this.removeStmt.run(key, JSON.stringify(ids));
   }
 
   async search(key: string, query: string, opts: MemorySearchOptions = {}): Promise<MemoryEntry[]> {

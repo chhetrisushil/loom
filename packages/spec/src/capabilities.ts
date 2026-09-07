@@ -527,7 +527,19 @@ export const CAPABILITIES: readonly Capability[] = [
       conformanceTest: "packages/memory/src/conformance.test.ts",
       usedIn: "loom-examples: runbook-recall, agent-network",
     },
-    note: "ADR 0090 — `search` is proven portable by FOUR independent implementations of one kit (in-memory IDF, SQLite FTS5, Postgres tsvector, and the 3P loom-plugin-vector's cosine similarity), which is what makes the seam a contract rather than a description of an inverted index. L3 → L5 once MEMORY_STORE_SPI_VERSION landed: the level bar is a versioned contract pinned by a conformance kit, and this seam is the first whose implementations live OUTSIDE this repo, which is what made an unversioned contract an actual hazard rather than a formality. As with every SPI here, nothing forces the constant to be bumped when the shape changes — the version is a declaration, the kit is the check.",
+    note: "ADR 0090/0091 — `search` is proven portable by FOUR independent implementations of one kit (in-memory IDF, SQLite FTS5, Postgres tsvector, and the 3P loom-plugin-vector's cosine similarity), which is what makes the seam a contract rather than a description of an inverted index. ADR 0091 took the SPI to 2.0.0: entry `id` (REQUIRED to round-trip, so the read-filter-replace fallback has something to match) plus the optional `remove`, because `search` ranks within one key while a document — the unit a corpus is actually edited in — is a subset of it. MAJOR because a backend that decomposes an entry into columns drops a field nobody told it to keep, which is silent in every case that only checks `content`. L3 → L5 once MEMORY_STORE_SPI_VERSION landed: the level bar is a versioned contract pinned by a conformance kit, and this seam is the first whose implementations live OUTSIDE this repo, which is what made an unversioned contract an actual hazard rather than a formality. As with every SPI here, nothing forces the constant to be bumped when the shape changes — the version is a declaration, the kit is the check.",
+  },
+  {
+    id: "knowledge",
+    title: "Document Corpora",
+    package: "@loom/knowledge",
+    level: "L2",
+    summary:
+      "KnowledgeBase over a memory tier: upsert/sync/remove by document, provenance-preserving prompt assembly, and decidable citation checking (ADR 0091).",
+    evidence: {
+      conformanceTest: "packages/knowledge/src/KnowledgeBase.test.ts",
+    },
+    note: "ADR 0091 — the package owns exactly one thing: the mapping from a DOCUMENT (the unit a corpus is edited in) to the PASSAGES it is searched in, so a revision supersedes its predecessor instead of duplicating it. Storage is `MemoryStore`'s, ranking is the backend's, reproducibility is `ctx.decide`'s, safety is ADR 0085's. NOT a seam: there is nothing to plug — an alternative KnowledgeBase would differ only in its manifest layout, and the seam it would need is one layer down. L2 and not L3 until a second consumer beyond the package's own suite exercises it (ADR 0083).",
   },
   {
     id: "placement-adapters",

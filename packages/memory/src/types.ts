@@ -9,6 +9,29 @@
 // fidelity that IS promised: nesting, arrays, null, numbers, unicode, and an
 // absent `role` staying absent.
 export interface MemoryEntry {
+  /**
+   * OPTIONAL caller-assigned identity, opaque to the store and unique within a key.
+   *
+   * It exists because the unit a corpus is EDITED in is not the unit it is SEARCHED in.
+   * `search` ranks over one key, so a searchable corpus has to be one key; a document,
+   * which is what actually gets revised and deleted, is a subset of it. Without an
+   * identity the only removal verb is `clear`, so fixing one line of one wiki page means
+   * rebuilding the whole corpus, and re-ingesting a document duplicates its chunks
+   * (`append` is a list, not a set).
+   *
+   * Stores MUST round-trip it: an entry appended with an `id` reads back with the same
+   * `id`, and one appended WITHOUT reads back with none (`{ content }` must not become
+   * `{ id: null, content }` — the same rule `role` already has, for the same reason).
+   * This is required rather than optional because {@link MemoryStore.remove} is optional:
+   * a store without it is removed from through read-filter-`replace`, which matches on
+   * the `id` that `read` gives back. A backend that dropped ids would make that fallback
+   * silently delete nothing.
+   *
+   * It is NOT indexed — `searchableText` projects `content` only, so an id is metadata by
+   * the same rule as `role` and the timestamp. Indexing it would make a document's own id
+   * a term that matches every one of its chunks.
+   */
+  id?: string;
   role?: string;
   content: unknown;
   timestamp: number;
@@ -28,6 +51,8 @@ export interface MemoryEntry {
 //    share a timestamp, and MemoryRuntime rewrites lists that are already
 //    ordered). An absent key reads as `[]`, never a throw.
 //  - `clear` is idempotent.
+//  - an entry may carry a caller-assigned `id`; every backend MUST round-trip it,
+//    and `remove` (optional) deletes by it.
 /**
  * The {@link MemoryStore} SPI contract version (ADR 0033 / ADR 0090).
  *
@@ -40,8 +65,15 @@ export interface MemoryEntry {
  * 1.0.0: `append` / `read` / `clear`, plus optional `replace`, `search` and `close`.
  *   The optional three shipped together with the first durable backends, so there is
  *   no earlier shape to be compatible with.
+ * 2.0.0: entry IDENTITY — `MemoryEntry.id`, optional for the caller but REQUIRED to
+ *   round-trip, plus the optional `remove`. MAJOR and not MINOR because the round-trip
+ *   is a requirement on every backend, including ones that do not implement `remove`:
+ *   a store that decomposes an entry into columns (both first-party SQL backends did)
+ *   silently dropped a field it had never been told to keep, and the conformance kit
+ *   now fails it. A backend that persists the entry object whole — `loom-plugin-vector`
+ *   is the third-party example — conforms unchanged.
  */
-export const MEMORY_STORE_SPI_VERSION = "1.0.0";
+export const MEMORY_STORE_SPI_VERSION = "2.0.0";
 
 export interface MemorySearchOptions {
   /**
@@ -130,6 +162,35 @@ export interface MemoryStore {
    * fallback stays for those that cannot (and is what the in-memory store uses).
    */
   replace?(key: string, entries: readonly MemoryEntry[]): Promise<void>;
+  /**
+   * OPTIONAL — remove the entries in `key` whose {@link MemoryEntry.id} is listed,
+   * keeping the append order of the survivors.
+   *
+   * This is the verb a mutable corpus needs and `clear` cannot give it. A knowledge
+   * base is not append-only: a document gets revised, and re-ingesting it without
+   * removing the previous revision leaves BOTH in the index, so retrieval returns
+   * the stale passage alongside the current one and a citation cannot say which is
+   * live. `clear` is the whole scope, which for a shared corpus means every other
+   * document too.
+   *
+   * The contract:
+   *  - IDEMPOTENT. An id that is not present is a no-op, not an error — a caller
+   *    that crashed mid-write re-runs the same removal, and so does one racing
+   *    another writer;
+   *  - an empty `ids` is a no-op (and MUST NOT be read as "all");
+   *  - an entry with NO id is never removed, whatever is passed;
+   *  - survivors keep their relative append order, because `read` still promises it;
+   *  - removing every entry leaves the key readable as `[]`, exactly like `clear`;
+   *  - if a caller broke uniqueness and two entries share an id, BOTH go. Enforcing
+   *    uniqueness would need an index the SPI does not require, and the alternative —
+   *    removing one of them — leaves a duplicate that no id can ever address again.
+   *
+   * When it is ABSENT, {@link MemoryRuntime} falls back to read-filter-`replace`,
+   * which is correct but rewrites the whole key: O(scope) per document edit, on a
+   * corpus that only grows. Implement it if the backend can express the delete —
+   * both first-party SQL backends do it as one statement.
+   */
+  remove?(key: string, ids: readonly string[]): Promise<void>;
   /** OPTIONAL — release backend resources (a file handle, a connection pool). */
   close?(): Promise<void>;
 }

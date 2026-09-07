@@ -22,6 +22,10 @@ interface EntryRow {
  * ordered explicitly so the serial values follow list order rather than trusting the
  * planner to emit rows in array order).
  *
+ * `remove` is one indexed `DELETE` over `entry->>'id'` (ADR 0091) — the id is read from
+ * the stored JSON rather than duplicated into a column, so nothing can drift between what
+ * `read` returns and what a delete matches.
+ *
  * `search` ranks with `ts_rank` over a GIN-indexed `to_tsvector('simple', text)`, where the
  * text is `searchableText(entry)` — the same projection the other backends index, so a query
  * means the same thing whichever one an app is wired to.
@@ -93,6 +97,26 @@ export class PostgresMemoryStore implements MemoryStore {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Delete by entry id in ONE statement — `= ANY($2::text[])` rather than a generated
+   * `IN (...)` list, so the plan is cached whatever the number of ids and a document with
+   * 200 chunks is not a 200-placeholder statement nobody has seen before.
+   *
+   * `entry->>'id'` reads the id back out of the stored JSON, which is where it already
+   * lives; there is no `id` column to keep in step with it. An entry with no id yields
+   * SQL NULL, and `NULL = ANY(...)` is never true, so an anonymous entry cannot be
+   * removed by any list of ids — including one containing the strings "null" or
+   * "undefined", which is how that bug usually arrives.
+   */
+  async remove(key: string, ids: readonly string[]): Promise<void> {
+    await this.ready;
+    if (ids.length === 0) return;
+    await this.pool.query(
+      "DELETE FROM memory_entries WHERE key = $1 AND entry->>'id' = ANY($2::text[])",
+      [key, [...ids]]
+    );
   }
 
   async search(key: string, query: string, opts: MemorySearchOptions = {}): Promise<MemoryEntry[]> {

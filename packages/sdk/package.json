@@ -34,13 +34,14 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@loom/agent-surface": "workspace:*",
     "@loom/agent": "workspace:*",
+    "@loom/agent-surface": "workspace:*",
     "@loom/blueprint-runtime": "workspace:*",
     "@loom/capability": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/intent": "workspace:*",
+    "@loom/knowledge": "workspace:*",
     "@loom/llm": "workspace:*",
     "@loom/memory": "workspace:*",
     "@loom/orchestration": "workspace:*",

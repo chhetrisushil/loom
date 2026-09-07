@@ -130,6 +130,9 @@
       "path": "packages/memory"
     },
     {
+      "path": "packages/knowledge"
+    },
+    {
       "path": "packages/capability"
     },
     {

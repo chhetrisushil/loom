@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A corpus is mutable, and the SPI could not say so**
+  ([ADR 0091](docs/adr/0091-corpus-lifecycle-and-the-knowledge-package.md)). `MemoryStore.search`
+  ranks within ONE key, so a searchable corpus has to be one key — while a DOCUMENT, the unit that
+  actually gets revised and deleted, is a subset of that key the SPI could not name. Re-ingesting
+  an edited document therefore DUPLICATED it (retrieval returning the superseded passage beside the
+  current one, with nothing saying which was live), the only removal verb was `clear` on the whole
+  scope, and a document deleted upstream kept answering questions. None of it shows in a green
+  suite, because every test ingests once.
+
+  `MemoryEntry.id` is now optional for a caller and **required for a backend to round-trip**, with
+  the optional `MemoryStore.remove(key, ids)` beside it. The asymmetry is deliberate: `remove` has
+  a correct fallback (read-filter-`replace`), but that fallback matches on the id `read` gives
+  back, so a backend that dropped ids would turn a delete into a silent no-op on exactly the path
+  taken by backends with no native delete. **`MEMORY_STORE_SPI_VERSION` is 2.0.0** — MAJOR because
+  a backend that decomposes an entry into columns drops a field nobody told it to keep, which is
+  invisible to every case that only checks `content`. Neither first-party SQL backend needed a
+  migration: both already store the entry as JSON, so removal reads the id back out of it
+  (`json_extract` / `entry->>'id'`) behind a partial expression index.
+
+- **`@loom/knowledge` — document corpora over a memory tier.** `KnowledgeBase.putDoc` is an UPSERT
+  and `sync(docs)` reconciles a corpus against its source: write what changed (by a
+  `canonicalJson`+`fnv1a64` fingerprint), leave what did not, remove what the source dropped — an
+  unchanged source costs one manifest read and zero writes. Manifest rows are APPENDED and pruned
+  only after the new one is durable, because the obvious alternative (delete the old row, write the
+  new one) has a crash window in which a document has no row at all, and a document nothing counts
+  is a document nothing can remove.
+
+  `groundedRequest`/`passageMessages` assemble the one prompt shape `guardRequest` accepts — one
+  `user` message per passage, taint intact, never joined — so the shape every RAG tutorial writes
+  (passages in the SYSTEM prompt) does not compile rather than being refused at run time.
+  `checkCitations`/`assertGrounded` reject a citation to a document that was never retrieved: the
+  one hallucination in a RAG answer that is decidable rather than judged, because the retrieval was
+  recorded. Chunking stays injected (`packParagraphs` is an ignorable default), embeddings stay
+  third-party, and the `knowledge$` construct stays rejected.
+
 - **The `MemoryStore` SPI is versioned** (`MEMORY_STORE_SPI_VERSION`, 1.0.0), carried in the kernel
   manifest and `checkCompatibility` beside the event-store / snapshot / branch / dispatcher SPIs.
   A formality while every implementation lived in this workspace, where a breaking change breaks

@@ -59,6 +59,9 @@
       "path": "../memory"
     },
     {
+      "path": "../knowledge"
+    },
+    {
       "path": "../../plugins/renderer-terminal"
     },
     {

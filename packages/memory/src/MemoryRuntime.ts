@@ -47,6 +47,32 @@ export class MemoryRuntime {
   }
 
   /**
+   * Remove specific entries by {@link MemoryEntry.id}, keeping the rest of the scope.
+   *
+   * Unlike `search`, an absent backend verb here does NOT fail: the fallback —
+   * read, filter, rewrite — is CORRECT, just linear in the scope, so refusing would
+   * deny a working capability rather than prevent a silent wrong answer. (That is the
+   * whole distinction: there is no read-based way to fake relevance retrieval, and
+   * there is an obvious read-based way to delete.)
+   *
+   * The rewrite goes through `persist`, so it inherits atomic `replace` where the
+   * backend has one — the same durability argument as eviction: a crash between
+   * `clear` and the re-appends would lose the scope this call was asked to prune.
+   */
+  async remove(memoryId: string, scope: string, ids: readonly string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const key = this.key(memoryId, scope);
+    if (this.store.remove !== undefined) {
+      await this.store.remove(key, ids);
+      return;
+    }
+    const stored = await this.store.read(key);
+    const doomed = new Set(ids);
+    const kept = stored.filter((entry) => entry.id === undefined || !doomed.has(entry.id));
+    if (kept.length !== stored.length) await this.persist(key, kept);
+  }
+
+  /**
    * Retrieve by relevance instead of by recency. Requires a store that implements the
    * optional `search`; a store without one FAILS LOUDLY rather than falling back to
    * `read`, because a silent fallback would hand back the tail of the scope while the
