@@ -13,7 +13,7 @@ title: "Porting Loom — building a durable execution kernel in another language
 
 **What must survive the port · what must be redesigned · what must never be built**
 
-Derived from `docs/spec/loom-kernel-specification.md`, `docs/architecture.md` §2, and 86 ADRs
+Derived from `docs/spec/loom-kernel-specification.md`, `docs/architecture.md` §2, and 91 ADRs
 
 <!--
 Presenter: "This is not 'rewrite Loom in Go.' It's a proposal to build a kernel

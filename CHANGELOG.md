@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Blueprint conformance** ([ADR 0088](docs/adr/0088-blueprint-conformance.md)). A blueprint a
+  *person* writes is checked by the type system; one a *model* composes at run time is data, and
+  the only thing between an off-catalogue component and a viewer is whatever validates it on the
+  way out. `validateBlueprint` / `catalogCoverage` in `@loom/blueprint-runtime` check a composed
+  blueprint against the widget catalogue the app already declared — two pure functions and a
+  declaration type, no kernel change.
+
+- **Worker-thread sandbox evaluation and the hard kill**
+  ([ADR 0089](docs/adr/0089-sandbox-worker-pool.md)). `vm.evalCode` is synchronous and cannot
+  yield, so `wallClockMs` was not only the longest a script may run — it was the longest the
+  CALLING thread was unavailable. The opt-in `workers` option on `SandboxSpec` moves evaluation
+  to a worker pool, which adds the one guarantee the in-engine guards structurally cannot: a hard
+  kill for a script that never reaches the interrupt handler (measured at 790ms against a 50ms
+  wall clock). In-process stays the default and ADR 0064's security list is parameterized over
+  both engines rather than copied.
+
 - **`app.knowledge(scope)`, `loom knowledge`, and a `loom doctor` memory-store check** — the DX
   follow-on to ADR 0091. `app.knowledge` opens a corpus over the app's configured `memoryStore`
   (one per scope, cached; options honoured on the first call only, since two parts of an app

@@ -875,20 +875,37 @@ a DOCUMENT — the unit people edit — to the PASSAGES it is searched in. `@loo
 mapping and nothing else (storage stays the `MemoryStore`'s, ranking stays the backend's):
 
 ```ts
-const kb = app.knowledge("runbooks");   // over the app's memoryStore; tier defaults to "semantic"
-
+// Startup / ops: the corpus over the app's memoryStore (tier defaults to "semantic").
+const kb = app.knowledge("runbooks");
 await kb.sync(await loadRunbooksFromWiki());   // write what changed, remove what the source dropped
-const passages = await kb.retrieve(question, { decide: ctx.decide, limit: 3 });
 
-const answer = await ctx.execute(AnswerTask, groundedRequest({
-  instructions: "Answer strictly from the passages provided; cite the runbook id.",
-  question,
-  passages,
-}));
-return { answer: answer.text, cited: assertGrounded(answer.citations, passages) };
+// The flow: `kb` is a closure argument, like any other dependency.
+const answerRunner = (kb: KnowledgeBase): FlowRunner<In, Out> => async (ctx, input) => {
+  const passages = await kb.retrieve(input.question, { decide: ctx.decide, limit: 3 });
+  const answer = await ctx.execute(AnswerTask, { question: input.question, passages });
+  return { answer, cited: assertGrounded(citedIds(answer), passages) };
+};
+
+// The prompt boundary — inside the LLM effect's buildRequest, where guardRequest runs.
+createLlmEffect({
+  provider,
+  buildRequest: ({ question, passages }) =>
+    groundedRequest({
+      instructions: "Answer strictly from the passages provided; cite the runbook id.",
+      question,
+      passages,
+    }),
+});
 ```
 
-Three things are doing real work there. `sync` is a reconcile, not an append: re-ingesting an
+Note where each piece sits. `ctx.execute` is handed the TASK INPUT — the question and the
+passages — and the request is assembled inside the effect's `buildRequest`, which is the boundary
+`guardRequest` runs at; building it in the runner would journal a prompt instead of the data the
+prompt was built from. And `kb` reaches the runner as an argument rather than through
+`app.knowledge`: the flow is declared to `defineConfig` before the app exists, and registering it
+afterwards to get the app would drop it out of boot-time verification.
+
+Three things are doing real work here. `sync` is a reconcile, not an append: re-ingesting an
 unchanged corpus writes nothing, a revised document supersedes its own old passages instead of
 sitting beside them, and a document deleted upstream stops answering questions. `groundedRequest`
 puts each passage in a `user` message with its taint intact — the shape `guardRequest` fences
@@ -907,15 +924,6 @@ with something else (a conversation in `episodic`, say).
 Either way the tier must not evict — under `ttlMs`/`maxEntries` a document would silently retrieve
 as a fragment of itself, and the constructor refuses one that does. `app.knowledge` also refuses a
 tier that a registered `memory$` would evict, since both run over the same store.
-
-A flow runner that closes over a corpus still takes one as an argument: `app.knowledge` needs the
-app, and the app needs the flows. Build the app, open the corpus, then register:
-
-```ts
-const app = defineConfig({ storage: { kind: "sqlite", ... }, memoryStore: store });
-const kb = app.knowledge("runbooks");
-app.runtime.registerFlow(AnswerFlow, answerRunner(kb));
-```
 
 Operating a corpus from outside the app is `loom knowledge` — `sync` a directory into it (a dry
 run by default, because the reconcile also DELETES what the directory no longer contains), `list`
