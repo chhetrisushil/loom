@@ -44,8 +44,44 @@ export interface MemoryEntry {
 export const MEMORY_STORE_SPI_VERSION = "1.0.0";
 
 export interface MemorySearchOptions {
-  /** Return at most N entries. Backends default to 20. */
+  /**
+   * Return at most N entries. Backends default to {@link DEFAULT_SEARCH_LIMIT} and MUST
+   * route the value through {@link clampSearchLimit} — see it for why.
+   */
   limit?: number;
+}
+
+/** Hits returned when a caller names no limit. */
+export const DEFAULT_SEARCH_LIMIT = 20;
+
+/**
+ * Hard ceiling on a search page, mirroring `@loom/plugin-read-model`'s `MAX_QUERY_LIMIT`.
+ * One answer per repo to "how much may a single query return".
+ */
+export const MAX_SEARCH_LIMIT = 10_000;
+
+/**
+ * Validate and clamp a search limit. Backends MUST call this — it is contract, not hygiene.
+ *
+ * Passed through raw, the same call produced three different behaviours: `.slice(0, -1)`
+ * dropped the last hit in memory, SQLite read `LIMIT -1` as NO LIMIT and returned the entire
+ * matching set, and Postgres rejected it. So a negative limit — the value a caller reaches by
+ * arithmetic, not by malice — silently DEFEATED the bound on one backend and crashed another.
+ *
+ * That the unbounded one is the quiet failure is what makes it more than an inconsistency:
+ * `recallRelevant` records what it retrieved through `ctx.decide`, so an unbounded search
+ * writes the whole corpus into a DECISION_RECORDED payload — permanently, into the
+ * append-only log, the way an over-large sandbox result once could.
+ *
+ * A fractional limit is clamped to its floor rather than refused: `Math.floor` is what every
+ * caller means by it, and refusing would turn `limit: total / pages` into a crash.
+ */
+export function clampSearchLimit(limit: number | undefined): number {
+  if (limit === undefined) return DEFAULT_SEARCH_LIMIT;
+  if (!Number.isFinite(limit)) {
+    throw new TypeError(`memory search: limit must be a finite number (got ${limit})`);
+  }
+  return Math.min(Math.max(Math.floor(limit), 0), MAX_SEARCH_LIMIT);
 }
 
 export interface MemoryStore {

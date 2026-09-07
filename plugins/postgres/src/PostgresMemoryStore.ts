@@ -1,5 +1,5 @@
 import type { MemoryEntry, MemorySearchOptions, MemoryStore } from "@loom/memory";
-import { searchableText, tokenize } from "@loom/memory";
+import { clampSearchLimit, searchableText, tokenize } from "@loom/memory";
 import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 
@@ -108,7 +108,7 @@ export class PostgresMemoryStore implements MemoryStore {
         WHERE key = $1 AND to_tsvector('simple', text) @@ to_tsquery('simple', $2)
         ORDER BY ts_rank(to_tsvector('simple', text), to_tsquery('simple', $2)) DESC, seq DESC
         LIMIT $3`,
-      [key, tsquery, opts.limit ?? 20]
+      [key, tsquery, clampSearchLimit(opts.limit)]
     );
     return rows.map((row) => row.entry);
   }

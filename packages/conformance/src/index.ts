@@ -1422,6 +1422,27 @@ export function runMemoryStoreConformance(
       await store.close?.();
     });
 
+    it("search bounds a hostile limit instead of trusting it (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.search === undefined) return void (await store.close?.());
+      for (let i = 0; i < 5; i++) await store.append("k", entry(`alert number ${i}`));
+
+      // A NEGATIVE limit is the one that matters. Passed through, `.slice(0, -1)` dropped
+      // the last hit, SQLite read `LIMIT -1` as NO LIMIT and returned everything, and
+      // Postgres rejected it — so the value a caller reaches by arithmetic silently
+      // DEFEATED the bound on one backend and crashed another.
+      expect(await store.search("k", "alert", { limit: -1 })).toEqual([]);
+      expect(await store.search("k", "alert", { limit: 0 })).toEqual([]);
+      // Fractional clamps to its floor rather than throwing: `total / pages` is a limit,
+      // not a mistake.
+      expect(await store.search("k", "alert", { limit: 2.9 })).toHaveLength(2);
+      // An enormous limit is capped, never handed to the backend verbatim.
+      expect(
+        (await store.search("k", "alert", { limit: Number.MAX_SAFE_INTEGER })).length
+      ).toBeLessThanOrEqual(5);
+      await store.close?.();
+    });
+
     it("search results are a subset of the key's entries (OPTIONAL)", async () => {
       const store = factory();
       if (store.search === undefined) return void (await store.close?.());

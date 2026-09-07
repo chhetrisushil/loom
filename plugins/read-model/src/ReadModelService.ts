@@ -74,6 +74,8 @@ export interface ReadModelServiceOptions {
  */
 export class ReadModelService {
   private readonly models = new Map<string, ReadModelDefinition>();
+  /** `definition.kinds` as a Set, built at registration — see the catch-up scan for why. */
+  private readonly kindSets = new Map<string, ReadonlySet<string>>();
   private readonly byKind = new Map<string, ReadModelDefinition[]>();
   private readonly onError: (err: unknown, event: EventEnvelope) => void;
 
@@ -98,6 +100,7 @@ export class ReadModelService {
       throw new TypeError(`read model "${model.id}" is already registered`);
     }
     this.models.set(model.id, model);
+    this.kindSets.set(model.id, new Set(model.kinds));
     for (const kind of model.kinds) {
       const list = this.byKind.get(kind);
       if (list === undefined) this.byKind.set(kind, [model]);
@@ -158,9 +161,13 @@ export class ReadModelService {
         for (const model of this.models.values()) {
           const from = marks.get(model.id)!;
           if (tip <= from) continue; // this model is already past everything read
+          // Set, not the declared array: this is the per-EVENT test on the catch-up
+          // scan, so a linear `kinds.includes` runs models x events x kinds over the
+          // whole log. Built once per model at registration.
+          const kinds = this.kindSets.get(model.id)!;
           const rows: ReadModelRow[] = [];
           for (const event of events) {
-            if (event.sequence > from && model.kinds.includes(event.eventType)) {
+            if (event.sequence > from && kinds.has(event.eventType)) {
               rows.push(...toRows(model, event));
             }
           }

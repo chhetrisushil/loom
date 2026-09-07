@@ -1,5 +1,5 @@
 import type { MemoryEntry, MemorySearchOptions, MemoryStore } from "@loom/memory";
-import { searchableText, tokenize } from "@loom/memory";
+import { clampSearchLimit, searchableText, tokenize } from "@loom/memory";
 import Database from "better-sqlite3";
 
 interface EntryRow {
@@ -112,7 +112,7 @@ export class SqliteMemoryStore implements MemoryStore {
     // FTS5 keywords, those being uppercase — and the quoting below is the second belt, so
     // that widening what counts as a term later cannot reopen this.
     const match = terms.map((term) => `"${term}"`).join(" OR ");
-    const rows = this.searchStmt.all(match, key, opts.limit ?? 20) as EntryRow[];
+    const rows = this.searchStmt.all(match, key, clampSearchLimit(opts.limit)) as EntryRow[];
     return rows.map((row) => JSON.parse(row.entry) as MemoryEntry);
   }
 

@@ -48,11 +48,57 @@ export function searchableText(entry: MemoryEntry): string {
   return out.join(" ");
 }
 
-function collect(value: unknown, out: string[]): void {
-  if (isTainted(value)) collect(value.value, out);
-  else if (typeof value === "string") out.push(value);
-  else if (typeof value === "number" && Number.isFinite(value)) out.push(String(value));
-  else if (Array.isArray(value)) for (const item of value) collect(item, out);
-  else if (value !== null && typeof value === "object")
-    for (const item of Object.values(value)) collect(item, out);
+/**
+ * How deep the walk descends before it stops.
+ *
+ * `content` is whatever was ingested, and a corpus is edited by whoever can edit the
+ * source. Recursion here was unbounded, which made two ordinary values fatal: a nesting
+ * depth of 5,000 — still perfectly JSON-serializable, so it satisfies the documented
+ * `content` contract and every durable backend's own `JSON.stringify` — blew the call
+ * stack, and a cyclic object never terminated. The in-memory store made that worse by
+ * accepting such an entry on `append` and throwing later, on an unrelated `search`.
+ */
+const MAX_DEPTH = 512;
+
+/**
+ * Iterative, with an explicit stack, so no input depth can exhaust the call stack — the
+ * same shape `blueprint-runtime`'s widget walk uses, and a depth cap like `schemaHash`'s.
+ *
+ * Over-deep content is INDEXED AS FAR AS THE CAP rather than refused. This is an index,
+ * not a validator: the entry is still stored and still findable by the text above the
+ * cap, where refusing would make legal content unstorable. The cap also terminates a
+ * cycle, since following one only ever increases depth.
+ */
+function collect(root: unknown, out: string[]): void {
+  const stack: Array<{ value: unknown; depth: number }> = [{ value: root, depth: 0 }];
+  for (let frame = stack.pop(); frame !== undefined; frame = stack.pop()) {
+    const { value, depth } = frame;
+    if (isTainted(value)) {
+      if (depth < MAX_DEPTH) stack.push({ value: value.value, depth: depth + 1 });
+      continue;
+    }
+    if (typeof value === "string") {
+      out.push(value);
+      continue;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      out.push(String(value));
+      continue;
+    }
+    if (depth >= MAX_DEPTH) continue;
+    // Pushed in reverse so the walk still emits terms in source order — the projection
+    // is compared verbatim in tests, and an FTS index should not depend on walk order.
+    if (Array.isArray(value)) {
+      for (let i = value.length - 1; i >= 0; i--) {
+        stack.push({ value: value[i], depth: depth + 1 });
+      }
+      continue;
+    }
+    if (value !== null && typeof value === "object") {
+      const values = Object.values(value);
+      for (let i = values.length - 1; i >= 0; i--) {
+        stack.push({ value: values[i], depth: depth + 1 });
+      }
+    }
+  }
 }

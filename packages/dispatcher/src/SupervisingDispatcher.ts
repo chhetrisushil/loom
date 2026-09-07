@@ -120,11 +120,17 @@ export class SupervisingDispatcher implements ExecutionDispatcher {
   }
 
   private recordSuccess(key: string): void {
-    const c = this.circuits.get(key);
-    if (c !== undefined) {
-      c.failures = 0;
-      c.openedAt = null;
-    }
+    // DELETE rather than reset. A circuit with `failures: 0, openedAt: null` is
+    // indistinguishable from an absent one everywhere it is read — `guardCircuit`
+    // returns on either, `recordFailure` defaults to exactly that shape, and
+    // `health()` counts only open circuits — so dropping it is observationally
+    // identical and bounds the map to circuits actually accumulating failures.
+    //
+    // Without this the map only grows. The default key is `flowId` (bounded by
+    // deployed flows), but `policy.circuit.key` receives the whole ExecutionPackage,
+    // so keying per tenant — or per execution, which reads as natural — turned a
+    // supervisor into a leak for the lifetime of the process.
+    this.circuits.delete(key);
   }
 
   private recordFailure(key: string): void {
