@@ -20,6 +20,38 @@ import { GROUPED_OPTIONS } from "./defineConfig";
 
 const REPO_ROOT = resolve(__dirname, "../../..");
 const USAGE = "docs/usage.md";
+const GUIDE = "docs/user-guide.md";
+
+/**
+ * The `LoomApp` members the user guide's §9 reference block declares.
+ *
+ * That block had drifted the other way from the usage table: it was CORRECT about every
+ * option and silently missing six members — `tools`, `skills`, `schedules`, `memory`,
+ * `knowledge` and `verify`. An interface reference that omits `app.memory` is not slightly
+ * incomplete, it is the reason a reader concludes the surface does not exist.
+ */
+function documentedAppMembers(): string[] {
+  const doc = readFileSync(resolve(REPO_ROOT, GUIDE), "utf8");
+  const start = doc.indexOf("interface LoomApp");
+  const block = doc.slice(start, doc.indexOf("\n}", start));
+  return [...block.matchAll(/^ {2}([a-zA-Z]+)[?(:]/gm)].map((m) => m[1] as string);
+}
+
+/** The real members, read off the built declaration rather than a copy of it. */
+function realAppMembers(): string[] {
+  const dts = readFileSync(resolve(REPO_ROOT, "packages/app/dist/defineConfig.d.ts"), "utf8");
+  const start = dts.indexOf("interface LoomApp");
+  let depth = 0;
+  let end = start;
+  for (let i = dts.indexOf("{", start); i < dts.length; i++) {
+    if (dts[i] === "{") depth++;
+    else if (dts[i] === "}" && --depth === 0) {
+      end = i;
+      break;
+    }
+  }
+  return [...dts.slice(start, end).matchAll(/^ {4}([a-zA-Z]+)[?(:]/gm)].map((m) => m[1] as string);
+}
 
 /** The first-column keys of the `LoomConfig` reference table in Step 3. */
 function documentedKeys(): string[] {
@@ -55,6 +87,16 @@ describe("the usage guide's config table matches defineConfig", () => {
       throwing,
       `${USAGE} documents flat option(s) that defineConfig REFUSES:\n  ${throwing.join("\n  ")}`
     ).toEqual([]);
+  });
+
+  it("the user guide's LoomApp block names every member the app actually has", () => {
+    // Requires `pnpm build` — it reads the emitted declaration, which is the point: the
+    // doc is checked against what ships, not against the source it was written beside.
+    const real = realAppMembers();
+    const documented = new Set(documentedAppMembers());
+    expect(real.length).toBeGreaterThan(8);
+    const missing = real.filter((m) => !documented.has(m));
+    expect(missing, `${GUIDE}'s LoomApp block omits: ${missing.join(", ")}`).toEqual([]);
   });
 
   it("documents every group, so a new namespace cannot ship unmentioned", () => {
