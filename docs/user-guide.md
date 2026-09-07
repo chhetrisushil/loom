@@ -852,7 +852,21 @@ for (const s of plan.steps) {
 }
 ```
 
-`@loom/memory` gives agents scoped, TTL/size-bounded stores via `memory$({ id, name, ttlMs, maxEntries })`. The default backing store is in-memory, so an agent that restarts remembers nothing — pass `memoryStore: new SqliteMemoryStore(".loom/events.db")` (or `new PostgresMemoryStore(url)`) to point memory at the same database as the event log, so one backup captures both. `@loom/orchestrator` packages the recurring route→plan→dispatch→gate loop as composable functions (`dispatchPlan`, `decideApproval`) — use them where they fit; drop to primitives where they don't ([ADR 0013](adr/0013-orchestrator-primitives.md)).
+`@loom/memory` gives agents scoped, TTL/size-bounded stores via `memory$({ id, name, ttlMs, maxEntries })`. The default backing store is in-memory, so an agent that restarts remembers nothing — pass `memoryStore: new SqliteMemoryStore(".loom/events.db")` (or `new PostgresMemoryStore(url)`) to point memory at the same database as the event log, so one backup captures both.
+
+Recall comes in two shapes, and the difference matters more than the API surface suggests:
+
+```ts
+await mem.recall("episodic", conversationId, { limit: 20, decide: ctx.decide });        // the tail
+await mem.recallRelevant("semantic", userId, question, { decide: ctx.decide, limit: 5 }); // the answer
+```
+
+`recall` returns the newest N — right for a conversation, meaningless for a `semantic` or
+`procedural` tier, which never evict. `recallRelevant` ranks the tier against a question and
+requires `decide`: what a relevance query returns changes as the corpus grows, so recording it
+is what keeps the replayed prompt the one that actually ran. It needs a store implementing
+`search` (both durable backends do, as does the in-memory default) and fails loudly on one that
+does not — a silent fall back to the tail would look like retrieval and quietly answer worse. `@loom/orchestrator` packages the recurring route→plan→dispatch→gate loop as composable functions (`dispatchPlan`, `decideApproval`) — use them where they fit; drop to primitives where they don't ([ADR 0013](adr/0013-orchestrator-primitives.md)).
 
 The full stack in action: `db-command-center` (in the [examples catalogue](examples.md)).
 

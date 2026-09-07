@@ -1,6 +1,6 @@
 import type { MemoryDefinition } from "@loom/core";
 import { InMemoryMemoryStore } from "./InMemoryMemoryStore";
-import type { MemoryEntry, MemoryStore } from "./types";
+import type { MemoryEntry, MemorySearchOptions, MemoryStore } from "./types";
 
 // The Agent Runtime's "memory access" from the proposal. A MemoryRuntime holds
 // named memories (registered from memory$() definitions) and enforces each
@@ -44,6 +44,37 @@ export class MemoryRuntime {
 
   async clear(memoryId: string, scope: string): Promise<void> {
     await this.store.clear(this.key(memoryId, scope));
+  }
+
+  /**
+   * Retrieve by relevance instead of by recency. Requires a store that implements the
+   * optional `search`; a store without one FAILS LOUDLY rather than falling back to
+   * `read`, because a silent fallback would hand back the tail of the scope while the
+   * caller believed it had retrieved — the kind of degradation nothing downstream can
+   * detect, and which shows up only as worse answers.
+   */
+  async search(
+    memoryId: string,
+    scope: string,
+    query: string,
+    opts: MemorySearchOptions = {}
+  ): Promise<MemoryEntry[]> {
+    if (this.store.search === undefined) {
+      throw new Error(
+        `memory "${memoryId}": the configured MemoryStore does not implement search(). Use a backend that does (SqliteMemoryStore, PostgresMemoryStore, InMemoryMemoryStore), or recall by recency with read().`
+      );
+    }
+    const hits = await this.store.search(this.key(memoryId, scope), query, opts);
+    // TTL applies to a hit as much as to a read — an expired entry reaching a prompt is
+    // the bug TTL exists to prevent. Filtered AFTER the store's `limit`, so an expiring
+    // tier can return fewer than `limit` rows; the alternative is reading the whole scope
+    // to prune it, which is exactly what an index is for. NOT persisted: unlike `read`,
+    // these entries are an arbitrary subset, and rewriting the list from a subset would
+    // delete everything that did not match.
+    const def = this.definitions.get(memoryId);
+    if (def?.ttlMs === undefined) return hits;
+    const cutoff = Date.now() - def.ttlMs;
+    return hits.filter((e) => e.timestamp >= cutoff);
   }
 
   // Drop entries older than ttlMs, then keep only the newest maxEntries. Pure.

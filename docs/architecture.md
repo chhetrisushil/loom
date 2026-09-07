@@ -320,7 +320,7 @@ The intelligence pipeline, all composable and all running *inside* durable flows
 - **`@loom/capability`** — flows exposed as intent-addressable capabilities.
 - **`@loom/intent`** — routes natural-language intent to a capability.
 - **`@loom/planner`** — turns a goal into an ordered capability plan.
-- **`@loom/memory`** — scoped, TTL/size-bounded agent memory, over a pluggable `MemoryStore` (in-memory by default; `SqliteMemoryStore`/`PostgresMemoryStore` make it survive a restart).
+- **`@loom/memory`** — scoped, TTL/size-bounded agent memory, over a pluggable `MemoryStore` (in-memory by default; `SqliteMemoryStore`/`PostgresMemoryStore` make it survive a restart and add relevance `search`, which `TieredMemory.recallRelevant` turns into a recorded decision).
 - **`@loom/orchestrator`** — composable `decideApproval` (risk gate) + `dispatchPlan` primitives ([ADR 0013](adr/0013-orchestrator-primitives.md)).
 
 ### 5.5 Compute & distribution (`@loom/dispatcher`, `@loom/worker-runtime*`, `@loom/plugin-worker-remote`, `@loom/plugin-worker-server`, `@loom/plugin-cloudrun`, `@loom/graph-executor`, `@loom/scheduler`)

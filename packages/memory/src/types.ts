@@ -28,10 +28,36 @@ export interface MemoryEntry {
 //    share a timestamp, and MemoryRuntime rewrites lists that are already
 //    ordered). An absent key reads as `[]`, never a throw.
 //  - `clear` is idempotent.
+export interface MemorySearchOptions {
+  /** Return at most N entries. Backends default to 20. */
+  limit?: number;
+}
+
 export interface MemoryStore {
   append(key: string, entry: MemoryEntry): Promise<void>;
   read(key: string): Promise<MemoryEntry[]>;
   clear(key: string): Promise<void>;
+  /**
+   * OPTIONAL — retrieve a key's entries by RELEVANCE to a text query, best first.
+   *
+   * This is the verb that separates "memory" from "the tail of a conversation".
+   * `read` answers *what happened last*; a `semantic`/`procedural` tier has no
+   * eviction at all, so answering *what is relevant to this question* over one
+   * cannot mean loading it.
+   *
+   * The contract, which the conformance kit pins:
+   *  - results are a SUBSET of `read(key)` — search never invents or leaks across keys;
+   *  - ANY query term may match (terms are OR-ed); an entry matching more of them, or
+   *    rarer ones, ranks higher. Requiring every term would make a longer question
+   *    return less;
+   *  - what gets indexed is `searchableText(entry)` and terms are `tokenize`'s — both
+   *    exported, because "what text is searched" is contract, not backend detail;
+   *  - a query with no terms, or one matching nothing, returns `[]`.
+   *
+   * RANKING itself is the backend's business — BM25, `ts_rank` and the reference
+   * scorer disagree, and a kit that pinned an order would be pinning an implementation.
+   */
+  search?(key: string, query: string, opts?: MemorySearchOptions): Promise<MemoryEntry[]>;
   /**
    * OPTIONAL — atomically replace a key's whole list (empty ⇒ the key is dropped).
    *

@@ -1464,8 +1464,12 @@ interface MemoryStore {
   read(key: string): Promise<MemoryEntry[]>                // in APPEND order; absent key => []
   clear(key: string): Promise<void>                        // idempotent
   replace?(key: string, entries: readonly MemoryEntry[]): Promise<void>  // OPTIONAL: atomic rewrite
+  search?(key: string, query: string, opts?: { limit?: number }): Promise<MemoryEntry[]>  // OPTIONAL: by relevance
   close?(): Promise<void>                                  // OPTIONAL: release resources
 }
+// what a backend indexes, and what a term is — exported because both are contract
+function searchableText(entry: MemoryEntry): string        // string/number leaves of `content`
+function tokenize(text: string): string[]                  // lowercase, non-alphanumeric split
 class InMemoryMemoryStore implements MemoryStore {}        // default; lost on restart
 // durable: SqliteMemoryStore (@loom/plugin-sqlite), PostgresMemoryStore (@loom/plugin-postgres)
 #+end_src
@@ -1480,7 +1484,8 @@ const DEFAULT_TIERS: Record<string, TierPolicy>;   // working / episodic / seman
 class TieredMemory {
   constructor(config: { tiers: Record<string, TierPolicy>; store?: MemoryStore; summarizer?: Summarizer; now?: () => number })
   remember(tier: string, scope: string, entry: { role?; content; timestamp? }): Promise<void>   // auto-summarizes bounded tiers
-  recall(tier: string, scope: string, opts?: { limit?: number; decide?: DecideFn; decisionKey?: string }): Promise<MemoryEntry[]>  // pass ctx.decide ⇒ replay-safe
+  recall(tier: string, scope: string, opts?: { limit?: number; decide?: DecideFn; decisionKey?: string }): Promise<MemoryEntry[]>  // the tail; pass ctx.decide ⇒ replay-safe
+  recallRelevant(tier: string, scope: string, query: string, opts: { decide: DecideFn; limit?: number; decisionKey?: string }): Promise<MemoryEntry[]>  // by relevance; `decide` REQUIRED, needs a store with search()
   promote(from: string, to: string, scope: string, opts?: { filter?: (e: MemoryEntry) => boolean; move?: boolean }): Promise<number>
   summarize(tier: string, scope: string, opts?: { keep?: number }): Promise<boolean>
   clear(tier: string, scope: string): Promise<void>

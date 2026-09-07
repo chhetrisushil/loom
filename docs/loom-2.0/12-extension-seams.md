@@ -36,7 +36,7 @@ that is what pins the contracts.
 | **Snapshots** | `SnapshotStore` (`@loom/snapshot-runtime`) | `save`, `loadLatest`, `loadAt`, `loadLatestBefore`, `close` | `deleteExecution` (K10.1) | `InMemoryAsyncSnapshotStore`, `SqliteSnapshotStore`, `PostgresSnapshotStore` | `runSnapshotStoreConformance` |
 | **Branches** | `BranchRegistry` (`@loom/event-runtime`) | `putRef`, `getRef`, `listRefs`, `moveTip`, `promote`, `deleteRef`, `recordLineage`, `getLineage`, `children`, `close` | — | `InMemoryBranchRegistry`, `SqliteBranchRegistry`, `PostgresBranchRegistry` | `runBranchRegistryConformance` |
 | **Timers** | `TimerStore` (`@loom/event-runtime`) | `putTimer`, `dueTimers`, `deleteTimer`, `close` | fencing (multi-node) | `InMemoryTimerStore`, `SqliteTimerStore`, `PostgresTimerStore` | — (future) |
-| **Memory** | `MemoryStore` (`@loom/memory`) | `append`, `read`, `clear` — a key names an ORDERED LIST, read back in APPEND order | `replace` (atomic whole-list rewrite, so eviction cannot lose a scope), `close` | `InMemoryMemoryStore`, `SqliteMemoryStore`, `PostgresMemoryStore` | `runMemoryStoreConformance` |
+| **Memory** | `MemoryStore` (`@loom/memory`) | `append`, `read`, `clear` — a key names an ORDERED LIST, read back in APPEND order | `replace` (atomic whole-list rewrite, so eviction cannot lose a scope), `search` (relevance retrieval over `searchableText`, OR-ed terms, ranking left to the backend), `close` | `InMemoryMemoryStore` (IDF scorer), `SqliteMemoryStore` (FTS5), `PostgresMemoryStore` (`tsvector`) | `runMemoryStoreConformance` |
 
 ## Compute seams
 
