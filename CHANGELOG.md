@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The `MemoryStore` SPI is versioned** (`MEMORY_STORE_SPI_VERSION`, 1.0.0), carried in the kernel
+  manifest and `checkCompatibility` beside the event-store / snapshot / branch / dispatcher SPIs.
+  A formality while every implementation lived in this workspace, where a breaking change breaks
+  the build that made it — and not one once the seam grew a backend OUTSIDE it, which nothing here
+  builds, tests, or can see.
+
+- **A `memory` seam for `loom plugin new`**, and an exports-map rule in `loom plugin check`: an
+  `exports` map declaring `require` with no `default`/`import` resolves for CJS and raises
+  `ERR_PACKAGE_PATH_NOT_EXPORTED` for ESM — a shape neither tsc nor a CJS test runner can see.
+
 - **Agent memory that survives a restart, and can answer a question**
   ([ADR 0090](docs/adr/0090-knowledge-is-retrieval-over-memory.md)). `@loom/memory` shipped tiers,
   TTL/size policy, summarization and `ctx.decide`-recorded recall over a pluggable `MemoryStore` —
@@ -87,6 +97,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the reason, and in the default; final metering still uses the provider's own numbers.
 
 ### Fixed
+
+- **Indexing recursed without a bound over ingested memory content.** `searchableText` walked
+  `entry.content` recursively with no depth cap and no cycle guard, and `content` is whatever was
+  ingested. A nesting depth of 5,000 is still JSON-serializable — so it satisfies the documented
+  contract AND every durable backend's own `JSON.stringify` — and it exhausted the call stack,
+  failing a write the store had promised to accept; a cyclic value never terminated, and the
+  in-memory store accepted one at `append` only to detonate later inside an unrelated `search`.
+  Now an iterative walk with an explicit stack and a depth cap, indexing over-deep content as far
+  as the cap rather than refusing it.
+
+- **`MemoryStore.search` trusted its `limit`.** Three backends, three behaviours: `.slice(0, -1)`
+  dropped the last hit, SQLite read `LIMIT -1` as NO LIMIT and returned the entire matching set,
+  Postgres threw. The unbounded one is the quiet failure, and `recallRelevant` records what it
+  retrieved through `ctx.decide` — so an unbounded search writes the whole corpus into a
+  `DECISION_RECORDED` payload, permanently. `clampSearchLimit` mirrors
+  `@loom/plugin-read-model`'s `MAX_QUERY_LIMIT`; four conformance cases pin it, and backends MUST
+  route their limit through it.
+
+- **`SupervisingDispatcher` never forgot a circuit.** `recordSuccess` reset one in place and
+  nothing deleted it, so a `policy.circuit.key` with tenant or execution cardinality — which the
+  hook invites, since it receives the whole `ExecutionPackage` — grew for the process lifetime.
+  Deleting on success is observationally identical at all three read sites.
+
+- **Two SPI-map claims that understated what ships.** The Timers row said its conformance kit was
+  `— (future)` while `runTimerStoreConformance` had shipped and SQLite was running it, and the
+  compute section called a dispatcher kit "a natural follow-up" with
+  `runExecutionDispatcherConformance` already exported. Four seams with kits and no row at all
+  (content store, carry state, read models, subject keys) are now listed, and a fitness function
+  keeps the column honest in both directions.
 
 - **Every package's `exports` map was unreachable from ESM.** Forty-nine declared
   `{ require, types }` and nothing else. Node matches export conditions in order and stops at the

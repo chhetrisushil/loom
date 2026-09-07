@@ -1468,10 +1468,16 @@ interface MemoryStore {
   close?(): Promise<void>                                  // OPTIONAL: release resources
 }
 // what a backend indexes, and what a term is — exported because both are contract
-function searchableText(entry: MemoryEntry): string        // string/number leaves of `content`
+function searchableText(entry: MemoryEntry): string        // string/number leaves of `content`; iterative, depth-capped
 function tokenize(text: string): string[]                  // lowercase, non-alphanumeric split
+// a backend's `search` MUST route its limit through this — raw, a negative limit means NO limit on some backends
+function clampSearchLimit(limit: number | undefined): number
+const DEFAULT_SEARCH_LIMIT = 20
+const MAX_SEARCH_LIMIT = 10_000                            // mirrors read-model's MAX_QUERY_LIMIT
+const MEMORY_STORE_SPI_VERSION: string                     // pin a third-party backend against this
 class InMemoryMemoryStore implements MemoryStore {}        // default; lost on restart
 // durable: SqliteMemoryStore (@loom/plugin-sqlite), PostgresMemoryStore (@loom/plugin-postgres)
+// third-party: loom-plugin-vector (cosine similarity over a pluggable Embedder)
 #+end_src
 
 *Tiered memory (2.0).* Named tiers over the scoped store, each with an eviction *or* summarization policy, plus promotion. Outcome-affecting recall can be *logged* (replay-safe).
