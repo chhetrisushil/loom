@@ -12,7 +12,8 @@
     },
     "./memory": {
       "types": "./memory.d.ts",
-      "require": "./memory.js"
+      "require": "./memory.js",
+      "default": "./memory.js"
     }
   },
   "scripts": {
