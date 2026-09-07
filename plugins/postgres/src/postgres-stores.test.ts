@@ -266,14 +266,20 @@ suite("@loom/plugin-postgres", () => {
       const nodeB = new PostgresEventStore(PG_URL as string);
       try {
         const received: EventEnvelope[] = [];
+        let resolveGot: () => void = () => {};
         const got = new Promise<void>((resolve) => {
-          void nodeB.subscribe("shared", (e) => {
-            received.push(e);
-            resolve();
-          });
+          resolveGot = resolve;
         });
-        // Give node B's LISTEN a moment to register before node A appends.
-        await new Promise((r) => setTimeout(r, 100));
+        // AWAIT the subscription. `subscribe` resolves only after its LISTEN is
+        // registered, precisely so "the caller cannot append-then-miss its own
+        // subscription's first cross-node event" — this test used to fire it and
+        // sleep 100ms instead, which is not a slow-machine problem but a lost one:
+        // NOTIFY is not durable, so a listener that registers after the publish
+        // never receives it and the wait below can only ever time out.
+        await nodeB.subscribe("shared", (e) => {
+          received.push(e);
+          resolveGot();
+        });
         await nodeA.append(makeEnvelope("shared", 0, { from: "A" }));
 
         await Promise.race([
