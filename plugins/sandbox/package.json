@@ -1,13 +1,14 @@
 {
   "name": "@loom/plugin-sandbox",
   "version": "0.0.1",
-  "description": "Hardened QuickJS/WASM sandbox for LLM-authored reshaping code \u2014 content-addressed scripts, resource limits, no ambient I/O, shape-hash-validated output (ADR 0064)",
+  "description": "Hardened QuickJS/WASM sandbox for LLM-authored reshaping code — content-addressed scripts, resource limits, no ambient I/O, shape-hash-validated output (ADR 0064)",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "default": "./dist/index.js"
     }
   },
   "scripts": {

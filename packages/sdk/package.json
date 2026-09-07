@@ -6,20 +6,24 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "default": "./dist/index.js"
     },
     "./sqlite": {
+      "types": "./dist/sqlite.d.ts",
       "require": "./dist/sqlite.js",
-      "types": "./dist/sqlite.d.ts"
+      "default": "./dist/sqlite.js"
     },
     "./postgres": {
+      "types": "./dist/postgres.d.ts",
       "require": "./dist/postgres.js",
-      "types": "./dist/postgres.d.ts"
+      "default": "./dist/postgres.js"
     },
     "./sandbox": {
+      "types": "./dist/sandbox.d.ts",
       "require": "./dist/sandbox.js",
-      "types": "./dist/sandbox.d.ts"
+      "default": "./dist/sandbox.js"
     }
   },
   "scripts": {
