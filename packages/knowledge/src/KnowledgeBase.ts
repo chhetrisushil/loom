@@ -39,6 +39,19 @@ export interface SyncResult {
   unchanged: string[];
   /** Documents removed because the source no longer lists them. */
   removed: string[];
+  /**
+   * Documents left alone because another writer owns them (see {@link DocRecord.source}).
+   *
+   * Reported rather than silent: "your sync deleted nothing" and "your sync protected four
+   * documents it does not own" describe very different corpora, and only one of them is
+   * something an operator should stop noticing in a nightly job's output.
+   */
+  retained: string[];
+}
+
+/** Names the writer a call speaks for. Omitted means the corpus's default writer. */
+export interface SourceOptions {
+  source?: string;
 }
 
 /**
@@ -236,11 +249,19 @@ export class KnowledgeBase {
    * them leaves the document with NO row, which is the same orphaning by a shorter path —
    * which is why rows are appended and superseded ones are pruned only afterwards.
    */
-  async putDoc(doc: KnowledgeDoc): Promise<Passage[]> {
-    return this.write(doc, (await this.manifest()).get(doc.id));
+  async putDoc(doc: KnowledgeDoc, opts: SourceOptions = {}): Promise<Passage[]> {
+    const slot = (await this.manifest()).get(doc.id);
+    // Only an EXISTING document has an owner. An absent one is unclaimed, so any writer
+    // may create it — the check is about not taking someone else's, not about permission.
+    if (slot !== undefined) assertOwned(doc.id, slot.record.source, opts.source);
+    return this.write(doc, slot, opts.source);
   }
 
-  private async write(doc: KnowledgeDoc, slot: ManifestSlot | undefined): Promise<Passage[]> {
+  private async write(
+    doc: KnowledgeDoc,
+    slot: ManifestSlot | undefined,
+    source: string | undefined
+  ): Promise<Passage[]> {
     const passages = this.toPassages(doc);
     const pending: DocRecord = {
       docId: doc.id,
@@ -248,6 +269,7 @@ export class KnowledgeBase {
       fingerprint: this.fingerprint(doc),
       committed: false,
       revision: (slot?.record.revision ?? -1) + 1,
+      ...(source !== undefined && { source }),
     };
 
     await this.appendRecord(pending);
@@ -282,9 +304,9 @@ export class KnowledgeBase {
    * `docs` is the COMPLETE set. Passing a subset removes everything not in it, which is
    * the correct reading of "reconcile" and the wrong thing to do with a page of results.
    */
-  async sync(docs: readonly KnowledgeDoc[]): Promise<SyncResult> {
+  async sync(docs: readonly KnowledgeDoc[], opts: SourceOptions = {}): Promise<SyncResult> {
     const manifest = await this.manifest();
-    const plan = this.classify(docs, manifest);
+    const plan = this.classify(docs, manifest, opts.source);
     // Indexed once: `written` is O(docs) and a scan per entry would make a sync of a
     // 10,000-document corpus quadratic in the size of the source, not of the change.
     const byId = new Map(docs.map((doc) => [doc.id, doc]));
@@ -293,7 +315,7 @@ export class KnowledgeBase {
       // An UNCOMMITTED row is rewritten even when the fingerprint matches. That case is
       // exactly the crash this design exists for, and treating it as unchanged is how a
       // document disappears from a corpus that still lists it.
-      await this.write(byId.get(docId) as KnowledgeDoc, manifest.get(docId));
+      await this.write(byId.get(docId) as KnowledgeDoc, manifest.get(docId), opts.source);
     }
     for (const docId of plan.removed) {
       const slot = manifest.get(docId) as ManifestSlot;
@@ -312,13 +334,17 @@ export class KnowledgeBase {
    * separate code path would be a preview of a different operation, so both go through the
    * same classification and only `sync` writes.
    */
-  async planSync(docs: readonly KnowledgeDoc[]): Promise<SyncResult> {
-    return this.classify(docs, await this.manifest());
+  async planSync(docs: readonly KnowledgeDoc[], opts: SourceOptions = {}): Promise<SyncResult> {
+    return this.classify(docs, await this.manifest(), opts.source);
   }
 
   /** Pure: which documents are new/changed, unchanged, or no longer in the source. */
-  private classify(docs: readonly KnowledgeDoc[], manifest: Map<string, ManifestSlot>): SyncResult {
-    const result: SyncResult = { written: [], unchanged: [], removed: [] };
+  private classify(
+    docs: readonly KnowledgeDoc[],
+    manifest: Map<string, ManifestSlot>,
+    source: string | undefined
+  ): SyncResult {
+    const result: SyncResult = { written: [], unchanged: [], removed: [], retained: [] };
     const seen = new Set<string>();
     for (const doc of docs) {
       if (seen.has(doc.id)) {
@@ -328,14 +354,19 @@ export class KnowledgeBase {
       }
       seen.add(doc.id);
       const slot = manifest.get(doc.id);
+      if (slot !== undefined) assertOwned(doc.id, slot.record.source, source);
       if (slot?.record.committed === true && slot.record.fingerprint === this.fingerprint(doc)) {
         result.unchanged.push(doc.id);
       } else {
         result.written.push(doc.id);
       }
     }
-    for (const docId of manifest.keys()) {
-      if (!seen.has(docId)) result.removed.push(docId);
+    for (const [docId, slot] of manifest) {
+      if (seen.has(docId)) continue;
+      // The whole point: a reconcile deletes only what it OWNS. Another writer's documents
+      // are not missing from this source — they were never this source's to list.
+      if (slot.record.source !== source) result.retained.push(docId);
+      else result.removed.push(docId);
     }
     return result;
   }
@@ -390,6 +421,23 @@ export function openKnowledgeBase(
     ...opts,
     memory: new TieredMemory({ tiers: { [tier]: {} }, store }),
   });
+}
+
+/**
+ * Refuse a write to a document another writer owns.
+ *
+ * Loud rather than re-stamping, because silently taking ownership makes the two writers
+ * fight: each `sync` would claim the document and the other's next `sync` would delete it,
+ * so the corpus would flap between two revisions forever while every individual run looked
+ * correct. Two writers claiming one document is the ambiguity this field exists to remove.
+ */
+function assertOwned(docId: string, owner: string | undefined, writer: string | undefined): void {
+  if (owner === writer) return;
+  const name = (s: string | undefined): string =>
+    s === undefined ? "the default writer" : `source "${s}"`;
+  throw new Error(
+    `KnowledgeBase: document "${docId}" is managed by ${name(owner)}, and this call speaks for ${name(writer)}. One document, one writer — otherwise the two delete each other's revisions on alternate syncs. Use a different document id, or the owning source.`
+  );
 }
 
 /** `docId#index` split at the LAST separator, so a document id may itself contain one. */

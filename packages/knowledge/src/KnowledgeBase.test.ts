@@ -182,13 +182,28 @@ describe("KnowledgeBase.sync — reconciling against a source", () => {
   it("writes new documents, leaves identical ones alone, removes dropped ones", async () => {
     const { kb } = corpus();
     const first = await kb.sync([RUNBOOK, POOL]);
-    expect(first).toEqual({ written: ["RB-101", "RB-204"], unchanged: [], removed: [] });
+    expect(first).toEqual({
+      written: ["RB-101", "RB-204"],
+      unchanged: [],
+      removed: [],
+      retained: [],
+    });
 
     const second = await kb.sync([RUNBOOK, { ...POOL, text: "Recycle the pool first." }]);
-    expect(second).toEqual({ written: ["RB-204"], unchanged: ["RB-101"], removed: [] });
+    expect(second).toEqual({
+      written: ["RB-204"],
+      unchanged: ["RB-101"],
+      removed: [],
+      retained: [],
+    });
 
     const third = await kb.sync([RUNBOOK]);
-    expect(third).toEqual({ written: [], unchanged: ["RB-101"], removed: ["RB-204"] });
+    expect(third).toEqual({
+      written: [],
+      unchanged: ["RB-101"],
+      removed: ["RB-204"],
+      retained: [],
+    });
     expect(await kb.retrieve("recycle pool", { decide })).toEqual([]);
   });
 

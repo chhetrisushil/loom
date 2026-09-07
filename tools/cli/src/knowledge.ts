@@ -139,11 +139,15 @@ function openCorpus(app: LoomApp, scope: string): KnowledgeBase {
 function summarize(plan: SyncResult): string {
   const line = (label: string, ids: string[]): string =>
     ids.length === 0 ? `  ${label}: none` : `  ${label} (${ids.length}): ${ids.join(", ")}`;
-  return [
+  const lines = [
     line("write", plan.written),
     line("unchanged", plan.unchanged),
     line("REMOVE", plan.removed),
-  ].join("\n");
+  ];
+  // Only when there is something to say: a corpus with one writer would otherwise carry a
+  // permanent "retained: none" that trains an operator to stop reading the block.
+  if (plan.retained.length > 0) lines.push(line("kept (another writer's)", plan.retained));
+  return lines.join("\n");
 }
 
 export async function cmdKnowledgeSync(opts: {
@@ -153,6 +157,12 @@ export async function cmdKnowledgeSync(opts: {
   extensions?: string[];
   maxBytes?: number;
   apply?: boolean;
+  /**
+   * The writer this sync speaks for. A corpus written by more than one thing — an authored
+   * directory and an agent's own learnings — needs it, because a reconcile deletes what it
+   * owns and this command owns the directory.
+   */
+  source?: string;
 }): Promise<{ text: string; result: SyncResult }> {
   const app = loadApp(opts.config);
   try {
@@ -161,10 +171,14 @@ export async function cmdKnowledgeSync(opts: {
       ...(opts.extensions !== undefined && { extensions: opts.extensions }),
       ...(opts.maxBytes !== undefined && { maxBytes: opts.maxBytes }),
     });
-    const plan = opts.apply === true ? await kb.sync(docs) : await kb.planSync(docs);
+    const sourceOpts = opts.source !== undefined ? { source: opts.source } : {};
+    const plan =
+      opts.apply === true ? await kb.sync(docs, sourceOpts) : await kb.planSync(docs, sourceOpts);
 
     const lines = [
-      `knowledge sync: ${docs.length} document(s) from ${path.resolve(opts.dir)} → "${opts.scope}"`,
+      `knowledge sync: ${docs.length} document(s) from ${path.resolve(opts.dir)} → "${opts.scope}"${
+        opts.source !== undefined ? ` as "${opts.source}"` : ""
+      }`,
       summarize(plan),
     ];
     if (skipped.length > 0) {
@@ -228,7 +242,8 @@ export async function cmdKnowledgeList(opts: {
       // An uncommitted row means a crash between the manifest write and the passages;
       // the next sync rewrites it. Showing it beats a corpus that looks complete.
       const state = r.committed ? "" : "  [uncommitted — will be rewritten on next sync]";
-      lines.push(`  ${r.docId}  ${r.chunkCount} passage(s)  ${r.fingerprint}${state}`);
+      const owner = r.source !== undefined ? `  ${r.source}` : "";
+      lines.push(`  ${r.docId}  ${r.chunkCount} passage(s)  ${r.fingerprint}${owner}${state}`);
     }
     return { text: lines.join("\n"), docs: records.length };
   } finally {

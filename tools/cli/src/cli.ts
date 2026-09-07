@@ -95,10 +95,11 @@ export const USAGE = `loom — project-local commands for a Loom app
   loom learn report --db <path> [executionId]     trajectories, per-arm rewards, learning coverage
   loom learn eval --db <path> --policy <module> [--min-steps N] [executionId]
                                                   shadow-evaluate a candidate policy on real logs
-  loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--apply]
+  loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--source <s>] [--apply]
                                                   reconcile a directory into a corpus
                                                   (dry run by default; --apply also REMOVES
-                                                   documents the directory no longer has)
+                                                   documents the directory no longer has —
+                                                   but never another writer's, see --source)
   loom knowledge list --config <mod> --scope <s>  what the corpus holds
   loom knowledge search --config <mod> --scope <s> "<query>" [--limit N]
                                                   ask the corpus (operator query — not recorded)
@@ -253,6 +254,7 @@ async function main(argv: string[]): Promise<number> {
           ...(flags["max-bytes"] !== undefined && {
             maxBytes: Number.parseInt(flags["max-bytes"], 10),
           }),
+          ...(flags.source !== undefined && flags.source !== "true" && { source: flags.source }),
           apply: flags.apply === "true",
         });
         console.log(text);

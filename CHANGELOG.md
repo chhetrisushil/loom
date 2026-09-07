@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A corpus can have more than one writer** — `DocRecord.source`, `sync(docs, { source })`,
+  `putDoc(doc, { source })`, and `SyncResult.retained`. `sync` is a destructive reconcile over
+  everything the manifest holds, so an agent writing down what it learned from feedback into the
+  same scope as an authored corpus would lose all of it to the next nightly wiki job: those
+  documents are not in the set the wiki produced, and never will be. Stamped with a writer, a
+  reconcile only ever touches its own documents; the rest come back as `retained`, so the
+  protection is visible rather than silent. A write to a document ANOTHER writer owns is refused
+  loudly — silently re-stamping would make the two delete each other's revisions on alternate
+  syncs, with every individual run looking correct. An absent document has no owner, so any
+  writer may create it, and an unstamped corpus behaves exactly as before (the default writer is
+  a source of its own, never a wildcard). `loom knowledge sync --source <s>` carries it.
+
 - **Blueprint conformance** ([ADR 0088](docs/adr/0088-blueprint-conformance.md)). A blueprint a
   *person* writes is checked by the type system; one a *model* composes at run time is data, and
   the only thing between an off-catalogue component and a viewer is whatever validates it on the

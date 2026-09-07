@@ -72,6 +72,18 @@ export interface DocRecord {
   fingerprint: string;
   committed: boolean;
   /**
+   * WHO manages this document — the writer that may revise or delete it. `undefined` is a
+   * source of its own (the corpus's default writer), not a wildcard.
+   *
+   * It exists because `sync` is a destructive reconcile over everything the manifest holds,
+   * and a corpus is not always written by one thing. An agent that writes down what it
+   * learned from feedback puts documents in the same scope as an authored corpus — and the
+   * nightly sync of a wiki export would then delete every one of them, because they are not
+   * in the set the wiki produced. Stamping each document with its writer makes that
+   * impossible instead of documented: a `sync` only ever reconciles its own documents.
+   */
+  source?: string;
+  /**
    * Generation of this manifest ROW, not a version of the document.
    *
    * Manifest rows are only ever APPENDED — `docId#0`, `docId#1`, … — and the highest one

@@ -212,6 +212,35 @@ The second consumers (ADR 0083) are the CLI itself and `runbook-recall`, which b
 opens its corpus from it, and registers the flow — the ordering `app.knowledge` imposes, documented
 rather than hidden.
 
+## Follow-on — two writers, one corpus (2026-09-07)
+
+`@loom/knowledge` was designed around a corpus whose documents are authored elsewhere and
+reconciled from a source of truth. Asked whether knowledge that comes from a FEEDBACK LOOP fits
+the same structure, the answer is mostly yes — a learning is a document whose author is the
+agent, `putDoc` writes it, taint keeps it out of instruction positions, and `ctx.decide` makes a
+replay reconstruct what the agent knew *then*. What did NOT fit is `sync`: a destructive
+reconcile over everything the manifest holds would delete every learned document on the next run
+of a nightly wiki job, because they are not in the set the wiki produced and never will be.
+
+`DocRecord.source` names the writer that may revise or delete a document, and a reconcile only
+ever touches its own. Three details are the decision:
+
+- **`undefined` is a source, not a wildcard.** An unstamped corpus behaves exactly as before, and
+  a named source cannot quietly adopt documents nobody claimed.
+- **An absent document has no owner**, so any writer may create it. The rule is about not taking
+  someone else's, not about permission.
+- **A write to a document another writer owns is REFUSED**, not re-stamped. Re-stamping makes the
+  two writers fight — each `sync` claims the document and the other's next `sync` deletes it — so
+  the corpus flaps between revisions forever while every individual run looks correct.
+
+`SyncResult.retained` reports what a reconcile protected. "Deleted nothing" and "protected four
+documents it does not own" describe very different corpora, and only one of them is something an
+operator should stop noticing.
+
+What this deliberately does NOT do is judge a learning. Whether one was any good is
+`@loom/learning`'s question — trajectories, propensity, off-policy evaluation — and giving a
+corpus a notion of reward would duplicate that substrate badly.
+
 ## Evidence
 
 - `packages/knowledge/src/KnowledgeBase.test.ts` — re-ingest does not duplicate; a revision's old

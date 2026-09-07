@@ -114,7 +114,12 @@ describe("loom knowledge sync", () => {
     expect(first.result.written).toEqual(["a.md", "b.md"]);
 
     const second = await cmdKnowledgeSync({ config, scope: "runbooks", dir: root, apply: true });
-    expect(second.result).toEqual({ written: [], unchanged: ["a.md", "b.md"], removed: [] });
+    expect(second.result).toEqual({
+      written: [],
+      unchanged: ["a.md", "b.md"],
+      removed: [],
+      retained: [],
+    });
   });
 
   it("names the documents a run would REMOVE, because the reconcile is destructive", async () => {
@@ -127,6 +132,30 @@ describe("loom knowledge sync", () => {
     expect(result.removed).toEqual(["b.md"]);
     expect(text).toContain("REMOVE (1): b.md");
     // Still a dry run: the document is only gone once --apply says so.
+    expect((await cmdKnowledgeList({ config, scope: "runbooks" })).docs).toBe(2);
+  });
+
+  it("reconciles only what the named source owns", async () => {
+    // The reason `--source` exists: a corpus written by more than one thing. This command
+    // owns a directory; an agent writing down what it learned owns its own documents, and a
+    // nightly directory sync must not delete them.
+    const config = configModule(true);
+    const root = corpusDir({ "a.md": "# A\n\nalpha" });
+    await cmdKnowledgeSync({ config, scope: "runbooks", dir: root, source: "docs", apply: true });
+
+    const kb = require(config).knowledge("runbooks");
+    await kb.putDoc({ id: "learned:1", text: "recycling cleared the queue" }, { source: "agent" });
+
+    const { text, result } = await cmdKnowledgeSync({
+      config,
+      scope: "runbooks",
+      dir: root,
+      source: "docs",
+      apply: true,
+    });
+    expect(result.removed).toEqual([]);
+    expect(result.retained).toEqual(["learned:1"]);
+    expect(text).toContain("kept (another writer's) (1): learned:1");
     expect((await cmdKnowledgeList({ config, scope: "runbooks" })).docs).toBe(2);
   });
 
