@@ -519,11 +519,13 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Tiered Memory",
     package: "@loom/memory",
     level: "L3",
-    summary: "M5 working/episodic/semantic/procedural tiers with deterministic recall.",
+    summary:
+      "M5 working/episodic/semantic/procedural tiers with deterministic recall, over a MemoryStore SPI with durable SQLite/Postgres backends and optional relevance search (ADR 0090).",
     evidence: {
-      conformanceTest: "packages/memory/src/TieredMemory.test.ts",
-      usedIn: "examples/db-command-center",
+      conformanceTest: "packages/memory/src/conformance.test.ts",
+      usedIn: "loom-examples: runbook-recall, agent-network",
     },
+    note: "ADR 0090 — `search` is proven portable by FOUR independent implementations of one kit (in-memory IDF, SQLite FTS5, Postgres tsvector, and the 3P loom-plugin-vector's cosine similarity), which is what makes the seam a contract rather than a description of an inverted index. Still L3, not L5: the SPI has no versioned `*_VERSION` constant, so nothing pins it across a breaking change.",
   },
   {
     id: "placement-adapters",
