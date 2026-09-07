@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agent memory that survives a restart, and can answer a question**
+  ([ADR 0090](docs/adr/0090-knowledge-is-retrieval-over-memory.md)). `@loom/memory` shipped tiers,
+  TTL/size policy, summarization and `ctx.decide`-recorded recall over a pluggable `MemoryStore` —
+  and exactly one implementation of it, `InMemoryMemoryStore`. Every store plugin carried an event
+  store, a snapshot store, a timer store, a durable-state store and a read model, and no memory
+  store, so what shipped was a prompt-context manager: an agent that restarted remembered nothing.
+
+  `SqliteMemoryStore` and `PostgresMemoryStore` live in the plugins that already own those
+  databases — point them at the event log's file/URL and one backup captures both. A key names an
+  ORDERED LIST read back in APPEND order, never timestamp order (entries routinely share a
+  timestamp, and ordering by it reshuffles a conversation). `MemoryStore.replace` (OPTIONAL) is a
+  durability fix rather than an optimisation: `MemoryRuntime` rewrites a scope's whole list on
+  every eviction, and as clear-then-re-append a crash between the two makes routine eviction the
+  thing that loses the scope.
+
+- **`MemoryStore.search` — recall by relevance, not just by recency.** `read` answers *what
+  happened last*; the `semantic`/`procedural` tiers never evict, so their "newest N" means nothing
+  and the only way to use one was to load it whole. `search` ships with three first-party
+  implementations (in-memory IDF, SQLite FTS5, Postgres `tsvector`) plus a third-party cosine
+  backend, all passing one `runMemoryStoreConformance` — which is what makes the seam a contract
+  rather than a description of an inverted index. `searchableText` and `tokenize` are exported
+  because *what gets indexed* and *what counts as a term* are the contract; ranking is not, and the
+  kit deliberately does not pin an order.
+
+  `TieredMemory.recallRelevant(tier, scope, query, { decide })` takes `decide` as a **required**
+  option where `recall`'s is optional: relevance ranks over a corpus that grows, so the set it
+  returns differs between a run and its replay, and a type requirement beats a documented one.
+  `MemoryRuntime.search` refuses a store without `search` rather than degrading to `read` — a
+  silent fallback would look like retrieval and be undetectable downstream.
+
+- **A `memory` seam for `loom plugin new`.** Emits only the three required verbs and explains
+  `replace`/`search`/`close` in prose, because for an optional method presence IS the feature flag:
+  the runtime tests for it and falls back when absent, so a generated stub that throws advertises a
+  capability the store does not have. `loom plugin check` gains an exports-map rule — `require`
+  with no `default`/`import` resolves for CJS and raises `ERR_PACKAGE_PATH_NOT_EXPORTED` for ESM.
+
 - **The agent loop is a runner body, and the seams it can now reach are wired**
   ([ADR 0087](docs/adr/0087-durable-agent-loop.md)). `agentStep$` wrapped the whole ReAct loop in
   one `step$({ handler })`, and a handler receives `StepHandlerContext` — `emit`, and nothing else.
@@ -51,6 +87,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the reason, and in the default; final metering still uses the provider's own numbers.
 
 ### Fixed
+
+- **Every package's `exports` map was unreachable from ESM.** Forty-nine declared
+  `{ require, types }` and nothing else. Node matches export conditions in order and stops at the
+  first hit, and an `import` offers `["node", "import"]` — never `"require"` — so it matched
+  nothing. Invisible from inside: loom's own test config forces `conditions: ["require",
+  "default"]`, TypeScript reads `types` directly, and neither turbo nor tsc resolves at runtime.
+  Now `types` / `require` / `default`, with `default` last because it matches everything and
+  anything after it is dead. A fitness function in `@loom/spec` holds all three properties, and the
+  scaffold no longer mints the defect into new plugins.
+
+- **Three ways a check could silently not run.** The Postgres suites (94 tests) had never executed
+  in CI — gated on `LOOM_TEST_POSTGRES_URL`, skipping cleanly, and a skipped suite renders exactly
+  like a passing one; CI now provisions a service container, and the requirement lives in the repo
+  as a test that fails when `CI` is set and the URL is not. `LOOM_TEST_POSTGRES_URL` and
+  `LOOM_TEST_SRC` were absent from turbo's `test` cache key, so a cached result from a run WITHOUT
+  a database was replayed verbatim for a run that had one. And seven packages ran vitest with no
+  config at all — there is no root config to inherit — so they silently opted out of the shared
+  resolution, which is how a value import from `@loom/memory` first broke, and made
+  `LOOM_TEST_SRC=1` inert in exactly those packages.
+
+- **`ctx.decide` could not be passed as a value.** Every decider-taking helper takes it as an
+  option and the documented spelling is `decide: ctx.decide`, which lost its receiver and died
+  inside the context with a `TypeError` naming neither `decide` nor binding. `agentLoop$` carried a
+  hand-written wrapper at two call sites, with a comment instructing the reader to do the same — so
+  the workaround was known and the fix was not. The context now binds it.
+
+- **A tainted value's `origin` was indexed as searchable text.** An ingested corpus taints every
+  entry ([ADR 0085](docs/adr/0085-untrusted-content-integrity-axis.md)), so the label rode into
+  `searchableText` as a string leaf and one term matched the whole corpus — on an FTS backend that
+  widens the match *set*, not just the ranking. Provenance is metadata by exactly the rule that
+  already excludes `role` and the timestamp.
+
+- **Two tests that asserted the clock instead of the property.** A cross-node LISTEN/NOTIFY test
+  fired `subscribe` and slept 100ms; `NOTIFY` is not durable, so a listener registering after the
+  publish never receives it and the wait could only time out — it now awaits the subscription,
+  which the store already resolves after its LISTEN registers. A content-batching test measured
+  elapsed time against a 20 x 5ms serialized floor with a 2x margin; it now asserts peak in-flight
+  calls, which a serialized fallback can only ever drive to 1.
 
 - **The prompt-boundary guard runs where prompts are actually built.**
   [ADR 0085](docs/adr/0085-untrusted-content-integrity-axis.md)'s protection did not cover the
