@@ -18,6 +18,52 @@ describe("checkPlugin", () => {
     expect(levels(findings, "warn")).toEqual([]);
   });
 
+  it("warns when the exports map cannot be entered from ESM", () => {
+    // The shape 49 loom packages carried and the scaffold used to emit: matched in
+    // order, `require` first, nothing an `import` offers — so it resolves for CJS and
+    // raises ERR_PACKAGE_PATH_NOT_EXPORTED for ESM. tsc and a CJS runner both miss it.
+    const findings = checkPlugin(
+      {
+        name: "loom-plugin-redis",
+        keywords: ["loom", "loom-plugin"],
+        exports: { ".": { require: "./dist/index.js", types: "./dist/index.d.ts" } },
+      },
+      ['import { runMemoryStoreConformance } from "@loom/conformance";']
+    );
+    expect(levels(findings, "warn")[0]).toMatch(/ERR_PACKAGE_PATH_NOT_EXPORTED/);
+  });
+
+  it("warns when `default` shadows a later condition", () => {
+    const findings = checkPlugin(
+      {
+        name: "loom-plugin-redis",
+        keywords: ["loom", "loom-plugin"],
+        exports: { ".": { default: "./dist/index.js", require: "./dist/index.js" } },
+      },
+      ['import { runMemoryStoreConformance } from "@loom/conformance";']
+    );
+    expect(levels(findings, "warn")[0]).toMatch(/anything after it is dead/);
+  });
+
+  it("passes an exports map that resolves both ways", () => {
+    const findings = checkPlugin(
+      {
+        name: "loom-plugin-redis",
+        keywords: ["loom", "loom-plugin"],
+        exports: {
+          ".": {
+            types: "./dist/index.d.ts",
+            require: "./dist/index.js",
+            default: "./dist/index.js",
+          },
+        },
+      },
+      ['import { runMemoryStoreConformance } from "@loom/conformance";']
+    );
+    expect(levels(findings, "warn")).toEqual([]);
+    expect(levels(findings, "ok")).toContain("exports resolve for both require() and import");
+  });
+
   it("errors when the plugin depends on the replay fold engine", () => {
     const findings = checkPlugin(
       { name: "@loom/plugin-x", dependencies: { "@loom/replay-vm": "workspace:*" } },
