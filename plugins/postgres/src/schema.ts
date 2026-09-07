@@ -166,6 +166,17 @@ const DDL = `
       sequence BIGINT NOT NULL,
       PRIMARY KEY (model_id, execution_id)
     );
+
+    -- @loom/memory: durable agent memory. A key (\`memoryId::scope\`) names an
+    -- ORDERED LIST of entries, so the table carries its own insertion key --
+    -- entries routinely share a timestamp and ordering by it would reshuffle a
+    -- conversation. TTL/size policy lives above the SPI, in MemoryRuntime.
+    CREATE TABLE IF NOT EXISTS memory_entries (
+      seq BIGSERIAL PRIMARY KEY,
+      key TEXT NOT NULL,
+      entry JSONB NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_entries_key ON memory_entries (key, seq ASC);
   `;
 
 // The channel every EventStore instance LISTENs on for cross-node subscribe.

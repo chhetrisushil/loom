@@ -1,7 +1,8 @@
-import { runEventStoreConformance } from "@loom/conformance";
+import { runEventStoreConformance, runMemoryStoreConformance } from "@loom/conformance";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe } from "vitest";
 import { PostgresEventStore } from "./PostgresEventStore";
+import { PostgresMemoryStore } from "./PostgresMemoryStore";
 import { migrate } from "./schema";
 
 // The portable EventStore contract (ADR 0033) against the Postgres backend — now including
@@ -15,7 +16,7 @@ import { migrate } from "./schema";
 // suites vitest runs concurrently against the same database.
 const PG_URL = process.env.LOOM_TEST_POSTGRES_URL;
 
-const SCHEMA_COUNT = 32; // comfortably above the number of EventStore conformance cases
+const SCHEMA_COUNT = 32; // comfortably above the case count of the largest kit run here
 const schemaName = (i: number): string => `loom_conf_${process.pid}_${i}`;
 
 if (PG_URL === undefined) {
@@ -23,6 +24,11 @@ if (PG_URL === undefined) {
 } else {
   const pools: Pool[] = [];
   let next = 0;
+  // Its own cursor, not a shared one: the MemoryStore kit writes only to `memory_entries`,
+  // so sharing a schema with an EventStore case is harmless, while sharing one with ANOTHER
+  // memory case (which a shared cursor would cause once the two kits' case counts pass
+  // SCHEMA_COUNT) would let fixed keys like "k" leak between cases.
+  let nextMemory = 0;
 
   beforeAll(async () => {
     // Create and migrate every schema up front, so `factory()` can stay synchronous (the
@@ -63,4 +69,9 @@ if (PG_URL === undefined) {
     const pool = pools[next++ % pools.length] as Pool;
     return new PostgresEventStore(pool);
   }, "PostgresEventStore");
+
+  runMemoryStoreConformance(() => {
+    const pool = pools[nextMemory++ % pools.length] as Pool;
+    return new PostgresMemoryStore(pool);
+  }, "PostgresMemoryStore");
 }

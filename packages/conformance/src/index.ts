@@ -1153,6 +1153,177 @@ export function runReadModelStoreConformance(
   });
 }
 
+export interface MemoryEntryLike {
+  role?: string;
+  content: unknown;
+  timestamp: number;
+}
+
+export interface MemoryStoreLike {
+  append(key: string, entry: MemoryEntryLike): Promise<void>;
+  read(key: string): Promise<MemoryEntryLike[]>;
+  clear(key: string): Promise<void>;
+  /** OPTIONAL: atomic whole-list rewrite (empty ⇒ the key is dropped). */
+  replace?(key: string, entries: readonly MemoryEntryLike[]): Promise<void>;
+  /** OPTIONAL: release backend resources. */
+  close?(): Promise<void>;
+}
+
+/**
+ * Assert a MemoryStore backend (`@loom/memory`) upholds the SPI: a key names an
+ * ORDERED LIST of entries, appended to, read whole, and cleared.
+ *
+ * Three of these cases exist because they are exactly what a SQL backend gets wrong
+ * on the first attempt, and what an in-memory reference cannot fail:
+ *
+ *  - order is APPEND order, not timestamp order. Entries routinely share a timestamp
+ *    (a turn written in one tick), so `ORDER BY timestamp` silently reshuffles a
+ *    conversation. A backend needs its own monotonic insertion key.
+ *  - the list is a LIST, not a set: two identical entries are two entries.
+ *  - an ABSENT `role` must read back absent, not `null`. A nullable column round-trips
+ *    `{ content }` into `{ role: null, content }`, which is a different prompt.
+ *
+ * `replace` is optional and skipped when a backend omits it; where it exists it must
+ * be equivalent to clear-then-append-all, including on an absent key.
+ */
+export function runMemoryStoreConformance(
+  factory: () => MemoryStoreLike,
+  label = "MemoryStore"
+): void {
+  const entry = (content: unknown, timestamp = 1_000): MemoryEntryLike => ({ content, timestamp });
+
+  describe(`${label} conformance (MemoryStore SPI)`, () => {
+    it("append + read returns a key's entries in append order", async () => {
+      const store = factory();
+      await store.append("k", entry("a"));
+      await store.append("k", entry("b"));
+      await store.append("k", entry("c"));
+      expect((await store.read("k")).map((e) => e.content)).toEqual(["a", "b", "c"]);
+      await store.close?.();
+    });
+
+    it("read returns [] (never throws) for an absent key", async () => {
+      const store = factory();
+      expect(await store.read("absent")).toEqual([]);
+      await store.close?.();
+    });
+
+    it("preserves append order for entries sharing a timestamp", async () => {
+      const store = factory();
+      for (const c of ["first", "second", "third"]) await store.append("k", entry(c, 7));
+      expect((await store.read("k")).map((e) => e.content)).toEqual(["first", "second", "third"]);
+      await store.close?.();
+    });
+
+    it("does not order by timestamp: an out-of-order timestamp keeps its append position", async () => {
+      const store = factory();
+      await store.append("k", entry("late-clock", 9_000));
+      await store.append("k", entry("early-clock", 1));
+      expect((await store.read("k")).map((e) => e.content)).toEqual(["late-clock", "early-clock"]);
+      await store.close?.();
+    });
+
+    it("is a list, not a set: identical entries are kept separately", async () => {
+      const store = factory();
+      await store.append("k", entry("same"));
+      await store.append("k", entry("same"));
+      expect(await store.read("k")).toHaveLength(2);
+      await store.close?.();
+    });
+
+    it("keys are isolated", async () => {
+      const store = factory();
+      await store.append("a", entry("of-a"));
+      await store.append("b", entry("of-b"));
+      expect((await store.read("a")).map((e) => e.content)).toEqual(["of-a"]);
+      expect((await store.read("b")).map((e) => e.content)).toEqual(["of-b"]);
+      await store.close?.();
+    });
+
+    it("round-trips role, content and timestamp; an absent role stays absent", async () => {
+      const store = factory();
+      await store.append("k", { role: "user", content: "hi", timestamp: 42 });
+      await store.append("k", { content: "no role", timestamp: 43 });
+      const [withRole, withoutRole] = await store.read("k");
+      expect(withRole).toEqual({ role: "user", content: "hi", timestamp: 42 });
+      expect(withoutRole).toEqual({ content: "no role", timestamp: 43 });
+      expect("role" in (withoutRole as object)).toBe(false);
+      await store.close?.();
+    });
+
+    it("preserves JSON content fidelity (nesting, arrays, null, numbers, unicode)", async () => {
+      const store = factory();
+      const content = {
+        nested: { deep: [1, 2.5, null, "χ", { flag: false }] },
+        empty: {},
+        list: [] as unknown[],
+      };
+      await store.append("k", entry(content));
+      expect((await store.read("k"))[0]?.content).toEqual(content);
+      await store.close?.();
+    });
+
+    it("clear empties the key, is idempotent, and append works again afterwards", async () => {
+      const store = factory();
+      await store.append("k", entry("gone"));
+      await store.clear("k");
+      expect(await store.read("k")).toEqual([]);
+      await store.clear("k"); // idempotent
+      await store.append("k", entry("fresh"));
+      expect((await store.read("k")).map((e) => e.content)).toEqual(["fresh"]);
+      await store.close?.();
+    });
+
+    it("clear isolates keys", async () => {
+      const store = factory();
+      await store.append("a", entry("keep"));
+      await store.append("b", entry("drop"));
+      await store.clear("b");
+      expect((await store.read("a")).map((e) => e.content)).toEqual(["keep"]);
+      await store.close?.();
+    });
+
+    it("replace rewrites the whole list, in order (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.replace === undefined) return void (await store.close?.());
+      await store.append("k", entry("old-1"));
+      await store.append("k", entry("old-2"));
+      await store.replace("k", [entry("new-1"), entry("new-2"), entry("new-3")]);
+      expect((await store.read("k")).map((e) => e.content)).toEqual(["new-1", "new-2", "new-3"]);
+      await store.close?.();
+    });
+
+    it("replace with an empty list empties the key (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.replace === undefined) return void (await store.close?.());
+      await store.append("k", entry("gone"));
+      await store.replace("k", []);
+      expect(await store.read("k")).toEqual([]);
+      await store.close?.();
+    });
+
+    it("replace works on an absent key and isolates other keys (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.replace === undefined) return void (await store.close?.());
+      await store.append("other", entry("untouched"));
+      await store.replace("ghost", [entry("materialized")]);
+      expect((await store.read("ghost")).map((e) => e.content)).toEqual(["materialized"]);
+      expect((await store.read("other")).map((e) => e.content)).toEqual(["untouched"]);
+      await store.close?.();
+    });
+
+    it("entries appended after a replace follow the replaced list (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.replace === undefined) return void (await store.close?.());
+      await store.append("k", entry("old"));
+      await store.replace("k", [entry("kept")]);
+      await store.append("k", entry("later"));
+      expect((await store.read("k")).map((e) => e.content)).toEqual(["kept", "later"]);
+      await store.close?.();
+    });
+  });
+}
+
 /**
  * Prove a {@link Policy} (`@loom/learning`) conforms to the SPI (ADR 0080).
  *

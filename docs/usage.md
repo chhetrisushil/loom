@@ -127,7 +127,7 @@ const app = defineConfig({
 | `agentModules` / `toolModules` / `skillModules` | `agent$` / `tool$` / `skill$` definitions discovered by `loom gen` (value-shape); agents fold into `agents` (auto-wired behind `a2a`/`agentSurface`), tools are exposed on `app.tools`, skills register into `app.skills` |
 | `scheduleModules` / `memoryModules` | `schedule$` / `memory$` definitions discovered by `loom gen`; schedules merge into `app.schedules` + fire via the `TimerService` (needs `timers.store`), memories register into `app.memory` |
 | `skills` / `memories` | `skill$` / `memory$` definitions registered directly (in addition to the `*Modules`) |
-| `memoryStore` | backing `MemoryStore` for `app.memory` (default in-memory; content is separate from the durable log) |
+| `memoryStore` | backing `MemoryStore` for `app.memory`. Defaults to in-memory — **agent memory is lost on restart** unless you pass a durable one: `new SqliteMemoryStore(".loom/events.db")` (`@loom/plugin-sqlite`) or `new PostgresMemoryStore(url)` (`@loom/plugin-postgres`). Memory is stored separately from the durable log |
 | `effectMiddleware` | cross-cutting effect wrappers (retries, metering, safety, redaction… — see Step 11) |
 | `authorizer` | capability protection ring — deny ungranted effects (K2; see Step 11) |
 | `policies` | app-global `policy$` definitions enforced via a `PolicyAuthorizer` (composes under `authorizer`; per-flow policies read from each flow's `policies`) |

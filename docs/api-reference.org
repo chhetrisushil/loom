@@ -1459,8 +1459,15 @@ class MemoryRuntime {
   read(memoryId: string, scope: string): Promise<MemoryEntry[]>
   clear(memoryId: string, scope: string): Promise<void>
 }
-interface MemoryStore { append(key, entry): Promise<void>; read(key): Promise<MemoryEntry[]>; clear(key): Promise<void>; }
-class InMemoryMemoryStore implements MemoryStore {}
+interface MemoryStore {
+  append(key: string, entry: MemoryEntry): Promise<void>   // a key names an ORDERED LIST
+  read(key: string): Promise<MemoryEntry[]>                // in APPEND order; absent key => []
+  clear(key: string): Promise<void>                        // idempotent
+  replace?(key: string, entries: readonly MemoryEntry[]): Promise<void>  // OPTIONAL: atomic rewrite
+  close?(): Promise<void>                                  // OPTIONAL: release resources
+}
+class InMemoryMemoryStore implements MemoryStore {}        // default; lost on restart
+// durable: SqliteMemoryStore (@loom/plugin-sqlite), PostgresMemoryStore (@loom/plugin-postgres)
 #+end_src
 
 *Tiered memory (2.0).* Named tiers over the scoped store, each with an eviction *or* summarization policy, plus promotion. Outcome-affecting recall can be *logged* (replay-safe).

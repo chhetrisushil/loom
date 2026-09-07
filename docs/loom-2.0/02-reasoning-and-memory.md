@@ -338,8 +338,8 @@ Source: `packages/memory/src/TieredMemory.ts` (`TieredMemory`), `packages/memory
 **Base layer** (`packages/memory/src/types.ts`, `MemoryRuntime.ts`):
 
 - **`MemoryEntry`** — a single remembered item: an optional `role`, arbitrary `content` (a message, a tool result, a fact), and a `timestamp` used for TTL eviction.
-- **`MemoryStore`** — the pluggable, **async-first** storage backend (`append`/`read`/`clear`, all keyed by a string). `InMemoryMemoryStore` is the default; the async signature means Redis / a DB / a vector store are real implementations, not afterthoughts.
-- **`MemoryRuntime`** — holds named memory definitions and enforces each one's `ttlMs`/`maxEntries` policy on read and write. Memory is addressed by **`(memoryId, scope)`** — `scope` is typically an `executionId`, `conversationId`, or `userId`, so one definition serves many concurrent sessions. `prune` (`MemoryRuntime.ts`) drops entries older than `ttlMs` then keeps the newest `maxEntries`; `evict` (`:59`) rewrites the stored list to the pruned view so eviction is durable, not just a read-time filter.
+- **`MemoryStore`** — the pluggable, **async-first** storage backend (`append`/`read`/`clear`, all keyed by a string; optional `replace`/`close`). A key names an *ordered list*, read back in **append** order — entries routinely share a timestamp, so ordering by it would reshuffle a conversation. `InMemoryMemoryStore` is the default and loses everything on restart; `SqliteMemoryStore` / `PostgresMemoryStore` (in the store plugins) are the durable backends, and the async signature means Redis / a vector store are real implementations, not afterthoughts. Durable backends round-trip an entry through JSON, so `content` must be JSON-serializable. All of them run `runMemoryStoreConformance`.
+- **`MemoryRuntime`** — holds named memory definitions and enforces each one's `ttlMs`/`maxEntries` policy on read and write. Memory is addressed by **`(memoryId, scope)`** — `scope` is typically an `executionId`, `conversationId`, or `userId`, so one definition serves many concurrent sessions. `prune` (`MemoryRuntime.ts`) drops entries older than `ttlMs` then keeps the newest `maxEntries`; `evict` rewrites the stored list to the pruned view so eviction is durable, not just a read-time filter — through the store's atomic `replace` when it has one, because the clear-then-re-append fallback would let a crash mid-eviction lose the whole scope.
 
 **Tier layer** (`TieredMemory.ts`):
 
@@ -386,6 +386,8 @@ classDiagram
     +append(key, entry)
     +read(key) MemoryEntry[]
     +clear(key)
+    +replace(key, entries)?
+    +close()?
   }
   class MemoryEntry {
     +role?: string

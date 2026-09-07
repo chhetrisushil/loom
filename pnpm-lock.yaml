@@ -678,6 +678,9 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
+      '@loom/conformance':
+        specifier: workspace:*
+        version: link:../conformance
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -1596,6 +1599,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../../packages/event-runtime
+      '@loom/memory':
+        specifier: workspace:*
+        version: link:../../packages/memory
       '@loom/plugin-durable-state':
         specifier: workspace:*
         version: link:../durable-state
@@ -1812,6 +1818,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../../packages/event-runtime
+      '@loom/memory':
+        specifier: workspace:*
+        version: link:../../packages/memory
       '@loom/plugin-content':
         specifier: workspace:*
         version: link:../content

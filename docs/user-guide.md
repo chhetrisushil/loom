@@ -852,7 +852,7 @@ for (const s of plan.steps) {
 }
 ```
 
-`@loom/memory` gives agents scoped, TTL/size-bounded stores via `memory$({ id, name, ttlMs, maxEntries })`. `@loom/orchestrator` packages the recurring route→plan→dispatch→gate loop as composable functions (`dispatchPlan`, `decideApproval`) — use them where they fit; drop to primitives where they don't ([ADR 0013](adr/0013-orchestrator-primitives.md)).
+`@loom/memory` gives agents scoped, TTL/size-bounded stores via `memory$({ id, name, ttlMs, maxEntries })`. The default backing store is in-memory, so an agent that restarts remembers nothing — pass `memoryStore: new SqliteMemoryStore(".loom/events.db")` (or `new PostgresMemoryStore(url)`) to point memory at the same database as the event log, so one backup captures both. `@loom/orchestrator` packages the recurring route→plan→dispatch→gate loop as composable functions (`dispatchPlan`, `decideApproval`) — use them where they fit; drop to primitives where they don't ([ADR 0013](adr/0013-orchestrator-primitives.md)).
 
 The full stack in action: `db-command-center` (in the [examples catalogue](examples.md)).
 
@@ -905,7 +905,8 @@ interface LoomConfig {
   scheduleModules?: ScheduleModule[];  // from `loom gen`: schedule$ defs → app.schedules + TimerService
   memoryModules?: MemoryModule[];      // from `loom gen`: memory$ defs → registered into app.memory
   memories?: MemoryDefinition[];       // memory defs registered directly (in addition to memoryModules)
-  memoryStore?: MemoryStore;           // backing store for app.memory (default in-memory)
+  memoryStore?: MemoryStore;           // backing store for app.memory (default in-memory — lost on
+                                       // restart; SqliteMemoryStore/PostgresMemoryStore persist it)
   projectionModules?: ProjectionModule[]; // from `loom gen`: projection$ defs → projection runtime (lazy fold code)
   projections?: ProjectionDefinition[];   // projections registered directly (in addition to projectionModules)
   projectionRuntime?: ProjectionRuntime;

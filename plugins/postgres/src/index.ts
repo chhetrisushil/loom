@@ -9,6 +9,7 @@ export type { PgConfig, PoolLike } from "./pool";
 export { PostgresTimerStore } from "./PostgresTimerStore";
 export { PostgresDurableStateStore } from "./PostgresDurableStateStore";
 export { PostgresReadModelStore } from "./PostgresReadModelStore";
+export { PostgresMemoryStore } from "./PostgresMemoryStore";
 
 // `postgresPool` is public because an app assembling the stores by hand may want a real
 // `pg.Pool` from THIS package — the sizing/instrumentation surface (`totalCount` and
