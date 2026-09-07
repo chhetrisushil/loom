@@ -12,7 +12,7 @@ conforms (not just compile against the interface).
 
 ## How to prove conformance
 
-Reference impls and third-party impls run the same kit from `@loom/testing`:
+Reference impls and third-party impls run the same kit from `@loom/conformance`:
 
 ```ts
 import { runEventStoreConformance } from "@loom/conformance";
@@ -36,6 +36,10 @@ that is what pins the contracts.
 | **Snapshots** | `SnapshotStore` (`@loom/snapshot-runtime`) | `save`, `loadLatest`, `loadAt`, `loadLatestBefore`, `close` | `deleteExecution` (K10.1) | `InMemoryAsyncSnapshotStore`, `SqliteSnapshotStore`, `PostgresSnapshotStore` | `runSnapshotStoreConformance` |
 | **Branches** | `BranchRegistry` (`@loom/event-runtime`) | `putRef`, `getRef`, `listRefs`, `moveTip`, `promote`, `deleteRef`, `recordLineage`, `getLineage`, `children`, `close` | — | `InMemoryBranchRegistry`, `SqliteBranchRegistry`, `PostgresBranchRegistry` | `runBranchRegistryConformance` |
 | **Timers** | `TimerStore` (`@loom/event-runtime`) | `putTimer`, `dueTimers`, `deleteTimer`, `close` | fencing (multi-node) | `InMemoryTimerStore`, `SqliteTimerStore`, `PostgresTimerStore` | `runTimerStoreConformance` |
+| **Content** | `ContentStore` (`@loom/plugin-content`) | `put` (content-addressed, idempotent by hash), `get` (`null` on absence — MUST NOT throw), `delete` (idempotent physical erasure) | `putStream` (ST-1, ADR 0059), `getMany` (TS-10, ADR 0062) | `InMemoryContentStore`, `CachingContentStore` (decorator), `SqliteContentStore` | `runContentStoreConformance` |
+| **Carry state** | `DurableStateStore` (`@loom/plugin-durable-state`) | `load` (`null` when absent), `save` (compare-and-set on `expectedRevision`), `clear` | `close` | `InMemoryDurableStateStore`, `SqliteDurableStateStore`, `PostgresDurableStateStore` | `runDurableStateStoreConformance` |
+| **Read models** | `ReadModelStore` (`@loom/plugin-read-model`) | `apply` (idempotent per `rowId`, watermark monotonic), `watermark`, `watermarkedExecutions`, `query` (keyset paging), `clear` | `close` | `InMemoryReadModelStore`, `SqliteReadModelStore`, `PostgresReadModelStore` | `runReadModelStoreConformance` |
+| **Subject keys** | `KeyStore` (`@loom/plugin-crypto`) | `getOrCreate`, `get` (`null` when never created OR shredded), `destroy` (irreversible — K10 crypto-shredding) | — | `InMemoryKeyStore` | `runKeyStoreConformance` |
 | **Memory** | `MemoryStore` (`@loom/memory`) | `append`, `read`, `clear` — a key names an ORDERED LIST, read back in APPEND order | `replace` (atomic whole-list rewrite, so eviction cannot lose a scope), `search` (relevance retrieval over `searchableText`, OR-ed terms, ranking left to the backend), `close` | `InMemoryMemoryStore` (IDF scorer), `SqliteMemoryStore` (FTS5), `PostgresMemoryStore` (`tsvector`), `loom-plugin-vector` (cosine, 3P) | `runMemoryStoreConformance` |
 
 ## Compute seams
@@ -51,7 +55,7 @@ that is what pins the contracts.
 |---|---|---|---|
 | **Effect** | `Effect<TIn,TOut>` (`@loom/effect-runtime`) | The unit of side effect; `execute` + optional `idempotent`/`warm` | `ToolEffect`, `IsolatedToolEffect` (K7), LLM effect |
 | **Middleware** | `EffectMiddleware` (`@loom/effect-runtime`) | Wraps every effect: auth → retry → meter → safety → redact | `retryMiddleware`, `meteringMiddleware` (K3), `safetyMiddleware` (K6), `redactionMiddleware` (K10) |
-| **Authority** | `CapabilityAuthorizer` (`@loom/effect-runtime`) | K2 protection ring — allow/deny per effect | `GrantTable`, `DelegationAuthorizer` (K12.4) |
+| **Authority** | `CapabilityAuthorizer` (`@loom/effect-runtime`) | K2 protection ring — allow/deny per effect. Conformance: `runCapabilityAuthorizerConformance` | `GrantTable`, `DelegationAuthorizer` (K12.4) |
 | **Scheduler** | `Scheduler` (`@loom/scheduler`) | M6 bounded concurrency + priority (advisory; zero-overhead default) | `createScheduler` |
 | **Warmer** | `Warmer` (`@loom/effect-runtime`) | M6 advisory pre-warm (latency-only, off-log) | ADR 0027 |
 | **Policy** | `Policy<A>` (`@loom/learning`) | Choose an action from an observation — `select(context, actions)`. The **only seam consumed from flow code** rather than `defineConfig`: a learned choice reaches a run through `decideWithPolicy` → `ctx.decide`, so it stays recorded and replayable (ADR 0080). Conformance: `runPolicyConformance` | `loom-plugin-linucb` (3P) |
@@ -62,7 +66,7 @@ that is what pins the contracts.
 |---|---|---|---|
 | **LLM** | `LlmProvider` (`@loom/llm`) | A model backend — `complete`, optional `stream`/`warm`. A `stream` MUST end with exactly one terminal chunk, and whatever outcome it reports there (`toolCalls`/`stopReason`/`usage`, all optional) MUST equal what `complete` returns for the same request — fold a stream with `assembleStream`. Wired via `createLlmEffect({ provider })` or an agent's `provider`. Conformance: `runLlmProviderConformance` | `AnthropicProvider`, `OpenAiProvider`, `GeminiProvider` |
 | **Telemetry** | `TelemetryAdapter` (`@loom/telemetry`) | Spans/metrics over the event stream | OpenTelemetry adapter sketch |
-| **Projection** | `ProjectionRuntime` (`@loom/projection-runtime`) | Fold events into read models / UI surfaces | `InMemoryProjectionRuntime` |
+| **Projection** | `ProjectionRuntime` (`@loom/projection-runtime`) | Fold events into read models / UI surfaces. Conformance: `runProjectionRuntimeConformance` | `InMemoryProjectionRuntime` |
 
 ## The contract, not the impl, is normative
 
