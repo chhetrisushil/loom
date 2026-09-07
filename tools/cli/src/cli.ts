@@ -14,6 +14,7 @@ import { cmdGen, cmdNew } from "./gen";
 import { serveInspector } from "./inspector";
 import { cmdIntrospect } from "./introspect";
 import { cmdCompat, cmdKernelManifest } from "./kernel";
+import { cmdKnowledgeList, cmdKnowledgeSearch, cmdKnowledgeSync } from "./knowledge";
 import { cmdLearnEval, cmdLearnReport } from "./learn";
 import { cmdLintClaimCheck } from "./lintClaimCheck";
 import { cmdOptimize } from "./optimize";
@@ -94,6 +95,13 @@ export const USAGE = `loom — project-local commands for a Loom app
   loom learn report --db <path> [executionId]     trajectories, per-arm rewards, learning coverage
   loom learn eval --db <path> --policy <module> [--min-steps N] [executionId]
                                                   shadow-evaluate a candidate policy on real logs
+  loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--apply]
+                                                  reconcile a directory into a corpus
+                                                  (dry run by default; --apply also REMOVES
+                                                   documents the directory no longer has)
+  loom knowledge list --config <mod> --scope <s>  what the corpus holds
+  loom knowledge search --config <mod> --scope <s> "<query>" [--limit N]
+                                                  ask the corpus (operator query — not recorded)
   loom kernel-manifest [--json] [--emit-docs <dir>]  kernel version + maturity manifest
   loom compat --abi <v> --event-schema <v> [...]  validate a deployment's contract versions
   loom debug --db <path> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
@@ -229,6 +237,48 @@ async function main(argv: string[]): Promise<number> {
       }
       console.error(`unknown subcommand "learn ${sub}" — expected report|eval`);
       return 2;
+    }
+    case "knowledge": {
+      const sub = requirePositional(positionals, "sync | list | search");
+      requireFlag(flags, "config");
+      requireFlag(flags, "scope");
+      if (sub === "sync") {
+        requireFlag(flags, "dir");
+        const { text } = await cmdKnowledgeSync({
+          config: flags.config!,
+          scope: flags.scope!,
+          dir: flags.dir!,
+          ...(flags.ext !== undefined &&
+            flags.ext !== "true" && { extensions: flags.ext.split(",").map((e) => e.trim()) }),
+          ...(flags["max-bytes"] !== undefined && {
+            maxBytes: Number.parseInt(flags["max-bytes"], 10),
+          }),
+          apply: flags.apply === "true",
+        });
+        console.log(text);
+        return 0;
+      }
+      if (sub === "list") {
+        console.log((await cmdKnowledgeList({ config: flags.config!, scope: flags.scope! })).text);
+        return 0;
+      }
+      if (sub === "search") {
+        const query = positionals[1];
+        if (query === undefined || query.length === 0) {
+          throw new Error(
+            'knowledge search: pass the query as a positional — loom knowledge search --config <mod> --scope <s> "replica lag"'
+          );
+        }
+        const { text } = await cmdKnowledgeSearch({
+          config: flags.config!,
+          scope: flags.scope!,
+          query,
+          ...(flags.limit !== undefined && { limit: Number.parseInt(flags.limit, 10) }),
+        });
+        console.log(text);
+        return 0;
+      }
+      throw new Error(`unknown subcommand "${sub}" — expected sync | list | search`);
     }
     case "kernel-manifest": {
       console.log(

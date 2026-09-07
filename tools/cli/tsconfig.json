@@ -21,6 +21,9 @@
       "path": "../../packages/app"
     },
     {
+      "path": "../../packages/knowledge"
+    },
+    {
       "path": "../appgen"
     },
     {

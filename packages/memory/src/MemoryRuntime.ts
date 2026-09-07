@@ -17,6 +17,18 @@ export class MemoryRuntime {
     return this;
   }
 
+  /**
+   * The registered definition for a memory id, or `undefined`.
+   *
+   * Exposed for the same reason as `TieredMemory.tierPolicy`: a caller that is about to
+   * write data whose correctness depends on the WHOLE set being present needs to know
+   * whether something else has registered an eviction policy over the same key space.
+   * Two runtimes can share one store, and only the one that reads applies its own policy.
+   */
+  definitionFor(memoryId: string): MemoryDefinition | undefined {
+    return this.definitions.get(memoryId);
+  }
+
   private key(memoryId: string, scope: string): string {
     return `${memoryId}::${scope}`;
   }

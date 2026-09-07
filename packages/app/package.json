@@ -1,7 +1,7 @@
 {
   "name": "@loom/app",
   "version": "0.0.1",
-  "description": "App composition for Loom — defineConfig assembles the durable runtime, effect middleware, projection, and A2A transport from a static config, so apps skip the copy-pasted composition root",
+  "description": "App composition for Loom \u2014 defineConfig assembles the durable runtime, effect middleware, projection, and A2A transport from a static config, so apps skip the copy-pasted composition root",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -20,15 +20,16 @@
   },
   "dependencies": {
     "@loom/agent": "workspace:*",
-    "@loom/plugin-a2a": "workspace:*",
     "@loom/agent-surface": "workspace:*",
+    "@loom/compliance": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/dispatcher": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
-    "@loom/compliance": "workspace:*",
     "@loom/event-runtime": "workspace:*",
+    "@loom/knowledge": "workspace:*",
     "@loom/memory": "workspace:*",
     "@loom/middleware": "workspace:*",
+    "@loom/plugin-a2a": "workspace:*",
     "@loom/projection-runtime": "workspace:*",
     "@loom/replay-vm": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",

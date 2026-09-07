@@ -33,7 +33,9 @@ import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime
 // node:fs/path are loaded lazily on the `kind:"sqlite"` path only (see
 // `loadNodeModule`), so a browser app using in-memory storage stays clean.
 import { InMemoryAsyncEventStore } from "@loom/event-runtime/memory";
-import { MemoryRuntime } from "@loom/memory";
+import { type KnowledgeBase, openKnowledgeBase } from "@loom/knowledge";
+import type { KnowledgeBaseConfig } from "@loom/knowledge";
+import { InMemoryMemoryStore, MemoryRuntime } from "@loom/memory";
 import type { MemoryStore } from "@loom/memory";
 import {
   type SecretResolver,
@@ -496,6 +498,13 @@ export interface LoomStores {
   eventStore: EventStore;
   snapshotStore: SnapshotStore;
   branchRegistry?: BranchRegistry;
+  /**
+   * The backing store for `app.memory` and `app.knowledge(...)` — present only when one
+   * was CONFIGURED. Absent means the app fell back to the in-memory default, which is the
+   * state worth being able to detect: agent memory and any corpus are lost on restart, and
+   * an operator command that writes into one would be writing into a throwaway.
+   */
+  memoryStore?: MemoryStore;
 }
 
 export interface LoomApp {
@@ -521,6 +530,21 @@ export interface LoomApp {
    * `memoryStore` (in-memory by default). Agents resolve their `memoryId` against it.
    */
   memory: MemoryRuntime;
+  /**
+   * Open (or return) the document corpus named `scope`, over the same `memoryStore` that
+   * backs `app.memory` (ADR 0091). One `KnowledgeBase` per scope, cached: two instances of
+   * one corpus are not wrong, they are just two objects doing the same work.
+   *
+   * `options` may only be passed the FIRST time a scope is opened. A second call that
+   * passes them for an already-open corpus throws rather than silently ignoring them —
+   * two parts of an app configuring one corpus with different chunkers would chunk it
+   * differently on alternate ingests, which shows up as retrieval quality and nothing else.
+   *
+   * Throws if a `memory$` definition shares the corpus tier's id AND evicts: the two run
+   * over the same store, so reading that memory through `app.memory` would evict passages
+   * the corpus manifest still counts.
+   */
+  knowledge(scope: string, options?: Omit<KnowledgeBaseConfig, "memory" | "scope">): KnowledgeBase;
   /**
    * K10.1 log lifecycle — explicit retention/compaction over this app's stores, with the
    * branch-integrity guard wired when a `branchRegistry` is present. Drive it from an
@@ -663,6 +687,9 @@ export function normalizeConfig(config: LoomConfig): ResolvedConfig {
 export function defineConfig(rawConfig: LoomConfig): LoomApp {
   const config = normalizeConfig(rawConfig);
   const stores = buildStores(config.storage);
+  // Present only when CONFIGURED — see LoomStores.memoryStore for why the distinction is
+  // the useful part.
+  if (config.memoryStore !== undefined) stores.memoryStore = config.memoryStore;
 
   // K10-R2 — secret redaction runs OUTERMOST on the effect path (it must resolve input
   // references before any other middleware sees the value, and redact output references
@@ -922,14 +949,20 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   // Memory definitions from the explicit `memories` list + `memoryModules` (loom gen discovery),
   // registered into one MemoryRuntime backed by `memoryStore` (in-memory default). Agents resolve
   // their `memoryId` against `app.memory`.
-  const memory =
-    config.memoryStore !== undefined ? new MemoryRuntime(config.memoryStore) : new MemoryRuntime();
+  // Materialized rather than defaulted inside MemoryRuntime, so `app.knowledge(...)` can
+  // put a corpus in the SAME store as `app.memory`. Two stores would be two corpora that
+  // look like one.
+  const memoryStore = config.memoryStore ?? new InMemoryMemoryStore();
+  const memory = new MemoryRuntime(memoryStore);
   for (const def of [
     ...(config.memories ?? []),
     ...memoryDefinitionsFrom(...(config.memoryModules ?? [])),
   ]) {
     memory.register(def);
   }
+
+  /** One KnowledgeBase per `tier::scope`, opened on demand by `app.knowledge(...)`. */
+  const corpora = new Map<string, KnowledgeBase>();
 
   const bus = new InProcessA2ABus(runtime, config.dispatcher);
   let unwiredDefs = 0;
@@ -1040,6 +1073,28 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     skills,
     schedules,
     memory,
+    knowledge(scope, options) {
+      const tier = options?.tier ?? "semantic";
+      const key = `${tier}::${scope}`;
+      const open = corpora.get(key);
+      if (open !== undefined) {
+        if (options !== undefined) {
+          throw new Error(
+            `[loom] knowledge("${scope}") is already open; its options were fixed by the first call. Configure a corpus once (a second chunker would chunk the same corpus differently on alternate ingests), or use a different scope.`
+          );
+        }
+        return open;
+      }
+      const clash = memory.definitionFor(tier);
+      if (clash?.ttlMs !== undefined || clash?.maxEntries !== undefined) {
+        throw new Error(
+          `[loom] knowledge("${scope}") uses memory tier "${tier}", but a memory$({ id: "${tier}" }) with ttlMs/maxEntries is registered over the same store. Reading it through app.memory would evict passages the corpus manifest still counts, so the corpus would retrieve as fragments of itself. Give the corpus its own tier: app.knowledge("${scope}", { tier: "knowledge" }).`
+        );
+      }
+      const kb = openKnowledgeBase(memoryStore, { ...options, scope, tier });
+      corpora.set(key, kb);
+      return kb;
+    },
     lifecycle,
     ...(subjectIndex !== undefined && { subjectIndex }),
     exportSubject(subjectId, options) {

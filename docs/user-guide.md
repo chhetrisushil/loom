@@ -875,7 +875,7 @@ a DOCUMENT — the unit people edit — to the PASSAGES it is searched in. `@loo
 mapping and nothing else (storage stays the `MemoryStore`'s, ranking stays the backend's):
 
 ```ts
-const kb = openKnowledgeBase(store, { scope: "runbooks" });   // tier defaults to "semantic"
+const kb = app.knowledge("runbooks");   // over the app's memoryStore; tier defaults to "semantic"
 
 await kb.sync(await loadRunbooksFromWiki());   // write what changed, remove what the source dropped
 const passages = await kb.retrieve(question, { decide: ctx.decide, limit: 3 });
@@ -897,11 +897,30 @@ rather than refuses, and the reason retrieved text can never reach an instructio
 cites a document that was not retrieved, which — because the retrieval is recorded — is the one
 hallucination here that is decidable rather than judged.
 
-`openKnowledgeBase` builds the one-tier, never-evicting memory a corpus needs; use the
-`KnowledgeBase` constructor with your own `TieredMemory` when the corpus shares a memory with
-something else (a conversation in `episodic`, say). Either way the tier must not evict — under
-`ttlMs`/`maxEntries` a document would silently retrieve as a fragment of itself, and the
-constructor refuses one that does.
+`app.knowledge(scope)` opens the corpus over the app's configured `memoryStore` — one instance per
+scope, cached, and options are honoured on the first call only (two parts of an app configuring one
+corpus with different chunkers would chunk it differently on alternate ingests). Outside an app,
+`openKnowledgeBase(store, { scope })` builds the one-tier, never-evicting memory a corpus needs;
+use the `KnowledgeBase` constructor with your own `TieredMemory` when the corpus shares a memory
+with something else (a conversation in `episodic`, say).
+
+Either way the tier must not evict — under `ttlMs`/`maxEntries` a document would silently retrieve
+as a fragment of itself, and the constructor refuses one that does. `app.knowledge` also refuses a
+tier that a registered `memory$` would evict, since both run over the same store.
+
+A flow runner that closes over a corpus still takes one as an argument: `app.knowledge` needs the
+app, and the app needs the flows. Build the app, open the corpus, then register:
+
+```ts
+const app = defineConfig({ storage: { kind: "sqlite", ... }, memoryStore: store });
+const kb = app.knowledge("runbooks");
+app.runtime.registerFlow(AnswerFlow, answerRunner(kb));
+```
+
+Operating a corpus from outside the app is `loom knowledge` — `sync` a directory into it (a dry
+run by default, because the reconcile also DELETES what the directory no longer contains), `list`
+what it holds, and `search` it to find out why retrieval returned what it did. See the
+[CLI guide](usage-cli.md#operate-a-corpus-knowledge-sync-list-search).
 
 Chunking is yours to choose: `packParagraphs()` is a reasonable default, and most of retrieval
 quality lives in that decision. So does what you put in `meta` — it travels onto every passage and

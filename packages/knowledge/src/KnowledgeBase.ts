@@ -284,9 +284,42 @@ export class KnowledgeBase {
    */
   async sync(docs: readonly KnowledgeDoc[]): Promise<SyncResult> {
     const manifest = await this.manifest();
+    const plan = this.classify(docs, manifest);
+    // Indexed once: `written` is O(docs) and a scan per entry would make a sync of a
+    // 10,000-document corpus quadratic in the size of the source, not of the change.
+    const byId = new Map(docs.map((doc) => [doc.id, doc]));
+
+    for (const docId of plan.written) {
+      // An UNCOMMITTED row is rewritten even when the fingerprint matches. That case is
+      // exactly the crash this design exists for, and treating it as unchanged is how a
+      // document disappears from a corpus that still lists it.
+      await this.write(byId.get(docId) as KnowledgeDoc, manifest.get(docId));
+    }
+    for (const docId of plan.removed) {
+      const slot = manifest.get(docId) as ManifestSlot;
+      await this.removeRecordedPassages(slot.record);
+      await this.memory.forget(this.tier, this.manifestScope, slot.rowIds);
+    }
+    return plan;
+  }
+
+  /**
+   * What {@link sync} WOULD do, without doing it. Read-only.
+   *
+   * Exists because a corpus sync is a destructive reconcile — `docs` is the complete set,
+   * so anything missing from it is deleted — and the operator command that runs it
+   * (`loom knowledge sync`) defaults to a dry run for that reason. A preview computed by a
+   * separate code path would be a preview of a different operation, so both go through the
+   * same classification and only `sync` writes.
+   */
+  async planSync(docs: readonly KnowledgeDoc[]): Promise<SyncResult> {
+    return this.classify(docs, await this.manifest());
+  }
+
+  /** Pure: which documents are new/changed, unchanged, or no longer in the source. */
+  private classify(docs: readonly KnowledgeDoc[], manifest: Map<string, ManifestSlot>): SyncResult {
     const result: SyncResult = { written: [], unchanged: [], removed: [] };
     const seen = new Set<string>();
-
     for (const doc of docs) {
       if (seen.has(doc.id)) {
         throw new Error(
@@ -297,20 +330,12 @@ export class KnowledgeBase {
       const slot = manifest.get(doc.id);
       if (slot?.record.committed === true && slot.record.fingerprint === this.fingerprint(doc)) {
         result.unchanged.push(doc.id);
-        continue;
+      } else {
+        result.written.push(doc.id);
       }
-      // An UNCOMMITTED row is rewritten even when the fingerprint matches. That case is
-      // exactly the crash this design exists for, and treating it as unchanged is how a
-      // document disappears from a corpus that still lists it.
-      await this.write(doc, slot);
-      result.written.push(doc.id);
     }
-
-    for (const [docId, slot] of manifest) {
-      if (seen.has(docId)) continue;
-      await this.removeRecordedPassages(slot.record);
-      await this.memory.forget(this.tier, this.manifestScope, slot.rowIds);
-      result.removed.push(docId);
+    for (const docId of manifest.keys()) {
+      if (!seen.has(docId)) result.removed.push(docId);
     }
     return result;
   }

@@ -184,6 +184,34 @@ enough to matter.
 tier's scopes sees it. Keeping it in the corpus scope was the alternative and it is worse: a
 manifest row in a searchable corpus is an entry that matches queries and answers nothing.
 
+## Follow-on — the wiring surfaces (2026-09-07)
+
+Three DX surfaces, none of them a new decision, all of them the same question: a corpus lives in
+the app's `memoryStore`, and nothing connected the two.
+
+`app.knowledge(scope)` opens one over the configured store, cached per scope. Its two refusals are
+the content: **options on an already-open corpus** throw rather than being ignored (two parts of an
+app configuring one corpus with different chunkers chunk it differently on alternate ingests, and
+the only symptom is retrieval quality), and a corpus tier that a registered `memory$` would evict
+throws with the escape named — both run over one store, and only the runtime that READS applies its
+own policy, so `app.memory` would evict passages the corpus manifest still counts.
+
+`loom knowledge sync | list | search` operates a corpus from outside a flow. `sync` is a dry run by
+default, because the reconcile deletes what the source no longer lists; its preview is
+`KnowledgeBase.planSync`, the same classification `sync` runs, so it previews the real operation and
+not a second implementation of it. `search` prints that the retrieval was **not recorded** — the
+ops escape hatch ADR 0090 named, made visible in the output rather than only in the code.
+
+`loom doctor` gains the memory-store check, whose two outcomes are chosen rather than uniform: an
+unconfigured store is a SKIP that names the cost (0090's opening symptom), a configured store
+without `search` is a FAILURE (someone chose that backend, and relevance retrieval refuses it at run
+time). `LoomStores.memoryStore` is therefore present only when CONFIGURED — the distinction is the
+signal, and it is what lets `loom knowledge` refuse to ingest into a store the process discards.
+
+The second consumers (ADR 0083) are the CLI itself and `runbook-recall`, which builds its app,
+opens its corpus from it, and registers the flow — the ordering `app.knowledge` imposes, documented
+rather than hidden.
+
 ## Evidence
 
 - `packages/knowledge/src/KnowledgeBase.test.ts` — re-ingest does not duplicate; a revision's old

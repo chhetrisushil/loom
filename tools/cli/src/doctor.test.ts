@@ -35,12 +35,53 @@ describe("loom doctor", () => {
     const ws = workspace();
     const { text, result } = await cmdDoctor({ dir: ws });
 
-    expect(result.checks.filter((c) => c.status === "skipped")).toHaveLength(2);
+    expect(result.checks.filter((c) => c.status === "skipped")).toHaveLength(3);
     expect(text).toContain("no loom-manifest.json found");
     expect(text).toContain("no built config module found");
     // Each skip names the flag that would have enabled it.
     expect(text).toContain("--manifest");
     expect(text).toContain("--config");
+  });
+
+  it("fails when a CONFIGURED memory store cannot do relevance retrieval", async () => {
+    // Not a default anybody fell into: somebody wired this backend. `recallRelevant` and
+    // `KnowledgeBase.retrieve` refuse such a store rather than degrading to the newest N,
+    // so the app is one relevance query away from throwing.
+    const ws = workspace();
+    const config = join(ws, "config.js");
+    writeFileSync(
+      config,
+      "module.exports = { stores: { memoryStore: { append(){}, read(){}, clear(){} } } };"
+    );
+    const { result, text } = await cmdDoctor({ dir: ws, config });
+    const check = result.checks.find((c) => c.name.startsWith("memory store"));
+    expect(check?.status).toBe("failed");
+    expect(text).toContain("does not implement the optional `search`");
+  });
+
+  it("passes a configured store that implements search", async () => {
+    const ws = workspace();
+    const config = join(ws, "config.js");
+    writeFileSync(
+      config,
+      "module.exports = { stores: { memoryStore: { append(){}, read(){}, clear(){}, search(){} } } };"
+    );
+    const { result } = await cmdDoctor({ dir: ws, config });
+    expect(result.checks.find((c) => c.name.startsWith("memory store"))?.status).toBe("ok");
+  });
+
+  it("skips — and names the durability cost — when no memory store is configured", async () => {
+    // The shape ADR 0090 opened with: an agent that restarted remembered nothing, and
+    // nothing said so. A skip, not a failure: a test suite or a browser app wants exactly
+    // this — but the skip is what turns a clean bill of health into partial coverage.
+    const ws = workspace();
+    const config = join(ws, "config.js");
+    writeFileSync(config, "module.exports = { stores: {} };");
+    const { result, text } = await cmdDoctor({ dir: ws, config });
+    expect(result.checks.find((c) => c.name.startsWith("memory store"))?.status).toBe("skipped");
+    // The skip carries the cost, rather than the check simply being absent.
+    expect(text).toContain("LOST ON RESTART");
+    expect(text).toContain("memoryStore: new SqliteMemoryStore");
   });
 
   it("a run with skips does not read the same as a clean run", async () => {

@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`app.knowledge(scope)`, `loom knowledge`, and a `loom doctor` memory-store check** — the DX
+  follow-on to ADR 0091. `app.knowledge` opens a corpus over the app's configured `memoryStore`
+  (one per scope, cached; options honoured on the first call only, since two parts of an app
+  configuring one corpus with different chunkers would chunk it differently on alternate ingests),
+  and refuses a tier a registered `memory$` would evict — both run over the same store, and only
+  the runtime that reads applies its own policy.
+
+  `loom knowledge sync --dir <path>` reconciles a directory into a corpus, `list` shows what it
+  holds, `search` asks it what a flow would retrieve. `sync` is a **dry run by default** because
+  the reconcile is destructive — a document the directory no longer contains is deleted — and the
+  preview runs `KnowledgeBase.planSync`, the same classification `sync` itself uses. Skipped files
+  (symlinks, over the size cap, empty) are listed rather than quietly dropped, because a file the
+  corpus does not contain is the answer to a "why did retrieval miss that" question. `search`
+  prints that it is **not a recorded retrieval**: an operator query has no execution to record
+  into, so a transcript of it is not what an execution saw. All three refuse an app with no
+  configured `memoryStore` — that corpus lives in a store the process discards on exit.
+
+  `loom doctor` gains a memory-store check: no `memoryStore` is a SKIP that names the cost (memory
+  and any corpus lost on restart — the shape ADR 0090 opened with), while a configured store
+  without `search` is a FAILURE, since `recallRelevant`/`retrieve` refuse it at run time rather
+  than degrading.
+
 - **`@loom/memory` is in `SPI_PACKAGES`**, so `loom plugin check` finally holds a memory backend
   to the peer-dependency rule. It had been absent for as long as the seam existed, reporting a
   green "SPI packages are peer dependencies" while being unable to see the one package that

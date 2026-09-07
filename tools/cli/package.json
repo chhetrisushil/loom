@@ -1,7 +1,7 @@
 {
   "name": "@loom/cli",
   "version": "0.0.1",
-  "description": "The loom CLI — project-local commands over the durable log: logs, debug (time-travel), eval",
+  "description": "The loom CLI \u2014 project-local commands over the durable log: logs, debug (time-travel), eval",
   "bin": {
     "loom": "./dist/cli.js"
   },
@@ -22,26 +22,27 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@loom/classify": "workspace:*",
-    "@loom/compliance": "workspace:*",
     "@loom/analytics": "workspace:*",
     "@loom/app": "workspace:*",
     "@loom/appgen": "workspace:*",
+    "@loom/classify": "workspace:*",
+    "@loom/compliance": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/deploy-sim": "workspace:*",
     "@loom/eval": "workspace:*",
     "@loom/event-runtime": "workspace:*",
+    "@loom/knowledge": "workspace:*",
+    "@loom/learning": "workspace:*",
     "@loom/llm": "workspace:*",
+    "@loom/plugin-content": "workspace:*",
+    "@loom/plugin-kit": "workspace:*",
+    "@loom/plugin-sqlite": "workspace:*",
     "@loom/replay-vm": "workspace:*",
     "@loom/scaffold": "workspace:*",
     "@loom/spec": "workspace:*",
     "@loom/verify": "workspace:*",
-    "@loom/plugin-sqlite": "workspace:*",
     "@loom/workflow-runtime": "workspace:*",
-    "@loom/plugin-kit": "workspace:*",
-    "zod": "^3.23.8",
-    "@loom/plugin-content": "workspace:*",
-    "@loom/learning": "workspace:*"
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@loom/effect-runtime": "workspace:*",

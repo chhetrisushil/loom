@@ -18,11 +18,12 @@ The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`
 6. [Learn from the log: `learn report`, `learn eval`](#learn-from-the-log-learn-report-learn-eval)
 7. [Ship safely: `eval`, `deploy check`](#ship-safely-eval-deploy-check)
 8. [Data protection: `retention run`, `sweep content`, `compliance report`](#data-protection-retention-run-sweep-content-compliance-report)
-9. [Deployment contracts: `kernel-manifest`, `compat`](#deployment-contracts-kernel-manifest-compat)
-10. [Author a plugin: `plugin …`](#author-a-plugin-plugin-)
-11. [Cheat sheet](#cheat-sheet)
-12. [Exit codes & scripting](#exit-codes--scripting)
-13. [Programmatic use](#programmatic-use)
+9. [Operate a corpus: `knowledge sync`, `list`, `search`](#operate-a-corpus-knowledge-sync-list-search)
+10. [Deployment contracts: `kernel-manifest`, `compat`](#deployment-contracts-kernel-manifest-compat)
+11. [Author a plugin: `plugin …`](#author-a-plugin-plugin-)
+12. [Cheat sheet](#cheat-sheet)
+13. [Exit codes & scripting](#exit-codes--scripting)
+14. [Programmatic use](#programmatic-use)
 
 ---
 
@@ -58,6 +59,13 @@ loom — project-local commands for a Loom app
   loom learn report --db <path> [executionId]     trajectories, per-arm rewards, learning coverage
   loom learn eval --db <path> --policy <module> [--min-steps N] [executionId]
                                                   shadow-evaluate a candidate policy on real logs
+  loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--apply]
+                                                  reconcile a directory into a corpus
+                                                  (dry run by default; --apply also REMOVES
+                                                   documents the directory no longer has)
+  loom knowledge list --config <mod> --scope <s>  what the corpus holds
+  loom knowledge search --config <mod> --scope <s> "<query>" [--limit N]
+                                                  ask the corpus (operator query — not recorded)
   loom kernel-manifest [--json] [--emit-docs <dir>]  kernel version + maturity manifest
   loom compat --abi <v> --event-schema <v> [...]  validate a deployment's contract versions
   loom debug --db <path> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
@@ -241,8 +249,17 @@ Runs every pre-flight check whose input it can discover, and **reports the ones 
 | Input | Discovered from | Enables |
 |---|---|---|
 | compiler manifest | `--manifest`, else `loom-manifest.json` or `dist/loom-manifest.json` under `--dir` | `loom check` |
-| built config module | `--config`, else `loom.config.js` / `loom.config.mjs` / `dist/loom.config.js` / `dist/config.js` | `loom verify` |
+| built config module | `--config`, else `loom.config.js` / `loom.config.mjs` / `dist/loom.config.js` / `dist/config.js` | `loom verify`, the memory-store check |
 | source tree | `--dir` (defaults to `.`) | `loom lint claim-check` |
+
+The memory-store check reads the app's configured `memoryStore` and answers two questions the
+runtime otherwise answers much later. **Not configured** is a skip, not a failure — a browser app
+or a test suite wants the in-memory default — but the skip says what it costs: agent memory and
+any corpus are lost on restart, which is exactly the shape
+[ADR 0090](adr/0090-knowledge-is-retrieval-over-memory.md) opened with. **Configured but without
+`search`** is a failure: somebody chose that backend, and `recallRelevant()` /
+`KnowledgeBase.retrieve()` refuse such a store rather than degrading to the newest N, so the app
+is one relevance query away from throwing.
 
 ```bash
 npx loom doctor
@@ -255,10 +272,12 @@ loom doctor
       loom-manifest.json
   – runtime verification (loom verify)
       no built config module found — pass --config <module> exporting a LoomApp (build to JS first, or run under tsx)
+  – memory store (durability + relevance recall)
+      no built config module found — pass --config <module> exporting a LoomApp
   ✓ claim-check reach-through (loom lint)
       .
 
-passed, but 1 check(s) could not run — coverage is partial
+passed, but 2 check(s) could not run — coverage is partial
 ```
 
 A **skipped check never fails the run**, but it never reads as a pass either: `all checks passed` and `passed, but N check(s) could not run — coverage is partial` are deliberately different strings, so a green `doctor` can't be cited as evidence for a check that never ran. Exit `1` only when a check actually **fails**.
@@ -589,6 +608,64 @@ npx loom compliance report --db .loom/events.db --subject-path input.userId
 
 ---
 
+## Operate a corpus: `knowledge sync`, `list`, `search`
+
+A document corpus ([`@loom/knowledge`](adr/0091-corpus-lifecycle-and-the-knowledge-package.md))
+lives in the app's `memoryStore`, so operating one needs the built config module — the same
+input `verify` and `deploy check` take. All three subcommands **refuse an app with no
+configured `memoryStore`**: that app's corpus lives in the in-memory default, so this process
+would ingest into a store it throws away on exit and print a successful-looking summary.
+
+### `loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--max-bytes N] [--apply]`
+
+Reconciles a directory of documents into the corpus: write what changed, leave what did not,
+**remove what the directory no longer contains**. That last clause is why it is a dry run by
+default — `--apply` deletes as well as writes.
+
+The document id is the path relative to `--dir`, which is what makes a second run recognise the
+same document; the title is the file's first markdown heading, or its filename. Symlinks are not
+followed, files over `--max-bytes` (1 MiB) and empty files are skipped — and every skip is
+listed, because a file the corpus does not contain is the answer to a "why did retrieval miss
+that" question nobody could otherwise answer.
+
+```bash
+npx loom knowledge sync --config dist/loom.config.js --scope runbooks --dir docs/runbooks
+npx loom knowledge sync --config dist/loom.config.js --scope runbooks --dir docs/runbooks --apply
+```
+
+```text
+knowledge sync: 14 document(s) from /app/docs/runbooks → "runbooks"
+  write (2): replica-lag.md, pool-exhaustion.md
+  unchanged (11): checkpoints.md, …
+  REMOVE (1): failover-drill.md
+  skipped (1):
+    dump.sql.txt — 4194304 bytes exceeds the 1048576-byte cap
+  dry run — nothing written. Re-run with --apply. NOTE: `REMOVE` deletes documents the directory no longer contains.
+```
+
+Re-running it against an unchanged directory writes nothing (documents are compared by a
+content fingerprint), which is what makes it safe on a schedule.
+
+### `loom knowledge list --config <mod> --scope <s>`
+
+What the corpus holds: one line per document, with its passage count and fingerprint. A row
+marked `[uncommitted]` is a document whose manifest row was written but whose passages were
+not — a crash mid-ingest — and the next `sync` rewrites it.
+
+### `loom knowledge search --config <mod> --scope <s> "<query>" [--limit N]`
+
+Asks the corpus what a flow would retrieve, which is how you answer *why did it return that*.
+
+```bash
+npx loom knowledge search --config dist/loom.config.js --scope runbooks "replica lag" --limit 3
+```
+
+**This is not a recorded retrieval, and the output says so.** Inside a flow, `retrieve` requires
+`ctx.decide` because a corpus changes between a run and its replay; an operator query has no
+execution to record into. Never read a transcript of this command as what an execution saw.
+
+---
+
 ## Deployment contracts: `kernel-manifest`, `compat`
 
 The kernel-governance surface ([ADR 0035](adr/0035-kernel-governance-layer.md), [`@loom/spec`](../packages/spec)). Neither reads a log — they report and check the **versioned contracts** a deployment depends on.
@@ -768,6 +845,9 @@ npx loom plugin search postgres
 | `loom retention run` | reclaim aged terminal executions | `--db` *(req)*, `--snap` *(req)*, `--ttl`, `--apply` | error |
 | `loom sweep content` | K10.6 pinned blob sweep | `--db` *(req)*, `--content` *(req)*, `--archive-db`, `--pin`, `--ttl`, `--apply` | error |
 | `loom compliance report` | data-subject inventory | `--db` *(req)*, `--subject-path` *(req)*, `--tenant-path` | error |
+| `loom knowledge sync` | reconcile a directory into a corpus | `--config` *(req)*, `--scope` *(req)*, `--dir` *(req)*, `--ext`, `--max-bytes`, `--apply` | error |
+| `loom knowledge list` | what the corpus holds | `--config` *(req)*, `--scope` *(req)* | error |
+| `loom knowledge search` | ask the corpus (not recorded) | `--config` *(req)*, `--scope` *(req)*, `--limit` | error |
 | `loom kernel-manifest` | kernel version + maturity manifest | `--json`, `--emit-docs <dir>` | (never) |
 | `loom compat` | validate a deployment's contract versions | `--abi`, `--event-schema`, … | major-version mismatch |
 | `loom plugin new` | scaffold a plugin package | `--first-party`, `--dir .` | every file already existed |
