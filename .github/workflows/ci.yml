@@ -14,6 +14,28 @@ jobs:
   build-and-test:
     name: build + typecheck + lint + test
     runs-on: ubuntu-latest
+
+    # The Postgres suites are gated on LOOM_TEST_POSTGRES_URL and skip cleanly
+    # without it — which meant they had never run in CI, and a skipped suite reads
+    # exactly like a passing one. A service container is a throwaway database for
+    # the life of the job; it needs a Linux runner, which this already is.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: loomtest
+        ports:
+          - 5432:5432
+        # The conformance suite opens 32 pools (one schema per case, for isolation);
+        # the default ceiling of 100 connections is uncomfortably close.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          -c max_connections=300
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,3 +63,7 @@ jobs:
 
       - name: Test
         run: pnpm test
+        env:
+          # Declared in turbo.json's `test` task, so it is part of the cache key —
+          # otherwise a cached result from a database-less run is replayed here.
+          LOOM_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/loomtest
