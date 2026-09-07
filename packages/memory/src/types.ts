@@ -28,6 +28,21 @@ export interface MemoryEntry {
 //    share a timestamp, and MemoryRuntime rewrites lists that are already
 //    ordered). An absent key reads as `[]`, never a throw.
 //  - `clear` is idempotent.
+/**
+ * The {@link MemoryStore} SPI contract version (ADR 0033 / ADR 0090).
+ *
+ * Same rules as the other store SPIs: MINOR for an additive, optional-with-fallback
+ * method; MAJOR only for a change that breaks an existing backend. It exists because
+ * implementations now live OUTSIDE this repo — `loom-plugin-vector` is third-party —
+ * so a breaking change would otherwise reach a backend nothing in this workspace
+ * builds, tests, or can even see.
+ *
+ * 1.0.0: `append` / `read` / `clear`, plus optional `replace`, `search` and `close`.
+ *   The optional three shipped together with the first durable backends, so there is
+ *   no earlier shape to be compatible with.
+ */
+export const MEMORY_STORE_SPI_VERSION = "1.0.0";
+
 export interface MemorySearchOptions {
   /** Return at most N entries. Backends default to 20. */
   limit?: number;

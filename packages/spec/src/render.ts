@@ -26,6 +26,7 @@ export function renderCompatibilityMatrix(m: KernelManifest = kernelManifest()):
       "`BRANCH_REGISTRY_SPI_VERSION` · conformance kit",
     ],
     ["Dispatcher SPI", m.spis.dispatcher, "`DISPATCHER_SPI_VERSION` · conformance kit"],
+    ["MemoryStore SPI", m.spis.memoryStore, "`MEMORY_STORE_SPI_VERSION` · conformance kit"],
     ["Compiler manifest", m.compilerManifest.version, "`COMPILER_MANIFEST_VERSION`"],
   ];
   const body = rows.map(([c, v, a]) => `| ${c} | \`${v}\` | ${a} |`).join("\n");
@@ -110,6 +111,7 @@ export function renderManifestText(m: KernelManifest = kernelManifest()): string
     `  snapshot SPI    ${m.spis.snapshotStore}`,
     `  branch SPI      ${m.spis.branchRegistry}`,
     `  dispatcher SPI  ${m.spis.dispatcher}`,
+    `  memory SPI      ${m.spis.memoryStore}`,
     `  compiler manif. ${m.compilerManifest.version}`,
     `  capabilities    ${CAPABILITIES.length} (see loom kernel-manifest --json)`,
   ].join("\n");

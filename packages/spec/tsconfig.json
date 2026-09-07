@@ -11,6 +11,7 @@
     { "path": "../../tools/compiler" },
     { "path": "../dispatcher" },
     { "path": "../event-runtime" },
+    { "path": "../memory" },
     { "path": "../replay-vm" },
     { "path": "../snapshot-runtime" },
     { "path": "../wire-abi" },
