@@ -1,3 +1,4 @@
+import { isTainted } from "@loom/classify";
 import type { MemoryEntry } from "./types";
 
 /**
@@ -33,6 +34,13 @@ export function tokenize(text: string): string[] {
  * - object KEYS are schema, not content: indexing them makes "latency" match a record
  *   that merely *has* a latency field and says nothing about latency.
  * - numbers are kept, because "500" and "2026" are things people search for.
+ * - a TAINTED value (ADR 0085) is indexed as its inner content. The wrapper's
+ *   `origin` is provenance, and provenance is metadata by the same rule that
+ *   excludes `role`: an ingested corpus taints every entry, so indexing the label
+ *   makes one query term ("runbook", "mcp", the tool's name) match the entire
+ *   corpus at once — it widens the match SET on an FTS backend, not merely the
+ *   ranking. Only this wrapper is unwrapped, because it is the only framework
+ *   wrapper an entry's content is known to carry.
  */
 export function searchableText(entry: MemoryEntry): string {
   const out: string[] = [];
@@ -41,7 +49,8 @@ export function searchableText(entry: MemoryEntry): string {
 }
 
 function collect(value: unknown, out: string[]): void {
-  if (typeof value === "string") out.push(value);
+  if (isTainted(value)) collect(value.value, out);
+  else if (typeof value === "string") out.push(value);
   else if (typeof value === "number" && Number.isFinite(value)) out.push(String(value));
   else if (Array.isArray(value)) for (const item of value) collect(item, out);
   else if (value !== null && typeof value === "object")

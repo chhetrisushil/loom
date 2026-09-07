@@ -674,6 +674,9 @@ importers:
 
   packages/memory:
     dependencies:
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../classify
       '@loom/core':
         specifier: workspace:*
         version: link:../core

@@ -60,6 +60,14 @@ export class WorkflowContextImpl implements WorkflowContext {
     // agent-surface patches flow through the normal event pipeline, so UI updates are
     // durable and replay deterministically alongside every other event.
     this.ui = createSurfaceEmitter((eventType, payload) => this.emit(eventType, payload));
+    // `decide` is the one context method routinely passed AS A VALUE rather than
+    // called: `TieredMemory.recall({ decide })`, `recallRelevant({ decide })`,
+    // any decider-taking helper. Unbound, `decide: ctx.decide` loses its receiver
+    // and fails at the first `this.vm` — a TypeError with no mention of binding,
+    // from a line that reads exactly like the documentation. Bound here so the
+    // documented spelling is the working one; every existing `ctx.decide(…)` call
+    // site is unaffected.
+    this.decide = this.decide.bind(this);
   }
 
   // Synchronous: the journal allocates a sequence, folds the VM, fires onEvent,

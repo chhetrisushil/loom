@@ -1,3 +1,4 @@
+import { tainted } from "@loom/classify";
 import { memory$ } from "@loom/core";
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryMemoryStore } from "./InMemoryMemoryStore";
@@ -23,6 +24,28 @@ describe("searchableText", () => {
 
   it("excludes role and timestamp — metadata is not content", () => {
     expect(searchableText({ role: "assistant", content: "hello", timestamp: 1234 })).toBe("hello");
+  });
+
+  it("indexes a tainted value's content, not its origin label", () => {
+    // An ingested corpus taints EVERY entry (ADR 0085), so an indexed origin makes
+    // one term match the whole corpus — on an FTS backend that widens the match set,
+    // not just the ranking. Provenance is metadata by the same rule that drops `role`.
+    const text = searchableText({
+      content: tainted("replica lag runbook", "mcp:wiki"),
+      timestamp: 1,
+    });
+    expect(text).toBe("replica lag runbook");
+    expect(text).not.toContain("mcp");
+  });
+
+  it("reaches a tainted value nested inside structured content", () => {
+    const text = searchableText({
+      content: { docId: "RB-204", text: tainted("pool saturated", "runbook:RB-204") },
+      timestamp: 1,
+    });
+    expect(text).toContain("RB-204");
+    expect(text).toContain("pool saturated");
+    expect(text).not.toContain("runbook:");
   });
 });
 
