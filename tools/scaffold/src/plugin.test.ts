@@ -59,6 +59,7 @@ describe("pluginFiles", () => {
       "telemetry",
       "middleware",
       "timer",
+      "memory",
       "projection",
       "worker",
       "llm",
@@ -76,6 +77,41 @@ describe("pluginFiles", () => {
     expect(index).toContain("propensity");
     expect(files["loom-plugin-foo/src/index.test.ts"]).toContain("runPolicyConformance");
     expect(files["loom-plugin-foo/package.json"]).toContain("@loom/learning");
+  });
+
+  it("scaffolds a memory plugin wired to the conformance kit", () => {
+    const files = pluginFiles("memory", "foo", { firstParty: false });
+    const index = files["loom-plugin-foo/src/index.ts"]!;
+    expect(index).toContain("implements MemoryStore");
+    expect(files["loom-plugin-foo/src/index.test.ts"]).toContain("runMemoryStoreConformance");
+    expect(files["loom-plugin-foo/package.json"]).toContain("@loom/memory");
+  });
+
+  it("scaffolds memory's OPTIONAL methods as prose, never as throwing stubs", () => {
+    // The runtime tests for `replace`/`search`/`close` and falls back when they are
+    // absent, so presence IS the feature flag: a generated stub that throws would
+    // advertise a capability the store does not have, and eviction would fail
+    // instead of taking the fallback path.
+    const index = pluginFiles("memory", "foo", { firstParty: false })[
+      "loom-plugin-foo/src/index.ts"
+    ]!;
+    const body = index.slice(index.indexOf("export class"));
+    for (const optional of ["replace", "search", "close"]) {
+      expect(index, `${optional} must be explained`).toContain(optional);
+      expect(body, `${optional} must not be emitted as a member`).not.toContain(`${optional}(`);
+    }
+    expect(index).toContain("PRESENCE IS THE FEATURE FLAG");
+  });
+
+  it("emits an exports map an ESM consumer can enter", () => {
+    // The scaffold used to mint `{ require, types }` — the exact shape that left 49
+    // packages in loom itself unreachable from `import`. A generator that reproduces
+    // a defect outlives every sweep of it.
+    const pkg = JSON.parse(
+      pluginFiles("memory", "foo", { firstParty: false })["loom-plugin-foo/package.json"] as string
+    ) as { exports: Record<string, Record<string, string>> };
+    const root = pkg.exports["."] as Record<string, string>;
+    expect(Object.keys(root)).toEqual(["types", "require", "default"]);
   });
 
   it("tells a policy author it is NOT a defineConfig seam", () => {

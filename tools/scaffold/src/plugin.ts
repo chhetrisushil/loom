@@ -391,6 +391,79 @@ const SEAMS: Record<string, SeamDef> = {
     },
   },
 
+  memory: {
+    key: "memory",
+    spi: "MemoryStore",
+    title: "Agent memory store (scoped entries, optional relevance search)",
+    wiring: "memoryStore: new <Name>MemoryStore()",
+    spiDeps: ["@loom/memory"],
+    conformance: ["runMemoryStoreConformance"],
+    index: (name) => {
+      const P = pascal(name);
+      return [
+        'import type { MemoryEntry, MemoryStore } from "@loom/memory";',
+        "",
+        "/**",
+        " * A `MemoryStore` — durable agent memory. Wire as `memoryStore`.",
+        " *",
+        " * A key names an ORDERED LIST of entries. `read` returns them in APPEND order,",
+        " * not timestamp order: entries routinely share a timestamp (one turn written in",
+        " * one tick), so a backend needs an insertion key of its own. An absent key reads",
+        " * as `[]`, never a throw, and `clear` is idempotent.",
+        " *",
+        " * `replace`, `search` and `close` are OPTIONAL, and PRESENCE IS THE FEATURE FLAG:",
+        " * the runtime tests for the method and falls back when it is missing. A stub that",
+        " * throws is therefore worse than no stub at all — it would advertise a capability",
+        " * the store does not have. Add each one only when you implement it:",
+        " *",
+        " *   replace(key, entries)  atomic whole-list rewrite. Without it, eviction is",
+        " *                          clear-then-re-append, and a crash between the two loses",
+        " *                          the scope.",
+        " *   search(key, query, o)  relevance retrieval, best first — what separates memory",
+        " *                          from the tail of a conversation. Index",
+        " *                          `searchableText(entry)` and split terms with `tokenize`",
+        " *                          (both exported by @loom/memory), because what gets",
+        " *                          indexed and what counts as a term are the contract.",
+        " *   close()                release a handle or a pool.",
+        " *",
+        " * `runMemoryStoreConformance` covers the required verbs and skips the optional",
+        " * ones you have not added.",
+        " */",
+        `export class ${P}MemoryStore implements MemoryStore {`,
+        "  append(_key: string, _entry: MemoryEntry): Promise<void> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  read(_key: string): Promise<MemoryEntry[]> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  clear(_key: string): Promise<void> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "}",
+        "",
+      ].join("\n");
+    },
+    test: (name) => {
+      const P = pascal(name);
+      return [
+        "// Prove your memory store with the conformance kit once the methods are real:",
+        '// import { runMemoryStoreConformance } from "@loom/conformance";',
+        `// import { ${P}MemoryStore } from "./index";`,
+        `// runMemoryStoreConformance(() => new ${P}MemoryStore());`,
+        "",
+        'import { describe, expect, it } from "vitest";',
+        `import { ${P}MemoryStore } from "./index";`,
+        "",
+        `describe("${P}MemoryStore", () => {`,
+        '  it("constructs", () => {',
+        `    expect(new ${P}MemoryStore()).toBeDefined();`,
+        "  });",
+        "});",
+        "",
+      ].join("\n");
+    },
+  },
+
   projection: {
     key: "projection",
     spi: "ProjectionRuntime",
@@ -719,7 +792,16 @@ function pluginPackageJson(seam: SeamDef, packageName: string, firstParty: boole
     type: "commonjs",
     main: "./dist/index.js",
     types: "./dist/index.d.ts",
-    exports: { ".": { require: "./dist/index.js", types: "./dist/index.d.ts" } },
+    // `types` first (TypeScript matches conditions in order), `default` LAST — it is
+    // the fallback that any condition set matches, and without it an `import`, which
+    // offers ["node", "import"] and never "require", resolves nothing at all.
+    exports: {
+      ".": {
+        types: "./dist/index.d.ts",
+        require: "./dist/index.js",
+        default: "./dist/index.js",
+      },
+    },
     scripts: {
       build: "tsc --build",
       test: "vitest run",

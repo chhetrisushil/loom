@@ -140,6 +140,45 @@ export function checkPlugin(
     });
   }
 
+  // Reachability from ESM. A conditional export is matched in ORDER and stops at the
+  // first hit, so `{ require, types }` — the shape this scaffold used to emit, and that
+  // 49 packages in loom itself carried — resolves for require() and fails an `import`
+  // with ERR_PACKAGE_PATH_NOT_EXPORTED. It is invisible to tsc, to a CJS test runner,
+  // and to anything that never actually imports the package from ESM.
+  const conditional = Object.entries(pkg.exports ?? {}).filter(
+    (entry): entry is [string, Record<string, string>] =>
+      typeof entry[1] === "object" && entry[1] !== null && !Array.isArray(entry[1])
+  );
+  const unreachable = conditional.filter(
+    ([, conds]) => "require" in conds && !("default" in conds) && !("import" in conds)
+  );
+  const shadowed = conditional.filter(
+    ([, conds]) => "default" in conds && Object.keys(conds).at(-1) !== "default"
+  );
+  if (conditional.length > 0) {
+    if (unreachable.length > 0) {
+      findings.push({
+        level: "warn",
+        message: `exports ${unreachable
+          .map(([sub]) => `"${sub}"`)
+          .join(
+            ", "
+          )} declare \`require\` with no \`default\`/\`import\` — an ESM consumer gets ERR_PACKAGE_PATH_NOT_EXPORTED`,
+      });
+    } else if (shadowed.length > 0) {
+      findings.push({
+        level: "warn",
+        message: `exports ${shadowed
+          .map(([sub]) => `"${sub}"`)
+          .join(
+            ", "
+          )} put \`default\` before another condition — \`default\` matches everything, so anything after it is dead`,
+      });
+    } else {
+      findings.push({ level: "ok", message: "exports resolve for both require() and import" });
+    }
+  }
+
   // Pre-publish readiness — npm-metadata hygiene a consumer relies on. Warn-only.
   if (opts.publish) {
     const need = (cond: boolean, ok: string, warn: string) =>

@@ -675,7 +675,7 @@ Loom plugin seams (loom plugin new <seam> <name>):
   …
 ```
 
-The current seams are **`store`**, **`dispatcher`**, **`telemetry`**, **`middleware`**, **`timer`**, **`projection`**, **`worker`**, **`llm`**, **`authorizer`**, and **`policy`**. Note that `policy` is wired in **flow code** (`decideWithPolicy(ctx, id, policy, context, actions)`), not in `defineConfig`.
+The current seams are **`store`**, **`dispatcher`**, **`telemetry`**, **`middleware`**, **`timer`**, **`memory`**, **`projection`**, **`worker`**, **`llm`**, **`authorizer`**, and **`policy`**. Note that `policy` is wired in **flow code** (`decideWithPolicy(ctx, id, policy, context, actions)`), not in `defineConfig`.
 
 ### `loom plugin new <seam> <name> [--first-party] [--dir .]`
 
@@ -697,7 +697,7 @@ Exit `0` when at least one file was written, `1` when everything was skipped (th
 
 ### `loom plugin check [--dir .] [--publish]`
 
-Validates a plugin package and prints one `✓` / `⚠` / `✗` line per finding, then a verdict. `--publish` adds npm-readiness checks on top of the structural ones. Exit `0` when there are no errors (warnings don't fail), `1` otherwise. The directory may also be given positionally — `loom plugin check ./loom-plugin-redis` — with `--dir` winning if both are present.
+Validates a plugin package and prints one `✓` / `⚠` / `✗` line per finding, then a verdict. Among the structural checks: an `exports` map that declares `require` with no `default`/`import` resolves for `require()` and raises `ERR_PACKAGE_PATH_NOT_EXPORTED` for an `import` — a shape neither tsc nor a CJS test runner can see. `--publish` adds npm-readiness checks on top of the structural ones. Exit `0` when there are no errors (warnings don't fail), `1` otherwise. The directory may also be given positionally — `loom plugin check ./loom-plugin-redis` — with `--dir` winning if both are present.
 
 ```bash
 npx loom plugin check --dir ./loom-plugin-redis --publish
