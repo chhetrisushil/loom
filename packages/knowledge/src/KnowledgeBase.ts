@@ -1,6 +1,7 @@
 import { tainted } from "@loom/classify";
 import { canonicalJson, fnv1a64 } from "@loom/core";
-import type { MemoryEntry, TieredMemory } from "@loom/memory";
+import { TieredMemory } from "@loom/memory";
+import type { MemoryEntry, MemoryStore } from "@loom/memory";
 import { packParagraphs } from "./chunk";
 import type { Chunker, DocRecord, KnowledgeDoc, Passage } from "./types";
 
@@ -126,6 +127,34 @@ export class KnowledgeBase {
     }));
   }
 
+  /**
+   * What is actually WRITTEN for a passage: its `text`, and its `title`/`meta` if any.
+   *
+   * `docId` and `index` are deliberately NOT stored, because a store indexes the string
+   * and number leaves of `content` — so storing them would make a document's own id a term
+   * matching all of its passages, and the chunk ordinal a term matching the first passage
+   * of every document in the corpus. That is the same widening that made a tainted value's
+   * `origin` unindexable (ADR 0090), and the same rule the SPI states for `MemoryEntry.id`.
+   *
+   * They are not lost: the entry id IS `docId#index`, ids are required to round-trip
+   * (SPI 2.0.0), and ids are not indexed. The requirement earns its keep twice.
+   */
+  private storedPassage(passage: Passage): Record<string, unknown> {
+    return {
+      ...(passage.title !== undefined && { title: passage.title }),
+      text: passage.text,
+      ...(passage.meta !== undefined && { meta: passage.meta }),
+    };
+  }
+
+  /**
+   * The tiered memory the corpus lives in, for a caller that also wants to `recall` it,
+   * point a second corpus at the same store, or inspect it from ops code.
+   */
+  get tieredMemory(): TieredMemory {
+    return this.memory;
+  }
+
   /** `docId#revision` — a manifest row's id. Rows are appended; the highest revision wins. */
   private rowId(docId: string, revision: number): string {
     return `${docId}#${revision}`;
@@ -226,7 +255,7 @@ export class KnowledgeBase {
     for (const passage of passages) {
       await this.memory.remember(this.tier, this.scope, {
         id: this.passageId(doc.id, passage.index),
-        content: passage,
+        content: this.storedPassage(passage),
       });
     }
     const committed: DocRecord = { ...pending, committed: true, revision: pending.revision + 1 };
@@ -314,15 +343,61 @@ export class KnowledgeBase {
 }
 
 /**
- * A stored entry's content, as a passage.
+ * Open a corpus over a `MemoryStore` directly — the two-line form of the four every
+ * consumer was writing by hand.
  *
- * A cast and not a parse, deliberately: on replay this value comes back out of a
- * `DECISION_RECORDED` payload as plain JSON, and re-validating it would only be able to
- * reject what the log already contains — the value IS what ran. The taint wrapper survives
- * that round trip because it is plain JSON too, which is the property ADR 0085 was built on.
+ * A corpus needs exactly one memory tier and that tier must not evict, which is a fact
+ * about corpora and not a decision each application should be re-deriving. Both first
+ * consumers built the identical `new TieredMemory({ tiers: { semantic: {} }, store })`
+ * before they could construct anything, and an application wiring `defineConfig` cannot
+ * pass `app.memory` here at all — that is a {@link MemoryRuntime}, one layer below
+ * `TieredMemory` — so the boilerplate was mandatory rather than incidental.
+ *
+ * Reach for the constructor instead when the corpus shares a memory with something else
+ * (a conversation in `episodic`, say), which is exactly when the tier set is a decision.
+ */
+export function openKnowledgeBase(
+  store: MemoryStore,
+  opts: Omit<KnowledgeBaseConfig, "memory">
+): KnowledgeBase {
+  const tier = opts.tier ?? "semantic";
+  return new KnowledgeBase({
+    ...opts,
+    memory: new TieredMemory({ tiers: { [tier]: {} }, store }),
+  });
+}
+
+/** `docId#index` split at the LAST separator, so a document id may itself contain one. */
+function splitPassageId(id: string): { docId: string; index: number } {
+  const cut = id.lastIndexOf("#");
+  const index = Number(id.slice(cut + 1));
+  if (cut < 1 || !Number.isInteger(index)) {
+    throw new Error(
+      `KnowledgeBase: entry id "${id}" is not a passage id (expected "docId#index"). The corpus scope holds passages this KnowledgeBase wrote; something else appended to it.`
+    );
+  }
+  return { docId: id.slice(0, cut), index };
+}
+
+/**
+ * A stored entry, as a passage: its identity from the entry id, the rest from `content`.
+ *
+ * The content half is a cast and not a parse, deliberately: on replay this value comes back
+ * out of a `DECISION_RECORDED` payload as plain JSON, and re-validating it would only be
+ * able to reject what the log already contains — the value IS what ran. The taint wrapper
+ * survives that round trip because it is plain JSON too, which is the property ADR 0085 was
+ * built on. The identity half is checked, because an unparseable id means the entry was not
+ * written by a KnowledgeBase and a `docId: undefined` would flow straight into a citation.
  */
 function toPassage(entry: MemoryEntry): Passage {
-  return entry.content as Passage;
+  if (entry.id === undefined) {
+    throw new Error(
+      "KnowledgeBase: a corpus entry has no id, so the document it belongs to cannot be named. Either the backend does not round-trip `MemoryEntry.id` (REQUIRED since MemoryStore SPI 2.0.0 — run `runMemoryStoreConformance` against it), or something other than this KnowledgeBase appended to the corpus scope."
+    );
+  }
+  const { docId, index } = splitPassageId(entry.id);
+  const stored = entry.content as Omit<Passage, "docId" | "index">;
+  return { docId, index, ...stored };
 }
 
 /** A document's live manifest record, plus every row id standing for it right now. */

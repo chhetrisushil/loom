@@ -1,5 +1,5 @@
 import { isTainted, taintOf, unwrapTainted } from "@loom/classify";
-import { InMemoryMemoryStore, TieredMemory } from "@loom/memory";
+import { InMemoryMemoryStore, TieredMemory, searchableText, tokenize } from "@loom/memory";
 import type { MemoryEntry, MemoryStore } from "@loom/memory";
 import { describe, expect, it } from "vitest";
 import { KnowledgeBase } from "./KnowledgeBase";
@@ -117,8 +117,51 @@ describe("KnowledgeBase — the document ↔ passage mapping", () => {
     const { kb, memory } = corpus();
     await kb.putDoc(RUNBOOK);
     const entries = await memory.recall("semantic", "runbooks");
-    expect(entries.every((e) => (e.content as Passage).docId !== undefined)).toBe(true);
+    expect(entries.every((e) => e.id?.startsWith("RB-101#") === true)).toBe(true);
     expect(entries.some((e) => "chunkCount" in (e.content as object))).toBe(false);
+  });
+
+  it("keeps the document id and the chunk ordinal OUT of the searchable text", async () => {
+    // A store indexes the string and number LEAVES of `content`. Storing `docId` there
+    // would make a document's own id match all of its passages, and storing `index` would
+    // make "0" match the first passage of every document in the corpus — the same widening
+    // that made a tainted value's `origin` unindexable, and the rule the SPI states for
+    // `MemoryEntry.id`. Both survive in the entry id, which is not indexed.
+    const { kb, memory } = corpus();
+    await kb.putDoc(RUNBOOK);
+    const stored = (await memory.recall("semantic", "runbooks"))[0] as MemoryEntry;
+    expect(searchableText(stored)).not.toContain("RB-101");
+    expect(tokenize(searchableText(stored))).not.toContain("0");
+    // …and the passage that comes back out still knows both.
+    const [passage] = await kb.retrieve("replica replay", { decide });
+    expect(passage?.docId).toBe("RB-101");
+    expect(passage?.index).toBe(0);
+  });
+
+  it("DOES index the title and meta — high signal, and a footgun worth knowing", async () => {
+    // Titles are what a question is often phrased in, so indexing them is deliberate.
+    // `meta` is the caller's, and it is indexed by the same rule: a `{ team: "payments" }`
+    // stamped on 300 documents makes "payments" match all 300. That is useful as a filter
+    // and surprising as a relevance term, so it is pinned here rather than left to be found.
+    const { kb } = corpus();
+    await kb.putDoc({
+      id: "D",
+      title: "Vacuum tuning",
+      text: "unrelated body",
+      meta: { team: "payments" },
+    });
+    expect((await kb.retrieve("vacuum", { decide })).map((p) => p.docId)).toEqual(["D"]);
+    expect((await kb.retrieve("payments", { decide })).map((p) => p.docId)).toEqual(["D"]);
+  });
+
+  it("refuses a corpus entry it did not write, rather than citing an unnamed document", async () => {
+    // The corpus scope belongs to the KnowledgeBase. An entry appended by hand has no
+    // passage id, so its document cannot be named — and a `docId: undefined` would flow
+    // straight into a citation.
+    const { kb, memory } = corpus();
+    await kb.putDoc(RUNBOOK);
+    await memory.remember("semantic", "runbooks", { content: { text: "smuggled replica note" } });
+    await expect(kb.retrieve("replica", { decide })).rejects.toThrow(/has no id/);
   });
 
   it("refuses a tier that evicts", () => {

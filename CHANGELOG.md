@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`@loom/memory` is in `SPI_PACKAGES`**, so `loom plugin check` finally holds a memory backend
+  to the peer-dependency rule. It had been absent for as long as the seam existed, reporting a
+  green "SPI packages are peer dependencies" while being unable to see the one package that
+  matters to it. A bundled copy here is not a duplicate kernel but a duplicate CONTRACT:
+  `searchableText`/`tokenize`/`clampSearchLimit` decide what a backend indexes and what counts
+  as a term, so a plugin carrying its own copy can answer a different question than the app
+  asked and still pass conformance.
+
 - **A corpus is mutable, and the SPI could not say so**
   ([ADR 0091](docs/adr/0091-corpus-lifecycle-and-the-knowledge-package.md)). `MemoryStore.search`
   ranks within ONE key, so a searchable corpus has to be one key — while a DOCUMENT, the unit that
@@ -39,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `groundedRequest`/`passageMessages` assemble the one prompt shape `guardRequest` accepts — one
   `user` message per passage, taint intact, never joined — so the shape every RAG tutorial writes
   (passages in the SYSTEM prompt) does not compile rather than being refused at run time.
+  `openKnowledgeBase(store, { scope })` is the two-line form of the four every consumer was
+  writing by hand — a corpus needs exactly one tier and that tier must not evict, which is a
+  fact about corpora rather than a decision each app re-derives (and `app.memory` is a
+  `MemoryRuntime`, one layer below the `TieredMemory` the constructor takes, so the
+  boilerplate was mandatory rather than incidental).
+
   `checkCitations`/`assertGrounded` reject a citation to a document that was never retrieved: the
   one hallucination in a RAG answer that is decidable rather than judged, because the retrieval was
   recorded. Chunking stays injected (`packParagraphs` is an ignorable default), embeddings stay
