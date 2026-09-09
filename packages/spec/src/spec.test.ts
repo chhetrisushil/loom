@@ -218,6 +218,10 @@ const NOT_A_CAPABILITY = new Set([
   // 0084 — effect classes ride the existing @loom/verify seam (ADR 0028's capability
   // is what the registry grades); this ADR adds a rule, not a subsystem.
   "0084",
+  // 0092 — a placement verdict on the adaptive-operator-profile workload: the app builds
+  // it, one 1P item is gated on a second consumer and one is deferred behind evidence.
+  // No runtime subsystem to grade, the same reason 0081/0082/0083 are listed here.
+  "0092",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

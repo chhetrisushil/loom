@@ -43,6 +43,7 @@ const NO_CHANGELOG_ENTRY = new Set([
   "0044", // plugin packaging follow-on
   "0047", // the tools/* dev-tooling tier
   "0083", // the second-consumer rule
+  "0092", // adaptive operator profiles — placement; nothing shipped, W1 gated, W3 deferred
 ]);
 
 /** Accepted ADRs, by number. Superseded/withdrawn records describe nothing shipped. */
