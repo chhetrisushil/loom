@@ -13,10 +13,10 @@ import {
 import { isProjectionHandlersRef, loadProjectionHandlers, projectionEventTypes } from "@loom/core";
 import type {
   AgentDefinition,
+  AnyProjectionDefinition,
   EventEnvelope,
   MemoryDefinition,
   PolicyDefinition,
-  ProjectionDefinition,
   ScheduleDefinition,
   SkillDefinition,
   ToolDefinition,
@@ -436,8 +436,14 @@ export interface LoomConfig {
    * whose events never fire never loads its code). Discovery from `app/projections/*.ts`.
    */
   projectionModules?: ProjectionModule[];
-  /** Projection definitions registered directly (in addition to any from `projectionModules`). */
-  projections?: ProjectionDefinition[];
+  /**
+   * Projection definitions registered directly (in addition to any from `projectionModules`).
+   *
+   * Typed as {@link AnyProjectionDefinition} because a fold is invariant in its state: a
+   * `ProjectionDefinition<CpuState>` is assignable to no other instantiation, so an array of
+   * concretely-typed projections could not be passed here at all.
+   */
+  projections?: AnyProjectionDefinition[];
   /** Capability catalog registered into the runtime + wired to agents. */
   catalog?: CatalogLike;
   /**

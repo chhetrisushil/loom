@@ -36,6 +36,7 @@ export type { ExposedError } from "./types/exposure";
 export type {
   AgentDefinition,
   AgentSkillDef,
+  AnyProjectionDefinition,
   EffectKind,
   EffectMode,
   FlowDefinition,
