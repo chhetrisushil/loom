@@ -56,9 +56,18 @@ export interface PinReport {
   readonly compared: number;
 }
 
-/** A declared version is a non-empty string; `""` is a forgotten field, not a version. */
+/**
+ * A declared version is a non-empty OWN string; `""` is a forgotten field, not a version.
+ *
+ * `Object.hasOwn` rather than a bare index read: a caller's map is an ordinary object, so
+ * `pins["toString"]` would otherwise return a function off `Object.prototype` and a
+ * derivation named `constructor` or `valueOf` would compare against something nobody
+ * recorded. Reading only own properties makes the answer depend on the map, not on where
+ * the map came from.
+ */
 function declared(pins: VersionPins | undefined, id: string): string | undefined {
-  const value = pins?.[id];
+  if (pins === undefined || !Object.hasOwn(pins, id)) return undefined;
+  const value = pins[id];
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed === "" ? undefined : trimmed;

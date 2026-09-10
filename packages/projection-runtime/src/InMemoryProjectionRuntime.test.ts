@@ -450,6 +450,17 @@ describe("pins() — what an artifact's recorded version is compared against", (
     expect(runtime.pins()).toEqual({ latency: "3", deploys: "1" });
   });
 
+  it("keeps a version under a hostile id instead of setting a prototype", () => {
+    // `{}` would swallow this: assigning `__proto__` sets a prototype rather than adding a
+    // key, so the projection would vanish from every comparison with no finding anywhere.
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register({ ...stepCounterProjection, id: "__proto__", version: "3" });
+    // `Object.entries`, not an index read: it asserts the key AND the value, and reads as
+    // the data question this is — does the map contain this entry — rather than as a
+    // property access that would look like prototype fiddling.
+    expect(Object.entries(runtime.pins())).toEqual([["__proto__", "3"]]);
+  });
+
   it("a projection declaring no version is ABSENT, not present-and-empty", () => {
     // Present-and-empty would compare equal to another empty declaration and read as a
     // verified match between two folds that said nothing about themselves.

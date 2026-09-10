@@ -18,6 +18,17 @@ export interface CapabilityCatalogOptions {
 // The "catalog/" of the proposal: a registry of capabilities that can be listed,
 // keyword-searched (a deterministic fallback for intent matching), registered
 // into a WorkflowRuntime, and invoked by id.
+/**
+ * How many distinct query terms the keyword scorer counts.
+ *
+ * Scoring is O(entries x terms) of substring searches, so the query is the multiplier;
+ * past a few dozen terms the extra ones are noise rather than signal. Mirrors
+ * `@loom/memory`'s `MAX_QUERY_TERMS` in intent — a query is an input, and an input has a
+ * bound — without sharing a constant across packages that do not otherwise depend on each
+ * other.
+ */
+const MAX_SCORED_TERMS = 64;
+
 export class CapabilityCatalog {
   private readonly capabilities = new Map<string, CapabilityDefinition>();
   private readonly authorizer: CapabilityInvokeAuthorizer | undefined;
@@ -76,10 +87,17 @@ export class CapabilityCatalog {
   // Deterministic keyword scoring over id/name/intent/tags. Used as the offline
   // fallback for intent routing and planning when no LLM provider is supplied.
   find(query: string): CapabilityMatch[] {
-    const terms = query
-      .toLowerCase()
-      .split(/\W+/)
-      .filter((t) => t.length > 2);
+    // Deduplicated and capped, for the reason `SkillRegistry.find` is: the score counts
+    // terms the haystack contains, so a repeat adds a substring search and no information,
+    // and an unbounded question is O(capabilities x terms) of them.
+    const terms = [
+      ...new Set(
+        query
+          .toLowerCase()
+          .split(/\W+/)
+          .filter((t) => t.length > 2)
+      ),
+    ].slice(0, MAX_SCORED_TERMS);
     const matches: CapabilityMatch[] = [];
     for (const capability of this.capabilities.values()) {
       const haystack = [capability.id, capability.name, capability.intent, ...capability.tags]

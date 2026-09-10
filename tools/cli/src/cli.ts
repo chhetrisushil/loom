@@ -35,7 +35,10 @@ interface Parsed {
 export function parseArgs(argv: string[]): Parsed {
   const [command, ...rest] = argv;
   const positionals: string[] = [];
-  const flags: Record<string, string> = {};
+  // No prototype: with one, `flags["valueOf"] ?? fallback` answers with a FUNCTION for a
+  // flag nobody passed, and `--__proto__ x` sets a prototype instead of recording a flag.
+  // Every option is read out of this bag by name, so the bag must hold only what was typed.
+  const flags: Record<string, string> = Object.create(null);
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i]!;
     if (arg.startsWith("--")) {

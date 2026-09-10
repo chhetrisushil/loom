@@ -228,7 +228,9 @@ export class ReadModelService {
    * would compare equal to another empty declaration and read as a verified match.
    */
   pins(): Readonly<Record<string, string>> {
-    const pins: Record<string, string> = {};
+    // No prototype — see `emptyPins` in @loom/blueprint-runtime: a model id of `__proto__`
+    // would otherwise set one rather than add a key, and drop out of every report silently.
+    const pins: Record<string, string> = Object.create(null);
     for (const [id, model] of this.models) {
       if (model.version !== undefined) pins[id] = model.version;
     }
@@ -253,7 +255,7 @@ export class ReadModelService {
     // Scoped to what the caller recorded: another model's version drifting says nothing
     // about the artifact in hand, and which models an artifact used is only the caller's
     // to know.
-    const scoped: Record<string, string> = {};
+    const scoped: Record<string, string> = Object.create(null);
     for (const id of Object.keys(recorded)) {
       const now = current[id];
       if (now !== undefined) scoped[id] = now;

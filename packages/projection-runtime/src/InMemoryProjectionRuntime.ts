@@ -326,7 +326,9 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
    * equal to another empty declaration and read as a verified match.
    */
   pins(): Readonly<Record<string, string>> {
-    const pins: Record<string, string> = {};
+    // No prototype: a projection registered as `__proto__` would otherwise set one instead
+    // of adding a key, and vanish from every comparison without a finding.
+    const pins: Record<string, string> = Object.create(null);
     for (const [id, projection] of this.projections) {
       if (projection.version !== undefined) pins[id] = projection.version;
     }

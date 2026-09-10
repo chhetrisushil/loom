@@ -113,3 +113,36 @@ describe("checkBlueprintPins — does this view still mean what it meant?", () =
     expect(report.compared).toBe(1);
   });
 });
+
+describe("a projection id is data, and cannot fall out of the report", () => {
+  // Before the maps were built without a prototype, `pins["__proto__"] = v` SET a prototype
+  // instead of adding a key: the pin vanished, `Object.keys` never saw it, and the binding
+  // dropped out of the comparison with `compared` counting one fewer and no finding at all.
+  // Silent omission is the failure this whole seam exists to prevent.
+
+  it("reports a `__proto__` binding rather than dropping it", () => {
+    const recorded = JSON.parse('{"__proto__":"1","spend":"1"}');
+    const stored = JSON.parse(
+      JSON.stringify({
+        ...view(["__proto__", "spend"]),
+      })
+    );
+    stored.projectionVersions = recorded;
+
+    expect(Object.keys(blueprintPins(stored)).sort()).toEqual(["__proto__", "spend"]);
+
+    const report = checkBlueprintPins(stored, JSON.parse('{"__proto__":"2","spend":"1"}'));
+    expect(report.compared).toBe(2);
+    expect(report.findings.map((f) => [f.id, f.code])).toEqual([["__proto__", "drift"]]);
+  });
+
+  it("still accounts for a binding whose version could not be recorded", () => {
+    // An object LITERAL cannot carry a `__proto__` key at all, so nothing was recorded for
+    // it. That has to read as `unpinned` — an absence the caller can see — not as silence.
+    const report = checkBlueprintPins(view(["__proto__", "spend"], { spend: "1" }), {
+      spend: "1",
+    });
+    expect(report.compared).toBe(1);
+    expect(report.findings.map((f) => [f.id, f.code])).toEqual([["__proto__", "unpinned"]]);
+  });
+});

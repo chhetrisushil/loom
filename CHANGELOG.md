@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A query is an input, and an input has a bound (MemoryStore SPI 2.0.0 → 2.1.0).** Terms are
+  OR-ed, so a repeated term is the same term — it cannot change which entries match, only how
+  long a store takes to say so. A 128 KB question repeating one word 20,000 times built a
+  20,000-clause FTS5 `MATCH` and took `SqliteMemoryStore` **32.7 seconds**: a denial of service
+  bought from a text box, on a call any agent makes with whatever a user typed. `queryTerms`
+  now deduplicates and caps at `MAX_QUERY_TERMS` (256, far past any real question, and the
+  point at which distinct terms stop being signal), and all three backends derive their terms
+  from it. It degrades rather than refuses — the choice `searchableText`'s depth limit already
+  makes — and a similarity backend, which derives no terms, is unaffected. The same bound is
+  applied to `SkillRegistry.find` and `CapabilityCatalog.find`, whose keyword scoring is
+  `O(entries × terms)` of substring searches over an equally unbounded query.
+
+- **A pin map is read as data, never as an object.** A derivation id is an untrusted string —
+  the premise of ADR 0088 is that a model may have composed the blueprint that names it — and
+  `{}["__proto__"] = version` sets a prototype instead of adding a key. The pin vanished,
+  `Object.keys` never saw it, and the binding dropped out of `checkBlueprintPins` entirely:
+  `compared` counted one fewer and **no finding was raised**, which is precisely the silent
+  omission the seam exists to prevent. Every pin map is now built without a prototype
+  (`blueprintPins`, `checkBlueprintPins`, `InMemoryProjectionRuntime.pins`,
+  `ReadModelService.pins`/`checkPins`) and every read is an own-property read, so a derivation
+  called `constructor` or `toString` can no longer be answered for by `Object.prototype`.
+  `parseArgs` gets the same treatment: with a prototype, `flags["valueOf"] ?? fallback`
+  answered with a function for a flag nobody passed.
+
 - **The binding-semantics pin — a content address that freezes a name, not a meaning.** A
   composed surface is content-addressed, and `docs/composed-surfaces.md` listed *bindings* among
   the things that address freezes, under the heading "the meaning of a view never changes

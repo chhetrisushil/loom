@@ -1,5 +1,5 @@
 import type { MemoryEntry, MemorySearchOptions, MemoryStore } from "@loom/memory";
-import { clampSearchLimit, searchableText, tokenize } from "@loom/memory";
+import { clampSearchLimit, queryTerms, searchableText } from "@loom/memory";
 import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 
@@ -121,9 +121,9 @@ export class PostgresMemoryStore implements MemoryStore {
 
   async search(key: string, query: string, opts: MemorySearchOptions = {}): Promise<MemoryEntry[]> {
     await this.ready;
-    const terms = tokenize(query);
+    const terms = queryTerms(query);
     if (terms.length === 0) return [];
-    // OR-ed terms, and safe to interpolate into a tsquery because `tokenize` yields only
+    // OR-ed terms, and safe to interpolate into a tsquery because `queryTerms` yields only
     // alphanumerics — `plainto_tsquery` would AND them instead, so a longer question would
     // return fewer memories, which is backwards.
     const tsquery = terms.join(" | ");
