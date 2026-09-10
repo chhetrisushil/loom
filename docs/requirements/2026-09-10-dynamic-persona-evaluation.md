@@ -217,6 +217,10 @@ gate was met rather than waived — and the second consumer changed the API from
 **W2 — Document the identity hazard where a composer meets it (docs).** The comment in `widgets.ts`
 is correct and is in the one place a runtime composer's author never looks. The blueprint-conformance
 documentation should carry it: a model-composed blueprint that is ever revised must supply ids.
+**Shipped**: [`docs/composed-surfaces.md`](../composed-surfaces.md) carries it, in both directions —
+along one lineage (a revision re-identifies an edited node) and across compositions (two variants
+meant to share a node agree only while their props stay byte-identical) — with `preservesNodes` /
+`identityDiff` named as how you find out you got it wrong.
 
 **W3 — Subject erasure must invalidate derived read models (1P, deferred behind evidence).** The
 correctness fix is available today (`clear` + rebuild) and should be *documented as required* now.
