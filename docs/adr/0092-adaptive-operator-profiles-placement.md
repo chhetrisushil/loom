@@ -127,6 +127,27 @@ non-removal invariant becomes a rate rather than an assertion.
 - Nothing here changes what a consumer of the framework can call, which is why this ADR ships no
   changelog entry.
 
+## Addendum — 2026-09-10, from implementing D6
+
+D6 says the extractor "must tolerate `{ $shredded }` payloads … or the rebuild throws". Building
+the case showed the sentence puts the failure one layer too low, in the direction that matters:
+
+**The throw is at the SOURCE read, before any extractor runs.** `EncryptingEventStore` fails an
+authoritative read of a shredded subject by design (K10-R4), and `ReadModelService`'s scan is such
+a read — so a rebuild through the store the fold uses does not degrade, it does not skip the
+subject, it raises `PayloadShreddedError` and indexes nothing at all. The repair D6 prescribes is
+unavailable unless the rebuild is given a source configured `onShredded: "tolerate"`, which is a
+deployment decision, not an extractor one.
+
+Tolerance then hands the extractor a second decision D6 did not name: a tolerant read substitutes
+`{ $shredded: true }` for each erased field, so an extractor that indexes it verbatim rebuilds the
+**placeholder** into the cache. Nothing leaks — the value is genuinely gone — but every erased
+subject collapses onto that single value in a field the app declared as an id, so a model keyed on
+it merges erased subjects into one bucket.
+
+Both are now pinned by `plugins/read-model/src/erasure.test.ts`, alongside the stale-row hazard
+itself and the *O(log)* rebuild cost. The deferral of a row-granular purge is unchanged.
+
 ## Notes
 
 The evaluation carries the full verdict table, the correction record, and answers to three of the
