@@ -128,26 +128,48 @@ it does not know a read model exists, and the only removal verb on `ReadModelSto
 `clear(modelId)` — the whole model, never a row.
 
 So after an erasure, every derived row still holds whatever the extractor copied out
-before the key died — and those rows are what a console query reads. Three obligations
-follow, and the middle one is the one designs miss because "just rebuild it" sounds free
-([ADR 0092](adr/0092-adaptive-operator-profiles-placement.md) D6):
+before the key died — and those rows are what a console query reads. **Invalidating them
+is a separate, explicit step.**
 
-1. **Invalidate what the subject touched.** `clear(modelId)` then re-scan. Erasure cost
-   is therefore *O(log)*, not *O(subject)*: an unrelated subject's rows are rebuilt too.
-   Budget it against the erasure SLA before a model grows.
-2. **Rebuild through a tolerant source.** The rebuild is a read, and the authoritative
+### Purge the subject's rows (preferred)
+
+```ts
+await readModels.purge("actions-by-operator", { operator: "user-42" });
+```
+
+`purge` deletes by indexed-field equality — the same semantics `query` uses, so the rows
+it removes are exactly the rows the equivalent query returns — and returns the count
+([ADR 0093](adr/0093-read-model-row-purge.md)). Work is proportional to the erased
+subject, and it never reads the log, so none of the rebuild hazards below apply.
+
+Three things it deliberately refuses, because an erasure that quietly does nothing is
+worse than one that fails: an **empty filter** (neither "every row" — that is `clear` —
+nor "no rows"), a filter naming an **undeclared field** (it could never match, so the
+report would be a successful erasure of zero rows), and a **backend without the method**
+(`PurgeUnsupportedError`, naming the fallback). Watermarks are untouched, which is what
+makes the deletion stick: the next catch-up has nothing left to re-read.
+
+### `clear` + rebuild (the fallback)
+
+Correct, always available, and *O(log)* — measured at 68× the cost of a purge for one
+subject of 50 in a 20k-event corpus (`plugins/read-model/src/purge.bench.ts`). Rebuild's
+cost does not depend on how much of the model the subject owned, so budget it against the
+erasure SLA. Two obligations it carries that a purge does not
+([ADR 0092](adr/0092-adaptive-operator-profiles-placement.md) D6 and its addendum):
+
+1. **Rebuild through a tolerant source.** The rebuild is a read, and the authoritative
    read of a shredded subject throws `PayloadShreddedError` by design (K10-R4) — so a
    rebuild through the store the fold uses **cannot run at all**. It needs an
    `EncryptingEventStore` configured `onShredded: "tolerate"`, the same off-log posture
    `exportSubject` takes.
-3. **Decide what a shredded field means to the extractor.** A tolerant read substitutes
+2. **Decide what a shredded field means to the extractor.** A tolerant read substitutes
    `{ $shredded: true }` for each erased field. An extractor that indexes it verbatim
    rebuilds the *placeholder* into the cache: not a leak — the value is genuinely gone —
    but every erased subject collapses onto one bucket in a field the app declared as an
    id. Use `isShredded` and skip the row, or map it to an explicit tombstone.
 
-`plugins/read-model/src/erasure.test.ts` pins all three, including the rebuild that
-throws.
+`plugins/read-model/src/erasure.test.ts` pins all of it, including the rebuild that
+throws and the purge that works through the same strict source.
 
 ## Triage & scope
 

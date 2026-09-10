@@ -35,6 +35,10 @@ import type { ReadModelDefinition } from "./types";
 //  4. and the erasure is whole-model: an unrelated subject's rows are rebuilt too.
 //
 // Points 2 and 3 are the ones a design will miss, because "just rebuild it" sounds free.
+//
+// The last case is the one that closes it: `purge` (ADR 0093) deletes the subject's rows
+// directly, so the erasure costs the rows rather than the log — and it needs no tolerant
+// source, because it never reads the log at all.
 
 const SENSITIVE = { OPERATOR_ACTION: ["operator"] } as const;
 
@@ -145,6 +149,30 @@ describe("subject erasure and derived read-model rows (ADR 0092 D6)", () => {
     expect(await operatorsIn(service)).toEqual(["bo"]);
     // The cost, stated: every execution is re-scanned, not just the erased subject's.
     expect(report.executionsScanned).toBe(3);
+  });
+
+  it("purge erases the subject's rows without reading the log at all", async () => {
+    const { keys, raw, encrypting, service } = await boot("throw"); // the STRICT source
+    await service.catchUp([encrypting]);
+    await shredSubject(keys, raw, "ana:1", { subjectId: "ana", executionIds: ["ana:1", "ana:2"] });
+
+    // No rebuild, so no scan, so the strict source that made the rebuild impossible two
+    // cases up is irrelevant here: purge works over the ROWS, and the rows are plaintext.
+    expect(await service.purge(ACTIONS.id, { operator: "ana" })).toBe(2);
+    expect(await operatorsIn(service)).toEqual(["bo"]);
+
+    // And it holds: watermarks are untouched, so the next incremental catch-up has
+    // nothing to re-read — which is why this is an erasure and not a cache eviction.
+    // (Through the strict source that scan would throw; through a tolerant one it finds
+    // every execution already watermarked.)
+    const tolerant = new EncryptingEventStore(raw, keys, {
+      sensitive: SENSITIVE,
+      subjectOf,
+      onShredded: "tolerate",
+    });
+    const report = await service.catchUp([tolerant]);
+    expect(report.rowsApplied).toBe(0);
+    expect(await operatorsIn(service)).toEqual(["bo"]);
   });
 
   it("a credulous extractor rebuilds the placeholder INTO the cache", async () => {

@@ -2,9 +2,10 @@ import type {
   ReadModelPage,
   ReadModelQuery,
   ReadModelRow,
+  ReadModelScalar,
   ReadModelStore,
 } from "@loom/plugin-read-model";
-import { clampQueryLimit, parseQueryCursor } from "@loom/plugin-read-model";
+import { assertPurgeFilter, clampQueryLimit, parseQueryCursor } from "@loom/plugin-read-model";
 import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 
@@ -152,6 +153,20 @@ export class PostgresReadModelStore implements ReadModelStore {
           nextCursor: JSON.stringify([last.timestamp, last.sequence, last.rowId]),
         }),
     };
+  }
+
+  async purge(modelId: string, where: Record<string, ReadModelScalar>): Promise<number> {
+    assertPurgeFilter(where);
+    await this.ready;
+    // `fields @> $2::jsonb` is the same GIN-indexed containment the query path uses, so a
+    // purge deletes exactly what the equivalent query would have returned. Watermarks are
+    // deliberately untouched (SPI contract): clearing one would make the next catch-up
+    // re-derive the rows just erased.
+    const { rowCount } = await this.pool.query(
+      "DELETE FROM read_model_rows WHERE model_id = $1 AND fields @> $2::jsonb",
+      [modelId, JSON.stringify(where)]
+    );
+    return rowCount ?? 0;
   }
 
   async clear(modelId: string): Promise<void> {

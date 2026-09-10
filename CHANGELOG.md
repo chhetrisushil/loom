@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Row-granular `purge` on the read-model store SPI (1.0.0 → 1.1.0).** Erasing one subject
+  from a read model used to mean `clear` + rebuild — work proportional to the whole log, no
+  matter how few rows the subject owned. `purge(modelId, where)` deletes by indexed-field
+  equality with the same semantics `query` uses, so a caller can see what it is about to erase
+  with the tool it already has, and returns the count. Measured at **68×** on
+  `purge.bench.ts` (0.49 ms vs 33.8 ms, one subject of 50 in a 20k-event corpus).
+  Three refusals, because an erasure that quietly does nothing is worse than one that fails:
+  an empty filter throws rather than meaning either "every row" or "no rows"; a filter naming
+  an undeclared field throws rather than reporting zero; and a backend without the method
+  raises a typed `PurgeUnsupportedError` naming the fallback rather than resolving with zero.
+  Watermarks are deliberately untouched — clearing them would let the next catch-up re-derive
+  the rows just erased. Implemented for the in-memory, SQLite and Postgres backends and pinned
+  by the conformance kit, which `PostgresReadModelStore` now runs for the first time
+  (ADR 0093).
+
 - **A corpus can have more than one writer** — `DocRecord.source`, `sync(docs, { source })`,
   `putDoc(doc, { source })`, and `SyncResult.retained`. `sync` is a destructive reconcile over
   everything the manifest holds, so an agent writing down what it learned from feedback into the

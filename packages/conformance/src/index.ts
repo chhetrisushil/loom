@@ -1044,6 +1044,8 @@ export interface ReadModelStoreLike {
       cursor?: string;
     }
   ): Promise<{ rows: { rowId: string; value: unknown }[]; nextCursor?: string }>;
+  /** OPTIONAL (SPI 1.1.0): delete rows by indexed-field equality; returns the count. */
+  purge?(modelId: string, where: Record<string, RmScalar>): Promise<number>;
   clear(modelId: string): Promise<void>;
 }
 
@@ -1149,6 +1151,69 @@ export function runReadModelStoreConformance(
       expect(await store.watermark("a", "x-1")).toBeNull();
       expect((await store.query("b")).rows).toHaveLength(1);
       expect(await store.watermark("b", "x-1")).toBe(0);
+    });
+
+    // ── purge (OPTIONAL, SPI 1.1.0 — ADR 0093) ───────────────────────────────
+
+    it("purge deletes exactly the matching rows, scoped to one model (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.purge === undefined) return;
+      await store.apply("a", "x-1", 2, [
+        row(0, { fields: { target: "orders" } }),
+        row(1, { fields: { target: "orders" } }),
+        row(2, { fields: { target: "users" } }),
+      ]);
+      await store.apply("b", "x-1", 0, [row(0, { fields: { target: "orders" } })]);
+
+      expect(await store.purge("a", { target: "orders" })).toBe(2);
+      expect((await store.query("a")).rows).toHaveLength(1);
+      // Another model's rows with the same field value are a different subject's data.
+      expect((await store.query("b")).rows).toHaveLength(1);
+    });
+
+    it("purge leaves watermarks alone, so catch-up cannot resurrect the rows (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.purge === undefined) return;
+      await store.apply("a", "x-1", 7, [row(0, { fields: { target: "orders" } })]);
+      await store.purge("a", { target: "orders" });
+      // The row is erased; the watermark still says this execution is indexed through 7.
+      // A backend that cleared it would make the next incremental scan re-read the log
+      // from zero and re-derive exactly what was just erased.
+      expect(await store.watermark("a", "x-1")).toBe(7);
+    });
+
+    it("purge is idempotent, matches nothing rather than everything, and refuses an empty filter (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.purge === undefined) return;
+      await store.apply("a", "x-1", 0, [row(0, { fields: { target: "orders" } })]);
+
+      // An erasure is retried; the second run legitimately finds nothing.
+      expect(await store.purge("a", { target: "ghost" })).toBe(0);
+      expect(await store.purge("unknown-model", { target: "orders" })).toBe(0);
+      expect((await store.query("a")).rows).toHaveLength(1);
+
+      // The empty filter is the one a caller reaches by ACCIDENT — a subject id that
+      // resolved to nothing. Read as match-all it wipes the model; read as match-none it
+      // reports an erasure that did not happen. Both are wrong, so it must throw.
+      await expect(store.purge("a", {})).rejects.toBeInstanceOf(TypeError);
+      expect((await store.query("a")).rows).toHaveLength(1);
+
+      expect(await store.purge("a", { target: "orders" })).toBe(1);
+      expect(await store.purge("a", { target: "orders" })).toBe(0); // idempotent
+    });
+
+    it("purge ANDs its fields, exactly as query does (OPTIONAL)", async () => {
+      const store = factory();
+      if (store.purge === undefined) return;
+      await store.apply("a", "x-1", 1, [
+        row(0, { fields: { target: "orders", severity: "high" } }),
+        row(1, { fields: { target: "orders", severity: "low" } }),
+      ]);
+      // A backend ORing its clauses would take both — and an erasure that deletes more
+      // than it was asked to is as much a defect as one that deletes less.
+      expect(await store.purge("a", { target: "orders", severity: "high" })).toBe(1);
+      const left = await store.query("a");
+      expect(left.rows).toHaveLength(1);
     });
   });
 }

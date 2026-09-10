@@ -8,8 +8,10 @@ import type {
   ReadModelPage,
   ReadModelQuery,
   ReadModelRow,
+  ReadModelScalar,
   ReadModelStore,
 } from "./types";
+import { PurgeUnsupportedError, assertPurgeFilter } from "./types";
 
 /** Reserved control streams (`__loom_*`) are kernel bookkeeping — never indexed. */
 function isReservedStream(executionId: string): boolean {
@@ -184,6 +186,38 @@ export class ReadModelService {
       return Promise.reject(new TypeError(`read model "${modelId}" is not registered`));
     }
     return this.store.query(modelId, q);
+  }
+
+  /**
+   * Delete the rows matching `where` — row-granular erasure (ADR 0093).
+   *
+   * The compliance path: a crypto-shred erases the log, and the derived rows keep
+   * whatever the extractor copied out before the key died. Purging by the subject's
+   * indexed field removes exactly those rows, at the cost of the rows rather than the
+   * cost of the log.
+   *
+   * Two refusals rather than one silent success, because an erasure that quietly did
+   * nothing is worse than one that failed:
+   *  - a field the model never declared as an index (it can match no row, so a filter
+   *    naming it would report a successful erasure of zero rows), and
+   *  - a backend without {@link ReadModelStore.purge} ({@link PurgeUnsupportedError}) —
+   *    catch it and `rebuild` if the *O(log)* fallback is acceptable.
+   */
+  async purge(modelId: string, where: Record<string, ReadModelScalar>): Promise<number> {
+    const model = this.models.get(modelId);
+    if (model === undefined) {
+      throw new TypeError(`read model "${modelId}" is not registered`);
+    }
+    assertPurgeFilter(where);
+    for (const field of Object.keys(where)) {
+      if (!model.indexes.includes(field)) {
+        throw new TypeError(
+          `read model "${modelId}": purge filter names undeclared field "${field}" — only indexed fields are stored on a row, so this filter could never match`
+        );
+      }
+    }
+    if (this.store.purge === undefined) throw new PurgeUnsupportedError(modelId);
+    return this.store.purge(modelId, where);
   }
 
   /** RM-2 — the read model is a cache: drop it and re-derive from the log. */

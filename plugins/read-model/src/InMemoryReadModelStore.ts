@@ -5,7 +5,7 @@ import type {
   ReadModelScalar,
   ReadModelStore,
 } from "./types";
-import { clampQueryLimit, parseQueryCursor } from "./types";
+import { assertPurgeFilter, clampQueryLimit, parseQueryCursor } from "./types";
 
 type Cursor = [timestamp: number, sequence: number, rowId: string];
 
@@ -59,6 +59,23 @@ export class InMemoryReadModelStore implements ReadModelStore {
     }
     const prior = marks.get(executionId);
     if (prior === undefined || upToSequence > prior) marks.set(executionId, upToSequence); // monotonic
+  }
+
+  async purge(modelId: string, where: Record<string, ReadModelScalar>): Promise<number> {
+    assertPurgeFilter(where);
+    const byId = this.rows.get(modelId);
+    if (byId === undefined) return 0;
+    let deleted = 0;
+    // One pass, deleting through the iterator — a Map tolerates delete-during-iteration
+    // for the current entry, so this needs no intermediate array of keys.
+    for (const [rowId, row] of byId) {
+      if (matches(row, { where })) {
+        byId.delete(rowId);
+        deleted++;
+      }
+    }
+    // Watermarks deliberately untouched: see the SPI contract.
+    return deleted;
   }
 
   async watermark(modelId: string, executionId: string): Promise<number | null> {

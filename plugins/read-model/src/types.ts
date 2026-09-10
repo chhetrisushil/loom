@@ -73,6 +73,52 @@ export function clampQueryLimit(limit: number | undefined): number {
   return Math.min(limit, MAX_QUERY_LIMIT);
 }
 
+/**
+ * The {@link ReadModelStore} SPI contract version (ADR 0093).
+ *
+ * - `1.0.0`: `apply` / `watermark` / `watermarkedExecutions` / `query` / `clear`, plus
+ *   optional `close`.
+ * - `1.1.0`: optional {@link ReadModelStore.purge} — row-granular deletion by
+ *   indexed-field equality. MINOR because a backend that omits it behaves exactly as
+ *   before: callers reach it through `ReadModelService.purge`, which REFUSES loudly
+ *   when the backend cannot do it rather than deleting nothing and returning, which is
+ *   the one behaviour an erasure path must never have.
+ */
+export const READ_MODEL_STORE_SPI_VERSION = "1.1.0";
+
+/**
+ * Raised when a purge is asked of a backend that does not implement it. Typed rather
+ * than a bare `TypeError` so a compliance caller can catch it and fall back to
+ * `clear` + rebuild deliberately — the fallback is correct but *O(log)*, so choosing it
+ * should be a decision in the caller's code, not a surprise.
+ */
+export class PurgeUnsupportedError extends Error {
+  readonly name = "PurgeUnsupportedError";
+  constructor(readonly modelId: string) {
+    super(
+      `read model "${modelId}": this backend does not implement purge (ReadModelStore SPI ${READ_MODEL_STORE_SPI_VERSION}). Erase by clear(modelId) + rebuild from the log, or use a backend that implements it.`
+    );
+  }
+}
+
+/**
+ * Validate a purge filter. Backends MUST call this — contract, not hygiene.
+ *
+ * An EMPTY filter is refused rather than read as match-all. Match-all is `clear`, which
+ * a caller has to name explicitly; a filter is something a caller COMPUTES — from a
+ * subject id, a tenant, a lookup that returned nothing — and the empty case is exactly
+ * the one arrived at by accident. Reading it as "every row" turns a no-op into a silent
+ * wipe of the model, and reading it as "no rows" turns an erasure into a lie. Refusing
+ * is the only answer that is safe in both directions.
+ */
+export function assertPurgeFilter(where: Record<string, ReadModelScalar>): void {
+  if (Object.keys(where).length === 0) {
+    throw new TypeError(
+      "read-model purge: the filter must name at least one field — an empty filter is not 'every row' (that is `clear`), and silently matching nothing would report an erasure that did not happen"
+    );
+  }
+}
+
 /** The keyset cursor tuple every backend orders by. */
 export type QueryCursor = [timestamp: number, sequence: number, rowId: string];
 
@@ -121,6 +167,31 @@ export interface ReadModelStore {
   /** Executions this model has watermarks for (drives incremental catch-up). */
   watermarkedExecutions(modelId: string): Promise<string[]>;
   query(modelId: string, q?: ReadModelQuery): Promise<ReadModelPage>;
+  /**
+   * OPTIONAL row-granular delete (SPI 1.1.0, ADR 0093). Remove every row of `modelId`
+   * whose declared indexed fields all equal `where` — the same equality semantics
+   * `query` uses, ANDed. Returns how many rows were deleted.
+   *
+   * It exists for erasure. A crypto-shred erases the log and leaves derived rows holding
+   * the plaintext an extractor copied out beforehand, and until this method the only
+   * removal verb was {@link ReadModelStore.clear} — the whole model, re-scanned from the
+   * log, *O(log)* per subject (see `docs/compliance.md`).
+   *
+   * Contract a backend MUST honour:
+   * - **Watermarks are NOT touched.** Purge says "these rows are erased", not "re-read
+   *   this history": advancing or clearing a watermark would make the next catch-up
+   *   re-derive the very rows just deleted, from a log that may still hold them.
+   * - **An empty filter is refused**, never read as match-all — route it through
+   *   {@link assertPurgeFilter}, and see there for why.
+   * - **Idempotent**, and a filter matching nothing returns `0` rather than throwing: an
+   *   erasure is commonly retried, and the second run legitimately finds nothing.
+   * - **Scoped to one model.** Another model's rows with identical field values stay.
+   *
+   * A store that omits it is unchanged; `ReadModelService.purge` then raises
+   * {@link PurgeUnsupportedError} rather than reporting an erasure that never happened.
+   */
+  purge?(modelId: string, where: Record<string, ReadModelScalar>): Promise<number>;
+
   /**
    * RM-2 — drop ALL rows and watermarks for the model (rebuild support). Idempotent.
    *
