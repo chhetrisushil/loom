@@ -2,9 +2,10 @@ import type {
   ReadModelPage,
   ReadModelQuery,
   ReadModelRow,
+  ReadModelScalar,
   ReadModelStore,
 } from "@loom/plugin-read-model";
-import { clampQueryLimit, parseQueryCursor } from "@loom/plugin-read-model";
+import { assertPurgeFilter, clampQueryLimit, parseQueryCursor } from "@loom/plugin-read-model";
 import Database from "better-sqlite3";
 
 interface RowRecord {
@@ -172,6 +173,31 @@ export class SqliteReadModelStore implements ReadModelStore {
           nextCursor: JSON.stringify([last.timestamp, last.sequence, last.rowId]),
         }),
     };
+  }
+
+  async purge(modelId: string, where: Record<string, ReadModelScalar>): Promise<number> {
+    assertPurgeFilter(where);
+    // Same `json_extract` equality the query path uses, so a purge deletes exactly the
+    // rows the equivalent query would have returned. Not prepared once: the clause shape
+    // varies with the filter's field set, and an erasure is a lifecycle call, not a hot path.
+    const clauses = ["model_id = ?"];
+    const params: unknown[] = [modelId];
+    for (const [field, value] of Object.entries(where)) {
+      const path = `$."${field.split('"').join('""')}"`;
+      if (value === null) {
+        clauses.push("json_extract(fields, ?) IS NULL");
+        params.push(path);
+      } else {
+        clauses.push("json_extract(fields, ?) = ?");
+        params.push(path, typeof value === "boolean" ? (value ? 1 : 0) : value);
+      }
+    }
+    // Watermarks are deliberately left alone (SPI contract) — deleting one would make the
+    // next catch-up re-derive the rows just erased.
+    const info = this.db
+      .prepare(`DELETE FROM read_model_rows WHERE ${clauses.join(" AND ")}`)
+      .run(...params);
+    return info.changes;
   }
 
   async clear(modelId: string): Promise<void> {

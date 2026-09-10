@@ -1,8 +1,13 @@
-import { runEventStoreConformance, runMemoryStoreConformance } from "@loom/conformance";
+import {
+  runEventStoreConformance,
+  runMemoryStoreConformance,
+  runReadModelStoreConformance,
+} from "@loom/conformance";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe } from "vitest";
 import { PostgresEventStore } from "./PostgresEventStore";
 import { PostgresMemoryStore } from "./PostgresMemoryStore";
+import { PostgresReadModelStore } from "./PostgresReadModelStore";
 import { migrate } from "./schema";
 
 // The portable EventStore contract (ADR 0033) against the Postgres backend — now including
@@ -29,6 +34,12 @@ if (PG_URL === undefined) {
   // memory case (which a shared cursor would cause once the two kits' case counts pass
   // SCHEMA_COUNT) would let fixed keys like "k" leak between cases.
   let nextMemory = 0;
+  // Likewise for the read-model kit: its cases share fixed model ids ("m", "a", "b"), so it
+  // needs its own cursor rather than sharing the EventStore's. Until now the Postgres read
+  // model was covered only by a hand-rolled case in `postgres-stores.test.ts` while the
+  // SQLite one was held to the kit — so the portable contract was enforced on one backend
+  // and merely assumed on the other.
+  let nextReadModel = 0;
 
   beforeAll(async () => {
     // Create and migrate every schema up front, so `factory()` can stay synchronous (the
@@ -74,4 +85,9 @@ if (PG_URL === undefined) {
     const pool = pools[nextMemory++ % pools.length] as Pool;
     return new PostgresMemoryStore(pool);
   }, "PostgresMemoryStore");
+
+  runReadModelStoreConformance(() => {
+    const pool = pools[nextReadModel++ % pools.length] as Pool;
+    return new PostgresReadModelStore(pool);
+  }, "PostgresReadModelStore");
 }

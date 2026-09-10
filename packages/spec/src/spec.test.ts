@@ -222,6 +222,9 @@ const NOT_A_CAPABILITY = new Set([
   // it, one 1P item is gated on a second consumer and one is deferred behind evidence.
   // No runtime subsystem to grade, the same reason 0081/0082/0083 are listed here.
   "0092",
+  // 0093 — one optional method on the read-model store SPI (a plugin), the same tier as
+  // ADR 0058 above: the registry grades runtime subsystems, and this grows an adapter seam.
+  "0093",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {
