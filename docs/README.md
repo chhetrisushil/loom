@@ -39,7 +39,7 @@ The foundational decision record is [ADR 0016](adr/0016-loom-2.0-execution-runti
 
 Then the **[Kernel Governance Layer](spec/loom-kernel-specification.md)** ([ADR 0035](adr/0035-kernel-governance-layer.md)) added the normative spec, evidence-derived [maturity badges](spec/maturity.md), and the [compatibility matrix](spec/compatibility-matrix.md), all generated from one manifest (`@loom/spec`). Then the **three-direction arc** ([ADRs 0036–0041](adr/)) added three frontiers as opt-in packages over the stable syscall surface — **simulation testing** (`@loom/dst`), **multi-tenant isolation** (`@loom/plugin-audit-chain`, `@loom/fair-scheduler`, execution-lifecycle authorization), and **coordination primitives** (`@loom/live-query`, `@loom/orchestration`, `@loom/saga`) — landing `EVENT_SCHEMA_VERSION 1.12.0` (`+EXECUTION_DENIED`) with `KERNEL_ABI` unchanged. See [§5.8 of the architecture](architecture.md#58-the-three-direction-arc--simulation-testing-coordination-multi-tenant-isolation). Then the **perpetual-agents series** ([ADRs 0051–0057](adr/)) made logically perpetual, schedule-driven agents a first-class pattern: typed, contract-migratable carry state (`@loom/plugin-durable-state`), claim-checked bulk effect data (`claimCheckMiddleware` — the log records `{ ref, size, digest }` as the value), the K10.6 retention pin seam + pinned content GC, K11.5 contract-versioned state migration on `resumeAs`, opt-in `validateInput`, and a fix for the multi-gate suspend replay bug — landing `EVENT_SCHEMA_VERSION 1.16.0` with `KERNEL_ABI` unchanged, proven by a DST-simulated year in `db-sentinel` (in the sibling [`loom-examples`](examples.md) repo). Its **db-copilot infrastructure follow-on** ([ADRs 0058–0059](adr/)) added durable cross-execution read models (`@loom/plugin-read-model` — the institutional-memory query engine), paged store enumeration (EventStore SPI 1.2.0), streaming content ingestion (`putStream` + stream-typed claim-check), the `loom sweep content` operator CLI with the first durable content backend, and `sentinelPreset()`/`loom new sentinel`.
 
-The four arcs since have all landed **outside** the kernel — `KERNEL_ABI` is still `1.1.0`, and only the first of them touched the event schema at all:
+The arcs since have all landed **outside** the kernel — `KERNEL_ABI` is still `1.1.0`, and only two of them touched the event schema at all (typed failure channels took it to `1.17.0`, the learning substrate's decision context to `1.18.0`):
 
 - **GenUI dynamic execution** ([ADRs 0060–0066](adr/)) — the one that *did* change the kernel, and minimally: **typed failure channels** (`STEP_FAILED.channel/payload`, `EVENT_SCHEMA_VERSION 1.17.0`) let a step fail into a named channel that replay substitutes rather than re-runs. Around it, in userspace: the step-identity/interpreter contract ([0061](adr/0061-step-identity-interpreter-guardrails.md)), batched content resolution (`getMany`), MCP **dynamic dispatch** with schema-hash pinning ([0063](adr/0063-mcp-dynamic-dispatch.md)), the QuickJS `@loom/plugin-sandbox` ([0064](adr/0064-sandbox-eval-plugin.md)), and the `invokeTransient` façade ([0066](adr/0066-transient-effect-invocation-facade.md)) — see [the transient-interpreter guide](transient-interpreter.md). [ADR 0067](adr/0067-reactive-graph-resumability-rejected.md) records what was *rejected* here.
 - **Agent surfaces on the wire** ([ADRs 0068–0070](adr/)) — `subscribeSelector`, and `@loom/plugin-a2ui`: Loom agent surfaces projected onto the Google A2UI protocol, including `callFunction` bidirectional RPC, where the client's *result* re-enters as a recorded fact under a deterministic `callId` — which is what keeps a client-invoked function inside the replay grain.
@@ -78,6 +78,31 @@ The four arcs since have all landed **outside** the kernel — `KERNEL_ABI` is s
   authority than the flow it runs; the streaming SPI gained a **streamed ≡ completed** conformance
   contract; and K8.4 — the last unimplemented piece of [ADR 0020](adr/0020-k8-cancellation-deadlines-bounded-effects.md) —
   now severs a runaway generation *while it generates*.
+
+- **Composed surfaces, made checkable** ([ADRs 0088–0089](adr/), [0094–0095](adr/)) — a blueprint a
+  *person* writes is checked by the type system; one a **model** composes at runtime is data, and
+  nothing checked it. [0088](adr/0088-blueprint-conformance.md) closed both vocabulary paths —
+  `validateBlueprint` reports findings (never throws, so a composer can degrade and file a gap) and
+  `catalogCoverage` asks the question that is easy to forget, whether a renderer implements
+  everything the catalogue declares; it failed on shipped code the day it was written.
+  [0094](adr/0094-blueprint-node-identity.md) added the half a single-tree validator cannot see —
+  which node ids a structural change DROPPED — and [0095](adr/0095-binding-semantics-pin.md) the
+  half a content address cannot: a binding freezes a *name*, while the fold behind it is live code,
+  so what that name MEANT is declared and compared rather than assumed.
+  [0089](adr/0089-sandbox-worker-pool.md) gave the QuickJS sandbox an opt-in worker pool, which
+  contributes the one thing an in-engine guard structurally cannot — a hard kill for a script that
+  never reaches the interrupt handler.
+
+- **Knowledge, and the lifecycle of a corpus** ([ADRs 0090–0093](adr/)) —
+  [0090](adr/0090-knowledge-is-retrieval-over-memory.md) refused a `knowledge$` construct and made
+  retrieval one optional verb on the memory seam (`search`), proven portable by four independent
+  implementations of one conformance kit. [0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md)
+  then corrected its own premise: a corpus is **mutable**, `search` ranks within one key while a
+  *document* is a subset of it, so entry identity plus `remove` (MemoryStore SPI 2.x) and
+  `@loom/knowledge` for the document↔passage mapping. [0092](adr/0092-adaptive-operator-profiles-placement.md)
+  placed adaptive per-operator UI entirely in userland — with the expiry that would have made a fold
+  impure moved into an event — and [0093](adr/0093-read-model-row-purge.md) made erasing one subject
+  from a read model cost one subject rather than a whole-model rebuild (measured at 68×).
 
 ## The one-paragraph version
 

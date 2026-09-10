@@ -1,7 +1,7 @@
 #+title: Loom — API Reference
 #+author: Sushil Chhetri
 
-Exhaustive per-package reference. Signatures are quoted from source; types owned by another package are cross-referenced, not repeated. Most apps import everything from ~@loom/sdk~ (the public barrel) or the individual ~@loom/*~ packages shown here.
+Exhaustive per-package reference — every workspace package with published typings has a section here, and `packages/spec/src/apiReferenceDocs.test.ts` fails the build if one does not. Signatures are quoted from source; types owned by another package are cross-referenced, not repeated. Most apps import everything from ~@loom/sdk~ (the public barrel) or the individual ~@loom/*~ packages shown here.
 
 New to Loom? Start with [[file:getting-started.md][Getting Started]] and the [[file:user-guide.md][User Guide]]; this document is the lookup reference.
 
@@ -389,7 +389,7 @@ const globalAgentRegistry: AgentRegistry;
 
 -----
 
-* WorkflowRuntime
+* WorkflowRuntime — ~@loom/workflow-runtime~
 :PROPERTIES:
 :CUSTOM_ID: workflow-runtime
 :END:
@@ -487,6 +487,43 @@ interface ForkResult   { executionId: string; parentExecutionId: string; forkSeq
 Also exported (resumability, for server→client handoff): ~serializeExecution~ / ~deserializeExecution~, ~serializeProjections~ / ~deserializeProjections~, and ~ProjectionSnapshot~.
 
 -----
+
+** ~@loom/orchestration~ — parent/child executions
+
+Built from ~ctx.decide~ + ~ctx.suspend~ — no syscall and no new event type. A spawn intent is a recorded DECISION, which is what makes recovery never start a second child.
+
+#+begin_src typescript
+function awaitChild<T>(ctx, flowId: string, input: unknown, opts?): Promise<ChildResult<T>>
+function awaitChildren<T>(ctx, specs: readonly { flowId: string; input: unknown }[], opts?: FanoutOptions): Promise<ChildResult<T>[]>  // SETTLED
+function awaitAll<T>(ctx, specs, opts?): Promise<T[]>          // all-or-nothing: throws childFailed
+function superviseChildren(deps: SupervisorDeps): ChildSupervisor  // wire into onEvent
+function fanout$(options: FanoutOptions)                        // bounded concurrency
+const CHILD_DONE: string; const CHILD_FAILED: string            // userspace events the fold skips
+function childIdFor(parentId: string, label: string, index?: number): string
+function parentOf(executionId: string): string | undefined; function depthOf(executionId: string): number
+#+end_src
+
+** ~@loom/saga~ — compensation without a syscall
+
+#+begin_src typescript
+function createSaga(ctx): Saga
+function withSaga<T>(ctx, body: (saga: Saga) => Promise<T>): Promise<T>
+interface Saga {
+  run<T>(step: StepDefinition<unknown, T>, input: unknown, compensate: (out: T) => Promise<void> | void): Promise<T>
+  compensate(): Promise<void>     // reverse order; each compensator is a replay-guarded ctx.run step
+}
+// ADR 0041 — the plan's `ctx.compensate` syscall and COMPENSATION_* events proved unnecessary
+#+end_src
+
+** ~@loom/fair-scheduler~ — per-tenant fairness
+
+#+begin_src typescript
+function createFairScheduler(options: {
+  weights?: Record<string, number>;        // per-tenant share
+  concurrency: number;                     // total in-flight budget
+}): { submit<T>(tenant: string, task: () => Promise<T>): Promise<T> }
+// deficit round-robin: one noisy tenant cannot starve the others (ADR 0038)
+#+end_src
 
 * Replay & storage
 :PROPERTIES:
@@ -596,6 +633,94 @@ function migratePostgresStores(pool: Pool): Promise<void>;   // idempotent DDL f
 Drop-in via ~defineConfig({ storage: { kind: "postgres", url, branching? } })~ (lazy-loaded, so ~pg~ never reaches browser bundles), or the ~custom~ storage kind. Single-writer-per-execution (D3) stays the lock-free shard model. See [[file:loom-2.0/03-compute-scheduling-storage.md][compute/scheduling/storage]].
 
 -----
+
+** ~@loom/plugin-content~ — the content-addressed blob seam
+
+Large values leave the log by REFERENCE. The log stays the thin, ordered authority; the bytes live in a store addressed by their own hash (ADR 0046).
+
+#+begin_src typescript
+interface ContentStore {
+  put(bytes: Uint8Array): Promise<ContentRef>          // address IS sha256(bytes)
+  get(ref: ContentRef): Promise<Uint8Array | null>
+  getMany?(refs: readonly ContentRef[]): Promise<(Uint8Array | null)[]>   // OPTIONAL, coalesced
+  putStream?(stream: AsyncIterable<Uint8Array>): Promise<ContentRef>      // OPTIONAL
+  delete(ref: ContentRef): Promise<void>
+}
+function encodeValue(value: unknown): Uint8Array; function decodeValue(bytes: Uint8Array): unknown
+function isContentRef(value: unknown): value is ContentRef
+function collectContentRefs(value: unknown, visit: (address: string) => void): void
+class ContentResolvingEventStore implements EventStore {}   // externalize on write, resolve on read
+class CachingContentStore implements ContentStore {}
+// GC: a ref is reachable only from the log, so a sweep needs to know what PINS one
+function sweepUnpinnedContent(options: ContentSweepOptions): Promise<ContentSweepReport>
+function pinByEventKinds(store: EventStore, kinds: readonly string[]): PinPredicate
+const CONTENT_STORE_SPI_VERSION: string
+class InMemoryContentStore implements ContentStore {}
+#+end_src
+
+** ~@loom/plugin-durable-state~ — carry state across wakes
+
+#+begin_src typescript
+interface DurableStateStore {
+  get(key: string): Promise<DurableStateRecord | null>
+  put(key: string, value: unknown, expectedRevision: number | null): Promise<DurableStateRecord>
+  clear(input: ClearInput): Promise<ClearResult>
+}
+function registerDurableState(effects: EffectRegistry, config: DurableStateConfig): void
+class RevisionConflictError extends Error {}   // optimistic concurrency: two wakes cannot interleave
+class InMemoryDurableStateStore implements DurableStateStore {}
+// durable: SqliteDurableStateStore / PostgresDurableStateStore. ADR 0053; the sentinel preset wires it.
+#+end_src
+
+** ~@loom/plugin-sqlite~ — single-node durability
+
+#+begin_src typescript
+class SqliteEventStore implements EventStore {}          // + fencing (K9.4)
+class SqliteSnapshotStore implements SnapshotStore {}
+class SqliteBranchRegistry implements BranchRegistry {}
+class SqliteMemoryStore implements MemoryStore {}        // FTS5 external-content index for `search`
+class SqliteReadModelStore implements ReadModelStore {}
+class SqliteDurableStateStore implements DurableStateStore {}
+class SqliteContentStore implements ContentStore {}
+class SqliteTimerStore implements TimerStore {}
+function sqliteStorage(path: string): CustomStorage      // the preset for defineConfig({ storage })
+#+end_src
+
+** ~@loom/plugin-read-model~ — durable cross-execution indexes
+
+A read model is a CACHE of the log with a watermark, never an authority: drop it and rebuild by re-scanning. Ingestion converges from any mix of live tail, catch-up scans and multiple nodes, because ~apply~ is idempotent per row id and watermarks are monotonic per execution.
+
+#+begin_src typescript
+class ReadModelService {
+  constructor(store: ReadModelStore, options?: { onError?: (err: unknown, event: EventEnvelope) => void })
+  register(model: ReadModelDefinition): void      // { id, version?, kinds, indexes, extract }
+  handleEvent(event: EventEnvelope): void         // wire into defineConfig({ observability.onEvent })
+  catchUp(sources: readonly ReadModelEventSource[]): Promise<CatchUpReport>   // watermark-incremental
+  query(modelId: string, q?: ReadModelQuery): Promise<ReadModelPage>          // keyset cursor
+  purge(modelId: string, where: Record<string, ReadModelScalar>): Promise<number>  // ADR 0093; erasure
+  rebuild(modelId: string, sources: readonly ReadModelEventSource[]): Promise<CatchUpReport>
+  pins(): Readonly<Record<string, string>>                     // ADR 0095 — declared `version`s
+  checkPins(recorded: Readonly<Record<string, string>>): PinReport   // a QUERY: clears nothing
+}
+const MAX_QUERY_LIMIT = 10_000                    // backends MUST clamp through clampQueryLimit
+function assertPurgeFilter(where: Record<string, ReadModelScalar>): void  // empty filter is REFUSED
+const READ_MODEL_STORE_SPI_VERSION: string        // pin a third-party row store against this
+class InMemoryReadModelStore implements ReadModelStore {}
+// durable: SqliteReadModelStore (@loom/plugin-sqlite), PostgresReadModelStore (@loom/plugin-postgres)
+#+end_src
+
+** ~@loom/plugin-audit-chain~ — a tamper-evident log
+
+Hash-chains every event into its ~metadata~, which the fold ignores — so replay is byte-identical whether or not it is wired, and any later edit, insert, reorder or drop is detectable out of band.
+
+#+begin_src typescript
+function hashChainedEventStore(inner: EventStore, options?: { hmacSecret?: string }): HashChainedEventStore
+interface HashChainedEventStore extends EventStore {
+  verifyChain(executionId: string): Promise<ChainVerification>   // { ok, length, brokenAt?, reason? }
+}
+// compose BELOW tenant-scoping and ABOVE the base store, and OUTSIDE ContentResolvingEventStore —
+// inside it, the chain only ever sees a ref string and rewriting the blob is silent
+#+end_src
 
 * Effects — ~@loom/effect-runtime~
 :PROPERTIES:
@@ -751,6 +876,38 @@ class PayloadShreddedError extends Error { … }     // thrown on any read of a 
 
 Pair with ~redactionMiddleware~/~secretRef~ (under [[#app][@loom/middleware]]) to keep secrets out of the log in the first place; ~@loom/plugin-crypto~ protects what *is* persisted.
 
+** ~@loom/classify~ — what a value IS, on two axes
+
+Confidentiality is a property of a FIELD and static; integrity is a property of a VALUE and acquired at runtime from a specific origin (ADR 0085). Both are declarations the runtime enforces elsewhere — masking, encryption, externalization, and the prompt boundary in ~@loom/llm~.
+
+#+begin_src typescript
+// confidentiality — marks on a schema, read by the kernel's egress/crypto paths
+function sensitive<T>(schema: T): T; function secret<T>(schema: T): T; function internal<T>(schema: T): T
+function classify(schema: unknown): ClassifiedPath[]      // paths + DataClass, wildcards expanded
+function maskPaths<T>(value: T, paths: readonly string[]): T   // REDACTED at each path
+function expandPaths(paths: readonly string[], value: unknown): string[]   // `[]` crossings (ADR 0076)
+
+// integrity — a wrapper around a value, not a mark on a field
+function tainted<T>(value: T, origin: string): TaintedValue<T>
+function isTainted(value: unknown): boolean; function taintOf(value: unknown): Taint | undefined
+function unwrapTainted<T>(value: TaintedValue<T> | T): T
+// producers: plugin-mcp taints a whole tool result; plugin-a2a taints `content` only
+#+end_src
+
+** ~@loom/compliance~ — subject export & erasure (T3)
+
+#+begin_src typescript
+class SubjectIndex {                              // subjectId → executions; fed live, rebuildable
+  static fromEvents(events: EventEnvelope[], subjectOf: (e: EventEnvelope) => string | undefined): SubjectIndex
+}
+function exportSubject(subjectId: string, opts?: ExportSubjectOptions): Promise<SubjectExport>  // Art. 15/20
+class EraseCoordinator {                          // Art. 17 — shred now, or park until terminal
+  request(subjectId: string, tenant?: string): Promise<EraseSubjectResult>
+}
+const ERASURE_STREAM: string                      // the reserved control stream erasure facts live on
+// reached through app.exportSubject / app.eraseSubject when `compliance` is configured
+#+end_src
+
 ** ~@loom/wire-abi~ — wire-level kernel ABI (T2)
 
 A language-neutral JSON-RPC projection of the K1 syscalls: a non-TS worker can drive a Loom execution over the wire, and the same fold-conformance vectors pin its behavior byte-for-byte against the in-process kernel.
@@ -800,6 +957,25 @@ interface ProjectionRuntime {
 }
 class InMemoryProjectionRuntime {
   constructor(config?: { coalesceNotifications?: boolean })   // true = flush once per microtask with latest state
+}
+#+end_src
+
+** ~@loom/live-query~ — one execution, pushed on every event
+
+Read models answer questions ACROSS executions; a live query is the other axis — the state of ONE execution, re-folded and pushed each time an event lands. No syscall and no event type: it composes ~loadState~ with ~EventStore.subscribe~ (P10).
+
+#+begin_src typescript
+function liveQuery(deps: {
+  eventStore: EventStore;
+  reader: StateReader;                       // typically the WorkflowRuntime
+  onError?: (err: unknown) => void;          // background re-folds have no caller to catch them
+}): LiveQuery
+
+interface LiveQuery {
+  snapshot(executionId: string): Promise<ExecutionState | null>
+  // pushes CURRENT state immediately, then after every subsequent event; coalesced latest-wins,
+  // so a burst costs O(1) extra folds and a terminal state is delivered before teardown
+  subscribe(executionId: string, onState: (state: ExecutionState) => void): Promise<() => void>
 }
 #+end_src
 
@@ -1106,6 +1282,31 @@ function traverseBlueprintAsync<TNode>(node, stateMap, options): Promise<TNode> 
 function resolveWidgetValue(widget: Widget, stateMap: Map<string, unknown>): unknown
 class RendererRegistry<TRenderer> { register(kind, renderer): this; get(kind); has(kind); kinds(); merge(other) }
 #+end_src
+
+*Conformance, identity and pins.* A blueprint a *person* writes is checked by the type system; one a *model* composes at runtime is data. These are the three checks over that data — all of them report findings and none of them throw, because a composer must be able to degrade and record a gap rather than lose the surface.
+
+#+begin_src typescript
+// ADR 0088 — is every component one the audited catalogue defines, and can the renderer draw them?
+function defineWidgetCatalog(catalog: WidgetCatalog): WidgetCatalog   // { id, entries: { kind, props, binding }[] }
+const builtinCatalog: WidgetCatalog                                   // loom's own eight widgets, NOT a mandate
+function validateBlueprint(blueprint: Blueprint, catalog: WidgetCatalog): BlueprintValidation
+// findings: unknown-kind | missing-binding | unexpected-binding | undeclared-prop |
+//           undeclared-projection | duplicate-node-id      · `widgets` is the DENOMINATOR
+function catalogCoverage(catalog: WidgetCatalog, kinds: Iterable<string>): CoverageReport
+
+// ADR 0094 — which node ids did this change DROP? (the failure one tree cannot show)
+function blueprintNodeIds(blueprint: Blueprint): string[]
+function preservesNodes(before: Iterable<string>, after: Iterable<string>): IdentityReport
+function preservesBlueprintNodes(before: Blueprint, after: Blueprint): IdentityReport
+// id SETS, not blueprints: the second consumer (A2UISurfaceBridge.identityDiff) has a flat list
+
+// ADR 0095 — does this view still MEAN what it meant? A binding freezes a NAME
+function blueprintPins(blueprint: Blueprint): VersionPins                       // what it recorded
+function checkBlueprintPins(blueprint: Blueprint, current: VersionPins): PinReport
+// `Blueprint.projectionVersions` is part of the value, hence part of the content address
+#+end_src
+
+*Types re-exported from ~@loom/core~* so a consumer types the report from the package it already imports: ~PinReport~, ~PinFinding~, ~PinFindingCode~, ~VersionPins~.
 
 ** ~@loom/plugin-renderer-react~
 
@@ -1470,6 +1671,10 @@ interface MemoryStore {
 // what a backend indexes, and what a term is — exported because both are contract
 function searchableText(entry: MemoryEntry): string        // string/number leaves of `content`; iterative, depth-capped
 function tokenize(text: string): string[]                  // lowercase, non-alphanumeric split
+// SPI 2.1.0 — a term-based backend derives QUERY terms from this: deduplicated and capped, because
+// OR-ing one word 20,000 times cannot change which rows match and cost SQLite 32.7s to say so
+function queryTerms(query: string): string[]
+const MAX_QUERY_TERMS = 256
 // a backend's `search` MUST route its limit through this — raw, a negative limit means NO limit on some backends
 function clampSearchLimit(limit: number | undefined): number
 const DEFAULT_SEARCH_LIMIT = 20
@@ -1496,6 +1701,64 @@ class TieredMemory {
   summarize(tier: string, scope: string, opts?: { keep?: number }): Promise<boolean>
   clear(tier: string, scope: string): Promise<void>
 }
+#+end_src
+
+** ~@loom/knowledge~ — a corpus over the memory seam
+
+There is no ~knowledge$~ construct and no embedding SPI (ADR 0090). This package owns exactly one thing the store cannot: the mapping from a DOCUMENT — the unit a corpus is edited in — to the PASSAGES it is searched in, so a revision supersedes its predecessor instead of being indexed twice (ADR 0091).
+
+#+begin_src typescript
+function openKnowledgeBase(config: KnowledgeBaseConfig): KnowledgeBase   // memory + scope + chunker
+class KnowledgeBase {
+  putDoc(doc: KnowledgeDoc, opts?: SourceOptions): Promise<Passage[]>    // UPSERT, not append
+  sync(docs: readonly KnowledgeDoc[], opts?: SourceOptions): Promise<SyncResult>  // write/remove a set
+  planSync(docs: readonly KnowledgeDoc[], opts?: SourceOptions): Promise<SyncResult>  // dry run
+  removeDoc(docId: string): Promise<void>
+  listDocs(): Promise<DocRecord[]>
+  retrieve(query: string, opts: RetrieveOptions): Promise<Passage[]>     // REQUIRES ctx.decide
+}
+function packParagraphs(maxChars?: number): Chunker      // the default; pass your own for structure
+// the prompt boundary and the one hallucination that is DECIDABLE rather than judged
+function groundedRequest(opts: GroundedRequestOptions): LlmRequest       // passages in a USER turn
+function checkCitations(claimed: readonly string[], passages: readonly Passage[]): CitationCheck
+function assertGrounded(claimed: readonly string[], passages: readonly Passage[]): string[]  // throws
+#+end_src
+
+Reached through ~app.knowledge(scope)~, over the same ~memoryStore~ that backs ~app.memory~; operated from the CLI with ~loom knowledge sync|search|list~.
+
+** ~@loom/plugin-sandbox~ — untrusted code as an effect
+
+#+begin_src typescript
+function sandboxEval$(config: { id: string; script: string | ContentRef; limits?: SandboxLimits }): TaskDefinition
+function registerSandboxEval(effects: EffectRegistry, options?: { workers?: number }): void
+const SANDBOX_ERRORS: { limitExceeded: string; badShape: string }   // typed failure channels (ADR 0060)
+interface SandboxLimits { memoryBytes?: number; interruptBudget?: number; wallClockMs?: number;
+                          maxOutputBytes?: number }   // EMISSION is capped too — output lands in the log
+function shapeOf(value: unknown): string; function shapeHash(value: unknown): string
+class SandboxWorkerPool {}    // opt-in (ADR 0089): a hard kill for a script that never yields
+// a `scriptRef` is re-hashed before eval — ContentStore.get carries no verify-on-read obligation
+#+end_src
+
+** ~@loom/plugin-sentinel~ — the perpetual-agent preset
+
+#+begin_src typescript
+function sentinelPreset(options: {
+  cron: string; flowId: string;                 // when it wakes, and what it runs
+  stateStore: DurableStateStore;                // carry state ACROSS wakes (ADR 0053)
+  contentStore?: ContentStore;                  // over-cap observations go by reference
+}): Partial<LoomConfig>                          // spread into defineConfig
+#+end_src
+
+** ~@loom/learning~ — off-policy evaluation over the decision log
+
+#+begin_src typescript
+function decideWithPolicy<T>(ctx, key: string, policy: Policy<T>, context: PolicyContext, actions: readonly T[]): Promise<T>
+// records context + policy.propensity at DECISION time — a propensity cannot be reconstructed later
+function trajectories(events: readonly EventEnvelope[]): Trajectory[]
+function evaluatePolicy(trajectories: readonly Trajectory[], candidate: Policy<string>, opts?: EvaluateOptions): EvalReport
+// SNIPS with clipping + effective sample size; refuses a value estimate without propensities
+function promotionGate(report: EvalReport, thresholds?: PromotionThresholds): PromotionVerdict
+function policyManifest(policy: Policy<string>): PolicyManifest
 #+end_src
 
 ** ~@loom/orchestrator~ — composable orchestration
@@ -1552,6 +1815,15 @@ Implementations: ~new LocalWorkerRuntime(runtime: WorkflowRuntime)~ (in-process)
 
 *Fencing (2.0, K9.4).* On a fencing-capable store, every event a run appends carries its ~lease.fence~; once a re-dispatch acquires a newer token, the older lease's holder can no longer write — a partitioned "zombie" worker is fenced out at the store rather than double-writing. Absent on single-node SQLite (correlation only).
 
+** ~@loom/worker-runtime-local~ — the in-process worker
+
+#+begin_src typescript
+class LocalWorkerRuntime implements WorkerRuntime {
+  // runs an ExecutionPackage in THIS process; acquires the K9.4 fence automatically, so
+  // exactly one version of an execution's history can land even under recovery
+}
+#+end_src
+
 ** ~@loom/dispatcher~ — placement
 
 #+begin_src typescript
@@ -1583,6 +1855,15 @@ class SupervisingDispatcher implements ExecutionDispatcher {
   constructor(child: ExecutionDispatcher, options?: { policy?: SupervisionPolicy; now?: () => number; sleep?: (ms: number) => Promise<void> })
 }
 class CircuitOpenError extends Error { readonly key: string; }
+#+end_src
+
+** ~@loom/plugin-worker-remote~ — the HTTP client side
+
+#+begin_src typescript
+class RemoteWorkerRuntime implements WorkerRuntime {
+  // POSTs an ExecutionPackage to a `@loom/plugin-worker-server` endpoint. The package carries
+  // resume COORDINATES, never code: the worker rebuilds all state from the shared stores.
+}
 #+end_src
 
 ** ~@loom/plugin-worker-server~ — the stateless HTTP worker
@@ -1776,6 +2057,93 @@ function analyzeRunnerReach(source: string, location?: string): RunnerReach     
 interface AnalyzeOptions { skipMemoized?: boolean }   // whole-module callers skip memoized handler$ bodies
 interface RunnerReach { steps: RunnerStepRef[]; unresolved: UnresolvedReach[]; suspends: RunnerSuspend[]; }
 // Serialization utils: fnv1a32(input) / shortHash(input).  CLI bin: `loom-compile`.
+#+end_src
+
+** ~@loom/verify~ — pre-flight rules over a config
+
+Static checks that run before anything executes, over the app's own declarations plus (optionally) the compiler manifest. Findings, with severities — `loom verify` exits non-zero on an error.
+
+#+begin_src typescript
+function verify(app: LoomApp, options?: { lint?: VerifyLintInputs }): VerificationReport
+function runVerification(spec: VerifySpec): VerificationReport
+function formatReport(report: VerificationReport): string
+const RULE_ORDER: readonly string[]    // determinism · replay-safety · capability-compat ·
+                                       // effect-class · suspension-safety · classification-reachability · …
+const RULES: Record<string, Rule>
+class VerificationError extends Error { readonly report: VerificationReport }
+#+end_src
+
+The rule table, what each one reads, and which are opt-in live in [[file:usage-cli.md][the CLI guide]] and `packages/verify/README.md`; `ruleDocs.test.ts` fails the build if a rule ships without reaching both.
+
+** ~@loom/replay-inspector~ — a read-only lens over a stored log
+
+Strictly read-only (ADR 0071): it reconstructs, never writes, and never falls back to a current version when a pinned one is unavailable — a plausible wrong answer is the failure a pin exists to prevent.
+
+#+begin_src typescript
+class ReplayInspector {
+  reconstructAt(executionId: string, sequence: number): Promise<InspectedState>
+  reconstructMany(executionId: string, sequences: readonly number[]): Promise<InspectedState[]>
+  reconstructProjections(executionId: string, opts?: ProjectionReconstructOptions): Promise<ProjectionSlice[]>
+  pinOf(executionId: string): Promise<PinStatus>     // pinned | unpinned-legacy | unavailable
+}
+function diffState(a: InspectedState, b: InspectedState, opts?: DiffOptions): DiffResult
+function anchorFor(events: readonly EventEnvelope[], sequence: number): number
+class InspectorBudgetError extends Error {}          // a reconstruction that would exceed its budget
+#+end_src
+
+** ~@loom/sdk~ — the public barrel
+
+Re-exports the surface most apps import (~200 symbols) so an application depends on one package rather than a dozen. It adds nothing of its own: every entry is documented under its owning package above, and a symbol absent here is absent from the barrel.
+
+#+begin_src typescript
+import { defineConfig, flow$, step$, ctx /* … */ } from "@loom/sdk";
+#+end_src
+
+** ~@loom/conformance~ — the portable SPI kits
+
+A backend is conformant if it passes the kit, not if it looks right. Every kit is a `describe` block a third-party package runs against its own implementation.
+
+#+begin_src typescript
+function runEventStoreConformance(factory: () => EventStore, label?: string): void
+function runSnapshotStoreConformance(factory, label?): void
+function runBranchRegistryConformance(factory, label?): void
+function runExecutionDispatcherConformance(factory, label?): void
+function runTimerStoreConformance(factory, label?): void
+function runProjectionRuntimeConformance(factory, label?): void
+function runWorkerRuntimeConformance(factory, label?): void
+function runLlmProviderConformance(factory, label?): void
+function runCapabilityAuthorizerConformance(factory, label?): void
+function runKeyStoreConformance(factory, label?): void
+function runContentStoreConformance(factory, label?): void
+function runMemoryStoreConformance(factory, label?): void
+function runDurableStateStoreConformance(factory, label?): void
+function runReadModelStoreConformance(factory, label?): void
+#+end_src
+
+** ~@loom/spec~ — the kernel manifest, badges and layering
+
+#+begin_src typescript
+function kernelManifest(): KernelManifest        // built by IMPORTING the real version constants
+function checkCompatibility(deployment: DeploymentVersions): CompatReport
+function majorCompatible(a: string, b: string): boolean
+const CAPABILITIES: readonly Capability[]        // evidence-derived L0–L5 maturity registry
+function renderMaturityTable(): string; function renderCompatibilityMatrix(): string
+function readWorkspaceGraph(root: string): WorkspaceGraph
+function findLayeringViolations(graph: WorkspaceGraph): LayeringViolation[]   // kernel ↛ plugins
+const KERNEL_PACKAGES: readonly string[]; const SPI_PACKAGES: readonly string[]
+#+end_src
+
+Read-only; nothing here touches execution semantics. The generated `docs/spec/` files come from this manifest via ~loom kernel-manifest --emit-docs~.
+
+** ~@loom/plugin-kit~ — authoring a storage preset
+
+#+begin_src typescript
+interface CustomStorage { kind: "custom"; eventStore: EventStore; snapshotStore: SnapshotStore;
+                          branchRegistry?: BranchRegistry }
+type StoragePreset<Options = void> = (options: Options) => CustomStorage
+function defineStoragePreset<Options = void>(build: (options: Options) => CustomStorage): StoragePreset<Options>
+// spread the result into defineConfig({ storage }) — the shape a plugin returns, so a preset
+// never hand-rolls it and never drifts from the config type
 #+end_src
 
 ** ~@loom/telemetry~
