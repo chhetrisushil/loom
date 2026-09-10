@@ -130,12 +130,13 @@ export function checkVersionPins(
   for (const id of Object.keys(current ?? {})) {
     if (seen.has(id)) continue;
     seen.add(id);
+    const now = declared(current, id);
     findings.push({
       code: "unpinned",
       severity: "warn",
       id,
-      message: `"${id}" is registered${declared(current, id) === undefined ? "" : ` at version "${declared(current, id)}"`} but the artifact recorded nothing for it — it was bound after the fact, or the recording missed it`,
-      ...(declared(current, id) !== undefined && { current: declared(current, id) as string }),
+      message: `"${id}" is registered${now === undefined ? "" : ` at version "${now}"`} but the artifact recorded nothing for it — it was bound after the fact, or the recording missed it`,
+      ...(now !== undefined && { current: now }),
     });
   }
 
