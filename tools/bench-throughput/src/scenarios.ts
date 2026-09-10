@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { EventEnvelope } from "@loom/core";
 import { flow$, step$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { CoalescingEventStore } from "@loom/event-runtime";
 import { NOTIFY_CHANNEL, PostgresEventStore, PostgresSnapshotStore } from "@loom/plugin-postgres";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
@@ -79,6 +80,43 @@ export async function rawAppend(
     warmupPerWorker: cfg.warmupPerWorker,
     op: ({ worker, n }) => store.append(envelope(`raw-${RUN_TAG}-${worker}`, n, payload)),
   });
+}
+
+// ── A2. The SHIPPED coalescer — `CoalescingEventStore` over the real store ──────
+//
+// Section B below sizes a counterfactual in SQL. This is the thing itself: the decorator
+// that ships, wrapping `PostgresEventStore` and calling its real `appendBatch`, so every
+// cost the shipped path pays is in the number — the per-row fence join, one `pg_notify` per
+// envelope, and the all-or-nothing guard.
+//
+// Driven exactly like `rawAppend` (worker w owns execution w, serial sequences), because
+// that IS the coalescer's shape: many journals, each holding a single pending envelope,
+// flushed together by a store that sees all of them. `ops` are per EVENT, so `opsPerSec` is
+// directly comparable to section A rather than needing `unitsPerOp` scaling.
+//
+// The docs quoted this comparison for a year with nothing in the repo that could reproduce
+// it; that is what this scenario fixes.
+
+export async function coalescedAppend(
+  store: PostgresEventStore,
+  cfg: BenchConfig,
+  concurrency: number,
+  maxBatch: number
+): Promise<Measurement> {
+  const payload = makePayload(cfg.payloadBytes);
+  const coalesced = new CoalescingEventStore(store, { maxBatch });
+  const measurement = await drive({
+    label: `CoalescingEventStore (shipped) · maxBatch=${maxBatch} · c=${concurrency}`,
+    concurrency,
+    opsPerWorker: cfg.opsPerWorker,
+    warmupPerWorker: cfg.warmupPerWorker,
+    op: ({ worker, n }) =>
+      coalesced.append(envelope(`coal${maxBatch}-${RUN_TAG}-${worker}`, n, payload)),
+  });
+  // `drain`, never `close`: closing would close the INNER store, and the pool it holds is
+  // shared with every scenario after this one.
+  await coalesced.drain();
+  return measurement;
 }
 
 // ── B. Batched append — the `appendBatch` counterfactual ────────────────────────

@@ -246,10 +246,12 @@ interval — the obvious reading of the defect — is inert in both regimes (299
 checkpoints on a slow workload; no effect at all on a fast one). Dropped rather than shipped
 unmeasured.
 
-### 3.3 Batching — SHIPPED as a decorator (ADR 0074 D2), worth 2.3–4.3×
+### 3.3 Batching — SHIPPED as a decorator (ADR 0074 D2), worth 1.5–2.0×
 
 **Status: implemented as `CoalescingEventStore` + the optional `appendBatch` SPI hook.**
-Measured end to end on Postgres: **2.3×** at the default `maxBatch: 16`, **4.3×** at 64.
+Measured end to end on Postgres by section A2 of the throughput harness: **1.5×** at the
+default `maxBatch: 16`, **2.0×** at 64. (This page previously said 2.3–4.3×, from a table
+no committed scenario could reproduce — see [benchmarks](benchmarks.md).)
 Opt-in — inert unless wired into `storage`.
 
 **Is your workload even write-bound?** Wrap your store in `ProfilingEventStore` and add

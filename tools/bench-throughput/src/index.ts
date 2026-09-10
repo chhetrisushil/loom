@@ -7,6 +7,7 @@ import {
   appendWithoutNotify,
   attachListeners,
   batchedAppend,
+  coalescedAppend,
   crossExecutionBatch,
   durableExecutions,
   makeRuntime,
@@ -256,6 +257,39 @@ async function main(): Promise<void> {
       `Falloff from a ${shortEvents}-event log to a ${longEvents}-event one `,
       `(**${longEvents / shortEvents}× the events**): **${fmt(falloff, 2)}×** slower. `,
       "Near 1× means snapshots bound the read; scaling with the log means they do not.",
+    ].join("")
+  );
+
+  // ── A2. the SHIPPED coalescer, over the real store ──────────────────────────
+  const coalescedRows: Measurement[] = [];
+  for (const b of cfg.batchSizes.filter((n) => n > 1)) {
+    await truncate();
+    coalescedRows.push(await coalescedAppend(bundle.eventStore, cfg, batchConcurrency, b));
+  }
+  await truncate();
+  const shippedBaseline = appendRows.find((m) => m.concurrency === batchConcurrency);
+  sections.push(
+    [
+      "## A2. `CoalescingEventStore`, as shipped\n\n",
+      "The decorator itself over the real `PostgresEventStore.appendBatch` — every cost the ",
+      "shipped path pays is in these numbers (the per-row fence join, one `pg_notify` per ",
+      "envelope, the all-or-nothing guard). Driven exactly like section A, one serial writer ",
+      "per execution, so `ops` are per EVENT and comparable line for line.\n\n",
+      `${table(coalescedRows, "events")}\n\n`,
+      shippedBaseline !== undefined
+        ? [
+            `Against section A at the same concurrency (**${fmt(shippedBaseline.unitsPerSec)} `,
+            "events/sec** per-event): ",
+            coalescedRows
+              .map(
+                (m) =>
+                  `maxBatch=${m.label.replace(/^.*maxBatch=(\d+).*$/, "$1")} → **${fmt(m.unitsPerSec / shippedBaseline.unitsPerSec, 2)}×**`
+              )
+              .join(", "),
+            ". The default is 16 and stays there: tail latency at 64 is a trade a deployment ",
+            "makes with its own p99 in hand, not one the framework makes for it.",
+          ].join("")
+        : "",
     ].join("")
   );
 
