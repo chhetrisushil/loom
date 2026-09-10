@@ -36,6 +36,7 @@ const FITNESS_TESTS: readonly string[] = [
   "packages/spec/src/projectGraph.test.ts",
   "packages/spec/src/docCitations.test.ts",
   "packages/spec/src/adrIndexDocs.test.ts",
+  "packages/spec/src/apiReferenceDocs.test.ts",
   "packages/spec/src/fitnessDocs.test.ts",
   "packages/workflow-runtime/src/contextDocs.test.ts",
   "tools/scaffold/src/seamDocs.test.ts",
