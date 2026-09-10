@@ -253,6 +253,15 @@ one before it.
   open at runtime cannot be audited at all. The catalogue is closed, a gap is
   logged, and a human ships the component.
 
+## The example
+
+`saved-views` (loom-examples) is this page as running code: compose → validate → `put` →
+`BLUEPRINT_COMPOSED` → sweep → re-open, with a deploy in the middle that moves the fold behind
+one binding from a rolling week to a calendar month. Every claim above is an assertion in its
+suite, including the two that are only visible as negatives — an off-catalogue component
+reaching neither the store nor the log, and a pre-pin artifact reporting `compared: 0` rather
+than a clean pass.
+
 ## See also
 
 [Transient manifest interpreter](transient-interpreter.md) · the composed-surface
