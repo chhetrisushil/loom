@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The binding-semantics pin — a content address that freezes a name, not a meaning.** A
+  composed surface is content-addressed, and `docs/composed-surfaces.md` listed *bindings* among
+  the things that address freezes, under the heading "the meaning of a view never changes
+  silently". It froze `{ projectionId, path }` — a **name**. The projection behind it is live code
+  registered under that name with no version, so the query, the filter predicates, the join keys,
+  the aggregation and the window all sat on the floating side, and editing a fold changed what
+  every pinned view meant under an unchanged hash. The same hole was a live defect in
+  `plugins/read-model`, where an edited `extract` leaves old rows in place, the watermark already
+  past them, one `query` answering from two extractors, and `rebuild()` the fix nobody is told to
+  run. An optional declared `version` on `ProjectionDefinition` / `Projection` /
+  `ReadModelDefinition` (declared, not derived — `flowContentHash` excludes handler code for the
+  same reason a fold closure has no stable fingerprint), `checkVersionPins(recorded, current)`
+  reporting `drift` as an error and `unpinned` as a warn with the side it is missing from, and
+  `compared` as the denominator so `ok: true` over nothing cannot read as a pass. The recorded pin
+  rides in `Blueprint.projectionVersions`, inside the content address rather than beside it.
+  Second consumer, wired: `ReadModelService.pins()` / `checkPins(recorded)` — a query, like
+  `identityDiff`, that reports what is wrong without rebuilding anything (ADR 0095).
+
 - **Row-granular `purge` on the read-model store SPI (1.0.0 → 1.1.0).** Erasing one subject
   from a read model used to mean `clear` + rebuild — work proportional to the whole log, no
   matter how few rows the subject owned. `purge(modelId, where)` deletes by indexed-field
