@@ -33,7 +33,8 @@ pnpm --filter @loom/db-observability start
   [`transient-interpreter.md`](./transient-interpreter.md), ADR 0065/0066.
 - **`db-sentinel`** — the perpetual-agent / sentinel pattern via `sentinelPreset`
   (schedule + durable carry-state + claim-checked telemetry).
-- **`child-orchestration`** — cross-execution orchestration (`@loom/orchestration`)
+- **`child-orchestration`** — cross-execution orchestration (`@loom/orchestration`), waiting
+  on the log with `@loom/live-query` instead of polling `loadState` for a terminal state
   end to end: a release pipeline that fans out builds with `awaitChildren`
   (wait-all settled, tolerate partial failure), gates smoke tests with `awaitAll`
   (all-or-nothing), and publishes with `awaitChild` (one child) — each service a
@@ -138,7 +139,25 @@ pnpm --filter @loom/db-observability start
   the flow) until the View polls itself current. Writing it found two real plugin
   bugs that string-level tests could not — the template never called the cursor it
   was documented to poll, and its `List` branch read a prop the A2UI `list()` helper
-  never emits. Headless, offline.
+  never emits. Its log is **hash-chained** (`@loom/plugin-audit-chain`), which belongs in this
+  example specifically: the K12 authenticator decides whether an approval is *accepted*, and
+  `verifyChain` answers the separate question of whether the accepted approval is still the
+  one recorded — a test rewrites the approver on the durable event and gets `ok: false` with
+  `brokenAt` at that sequence. Headless, offline.
+- **`saved-views`** — the [composed-surface recipe](composed-surfaces.md) end to end, and
+  the first consumer it has ever had. A view is composed from a **closed** catalogue,
+  validated *before* anything is recorded, stored by `sha256:` ref, and promoted with
+  `ctx.emit(BLUEPRINT_COMPOSED, { ref })` — so which **event** cites the ref is the whole
+  difference between a saved view and an ephemeral one, and `sweepUnpinnedContent` proves it
+  by reclaiming the draft and keeping the promotion. Its centre is the failure
+  [ADR 0095](adr/0095-binding-semantics-pin.md) closes: halfway through, the fold registered
+  under `spend` moves from a rolling week to a calendar month. Same blueprint, same hash,
+  every binding resolving, catalogue still validating — and $750 becomes $1,650.
+  `checkBlueprintPins` reports the drift on `spend` and leaves `incidents` alone. Two more
+  negative cases are assertions rather than prose: a view promoted before the pin existed
+  reports `compared: 0` with an `unpinned` finding per binding, and an off-catalogue
+  component reaches neither the content store nor the log — checked on the emitted event
+  stream, because "validated" and "recorded" look identical from a return value. Headless.
 - **`appgen-brownfield`**, **`appgen-models`** — AI-driven app generation
   (`@loom/appgen`).
 
