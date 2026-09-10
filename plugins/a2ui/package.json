@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@loom/agent-surface": "workspace:*",
+    "@loom/blueprint-runtime": "workspace:*",
     "@loom/classify": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/effect-runtime": "workspace:*"

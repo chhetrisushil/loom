@@ -161,6 +161,11 @@ Two consequences worth stating out loud:
   step, a recorded operation) resolves in one tree and dangles in the other.
   A set of nodes that must survive every variant is a set of nodes with
   explicit ids ([ADR 0092](adr/0092-adaptive-operator-profiles-placement.md) D5).
+  `preservesNodes(before, after)` is how you find out you got it wrong: it reports
+  the ids a change dropped, over either two blueprints or the floor's ids against
+  a variant's ([ADR 0094](adr/0094-blueprint-node-identity.md)). On the A2UI egress
+  path the same question is `bridge.identityDiff(next)` — which components a
+  recompose would unmount — asked before committing to the new tree.
 - A component change that alters what a view *means* is not an upgrade; it is a
   new component version, and migrating to it is a re-composition — a second
   `BLUEPRINT_COMPOSED`, visible and revertible — not an edit in place.

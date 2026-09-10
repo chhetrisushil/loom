@@ -24,6 +24,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by the conformance kit, which `PostgresReadModelStore` now runs for the first time
   (ADR 0093).
 
+- **`preservesNodes` — node identity across a structural change.** A widget's `id` is derived
+  from kind + props unless supplied, so a prop edit *re-identifies* the node: it remounts, and
+  any pin, annotation or agent reference keyed on the old id dangles. `validateBlueprint` checks
+  one tree (including `duplicate-node-id` within it); nothing compared one tree to another, which
+  is where identity is actually lost. `preservesNodes(before, after)` reports which ids the change
+  dropped, with `added` as data (a `dropped` beside an `added` is what a re-identification looks
+  like) and `compared` as the denominator, so `ok: true` over an empty `before` cannot read as a
+  pass. `blueprintNodeIds` / `preservesBlueprintNodes` spell the blueprint case; passing a floor's
+  ids as `before` answers "does this variant contain the floor?" with no new vocabulary. Second
+  consumer: `A2UISurfaceBridge.identityDiff(next)`, which reports what a proposed `recompose`
+  would unmount without committing the tree or emitting — and which is why the API takes id sets
+  rather than blueprints, A2UI components being a flat list (ADR 0094).
+
 - **A corpus can have more than one writer** — `DocRecord.source`, `sync(docs, { source })`,
   `putDoc(doc, { source })`, and `SyncResult.retained`. `sync` is a destructive reconcile over
   everything the manifest holds, so an agent writing down what it learned from feedback into the

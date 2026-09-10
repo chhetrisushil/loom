@@ -18,6 +18,7 @@ export {
   BUILTIN_CATALOG_ID,
 } from "./catalog";
 export { catalogCoverage } from "./coverage";
+export { blueprintNodeIds, preservesBlueprintNodes, preservesNodes } from "./identity";
 export { RendererRegistry } from "./RendererRegistry";
 export { traverseBlueprint, resolveWidgetValue, resolvePath } from "./traverseBlueprint";
 export { traverseBlueprintAsync } from "./traverseBlueprintAsync";
@@ -46,3 +47,4 @@ export type {
   BlueprintValidation,
 } from "./catalog";
 export type { CoverageReport } from "./coverage";
+export type { IdentityFinding, IdentityReport } from "./identity";

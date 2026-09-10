@@ -9,6 +9,7 @@
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
   "references": [
     { "path": "../../packages/agent-surface" },
+    { "path": "../../packages/blueprint-runtime" },
     { "path": "../../packages/classify" },
     { "path": "../../packages/core" },
     { "path": "../../packages/effect-runtime" }

@@ -1352,6 +1352,9 @@ importers:
       '@loom/agent-surface':
         specifier: workspace:*
         version: link:../../packages/agent-surface
+      '@loom/blueprint-runtime':
+        specifier: workspace:*
+        version: link:../../packages/blueprint-runtime
       '@loom/classify':
         specifier: workspace:*
         version: link:../../packages/classify
