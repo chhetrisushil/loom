@@ -778,12 +778,21 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
         ? {
             id: def.id,
             initialState: def.initialState,
+            // ADR 0095 — the declared fold semantics travel with the registration, so
+            // `projectionRuntime.pins()` can answer what an artifact's recorded pin is
+            // compared against.
+            ...(def.version !== undefined && { version: def.version }),
             lazy: {
               eventTypes: projectionEventTypes(def.handlers),
               load: () => loadProjectionHandlers(def.handlers),
             },
           }
-        : { id: def.id, initialState: def.initialState, handlers: def.handlers }
+        : {
+            id: def.id,
+            initialState: def.initialState,
+            ...(def.version !== undefined && { version: def.version }),
+            handlers: def.handlers,
+          }
     );
   }
 

@@ -440,3 +440,22 @@ describe("InMemoryProjectionRuntime — retention (leak fix)", () => {
     });
   });
 });
+
+// ── ADR 0095 — the declared fold semantics ────────────────────────────────────
+describe("pins() — what an artifact's recorded version is compared against", () => {
+  it("reports the declared version of every registered projection that has one", () => {
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register({ ...stepCounterProjection, id: "latency", version: "3" });
+    runtime.register({ ...stepCounterProjection, id: "deploys", version: "1" });
+    expect(runtime.pins()).toEqual({ latency: "3", deploys: "1" });
+  });
+
+  it("a projection declaring no version is ABSENT, not present-and-empty", () => {
+    // Present-and-empty would compare equal to another empty declaration and read as a
+    // verified match between two folds that said nothing about themselves.
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register({ ...stepCounterProjection, id: "latency" });
+    expect(runtime.pins()).toEqual({});
+    expect(Object.hasOwn(runtime.pins(), "latency")).toBe(false);
+  });
+});

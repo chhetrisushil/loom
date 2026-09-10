@@ -8,6 +8,8 @@ import type { Projection, ProjectionFoldMap, ProjectionRuntime } from "./types";
  */
 interface ActiveProjection {
   id: string;
+  /** ADR 0095 — the declared semantics of the fold, as given at registration. */
+  version?: string;
   initialState: unknown;
   handlers?: ProjectionFoldMap<unknown>;
   // Lazy state — cleared to undefined once resolved into `handlers`.
@@ -153,6 +155,7 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
     const active: ActiveProjection = {
       id: projection.id,
       initialState: projection.initialState,
+      ...(projection.version !== undefined && { version: projection.version }),
       loading: false,
       buffer: [],
       ...(projection.handlers !== undefined && {
@@ -313,6 +316,21 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
     const key = this.stateKey(projectionId, executionId);
     this.states.set(key, state);
     this.touch(executionId);
+  }
+
+  /**
+   * ADR 0095 — the declared `version` of every registered projection that has one.
+   *
+   * Projections that declare nothing are ABSENT rather than present-and-empty: the caller
+   * compares this against what an artifact recorded, and a key mapped to `""` would compare
+   * equal to another empty declaration and read as a verified match.
+   */
+  pins(): Readonly<Record<string, string>> {
+    const pins: Record<string, string> = {};
+    for (const [id, projection] of this.projections) {
+      if (projection.version !== undefined) pins[id] = projection.version;
+    }
+    return pins;
   }
 
   private notify(key: string, state: unknown): void {

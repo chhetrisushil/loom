@@ -1,8 +1,6 @@
 # ADR 0095 — Pinning what a binding *means*, not just what it is called
 
-- Status: **Accepted** (2026-09-10). Implementation follows immediately in
-  `feat/binding-semantics-pin`; this record is written first because the decision is the
-  reviewable part.
+- Status: **Accepted — implemented** (2026-09-10)
 - Date: 2026-09-10
 - Resolves: §1 of the
   [Console AI mode re-evaluation](../requirements/2026-09-10-console-ai-mode-evaluation.md)
@@ -43,8 +41,11 @@ artifact was built against?**
 
 ### D1 — The pin is declared, not derived
 
-`version?: string` on `ProjectionDefinition`, on the projection runtime's `Projection`, and on
-`ReadModelDefinition`. Author-supplied, opaque, compared by equality.
+`version?: string` on `ProjectionDefinition` (so `projection$` and therefore `loom gen`
+discovery carry it), on the projection runtime's `Projection`, and on `ReadModelDefinition`.
+Author-supplied, opaque, compared by equality after trimming — an editor's stray newline is not
+a change of meaning, and `""` is a forgotten field rather than a version, so it reads as
+*undeclared* instead of comparing equal to another empty declaration.
 
 Deriving it is not available. `flowContentHash` deliberately excludes handler code because it is
 *"not stably serializable at runtime"*, and a fold closure is the same object; a hash over
@@ -110,7 +111,12 @@ three backend implementations, and would answer a question the caller can alread
 saved the derived artifact records the pins it was built from and compares later.
 `ReadModelService.pins()` returns the declared versions, and `ReadModelService.checkPins(recorded)`
 is the wired second consumer — a **query**, exactly like `A2UISurfaceBridge.identityDiff`: it
-reports what would be wrong without clearing anything or rebuilding.
+reports what would be wrong without clearing anything or rebuilding, and a test asserts that
+(rows and watermark untouched after a call).
+
+`ProjectionRuntime.pins?()` is the same answer on the other side, and it is **optional on the
+interface** so an existing implementation stays valid. A runtime that omits it cannot answer the
+question, which surfaces as `unpinned` — not as a pass.
 
 ### D6 — `validateBlueprint` is not extended
 

@@ -19,6 +19,7 @@ export {
 } from "./catalog";
 export { catalogCoverage } from "./coverage";
 export { blueprintNodeIds, preservesBlueprintNodes, preservesNodes } from "./identity";
+export { blueprintPins, checkBlueprintPins } from "./pins";
 export { RendererRegistry } from "./RendererRegistry";
 export { traverseBlueprint, resolveWidgetValue, resolvePath } from "./traverseBlueprint";
 export { traverseBlueprintAsync } from "./traverseBlueprintAsync";

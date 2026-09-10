@@ -33,7 +33,15 @@ for the fold to do with it).
 ## Shape
 
 ```ts
-import { MetricCard, blueprint$, builtinCatalog, stack, validateBlueprint } from "@loom/blueprint-runtime";
+import {
+  MetricCard,
+  blueprint$,
+  builtinCatalog,
+  checkBlueprintPins,
+  stack,
+  validateBlueprint,
+} from "@loom/blueprint-runtime";
+import type { Blueprint } from "@loom/blueprint-runtime";
 import { decodeValue, encodeValue } from "@loom/plugin-content";
 import type { ContentRef, ContentStore } from "@loom/plugin-content";
 
@@ -41,7 +49,12 @@ const BLUEPRINT_COMPOSED = "BLUEPRINT_COMPOSED";
 
 // 1. COMPOSE — once, at the moment of intent. A model picks catalogue entries;
 //    the app builds the widgets. The model never names a `kind` directly.
-async function compose(ctx: { emit: (t: string, p: unknown) => void }, content: ContentStore) {
+async function compose(
+  ctx: { emit: (t: string, p: unknown) => void },
+  content: ContentStore,
+  // What every projection this view binds to MEANT right now: `projectionRuntime.pins()`.
+  pins: Record<string, string>
+) {
   const view = blueprint$({
     id: "checkout-triage",
     title: "Checkout triage",
@@ -57,6 +70,9 @@ async function compose(ctx: { emit: (t: string, p: unknown) => void }, content: 
       ],
     }),
     projections: ["latency", "deploys"],
+    // The binding above freezes a NAME. This freezes what that name meant, and because it
+    // is a field of the value it is part of the content address (ADR 0095).
+    projectionVersions: pins,
   });
 
   // 2. VALIDATE BEFORE YOU RECORD. An off-catalogue component that reaches the
@@ -81,10 +97,16 @@ async function compose(ctx: { emit: (t: string, p: unknown) => void }, content: 
 // 5. RENDER — a read, not a generation. Resolve the ref, hydrate the bindings
 //    against THIS viewer, draw. Nothing here can produce a different structure
 //    than the one that was recorded.
-async function render(ref: ContentRef, content: ContentStore) {
+async function render(ref: ContentRef, content: ContentStore, pins: Record<string, string>) {
   const bytes = await content.get(ref);
   if (!bytes) throw new Error(`blueprint ${ref.__loomContent} is gone — see "Pin it" below`);
-  return decodeValue(bytes);
+  const view = decodeValue(bytes) as Blueprint;
+
+  // 6. CHECK THE PIN. The structure is identical to the one that was promoted; whether it
+  //    still MEANS the same thing is a different question, and this is the one place it can
+  //    be asked. Findings, never a throw — a drift may be a deliberate re-promotion.
+  const pinned = checkBlueprintPins(view, pins);
+  return { view, pinned };
 }
 ```
 
@@ -100,6 +122,7 @@ drifts and the repair must be recorded.
 | The composed structure | ContentStore, by `sha256:` address | Content-addressed, so replay reproduces the same address and identical views dedup ([ADR 0046](adr/0046-content-store-seam-thin-authoritative-log.md)) |
 | The reference + intent + catalogue id | The log, in `BLUEPRINT_COMPOSED` | Small, ordered, replayable. `claimCheckMiddleware` ([ADR 0054](adr/0054-claim-check-middleware.md)) does the same job automatically for large effect payloads |
 | Fetched rows, metrics, names | **Nowhere durable** | A blueprint declares what to fetch, never what was fetched — that is what lets one artifact be shared and hydrated separately against each viewer's permissions. `validateBlueprint`'s `undeclared-prop` is the check ([ADR 0088](adr/0088-blueprint-conformance.md)) |
+| What each binding *meant* | Inside the blueprint, as `projectionVersions` | A binding freezes the projection's NAME; the fold behind that name is live code with no version, so the meaning has to be pinned separately — and inside the value, so it is inside the address ([ADR 0095](adr/0095-binding-semantics-pin.md)) |
 | Who placed which node | The log, as `SURFACE_PATCH.by` | Ordered events, so *"which patch last wrote this path"* is a projection — `surfaceProvenanceProjection` / `provenanceOf` — not a second store |
 
 ## Pin it, or retention will reclaim it
@@ -142,9 +165,38 @@ inferring the current version is exactly the silent fallback the pin exists to
 prevent.
 
 Apply the same split. **Frozen** (part of the address): intent, layout, node
-identity, bindings, and the catalogue id. **Floating**: component
-implementations, patched under [`catalogCoverage`](adr/0088-blueprint-conformance.md).
-**Always current, never pinned**: policy and IAM at render.
+identity, the binding *names*, the versions those names were pinned at, and the
+catalogue id. **Floating**: component implementations, patched under
+[`catalogCoverage`](adr/0088-blueprint-conformance.md). **Always current, never
+pinned**: policy and IAM at render.
+
+A binding is `{ projectionId, path }`, so freezing it freezes a **name**. The
+projection behind that name is live code — and the query, the filter predicates,
+the join keys, the aggregation and the window all live there, on the *floating*
+side. Rolling-versus-fixed is not expressible in a `DataBinding` at all. Edit the
+fold and every pinned view bound to it means something else under an unchanged
+hash, which is the one failure this page exists to prevent, so the meaning is
+pinned by **declaration** ([ADR 0095](adr/0095-binding-semantics-pin.md)):
+
+```ts
+projection$({ id: "latency", name: "Latency", version: "3", initialState, handlers });
+```
+
+`projectionRuntime.pins()` is what a composer records into
+`Blueprint.projectionVersions`; `checkBlueprintPins(view, pins)` is what a render
+compares it against, reporting `drift` when the fold behind a name changed and
+`unpinned` when one side declared nothing — because two sides that declared
+nothing must not read as a verified match. Bump the version when the fold's
+*meaning* changes; a refactor producing identical state is not a new version.
+The pin is a declaration, not a proof: an author who edits a fold without
+bumping it still lies, and the value of the mechanism is that the honest case
+becomes checkable and the dishonest one becomes a review question.
+
+The same declaration works one layer down, on the derived rows a view may read:
+`ReadModelDefinition.version` + `ReadModelService.checkPins(recorded)`, where an
+edited `extract` is worse than a drifted chart — the old rows stay, the watermark
+is already past them, and one query answers from two extractors until someone
+runs `rebuild()`.
 
 Two consequences worth stating out loud:
 

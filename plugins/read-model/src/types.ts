@@ -23,6 +23,20 @@ export interface ExtractedRow {
 
 export interface ReadModelDefinition {
   id: string;
+  /**
+   * ADR 0095 — the declared semantics of {@link ReadModelDefinition.extract}.
+   *
+   * Changing an extractor is silent by construction: the rows the old one wrote stay, the
+   * `(modelId, executionId)` watermark is already past the events that produced them, so
+   * catch-up never revisits them, and one `query` then answers from two extractors at once.
+   * `rebuild()` is the exit — this is what lets a caller find out it is needed, by comparing
+   * the version a derived artifact recorded against {@link ReadModelService.pins}.
+   *
+   * Bump it when what a row MEANS changes (different fields, different value, different
+   * filter); a refactor that produces identical rows is not a new version. Declared rather
+   * than derived, for the reason `flowContentHash` excludes handler code.
+   */
+  version?: string;
   /** Event kinds this model indexes (non-empty). */
   kinds: readonly string[];
   /** The queryable field names every extracted row may set. */
