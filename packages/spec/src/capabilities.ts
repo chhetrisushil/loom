@@ -328,8 +328,9 @@ export const CAPABILITIES: readonly Capability[] = [
       "CoalescingEventStore (cross-execution append batching, per-row fencing preserved) and ShardedEventStore (hash-routed fan-out over N backends) as EventStore DECORATORS — so a BYO store inherits scale-out without implementing it (EVENT_STORE_SPI 1.3.0 appendBatch, optional-with-fallback).",
     evidence: {
       conformanceTest: "packages/event-runtime/src/scaleDecorators.test.ts",
+      bench: "packages/event-runtime/src/scaleDecorators.bench.ts",
     },
-    note: "ADR 0074 — capability in packages, optimization in plugins. L2 not L4: the committed bench (tools/bench-throughput) measures the LOG, not these decorators specifically, so the L4 bar is not met on this capability's own evidence.",
+    note: "ADR 0074 — capability in packages, optimization in plugins. The decorators now have their OWN committed bench (scaleDecorators.bench.ts), which prices one backend round-trip explicitly and appends 512 envelopes across 512 executions concurrently: 14.8x at the default maxBatch 16 and 51x at 64, tracking the round-trips saved (512 -> 32 -> 8) rather than any backend's properties. Its second half is the counterweight and the reason these stay inert unless explicitly composed — over a FREE in-memory store there is nothing to save, so coalescing costs 1.49x and sharding 2.27x. Still L2, and the missing rung is not measurement: the level bar for L3 is an example or integration exercising it, and the bench itself argues against manufacturing one, since every shipped example runs in-memory where wiring these buys nothing. Promote when a deployment path with a real round-trip exists to point at.",
   },
   {
     id: "shard-rebalancing",
