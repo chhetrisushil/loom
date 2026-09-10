@@ -5,6 +5,8 @@ import {
   getSurfaceValue,
 } from "@loom/agent-surface";
 import type { SurfacePatch, SurfacePatchPayload, SurfaceState } from "@loom/agent-surface";
+import { preservesNodes } from "@loom/blueprint-runtime";
+import type { IdentityReport } from "@loom/blueprint-runtime";
 import { maskPaths } from "@loom/classify";
 import type { EventEnvelope } from "@loom/core";
 import { DEFAULT_CATALOG_ID, defaultCatalog } from "./catalog";
@@ -153,6 +155,30 @@ export class A2UISurfaceBridge {
         updateComponents: { surfaceId: this.a2uiSurfaceId, components },
       },
     ];
+  }
+
+  /**
+   * Which component ids a proposed `recompose` would drop — a pure query, run BEFORE
+   * committing to the new tree.
+   *
+   * A client keys its rendered components by id, so an id present before and absent after
+   * is a component the client unmounts and rebuilds: state inside it is discarded, and
+   * anything that referenced it — a pin, an annotation, a runbook step naming the panel —
+   * now points at nothing. That is correct when a subtree is genuinely being replaced and
+   * a defect when a composer merely edited a prop and re-emitted the tree, and the bridge
+   * cannot tell those apart. So it reports, exactly as `validateComponents` does, and the
+   * caller decides.
+   *
+   * Shares `preservesNodes` with `@loom/blueprint-runtime` rather than reimplementing the
+   * diff: the same question is asked of a composed Blueprint's widget ids
+   * ([ADR 0094](../../../docs/adr/0094-blueprint-node-identity.md)), and one answer that
+   * both surfaces agree on is the point.
+   */
+  identityDiff(next: readonly ComponentInstance[]): IdentityReport {
+    return preservesNodes(
+      this.components.map((c) => c.id),
+      next.map((c) => c.id)
+    );
   }
 
   /** The A2UI surfaceId this bridge emits/accepts on the wire. */
