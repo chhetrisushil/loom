@@ -119,6 +119,36 @@ The **one hard rule** (T3-R4.5): never shred a fold that is still in flight. Era
 
 This is honest deferral: the request is recorded and named, never silently dropped.
 
+### Erasure does not reach a derived read model
+
+A shred erases the **log**. It says nothing about anything built *from* the log, and a
+[read model](plugins.md) is exactly that: RM-2 makes it "a cache of the log with a
+watermark, never an authority". `eraseSubject` knows the event store and the key store;
+it does not know a read model exists, and the only removal verb on `ReadModelStore` is
+`clear(modelId)` — the whole model, never a row.
+
+So after an erasure, every derived row still holds whatever the extractor copied out
+before the key died — and those rows are what a console query reads. Three obligations
+follow, and the middle one is the one designs miss because "just rebuild it" sounds free
+([ADR 0092](adr/0092-adaptive-operator-profiles-placement.md) D6):
+
+1. **Invalidate what the subject touched.** `clear(modelId)` then re-scan. Erasure cost
+   is therefore *O(log)*, not *O(subject)*: an unrelated subject's rows are rebuilt too.
+   Budget it against the erasure SLA before a model grows.
+2. **Rebuild through a tolerant source.** The rebuild is a read, and the authoritative
+   read of a shredded subject throws `PayloadShreddedError` by design (K10-R4) — so a
+   rebuild through the store the fold uses **cannot run at all**. It needs an
+   `EncryptingEventStore` configured `onShredded: "tolerate"`, the same off-log posture
+   `exportSubject` takes.
+3. **Decide what a shredded field means to the extractor.** A tolerant read substitutes
+   `{ $shredded: true }` for each erased field. An extractor that indexes it verbatim
+   rebuilds the *placeholder* into the cache: not a leak — the value is genuinely gone —
+   but every erased subject collapses onto one bucket in a field the app declared as an
+   id. Use `isShredded` and skip the row, or map it to an explicit tombstone.
+
+`plugins/read-model/src/erasure.test.ts` pins all three, including the rebuild that
+throws.
+
 ## Triage & scope
 
 `@loom/compliance` is a 1P **authoring/application-tier** package above the kernel — subject

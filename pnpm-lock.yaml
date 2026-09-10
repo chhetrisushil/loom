@@ -1692,6 +1692,9 @@ importers:
       '@loom/conformance':
         specifier: workspace:*
         version: link:../../packages/conformance
+      '@loom/plugin-crypto':
+        specifier: workspace:*
+        version: link:../crypto
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

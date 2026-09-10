@@ -197,6 +197,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Subject erasure never reached a derived read model, and "just rebuild it" did not work
+  either.** A crypto-shred (K10.2) erases the log; it says nothing about anything built from
+  the log, and `eraseSubject` does not know a read model exists. Every derived row kept the
+  plaintext its extractor copied out before the key died — and those rows are what a query
+  reads. The prescribed repair, `clear(modelId)` + re-scan, then failed on its own terms: the
+  authoritative read of a shredded subject throws `PayloadShreddedError` by design, and a
+  rebuild is a read, so it needs a source configured `onShredded: "tolerate"` — the throw is
+  at the SOURCE, before any extractor runs. Under a tolerant source the extractor must then
+  decide what `{ $shredded: true }` means, because indexing it verbatim rebuilds the
+  placeholder into the cache and collapses every erased subject onto one bucket. All three are
+  now documented (`docs/compliance.md`, the `ReadModelStore.clear` contract) and pinned by
+  `plugins/read-model/src/erasure.test.ts`. Erasure cost is *O(log)*, not *O(subject)*; a
+  row-granular purge stays deferred behind a measured cost (ADR 0092 D6).
+
 - **Indexing recursed without a bound over ingested memory content.** `searchableText` walked
   `entry.content` recursively with no depth cap and no cycle guard, and `content` is whatever was
   ingested. A nesting depth of 5,000 is still JSON-serializable — so it satisfies the documented

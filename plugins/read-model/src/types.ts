@@ -121,7 +121,18 @@ export interface ReadModelStore {
   /** Executions this model has watermarks for (drives incremental catch-up). */
   watermarkedExecutions(modelId: string): Promise<string[]>;
   query(modelId: string, q?: ReadModelQuery): Promise<ReadModelPage>;
-  /** RM-2 — drop ALL rows and watermarks for the model (rebuild support). Idempotent. */
+  /**
+   * RM-2 — drop ALL rows and watermarks for the model (rebuild support). Idempotent.
+   *
+   * Whole-model is deliberate (a cache, not an authority), and it is also the ONLY
+   * erasure path a read model has: a crypto-shred erases the log and leaves every
+   * derived row holding the plaintext the extractor copied out beforehand. Invalidating
+   * one subject therefore means `clear` + re-scan — *O(log)*, not *O(subject)* — through
+   * a source that tolerates shredded payloads, because the authoritative read of a
+   * shredded subject throws. See `docs/compliance.md` and `erasure.test.ts`; a
+   * row-granular purge is deferred behind a measured cost
+   * (ADR 0092 D6).
+   */
   clear(modelId: string): Promise<void>;
   close?(): Promise<void>;
 }

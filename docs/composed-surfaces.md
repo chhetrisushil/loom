@@ -152,6 +152,15 @@ Two consequences worth stating out loud:
   derived id is a hash of kind + props, so editing any prop *re-identifies* the
   node — remounting it and breaking any pin, annotation, or agent reference
   keyed on it.
+- The same applies **across** compositions, not just along one lineage. If two
+  separately generated trees are meant to share a node — the same panel in a
+  novice and an expert arrangement, a "floor" every variant must contain — the
+  derived id makes them the same node only while their props stay
+  byte-identical. Vary a title or a density and the two trees quietly stop
+  agreeing about what the node *is*, so anything keyed on it (a pin, a runbook
+  step, a recorded operation) resolves in one tree and dangles in the other.
+  A set of nodes that must survive every variant is a set of nodes with
+  explicit ids ([ADR 0092](adr/0092-adaptive-operator-profiles-placement.md) D5).
 - A component change that alters what a view *means* is not an upgrade; it is a
   new component version, and migrating to it is a re-composition — a second
   `BLUEPRINT_COMPOSED`, visible and revertible — not an edit in place.
