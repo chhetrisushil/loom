@@ -314,24 +314,40 @@ highest-priority change in [`scaling.md`](scaling.md).
 
 ### Coalescing, as shipped (ADR 0074)
 
-The measurements above sized a *counterfactual*. These are the implementation:
+The measurements above size *counterfactuals* in SQL. This is the implementation:
 `CoalescingEventStore` over `PostgresEventStore.appendBatch`, including everything the real
 path pays — the per-row fence JOIN, per-envelope `pg_notify`, and the all-or-nothing guard.
-c=64, 4000 events, median of 3 runs:
+It is **section A2 of the harness** (`coalescedAppend`), driven exactly like section A — one
+serial writer per execution, ops counted per event — so the rows compare line for line.
+c=64, 6,400 events, median of 3 runs:
 
 | configuration | events/sec | vs shipped |
 |---|---:|---:|
-| per-event `append` | 18,190 | 1.0× |
-| `CoalescingEventStore` (default `maxBatch: 16`) | 42,110 | **2.3×** |
-| `CoalescingEventStore` (`maxBatch: 64`) | 78,122 | **4.3×** |
+| per-event `append` | 21,614 | 1.0× |
+| `CoalescingEventStore` (default `maxBatch: 16`) | 32,190 | **1.5×** |
+| `CoalescingEventStore` (`maxBatch: 64`) | 43,126 | **2.0×** |
+
+**These numbers replace an earlier table that nothing in the repo could reproduce.** It
+reported 2.3× and 4.3× for the same two configurations, and the harness contained only the
+raw-SQL counterfactuals of sections B and G — no scenario ever instantiated the decorator.
+The per-event baseline was reproduced closely (18,190 then, 21,614 now, same laptop class),
+so the gap is in the coalesced rows rather than in the machine. What is reproducible is what
+this table now says, and re-running it is one command:
+
+```sh
+LOOM_TEST_POSTGRES_URL=postgres://… LOOM_BENCH_CONCURRENCIES=8,64 LOOM_BENCH_OPS=100 \
+  LOOM_BENCH_BATCHES=1,16,64 pnpm --filter @loom/bench-throughput bench
+```
 
 Note the default is the conservative one. The earlier "knee at 16, regression at 64" came
 from the same-execution statement shape in section B; the cross-execution shape behaves
-differently and 64 is faster here. Tail latency at 64 is unmeasured, which is why the
-default stays at 16 — raise it deliberately, with your own p99 in hand.
+differently and 64 is faster here. Its tail is where the trade shows: p99 rises from 3.95 ms
+at 16 to a 14.2 ms max at 64 in the same run, which is why the default stays at 16 — raise
+it deliberately, with your own p99 in hand.
 
-This is the honest bottom line on batching: **2.3–4.3× measured end to end**, not section
-B's 8.2×. That number was always an upper bound on a statement, not on a design.
+The honest bottom line on batching is therefore **1.5–2.0× measured end to end** on the
+shipped decorator — not section B's 8.2×, which was always an upper bound on a statement
+rather than on a design, and not the 2.3–4.3× this page previously claimed.
 
 ### The decorators without a database: what they cost, and what they buy
 
@@ -355,7 +371,7 @@ Those ratios track the round-trips saved (512 → 32 → 8) rather than a proper
 backend: the point of the parameter is that a reader who thinks their own round-trip is
 dearer or cheaper can move it and re-run. What the Postgres table above adds — and this one
 cannot — is everything a real backend also pays: the fence JOIN, `pg_notify` per envelope,
-the all-or-nothing guard. That is why 51× on a modelled round-trip is 4.3× on a database.
+the all-or-nothing guard. That is why 51× on a modelled round-trip is 2.0× on a database.
 
 The second half of the bench is the counterweight, and it is the reason these decorators are
 **inert unless explicitly composed**:
