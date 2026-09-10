@@ -333,6 +333,44 @@ default stays at 16 — raise it deliberately, with your own p99 in hand.
 This is the honest bottom line on batching: **2.3–4.3× measured end to end**, not section
 B's 8.2×. That number was always an upper bound on a statement, not on a design.
 
+### The decorators without a database: what they cost, and what they buy
+
+Everything above needs a live Postgres, so none of it runs in CI and none of it can be
+re-checked on a laptop. `packages/event-runtime/src/scaleDecorators.bench.ts` is the part
+that can: it prices ONE round-trip explicitly (`ROUND_TRIP_US`, spun rather than slept, so
+scheduler granularity stays out of a measurement about call counts) and appends 512
+envelopes across 512 distinct executions concurrently — the real shape, N journals each
+holding one pending envelope.
+
+Run it with `npx vitest bench --run src/scaleDecorators.bench.ts` from
+`packages/event-runtime`. At a 20µs round-trip, on the same laptop as the rest of this file:
+
+| configuration | ops/sec | vs undecorated |
+|---|---:|---:|
+| per-event `append` (no decorator) | 96.8 | 1.0× |
+| `CoalescingEventStore` (default `maxBatch: 16`) | 1,437 | **14.8×** |
+| `CoalescingEventStore` (`maxBatch: 64`) | 4,950 | **51×** |
+
+Those ratios track the round-trips saved (512 → 32 → 8) rather than a property of any
+backend: the point of the parameter is that a reader who thinks their own round-trip is
+dearer or cheaper can move it and re-run. What the Postgres table above adds — and this one
+cannot — is everything a real backend also pays: the fence JOIN, `pg_notify` per envelope,
+the all-or-nothing guard. That is why 51× on a modelled round-trip is 4.3× on a database.
+
+The second half of the bench is the counterweight, and it is the reason these decorators are
+**inert unless explicitly composed**:
+
+| over a FREE (in-memory) backend | ops/sec | cost |
+|---|---:|---:|
+| `InMemoryAsyncEventStore` (no decorator) | 8,074 | — |
+| `CoalescingEventStore` over in-memory | 5,431 | **1.49×** slower |
+| `ShardedEventStore` over 4 in-memory shards | 3,550 | **2.27×** slower |
+
+There are no round-trips to save against a store in the same process, so coalescing there is
+pure overhead, and sharding buys parallelism a single-process bench cannot show and this
+deliberately does not claim. Wire them where a round-trip is real; leave them out where it
+is not.
+
 ### Read path: `loadState` no longer reads the whole log
 
 `foldState` used to read the ENTIRE log before checking for a snapshot, then throw that
