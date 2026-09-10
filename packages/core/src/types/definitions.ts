@@ -267,6 +267,20 @@ export type ProjectionHandlersSpec<TState = unknown> =
   | ProjectionHandlers<TState>
   | ProjectionHandlersRef<TState>;
 
+/**
+ * A projection definition of *some* state — what a registry holds when its entries fold
+ * different state types.
+ *
+ * `ProjectionDefinition<unknown>` cannot serve that role: a fold's state appears in both
+ * parameter and return position (`(state: TState, event) => TState`), so the type is
+ * INVARIANT in `TState` and `ProjectionDefinition<CpuState>` is assignable to no other
+ * instantiation. Without this alias `defineConfig({ projections: [...] })` cannot be called
+ * with typed projections at all — which is how the gap survived: nothing passed the field.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: the standard escape for an invariant generic;
+// every consumer reads only id/name/version/initialState/handlers and never the state type.
+export type AnyProjectionDefinition = ProjectionDefinition<any>;
+
 export interface ProjectionDefinition<TState = unknown> {
   readonly _tag: "ProjectionDefinition";
   id: string;
