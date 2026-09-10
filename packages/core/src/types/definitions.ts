@@ -277,8 +277,7 @@ export type ProjectionHandlersSpec<TState = unknown> =
  * instantiation. Without this alias `defineConfig({ projections: [...] })` cannot be called
  * with typed projections at all — which is how the gap survived: nothing passed the field.
  */
-// biome-ignore lint/suspicious/noExplicitAny: the standard escape for an invariant generic;
-// every consumer reads only id/name/version/initialState/handlers and never the state type.
+// biome-ignore lint/suspicious/noExplicitAny: the standard escape for an invariant generic — every consumer reads id/name/version/initialState/handlers and never the state type
 export type AnyProjectionDefinition = ProjectionDefinition<any>;
 
 export interface ProjectionDefinition<TState = unknown> {
