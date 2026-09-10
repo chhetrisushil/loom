@@ -6,6 +6,11 @@
 - Evaluates: [Project Dynamic Persona](2026-09-10-dynamic-persona.md) (**PdP**), an adaptive
   Operator Profile for the generative database-observability console.
 - Decisions recorded in: [ADR 0092](../adr/0092-adaptive-operator-profiles-placement.md).
+- **Follow-through (2026-09-10):** all three work items shipped. W2 with the ADR; W1's gate and W3's
+  deferral were then lifted by decision and implemented —
+  [ADR 0094](../adr/0094-blueprint-node-identity.md) and
+  [ADR 0093](../adr/0093-read-model-row-purge.md). Nothing below is outstanding on loom; the
+  remaining work is the app-side one this document places in the app.
 - Method: the [ADR 0051](../adr/0051-perpetual-agents-placement-schedule-remodel.md) discipline —
   a placement verdict per requirement, judged against the best userland alternative, bias outward,
   [second-consumer rule](../adr/0083-second-consumer-rule.md) applied before anything becomes 1P
@@ -206,6 +211,8 @@ consumer exists. The candidate is the a2ui revision path: `A2UISurfaceBridge` st
 and a surface that is *revised* across turns needs stable node identity for the same reason a floor
 does. **If that path stays unbuilt, W1(b) is app code and stays in the app** — the second-consumer
 rule is not satisfied by one consumer plus a plausible one.
+**Shipped** ([ADR 0094](../adr/0094-blueprint-node-identity.md)): the a2ui path was wired, so the
+gate was met rather than waived — and the second consumer changed the API from blueprints to id sets.
 
 **W2 — Document the identity hazard where a composer meets it (docs).** The comment in `widgets.ts`
 is correct and is in the one place a runtime composer's author never looks. The blueprint-conformance
@@ -216,6 +223,8 @@ correctness fix is available today (`clear` + rebuild) and should be *documented
 A row-granular purge on `ReadModelStore` is the efficient fix and is **deferred**: reopen when a
 measured rebuild cost at production log size exceeds the erasure SLA. Absent that number, the cheap
 mechanism is sufficient and the SPI addition is unjustified.
+**Shipped** ([ADR 0093](../adr/0093-read-model-row-purge.md)): the gate was lifted by decision, and
+the measurement taken afterwards put the rebuild at 68× the cost of a purge for one subject.
 
 ---
 

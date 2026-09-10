@@ -1,7 +1,11 @@
 # ADR 0092 — Adaptive operator profiles: the journaled value is a decision, not an offset
 
-- Status: **Accepted** (2026-09-10) — placement verdicts recorded. Nothing ships in this record:
-  one 1P item is gated on a second consumer (W1), one is deferred behind an evidence gate (W3).
+- Status: **Accepted** (2026-09-10) — placement verdicts recorded. Nothing shipped in this record
+  itself: one 1P item was gated on a second consumer (W1/D5), one deferred behind an evidence gate
+  (W3/D6).
+- **Both were later lifted by decision and implemented, same day**: D5 → [ADR 0094](0094-blueprint-node-identity.md)
+  (`preservesNodes`, second consumer wired), D6 → [ADR 0093](0093-read-model-row-purge.md)
+  (row-granular `purge`, SPI 1.1.0). The verdicts below stand as written; the two gates do not.
 - Date: 2026-09-10
 - Resolves: the [Dynamic Persona submission](../requirements/2026-09-10-dynamic-persona.md),
   evaluated in [the placement evaluation](../requirements/2026-09-10-dynamic-persona-evaluation.md).
@@ -93,6 +97,11 @@ same node ids — is a pure function of the shape `validateBlueprint` establishe
 unrelated consumer exists. The named candidate is the a2ui revision path, which needs stable node
 identity for the same reason. One consumer plus a plausible one is not two.
 
+**Lifted 2026-09-10** ([ADR 0094](0094-blueprint-node-identity.md)). The candidate consumer was
+wired rather than waived, and being a real one changed the API: `preservesNodes` takes id sets, not
+blueprints, because A2UI's components are a flat list. The requirement in bold above is unchanged —
+explicit ids are what make a floor a floor; there is now a check that says when they are missing.
+
 ### D6 — Subject erasure must invalidate derived read models (W3, deferred)
 
 `@loom/compliance` shreds the log and knows nothing about read models; `ReadModelStore`'s only
@@ -105,6 +114,12 @@ one operator who exercised deletion.
 A row-granular purge on the store SPI is **deferred behind an evidence gate**: reopen when a measured
 rebuild cost at production log size exceeds the erasure SLA. Until that number exists, the available
 mechanism is sufficient and the SPI addition is unjustified.
+
+**Lifted 2026-09-10** ([ADR 0093](0093-read-model-row-purge.md)). The gate was opened by decision
+rather than tripped, so the measurement was taken afterwards: 0.49 ms by purge against 33.8 ms by
+`clear` + rebuild, erasing one subject of 50 from a 20k-event corpus. Rebuild's cost does not depend
+on how much of the model the subject owned, which is the part this paragraph underestimated when it
+called the available mechanism sufficient.
 
 ### D7 — Rejected: a render overlay in the 1P renderers, and a new gap class
 
