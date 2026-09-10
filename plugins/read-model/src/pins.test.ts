@@ -145,6 +145,18 @@ describe("ReadModelService.checkPins — the signal", () => {
     expect(report.findings[0]).toMatchObject({ code: "unpinned", severity: "warn" });
   });
 
+  it("keeps a version under a hostile model id", () => {
+    // Same reason as the projection runtime's: `{}["__proto__"] = v` sets a prototype and
+    // records nothing, so the model would drop out of `pins()` and out of every report.
+    const service = new ReadModelService(new InMemoryReadModelStore());
+    service.register({ ...FINDINGS_V1, id: "__proto__", version: "1" });
+    expect(Object.keys(service.pins())).toEqual(["__proto__"]);
+    expect(service.checkPins(JSON.parse('{"__proto__":"2"}'))).toMatchObject({
+      ok: false,
+      compared: 1,
+    });
+  });
+
   it("another model's version drifting says nothing about this artifact", () => {
     const service = new ReadModelService(new InMemoryReadModelStore());
     service.register(FINDINGS_V2);

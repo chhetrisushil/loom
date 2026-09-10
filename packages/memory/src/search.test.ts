@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { InMemoryMemoryStore } from "./InMemoryMemoryStore";
 import { MemoryRuntime } from "./MemoryRuntime";
 import { TieredMemory } from "./TieredMemory";
-import { searchableText, tokenize } from "./searchText";
+import { MAX_QUERY_TERMS, queryTerms, searchableText, tokenize } from "./searchText";
 import type { MemoryEntry, MemoryStore } from "./types";
 
 describe("searchableText", () => {
@@ -213,5 +213,72 @@ describe("TieredMemory.recallRelevant", () => {
       decide: async (_, f) => f(),
     });
     expect(hits).toHaveLength(2);
+  });
+});
+
+// ── The query is an input, and an input has a bound (audit 2026-09-10) ────────
+//
+// Terms are OR-ed, so a repeated term cannot change WHICH entries match — only how long a
+// store takes to say so. Before `queryTerms`, one word repeated 20,000 times built a
+// 20,000-clause FTS5 MATCH and took SQLite 32.7 seconds: a denial of service bought from a
+// text box. Distinct terms cost linearly, so the cap bounds the other half.
+
+describe("queryTerms", () => {
+  it("deduplicates, keeping the order the asker led with", () => {
+    expect(queryTerms("latency spend latency rollout spend")).toEqual([
+      "latency",
+      "spend",
+      "rollout",
+    ]);
+  });
+
+  it("caps the number of distinct terms", () => {
+    const query = Array.from({ length: MAX_QUERY_TERMS + 50 }, (_, i) => `term${i}`).join(" ");
+    const terms = queryTerms(query);
+    expect(terms).toHaveLength(MAX_QUERY_TERMS);
+    // Kept from the front: the terms a question leads with are the ones it is about.
+    expect(terms[0]).toBe("term0");
+    expect(terms).not.toContain(`term${MAX_QUERY_TERMS + 10}`);
+  });
+
+  it("collapses a repeated term to one, however many times it appears", () => {
+    expect(queryTerms(Array.from({ length: 20_000 }, () => "latency").join(" "))).toEqual([
+      "latency",
+    ]);
+  });
+
+  it("is empty for a query with no terms", () => {
+    expect(queryTerms("   ---   ")).toEqual([]);
+  });
+});
+
+describe("search is bounded by the same terms", () => {
+  it("does not match on a term past the cap", async () => {
+    // The behavioural half: a store that ignored the cap would return `beyond` too.
+    const store = new InMemoryMemoryStore();
+    await store.append("k", { content: { text: "term0 only" }, timestamp: 1 });
+    await store.append("k", {
+      content: { text: `term${MAX_QUERY_TERMS + 10} only` },
+      timestamp: 2,
+    });
+
+    const query = Array.from({ length: MAX_QUERY_TERMS + 50 }, (_, i) => `term${i}`).join(" ");
+    const hits = await store.search("k", query, { limit: 10 });
+
+    expect(hits).toHaveLength(1);
+    expect(JSON.stringify(hits[0]?.content)).toContain("term0");
+  });
+
+  it("answers a query repeating one term exactly as it answers the term", async () => {
+    const store = new InMemoryMemoryStore();
+    await store.append("k", { content: { text: "latency spiked" }, timestamp: 1 });
+    await store.append("k", { content: { text: "spend rose" }, timestamp: 2 });
+
+    const once = await store.search("k", "latency", { limit: 10 });
+    const many = await store.search("k", Array.from({ length: 5_000 }, () => "latency").join(" "), {
+      limit: 10,
+    });
+
+    expect(many).toEqual(once);
   });
 });

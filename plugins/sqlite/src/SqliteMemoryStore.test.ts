@@ -88,3 +88,55 @@ describe("SqliteMemoryStore FTS index maintenance", () => {
     expect(indexHits("current")).toBe(1);
   });
 });
+
+// ── A query cannot buy unbounded work (audit 2026-09-10) ─────────────────────
+//
+// FTS5 evaluates every clause of a MATCH expression, and terms are OR-ed — so before
+// `queryTerms` deduplicated them, one word repeated 20,000 times built a 20,000-clause
+// expression and this store took **32.7 seconds** to answer a query whose meaning was one
+// word. A 128 KB text box was a denial of service.
+//
+// The bound below is 5s against a fixed path that answers in about a millisecond: three
+// orders of magnitude of headroom for a loaded CI box, and still far under the failure it
+// discriminates. Timing is the only observable here, because deduplication cannot change
+// which rows come back — that is exactly why it was safe to do and invisible to a
+// semantic test.
+describe("SqliteMemoryStore query bounds", () => {
+  let dir: string;
+  let store: SqliteMemoryStore;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "loom-memory-bounds-"));
+    store = new SqliteMemoryStore(join(dir, "memory.db"));
+  });
+
+  afterEach(async () => {
+    await store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("answers a 20,000-repeat query as fast as the single term it means", async () => {
+    for (let i = 0; i < 200; i++) {
+      await store.append("k", { content: { text: `entry ${i} about latency` }, timestamp: i });
+    }
+    const repeated = Array.from({ length: 20_000 }, () => "latency").join(" ");
+
+    const started = performance.now();
+    const hits = await store.search("k", repeated, { limit: 5 });
+    const elapsed = performance.now() - started;
+
+    expect(hits).toHaveLength(5);
+    expect(elapsed).toBeLessThan(5_000);
+  });
+
+  it("does not match on a term past the cap", async () => {
+    await store.append("k", { content: { text: "term0 only" }, timestamp: 1 });
+    await store.append("k", { content: { text: "term500 only" }, timestamp: 2 });
+    const query = Array.from({ length: 600 }, (_, i) => `term${i}`).join(" ");
+
+    const hits = await store.search("k", query, { limit: 10 });
+
+    expect(hits).toHaveLength(1);
+    expect(JSON.stringify(hits[0]?.content)).toContain("term0");
+  });
+});

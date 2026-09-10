@@ -46,6 +46,44 @@ describe("SkillRegistry.find", () => {
     // "cpu" only matches the cpu skill.
     expect(matches.map((m) => m.skill.id)).toEqual(["diagnose-cpu"]);
   });
+
+  // The score counts terms the haystack CONTAINS, so a repeated term is a second substring
+  // search that can only inflate the number — and an unbounded question is O(skills x terms)
+  // of them. Both halves are bounded; these assert it where it is observable.
+  it("scores a repeated term once, however many times it is asked", () => {
+    const reg = new SkillRegistry().register(
+      skill$({
+        id: "diagnose-cpu",
+        name: "CPU",
+        description: "diagnose cpu saturation",
+        tags: ["cpu"],
+        instructions: instructions$("a"),
+      })
+    );
+
+    const once = reg.find("cpu");
+    const many = reg.find(Array.from({ length: 5_000 }, () => "cpu").join(" "));
+
+    expect(many[0]?.score).toBe(once[0]?.score);
+  });
+
+  it("stops scoring past the term cap", () => {
+    const reg = new SkillRegistry().register(
+      skill$({
+        id: "diagnose-cpu",
+        name: "CPU",
+        description: "diagnose cpu saturation",
+        tags: ["cpu"],
+        instructions: instructions$("a"),
+      })
+    );
+
+    // 64 distinct filler terms, then the only term that matches: past the cap, so it never
+    // contributes and nothing matches at all.
+    const query = `${Array.from({ length: 64 }, (_, i) => `filler${i}`).join(" ")} cpu`;
+
+    expect(reg.find(query)).toEqual([]);
+  });
 });
 
 describe("deterministicSkillSelector", () => {

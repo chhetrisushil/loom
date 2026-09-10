@@ -65,6 +65,11 @@ export interface MemoryEntry {
  * 1.0.0: `append` / `read` / `clear`, plus optional `replace`, `search` and `close`.
  *   The optional three shipped together with the first durable backends, so there is
  *   no earlier shape to be compatible with.
+ * 2.1.0: the query is BOUNDED — a term-based backend derives its terms with `queryTerms`
+ *   (deduplicated, capped at `MAX_QUERY_TERMS`) rather than `tokenize`. MINOR because a
+ *   backend that already used `tokenize` returns the same rows for every query anyone would
+ *   actually ask; what changes is that a pathological one can no longer buy unbounded work.
+ *   A similarity backend derives no terms and is unaffected.
  * 2.0.0: entry IDENTITY — `MemoryEntry.id`, optional for the caller but REQUIRED to
  *   round-trip, plus the optional `remove`. MAJOR and not MINOR because the round-trip
  *   is a requirement on every backend, including ones that do not implement `remove`:
@@ -73,7 +78,7 @@ export interface MemoryEntry {
  *   now fails it. A backend that persists the entry object whole — `loom-plugin-vector`
  *   is the third-party example — conforms unchanged.
  */
-export const MEMORY_STORE_SPI_VERSION = "2.0.0";
+export const MEMORY_STORE_SPI_VERSION = "2.1.0";
 
 export interface MemorySearchOptions {
   /**
@@ -133,8 +138,14 @@ export interface MemoryStore {
    *  - ANY query term may match (terms are OR-ed); an entry matching more of them, or
    *    rarer ones, ranks higher. Requiring every term would make a longer question
    *    return less;
-   *  - what gets indexed is `searchableText(entry)` and terms are `tokenize`'s — both
-   *    exported, because "what text is searched" is contract, not backend detail;
+   *  - what gets indexed is `searchableText(entry)`, and a term-based backend derives its
+   *    terms with `queryTerms` — both exported, because "what text is searched" is
+   *    contract, not backend detail. `queryTerms` deduplicates and caps at
+   *    `MAX_QUERY_TERMS`: repeated terms are OR-ed with themselves and cannot change which
+   *    entries match, and an uncapped question is unbounded work bought from a text box
+   *    (measured: one word repeated 20,000 times took SQLite 32.7 seconds). A SIMILARITY
+   *    backend derives no terms and is unaffected, exactly as it is by the ranking
+   *    carve-out below;
    *  - a query with no terms, or one matching nothing, returns `[]`.
    *
    * RANKING itself is the backend's business — BM25, `ts_rank` and the reference

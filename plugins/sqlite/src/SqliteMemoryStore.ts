@@ -1,5 +1,5 @@
 import type { MemoryEntry, MemorySearchOptions, MemoryStore } from "@loom/memory";
-import { clampSearchLimit, searchableText, tokenize } from "@loom/memory";
+import { clampSearchLimit, queryTerms, searchableText } from "@loom/memory";
 import Database from "better-sqlite3";
 
 interface EntryRow {
@@ -138,8 +138,11 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   async search(key: string, query: string, opts: MemorySearchOptions = {}): Promise<MemoryEntry[]> {
-    const terms = tokenize(query);
+    const terms = queryTerms(query);
     if (terms.length === 0) return [];
+    // `queryTerms`, not `tokenize`: OR-ing the same term 20,000 times cannot change which
+    // rows match and took 32.7 SECONDS here before it was deduplicated.
+    //
     // Building the MATCH from TERMS, never from the raw question, is what keeps FTS5's
     // expression syntax (`*`, `NEAR`, `AND`, a bare `-`) out of it: a user question passed
     // through is parsed as operators, and either raises a syntax error or quietly means

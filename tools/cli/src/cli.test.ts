@@ -104,6 +104,22 @@ describe("loom CLI", () => {
         flags: { db: "x.db", at: "3" },
       });
     });
+
+    it("holds only what was typed — an unset flag is undefined, not an inherited member", () => {
+      // Every option is read out of this bag by name. With a prototype,
+      // `flags["valueOf"] ?? fallback` answers with a FUNCTION for a flag nobody passed.
+      const { flags } = parseArgs(["debug", "--db", "x.db"]);
+      // Read the way the CLI reads: by a name computed at runtime, which is the case an
+      // inherited member answers for.
+      for (const option of ["valueOf", "constructor", "toString", "hasOwnProperty"]) {
+        expect(flags[option], option).toBeUndefined();
+      }
+    });
+
+    it("records `--__proto__` as a flag rather than losing it", () => {
+      const { flags } = parseArgs(["debug", "--__proto__", "x"]);
+      expect(Object.entries(flags)).toEqual([["__proto__", "x"]]);
+    });
   });
 
   describe("foldAt / formatLog / describeState", () => {

@@ -26,6 +26,43 @@ export function tokenize(text: string): string[] {
 }
 
 /**
+ * How many distinct terms of a QUERY a backend may search for.
+ *
+ * A question is an input, and this is the bound on the work one can buy. 256 distinct
+ * terms is far past any real question — a 500-word paste is under it — and it holds the
+ * pathological case to a millisecond.
+ */
+export const MAX_QUERY_TERMS = 256;
+
+/**
+ * The terms a backend searches for: {@link tokenize}, DEDUPLICATED and capped.
+ *
+ * Both halves are load-bearing, and both were measured on the 1P backends before this
+ * existed:
+ *
+ * - **Dedupe.** Terms are OR-ed, so a repeated term is the same term — it cannot change
+ *   which entries match, only how long the store takes to say so. A 128 KB query repeating
+ *   one word 20,000 times built a 20,000-clause `MATCH` and took SQLite **32.7 seconds**;
+ *   deduplicated it is one clause and sub-millisecond. That is a denial of service bought
+ *   with a text box.
+ * - **Cap.** Distinct terms cost linearly (4,096 terms ≈ 19 ms on SQLite, ≈ 238 ms on the
+ *   reference scorer over 2,000 entries), so an unbounded query is an unbounded scan.
+ *
+ * It DEGRADES rather than refuses — the same choice `searchableText`'s depth limit makes.
+ * A query is a relevance hint, not a validated payload, and a store that threw on a long
+ * question would fail a caller who did nothing wrong. First-seen order is preserved so the
+ * terms that survive are the ones the asker led with.
+ */
+export function queryTerms(query: string): string[] {
+  const seen = new Set<string>();
+  for (const term of tokenize(query)) {
+    seen.add(term);
+    if (seen.size >= MAX_QUERY_TERMS) break;
+  }
+  return [...seen];
+}
+
+/**
  * The text a store indexes for an entry: its `content`'s string and number LEAVES,
  * whitespace-joined.
  *

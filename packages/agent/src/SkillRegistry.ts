@@ -9,6 +9,17 @@ export interface SkillMatch {
 // held here for selection; the instructions body stays lazy until a skill is
 // chosen. Mirrors CapabilityCatalog — a deterministic keyword scorer backs the
 // offline, replay-safe selection path.
+/**
+ * How many distinct query terms the keyword scorer counts.
+ *
+ * Scoring is O(entries x terms) of substring searches, so the query is the multiplier;
+ * past a few dozen terms the extra ones are noise rather than signal. Mirrors
+ * `@loom/memory`'s `MAX_QUERY_TERMS` in intent — a query is an input, and an input has a
+ * bound — without sharing a constant across packages that do not otherwise depend on each
+ * other.
+ */
+const MAX_SCORED_TERMS = 64;
+
 export class SkillRegistry {
   private readonly skills = new Map<string, SkillDefinition>();
 
@@ -33,10 +44,18 @@ export class SkillRegistry {
   // id so the ordering is stable for the same query — the property the default
   // selector relies on for replay-safety.
   find(query: string): SkillMatch[] {
-    const terms = query
-      .toLowerCase()
-      .split(/\W+/)
-      .filter((t) => t.length > 2);
+    // Deduplicated and capped: the score counts terms the haystack CONTAINS, so repeating
+    // a term inflates nothing and only costs another substring search per skill, and an
+    // unbounded question is O(skills x terms) of it. Scoring beyond a few dozen terms is
+    // noise anyway. First-seen order is preserved; the cap only decides what is dropped.
+    const terms = [
+      ...new Set(
+        query
+          .toLowerCase()
+          .split(/\W+/)
+          .filter((t) => t.length > 2)
+      ),
+    ].slice(0, MAX_SCORED_TERMS);
     const matches: SkillMatch[] = [];
     for (const skill of this.skills.values()) {
       const haystack = [skill.id, skill.name, skill.description, ...(skill.tags ?? [])]

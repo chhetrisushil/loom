@@ -1,4 +1,4 @@
-import { searchableText, tokenize } from "./searchText";
+import { queryTerms, searchableText, tokenize } from "./searchText";
 import { clampSearchLimit } from "./types";
 import type { MemoryEntry, MemorySearchOptions, MemoryStore } from "./types";
 
@@ -47,7 +47,7 @@ export class InMemoryMemoryStore implements MemoryStore {
    * whose indexes do this properly and without scanning.
    */
   async search(key: string, query: string, opts: MemorySearchOptions = {}): Promise<MemoryEntry[]> {
-    const terms = new Set(tokenize(query));
+    const terms = new Set(queryTerms(query));
     const entries = this.entries.get(key) ?? [];
     if (terms.size === 0 || entries.length === 0) return [];
 

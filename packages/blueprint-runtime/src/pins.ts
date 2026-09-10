@@ -30,10 +30,10 @@ import type { Blueprint } from "./types";
  */
 export function blueprintPins(blueprint: Blueprint): VersionPins {
   const recorded = blueprint.projectionVersions;
-  if (recorded === undefined) return {};
-  const pins: Record<string, string> = {};
+  if (recorded === undefined) return emptyPins();
+  const pins = emptyPins();
   for (const projectionId of blueprint.projections) {
-    const version = recorded[projectionId];
+    const version = recordedVersion(recorded, projectionId);
     if (version !== undefined) pins[projectionId] = version;
   }
   return pins;
@@ -54,12 +54,31 @@ export function blueprintPins(blueprint: Blueprint): VersionPins {
  * would then read `ok: true` over an empty comparison.
  */
 export function checkBlueprintPins(blueprint: Blueprint, current: VersionPins): PinReport {
-  const recorded: Record<string, string> = {};
-  const scoped: Record<string, string> = {};
+  const recorded = emptyPins();
+  const scoped = emptyPins();
   for (const projectionId of blueprint.projections) {
-    recorded[projectionId] = blueprint.projectionVersions?.[projectionId] ?? "";
-    const now = current[projectionId];
+    recorded[projectionId] = recordedVersion(blueprint.projectionVersions, projectionId) ?? "";
+    const now = recordedVersion(current, projectionId);
     if (now !== undefined) scoped[projectionId] = now;
   }
   return checkVersionPins(recorded, scoped);
+}
+
+/**
+ * A pin map with NO prototype, built rather than written into `{}`.
+ *
+ * A blueprint is data — the whole premise of ADR 0088 is that a model may have composed it
+ * — so a `projectionId` is an untrusted string, and `{}["__proto__"] = "1"` sets a
+ * prototype instead of a key: the pin vanishes, `Object.keys` never sees it, and the
+ * binding drops out of the report entirely with no finding. Silent omission is precisely
+ * what this seam exists to prevent, so the maps it builds cannot have a prototype to hit.
+ */
+function emptyPins(): Record<string, string> {
+  return Object.create(null) as Record<string, string>;
+}
+
+/** An OWN-property read, so an inherited member never answers for a recorded version. */
+function recordedVersion(pins: VersionPins | undefined, id: string): string | undefined {
+  if (pins === undefined || !Object.hasOwn(pins, id)) return undefined;
+  return pins[id];
 }

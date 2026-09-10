@@ -88,3 +88,36 @@ describe("checkVersionPins — the comparison", () => {
     expect(report.compared).toBe(1);
   });
 });
+
+describe("a pin map is read as data, never as an object", () => {
+  // A derivation id is an untrusted string — a model composes the blueprint that names it
+  // (ADR 0088) — and a pin map is an ordinary object. A bare index read would answer with
+  // `Object.prototype`'s members, so a derivation called `toString` or `constructor` would
+  // compare against something nobody recorded.
+
+  it("an inherited member is not a recorded version", () => {
+    const report = checkVersionPins({ latency: "1" }, { latency: "1" });
+    expect(report.ok).toBe(true);
+    // `toString` exists on both maps by inheritance, and neither side declared it.
+    expect(report.findings.map((f) => f.id)).not.toContain("toString");
+    expect(report.compared).toBe(1);
+  });
+
+  it("compares a version recorded under `__proto__` like any other", () => {
+    // The real path: a composed blueprint round-trips through the content store, and
+    // `JSON.parse` gives `__proto__` an OWN property where an object literal cannot.
+    const recorded = JSON.parse('{"__proto__":"1","spend":"1"}');
+    const current = JSON.parse('{"__proto__":"2","spend":"1"}');
+
+    const report = checkVersionPins(recorded, current);
+
+    expect(report.compared).toBe(2);
+    expect(report.findings.map((f) => [f.id, f.code])).toEqual([["__proto__", "drift"]]);
+  });
+
+  it("treats a hostile id with no own entry as undeclared, not as a match", () => {
+    const report = checkVersionPins({ constructor: "1" } as Record<string, string>, {});
+    expect(report.findings[0]).toMatchObject({ id: "constructor", code: "unpinned" });
+    expect(report.compared).toBe(0);
+  });
+});
