@@ -23,7 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same reason a fold closure has no stable fingerprint), `checkVersionPins(recorded, current)`
   reporting `drift` as an error and `unpinned` as a warn with the side it is missing from, and
   `compared` as the denominator so `ok: true` over nothing cannot read as a pass. The recorded pin
-  rides in `Blueprint.projectionVersions`, inside the content address rather than beside it.
+  rides in `Blueprint.projectionVersions`, inside the content address rather than beside it — a
+  test asserts two views differing only in their recorded versions hash differently, which is
+  what makes the recipe's frozen list true rather than aspirational. `projectionRuntime.pins()`
+  is what a composer records; `checkBlueprintPins(view, pins)` is what a render compares.
   Second consumer, wired: `ReadModelService.pins()` / `checkPins(recorded)` — a query, like
   `identityDiff`, that reports what is wrong without rebuilding anything (ADR 0095).
 

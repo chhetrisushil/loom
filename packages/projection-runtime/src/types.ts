@@ -6,6 +6,17 @@ export type ProjectionFoldMap<TState> = {
 
 export interface Projection<TState> {
   id: string;
+  /**
+   * ADR 0095 — the declared semantics of this fold. An artifact that binds to `id` (a
+   * blueprint's `DataBinding`, a saved report) records this string, and `checkVersionPins`
+   * compares what was recorded against what is registered: a changed query, filter,
+   * aggregation or window then reads as a finding instead of a silently different number.
+   *
+   * Bump it when the fold's MEANING changes — a refactor producing the same state is not a
+   * new version. Declared rather than derived, for the reason `flowContentHash` excludes
+   * handler code: a fold closure has no stable fingerprint.
+   */
+  version?: string;
   initialState: TState;
   /** The eager fold map — present when handlers are inline / already resolved. */
   handlers?: ProjectionFoldMap<TState>;
@@ -51,4 +62,12 @@ export interface ProjectionRuntime {
   ): () => void;
   handleEvent(event: EventEnvelope): void;
   seedState(projectionId: string, executionId: string, state: unknown): void;
+  /**
+   * ADR 0095 — the declared `version` of every registered projection that has one, by id.
+   *
+   * OPTIONAL on the interface so an existing implementation stays valid; a runtime that
+   * omits it simply cannot answer the question, and `checkVersionPins` reports that as
+   * `unpinned` rather than as a pass.
+   */
+  pins?(): Readonly<Record<string, string>>;
 }

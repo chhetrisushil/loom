@@ -17,6 +17,8 @@ export type {
 } from "./types/execution";
 export { executionFromState } from "./types/execution";
 export { flowContentHash } from "./flowHash";
+export { checkVersionPins } from "./versionPins";
+export type { PinFinding, PinFindingCode, PinReport, VersionPins } from "./versionPins";
 export { canonicalJson, fnv1a64, jsonSchemaHash } from "./schemaHash";
 export { schedule$ } from "./builders/schedule";
 export type { ScheduleConfig } from "./builders/schedule";

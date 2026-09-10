@@ -1642,6 +1642,7 @@ import { InMemoryReadModelStore, ReadModelService } from "@loom/plugin-read-mode
 const readModels = new ReadModelService(new InMemoryReadModelStore());
 readModels.register({
   id: "findings-by-target",
+  version: "1", // ADR 0095 — bump when `extract` changes MEANING (see below)
   kinds: ["FINDING_RECORDED"],
   indexes: ["target", "severity"],
   extract: (e) => [{ fields: { target: e.payload.target, severity: e.payload.severity } }],
@@ -1663,6 +1664,17 @@ A read model is a **cache of the log with a watermark, never an authority**: dro
 `rebuild()` re-derives identical state; queries are read-only and never recorded, so replay is
 untouched. Ingestion converges from any mix of live tail, catch-up scans, and multiple nodes
 (idempotent rows + monotonic per-execution watermarks — no global event order required).
+
+**Changing an extractor is silent unless you pin it.** The rows the old `extract` wrote stay,
+the `(modelId, executionId)` watermark is already past the events that produced them, so
+catch-up never revisits them, and one `query` then answers from two extractors at once.
+`rebuild()` is the exit; `version` is how anyone finds out it is needed. Whatever you derive
+from these rows records `readModels.pins()`, and `readModels.checkPins(recorded)` compares it
+later — a query that clears nothing, reporting `drift` when an extractor changed and `unpinned`
+when one side declared no version, because two sides that declared nothing must not read as a
+verified match ([ADR 0095](adr/0095-binding-semantics-pin.md)). The same declaration exists on
+`projection$` / `Projection` for the folds a composed surface binds to; see
+[the composed-surface recipe](composed-surfaces.md).
 
 ### Live queries: watching one execution as it runs (`@loom/live-query`)
 

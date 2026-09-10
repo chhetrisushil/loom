@@ -9,6 +9,8 @@ export interface ProjectionConfig<TState> {
   id: string;
   name: string;
   sourceFlowId?: string;
+  /** ADR 0095 — the declared semantics of this fold. See {@link ProjectionDefinition.version}. */
+  version?: string;
   initialState: TState;
   /**
    * The event-fold map (`{ [eventType]: (state, event) => state }`). Uncompiled it is
@@ -28,6 +30,7 @@ export function projection$<TState>(
     initialState: config.initialState,
     handlers: config.handlers,
     ...(config.sourceFlowId !== undefined && { sourceFlowId: config.sourceFlowId }),
+    ...(config.version !== undefined && { version: config.version }),
   };
 }
 

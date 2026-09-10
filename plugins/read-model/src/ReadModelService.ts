@@ -1,4 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
+import { checkVersionPins } from "@loom/core";
+import type { EventEnvelope, PinReport } from "@loom/core";
 import { iterateExecutionIds } from "@loom/event-runtime";
 import type {
   CatchUpReport,
@@ -218,6 +219,46 @@ export class ReadModelService {
     }
     if (this.store.purge === undefined) throw new PurgeUnsupportedError(modelId);
     return this.store.purge(modelId, where);
+  }
+
+  /**
+   * ADR 0095 — the declared `version` of every registered model that has one, by id.
+   *
+   * Models declaring nothing are absent rather than present-and-empty: a key mapped to `""`
+   * would compare equal to another empty declaration and read as a verified match.
+   */
+  pins(): Readonly<Record<string, string>> {
+    const pins: Record<string, string> = {};
+    for (const [id, model] of this.models) {
+      if (model.version !== undefined) pins[id] = model.version;
+    }
+    return pins;
+  }
+
+  /**
+   * ADR 0095 — were these models still the models a derived artifact was built against?
+   *
+   * `recorded` is what the caller wrote down when it produced something from these rows (a
+   * report, a saved view, an exported number). A `drift` finding means the rows now in the
+   * store were not all produced by the extractor the artifact assumed, and the exit is
+   * {@link ReadModelService.rebuild} — nothing else can repair rows whose watermark has
+   * already passed them.
+   *
+   * A QUERY, deliberately: it clears nothing, rebuilds nothing and applies nothing, so
+   * looking before you leap is not itself the leap. Same shape as
+   * `A2UISurfaceBridge.identityDiff`.
+   */
+  checkPins(recorded: Readonly<Record<string, string>>): PinReport {
+    const current = this.pins();
+    // Scoped to what the caller recorded: another model's version drifting says nothing
+    // about the artifact in hand, and which models an artifact used is only the caller's
+    // to know.
+    const scoped: Record<string, string> = {};
+    for (const id of Object.keys(recorded)) {
+      const now = current[id];
+      if (now !== undefined) scoped[id] = now;
+    }
+    return checkVersionPins(recorded, scoped);
   }
 
   /** RM-2 — the read model is a cache: drop it and re-derive from the log. */

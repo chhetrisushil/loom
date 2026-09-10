@@ -55,6 +55,18 @@ export interface Blueprint {
   title: string;
   layout: Layout;
   projections: string[];
+  /**
+   * ADR 0095 — the declared semantics of the projections this view binds to, by id, as they
+   * were at composition.
+   *
+   * It lives on the blueprint rather than beside it because a composed surface is
+   * content-addressed: a field of the value is part of the address, so this is what makes
+   * "the meaning of a view never changes silently" a property of the artifact instead of a
+   * paragraph. A binding freezes a NAME; this freezes what that name meant.
+   *
+   * Read it with `blueprintPins`, compare it with `checkBlueprintPins`.
+   */
+  projectionVersions?: Readonly<Record<string, string>>;
 }
 
 // ── Framework-agnostic renderer contract ─────────────────────────────────────

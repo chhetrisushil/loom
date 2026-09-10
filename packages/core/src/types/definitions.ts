@@ -272,6 +272,14 @@ export interface ProjectionDefinition<TState = unknown> {
   id: string;
   name: string;
   sourceFlowId?: string;
+  /**
+   * ADR 0095 — the declared semantics of this fold. An artifact that binds to `id` records
+   * this string; `checkVersionPins` compares the recorded one against the registered one, so
+   * a changed query/filter/aggregation/window is a finding rather than a silently different
+   * number. Bump it when the fold's MEANING changes; a refactor that produces the same state
+   * is not a new version. Declared, not derived — a fold closure has no stable fingerprint.
+   */
+  version?: string;
   initialState: TState;
   /**
    * Inline fold map (dev / no compiler), or the compiler-emitted lazy ref
