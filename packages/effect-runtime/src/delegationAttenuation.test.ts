@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   type DelegatedGrant,
   DelegationAuthorizer,
+  GrantTable,
   attenuateDelegation,
   signDelegation,
   verifyDelegation,
 } from "./authz";
 
 const SECRET = "shared-delegation-secret";
+// These tests are about attenuation and expiry, not the callee's own authority, so the
+// callee holds everything — the delegated set is the only thing narrowing the result.
+// `base` is required (ADR 0024): a symmetric secret means the token alone bounds nothing.
+const ALL = () => new GrantTable({ w: ["*"] });
 const req = (toolId: string, actor: string, delegation: DelegatedGrant) => ({
   toolId,
   executionId: "e",
@@ -25,12 +30,20 @@ describe("attenuateDelegation — narrowing is enforced on BOTH axes", () => {
 
     // The regression: `exp` was dropped, so the child never expired. Narrowing the grant
     // set while making the token immortal is broadening, not attenuating.
-    const past = new DelegationAuthorizer({ secret: SECRET, now: () => expiresAt + 1 });
+    const past = new DelegationAuthorizer({
+      secret: SECRET,
+      base: ALL(),
+      now: () => expiresAt + 1,
+    });
     expect(past.authorize(req("read", "alice", parent)).allowed).toBe(false);
     expect(past.authorize(req("read", "bob", child)).allowed).toBe(false);
 
     // Still valid before the parent's expiry.
-    const before = new DelegationAuthorizer({ secret: SECRET, now: () => expiresAt - 1 });
+    const before = new DelegationAuthorizer({
+      secret: SECRET,
+      base: ALL(),
+      now: () => expiresAt - 1,
+    });
     expect(before.authorize(req("read", "bob", child)).allowed).toBe(true);
   });
 
@@ -50,7 +63,7 @@ describe("attenuateDelegation — narrowing is enforced on BOTH axes", () => {
     // Filtering against the literal ["*"] array used to yield an EMPTY grant set, so a
     // wildcard delegator could not attenuate at all and would keep passing "*" onward.
     expect(child.grants).toEqual(["read"]);
-    const auth = new DelegationAuthorizer({ secret: SECRET });
+    const auth = new DelegationAuthorizer({ secret: SECRET, base: ALL() });
     expect(auth.authorize(req("read", "bob", child)).allowed).toBe(true);
     expect(auth.authorize(req("write", "bob", child)).allowed).toBe(false);
   });
@@ -74,7 +87,7 @@ describe("attenuateDelegation — narrowing is enforced on BOTH axes", () => {
   it("keeps the holder binding — a child is usable only by its issuedTo", () => {
     const parent = signDelegation(SECRET, "alice", ["read"]);
     const child = attenuateDelegation(SECRET, parent, "bob", ["read"]);
-    const auth = new DelegationAuthorizer({ secret: SECRET });
+    const auth = new DelegationAuthorizer({ secret: SECRET, base: ALL() });
     expect(auth.authorize(req("read", "bob", child)).allowed).toBe(true);
     expect(auth.authorize(req("read", "mallory", child)).allowed).toBe(false);
   });

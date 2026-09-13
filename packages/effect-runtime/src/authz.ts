@@ -110,15 +110,34 @@ export class GrantTable implements CapabilityAuthorizer {
 }
 
 export interface DelegationAuthorizerOptions {
-  /** Shared secret used to verify delegation signatures at this trust boundary. */
+  /**
+   * Shared secret used to verify delegation signatures at this trust boundary.
+   *
+   * NOTE this is SYMMETRIC: a party that can verify a token can also mint one.
+   * That is why {@link DelegationAuthorizerOptions.base} is required — see below.
+   */
   secret: string;
   /**
    * The callee's OWN authority — an effect is allowed only if it is in BOTH the
-   * verified delegated set AND the callee's own grants (never ambient
-   * escalation). Omit to allow the full verified delegated set (the callee
-   * delegates all of its authority decisions upstream).
+   * verified delegated set AND the callee's own grants (never ambient escalation).
+   *
+   * REQUIRED, and it is load-bearing for security rather than a convenience.
+   * Because `secret` is symmetric, the verifier is also a valid minter: a callee
+   * can always sign itself a token granting `"*"`, and that token is
+   * cryptographically indistinguishable from a genuine one. The delegation check
+   * therefore cannot bound a callee's authority on its own — only the
+   * intersection with `base` can. With `base` set, minting a token gains a callee
+   * nothing it did not already hold, which is what makes the symmetric secret
+   * safe here.
+   *
+   * This option used to be optional, documented as "omit to allow the full
+   * verified delegated set (the callee delegates all of its authority decisions
+   * upstream)". That mode could not deliver what it claimed: upstream cannot
+   * retain authority over a callee that holds the minting key. Delegating
+   * authority ACROSS a trust boundary needs asymmetric signatures (the verifier
+   * must not be able to mint), which this primitive does not implement.
    */
-  base?: CapabilityAuthorizer;
+  base: CapabilityAuthorizer;
   /** Clock for token-expiry checks (epoch ms). Injectable for tests; defaults to `Date.now`. */
   now?: () => number;
 }
@@ -129,21 +148,33 @@ export interface DelegationAuthorizerOptions {
  * forged or tampered delegation is denied outright), then the effect must be in
  * the **intersection** of the delegated grants and the callee's own authority
  * (`base`) — a delegate can never invoke an effect the delegator lacked, nor one
- * the callee itself lacks. No delegation present ⇒ falls through to `base`
- * (or denied when there is no base).
+ * the callee itself lacks. No delegation present ⇒ falls through to `base`.
+ *
+ * TRUST MODEL — delegator and callee share one secret, so they are one trust
+ * domain. The signature stops a THIRD party (a caller, a middlebox) forging or
+ * tampering with a grant set in transit; it does not, and cannot, stop the
+ * verifier minting its own. Authority over the callee comes from `base`, never
+ * from the token. Cross-organisation delegation, where the verifier must not be
+ * able to mint, is out of scope for this primitive and needs asymmetric
+ * signatures. See ADR 0024.
  */
 export class DelegationAuthorizer implements CapabilityAuthorizer {
-  constructor(private readonly options: DelegationAuthorizerOptions) {}
+  constructor(private readonly options: DelegationAuthorizerOptions) {
+    // The type alone is not the enforcement — JS callers and `as any` bypass it,
+    // and an absent `base` silently turns the intersection into a no-op, which
+    // reads as a working gate while bounding nothing.
+    if (options.base === undefined || options.base === null) {
+      throw new Error(
+        "DelegationAuthorizer: `base` is required — the delegation secret is symmetric, so a " +
+          "verified token cannot bound a callee's authority on its own (see ADR 0024)."
+      );
+    }
+  }
 
   authorize(req: CapabilityRequest): CapabilityDecision {
     const token = req.principal?.delegation;
     if (token === undefined) {
-      return (
-        this.options.base?.authorize(req) ?? {
-          allowed: false,
-          reason: "no delegation and no base authority",
-        }
-      );
+      return this.options.base.authorize(req);
     }
     if (!verifyDelegation(this.options.secret, token)) {
       return { allowed: false, reason: "delegation signature invalid (forged or tampered)" };
@@ -170,14 +201,13 @@ export class DelegationAuthorizer implements CapabilityAuthorizer {
       return { allowed: false, reason: `effect "${req.toolId}" not in the delegated grant set` };
     }
     // Intersection: the callee must ALSO hold the authority (no ambient escalation).
-    if (this.options.base !== undefined) {
-      const baseDecision = this.options.base.authorize(req);
-      if (!baseDecision.allowed) {
-        return {
-          allowed: false,
-          reason: `delegated, but the callee itself lacks "${req.toolId}": ${baseDecision.reason ?? ""}`,
-        };
-      }
+    // This is what bounds a callee that could mint its own token — never the signature.
+    const baseDecision = this.options.base.authorize(req);
+    if (!baseDecision.allowed) {
+      return {
+        allowed: false,
+        reason: `delegated, but the callee itself lacks "${req.toolId}": ${baseDecision.reason ?? ""}`,
+      };
     }
     return { allowed: true };
   }
