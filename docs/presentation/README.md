@@ -38,7 +38,7 @@ depth requires. The demo script has 5 / 15 / 30‑minute variants.
 
 **Pitching to a room of engineers in a single 30-minute slot?** Present
 [`sip-n-pitch-deck.md`](./sip-n-pitch-deck.md) and drive
-[`loom-demo/DEMO_SCRIPT.md`](../../../loom-demo/DEMO_SCRIPT.md) — it is self-contained and
+`DEMO_SCRIPT.md` from the sibling **`loom-demo`** checkout — the deck is self-contained and
 already includes the competitive analysis.
 
 ---
