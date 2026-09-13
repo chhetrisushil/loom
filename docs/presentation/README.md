@@ -13,6 +13,7 @@ optimize for continuation, not hydration.*
 
 | File | Audience | Use it for |
 |------|----------|------------|
+| [`sip-n-pitch-concept-deck.md`](./sip-n-pitch-concept-deck.md) | Engineers — pitching the **idea**, not the product | **The concept pitch.** Same 30-min slot and same live demo, but framed as a *bet being tested* rather than a thing to adopt: the thesis, what it predicts, whether the gap is real, the spike as **evidence**, then the unknowns and a **collaborator ask**. Makes no product or adoption claims |
 | [`sip-n-pitch-deck.md`](./sip-n-pitch-deck.md) | Engineers (30-min slot, with a demo) | **The pitch deck** — problem, thesis, benefits, and a full competitive section: **ADK · Temporal · and the ADK+Temporal combination** (the strongest real competitor). Built around the `loom-demo` crash/resume live demo. Timing plan + Q&A crib in the presenter notes |
 | [`loom-deck.md`](./loom-deck.md) | Everyone (start here) | **The flagship overview** — mission, the problem, the thesis, core principles, the runtime model, branching, tooling, run-anywhere. The single deck to present Loom |
 | [`loom-2.0-deck.md`](./loom-2.0-deck.md) | Everyone | **Loom 2.0 — the execution kernel** — the reframe, the honest critique (kept/reshaped/dropped), principles P9/P10, the two spines, every runtime (reasoning/memory/compute/scale-out), the kernel rings (K1–K12, T1–T2), intelligence, and NL→codegen. Deep-dives in [`../loom-2.0/`](../loom-2.0/00-overview.md) |
@@ -36,10 +37,18 @@ optimize for continuation, not hydration.*
 Suggested order: **leadership deck → live demo (Demo 0 + 1) → engineering deck → walkthrough** as
 depth requires. The demo script has 5 / 15 / 30‑minute variants.
 
-**Pitching to a room of engineers in a single 30-minute slot?** Present
-[`sip-n-pitch-deck.md`](./sip-n-pitch-deck.md) and drive
-`DEMO_SCRIPT.md` from the sibling **`loom-demo`** checkout — the deck is self-contained and
-already includes the competitive analysis.
+**Pitching to a room of engineers in a single 30-minute slot?** There are two variants, both
+self-contained, both including the competitive analysis, and both driving `DEMO_SCRIPT.md` from
+the sibling **`loom-demo`** checkout:
+
+| Variant | Posture | The ask | Use it when |
+|---|---|---|---|
+| [`sip-n-pitch-deck.md`](./sip-n-pitch-deck.md) | "here is what this does" | adopt / evaluate | the room may actually use it |
+| [`sip-n-pitch-concept-deck.md`](./sip-n-pitch-concept-deck.md) | "here is a bet, and how I tested it" | collaborators | pitching the **idea**; nothing is published or adopted |
+
+They share the demo. The concept variant frames the crash/resume run as **evidence for a
+falsifiable claim** rather than a product tour, adds *what I still don't know* and *what would
+change my mind*, and makes **no product or adoption claims** — see its `HONESTY FLOOR` note.
 
 ---
 
