@@ -56,3 +56,49 @@ redispatch → continue*.
   step B, completes, and leaves exactly one `EXECUTION_STARTED` (step A not
   re-run). Plus lost-response idempotency on an already-completed execution.
 - Full repo: build + typecheck clean, 64/64 test tasks green, biome clean.
+
+---
+
+## Amendment (2026-09-14) — the boundary this ADR does not cover
+
+The decision above recovers a dead or wedged **worker**, and it works: the dispatcher's
+`executeTimeoutMs` turns a hung attempt into a failed one, redispatches, and the worker's
+`loadState()` branch resumes idempotently. Nothing there changes.
+
+What it does not cover is the **supervisor** dying. Detection lives in the dispatcher's
+process memory — `private inFlight` and an awaited deadline — and `WorkerLease` is a
+compute-allocation handle (`{ leaseId }`), not a durable record of who owns an execution. So
+if the process holding the dispatcher is killed, nothing survives that knows an execution was
+in flight. It stays `running` in the log with no owner.
+
+**Why the log alone cannot fix this.** A `running` execution owned by a healthy node on
+another machine and one orphaned by a dead supervisor are *byte-identical* in the log. No
+fold distinguishes them, because the difference is not a fact about the execution — it is a
+fact about the cluster. Only the deployment knows.
+
+**What ships.** `recoverAbandoned(runtime, { source, isAbandoned })` in
+`@loom/workflow-runtime`: a maintenance pass that enumerates via the shared
+`iterateExecutionIds` loop, filters to `running`/`pending`, asks the caller's predicate, and
+resumes what it claims through the **same** `EXECUTION_RECOVERED` path the worker uses under
+redispatch. It re-checks status immediately before acting, so an execution that settled
+between enumeration and decision is skipped rather than re-driven; a resume that throws is
+left for the next pass.
+
+`isAbandoned` is **required, with no default**, and that is the whole design. Defaulting to
+`true` would preempt live work on other nodes; defaulting to `false` would be a pass that
+silently recovers nothing while reading like it does — the vacuous-check pattern. A predicate
+that wrongly claims a live execution still cannot corrupt the log (fencing, K9.4), but its
+in-flight effect may land, so the interrupted step runs twice. That is the same at-least-once
+this ADR already accepts for a genuine crash; the difference is paying it for a step that was
+never interrupted.
+
+**What deliberately does NOT ship.** A `LeaseStore`/heartbeat SPI that would let Loom answer
+"is this orphaned?" itself. That is the correct end state and it is in-pattern (it would
+mirror `TimerStore`/`TimerService` exactly), but it is new optional SPI plus a conformance
+kit plus renewal during long effects — and the only concrete consumer today is this one pass.
+Per [ADR 0083](0083-second-consumer-rule.md), it waits for a second, unrelated consumer;
+"only one node should run this execution" is the likely candidate.
+
+**Positioning consequence.** Loom has *in-process* supervision, not *durable* supervision.
+That is an honest thing to say out loud: a dead worker is handled; a dead supervisor is a
+deployment concern, the same as it is for any library rather than a hosted control plane.
