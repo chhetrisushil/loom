@@ -219,13 +219,16 @@ the sentence that regulated-industry people write down.
 
 **2. Non-determinism is allowed — but only when logged.** A model call, a routing choice, a sample: each is recorded as a durable fact and **served from the log on replay, never re-computed.**
 
-> The result is a property most engines can't offer:
-> **a given execution replays bit-for-bit forever — while outcomes improve run to run.**
+> Most durable engines now do a version of this. The unusual part:
+> **a recorded decision also carries the policy and the propensity it was chosen with** — so it can be scored counterfactually, later, off real logs.
 
 <!--
-Presenter: rule 2 is the single most important architectural claim in the deck.
-It is what "What the integration had to do is the whole argument" turns on.
-Plant it here, harvest it there.
+Rule 2 used to be pitched as the thing nobody else does. That's no longer true —
+Temporal, Dapr and Diagrid all record effect results and replay them, and ADK
+2.0 returns completed tool results from event history.
+So plant the NARROW version here: the mechanism is table stakes; the propensity
+on the decision record is not. You harvest it on "What's actually left".
+If you say the broad version, the competitive section can't cash it.
 -->
 
 ---
@@ -334,182 +337,206 @@ CREDIBILITY, not conquest. Every product named here is good. Our claim is about
 LAYER and DESIGN CENTER, never quality.
 
 If someone in the room works on ADK or Temporal, lean harder into the credit
-paragraph on "Fine — I'll just use ADK + Temporal". Never bluff a competitor's
+paragraph on "Fine — a framework plus an engine". Never bluff a competitor's
 feature set — see "A note on fairness".
 -->
 
 ---
 
-## Three categories — and Loom sits in the seam
+## The landscape moved — the seam has occupants
 
 ```
-   ┌─────────────────────────────┐        ┌─────────────────────────────┐
-   │   AGENT FRAMEWORKS          │        │  DURABLE EXECUTION ENGINES  │
-   │   Google ADK · LangGraph    │        │  Temporal · Restate         │
-   │   CrewAI · OpenAI Agents    │        │  Inngest · DBOS · Step Fns  │
-   │                             │        │                             │
-   │   great at: composing       │        │   great at: surviving       │
-   │   agents, tools, prompts    │        │   crashes at scale          │
-   └──────────────┬──────────────┘        └──────────────┬──────────────┘
-                  │                                      │
-                  └───────────────┐      ┌───────────────┘
-                                  ▼      ▼
-                          ┌───────────────────────┐
-                          │        LOOM           │
-                          │  durable execution    │
-                          │  that is AI-native    │
-                          │  and embeddable       │
-                          └───────────────────────┘
+  ┌────────────────────────────┐          ┌────────────────────────────┐
+  │  AGENT FRAMEWORKS          │          │  DURABLE ENGINES           │
+  │  Google ADK 2.0 · CrewAI   │          │  Temporal · Dapr · Restate │
+  │  LangGraph · OpenAI Agents │          │  Inngest · DBOS · Step Fns │
+  └─────────────┬──────────────┘          └─────────────┬──────────────┘
+                │        both moved toward the middle   │
+                └──────────────┐         ┌──────────────┘
+                               ▼         ▼
+                ┌─────────────────────────────────┐
+                │   DURABLE + AGENTIC             │
+                │   Diagrid Catalyst              │
+                │   ADK + Temporal                │
+                │   ADK 2.0 natively (in part)    │
+                └─────────────────────────────────┘
 ```
+
+**In 2025 this was an empty seam. It isn't any more — so the argument has to be sharper than "we're in the gap."**
 
 <!--
-Orientation slide. 30 seconds, no more.
-SAY: "Two mature categories. Both genuinely good. The claim is not that we beat
-either one on its home turf — it's that the problems I care about live in the
-seam between them."
-Point at the seam as you say it.
-EXPECT: "isn't that a gap you invented to sit in?" — fair question, and the
-next three slides are the answer. Say that out loud rather than deflecting.
+Orientation, and an honest correction if you've given this talk before: the
+empty-seam version of this slide is out of date.
+SAY: "When I started, I thought this middle box was empty. It isn't. Both
+categories moved toward each other, and at least one company is standing
+squarely in it. So let me tell you what everyone can now do, and then what I
+think is actually left."
+Leading with the correction is disarming and it buys you the next four slides.
+Anyone who knows this space will otherwise be waiting to tell you.
 -->
 
 ---
 
-## vs. Google ADK — a different layer
+## Google ADK 2.0 — closer than it used to be
 
-**ADK is an excellent agent-authoring SDK** — deep Gemini/Vertex integration, workflow agents, built-in tools, live multimodal, a managed runtime. Want an agent shipped this week on GCP? It wins.
+**Python, TypeScript and Go, all GA — and it is event-sourced.** `ResumabilityConfig`
+gives replay-based resumption, and **completed tool results are returned from event
+history**. That is effect memoization, natively, with no engine attached.
 
-| | **Google ADK** | **Loom** |
+| | **ADK 2.0** | **Loom** |
 |---|---|---|
-| What it is | SDK to *author* agents | a *durable execution runtime* |
-| Unit of durability | session snapshot you reload | **the execution** |
-| Runtime of record | the managed runtime | **your event log, anywhere** |
-| Resume semantics | reload a session, re-drive | **fold + memoized effects** |
+| Resume unit | session + **a state machine you maintain** | the execution, as a fold |
+| On crash | *the caller must detect it and re-invoke* | supervisor + fencing |
+| Scope | agents you author in ADK | any `async` function |
 
-> An agent SDK asks *how do I compose agents and tools?*
-> A kernel asks *what happens when the process dies at step 7 of 12?*
+> The gap isn't "ADK can't resume." It's that **you** hold the state machine and **you** notice the crash.
 
 <!--
-Lead with the credit and mean it — several people in the room have shipped ADK
-agents and you need them listening, not defending.
-The only row that matters is UNIT OF DURABILITY. Everything else is context.
-SAY: "A session is a snapshot you reload. An execution is a computation you
-reconstruct. Those look identical on the happy path and behave completely
-differently when you crash mid-tool-call."
-LANDMINE: do NOT say ADK has no persistence or no human-interrupt support. It
-has both, and someone here knows that. The claim is narrower — it's about the
-unit of durability, not the presence of state.
+IMPORTANT: this slide was rewritten after checking ADK 2.0 directly. The old
+version said ADK's unit of durability was "a session snapshot you reload" and
+that it was Python-only. Both were out of date and someone would have caught it.
+SAY: "ADK 2.0 is genuinely event-sourced, and completed tool results come back
+from event history. That's memoization. I'm not going to pretend otherwise."
+Then the real distinction, from Google's own long-running-agents guide: ADK
+grounds resumability in an EXPLICIT state machine the developer maintains in
+session state — you write `current_step` and interpolate it into the prompt.
+That's a different thing from a fold over the log, and it's the honest claim.
+The "on crash" row is Diagrid's published critique of ADK, not mine — ADK gives
+you the ability to resume, not the automation that notices you should.
 -->
 
 ---
 
-## vs. Temporal — the same goal, a different shape
+## Temporal — the same goal, a different shape
 
-**Temporal is the real thing** — a decade of hardening, deterministic replay, signals, timers, multi-language SDKs, enormous scale. On durability they have nothing to prove.
+**Temporal is the real thing** — a decade of hardening, deterministic replay, signals,
+timers, multi-language SDKs, enormous scale. On durability they have nothing to prove.
 
 | | **Temporal** | **Loom** |
 |---|---|---|
 | Deployment | a **server/cluster** you run or buy | **a library** |
 | Runs in a browser tab | ➖ | ✅ same core |
-| Design center | deterministic transactions | **non-deterministic AI work** |
-| Non-determinism | **quarantined** into Activities | **recorded as a fact** |
+| Design center | deterministic transactions | non-deterministic AI work |
+| A model choice is… | an activity result | **a decision + its propensity** |
 
 > Not "Temporal is wrong." **Temporal is a platform; Loom is a dependency.**
 
 <!--
-Give them the full decade. Do not get competitive here.
-SAY: "If this room votes 'use Temporal' tonight, that is a defensible
-engineering decision and I would rather you shipped."
-Then two rows only: deployment shape and design center.
-THE LINE: "Temporal is a platform; Loom is a dependency."
-The browser-tab row usually gets a visible reaction — that's your evidence that
-"library, not platform" is a real architectural property and not marketing.
-If someone says "we already run Temporal" — good, that's the next three slides,
-and you're not going to tell them they're wrong.
+Give them the full decade, no hedge.
+SAY: "if this room votes 'use Temporal', that's defensible and I'd rather you
+shipped."
+NOTE THE CHANGED ROW: this used to say "non-determinism: quarantined vs
+recorded." That was overstated — Temporal records activity results and replays
+them, which is functionally what Loom does with effects, and Loom's runner has
+to be deterministic too. Do not make the quarantine argument; someone who knows
+Temporal will take it apart and you'll lose the room.
+The defensible version is the last row: everyone records WHAT came back, but a
+Loom decision also carries the policy and the PROPENSITY — which is what makes
+it evaluable counterfactually later. That's the narrow, true claim.
 -->
 
 ---
 
-## "Fine — I'll just use ADK **+** Temporal."
+## "Fine — a framework **plus** an engine."
 
-### This is the strongest answer in the market, and it's real.
+### Two real answers, and you should take both seriously.
 
-Temporal shipped an official ADK integration. It is genuinely well-designed: it pushes **every LLM call and tool invocation into its own Activity** — durable execution *inside* the agentic loop, not a single activity wrapped around the whole agent.
+**ADK + Temporal** — an official integration that pushes every LLM call and tool
+invocation into its own Activity: durability *inside* the agentic loop.
 
-- `TemporalModel` — routes model calls through Activities
-- `activity_tool` — wraps tools with retries + heartbeating
-- `GoogleAdkPlugin` — worker setup, serialization, deterministic time/UUID
+**Diagrid Catalyst** — the same execution model across **10+ frameworks** (ADK,
+LangGraph, CrewAI, OpenAI Agents, Strands…), built on Dapr, hosted **or** self-hosted.
+It memoizes completed model and tool calls, and signs every step.
 
-**If you are a Python shop on GCP that already runs Temporal, this is a rational choice and you should take it seriously.** So should we.
+> If you're already on Dapr, or already on Temporal, **these are rational choices and
+> my argument has to beat them — not ignore them.**
 
 <!--
-Presenter: say this slide with a straight face and real respect. If you sneer
-here you lose every senior engineer in the room. The NEXT slide is where the
-argument actually happens — and it's an architectural argument, not a dunk.
+Straight face, real respect. Diagrid especially: they're a serious company with
+a CNCF-graduated foundation, and their blog post is literally titled "Durable
+Execution: The Missing Runtime Primitive for Agents." They are not a strawman;
+they're the strongest occupant of the box on the landscape slide.
+If you sneer at either of these you lose every senior engineer in the room.
+The argument happens on the next two slides, and it starts by CONCEDING the
+capability rather than disputing it.
 -->
 
 ---
 
-## What the integration had to do is the whole argument
+## What's now table stakes
 
-To run ADK inside a Temporal workflow, the integration **had to patch ADK's clock and UUID generator** — new `google.adk.platform.time` / `google.adk.platform.uuid` seams, so Temporal could substitute `workflow.now()` and `workflow.uuid4()` on replay.
+**Say this out loud before you claim anything.** All of these are solved, by several
+people, today:
 
-> That's not a criticism. That's a **design center** showing through.
-> A classical engine must make the agent deterministic, because non-determinism is a
-> hazard it quarantines.
+- **An append-only history of what happened** — ADK, Dapr, Temporal, Diagrid
+- **Replay after a crash** — resume from the last completed step
+- **Memoized model and tool calls** — *"no duplicate LLM calls"*, natively in ADK 2.0 and in Diagrid
+- **Durable human-in-the-loop pauses** — first-class in ADK 2.0
 
-**Loom never had to do that** — because it doesn't require the agent to be deterministic. It records what the non-deterministic thing *returned*, and serves that from the log.
-
-> **They quarantine non-determinism. We record it.**
-> Everything else on the next two slides follows from that one choice.
+> **"We record what the model returned instead of re-running it" is no longer a differentiator.**
+> It's the price of entry. So what's left?
 
 <!--
-Presenter: this is the intellectual core of the talk. If you land one slide in
-the competitive section, land this one. The fact is checkable — the ADK PR that
-added google.adk.platform.time / .uuid is public. Offer that if challenged.
-
-Do NOT claim this makes Temporal wrong. For deterministic business transactions
-quarantining is the correct design. The claim is narrower and defensible: for an
-AI workload the non-determinism IS the payload, so a seam beats a quarantine.
+This is the most important slide in the new competitive section, and it costs
+you something on purpose.
+An engineer who knows this space is sitting there with a list of things that are
+already solved. If you claim them, you lose. If you concede them first, you get
+to spend your credibility on the three that are actually left.
+SAY: "If I'd given this talk eighteen months ago I'd have claimed all four of
+these. I can't any more, and I'd rather say so than have you tell me."
+Then land the question — "so what's left?" — and go straight to the next slide.
 -->
 
 ---
 
-## The ledger, part 1 — what it costs to get there
+## What's actually left — three things
 
-| Axis | **ADK + Temporal** | **Loom** |
+**1 · Shape.** Diagrid is a control plane and a data plane, even self-hosted. Temporal
+is a cluster. ADK needs a session service *plus* your own supervisor.
+**Loom is a dependency** — the same core runs in a unit test and a browser tab.
+
+**2 · Branch a live execution.** Fork the log at a gate, simulate alternatives on real
+state, promote one. Dapr has conditional branching; **nobody has fork-and-simulate.**
+
+**3 · Decisions carry their propensity.** Everyone records *what* the model returned.
+A Loom decision also records the **policy and the probability it was chosen with** — which
+is what makes it evaluable **counterfactually**, later, off real logs.
+
+<!--
+The new spine of the whole section. Three claims, each one checked.
+#1 is the sharpest and nothing on the landscape contests it.
+#2 was verified specifically — Dapr's branching is ordinary if-statements
+replayed deterministically, which is not the same as forking the log to explore
+alternatives. If challenged, that's the precise distinction.
+#3 is the one nobody expects and the one worth slowing down for. Everyone else
+logs the OUTCOME. Loom logs the outcome, the policy that produced it, and the
+propensity — so you can ask "what would a different policy have scored?" without
+re-running anything. That's off-policy evaluation, and it's in @loom/learning.
+If you only defend one thing in Q&A, defend this one. It's true and it's checkable.
+-->
+
+---
+
+## The cost of the combination
+
+The capability is real. **The bill is what differs.**
+
+| | **Framework + engine** | **Loom** |
 |---|---|---|
-| **Maturity of the seam** | **experimental**; breaking changes flagged | v1 kernel, pinned ABI + event schema |
-| **Language** | **Python only** (others "likely to follow") | TypeScript |
-| **Infra for guarantee #1** | **a running Temporal server** | **a dependency** |
-| **Dev/prod parity** | `adk web` locally ⇒ *"you won't get the benefits of durable execution"* | **same runtime** in a test, a browser, prod |
-| **Roadmap risk** | ADK **and** Temporal must both keep the seam alive | one kernel |
+| To get guarantee #1 | a running server / control plane | a dependency |
+| Dev/prod parity | ADK docs: running locally outside the engine ⇒ *"you won't get the benefits of durable execution"* | same runtime in a test, a browser, prod |
+| Code shape | wrap in activities / nodes | a plain `async` function |
 
 <!--
-Presenter: the dev/prod parity row is the one engineers react to. That quote is
-verbatim from ADK's own Temporal plugin page. Let it sit for a beat.
--->
-
----
-
-## The ledger, part 2 — and what you still don't get
-
-| Axis | **ADK + Temporal** | **Loom** |
-|---|---|---|
-| **Code shape** | 6 wrappers: `@activity.defn`, `activity_tool`, `TemporalModel`, `@workflow.defn`, plugin worker, client | a plain `async` function |
-| **UI from the same log** | your problem | **projections** |
-| **Branch a live execution** | ➖ | **fork / simulate / promote** |
-
-> **They can do durability.** It just costs a server, a language, a preview-grade seam, two roadmaps, and your dev/prod parity — to reach where Loom starts.
-
-<!--
-Move faster than part 1. Part 1 was what it costs to get there; this is the
-ceiling once you're there.
-The CODE SHAPE row is the one engineers feel in their body: six wrappers versus
-an async function. Say that and then just let them read it.
-Land the blockquote close to verbatim — it's the thesis of the whole section,
-and it concedes their capability while pricing it:
-  "They can do durability. It just costs a server, a language, a preview-grade
-   seam, two roadmaps, and your dev/prod parity — to reach where Loom starts."
+This survives the fact-check intact — it was always an adoption-cost argument
+rather than a capability argument, and adoption cost is where the difference
+actually lives now.
+The dev/prod parity row is verbatim from ADK's own Temporal plugin page. It's
+the row engineers react to, so let it sit for a beat.
+A "two vendors' roadmaps" row was cut from this table on purpose: Diagrid
+maintains its own integrations, so for Catalyst it's one vendor, not two. If
+someone raises roadmap risk anyway, concede it rather than arguing — the
+adoption-cost rows above are the ones that hold."
 -->
 
 ---
@@ -520,18 +547,19 @@ and it concedes their capability while pricing it:
 
 | Axis | Agent frameworks | Durable engines | **Loom** |
 |---|---|---|---|
-| **Unit of durability** | session checkpoint | workflow execution | **execution** |
-| **The record** | app DB / vendor | engine cluster | **your event log** |
-| **Replay model** | reload & re-drive | deterministic replay | **fold + memoized effects** |
-| **Deployment** | library + infra | cluster or SaaS | **library; in-browser** |
-| **Non-determinism** | inherent, unrecorded | quarantined | **first-class, recorded** |
+| **The record** | session store | engine cluster / service | **your event log** |
+| **Deployment** | library + infra | cluster, sidecar or SaaS | **library; in-browser** |
+| **Replay** | resume from saved state | deterministic replay | **fold + memoized effects** |
+| **A decision records** | the outcome | the outcome | **outcome + policy + propensity** |
+| **Fork a live run** | ➖ | ➖ | **✅ simulate & promote** |
 
 <!--
-Optional. If you're on time, show it for 15 seconds and say: "this is the
-summary — photograph it, don't let me read it to you."
-Its only job is to still look defensible when someone screenshots one slide and
-posts it in a Slack channel tomorrow. That's why it's axes, not checkmarks.
-CUT ORDER: cut #2 (after the branching slide) if you're behind.
+Optional. 15 seconds — "this is the summary, photograph it, don't let me read
+it to you."
+Its only job is to still look defensible when someone screenshots one slide.
+That's why the rows are now the four that survived the fact-check rather than
+the eight I started with.
+CUT ORDER: cut #2 if you're behind.
 -->
 
 ---
@@ -540,18 +568,21 @@ CUT ORDER: cut #2 (after the branching slide) if you're behind.
 
 **Do not present the previous slides without this one.**
 
-- **Temporal** — a decade of hardening, multi-language SDKs, mature ops tooling, proven at enormous scale, commercial support. **Loom is younger.**
-- **ADK** — larger ecosystem, deeper tooling, live multimodal, a managed runtime, a far faster path to a first demo on GCP.
-- **ADK + Temporal** — both, commercially supported. Already a Python/GCP Temporal shop? **The marginal cost is low.**
-- **AI SDKs** — for a single-turn call they're the right tool. Loom would be ceremony.
+- **Temporal** — a decade of hardening, multi-language SDKs, real ops tooling, proven at scale, commercial support. **Loom is younger.**
+- **Diagrid** — **ahead of us on attestation**: steps signed for public-key verification, lineage, SPIFFE identity over mTLS. Loom's audit chain is hash-chained and HMAC'd — tamper-*evident*, not third-party verifiable. Plus 10+ framework integrations.
+- **ADK 2.0** — bigger ecosystem, three languages GA, managed runtime, far faster to a first agent.
+- **AI SDKs** — for a single-turn call they're simply right.
 
 > **Loom compounds with longevity, regulation, cost-per-step, portability.**
 
 <!--
-Presenter: deliver this one straight, without hedging or a "but". Conceding the
-strong version of their case is what buys you the rest of the deck. If you need
-one line to land it: "if you're a Python shop on GCP already running Temporal,
-go use that — I'd rather you shipped."
+Deliver straight, no "but". This slide is the credibility of the whole section.
+The Diagrid line is the important addition and you should say it without
+flinching: on verifiable execution they are genuinely ahead of us, and that's a
+checked comparison, not modesty. Hash-chain + HMAC detects tampering; signed
+steps with a workload identity let a THIRD PARTY verify who produced what. Those
+are different guarantees and theirs is stronger.
+Conceding a real loss here is what makes "what's actually left" believable.
 -->
 
 ---
@@ -666,20 +697,17 @@ Silence after a close is fine. Let them come to you.
 ## A note on fairness
 
 - Every product named here is **good at what it does**. The comparisons are about **architectural layer and design center**, not quality.
-- This landscape moves **very fast**. The ADK/Temporal specifics here were verified against vendor docs in **September 2026** — Python-only and flagged experimental at that time.
-- **Re-verify before quoting a slide at someone.**
-- Loom's claims trace to shipped code, ADRs, and `docs/spec/`. If a slide can't, cut it — **an overclaim costs more than it wins.**
+- **Re-verified 2026-09-13** against vendor documentation — including a correction: ADK 2.0 is Python/TS/Go GA and natively memoizes tool results, and **Diagrid Catalyst now occupies the seam** this deck used to call empty.
+- **This moves fast. Verify before you repeat any of it**, including from me.
+- Loom's claims trace to shipped code, ADRs and `docs/spec/`. If a slide can't, cut it — **an overclaim costs more than it wins.**
 
 <!--
 Never delete this slide; presenting it is optional.
-If the room is senior, show it — it's the slide that retroactively makes
-everything before it credible.
-If you're tight on time, skip the slide but say the one line out loud:
-  "Everything I claimed about ADK and Temporal tonight was checked against their
-   own documentation this week. Verify it before you repeat it — this moves fast
-   enough that I could be wrong by next month."
-That sentence costs you nothing and buys you the benefit of the doubt on
-everything else.
+The re-verification bullet is worth saying out loud even if you skip the rest —
+it tells the room you checked recently and corrected yourself, which is exactly
+the posture that survives a hostile question.
+If tight: "everything I claimed about other people's software was checked
+against their own docs this week, and two of my slides changed as a result."
 -->
 
 ---
@@ -705,9 +733,19 @@ pnpm install && pnpm crash && pnpm resume
 Likely questions and short answers:
 
 Q: "Isn't this just Temporal in TypeScript?"
-A: Deployment shape and design center. Library vs server; records
-   non-determinism vs quarantines it. See the "vs. Temporal" and
-   "What the integration had to do" slides.
+A: Do NOT answer "we record non-determinism, they quarantine it" — that
+   argument doesn't survive contact with anyone who knows Temporal. The honest
+   answer is three things: deployment shape (a dependency, not a cluster;
+   it runs in a browser tab), forking a live execution to simulate
+   alternatives, and decisions that carry their propensity so they can be
+   evaluated counterfactually. See "What's actually left".
+
+Q: "What about Diagrid / Dapr?"
+A: The closest thing to this in the market, and say so. Durable execution
+   across 10+ agent frameworks, memoized model calls, signed steps with SPIFFE
+   identity — their attestation is ahead of ours. The difference is shape: a
+   control plane and data plane versus a dependency. If they're already on
+   Dapr, that's a rational choice.
 
 Q: "How do you handle a flow whose code changed between suspend and resume?"
 A: `loom deploy check` replays real logs against new code and fails a

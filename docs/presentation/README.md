@@ -13,8 +13,8 @@ optimize for continuation, not hydration.*
 
 | File | Audience | Use it for |
 |------|----------|------------|
-| [`sip-n-pitch-concept-deck.md`](./sip-n-pitch-concept-deck.md) | Engineers — pitching the **idea**, not the product | **The concept pitch.** Same 30-min slot and same live demo, but framed as a *bet being tested* rather than a thing to adopt: the thesis, what it predicts, whether the gap is real, the spike as **evidence**, then the unknowns and a **collaborator ask**. Makes no product or adoption claims |
-| [`sip-n-pitch-deck.md`](./sip-n-pitch-deck.md) | Engineers (30-min slot, with a demo) | **The pitch deck** — problem, thesis, benefits, and a full competitive section: **ADK · Temporal · and the ADK+Temporal combination** (the strongest real competitor). Built around the `loom-demo` crash/resume live demo. Timing plan + Q&A crib in the presenter notes |
+| [`sip-n-pitch-concept-deck.md`](./sip-n-pitch-concept-deck.md) | Engineers — pitching the **idea**, not the product | **The concept pitch.** Same 30-min slot and same live demo, but framed as a *bet being tested* rather than a thing to adopt: the thesis, what it predicts, whether the gap is *still* real (Diagrid occupies it), the spike as **evidence**, then the unknowns and a **collaborator ask**. Makes no product or adoption claims |
+| [`sip-n-pitch-deck.md`](./sip-n-pitch-deck.md) | Engineers (30-min slot, with a demo) | **The pitch deck** — problem, thesis, benefits, and a fact-checked competitive section: **ADK 2.0 · Temporal · Dapr/Diagrid Catalyst** and the framework+engine combinations. Concedes what is now table stakes, then argues the three things that aren't. Built around the `loom-demo` crash/resume live demo |
 | [`loom-deck.md`](./loom-deck.md) | Everyone (start here) | **The flagship overview** — mission, the problem, the thesis, core principles, the runtime model, branching, tooling, run-anywhere. The single deck to present Loom |
 | [`loom-2.0-deck.md`](./loom-2.0-deck.md) | Everyone | **Loom 2.0 — the execution kernel** — the reframe, the honest critique (kept/reshaped/dropped), principles P9/P10, the two spines, every runtime (reasoning/memory/compute/scale-out), the kernel rings (K1–K12, T1–T2), intelligence, and NL→codegen. Deep-dives in [`../loom-2.0/`](../loom-2.0/00-overview.md) |
 | [`platform-and-dx-deck.md`](./platform-and-dx-deck.md) | Engineers / architects | **Platform & DX** — `defineConfig`, the `loom` CLI, pluggable compute (dispatcher/Cloud Run), `@loom/testing`, evals & deploy-sim, orchestration primitives, perf. Everything built on top of the durable core |
@@ -118,3 +118,9 @@ pnpm --filter @loom/schema-migration-planner dev        #         …or the live
 - [`../usage.md`](../usage.md) — step‑by‑step build guide
 - [`../usage-compiler.org`](../usage-compiler.org) — the `@loom/compiler` Vite plugin
 - [`../../README.org`](../../README.org) — repo overview & package list
+
+> **Competitive facts re-verified 2026-09-13.** Both sip-n-pitch decks were corrected against
+> vendor documentation: ADK 2.0 is Python/TS/Go GA and natively memoizes completed tool results,
+> and **Diagrid Catalyst occupies the "durable + agentic" seam** the decks previously described as
+> empty. The "we record non-determinism, they quarantine it" argument was **retired** — it does not
+> survive contact with anyone who knows Temporal or Dapr. Re-verify before reusing these slides.

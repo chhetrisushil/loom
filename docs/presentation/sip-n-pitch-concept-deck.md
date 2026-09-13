@@ -259,22 +259,26 @@ Two rules. The first is ordinary. **The second is the bet.**
 
 **1. State is a pure fold.** Never a snapshot you mutate.
 
-**2. Non-determinism is allowed — but only if it's logged.**
-A model call, a routing choice, a sample: record it as a durable fact, and serve
-it **from the log** on replay. Never recompute it.
+**2. Non-determinism is allowed — but only if it's logged**, *and the log keeps the
+reasoning, not just the result.* A model call records what came back **and** the policy
+and probability it was chosen with.
 
-> Classical engines treat non-determinism as a **hazard to quarantine**.
-> For AI work, non-determinism *is the payload*. So give it a seam instead.
+> Recording the result is table stakes — several engines do it.
+> Recording the **propensity** is what lets you ask, later, *what would a different
+> choice have scored?* — without re-running anything.
 
 <!--
-THE most important slide in the deck — everything in Act IV turns on it. Plant
-it here so you can harvest it there.
-SAY: "Workflow engines spent a decade learning to keep non-determinism OUT of
-the workflow path. That was correct for bank transfers. I think it's backwards
-when the non-deterministic thing is the entire point of your program."
-The payoff — if the bet holds you get a property that sounds contradictory:
-"a given execution replays bit-for-bit forever, while outcomes improve run to
-run." Say that and let it sit.
+Rule 2 was originally pitched as "engines quarantine non-determinism, I record
+it". Cut that framing: Temporal, Dapr and Diagrid all record effect results and
+replay them, and ADK 2.0 returns completed tool results from event history. It
+was the weakest claim in the first draft.
+PLANT THE NARROW VERSION HERE and harvest it on "So what's actually left?":
+the mechanism is table stakes; the propensity on the decision record is not.
+SAY: "everyone can replay what the model said. I want to be able to ask what a
+different policy would have scored, using logs I already have. That needs the
+probability, and you can't reconstruct it afterwards — you either wrote it down
+at the time or you didn't."
+That last clause is the real argument, and it's checkable.
 -->
 
 ---
@@ -385,161 +389,161 @@ weakening your position — generosity IS the position.
 
 ---
 
-## Three categories, and the gap I think exists
+## Three categories — and the seam has occupants
 
 ```
-   ┌─────────────────────────────┐        ┌─────────────────────────────┐
-   │   AGENT FRAMEWORKS          │        │  DURABLE EXECUTION ENGINES  │
-   │   Google ADK · LangGraph    │        │  Temporal · Restate         │
-   │   CrewAI · OpenAI Agents    │        │  Inngest · DBOS · Step Fns  │
-   │                             │        │                             │
-   │   great at: composing       │        │   great at: surviving       │
-   │   agents, tools, prompts    │        │   crashes at scale          │
-   └──────────────┬──────────────┘        └──────────────┬──────────────┘
-                  │                                      │
-                  └───────────────┐      ┌───────────────┘
-                                  ▼      ▼
-                              ???  the seam  ???
+  ┌────────────────────────────┐          ┌────────────────────────────┐
+  │  AGENT FRAMEWORKS          │          │  DURABLE ENGINES           │
+  │  Google ADK 2.0 · CrewAI   │          │  Temporal · Dapr · Restate │
+  │  LangGraph · OpenAI Agents │          │  Inngest · DBOS · Step Fns │
+  └─────────────┬──────────────┘          └─────────────┬──────────────┘
+                │        both moved toward the middle   │
+                └──────────────┐         ┌──────────────┘
+                               ▼         ▼
+                ┌─────────────────────────────────┐
+                │   DURABLE *AND* AGENTIC         │
+                │   Diagrid Catalyst              │
+                │   ADK + Temporal                │
+                │   ADK 2.0 natively (in part)    │
+                └─────────────────────────────────┘
 ```
 
-**Both categories are genuinely good. My bet is that the interesting problems
-live in the seam — and that's the part I need you to pressure-test.**
+**I thought this box was empty. It isn't — and a bet has to survive that.**
 
 <!--
-30 seconds, orientation only.
-The "???" is deliberate — don't put your own name in the gap. The room should
-decide the gap exists before you claim to stand in it.
-EXPECT: "isn't that a gap you invented so you could sit in it?" — the best
-question you'll get all night. Say so, and say the next three slides are your
-attempt to answer it with evidence rather than assertion.
+This is where the concept pitch gets its credibility, so do NOT skip the
+correction.
+SAY: "When I started, I thought the middle was empty. It isn't. Both categories
+moved toward each other, and at least one company is standing squarely in it.
+An idea that only works if nobody else had it is a bad idea, so let me show you
+what everyone can do now, and then what I think is still unclaimed."
+A room that sees you correct your own landscape slide will believe the rest.
+A room that catches you with a stale one won't believe any of it.
 -->
 
 ---
 
-## Google ADK — a different layer
+## Google ADK 2.0 — closer than my bet assumed
 
-**A genuinely excellent agent-authoring SDK** — deep Gemini/Vertex integration,
-workflow agents, built-in tools, live multimodal, a managed runtime.
+**Python, TypeScript and Go, all GA — and event-sourced.** `ResumabilityConfig` gives
+replay-based resumption, and **completed tool results come back from event history**.
+That's effect memoization, natively, with no engine attached.
 
-| | **ADK** | **The bet** |
+| | **ADK 2.0** | **The bet** |
 |---|---|---|
-| What it is | SDK to *author* agents | a *runtime* for executions |
-| Unit of durability | session snapshot you reload | **the execution** |
-| Resume | reload a session, re-drive | **fold + memoized effects** |
+| Resume unit | session + **a state machine you maintain** | the execution, as a fold |
+| On crash | *the caller must detect it and re-invoke* | supervised, fenced |
 
-> Composing agents and *surviving a crash at step 7* are different problems.
-> ADK is very good at the first one.
+> The gap isn't "ADK can't resume." It's that **you** hold the state machine and **you** notice the crash.
 
 <!--
-Lead with the credit and mean it — people here have shipped ADK agents and you
-need them curious, not defensive.
-Only one row matters: UNIT OF DURABILITY.
-SAY: "a session is a snapshot you reload. An execution is a computation you
-reconstruct. Identical on the happy path; completely different when you crash
-mid-tool-call."
-LANDMINE: never say ADK has no persistence or no human-interrupt support. It has
-both and someone here knows it. The claim is narrower and survives scrutiny.
+Rewritten after checking ADK 2.0 directly — the earlier version of this slide
+was out of date and would have been caught.
+SAY: "I have to correct something. ADK 2.0 is genuinely event-sourced and it
+memoizes completed tool results. When I started this, that wasn't true."
+Then the surviving distinction, from Google's own long-running-agents guide:
+ADK grounds resumability in an EXPLICIT state machine the developer maintains
+in session state. That's a real difference from a fold, but it's a smaller one
+than I originally claimed, and saying so is the price of being believed.
 -->
 
 ---
 
 ## Temporal — the same goal, a different shape
 
-**Temporal is the real thing.** A decade of hardening, deterministic replay,
-signals, timers, multi-language SDKs, enormous scale. On durability they have
-nothing to prove, and I'm not pretending otherwise.
+**Temporal is the real thing.** A decade of hardening, deterministic replay, signals,
+timers, multi-language SDKs, enormous scale. I'm not pretending otherwise.
 
 | | **Temporal** | **The bet** |
 |---|---|---|
 | Deployment | a **server/cluster** you run or buy | **a library** |
-| Design center | deterministic transactions | **non-deterministic AI work** |
-| Non-determinism | **quarantined** into Activities | **recorded as a fact** |
+| Design center | deterministic transactions | non-deterministic AI work |
+| A model choice is… | an activity result | **a decision + its propensity** |
 
 <!--
-Give them the full decade, with no hedge.
-SAY: "if this room concludes 'just use Temporal', that is a completely
-defensible engineering decision and I'd rather you shipped than waited for me."
-Saying that out loud is what earns you the next two slides.
-Then the two rows that actually differ: deployment shape and design center.
-The second one is the real argument, and it's the one the next slide pays off.
+Give them the full decade with no hedge.
+SAY: "if this room concludes 'just use Temporal', that's defensible and I'd
+rather you shipped than waited for me."
+CHANGED ROW — this used to say "non-determinism: quarantined vs recorded". Cut
+that argument: Temporal records activity results and replays them, and the Loom
+runner has to be deterministic too. It was the weakest claim in the original
+deck and the easiest to dismantle.
+What survives is the last row, and it's narrow: everyone records WHAT came back;
+the bet also records the policy and the propensity.
 -->
 
 ---
 
-## "So use ADK **and** Temporal."
+## Someone already built this. Two someones.
 
-### Someone already built exactly that. It's good.
+**ADK + Temporal** — an official integration pushing every LLM call and tool invocation
+into its own Activity.
 
-Temporal ships an official ADK integration — and it's well designed. It pushes
-**every LLM call and tool invocation into its own Activity**: durability *inside*
-the agentic loop, not a wrapper around it.
+**Diagrid Catalyst** — durable execution across **10+ agent frameworks**, built on Dapr (CNCF-graduated), hosted or self-hosted. Memoizes completed model and tool calls, and signs every step. Their blog post is titled *"Durable Execution: The Missing Runtime Primitive for Agents."*
 
-`TemporalModel` · `activity_tool` · `GoogleAdkPlugin`
-
-**If you're a Python shop on GCP already running Temporal, that is a rational
-choice and my bet has to beat it — not ignore it.**
+> **That's my thesis, with a company behind it.** Which is either very bad news or the
+> best validation I could ask for.
 
 <!--
-Say this with a completely straight face and real respect. If you sneer here you
-lose every senior engineer in the room, permanently.
-This slide also proves you did your homework, which in a concept pitch is worth
-more than any feature claim — it says "I looked for prior art before I fell in
-love with my idea."
-The argument happens on the NEXT slide, and it's an architectural observation,
-not a dunk.
+The most important slide in the concept deck, and the one that would be
+tempting to leave out. Leave it in.
+SAY it with a straight face: someone independently reached the same conclusion,
+funded it, and shipped it across ten frameworks. If the idea were wrong, that
+wouldn't have happened.
+Then the honest pivot — and pause before it: "so the question stops being 'is
+there a gap' and becomes 'why does a library-shaped version still matter?'
+That's a harder question and it's the one I actually want your help with."
+That reframe is the whole reason this variant of the talk exists.
 -->
 
 ---
 
-## …and what they had to do is my best evidence
+## So what's actually left?
 
-To run ADK inside a Temporal workflow, the integration **had to patch ADK's clock
-and UUID generator** — new `google.adk.platform.time` / `.uuid` seams, so Temporal
-could substitute deterministic equivalents on replay.
+**Table stakes now** — an append-only history · replay after a crash · memoized model
+and tool calls · durable human pauses. Several people do all of it.
 
-> Read that as a **design center**, not a criticism.
-> A classical engine must *make the agent deterministic*, because non-determinism
-> is a hazard it quarantines.
+**What I think is still unclaimed:**
 
-**That's the seam I think is real.** The bet says: don't remove the
-non-determinism — **record what it returned.**
+**1 · Shape** — a dependency, not a control plane. Same core in a unit test and a browser tab.
+**2 · Forking a live execution** — simulate alternatives on real state, promote one. Dapr has conditional branching; nobody has fork-and-simulate.
+**3 · Decisions that carry their propensity** — so a choice can be scored **counterfactually** later, off real logs, without re-running anything.
 
 <!--
-The intellectual core of the talk. If you land one slide in Act IV, land this.
-SAY: "Two excellent teams met in the middle, and the price of the meeting was
-patching the clock of an agent framework. That's not a bug — it's two design
-centers grinding against each other. And it's the most concrete evidence I have
-that the gap isn't imaginary."
-It's checkable — the ADK PR adding those seams is public. Offer that if pushed.
-LANDMINE: do NOT say this makes Temporal wrong. For deterministic business
-transactions, quarantining is the CORRECT design. The claim is narrow: when the
-non-determinism is the payload, a seam may beat a quarantine. "May". You're
-testing it, not announcing it.
+This replaces the old "they had to patch ADK's clock" slide, which is now stale:
+those seams were upstreamed INTO ADK 2.0 as a platform package precisely so any
+engine can do replay-safe events. Telling that story as friction would be
+describing a problem that got fixed.
+Concede table stakes FIRST — an engineer in this room already has that list, and
+claiming any of it loses you the other three.
+#3 is the one to slow down on and the one I'd defend in Q&A. Everyone logs the
+outcome. Logging the policy AND the probability it was chosen with is what makes
+off-policy evaluation possible. It's in @loom/learning and it's checkable.
+If someone asks "why does that matter?" — because otherwise you can only learn
+from what you did, never from what you didn't.
 -->
 
 ---
 
 ## Where the existing answers are simply better
 
-**If I skip this slide, you should stop believing the last four.**
+**If I skip this slide, you should stop believing the last five.**
 
-- **Temporal** — a decade of production hardening, multi-language SDKs, real ops
-  tooling, proven at scale, commercial support. **I have none of that.**
-- **ADK** — bigger ecosystem, deeper tooling, managed runtime, far faster path to
-  a working agent.
-- **ADK + Temporal** — both, commercially supported, available today.
-- **AI SDKs** — for a single-turn call they're simply right.
+- **Temporal** — a decade of hardening, multi-language SDKs, real ops tooling, proven at scale, commercial support. **I have none of that.**
+- **Diagrid** — **ahead of me on attestation**: signed steps, public-key verification, lineage, SPIFFE identity over mTLS. Mine is hash-chained and HMAC'd — tamper-*evident*, not third-party verifiable.
+- **ADK 2.0** — three languages GA, bigger ecosystem, managed runtime, far faster to a working agent.
 
-> **Nobody was ever fired for choosing the boring, proven thing. That's not a
-> joke — it's the correct default, and my idea has to beat it on merits.**
+> **Nobody was ever fired for choosing the boring, proven thing. That's the correct default, and my idea has to beat it on merits.**
 
 <!--
-Deliver straight, no "but". This slide is the entire credibility of the concept
-pitch, and in a room of engineers it will do more for you than any advantage
-slide.
-If you're tight on time, cut something else. Not this.
-GOOD LINE if the room is skeptical: "I'd rather leave here with three people
-telling me why this is wrong than thirty nodding."
+Deliver straight, no "but". In a concept pitch this slide does more work than
+any advantage slide.
+The Diagrid line matters most: on verifiable execution they are genuinely ahead,
+and that's a checked comparison rather than modesty. A hash chain detects
+tampering; signed steps with a workload identity let a THIRD PARTY verify who
+produced what. Different guarantees, and theirs is stronger.
+GOOD LINE if the room is skeptical: "I'd rather leave with three people telling
+me why this is wrong than thirty nodding."
 -->
 
 ---
@@ -695,23 +699,23 @@ slide.
 
 I'd drop this if:
 
-- **Durable engines absorb the AI-native seams** — and Temporal's ADK
-  integration is *already* a move in that direction
-- **Agents stop being long-running** — if models get fast and cheap enough that
-  re-running from scratch is simply free
+- **Durable engines absorb the AI-native seams** — **this one is already happening.** ADK 2.0 took the determinism seams in-tree; Diagrid took the category.
+- **Agents stop being long-running** — models fast and cheap enough that re-running is free
 - **Cost-per-step collapses** — memoization stops mattering
 - **The ergonomics don't survive** real teams writing real flows
 
-> A bet you can't lose isn't a bet. **These are the conditions where I'm wrong.**
+> A bet you can't lose isn't a bet. **One of these is already partly true.**
 
 <!--
-This is the slide senior people remember, and the one that most often turns a
-skeptic into an ally.
-Name the first bullet specifically — conceding that your strongest competitor is
-already moving into your gap is disarming precisely because it's true, and
-pretending otherwise would be the easiest thing in the world to catch you on.
-SAY: "If durable engines keep going the way that integration is going, the gap
-closes on its own and the right answer is to help them instead."
+This is the slide senior people remember, and it got stronger rather than weaker
+when the facts changed.
+Say the first bullet plainly and don't soften it: the condition I wrote down as
+"what would change my mind" has partly fired, in public, since I wrote it. That
+is exactly what an honest bet looks like from the inside.
+SAY: "I'm not going to quietly delete the prediction that came true."
+If someone asks whether you're abandoning it — no, but the remaining claim is
+narrower than it was, and the three things on 'what's actually left' are what
+I'd defend now.
 -->
 
 ---
@@ -724,8 +728,8 @@ closes on its own and the right answer is to help them instead."
   to test the bet against something I didn't design for.
 - Do you want to **try to break the guarantee**? `kill -9` it in a way I haven't
   thought of.
-- Do you disagree with the **"record, don't quarantine"** rule? That's the load-bearing
-  claim — I'd rather find out now.
+- Do you think **propensity-on-the-decision** earns its cost? That's the load-bearing
+  claim now — I'd rather find out it's wrong tonight.
 
 > My own design rule: nothing becomes real until a **second, unrelated** use case
 > needs it. **I need second use cases. That's the ask.**
@@ -767,21 +771,16 @@ If you only get one sentence out before time is called, it's the first one.
 
 ## A note on fairness
 
-- Every product named here is **good at what it does**, and several overlap with
-  this idea in real ways. The comparisons are about **architectural layer and
-  design center**, not quality.
-- The ADK/Temporal specifics were checked against vendor documentation in
-  **September 2026** — Python-only and flagged experimental at that time.
+- Every product named here is **good at what it does**, and several overlap with this idea in real ways. The comparisons are about **architectural layer and design center**, not quality.
+- **Re-verified 2026-09-13** against vendor documentation — and two slides changed as a result: ADK 2.0 is Python/TS/Go GA and natively memoizes tool results, and **Diagrid Catalyst occupies the seam** this deck used to call empty.
 - **This moves fast. Verify before you repeat any of it**, including from me.
-- Nothing here is a product claim. There is no package to install and no user to
-  reference.
+- Nothing here is a product claim. There is no package to install and no user to reference.
 
 <!--
-Never delete this slide; presenting it is optional.
-If time is tight, skip it but say the one line out loud: "everything I claimed
-about other people's software tonight was checked against their own docs this
-week — verify it before you repeat it, because I could be out of date by next
-month."
-That sentence costs nothing and buys you the benefit of the doubt on everything
-else you said.
+Never delete; presenting it is optional.
+If tight on time, say one line: "everything I claimed about other people's
+software was checked against their own docs this week, and two of my slides
+changed as a result."
+In a concept pitch that sentence is worth more than the slide — it's evidence
+that you update on facts, which is the only reason to trust the rest.
 -->
