@@ -773,16 +773,18 @@ interface Warmer { warm(toolId: string): void; }
 
 A denied effect never runs: it emits ~EFFECT_DENIED~ (folds into ~variables._denials~) and throws ~CapabilityDeniedError~, failing the step. All three options are opt-in — omit them and ~execute~ is the unchanged zero-overhead path.
 
-*Identity, tenancy & delegated authority (2.0, K12).* A ~CapabilityRequest~ can carry a ~PrincipalChain~ (tenant / actor / on-behalf-of / a verifiable delegation). ~DelegationAuthorizer~ honors a *signed, attenuated* delegation only after verifying its HMAC and intersecting its grants with the callee's own authority — a delegate can never invoke an effect the delegator lacked, nor one the callee lacks (no ambient escalation). Attenuation only narrows.
+*Identity, tenancy & delegated authority (2.0, K12).* A ~CapabilityRequest~ can carry a ~PrincipalChain~ (tenant / actor / on-behalf-of / a verifiable delegation). ~DelegationAuthorizer~ honors a *signed, attenuated* delegation only after verifying its HMAC and intersecting its grants with the callee's own authority (~base~, required) — a delegate can never invoke an effect the delegator lacked, nor one the callee lacks (no ambient escalation). Attenuation only narrows. The HMAC secret is *symmetric*, so the signature stops a third party forging a grant set in transit but cannot stop the verifier minting its own; the intersection is what bounds the callee. Cross-organisation delegation is out of scope — see [[file:adr/0024-k12-identity-tenancy-delegated-authority.md][ADR 0024]].
 
 #+begin_src typescript
 interface PrincipalChain { tenant?: string; actor?: string; onBehalfOf?: string; delegation?: DelegatedGrant; [k: string]: unknown; }
-interface DelegatedGrant { grants: string[]; issuedTo: string; sig: string; }   // HMAC-SHA256 over issuedTo + sorted grants
-function signDelegation(secret: string, issuedTo: string, grants: string[]): DelegatedGrant;
+interface DelegatedGrant { grants: string[]; issuedTo: string; exp?: number; sig: string; } // HMAC-SHA256 over issuedTo + sorted grants (+ exp)
+function signDelegation(secret: string, issuedTo: string, grants: string[], exp?: number): DelegatedGrant;
 function verifyDelegation(secret: string, token: DelegatedGrant): boolean;       // constant-time
-function attenuateDelegation(secret: string, token: DelegatedGrant, issuedTo: string, subset: string[]): DelegatedGrant; // narrow only
+function attenuateDelegation(secret: string, token: DelegatedGrant, issuedTo: string, subset: string[], exp?: number): DelegatedGrant; // narrow only; inherits parent exp
 class DelegationAuthorizer implements CapabilityAuthorizer {
-  constructor(options: { secret: string; base?: CapabilityAuthorizer })          // base = the callee's own authority
+  constructor(options: { secret: string; base: CapabilityAuthorizer; now?: () => number })
+  // `base` is REQUIRED and load-bearing: the secret is symmetric, so the verifier can also
+  // mint. Only the intersection with the callee's own authority bounds it (ADR 0024).
 }
 #+end_src
 

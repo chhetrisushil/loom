@@ -95,3 +95,47 @@ Adopted per the [K12 evaluation](../requirements/2026-07-10-kernel-hardening-eva
 - **A7 — store scoping perf**: tenant-column + index (or key-prefixing) is the default;
   Postgres row-level security is an optional hardening layer, benchmarked before it is
   recommended (RLS predicates tax every query).
+
+---
+
+## Amendment (2026-09-14) — A2's trust model, made explicit
+
+A2 above requires delegation to be "verifiable at the callee's trust boundary". The shipped
+primitive (`signDelegation`/`verifyDelegation`, HMAC-SHA256) delivers a **narrower** property
+than that phrasing suggests, and the difference was never written down. It is now.
+
+**What the signature does.** It stops a *third* party — a caller, a middlebox, anything in
+transit — forging or tampering with a grant set. That is the hole A2 identified and it is
+closed.
+
+**What it cannot do.** The secret is **symmetric**: the party that verifies is also a party
+that can mint. A callee can sign itself `{ grants: ["*"] }`, and that token is *genuine* —
+`verifyDelegation` returns `true` and no signature check can reject it. So a verified
+delegation cannot, on its own, bound the authority of the party verifying it.
+
+**Why the design is nevertheless sound.** Authority over the callee comes from the
+**intersection** with `base` (the callee's own grants), never from the token. With `base`
+set, self-minting buys a callee nothing it did not already hold. `DelegationAuthorizer`'s
+`base` is therefore **load-bearing for security, not a convenience**.
+
+**What changed.** `base` was optional, documented as *"omit to allow the full verified
+delegated set (the callee delegates all of its authority decisions upstream)"*. That mode
+could not deliver what it claimed — upstream cannot retain authority over a callee holding
+the minting key — and an absent `base` silently reduced the intersection to a no-op while
+still reading as a working gate (the vacuous-check pattern). `base` is now **required**, with
+a constructor guard because the type alone is not enforcement for JS callers, and two tests
+pin the reasoning: one asserts construction without `base` throws, the other asserts a
+*self-minted, validly signed* wildcard token still cannot exceed the callee's own grants.
+
+Blast radius at the time of the change: no production construction sites in this repo or any
+sibling — only tests.
+
+**Scope boundary.** Delegation **across** organisations, where the verifier must not be able
+to mint, is **out of scope** for this primitive. It needs asymmetric signatures (and the key
+distribution and rotation that come with them). If a second, unrelated consumer appears that
+genuinely spans trust domains, that is the trigger to revisit — not before ([ADR 0083](0083-second-consumer-rule.md)).
+
+> The same symmetry applies to the `sig` field of the tamper-evident audit chain
+> ([ADR 0037](0037-tamper-evident-audit-chain.md)): an auditor handed the HMAC secret to
+> verify history can also rewrite it. That chain's guarantee is tamper-**evidence** against
+> third parties, not third-party **verifiability**.

@@ -6,7 +6,7 @@ import {
   signDelegation,
   verifyDelegation,
 } from "./authz";
-import type { CapabilityRequest } from "./authz";
+import type { CapabilityRequest, DelegationAuthorizerOptions } from "./authz";
 
 const SECRET = "shared-delegation-secret";
 
@@ -88,7 +88,10 @@ describe("K12.4 — verifiable attenuated delegation", () => {
   });
 
   it("a forged delegation is denied outright (not honored as a plain field)", () => {
-    const authz = new DelegationAuthorizer({ secret: SECRET });
+    const authz = new DelegationAuthorizer({
+      secret: SECRET,
+      base: new GrantTable({ "callee-flow": ["delete-prod"] }),
+    });
     const forged = { grants: ["delete-prod"], issuedTo: "callee-flow", sig: "deadbeef" };
     const decision = authz.authorize(req("delete-prod", { delegation: forged }));
     expect(decision.allowed).toBe(false);
@@ -100,5 +103,43 @@ describe("K12.4 — verifiable attenuated delegation", () => {
     const authz = new DelegationAuthorizer({ secret: SECRET, base });
     expect(authz.authorize(req("deploy", undefined)).allowed).toBe(true);
     expect(authz.authorize(req("rollback", undefined)).allowed).toBe(false);
+  });
+
+  // ── The symmetric-secret precondition (ADR 0024) ──────────────────────────
+  //
+  // `base` used to be optional, documented as "the callee delegates all of its
+  // authority decisions upstream". It cannot: the secret is symmetric, so the
+  // verifier is also a valid minter. These two tests pin the reasoning so the
+  // option is not quietly relaxed back into a convenience.
+
+  it("refuses to construct without `base` — the type is not the enforcement", () => {
+    expect(
+      // A JS caller or an `as any` bypasses the required-ness of the field entirely,
+      // and an absent `base` reads as a working gate while bounding nothing.
+      () => new DelegationAuthorizer({ secret: SECRET } as unknown as DelegationAuthorizerOptions)
+    ).toThrow(/`base` is required/);
+  });
+
+  it("a self-minted token cannot exceed the callee's own authority", () => {
+    // The threat `base` actually defends against. The callee holds the verification
+    // secret, so it can mint itself a valid wildcard token — this is NOT forgery, the
+    // signature is genuine and no signature check can reject it.
+    const selfMinted = signDelegation(SECRET, "callee-flow", ["*"]);
+    expect(verifyDelegation(SECRET, selfMinted)).toBe(true);
+
+    const authz = new DelegationAuthorizer({
+      secret: SECRET,
+      base: new GrantTable({ "callee-flow": ["deploy"] }),
+    });
+
+    // Minting bought it nothing: the intersection with `base` still bounds it.
+    expect(
+      authz.authorize(req("deploy", { actor: "callee-flow", delegation: selfMinted })).allowed
+    ).toBe(true);
+    const escalated = authz.authorize(
+      req("delete-prod", { actor: "callee-flow", delegation: selfMinted })
+    );
+    expect(escalated.allowed).toBe(false);
+    expect(escalated.reason).toMatch(/the callee itself lacks/);
   });
 });
