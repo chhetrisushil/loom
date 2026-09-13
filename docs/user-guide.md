@@ -1629,6 +1629,46 @@ catch-up policy can layer on later). Cross-node duplicate fires settle at the sh
 the idempotent-wake guard, the `UNIQUE(execution_id, sequence)` backstop, and fencing (when
 `fenced`) guarantee exactly one durable history.
 
+### Recovering executions whose supervisor died (ADR 0004)
+
+A dead or wedged **worker** is already handled: the dispatcher's `executeTimeoutMs` turns a
+hung attempt into a failed one and redispatches it, and the worker resumes idempotently from
+durable state — completed steps are served from the log, only the interrupted tail re-runs.
+You get that for free.
+
+The case it cannot cover is the **supervisor** itself dying. Detection lives in the
+dispatcher's process memory, so if that process is killed nothing survives that knows an
+execution was in flight: it sits `running` in the log with no owner.
+
+Loom cannot resolve this from the log alone, and does not pretend to. A `running` execution
+owned by a healthy node elsewhere is byte-identical to an orphaned one — the difference is a
+fact about your cluster, not about the execution. So the pass takes the decision from you:
+
+```ts
+import { recoverAbandoned } from "@loom/workflow-runtime";
+
+// Run this from a cron, a Kubernetes Job, or a leader-elected ticker — it is a
+// maintenance pass you schedule, not a service that runs itself.
+const STALE_MS = 15 * 60_000;
+const summary = await recoverAbandoned(runtime, {
+  source: eventStore,
+  isAbandoned: (c) => Date.now() - c.updatedAt > STALE_MS, // YOUR policy
+  fenced: true,        // K9.4 — a predecessor that isn't really dead loses at the store
+  limit: 50,
+});
+// → { scanned, candidates, recovered, failed }
+```
+
+`isAbandoned` is **required and has no default**. Defaulting it either way would be wrong:
+`true` preempts live work on other nodes, and `false` would be a pass that silently recovers
+nothing while looking like it works.
+
+> **Be generous with the threshold.** A predicate that wrongly claims a *live* execution
+> cannot corrupt the log (fencing), but the preempted worker's in-flight effect may still
+> land — so the step runs twice. That is the same at-least-once a genuine crash already
+> incurs; you just don't want to pay it for a step that was never interrupted. Prefer a real
+> liveness signal from your orchestrator over a timeout where you have one.
+
 ### Read models: durable cross-execution queries (ADR 0058)
 
 Projections are per-execution and in-process; **read models** (`@loom/plugin-read-model`) are

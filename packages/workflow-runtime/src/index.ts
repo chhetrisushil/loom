@@ -17,6 +17,12 @@ export {
 } from "./types";
 export { TimerService, type TimerServiceOptions } from "./TimerService";
 export {
+  recoverAbandoned,
+  type AbandonedCandidate,
+  type RecoverAbandonedOptions,
+  type RecoverAbandonedSummary,
+} from "./recoverAbandoned";
+export {
   LogLifecycle,
   type RetentionPolicy,
   type ArchiveStores,
