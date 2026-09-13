@@ -40,6 +40,15 @@ crash/resume demo do the closing argument for you.
 
 ## Act I — The problem
 
+<!--
+Divider — 5 seconds, don't linger.
+SAY: "Three parts. The problem, the idea, and then the part you actually came
+for — why not just use the thing you're already using. Hold the competitive
+questions for about ten minutes and I promise I'll get there."
+That promise is worth making: it stops the room from litigating Temporal
+during Act I.
+-->
+
 ---
 
 ## The shape of the work changed
@@ -72,9 +81,26 @@ agent in production that waits on a human?"
 
 > The interesting problems live in the seam between these two columns.
 
+<!--
+SAY: "Everyone here has already picked one of these columns. If you picked the
+left one, you've written a retry loop and a status column in Postgres and
+called it durable. If you picked the right one, you've written YAML."
+Usually gets the laugh, because it's true.
+LAND: most teams end up building a bad version of the right column inside the
+left one — and that's the thing this is trying to make unnecessary.
+LANDMINE: do NOT name a vendor here. Naming Temporal now starts the argument
+six slides early and you'll never get the thesis out.
+-->
+
 ---
 
 ## Act II — The idea
+
+<!--
+Divider — keep moving.
+SAY: "Now the idea. It's one sentence and one guarantee, and if you only
+remember one slide tonight it's the one after next."
+-->
 
 ---
 
@@ -89,6 +115,18 @@ Less formally:
 > returns once — and every meaningful thing it does becomes an immutable fact in a log.
 
 So it can **pause for a human, resume on another machine, replay bit-for-bit, fork to explore alternatives, and be audited against its own history.**
+
+<!--
+Say the formal sentence once, then immediately the informal one — the formal
+one is for the skeptics, the informal one is what they'll repeat.
+The phrase that lands: "a process that unfolds over time, not a request that
+returns once."
+Pause after "fork to explore alternatives" — nobody expects that one and you
+want it to register before Act III.
+IF ASKED "isn't this just event sourcing?": "Yes — applied to execution rather
+than to domain state. The novelty isn't the log, it's that the call stack is a
+fold of it." Then move on; don't teach event sourcing.
+-->
 
 ---
 
@@ -128,6 +166,21 @@ const runner: FlowRunner<In, Out> = async (ctx, input) => {
 
 **No DSL. No state machine. No queue.** The process can die at *any* line — on resume, `inspectStep` and `assessStep` are **served from the log, not re-run**.
 
+<!--
+First code on screen. SLOW DOWN — let them read before you talk.
+Walk exactly three things, not the whole listing:
+  1. ctx.run — a durable step. Recorded; on replay it's served from the log,
+     never re-executed. Exactly-once without you doing anything.
+  2. ctx.suspend — the entire human-in-the-loop story, in one line. It writes a
+     checkpoint and hands control back. The approval can arrive in three days.
+  3. What ISN'T here — no try/catch, no state machine, no queue, no status
+     column, no `extends`.
+THE LINE: "The process can die at any line on this slide, and none of this code
+changes. That's the whole bet: plain async code, durability underneath."
+LANDMINE: if asked about step$/handler$ — "compile-time extraction, it's in the
+repo" — and move on. It's a twenty-minute rabbit hole and it isn't the point.
+-->
+
 ---
 
 ## The thesis
@@ -146,6 +199,17 @@ If every meaningful thing that happens is appended to an **ordered, immutable lo
 ```
 
 **You don't add auditability later. It's the substrate.**
+
+<!--
+One sentence first: "state is a fold over an append-only log."
+Then work the diagram outward, not left-to-right:
+  left column  = things you'd normally BUY separately
+  right column = things you'd normally BUILD later, badly, under deadline
+SAY: "Every arrow here is the same mechanism read through a different lens.
+You don't integrate six systems. You append to one log."
+Close on the last line and let it sit — "you don't add auditability later" is
+the sentence that regulated-industry people write down.
+-->
 
 ---
 
@@ -168,6 +232,11 @@ Plant it here, harvest it there.
 
 ## Act III — What it buys you
 
+<!--
+Divider — quick.
+SAY: "So what does that actually buy you?"
+-->
+
 ---
 
 ## Six features. One mechanism.
@@ -182,6 +251,18 @@ Plant it here, harvest it there.
 | **Deploy safety** | Fail a resume-breaking change *before* it ships. |
 
 > Six line items in most stacks. **One mechanism here.**
+
+<!--
+DO NOT read the table. They can read. Pick TWO and make them concrete:
+  • Effect memoization — "you crash right after a four-dollar model call. On
+    resume you don't pay for it again. That's not a feature we added; it's
+    what 'served from the log' means."
+  • Time-travel — "fold to sequence 6 and inspect the exact state, three days
+    after it happened. A debugger for a workflow that runs for a week."
+THEN: "Six line items you'd budget separately. One mechanism."
+If the room is quiet, this is a good place to ask: "which of these have you
+built by hand?" Most will say two or three.
+-->
 
 ---
 
@@ -202,6 +283,20 @@ Because state is `fold(events)`, a branch is a **shared log prefix** — nearly 
 
 Shipped on two unrelated domains — incident remediation and schema migration — specifically to prove the seam isn't domain-shaped.
 
+<!--
+This is the most differentiating thing in the whole landscape and almost
+nobody expects it. Give it room.
+SAY: "Because state is a fold, a branch is just a shared prefix — the same
+reason branching is cheap in git. So you can fork a live, in-flight execution
+at the approval gate, run three different remediations against real state,
+compare them, and promote one."
+Note branch-only, no merge — and say WHY, because engineers will ask: merging
+two divergent event histories has no sound semantics, so we didn't fake one.
+Refusing to ship the unsound feature reads as credibility.
+CUT ORDER: this is cut #1 if you're behind — BUT if there's a platform or SRE
+person in the room, keep it and cut the side-by-side table instead.
+-->
+
 ---
 
 ## Where Loom is the wrong tool
@@ -215,6 +310,17 @@ Shipped on two unrelated domains — incident remediation and schema migration �
 Use the simple thing. **Loom's value compounds with longevity, cost-per-step, regulation, and blast radius** — not with cleverness.
 
 > If your agent finishes in 900ms and re-running it is free, you do not need a kernel.
+
+<!--
+Deliver this unprompted, and early. It is the slide that buys you the entire
+competitive section.
+SAY: "I'm about to spend five minutes on why not to use the alternatives, so
+let me first be honest about when not to use this."
+Then the three bullets, flat, no hedging. Do not soften them with "but of
+course..." — the value of this slide is that it costs you something.
+THE LINE: "If your agent finishes in 900ms and re-running it is free, you do
+not need a kernel. Use the simple thing."
+-->
 
 ---
 
@@ -256,6 +362,16 @@ feature set — see "A note on fairness".
                           └───────────────────────┘
 ```
 
+<!--
+Orientation slide. 30 seconds, no more.
+SAY: "Two mature categories. Both genuinely good. The claim is not that we beat
+either one on its home turf — it's that the problems I care about live in the
+seam between them."
+Point at the seam as you say it.
+EXPECT: "isn't that a gap you invented to sit in?" — fair question, and the
+next three slides are the answer. Say that out loud rather than deflecting.
+-->
+
 ---
 
 ## vs. Google ADK — a different layer
@@ -272,6 +388,18 @@ feature set — see "A note on fairness".
 > An agent SDK asks *how do I compose agents and tools?*
 > A kernel asks *what happens when the process dies at step 7 of 12?*
 
+<!--
+Lead with the credit and mean it — several people in the room have shipped ADK
+agents and you need them listening, not defending.
+The only row that matters is UNIT OF DURABILITY. Everything else is context.
+SAY: "A session is a snapshot you reload. An execution is a computation you
+reconstruct. Those look identical on the happy path and behave completely
+differently when you crash mid-tool-call."
+LANDMINE: do NOT say ADK has no persistence or no human-interrupt support. It
+has both, and someone here knows that. The claim is narrower — it's about the
+unit of durability, not the presence of state.
+-->
+
 ---
 
 ## vs. Temporal — the same goal, a different shape
@@ -286,6 +414,18 @@ feature set — see "A note on fairness".
 | Non-determinism | **quarantined** into Activities | **recorded as a fact** |
 
 > Not "Temporal is wrong." **Temporal is a platform; Loom is a dependency.**
+
+<!--
+Give them the full decade. Do not get competitive here.
+SAY: "If this room votes 'use Temporal' tonight, that is a defensible
+engineering decision and I would rather you shipped."
+Then two rows only: deployment shape and design center.
+THE LINE: "Temporal is a platform; Loom is a dependency."
+The browser-tab row usually gets a visible reaction — that's your evidence that
+"library, not platform" is a real architectural property and not marketing.
+If someone says "we already run Temporal" — good, that's the next three slides,
+and you're not going to tell them they're wrong.
+-->
 
 ---
 
@@ -361,6 +501,17 @@ verbatim from ADK's own Temporal plugin page. Let it sit for a beat.
 
 > **They can do durability.** It just costs a server, a language, a preview-grade seam, two roadmaps, and your dev/prod parity — to reach where Loom starts.
 
+<!--
+Move faster than part 1. Part 1 was what it costs to get there; this is the
+ceiling once you're there.
+The CODE SHAPE row is the one engineers feel in their body: six wrappers versus
+an async function. Say that and then just let them read it.
+Land the blockquote close to verbatim — it's the thesis of the whole section,
+and it concedes their capability while pricing it:
+  "They can do durability. It just costs a server, a language, a preview-grade
+   seam, two roadmaps, and your dev/prod parity — to reach where Loom starts."
+-->
+
 ---
 
 ## Side-by-side, by design axis
@@ -374,6 +525,14 @@ verbatim from ADK's own Temporal plugin page. Let it sit for a beat.
 | **Replay model** | reload & re-drive | deterministic replay | **fold + memoized effects** |
 | **Deployment** | library + infra | cluster or SaaS | **library; in-browser** |
 | **Non-determinism** | inherent, unrecorded | quarantined | **first-class, recorded** |
+
+<!--
+Optional. If you're on time, show it for 15 seconds and say: "this is the
+summary — photograph it, don't let me read it to you."
+Its only job is to still look defensible when someone screenshots one slide and
+posts it in a Slack channel tomorrow. That's why it's axes, not checkmarks.
+CUT ORDER: cut #2 (after the branching slide) if you're behind.
+-->
 
 ---
 
@@ -408,6 +567,17 @@ Loom is a **substrate**, not a rival agent library:
   it's recorded.
 
 > **The question is rarely "Loom *or* X." It's usually "X, running on Loom."**
+
+<!--
+De-escalation, and it's sincere — say it like you mean it, because it's true.
+SAY: "The question is almost never 'Loom or X'. It's 'X, running on Loom'.
+Wrap an ADK agent as a durable effect and it gets replay, capability control
+and audit for free. Use an AI SDK inside a step — the kernel doesn't care what
+happens in there, only that it's recorded."
+This slide is what converts the last six from a sales pitch into an analysis.
+If anyone has been getting defensive about their stack, this is where you get
+them back. Watch for that and slow down if you see it.
+-->
 
 ---
 
@@ -452,6 +622,20 @@ process 2:   ⚡ apply                        🎉 completed
 
 > **That's "The one guarantee everything serves" — executed, not asserted.**
 
+<!--
+The most important non-competitive slide in the deck. Point at the COUNTS, not
+the prose.
+SAY: "Two lightning bolts in the first process. One in the second. That's the
+entire argument, and you just watched it happen on my machine."
+Then the line that actually lands it:
+  "The risk assessment in that result was written by a process that no longer
+   exists. It was rebuilt by folding the log."
+And the giveaway: "I wrote zero observability code. loom logs is just reading
+the log the flow already wrote."
+If the demo broke and you're recovering here — this slide still works as a
+narration of what they would have seen. Don't skip it.
+-->
+
 ---
 
 ## Bottom line
@@ -467,6 +651,16 @@ process 2:   ⚡ apply                        🎉 completed
 
 **You don't add durability, auditability, or reproducibility later. They're the substrate.**
 
+<!--
+Close. No new information on this slide — resist the urge to add anything.
+Say the blockquote as written; it's the one sentence you want them repeating at
+the bar afterwards.
+Then the final line slowly, and then STOP TALKING:
+  "You don't add durability, auditability, or reproducibility later. They're the
+   substrate."
+Silence after a close is fine. Let them come to you.
+-->
+
 ---
 
 ## A note on fairness
@@ -475,6 +669,18 @@ process 2:   ⚡ apply                        🎉 completed
 - This landscape moves **very fast**. The ADK/Temporal specifics here were verified against vendor docs in **September 2026** — Python-only and flagged experimental at that time.
 - **Re-verify before quoting a slide at someone.**
 - Loom's claims trace to shipped code, ADRs, and `docs/spec/`. If a slide can't, cut it — **an overclaim costs more than it wins.**
+
+<!--
+Never delete this slide; presenting it is optional.
+If the room is senior, show it — it's the slide that retroactively makes
+everything before it credible.
+If you're tight on time, skip the slide but say the one line out loud:
+  "Everything I claimed about ADK and Temporal tonight was checked against their
+   own documentation this week. Verify it before you repeat it — this moves fast
+   enough that I could be wrong by next month."
+That sentence costs you nothing and buys you the benefit of the doubt on
+everything else.
+-->
 
 ---
 
