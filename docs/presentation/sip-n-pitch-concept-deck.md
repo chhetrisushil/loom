@@ -464,6 +464,9 @@ timers, multi-language SDKs, enormous scale. I'm not pretending otherwise.
 Give them the full decade with no hedge.
 SAY: "if this room concludes 'just use Temporal', that's defensible and I'd
 rather you shipped than waited for me."
+IF PUSHED on the "on crash" row ("your supervisor can die too"): concede it, it
+is true. Loom's detection lives in the dispatcher's process — in-process
+supervision, not durable supervision.
 CHANGED ROW — this used to say "non-determinism: quarantined vs recorded". Cut
 that argument: Temporal records activity results and replays them, and the Loom
 runner has to be deterministic too. It was the weakest claim in the original
@@ -591,8 +594,8 @@ a kernel where a step is an event, `ctx.suspend` writes a durable checkpoint, an
 state is a fold. A few worked examples. A CLI that reads the log.
 
 **Not built** — deliberately:
-no hosted service · no published package · no multi-language SDKs · no ops story
-· **no users**
+no hosted service · no published package · no multi-language SDKs · no supervisor
+daemon · **no users**
 
 > It is **more than a weekend and much less than a product.**
 > Its only job is to answer one question: *does the guarantee hold?*
@@ -657,6 +660,18 @@ immediately say what it did NOT prove. Volunteering the limit right after your
 strongest moment is the single most credible thing you can do on stage, and it
 sets up the next slide perfectly.
 If the demo failed: this slide still works as narration. Don't skip it.
+
+THE QUESTION THIS SLIDE ATTRACTS: "so who calls resume in production?" Have the
+answer ready — it is in loom-demo/DEMO_SCRIPT.md in full, and short form is:
+"here, me — I'm playing the supervisor. In a real deployment the dispatcher
+redispatches a dead or wedged worker automatically (ADR 0004, tested). What that
+misses is the supervisor itself dying, and for that there's `recoverAbandoned()`
+— a pass you run from a cron, which makes YOU supply the 'is it orphaned?'
+predicate, because a running execution on a healthy node looks identical in the
+log to an orphaned one."
+Do NOT claim the demo shows automatic recovery. It shows the RESUME is possible
+from a cold process, which is the durability claim. Who triggers it is a
+separate, answerable question.
 -->
 
 ---
