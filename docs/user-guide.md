@@ -1650,8 +1650,9 @@ import { recoverAbandoned } from "@loom/workflow-runtime";
 // Run this from a cron, a Kubernetes Job, or a leader-elected ticker — it is a
 // maintenance pass you schedule, not a service that runs itself.
 const STALE_MS = 15 * 60_000;
-const summary = await recoverAbandoned(runtime, {
-  source: eventStore,
+const app = defineConfig({ /* … */ });
+const summary = await recoverAbandoned(app.runtime, {
+  source: app.stores.eventStore,
   isAbandoned: (c) => Date.now() - c.updatedAt > STALE_MS, // YOUR policy
   fenced: true,        // K9.4 — a predecessor that isn't really dead loses at the store
   limit: 50,

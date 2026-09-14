@@ -454,6 +454,8 @@ interface ExecutionContext {
 
 *Durable timers (2.0, T1).* ~ctx.sleep~/~ctx.sleepUntil~ suspend the execution with the absolute wake time recorded in the log; a wired ~TimerService~ fires a durable ~TIMER_FIRED~ resume, so a sleep survives restarts and replays deterministically (the scheduled time is in the log — wall-clock drift never enters the fold). Without a timer service the suspension is still durable and resumable by any node. Declare cron-driven starts with ~schedule$~ (see [[#authoring][~@loom/core~ builders]]) and wire both via ~defineConfig({ timers })~.
 
+*Recovering an abandoned execution ([[file:adr/0004-failure-recovery.md][ADR 0004]]).* A dead or wedged *worker* is redispatched by the dispatcher (~executeTimeoutMs~) and resumes idempotently. A dead *supervisor* is not covered — detection lives in its process — so ~recoverAbandoned(runtime, { source, isAbandoned })~ (~@loom/workflow-runtime~) enumerates ~running~/~pending~ executions and resumes the ones your predicate claims, via the same ~EXECUTION_RECOVERED~ resume the worker uses. ~isAbandoned~ is REQUIRED: a running execution on a healthy node is byte-identical in the log to an orphaned one, so only the deployment can decide. Run it from a cron or Job, not as a service.
+
 *Cancellation, deadlines & bounded effects (2.0, K8).* A step's ~timeoutMs~ bounds a single effect; a flow's ~deadlineMs~ (see ~FlowDefinition~) bounds the whole run against the logged ~EXECUTION_STARTED~ timestamp (never reset by recovery). Breach — or ~handle.cancel()~ / ~ExecutionRuntime.cancel()~ — aborts in-flight effects via ~EffectContext.signal~ and records a kernel-driven ~EXECUTION_CANCELLED~.
 
 *The kernel ABI (2.0, K1).* The syscall surface is named and versioned; a conformance test pins it.

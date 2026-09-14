@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Recovering executions whose supervisor died ([ADR 0004](docs/adr/0004-failure-recovery.md)
+  amendment).** A dead or wedged *worker* was already handled: the dispatcher's
+  `executeTimeoutMs` turns a hung attempt into a failed one, redispatches, and the worker
+  resumes idempotently from durable state. What that cannot cover is the *supervisor* itself
+  dying — detection lives in the dispatcher's process memory, so killing that process leaves
+  an execution `running` in the log with no owner. Loom cannot resolve this from the log:
+  a `running` execution owned by a healthy node elsewhere is byte-identical to an orphaned
+  one, because the difference is a fact about your cluster. `recoverAbandoned(runtime, {
+  source, isAbandoned })` (`@loom/workflow-runtime`) therefore does everything *except*
+  decide — enumerate, filter to `running`/`pending`, ask your predicate, and resume what it
+  claims through the same `EXECUTION_RECOVERED` path the worker uses under redispatch.
+  `isAbandoned` is **required with no default**: `true` would preempt live work on other
+  nodes, `false` would be a pass that silently recovers nothing while reading as coverage.
+  Run it from a cron or a Kubernetes Job — it is a maintenance pass, not a service. A
+  `LeaseStore`/heartbeat SPI that would let Loom answer the question itself is deliberately
+  deferred to a second consumer ([ADR 0083](docs/adr/0083-second-consumer-rule.md)).
+
 - **A query is an input, and an input has a bound (MemoryStore SPI 2.0.0 → 2.1.0).** Terms are
   OR-ed, so a repeated term is the same term — it cannot change which entries match, only how
   long a store takes to say so. A 128 KB question repeating one word 20,000 times built a

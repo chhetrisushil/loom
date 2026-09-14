@@ -1,5 +1,6 @@
 import { type ExecutionEnumerable, iterateExecutionIds } from "@loom/event-runtime";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
+import { EXECUTION_RECOVERED } from "./types";
 
 // ── Recovering executions whose supervisor died ───────────────────────────────
 //
@@ -150,7 +151,7 @@ export async function recoverAbandoned(
       const fence = options.fenced ? await runtime.acquireFence(executionId) : undefined;
       const handle = await runtime.resume(
         executionId,
-        { eventType: "EXECUTION_RECOVERED", payload: {} },
+        { eventType: EXECUTION_RECOVERED, payload: {} },
         fence !== undefined ? { fence } : undefined
       );
       // Settle before moving on, so the pass applies backpressure instead of stampeding
