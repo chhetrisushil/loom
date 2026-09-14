@@ -403,6 +403,10 @@ session state — you write `current_step` and interpolate it into the prompt.
 That's a different thing from a fold over the log, and it's the honest claim.
 The "on crash" row is Diagrid's published critique of ADK, not mine — ADK gives
 you the ability to resume, not the automation that notices you should.
+IF PUSHED ("your supervisor can die too"): concede it immediately, because it is
+true. Loom's detection lives in the dispatcher's process, so it is IN-PROCESS
+supervision, not durable supervision. The row still holds — ADK has no automatic
+redispatch at all, loom does — but do not defend it past that line.
 -->
 
 ---
@@ -665,6 +669,18 @@ And the giveaway: "I wrote zero observability code. loom logs is just reading
 the log the flow already wrote."
 If the demo broke and you're recovering here — this slide still works as a
 narration of what they would have seen. Don't skip it.
+
+THE QUESTION THIS SLIDE ATTRACTS: "so who calls resume in production?" Have the
+answer ready — it is in loom-demo/DEMO_SCRIPT.md in full, and short form is:
+"here, me — I'm playing the supervisor. In a real deployment the dispatcher
+redispatches a dead or wedged worker automatically (ADR 0004, tested). What that
+misses is the supervisor itself dying, and for that there's `recoverAbandoned()`
+— a pass you run from a cron, which makes YOU supply the 'is it orphaned?'
+predicate, because a running execution on a healthy node looks identical in the
+log to an orphaned one."
+Do NOT claim the demo shows automatic recovery. It shows the RESUME is possible
+from a cold process, which is the durability claim. Who triggers it is a
+separate, answerable question.
 -->
 
 ---
