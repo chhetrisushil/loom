@@ -270,6 +270,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`DelegationAuthorizer`'s `base` is required (potentially breaking).** It was optional,
+  documented as "omit to allow the full verified delegated set (the callee delegates all of
+  its authority decisions upstream)". That mode cannot deliver what it claims: the delegation
+  secret is **symmetric**, so the party that verifies a token is also a party that can mint
+  one. A callee can sign itself `{ grants: ["*"] }` and the result is *genuine* — no signature
+  check can reject it, because it is not forgery. What actually bounds a callee is the
+  intersection with `base`, so an absent `base` silently reduced that check to a no-op while
+  still reading as a working gate. `base` is now required, with a constructor guard as well as
+  the type (the type is not enforcement for JS callers). No production construction sites
+  existed in this repo or any sibling, so the practical blast radius is zero;
+  [ADR 0024](docs/adr/0024-k12-identity-tenancy-delegated-authority.md) now records the trust
+  model and marks cross-organisation delegation — where the verifier must not be able to mint,
+  and which needs asymmetric signatures — an explicit non-goal. The same symmetry applies to
+  [ADR 0037](docs/adr/0037-tamper-evident-audit-chain.md)'s audit chain: an auditor handed the
+  HMAC secret to verify history can also rewrite it, so it is tamper-*evident* against third
+  parties rather than third-party *verifiable*.
+
 - **Subject erasure never reached a derived read model, and "just rebuild it" did not work
   either.** A crypto-shred (K10.2) erases the log; it says nothing about anything built from
   the log, and `eraseSubject` does not know a read model exists. Every derived row kept the
