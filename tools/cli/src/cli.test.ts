@@ -690,17 +690,24 @@ describe("loom CLI", () => {
       expect(result.findings.map((f) => f.message)).toEqual(["loop-identity: interp"]);
     });
 
-    it("stays byte-identical when no manifest exists or it carries no findings", async () => {
+    it("says when runner bodies were NOT analysed — the silence used to read as clean", async () => {
+      // This test used to assert the opposite: that a run with no manifest stayed
+      // byte-identical to one with it. That WAS the defect — three rules see past a flow's
+      // declared steps only with reach data, and reported exactly as they do with it.
       const sub = join(dir, "verify-none");
       mkdirSync(sub, { recursive: true });
       writeFileSync(join(sub, "app.js"), ECHOING_APP);
       const bare = await cmdVerify(join(sub, "app.js"));
-      expect(bare.text).not.toContain("[manifest]");
-      expect(bare.result.findings).toHaveLength(0);
+      expect(bare.text).toContain("none found");
+      expect(bare.text).toContain("not analysed");
+      expect(bare.text).toContain("--manifest"); // names the fix, like every other refusal
+      expect(bare.result.findings).toHaveLength(0); // ...and still does not FAIL the run
 
+      // A manifest that carries no runner-body analysis leaves the rules just as blind, so
+      // the presence of a file is not the question.
       writeFileSync(join(sub, "loom-manifest.json"), JSON.stringify({ flows: { clean: {} } }));
       const empty = await cmdVerify(join(sub, "app.js"));
-      expect(empty.text).not.toContain("[manifest]");
+      expect(empty.text).toContain("carries no runner-body analysis");
       expect(empty.result.findings).toHaveLength(0);
     });
   });

@@ -62,8 +62,22 @@ export function formatReport(report: VerificationReport): string {
   }
   const errors = report.findings.filter((f) => f.severity === "error").length;
   const warnings = report.findings.filter((f) => f.severity === "warn").length;
+  const infos = report.findings.filter((f) => f.severity === "info").length;
   const lines = report.findings.map(
     (f) => `  [${f.severity}] ${f.rule}${f.location ? ` (${f.location})` : ""}: ${f.message}`
   );
-  return `loom verify: ${report.findings.length} finding(s) — ${errors} error(s), ${warnings} warning(s)\n${lines.join("\n")}`;
+  // V3 — `0 error(s), 0 warning(s)` reads as a clean bill of health, and used to print
+  // identically whether the rules examined the runner bodies or never saw them. Coverage
+  // notes are counted in the headline for the same reason `loom doctor` counts its skips:
+  // the alternative is a number that looks like proof of something it did not check.
+  const counts = [
+    `${errors} error(s)`,
+    `${warnings} warning(s)`,
+    ...(infos > 0 ? [`${infos} coverage note(s)`] : []),
+  ].join(", ");
+  const headline =
+    errors === 0 && warnings === 0
+      ? `loom verify: ${report.checked.length} rule(s) passed — ${counts}`
+      : `loom verify: ${report.findings.length} finding(s) — ${counts}`;
+  return `${headline}\n${lines.join("\n")}`;
 }

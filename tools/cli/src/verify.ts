@@ -148,6 +148,15 @@ export async function cmdVerify(
       banner = `[manifest] ${resolved}: ${parts.join(", ")} injected\n`;
     }
   }
+  // V4 — the banner was one-sided: it announced what a manifest contributed and said nothing
+  // when none did, so the absence of source analysis looked like an absence of problems. The
+  // condition is whether reach was INJECTED, not whether a file exists: a manifest that
+  // carries no runner-body analysis leaves the rules exactly as blind as no manifest at all.
+  if (lint?.runnerReachByFlow === undefined || Object.keys(lint.runnerReachByFlow).length === 0) {
+    const why =
+      resolved === undefined ? "none found" : `${resolved} carries no runner-body analysis`;
+    banner += `[manifest] ${why} — runner bodies were not analysed, so suspend points and undeclared \`ctx.run\` targets are invisible to three rules (ADR 0086). Build with @loom/compiler, or pass --manifest <loom-manifest.json>.\n`;
+  }
 
   const report = app.verify(lint !== undefined ? { lint } : undefined);
   const text = banner + formatReport(report);

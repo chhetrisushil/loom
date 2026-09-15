@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Verification reports its own coverage (V1–V5).** `suspension-safety`, `capability-compat`
+  and `effect-class` see past a flow's declared steps only with the compiler's runner-body
+  analysis (ADR 0086) — and without it they reported exactly as they do with it. `loom verify`
+  printed the same `0 error(s), 0 warning(s)` whether the rules read the runner bodies or
+  never saw them. `reachAnalyzed` existed to tell those apart and no rule read it.
+
+  Each of the three now emits one `info` coverage note per rule (not per flow — the same fact
+  twenty times is noise), the headline counts them (`8 rule(s) passed — 0 error(s), 0
+  warning(s), 1 coverage note(s)`), the CLI says when no analysis was injected, and
+  `loom doctor` surfaces it as an advisory instead of flattening the report to "0 errors".
+
+  `info` deliberately: the compiler is opt-in, so `warn` would scold every correct project
+  that does not use it, and a verifier people switch off checks nothing at all.
+
+  A fitness test now runs the same app with and without reach data and requires that **any**
+  rule whose real findings change also reports that it could not look — so the next rule added
+  cannot silently reintroduce the gap. It guards itself against passing vacuously.
+
 - **`loom doctor` gains two timer checks, and a fourth status to report them honestly.**
   `durable timers` fails when schedules are declared with no `timers: { store }` (they can
   never fire) and advises when flows declare resume gates but nothing can wake them.

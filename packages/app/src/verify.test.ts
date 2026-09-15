@@ -142,7 +142,9 @@ describe("defineConfig({ verify }) boot gate", () => {
       flows: [flow()],
       checks: { verify: "error" },
     });
-    expect(app.verify().findings.filter((f) => f.rule === "capability-compat")).toHaveLength(0);
+    expect(
+      app.verify().findings.filter((f) => f.rule === "capability-compat" && f.severity !== "info")
+    ).toHaveLength(0);
   });
 });
 
@@ -187,7 +189,9 @@ describe("verify — K12 resume authentication", () => {
     // The finding that could not previously be produced.
     const app = defineConfig({ storage: { kind: "memory" }, flows: [gatedFlow()] });
     const report = app.verify();
-    const finding = report.findings.find((f) => f.rule === "suspension-safety");
+    const finding = report.findings.find(
+      (f) => f.rule === "suspension-safety" && f.severity === "error"
+    );
     expect(finding?.severity).toBe("error");
     expect(finding?.message).toContain("no ResumeAuthenticator is wired");
     expect(report.ok).toBe(false);
@@ -208,7 +212,9 @@ describe("verify — K12 resume authentication", () => {
       security: { resumeAuthenticator: authenticator },
     });
     expect(app.runtime.hasResumeAuthenticator()).toBe(true);
-    expect(app.verify().findings.filter((f) => f.rule === "suspension-safety")).toHaveLength(0);
+    expect(
+      app.verify().findings.filter((f) => f.rule === "suspension-safety" && f.severity !== "info")
+    ).toHaveLength(0);
   });
 
   it('boots or refuses to boot accordingly under verify:"error"', () => {
@@ -284,7 +290,7 @@ describe("effect-class reaches the rule through defineConfig", () => {
       checks: { verify: { mode: "warn", effectClasses: CLASSES } },
     });
     const report = app.verify();
-    const ef = report.findings.filter((f) => f.rule === "effect-class");
+    const ef = report.findings.filter((f) => f.rule === "effect-class" && f.severity !== "info");
     expect(ef).toHaveLength(1);
     expect(ef[0]?.severity).toBe("error");
     expect(ef[0]?.location).toBe("audit:post-tool");
@@ -298,7 +304,9 @@ describe("effect-class reaches the rule through defineConfig", () => {
       security: { authorizer: new GrantTable({ audit: ["post-tool"] }) },
       checks: { verify: { mode: "warn", effectClasses: CLASSES } },
     });
-    const ef = app.verify().findings.filter((f) => f.rule === "effect-class");
+    const ef = app
+      .verify()
+      .findings.filter((f) => f.rule === "effect-class" && f.severity !== "info");
     expect(ef[0]?.message).toMatch(/IS granted, so K2 will not stop it at runtime/);
   });
 
@@ -308,7 +316,9 @@ describe("effect-class reaches the rule through defineConfig", () => {
       flows: [efFlow("audit", "read-only", [unclassified])],
       checks: { verify: { mode: "warn", effectClasses: CLASSES } },
     });
-    const ef = app.verify().findings.filter((f) => f.rule === "effect-class");
+    const ef = app
+      .verify()
+      .findings.filter((f) => f.rule === "effect-class" && f.severity !== "info");
     expect(ef).toHaveLength(1);
     expect(ef[0]?.severity).toBe("warn");
     expect(ef[0]?.message).toMatch(/only partially verified/);
@@ -366,8 +376,19 @@ describe("runner-body reach reaches the rules", () => {
       security: { authorizer: partialGrants },
     });
     const report = verify(resolveVerifyInput(runtime, { authorizer: partialGrants }));
-    expect(report.findings.filter((f) => f.rule === "capability-compat")).toHaveLength(0);
-    expect(report.ok).toBe(true); // clean, and wrong
+    const errors = report.findings.filter(
+      (f) => f.rule === "capability-compat" && f.severity === "error"
+    );
+    expect(errors).toHaveLength(0); // still invisible — the bound is real
+    expect(report.ok).toBe(true);
+
+    // ...but no longer SILENTLY invisible, which is the whole difference. This assertion is
+    // the one that used to read `// clean, and wrong`.
+    const coverage = report.findings.find(
+      (f) => f.rule === "capability-compat" && f.severity === "info"
+    );
+    expect(coverage?.message).toContain("no runner-body analysis");
+    expect(coverage?.message).toContain("DECLARED steps");
   });
 
   it("with reach analysis the same ungranted step is caught", () => {
@@ -488,7 +509,9 @@ describe("the wiring an app actually uses", () => {
       checks: { verify: { mode: "off" } },
     });
     // Nothing configured ⇒ the bound applies and the report is clean-but-blind…
-    expect(app.verify().findings.filter((f) => f.rule === "capability-compat")).toHaveLength(0);
+    expect(
+      app.verify().findings.filter((f) => f.rule === "capability-compat" && f.severity !== "info")
+    ).toHaveLength(0);
     // …injected at call time (which is how `loom verify` supplies the manifest) ⇒ caught.
     const injected = app.verify({
       lint: { runnerReachByFlow: { gated: analyzeRunnerReach(RUNNER_SOURCE, "gated") } },

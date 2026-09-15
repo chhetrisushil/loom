@@ -85,6 +85,13 @@ const replaySafety: Rule = (input) => {
  */
 const suspensionSafety: Rule = (input) => {
   const findings: Finding[] = [];
+  findings.push(
+    ...unanalysedCoverage(
+      input.flows,
+      "suspension-safety",
+      "no suspend point is visible at all — suspends live in the runner body, so timed-suspend safety is UNVERIFIED rather than clean (a flow that never suspends is unaffected)"
+    )
+  );
   for (const flow of input.flows) {
     // Only suspend-shaped gaps matter here: an unresolvable `ctx.run` target
     // says nothing about whether this flow's suspends are safe.
@@ -128,6 +135,13 @@ const capabilityCompat: Rule = (input) => {
   const findings: Finding[] = [];
   const grantSpec = input.grants;
   if (!grantSpec) return findings;
+  findings.push(
+    ...unanalysedCoverage(
+      input.flows,
+      "capability-compat",
+      "grant coverage is checked only over their DECLARED steps — a tool invoked through `ctx.run` without being declared is invisible here"
+    )
+  );
   for (const flow of input.flows) {
     findings.push(...reachCoverage(flow, "capability-compat", "grant coverage"));
     const principal = grantSpec.principalOf ? grantSpec.principalOf(flow.id) : flow.id;
@@ -267,6 +281,40 @@ const classificationReachability: Rule = (input) => {
  * `warn`, not `error`: an unresolved target is a limit of the analysis, not a
  * defect in the app, and an app with no compiler wired must stay usable.
  */
+/**
+ * V1/V2 — the coverage a rule does NOT have when the runner bodies were never read.
+ *
+ * `reachAnalyzed` marks a flow whose body the compiler analysed (ADR 0086). Without a
+ * manifest it is absent, `FlowSpec.suspends` is empty and `effects` holds only DECLARED
+ * steps — and until now every rule reported exactly as it does with full coverage. The
+ * field was written by the adapter and read by nothing, which is how a verifier ends up
+ * saying "0 errors" about code it never looked at.
+ *
+ * One finding per RULE, not per flow: the same fact repeated twenty times is noise, and
+ * noise is how a verifier gets switched off. `info` for the same reason — the compiler is
+ * opt-in, so a `warn` would scold every correct project that simply does not use it.
+ */
+function unanalysedCoverage(
+  flows: readonly FlowSpec[],
+  rule: RuleName,
+  consequence: string
+): Finding[] {
+  const blind = flows.filter((f) => f.reachAnalyzed !== true);
+  if (blind.length === 0) return [];
+  const sample = blind
+    .slice(0, 3)
+    .map((f) => `"${f.id}"`)
+    .join(", ");
+  const more = blind.length > 3 ? `, +${blind.length - 3} more` : "";
+  return [
+    {
+      rule,
+      severity: "info",
+      message: `${blind.length} of ${flows.length} flow(s) had no runner-body analysis (${sample}${more}), so ${consequence}. Build with @loom/compiler and pass its manifest to cover them (ADR 0086).`,
+    },
+  ];
+}
+
 function reachCoverage(flow: FlowSpec, rule: RuleName, what: string): Finding[] {
   const unresolved = flow.unresolvedReach ?? [];
   if (unresolved.length > 0) {
@@ -325,6 +373,14 @@ const effectClass: Rule = (input) => {
     if (granted === "*") return true;
     return granted === undefined ? false : granted.includes(capability);
   };
+
+  findings.push(
+    ...unanalysedCoverage(
+      input.flows,
+      "effect-class",
+      "the declared ceiling is checked only over their DECLARED steps, so an undeclared `ctx.run` target cannot raise it"
+    )
+  );
 
   for (const flow of input.flows) {
     const declared = flow.effectClass;

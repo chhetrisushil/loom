@@ -11,6 +11,10 @@ function cleanFlow(overrides: Partial<FlowSpec> = {}): FlowSpec {
     nonDeterministicCalls: [{ callee: "Math.random", insideDecide: true }],
     suspends: [{ id: "approve", correlationKey: "orderId", timed: false }],
     effects: [{ toolId: "charge", capability: "payments.charge" }],
+    // Clean means FULLY EXAMINED: a flow whose runner body was analysed (ADR 0086). Without
+    // this the fixture is a flow nothing looked inside, which three rules now say out loud —
+    // so every "no findings" assertion below would be asserting the wrong kind of clean.
+    reachAnalyzed: true,
     ...overrides,
   };
 }
@@ -310,6 +314,130 @@ describe("runVerification — mode gate", () => {
   });
 });
 
+// ── V1–V3 — a rule that could not look must not report like one that did ─────
+describe("coverage reporting (reachAnalyzed)", () => {
+  const unanalysed = (over: Partial<FlowSpec> = {}): FlowSpec => {
+    const { reachAnalyzed: _drop, ...rest } = cleanFlow(over);
+    return rest as FlowSpec;
+  };
+
+  it("THE pair: the same app verifies differently with and without reach analysis", () => {
+    const withReach = verify(cleanInput());
+    const without = verify(cleanInput(unanalysed()));
+
+    // Before V1, these two were byte-identical — a verifier reporting "clean" about code it
+    // had not read. That equality was the defect; its absence is the fix.
+    expect(formatReport(withReach)).not.toBe(formatReport(without));
+    expect(withReach.findings).toHaveLength(0);
+    expect(without.findings.length).toBeGreaterThan(0);
+    expect(without.findings.every((f) => f.severity === "info")).toBe(true);
+    expect(without.ok).toBe(true); // coverage is not a defect: it must not fail the run
+  });
+
+  it("says it once per rule, not once per flow", () => {
+    const many = Array.from({ length: 20 }, (_, i) => unanalysed({ id: `f-${i}` }));
+    const report = verify({ ...cleanInput(), flows: many });
+    const notes = report.findings.filter((f) => f.severity === "info");
+    // Twenty flows, one sentence per rule — the same fact repeated twenty times is noise,
+    // and noise is how a verifier gets switched off.
+    expect(notes.length).toBeLessThanOrEqual(RULE_ORDER.length);
+    expect(notes.some((f) => f.message.includes("20 of 20 flow(s)"))).toBe(true);
+  });
+
+  it("names which rule lost what, rather than one generic warning", () => {
+    const report = verify(
+      cleanInput(
+        unanalysed({ effectClass: "read-only", effects: [{ toolId: "t", capability: "t" }] })
+      )
+    );
+    const by = (rule: string) =>
+      report.findings.find((f) => f.rule === rule && f.severity === "info")?.message ?? "";
+    expect(by("suspension-safety")).toContain("timed-suspend safety is UNVERIFIED");
+    expect(by("capability-compat")).toContain("grant coverage");
+  });
+
+  it("the headline counts coverage notes, so `0 error(s)` cannot stand alone", () => {
+    const text = formatReport(verify(cleanInput(unanalysed())));
+    expect(text).toContain("coverage note(s)");
+    expect(text).toContain("rule(s) passed");
+  });
+});
+
+/**
+ * Fitness function: a rule that reads reach data must report when it had none.
+ *
+ * V1/V2 fixed three rules. Without this, the fourth rule added next year reads `effects`
+ * or `suspends`, reports clean on unexamined bodies, and nothing notices — which is how
+ * this gap appeared in the first place.
+ */
+describe("fitness — every reach-reading rule states its coverage", () => {
+  const REACH_READERS: RuleName[] = ["suspension-safety", "capability-compat", "effect-class"];
+
+  it("the three known readers each emit a coverage note when nothing was analysed", () => {
+    const flow = { ...cleanFlow(), effectClass: "read-only" } as FlowSpec;
+    const { reachAnalyzed: _drop, ...unanalysed } = flow;
+    const report = verify({
+      ...cleanInput(unanalysed as FlowSpec),
+      effectClasses: ["read-only", "external-write"],
+    });
+    for (const rule of REACH_READERS) {
+      const note = report.findings.find((f) => f.rule === rule && f.severity === "info");
+      expect(note, `${rule} reads reach data but reports nothing when there is none`).toBeDefined();
+    }
+  });
+
+  it("ANY rule whose findings change with reach data must say so when it has none", () => {
+    // The generalising guard: not a list of today's three rules, and not a grep. Run the
+    // same app twice — once as the adapter builds it WITH a manifest (suspends and ctx.run
+    // targets present, `reachAnalyzed`), once as it builds it WITHOUT — and require that a
+    // rule whose real findings moved also reports that it could not look.
+    const analysed: FlowSpec = {
+      id: "checkout",
+      flowHash: "sha256:abc",
+      nonDeterministicCalls: [{ callee: "Math.random", insideDecide: true }],
+      reachAnalyzed: true,
+      suspends: [{ id: "approve", timed: true }],
+      effects: [
+        { toolId: "charge", capability: "payments.charge" },
+        { toolId: "refund", capability: "payments.refund", effectClass: "external-write" },
+      ],
+      effectClass: "read-only",
+    };
+    // What the same flow looks like when nothing read the runner body: suspends unknown,
+    // and only the DECLARED step survives.
+    const blind: FlowSpec = {
+      id: "checkout",
+      flowHash: "sha256:abc",
+      nonDeterministicCalls: [{ callee: "Math.random", insideDecide: true }],
+      effects: [{ toolId: "charge", capability: "payments.charge" }],
+      effectClass: "read-only",
+    };
+    const base = {
+      grants: { grants: { checkout: ["payments.charge"] } },
+      meteredDimensions: ["tokens", "costUsd", "ms"],
+      resumeAuthenticatorWired: true,
+      eventSchemaVersion: "1.7.0",
+      effectClasses: ["read-only", "external-write"],
+    };
+    const real = (r: ReturnType<typeof verify>, rule: RuleName) =>
+      JSON.stringify(r.findings.filter((f) => f.rule === rule && f.severity !== "info"));
+
+    const withReach = verify({ ...base, flows: [analysed] } as VerifyInput);
+    const without = verify({ ...base, flows: [blind] } as VerifyInput);
+
+    let dependents = 0;
+    for (const rule of RULE_ORDER) {
+      if (real(withReach, rule) === real(without, rule)) continue;
+      dependents++;
+      const said = without.findings.some((f) => f.rule === rule && f.severity === "info");
+      expect(said, `${rule} loses findings without reach analysis but reports nothing`).toBe(true);
+    }
+    // Guard the guard: if the fixtures stop exercising any reach-dependent rule, this test
+    // would pass vacuously and protect nothing.
+    expect(dependents).toBeGreaterThan(0);
+  });
+});
+
 describe("formatReport", () => {
   it("renders a pass line", () => {
     expect(formatReport(verify(cleanInput()))).toContain("no findings");
@@ -338,6 +466,9 @@ describe("effect-class rule", () => {
     effects: { toolId: string; effectClass?: string }[]
   ) => ({
     id: "f",
+    // Analysed, so these cases test the LADDER rather than the coverage note (see the
+    // dedicated coverage tests below).
+    reachAnalyzed: true,
     ...(effectClass !== undefined && { effectClass }),
     effects: effects.map((e) => ({
       toolId: e.toolId,
