@@ -52,4 +52,10 @@ await shredSubject(keys, innerEvents, executionId, { reason: "gdpr-erasure" });
   a wrong key fails, not silently mis-decrypts.
 
 The `KeyStore` is the security boundary: destroying a key must be true deletion,
-so back it with a KMS/HSM. `InMemoryKeyStore` is for tests and ephemeral apps.
+so back it with a KMS/HSM. `InMemoryKeyStore` is for tests and ephemeral apps, and it
+declares `durable = false` so `loom doctor` **fails** rather than letting the combination
+ship: an encrypting store with non-durable keys writes a log whose contents are unreadable
+from the next boot, and nothing fails at the time it happens.
+
+Implementing your own? Declare `durable` either way. Omitting it is reported as an advisory —
+*this store does not say* — which is different from saying no.

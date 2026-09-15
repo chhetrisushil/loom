@@ -1844,7 +1844,8 @@ per-subject key; satisfy erasure by **destroying the key** — no history rewrit
 import { EncryptingEventStore, EncryptingSnapshotStore, InMemoryKeyStore, shredSubject }
   from "@loom/plugin-crypto";
 
-const keys = new InMemoryKeyStore(); // KMS/HSM in production — the key IS the erasure boundary
+const keys = new InMemoryKeyStore(); // tests only — `loom doctor` FAILS this in an app
+                                     // (keys are the erasure boundary; losing them erases)
 const eventStore = new EncryptingEventStore(inner, keys, {
   sensitive: { STEP_COMPLETED: ["output.ssn"] },      // dot-paths; only these encrypt (A4)
 });

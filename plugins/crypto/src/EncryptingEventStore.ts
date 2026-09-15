@@ -81,7 +81,12 @@ export class EncryptingEventStore implements EventStore {
 
   constructor(
     private readonly inner: EventStore,
-    private readonly keys: KeyStore,
+    /**
+     * PUBLIC so a pre-flight check can ask whether these keys outlive the process — see
+     * `KeyStore.durable`. `loom doctor` looks for this property structurally, which is how it
+     * checks an encrypting store without depending on @loom/plugin-crypto.
+     */
+    readonly keys: KeyStore,
     options: EncryptingEventStoreOptions
   ) {
     this.sensitive = options.sensitive;

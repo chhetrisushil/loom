@@ -144,6 +144,60 @@ describe("loom doctor", () => {
     expect(readFileSync(witness, "utf8")).toBe("1");
   });
 
+  // ── encryption keys ────────────────────────────────────────────────────────
+  //
+  // The key IS the erasure boundary, so losing one is indistinguishable from shredding the
+  // subject — the writes succeed and the data is unreadable from the next boot. Before this,
+  // the only protection was a README sentence.
+
+  it("FAILS an encrypting store whose keys declare themselves non-durable", async () => {
+    const { ws, config } = timerConfig(
+      "{ stores: { eventStore: { keys: { durable: false } }, snapshotStore: {} }, schedules: [] }"
+    );
+    const { result, text } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, "encryption keys")?.status).toBe("failed");
+    expect(result.ok).toBe(false);
+    expect(text).toContain("permanently unreadable");
+    expect(text).toContain("the log survives, its contents do not");
+  });
+
+  it("advises when the KeyStore does not say either way — unknown is not fine", async () => {
+    const { ws, config } = timerConfig(
+      "{ stores: { eventStore: { keys: {} }, snapshotStore: {} }, schedules: [] }"
+    );
+    const { result, text } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, "encryption keys")?.status).toBe("advisory");
+    expect(text).toContain("does not declare whether it survives a restart");
+  });
+
+  it("passes when the keys declare themselves durable", async () => {
+    const { ws, config } = timerConfig(
+      "{ stores: { eventStore: { keys: { durable: true } }, snapshotStore: {} }, schedules: [] }"
+    );
+    const { result } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, "encryption keys")?.status).toBe("ok");
+  });
+
+  it("skips when nothing encrypts — there is no key to depend on", async () => {
+    const { ws, config } = timerConfig(
+      "{ stores: { eventStore: {}, snapshotStore: {} }, schedules: [] }"
+    );
+    const { result, text } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, "encryption keys")?.status).toBe("skipped");
+    expect(text).toContain("no encrypting store wired");
+  });
+
+  it("catches an encrypting SNAPSHOT store too, not only the event log", async () => {
+    // Snapshots carry the same folded fields. Checking one and not the other would be a
+    // guard that looks complete and covers half the data.
+    const { ws, config } = timerConfig(
+      "{ stores: { eventStore: {}, snapshotStore: { keys: { durable: false } } }, schedules: [] }"
+    );
+    const { result, text } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, "encryption keys")?.status).toBe("failed");
+    expect(text).toContain("snapshotStore");
+  });
+
   it("fails when a CONFIGURED memory store cannot do relevance retrieval", async () => {
     // Not a default anybody fell into: somebody wired this backend. `recallRelevant` and
     // `KnowledgeBase.retrieve` refuse such a store rather than degrading to the newest N,

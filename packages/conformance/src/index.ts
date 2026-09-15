@@ -1125,6 +1125,8 @@ export function runCapabilityAuthorizerConformance(
 
 /** Structural view of the crypto-plugin KeyStore SPI (avoids a plugin dependency). */
 export interface KeyStoreLike {
+  /** See `KeyStore.durable` — declared, because losing a key erases the subject. */
+  readonly durable?: boolean;
   getOrCreate(subjectId: string): Promise<Uint8Array>;
   get(subjectId: string): Promise<Uint8Array | null>;
   destroy(subjectId: string): Promise<void>;
@@ -1140,6 +1142,14 @@ export function runKeyStoreConformance(factory: () => KeyStoreLike, label = "Key
     a.length === b.length && a.every((byte, i) => byte === b[i]);
 
   describe(`${label} conformance (KeyStore SPI, K10.2)`, () => {
+    it("says whether it survives a restart, if it says anything", () => {
+      // `durable` is optional on the SPI, so absence is allowed here and reported by
+      // `loom doctor` as an advisory — the honest handling for a question only the author
+      // can answer. What is NOT allowed is answering it with something other than a boolean.
+      const declared = factory().durable;
+      if (declared !== undefined) expect(typeof declared).toBe("boolean");
+    });
+
     it("getOrCreate returns a stable key for a subject", async () => {
       const store = factory();
       expect(eq(await store.getOrCreate("s1"), await store.getOrCreate("s1"))).toBe(true);

@@ -149,7 +149,18 @@ export async function cmdDoctor(opts: {
     checks.push(...timerChecks(await loadedApp(config)));
   }
 
-  // 5. Claim-check reach-through (CC-5) over the source tree.
+  // 5. Encrypted-at-rest durability: are the keys going to outlive the process?
+  if (config === undefined) {
+    checks.push({
+      name: KEYS_CHECK,
+      status: "skipped",
+      detail: "no built config module found — pass --config <module> exporting a LoomApp",
+    });
+  } else {
+    checks.push(encryptionKeyCheck(await loadedApp(config)));
+  }
+
+  // 6. Claim-check reach-through (CC-5) over the source tree.
   try {
     const { findings } = cmdLintClaimCheck(dir);
     checks.push({
@@ -210,6 +221,66 @@ function memoryStoreCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
   } catch (err) {
     return { name, status: "failed", detail: String(err) };
   }
+}
+
+const KEYS_CHECK = "encryption keys (will the log still be readable?)";
+
+/**
+ * K10 crypto-shredding turns the key into the erasure boundary — which means LOSING a key is
+ * indistinguishable from shredding the subject. An encrypting store wired to keys that live
+ * in a Map has a durable log whose contents evaporate on restart, and nothing fails at the
+ * moment it happens: the writes succeed, and the data is unreadable from the next boot.
+ *
+ * Until now the only protection was prose — a README saying "back it with a KMS in
+ * production". This is that sentence, enforced.
+ *
+ * Read structurally (`.keys.durable`) so the CLI does not depend on @loom/plugin-crypto:
+ * a third party's own encrypting wrapper gets the same check for free by exposing the same
+ * property.
+ */
+function encryptionKeyCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
+  if (loaded instanceof Error) {
+    return { name: KEYS_CHECK, status: "failed", detail: String(loaded) };
+  }
+  const wrappers = [
+    ["eventStore", loaded.stores?.eventStore],
+    ["snapshotStore", loaded.stores?.snapshotStore],
+  ] as const;
+  /** The KeyStore an encrypting wrapper exposes, or undefined for a plain store. */
+  const keysOf = (store: unknown): { durable?: boolean } | undefined => {
+    const keys = (store as { keys?: unknown } | undefined)?.keys;
+    return typeof keys === "object" && keys !== null ? (keys as { durable?: boolean }) : undefined;
+  };
+  const encrypting = wrappers.filter(([, store]) => keysOf(store) !== undefined);
+
+  if (encrypting.length === 0) {
+    return {
+      name: KEYS_CHECK,
+      status: "skipped",
+      detail: "no encrypting store wired — nothing here depends on key durability",
+    };
+  }
+
+  const where = encrypting.map(([name]) => name).join(" + ");
+  const ephemeral = encrypting.filter(([, store]) => keysOf(store)?.durable === false);
+  if (ephemeral.length > 0) {
+    return {
+      name: KEYS_CHECK,
+      status: "failed",
+      detail: `${where} encrypts at rest with keys that declare themselves NON-DURABLE. Every encrypted field becomes permanently unreadable when this process ends — the log survives, its contents do not, and nothing fails at the time. Back it with a KMS/HSM or any KeyStore that persists.`,
+    };
+  }
+
+  const undeclared = encrypting.filter(([, store]) => keysOf(store)?.durable === undefined);
+  if (undeclared.length > 0) {
+    return {
+      name: KEYS_CHECK,
+      status: "advisory",
+      detail: `${where} encrypts at rest, and its KeyStore does not declare whether it survives a restart (\`KeyStore.durable\`). If it does not, every encrypted field is unreadable from the next boot. Declare it either way so this check can answer.`,
+    };
+  }
+
+  return { name: KEYS_CHECK, status: "ok", detail: `${where} encrypts with a durable KeyStore` };
 }
 
 const TIMER_CHECK = "durable timers (can this deployment wake?)";
