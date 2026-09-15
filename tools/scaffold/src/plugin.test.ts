@@ -59,6 +59,7 @@ describe("pluginFiles", () => {
       "telemetry",
       "middleware",
       "timer",
+      "lease",
       "memory",
       "projection",
       "worker",

@@ -21,3 +21,6 @@ docs/pdf/*.pdf
 
 # CLI test scratch (config fixtures + built-binary runs; removed by the tests themselves)
 tools/cli/.tmp-*/
+
+# scaffold template typecheck probe (removed by the test itself)
+.tmp-template-types/

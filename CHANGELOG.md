@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`loom plugin new lease <name>` — a `LeaseStore` seam.** The interface, the conformance
+  kit (`runLeaseStoreConformance`), the SPI-map row and the composition wiring
+  (`timers.leases`) all existed; the scaffold did not, so loom advertised a seam a third
+  party could not start from. The template documents the three return values that carry the
+  whole contract — `acquire` returning `null` for another owner (re-acquiring your own is a
+  renewal, not a conflict), `renew` returning `false` meaning ownership is LOST and never
+  resurrected, and `expired` as the evidence of an orphan.
+
+- **The seam/doc fitness function now runs both ways.** It checked scaffold → docs only, so
+  an SPI could ship an interface, a conformance kit and a map row with no `loom plugin new`
+  template and nothing would notice — which is exactly how `LeaseStore` sat. Published SPIs
+  must now be scaffoldable or carry a stated reason, and a reason that goes stale (the SPI
+  became scaffoldable) fails too. A one-directional fitness function is the failure it exists
+  to prevent, pointed the other way.
+
+- **Seam templates are typechecked against the real SPIs, and one was already broken.** The
+  scaffold is a generator: when an SPI gains a method, every existing plugin fails loudly
+  while the template keeps emitting the old shape silently. The new check found
+  `loom plugin new projection` emitting a class missing `subscribeSelector`, added to
+  `ProjectionRuntime` by ADR 0068 — so that seam had been scaffolding code that does not
+  compile ever since. Fixed, and now guarded for all twelve seams.
+
 - **Verification reports its own coverage (V1–V5).** `suspension-safety`, `capability-compat`
   and `effect-class` see past a flow's declared steps only with the compiler's runner-body
   analysis (ADR 0086) — and without it they reported exactly as they do with it. `loom verify`
