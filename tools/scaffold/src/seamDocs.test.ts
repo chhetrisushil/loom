@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SEAM_KEYS, SEAM_SPI } from "./plugin";
+import { SEAM_KEYS, SEAM_SPI, SEAM_WIRING } from "./plugin";
 
 // ── Fitness function: a seam cannot ship undocumented ─────────────────────────
 //
@@ -24,6 +24,9 @@ const doc = (rel: string) => readFileSync(resolve(REPO_ROOT, rel), "utf8");
 
 const SPI_MAP = "docs/loom-2.0/12-extension-seams.md";
 const PLUGIN_GUIDE = "docs/plugins.md";
+// The CLI guide enumerates the seams too, and was NOT covered: `lease` landed in the plugin
+// guide (this test made sure) and stayed missing here. Two enumerations, one guard.
+const CLI_GUIDE = "docs/usage-cli.md";
 
 /**
  * Seams with no ROW naming their SPI in the map. Structural on purpose: matching
@@ -92,6 +95,15 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
     expect(publishedSpis(doc(SPI_MAP)).length).toBeGreaterThan(10);
   });
 
+  it("the CLI guide's seam enumeration names every seam", () => {
+    const text = doc(CLI_GUIDE);
+    const start = text.indexOf("The current seams are");
+    expect(start, `${CLI_GUIDE} no longer enumerates the seams`).toBeGreaterThan(-1);
+    const sentence = text.slice(start, text.indexOf(".", start));
+    const missing = SEAM_KEYS.filter((k) => !sentence.includes(`\`${k}\``));
+    expect(missing, `${CLI_GUIDE} omits: ${missing.join(", ")}`).toEqual([]);
+  });
+
   it("every published SPI is scaffoldable, or exempted with a reason", () => {
     const scaffoldable = new Set(Object.values(SEAM_SPI));
     const orphans = publishedSpis(doc(SPI_MAP)).filter(
@@ -109,6 +121,24 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
       (spi) => scaffoldable.has(spi) && !NO_SEAM_YET[spi]?.startsWith("scaffolded by")
     );
     expect(stale).toEqual([]);
+  });
+
+  it("a seam wired through defineConfig names a REAL config key", () => {
+    // `durable-state` shipped a wiring line reading `durableState: { store }` — a config key
+    // that does not exist, invented by analogy with `timers: { store }`. The line is the
+    // first thing an author copies, so a fabricated one sends them to a compile error with
+    // loom's name on it. Seams wired in CODE (a constructor, a helper call) are skipped:
+    // there is no config key to check.
+    const config = readFileSync(resolve(REPO_ROOT, "packages/app/src/defineConfig.ts"), "utf8");
+    const declared = new Set([...config.matchAll(/^\s{2}(\w+)\??:/gm)].map((m) => m[1]));
+    const bad: string[] = [];
+    for (const key of SEAM_KEYS) {
+      const wiring = SEAM_WIRING[key] as string;
+      const m = /^(\w+)\s*:/.exec(wiring);
+      if (m?.[1] === undefined) continue; // wired in code, not in defineConfig
+      if (!declared.has(m[1])) bad.push(`${key} → \`${m[1]}\` is not a defineConfig option`);
+    }
+    expect(bad, bad.join("\n")).toEqual([]);
   });
 
   it("every SPI with a conformance kit is scaffoldable", () => {

@@ -10,6 +10,20 @@ without forking Loom (P10). This is the "kernel extension model" — as document
 SPIs that already exist, plus **portable conformance kits** so an implementation can *prove* it
 conforms (not just compile against the interface).
 
+## How to start
+
+Every seam below that lists a **conformance kit** can be scaffolded — a package, an SPI stub
+with the contract written out, and the conformance test already wired:
+
+```bash
+loom plugin seams                       # the seam keys, their titles, and how each is wired
+loom plugin new lease my-redis-lease    # → ./loom-plugin-my-redis-lease
+```
+
+That is an invariant, not a coincidence: a kit is Loom saying *third parties implement this*,
+so a fitness test fails the build if a kitted SPI has no scaffold. Two seams here have no kit
+(`Scheduler`, `Warmer`) and are correspondingly not scaffoldable.
+
 ## How to prove conformance
 
 Reference impls and third-party impls run the same kit from `@loom/conformance`:

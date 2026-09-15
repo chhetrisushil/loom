@@ -545,7 +545,8 @@ const SEAMS: Record<string, SeamDef> = {
     key: "durable-state",
     spi: "DurableStateStore",
     title: "Carry state across executions (compare-and-set)",
-    wiring: "durableState: { store: new <Name>DurableStateStore() }",
+    wiring:
+      'durableState({ id: "carry", version: 1, schema, store: new <Name>DurableStateStore() })',
     spiDeps: ["@loom/plugin-durable-state"],
     conformance: ["runDurableStateStoreConformance"],
     index: (name) => {
@@ -691,7 +692,7 @@ const SEAMS: Record<string, SeamDef> = {
     key: "keystore",
     spi: "KeyStore",
     title: "Per-subject encryption keys (K10 crypto-shredding)",
-    wiring: "new EncryptingEventStore(inner, new <Name>KeyStore())",
+    wiring: "new EncryptingEventStore(inner, new <Name>KeyStore(), { sensitive })",
     spiDeps: ["@loom/plugin-crypto"],
     conformance: ["runKeyStoreConformance"],
     index: (name) => {
@@ -1139,6 +1140,11 @@ export const SEAM_KEYS = Object.keys(SEAMS);
 /** seam key → SPI interface name. Consumed by the seam/doc coverage fitness test. */
 export const SEAM_SPI: Record<string, string> = Object.fromEntries(
   Object.entries(SEAMS).map(([k, v]) => [k, v.spi])
+);
+
+/** seam key → the line that wires it. Consumed by the wiring fitness test. */
+export const SEAM_WIRING: Record<string, string> = Object.fromEntries(
+  Object.entries(SEAMS).map(([k, v]) => [k, v.wiring])
 );
 
 /** Human-readable seam list for `loom plugin seams`. */
