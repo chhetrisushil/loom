@@ -476,6 +476,24 @@ export function runBranchRegistryConformance(
       await reg.close();
     });
 
+    it("removeLineage forgets one edge and leaves its siblings (optional; skipped if absent)", async () => {
+      const reg = factory();
+      if (reg.removeLineage === undefined) return void (await reg.close());
+      await reg.recordLineage({ executionId: "kidA", parentExecutionId: "mum", forkSequence: 1 });
+      await reg.recordLineage({ executionId: "kidB", parentExecutionId: "mum", forkSequence: 2 });
+
+      await reg.removeLineage("kidA");
+      expect(await reg.getLineage("kidA")).toBeNull();
+      expect((await reg.children("mum")).map((c) => c.executionId)).toEqual(["kidB"]);
+
+      // Forgetting an edge that is not there is a no-op, not an error: retention deletes
+      // executions that may never have been forked.
+      await reg.removeLineage("kidA");
+      await reg.removeLineage("never-existed");
+      expect((await reg.children("mum")).map((c) => c.executionId)).toEqual(["kidB"]);
+      await reg.close();
+    });
+
     it("recordLineage + getLineage + children model the fork DAG", async () => {
       const reg = factory();
       await reg.recordLineage({

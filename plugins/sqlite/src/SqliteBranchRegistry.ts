@@ -173,6 +173,10 @@ export class SqliteBranchRegistry implements BranchRegistry {
       .run(rec.executionId, rec.parentExecutionId, rec.forkSequence, Date.now());
   }
 
+  async removeLineage(executionId: string): Promise<void> {
+    this.db.prepare<[string]>("DELETE FROM lineage WHERE execution_id = ?").run(executionId);
+  }
+
   async getLineage(executionId: string): Promise<LineageRecord | null> {
     const row = this.db
       .prepare<[string], LineageRow>("SELECT * FROM lineage WHERE execution_id = ?")

@@ -194,6 +194,11 @@ export class PostgresBranchRegistry implements BranchRegistry {
     );
   }
 
+  async removeLineage(executionId: string): Promise<void> {
+    await this.ready;
+    await this.pool.query("DELETE FROM lineage WHERE execution_id = $1", [executionId]);
+  }
+
   async getLineage(executionId: string): Promise<LineageRecord | null> {
     await this.ready;
     const { rows } = await this.pool.query<LineageRow>(

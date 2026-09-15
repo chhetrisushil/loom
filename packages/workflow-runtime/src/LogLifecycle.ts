@@ -158,6 +158,12 @@ export class LogLifecycle {
     await this.emitLifecycleFact("EXECUTION_DELETED", executionId, now);
     await this.eventStore.deleteExecution(executionId);
     await this.snapshotStore.deleteExecution?.(executionId);
+    // The fork edge described data that no longer exists. Dropping it here is the only
+    // point where the id is known AND the data is provably gone — and leaving it would
+    // make every future sweep walk a dead child (see `hasLiveDescendant`), so the cost of
+    // retention would grow with every fork ever taken. Optional on the SPI: a registry
+    // that omits it keeps its edges, byte-identically to before.
+    await this.options.branchRegistry?.removeLineage?.(executionId);
     return "reclaimed";
   }
 

@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { LogLifecycle } from "./LogLifecycle";
 import { WorkflowRuntime } from "./WorkflowRuntime";
+import { pruneBranchRefs } from "./pruneBranchRefs";
 import { retireAbandonedBranches } from "./retireAbandonedBranches";
 import type { FlowRunner, RegisteredFlow } from "./types";
 
@@ -149,5 +150,98 @@ describe("a branch nobody answered blocks its parent forever", () => {
       // biome-ignore lint/suspicious/noExplicitAny: asserting the runtime guard, not the type
       retireAbandonedBranches(app.runtime, app.branchRegistry, "p5", {} as any)
     ).rejects.toThrow(/isAbandoned` is required/);
+  });
+});
+
+// ── The registry rows that outlive the executions they describe ───────────────
+
+describe("branch registry rows do not outlive their executions", () => {
+  it("forgets the fork edge when retention deletes the branch", async () => {
+    const app = boot();
+    const branchId = await parentWithBranch(app, ["p6", "b6"]);
+    expect(await app.branchRegistry.getLineage(branchId)).not.toBeNull();
+    expect(await app.branchRegistry.children("p6")).toHaveLength(1);
+
+    await app.runtime.cancel(branchId, "abandoned");
+    expect(await app.lifecycle.applyRetention(branchId, FOREVER, Date.now() + 1)).toBe("reclaimed");
+
+    // The edge described data that no longer exists — and every future sweep would have
+    // walked it, so retention would get slower with every fork ever taken.
+    expect(await app.branchRegistry.getLineage(branchId)).toBeNull();
+    expect(await app.branchRegistry.children("p6")).toEqual([]);
+  });
+
+  it("sweeps refs that point at nothing, and reports a dangling `main` rather than deleting it", async () => {
+    const app = boot();
+    const branchId = await parentWithBranch(app, ["p7", "b7"]);
+    const now = Date.now();
+    await app.branchRegistry.putRef({
+      name: "spec/gone",
+      executionId: branchId,
+      tip: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await app.branchRegistry.putRef({
+      name: "spec/live",
+      executionId: "p7",
+      tip: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await app.branchRegistry.putRef({
+      name: "main",
+      executionId: branchId,
+      tip: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await app.runtime.cancel(branchId, "abandoned");
+    await app.lifecycle.applyRetention(branchId, FOREVER, now + 1);
+
+    const summary = await pruneBranchRefs(app.eventStore, app.branchRegistry);
+    expect(summary).toMatchObject({ scanned: 3, dangling: 2, deleted: 1 });
+    // `main` dangling is a loud problem; deleting it would turn "main names a ghost" into
+    // "there is no main", which is harder to diagnose, not easier.
+    expect(summary.protectedDangling).toEqual(["main"]);
+    expect(await app.branchRegistry.getRef("spec/gone")).toBeNull();
+    expect(await app.branchRegistry.getRef("main")).not.toBeNull();
+    // A ref whose execution is alive is untouched.
+    expect(await app.branchRegistry.getRef("spec/live")).not.toBeNull();
+  });
+
+  it("pages through a registry larger than one page", async () => {
+    const app = boot();
+    const now = Date.now();
+    for (let i = 0; i < 12; i++) {
+      await app.branchRegistry.putRef({
+        name: `spec/ghost-${String(i).padStart(2, "0")}`,
+        executionId: `never-existed-${i}`,
+        tip: 0,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    const summary = await pruneBranchRefs(app.eventStore, app.branchRegistry, { pageSize: 5 });
+    expect(summary).toMatchObject({ scanned: 12, dangling: 12, deleted: 12 });
+    expect(await app.branchRegistry.listRefs()).toEqual([]);
+  });
+
+  it("stops at `limit`, leaving the rest for the next pass", async () => {
+    const app = boot();
+    const now = Date.now();
+    for (let i = 0; i < 6; i++) {
+      await app.branchRegistry.putRef({
+        name: `spec/g${i}`,
+        executionId: `gone-${i}`,
+        tip: 0,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    const summary = await pruneBranchRefs(app.eventStore, app.branchRegistry, { limit: 2 });
+    expect(summary.deleted).toBe(2);
+    expect(await app.branchRegistry.listRefs()).toHaveLength(4);
   });
 });
