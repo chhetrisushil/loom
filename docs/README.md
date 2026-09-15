@@ -112,6 +112,8 @@ A Loom workflow is an ordinary `async` TypeScript function whose every meaningfu
 
 - [`api-reference.org`](api-reference.org) — exhaustive per-package API reference.
 - [`usage-compiler.org`](usage-compiler.org) — the optional `@loom/compiler` (build-time `handler$` extraction, resumability).
+- [`cheatsheet-features.md`](cheatsheet-features.md) — Card I: the kernel's ten syscalls, the builders, and the subsystems on the log. Printable.
+- [`cheatsheet-dx.md`](cheatsheet-dx.md) — Card II: the CLI, the scaffolds, the tests, the operator passes, and what bites. Printable.
 - [`plugins.md`](plugins.md) — authoring a plugin: the seam list, `loom plugin new`, and the 1P/3P split.
 - [`transient-interpreter.md`](transient-interpreter.md) — the transient/interpreter grain (`invokeTransient`, dynamic step minting).
 - [`benchmarks.md`](benchmarks.md) — committed performance baselines.
