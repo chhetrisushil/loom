@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The audit chain can be verified by someone who could not have written it (#382,
+  [ADR 0037](docs/adr/0037-tamper-evident-audit-chain.md) amendment).** The HMAC signature makes
+  the log tamper-evident *against a third party who lacks the secret* — but verification needs
+  that same secret, so anyone enabled to check the log can also rewrite it: re-chain the hashes,
+  re-compute the HMACs, and it verifies cleanly. The verifier and the forger were the same role,
+  which is exactly what an auditor must not be.
+
+  The signature seam is now pluggable — `ChainSigner` / `ChainVerifier` — with `ed25519Signer`
+  and `ed25519Verifier` shipped over `node:crypto` (no dependency, 64-byte signatures, nothing
+  to parameterize wrongly). `ChainMetadata.keyId` names the signing key so rotation does not
+  invalidate history; `hmacSecret` and `signer` are mutually exclusive because they make
+  different promises; and `ChainVerification` gains **`signaturesChecked`**, so a hash-only
+  `ok: true` can never be read as an authorship guarantee. An entry signed by a key the verifier
+  does not know is **rejected, not skipped** — authorship that cannot be checked has not been.
+
+  Loom still makes no trust-root decision: it signs with the key you hand it, exactly as it
+  HMACs with the secret you hand it.
+
 - **`defineConfig({ timers: { dispatcher } })`** — the composition-root half of #392. An app
   that places executions deliberately can now wire the wake path in one line, instead of
   building its own `TimerService` to get at the option.
