@@ -1,6 +1,6 @@
 # Live Multimodal Streaming: What Is Actually Stopping Us
 
-**Status:** Evaluation — no work scheduled
+**Status:** Evaluation — no work scheduled ([#394](https://github.com/chhetrisushil/loom/issues/394))
 **Date:** 2026-09-15
 **Kernel baseline:** EVENT_SCHEMA 1.18.0, KERNEL_ABI 1.1.0, ADRs 0001–0095
 **Prompted by:** the competitive decks, which score live bidirectional audio/video as

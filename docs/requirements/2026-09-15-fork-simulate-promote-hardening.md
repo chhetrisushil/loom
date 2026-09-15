@@ -123,7 +123,7 @@ the shipped demos branches are safe because they resume with `simulate: true`; a
 effects before parking makes "losing" non-free, which is compensation territory (`@loom/saga`), not
 pointer-move promote.
 
-### E4 — per-branch placement *(1P)*
+### E4 — per-branch placement *(1P)* — **DEFERRED** ([#392](https://github.com/chhetrisushil/loom/issues/392))
 
 Fixes M5. Record an optional placement hint on the branch ref at `fork()` time and derive
 `DispatchMetadata.target` from it, so "simulate the expensive branch on Cloud Run, the cheap one
@@ -153,7 +153,7 @@ Writing those cases turned up something the plan had not suspected: **the Postgr
 BranchRegistry ran against no conformance kit at all.** SQLite was held to the portable
 contract; the backend with hand-written SQL was assumed to match it. It now runs the kit.
 
-**The TTL sweep is deliberately NOT built.** Which branches are safe to collect is a policy
+**The TTL sweep is deliberately NOT built** ([#393](https://github.com/chhetrisushil/loom/issues/393)). Which branches are safe to collect is a policy
 only an application has — a ref whose execution is still suspended is not garbage, it is
 someone's open question — and the mechanism is already `listRefs` + `deleteRef`. Building a
 1P sweeper now would mean inventing a predicate with no consumer to shape it, which is the
