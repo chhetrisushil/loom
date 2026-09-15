@@ -1,4 +1,12 @@
-import type { BranchRef, BranchRegistry, LineageRecord } from "@loom/event-runtime";
+import {
+  BranchPromotionConflictError,
+  type BranchRef,
+  type BranchRegistry,
+  type LineageRecord,
+  type ListRefsOptions,
+  type PromoteOptions,
+  assertListRefsLimit,
+} from "@loom/event-runtime";
 import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 
@@ -88,9 +96,16 @@ export class PostgresBranchRegistry implements BranchRegistry {
     return rows[0] ? rowToRef(rows[0]) : null;
   }
 
-  async listRefs(): Promise<BranchRef[]> {
+  async listRefs(options?: ListRefsOptions): Promise<BranchRef[]> {
+    assertListRefsLimit(options?.limit);
     await this.ready;
-    const { rows } = await this.pool.query<RefRow>("SELECT * FROM refs ORDER BY name ASC");
+    const { rows } = await this.pool.query<RefRow>(
+      `SELECT * FROM refs
+        WHERE ($1::text IS NULL OR name > $1)
+        ORDER BY name ASC
+        LIMIT $2::int`,
+      [options?.after ?? null, options?.limit ?? null]
+    );
     return rows.map(rowToRef);
   }
 
@@ -103,22 +118,62 @@ export class PostgresBranchRegistry implements BranchRegistry {
     ]);
   }
 
-  async promote(fromName: string, toName: string): Promise<void> {
+  async promote(fromName: string, toName: string, options?: PromoteOptions): Promise<void> {
+    await this.ready;
     const from = await this.getRef(fromName);
     if (from === null) {
       throw new Error(`Cannot promote: ref "${fromName}" does not exist`);
     }
-    const existing = await this.getRef(toName);
     const now = this.now();
-    await this.putRef({
-      name: toName,
-      executionId: from.executionId,
-      tip: from.tip,
-      ...(from.parentExecutionId !== undefined && { parentExecutionId: from.parentExecutionId }),
-      ...(from.forkSequence !== undefined && { forkSequence: from.forkSequence }),
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    });
+    const values = [
+      toName,
+      from.executionId,
+      from.tip,
+      from.parentExecutionId ?? null,
+      from.forkSequence ?? null,
+      now,
+    ];
+
+    // Without an expectation this is the 1.0.0 upsert: last write wins.
+    if (options === undefined || !("expect" in options)) {
+      const existing = await this.getRef(toName);
+      await this.putRef({
+        name: toName,
+        executionId: from.executionId,
+        tip: from.tip,
+        ...(from.parentExecutionId !== undefined && { parentExecutionId: from.parentExecutionId }),
+        ...(from.forkSequence !== undefined && { forkSequence: from.forkSequence }),
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      });
+      return;
+    }
+
+    // Compare-and-set, as ONE statement so two nodes racing cannot both win. A zero
+    // rowcount is the loser: re-read and decide, nothing was written.
+    const expected = options.expect ?? null;
+    const { rowCount } =
+      expected === null
+        ? // "must not exist yet" — the insert itself is the check.
+          await this.pool.query(
+            `INSERT INTO refs (name, execution_id, tip, parent_execution_id, fork_sequence, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $6)
+             ON CONFLICT (name) DO NOTHING`,
+            values
+          )
+        : await this.pool.query(
+            `UPDATE refs SET execution_id = $2, tip = $3, parent_execution_id = $4,
+                             fork_sequence = $5, updated_at = $6
+              WHERE name = $1 AND execution_id = $7`,
+            [...values, expected]
+          );
+    if (rowCount === 0) {
+      throw new BranchPromotionConflictError(
+        toName,
+        expected,
+        (await this.getRef(toName))?.executionId ?? null
+      );
+    }
   }
 
   async deleteRef(name: string): Promise<void> {

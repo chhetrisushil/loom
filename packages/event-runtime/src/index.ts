@@ -26,5 +26,15 @@ export { InMemoryBranchRegistry } from "./InMemoryBranchRegistry";
 export type { InMemoryBranchRegistryOptions } from "./InMemoryBranchRegistry";
 export { InMemoryTimerStore } from "./timers";
 export type { TimerRecord, TimerStore } from "./timers";
-export type { BranchRef, BranchRegistry, LineageRecord } from "./BranchRegistry";
-export { BRANCH_REGISTRY_SPI_VERSION } from "./BranchRegistry";
+export type {
+  BranchRef,
+  BranchRegistry,
+  LineageRecord,
+  ListRefsOptions,
+  PromoteOptions,
+} from "./BranchRegistry";
+export {
+  BRANCH_REGISTRY_SPI_VERSION,
+  BranchPromotionConflictError,
+  assertListRefsLimit,
+} from "./BranchRegistry";

@@ -1,4 +1,12 @@
-import type { BranchRef, BranchRegistry, LineageRecord } from "./BranchRegistry";
+import {
+  BranchPromotionConflictError,
+  type BranchRef,
+  type BranchRegistry,
+  type LineageRecord,
+  type ListRefsOptions,
+  type PromoteOptions,
+  assertListRefsLimit,
+} from "./BranchRegistry";
 
 export interface InMemoryBranchRegistryOptions {
   /** Injectable clock for createdAt/updatedAt (defaults to Date.now). */
@@ -28,10 +36,14 @@ export class InMemoryBranchRegistry implements BranchRegistry {
     return ref !== undefined ? { ...ref } : null;
   }
 
-  async listRefs(): Promise<BranchRef[]> {
-    return [...this.refs.values()]
+  async listRefs(options?: ListRefsOptions): Promise<BranchRef[]> {
+    assertListRefsLimit(options?.limit);
+    const after = options?.after;
+    const page = [...this.refs.values()]
       .map((r) => ({ ...r }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .filter((r) => after === undefined || r.name.localeCompare(after) > 0);
+    return options?.limit === undefined ? page : page.slice(0, options.limit);
   }
 
   async moveTip(name: string, tip: number): Promise<void> {
@@ -41,13 +53,21 @@ export class InMemoryBranchRegistry implements BranchRegistry {
     ref.updatedAt = this.now();
   }
 
-  async promote(fromName: string, toName: string): Promise<void> {
+  async promote(fromName: string, toName: string, options?: PromoteOptions): Promise<void> {
     const from = this.refs.get(fromName);
     if (from === undefined) {
       throw new Error(`promote: branch "${fromName}" does not exist`);
     }
     const now = this.now();
     const to = this.refs.get(toName);
+    // CAS. Single-threaded by construction here, so read-then-write IS atomic; the durable
+    // backends do the same check inside one statement/transaction.
+    if (options !== undefined && "expect" in options) {
+      const actual = to?.executionId ?? null;
+      if (actual !== (options.expect ?? null)) {
+        throw new BranchPromotionConflictError(toName, options.expect ?? null, actual);
+      }
+    }
     if (to === undefined) {
       this.refs.set(toName, {
         name: toName,
