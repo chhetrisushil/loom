@@ -458,6 +458,8 @@ const resumed = await runtime.resume(fork.executionId, {
 const outcome = (await resumed.waitForCompletion()).variables._output;
 ```
 
+**Forking a timed gate.** If the fork point is a suspension carrying a deadline (`suspend({ timeout })` or `ctx.sleep`), the branch gets its own timer row so its deadline fires independently of the parent's — a timer is keyed by execution, so without this a branch would carry a deadline nothing could fire. The branch **inherits the recorded wake time**; it cannot re-base it, because a timer fires only when it matches the `wakeAt` in the log and the copied prefix is byte-identical by design. A branch that needs its own deadline resumes the gate and suspends again with a fresh `timeout`.
+
 The `BranchRegistry` provides git-style refs — `putRef`, `moveTip`, `promote(from, to)`, `children`, `getLineage`:
 
 ```ts

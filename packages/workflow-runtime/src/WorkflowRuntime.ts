@@ -1245,6 +1245,35 @@ export class WorkflowRuntime {
     };
     await this.snapshotStore.save(seed);
 
+    // 3b. Re-register the forked gate's durable wake.
+    //
+    //     The prefix copy carries the parent's EXECUTION_SUSPENDED verbatim, so the child
+    //     IS parked on the same condition — but a timer row is keyed by executionId, and
+    //     the parent's row wakes only the parent. Without this the child inherits a
+    //     deadline recorded in its own log that can never fire, and nothing else sweeps it:
+    //     `recoverAbandoned` (correctly) ignores suspended executions, since suspension is
+    //     a normal outcome rather than an abandonment.
+    //
+    //     The child's wake MUST be the RECORDED `wakeAt`, never a fresh one. `TimerService`
+    //     fires only when `state.suspendedOn.wakeAt === timer.wakeAt`, and the copied prefix
+    //     is byte-identical by design — so a re-based deadline would be a timer that can
+    //     never match its own log. A branch that wants its own deadline resumes the gate and
+    //     suspends again with a new `timeout`; that is a fact it appends, not one it inherits.
+    //
+    //     Scheduled only after the prefix and the seed snapshot are durable — the same
+    //     invariant the suspend path holds, that a timer must never fire into a log which
+    //     does not yet record the suspend. A failure here is reported rather than thrown:
+    //     the fork is already complete and durable, and this matches the suspend path's
+    //     policy for the identical write.
+    const forkWakeAt = forkState.status === "suspended" ? forkState.suspendedOn?.wakeAt : undefined;
+    if (this.timerStore !== undefined && forkWakeAt !== undefined) {
+      try {
+        await this.timerStore.schedule({ executionId: childId, wakeAt: forkWakeAt });
+      } catch (timerErr) {
+        this.onStorageError?.(childId, timerErr);
+      }
+    }
+
     // 4. Record lineage + optional movable ref.
     const branchName = opts?.branchName ?? childId;
     if (this.branchRegistry) {
