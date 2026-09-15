@@ -497,6 +497,20 @@ export interface LoomConfig {
      */
     dispatcher?: TimerDispatcher;
   };
+  /**
+   * Whether composing this app also STARTS the background services it wires (today: the
+   * durable-timer service). Default `true` — `defineConfig` has always started what it wired.
+   *
+   * Set `false` when something needs to INSPECT a composition rather than run it. An operator
+   * command that reads this app's stores must not, merely by importing the module, begin polling
+   * for due timers and firing schedules against production storage — a diagnostic with side
+   * effects is worse than a missing one, and `import` happens before any of its own code runs.
+   *
+   * Nothing is given up: {@link LoomApp.start} starts exactly what `autostart` would have,
+   * whenever the caller actually means to.
+   */
+  autostart?: boolean;
+
   // ── Grouped options ───────────────────────────────────────────────────────
   /** See {@link SecurityOptions}. */
   security?: SecurityOptions;
@@ -524,6 +538,13 @@ export interface LoomStores {
 }
 
 export interface LoomApp {
+  /**
+   * Start the background services this app wired (today: the durable-timer service).
+   * Idempotent, and a no-op when nothing with a lifecycle is configured. Called for you at
+   * composition time unless `autostart: false` — this is the other half of that switch, so
+   * "build now, run later" never means "built, and can never run".
+   */
+  start(): void;
   runtime: WorkflowRuntime;
   effectRuntime: EffectRuntime;
   projectionRuntime: ProjectionRuntime;
@@ -901,7 +922,8 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       ...(config.timers.warmLeadMs !== undefined && { warmLeadMs: config.timers.warmLeadMs }),
       ...(config.timers.dispatcher !== undefined && { dispatcher: config.timers.dispatcher }),
     });
-    timerService.start();
+    // Composition starts it, unless the caller is inspecting rather than running (`autostart`).
+    if (config.autostart !== false) timerService.start();
   } else if (schedules.length > 0) {
     // Discovered/declared schedules can't fire without a TimerStore — surface it loudly at boot
     // rather than silently never running them.
@@ -1150,6 +1172,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     },
     verify(options) {
       return runVerify(resolveInput(options?.lint), verifyOptions);
+    },
+    start() {
+      timerService?.start();
     },
     async close() {
       timerService?.stop();
