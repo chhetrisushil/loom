@@ -7,6 +7,7 @@ import {
   EVENT_STORE_SPI_VERSION,
   InMemoryAsyncEventStore,
   InMemoryBranchRegistry,
+  InMemoryLeaseStore,
   InMemoryTimerStore,
   ShardPlan,
   ShardedEventStore,
@@ -27,6 +28,7 @@ import {
   runCapabilityAuthorizerConformance,
   runEventStoreConformance,
   runExecutionDispatcherConformance,
+  runLeaseStoreConformance,
   runLlmProviderConformance,
   runProjectionRuntimeConformance,
   runSnapshotStoreConformance,
@@ -110,6 +112,7 @@ runEventStoreConformance(
 );
 runSnapshotStoreConformance(() => new InMemoryAsyncSnapshotStore(), "InMemoryAsyncSnapshotStore");
 runBranchRegistryConformance(() => new InMemoryBranchRegistry(), "InMemoryBranchRegistry");
+runLeaseStoreConformance(() => new InMemoryLeaseStore(), "InMemoryLeaseStore");
 runExecutionDispatcherConformance(() => new LocalDispatcher(new FakeWorker()), "LocalDispatcher");
 runTimerStoreConformance(() => new InMemoryTimerStore(), "InMemoryTimerStore");
 runProjectionRuntimeConformance(() => new InMemoryProjectionRuntime(), "InMemoryProjectionRuntime");

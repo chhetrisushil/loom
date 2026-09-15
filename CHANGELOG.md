@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Durable leases: only one node pays for a duplicated wake (#380, L1–L2).** `TimerStore.due()`
+  has no claim, so two nodes polling the same store both receive the same due timer, both
+  resume, and both pay for every effect until one loses at the fence. Fencing (K9.4) makes that
+  outcome *safe*, not *cheap* — and durable placement (#392) made the duplicate expensive on
+  purpose, since a branch is placed precisely when its work is heavy.
+
+  New optional `LeaseStore` SPI (`acquire` / `renew` / `expired` / `release`), shaped like
+  `TimerStore`: `acquire` returns `null` when another owner holds an unexpired lease — that
+  single `null` is the mutual exclusion "only one node should run this execution" needs — and
+  `renew` returns `false` once ownership is lost, so a node declared dead stops believing it is
+  alive. `InMemoryLeaseStore` ships with it, held to `runLeaseStoreConformance`.
+
+  `TimerService` takes `leases: { store, owner, ttlMs? }` and claims before firing. A node that
+  cannot claim skips **without completing the timer**, so a wake is never lost if the holder
+  dies between claiming and resuming; ownership is released afterwards, because it covers the
+  fire rather than the execution's whole life. Unwired, every path is byte-identical.
+
+  Staged deliberately (`docs/requirements/2026-09-15-durable-lease.md`): the runtime does not
+  yet hold a lease across a whole run, because renewal is a ticker on the owning process's
+  event loop and a CPU-bound effect can starve it into declaring a healthy execution abandoned.
+  That false positive is how this feature fails, and it is written down rather than buried in a
+  TTL constant.
+
 - **The audit chain can be verified by someone who could not have written it (#382,
   [ADR 0037](docs/adr/0037-tamper-evident-audit-chain.md) amendment).** The HMAC signature makes
   the log tamper-evident *against a third party who lacks the secret* — but verification needs
