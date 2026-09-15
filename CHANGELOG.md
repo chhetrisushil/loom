@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`defineConfig({ autostart: false })` + `app.start()` — composing an app need not also run
+  it.** Composition has always called `timerService.start()`, so a command that reads a
+  deployment's stores by importing its config module would begin polling production storage and
+  fire whatever was due — a side effect of being *inspected*, happening during `import`, before
+  any of that command's own code runs. The flag builds without starting; `app.start()` is the
+  other half, so "build now, run later" never means "built, and can never run". Default
+  unchanged, and `start()` is idempotent.
+
+- **`timers.leases` — the lease seam `defineConfig` never had.** `TimerService` has accepted a
+  `LeaseStore` since #380 (claim before waking, renew while the wake is in flight), but
+  `defineConfig` builds that service itself and forwarded every option except this one. Nothing
+  in the repository wired `leases:` outside tests, so the leased-wake path had **no reachable
+  entry point** from loom's own front door — while `docs/user-guide.md` taught the staleness
+  predicate and then advised preferring "a real liveness signal". A lease *is* that signal; the
+  guide now shows it.
+
+- **`LoomStores.timerStore` / `LoomStores.leaseStore`.** Present only when configured, on the
+  same contract as `memoryStore`: absent means *not wired*, which an operator pass must be able
+  to see rather than infer. "Nobody is tracking ownership" and "every lease is expired" are
+  different answers — the first is a coverage gap, the second is a fleet that died.
+
 - **`loom census` — the operator half of the same thing.** A number that requires writing
   TypeScript against your own composition root is a number nobody looks at, so the census now
   has a front door: `loom census --db <path> [--leases <path>] [--buckets 5m,1h,6h,24h]`, which

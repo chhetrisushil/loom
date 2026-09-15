@@ -1,7 +1,7 @@
 import { step$ } from "@loom/core";
 import type { FlowDefinition } from "@loom/core";
 import { ToolEffect } from "@loom/effect-runtime";
-import { InMemoryTimerStore } from "@loom/event-runtime";
+import { InMemoryLeaseStore, InMemoryTimerStore } from "@loom/event-runtime";
 import type { DurableTimer } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -117,5 +117,72 @@ describe("S1 — autostart", () => {
   it("start() is a no-op when nothing with a lifecycle is configured", () => {
     const app = defineConfig({ storage: { kind: "memory" } });
     expect(() => app.start()).not.toThrow();
+  });
+});
+
+// ── S2 — the composition root must carry what an operator pass needs to find ──
+//
+// `defineConfig` builds the TimerService itself, so an option it does not forward is an
+// option no app can use. Before this, nothing in the repository wired `leases:` into a
+// TimerService outside tests — the leased-wake path shipped in #380 had no reachable entry
+// point from loom's own front door, while the user guide recommended exactly that signal.
+
+class RecordingLeaseStore extends InMemoryLeaseStore {
+  readonly acquired: { executionId: string; owner: string }[] = [];
+  override async acquire(executionId: string, owner: string, ttlMs: number, now?: number) {
+    this.acquired.push({ executionId, owner });
+    return super.acquire(executionId, owner, ttlMs, now);
+  }
+}
+
+describe("S2 — stores the composition exposes", () => {
+  it("exposes the SAME timer and lease instances the app was given", () => {
+    const timerStore = new InMemoryTimerStore();
+    const leaseStore = new InMemoryLeaseStore();
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      timers: { store: timerStore, leases: { store: leaseStore, owner: "node-a" } },
+      autostart: false,
+    });
+    expect(app.stores.timerStore).toBe(timerStore);
+    expect(app.stores.leaseStore).toBe(leaseStore);
+  });
+
+  it("omits them when not configured — absent is 'nobody is tracking that', not zero", () => {
+    const bare = defineConfig({ storage: { kind: "memory" } });
+    expect(bare.stores.timerStore).toBeUndefined();
+    expect(bare.stores.leaseStore).toBeUndefined();
+
+    // Timers without leases: one configured, one not. The pair must not move together.
+    const timed = defineConfig({
+      storage: { kind: "memory" },
+      timers: { store: new InMemoryTimerStore() },
+      autostart: false,
+    });
+    expect(timed.stores.timerStore).toBeDefined();
+    expect(timed.stores.leaseStore).toBeUndefined();
+  });
+
+  it("takes ownership before a wake — the assertion no app could make before", async () => {
+    const leases = new RecordingLeaseStore();
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [sleeper()],
+      timers: {
+        store: new InMemoryTimerStore(),
+        pollMs: 2,
+        leases: { store: leases, owner: "node-a", ttlMs: 30_000 },
+      },
+    });
+    app.effectRuntime.register("wake-tool", new ToolEffect(async () => ({})));
+
+    const handle = await app.runtime.start(sleeper(), {});
+    await handle.waitForSuspend();
+    await settle(60);
+
+    expect((await app.runtime.loadState(handle.executionId))?.status).toBe("completed");
+    // Claimed, by this node, for this execution — the wake ran as an owner, not a racer.
+    expect(leases.acquired).toContainEqual({ executionId: handle.executionId, owner: "node-a" });
+    await app.close();
   });
 });

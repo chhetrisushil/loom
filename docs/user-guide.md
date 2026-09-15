@@ -1678,6 +1678,40 @@ nothing while looking like it works.
 > incurs; you just don't want to pay it for a step that was never interrupted. Prefer a real
 > liveness signal from your orchestrator over a timeout where you have one.
 
+**A lease is that liveness signal, and loom ships one.** Configure `timers.leases` and each
+node claims an execution before waking it, renewing while the wake is in flight; `expired()`
+then answers "who stopped saying they were alive" as a *fact*, not a guess about a clock:
+
+```ts
+import { SqliteLeaseStore } from "@loom/plugin-sqlite"; // PostgresLeaseStore for multi-node
+
+const app = defineConfig({
+  storage: { /* … */ },
+  timers: {
+    store: timerStore,
+    // This node's identity — a pod name, a process uuid, whatever already means "this process".
+    leases: { store: leaseStore, owner: process.env.HOSTNAME ?? "node-1", ttlMs: 60_000 },
+  },
+});
+
+// With leases wired, `isAbandoned` becomes optional: the candidates are the EXPIRED leases.
+const summary = await recoverAbandoned(app.runtime, {
+  source: app.stores.eventStore,
+  leases: { store: app.stores.leaseStore!, owner: "recovery-pass", ttlMs: 60_000 },
+  fenced: true,
+  limit: 50,
+});
+```
+
+The ttl is your tolerance for a node that **died**, not a bound on how long a run may take —
+the claim is held and renewed across the whole resumed execution, which for a branch
+simulation may be minutes.
+
+> **A lease narrows the question; it does not close it.** An execution that never had a lease
+> is invisible to `expired()` — it is not orphaned, it is unwatched, and the two are different
+> answers. `loom census` reports that population separately (`no lease at all`) precisely so a
+> gap in coverage cannot read as a clean bill of health.
+
 ### Read models: durable cross-execution queries (ADR 0058)
 
 Projections are per-execution and in-process; **read models** (`@loom/plugin-read-model`) are
