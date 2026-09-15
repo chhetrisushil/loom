@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`retireAbandonedBranches()` — a forked parent could never be reclaimed.** `applyRetention`
+  refuses anything non-terminal, and refuses a parent while a live descendant branch still has
+  events (R5.3, correctly: the fork's copied prefix aliases the parent's). A branch that was
+  forked, simulated and then never answered is suspended *forever* — so it is never reclaimed,
+  so its parent is never reclaimed either: `blocked-by-branch`, every sweep, permanently. The
+  retention policy quietly stopped applying to exactly the executions that did the most work.
+
+  The lever is not deletion. An abandoned branch should become **terminal**, which `cancel()`
+  already does durably and auditably — `EXECUTION_CANCELLED` records that the branch was
+  abandoned and why, rather than erasing that it existed — after which ordinary retention
+  collects the branch on its own TTL and the parent unblocks behind it. The new pass is
+  parent-centric (bounded by one parent's children, no global scan), and `isAbandoned` is
+  **required with no default** for `recoverAbandoned`'s reason: a branch parked on a human gate
+  is someone's open question, not garbage, and only the application knows whether that person
+  is still coming. It reports what it left alone, so "still open" is an answer rather than a
+  silence.
+
 - **A declared deadline no runtime can honour now says so.** `suspend({ timeout })` becomes a
   durable `wakeAt` only when a `TimerStore` is wired; unwired, the condition is committed
   *without* one — byte-identically, and silently. That is invisible while everything runs in
@@ -334,6 +351,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the reason, and in the default; final metering still uses the provider's own numbers.
 
 ### Fixed
+
+- **The retention guard read whole logs to ask a yes/no question.** `hasLiveDescendant` called
+  `eventStore.read(child)` and checked `.length > 0` — per child, per swept execution, against
+  branch logs, which are the long ones precisely because a branch is forked to do expensive
+  work. It is a tip query, and now uses `headOf` (EventStore SPI 1.4.0).
 
 - **A fork copied the gate but not the alarm.** `WorkflowRuntime.fork()` copies the parent's
   prefix verbatim, so a branch forked at a suspension is parked on the same condition —
