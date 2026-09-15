@@ -863,11 +863,11 @@ describe("loom retention run + compliance report (listExecutions SPI)", () => {
     await seed(store, "branch-of-x1", [["EXECUTION_STARTED", { input: {} }]]);
     store.close();
 
-    const guarded = await cmdRetentionRun(cdb, csnap, 0, false, branchesDb);
+    const guarded = await cmdRetentionRun({ db: cdb, snap: csnap, ttlMs: 0, apply: false, branches: branchesDb });
     expect(guarded).toContain("blocked-by-branch");
     expect(guarded).not.toContain("⚠"); // the guard is on, so no warning
 
-    await cmdRetentionRun(cdb, csnap, 0, true, branchesDb);
+    await cmdRetentionRun({ db: cdb, snap: csnap, ttlMs: 0, apply: true, branches: branchesDb });
     const after = new SqliteEventStore(cdb);
     const remaining = (await after.listExecutions()).filter((id) => !id.startsWith("__loom_"));
     expect(remaining).toContain("x1"); // survived, because something still depends on it
@@ -878,18 +878,18 @@ describe("loom retention run + compliance report (listExecutions SPI)", () => {
   it("warns when it cannot apply the branch guard at all", async () => {
     // Silence here would be the worst outcome: the sweep looks complete while the one guard
     // that prevents data loss is switched off.
-    const unguarded = await cmdRetentionRun(cdb, csnap, 0, false);
+    const unguarded = await cmdRetentionRun({ db: cdb, snap: csnap, ttlMs: 0, apply: false });
     expect(unguarded).toContain("R5.3");
     expect(unguarded).toContain("OFF");
   });
 
   it("retention run dry-runs by default, reclaims aged terminal executions with --apply", async () => {
-    const dry = await cmdRetentionRun(cdb, csnap, 0, false);
+    const dry = await cmdRetentionRun({ db: cdb, snap: csnap, ttlMs: 0, apply: false });
     expect(dry).toContain("DRY RUN");
     expect(dry).toContain("would-reclaim"); // x1, x2 terminal + aged
     expect(dry).toContain("not-terminal"); // x3 still running
 
-    const applied = await cmdRetentionRun(cdb, csnap, 0, true);
+    const applied = await cmdRetentionRun({ db: cdb, snap: csnap, ttlMs: 0, apply: true });
     expect(applied).toContain("reclaimed");
 
     // x1/x2 are gone; x3 (running) survives.

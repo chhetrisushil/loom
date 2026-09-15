@@ -51,7 +51,7 @@ describe("loom census", () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it("bands what is in flight and ignores what finished", async () => {
-    const out = await cmdCensus(db);
+    const out = await cmdCensus({ db });
     expect(out).toContain("4 execution(s) scanned, 3 in flight");
     expect(out).toMatch(/in flight ≥ 6h\s+2/);
     // `fresh` is a minute old: in flight, but below every default band. Bands are thresholds,
@@ -61,7 +61,7 @@ describe("loom census", () => {
   });
 
   it("says lease coverage was NOT ASKED rather than reporting zeros", async () => {
-    const out = await cmdCensus(db);
+    const out = await cmdCensus({ db });
     expect(out).toContain("not asked");
     expect(out).not.toContain("no lease at all");
   });
@@ -72,7 +72,7 @@ describe("loom census", () => {
     await leases.acquire("old-b", "node-2", 1, Date.now() - 60_000); // lapsed
     await leases.close();
 
-    const out = await cmdCensus(db, { leases: leasesDb });
+    const out = await cmdCensus({ db, leases: leasesDb });
     expect(out).toMatch(/lease held \(renewing\):\s+1/);
     expect(out).toMatch(/lease expired:\s+1/);
     expect(out).toMatch(/no lease at all:\s+1/); // `fresh` — started by nothing that leases

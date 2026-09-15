@@ -6,6 +6,7 @@ import { SqliteEventStore } from "@loom/plugin-sqlite";
 
 import { type Elevation, type Planner, cmdAppgen, plannerTag, renderPlan } from "./appgen";
 import { cmdCensus } from "./census";
+import { STORE_FLAG_HELP, hasStoreFlags } from "./stores";
 import { cmdCheck } from "./check";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { cmdComplianceReport } from "./compliance";
@@ -145,9 +146,14 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case "census": {
-      requireFlag(flags, "db");
+      if (!hasStoreFlags(flags)) {
+        console.error(`loom census: ${STORE_FLAG_HELP}`);
+        return 1;
+      }
       console.log(
-        await cmdCensus(flags.db!, {
+        await cmdCensus({
+          ...(flags.config !== undefined && { config: flags.config }),
+          ...(flags.db !== undefined && { db: flags.db }),
           ...(flags.snap !== undefined && { snap: flags.snap }),
           ...(flags.leases !== undefined && { leases: flags.leases }),
           ...(flags.buckets !== undefined && { buckets: flags.buckets }),
@@ -159,11 +165,20 @@ async function main(argv: string[]): Promise<number> {
 
     case "retention": {
       requirePositional(positionals, "run"); // `loom retention run`
-      requireFlag(flags, "db");
-      requireFlag(flags, "snap");
+      if (!hasStoreFlags(flags)) {
+        console.error(`loom retention: ${STORE_FLAG_HELP}`);
+        return 1;
+      }
       const ttl = flags.ttl !== undefined ? Number.parseInt(flags.ttl, 10) : 0;
       console.log(
-        await cmdRetentionRun(flags.db!, flags.snap!, ttl, flags.apply === "true", flags.branches)
+        await cmdRetentionRun({
+          ...(flags.config !== undefined && { config: flags.config }),
+          ...(flags.db !== undefined && { db: flags.db }),
+          ...(flags.snap !== undefined && { snap: flags.snap }),
+          ...(flags.branches !== undefined && { branches: flags.branches }),
+          ttlMs: ttl,
+          apply: flags.apply === "true",
+        })
       );
       return 0;
     }

@@ -958,7 +958,23 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       ...(config.timers.leases !== undefined && { leases: config.timers.leases }),
     });
     // Composition starts it, unless the caller is inspecting rather than running (`autostart`).
-    if (config.autostart !== false) timerService.start();
+    //
+    // The env var is how a TOOL asks a config it did not write to be inspectable. An operator
+    // running `loom census --config ./dist/app.js` cannot edit that module, and the start
+    // happens during `import` — before any of the command's own code runs — so the request has
+    // to be in place beforehand. It only ever suppresses, never starts.
+    const inspectOnly = process.env.LOOM_NO_AUTOSTART === "1";
+    if (config.autostart !== false && !inspectOnly) {
+      timerService.start();
+    } else if (inspectOnly && config.autostart === true) {
+      // Suppressing a DEFAULT is the quiet, expected case. Suppressing what a config asked for
+      // explicitly is someone's intent being overridden by an environment variable — the one
+      // way this could silently stop timers in production, so it says so.
+      const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+      warn(
+        "LOOM_NO_AUTOSTART=1 — background services were NOT started, though this config sets `autostart: true`. Unset it to run normally."
+      );
+    }
   } else if (schedules.length > 0) {
     // Discovered/declared schedules can't fire without a TimerStore — surface it loudly at boot
     // rather than silently never running them.

@@ -1,6 +1,6 @@
 import { isReservedStream, iterateExecutionIds } from "@loom/event-runtime";
-import { SqliteBranchRegistry, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
 import { LogLifecycle } from "@loom/workflow-runtime";
+import { type StoreFlags, resolveStores } from "./stores";
 
 // ── `loom retention run` — the explicit, operator-driven retention sweep (K10.1) ─
 //
@@ -31,20 +31,22 @@ function tally(outcomes: string[]): string {
  * terminal executions older than the TTL. Dry run unless `--apply`.
  */
 export async function cmdRetentionRun(
-  db: string,
-  snap: string,
-  ttlMs: number,
-  apply: boolean,
-  branchesDb?: string
+  flags: StoreFlags & { ttlMs: number; apply: boolean }
 ): Promise<string> {
-  const events = new SqliteEventStore(db);
-  const snapshots = new SqliteSnapshotStore(snap);
-  const branchRegistry =
-    branchesDb !== undefined ? new SqliteBranchRegistry(branchesDb) : undefined;
+  const { ttlMs, apply } = flags;
+  const stores = await resolveStores(flags);
+  const events = stores.eventStore;
+  const branchRegistry = stores.branchRegistry;
   try {
     if (events.listExecutions === undefined && events.listExecutionsPage === undefined) {
-      return "this event store does not support enumeration (cannot sweep for retention)";
+      return `loom retention needs to enumerate executions, and the configured ${events.constructor.name} implements neither listExecutions nor listExecutionsPage.`;
     }
+    if (stores.snapshotStore === undefined) {
+      // Retention PRUNES snapshots alongside the log. Running without one would silently
+      // leave them behind — a sweep that reports success while half the data stays.
+      return "loom retention needs a snapshot store: pass --snap <snap.db>, or use --config (an app always has one).";
+    }
+    const snapshots = stores.snapshotStore;
     const now = Date.now();
     const lifecycle = new LogLifecycle(events, snapshots, {
       ...(branchRegistry !== undefined && { branchRegistry }),
@@ -71,17 +73,19 @@ export async function cmdRetentionRun(
     }
 
     const mode = apply ? "run" : "DRY RUN (pass --apply to reclaim)";
+    // Which half to fix differs by how the stores were resolved: a flag the operator can add,
+    // or a registry the application never wired (so fork/branch is not in use at all).
     const guard =
       branchRegistry === undefined
-        ? "\n  ⚠ no --branches given: the live-descendant guard (R5.3) is OFF, so a parent with live branches is not protected"
+        ? stores.origin === "config"
+          ? "\n  ⚠ this app wires no branchRegistry: the live-descendant guard (R5.3) is OFF, so a parent with live branches is not protected"
+          : "\n  ⚠ no --branches given: the live-descendant guard (R5.3) is OFF, so a parent with live branches is not protected"
         : "";
     const header = `retention ${mode} — ttl ${ttlMs}ms — ${seen} execution(s)`;
     return seen === 0
       ? `${header}${guard}\n  (no executions)`
       : `${header}${guard}\n${rows.join("\n")}\n${tally(outcomes)}`;
   } finally {
-    await events.close();
-    await snapshots.close();
-    await branchRegistry?.close();
+    await stores.close();
   }
 }
