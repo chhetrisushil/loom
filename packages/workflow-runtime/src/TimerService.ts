@@ -2,6 +2,7 @@ import type { ScheduleDefinition } from "@loom/core";
 import type { EventStore, LeaseStore, TimerStore } from "@loom/event-runtime";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type CronSpec, nextOccurrence, parseCron } from "./cron";
+import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
 import { TIMER_FIRED } from "./types";
 
@@ -67,8 +68,25 @@ export interface TimerServiceOptions {
     store: LeaseStore;
     /** This node's identity — a pod name, a process uuid, the deployment's vocabulary. */
     owner: string;
-    /** How long ownership is claimed for. Default 60s: comfortably longer than a fire takes. */
+    /**
+     * How long ownership is claimed for, and RENEWED for while the wake is in flight.
+     *
+     * Not a bound on how long the run may take — the claim is held across the whole resumed
+     * execution, which for a branch simulation is minutes — but the tolerance for a node that
+     * has DIED: after this long without a renewal, the lease is collectable and a recovery
+     * pass may take over. Default 60s.
+     */
     ttlMs?: number;
+    /**
+     * How often to renew while holding. Default `ttlMs / 3`, so two renewals may be lost
+     * before ownership is.
+     *
+     * Renewal runs on this process's event loop. A handler doing heavy SYNCHRONOUS work
+     * blocks it, and a lease that lapses while its holder is healthily working invites a
+     * recovery pass to fence the holder out mid-run. Heavy CPU belongs off the main
+     * thread — which is what the sandbox worker pool exists for.
+     */
+    renewEveryMs?: number;
   };
 }
 
@@ -127,6 +145,7 @@ export class TimerService {
   private readonly dispatcher: TimerDispatcher | undefined;
   private readonly leases: TimerServiceOptions["leases"];
   private readonly leaseTtlMs: number;
+  private readonly leaseRenewEveryMs: number;
   private readonly eventStore: EventStore;
 
   constructor(
@@ -137,6 +156,7 @@ export class TimerService {
     this.dispatcher = options.dispatcher;
     this.leases = options.leases;
     this.leaseTtlMs = options.leases?.ttlMs ?? 60_000;
+    this.leaseRenewEveryMs = options.leases?.renewEveryMs ?? defaultRenewEvery(this.leaseTtlMs);
     // Read from the runtime rather than taken as a second option: two stores that must
     // agree is a way for them to disagree.
     this.eventStore = runtime.events;
@@ -247,9 +267,20 @@ export class TimerService {
     // presumably firing this same timer; skip WITHOUT completing it, so a wake is never lost
     // if that node dies between the claim and the resume. Its lease expires; we try again.
     const leases = this.leases;
+    let held: HeldLease | undefined;
     if (leases !== undefined) {
       const lease = await leases.store.acquire(executionId, leases.owner, this.leaseTtlMs);
       if (lease === null) return;
+      // Hold it for as long as the wake takes — see `renewWhileHeld` for why this is not
+      // optional: a fire awaits the resumed execution to settle, so the claim spans the run.
+      held = renewWhileHeld(
+        leases.store,
+        executionId,
+        leases.owner,
+        this.leaseTtlMs,
+        this.leaseRenewEveryMs,
+        (err) => this.onError?.(executionId, err)
+      );
     }
     try {
       const state = await this.runtime.loadState(executionId);
@@ -301,6 +332,7 @@ export class TimerService {
       // Ownership covers the fire, not the execution's whole life: by here it has suspended
       // again, completed, or failed, and holding the lease longer would block whoever legitimately
       // wakes it next.
+      held?.stop();
       if (leases !== undefined) {
         await leases.store.release(executionId, leases.owner).catch(() => undefined);
       }

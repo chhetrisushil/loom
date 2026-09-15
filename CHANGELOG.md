@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is the race the whole primitive exists to lose loudly. Verified against a real
   PostgreSQL 17, including twelve simultaneous acquires granting exactly one.
 
+  **A claim is renewed for as long as the work takes.** Both paths that take one hold it across
+  the whole resumed run, because both await it settling. Unrenewed, the lease expired *under a
+  healthy holder* and a recovery pass would fence that holder out mid-run — not duplicate work,
+  a killed execution. `renewWhileHeld` covers both, and reports the case where ownership is lost
+  anyway, since two nodes on one execution is worth being told about even when fencing keeps the
+  log sound.
+
   Staged deliberately (`docs/requirements/2026-09-15-durable-lease.md`): the runtime does not
   yet hold a lease across a whole run, because renewal is a ticker on the owning process's
   event loop and a CPU-bound effect can starve it into declaring a healthy execution abandoned.

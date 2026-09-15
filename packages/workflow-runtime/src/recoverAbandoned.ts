@@ -5,6 +5,7 @@ import {
 } from "@loom/event-runtime";
 import type { TimerDispatcher } from "./TimerService";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
+import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
 import { EXECUTION_RECOVERED } from "./types";
 
@@ -79,8 +80,10 @@ export interface RecoverAbandonedOptions {
     store: LeaseStore;
     /** This node's identity, recorded as the new owner while it recovers. */
     owner: string;
-    /** How long to hold ownership while re-driving. Default 60s. */
+    /** How long to hold ownership while re-driving, renewed for as long as it takes. Default 60s. */
     ttlMs?: number;
+    /** How often to renew while holding. Default `ttlMs / 3`. */
+    renewEveryMs?: number;
   };
   /** Stop after this many successful recoveries. Default: unlimited. */
   limit?: number;
@@ -183,13 +186,22 @@ export async function recoverAbandoned(
 
     // Take ownership before re-driving, so two passes racing the same orphan do not both pay
     // for it. Losing the race means someone else is already on it.
+    let held: HeldLease | undefined;
     if (options.leases !== undefined) {
-      const lease = await options.leases.store.acquire(
+      const ttlMs = options.leases.ttlMs ?? 60_000;
+      const lease = await options.leases.store.acquire(executionId, options.leases.owner, ttlMs);
+      if (lease === null) continue;
+      // Held across the re-drive below, which awaits the recovered execution settling. An
+      // unrenewed claim would expire under this very pass and invite the NEXT one to fence
+      // us out of the recovery we are performing.
+      held = renewWhileHeld(
+        options.leases.store,
         executionId,
         options.leases.owner,
-        options.leases.ttlMs ?? 60_000
+        ttlMs,
+        options.leases.renewEveryMs ?? defaultRenewEvery(ttlMs),
+        (err) => options.onError?.(executionId, err)
       );
-      if (lease === null) continue;
     }
 
     try {
@@ -239,6 +251,10 @@ export async function recoverAbandoned(
       // Left in place; the next pass retries (at-least-once).
       summary.failed++;
       options.onError?.(executionId, err);
+    } finally {
+      // Stop renewing whatever happened: the re-drive has settled, failed, or thrown, and a
+      // claim outliving the work it covers blocks whoever legitimately takes it next.
+      held?.stop();
     }
   }
 
