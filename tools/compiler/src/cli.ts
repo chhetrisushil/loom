@@ -17,8 +17,29 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
+const USAGE = "usage: loom-compile [srcDir=src] [outDir=dist-loom]";
+
 async function main(): Promise<void> {
   const [, , srcDir = "src", outDir = "dist-loom"] = process.argv;
+  if (srcDir === "--help" || srcDir === "-h") {
+    console.log(USAGE);
+    return;
+  }
+  // Positional arguments are DIRECTORIES. A flag reaching `readdirSync` surfaces as an ENOENT
+  // naming a path the user never typed, which reads like a broken install rather than a
+  // mistyped command.
+  if (srcDir.startsWith("-") || outDir.startsWith("-")) {
+    console.error(
+      `[loom-compiler] unknown option "${srcDir.startsWith("-") ? srcDir : outDir}"\n${USAGE}`
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (!fs.existsSync(srcDir)) {
+    console.error(`[loom-compiler] no such directory: ${srcDir}\n${USAGE}`);
+    process.exitCode = 1;
+    return;
+  }
 
   const state: PluginState = {
     chunks: new Map(),
