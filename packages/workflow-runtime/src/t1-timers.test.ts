@@ -67,6 +67,10 @@ function boot(
     snapshotStore: stores.snapshotStore,
     effectRuntime: effects,
     ...(withTimerStore && { timerStore: stores.timerStore }),
+    // Unwired is the case under test here, so the runtime's "this deadline will never
+    // fire" warning is expected — route it away from the suite output rather than
+    // letting a true diagnostic read as noise.
+    ...(withTimerStore ? {} : { onWarn: () => {} }),
   });
   runtime.registerFlow(flow.definition, flow.runner);
   return { runtime, ...stores };
