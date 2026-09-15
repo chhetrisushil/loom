@@ -134,11 +134,24 @@ in-process" is declarative rather than hand-wired at each dispatch.
 Fixes M6. Turns `fork()` from O(parent log) into O(1) + `copyPrefix`. Additive optional method with a
 `readFrom`-based fallback, a conformance case, and a bench line. Measurable on the existing harness.
 
-### E6 — branch lifecycle *(app/1P)*
+### E6 — branch lifecycle *(app/1P)* — **PARTLY SHIPPED**
 
-Fixes M8 and M4. A TTL sweep for abandoned branches, a cursor on `listRefs`, and a compare-and-set
-`promote` (expected current executionId) so a concurrent promotion is a refusal rather than a silent
-overwrite.
+Fixes M4 and the read half of M8. `promote` takes `{ expect }` (compare-and-set,
+`BranchPromotionConflictError` on a mismatch, nothing written) and `listRefs` takes
+`{ limit, after }` (keyset paging, with a shared guard that refuses a non-positive or
+fractional limit — `LIMIT -1` is SQLite for *no limit*). BranchRegistry SPI → 1.1.0, all three
+backends, conformance cases for both.
+
+Writing those cases turned up something the plan had not suspected: **the Postgres
+BranchRegistry ran against no conformance kit at all.** SQLite was held to the portable
+contract; the backend with hand-written SQL was assumed to match it. It now runs the kit.
+
+**The TTL sweep is deliberately NOT built.** Which branches are safe to collect is a policy
+only an application has — a ref whose execution is still suspended is not garbage, it is
+someone's open question — and the mechanism is already `listRefs` + `deleteRef`. Building a
+1P sweeper now would mean inventing a predicate with no consumer to shape it, which is the
+`recoverAbandoned` lesson (`isAbandoned` is required precisely because no default is
+defensible) pointed the wrong way. Revisit when a second workload needs it.
 
 ### E7 — branch-addressed approvals *(app, forced by the kernel shape)*
 
@@ -173,7 +186,7 @@ gate's deadline is live rather than hypothetical.
 1. ~~**E1**~~ — **shipped**; the `restart` option it proposed turned out to be unimplementable.
 2. ~~**E8**~~ — **shipped**; it decided E2/E3's shape and carried E7 in with it.
 3. ~~**E7**, **E2**~~ — **shipped inside E8** as app patterns; neither needs a 1P surface yet.
-4. **E6** (and the rest of **E3**: a compare-and-set `promote`) — lifecycle, now that a real cohort exists.
+4. ~~**E6**~~ — **the CAS `promote` and paging shipped**; the TTL sweep is deferred with a reason, not forgotten.
 5. **E4**, **E5** — placement and cost, independent of the others.
 
 ## 5. Not doing

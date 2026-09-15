@@ -578,18 +578,22 @@ class SqliteEventStore       { constructor(dbPath: string) }
 interface BranchRef      { name: string; executionId: string; tip: number; parentExecutionId?: string; forkSequence?: number; createdAt: number; updatedAt: number; }
 interface LineageRecord  { executionId: string; parentExecutionId: string; forkSequence: number; createdAt: number; }
 
+interface ListRefsOptions { limit?: number; after?: string; }             // keyset paging; limit MUST be a positive int
+interface PromoteOptions  { expect?: string | null; }                    // CAS: the executionId `toName` must name now (null = must not exist)
+
 interface BranchRegistry {
   putRef(ref: BranchRef): Promise<void>;
   getRef(name: string): Promise<BranchRef | null>;
-  listRefs(): Promise<BranchRef[]>;
+  listRefs(options?: ListRefsOptions): Promise<BranchRef[]>;
   moveTip(name: string, tip: number): Promise<void>;
-  promote(fromName: string, toName: string): Promise<void>;   // pointer move — the whole "merge" replacement
+  promote(fromName: string, toName: string, options?: PromoteOptions): Promise<void>;   // pointer move — the whole "merge" replacement
   deleteRef(name: string): Promise<void>;
   recordLineage(rec: Omit<LineageRecord, "createdAt">): Promise<void>;
   getLineage(executionId: string): Promise<LineageRecord | null>;
   children(executionId: string): Promise<LineageRecord[]>;
   close(): Promise<void>;
 }
+class BranchPromotionConflictError extends Error { toName; expected: string | null; actual: string | null }  // a CAS promote lost — nothing moved
 class SqliteBranchRegistry { constructor(dbPath: string) }
 #+end_src
 

@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`BranchRegistry.promote` can be a compare-and-set, and `listRefs` can be paged
+  (BranchRegistry SPI 1.1.0).** `promote(from, to)` was read-then-write on every backend, so
+  two nodes promoting different winners onto `main` both succeeded and the loser silently
+  became what `main` named — a pointer move with no way to say *"only if it still names what
+  I read"*. It now takes `{ expect }`: the executionId `to` must name right now, or `null`
+  for "must not exist yet". A mismatch throws `BranchPromotionConflictError` and **nothing
+  moves**, so a caller re-reads and decides rather than retrying blind. Each backend does the
+  check where it is actually atomic — one `UPDATE … WHERE execution_id = $expected` (or an
+  `INSERT … ON CONFLICT DO NOTHING`) on Postgres, inside a transaction on SQLite, and
+  in-process for the Map. Omitting `expect` keeps 1.0.0's last-write-wins behaviour
+  byte-identically. `listRefs({ limit, after })` adds keyset paging for a ref table that is
+  unbounded by design — forking is cheap — and the shared `assertListRefsLimit` guard refuses
+  a non-positive or fractional `limit` on every backend, because `LIMIT -1` is SQLite for *no
+  limit* and would hand the whole table to a caller that asked for one row.
+
+  Found while writing the conformance cases: **the Postgres `BranchRegistry` had never been
+  run against the conformance kit at all.** SQLite was held to the portable contract while
+  the Postgres implementation — the one with hand-written SQL — was merely assumed to match
+  it. `plugins/postgres/src/conformance.test.ts` now runs `runBranchRegistryConformance`
+  too (verified against a real PostgreSQL 17: 71/71, up from 64).
+
 - **Recovering executions whose supervisor died ([ADR 0004](docs/adr/0004-failure-recovery.md)
   amendment).** A dead or wedged *worker* was already handled: the dispatcher's
   `executeTimeoutMs` turns a hung attempt into a failed one, redispatches, and the worker

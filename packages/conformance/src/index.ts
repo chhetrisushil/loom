@@ -397,6 +397,58 @@ export function runBranchRegistryConformance(
       await reg.close();
     });
 
+    it("promote with `expect` is a compare-and-set: the loser is refused, not applied", async () => {
+      // Two nodes promoting different winners onto `main` both "succeed" without this —
+      // last write wins and the losing branch silently becomes what main names.
+      const reg = factory();
+      await reg.putRef(ref("cand-a", "execA", 3));
+      await reg.putRef(ref("cand-b", "execB", 4));
+
+      // `expect: null` means "must not exist yet" — the first promotion creates it.
+      await reg.promote("cand-a", "main", { expect: null });
+      expect((await reg.getRef("main"))?.executionId).toBe("execA");
+
+      // A second node still believes main names nothing. It loses, and NOTHING moves.
+      await expect(reg.promote("cand-b", "main", { expect: null })).rejects.toMatchObject({
+        name: "BranchPromotionConflictError",
+      });
+      expect((await reg.getRef("main"))?.executionId).toBe("execA");
+
+      // A stale expectation loses the same way.
+      await expect(reg.promote("cand-b", "main", { expect: "execGone" })).rejects.toMatchObject({
+        name: "BranchPromotionConflictError",
+      });
+      expect((await reg.getRef("main"))?.executionId).toBe("execA");
+
+      // The current holder's expectation wins.
+      await reg.promote("cand-b", "main", { expect: "execA" });
+      expect((await reg.getRef("main"))?.executionId).toBe("execB");
+      expect((await reg.getRef("main"))?.tip).toBe(4);
+
+      // And omitting `expect` keeps the 1.0.0 last-write-wins behaviour.
+      await reg.promote("cand-a", "main");
+      expect((await reg.getRef("main"))?.executionId).toBe("execA");
+      await reg.close();
+    });
+
+    it("listRefs pages by keyset and refuses a nonsense limit", async () => {
+      const reg = factory();
+      for (const n of ["a", "b", "c", "d"]) await reg.putRef(ref(n, `exec-${n}`, 1));
+
+      expect((await reg.listRefs({ limit: 2 })).map((r) => r.name)).toEqual(["a", "b"]);
+      expect((await reg.listRefs({ limit: 2, after: "b" })).map((r) => r.name)).toEqual(["c", "d"]);
+      expect((await reg.listRefs({ after: "d" })).map((r) => r.name)).toEqual([]);
+      // Unpaged stays unpaged — the 1.0.0 call is unchanged.
+      expect((await reg.listRefs()).map((r) => r.name)).toEqual(["a", "b", "c", "d"]);
+
+      // `LIMIT -1` is SQLite for "no limit": an unvalidated negative would hand back the
+      // whole table to a caller that asked for one row.
+      await expect(reg.listRefs({ limit: 0 })).rejects.toThrow(/positive integer/);
+      await expect(reg.listRefs({ limit: -1 })).rejects.toThrow(/positive integer/);
+      await expect(reg.listRefs({ limit: 1.5 })).rejects.toThrow(/positive integer/);
+      await reg.close();
+    });
+
     it("deleteRef removes a ref", async () => {
       const reg = factory();
       await reg.putRef(ref("tmp", "execA", 1));

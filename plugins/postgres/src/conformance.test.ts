@@ -1,10 +1,12 @@
 import {
+  runBranchRegistryConformance,
   runEventStoreConformance,
   runMemoryStoreConformance,
   runReadModelStoreConformance,
 } from "@loom/conformance";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe } from "vitest";
+import { PostgresBranchRegistry } from "./PostgresBranchRegistry";
 import { PostgresEventStore } from "./PostgresEventStore";
 import { PostgresMemoryStore } from "./PostgresMemoryStore";
 import { PostgresReadModelStore } from "./PostgresReadModelStore";
@@ -40,6 +42,11 @@ if (PG_URL === undefined) {
   // SQLite one was held to the kit — so the portable contract was enforced on one backend
   // and merely assumed on the other.
   let nextReadModel = 0;
+  // And for the branch-registry kit, whose cases share fixed ref names ("main", "cand-a").
+  // Until now the Postgres BranchRegistry ran against NO kit at all — SQLite was held to the
+  // portable contract while the Postgres implementation, the one with hand-written
+  // compare-and-set SQL, was merely assumed to match it.
+  let nextBranch = 0;
 
   beforeAll(async () => {
     // Create and migrate every schema up front, so `factory()` can stay synchronous (the
@@ -90,4 +97,9 @@ if (PG_URL === undefined) {
     const pool = pools[nextReadModel++ % pools.length] as Pool;
     return new PostgresReadModelStore(pool);
   }, "PostgresReadModelStore");
+
+  runBranchRegistryConformance(() => {
+    const pool = pools[nextBranch++ % pools.length] as Pool;
+    return new PostgresBranchRegistry(pool);
+  }, "PostgresBranchRegistry");
 }

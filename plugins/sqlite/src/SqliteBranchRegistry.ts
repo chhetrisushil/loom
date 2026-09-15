@@ -1,4 +1,12 @@
-import type { BranchRef, BranchRegistry, LineageRecord } from "@loom/event-runtime";
+import {
+  BranchPromotionConflictError,
+  type BranchRef,
+  type BranchRegistry,
+  type LineageRecord,
+  type ListRefsOptions,
+  type PromoteOptions,
+  assertListRefsLimit,
+} from "@loom/event-runtime";
 import Database from "better-sqlite3";
 import { migrate } from "./schema";
 
@@ -61,6 +69,11 @@ export class SqliteBranchRegistry implements BranchRegistry {
   }
 
   async putRef(ref: BranchRef): Promise<void> {
+    this.writeRef(ref);
+  }
+
+  /** Synchronous upsert — `putRef`'s body, callable from inside a transaction. */
+  private writeRef(ref: BranchRef): void {
     this.db
       .prepare<[string, string, number, string | null, number | null, number, number]>(`
         INSERT INTO refs (name, execution_id, tip, parent_execution_id, fork_sequence, created_at, updated_at)
@@ -88,8 +101,19 @@ export class SqliteBranchRegistry implements BranchRegistry {
     return row ? rowToRef(row) : null;
   }
 
-  async listRefs(): Promise<BranchRef[]> {
-    const rows = this.db.prepare<[], RefRow>("SELECT * FROM refs ORDER BY name ASC").all();
+  async listRefs(options?: ListRefsOptions): Promise<BranchRef[]> {
+    assertListRefsLimit(options?.limit);
+    const after = options?.after ?? null;
+    // `LIMIT -1` is SQLite for "no limit", so the guard above is load-bearing: an
+    // unvalidated negative would return the whole table to a caller asking for a page.
+    const rows = this.db
+      .prepare<[string | null, string | null, number], RefRow>(
+        `SELECT * FROM refs
+          WHERE (? IS NULL OR name > ?)
+          ORDER BY name ASC
+          LIMIT ?`
+      )
+      .all(after, after, options?.limit ?? -1);
     return rows.map(rowToRef);
   }
 
@@ -99,22 +123,41 @@ export class SqliteBranchRegistry implements BranchRegistry {
       .run(tip, Date.now(), name);
   }
 
-  async promote(fromName: string, toName: string): Promise<void> {
-    const from = await this.getRef(fromName);
-    if (!from) {
-      throw new Error(`Cannot promote: ref "${fromName}" does not exist`);
-    }
-    const existing = await this.getRef(toName);
-    const now = Date.now();
-    await this.putRef({
-      name: toName,
-      executionId: from.executionId,
-      tip: from.tip,
-      ...(from.parentExecutionId !== undefined && { parentExecutionId: from.parentExecutionId }),
-      ...(from.forkSequence !== undefined && { forkSequence: from.forkSequence }),
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
+  async promote(fromName: string, toName: string, options?: PromoteOptions): Promise<void> {
+    // better-sqlite3 is synchronous, so wrapping the read-modify-write in a transaction
+    // makes the compare-and-set atomic against other connections to the same file.
+    const cas = options !== undefined && "expect" in options;
+    const expected = options?.expect ?? null;
+    const run = this.db.transaction(() => {
+      const from = this.readRef(fromName);
+      if (!from) {
+        throw new Error(`Cannot promote: ref "${fromName}" does not exist`);
+      }
+      const existing = this.readRef(toName);
+      if (cas) {
+        const actual = existing?.executionId ?? null;
+        if (actual !== expected) {
+          throw new BranchPromotionConflictError(toName, expected, actual);
+        }
+      }
+      const now = Date.now();
+      this.writeRef({
+        name: toName,
+        executionId: from.executionId,
+        tip: from.tip,
+        ...(from.parentExecutionId !== undefined && { parentExecutionId: from.parentExecutionId }),
+        ...(from.forkSequence !== undefined && { forkSequence: from.forkSequence }),
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      });
     });
+    run();
+  }
+
+  /** Synchronous ref read — the transaction body cannot await. */
+  private readRef(name: string): BranchRef | null {
+    const row = this.db.prepare<[string], RefRow>("SELECT * FROM refs WHERE name = ?").get(name);
+    return row ? rowToRef(row) : null;
   }
 
   async deleteRef(name: string): Promise<void> {
