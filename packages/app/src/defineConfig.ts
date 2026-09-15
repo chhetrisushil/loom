@@ -24,7 +24,7 @@ import type {
 import type { ExecutionDispatcher } from "@loom/dispatcher";
 import { EffectRuntime, PolicyAuthorizer } from "@loom/effect-runtime";
 import type { CapabilityAuthorizer, EffectMiddleware } from "@loom/effect-runtime";
-import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
+import type { BranchRegistry, EventStore, LeaseStore, TimerStore } from "@loom/event-runtime";
 // Only the in-memory stores are imported statically — they are pure JS. We import
 // them from the browser-safe `/memory` SUBPATH rather than the package barrel: the
 // barrel also re-exports the SQLite stores (which `import "better-sqlite3"`), and
@@ -496,6 +496,22 @@ export interface LoomConfig {
      * own compute otherwise wakes up in the web server after its first suspension.
      */
     dispatcher?: TimerDispatcher;
+    /**
+     * #380 — ownership before a wake. With a `LeaseStore` the service CLAIMS an execution
+     * before resuming it and renews while the wake is in flight, so two nodes polling one
+     * timer store do not both resume (and both pay for) the same work. Without one, a
+     * duplicate wake is made safe by fencing (K9.4) but is still run twice.
+     *
+     * `owner` is this node's identity — a pod name, a process uuid, whatever your deployment
+     * already uses to mean "this process". See `TimerService` for the ttl/renewal semantics:
+     * the ttl is the tolerance for a node that DIED, not a bound on how long a run may take.
+     */
+    leases?: {
+      store: LeaseStore;
+      owner: string;
+      ttlMs?: number;
+      renewEveryMs?: number;
+    };
   };
   /**
    * Whether composing this app also STARTS the background services it wires (today: the
@@ -535,6 +551,19 @@ export interface LoomStores {
    * an operator command that writes into one would be writing into a throwaway.
    */
   memoryStore?: MemoryStore;
+  /**
+   * The durable-timer store, present only when `timers` was configured. Absent means this
+   * deployment has no timer firing at all — sleeps and scheduled flows never wake — which is
+   * a thing an operator command must be able to SEE rather than infer from an empty table.
+   */
+  timerStore?: TimerStore;
+  /**
+   * The lease store, present only when `timers.leases` was configured. Absent is the answer
+   * to "who owns this execution?" being *nobody is tracking that* — distinct from "every
+   * lease is expired", which is a fleet that died. A diagnostic must not render the first as
+   * a count of the second.
+   */
+  leaseStore?: LeaseStore;
 }
 
 export interface LoomApp {
@@ -727,6 +756,11 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   // Present only when CONFIGURED — see LoomStores.memoryStore for why the distinction is
   // the useful part.
   if (config.memoryStore !== undefined) stores.memoryStore = config.memoryStore;
+  // Same contract for the two stores an operator pass needs to find: what the app WIRED, not
+  // a default standing in for it. A diagnostic can then distinguish "not configured" from
+  // "configured and empty" — the distinction the whole census turns on.
+  if (config.timers !== undefined) stores.timerStore = config.timers.store;
+  if (config.timers?.leases !== undefined) stores.leaseStore = config.timers.leases.store;
 
   // K10-R2 — secret redaction runs OUTERMOST on the effect path (it must resolve input
   // references before any other middleware sees the value, and redact output references
@@ -921,6 +955,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       ...(config.timers.fenced !== undefined && { fenced: config.timers.fenced }),
       ...(config.timers.warmLeadMs !== undefined && { warmLeadMs: config.timers.warmLeadMs }),
       ...(config.timers.dispatcher !== undefined && { dispatcher: config.timers.dispatcher }),
+      ...(config.timers.leases !== undefined && { leases: config.timers.leases }),
     });
     // Composition starts it, unless the caller is inspecting rather than running (`autostart`).
     if (config.autostart !== false) timerService.start();
