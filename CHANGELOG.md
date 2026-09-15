@@ -30,6 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Two printable reference cards: [`docs/cheatsheet-features.md`](docs/cheatsheet-features.md)
+  and [`docs/cheatsheet-dx.md`](docs/cheatsheet-dx.md).** Card I is what the kernel gives you
+  — the ten syscalls, the builders, the three authority rings, the subsystems on the log.
+  Card II is how you work — the CLI, `<store>`, doctor's four marks, the operator passes,
+  testing helpers, plugin seams, and the handful of things that reliably bite. Laid out to be
+  read on screen or printed (A4, two columns, every block kept whole).
+
+  Both are derived from the kernel manifest, the CLI usage text and the SPI map rather than
+  from memory, and a fitness test keeps them that way: every syscall must appear on Card I,
+  every seam and CLI command on Card II, and the version and count headlines must match their
+  sources. A cheatsheet is the densest enumeration a repo has and nothing about it fails when
+  a name changes — which is exactly how three other seam lists here went stale.
+
 - **Three seams that were never in the SPI map at all: `execution-authorizer`,
   `resume-authenticator`, `timer-dispatcher`.** Each is a `defineConfig` option whose type is
   an interface an application implements — replaceable by construction, which is what the map
