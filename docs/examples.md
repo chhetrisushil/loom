@@ -43,7 +43,11 @@ pnpm --filter @loom/db-observability start
 ### Execution branching
 
 - **`incident-war-room`** — git-style branching over an execution: fork, simulate
-  on a branch, promote — no merge. Uses `BranchRegistry` + `parallelLimit`.
+  on a branch, promote — no merge. Uses `BranchRegistry` + `parallelLimit`. Each
+  branch then **waits on its own human**, so it is also the reference for a cohort
+  of long-running branches: the orchestrator returns while every branch is
+  suspended, an approval must name the branch it settles, and promoting retracts
+  the ones still parked.
 - **`schema-migration-planner`** — a second branching demo (proving the seam is
   domain-agnostic) with live per-branch backfill progress
   (`reportProgress`/`onProgress`).

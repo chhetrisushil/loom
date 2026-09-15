@@ -44,14 +44,13 @@ You can't do two of these. So don't force a blind approve/reject — **branch**.
 
 1. **Detect** — `IntentRuntime` routes the goal; `PlannerRuntime` composes
    *diagnose → assess → remediate* over the A2A agent mesh (reused verbatim).
-2. **Gate** — the mutating remediation suspends at a durable `ctx.suspend`. `main`
-   points at it. The UI jumps to the **War Room** tab.
-3. **Explore** — fork one child per strategy; resume each **in simulate mode**,
-   concurrently (`@loom/scheduler` `parallelLimit`). Each previews a projected
-   outcome **without touching real infra**. Parent log untouched (copy-on-write).
-4. **Compare** — a git-graph + side-by-side diff fill in live over SSE.
-5. **Promote** — pick a winner: `promote` its ref onto `main`, fork a commit
-   branch, resume `simulate:false` to apply **for real**. Losers kept as lineage.
+2. **Gate** — the remediation suspends at a durable `ctx.suspend`; `main` points at it.
+3. **Explore** — fork one child per strategy, resume each **in simulate mode**,
+   concurrently (`parallelLimit`). Parent log untouched.
+4. **Review** — each branch **parks on its own gate** for that strategy's owner.
+   `explore()` returns with all three still suspended.
+5. **Promote** — the first branch cleared wins: move `main`, apply for real, and
+   **retract** whatever is still parked so no late review resumes a loser.
 
 > The low-risk **CPU** goal auto-remediates without branching — the contrast is the point.
 
@@ -79,27 +78,26 @@ Fork the suspended gate N times, resume each child with a **different**
 ## The seam (`src/branching/BranchOrchestrator.ts`)
 
 ```ts
-// explore(): fork + dry-run every candidate, concurrently, in input order
-const outcomes = await parallelLimit(STRATEGIES.map((s) => async () => {
+// explore(): fork + start every candidate. Returns while they are ALL suspended.
+await parallelLimit(STRATEGIES.map((s) => async () => {
   const fork = await runtime.fork(parent, forkPoint, { branchName: `spec/${s.id}` });
-  const done = await (await runtime.resume(fork.executionId, {
-    eventType: "RemediationDecision",
-    payload: { approved: true, strategy: s.id, simulate: true, approvedBy: "explorer" },
-  })).waitForCompletion();
-  return done.variables._output;                       // projected StrategyOutcome
+  const resumed = await runtime.resume(fork.executionId, { eventType: "RemediationDecision",
+    payload: { approved: true, strategy: s.id, simulate: true, approvedBy: "explorer" } });
+  await resumed.waitForSuspend();          // ← NOT waitForCompletion: it parks for a human
 }), { limit: STRATEGIES.length });
 
-// promote(): pick a winner — a pointer move, then a real, durable apply
-await branchRegistry.promote(`spec/${winner}`, "main");           // records the decision
-const commit = await runtime.fork(parent, forkPoint, { branchName: "commit" });
-await runtime.resume(commit.executionId, { …, payload: { …, simulate: false } });
-await branchRegistry.promote("commit", "main");                    // main = the real apply
+// review(): one owner answers one branch — arrivals are independent, order is theirs
+await runtime.resume(branch.executionId, { eventType: "SimulationReviewed",
+  payload: { branchExecutionId: branch.executionId, approved: true, reviewer } });
+
+// promote(): a pointer move, a real apply — and retract whatever is still parked
+await branchRegistry.promote(`spec/${winner}`, "main");
+for (const other of stillParked) await runtime.cancel(other.executionId, "superseded");
 ```
 
-`parallelLimit` preserves **input order** in the result array → the branch list is deterministic for replay.
+> `waitForCompletion()` here would hang **forever**: the suspend path never resolves it.
 
 ---
-
 ## Copy-on-write, branch-only — why no merge
 
 - **`fork()`** copies the parent's events `[0..S]` verbatim into the child (only
@@ -118,15 +116,12 @@ await branchRegistry.promote("commit", "main");                    // main = the
 
 | | Server (Node) | Client (browser) |
 |---|---|---|
-| Stores | `SqliteEventStore` + `SqliteSnapshotStore` + **`SqliteBranchRegistry`** (`./.data/`) | — |
-| Runtime | `WorkflowRuntime.fork/resume/promote`, `BranchOrchestrator`, A2A bus, 3 agents | — |
-| Surfaces | authoritative `mission` / `telemetry` / **`branch`** | a mirror `InMemoryProjectionRuntime` |
-| UI | — | `BranchGraph` + `BranchDiff` + `BranchControls` Custom Elements (BYOC) |
+| Stores | Sqlite event + snapshot + **branch registry** + **timers** | — |
+| Runtime | `fork` / `resume` / `cancel` / `promote`, `BranchOrchestrator`, A2A bus | — |
+| Surfaces | authoritative `mission` / `telemetry` / **`branch`** | mirror projection runtime |
+| UI | — | `BranchGraph` · `BranchDiff` · `BranchControls` (BYOC) |
 
-New routes: `POST /branches` (fork + simulate) · `GET /branches` · `POST /promote` `{strategy}`.
-Everything else — agents, planner, intent, durable flows, render layer — is **reused**.
-
-> The branch widgets bind to the **whole** `branch` surface (`DataBinding` with an empty `path`) — one widget renders `phase`, `branches`, and `refs` together, not a single field.
+Routes: `POST /branches` · `/review` `{strategy, approved}` · `/promote` `{strategy}`. Everything else — agents, planner, intent, render layer — is **reused**.
 
 ---
 
@@ -160,8 +155,10 @@ distinct projected outcomes, parent isolation, `main` movement, and lineage on S
 
 - Branching is **nearly zero-cost** on Loom: an immutable log + deterministic replay
   mean a fork is a copy-on-write prefix plus a movable ref.
-- `parallelLimit` makes the speculative fan-out **concurrent and deterministic** — the
-  first example to exercise `@loom/scheduler`.
-- The honest model for mutually-exclusive choices is **pick-a-winner, not merge**.
+- A branch can **wait on its own human** — three branches, three reviewers, three
+  clocks. The orchestrator is driven by arrivals, never by awaiting a cohort.
+- An approval must **name its branch**: a sibling's sign-off parses identically at
+  the same gate, so the address rides in the payload and the gate requires it.
+- Promotion **retracts** the losers. A pointer move alone leaves their asks live.
 
 > Sibling decks: `db-command-center-server` (same topology) · `architecture-deck` (the branching mechanics).
