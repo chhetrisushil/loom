@@ -144,7 +144,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       // the worker's reply — and libuv runs the timers phase before the poll phase, so a
       // due deadline can fire ahead of a reply that already arrived. Under a full-repo run
       // this trivial script came back as `limitExceeded` with the worker long since done
-      // (#383). That misattribution is real and tracked separately; the subject HERE is
+      // (#383). That misattribution is real and is tracked in #399; the subject HERE is
       // worker replacement, so this asserts the pool serves again rather than asserting a
       // clock the test does not own.
       const serveAgain = async (): Promise<unknown> => run(await put("(() => 1 + 1)()"));
