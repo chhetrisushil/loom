@@ -10,10 +10,24 @@ import { appFiles } from "@loom/scaffold";
  */
 export const scaffoldFiles = appFiles;
 
+const USAGE = "usage: create-loom-app <directory>";
+
 function main(argv: string[]): void {
   const target = argv[2];
   if (!target) {
-    console.error("usage: create-loom-app <directory>");
+    console.error(USAGE);
+    process.exitCode = 1;
+    return;
+  }
+  if (target === "--help" || target === "-h") {
+    console.log(USAGE);
+    return;
+  }
+  // A flag is not a directory name. Without this, `create-loom-app --help` scaffolds eleven
+  // files into a folder literally called `--help` and reports success — the argument was
+  // never validated because the only check was that it existed.
+  if (target.startsWith("-")) {
+    console.error(`create-loom-app: "${target}" is not a directory name\n${USAGE}`);
     process.exitCode = 1;
     return;
   }
@@ -30,6 +44,9 @@ function main(argv: string[]): void {
 }
 
 // Run only when invoked as a CLI (not when imported by tests).
-if (process.argv[1]?.endsWith("index.js")) {
+// `require.main === module`, not a filename check: `npm create loom-app` and any global
+// install invoke this through a symlink named `create-loom-app`, where argv[1] never ends
+// in "index.js" — the scaffolder would exit 0 having created nothing.
+if (require.main === module) {
   main(process.argv);
 }

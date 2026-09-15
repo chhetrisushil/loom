@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -76,6 +76,21 @@ describe("the built CLI loads a config module", () => {
   it("reads a CommonJS config", () => {
     const out = run(["census", "--config", "./app.cjs"]);
     expect(out).toContain("1 execution(s) scanned, 1 in flight");
+  });
+
+  it("runs when invoked through a SYMLINK, the way a global install does", () => {
+    // The defect this pins: the entry guard used to be `argv[1].endsWith("cli.js")`, so a
+    // global install — which puts a symlink named `loom` on PATH — ran nothing and exited 0.
+    // `pnpm link --global` hid it by writing a shim that execs cli.js by name; `npm i -g`
+    // creates a plain symlink and the binary went silent.
+    const link = join(SCRATCH, "loom");
+    rmSync(link, { force: true });
+    symlinkSync(CLI, link);
+    const out = execFileSync(process.execPath, [link, "--help"], {
+      encoding: "utf8",
+      cwd: SCRATCH,
+    });
+    expect(out).toContain("project-local commands for a Loom app");
   });
 
   it("still reads the SQLite shorthand", () => {

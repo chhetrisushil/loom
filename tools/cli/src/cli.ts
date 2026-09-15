@@ -627,7 +627,12 @@ function requirePositional(positionals: string[], name: string): string {
 }
 
 // Run only as a CLI, not when imported by tests.
-if (process.argv[1]?.endsWith("cli.js")) {
+//
+// `require.main === module`, NOT a check on argv[1]'s filename: a global install puts a
+// symlink named `loom` on PATH, so argv[1] is ".../bin/loom" and a filename check is false —
+// the binary then exits 0 having done nothing, which is the worst way for a CLI to fail.
+// pnpm's global link hid this because it writes a shim that execs cli.js by name.
+if (require.main === module) {
   main(process.argv.slice(2))
     .then((code) => {
       process.exitCode = code;

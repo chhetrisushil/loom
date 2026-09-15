@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A globally installed `loom` did nothing and exited 0.** The entry guard was
+  `process.argv[1]?.endsWith("cli.js")`, but a global install puts a SYMLINK named `loom` on
+  PATH — so `argv[1]` is `…/bin/loom`, the guard was false, and the binary returned success
+  having run no command. `pnpm link --global` hid it by writing a shim that execs `cli.js` by
+  name; `npm i -g` creates a plain symlink, which is what a published package gets. Now
+  `require.main === module`. `create-loom-app` had the same guard and the same silence.
+
+- **`create-loom-app --help` scaffolded eleven files into a directory named `--help`**, and
+  reported success — the only check on the argument was that it existed. `loom-compile --help`
+  crashed with an ENOENT naming a path the user never typed. Both now validate their
+  arguments and print usage. These were newly *reachable*: before the guard fix, neither ran
+  at all through a global install.
+
+- **`pnpm run unlink:global` failed with `ERR_PNPM_UNEXPECTED_STORE`.** The repo pins
+  `pnpm@9.14.4` via `packageManager`, so a machine running pnpm 10 self-downgrades inside the
+  repo — and 9.x refuses to touch a global directory 10.x created. The global store's format
+  is tied to pnpm's major version, so any script touching it is coupled to whichever pnpm
+  created it. Both scripts now use `npm link`, whose global has no such versioning.
+
 ### Added
 
 - **Three seams that were never in the SPI map at all: `execution-authorizer`,
