@@ -111,11 +111,20 @@ export class LogLifecycle {
    * remains byte-identical. Returns what happened (idempotent: a second call is
    * `unknown`).
    */
-  async applyRetention(
+  /**
+   * Every gate `applyRetention` applies, with nothing done — `"reclaimable"` means a real run
+   * would delete this execution.
+   *
+   * Exists so a preview cannot drift from the thing it previews. `loom retention run`'s dry
+   * run used to re-implement eligibility locally (terminal + aged), which silently omitted the
+   * branch and pin gates: it printed `would-reclaim` for executions the library would refuse,
+   * and a `--apply` flag whose preview disagrees with its apply is worse than no preview.
+   */
+  async evaluate(
     executionId: string,
     policy: RetentionPolicy,
     now: number
-  ): Promise<RetentionOutcome> {
+  ): Promise<RetentionOutcome | "reclaimable"> {
     if (this.eventStore.deleteExecution === undefined) return "unsupported";
     const events = await this.eventStore.read(executionId);
     if (events.length === 0) return "unknown";
@@ -132,6 +141,21 @@ export class LogLifecycle {
     if (this.options.pinned !== undefined && (await this.options.pinned(executionId)) === true) {
       return "pinned";
     }
+    return "reclaimable";
+  }
+
+  async applyRetention(
+    executionId: string,
+    policy: RetentionPolicy,
+    now: number
+  ): Promise<RetentionOutcome> {
+    const verdict = await this.evaluate(executionId, policy, now);
+    if (verdict !== "reclaimable") return verdict;
+    // `evaluate` already refused a store that cannot delete; this re-reads it to narrow the
+    // type rather than asserting one.
+    const deleteExecution = this.eventStore.deleteExecution;
+    if (deleteExecution === undefined) return "unsupported";
+    const events = await this.eventStore.read(executionId);
 
     if (this.options.archive !== undefined) {
       const archive = this.options.archive;
@@ -156,7 +180,7 @@ export class LogLifecycle {
 
     // Journal the deletion fact BEFORE deleting — the values go, the fact survives (P9).
     await this.emitLifecycleFact("EXECUTION_DELETED", executionId, now);
-    await this.eventStore.deleteExecution(executionId);
+    await deleteExecution.call(this.eventStore, executionId);
     await this.snapshotStore.deleteExecution?.(executionId);
     // The fork edge described data that no longer exists. Dropping it here is the only
     // point where the id is known AND the data is provably gone — and leaving it would

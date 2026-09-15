@@ -475,6 +475,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`loom retention run` could delete a parent its branches still depended on.** The command
+  built `LogLifecycle` with **no branch registry**, and R5.3's live-descendant guard is a no-op
+  without one — so `--apply` on a branched database deleted parents whose forks alias their
+  prefix, breaking exactly the invariant the guard exists for. The file's own comment said the
+  opposite (*"the branch-integrity guard … handled by `LogLifecycle.applyRetention`"*), true of
+  the method and false of this caller.
+
+  It also re-implemented eligibility locally for the dry run — terminal + aged — so the preview
+  silently skipped the branch **and** pin gates and printed `would-reclaim` for executions the
+  library would refuse. A `--apply` flag whose preview disagrees with its apply is worse than no
+  preview. `LogLifecycle.evaluate()` now holds every gate and `applyRetention` consults it, so
+  the two cannot drift; the CLI takes `--branches <path>`, and **says the guard is off** when it
+  is not given rather than looking complete.
+
 - **`wallClockMs` charged the parent's own latency to the script.** The sandbox pool's kill
   deadline is a `setTimeout` on the parent's event loop, and the worker's reply arrives as a
   message to that same loop — so the budget measured the script *plus* however long the parent
