@@ -151,12 +151,16 @@ export interface VerifyAdapterInputs {
  * `@loom/compiler`'s `analyzeNonDeterminism`, issue #82). Still not derivable from the
  * definition: per-flow `computeTarget` and budgets.
  *
- * **`FlowSpec.suspends` is still unpopulated, and that matters.** Suspend points live in
- * the runner BODY, not the definition, so nothing here can see their `correlationKey` or
- * `wakeAt`. Two of `suspension-safety`'s three checks read that array and therefore never
- * fire for any app built through this adapter — a clean report says nothing about them.
- * Only the K12 approval check above is live. Populating it needs body analysis of the
- * same kind `nonDeterministicByFlow` already arrives by.
+ * **`FlowSpec.suspends` is populated from `runnerReachByFlow` (ADR 0086), and only from
+ * there.** Suspend points live in the runner BODY, not the definition, so this adapter
+ * cannot see a `correlationKey` or `wakeAt` on its own — the compiler's reach analysis reads
+ * them and the manifest carries them. The bound that remains is therefore about INPUT, not
+ * about producers: without a manifest, `reach` is undefined, `suspends` is empty, and two of
+ * `suspension-safety`'s three checks have nothing to read.
+ *
+ * `reachAnalyzed` marks which case a flow is in. Note that no rule reads it yet, so a flow
+ * verified without a manifest reports clean on those checks rather than partially verified —
+ * the one thing here that still overstates its coverage.
  */
 export function resolveVerifyInput(
   runtime: WorkflowRuntime,

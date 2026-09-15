@@ -85,7 +85,7 @@ describe("loom doctor", () => {
     expect(find(result, "durable timers")?.status).toBe("advisory");
     expect(text).toContain("advisory (depends on how you deploy)"); // not silence
     // It says what verification does NOT cover, so a clean report is not read as coverage.
-    expect(text).toContain("FlowSpec.suspends has no producer");
+    expect(text).toContain("ADR 0086 reach analysis");
   });
 
   it("an advisory does not fail the run, and does not vanish from the summary", () => {

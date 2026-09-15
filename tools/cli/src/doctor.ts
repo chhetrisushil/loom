@@ -268,7 +268,7 @@ function timerChecks(loaded: Partial<LoomApp> | Error): DoctorCheck[] {
           ? {
               name: TIMER_CHECK,
               status: "advisory",
-              detail: `no \`timers: { store }\`, and ${gated.length} flow(s) declare resume gates — any \`ctx.sleep\` or \`suspend({ timeout })\` will never wake. Timeouts live in the runner body, so this is inference, not proof: \`suspension-safety\`'s timed-suspend rule cannot see them either (FlowSpec.suspends has no producer), and a clean \`loom verify\` says nothing about them`,
+              detail: `no \`timers: { store }\`, and ${gated.length} flow(s) declare resume gates — any \`ctx.sleep\` or \`suspend({ timeout })\` will never wake. Timeouts live in the runner body, so this is inference from the gates, not proof: \`suspension-safety\` sees real suspend points only when you build with the Loom compiler and pass --manifest (ADR 0086 reach analysis); without one it is silent about them rather than clean`,
             }
           : {
               name: TIMER_CHECK,
