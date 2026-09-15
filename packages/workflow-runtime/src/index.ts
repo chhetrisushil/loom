@@ -34,6 +34,13 @@ export {
 } from "./retireAbandonedBranches";
 export { placementOf, COMPUTE_TARGET_KEY } from "./placement";
 export {
+  orphanCensus,
+  type LeaseCoverage,
+  type OrphanBand,
+  type OrphanCensus,
+  type OrphanCensusOptions,
+} from "./orphanCensus";
+export {
   pruneBranchRefs,
   type PruneBranchRefsOptions,
   type PruneBranchRefsSummary,

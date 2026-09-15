@@ -73,6 +73,13 @@ export class SqliteLeaseStore implements LeaseStore {
     return rows.map(rowToLease);
   }
 
+  async get(executionId: string): Promise<Lease | null> {
+    const row = this.db
+      .prepare<[string], LeaseRow>("SELECT * FROM leases WHERE execution_id = ?")
+      .get(executionId);
+    return row ? rowToLease(row) : null;
+  }
+
   async release(executionId: string, owner: string): Promise<void> {
     this.db
       .prepare<[string, string]>("DELETE FROM leases WHERE execution_id = ? AND owner = ?")

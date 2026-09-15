@@ -78,6 +78,15 @@ export class PostgresLeaseStore implements LeaseStore {
     return rows.map(rowToLease);
   }
 
+  async get(executionId: string): Promise<Lease | null> {
+    await this.ready;
+    const { rows } = await this.pool.query<LeaseRow>(
+      "SELECT * FROM leases WHERE execution_id = $1",
+      [executionId]
+    );
+    return rows[0] ? rowToLease(rows[0]) : null;
+  }
+
   async release(executionId: string, owner: string): Promise<void> {
     await this.ready;
     await this.pool.query("DELETE FROM leases WHERE execution_id = $1 AND owner = $2", [

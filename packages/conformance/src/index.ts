@@ -457,6 +457,22 @@ export function runLeaseStoreConformance(factory: () => LeaseStore, label = "Lea
       await store.close();
     });
 
+    it("get reads the current lease, including an expired one (optional; skipped if absent)", async () => {
+      const store = factory();
+      if (store.get === undefined) return void (await store.close());
+      expect(await store.get("x")).toBeNull();
+
+      await store.acquire("x", "node-a", 1000, 0);
+      expect(await store.get("x")).toMatchObject({ owner: "node-a", expiresAt: 1000 });
+
+      // An EXPIRED lease is still a lease: `null` must mean "nothing ever held this", because
+      // a census counts those separately — one is unwatched, the other is collectable.
+      expect(await store.get("x")).not.toBeNull();
+      await store.release("x", "node-a");
+      expect(await store.get("x")).toBeNull();
+      await store.close();
+    });
+
     it("refuses a TTL that would expire on arrival", async () => {
       const store = factory();
       await expect(store.acquire("x", "n", 0, 0)).rejects.toThrow(/positive/);
