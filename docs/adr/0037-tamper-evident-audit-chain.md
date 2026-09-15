@@ -53,8 +53,43 @@ event's `prevHash`.
   out of band. `truncatePrefix`/`deleteExecution` are forwarded unchanged; verification over a
   truncated log correctly reports a break rather than silently passing.
 
+## Amendment (2026-09-15) — third-party verifiability (#382)
+
+The HMAC path makes the log **tamper-evident**, not **third-party verifiable**, and the
+difference is the whole point of an audit trail. Verification needs the same secret that
+signs, so anyone enabled to *check* the log can also *rewrite* it: re-chain the hashes,
+re-compute the HMACs, and the result verifies cleanly. The verifier and the forger are the
+same role — and an auditor handed the verification key is, cryptographically, indistinguishable
+from the system that produced the log.
+
+So the signature seam becomes pluggable, with an asymmetric implementation shipped:
+
+- `ChainSigner` (`{ keyId, sign(hash) }`) and `ChainVerifier` (`verify(hash, sig, keyId)`),
+  plus `ed25519Signer` / `ed25519Verifier` over `node:crypto` — no dependency, 64-byte
+  signatures, nothing to parameterize wrongly.
+- `ChainMetadata.keyId` names the signing key, so **rotation does not invalidate history**.
+- `hmacSecret` and `signer` are **mutually exclusive**: they make different promises, and a
+  reader must not be left to guess which one an entry carries.
+- `ChainVerification.signaturesChecked` reports whether authorship was checked at all, so a
+  hash-only `ok: true` can never be read as an authorship guarantee.
+
+**Loom still makes no trust-root decision.** It signs with the key you hand it, exactly as it
+HMACs with the secret you hand it; publishing the public key and deciding whose key to trust
+are deployment concerns.
+
+Why the key-lifecycle objection that keeps asymmetric *delegation* deferred (#381) does not
+apply here: a delegation token is a live **capability** that must be revocable, whereas an
+audit entry is a historical **fact**. Verifying a two-year-old entry against the key that
+signed it is correct, so rotation is a `keyId` and there is no revocation problem to solve.
+
 ## Verification
 
+- Asymmetric tests (7, #382): an auditor holding only the public key verifies a chain; a
+  re-chained forgery signed with an unpublished key is internally consistent and still fails
+  against the published one; an unknown `keyId` is rejected rather than skipped; history stays
+  verifiable across a rotation; an unsigned entry is flagged; a chain checked with neither a
+  secret nor a verifier reports `signaturesChecked: false`; and an ambiguous
+  `hmacSecret` + `signer` configuration is refused.
 - `@loom/audit-chain` tests (11): genesis-rooted chain verifies; a tampered payload is caught at the
   right sequence; a dropped event breaks `prevHash`; with a secret, a re-chained forgery fails on the
   signature; the chain continues across a cold start (recovery reads the durable tail); the

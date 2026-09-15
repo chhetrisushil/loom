@@ -22,12 +22,51 @@ export interface ChainMetadata {
   prevHash: string;
   hash: string;
   sig?: string;
+  /**
+   * Which key produced `sig`, when signing asymmetrically. Present so rotation does not
+   * invalidate history: an entry signed last year still verifies against the key that signed
+   * it, which is the whole point of an audit trail and the reason revocation — the hard part
+   * of key lifecycle for a live capability — does not apply here.
+   */
+  keyId?: string;
+}
+
+/**
+ * Produces a signature over a chain hash (#382).
+ *
+ * The HMAC path makes the log tamper-evident against a third party who does not hold the
+ * secret. It cannot make it third-party VERIFIABLE, because verification needs the same
+ * secret: anyone you enable to check the log can also rewrite it — re-chain the hashes,
+ * re-compute the HMACs, and the result verifies cleanly. The verifier and the forger are the
+ * same role, which is exactly what an auditor must not be.
+ *
+ * An asymmetric signer splits them. Loom makes no trust-root decision: it signs with the key
+ * you give it, exactly as it HMACs with the secret you give it.
+ */
+export interface ChainSigner {
+  /** Names the key in each entry, so a verifier can select one. */
+  readonly keyId: string;
+  sign(hash: string): string;
+}
+
+/**
+ * Checks a signature — and CANNOT produce one. That asymmetry is the feature: hand this to
+ * an auditor and they can check every entry without being able to author a single one.
+ */
+export interface ChainVerifier {
+  verify(hash: string, sig: string, keyId: string | undefined): boolean;
 }
 
 export interface ChainVerification {
   ok: boolean;
   /** Number of events checked. */
   length: number;
+  /**
+   * Whether SIGNATURES were checked, not just hashes. A chain verified without a secret or a
+   * verifier is still a real result — the hashes chain — but it says nothing about authorship,
+   * and `ok: true` must not be read as if it did.
+   */
+  signaturesChecked: boolean;
   /** The sequence at which the chain first broke (absent when ok). */
   brokenAt?: number;
   /** Why it broke — a short, specific reason (absent when ok). */
@@ -35,8 +74,22 @@ export interface ChainVerification {
 }
 
 export interface HashChainOptions {
-  /** If set, each event is also HMAC-signed, so a re-chaining tamper is still detectable. */
+  /**
+   * If set, each event is also HMAC-signed, so a re-chaining tamper is still detectable —
+   * by anyone holding the same secret. Tamper-EVIDENT, not third-party verifiable (#382).
+   */
   hmacSecret?: string;
+  /**
+   * Sign each entry asymmetrically instead (#382). Mutually exclusive with `hmacSecret`:
+   * the two make different promises, and a reader cannot be left to guess which one a given
+   * entry carries.
+   */
+  signer?: ChainSigner;
+  /**
+   * Check signatures during `verifyChain`. An auditor configures THIS and nothing else — no
+   * signer, no secret — and can then verify every entry without being able to author one.
+   */
+  verifier?: ChainVerifier;
 }
 
 export interface HashChainedEventStore extends EventStore {
@@ -138,6 +191,15 @@ export function hashChainedEventStore(
   options: HashChainOptions = {}
 ): HashChainedEventStore {
   const secret = options.hmacSecret;
+  const signer = options.signer;
+  const verifier = options.verifier;
+  if (secret !== undefined && signer !== undefined) {
+    throw new Error(
+      "hashChainedEventStore: `hmacSecret` and `signer` are mutually exclusive — one makes the " +
+        "log tamper-evident to secret-holders, the other makes it verifiable by anyone holding " +
+        "the public key. A reader cannot be left to guess which promise an entry carries."
+    );
+  }
   // Last hash per execution, so an append can chain onto it without re-reading. Bounded
   // by the number of live executions writing through this store instance.
   const lastHash = new Map<string, string>();
@@ -158,9 +220,11 @@ export function hashChainedEventStore(
     async append(envelope: EventEnvelope): Promise<void> {
       const prevHash = await priorHashFor(envelope.executionId);
       const hash = hashEvent(prevHash, envelope);
-      const chain: ChainMetadata = secret
-        ? { prevHash, hash, sig: signHash(secret, hash) }
-        : { prevHash, hash };
+      const chain: ChainMetadata = signer
+        ? { prevHash, hash, sig: signer.sign(hash), keyId: signer.keyId }
+        : secret
+          ? { prevHash, hash, sig: signHash(secret, hash) }
+          : { prevHash, hash };
       const stamped: EventEnvelope = {
         ...envelope,
         metadata: { ...envelope.metadata, auditChain: chain },
@@ -179,6 +243,8 @@ export function hashChainedEventStore(
     subscribe: (executionId, handler) => inner.subscribe(executionId, handler),
     close: () => inner.close(),
     async verifyChain(executionId: string): Promise<ChainVerification> {
+      // Reported on every outcome so a hash-only pass can never read as an authorship check.
+      const signaturesChecked = verifier !== undefined || secret !== undefined;
       const events = await inner.read(executionId);
       let prev = GENESIS;
       for (const e of events) {
@@ -187,6 +253,7 @@ export function hashChainedEventStore(
           return {
             ok: false,
             length: events.length,
+            signaturesChecked,
             brokenAt: e.sequence,
             reason: "missing chain metadata",
           };
@@ -195,6 +262,7 @@ export function hashChainedEventStore(
           return {
             ok: false,
             length: events.length,
+            signaturesChecked,
             brokenAt: e.sequence,
             reason: "prevHash mismatch (event dropped or reordered)",
           };
@@ -204,15 +272,38 @@ export function hashChainedEventStore(
           return {
             ok: false,
             length: events.length,
+            signaturesChecked,
             brokenAt: e.sequence,
             reason: "hash mismatch (event tampered)",
           };
         }
-        if (secret !== undefined) {
+        if (verifier !== undefined) {
+          if (chain.sig === undefined) {
+            return {
+              ok: false,
+              length: events.length,
+              signaturesChecked: true,
+              brokenAt: e.sequence,
+              reason: "signature missing (unsigned entry)",
+            };
+          }
+          if (!verifier.verify(chain.hash, chain.sig, chain.keyId)) {
+            return {
+              ok: false,
+              length: events.length,
+              signaturesChecked: true,
+              brokenAt: e.sequence,
+              // An unknown keyId lands here too: a signature this verifier cannot check is
+              // not a signature it may ignore.
+              reason: "signature invalid (forged, or signed by an unknown key)",
+            };
+          }
+        } else if (secret !== undefined) {
           if (chain.sig === undefined || !hmacMatches(secret, chain.hash, chain.sig)) {
             return {
               ok: false,
               length: events.length,
+              signaturesChecked: true,
               brokenAt: e.sequence,
               reason: "signature invalid (forged or unsigned)",
             };
@@ -220,7 +311,7 @@ export function hashChainedEventStore(
         }
         prev = chain.hash;
       }
-      return { ok: true, length: events.length };
+      return { ok: true, length: events.length, signaturesChecked };
     },
     ...(inner.head !== undefined && { head: inner.head.bind(inner) }),
     ...(inner.readRange !== undefined && { readRange: inner.readRange.bind(inner) }),

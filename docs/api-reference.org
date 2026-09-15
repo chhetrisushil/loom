@@ -723,14 +723,22 @@ class InMemoryReadModelStore implements ReadModelStore {}
 // durable: SqliteReadModelStore (@loom/plugin-sqlite), PostgresReadModelStore (@loom/plugin-postgres)
 #+end_src
 
-** ~@loom/plugin-audit-chain~ — a tamper-evident log
+** ~@loom/plugin-audit-chain~ — a tamper-evident, third-party verifiable log
 
 Hash-chains every event into its ~metadata~, which the fold ignores — so replay is byte-identical whether or not it is wired, and any later edit, insert, reorder or drop is detectable out of band.
 
+*Who can check it (#382).* An ~hmacSecret~ makes the log tamper-EVIDENT: verification needs the same secret, so anyone able to check it could also re-chain and re-sign it. A ~signer~ makes it third-party VERIFIABLE — an auditor holds only ~verifier~ and cannot author an entry. The two are mutually exclusive (different promises), ~keyId~ keeps history verifiable across rotation, an unknown key is rejected rather than skipped, and ~signaturesChecked~ says whether authorship was checked at all so a hash-only pass cannot be over-read.
+
 #+begin_src typescript
-function hashChainedEventStore(inner: EventStore, options?: { hmacSecret?: string }): HashChainedEventStore
+function hashChainedEventStore(inner: EventStore, options?: {
+  hmacSecret?: string;        // tamper-evident to secret-holders
+  signer?: ChainSigner;       // { keyId, sign(hash) } — mutually exclusive with hmacSecret
+  verifier?: ChainVerifier;   // { verify(hash, sig, keyId) } — the auditor holds ONLY this
+}): HashChainedEventStore
+function ed25519Signer(privateKey: KeyLike, keyId: string): ChainSigner
+function ed25519Verifier(publicKeys: Record<string, KeyLike>): ChainVerifier   // keyId → public key
 interface HashChainedEventStore extends EventStore {
-  verifyChain(executionId: string): Promise<ChainVerification>   // { ok, length, brokenAt?, reason? }
+  verifyChain(executionId: string): Promise<ChainVerification>   // { ok, length, signaturesChecked, brokenAt?, reason? }
 }
 // compose BELOW tenant-scoping and ABOVE the base store, and OUTSIDE ContentResolvingEventStore —
 // inside it, the chain only ever sees a ref string and rewriting the blob is silent

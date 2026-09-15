@@ -52,7 +52,13 @@ describe("hashChainedEventStore", () => {
       const cur = (events[i]?.metadata as { auditChain: { prevHash: string } }).auditChain.prevHash;
       expect(cur).toBe(prev);
     }
-    expect(await chained.verifyChain("e1")).toEqual({ ok: true, length: 4 });
+    // `signaturesChecked: false` is load-bearing (#382): this chain has no secret and no
+    // verifier, so the hashes chain but nothing was established about WHO wrote them.
+    expect(await chained.verifyChain("e1")).toEqual({
+      ok: true,
+      length: 4,
+      signaturesChecked: false,
+    });
   });
 
   it("detects a tampered payload", async () => {
