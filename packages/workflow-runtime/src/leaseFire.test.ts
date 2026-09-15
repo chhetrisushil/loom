@@ -234,3 +234,69 @@ describe("recoverAbandoned with leases", () => {
     ).rejects.toThrow(/isAbandoned` is required/);
   });
 });
+
+// ── #380 L5a — a claim that outlives its own TTL ─────────────────────────────
+//
+// `fire()` awaits the resumed execution to settle, so the claim spans the WHOLE run —
+// minutes, for the work a branch is placed on its own compute for. Unrenewed, the lease
+// expires under a healthy holder, and a recovery pass then fences that holder out mid-run.
+// Not duplicate work: a killed execution. The log stays correct; the run does not.
+
+describe("#380 L5a — the claim is renewed while the wake is in flight", () => {
+  /** A flow whose post-wake step blocks until the test lets it finish. */
+  function slowFlow() {
+    let release!: () => void;
+    const blocked = new Promise<void>((r) => {
+      release = r;
+    });
+    const flow = makeFlow(async (ctx, input) => {
+      await ctx.suspend({ on: "Approval", timeout: 60_000 });
+      return await ctx.run(expensive, input);
+    });
+    return { flow, blocked, release: () => release() };
+  }
+
+  it("keeps ownership across a run far longer than the TTL", async () => {
+    const eventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const timerStore = new InMemoryTimerStore();
+    const leaseStore = new InMemoryLeaseStore();
+    const slow = slowFlow();
+
+    const effects = new EffectRuntime();
+    effects.register(
+      "expensive-tool",
+      new ToolEffect(async () => {
+        await slow.blocked; // the run is still going
+        return { done: true };
+      })
+    );
+    const runtime = new WorkflowRuntime({
+      eventStore,
+      snapshotStore,
+      effectRuntime: effects,
+      timerStore,
+      onWarn: () => {},
+    });
+    runtime.registerFlow(slow.flow.definition, slow.flow.runner);
+
+    const handle = await runtime.start(slow.flow, { n: 1 }, { executionId: "long-run" });
+    const parked = await handle.waitForSuspend();
+
+    const service = new TimerService(runtime, timerStore, {
+      leases: { store: leaseStore, owner: "node-a", ttlMs: 40, renewEveryMs: 5 },
+    });
+    const firing = service.tick((parked.suspendedOn?.wakeAt ?? 0) + 1);
+
+    // Well past the TTL, with the run still in flight.
+    await new Promise((r) => setTimeout(r, 200));
+    expect(await leaseStore.expired(Date.now())).toEqual([]);
+    // And still exclusively ours: a recovery pass would find nothing to take.
+    expect(await leaseStore.acquire("long-run", "rescuer", 1000)).toBeNull();
+
+    slow.release();
+    await firing;
+    // Released once the wake settled — ownership covers the fire, not the execution's life.
+    expect(await leaseStore.acquire("long-run", "rescuer", 1000)).not.toBeNull();
+  }, 20_000);
+});

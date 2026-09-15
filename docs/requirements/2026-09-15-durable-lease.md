@@ -1,6 +1,6 @@
 # Durable Leases: who owns this execution
 
-**Status:** L1–L4 SHIPPED; L5 (runtime-held leases) deferred to D2.3's hazard
+**Status:** L1–L4 + **L5a** SHIPPED. L5b (the runtime leasing every run) deferred — see §5.
 **Date:** 2026-09-15
 **Kernel baseline:** EVENT_SCHEMA 1.18.0, KERNEL_ABI 1.1.0, EventStore SPI 1.4.0, BranchRegistry SPI 1.2.0
 **Tracks:** [#380](https://github.com/chhetrisushil/loom/issues/380)
@@ -96,14 +96,47 @@ automatic recovery of a live execution is the way this feature fails.
 | ~~**L2**~~ ✅ | `TimerService` acquires before firing | the cheapest real consumer; no runtime changes |
 | ~~**L3**~~ ✅ | `recoverAbandoned` defaults `isAbandoned` to "lease expired" | closes #380's stated ask |
 | ~~**L4**~~ ✅ | SQLite + Postgres backends | the kit already defines correct; verified against a real PG |
-| **L5** | Runtime acquire/renew/release around a run | the biggest, and the one D2.3 is about |
+| ~~**L5a**~~ ✅ | renewal while a claim is held | turned out to be REQUIRED by L2, not polish — see below |
+| **L5b** | the runtime leases every run, not only wake-driven ones | deferred; §5 |
 
 L1–L4 are useful without L5: leases can be held by whatever drives executions (a dispatcher, a
 worker) before the runtime itself learns to hold one.
 
 ---
 
-## 4. Not doing
+## 4.1 What L5a turned out to be
+
+Not polish. `TimerService.fire` and `recoverAbandoned` both hold their claim across the WHOLE
+resumed run, because both await it settling — minutes, for the work a branch is placed on its
+own compute for. Nothing renewed it, so the lease expired **under a healthy holder**, and a
+recovery pass would then fence that holder out mid-run: not duplicate work, a killed execution.
+The log stays correct (fencing doing its job); the run does not.
+
+Shipped as a shared `renewWhileHeld`, used by both paths, with `onLost` surfacing the case where
+ownership is gone anyway — two nodes on one execution is worth being told about, even though
+fencing keeps the log sound.
+
+## 5. L5b — deferred, and what would change that
+
+The coverage after L5a:
+
+| How an execution runs | Leased? |
+| --- | --- |
+| Timer-driven wake (sleep, schedule, HITL timeout) | **yes**, across the whole run |
+| Recovery re-drive | **yes**, across the whole re-drive |
+| `runtime.start()` from a request | no |
+| An operator/API resume | no |
+
+L5b closes the last two, and costs the renewal hazard applied to *every* execution — including
+short interactive ones, where a 60s TTL is absurd relative to the run. The cheaper answer for
+those already exists and is what it was designed for: `recoverAbandoned` with a staleness
+predicate, still required whenever no lease store is wired.
+
+**The condition:** a deployment actually running multi-node that reports orphans the predicate
+misses. That is operational evidence, not a guess about a consumer — and L1–L4 are what make it
+collectable.
+
+## 6. Not doing
 
 - **A lease as the fence.** They answer different questions — fencing is monotonic write-ordering at
   the store, a lease is time-bounded ownership — and collapsing them would make a slow renewal into
