@@ -136,20 +136,43 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         workers: { count: 1, hardKillGraceMs: 50 },
       });
       await expect(run(await put(NON_YIELDING))).rejects.toBeInstanceOf(TypedFailure);
-
       // The only worker was terminated; the next run must get a fresh one.
       //
-      // Retried once, deliberately. `wallClockMs` is enforced by a `setTimeout` on THIS
-      // thread, so it measures the script PLUS however long the main thread took to drain
-      // the worker's reply — and libuv runs the timers phase before the poll phase, so a
-      // due deadline can fire ahead of a reply that already arrived. Under a full-repo run
-      // this trivial script came back as `limitExceeded` with the worker long since done
-      // (#383). That misattribution is real and is tracked in #399; the subject HERE is
-      // worker replacement, so this asserts the pool serves again rather than asserting a
-      // clock the test does not own.
-      const serveAgain = async (): Promise<unknown> => run(await put("(() => 1 + 1)()"));
-      const first = await serveAgain().catch((e: unknown) => e);
-      expect(first instanceof Error ? await serveAgain() : first).toBe(2);
+      // Asserted directly again. This briefly tolerated a retry, because under a full-repo
+      // run the trivial script came back `limitExceeded` with the worker long since done
+      // (#383) — the parent's kill timer charging its own latency to the script. That is
+      // fixed at the source (#399), so tolerating it here would now hide a regression
+      // rather than absorb a known artifact.
+      await expect(run(await put("(() => 1 + 1)()"))).resolves.toBe(2);
+    },
+    SLOW
+  );
+
+  it(
+    "does not charge the parent's own latency to the script (#399)",
+    async () => {
+      // `wallClockMs` bounds the SCRIPT. The kill timer lives on THIS thread, so before
+      // #399 it also measured however long this thread took to hear back — and libuv runs
+      // timers before polling, so a due deadline fires ahead of a reply that already
+      // arrived. A trivial script then came back `limitExceeded { wallClock }`: a resource
+      // kill routed to drift-repair, for a script that was never the problem.
+      //
+      // Starvation, made deterministic. The worker answers in microseconds on its own
+      // thread; this thread refuses to listen for four times the deadline.
+      const { put, run } = await boot({
+        limits: { memoryBytes: 512 * 1024 * 1024, wallClockMs: 50 },
+        workers: { count: 1, hardKillGraceMs: 50 },
+      });
+      const ref = await put("(() => 1 + 1)()");
+
+      const pending = run(ref);
+      await new Promise((r) => setTimeout(r, 5)); // let the eval actually be posted
+      const until = Date.now() + 400; // 4x the 50 + 50 deadline
+      while (Date.now() < until) {
+        // Deliberate: the parent is unresponsive, which is the whole scenario.
+      }
+
+      await expect(pending).resolves.toBe(2);
     },
     SLOW
   );

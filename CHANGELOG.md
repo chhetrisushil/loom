@@ -366,6 +366,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`wallClockMs` charged the parent's own latency to the script.** The sandbox pool's kill
+  deadline is a `setTimeout` on the parent's event loop, and the worker's reply arrives as a
+  message to that same loop — so the budget measured the script *plus* however long the parent
+  took to post the eval and to drain the reply. libuv runs the timers phase before the poll
+  phase, so on a contended host a due deadline fires ahead of a reply that already arrived,
+  and a trivial script comes back `limitExceeded { wallClock }`: a resource kill routed to
+  drift-repair, where an LLM rewrites a script that was never the problem. (Same failure the
+  pool already fixed for cold starts, by a different route.) The deadline is now a **question
+  asked of shared memory** rather than a verdict: the worker stamps when the script actually
+  started and when it stopped into a `SharedArrayBuffer`, which the parent reads
+  *synchronously* inside the timer callback — where it cannot receive a message. A script is
+  killed only if it is still running and has outrun its budget **by the worker's own clock**;
+  otherwise the parent re-asks. A worker that never starts the run at all is still reclaimed,
+  as a worker fault rather than a script breach. Pinned by a test that starves the parent for
+  four times the deadline and asserts the fast script still resolves.
+
 - **The retention guard read whole logs to ask a yes/no question.** `hasLiveDescendant` called
   `eventStore.read(child)` and checked `.length > 0` — per child, per swept execution, against
   branch logs, which are the long ones precisely because a branch is forked to do expensive
