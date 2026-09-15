@@ -146,21 +146,34 @@ Fixes M7. The branch id goes in the resume payload and is **required** by the fl
 because the authenticator cannot see the address it is being applied to. Pair with a per-branch
 external task created *after* the fork — a human task minted before the fork can only name the parent.
 
-### E8 — an example that actually hosts a gate inside a branch *(loom-examples)*
+### E8 — an example that hosts a gate inside a branch *(loom-examples)* — **SHIPPED**
 
-Fixes M10, and is the evidence for all of the above. The orchestrator must be event-driven: fork all
-branches, persist the cohort, return; let each branch's resume arrive on its own schedule and
-re-evaluate whether the cohort is decidable. This is the second consumer that would justify promoting
-E2/E3 out of app code.
+Fixes M10 (loom-examples #41). `incident-war-room`'s `explore()` now returns while every branch
+is suspended, and reviews arrive independently. Building it settled three things the plan left
+open:
+
+- **E7 landed with it.** The branch id rides in the review payload, is required by
+  `resumeSchemas`, and is checked by the runner — which **re-parks** on a mismatch rather than
+  failing the execution. Ignoring a mis-addressed approval is the right behaviour: the branch
+  still needs its own answer.
+- **E3 landed with it, and changed shape.** Gating promotion on the *whole* cohort being
+  answered makes the slowest reviewer the critical path for an incident fix. The first branch
+  cleared can win, and promotion cancels the siblings still parked.
+- **E2 landed with it, as an app pattern.** The committing execution records the promotion with
+  `ctx.decide` — candidate set and reason. It needs no 1P surface, which is the outcome ADR 0083
+  predicts: one consumer is a pattern, not a package.
+
+The example also became **E1's first consumer** by wiring a `SqliteTimerStore`, so the forked
+gate's deadline is live rather than hypothetical.
 
 ---
 
 ## 4. Suggested order
 
 1. ~~**E1**~~ — **shipped**; the `restart` option it proposed turned out to be unimplementable.
-2. **E8** — build the workload that needs the rest; it decides E2/E3's real shape.
-3. **E7**, **E2** — correctness and audit, both driven by E8.
-4. **E3**, **E6** — lifecycle, once the cohort exists in a real app.
+2. ~~**E8**~~ — **shipped**; it decided E2/E3's shape and carried E7 in with it.
+3. ~~**E7**, **E2**~~ — **shipped inside E8** as app patterns; neither needs a 1P surface yet.
+4. **E6** (and the rest of **E3**: a compare-and-set `promote`) — lifecycle, now that a real cohort exists.
 5. **E4**, **E5** — placement and cost, independent of the others.
 
 ## 5. Not doing

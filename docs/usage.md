@@ -378,6 +378,15 @@ await branchRegistry.promote("commit", "main");
 
 The parent and losing branches remain immutable — a full audit trail of what was tried and why. See `incident-war-room` and `schema-migration-planner` in the sibling [`loom-examples`](examples.md) repo.
 
+> **If a branch can suspend, do not await completion in the fan-out.** The shape above works
+> only while every branch runs straight through. A branch that parks — on a human, a timer, an
+> approval — never resolves `waitForCompletion()`, so one such branch stalls the whole cohort
+> forever. Await `waitForSuspend()` instead, record the cohort, and let each branch's resume
+> arrive on its own schedule. `incident-war-room` is the worked example: a review gate inside
+> every branch, an approval that carries the branch id (a sibling's approval parses identically
+> at the same gate), and a `promote` that cancels the branches still parked so a late answer
+> cannot resume a loser.
+
 ---
 
 ## Step 11 — Harden it: grants, quotas, safety, secrets & isolation
