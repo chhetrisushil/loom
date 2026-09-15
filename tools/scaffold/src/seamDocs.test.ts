@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -139,6 +140,55 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
       if (!declared.has(m[1])) bad.push(`${key} → \`${m[1]}\` is not a defineConfig option`);
     }
     expect(bad, bad.join("\n")).toEqual([]);
+  });
+
+  it("every defineConfig option typed as an INTERFACE appears in the SPI map", () => {
+    // The blind spot the other two guards share: both start from a conformance kit, so a
+    // seam with no kit is invisible to them. `ExecutionAuthorizer` and `TimerDispatcher` were
+    // both `defineConfig` options an application implements — replaceable by construction,
+    // which is what the map says it enumerates — with no row, no kit and no scaffold.
+    //
+    // This starts from the config instead: if an app can pass its own implementation of X,
+    // X is a seam, whether or not anyone wrote a kit for it.
+    const config = readFileSync(resolve(REPO_ROOT, "packages/app/src/defineConfig.ts"), "utf8");
+    const map = doc(SPI_MAP);
+
+    // Interface-typed options, one or two levels in (`authorizer?: CapabilityAuthorizer`,
+    // `dispatcher?: TimerDispatcher`). Concrete classes, primitives, unions and callbacks are
+    // not seams — you cannot supply your own `boolean`.
+    // Types an app passes that are NOT replaceable behaviour. Each needs a reason, because
+    // "it is just a shape" is also what someone would say about a seam they did not want to
+    // document — the three below are data or a holder, with no policy to implement.
+    const NOT_A_SEAM: Record<string, string> = {
+      GrantTable: "a concrete 1P implementation, reachable through CapabilityAuthorizer",
+      PlacementDispatcher: "a concrete 1P implementation of ExecutionDispatcher",
+      ProjectionRuntime: "documented in its own right",
+      ArchiveStores: "a HOLDER of two documented seams ({ eventStore, snapshotStore }), not one",
+      ManifestView: "compiler-manifest DATA — there is no behaviour to supply",
+      CatalogLike: "an adapter shape for an existing catalog object, not a pluggable backend",
+    };
+    const options = [...config.matchAll(/^\s{2,4}(\w+)\?:\s*([A-Z]\w+);/gm)];
+    const missing: string[] = [];
+    for (const [, option, type] of options) {
+      if (type === undefined || option === undefined) continue;
+      if (NOT_A_SEAM[type] !== undefined) continue;
+      // `security`, `observability`, `durability`… are option GROUPS — a namespace of
+      // settings, not a behaviour anyone implements. The naming convention is load-bearing
+      // here, so a group added later is excluded without an edit.
+      if (type.endsWith("Options")) continue;
+      // Only types declared as an `interface` somewhere in the repo — a type alias for a
+      // union or a function is a config shape, not an implementable seam.
+      const declared = execSync(
+        `grep -rl "export interface ${type} " packages plugins --include="*.ts" || true`,
+        { cwd: REPO_ROOT, encoding: "utf8" }
+      ).trim();
+      if (declared === "") continue;
+      if (!map.includes(`\`${type}`)) missing.push(`${option}: ${type}`);
+    }
+    expect(
+      missing,
+      `these defineConfig options let an app supply its own implementation, and the SPI map never names them:\n${missing.join("\n")}`
+    ).toEqual([]);
   });
 
   it("every SPI with a conformance kit is scaffoldable", () => {

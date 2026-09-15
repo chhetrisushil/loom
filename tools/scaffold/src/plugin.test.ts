@@ -69,6 +69,9 @@ describe("pluginFiles", () => {
       "worker",
       "llm",
       "authorizer",
+      "execution-authorizer",
+      "resume-authenticator",
+      "timer-dispatcher",
       "policy",
     ]);
     const text = listSeams();

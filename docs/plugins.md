@@ -206,7 +206,8 @@ loom plugin new store my-backend --first-party # first-party: ./plugins/my-backe
 
 Seams: `store`, `dispatcher`, `telemetry`, `middleware`, `timer`, `lease`, `content`,
 `durable-state`, `read-model`, `keystore`, `memory`, `projection`, `worker`, `llm`,
-`authorizer`, `policy`. Then implement
+`authorizer`, `execution-authorizer`,
+`resume-authenticator`, `timer-dispatcher`, `policy`. Then implement
 the SPI, un-comment the conformance test, and run your formatter.
 
 **`policy` is the one seam that is not a `defineConfig` contributor.** Every other seam is
