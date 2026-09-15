@@ -131,6 +131,27 @@ describe("a branch nobody answered blocks its parent forever", () => {
     );
   });
 
+  it("previews a retirement without cancelling the branch", async () => {
+    const app = boot();
+    await parentWithBranch(app, ["p9", "b9"]);
+
+    const seen: string[] = [];
+    const summary = await retireAbandonedBranches(app.runtime, app.branchRegistry, "p9", {
+      isAbandoned: () => true,
+      dryRun: true,
+      onCandidate: (c) => seen.push(c.executionId),
+    });
+
+    expect(seen).toEqual(["b9"]);
+    expect(summary).toMatchObject({ scanned: 1, candidates: 1, retired: 0 });
+    // Still parked on its gate — someone's open question is not closed by asking about it.
+    expect((await app.runtime.loadState("b9"))?.status).toBe("suspended");
+    // ...and the parent is still blocked, which is what the preview is TELLING you.
+    expect(await app.lifecycle.applyRetention("p9", FOREVER, Date.now() + 1)).toBe(
+      "blocked-by-branch"
+    );
+  });
+
   it("never offers a terminal branch to the predicate", async () => {
     const app = boot();
     const branchId = await parentWithBranch(app, ["p4", "b4"]);
@@ -209,6 +230,53 @@ describe("branch registry rows do not outlive their executions", () => {
     expect(await app.branchRegistry.getRef("main")).not.toBeNull();
     // A ref whose execution is alive is untouched.
     expect(await app.branchRegistry.getRef("spec/live")).not.toBeNull();
+  });
+
+  it("previews without deleting, and `deleted` stays 0 because nothing was", async () => {
+    const app = boot();
+    const now = Date.now();
+    for (let i = 0; i < 3; i++) {
+      await app.branchRegistry.putRef({
+        name: `spec/ghost-${i}`,
+        executionId: `never-existed-${i}`,
+        tip: 0,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    const seen: string[] = [];
+    const summary = await pruneBranchRefs(app.eventStore, app.branchRegistry, {
+      dryRun: true,
+      onCandidate: (name) => seen.push(name),
+    });
+
+    expect(seen).toEqual(["spec/ghost-0", "spec/ghost-1", "spec/ghost-2"]);
+    expect(summary).toMatchObject({ scanned: 3, dangling: 3, deleted: 0 });
+    // Every ref is still there — and `deleted: 0` is the honest count, not a tally of
+    // writes the preview merely imagined.
+    expect(await app.branchRegistry.listRefs()).toHaveLength(3);
+  });
+
+  it("bounds a preview by `limit`, since `deleted` cannot be the bound", async () => {
+    const app = boot();
+    const now = Date.now();
+    for (let i = 0; i < 6; i++) {
+      await app.branchRegistry.putRef({
+        name: `spec/ghost-${i}`,
+        executionId: `never-existed-${i}`,
+        tip: 0,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    const seen: string[] = [];
+    await pruneBranchRefs(app.eventStore, app.branchRegistry, {
+      dryRun: true,
+      limit: 2,
+      onCandidate: (name) => seen.push(name),
+    });
+    expect(seen).toHaveLength(2);
   });
 
   it("pages through a registry larger than one page", async () => {

@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`loom recover` / `loom branches retire` / `loom branches prune` — front doors for the
+  three maintenance passes.** Recovering executions whose supervisor died, retiring branches
+  nobody is coming back to, and pruning refs that name nothing all shipped as library
+  functions a scheduled job had to be written by hand to call. All three are **dry by
+  default** and act only under `--apply`.
+
+  Each one turns on a judgement loom will not make for you, so each refuses rather than
+  guesses: `recover` needs either `timers.leases` (an expired lease is evidence) or an
+  explicit `--stale`, and says *why* no default is defensible; `branches retire` needs
+  `--stale` because a branch parked on a human gate is someone's open question. `recover
+  --apply` additionally requires `--config`, because re-driving an execution runs its steps
+  and only a composition has the flows registered — the `--db` shorthand can preview, and the
+  message says so instead of only refusing.
+
+- **`dryRun` + `onCandidate` on `recoverAbandoned`, `retireAbandonedBranches` and
+  `pruneBranchRefs`.** The preview runs through the pass rather than beside it, because
+  `loom retention` shipped the other arrangement once: a dry run computed alongside the real
+  pass skipped a guard the pass applied, and promised an outcome the run would not deliver.
+  A preview claims no lease (claiming is a write, and would fence the real pass out of the
+  execution it was about to take), deletes no ref, and leaves `deleted`/`recovered` at zero —
+  a count of writes that never happened is the same lie in a different place.
+
 - **Every storage-backed `loom` command takes `--config <module>`.** `census`, `retention`,
   `logs`, `debug`, `inspect`/`dev`, `profile`, `introspect`, `optimize`, `learn report|eval`,
   `compliance report` and `sweep content` resolve their stores from the app's composition, so

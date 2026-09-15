@@ -9,6 +9,7 @@ import {
   SqliteSnapshotStore,
 } from "@loom/plugin-sqlite";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
+import type { WorkflowRuntime } from "@loom/workflow-runtime";
 
 // ── Where an operator command gets its storage ───────────────────────────────
 //
@@ -33,6 +34,15 @@ export interface ResolvedStores {
   branchRegistry?: BranchRegistry;
   leaseStore?: LeaseStore;
   timerStore?: TimerStore;
+  /**
+   * The app's own runtime — present only on the `--config` path, because only a composition
+   * has the flows and effects registered.
+   *
+   * It is the difference between a pass that can LOOK and one that can ACT: folding state
+   * needs nothing but the log, while re-driving an execution runs its steps. A command that
+   * writes must refuse the `--db` shorthand rather than re-drive into an empty registry.
+   */
+  runtime?: WorkflowRuntime;
   /** How these were resolved — messages about what is MISSING must say which half to fix. */
   origin: "config" | "db";
   close(): Promise<void>;
@@ -119,6 +129,7 @@ async function fromConfig(modulePath: string): Promise<ResolvedStores> {
   return {
     eventStore,
     snapshotStore,
+    ...(app.runtime !== undefined && { runtime: app.runtime }),
     ...(branchRegistry !== undefined && { branchRegistry }),
     ...(leaseStore !== undefined && { leaseStore }),
     ...(timerStore !== undefined && { timerStore }),

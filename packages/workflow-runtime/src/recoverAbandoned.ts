@@ -95,6 +95,20 @@ export interface RecoverAbandonedOptions {
    * Default `false`, matching {@link TimerService}.
    */
   fenced?: boolean;
+  /**
+   * Called for every execution the pass SELECTED, in both modes — the dry run's answer, and
+   * in a live run the record of what it was about to touch.
+   */
+  onCandidate?: (executionId: string) => void;
+  /**
+   * Select and report, changing nothing: no lease claimed, no execution re-driven.
+   *
+   * The preview deliberately runs through THIS function rather than beside it. A preview
+   * computed alongside a pass is a preview that can disagree with it — `loom retention`
+   * shipped exactly that bug, where the CLI's own dry run skipped a guard the real pass
+   * applied, so it promised an outcome the run would not deliver.
+   */
+  dryRun?: boolean;
   onRecovered?: (executionId: string) => void;
   onError?: (executionId: string, err: unknown) => void;
   /**
@@ -161,7 +175,9 @@ export async function recoverAbandoned(
   };
 
   for await (const executionId of candidateIds(options)) {
-    if (summary.recovered >= limit) break;
+    // A dry run recovers nothing, so `recovered` would never reach the limit and the scan
+    // would run to the end of the store. Bound the mode that is actually counting.
+    if ((options.dryRun === true ? summary.candidates : summary.recovered) >= limit) break;
     summary.scanned++;
 
     const state = await runtime.loadState(executionId);
@@ -183,6 +199,11 @@ export async function recoverAbandoned(
             sequence: state.sequence,
           });
     if (!claimed) continue;
+    options.onCandidate?.(executionId);
+
+    // A dry run stops HERE, before the claim: acquiring a lease is a write, and it would
+    // fence a real recovery pass out of the very execution it was about to take.
+    if (options.dryRun === true) continue;
 
     // Take ownership before re-driving, so two passes racing the same orphan do not both pay
     // for it. Losing the race means someone else is already on it.

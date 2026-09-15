@@ -17,6 +17,7 @@ import { cmdCompat, cmdKernelManifest } from "./kernel";
 import { cmdKnowledgeList, cmdKnowledgeSearch, cmdKnowledgeSync } from "./knowledge";
 import { cmdLearnEval, cmdLearnReport } from "./learn";
 import { cmdLintClaimCheck } from "./lintClaimCheck";
+import { cmdBranchesPrune, cmdBranchesRetire, cmdRecover } from "./maintenance";
 import { cmdOptimize } from "./optimize";
 import { cmdPluginCheck, cmdPluginNew, cmdPluginSeams } from "./plugin";
 import { cmdPluginSearch } from "./pluginSearch";
@@ -114,6 +115,15 @@ export const USAGE = `loom — project-local commands for a Loom app
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
   loom census <store> [--buckets 5m,1h,6h,24h]    what is stuck, and is anything watching it
                                                   (read-only; takes no predicate)
+  loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--apply]
+                                                  re-drive executions whose supervisor died
+                                                  (needs \`timers.leases\` or --stale; --apply
+                                                   needs --config: re-driving runs the flow)
+  loom branches retire <store> --parent <id> --stale <d> [--limit N] [--apply]
+                                                  cancel branches nobody is coming back to
+                                                  (they keep the parent uncollectable)
+  loom branches prune <store> [--protect main,rel] [--limit N] [--apply]
+                                                  delete refs that name nothing (main protected)
   loom retention run <store> [--ttl ms] [--apply]  reclaim aged terminal executions
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
@@ -155,6 +165,49 @@ async function main(argv: string[]): Promise<number> {
       const at = flags.at !== undefined ? Number.parseInt(flags.at, 10) : undefined;
       console.log(await cmdDebug(storeFlagsOf(flags), executionId, at, parseRedact(flags.redact)));
       return 0;
+    }
+    case "recover": {
+      if (!hasStoreFlags(flags)) return storeFlagError("recover");
+      console.log(
+        await cmdRecover({
+          ...storeFlagsOf(flags),
+          ...(flags.stale !== undefined && { stale: flags.stale }),
+          ...(flags.owner !== undefined && { owner: flags.owner }),
+          ...(flags.limit !== undefined && { limit: Number.parseInt(flags.limit, 10) }),
+          apply: flags.apply === "true",
+        })
+      );
+      return 0;
+    }
+    case "branches": {
+      const sub = requirePositional(positionals, "retire|prune");
+      if (!hasStoreFlags(flags)) return storeFlagError(`branches ${sub}`);
+      const shared = {
+        ...storeFlagsOf(flags),
+        ...(flags.limit !== undefined && { limit: Number.parseInt(flags.limit, 10) }),
+        apply: flags.apply === "true",
+      };
+      if (sub === "retire") {
+        requireFlag(flags, "parent");
+        console.log(
+          await cmdBranchesRetire({
+            ...shared,
+            parent: flags.parent!,
+            ...(flags.stale !== undefined && { stale: flags.stale }),
+          })
+        );
+        return 0;
+      }
+      if (sub === "prune") {
+        console.log(
+          await cmdBranchesPrune({
+            ...shared,
+            ...(flags.protect !== undefined && { protect: flags.protect }),
+          })
+        );
+        return 0;
+      }
+      throw new Error(`unknown branches subcommand "${sub}" (expected retire|prune)`);
     }
     case "census": {
       if (!hasStoreFlags(flags)) return storeFlagError("census");

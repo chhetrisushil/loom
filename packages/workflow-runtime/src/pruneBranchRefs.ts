@@ -24,6 +24,10 @@ export interface PruneBranchRefsOptions {
    * a ghost" into "there is no main", which is harder to diagnose, not easier.
    */
   protect?: readonly string[];
+  /** Called for every dangling, unprotected ref the pass selected, in both modes. */
+  onCandidate?: (name: string) => void;
+  /** Select and report, deleting nothing — through this function, not beside it. */
+  dryRun?: boolean;
 }
 
 export interface PruneBranchRefsSummary {
@@ -51,6 +55,7 @@ export async function pruneBranchRefs(
   const pageSize = options.pageSize ?? 500;
   const limit = options.limit ?? Number.POSITIVE_INFINITY;
   const protectedNames = new Set(options.protect ?? ["main"]);
+  let selected = 0;
   const summary: PruneBranchRefsSummary = {
     scanned: 0,
     dangling: 0,
@@ -73,7 +78,13 @@ export async function pruneBranchRefs(
         summary.protectedDangling.push(ref.name);
         continue;
       }
-      if (summary.deleted >= limit) continue;
+      // `deleted` counts writes, so in a dry run it stays 0 and the bound comes from the
+      // selections instead — a summary that claimed deletions it never made would be the
+      // same lie as a preview that disagrees with its pass.
+      if ((options.dryRun === true ? selected : summary.deleted) >= limit) continue;
+      selected++;
+      options.onCandidate?.(ref.name);
+      if (options.dryRun === true) continue;
       await registry.deleteRef(ref.name);
       summary.deleted++;
     }

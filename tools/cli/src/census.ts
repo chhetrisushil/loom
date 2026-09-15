@@ -3,6 +3,7 @@ import { isReservedStream } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime, orphanCensus } from "@loom/workflow-runtime";
 import type { LeaseCoverage, OrphanCensus } from "@loom/workflow-runtime";
+import { humanizeDuration as humanize, parseDuration } from "./duration";
 import { type StoreFlags, resolveStores } from "./stores";
 
 // ── `loom census` — what is stuck, and is anything watching it ────────────────
@@ -14,8 +15,6 @@ import { type StoreFlags, resolveStores } from "./stores";
 // Read-only, and takes no predicate — the question it answers is whether YOUR staleness rule
 // is right, so it must not need one of its own.
 
-const BUCKET_UNITS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
-
 /** `5m,1h,6h,24h` → ms. Plain numbers are milliseconds. */
 export function parseBuckets(spec: string): number[] {
   return spec
@@ -23,17 +22,12 @@ export function parseBuckets(spec: string): number[] {
     .map((raw) => raw.trim())
     .filter((raw) => raw.length > 0)
     .map((raw) => {
-      const match = /^(\d+)([smhd]?)$/.exec(raw);
-      if (match === null) throw new Error(`invalid bucket "${raw}" (try 30s, 5m, 6h, 2d)`);
-      return Number(match[1]) * (match[2] ? (BUCKET_UNITS[match[2]] as number) : 1);
+      try {
+        return parseDuration(raw);
+      } catch {
+        throw new Error(`invalid bucket "${raw}" (try 30s, 5m, 6h, 2d)`);
+      }
     });
-}
-
-function humanize(ms: number): string {
-  if (ms >= 86_400_000) return `${ms / 86_400_000}d`;
-  if (ms >= 3_600_000) return `${ms / 3_600_000}h`;
-  if (ms >= 60_000) return `${ms / 60_000}m`;
-  return `${ms / 1000}s`;
 }
 
 function leaseLine(coverage: LeaseCoverage): string[] {
