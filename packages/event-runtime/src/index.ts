@@ -21,6 +21,14 @@ export {
   EVENT_STORE_SPI_VERSION,
 } from "./types";
 export { StaleFenceError, fenceOf } from "./fencing";
+export {
+  InMemoryLeaseStore,
+  LEASE_STORE_SPI_VERSION,
+  assertTtl,
+  type InMemoryLeaseStoreOptions,
+  type Lease,
+  type LeaseStore,
+} from "./leases";
 export { DuplicateEnvelopeIdError, DuplicateSequenceError } from "./writeConflicts";
 export { lowerBoundBySequence, sliceBySequence } from "./sequenceRange";
 export { InMemoryBranchRegistry } from "./InMemoryBranchRegistry";

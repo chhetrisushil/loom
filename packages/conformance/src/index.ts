@@ -8,6 +8,7 @@ import type {
   TimerRecord,
   TimerStore,
 } from "@loom/event-runtime";
+import type { LeaseStore } from "@loom/event-runtime";
 import {
   DuplicateEnvelopeIdError,
   DuplicateSequenceError,
@@ -380,6 +381,92 @@ function ref(name: string, executionId: string, tip: number): BranchRef {
 }
 
 /** The BranchRegistry contract (`@loom/event-runtime`): refs, tip moves, promote, lineage DAG. */
+/**
+ * The portable {@link LeaseStore} contract (#380). Ownership with an expiry is the fact the log
+ * cannot hold — so the cases below are about the two answers that matter to a caller: *who has
+ * it* and *have I lost it*, at a clock the test controls.
+ */
+export function runLeaseStoreConformance(factory: () => LeaseStore, label = "LeaseStore"): void {
+  describe(`${label} conformance (LeaseStore SPI)`, () => {
+    it("grants a free lease and refuses one another owner already holds", async () => {
+      const store = factory();
+      expect(await store.acquire("x", "node-a", 1000, 0)).toMatchObject({
+        executionId: "x",
+        owner: "node-a",
+        expiresAt: 1000,
+      });
+      // The `null` that is the whole point: only one node should run this execution.
+      expect(await store.acquire("x", "node-b", 1000, 100)).toBeNull();
+      // A different execution is unaffected — leases are per execution, not a global lock.
+      expect(await store.acquire("y", "node-b", 1000, 100)).not.toBeNull();
+      await store.close();
+    });
+
+    it("lets the holder re-acquire — restarting your own work is not a conflict", async () => {
+      const store = factory();
+      await store.acquire("x", "node-a", 1000, 0);
+      const again = await store.acquire("x", "node-a", 1000, 500);
+      expect(again).toMatchObject({ owner: "node-a", expiresAt: 1500 });
+      await store.close();
+    });
+
+    it("hands an EXPIRED lease to whoever asks next", async () => {
+      const store = factory();
+      await store.acquire("x", "node-a", 1000, 0);
+      expect(await store.acquire("x", "node-b", 1000, 999)).toBeNull(); // not yet
+      expect(await store.acquire("x", "node-b", 1000, 1001)).toMatchObject({ owner: "node-b" });
+      await store.close();
+    });
+
+    it("renew extends for the holder and FAILS once ownership is lost", async () => {
+      const store = factory();
+      await store.acquire("x", "node-a", 1000, 0);
+      expect(await store.renew("x", "node-a", 1000, 500)).toBe(true);
+      expect(await store.renew("x", "node-b", 1000, 500)).toBe(false); // never a steal
+      expect(await store.renew("ghost", "node-a", 1000, 500)).toBe(false);
+
+      // Taken over after expiry: the old owner must learn it is no longer alive, because a
+      // caller that keeps working on `true` is the split brain this exists to surface.
+      await store.acquire("x", "node-b", 1000, 2000);
+      expect(await store.renew("x", "node-a", 1000, 2100)).toBe(false);
+      await store.close();
+    });
+
+    it("expired() reports what stopped saying it was alive, soonest first", async () => {
+      const store = factory();
+      await store.acquire("late", "n", 1000, 0);
+      await store.acquire("early", "n", 100, 0);
+      await store.acquire("alive", "n", 10_000, 0);
+
+      const dead = await store.expired(2000);
+      expect(dead.map((l) => l.executionId)).toEqual(["early", "late"]);
+      expect(await store.expired(50)).toEqual([]);
+      expect((await store.expired(2000, 1)).map((l) => l.executionId)).toEqual(["early"]);
+      await store.close();
+    });
+
+    it("release frees it for the holder and is a no-op for anyone else", async () => {
+      const store = factory();
+      await store.acquire("x", "node-a", 1000, 0);
+      await store.release("x", "node-b"); // not yours
+      expect(await store.acquire("x", "node-b", 1000, 100)).toBeNull();
+
+      await store.release("x", "node-a");
+      expect(await store.acquire("x", "node-b", 1000, 100)).not.toBeNull();
+      await store.release("ghost", "node-a"); // no throw
+      await store.close();
+    });
+
+    it("refuses a TTL that would expire on arrival", async () => {
+      const store = factory();
+      await expect(store.acquire("x", "n", 0, 0)).rejects.toThrow(/positive/);
+      await expect(store.acquire("x", "n", -1, 0)).rejects.toThrow(/positive/);
+      await expect(store.renew("x", "n", 0, 0)).rejects.toThrow(/positive/);
+      await store.close();
+    });
+  });
+}
+
 export function runBranchRegistryConformance(
   factory: () => BranchRegistry,
   label = "BranchRegistry"

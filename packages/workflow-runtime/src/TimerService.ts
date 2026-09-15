@@ -1,5 +1,5 @@
 import type { ScheduleDefinition } from "@loom/core";
-import type { EventStore, TimerStore } from "@loom/event-runtime";
+import type { EventStore, LeaseStore, TimerStore } from "@loom/event-runtime";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type CronSpec, nextOccurrence, parseCron } from "./cron";
 import { placementOf } from "./placement";
@@ -52,6 +52,24 @@ export interface TimerServiceOptions {
    * Without one, behaviour is unchanged.
    */
   dispatcher?: TimerDispatcher;
+  /**
+   * #380 — take durable ownership of an execution before waking it.
+   *
+   * `TimerStore.due()` has no claim, so two nodes polling the same store both receive the
+   * same due timer, both resume, and both pay for every effect until one loses at the fence.
+   * Fencing makes that outcome SAFE, not cheap — and placement (#392) made it expensive on
+   * purpose, since a branch is placed precisely when its work is heavy.
+   *
+   * With a lease store, a node that cannot acquire the lease skips the fire and leaves the
+   * timer for whoever holds it. Unwired, behaviour is unchanged.
+   */
+  leases?: {
+    store: LeaseStore;
+    /** This node's identity — a pod name, a process uuid, the deployment's vocabulary. */
+    owner: string;
+    /** How long ownership is claimed for. Default 60s: comfortably longer than a fire takes. */
+    ttlMs?: number;
+  };
 }
 
 /**
@@ -107,6 +125,8 @@ export class TimerService {
   private readonly now: () => number;
 
   private readonly dispatcher: TimerDispatcher | undefined;
+  private readonly leases: TimerServiceOptions["leases"];
+  private readonly leaseTtlMs: number;
   private readonly eventStore: EventStore;
 
   constructor(
@@ -115,6 +135,8 @@ export class TimerService {
     options: TimerServiceOptions = {}
   ) {
     this.dispatcher = options.dispatcher;
+    this.leases = options.leases;
+    this.leaseTtlMs = options.leases?.ttlMs ?? 60_000;
     // Read from the runtime rather than taken as a second option: two stores that must
     // agree is a way for them to disagree.
     this.eventStore = runtime.events;
@@ -221,6 +243,14 @@ export class TimerService {
   }
 
   private async fire(executionId: string, wakeAt: number): Promise<void> {
+    // #380 — claim the execution before waking it. `null` means another node holds it and is
+    // presumably firing this same timer; skip WITHOUT completing it, so a wake is never lost
+    // if that node dies between the claim and the resume. Its lease expires; we try again.
+    const leases = this.leases;
+    if (leases !== undefined) {
+      const lease = await leases.store.acquire(executionId, leases.owner, this.leaseTtlMs);
+      if (lease === null) return;
+    }
     try {
       const state = await this.runtime.loadState(executionId);
       const stillWaiting =
@@ -267,6 +297,13 @@ export class TimerService {
     } catch (err) {
       // Leave the timer in place; the next poll retries (at-least-once).
       this.onError?.(executionId, err);
+    } finally {
+      // Ownership covers the fire, not the execution's whole life: by here it has suspended
+      // again, completed, or failed, and holding the lease longer would block whoever legitimately
+      // wakes it next.
+      if (leases !== undefined) {
+        await leases.store.release(executionId, leases.owner).catch(() => undefined);
+      }
     }
   }
 }
