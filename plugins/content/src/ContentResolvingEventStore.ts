@@ -56,6 +56,8 @@ function pathsFor(
 
 export class ContentResolvingEventStore implements EventStore {
   private readonly externalize: Record<string, readonly string[]>;
+  // A tip is a sequence number — no payload to resolve, so it forwards unchanged.
+  readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
@@ -69,6 +71,9 @@ export class ContentResolvingEventStore implements EventStore {
     options: ContentResolvingEventStoreOptions
   ) {
     this.externalize = options.externalize;
+    if (inner.head !== undefined) {
+      this.head = (executionId) => inner.head!(executionId);
+    }
     if (inner.readRange !== undefined) {
       this.readRange = (executionId, from, to) =>
         inner.readRange!(executionId, from, to).then((evs) => this.resolveAll(executionId, evs));

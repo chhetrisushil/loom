@@ -564,6 +564,7 @@ interface EventStore {
   read(executionId: string): Promise<EventEnvelope[]>;
   readFrom(executionId: string, fromSequence: number): Promise<EventEnvelope[]>;
   subscribe(executionId: string, handler: (event: EventEnvelope) => void): Promise<() => void>;
+  head?(executionId: string): Promise<number | null>;   // the tip, without reading the log — use headOf(store, id) (optional)
   copyPrefix?(from: string, to: string, throughSequence: number, metadata: Record<string, unknown>): Promise<void>; // fork fast-path (optional)
   close(): Promise<void>;
 }

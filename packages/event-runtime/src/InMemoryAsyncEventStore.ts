@@ -174,6 +174,12 @@ export class InMemoryAsyncEventStore implements EventStore {
     return list.slice(lowerBoundBySequence(list, fromSequence));
   }
 
+  async head(executionId: string): Promise<number | null> {
+    await this.tick();
+    const list = this.log.get(executionId) ?? [];
+    return list.length === 0 ? null : (list[list.length - 1]?.sequence ?? null);
+  }
+
   async readRange(
     executionId: string,
     fromSequence: number,

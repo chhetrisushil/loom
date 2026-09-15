@@ -206,6 +206,15 @@ export class SqliteEventStore implements EventStore {
     return rows.map(rowToEnvelope);
   }
 
+  async head(executionId: string): Promise<number | null> {
+    const row = this.db
+      .prepare<[string], { tip: number | null }>(
+        "SELECT MAX(sequence) AS tip FROM events WHERE execution_id = ?"
+      )
+      .get(executionId);
+    return row?.tip ?? null;
+  }
+
   async readRange(
     executionId: string,
     fromSequence: number,

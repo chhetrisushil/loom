@@ -176,3 +176,104 @@ describe("E1 — fork re-registers the forked gate's durable wake", () => {
     expect(await app.timerStore.due(Number.MAX_SAFE_INTEGER)).toEqual([]);
   });
 });
+
+// ── E5 — what a fork actually reads ──────────────────────────────────────────
+
+/** Counts what `fork()` asks the store for. */
+class CountingEventStore {
+  reads = 0;
+  ranges: Array<[number, number]> = [];
+  eventsRead = 0;
+  heads = 0;
+  constructor(private readonly inner: InMemoryAsyncEventStore) {
+    // Forward the optional capabilities fork() probes for.
+    this.copyPrefix = (f, t, through, meta) => inner.copyPrefix(f, t, through, meta);
+  }
+  readonly copyPrefix: InMemoryAsyncEventStore["copyPrefix"];
+  append(e: EventEnvelope) {
+    return this.inner.append(e);
+  }
+  async read(id: string) {
+    this.reads++;
+    const evs = await this.inner.read(id);
+    this.eventsRead += evs.length;
+    return evs;
+  }
+  readFrom(id: string, from: number) {
+    return this.inner.readFrom(id, from);
+  }
+  async readRange(id: string, from: number, to: number) {
+    this.ranges.push([from, to]);
+    const evs = await this.inner.readRange(id, from, to);
+    this.eventsRead += evs.length;
+    return evs;
+  }
+  async head(id: string) {
+    this.heads++;
+    return this.inner.head(id);
+  }
+  subscribe(id: string, h: (e: EventEnvelope) => void) {
+    return this.inner.subscribe(id, h);
+  }
+  close() {
+    return this.inner.close();
+  }
+}
+
+describe("E5 — fork reads its window, not the parent's log", () => {
+  const bootCounting = (flow: RegisteredFlow<In, Out>) => {
+    const effects = new EffectRuntime();
+    effects.register("after-tool", new ToolEffect(async () => ({ done: true })));
+    const inner = new InMemoryAsyncEventStore();
+    const eventStore = new CountingEventStore(inner) as unknown as InMemoryAsyncEventStore;
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const runtime = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime: effects });
+    runtime.registerFlow(flow.definition, flow.runner);
+    return { runtime, counter: eventStore as unknown as CountingEventStore, snapshotStore };
+  };
+
+  it("never reads the whole log, and never reads past the fork point", async () => {
+    const flow = timedGateFlow("read-window", 60_000);
+    const app = bootCounting(flow);
+    const parent = await app.runtime.start(flow, { n: 1 }, { executionId: "rw" });
+    const parked = await parent.waitForSuspend();
+
+    // Give the parent a tail ABOVE the fork point — the part a fork must never pay for.
+    for (let i = 1; i <= 50; i++) {
+      await app.counter.append({
+        id: `tail-${i}`,
+        executionId: "rw",
+        workflowId: flow.definition.id,
+        eventType: "NOISE",
+        payload: {},
+        sequence: parked.sequence + i,
+        timestamp: 1,
+      } as EventEnvelope);
+    }
+
+    app.counter.reads = 0;
+    app.counter.eventsRead = 0;
+    app.counter.ranges = [];
+    await app.runtime.fork("rw", parked.sequence);
+
+    expect(app.counter.reads).toBe(0); // no whole-log read at all
+    expect(app.counter.heads).toBeGreaterThan(0); // the tip came from the indexed query
+    for (const [, to] of app.counter.ranges) expect(to).toBeLessThanOrEqual(parked.sequence);
+  });
+
+  it("reads NO events when a snapshot sits at the fork point and the store can copy natively", async () => {
+    // The suspend path already checkpoints, so this is the common case: fork a branch at a
+    // durable gate on a long-lived parent and the fold has nothing left to replay.
+    const flow = timedGateFlow("read-none", 60_000);
+    const app = bootCounting(flow);
+    const parent = await app.runtime.start(flow, { n: 1 }, { executionId: "rn" });
+    const parked = await parent.waitForSuspend();
+
+    app.counter.reads = 0;
+    app.counter.eventsRead = 0;
+    await app.runtime.fork("rn", parked.sequence);
+
+    expect(app.counter.reads).toBe(0);
+    expect(app.counter.eventsRead).toBe(0);
+  });
+});

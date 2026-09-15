@@ -8,7 +8,12 @@ import type {
   TimerRecord,
   TimerStore,
 } from "@loom/event-runtime";
-import { DuplicateEnvelopeIdError, DuplicateSequenceError, readRangeOf } from "@loom/event-runtime";
+import {
+  DuplicateEnvelopeIdError,
+  DuplicateSequenceError,
+  headOf,
+  readRangeOf,
+} from "@loom/event-runtime";
 import type { LlmProvider, LlmStreamChunk } from "@loom/llm";
 import { assembleStream } from "@loom/llm";
 import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
@@ -64,6 +69,20 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       const store = factory();
       for (let i = 0; i < 4; i++) await store.append(evt("x", i));
       expect((await store.readFrom("x", 2)).map((e) => e.sequence)).toEqual([2, 3]);
+      await store.close();
+    });
+
+    it("headOf reports the tip without materializing the log (native or fallback)", async () => {
+      const store = factory();
+      expect(await headOf(store, "ghost")).toBeNull();
+      for (let i = 0; i < 4; i++) await store.append(evt("x", i));
+      expect(await headOf(store, "x")).toBe(3);
+      await store.append(evt("x", 4));
+      expect(await headOf(store, "x")).toBe(4);
+      // Other executions do not contribute to it.
+      await store.append(evt("y", 0));
+      expect(await headOf(store, "x")).toBe(4);
+      expect(await headOf(store, "y")).toBe(0);
       await store.close();
     });
 

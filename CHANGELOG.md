@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`fork()` no longer reads the parent's whole log (EventStore SPI 1.4.0).** It needed the
+  tip to validate a fork point and was calling `read()` to get it — materializing every event
+  of a long-lived parent, including the entire tail *above* the fork point, and paying that
+  even when the store could copy the prefix natively. The SPI gains an optional
+  `head(executionId)` (one indexed `MAX(sequence)`; `headOf()` falls back to reading for
+  stores that omit it), and `fork()` now reads exactly one window: the tail a snapshot does
+  not already cover, widened to the full prefix only when the copy itself needs it (no native
+  `copyPrefix`, or live projections that must see the copied events). In the common case — a
+  branch forked at a durable gate, where the suspend path has just checkpointed — it reads
+  **no events at all**. Implemented natively on SQLite/Postgres/in-memory and forwarded by
+  every store decorator (tenant-scoping, coalescing, sharding, profiling, content-resolving,
+  hash-chaining, encrypting), so a capability probe behaves the same through a wrapper stack.
+
 - **`BranchRegistry.promote` can be a compare-and-set, and `listRefs` can be paged
   (BranchRegistry SPI 1.1.0).** `promote(from, to)` was read-then-write on every backend, so
   two nodes promoting different winners onto `main` both succeeded and the loser silently

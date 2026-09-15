@@ -50,6 +50,7 @@ interface Pending {
  * outside it, since routing must pick a shard before a batch is formed for that shard).
  */
 export class CoalescingEventStore implements EventStore {
+  readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
@@ -76,6 +77,7 @@ export class CoalescingEventStore implements EventStore {
     // Pass through every optional capability the inner store has, so wrapping never
     // silently downgrades a backend (a missing `readRange` would push callers onto the
     // slow fallback for no reason).
+    if (inner.head !== undefined) this.head = (...a) => inner.head!(...a);
     if (inner.readRange !== undefined) this.readRange = (...a) => inner.readRange!(...a);
     if (inner.acquireFence !== undefined) this.acquireFence = (id) => inner.acquireFence!(id);
     if (inner.copyPrefix !== undefined) this.copyPrefix = (...a) => inner.copyPrefix!(...a);
