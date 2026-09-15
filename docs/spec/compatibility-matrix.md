@@ -16,7 +16,7 @@ for the day a MAJOR diverges (e.g. an external adapter pinned to an older SPI).
 | Wire ABI (T2) | `1.0.0` | `WIRE_ABI_VERSION` · `wire-abi.test.ts` |
 | EventStore SPI | `1.4.0` | `EVENT_STORE_SPI_VERSION` · conformance kit |
 | SnapshotStore SPI | `1.0.0` | `SNAPSHOT_STORE_SPI_VERSION` · conformance kit |
-| BranchRegistry SPI | `1.1.0` | `BRANCH_REGISTRY_SPI_VERSION` · conformance kit |
+| BranchRegistry SPI | `1.2.0` | `BRANCH_REGISTRY_SPI_VERSION` · conformance kit |
 | Dispatcher SPI | `1.0.0` | `DISPATCHER_SPI_VERSION` · conformance kit |
 | MemoryStore SPI | `2.1.0` | `MEMORY_STORE_SPI_VERSION` · conformance kit |
 | Compiler manifest | `1` | `COMPILER_MANIFEST_VERSION` |

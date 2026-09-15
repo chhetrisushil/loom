@@ -96,6 +96,10 @@ export class InMemoryBranchRegistry implements BranchRegistry {
     return rec !== undefined ? { ...rec } : null;
   }
 
+  async removeLineage(executionId: string): Promise<void> {
+    this.lineage.delete(executionId);
+  }
+
   async children(executionId: string): Promise<LineageRecord[]> {
     return [...this.lineage.values()]
       .filter((l) => l.parentExecutionId === executionId)

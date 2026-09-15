@@ -458,6 +458,8 @@ interface ExecutionContext {
 
 *Retiring an abandoned branch.* Retention never reclaims an execution while a live descendant branch still has events (R5.3) — and a branch nobody answered is suspended forever, so a forked parent returns ~blocked-by-branch~ on every sweep, permanently. ~retireAbandonedBranches(runtime, registry, parentId, { isAbandoned })~ (~@loom/workflow-runtime~) walks that parent's direct children, offers the non-terminal ones to your predicate, and ~cancel()~s the ones it claims — a durable ~EXECUTION_CANCELLED~, not a deletion, so *why* the branch ended survives. Ordinary retention then collects the branch on its own TTL and the parent behind it. ~isAbandoned~ is REQUIRED, for the same reason ~recoverAbandoned~'s is: a branch parked on a human gate is someone's open question, not garbage. The summary reports what it left alone.
 
+*Collecting the registry.* After retention reclaims a branch, two rows outlive it. ~LogLifecycle~ forgets the fork edge as it deletes the execution (optional ~removeLineage~ — dead edges otherwise make every future sweep walk them). ~pruneBranchRefs(eventStore, registry, { pageSize?, limit?, protect? })~ (~@loom/workflow-runtime~) pages over ~listRefs~ and deletes refs whose execution has no events — a dangling ref is not merely untidy, since promoting one leaves ~main~ naming an execution nobody can read. It takes NO predicate: unlike "is this branch abandoned", "the execution is gone" is a fact. ~main~ is protected by default and reported as dangling instead.
+
 *Cancellation, deadlines & bounded effects (2.0, K8).* A step's ~timeoutMs~ bounds a single effect; a flow's ~deadlineMs~ (see ~FlowDefinition~) bounds the whole run against the logged ~EXECUTION_STARTED~ timestamp (never reset by recovery). Breach — or ~handle.cancel()~ / ~ExecutionRuntime.cancel()~ — aborts in-flight effects via ~EffectContext.signal~ and records a kernel-driven ~EXECUTION_CANCELLED~.
 
 *The kernel ABI (2.0, K1).* The syscall surface is named and versioned; a conformance test pins it.
@@ -592,6 +594,7 @@ interface BranchRegistry {
   promote(fromName: string, toName: string, options?: PromoteOptions): Promise<void>;   // pointer move — the whole "merge" replacement
   deleteRef(name: string): Promise<void>;
   recordLineage(rec: Omit<LineageRecord, "createdAt">): Promise<void>;
+  removeLineage?(executionId: string): Promise<void>;   // forget one edge — called by LogLifecycle on delete (optional)
   getLineage(executionId: string): Promise<LineageRecord | null>;
   children(executionId: string): Promise<LineageRecord[]>;
   close(): Promise<void>;

@@ -13,7 +13,7 @@
  * SPI version for the {@link BranchRegistry} contract (ADR 0033). Pinned by
  * `runBranchRegistryConformance` in `@loom/testing`.
  */
-export const BRANCH_REGISTRY_SPI_VERSION = "1.1.0";
+export const BRANCH_REGISTRY_SPI_VERSION = "1.2.0";
 
 /** A named, movable pointer to an execution head. */
 export interface BranchRef {
@@ -117,6 +117,21 @@ export interface BranchRegistry {
   /** Record a fork edge in the DAG. */
   recordLineage(rec: Omit<LineageRecord, "createdAt">): Promise<void>;
   getLineage(executionId: string): Promise<LineageRecord | null>;
+  /**
+   * OPTIONAL: forget one fork edge — the child's edge to its parent.
+   *
+   * Lineage is the alternatives-considered audit trail and must outlive a branch's own
+   * life. It must NOT outlive the executions it describes: once retention has reclaimed a
+   * branch, its edge points at data that no longer exists, and keeping a permanent index of
+   * deleted executions contradicts the retention policy that deleted them. It also costs —
+   * `LogLifecycle` walks `children()` on every sweep, so dead edges make retention slower
+   * forever, in proportion to every fork ever taken.
+   *
+   * Called by `LogLifecycle` at the moment an execution is deleted, which is the only point
+   * where the id is known and the data is provably gone. A store that omits it simply keeps
+   * its edges (today's behaviour, byte-identically).
+   */
+  removeLineage?(executionId: string): Promise<void>;
   /** Direct children forked from `executionId`. */
   children(executionId: string): Promise<LineageRecord[]>;
 

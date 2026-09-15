@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Branch registry rows no longer outlive the executions they describe (BranchRegistry SPI
+  1.2.0).** Two rows survive a reclaimed branch and nothing collected either. A **fork edge**
+  described data that no longer exists — and `LogLifecycle` walks `children()` on every sweep,
+  so dead edges make retention slower forever, in proportion to every fork ever taken; the new
+  optional `removeLineage(executionId)` is called at the one point where the id is known and
+  the data is provably gone, inside `applyRetention`'s delete. A **ref** survives it too, and
+  that is worse than untidy: `promote(ghost, "main")` succeeds, leaving `main` naming an
+  execution that cannot be read, resumed or replayed. `pruneBranchRefs(eventStore, registry)`
+  pages over `listRefs` and deletes refs whose execution has no events — and takes **no
+  predicate**, because unlike "is this branch abandoned" (someone's open question, only the app
+  can judge), "the execution is gone" is a fact. It protects `main` by default and *reports* it
+  as dangling instead: turning "main names a ghost" into "there is no main" makes the problem
+  harder to diagnose, not easier.
+
 - **`retireAbandonedBranches()` — a forked parent could never be reclaimed.** `applyRetention`
   refuses anything non-terminal, and refuses a parent while a live descendant branch still has
   events (R5.3, correctly: the fork's copied prefix aliases the parent's). A branch that was

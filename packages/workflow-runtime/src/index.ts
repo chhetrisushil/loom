@@ -29,6 +29,11 @@ export {
   type RetireAbandonedBranchesSummary,
 } from "./retireAbandonedBranches";
 export {
+  pruneBranchRefs,
+  type PruneBranchRefsOptions,
+  type PruneBranchRefsSummary,
+} from "./pruneBranchRefs";
+export {
   LogLifecycle,
   type RetentionPolicy,
   type ArchiveStores,
