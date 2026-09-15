@@ -28,6 +28,7 @@ export {
   type RetireAbandonedBranchesOptions,
   type RetireAbandonedBranchesSummary,
 } from "./retireAbandonedBranches";
+export { placementOf, COMPUTE_TARGET_KEY } from "./placement";
 export {
   pruneBranchRefs,
   type PruneBranchRefsOptions,

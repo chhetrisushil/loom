@@ -186,3 +186,43 @@ describe("defaultPlacementPolicy", () => {
     expect(policy(pkg(), undefined, ["local", "cloudrun"])).toBe("local");
   });
 });
+
+describe("#392 — a hint can outlive the lane it names", () => {
+  it("falls back for an unregistered target, and says so once", async () => {
+    const onWarn = vi.fn();
+    const localWorker = new TaggedWorker("local");
+    const d = new PlacementDispatcher({
+      targets: { local: new LocalDispatcher(localWorker) },
+      default: "local",
+      onWarn,
+    });
+
+    await d.dispatch(pkg("e1"), { target: "retired-lane" });
+    await d.dispatch(pkg("e2"), { target: "retired-lane" });
+
+    // Both ran — a retired lane must not strand what named it.
+    expect(localWorker.ran).toEqual(["e1", "e2"]);
+    // Said once: this is a deployment fact, not a per-dispatch event.
+    expect(onWarn).toHaveBeenCalledTimes(1);
+    const msg = String(onWarn.mock.calls[0]?.[0]);
+    expect(msg).toContain("retired-lane");
+    expect(msg).toContain("local");
+  });
+
+  it("says nothing when the target is registered, or when none was asked for", async () => {
+    const onWarn = vi.fn();
+    const localWorker = new TaggedWorker("local");
+    const bigWorker = new TaggedWorker("big");
+    const d = new PlacementDispatcher({
+      targets: { local: new LocalDispatcher(localWorker), big: new LocalDispatcher(bigWorker) },
+      default: "local",
+      onWarn,
+    });
+
+    await d.dispatch(pkg("e3"), { target: "big" });
+    await d.dispatch(pkg("e4"));
+    expect(bigWorker.ran).toEqual(["e3"]);
+    expect(localWorker.ran).toEqual(["e4"]);
+    expect(onWarn).not.toHaveBeenCalled();
+  });
+});

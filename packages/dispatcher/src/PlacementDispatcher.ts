@@ -16,6 +16,12 @@ export interface PlacementDispatcherOptions {
   default: string;
   /** How to choose a target. Defaults to "honour meta.target, else default". */
   policy?: PlacementPolicy;
+  /**
+   * Where to report a dispatch that named an unregistered target (#392). Defaults to
+   * `console.warn`. Falling back is correct; doing it silently is how an execution placed
+   * on sized compute ends up running somewhere else without anyone noticing.
+   */
+  onWarn?: (message: string) => void;
 }
 
 /**
@@ -37,6 +43,8 @@ export class PlacementDispatcher implements ExecutionDispatcher {
   private static readonly ROUTED_CAP = 10_000;
   private readonly routed = new Map<string, string>();
   private inFlight = 0;
+  private readonly onWarn: (message: string) => void;
+  private readonly warnedTargets = new Set<string>();
 
   constructor(options: PlacementDispatcherOptions) {
     this.names = Object.keys(options.targets);
@@ -49,6 +57,7 @@ export class PlacementDispatcher implements ExecutionDispatcher {
     this.targets = options.targets;
     this.defaultTarget = options.default;
     this.policy = options.policy ?? defaultPlacementPolicy(options.default);
+    this.onWarn = options.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
   }
 
   /** The target names currently registered. */
@@ -57,6 +66,19 @@ export class PlacementDispatcher implements ExecutionDispatcher {
   }
 
   async dispatch(pkg: ExecutionPackage, meta?: DispatchMetadata): Promise<ExecutionResult> {
+    // #392 — a placement hint can outlive the lane it names: an execution suspended for days
+    // wakes into a deployment where its target was renamed or retired. Falling back is
+    // right (a retired lane must not strand what named it) but doing it SILENTLY means an
+    // execution deliberately placed on sized compute quietly runs somewhere else forever.
+    // Warned once per unknown name — this is a deployment fact, not a per-dispatch event.
+    if (meta?.target !== undefined && !this.names.includes(meta.target)) {
+      if (!this.warnedTargets.has(meta.target)) {
+        this.warnedTargets.add(meta.target);
+        this.onWarn(
+          `placement target "${meta.target}" is not registered [${this.names.join(", ")}] — falling back to "${this.defaultTarget}". An execution that named it is now running somewhere else.`
+        );
+      }
+    }
     const chosen = this.policy(pkg, meta, this.names);
     const name = chosen in this.targets ? chosen : this.defaultTarget;
     const target = this.targets[name] as ExecutionDispatcher;

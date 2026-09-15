@@ -1,5 +1,7 @@
 import { type ExecutionEnumerable, iterateExecutionIds } from "@loom/event-runtime";
+import type { TimerDispatcher } from "./TimerService";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
+import { placementOf } from "./placement";
 import { EXECUTION_RECOVERED } from "./types";
 
 // ── Recovering executions whose supervisor died ───────────────────────────────
@@ -70,6 +72,12 @@ export interface RecoverAbandonedOptions {
   fenced?: boolean;
   onRecovered?: (executionId: string) => void;
   onError?: (executionId: string, err: unknown) => void;
+  /**
+   * #392 — re-drive through a placement seam rather than in this process. With a dispatcher,
+   * each claimed execution is dispatched to the lane it was started in; without one, it is
+   * resumed here, exactly as before.
+   */
+  dispatcher?: TimerDispatcher;
 }
 
 export interface RecoverAbandonedSummary {
@@ -149,17 +157,38 @@ export async function recoverAbandoned(
       if (fresh === null || (fresh.status !== "running" && fresh.status !== "pending")) continue;
 
       const fence = options.fenced ? await runtime.acquireFence(executionId) : undefined;
-      const handle = await runtime.resume(
-        executionId,
-        { eventType: EXECUTION_RECOVERED, payload: {} },
-        fence !== undefined ? { fence } : undefined
-      );
-      // Settle before moving on, so the pass applies backpressure instead of stampeding
-      // every orphan into the runtime at once.
-      await Promise.race([
-        handle.waitForSuspend().catch(() => undefined),
-        handle.waitForCompletion().catch(() => undefined),
-      ]);
+      const resumeEvent = { eventType: EXECUTION_RECOVERED, payload: {} };
+
+      if (options.dispatcher !== undefined) {
+        // #392 — re-drive where the execution belongs, not on whichever node happens to be
+        // running the recovery pass. The recorded target is a HINT, and that matters more
+        // here than anywhere else: a node is often recovering an execution precisely
+        // BECAUSE its original lane went away, so the placement policy gets the last word
+        // and an unregistered target falls back rather than stranding the orphan.
+        const target = await placementOf(runtime.events, executionId);
+        await options.dispatcher.dispatch(
+          {
+            executionId,
+            workflowId: fresh.workflowId,
+            flowId: fresh.workflowId,
+            resumeEvent,
+            ...(fence !== undefined && { metadata: { fence } }),
+          },
+          target !== undefined ? { target } : undefined
+        );
+      } else {
+        const handle = await runtime.resume(
+          executionId,
+          resumeEvent,
+          fence !== undefined ? { fence } : undefined
+        );
+        // Settle before moving on, so the pass applies backpressure instead of stampeding
+        // every orphan into the runtime at once.
+        await Promise.race([
+          handle.waitForSuspend().catch(() => undefined),
+          handle.waitForCompletion().catch(() => undefined),
+        ]);
+      }
       summary.recovered++;
       options.onRecovered?.(executionId);
     } catch (err) {
