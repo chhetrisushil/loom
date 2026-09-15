@@ -9,6 +9,32 @@ import type { EvalLimits, TrippedGuard } from "./evalCore";
 // and the JSON step is work the sandbox does anyway (the VM is seeded from a
 // JSON string, and the output is measured in JSON bytes for `maxOutputBytes`).
 
+// ── The run-status word (#399) ───────────────────────────────────────────────
+//
+// `wallClockMs` bounds the SCRIPT. The parent's kill timer is a `setTimeout` on the
+// parent's event loop, so left alone it measures the script PLUS however long that loop
+// took to post the eval and to drain the reply — and libuv runs the timers phase before
+// the poll phase, so a due deadline can fire ahead of a reply that already arrived. On a
+// contended host that turns a fast script into `limitExceeded { wallClock }`: a resource
+// kill routed to drift-repair, for a script that was never the problem.
+//
+// So the worker publishes what only the worker knows — when the script actually started,
+// and whether it is still running — into shared memory the parent reads SYNCHRONOUSLY when
+// its timer fires. No message, no event loop, no race.
+
+/** Byte layout of the status buffer: `[state: i32, runId: i32]` then `[startedAt: f64]`. */
+export const STATUS_BYTES = 16;
+export const STATUS_STATE_INDEX = 0;
+export const STATUS_RUN_ID_INDEX = 1;
+/** Byte offset of the `startedAt` float (after the two i32 fields). */
+export const STATUS_STARTED_AT_OFFSET = 8;
+
+export const RUN_IDLE = 0;
+/** The worker is inside `evalInFreshRuntime` for `runId`. */
+export const RUN_EVALUATING = 1;
+/** The script returned; the reply is posted or about to be. */
+export const RUN_FINISHED = 2;
+
 /** Parent → worker. */
 export type ToWorker =
   | { type: "warm" }
@@ -19,6 +45,12 @@ export type ToWorker =
       /** JSON of the step input. Transferred, not copied. */
       inputJson: Uint8Array;
       limits: EvalLimits;
+      /**
+       * Shared status word (see above). SHARED, not transferred — both threads hold the
+       * same memory, which is the point: the parent reads it from inside a timer callback,
+       * where it cannot receive a message.
+       */
+      status: SharedArrayBuffer;
     };
 
 /** Worker → parent. */

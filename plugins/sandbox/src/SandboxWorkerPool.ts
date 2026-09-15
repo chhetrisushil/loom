@@ -2,6 +2,14 @@ import { existsSync } from "node:fs";
 import * as path from "node:path";
 import { Worker } from "node:worker_threads";
 import type { EvalLimits, EvalOutcome } from "./evalCore";
+import {
+  RUN_EVALUATING,
+  RUN_FINISHED,
+  STATUS_BYTES,
+  STATUS_RUN_ID_INDEX,
+  STATUS_STARTED_AT_OFFSET,
+  STATUS_STATE_INDEX,
+} from "./workerProtocol";
 import type { FromWorker, ToWorker } from "./workerProtocol";
 
 // ── ADR 0089 — moving the eval off the caller's event loop ───────────────────
@@ -20,6 +28,15 @@ import type { FromWorker, ToWorker } from "./workerProtocol";
 // What it deliberately does NOT change: isolation. That comes from the WASM VM
 // being capability-empty, and a thread adds nothing to it. This is a latency
 // and liveness change, not a security one.
+
+/** How often the parent re-asks shared memory once a deadline has come due (#399). */
+const RECHECK_MS = 20;
+/**
+ * How long past its budget the parent waits for a worker that has not started the run at
+ * all before treating the WORKER as broken. Generous: this covers engine boot and input
+ * marshalling on a contended host, neither of which is the script's fault.
+ */
+const STARTUP_LIVENESS_MS = 10_000;
 
 /** Milliseconds past `wallClockMs` before the pool stops asking and terminates. */
 const DEFAULT_HARD_KILL_GRACE_MS = 2_000;
@@ -246,6 +263,8 @@ export class SandboxWorkerPool {
     }
 
     const runId = this.nextRunId++;
+    // One buffer per run: a stale worker cannot then stamp a later run's status word.
+    const statusBuffer = new SharedArrayBuffer(STATUS_BYTES);
 
     let settled = false;
 
@@ -317,7 +336,47 @@ export class SandboxWorkerPool {
     slot.settle = kill;
     slot.worker.on("message", onMessage);
     run.signal?.addEventListener("abort", onAbort, { once: true });
-    const timer = setTimeout(() => {
+    // #399 — the deadline is a QUESTION, asked of shared memory, not a verdict.
+    //
+    // This callback runs on the parent's event loop, which may have been starved since the
+    // eval was posted. Firing blind would charge the script for the parent's own latency,
+    // and libuv runs timers before polling, so it can fire ahead of a reply that already
+    // arrived. Instead: read what the worker published. Kill only a script that IS running
+    // and HAS outrun its budget by the worker's own clock; otherwise re-ask later.
+    const status = new Int32Array(statusBuffer, 0, 2);
+    const startedAt = new Float64Array(statusBuffer, STATUS_STARTED_AT_OFFSET, 1);
+    const budget = run.limits.wallClockMs + this.hardKillGraceMs;
+    const armedAt = Date.now();
+    let timer: NodeJS.Timeout;
+
+    const check = (): void => {
+      const state = Atomics.load(status, STATUS_STATE_INDEX);
+      const mine = Atomics.load(status, STATUS_RUN_ID_INDEX) === runId;
+
+      if (state === RUN_FINISHED && mine) {
+        // The script stopped; its reply is queued behind this very callback. Let the
+        // message path settle it — killing here is the misattribution itself.
+        return;
+      }
+      if (!(state === RUN_EVALUATING && mine)) {
+        // Not started yet: the worker is booting, marshalling, or simply not scheduled.
+        // That is the engine, not the script (the distinction `ensureReady` already draws),
+        // so it does not come out of the script's budget — but it cannot be waited on
+        // forever either, or a wedged worker would never be reclaimed.
+        if (Date.now() - armedAt >= budget + STARTUP_LIVENESS_MS) {
+          kill(new Error("sandbox: worker never started the run"));
+          return;
+        }
+        timer = setTimeout(check, RECHECK_MS);
+        return;
+      }
+      const elapsed = Date.now() - startedAt[0]!;
+      if (elapsed < budget) {
+        // Running, but the budget is measured from when the SCRIPT started, which is later
+        // than when this timer was armed. Re-ask when it would actually be spent.
+        timer = setTimeout(check, Math.max(budget - elapsed, RECHECK_MS));
+        return;
+      }
       // The in-VM clock should have fired long before this. That it did not
       // means the script never gave the interrupt handler a chance, so report
       // the ceiling it blew through rather than the mechanism that caught it.
@@ -326,7 +385,8 @@ export class SandboxWorkerPool {
         message: `Error: exceeded wallClockMs=${run.limits.wallClockMs} without yielding to the interrupt handler`,
         tripped: "wallClock",
       });
-    }, run.limits.wallClockMs + this.hardKillGraceMs);
+    };
+    timer = setTimeout(check, budget);
 
     const message: ToWorker = {
       type: "eval",
@@ -334,6 +394,7 @@ export class SandboxWorkerPool {
       script: run.script,
       inputJson: run.inputJson,
       limits: run.limits,
+      status: statusBuffer,
     };
     slot.worker.postMessage(message, [run.inputJson.buffer as ArrayBuffer]);
   }

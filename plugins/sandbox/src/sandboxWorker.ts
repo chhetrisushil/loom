@@ -1,6 +1,13 @@
 import { type TransferListItem, parentPort } from "node:worker_threads";
 import { type QuickJSWASMModule, getQuickJS } from "quickjs-emscripten";
 import { evalInFreshRuntime } from "./evalCore";
+import {
+  RUN_EVALUATING,
+  RUN_FINISHED,
+  STATUS_RUN_ID_INDEX,
+  STATUS_STARTED_AT_OFFSET,
+  STATUS_STATE_INDEX,
+} from "./workerProtocol";
 import type { FromWorker, ToWorker } from "./workerProtocol";
 
 // ── ADR 0089 — the worker-side entrypoint ────────────────────────────────────
@@ -45,10 +52,20 @@ async function handle(msg: ToWorker): Promise<void> {
   }
 
   const runId = msg.runId;
+  // The parent reads these from inside its kill timer, where it cannot receive a message
+  // (#399). Written around the eval ONLY: booting the engine and marshalling the input are
+  // the sandbox's own work, not the script running long — the same distinction `ensureReady`
+  // draws for a cold start.
+  const state = new Int32Array(msg.status, 0, 2);
+  const startedAt = new Float64Array(msg.status, STATUS_STARTED_AT_OFFSET, 1);
   try {
     quickjs ??= await getQuickJS();
     const input = JSON.parse(decoder.decode(msg.inputJson)) as unknown;
+    startedAt[0] = Date.now();
+    Atomics.store(state, STATUS_RUN_ID_INDEX, runId);
+    Atomics.store(state, STATUS_STATE_INDEX, RUN_EVALUATING);
     const outcome = evalInFreshRuntime(quickjs, msg.script, input, msg.limits);
+    Atomics.store(state, STATUS_STATE_INDEX, RUN_FINISHED);
     if (!outcome.ok) {
       send(
         outcome.tripped === undefined
@@ -64,6 +81,9 @@ async function handle(msg: ToWorker): Promise<void> {
     const bytes = toTransferable(JSON.stringify(outcome.value));
     send({ type: "result", runId, outputJson: bytes }, [bytes.buffer as ArrayBuffer]);
   } catch (err) {
+    // Finished either way: the parent must not kill a worker for a script that has
+    // already stopped running, whatever the outcome was.
+    Atomics.store(state, STATUS_STATE_INDEX, RUN_FINISHED);
     // A throw here is the WORKER failing, not the script: the module would not
     // compile, or a value would not marshal. Untyped by design — same reasoning
     // as an environment violation inside the VM.
