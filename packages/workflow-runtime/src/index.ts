@@ -15,7 +15,11 @@ export {
   StepTimeoutError,
   TIMER_FIRED,
 } from "./types";
-export { TimerService, type TimerServiceOptions } from "./TimerService";
+export {
+  TimerService,
+  type TimerServiceOptions,
+  type TimerDispatcher,
+} from "./TimerService";
 export {
   recoverAbandoned,
   type AbandonedCandidate,

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`defineConfig({ timers: { dispatcher } })`** — the composition-root half of #392. An app
+  that places executions deliberately can now wire the wake path in one line, instead of
+  building its own `TimerService` to get at the option.
+
 - **Placement survives the process that chose it (#392).** `ExecutionPolicy` was a
   caller-side struct mapped to `DispatchMetadata` at dispatch time, so where an execution
   belonged lived in one process's memory. Invisible for an execution that runs once — and
