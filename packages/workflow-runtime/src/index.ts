@@ -23,6 +23,12 @@ export {
   type RecoverAbandonedSummary,
 } from "./recoverAbandoned";
 export {
+  retireAbandonedBranches,
+  type BranchCandidate,
+  type RetireAbandonedBranchesOptions,
+  type RetireAbandonedBranchesSummary,
+} from "./retireAbandonedBranches";
+export {
   LogLifecycle,
   type RetentionPolicy,
   type ArchiveStores,

@@ -1,5 +1,5 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
-import type { BranchRegistry, EventStore } from "@loom/event-runtime";
+import { type BranchRegistry, type EventStore, headOf } from "@loom/event-runtime";
 import { appendBatchOf } from "@loom/event-runtime";
 import { ReplayVM } from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
@@ -75,7 +75,10 @@ export class LogLifecycle {
     const registry = this.options.branchRegistry;
     if (registry === undefined) return false;
     for (const child of await registry.children(executionId)) {
-      if ((await this.eventStore.read(child.executionId)).length > 0) return true;
+      // "Has any events" is a tip query, not a read. This runs per child, per swept
+      // execution, against branch logs — which are the long ones, since a branch is forked
+      // precisely to do expensive work.
+      if ((await headOf(this.eventStore, child.executionId)) !== null) return true;
     }
     return false;
   }
