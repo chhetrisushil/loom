@@ -24,3 +24,9 @@ tools/cli/.tmp-*/
 
 # scaffold template typecheck probe (removed by the test itself)
 .tmp-template-types/
+
+# `npm link` writes bin/ symlinks and a lib/ tree into the package it links. The symlinks
+# point into the global prefix, so committing one gives everyone else a dangling link —
+# which is exactly what happened once (79c8e35).
+tools/*/bin/
+tools/*/lib/
