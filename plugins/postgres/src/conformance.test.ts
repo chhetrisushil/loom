@@ -1,6 +1,7 @@
 import {
   runBranchRegistryConformance,
   runEventStoreConformance,
+  runLeaseStoreConformance,
   runMemoryStoreConformance,
   runReadModelStoreConformance,
 } from "@loom/conformance";
@@ -8,6 +9,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe } from "vitest";
 import { PostgresBranchRegistry } from "./PostgresBranchRegistry";
 import { PostgresEventStore } from "./PostgresEventStore";
+import { PostgresLeaseStore } from "./PostgresLeaseStore";
 import { PostgresMemoryStore } from "./PostgresMemoryStore";
 import { PostgresReadModelStore } from "./PostgresReadModelStore";
 import { migrate } from "./schema";
@@ -47,6 +49,8 @@ if (PG_URL === undefined) {
   // portable contract while the Postgres implementation, the one with hand-written
   // compare-and-set SQL, was merely assumed to match it.
   let nextBranch = 0;
+  // Its own cursor as well: the lease kit reuses fixed ids ("x", "y") per case.
+  let nextLease = 0;
 
   beforeAll(async () => {
     // Create and migrate every schema up front, so `factory()` can stay synchronous (the
@@ -97,6 +101,11 @@ if (PG_URL === undefined) {
     const pool = pools[nextReadModel++ % pools.length] as Pool;
     return new PostgresReadModelStore(pool);
   }, "PostgresReadModelStore");
+
+  runLeaseStoreConformance(() => {
+    const pool = pools[nextLease++ % pools.length] as Pool;
+    return new PostgresLeaseStore(pool);
+  }, "PostgresLeaseStore");
 
   runBranchRegistryConformance(() => {
     const pool = pools[nextBranch++ % pools.length] as Pool;

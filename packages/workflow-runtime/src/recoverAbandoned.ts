@@ -1,4 +1,8 @@
-import { type ExecutionEnumerable, iterateExecutionIds } from "@loom/event-runtime";
+import {
+  type ExecutionEnumerable,
+  type LeaseStore,
+  iterateExecutionIds,
+} from "@loom/event-runtime";
 import type { TimerDispatcher } from "./TimerService";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { placementOf } from "./placement";
@@ -42,7 +46,7 @@ export interface AbandonedCandidate {
 
 export interface RecoverAbandonedOptions {
   /** The store to enumerate. Needs `listExecutionsPage` or `listExecutions`. */
-  source: ExecutionEnumerable;
+  source?: ExecutionEnumerable;
   /**
    * REQUIRED — decide whether a `running`/`pending` execution is genuinely orphaned.
    *
@@ -59,7 +63,25 @@ export interface RecoverAbandonedOptions {
    * predicate pays it for a step that was never interrupted. Prefer a generous staleness
    * threshold, or a real liveness signal from your orchestrator.
    */
-  isAbandoned: (candidate: AbandonedCandidate) => boolean | Promise<boolean>;
+  isAbandoned?: (candidate: AbandonedCandidate) => boolean | Promise<boolean>;
+  /**
+   * #380 — recover from EVIDENCE instead of a predicate.
+   *
+   * With a lease store, an orphan is no longer indistinguishable from a healthy execution:
+   * an expired lease is a node that stopped saying it was alive. So `isAbandoned` becomes
+   * OPTIONAL — pass it anyway to narrow further, and it is still asked — and the scan narrows
+   * from "every execution" to "every expired lease", which is the set you actually wanted.
+   *
+   * The pass also CLAIMS each execution before re-driving it, so two recovery passes racing
+   * the same orphan do not both pay for it.
+   */
+  leases?: {
+    store: LeaseStore;
+    /** This node's identity, recorded as the new owner while it recovers. */
+    owner: string;
+    /** How long to hold ownership while re-driving. Default 60s. */
+    ttlMs?: number;
+  };
   /** Stop after this many successful recoveries. Default: unlimited. */
   limit?: number;
   /** Enumeration page size. Default 1000. */
@@ -114,11 +136,17 @@ export async function recoverAbandoned(
   runtime: WorkflowRuntime,
   options: RecoverAbandonedOptions
 ): Promise<RecoverAbandonedSummary> {
-  if (typeof options.isAbandoned !== "function") {
+  if (options.leases === undefined && typeof options.isAbandoned !== "function") {
     throw new Error(
       "recoverAbandoned: `isAbandoned` is required — a running execution owned by a live " +
         "node is indistinguishable from an orphaned one in the log, so only the deployment " +
-        "can decide. See ADR 0004."
+        "can decide. See ADR 0004. Wire `leases` instead and an expired lease answers it (#380)."
+    );
+  }
+  if (options.leases === undefined && options.source === undefined) {
+    throw new Error(
+      "recoverAbandoned: pass `source` to enumerate executions, or `leases` to enumerate " +
+        "expired leases — there is nothing to scan otherwise."
     );
   }
   const limit = options.limit ?? Number.POSITIVE_INFINITY;
@@ -129,7 +157,7 @@ export async function recoverAbandoned(
     failed: 0,
   };
 
-  for await (const executionId of iterateExecutionIds(options.source, options.pageSize)) {
+  for await (const executionId of candidateIds(options)) {
     if (summary.recovered >= limit) break;
     summary.scanned++;
 
@@ -138,15 +166,31 @@ export async function recoverAbandoned(
     if (state.status !== "running" && state.status !== "pending") continue;
     summary.candidates++;
 
-    const claimed = await options.isAbandoned({
-      executionId,
-      workflowId: state.workflowId,
-      status: state.status,
-      updatedAt: state.updatedAt,
-      startedAt: state.startedAt,
-      sequence: state.sequence,
-    });
+    // With leases, reaching here IS the evidence: this id came from `expired()`. A predicate
+    // may still narrow it, and is asked when given — so it never becomes a lie.
+    const claimed =
+      options.isAbandoned === undefined
+        ? true
+        : await options.isAbandoned({
+            executionId,
+            workflowId: state.workflowId,
+            status: state.status,
+            updatedAt: state.updatedAt,
+            startedAt: state.startedAt,
+            sequence: state.sequence,
+          });
     if (!claimed) continue;
+
+    // Take ownership before re-driving, so two passes racing the same orphan do not both pay
+    // for it. Losing the race means someone else is already on it.
+    if (options.leases !== undefined) {
+      const lease = await options.leases.store.acquire(
+        executionId,
+        options.leases.owner,
+        options.leases.ttlMs ?? 60_000
+      );
+      if (lease === null) continue;
+    }
 
     try {
       // Re-check immediately before acting: the predicate may have awaited, and the
@@ -199,4 +243,19 @@ export async function recoverAbandoned(
   }
 
   return summary;
+}
+
+/**
+ * What to consider. With a lease store the candidate set is exactly the expired leases —
+ * narrower and cheaper than walking every execution, and the reason the predicate can go.
+ */
+async function* candidateIds(options: RecoverAbandonedOptions): AsyncGenerator<string> {
+  if (options.leases !== undefined) {
+    for (const lease of await options.leases.store.expired(Date.now(), options.pageSize ?? 1000)) {
+      yield lease.executionId;
+    }
+    return;
+  }
+  // Guarded above: without leases, `source` is required.
+  yield* iterateExecutionIds(options.source as ExecutionEnumerable, options.pageSize);
 }

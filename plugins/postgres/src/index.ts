@@ -6,6 +6,7 @@ export { migrate as migratePostgresStores, NOTIFY_CHANNEL } from "./schema";
 // contract for bringing your own pool: satisfy it and the stores take it, whichever copy
 // of `pg` built it — or whether `pg` built it at all.
 export type { PgConfig, PoolLike } from "./pool";
+export { PostgresLeaseStore } from "./PostgresLeaseStore";
 export { PostgresTimerStore } from "./PostgresTimerStore";
 export { PostgresDurableStateStore } from "./PostgresDurableStateStore";
 export { PostgresReadModelStore } from "./PostgresReadModelStore";

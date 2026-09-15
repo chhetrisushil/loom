@@ -42,6 +42,14 @@ export function migrate(db: Database.Database): void {
 
     -- Immutable fork DAG: each forked execution records its parent and the
     -- sequence it forked at. One row per child execution.
+    -- #380 — durable ownership of a RUNNING execution; the primary key IS the exclusion.
+    CREATE TABLE IF NOT EXISTS leases (
+      execution_id TEXT NOT NULL PRIMARY KEY,
+      owner TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_leases_expiry ON leases (expires_at ASC);
+
     CREATE TABLE IF NOT EXISTS lineage (
       execution_id TEXT PRIMARY KEY,
       parent_execution_id TEXT NOT NULL,

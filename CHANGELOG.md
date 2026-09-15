@@ -26,6 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dies between claiming and resuming; ownership is released afterwards, because it covers the
   fire rather than the execution's whole life. Unwired, every path is byte-identical.
 
+  `recoverAbandoned` then stops needing a predicate: with `leases` wired, **`isAbandoned`
+  becomes optional** — an expired lease *is* the evidence the log cannot hold — and the scan
+  narrows from every execution to every expired lease, which is the set you wanted. A predicate
+  passed anyway is still asked, so it never becomes a lie, and the pass **claims** each orphan
+  before re-driving it so two recovery passes racing the same one do not both pay for it.
+
+  `SqliteLeaseStore` and `PostgresLeaseStore` ship with it. Acquisition is **one statement** on
+  both — read-then-write would let several nodes each observe a free lease and all take it,
+  which is the race the whole primitive exists to lose loudly. Verified against a real
+  PostgreSQL 17, including twelve simultaneous acquires granting exactly one.
+
   Staged deliberately (`docs/requirements/2026-09-15-durable-lease.md`): the runtime does not
   yet hold a lease across a whole run, because renewal is a ticker on the owning process's
   event loop and a CPU-bound effect can starve it into declaring a healthy execution abandoned.

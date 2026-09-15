@@ -131,6 +131,15 @@ const DDL = `
     );
     CREATE INDEX IF NOT EXISTS idx_timers_wake ON timers (wake_at ASC);
 
+    -- #380 — durable ownership of a RUNNING execution. One row per execution: a lease is
+    -- exclusive by definition, so the primary key is the mutual exclusion.
+    CREATE TABLE IF NOT EXISTS leases (
+      execution_id TEXT NOT NULL PRIMARY KEY,
+      owner TEXT NOT NULL,
+      expires_at BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_leases_expiry ON leases (expires_at ASC);
+
     -- ADR 0051 D2 (@loom/plugin-durable-state): typed keyed carry state for
     -- schedule-driven agents, revisioned for compare-and-set. The contract
     -- (schemas, migrations) lives above the SPI; this is a dumb CAS store.

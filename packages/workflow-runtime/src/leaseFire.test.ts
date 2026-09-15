@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { TimerService } from "./TimerService";
 import { WorkflowRuntime } from "./WorkflowRuntime";
+import { recoverAbandoned } from "./recoverAbandoned";
 import type { FlowRunner, RegisteredFlow } from "./types";
 
 // ── #380 — two nodes, one due timer ──────────────────────────────────────────
@@ -72,7 +73,7 @@ function twoNodes() {
     runtime.registerFlow(flow.definition, flow.runner);
     return runtime;
   };
-  return { a: node(), b: node(), timerStore, leaseStore, work, flow };
+  return { a: node(), b: node(), eventStore, timerStore, leaseStore, work, flow };
 }
 
 describe("#380 — only one node pays for a duplicated wake", () => {
@@ -134,5 +135,102 @@ describe("#380 — only one node pays for a duplicated wake", () => {
 
     expect(n.work).not.toHaveBeenCalled();
     expect(await n.timerStore.due(at)).toHaveLength(1); // still pending
+  });
+});
+
+// ── #380 L3 — recovery from evidence instead of a predicate ──────────────────
+
+describe("recoverAbandoned with leases", () => {
+  /** A `running` execution with no owner: started, never settled. */
+  async function orphan(runtime: WorkflowRuntime, id: string) {
+    const stuck = makeFlow(async () => new Promise<Out>(() => ({ done: true })));
+    runtime.registerFlow(stuck.definition, stuck.runner);
+    void runtime.start(stuck, { n: 1 }, { executionId: id });
+    await vi.waitFor(async () => expect((await runtime.loadState(id))?.status).toBe("running"));
+  }
+
+  it("recovers an expired lease with no predicate at all", async () => {
+    const n = twoNodes();
+    await orphan(n.a, "orphan-1");
+    // node-a took ownership and then died without releasing it.
+    await n.leaseStore.acquire("orphan-1", "node-a", 1, Date.now() - 60_000);
+
+    const recovered: string[] = [];
+    const summary = await recoverAbandoned(n.b, {
+      leases: { store: n.leaseStore, owner: "node-b" },
+      dispatcher: {
+        async dispatch(pkg) {
+          recovered.push(pkg.executionId);
+          return undefined;
+        },
+      },
+    });
+
+    expect(summary).toMatchObject({ scanned: 1, candidates: 1, recovered: 1 });
+    expect(recovered).toEqual(["orphan-1"]);
+  });
+
+  it("leaves an execution whose owner is still renewing", async () => {
+    const n = twoNodes();
+    await orphan(n.a, "healthy-1");
+    await n.leaseStore.acquire("healthy-1", "node-a", 60_000); // alive
+
+    const summary = await recoverAbandoned(n.b, {
+      leases: { store: n.leaseStore, owner: "node-b" },
+      dispatcher: {
+        async dispatch() {
+          return undefined;
+        },
+      },
+    });
+    // Not even scanned: a live lease is not in `expired()`, which is the point of scanning
+    // leases rather than every execution.
+    expect(summary).toMatchObject({ scanned: 0, recovered: 0 });
+  });
+
+  it("still asks a predicate when given one, so it never becomes a lie", async () => {
+    const n = twoNodes();
+    await orphan(n.a, "orphan-2");
+    await n.leaseStore.acquire("orphan-2", "node-a", 1, Date.now() - 60_000);
+
+    const summary = await recoverAbandoned(n.b, {
+      leases: { store: n.leaseStore, owner: "node-b" },
+      isAbandoned: () => false, // "I know better"
+      dispatcher: {
+        async dispatch() {
+          return undefined;
+        },
+      },
+    });
+    expect(summary).toMatchObject({ candidates: 1, recovered: 0 });
+  });
+
+  it("claims before re-driving, so two passes racing an orphan do not both pay", async () => {
+    const n = twoNodes();
+    await orphan(n.a, "orphan-3");
+    await n.leaseStore.acquire("orphan-3", "dead-node", 1, Date.now() - 60_000);
+
+    const driven: string[] = [];
+    const dispatcher = {
+      async dispatch(pkg: { executionId: string }) {
+        driven.push(pkg.executionId);
+        return undefined;
+      },
+    };
+    const [first, second] = await Promise.all([
+      recoverAbandoned(n.b, { leases: { store: n.leaseStore, owner: "rescuer-1" }, dispatcher }),
+      recoverAbandoned(n.b, { leases: { store: n.leaseStore, owner: "rescuer-2" }, dispatcher }),
+    ]);
+
+    expect(driven).toEqual(["orphan-3"]);
+    expect((first?.recovered ?? 0) + (second?.recovered ?? 0)).toBe(1);
+  });
+
+  it("still requires a predicate when there is no evidence to use", async () => {
+    const n = twoNodes();
+    await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: asserting the runtime guard
+      recoverAbandoned(n.a, { source: n.eventStore } as any)
+    ).rejects.toThrow(/isAbandoned` is required/);
   });
 });
