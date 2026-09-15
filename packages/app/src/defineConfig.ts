@@ -58,6 +58,7 @@ import {
 import type { TelemetryAdapter } from "@loom/telemetry";
 import { type VerificationReport, runVerification, verify as runVerify } from "@loom/verify";
 import { LogLifecycle, TimerService, WorkflowRuntime } from "@loom/workflow-runtime";
+import type { TimerDispatcher } from "@loom/workflow-runtime";
 import type {
   ArchiveStores,
   ExecutionAuthorizer,
@@ -486,6 +487,15 @@ export interface LoomConfig {
     fenced?: boolean;
     /** Advisory: pre-warm a scheduled flow's first effect this many ms before it fires. */
     warmLeadMs?: number;
+    /**
+     * #392 — where a wake runs. With a dispatcher the service re-drives each due execution
+     * on the lane it was STARTED in (`start({ computeTarget })`), instead of resuming inside
+     * whichever process happens to run the timer. Without one, wakes run here, unchanged.
+     *
+     * Wire it in any deployment where executions are placed deliberately: a branch given its
+     * own compute otherwise wakes up in the web server after its first suspension.
+     */
+    dispatcher?: TimerDispatcher;
   };
   // ── Grouped options ───────────────────────────────────────────────────────
   /** See {@link SecurityOptions}. */
@@ -889,6 +899,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       ...(schedules.length > 0 && { schedules }),
       ...(config.timers.fenced !== undefined && { fenced: config.timers.fenced }),
       ...(config.timers.warmLeadMs !== undefined && { warmLeadMs: config.timers.warmLeadMs }),
+      ...(config.timers.dispatcher !== undefined && { dispatcher: config.timers.dispatcher }),
     });
     timerService.start();
   } else if (schedules.length > 0) {
