@@ -54,6 +54,74 @@ function exportedKits(): string[] {
   return [...source.matchAll(/export function (run\w*Conformance)/g)].map((m) => m[1] as string);
 }
 
+/**
+ * The OTHER direction, which nothing checked.
+ *
+ * Every guard here ran scaffold → docs: a seam you can scaffold must be documented. Nothing
+ * ran docs → scaffold, so an SPI could be published in the map, ship a conformance kit, and
+ * have no `loom plugin new` template — advertised as pluggable and not scaffoldable. That is
+ * how `LeaseStore` sat there: interface, kit, map row, composition wiring, no seam.
+ *
+ * A one-directional fitness function is the same failure it exists to prevent, pointed the
+ * other way.
+ */
+describe("scaffold coverage for published SPIs (fitness)", () => {
+  /**
+   * SPIs a third party can implement but not scaffold, each with the reason. Being on this
+   * list is a DECISION; being absent from both lists is the accident this test exists for.
+   */
+  const NO_SEAM_YET: Record<string, string> = {
+    ContentStore: "kit ships; seam not written yet — the same gap `lease` just closed",
+    DurableStateStore: "kit ships; seam not written yet",
+    ReadModelStore: "kit ships; seam not written yet",
+    KeyStore: "kit ships; seam not written yet",
+    Scheduler: "no conformance kit — not advertised as a third-party seam",
+    Warmer: "no conformance kit — not advertised as a third-party seam",
+    // Covered by an existing seam rather than needing their own:
+    SnapshotStore: "scaffolded by the `store` seam, alongside EventStore",
+    BranchRegistry: "scaffolded by the `store` seam, behind its `branching` option",
+  };
+
+  /** SPI interface names the map publishes, read from its rows. */
+  function publishedSpis(mapText: string): string[] {
+    const names = new Set<string>();
+    for (const row of mapText.split("\n").filter((l) => l.startsWith("|"))) {
+      const m = /`([A-Z]\w+)`\s*\(`@loom\/[\w-]+`\)/.exec(row);
+      if (m?.[1] !== undefined) names.add(m[1]);
+    }
+    return [...names];
+  }
+
+  it("reads the map (the sweep itself cannot silently match nothing)", () => {
+    expect(publishedSpis(doc(SPI_MAP)).length).toBeGreaterThan(10);
+  });
+
+  it("every published SPI is scaffoldable, or exempted with a reason", () => {
+    const scaffoldable = new Set(Object.values(SEAM_SPI));
+    const orphans = publishedSpis(doc(SPI_MAP)).filter(
+      (spi) => !scaffoldable.has(spi) && NO_SEAM_YET[spi] === undefined
+    );
+    expect(
+      orphans,
+      `these SPIs are published in the map and a third party cannot scaffold them:\n${orphans.join("\n")}`
+    ).toEqual([]);
+  });
+
+  it("the exemption list names no SPI that is now scaffoldable — a stale excuse is a hole", () => {
+    const scaffoldable = new Set(Object.values(SEAM_SPI));
+    const stale = Object.keys(NO_SEAM_YET).filter(
+      (spi) => scaffoldable.has(spi) && !NO_SEAM_YET[spi]?.startsWith("scaffolded by")
+    );
+    expect(stale).toEqual([]);
+  });
+
+  it("`lease` is scaffoldable, kitted and documented — the case that prompted this", () => {
+    expect(SEAM_SPI.lease).toBe("LeaseStore");
+    expect(doc(SPI_MAP)).toContain("runLeaseStoreConformance");
+    expect(doc(PLUGIN_GUIDE)).toContain("`lease`");
+  });
+});
+
 describe("conformance-kit/doc coverage (fitness)", () => {
   it("finds the kits (the sweep itself can't silently match nothing)", () => {
     expect(exportedKits().length).toBeGreaterThan(10);
