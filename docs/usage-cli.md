@@ -363,6 +363,21 @@ The compiler manifest carries **three** per-flow source analyses, and all of the
 
 Pass `--manifest` explicitly, or leave it off and a `loom-manifest.json` next to the config module — or in the cwd — is picked up automatically. Reach analysis also reports what it **could not** resolve (a `ctx.run` target imported from another module, a minted step id) as a `warn` on each of the three rules, so a partial analysis never reads as a complete one.
 
+**And when there is no analysis at all, it says that too.** Without a manifest those three rules see only a flow's *declared* steps — no suspend points, no `ctx.run` targets — and used to report exactly as they do with full coverage:
+
+```text
+[manifest] none found — runner bodies were not analysed, so suspend points and undeclared
+`ctx.run` targets are invisible to three rules (ADR 0086). Build with @loom/compiler, or
+pass --manifest <loom-manifest.json>.
+loom verify: 2 finding(s) — 1 error(s), 0 warning(s), 1 coverage note(s)
+  [info] suspension-safety: 1 of 1 flow(s) had no runner-body analysis ("checkout"), so no
+  suspend point is visible at all — timed-suspend safety is UNVERIFIED rather than clean…
+  [error] suspension-safety (checkout): Flow "checkout" uses approval/resume but no
+  ResumeAuthenticator is wired (K12); resume events would be unauthenticated.
+```
+
+Coverage notes are `info`: they **never** fail the run (`--manifest` is not mandatory, and an app that does not use the compiler is not wrong), and they are counted in the headline so `0 error(s)` cannot stand alone as a claim about code nothing read. One note per rule, not per flow. A manifest that carries no `runnerReach` gets the same message — the question is whether the analysis was *injected*, not whether a file exists.
+
 ```bash
 npx loom verify --config dist/app.js
 npx loom verify --config dist/app.js --manifest loom-manifest.json

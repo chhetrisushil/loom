@@ -1,6 +1,6 @@
 # Verification that reports its own coverage
 
-**Status:** PROPOSED — scoping only. The analysis this began as a request for **already exists**; §1 is the correction.
+**Status:** **SHIPPED** — V1–V5 implemented. The analysis this began as a request for already existed; §1 is the correction.
 **Date:** 2026-09-16
 **Kernel baseline:** EVENT_SCHEMA 1.18.0, KERNEL_ABI 1.1.0 — unchanged by everything below
 **Relates to:** [ADR 0086](../adr/0086-runner-body-reach-analysis.md) (runner-body reach), [ADR 0028](../adr/0028-runtime-verification.md) (runtime verification)

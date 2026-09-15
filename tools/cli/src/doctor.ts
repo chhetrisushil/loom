@@ -102,10 +102,18 @@ export async function cmdDoctor(opts: {
       const { result } = await cmdVerify(config, manifest);
       const errors = result.findings.filter((f) => f.severity === "error").length;
       const warns = result.findings.filter((f) => f.severity === "warn").length;
+      // V5 — carry the rules' own coverage notes through the front door. Flattening a report
+      // to "0 errors" is exactly how a partial check gets cited as a complete one, which is
+      // the thing this command exists to prevent.
+      const notes = result.findings.filter((f) => f.severity === "info");
+      const counts = `${result.checked.length} rule(s), ${errors} error(s), ${warns} warning(s)`;
       checks.push({
         name: "runtime verification (loom verify)",
-        status: result.ok ? "ok" : "failed",
-        detail: `${result.checked.length} rule(s), ${errors} error(s), ${warns} warning(s)`,
+        status: result.ok ? (notes.length > 0 ? "advisory" : "ok") : "failed",
+        detail:
+          notes.length === 0
+            ? counts
+            : `${counts} — ${notes.length} rule(s) reported partial coverage: ${notes[0]?.message ?? ""}`,
       });
     } catch (err) {
       checks.push({
