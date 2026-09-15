@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`orphanCensus` — the read-only pass that was missing (#408).** Every other maintenance pass
+  reads state in order to *act*: `recoverAbandoned` resumes what a predicate claims,
+  `retireAbandonedBranches` cancels, `pruneBranchRefs` deletes. Nothing just looked — which is
+  why "defer until a deployment reports orphans the staleness predicate misses" was never a real
+  condition: a false negative sits `running` forever, silently, and nobody files an issue about
+  work that quietly never finished.
+
+  The census takes **no predicate** — that is the point, since the question it answers is whether
+  yours is right — and writes nothing. It bands in-flight executions by age (cumulative, with a
+  sample of ids so a report points somewhere) and, given a lease store, classifies each as
+  `held` / `expired` / `none`. `none` is the number [#408](https://github.com/chhetrisushil/loom/issues/408)
+  turns on: a stuck execution nothing ever leased cannot be recovered from evidence at all, and
+  counting those is how "should the runtime lease every run" stops being a guess. Lease counts are
+  **omitted** rather than zeroed when no store is given, because zeros would read as "nothing is
+  unwatched" instead of "not asked".
+
+  `LeaseStore` gains an optional `get` (SPI 1.1.0) for exactly that classification: `expired()`
+  cannot tell an actively-renewed lease from one that never existed.
+
 - **Durable leases: only one node pays for a duplicated wake (#380, L1–L2).** `TimerStore.due()`
   has no claim, so two nodes polling the same store both receive the same due timer, both
   resume, and both pay for every effect until one loses at the fence. Fencing (K9.4) makes that

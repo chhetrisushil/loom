@@ -13,7 +13,7 @@
 // every path behaves byte-identically (G2).
 
 /** SPI version for the {@link LeaseStore} contract. Pinned by `runLeaseStoreConformance`. */
-export const LEASE_STORE_SPI_VERSION = "1.0.0";
+export const LEASE_STORE_SPI_VERSION = "1.1.0";
 
 export interface Lease {
   executionId: string;
@@ -45,6 +45,16 @@ export interface LeaseStore {
   renew(executionId: string, owner: string, ttlMs: number, now?: number): Promise<boolean>;
   /** Leases past their expiry, soonest-expired first. The evidence an execution was orphaned. */
   expired(now: number, limit?: number): Promise<Lease[]>;
+  /**
+   * OPTIONAL read: the lease on an execution, or `null` if nothing holds one.
+   *
+   * `expired()` answers "who stopped saying they were alive", which cannot distinguish an
+   * execution someone is actively renewing from one that never had a lease at all. That
+   * distinction is the whole question for `orphanCensus` (#408): a stuck execution with NO
+   * lease is a path nothing is watching, and counting those is how "should the runtime lease
+   * every run" stops being a guess.
+   */
+  get?(executionId: string): Promise<Lease | null>;
   /** Give it up. Releasing a lease held by someone else is a no-op, never a steal. */
   release(executionId: string, owner: string): Promise<void>;
   close(): Promise<void>;
@@ -101,6 +111,11 @@ export class InMemoryLeaseStore implements LeaseStore {
       .sort((a, b) => a.expiresAt - b.expiresAt)
       .slice(0, limit)
       .map((l) => ({ ...l }));
+  }
+
+  async get(executionId: string): Promise<Lease | null> {
+    const held = this.leases.get(executionId);
+    return held !== undefined ? { ...held } : null;
   }
 
   async release(executionId: string, owner: string): Promise<void> {
