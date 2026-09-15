@@ -17,7 +17,7 @@ export type { EventEnvelope };
  *   {@link appendBatchOf}, which prefers it and falls back to a per-envelope `append` loop,
  *   so a backend that omits it is byte-identical to before.
  */
-export const EVENT_STORE_SPI_VERSION = "1.3.0";
+export const EVENT_STORE_SPI_VERSION = "1.4.0";
 
 /**
  * Reserved-stream prefix. Control facts (retention `__loom_lifecycle__`, erasure
@@ -121,6 +121,17 @@ export interface EventStore {
     fromSequence: number,
     toSequence: number
   ): Promise<EventEnvelope[]>;
+  /**
+   * OPTIONAL tip query: the highest sequence durably stored for an execution, or `null`
+   * when it has none. One indexed `MAX(sequence)` instead of materializing a log just to
+   * ask how long it is.
+   *
+   * `fork()` is the motivating caller — it needs the tip to validate a fork point, and was
+   * reading the ENTIRE parent log to get it even when the store could copy the prefix
+   * natively. A store that omits this falls back to reading the log, so callers must
+   * tolerate its absence — use {@link headOf}.
+   */
+  head?(executionId: string): Promise<number | null>;
   subscribe(executionId: string, handler: (event: EventEnvelope) => void): Promise<() => void>;
   /**
    * OPTIONAL fencing (K9.4). Atomically increment and return the execution's
@@ -265,6 +276,16 @@ export async function appendBatchOf(
  * else falls back to `readFrom` + a bounded slice — so every caller gets the
  * range without having to branch on the capability.
  */
+/**
+ * The tip of an execution's log through the optional {@link EventStore.head} fast-path,
+ * falling back to reading it. `null` means the execution has no events at all.
+ */
+export async function headOf(store: EventStore, executionId: string): Promise<number | null> {
+  if (store.head) return store.head(executionId);
+  const events = await store.read(executionId);
+  return events.length === 0 ? null : (events[events.length - 1]?.sequence ?? null);
+}
+
 export async function readRangeOf(
   store: EventStore,
   executionId: string,

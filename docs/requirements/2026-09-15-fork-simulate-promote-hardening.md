@@ -129,10 +129,17 @@ Fixes M5. Record an optional placement hint on the branch ref at `fork()` time a
 `DispatchMetadata.target` from it, so "simulate the expensive branch on Cloud Run, the cheap one
 in-process" is declarative rather than hand-wired at each dispatch.
 
-### E5 — `head(executionId)` on the EventStore SPI *(1P, perf)*
+### E5 — `head(executionId)` on the EventStore SPI *(1P, perf)* — **SHIPPED**
 
-Fixes M6. Turns `fork()` from O(parent log) into O(1) + `copyPrefix`. Additive optional method with a
-`readFrom`-based fallback, a conformance case, and a bench line. Measurable on the existing harness.
+Fixes M6. Optional `head` (one indexed `MAX(sequence)`) with a `headOf` fallback, native on
+all three backends, forwarded by all seven store decorators, conformance case included.
+EventStore SPI → 1.4.0.
+
+The win turned out to be larger than "don't read to find the tip": once the tip is free, the
+fold only needs the window a snapshot does not cover, and the prefix only needs reading when
+the copy itself cannot be done natively. **Forking at a durable gate now reads no events at
+all** — the suspend path has already checkpointed there. Pinned by two tests that count what
+the store was asked for, both of which fail against the old implementation.
 
 ### E6 — branch lifecycle *(app/1P)* — **PARTLY SHIPPED**
 
@@ -187,7 +194,7 @@ gate's deadline is live rather than hypothetical.
 2. ~~**E8**~~ — **shipped**; it decided E2/E3's shape and carried E7 in with it.
 3. ~~**E7**, **E2**~~ — **shipped inside E8** as app patterns; neither needs a 1P surface yet.
 4. ~~**E6**~~ — **the CAS `promote` and paging shipped**; the TTL sweep is deferred with a reason, not forgotten.
-5. **E4**, **E5** — placement and cost, independent of the others.
+5. ~~**E5**~~ — **shipped**. **E4** (per-branch placement) is deferred: nothing has asked for it.
 
 ## 5. Not doing
 

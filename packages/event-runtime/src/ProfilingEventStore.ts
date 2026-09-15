@@ -37,6 +37,7 @@ export interface WriteProfile {
  * Zero-cost when unwired — it is a decorator, so a store that is not wrapped is unaffected.
  */
 export class ProfilingEventStore implements EventStore {
+  readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
@@ -56,6 +57,7 @@ export class ProfilingEventStore implements EventStore {
   private lastEnd = 0;
 
   constructor(private readonly inner: EventStore) {
+    if (inner.head !== undefined) this.head = (...a) => inner.head!(...a);
     if (inner.readRange !== undefined) this.readRange = (...a) => inner.readRange!(...a);
     if (inner.acquireFence !== undefined) this.acquireFence = (id) => inner.acquireFence!(id);
     if (inner.copyPrefix !== undefined) this.copyPrefix = (...a) => inner.copyPrefix!(...a);

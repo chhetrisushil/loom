@@ -222,6 +222,7 @@ export function hashChainedEventStore(
       }
       return { ok: true, length: events.length };
     },
+    ...(inner.head !== undefined && { head: inner.head.bind(inner) }),
     ...(inner.readRange !== undefined && { readRange: inner.readRange.bind(inner) }),
     ...(inner.acquireFence !== undefined && { acquireFence: inner.acquireFence.bind(inner) }),
     ...(inner.copyPrefix !== undefined && { copyPrefix: inner.copyPrefix.bind(inner) }),

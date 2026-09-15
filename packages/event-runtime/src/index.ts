@@ -12,6 +12,7 @@ export { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";
 export type { InMemoryAsyncEventStoreOptions } from "./InMemoryAsyncEventStore";
 export type { EventStore, EventStoreOptions, ExecutionEnumerable, ExecutionPage } from "./types";
 export {
+  headOf,
   readRangeOf,
   appendBatchOf,
   isReservedStream,

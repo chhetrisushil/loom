@@ -9,7 +9,7 @@ import type {
 } from "@loom/effect-runtime";
 import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
 import { RESERVED_STREAM_PREFIX, isReservedStream } from "@loom/event-runtime";
-import { readRangeOf } from "@loom/event-runtime";
+import { headOf, readRangeOf } from "@loom/event-runtime";
 // Import the pure sequence helper from the browser-safe subpath, not the barrel:
 // the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
 // would otherwise leak into every browser app that builds on the WorkflowRuntime.
@@ -1175,12 +1175,13 @@ export class WorkflowRuntime {
     atSequence: number,
     opts?: ForkOptions
   ): Promise<ForkResult> {
-    const parentEvents = await this.eventStore.read(parentExecutionId);
-    if (parentEvents.length === 0) {
+    // The tip, without materializing the log to find it. `fork()` used to `read()` the whole
+    // parent just to learn how long it was — on a long-lived parent that is the dominant cost
+    // of a fork, and it was paid even when the store could copy the prefix natively.
+    const tip = await headOf(this.eventStore, parentExecutionId);
+    if (tip === null) {
       throw new Error(`No execution found for id: ${parentExecutionId}`);
     }
-
-    const tip = parentEvents[parentEvents.length - 1]!.sequence;
     if (atSequence < 0 || atSequence > tip) {
       throw new Error(
         `Invalid fork point ${atSequence} for execution ${parentExecutionId} (valid range 0..${tip})`
@@ -1188,14 +1189,26 @@ export class WorkflowRuntime {
     }
 
     const childId = opts?.executionId ?? ulid();
-    const workflowId = parentEvents[0]!.workflowId;
+
+    // Only two things need the parent's events: folding the state at the fork point (which
+    // starts from the nearest snapshot at/below it, so usually a short tail), and the copy
+    // itself when the store cannot do it natively — or when live projections have to see the
+    // copied prefix. Read the WIDER of those windows once, never the whole log, and never
+    // anything above the fork point.
+    const needsPrefix = this.eventStore.copyPrefix === undefined || this.onEvent !== undefined;
+    const base = await this.snapshotStore.loadLatestBefore(parentExecutionId, atSequence);
+    const from = needsPrefix || base === null ? 0 : base.sequence + 1;
+    const window = await readRangeOf(this.eventStore, parentExecutionId, from, atSequence);
+    const parentEvents = window;
+
+    const workflowId = base?.state.workflowId ?? window[0]?.workflowId ?? "";
     const workflowVersion = this.flows.get(workflowId)?.definition.version ?? "";
 
     // 1. Materialize state at the fork point (reusing the nearest prior snapshot).
-    const forkState = await this.materializeStateAt(
-      parentExecutionId,
+    const forkState = this.materializeStateAt(
+      base,
       atSequence,
-      parentEvents,
+      window,
       childId,
       workflowId,
       workflowVersion
@@ -1306,28 +1319,26 @@ export class WorkflowRuntime {
   }
 
   /**
-   * Materialize ExecutionState at `atSequence` for a fork, stamped with the
-   * child executionId. Folds from the nearest snapshot at/below the fork point
-   * (falling back to a full prefix fold) so long histories don't replay from zero.
+   * Fold ExecutionState at `atSequence` for a fork, stamped with the child executionId.
+   * Pure: the caller has already read the snapshot and exactly the window of events this
+   * needs, so long histories neither replay from zero nor load anything above the fork point.
    */
-  private async materializeStateAt(
-    parentExecutionId: string,
+  private materializeStateAt(
+    base: Snapshot | null,
     atSequence: number,
-    parentEvents: EventEnvelope[],
+    window: EventEnvelope[],
     childId: string,
     workflowId: string,
     workflowVersion: string
-  ): Promise<ExecutionState> {
-    const base = await this.snapshotStore.loadLatestBefore(parentExecutionId, atSequence);
+  ): ExecutionState {
     let vm: ReplayVM;
     if (base) {
-      // parentEvents is sorted by sequence — binary-search the [base+1..at] tail
-      // instead of scanning the whole (possibly huge) log.
-      const tail = sliceBySequence(parentEvents, base.sequence + 1, atSequence);
+      // `window` may start at 0 (when the copy path needed the whole prefix), so slice the
+      // [base+1..at] tail out of it rather than replaying events the snapshot already folded.
+      const tail = sliceBySequence(window, base.sequence + 1, atSequence);
       vm = new ReplayVM(tail, base.state);
     } else {
-      const prefix = sliceBySequence(parentEvents, 0, atSequence);
-      vm = new ReplayVM(prefix, { executionId: childId, workflowId, workflowVersion });
+      vm = new ReplayVM(window, { executionId: childId, workflowId, workflowVersion });
     }
     const state = vm.getState();
     return { ...state, executionId: childId };

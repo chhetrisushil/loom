@@ -48,7 +48,7 @@ export function isShredded(value: unknown): value is { $shredded: true } {
  * destroyed throws {@link PayloadShreddedError} — replay fails loudly, never
  * silently diverges (the forbidden third behavior).
  *
- * Optional store capabilities (fencing, readRange, copyPrefix) are forwarded so
+ * Optional store capabilities (fencing, head, readRange, copyPrefix) are forwarded so
  * the wrapper composes with K9.4 and fork(); `copyPrefix` copies CIPHERTEXT
  * verbatim, which is why a fork must share the parent's subject to stay readable.
  */
@@ -71,6 +71,9 @@ export class EncryptingEventStore implements EventStore {
   private readonly onShredded: "throw" | "tolerate";
   // K9.4/fork/perf capabilities are forwarded only when the inner store has them,
   // so a capability probe (`if (store.copyPrefix)`) behaves identically.
+  // A tip is a sequence number, never a payload — nothing to decrypt, and it stays
+  // answerable after a shred (the rows are still there; only their contents are gone).
+  readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
@@ -84,6 +87,9 @@ export class EncryptingEventStore implements EventStore {
     this.sensitive = options.sensitive;
     this.subjectOf = options.subjectOf ?? ((e) => e.executionId);
     this.onShredded = options.onShredded ?? "throw";
+    if (inner.head !== undefined) {
+      this.head = (executionId) => inner.head!(executionId);
+    }
     if (inner.readRange !== undefined) {
       this.readRange = (executionId, from, to) =>
         inner.readRange!(executionId, from, to).then((evs) => this.decryptAll(executionId, evs));

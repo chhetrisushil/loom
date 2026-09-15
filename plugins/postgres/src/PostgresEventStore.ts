@@ -352,6 +352,17 @@ export class PostgresEventStore implements EventStore {
     return rows.map(rowToEnvelope);
   }
 
+  async head(executionId: string): Promise<number | null> {
+    await this.ready;
+    const { rows } = await this.pool.query<{ tip: string | number | null }>(
+      "SELECT MAX(sequence) AS tip FROM events WHERE execution_id = $1",
+      [executionId]
+    );
+    const tip = rows[0]?.tip;
+    // `MAX(bigint)` comes back as a string through node-postgres.
+    return tip === null || tip === undefined ? null : Number(tip);
+  }
+
   async readRange(
     executionId: string,
     fromSequence: number,

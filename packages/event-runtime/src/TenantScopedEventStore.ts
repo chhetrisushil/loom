@@ -17,6 +17,7 @@ const SEP = ":"; // ":" is not in the ULID alphabet — an unambiguous, collisio
  * row-level security is an optional hardening layer on top, not a replacement.
  */
 export class TenantScopedEventStore implements EventStore {
+  readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
@@ -29,6 +30,9 @@ export class TenantScopedEventStore implements EventStore {
     private readonly tenant: string
   ) {
     const scope = (id: string): string => `${this.tenant}${SEP}${id}`;
+    if (inner.head !== undefined) {
+      this.head = (id) => inner.head!(scope(id));
+    }
     if (inner.readRange !== undefined) {
       this.readRange = (id, from, to) =>
         inner.readRange!(scope(id), from, to).then((evs) => evs.map((e) => this.unscope(e)));

@@ -80,6 +80,7 @@ export interface MigrationResult {
  * what makes "which side holds it?" a single indexed point-read.
  */
 export class ShardedEventStore implements EventStore {
+  readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
@@ -104,6 +105,9 @@ export class ShardedEventStore implements EventStore {
     // Optional capabilities are exposed only when EVERY shard has them: a partial
     // capability would work for some executions and not others depending on where they
     // hashed, which is worse than not advertising it at all.
+    if (shards.every((s) => s.head !== undefined)) {
+      this.head = async (id) => (await this.route(id)).head!(id);
+    }
     if (shards.every((s) => s.readRange !== undefined)) {
       this.readRange = async (id, from, to) => (await this.route(id)).readRange!(id, from, to);
     }
