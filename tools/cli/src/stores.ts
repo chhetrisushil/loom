@@ -111,15 +111,24 @@ async function loadModule(file: string): Promise<Record<string, unknown>> {
   }
 }
 
-async function fromConfig(modulePath: string): Promise<ResolvedStores> {
-  // Set BEFORE the import: composing an app starts its timer service, and that happens while
-  // the module is evaluated. A read-only command must not fire due timers and scheduled flows
-  // as a side effect of being pointed at a deployment.
+/**
+ * Load an app from its config module without running it.
+ *
+ * `LOOM_NO_AUTOSTART` is set BEFORE the import because composing an app starts its timer
+ * service, and that happens while the module is evaluated — a read-only command must not fire
+ * due timers and scheduled flows as a side effect of being pointed at a deployment.
+ *
+ * Shared so every command that loads a config gets that guarantee, rather than each one
+ * remembering to: `loom doctor` used a bare `require` and therefore did start it.
+ */
+export async function loadLoomApp(modulePath: string): Promise<Partial<LoomApp>> {
   process.env.LOOM_NO_AUTOSTART = "1";
+  const mod = await loadModule(path.resolve(modulePath));
+  return (mod.default ?? mod.app ?? mod) as Partial<LoomApp>;
+}
 
-  const resolved = path.resolve(modulePath);
-  const mod = await loadModule(resolved);
-  const app = (mod.default ?? mod.app ?? mod) as Partial<LoomApp>;
+async function fromConfig(modulePath: string): Promise<ResolvedStores> {
+  const app = await loadLoomApp(modulePath);
   if (app.stores?.eventStore === undefined) {
     throw new Error(
       `${modulePath} must default-export a LoomApp from defineConfig(...) (no stores found)`

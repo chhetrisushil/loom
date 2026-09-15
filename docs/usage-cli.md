@@ -293,17 +293,40 @@ loom doctor
 
   ✓ flow-graph (loom check)
       loom-manifest.json
-  – runtime verification (loom verify)
-      no built config module found — pass --config <module> exporting a LoomApp (build to JS first, or run under tsx)
+  ✓ runtime verification (loom verify)
+      8 rule(s), 0 error(s), 0 warning(s)
   – memory store (durability + relevance recall)
-      no built config module found — pass --config <module> exporting a LoomApp
+      no `memoryStore` configured — agent memory and any corpus live in the in-memory default and are LOST ON RESTART
+  ✓ durable timers (can this deployment wake?)
+      TimerStore wired
+  ! timer wake ownership (does anything own a wake?)
+      a TimerStore with no `timers.leases`: if more than one process polls it, every node
+      resumes the same due execution. Fencing (K9.4) makes that safe, not cheap — the loser
+      still pays for its effects up to the point it loses. Harmless on a single node; wire
+      `timers.leases` before there are two
   ✓ claim-check reach-through (loom lint)
       .
 
-passed, but 2 check(s) could not run — coverage is partial
+passed, but 1 could not run — coverage is partial; 1 advisory (depends on how you deploy)
 ```
 
-A **skipped check never fails the run**, but it never reads as a pass either: `all checks passed` and `passed, but N check(s) could not run — coverage is partial` are deliberately different strings, so a green `doctor` can't be cited as evidence for a check that never ran. Exit `1` only when a check actually **fails**.
+Four statuses, and the distinctions are the point:
+
+| | meaning | fails the run? |
+|---|---|---|
+| `✓` | the check ran and passed | no |
+| `✗` | the check ran and found a defect | **yes** (exit `1`) |
+| `–` | **skipped** — the input it needs was not there | no |
+| `!` | **advisory** — it ran, and what it found matters *depending on how you deploy* | no |
+
+A **skipped check never fails the run**, but it never reads as a pass either: `all checks passed` and `passed, but 1 could not run — coverage is partial` are deliberately different strings, so a green `doctor` can't be cited as evidence for a check that never ran.
+
+An **advisory** is the other half of that honesty. "A TimerStore with no lease store" is a defect on a multi-node deployment and completely fine on one node, and `doctor` cannot see how many nodes you run — so it reports the fact, names the consequence, and leaves the judgement with you rather than failing your build on a guess or staying silent. Advisories are counted in the summary for the same reason skips are.
+
+The two timer checks read what the **composition** wired, which is where the answer lives:
+
+- **`durable timers`** — `✗` when schedules are declared with no `timers: { store }` (they can never fire), `!` when flows declare resume gates and no store exists (a `timeout` lives in the runner body, so this is inference, not proof — and it says so, including that `loom verify`'s timed-suspend rule cannot see them either).
+- **`timer wake ownership`** — `!` when a timer store has no `timers.leases` behind it.
 
 ### `loom check --manifest <path>`
 

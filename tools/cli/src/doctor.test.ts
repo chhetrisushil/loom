@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -35,12 +35,113 @@ describe("loom doctor", () => {
     const ws = workspace();
     const { text, result } = await cmdDoctor({ dir: ws });
 
-    expect(result.checks.filter((c) => c.status === "skipped")).toHaveLength(3);
+    // Every check that needs an input it does not have must SAY so — asserting the property
+    // rather than a count, so adding a check cannot quietly turn a skip into silence.
+    const skipped = result.checks.filter((c) => c.status === "skipped");
+    expect(skipped.length).toBeGreaterThanOrEqual(3);
+    for (const check of skipped)
+      expect(check.detail).toMatch(/--manifest|--config|nothing declared/);
     expect(text).toContain("no loom-manifest.json found");
     expect(text).toContain("no built config module found");
     // Each skip names the flag that would have enabled it.
     expect(text).toContain("--manifest");
     expect(text).toContain("--config");
+  });
+
+  // ── durable timers + wake ownership ────────────────────────────────────────
+
+  const timerConfig = (body: string) => {
+    const ws = workspace();
+    const config = join(ws, "config.js");
+    writeFileSync(config, `module.exports = ${body};`);
+    return { ws, config };
+  };
+
+  const find = (
+    result: { checks: { name: string; status: string; detail: string }[] },
+    p: string
+  ) => result.checks.find((c) => c.name.startsWith(p));
+
+  it("fails when schedules are declared and no TimerStore can fire them", async () => {
+    const { ws, config } = timerConfig(
+      '{ stores: {}, schedules: [{ id: "nightly" }, { id: "weekly" }] }'
+    );
+    const { result, text } = await cmdDoctor({ dir: ws, config });
+    const check = find(result, "durable timers");
+    expect(check?.status).toBe("failed");
+    expect(result.ok).toBe(false);
+    expect(text).toContain("can never fire");
+  });
+
+  it("advises — does not fail — when gates exist but no TimerStore does", async () => {
+    // A timeout lives in the runner body, so this is inference. It must not fail a build on
+    // a guess, and it must not stay silent either.
+    const { ws, config } = timerConfig(
+      `{ stores: {}, schedules: [],
+         runtime: { getFlowIds: () => ["approve"],
+                    getFlow: () => ({ definition: { resumeSchemas: { Approved: {} } } }) } }`
+    );
+    const { result, text } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, "durable timers")?.status).toBe("advisory");
+    expect(text).toContain("advisory (depends on how you deploy)"); // not silence
+    // It says what verification does NOT cover, so a clean report is not read as coverage.
+    expect(text).toContain("FlowSpec.suspends has no producer");
+  });
+
+  it("an advisory does not fail the run, and does not vanish from the summary", () => {
+    // Asserted on the formatter, because `result.ok` in a full run also carries every other
+    // check — and the property under test is what an advisory ALONE does.
+    const text = formatDoctor({
+      ok: true,
+      checks: [
+        { name: "durable timers (can this deployment wake?)", status: "advisory", detail: "…" },
+        { name: "something else", status: "ok", detail: "fine" },
+      ],
+    });
+    expect(text).toContain("passed, but");
+    expect(text).toContain("1 advisory (depends on how you deploy)");
+    expect(text).not.toContain("all checks passed");
+  });
+
+  it("advises when a TimerStore has no lease behind it", async () => {
+    const { ws, config } = timerConfig("{ stores: { timerStore: {} }, schedules: [] }");
+    const { result, text } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, "timer wake ownership")?.status).toBe("advisory");
+    expect(text).toContain("every node resumes the same due execution");
+    expect(text).toContain("Harmless on a single node");
+  });
+
+  it("passes when the timer store has a lease store, and says nothing further", async () => {
+    const { ws, config } = timerConfig(
+      '{ stores: { timerStore: {}, leaseStore: {} }, schedules: [{ id: "nightly" }] }'
+    );
+    const { result } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, "durable timers")?.status).toBe("ok");
+    expect(find(result, "timer wake ownership")?.status).toBe("ok");
+  });
+
+  it("skips ownership when there are no timers — there are no wakes to own", async () => {
+    const { ws, config } = timerConfig("{ stores: {}, schedules: [] }");
+    const { result } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, "timer wake ownership")?.status).toBe("skipped");
+    // ...and the timer check skips too: nothing observable needs one.
+    expect(find(result, "durable timers")?.status).toBe("skipped");
+  });
+
+  it("loads the config for inspection, not for running", async () => {
+    // doctor used a bare `require`, so pointing it at a deployment's config STARTED that
+    // deployment's timer service — a diagnostic firing due timers as a side effect of being
+    // asked a question. The module records what it saw at import time.
+    const ws = workspace();
+    const config = join(ws, "config.js");
+    const witness = join(ws, "witness.txt");
+    writeFileSync(
+      config,
+      `require("node:fs").writeFileSync(${JSON.stringify(witness)}, String(process.env.LOOM_NO_AUTOSTART));
+       module.exports = { stores: {}, schedules: [] };`
+    );
+    await cmdDoctor({ dir: ws, config });
+    expect(readFileSync(witness, "utf8")).toBe("1");
   });
 
   it("fails when a CONFIGURED memory store cannot do relevance retrieval", async () => {
