@@ -52,6 +52,10 @@ export interface RetireAbandonedBranchesOptions {
   reason?: (candidate: BranchCandidate) => unknown;
   /** Stop after retiring this many. Default: no limit. */
   limit?: number;
+  /** Called for every branch the pass selected, in both modes. */
+  onCandidate?: (candidate: BranchCandidate) => void;
+  /** Select and report, cancelling nothing — through this function, not beside it. */
+  dryRun?: boolean;
 }
 
 export interface RetireAbandonedBranchesSummary {
@@ -92,6 +96,7 @@ export async function retireAbandonedBranches(
     );
   }
   const limit = options.limit ?? Number.POSITIVE_INFINITY;
+  let selected = 0;
   const summary: RetireAbandonedBranchesSummary = {
     scanned: 0,
     candidates: 0,
@@ -119,10 +124,19 @@ export async function retireAbandonedBranches(
       updatedAt: state.updatedAt,
     };
 
-    if (summary.retired >= limit || !(await options.isAbandoned(candidate))) {
+    // A dry run retires nothing, so `retired` never reaches the limit; count selections
+    // separately rather than bounding on `remaining`, which holds the REJECTED branches.
+    if ((options.dryRun === true ? selected : summary.retired) >= limit) {
       summary.remaining.push(candidate);
       continue;
     }
+    if (!(await options.isAbandoned(candidate))) {
+      summary.remaining.push(candidate);
+      continue;
+    }
+    selected++;
+    options.onCandidate?.(candidate);
+    if (options.dryRun === true) continue;
     try {
       await runtime.cancel(
         child.executionId,

@@ -1,7 +1,7 @@
 import { step$ } from "@loom/core";
 import type { FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -179,6 +179,69 @@ describe("recoverAbandoned", () => {
     // already accepts — plus the tail `c` that had never run at all.
     expect(b.ran).toEqual(["b", "c"]);
     expect(a.ran).toEqual(["a", "b"]);
+  });
+
+  // ── dryRun — the preview runs through the pass, not beside it ──────────────
+  //
+  // `loom retention` shipped the other arrangement once: a preview computed alongside the
+  // real pass, which skipped a guard the pass applied and therefore promised an outcome the
+  // run would not deliver. These assert the preview cannot drift, because it IS the pass.
+
+  it("selects the same executions but changes nothing", async () => {
+    const { stores, executionId } = await abandonOne();
+    const b = boot({ shared: stores });
+    const before = (await b.eventStore.read(executionId)).length;
+
+    const seen: string[] = [];
+    const summary = await recoverAbandoned(b.runtime, {
+      source: b.eventStore,
+      isAbandoned: () => true,
+      dryRun: true,
+      onCandidate: (id) => seen.push(id),
+    });
+
+    expect(seen).toEqual([executionId]); // found it
+    expect(summary.candidates).toBe(1);
+    expect(summary.recovered).toBe(0); // ...and left it alone
+    expect(b.ran).toEqual([]); // no effect ran
+    expect((await b.eventStore.read(executionId)).length).toBe(before); // no event appended
+    expect((await b.runtime.loadState(executionId))?.status).toBe("running");
+  });
+
+  it("does not CLAIM during a preview — a dry run must not fence the real pass out", async () => {
+    const { stores, executionId } = await abandonOne();
+    const b = boot({ shared: stores });
+    const leases = new InMemoryLeaseStore();
+
+    await recoverAbandoned(b.runtime, {
+      source: b.eventStore,
+      isAbandoned: () => true,
+      leases: { store: leases, owner: "preview", ttlMs: 60_000 },
+      dryRun: true,
+    });
+
+    // Nothing owns it, so the recovery that follows can take it. A preview that claimed
+    // would lock an execution for a ttl on behalf of a pass that never ran.
+    const taken = await leases.acquire(executionId, "real-pass", 60_000);
+    expect(taken).not.toBeNull();
+  });
+
+  it("bounds a preview by `limit` — `recovered` never rises, so it cannot be the bound", async () => {
+    const a = boot({ gated: true });
+    for (let i = 0; i < 3; i++) void a.runtime.start(a.flow, {}, { executionId: `d-${i}` });
+    await settle();
+
+    const b = boot({ shared: a.stores });
+    const seen: string[] = [];
+    const summary = await recoverAbandoned(b.runtime, {
+      source: b.eventStore,
+      isAbandoned: () => true,
+      dryRun: true,
+      limit: 2,
+      onCandidate: (id) => seen.push(id),
+    });
+    expect(seen).toHaveLength(2);
+    expect(summary.candidates).toBe(2);
   });
 
   it("honours `limit`", async () => {

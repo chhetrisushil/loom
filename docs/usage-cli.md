@@ -74,6 +74,15 @@ loom — project-local commands for a Loom app
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
   loom census <store> [--buckets 5m,1h,6h,24h]    what is stuck, and is anything watching it
                                                   (read-only; takes no predicate)
+  loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--apply]
+                                                  re-drive executions whose supervisor died
+                                                  (needs `timers.leases` or --stale; --apply
+                                                   needs --config: re-driving runs the flow)
+  loom branches retire <store> --parent <id> --stale <d> [--limit N] [--apply]
+                                                  cancel branches nobody is coming back to
+                                                  (they keep the parent uncollectable)
+  loom branches prune <store> [--protect main,rel] [--limit N] [--apply]
+                                                  delete refs that name nothing (main protected)
   loom retention run <store> [--ttl ms] [--apply]  reclaim aged terminal executions
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live

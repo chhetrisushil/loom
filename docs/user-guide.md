@@ -1145,7 +1145,9 @@ loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
 loom inspect --db <path> [--port N]             web inspector (timeline + slider)
 ```
 
-(Plus `profile` / `introspect` / `optimize`, `learn report|eval`, `compat` / `kernel-manifest`, `retention run` / `sweep content` / `compliance report`, `knowledge sync|list|search`, `lint claim-check`, `dev`, and the `plugin …` family — the CLI guide has all of them.)
+(Plus `profile` / `introspect` / `optimize`, `learn report|eval`, `compat` / `kernel-manifest`, `census` / `recover` / `branches retire|prune` / `retention run` / `sweep content` / `compliance report`, `knowledge sync|list|search`, `lint claim-check`, `dev`, and the `plugin …` family — the CLI guide has all of them.)
+
+- **The maintenance passes are commands, not just functions.** `census` (read-only), `recover`, `branches retire`, `branches prune` and `retention run` are **dry by default** and act only under `--apply`. Each refuses where loom cannot decide for you: `recover` wants either `timers.leases` or an explicit `--stale`, and `branches retire` wants `--stale`, because a branch parked on a human gate is an open question rather than garbage. The preview comes from the pass itself, so it cannot disagree with what `--apply` would do.
 
 - **`logs` / `debug` / `inspect`** read one execution's log. `debug --at N` folds the exact state at sequence *N* (time-travel); `inspect` serves a web timeline with a slider using the same fold.
 - **Every storage-backed command takes `--config <module>` or `--db <path>`.** `--db` is the SQLite shorthand — a dev machine with loose files, no app load needed. `--config` points at your app's config module and uses **the stores it wired**, whatever they are: SQLite, Postgres, or any backend that passes the conformance kits (ADR 0033). That is what makes these commands usable on a real deployment — leases and placement exist because more than one node is running, and a multi-node deployment is not a file you can pass to `--db`.
