@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { SqliteEventStore } from "@loom/plugin-sqlite";
 
 import {
   type EvalReport,
@@ -10,18 +9,20 @@ import {
   foldAt,
   formatLog,
 } from "./core";
+import { type StoreFlags, resolveStores } from "./stores";
 
 /** `loom logs --db <path> <executionId> [--redact a,b]` — the durable event stream. */
 export async function cmdLogs(
-  db: string,
+  flags: StoreFlags,
   executionId: string,
   redact: readonly string[] = []
 ): Promise<string> {
-  const store = new SqliteEventStore(db);
+  const resolved = await resolveStores(flags);
+  const store = resolved.eventStore;
   try {
     return formatLog(await store.read(executionId), redact);
   } finally {
-    await store.close();
+    await resolved.close();
   }
 }
 
@@ -31,12 +32,13 @@ export async function cmdLogs(
  * the final state. `--redact` masks the listed output dot-paths from the printout (K10-R6).
  */
 export async function cmdDebug(
-  db: string,
+  flags: StoreFlags,
   executionId: string,
   at?: number,
   redact: readonly string[] = []
 ): Promise<string> {
-  const store = new SqliteEventStore(db);
+  const resolved = await resolveStores(flags);
+  const store = resolved.eventStore;
   try {
     const events = await store.read(executionId);
     if (events.length === 0) return `(no execution "${executionId}")`;
@@ -45,7 +47,7 @@ export async function cmdDebug(
     }
     return `${formatLog(events, redact)}\n\n${describeState(foldAt(events), redact)}`;
   } finally {
-    await store.close();
+    await resolved.close();
   }
 }
 

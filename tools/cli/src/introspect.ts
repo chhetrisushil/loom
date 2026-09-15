@@ -1,5 +1,5 @@
 import { formatIntrospection, introspect } from "@loom/analytics";
-import { SqliteEventStore } from "@loom/plugin-sqlite";
+import { type StoreFlags, resolveStores } from "./stores";
 
 /**
  * `loom introspect --db <path> <executionId> [--graph <name>]` — the read-only
@@ -7,16 +7,17 @@ import { SqliteEventStore } from "@loom/plugin-sqlite";
  * resource graphs folded from one execution's log; `--graph` selects one.
  */
 export async function cmdIntrospect(
-  db: string,
+  flags: StoreFlags,
   executionId: string,
   graph?: string
 ): Promise<string> {
-  const store = new SqliteEventStore(db);
+  const resolved = await resolveStores(flags);
+  const store = resolved.eventStore;
   try {
     const events = await store.read(executionId);
     if (events.length === 0) return `(no execution "${executionId}")`;
     return formatIntrospection(introspect(events, executionId), graph);
   } finally {
-    await store.close();
+    await resolved.close();
   }
 }

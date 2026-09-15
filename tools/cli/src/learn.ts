@@ -7,7 +7,7 @@ import {
   trajectories,
 } from "@loom/learning";
 import type { Policy, Trajectory } from "@loom/learning";
-import { SqliteEventStore } from "@loom/plugin-sqlite";
+import { type StoreFlags, resolveStores } from "./stores";
 
 /**
  * `loom learn …` — the offline half of the learning loop (ADR 0080).
@@ -17,8 +17,9 @@ import { SqliteEventStore } from "@loom/plugin-sqlite";
  * application code, and the choice it then makes is still a logged `ctx.decide`.
  */
 
-async function readAll(db: string, executionId?: string) {
-  const store = new SqliteEventStore(db);
+async function readAll(flags: StoreFlags, executionId?: string) {
+  const resolved = await resolveStores(flags);
+  const store = resolved.eventStore;
   try {
     if (executionId !== undefined) return await store.read(executionId);
     // listExecutions is OPTIONAL on the EventStore SPI (1.1.0) — a store without it
@@ -32,13 +33,13 @@ async function readAll(db: string, executionId?: string) {
     const logs = await Promise.all(ids.map((id) => store.read(id)));
     return logs.flat();
   } finally {
-    await store.close();
+    await resolved.close();
   }
 }
 
 /** `loom learn report --db <path> [executionId]` — what the log can and cannot teach. */
-export async function cmdLearnReport(db: string, executionId?: string): Promise<string> {
-  const events = await readAll(db, executionId);
+export async function cmdLearnReport(flags: StoreFlags, executionId?: string): Promise<string> {
+  const events = await readAll(flags, executionId);
   if (events.length === 0) return "(no events)";
 
   const ts = trajectories(events);
@@ -112,7 +113,7 @@ export async function cmdLearnReport(db: string, executionId?: string): Promise<
  * export, or a named `policy`). Exit code is non-zero when the promotion gate refuses.
  */
 export async function cmdLearnEval(
-  db: string,
+  flags: StoreFlags,
   policyModule: string,
   opts: { executionId?: string; minSteps?: number } = {}
 ): Promise<{ text: string; ok: boolean }> {
@@ -132,7 +133,7 @@ export async function cmdLearnEval(
     };
   }
 
-  const events = await readAll(db, opts.executionId);
+  const events = await readAll(flags, opts.executionId);
   const ts = trajectories(events) as Trajectory<unknown>[];
   const report = evaluatePolicy(ts, candidate);
   const verdict = promotionGate(

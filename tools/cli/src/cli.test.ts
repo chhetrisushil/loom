@@ -144,53 +144,53 @@ describe("loom CLI", () => {
 
   describe("commands over SQLite", () => {
     it("loom logs prints the timeline", async () => {
-      const text = await cmdLogs(dbPath, executionId);
+      const text = await cmdLogs({ db: dbPath }, executionId);
       expect(text).toContain("EXECUTION_STARTED");
       expect(text).toContain("STEP_COMPLETED");
     });
     it("loom debug --at N prints state at that sequence", async () => {
-      const text = await cmdDebug(dbPath, executionId, 0);
+      const text = await cmdDebug({ db: dbPath }, executionId, 0);
       expect(text).toContain("status: running");
     });
     it("loom debug (no --at) prints timeline + final state", async () => {
-      const text = await cmdDebug(dbPath, executionId);
+      const text = await cmdDebug({ db: dbPath }, executionId);
       expect(text).toContain("EXECUTION_SUSPENDED");
       expect(text).toContain("status: suspended");
     });
     it("loom debug on an unknown execution is graceful", async () => {
-      expect(await cmdDebug(dbPath, "nope")).toContain("no execution");
+      expect(await cmdDebug({ db: dbPath }, "nope")).toContain("no execution");
     });
     it("loom profile prints a flame graph + latency breakdown", async () => {
-      const text = await cmdProfile(dbPath, executionId);
+      const text = await cmdProfile({ db: dbPath }, executionId);
       expect(text).toContain(`profile ${executionId}`);
       expect(text).toContain("flame graph:");
       expect(text).toContain("latency:");
       expect(text).toContain("a —"); // the completed step appears in the flame tree
     });
     it("loom profile on an unknown execution is graceful", async () => {
-      expect(await cmdProfile(dbPath, "nope")).toContain("no execution");
+      expect(await cmdProfile({ db: dbPath }, "nope")).toContain("no execution");
     });
     it("loom introspect prints the execution/task/decision/resource graphs", async () => {
-      const text = await cmdIntrospect(dbPath, executionId);
+      const text = await cmdIntrospect({ db: dbPath }, executionId);
       expect(text).toContain("executions:");
       expect(text).toContain("tasks:");
       expect(text).toContain("a — completed");
     });
     it("loom introspect --graph selects one graph", async () => {
-      const text = await cmdIntrospect(dbPath, executionId, "tasks");
+      const text = await cmdIntrospect({ db: dbPath }, executionId, "tasks");
       expect(text).toContain("tasks:");
       expect(text).not.toContain("resources:");
     });
     it("loom introspect on an unknown execution is graceful", async () => {
-      expect(await cmdIntrospect(dbPath, "nope")).toContain("no execution");
+      expect(await cmdIntrospect({ db: dbPath }, "nope")).toContain("no execution");
     });
     it("loom optimize prints the advisory report", async () => {
-      const text = await cmdOptimize(dbPath, executionId);
+      const text = await cmdOptimize({ db: dbPath }, executionId);
       expect(text).toContain("advisory optimization report");
       expect(text).toContain("recommendations:");
     });
     it("loom optimize on an unknown execution is graceful", async () => {
-      expect(await cmdOptimize(dbPath, "nope")).toContain("no execution");
+      expect(await cmdOptimize({ db: dbPath }, "nope")).toContain("no execution");
     });
   });
 
@@ -840,7 +840,7 @@ describe("loom retention run + compliance report (listExecutions SPI)", () => {
   afterEach(() => rmSync(cdir, { recursive: true, force: true }));
 
   it("compliance report inventories subjects → executions", async () => {
-    const text = await cmdComplianceReport(cdb, "input.userId");
+    const text = await cmdComplianceReport({ db: cdb }, "input.userId");
     expect(text).toContain("2 subject(s)");
     expect(text).toMatch(/ann\s+2 executions/);
     expect(text).toMatch(/bob\s+1 execution\b/);
@@ -863,7 +863,13 @@ describe("loom retention run + compliance report (listExecutions SPI)", () => {
     await seed(store, "branch-of-x1", [["EXECUTION_STARTED", { input: {} }]]);
     store.close();
 
-    const guarded = await cmdRetentionRun({ db: cdb, snap: csnap, ttlMs: 0, apply: false, branches: branchesDb });
+    const guarded = await cmdRetentionRun({
+      db: cdb,
+      snap: csnap,
+      ttlMs: 0,
+      apply: false,
+      branches: branchesDb,
+    });
     expect(guarded).toContain("blocked-by-branch");
     expect(guarded).not.toContain("⚠"); // the guard is on, so no warning
 
