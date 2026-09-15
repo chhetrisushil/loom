@@ -66,6 +66,41 @@ export async function resolveStores(flags: StoreFlags): Promise<ResolvedStores> 
   throw new Error(`no storage given: ${STORE_FLAG_HELP}`);
 }
 
+/**
+ * Load a config module whether it is CommonJS or ESM.
+ *
+ * This package compiles to CommonJS, and `tsc` downlevels a literal `import()` into
+ * `require()` — which cannot load an ESM module at all, and cannot load a `file://` URL.
+ * Unit tests run through esbuild's ESM pipeline and never see it; the built binary fails on
+ * the first line. So: `require` for CJS (the shape `loom verify` has always assumed), and a
+ * real dynamic import — hidden from the compiler behind `new Function` — for ESM, including
+ * modules with top-level await, which `require(esm)` refuses even on Node 22+.
+ */
+async function loadModule(file: string): Promise<Record<string, unknown>> {
+  try {
+    return require(file) as Record<string, unknown>;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ERR_REQUIRE_ESM" && code !== "ERR_REQUIRE_ASYNC_MODULE") throw err;
+    const url = pathToFileURL(file).href;
+    try {
+      // Hidden from the compiler: a literal `import()` in this CommonJS build becomes
+      // `require()`, which is what we are escaping.
+      const esmImport = new Function("u", "return import(u)") as (
+        u: string
+      ) => Promise<Record<string, unknown>>;
+      return await esmImport(url);
+    } catch (viaFunction) {
+      // Vitest evaluates this file in a VM with no dynamic-import callback, so the trick
+      // above cannot run there — but there the pipeline is already ESM, so the literal
+      // `import()` is a REAL import and is never downlevelled. Each path covers exactly
+      // where the other cannot go.
+      if (!/dynamic import callback/i.test(String(viaFunction))) throw viaFunction;
+      return (await import(url)) as Record<string, unknown>;
+    }
+  }
+}
+
 async function fromConfig(modulePath: string): Promise<ResolvedStores> {
   // Set BEFORE the import: composing an app starts its timer service, and that happens while
   // the module is evaluated. A read-only command must not fire due timers and scheduled flows
@@ -73,7 +108,7 @@ async function fromConfig(modulePath: string): Promise<ResolvedStores> {
   process.env.LOOM_NO_AUTOSTART = "1";
 
   const resolved = path.resolve(modulePath);
-  const mod = (await import(pathToFileURL(resolved).href)) as Record<string, unknown>;
+  const mod = await loadModule(resolved);
   const app = (mod.default ?? mod.app ?? mod) as Partial<LoomApp>;
   if (app.stores?.eventStore === undefined) {
     throw new Error(

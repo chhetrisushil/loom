@@ -1,6 +1,7 @@
 # Diagnostics over BYO storage: the operator surface only runs on SQLite
 
-**Status:** PROPOSED — nothing implemented. Staged S1–S5 in §5. D1 decided (`autostart: false`).
+**Status:** **SHIPPED** — S1–S5 all landed. D1 decided and implemented (`autostart: false`).
+Two things were learned in the building and are recorded in §8.
 **Date:** 2026-09-16
 **Kernel baseline:** EVENT_SCHEMA 1.18.0, KERNEL_ABI 1.1.0, EventStore SPI 1.4.0, BranchRegistry SPI 1.2.0, LeaseStore SPI 1.1.0
 **Kernel change:** none. The work is `@loom/app` (composition) + `tools/cli` (resolution).
@@ -208,3 +209,32 @@ root, which is exactly where "what did this deployment wire" belongs. S3–S5 ar
 Second consumer for the `leases` seam is already on the table and unrelated to the CLI:
 `TimerService` (ownership before a wake) and `recoverAbandoned` (ownership before a re-drive)
 are two live consumers that today can only be reached by hand-building the runtime.
+
+---
+
+## 8. What the plan did not predict
+
+**The seam needed an environment variable.** §3/B3 established that a config module must be
+loadable without starting, and D1 chose `autostart: false`. But the operator running
+`loom census --config ./dist/app.js` **cannot edit that module**, and the start happens while
+it is being imported — before any CLI code runs. So `autostart` alone would have solved the
+problem only for apps that had already anticipated being inspected. `resolveStores` sets
+`LOOM_NO_AUTOSTART=1` before the import; `defineConfig` honours it, and *says so* when it
+overrides an explicit `autostart: true`, because that is the one way this could quietly stop
+timers in production.
+
+**The built CLI is a different program from its test suite.** `--config` passed its entire
+unit suite and then failed on the first line of the real binary: this package compiles to
+CommonJS, where `tsc` downlevels `import()` to `require()`, which cannot load ESM or a
+`file://` URL at all. Vitest runs TypeScript through an ESM pipeline and never sees it.
+
+The fix is a loader that tries `require` (the shape `loom verify` has always assumed) and
+falls back to a genuine dynamic import for ESM — including top-level await, which
+`require(esm)` refuses even on Node 22+. The lasting part is `builtCli.test.ts`, which runs
+**the artifact**: it is the only test here that could have caught this, and the defect class
+it guards — "the thing we ship behaves differently from the thing we test" — is invisible to
+every other kind of coverage.
+
+`loom verify` has the same latent limitation (a bare `require`, so an ESM config module fails
+there too). Not fixed here: it is a separate command with its own callers, and bundling the
+change would hide it. Worth a follow-up issue.
