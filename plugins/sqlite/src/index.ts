@@ -1,5 +1,6 @@
 export { SqliteEventStore } from "./SqliteEventStore";
 export { SqliteBranchRegistry } from "./SqliteBranchRegistry";
+export { SqliteLeaseStore } from "./SqliteLeaseStore";
 export { SqliteTimerStore } from "./SqliteTimerStore";
 export { SqliteSnapshotStore } from "./SqliteSnapshotStore";
 export { SqliteDurableStateStore } from "./SqliteDurableStateStore";

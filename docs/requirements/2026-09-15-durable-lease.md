@@ -1,6 +1,6 @@
 # Durable Leases: who owns this execution
 
-**Status:** Plan — L1 starting
+**Status:** L1–L4 SHIPPED; L5 (runtime-held leases) deferred to D2.3's hazard
 **Date:** 2026-09-15
 **Kernel baseline:** EVENT_SCHEMA 1.18.0, KERNEL_ABI 1.1.0, EventStore SPI 1.4.0, BranchRegistry SPI 1.2.0
 **Tracks:** [#380](https://github.com/chhetrisushil/loom/issues/380)
@@ -92,10 +92,10 @@ automatic recovery of a live execution is the way this feature fails.
 
 | | Scope | Why separable |
 | --- | --- | --- |
-| **L1** | `LeaseStore` SPI + in-memory + conformance kit | the contract, provable before anything depends on it |
-| **L2** | `TimerService` acquires before firing | the cheapest real consumer; no runtime changes |
-| **L3** | `recoverAbandoned` defaults `isAbandoned` to "lease expired" | closes #380's stated ask |
-| **L4** | SQLite + Postgres backends | the kit already defines correct; verified against a real PG |
+| ~~**L1**~~ ✅ | `LeaseStore` SPI + in-memory + conformance kit | the contract, provable before anything depends on it |
+| ~~**L2**~~ ✅ | `TimerService` acquires before firing | the cheapest real consumer; no runtime changes |
+| ~~**L3**~~ ✅ | `recoverAbandoned` defaults `isAbandoned` to "lease expired" | closes #380's stated ask |
+| ~~**L4**~~ ✅ | SQLite + Postgres backends | the kit already defines correct; verified against a real PG |
 | **L5** | Runtime acquire/renew/release around a run | the biggest, and the one D2.3 is about |
 
 L1–L4 are useful without L5: leases can be held by whatever drives executions (a dispatcher, a

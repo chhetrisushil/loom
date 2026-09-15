@@ -11,6 +11,7 @@ import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PostgresBranchRegistry } from "./PostgresBranchRegistry";
 import { PostgresEventStore } from "./PostgresEventStore";
+import { PostgresLeaseStore } from "./PostgresLeaseStore";
 import { PostgresSnapshotStore } from "./PostgresSnapshotStore";
 import { migrate } from "./schema";
 
@@ -46,7 +47,7 @@ suite("@loom/plugin-postgres", () => {
 
   beforeEach(async () => {
     await admin.query(
-      "TRUNCATE events, snapshots, refs, lineage, fences, timers, durable_state, read_model_rows, read_model_watermarks, memory_entries"
+      "TRUNCATE events, snapshots, refs, lineage, fences, timers, leases, durable_state, read_model_rows, read_model_watermarks, memory_entries"
     );
   });
 
@@ -468,6 +469,37 @@ suite("@loom/plugin-postgres", () => {
         sqlite.close();
         rmSync(dir, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe("PostgresLeaseStore — the race it exists to lose loudly (#380)", () => {
+    it("grants exactly one of many simultaneous acquires", async () => {
+      // The conformance kit checks the CONTRACT with an injected clock, sequentially. This
+      // checks the thing a lease is for: read-then-write would let several nodes each observe
+      // a free lease and all take it, and only real concurrency can catch that.
+      const store = new PostgresLeaseStore(admin);
+      const contenders = Array.from({ length: 12 }, (_, i) => `node-${i}`);
+      const results = await Promise.all(
+        contenders.map((owner) => store.acquire("hot-execution", owner, 30_000))
+      );
+      const winners = results.filter((r) => r !== null);
+      expect(winners).toHaveLength(1);
+
+      // And the winner is the one the store agrees about, not merely the one that returned.
+      const [held] = await store.expired(Number.MAX_SAFE_INTEGER);
+      expect(held?.owner).toBe(winners[0]?.owner);
+      await store.release("hot-execution", winners[0]?.owner as string);
+      await store.close();
+    });
+
+    it("hands an expired lease to exactly one of many waiting nodes", async () => {
+      const store = new PostgresLeaseStore(admin);
+      await store.acquire("expiring", "original", 1, Date.now() - 10_000); // long gone
+      const results = await Promise.all(
+        Array.from({ length: 8 }, (_, i) => store.acquire("expiring", `taker-${i}`, 30_000))
+      );
+      expect(results.filter((r) => r !== null)).toHaveLength(1);
+      await store.close();
     });
   });
 });
