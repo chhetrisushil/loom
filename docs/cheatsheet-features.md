@@ -110,7 +110,7 @@ All optional, all separate.
 | `sensitive()` · `internal()` | scrubbed from telemetry egress |
 | `secret()` | redacted from step output in the log |
 | `@loom/plugin-content` | claim-check: large or PII fields out of the log |
-| `@loom/plugin-crypto` | per-subject keys; `destroy` is crypto-shredding |
+| `@loom/plugin-crypto` | per-subject keys; `destroy` is crypto-shredding. Keys must declare `durable` — losing one erases the subject |
 | `@loom/compliance` | subject index, export, erase (T3) |
 | `@loom/plugin-audit-chain` | hash-chained log, optional Ed25519 signatures |
 

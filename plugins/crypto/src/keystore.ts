@@ -22,10 +22,28 @@ export interface KeyStore {
   get(subjectId: string): Promise<Buffer | null>;
   /** Destroy a subject's key — irreversible erasure of everything encrypted under it. */
   destroy(subjectId: string): Promise<void>;
+  /**
+   * Does this store survive a restart? **Declare it.**
+   *
+   * Losing a key is indistinguishable from shredding the subject: the log is still there,
+   * every field encrypted under that key is permanently unreadable, and nothing fails at the
+   * time it happens. A store that cannot persist must say `false` so a pre-flight check can
+   * refuse it before the data is written, not after.
+   *
+   * Omitting it is not the same as `false` — it means *this store does not say*, which
+   * `loom doctor` reports as an advisory rather than silently accepting.
+   */
+  readonly durable?: boolean;
 }
 
 /** Reference in-memory {@link KeyStore} (tests / ephemeral apps). */
 export class InMemoryKeyStore implements KeyStore {
+  /**
+   * Declared, not inferred. Wired behind an `EncryptingEventStore`, this store makes every
+   * encrypted field unreadable the moment the process ends — a durable log whose contents
+   * are gone. Saying so lets `loom doctor` refuse the combination.
+   */
+  readonly durable = false;
   private readonly keys = new Map<string, Buffer>();
   private readonly destroyed = new Set<string>();
 

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An encrypting store with in-memory keys now FAILS `loom doctor`.** K10 crypto-shredding
+  makes the key the erasure boundary, so losing a key is indistinguishable from shredding the
+  subject: the writes succeed, the log survives, and every encrypted field is unreadable from
+  the next boot — with nothing failing at the moment it happens. `KeyStore` had exactly one
+  implementation, `InMemoryKeyStore`, and the only protection was a README sentence saying
+  "back it with a KMS in production".
+
+  `KeyStore` now declares `durable`, `InMemoryKeyStore` declares `false`, and the new
+  `encryption keys` check reads it through whichever store exposes a `keys` property — so a
+  third party's own encrypting wrapper is covered for free, and the CLI still depends on no
+  crypto package. Three states, kept apart: declared non-durable **fails**, undeclared is an
+  **advisory** (*this store does not say*), declared durable passes, and nothing encrypting at
+  all is a skip. Snapshots are checked alongside the event log, since they carry the same
+  fields.
+
 - **A globally installed `loom` did nothing and exited 0.** The entry guard was
   `process.argv[1]?.endsWith("cli.js")`, but a global install puts a SYMLINK named `loom` on
   PATH — so `argv[1]` is `…/bin/loom`, the guard was false, and the binary returned success
