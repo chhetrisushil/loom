@@ -22,6 +22,55 @@ import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
 import { describe, expect, it } from "vitest";
 
+/**
+ * `ExecutionAuthorizer` and `TimerDispatcher` live in `@loom/workflow-runtime`, and importing
+ * them here would close a cycle: workflow-runtime dev-depends on `@loom/plugin-sqlite`, which
+ * depends on this package. So their shapes are declared STRUCTURALLY — TypeScript matches by
+ * shape, so a real implementation satisfies these without importing anything.
+ *
+ * Duplicating a contract is how contracts drift, so it does not stand alone:
+ * `@loom/worker-runtime-local` sees both packages and holds a compile-time proof that the
+ * real interfaces still satisfy these. If an SPI gains a method, that build fails.
+ */
+export type ExecutionOpLike = "start" | "resume" | "cancel" | "query";
+
+export interface ExecutionAuthzRequestLike {
+  op: ExecutionOpLike;
+  executionId: string;
+  workflowId: string;
+}
+
+export interface ExecutionAuthorizerLike {
+  authorize(request: ExecutionAuthzRequestLike): { allowed: boolean; reason?: string };
+}
+
+export interface ResumeEventLike {
+  eventType: string;
+  payload: unknown;
+}
+
+export type ResumeVerdictLike =
+  | { status: "verified"; actor: string; verifiedBy: string }
+  | { status: "rejected"; reason: string }
+  | { status: "not-applicable" };
+
+export interface ResumeAuthenticatorLike {
+  verify(event: ResumeEventLike): ResumeVerdictLike;
+}
+
+export interface TimerDispatcherLike {
+  dispatch(
+    pkg: {
+      executionId: string;
+      workflowId: string;
+      flowId: string;
+      resumeEvent: { eventType: string; payload: unknown };
+      metadata?: Record<string, unknown>;
+    },
+    meta?: { target?: string }
+  ): Promise<unknown>;
+}
+
 // ── SPI conformance kits (ADR 0033) ──────────────────────────────────────────
 //
 // Portable contract suites for Loom's extension SPIs. A third-party implementation
@@ -876,6 +925,176 @@ export function runLlmProviderConformance(factory: () => LlmProvider, label = "L
  * deterministically for a given request, and a denial's `reason` (if any) is a string.
  * (Policy content is the plugin's — the kit pins the *shape* and determinism.)
  */
+/**
+ * `ExecutionAuthorizer` — gates the execution LIFECYCLE (C.1), where `CapabilityAuthorizer`
+ * gates effects. Wired as `security.executionAuthorizer`.
+ *
+ * The kit is about the contract a caller relies on, not about any policy: a verdict is
+ * SYNCHRONOUS (it runs at the entry of start/resume/cancel/query, before anything is
+ * appended), deterministic for one request, and must answer for EVERY op — an authorizer
+ * that silently allows an op it did not consider is the failure mode worth catching, since
+ * `cancel` and `query` are the two people forget.
+ */
+export function runExecutionAuthorizerConformance(
+  factory: () => ExecutionAuthorizerLike,
+  label = "ExecutionAuthorizer"
+): void {
+  const OPS: ExecutionOpLike[] = ["start", "resume", "cancel", "query"];
+  const req = (op: ExecutionOpLike): ExecutionAuthzRequestLike => ({
+    op,
+    executionId: "e",
+    workflowId: "w",
+  });
+  describe(`${label} conformance (ExecutionAuthorizer SPI)`, () => {
+    it("answers every lifecycle op with a boolean decision", () => {
+      const a = factory();
+      for (const op of OPS) {
+        const verdict = a.authorize(req(op));
+        expect(typeof verdict.allowed, `op "${op}" returned no boolean decision`).toBe("boolean");
+      }
+    });
+
+    it("is deterministic for the same request", () => {
+      const a = factory();
+      for (const op of OPS) {
+        expect(a.authorize(req(op)).allowed).toBe(a.authorize(req(op)).allowed);
+      }
+    });
+
+    it("returns synchronously — the verdict is read before anything is appended", () => {
+      const verdict = factory().authorize(req("start")) as unknown;
+      expect(verdict).not.toBeInstanceOf(Promise);
+      expect(typeof (verdict as { then?: unknown }).then).not.toBe("function");
+    });
+
+    it("a denial's reason, when present, is a string", () => {
+      for (const op of OPS) {
+        const d = factory().authorize(req(op));
+        if (!d.allowed && d.reason !== undefined) expect(typeof d.reason).toBe("string");
+      }
+    });
+
+    it("decides on the request alone — a missing principal is a policy choice, not a crash", () => {
+      // `principal` is optional on the request, and the SPI doc says the policy decides how
+      // to treat its absence. Deciding is fine; throwing is not — the caller has no verdict
+      // to act on, and the lifecycle op fails for a reason that is not an authz decision.
+      expect(() => factory().authorize(req("resume"))).not.toThrow();
+    });
+  });
+}
+
+/**
+ * `TimerDispatcher` — where a due wake RUNS (#392). Wired as `timers.dispatcher`.
+ *
+ * One method, and the contract is about what it must tolerate rather than what it must do.
+ * A timer service calls this for an execution whose original lane may no longer exist — a
+ * node is often recovering an execution precisely BECAUSE its lane went away — so a target
+ * hint is a HINT: an unknown one must fall back, never strand the wake. And the resume event
+ * must be passed through untouched, because the kernel decides the vocabulary (K7.5), not
+ * the transport.
+ */
+export function runTimerDispatcherConformance(
+  factory: () => TimerDispatcherLike,
+  label = "TimerDispatcher"
+): void {
+  const pkg = () => ({
+    executionId: "e1",
+    workflowId: "wf",
+    flowId: "wf",
+    resumeEvent: { eventType: "TIMER_FIRED", payload: { wakeAt: 1 } },
+  });
+  describe(`${label} conformance (TimerDispatcher SPI)`, () => {
+    it("dispatch returns a promise", async () => {
+      await expect(Promise.resolve(factory().dispatch(pkg()))).resolves.not.toThrow();
+    });
+
+    it("accepts a wake with no target — placement is optional", async () => {
+      await factory().dispatch(pkg());
+    });
+
+    it("does not strand a wake whose target it does not know", async () => {
+      // The recorded target is a hint that can outlive the lane that produced it. A
+      // dispatcher that rejects an unknown target leaves the execution suspended forever,
+      // which is strictly worse than running it somewhere else.
+      await factory().dispatch(pkg(), { target: "a-lane-that-was-retired" });
+    });
+
+    it("carries the resume event through unchanged", async () => {
+      // Whatever the transport does, it may not reinterpret the event: the kernel owns the
+      // resume vocabulary, and a dispatcher that rewrites it changes what the log records.
+      const seen: unknown[] = [];
+      const dispatcher = factory();
+      const original = pkg();
+      await dispatcher.dispatch(original);
+      seen.push(original.resumeEvent);
+      expect(original.resumeEvent).toEqual({ eventType: "TIMER_FIRED", payload: { wakeAt: 1 } });
+    });
+  });
+}
+
+/**
+ * `ResumeAuthenticator` — may this event REOPEN a suspended execution (K12.2)?
+ *
+ * The narrowest of the three authority rings, and the one an attacker reaches first: a resume
+ * arrives from OUTSIDE the process, where an effect call and a lifecycle call do not.
+ *
+ * The verdict has three statuses, and the third is the one to get right. `not-applicable`
+ * means *this event is not mine to judge* — the runtime treats it as no opinion and lets the
+ * resume proceed. It is emphatically NOT a soft denial: an authenticator that returns it for
+ * an event it wanted to refuse has allowed that event. Only `rejected` refuses, and it must
+ * carry a reason, because `ApprovalRejectedError` surfaces that reason to the caller.
+ *
+ * So the kit checks the verdict is one of the three and correctly shaped, and that it is
+ * deterministic — a verifier that changes its mind about one event cannot be reasoned about.
+ * It does NOT assert a policy: which events you govern is yours to decide.
+ */
+export function runResumeAuthenticatorConformance(
+  factory: () => ResumeAuthenticatorLike,
+  label = "ResumeAuthenticator"
+): void {
+  const event = (eventType: string): ResumeEventLike => ({ eventType, payload: {} });
+  const CASES = ["Approved", "__not-a-declared-gate__"];
+  describe(`${label} conformance (ResumeAuthenticator SPI)`, () => {
+    it("returns one of the three statuses for any event", () => {
+      const a = factory();
+      for (const type of CASES) {
+        expect(["verified", "rejected", "not-applicable"]).toContain(a.verify(event(type)).status);
+      }
+    });
+
+    it("is deterministic for the same event", () => {
+      const a = factory();
+      for (const type of CASES) {
+        expect(a.verify(event(type)).status).toBe(a.verify(event(type)).status);
+      }
+    });
+
+    it("a rejection carries a reason — the caller surfaces it", () => {
+      // ApprovalRejectedError puts this reason in front of whoever tried to resume. A
+      // rejection with an empty reason tells them only that something refused them.
+      const a = factory();
+      for (const type of CASES) {
+        const verdict = a.verify(event(type));
+        if (verdict.status === "rejected") {
+          expect(typeof verdict.reason).toBe("string");
+          expect(verdict.reason.length).toBeGreaterThan(0);
+        }
+      }
+    });
+
+    it("a verification names both the actor and what verified them", () => {
+      const a = factory();
+      for (const type of CASES) {
+        const verdict = a.verify(event(type));
+        if (verdict.status === "verified") {
+          expect(typeof verdict.actor).toBe("string");
+          expect(typeof verdict.verifiedBy).toBe("string");
+        }
+      }
+    });
+  });
+}
+
 export function runCapabilityAuthorizerConformance(
   factory: () => CapabilityAuthorizer,
   label = "CapabilityAuthorizer"

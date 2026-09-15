@@ -63,6 +63,7 @@ that is what pins the contracts.
 |---|---|---|---|---|
 | **Dispatch** | `ExecutionDispatcher` (`@loom/dispatcher`) | `dispatch`, `cancel`, `health` | `LocalDispatcher`, `PlacementDispatcher` (routing), `SupervisingDispatcher` (K4 circuit-breaker) | `runExecutionDispatcherConformance` |
 | **Worker** | `WorkerRuntime` (`@loom/worker-runtime`) | `allocate`, `execute`, `release` (`cancel` optional) | `LocalWorkerRuntime`, `RemoteWorkerRuntime`, `CloudRunWorkerRuntime` | `runWorkerRuntimeConformance` |
+| **Timer placement** | `TimerDispatcher` (`@loom/workflow-runtime`) | `dispatch(pkg, meta?)` — run a due wake on the lane the execution was STARTED on (#392), not wherever the poller happens to live. A `target` is a HINT: an unknown one must fall back, never strand the wake | any `ExecutionDispatcher` satisfies it structurally (`LocalDispatcher`, `PlacementDispatcher`) | `runTimerDispatcherConformance` |
 
 ## Effect & policy seams
 
@@ -71,6 +72,8 @@ that is what pins the contracts.
 | **Effect** | `Effect<TIn,TOut>` (`@loom/effect-runtime`) | The unit of side effect; `execute` + optional `idempotent`/`warm` | `ToolEffect`, `IsolatedToolEffect` (K7), LLM effect |
 | **Middleware** | `EffectMiddleware` (`@loom/effect-runtime`) | Wraps every effect: auth → retry → meter → safety → redact | `retryMiddleware`, `meteringMiddleware` (K3), `safetyMiddleware` (K6), `redactionMiddleware` (K10) |
 | **Authority** | `CapabilityAuthorizer` (`@loom/effect-runtime`) | K2 protection ring — allow/deny per effect. Conformance: `runCapabilityAuthorizerConformance` | `GrantTable`, `DelegationAuthorizer` (K12.4) |
+| **Lifecycle authority** | `ExecutionAuthorizer` (`@loom/workflow-runtime`) | C.1 — allow/deny an execution OPERATION (`start`/`resume`/`cancel`/`query`), where `CapabilityAuthorizer` gates effects. Synchronous: the verdict is read before anything is appended. Conformance: `runExecutionAuthorizerConformance` | wired as `security.executionAuthorizer` |
+| **Resume authority** | `ResumeAuthenticator` (`@loom/workflow-runtime`) | K12.2 — `verify(event)` decides whether an event may REOPEN a suspended execution. The narrowest of the three rings and the one an attacker reaches first: a resume arrives from outside, unlike an effect or a lifecycle call. Three statuses: `not-applicable` means *not mine to judge* and lets the resume proceed — it is not a soft denial. Conformance: `runResumeAuthenticatorConformance` | wired as `security.resumeAuthenticator` |
 | **Scheduler** | `Scheduler` (`@loom/scheduler`) | M6 bounded concurrency + priority (advisory; zero-overhead default) | `createScheduler` |
 | **Warmer** | `Warmer` (`@loom/effect-runtime`) | M6 advisory pre-warm (latency-only, off-log) | ADR 0027 |
 | **Policy** | `Policy<A>` (`@loom/learning`) | Choose an action from an observation — `select(context, actions)`. The **only seam consumed from flow code** rather than `defineConfig`: a learned choice reaches a run through `decideWithPolicy` → `ctx.decide`, so it stays recorded and replayable (ADR 0080). Conformance: `runPolicyConformance` | `loom-plugin-linucb` (3P) |

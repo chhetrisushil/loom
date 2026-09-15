@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Three seams that were never in the SPI map at all: `execution-authorizer`,
+  `resume-authenticator`, `timer-dispatcher`.** Each is a `defineConfig` option whose type is
+  an interface an application implements — replaceable by construction, which is what the map
+  says it enumerates — with no row, no conformance kit and no scaffold. They sat in the blind
+  spot the other two guards share: both start from a conformance kit, so a seam nobody wrote a
+  kit for was invisible to both. A third guard now starts from the config instead — **every
+  `defineConfig` option typed as an interface must appear in the SPI map** — and it found the
+  third one (`ResumeAuthenticator`) on its first run, along with three data shapes now
+  exempted with stated reasons.
+
+  The two new kits' types are declared structurally in `@loom/conformance`, because importing
+  them would close a cycle (workflow-runtime dev-depends on plugin-sqlite, which depends on
+  conformance). Duplication drifts, so `@loom/worker-runtime-local` — the one package that
+  sees both — carries a two-way compile-time proof that the kits still describe the real SPIs;
+  adding a method to either interface fails that build. The proof earned itself immediately:
+  the first draft of the resume kit declared the verdict as `{ ok: boolean }`, while the real
+  `ResumeVerdict` is a three-way union whose third status (`not-applicable`) means *not mine
+  to judge* and lets the resume PROCEED. Shipped as drafted, it would have certified a
+  contract loom does not have.
+
 - **The seam enumerations are guarded everywhere they appear.** `docs/usage-cli.md` listed
   eleven seams and showed a stale `loom plugin seams` sample; the existing guard covered only
   `docs/plugins.md`, so one enumeration was checked and the other drifted. Both are checked

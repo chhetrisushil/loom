@@ -820,7 +820,7 @@ Loom plugin seams (loom plugin new <seam> <name>):
   …
 ```
 
-The current seams are **`store`**, **`dispatcher`**, **`telemetry`**, **`middleware`**, **`timer`**, **`lease`**, **`content`**, **`durable-state`**, **`read-model`**, **`keystore`**, **`memory`**, **`projection`**, **`worker`**, **`llm`**, **`authorizer`**, and **`policy`** — one for every SPI that publishes a conformance kit, which is the rule a fitness test now holds rather than a list someone remembers to extend.
+The current seams are **`store`**, **`dispatcher`**, **`telemetry`**, **`middleware`**, **`timer`**, **`lease`**, **`content`**, **`durable-state`**, **`read-model`**, **`keystore`**, **`memory`**, **`projection`**, **`worker`**, **`llm`**, **`authorizer`**, **`execution-authorizer`**, **`resume-authenticator`**, **`timer-dispatcher`**, and **`policy`** — one for every SPI that publishes a conformance kit, which is the rule a fitness test now holds rather than a list someone remembers to extend.
 
 Note that `policy` is wired in **flow code** (`decideWithPolicy(ctx, id, policy, context, actions)`), not in `defineConfig`.
 
