@@ -1,10 +1,19 @@
+import type { ExecutionState } from "@loom/core";
 import {
   type ExecutionEnumerable,
   type Lease,
   type LeaseStore,
   iterateExecutionIds,
 } from "@loom/event-runtime";
-import type { WorkflowRuntime } from "./WorkflowRuntime";
+
+/**
+ * All a census needs: the folding read. Structural, so a `WorkflowRuntime` satisfies it and a
+ * caller that only has stores does not have to build one — the same shape `@loom/live-query`
+ * takes, and for the same reason.
+ */
+export interface CensusStateReader {
+  loadState(executionId: string): Promise<ExecutionState | null>;
+}
 
 // ── What is stuck, and is anything watching it ────────────────────────────────
 //
@@ -78,7 +87,7 @@ const DEFAULT_BUCKETS = [5 * 60_000, 60 * 60_000, 6 * 60 * 60_000, 24 * 60 * 60_
  * large, the gap is that nothing leases those paths at all.
  */
 export async function orphanCensus(
-  runtime: WorkflowRuntime,
+  reader: CensusStateReader,
   options: OrphanCensusOptions
 ): Promise<OrphanCensus> {
   const now = options.now ?? Date.now();
@@ -100,7 +109,7 @@ export async function orphanCensus(
 
   for await (const executionId of iterateExecutionIds(options.source, options.pageSize)) {
     census.scanned++;
-    const state = await runtime.loadState(executionId);
+    const state = await reader.loadState(executionId);
     if (state === null) continue;
     if (state.status !== "running" && state.status !== "pending") continue;
     census.inFlight++;

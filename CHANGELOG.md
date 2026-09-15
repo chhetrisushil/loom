@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`loom census` — the operator half of the same thing.** A number that requires writing
+  TypeScript against your own composition root is a number nobody looks at, so the census now
+  has a front door: `loom census --db <path> [--leases <path>] [--buckets 5m,1h,6h,24h]`, which
+  writes nothing and takes no predicate. It prints in-flight counts by age band and, with a
+  lease store, the `held / expired / no lease at all` split that decides #408. Without
+  `--leases` it says the coverage was **not asked** rather than printing zeros. Consecutive
+  identical band breakdowns are collapsed — bands are cumulative, so repeating them turns a
+  four-line answer into a wall, and a report nobody scans is a report nobody reads.
+
+  `orphanCensus` now takes a `CensusStateReader` (`{ loadState }`) rather than a whole
+  `WorkflowRuntime` — the same narrowing `@loom/live-query` uses, so asking a read-only question
+  does not require a deployment's full wiring.
+
 - **`orphanCensus` — the read-only pass that was missing (#408).** Every other maintenance pass
   reads state in order to *act*: `recoverAbandoned` resumes what a predicate claims,
   `retireAbandonedBranches` cancels, `pruneBranchRefs` deletes. Nothing just looked — which is
