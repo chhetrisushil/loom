@@ -71,10 +71,6 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
    * list is a DECISION; being absent from both lists is the accident this test exists for.
    */
   const NO_SEAM_YET: Record<string, string> = {
-    ContentStore: "kit ships; seam not written yet — the same gap `lease` just closed",
-    DurableStateStore: "kit ships; seam not written yet",
-    ReadModelStore: "kit ships; seam not written yet",
-    KeyStore: "kit ships; seam not written yet",
     Scheduler: "no conformance kit — not advertised as a third-party seam",
     Warmer: "no conformance kit — not advertised as a third-party seam",
     // Covered by an existing seam rather than needing their own:
@@ -113,6 +109,20 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
       (spi) => scaffoldable.has(spi) && !NO_SEAM_YET[spi]?.startsWith("scaffolded by")
     );
     expect(stale).toEqual([]);
+  });
+
+  it("every SPI with a conformance kit is scaffoldable", () => {
+    // The strongest form of this rule, and the one that generalises past today's list:
+    // publishing a conformance kit IS loom saying "third parties implement this". An SPI it
+    // says that about, and then gives no way to start from, is advertising with no door.
+    const COVERED_ELSEWHERE = new Set(["SnapshotStore", "BranchRegistry"]); // the `store` seam
+    const scaffoldable = new Set(Object.values(SEAM_SPI));
+    const kitted = exportedKits().map((k) => k.replace(/^run/, "").replace(/Conformance$/, ""));
+    const doorless = kitted.filter((spi) => !scaffoldable.has(spi) && !COVERED_ELSEWHERE.has(spi));
+    expect(
+      doorless,
+      `these SPIs publish a conformance kit and cannot be scaffolded:\n${doorless.join("\n")}`
+    ).toEqual([]);
   });
 
   it("`lease` is scaffoldable, kitted and documented — the case that prompted this", () => {

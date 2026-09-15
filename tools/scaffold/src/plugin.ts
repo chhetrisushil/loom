@@ -476,6 +476,277 @@ const SEAMS: Record<string, SeamDef> = {
     },
   },
 
+  content: {
+    key: "content",
+    spi: "ContentStore",
+    title: "Content-addressed blob store (claim-check payloads)",
+    wiring: "claimCheckMiddleware({ store: new <Name>ContentStore(), inlineCapBytes: 16 * 1024 })",
+    spiDeps: ["@loom/plugin-content"],
+    conformance: ["runContentStoreConformance"],
+    index: (name) => {
+      const P = pascal(name);
+      return [
+        'import type { ContentRef, ContentStore } from "@loom/plugin-content";',
+        "",
+        "/**",
+        " * A `ContentStore` — where a claim-check payload actually lives (ADR 0046).",
+        " *",
+        " * Content-ADDRESSED: `put` is keyed by the hash of the bytes, so storing the same",
+        " * payload twice is one object and a retry is free. That is what makes the store safe",
+        " * to call from a replayed effect.",
+        " *",
+        " * `get` returns `null` for an absent ref and MUST NOT throw: a missing blob is a fact",
+        " * the caller handles (the log still has the digest), not an exception that aborts a",
+        " * replay. `delete` is idempotent PHYSICAL erasure — it is the K10 shredding path, so",
+        " * deleting what is already gone must succeed rather than object.",
+        " */",
+        `export class ${P}ContentStore implements ContentStore {`,
+        "  put(_bytes: Uint8Array): Promise<ContentRef> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  get(_ref: ContentRef): Promise<Uint8Array | null> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  delete(_ref: ContentRef): Promise<void> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  // Optional, and worth implementing where the backend has them natively:",
+        "  //   putStream(stream: AsyncIterable<Uint8Array>): Promise<ContentRef>  — ADR 0059",
+        "  //   getMany(refs: readonly ContentRef[]): Promise<(Uint8Array | null)[]> — ADR 0062",
+        "  // Left out rather than stubbed: a throwing optional method is worse than an absent",
+        "  // one, because callers feature-detect it.",
+        "}",
+        "",
+      ].join("\n");
+    },
+    test: (name) => {
+      const P = pascal(name);
+      return [
+        "// Prove it with the kit once the methods are real — it covers the idempotence that",
+        "// content addressing depends on (same bytes twice, delete twice, get after delete):",
+        '// import { runContentStoreConformance } from "@loom/conformance";',
+        `// import { ${P}ContentStore } from "./index";`,
+        `// runContentStoreConformance(() => new ${P}ContentStore());`,
+        "",
+        'import { describe, expect, it } from "vitest";',
+        `import { ${P}ContentStore } from "./index";`,
+        "",
+        `describe("${P}ContentStore", () => {`,
+        '  it("constructs", () => {',
+        `    expect(new ${P}ContentStore()).toBeDefined();`,
+        "  });",
+        "});",
+        "",
+      ].join("\n");
+    },
+  },
+
+  "durable-state": {
+    key: "durable-state",
+    spi: "DurableStateStore",
+    title: "Carry state across executions (compare-and-set)",
+    wiring: "durableState: { store: new <Name>DurableStateStore() }",
+    spiDeps: ["@loom/plugin-durable-state"],
+    conformance: ["runDurableStateStoreConformance"],
+    index: (name) => {
+      const P = pascal(name);
+      return [
+        'import type { DurableStateRecord, DurableStateStore } from "@loom/plugin-durable-state";',
+        "",
+        "/**",
+        " * A `DurableStateStore` — state that OUTLIVES one execution (a sentinel's carry).",
+        " *",
+        " * `save` is a compare-and-set on `expectedRevision`, and that is the whole point: two",
+        " * nodes finishing the same sentinel run must not silently overwrite each other. A",
+        " * mismatch REJECTS rather than wins; the caller re-reads and decides. Implement it as",
+        " * one conditional statement, not read-then-write, or the race you are closing is the",
+        " * race you introduce.",
+        " *",
+        " * `load` returns `null` when the key was never written — distinct from a record whose",
+        " * payload happens to be empty.",
+        " */",
+        `export class ${P}DurableStateStore implements DurableStateStore {`,
+        "  load(_key: string): Promise<DurableStateRecord | null> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  save(",
+        "    _key: string,",
+        "    _value: { contractVersion: number; payload: unknown },",
+        "    _expectedRevision: number",
+        "  ): Promise<DurableStateRecord> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  clear(_key: string): Promise<void> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  close(): Promise<void> {",
+        "    return Promise.resolve();",
+        "  }",
+        "}",
+        "",
+      ].join("\n");
+    },
+    test: (name) => {
+      const P = pascal(name);
+      return [
+        "// The kit covers the concurrent compare-and-set cases a hand-written test misses:",
+        '// import { runDurableStateStoreConformance } from "@loom/conformance";',
+        `// import { ${P}DurableStateStore } from "./index";`,
+        `// runDurableStateStoreConformance(() => new ${P}DurableStateStore());`,
+        "",
+        'import { describe, expect, it } from "vitest";',
+        `import { ${P}DurableStateStore } from "./index";`,
+        "",
+        `describe("${P}DurableStateStore", () => {`,
+        '  it("constructs", () => {',
+        `    expect(new ${P}DurableStateStore()).toBeDefined();`,
+        "  });",
+        "});",
+        "",
+      ].join("\n");
+    },
+  },
+
+  "read-model": {
+    key: "read-model",
+    spi: "ReadModelStore",
+    title: "Durable cross-execution query layer (ADR 0058)",
+    wiring: "new ReadModelService(new <Name>ReadModelStore())",
+    spiDeps: ["@loom/plugin-read-model"],
+    conformance: ["runReadModelStoreConformance"],
+    index: (name) => {
+      const P = pascal(name);
+      return [
+        "import type {",
+        "  ReadModelPage,",
+        "  ReadModelQuery,",
+        "  ReadModelRow,",
+        "  ReadModelStore,",
+        '} from "@loom/plugin-read-model";',
+        "",
+        "/**",
+        " * A `ReadModelStore` — the durable index behind cross-execution queries (ADR 0058).",
+        " *",
+        " * Two properties carry it, and both are about REPLAY rather than about querying:",
+        " *",
+        " * - `apply` is idempotent per `rowId`. A catch-up re-reads events the store already",
+        " *   saw, so applying the same row twice must leave one row, not two.",
+        " * - the watermark is MONOTONIC. `apply` advances it to `upToSequence` atomically with",
+        " *   the rows; if the rows land and the watermark does not, the next pass re-applies",
+        " *   them (fine), but the reverse loses them forever.",
+        " *",
+        " * `query` pages by KEYSET, not offset: a read model grows while you page through it.",
+        " */",
+        `export class ${P}ReadModelStore implements ReadModelStore {`,
+        "  apply(",
+        "    _modelId: string,",
+        "    _executionId: string,",
+        "    _upToSequence: number,",
+        "    _rows: readonly ReadModelRow[]",
+        "  ): Promise<void> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  watermark(_modelId: string, _executionId: string): Promise<number | null> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  watermarkedExecutions(_modelId: string): Promise<string[]> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  query(_modelId: string, _q?: ReadModelQuery): Promise<ReadModelPage> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  clear(_modelId: string): Promise<void> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  close(): Promise<void> {",
+        "    return Promise.resolve();",
+        "  }",
+        "}",
+        "",
+      ].join("\n");
+    },
+    test: (name) => {
+      const P = pascal(name);
+      return [
+        "// The kit covers idempotent re-apply and watermark monotonicity — the two things a",
+        "// read model is wrong about silently:",
+        '// import { runReadModelStoreConformance } from "@loom/conformance";',
+        `// import { ${P}ReadModelStore } from "./index";`,
+        `// runReadModelStoreConformance(() => new ${P}ReadModelStore());`,
+        "",
+        'import { describe, expect, it } from "vitest";',
+        `import { ${P}ReadModelStore } from "./index";`,
+        "",
+        `describe("${P}ReadModelStore", () => {`,
+        '  it("constructs", () => {',
+        `    expect(new ${P}ReadModelStore()).toBeDefined();`,
+        "  });",
+        "});",
+        "",
+      ].join("\n");
+    },
+  },
+
+  keystore: {
+    key: "keystore",
+    spi: "KeyStore",
+    title: "Per-subject encryption keys (K10 crypto-shredding)",
+    wiring: "new EncryptingEventStore(inner, new <Name>KeyStore())",
+    spiDeps: ["@loom/plugin-crypto"],
+    conformance: ["runKeyStoreConformance"],
+    index: (name) => {
+      const P = pascal(name);
+      return [
+        'import type { KeyStore } from "@loom/plugin-crypto";',
+        "",
+        "/**",
+        " * A `KeyStore` — one encryption key per subject, and therefore the erasure boundary.",
+        " *",
+        " * `destroy` is IRREVERSIBLE and is how loom honours an erasure request without",
+        " * rewriting an append-only log: destroy the key and the subject's events become",
+        " * undecryptable everywhere at once, including in backups you cannot reach. There is no",
+        " * undo, so back this with a KMS/HSM in production rather than with a table you might",
+        " * restore from a snapshot.",
+        " *",
+        " * `get` returns `null` both for a key never created AND for one destroyed — the caller",
+        " * cannot distinguish them, deliberately: after shredding there is nothing true to say.",
+        " */",
+        `export class ${P}KeyStore implements KeyStore {`,
+        "  getOrCreate(_subjectId: string): Promise<Buffer> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  get(_subjectId: string): Promise<Buffer | null> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "  destroy(_subjectId: string): Promise<void> {",
+        '    throw new Error("not implemented");',
+        "  }",
+        "}",
+        "",
+      ].join("\n");
+    },
+    test: (name) => {
+      const P = pascal(name);
+      return [
+        "// The kit covers the irreversibility: get-after-destroy is null, and getOrCreate does",
+        "// NOT resurrect a shredded subject.",
+        '// import { runKeyStoreConformance } from "@loom/conformance";',
+        `// import { ${P}KeyStore } from "./index";`,
+        `// runKeyStoreConformance(() => new ${P}KeyStore());`,
+        "",
+        'import { describe, expect, it } from "vitest";',
+        `import { ${P}KeyStore } from "./index";`,
+        "",
+        `describe("${P}KeyStore", () => {`,
+        '  it("constructs", () => {',
+        `    expect(new ${P}KeyStore()).toBeDefined();`,
+        "  });",
+        "});",
+        "",
+      ].join("\n");
+    },
+  },
+
   memory: {
     key: "memory",
     spi: "MemoryStore",
@@ -872,10 +1143,13 @@ export const SEAM_SPI: Record<string, string> = Object.fromEntries(
 
 /** Human-readable seam list for `loom plugin seams`. */
 export function listSeams(): string {
+  // Derived, not a constant: a seam key longer than the column silently breaks the alignment
+  // of every row, which is how `durable-state` landed mid-column the first time.
+  const width = Math.max(...SEAM_KEYS.map((k) => k.length));
   const rows = SEAM_KEYS.map((k) => {
     const s = SEAMS[k]!;
     const conf = s.conformance.length > 0 ? " (conformance ✓)" : "";
-    return `  ${k.padEnd(11)} ${s.title}${conf}\n              wire: ${s.wiring}`;
+    return `  ${k.padEnd(width)} ${s.title}${conf}\n  ${" ".repeat(width)} wire: ${s.wiring}`;
   });
   return `Loom plugin seams (loom plugin new <seam> <name>):\n\n${rows.join("\n")}`;
 }
