@@ -1,6 +1,6 @@
 # Durable Placement: a wake that knows where the execution belongs
 
-**Status:** Plan — not scheduled
+**Status:** SHIPPED (P1–P4) — the loom half. The acceptance test in loom-examples flips next.
 **Date:** 2026-09-15
 **Kernel baseline:** EVENT_SCHEMA 1.18.0, KERNEL_ABI 1.1.0, EventStore SPI 1.4.0, ADRs 0001–0095
 **Tracks:** [#392](https://github.com/chhetrisushil/loom/issues/392)
@@ -132,7 +132,19 @@ simulation can be placed differently from the execution it forked from.
 - **Cross-node placement negotiation.** Out of scope: this plan makes a wake respect a decision that
   was already made, not make a better one.
 
-## 6. Open questions
+## 6. Open questions — answered while implementing
+
+- **Whole `ExecutionPolicy` or just `computeTarget`?** Just `computeTarget`. The rest would
+  have ridden along for free, and "free" is how surface grows; nothing needed them.
+- **`TimerService` settle semantics under dispatch.** Unchanged in shape: the dispatch is
+  awaited, which is the same "the wake durably took effect" the in-process branch waits for,
+  and a failure still leaves the timer for the next poll (at-least-once).
+- **Does `recoverAbandoned` want the recorded placement or a fresh decision?** Both, and the
+  hint-not-pin rule resolves it: the recorded lane is handed to the policy, which decides. A
+  node recovering an orphan is often doing so *because* the original lane went away, and an
+  unregistered target falls back rather than stranding it — now audibly.
+
+## 7. Original open questions
 
 - Should the hint be the whole `ExecutionPolicy` (priority, resources, affinity) or only
   `computeTarget`? The rest is already advisory and would ride along for free — but "free" is how

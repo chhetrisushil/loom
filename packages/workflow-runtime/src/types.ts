@@ -171,6 +171,19 @@ export type ResourceDimension = "tokens" | "costUsd" | "ms" | "memBytes" | "wall
 export interface RunOptions {
   executionId?: string;
   /**
+   * #392 — the compute lane this execution belongs in, recorded on its `EXECUTION_STARTED`
+   * anchor so anything that wakes it LATER can find it.
+   *
+   * Placement was otherwise ephemeral: `ExecutionPolicy` is a caller-side struct mapped to
+   * `DispatchMetadata` at dispatch time, so it lived in the memory of the process that
+   * dispatched. That is invisible for an execution that runs once, and gone by the time a
+   * timer or a recovery pass re-drives one that suspended for a human.
+   *
+   * A HINT, not a pin: it is input to a `PlacementPolicy`, which may route elsewhere — a
+   * target that has since been retired must not strand the execution that named it.
+   */
+  computeTarget?: string;
+  /**
    * K9.4 — the monotonic fencing token this dispatch holds (from
    * `EventStore.acquireFence` / `WorkflowRuntime.acquireFence`). Every event the
    * run appends carries it in `metadata.fence`; a fencing store rejects appends
@@ -498,6 +511,15 @@ export interface ForkOptions {
   branchName?: string;
   /** Optional explicit executionId for the child (defaults to a fresh ULID). */
   executionId?: string;
+  /**
+   * #392 — place this branch somewhere other than its parent.
+   *
+   * Inheritance needs no option: the prefix copy carries the parent's anchor metadata, so a
+   * branch is placed where its parent was unless told otherwise. This is the override, and
+   * it is the case that matters — a simulation branch clones a dataset and backfills it,
+   * which is exactly the work you do NOT want on the lane running the parent.
+   */
+  computeTarget?: string;
 }
 
 export interface ForkResult {

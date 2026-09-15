@@ -1,7 +1,8 @@
 import type { ScheduleDefinition } from "@loom/core";
-import type { TimerStore } from "@loom/event-runtime";
+import type { EventStore, TimerStore } from "@loom/event-runtime";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type CronSpec, nextOccurrence, parseCron } from "./cron";
+import { placementOf } from "./placement";
 import { TIMER_FIRED } from "./types";
 
 export interface TimerServiceOptions {
@@ -43,6 +44,32 @@ export interface TimerServiceOptions {
    * and is the default `now` for interval-driven ticks. Default: `Date.now`.
    */
   now?: () => number;
+  /**
+   * #392 — where to send a wake. With a dispatcher the service dispatches an
+   * `ExecutionPackage` to the lane the execution was STARTED in (`placementOf`) instead of
+   * resuming on whatever runtime it happens to hold — so an execution deliberately placed
+   * on compute sized for it does not wake up inside the process that runs the timer.
+   * Without one, behaviour is unchanged.
+   */
+  dispatcher?: TimerDispatcher;
+}
+
+/**
+ * The slice of `ExecutionDispatcher` a wake needs, typed structurally: the kernel hands a
+ * package to a placement seam, it does not depend on one. An `ExecutionDispatcher` from
+ * `@loom/dispatcher` satisfies this.
+ */
+export interface TimerDispatcher {
+  dispatch(
+    pkg: {
+      executionId: string;
+      workflowId: string;
+      flowId: string;
+      resumeEvent: { eventType: string; payload: unknown };
+      metadata?: Record<string, unknown>;
+    },
+    meta?: { target?: string }
+  ): Promise<unknown>;
 }
 
 /**
@@ -79,11 +106,18 @@ export class TimerService {
   private ticking = false;
   private readonly now: () => number;
 
+  private readonly dispatcher: TimerDispatcher | undefined;
+  private readonly eventStore: EventStore;
+
   constructor(
     private readonly runtime: WorkflowRuntime,
     private readonly store: TimerStore,
     options: TimerServiceOptions = {}
   ) {
+    this.dispatcher = options.dispatcher;
+    // Read from the runtime rather than taken as a second option: two stores that must
+    // agree is a way for them to disagree.
+    this.eventStore = runtime.events;
     this.pollMs = options.pollMs ?? 250;
     this.batch = options.batch ?? 100;
     this.onError = options.onError;
@@ -195,17 +229,38 @@ export class TimerService {
         // K9.4 — in fenced deployments, acquire a newer token first so a
         // duplicate cross-node fire loses at the store instead of double-writing.
         const fence = this.fenced ? await this.runtime.acquireFence(executionId) : undefined;
-        const handle = await this.runtime.resume(
-          executionId,
-          { eventType: TIMER_FIRED, payload: { wakeAt } },
-          fence !== undefined ? { fence } : undefined
-        );
-        // Wait for the run to settle (suspend again, complete, or fail) so the
-        // timer is only retired once the wake durably took effect.
-        await Promise.race([
-          handle.waitForSuspend().catch(() => undefined),
-          handle.waitForCompletion().catch(() => undefined),
-        ]);
+        const resumeEvent = { eventType: TIMER_FIRED, payload: { wakeAt } };
+
+        if (this.dispatcher !== undefined) {
+          // #392 — the wake goes back to where the execution belongs. The recorded target
+          // is a HINT handed to the placement policy, which may route elsewhere: a lane
+          // that has since been retired must not strand what named it. Dispatch settles
+          // when the worker returns, which is the same "wake durably took effect" the
+          // in-process branch waits for below.
+          const target = await placementOf(this.eventStore, executionId);
+          await this.dispatcher.dispatch(
+            {
+              executionId,
+              workflowId: state.workflowId,
+              flowId: state.workflowId,
+              resumeEvent,
+              ...(fence !== undefined && { metadata: { fence } }),
+            },
+            target !== undefined ? { target } : undefined
+          );
+        } else {
+          const handle = await this.runtime.resume(
+            executionId,
+            resumeEvent,
+            fence !== undefined ? { fence } : undefined
+          );
+          // Wait for the run to settle (suspend again, complete, or fail) so the
+          // timer is only retired once the wake durably took effect.
+          await Promise.race([
+            handle.waitForSuspend().catch(() => undefined),
+            handle.waitForCompletion().catch(() => undefined),
+          ]);
+        }
       }
       // Fired — or obsolete (resumed by other means, terminal, unknown): retire it.
       await this.store.complete(executionId, wakeAt);

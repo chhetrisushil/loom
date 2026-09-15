@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Placement survives the process that chose it (#392).** `ExecutionPolicy` was a
+  caller-side struct mapped to `DispatchMetadata` at dispatch time, so where an execution
+  belonged lived in one process's memory. Invisible for an execution that runs once — and
+  gone by the time anything re-drives one that suspended for a human, which is how a branch
+  sized for a cloned database wakes up inside a web server.
+
+  `start({ computeTarget })` now records the lane on the `EXECUTION_STARTED` anchor
+  (sequence 0 — where `truncatePrefix` preserves it through compaction, `deleteExecution`
+  removes it, and `metadata.fence` already established that operational data rides), and
+  `placementOf(eventStore, executionId)` reads it back in one indexed point-read. **No
+  syscall and no EVENT_SCHEMA change**: metadata is descriptive, nothing folds it, replay is
+  byte-identical.
+
+  Both wake paths can then use it. `TimerService` and `recoverAbandoned` take an optional
+  `dispatcher` and dispatch an `ExecutionPackage` to the recorded lane instead of resuming on
+  whatever runtime they happen to hold; without one, behaviour is unchanged. A fork
+  **inherits** its parent's lane for free (the prefix copy carries the anchor's metadata) and
+  `fork(…, { computeTarget })` overrides it — the case that matters, since a simulation
+  branch is exactly the work you do not want on the parent's lane.
+
+  It is a **hint, not a pin**: it is input to a `PlacementPolicy`, which may route elsewhere.
+  A target that has since been retired must not strand the executions that named it, so
+  `PlacementDispatcher` falls back — and now warns once per unknown name, because falling
+  back silently is how an execution placed on sized compute ends up running somewhere else
+  forever. That matters most in `recoverAbandoned`, where a node is often recovering an
+  execution *because* its original lane went away.
+
 - **Branch registry rows no longer outlive the executions they describe (BranchRegistry SPI
   1.2.0).** Two rows survive a reclaimed branch and nothing collected either. A **fork edge**
   described data that no longer exists — and `LogLifecycle` walks `children()` on every sweep,

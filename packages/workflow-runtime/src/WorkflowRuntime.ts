@@ -19,6 +19,7 @@ import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { WorkflowContextImpl } from "./WorkflowContext";
+import { COMPUTE_TARGET_KEY } from "./placement";
 import {
   ApprovalRejectedError,
   EXECUTION_RECOVERED,
@@ -56,6 +57,8 @@ const KERNEL_EVENT_TYPES: ReadonlySet<string> = new Set(knownEventTypes());
 interface BootstrapEvent {
   eventType: string;
   payload: unknown;
+  /** Envelope metadata — operational, never folded. Carries the placement hint (#392). */
+  metadata?: Record<string, unknown>;
 }
 
 export interface WorkflowRuntimeDeps {
@@ -422,6 +425,16 @@ export class WorkflowRuntime {
    *
    * Not a syscall: KERNEL_SYSCALLS and KERNEL_ABI_VERSION are untouched.
    */
+  /**
+   * The durable log this runtime writes to. Exposed for maintenance passes that must read
+   * an execution's own metadata — `placementOf` (#392) reads the placement hint off
+   * sequence 0 — so a caller wiring one does not have to hand over the same store twice and
+   * risk the two disagreeing. Read-only by convention: nothing here writes through it.
+   */
+  get events(): EventStore {
+    return this.eventStore;
+  }
+
   hasTimerStore(): boolean {
     return this.timerStore !== undefined;
   }
@@ -846,6 +859,14 @@ export class WorkflowRuntime {
         {
           eventType: "EXECUTION_STARTED",
           payload: { input: effectiveInput, ...(flowHash !== undefined && { flowHash }) },
+          // #392 — where this execution belongs, recorded where it can be found again.
+          // Sequence 0 is the execution's metadata anchor: `truncatePrefix` preserves it
+          // through compaction, `deleteExecution` removes it with everything else, and
+          // `metadata.fence` already established that operational, non-semantic data rides
+          // here. Descriptive only — nothing folds it, so replay is untouched (G2).
+          ...(options?.computeTarget !== undefined && {
+            metadata: { computeTarget: options.computeTarget },
+          }),
         },
       ],
       options?.fence,
@@ -1229,7 +1250,14 @@ export class WorkflowRuntime {
     //    the envelopes are verbatim, pre-sequenced copies, so they must not be
     //    re-sequenced. No synthetic EXECUTION_FORKED event either — inserting one
     //    would perturb sequence numbering and break the prefix-identity guarantee.
-    const forkMeta = { forkedFrom: parentExecutionId, forkSequence: atSequence };
+    // The copy merges this into every copied envelope's metadata. An override therefore
+    // lands on sequence 0 — the anchor `placementOf` reads — as well as on the rest of the
+    // prefix, which is harmless: metadata is operational and nothing folds it.
+    const forkMeta = {
+      forkedFrom: parentExecutionId,
+      forkSequence: atSequence,
+      ...(opts?.computeTarget !== undefined && { [COMPUTE_TARGET_KEY]: opts.computeTarget }),
+    };
     const restamp = (e: EventEnvelope): EventEnvelope => ({
       ...e,
       executionId: childId,
@@ -1491,7 +1519,11 @@ export class WorkflowRuntime {
     // Commit bootstrap events (EXECUTION_STARTED / resume+RESUMED / restore) so
     // they flow through the same sequencer + writer as everything else.
     for (const b of bootstrapEvents) {
-      journal.commit(b.eventType, b.payload);
+      journal.commit(
+        b.eventType,
+        b.payload,
+        b.metadata !== undefined ? { metadata: b.metadata } : undefined
+      );
     }
 
     const ctx = new WorkflowContextImpl(
