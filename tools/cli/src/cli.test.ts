@@ -4,7 +4,7 @@ import { dirname, join, relative } from "node:path";
 import { step$ } from "@loom/core";
 import type { EventEnvelope } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+import { SqliteBranchRegistry, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
 
 import { AnthropicProvider, GeminiProvider, OpenAiProvider } from "@loom/llm";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
@@ -844,6 +844,43 @@ describe("loom retention run + compliance report (listExecutions SPI)", () => {
     expect(text).toContain("2 subject(s)");
     expect(text).toMatch(/ann\s+2 executions/);
     expect(text).toMatch(/bob\s+1 execution\b/);
+  });
+
+  it("does not delete a parent a live branch still depends on, and says so when it cannot tell", async () => {
+    // The bug this replaced: the command built `LogLifecycle` with no branch registry, so
+    // R5.3's live-descendant guard was a no-op and `--apply` deleted parents whose forks alias
+    // their prefix. The dry run re-implemented eligibility locally, so it did not mention
+    // branches either — a preview that disagrees with its apply.
+    const branchesDb = join(cdir, "branches.db");
+    const registry = new SqliteBranchRegistry(branchesDb);
+    // x1 is terminal and aged; a live branch was forked from it.
+    await registry.recordLineage({
+      executionId: "branch-of-x1",
+      parentExecutionId: "x1",
+      forkSequence: 1,
+    });
+    const store = new SqliteEventStore(cdb);
+    await seed(store, "branch-of-x1", [["EXECUTION_STARTED", { input: {} }]]);
+    store.close();
+
+    const guarded = await cmdRetentionRun(cdb, csnap, 0, false, branchesDb);
+    expect(guarded).toContain("blocked-by-branch");
+    expect(guarded).not.toContain("⚠"); // the guard is on, so no warning
+
+    await cmdRetentionRun(cdb, csnap, 0, true, branchesDb);
+    const after = new SqliteEventStore(cdb);
+    const remaining = (await after.listExecutions()).filter((id) => !id.startsWith("__loom_"));
+    expect(remaining).toContain("x1"); // survived, because something still depends on it
+    after.close();
+    await registry.close();
+  });
+
+  it("warns when it cannot apply the branch guard at all", async () => {
+    // Silence here would be the worst outcome: the sweep looks complete while the one guard
+    // that prevents data loss is switched off.
+    const unguarded = await cmdRetentionRun(cdb, csnap, 0, false);
+    expect(unguarded).toContain("R5.3");
+    expect(unguarded).toContain("OFF");
   });
 
   it("retention run dry-runs by default, reclaims aged terminal executions with --apply", async () => {
