@@ -287,6 +287,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A fork copied the gate but not the alarm.** `WorkflowRuntime.fork()` copies the parent's
+  prefix verbatim, so a branch forked at a suspension is parked on the same condition —
+  including a `wakeAt` derived from `suspend({ timeout })`. But a timer row is keyed by
+  executionId, and `timerStore.schedule` was called from exactly one place: the suspend path
+  of the run loop. A branch therefore inherited, in its own log, a deadline that nothing
+  would ever fire, and nothing else could catch it — `recoverAbandoned` ignores suspended
+  executions by design, because suspension is a normal outcome rather than an abandonment.
+  The parent timed out on schedule while every branch waited forever. `fork()` now schedules
+  the child's wake, after the prefix and seed snapshot are durable (the same invariant the
+  suspend path holds: a timer must never fire into a log that does not yet record the
+  suspend), and reports a failed schedule through `onStorageError` rather than failing a fork
+  that is already complete. **The branch inherits the recorded deadline and cannot re-base
+  it**: `TimerService` fires only when `state.suspendedOn.wakeAt === timer.wakeAt` and the
+  copied prefix is byte-identical by design, so a re-based deadline would be a timer that
+  could never match its own log. A branch that wants its own deadline resumes the gate and
+  suspends again with a fresh `timeout` — a fact it appends, not one it inherits. Untimed
+  gates gain no timer, a fork before the gate gains none, and with no `TimerStore` wired the
+  behaviour is byte-identical to before.
+
 - **`DelegationAuthorizer`'s `base` is required (potentially breaking).** It was optional,
   documented as "omit to allow the full verified delegated set (the callee delegates all of
   its authority decisions upstream)". That mode cannot deliver what it claims: the delegation

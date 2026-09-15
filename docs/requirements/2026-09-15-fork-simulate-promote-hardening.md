@@ -86,17 +86,26 @@ so the first branch that parks on a human hangs the whole fan-out. Neither branc
 
 ## 3. Work items
 
-### E1 — `fork()` re-registers the branch's timer *(1P, `workflow-runtime`, small)*
+### E1 — `fork()` re-registers the branch's timer *(1P, `workflow-runtime`)* — **SHIPPED**
 
-Fixes M1. After the seed snapshot, if the fork state is suspended with a `wakeAt`, schedule the
-child's timer. The policy must be **explicit and chosen, not implicit**: inherit the parent's
-absolute deadline, or restart the clock at fork time. Propose `fork(parent, at, { deadline:
-"inherit" | "restart" })` with `inherit` as the default, because it preserves the parent's meaning.
+Fixes M1. After the seed snapshot, `fork()` schedules the child's wake when the fork state is
+suspended with a `wakeAt`.
 
-*Acceptance:* a negative test — fork at a `suspend({ timeout })` gate, advance the injected clock past
-the deadline, assert the branch fires (today it does not). A second test pins the `restart` variant.
-*Second consumer:* every timeout gate, not just branching — this is a missing side effect, not a
-branch feature.
+**The proposed `{ deadline: "inherit" | "restart" }` option was dropped, and the reason is the
+interesting part.** `TimerService.fire` wakes an execution only when
+`state.suspendedOn.wakeAt === timer.wakeAt` (exact equality), and the copied prefix is
+byte-identical by design — so a re-based deadline would be a timer that can never match its own
+log, and rebasing it "properly" would mean rewriting a copied event and giving up prefix
+identity. There is therefore no option: **a branch inherits the recorded deadline.** A branch
+that wants its own resumes the gate and suspends again with a fresh `timeout`, which is a fact
+it appends rather than one it inherits. This is a better outcome than the API this plan
+proposed — one behaviour, no flag, and the semantics follow from an invariant already pinned.
+
+*Shipped with six tests* (`packages/workflow-runtime/src/fork-timers.test.ts`), three of which
+fail without the change: the branch gets its own row, the branch actually wakes on its deadline,
+and the row carries the recorded `wakeAt` rather than a fresh one. The other three pin what must
+NOT happen — no timer for an untimed gate, none for a fork before the gate, and byte-identical
+behaviour with no `TimerStore` wired.
 
 ### E2 — promotion recorded as a decision *(app pattern first)*
 
@@ -148,7 +157,7 @@ E2/E3 out of app code.
 
 ## 4. Suggested order
 
-1. **E1** — an outright bug, smallest diff, no API debate.
+1. ~~**E1**~~ — **shipped**; the `restart` option it proposed turned out to be unimplementable.
 2. **E8** — build the workload that needs the rest; it decides E2/E3's real shape.
 3. **E7**, **E2** — correctness and audit, both driven by E8.
 4. **E3**, **E6** — lifecycle, once the cohort exists in a real app.
