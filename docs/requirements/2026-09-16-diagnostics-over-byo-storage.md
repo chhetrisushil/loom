@@ -1,6 +1,6 @@
 # Diagnostics over BYO storage: the operator surface only runs on SQLite
 
-**Status:** PROPOSED — nothing implemented. Staged S1–S5 in §5.
+**Status:** PROPOSED — nothing implemented. Staged S1–S5 in §5. D1 decided (`autostart: false`).
 **Date:** 2026-09-16
 **Kernel baseline:** EVENT_SCHEMA 1.18.0, KERNEL_ABI 1.1.0, EventStore SPI 1.4.0, BranchRegistry SPI 1.2.0, LeaseStore SPI 1.1.0
 **Kernel change:** none. The work is `@loom/app` (composition) + `tools/cli` (resolution).
@@ -102,13 +102,34 @@ Missing: the **timer store** (configured at `timers.store`, never surfaced) and 
 store**. So `loom census --config` would read events and snapshots and then be unable to answer
 the lease-coverage question that is the command's entire reason to exist.
 
-### B2 — there is no lease seam in `defineConfig` at all
+### B2 — there is no lease seam in `defineConfig`, and that is not a CLI problem
 
 `timers` takes `{ store, pollMs, schedules, fenced, warmLeadMs, dispatcher }` — no `leases`.
-`TimerService` and `recoverAbandoned` both accept a `LeaseStore`, but an application using
-`defineConfig` cannot declare one; it must hand-build the service. **This is mine, from two days
-ago**, and it is the second-consumer rule (ADR 0083) failing in the other direction: the
-capability shipped with a consumer, and without a composition root it could not reach one.
+`defineConfig` constructs the `TimerService` itself (`defineConfig.ts:897`) and forwards every
+one of those options; an app cannot pass a `LeaseStore` because there is nowhere to declare one.
+
+The CLI is the *smaller* half of this. Two facts found while checking whether the seam is
+actually required:
+
+- **Nothing in the repository wires `leases:` into a `TimerService` outside tests.** The only
+  non-test occurrences are the census's own option shape and the CLI flag that feeds it. The
+  leased-wake path shipped with #380 — claim before waking, skip without completing the timer
+  when the claim is lost — therefore has **no reachable entry point** from the framework's own
+  front door. That is the vacuous pattern again, and it is mine.
+- **The user guide teaches the fallible form and then recommends the unreachable one.**
+  `docs/user-guide.md:1662` composes recovery out of `defineConfig` (`app.runtime`,
+  `app.stores.eventStore`) with a staleness predicate, and closes with: *"Prefer a real liveness
+  signal from your orchestrator over a timeout where you have one."* A lease **is** that signal,
+  and it is precisely what an app assembled that way cannot supply.
+
+`app.runtime` is exposed, so an application can hand-build a second `TimerService` with leases —
+but `defineConfig` has already started an unleased one against the same store, so that is a
+hazard (two pollers, one of them unclaimed), not an escape hatch.
+
+So the seam is required twice over: the diagnostics need the composition to carry a lease store,
+and — independently of this document — the runtime capability is unreachable without it. The
+alternative for the CLI alone would be a `--leases <path>` flag, which is a SQLite-only spelling
+of exactly the wall §1 rejects.
 
 ### B3 — importing a config *starts* things
 
@@ -146,7 +167,7 @@ Each stage is a branch and a PR, in order. S1 and S2 are `@loom/app`; S3–S5 ar
 | | stage | shape | verification |
 |---|---|---|---|
 | **S1** | Build-without-start seam (§6 D1) | `@loom/app` | a config whose `timers.schedules` contains an already-due occurrence is imported by the CLI path; assert the log is untouched and `TimerService` never polled |
-| **S2** | Expose stores + the lease seam | `LoomStores.timerStore?`/`leaseStore?`, `timers.leases` | round-trip test: an app that configures a lease store exposes the SAME instance; an app that does not exposes `undefined` (absent ≠ empty) |
+| **S2** | Expose stores + the lease seam | `LoomStores.timerStore?`/`leaseStore?`, `timers.leases` | round-trip test: an app that configures a lease store exposes the SAME instance; an app that does not exposes `undefined` (absent ≠ empty). Plus: a `defineConfig`-composed app takes a leased timer wake — the assertion that has no caller today. Ships with the `docs/user-guide.md:1662` correction, since that passage recommends a signal it cannot reach |
 | **S3** | `resolveStores()` + `census`/`retention` | `tools/cli` | both commands run against a `kind: "custom"` config wired to a **non-SQLite** store — the in-memory stores are the cheapest proof that nothing SQLite-shaped is assumed |
 | **S4** | Remaining eight commands | `tools/cli` | mechanical; each keeps its `--db` path green |
 | **S5** | Docs + guard | `docs/usage-cli.md`, fitness test | a test asserting no file in `tools/cli/src` imports `@loom/plugin-sqlite` outside the `--db` shorthand resolver |
@@ -158,7 +179,8 @@ fixed rather than its instances.
 
 ## 6. Decisions to make before S1
 
-**D1 — how "build but do not start" is expressed.** Three candidates:
+**D1 — how "build but do not start" is expressed. DECIDED: `autostart: false`.** Three
+candidates were on the table:
 
 - `defineConfig({ ..., autostart: false })` — smallest diff; adds a mode flag to a config object
   that so far describes a *deployment*, not a lifecycle.
@@ -168,8 +190,9 @@ fixed rather than its instances.
 - `app.stores` is populated eagerly while everything with a lifecycle (timers, schedules,
   subscriptions) starts lazily on first use. The cleanest semantics and the largest change.
 
-Recommendation: **`autostart: false`**, because it is the only one that can be added without
-invalidating an existing config module, and `loom verify` has already fixed the export shape.
+**Chosen: `autostart: false`** — the only one that can be added without invalidating an existing
+config module, and `loom verify` has already fixed the export shape. The lazy-lifecycle option is
+the better end state and stays available later; it is not worth blocking S1 on.
 
 **D2 — does `--config` have to be built JS?** Yes, and it already is for `verify`/`deploy check`.
 Worth stating in the docs rather than discovering at the prompt.
