@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`loom doctor` gains two timer checks, and a fourth status to report them honestly.**
+  `durable timers` fails when schedules are declared with no `timers: { store }` (they can
+  never fire) and advises when flows declare resume gates but nothing can wake them.
+  `timer wake ownership` advises when a TimerStore has no `timers.leases`: if more than one
+  process polls it, every node resumes the same due execution — fencing makes that safe, not
+  cheap, since the loser still pays for its effects up to the point it loses.
+
+  Both are `advisory` (`!`), a new status, because they are defects on a multi-node
+  deployment and fine on one — and `doctor` cannot see how many nodes you run. Failing the
+  build would be a guess; staying silent would be the same "unchecked reads as checked"
+  failure a skip avoids. Advisories are counted in the summary, and now so are caveats on a
+  FAILED run, where they were previously dropped.
+
+  The `durable timers` advisory also names what verification does *not* cover: a `timeout`
+  lives in the runner body, so `suspension-safety`'s timed-suspend rule cannot see it either
+  (`FlowSpec.suspends` has no producer) and a clean `loom verify` says nothing about it.
+
+- **`loom doctor` and `loom verify` no longer fail on an ESM config module, and `doctor` no
+  longer starts the app it inspects.** Both used a bare `require`, so a config with top-level
+  await produced two spurious ✗ — and `doctor` composing an app meant starting its timer
+  service, the same side-effect-of-being-inspected the other commands were fixed for. Both
+  now use the shared loader, which sets `LOOM_NO_AUTOSTART` first; `doctor` loads the app
+  once per run and hands the same result to every check that needs it.
+
 - **`loom recover` / `loom branches retire` / `loom branches prune` — front doors for the
   three maintenance passes.** Recovering executions whose supervisor died, retiring branches
   nobody is coming back to, and pruning refs that name nothing all shipped as library

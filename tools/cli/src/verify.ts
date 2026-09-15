@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { LoomApp } from "@loom/app";
 import { type VerificationReport, formatReport } from "@loom/verify";
+import { loadLoomApp as loadModuleForVerify } from "./stores";
 
 /**
  * `loom verify --config <module> [--manifest <loom-manifest.json>]` — pre-flight
@@ -113,10 +114,10 @@ export async function cmdVerify(
   configPath: string,
   manifestPath?: string
 ): Promise<{ text: string; result: VerificationReport }> {
-  const mod = require(path.resolve(configPath)) as { default?: unknown; app?: unknown } & Record<
-    string,
-    unknown
-  >;
+  const mod = (await loadModuleForVerify(configPath)) as {
+    default?: unknown;
+    app?: unknown;
+  } & Record<string, unknown>;
   const app = (mod.default ?? mod.app ?? mod) as Partial<LoomApp>;
   if (typeof app.verify !== "function") {
     throw new Error(
