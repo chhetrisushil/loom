@@ -859,6 +859,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     ...(config.validateInput !== undefined && { validateInput: config.validateInput }),
     ...(config.snapshotEvery !== undefined && { snapshotEvery: config.snapshotEvery }),
     ...(config.onStorageError !== undefined && { onStorageError: config.onStorageError }),
+    // One warning channel for the app: the same sink that reports a schedule which can
+    // never fire also reports a deadline this runtime cannot keep.
+    ...(config.onWarn !== undefined && { onWarn: config.onWarn }),
     ...(config.resumeAuthenticator !== undefined && {
       resumeAuthenticator: config.resumeAuthenticator,
     }),

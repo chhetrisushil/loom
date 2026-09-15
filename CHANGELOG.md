@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A declared deadline no runtime can honour now says so.** `suspend({ timeout })` becomes a
+  durable `wakeAt` only when a `TimerStore` is wired; unwired, the condition is committed
+  *without* one — byte-identically, and silently. That is invisible while everything runs in
+  one process and becomes a permanently parked execution the moment compute is split: a
+  worker built as "a runtime with the flows registered" discards every timeout of every
+  execution it suspends, and nothing downstream can tell "no deadline" from "the deadline was
+  dropped on the machine that suspended". `WorkflowRuntime` now warns at exactly that point,
+  once per (flow, gate), naming both and pointing at `loom verify`'s `suspension-safety` rule
+  — which catches it statically, if you run verify against the composition that suspends.
+  Routed through a new `onWarn` dep (defaulting to `console.warn`, like `defineConfig`'s
+  warning for schedules that can never fire) and wired to `defineConfig({ onWarn })`. The log
+  is untouched: this is a diagnostic, not a behaviour, and a test pins the committed condition
+  byte-for-byte.
+
 - **`fork()` no longer reads the parent's whole log (EventStore SPI 1.4.0).** It needed the
   tip to validate a fork point and was calling `read()` to get it — materializing every event
   of a long-lived parent, including the entire tail *above* the fork point, and paying that

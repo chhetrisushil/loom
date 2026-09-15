@@ -83,6 +83,12 @@ export interface WorkflowRuntimeDeps {
    */
   onStorageError?: (executionId: string, err: unknown) => void;
   /**
+   * Diagnostics that are nobody's error: a declared deadline this runtime cannot honour,
+   * today. Defaults to `console.warn`, matching `defineConfig`'s warning for schedules
+   * that can never fire. Pass a sink to route it, or a no-op to silence it.
+   */
+  onWarn?: (message: string) => void;
+  /**
    * Take a mid-run snapshot every N committed events, bounding the replay tail so
    * a resume/recovery folds only ~N events instead of the whole log. Omit (or 0)
    * to keep the default cadence (snapshots only at suspend + fork). A larger N
@@ -177,6 +183,9 @@ export class WorkflowRuntime {
   private readonly onEvent: ((event: EventEnvelope) => void) | undefined;
   private readonly branchRegistry: BranchRegistry | undefined;
   private readonly onStorageError: ((executionId: string, err: unknown) => void) | undefined;
+  private readonly onWarn: (message: string) => void;
+  /** One warning per (flow, gate) — a hot loop must not narrate the same dropped deadline. */
+  private readonly warnedDroppedDeadlines = new Set<string>();
   private readonly snapshotEvery: number | undefined;
   private readonly timerStore: TimerStore | undefined;
   private readonly resumeAuthenticator: ResumeAuthenticator | undefined;
@@ -206,6 +215,7 @@ export class WorkflowRuntime {
     this.onEvent = deps.onEvent;
     this.branchRegistry = deps.branchRegistry;
     this.onStorageError = deps.onStorageError;
+    this.onWarn = deps.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
     this.snapshotEvery = deps.snapshotEvery;
     this.resumeAuthenticator = deps.resumeAuthenticator;
     this.timerStore = deps.timerStore;
@@ -1547,6 +1557,25 @@ export class WorkflowRuntime {
               ? (condition.wakeAt ??
                 (condition.timeout !== undefined ? Date.now() + condition.timeout : undefined))
               : condition.wakeAt;
+          // The flow declared a deadline this runtime cannot keep. Unwired, the condition is
+          // committed WITHOUT a wakeAt — byte-identically, silently — so nothing downstream
+          // can tell "no deadline" from "the deadline was dropped on the machine that
+          // suspended". That gap is invisible while everything runs in one process and
+          // becomes a lost gate the moment compute is split: a worker built as "a runtime
+          // with the flows registered" discards every timeout of every execution it parks.
+          if (
+            this.timerStore === undefined &&
+            condition.timeout !== undefined &&
+            condition.wakeAt === undefined
+          ) {
+            const key = `${workflowId}:${condition.on}`;
+            if (!this.warnedDroppedDeadlines.has(key)) {
+              this.warnedDroppedDeadlines.add(key);
+              this.onWarn(
+                `flow "${workflowId}" suspended on "${condition.on}" with a timeout, but no TimerStore is wired — the deadline is NOT recorded and nothing will fire it. Wire \`timers: { store }\` on every runtime that can suspend (only one needs the TimerService). \`loom verify\`'s suspension-safety rule checks this statically.`
+              );
+            }
+          }
           const committedCondition =
             wakeAt !== undefined && condition.wakeAt === undefined
               ? { ...condition, wakeAt }

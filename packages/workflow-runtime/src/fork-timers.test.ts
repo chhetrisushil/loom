@@ -62,6 +62,7 @@ function boot(flow: RegisteredFlow<In, Out>, opts?: { timers?: boolean; after?: 
     effectRuntime: effects,
     branchRegistry,
     ...((opts?.timers ?? true) && { timerStore }),
+    ...((opts?.timers ?? true) ? {} : { onWarn: () => {} }), // unwired IS the case under test
   });
   runtime.registerFlow(flow.definition, flow.runner);
   return { runtime, eventStore, snapshotStore, timerStore, branchRegistry };
@@ -227,7 +228,14 @@ describe("E5 — fork reads its window, not the parent's log", () => {
     const inner = new InMemoryAsyncEventStore();
     const eventStore = new CountingEventStore(inner) as unknown as InMemoryAsyncEventStore;
     const snapshotStore = new InMemoryAsyncSnapshotStore();
-    const runtime = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime: effects });
+    // No timer store: these cases are about read accounting, not deadlines, so the
+    // dropped-deadline warning is expected and silenced.
+    const runtime = new WorkflowRuntime({
+      eventStore,
+      snapshotStore,
+      effectRuntime: effects,
+      onWarn: () => {},
+    });
     runtime.registerFlow(flow.definition, flow.runner);
     return { runtime, counter: eventStore as unknown as CountingEventStore, snapshotStore };
   };
