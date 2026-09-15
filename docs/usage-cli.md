@@ -72,6 +72,9 @@ loom — project-local commands for a Loom app
   loom debug --db <path> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
   loom eval  --dir <path>                         replay golden logs vs expectations
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
+  loom census --db <path> [--snap <path>] [--leases <path>] [--buckets 5m,1h,6h,24h]
+                                                  what is stuck, and is anything watching it
+                                                  (read-only; takes no predicate)
   loom retention run --db <path> --snap <path> [--branches <path>] [--ttl ms] [--apply]
                                                   reclaim aged terminal executions
                                                   (--branches enables the live-descendant

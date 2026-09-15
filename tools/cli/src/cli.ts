@@ -5,6 +5,7 @@ import type { FilePlan } from "@loom/appgen";
 import { SqliteEventStore } from "@loom/plugin-sqlite";
 
 import { type Elevation, type Planner, cmdAppgen, plannerTag, renderPlan } from "./appgen";
+import { cmdCensus } from "./census";
 import { cmdCheck } from "./check";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { cmdComplianceReport } from "./compliance";
@@ -111,6 +112,9 @@ export const USAGE = `loom — project-local commands for a Loom app
   loom debug --db <path> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
   loom eval  --dir <path>                         replay golden logs vs expectations
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
+  loom census --db <path> [--snap <path>] [--leases <path>] [--buckets 5m,1h,6h,24h]
+                                                  what is stuck, and is anything watching it
+                                                  (read-only; takes no predicate)
   loom retention run --db <path> --snap <path> [--branches <path>] [--ttl ms] [--apply]
                                                   reclaim aged terminal executions
                                                   (--branches enables the live-descendant
@@ -140,6 +144,19 @@ async function main(argv: string[]): Promise<number> {
       console.log(await cmdDebug(flags.db!, executionId, at, parseRedact(flags.redact)));
       return 0;
     }
+    case "census": {
+      requireFlag(flags, "db");
+      console.log(
+        await cmdCensus(flags.db!, {
+          ...(flags.snap !== undefined && { snap: flags.snap }),
+          ...(flags.leases !== undefined && { leases: flags.leases }),
+          ...(flags.buckets !== undefined && { buckets: flags.buckets }),
+          ...(flags.sample !== undefined && { sampleSize: Number(flags.sample) }),
+        })
+      );
+      return 0;
+    }
+
     case "retention": {
       requirePositional(positionals, "run"); // `loom retention run`
       requireFlag(flags, "db");

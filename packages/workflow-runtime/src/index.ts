@@ -35,6 +35,7 @@ export {
 export { placementOf, COMPUTE_TARGET_KEY } from "./placement";
 export {
   orphanCensus,
+  type CensusStateReader,
   type LeaseCoverage,
   type OrphanBand,
   type OrphanCensus,
