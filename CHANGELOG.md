@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The seam enumerations are guarded everywhere they appear.** `docs/usage-cli.md` listed
+  eleven seams and showed a stale `loom plugin seams` sample; the existing guard covered only
+  `docs/plugins.md`, so one enumeration was checked and the other drifted. Both are checked
+  now. ADR 0033's hard-coded six-seam list is replaced by the invariant (it was missing five),
+  and the SPI map — the doc an implementer opens first — finally says how to *start*.
+
+  Also: a seam's `wiring` line is now checked to name a real `defineConfig` option.
+  `durable-state` shipped with `durableState: { store }`, a key invented by analogy with
+  `timers: { store }` that does not exist; the real entry point is
+  `durableState({ id, version, schema, store })`. The wiring line is the first thing an author
+  copies, so a fabricated one sends them to a compile error with loom's name on it.
+
 - **Four more seams: `content`, `durable-state`, `read-model`, `keystore`.** With `lease`
   that closes every SPI loom publishes a conformance kit for — and a kit is loom saying
   "third parties implement this", so an SPI with one and no scaffold was advertising with no

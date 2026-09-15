@@ -55,9 +55,16 @@ Conformance kits now cover **9 SPIs**: `runEventStoreConformance`, `runSnapshotS
 factory; self-tested against `LocalWorkerRuntime` in `@loom/worker-runtime-local`),
 **`runLlmProviderConformance`** (`complete` shape + `stream`), and **`runCapabilityAuthorizerConformance`**
 (decision shape + determinism). The `loom plugin new <seam>` scaffolder (ADR 0043) emits the
-matching conformance-wired test for `store | dispatcher | telemetry | middleware | timer |
-projection`. Remaining seams without a kit: widget-renderer, effect-middleware, telemetry
-(framework-specific or passive-observer contracts — lower value).
+matching conformance-wired test for every seam it knows — run `loom plugin seams` for the
+list, which is authoritative in a way a list written here cannot stay. Remaining seams
+without a kit: widget-renderer, effect-middleware, telemetry (framework-specific or
+passive-observer contracts — lower value).
+
+**Amended 2026-09-16.** The enumeration above used to be spelled out here and named six
+seams; by the time it was noticed it was missing five. The relationship is now the other way
+round and is enforced rather than described: **every SPI that publishes a conformance kit is
+scaffoldable**, checked by a fitness test in `tools/scaffold`. Publishing a kit without
+writing its seam fails the build, so this ADR no longer has a list to keep current.
 
 ## ESM distribution (2026-07-13)
 
