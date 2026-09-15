@@ -117,6 +117,17 @@ function fromSqlite(flags: StoreFlags): ResolvedStores {
   };
 }
 
+/** Parsed CLI flags → the subset that decides where storage comes from. */
+export function storeFlagsOf(flags: Record<string, string | undefined>): StoreFlags {
+  return {
+    ...(flags.config !== undefined && { config: flags.config }),
+    ...(flags.db !== undefined && { db: flags.db }),
+    ...(flags.snap !== undefined && { snap: flags.snap }),
+    ...(flags.branches !== undefined && { branches: flags.branches }),
+    ...(flags.leases !== undefined && { leases: flags.leases }),
+  };
+}
+
 /**
  * Refuse precisely when a store cannot answer the question, naming the capability and the
  * store. Optional SPI members (`listExecutions`, `head`, `removeLineage`, `LeaseStore.get`)

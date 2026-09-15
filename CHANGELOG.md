@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every storage-backed `loom` command takes `--config <module>`.** `census`, `retention`,
+  `logs`, `debug`, `inspect`/`dev`, `profile`, `introspect`, `optimize`, `learn report|eval`,
+  `compliance report` and `sweep content` resolve their stores from the app's composition, so
+  they run on whatever it wired — SQLite, Postgres, or any conforming backend. Before this,
+  ten CLI files constructed `SqliteEventStore` directly and the CLI had no Postgres dependency
+  at all: the entire operator surface ran only on the single-node backend, while the features
+  it serves (leases, placement, the live-descendant guard) exist *because* a deployment has
+  more than one node. `--db` remains, as the SQLite shorthand it always was.
+
+  Sniffing `postgres://` was considered and rejected: it would bless two backends in a
+  framework whose premise is that storage is yours, leaving every 3P store unreachable. The
+  resolver therefore knows *no* backends — a fitness test now keeps it that way, with an
+  allowlist that states its reasons.
+
+  Messages name which half to fix: missing lease coverage reads *"this app wires no lease
+  store (`timers.leases`)"* on the config path and *"no --leases given"* on the shorthand. A
+  capability a store lacks is named with the store, not raised as a stack trace.
+
 - **`defineConfig({ autostart: false })` + `app.start()` — composing an app need not also run
   it.** Composition has always called `timerService.start()`, so a command that reads a
   deployment's stores by importing its config module would begin polling production storage and

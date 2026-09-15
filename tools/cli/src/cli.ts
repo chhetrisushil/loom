@@ -2,11 +2,9 @@
 import * as fs from "node:fs";
 import * as readline from "node:readline";
 import type { FilePlan } from "@loom/appgen";
-import { SqliteEventStore } from "@loom/plugin-sqlite";
 
 import { type Elevation, type Planner, cmdAppgen, plannerTag, renderPlan } from "./appgen";
 import { cmdCensus } from "./census";
-import { STORE_FLAG_HELP, hasStoreFlags } from "./stores";
 import { cmdCheck } from "./check";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { cmdComplianceReport } from "./compliance";
@@ -25,6 +23,7 @@ import { cmdPluginSearch } from "./pluginSearch";
 import { cmdPluginTry } from "./pluginTry";
 import { cmdProfile } from "./profile";
 import { cmdRetentionRun } from "./retention";
+import { STORE_FLAG_HELP, hasStoreFlags, resolveStores, storeFlagsOf } from "./stores";
 import { cmdSweepContent } from "./sweepContent";
 import { cmdVerify } from "./verify";
 
@@ -93,12 +92,12 @@ export const USAGE = `loom — project-local commands for a Loom app
   loom lint claim-check [--dir .]                 CC-5: flag claim-check reach-through inside flows
   loom verify --config <module> [--manifest <path>]  pre-flight runtime verification (@loom/verify)
                                                   (auto-reads loom-manifest.json loopIdentity findings, ADR 0061)
-  loom logs  --db <path> <executionId> [--redact a,b]   print the event timeline
-  loom profile --db <path> <executionId>          flame graph + latency breakdown
-  loom introspect --db <path> <executionId> [--graph N]  execution/task/decision/resource graphs
-  loom optimize --db <path> <executionId>         advisory optimization report (recommendations)
-  loom learn report --db <path> [executionId]     trajectories, per-arm rewards, learning coverage
-  loom learn eval --db <path> --policy <module> [--min-steps N] [executionId]
+  loom logs  <store> <executionId> [--redact a,b]  print the event timeline
+  loom profile <store> <executionId>              flame graph + latency breakdown
+  loom introspect <store> <executionId> [--graph N]  execution/task/decision/resource graphs
+  loom optimize <store> <executionId>             advisory optimization report (recommendations)
+  loom learn report <store> [executionId]         trajectories, per-arm rewards, learning coverage
+  loom learn eval <store> --policy <module> [--min-steps N] [executionId]
                                                   shadow-evaluate a candidate policy on real logs
   loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--source <s>] [--apply]
                                                   reconcile a directory into a corpus
@@ -110,52 +109,58 @@ export const USAGE = `loom — project-local commands for a Loom app
                                                   ask the corpus (operator query — not recorded)
   loom kernel-manifest [--json] [--emit-docs <dir>]  kernel version + maturity manifest
   loom compat --abi <v> --event-schema <v> [...]  validate a deployment's contract versions
-  loom debug --db <path> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
+  loom debug <store> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
   loom eval  --dir <path>                         replay golden logs vs expectations
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
-  loom census --db <path> [--snap <path>] [--leases <path>] [--buckets 5m,1h,6h,24h]
-                                                  what is stuck, and is anything watching it
+  loom census <store> [--buckets 5m,1h,6h,24h]    what is stuck, and is anything watching it
                                                   (read-only; takes no predicate)
-  loom retention run --db <path> --snap <path> [--branches <path>] [--ttl ms] [--apply]
-                                                  reclaim aged terminal executions
-                                                  (--branches enables the live-descendant
-                                                   guard; without it a parent with live
+  loom retention run <store> [--ttl ms] [--apply]  reclaim aged terminal executions
+                                                  (a branchRegistry enables the live-descendant
+                                                   guard; without one a parent with live
                                                    branches is NOT protected)
-  loom sweep content --db <path> --content <path> [--archive-db <path>] [--pin KIND,KIND] [--ttl ms] [--apply]  K10.6 pinned blob sweep
-  loom compliance report --db <path> --subject-path <p> [--tenant-path <p>]  data-subject inventory
-  loom inspect --db <path> [--port N]             web inspector (timeline + slider)
+  loom sweep content <store> --content <path> [--archive-db <path>] [--pin KIND,KIND] [--ttl ms] [--apply]  K10.6 pinned blob sweep
+  loom compliance report <store> --subject-path <p> [--tenant-path <p>]  data-subject inventory
+  loom inspect <store> [--port N]                 web inspector (timeline + slider)
+
+  <store>  where a command reads storage. Either half works for every command above:
+    --config <module>    the stores YOUR app wired (defineConfig) — SQLite, Postgres, or any
+                         conforming backend; importing it starts nothing
+    --db <events.db> [--snap <s.db>] [--branches <b.db>] [--leases <l.db>]
+                         SQLite shorthand, one file per store — for a dev machine with loose
+                         files. Flags you omit are stores the command cannot consult, and it
+                         says so rather than reporting them as empty.
 
 New project?  →  npm create loom-app
 `;
+
+/** Every storage-backed command refuses the same way, naming both front doors. */
+function storeFlagError(command: string): number {
+  console.error(`loom ${command}: ${STORE_FLAG_HELP}`);
+  return 1;
+}
 
 async function main(argv: string[]): Promise<number> {
   const { command, positionals, flags } = parseArgs(argv);
 
   switch (command) {
     case "logs": {
-      requireFlag(flags, "db");
+      if (!hasStoreFlags(flags)) return storeFlagError("logs");
       const executionId = requirePositional(positionals, "executionId");
-      console.log(await cmdLogs(flags.db!, executionId, parseRedact(flags.redact)));
+      console.log(await cmdLogs(storeFlagsOf(flags), executionId, parseRedact(flags.redact)));
       return 0;
     }
     case "debug": {
-      requireFlag(flags, "db");
+      if (!hasStoreFlags(flags)) return storeFlagError("debug");
       const executionId = requirePositional(positionals, "executionId");
       const at = flags.at !== undefined ? Number.parseInt(flags.at, 10) : undefined;
-      console.log(await cmdDebug(flags.db!, executionId, at, parseRedact(flags.redact)));
+      console.log(await cmdDebug(storeFlagsOf(flags), executionId, at, parseRedact(flags.redact)));
       return 0;
     }
     case "census": {
-      if (!hasStoreFlags(flags)) {
-        console.error(`loom census: ${STORE_FLAG_HELP}`);
-        return 1;
-      }
+      if (!hasStoreFlags(flags)) return storeFlagError("census");
       console.log(
         await cmdCensus({
-          ...(flags.config !== undefined && { config: flags.config }),
-          ...(flags.db !== undefined && { db: flags.db }),
-          ...(flags.snap !== undefined && { snap: flags.snap }),
-          ...(flags.leases !== undefined && { leases: flags.leases }),
+          ...storeFlagsOf(flags),
           ...(flags.buckets !== undefined && { buckets: flags.buckets }),
           ...(flags.sample !== undefined && { sampleSize: Number(flags.sample) }),
         })
@@ -165,17 +170,11 @@ async function main(argv: string[]): Promise<number> {
 
     case "retention": {
       requirePositional(positionals, "run"); // `loom retention run`
-      if (!hasStoreFlags(flags)) {
-        console.error(`loom retention: ${STORE_FLAG_HELP}`);
-        return 1;
-      }
+      if (!hasStoreFlags(flags)) return storeFlagError("retention");
       const ttl = flags.ttl !== undefined ? Number.parseInt(flags.ttl, 10) : 0;
       console.log(
         await cmdRetentionRun({
-          ...(flags.config !== undefined && { config: flags.config }),
-          ...(flags.db !== undefined && { db: flags.db }),
-          ...(flags.snap !== undefined && { snap: flags.snap }),
-          ...(flags.branches !== undefined && { branches: flags.branches }),
+          ...storeFlagsOf(flags),
           ttlMs: ttl,
           apply: flags.apply === "true",
         })
@@ -184,12 +183,12 @@ async function main(argv: string[]): Promise<number> {
     }
     case "sweep": {
       requirePositional(positionals, "content"); // `loom sweep content`
-      requireFlag(flags, "db");
+      if (!hasStoreFlags(flags)) return storeFlagError("sweep content");
       requireFlag(flags, "content");
       const ttl = flags.ttl !== undefined ? Number.parseInt(flags.ttl, 10) : 30 * 24 * 3_600_000;
       console.log(
         await cmdSweepContent({
-          db: flags.db!,
+          ...storeFlagsOf(flags),
           content: flags.content!,
           ...(flags["archive-db"] !== undefined && { archiveDb: flags["archive-db"] }),
           ...(flags.pin !== undefined && { pin: flags.pin }),
@@ -201,10 +200,10 @@ async function main(argv: string[]): Promise<number> {
     }
     case "compliance": {
       requirePositional(positionals, "report"); // `loom compliance report`
-      requireFlag(flags, "db");
+      if (!hasStoreFlags(flags)) return storeFlagError("compliance report");
       requireFlag(flags, "subject-path");
       console.log(
-        await cmdComplianceReport(flags.db!, flags["subject-path"]!, flags["tenant-path"])
+        await cmdComplianceReport(storeFlagsOf(flags), flags["subject-path"]!, flags["tenant-path"])
       );
       return 0;
     }
@@ -242,33 +241,33 @@ async function main(argv: string[]): Promise<number> {
       return result.ok ? 0 : 1;
     }
     case "profile": {
-      requireFlag(flags, "db");
+      if (!hasStoreFlags(flags)) return storeFlagError("profile");
       const executionId = requirePositional(positionals, "executionId");
-      console.log(await cmdProfile(flags.db!, executionId));
+      console.log(await cmdProfile(storeFlagsOf(flags), executionId));
       return 0;
     }
     case "introspect": {
-      requireFlag(flags, "db");
+      if (!hasStoreFlags(flags)) return storeFlagError("introspect");
       const executionId = requirePositional(positionals, "executionId");
-      console.log(await cmdIntrospect(flags.db!, executionId, flags.graph));
+      console.log(await cmdIntrospect(storeFlagsOf(flags), executionId, flags.graph));
       return 0;
     }
     case "optimize": {
-      requireFlag(flags, "db");
+      if (!hasStoreFlags(flags)) return storeFlagError("optimize");
       const executionId = requirePositional(positionals, "executionId");
-      console.log(await cmdOptimize(flags.db!, executionId));
+      console.log(await cmdOptimize(storeFlagsOf(flags), executionId));
       return 0;
     }
     case "learn": {
       const sub = requirePositional(positionals, "report|eval");
-      requireFlag(flags, "db");
+      if (!hasStoreFlags(flags)) return storeFlagError("learn");
       if (sub === "report") {
-        console.log(await cmdLearnReport(flags.db!, positionals[1]));
+        console.log(await cmdLearnReport(storeFlagsOf(flags), positionals[1]));
         return 0;
       }
       if (sub === "eval") {
         requireFlag(flags, "policy");
-        const { text, ok } = await cmdLearnEval(flags.db!, flags.policy!, {
+        const { text, ok } = await cmdLearnEval(storeFlagsOf(flags), flags.policy!, {
           ...(positionals[1] !== undefined && { executionId: positionals[1] }),
           ...(flags["min-steps"] !== undefined && {
             minSteps: Number.parseInt(flags["min-steps"], 10),
@@ -504,18 +503,18 @@ async function main(argv: string[]): Promise<number> {
     }
     case "inspect":
     case "dev": {
-      requireFlag(flags, "db");
-      const store = new SqliteEventStore(flags.db!);
+      if (!hasStoreFlags(flags)) return storeFlagError(command);
+      const stores = await resolveStores(storeFlagsOf(flags));
       const server = serveInspector(
-        store,
+        stores.eventStore,
         flags.port !== undefined ? { port: Number.parseInt(flags.port, 10) } : {}
       );
       await server.start();
       console.log(`loom inspector on ${server.url}  (Ctrl-C to stop)`);
-      // Graceful shutdown: on Ctrl-C, stop the server and close the DB handle instead
+      // Graceful shutdown: on Ctrl-C, stop the server and close the stores instead
       // of letting the process die with them open.
       const shutdown = () => {
-        void server.stop().then(() => store.close());
+        void server.stop().then(() => stores.close());
       };
       process.once("SIGINT", shutdown);
       process.once("SIGTERM", shutdown);

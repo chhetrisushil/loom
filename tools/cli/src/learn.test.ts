@@ -73,7 +73,7 @@ describe("loom learn", () => {
 
   it("report summarizes coverage and per-arm rewards", async () => {
     const id = await record(learnable);
-    const text = await cmdLearnReport(dbPath, id);
+    const text = await cmdLearnReport({ db: dbPath }, id);
     expect(text).toMatch(/1 execution\(s\), 1 decision\(s\)/);
     expect(text).toMatch(/with context\s+1 \(100%\)/);
     expect(text).toMatch(/with propensity\s+1 \(100%\)/);
@@ -83,7 +83,7 @@ describe("loom learn", () => {
 
   it("report names the gaps that make a log unlearnable", async () => {
     const id = await record(blind);
-    const text = await cmdLearnReport(dbPath, id);
+    const text = await cmdLearnReport({ db: dbPath }, id);
     expect(text).toMatch(/Blocking gaps/);
     expect(text).toMatch(/no decision recorded a context/);
     expect(text).toMatch(/no decision recorded a propensity/);
@@ -93,7 +93,7 @@ describe("loom learn", () => {
   it("report says so when there is nothing to learn from", async () => {
     const eventStore = new SqliteEventStore(dbPath);
     eventStore.close();
-    expect(await cmdLearnReport(dbPath)).toMatch(/no events|no decisions/);
+    expect(await cmdLearnReport({ db: dbPath })).toMatch(/no events|no decisions/);
   });
 
   it("eval shadow-evaluates a policy module and refuses promotion on thin evidence", async () => {
@@ -103,7 +103,7 @@ describe("loom learn", () => {
       mod,
       "module.exports.policy = { id: 'always-opus', version: '1', select: () => ({ action: 'opus' }) };"
     );
-    const { text, ok } = await cmdLearnEval(dbPath, mod, { executionId: id });
+    const { text, ok } = await cmdLearnEval({ db: dbPath }, mod, { executionId: id });
     expect(text).toMatch(/always-opus@1/);
     expect(text).toMatch(/GATE: refused/);
     expect(ok).toBe(false); // one step is not evidence, and the gate says so
@@ -116,7 +116,7 @@ describe("loom learn", () => {
       mod,
       "module.exports.policy = { id: 'always-opus', version: '1', select: () => ({ action: 'opus' }) };"
     );
-    const { text, ok } = await cmdLearnEval(dbPath, mod, { executionId: id, minSteps: 1 });
+    const { text, ok } = await cmdLearnEval({ db: dbPath }, mod, { executionId: id, minSteps: 1 });
     expect(text).toMatch(/GATE: pass/);
     expect(ok).toBe(true);
   });
@@ -125,7 +125,7 @@ describe("loom learn", () => {
     const id = await record(learnable);
     const mod = join(dir, "bad.js");
     writeFileSync(mod, "module.exports.somethingElse = 1;");
-    const { text, ok } = await cmdLearnEval(dbPath, mod, { executionId: id });
+    const { text, ok } = await cmdLearnEval({ db: dbPath }, mod, { executionId: id });
     expect(ok).toBe(false);
     expect(text).toMatch(/does not export a Policy/);
   });

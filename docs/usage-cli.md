@@ -52,12 +52,12 @@ loom — project-local commands for a Loom app
   loom lint claim-check [--dir .]                 CC-5: flag claim-check reach-through inside flows
   loom verify --config <module> [--manifest <path>]  pre-flight runtime verification (@loom/verify)
                                                   (auto-reads loom-manifest.json loopIdentity findings, ADR 0061)
-  loom logs  --db <path> <executionId> [--redact a,b]   print the event timeline
-  loom profile --db <path> <executionId>          flame graph + latency breakdown
-  loom introspect --db <path> <executionId> [--graph N]  execution/task/decision/resource graphs
-  loom optimize --db <path> <executionId>         advisory optimization report (recommendations)
-  loom learn report --db <path> [executionId]     trajectories, per-arm rewards, learning coverage
-  loom learn eval --db <path> --policy <module> [--min-steps N] [executionId]
+  loom logs  <store> <executionId> [--redact a,b]  print the event timeline
+  loom profile <store> <executionId>              flame graph + latency breakdown
+  loom introspect <store> <executionId> [--graph N]  execution/task/decision/resource graphs
+  loom optimize <store> <executionId>             advisory optimization report (recommendations)
+  loom learn report <store> [executionId]         trajectories, per-arm rewards, learning coverage
+  loom learn eval <store> --policy <module> [--min-steps N] [executionId]
                                                   shadow-evaluate a candidate policy on real logs
   loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--source <s>] [--apply]
                                                   reconcile a directory into a corpus
@@ -69,20 +69,26 @@ loom — project-local commands for a Loom app
                                                   ask the corpus (operator query — not recorded)
   loom kernel-manifest [--json] [--emit-docs <dir>]  kernel version + maturity manifest
   loom compat --abi <v> --event-schema <v> [...]  validate a deployment's contract versions
-  loom debug --db <path> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
+  loom debug <store> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
   loom eval  --dir <path>                         replay golden logs vs expectations
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
-  loom census --db <path> [--snap <path>] [--leases <path>] [--buckets 5m,1h,6h,24h]
-                                                  what is stuck, and is anything watching it
+  loom census <store> [--buckets 5m,1h,6h,24h]    what is stuck, and is anything watching it
                                                   (read-only; takes no predicate)
-  loom retention run --db <path> --snap <path> [--branches <path>] [--ttl ms] [--apply]
-                                                  reclaim aged terminal executions
-                                                  (--branches enables the live-descendant
-                                                   guard; without it a parent with live
+  loom retention run <store> [--ttl ms] [--apply]  reclaim aged terminal executions
+                                                  (a branchRegistry enables the live-descendant
+                                                   guard; without one a parent with live
                                                    branches is NOT protected)
-  loom sweep content --db <path> --content <path> [--archive-db <path>] [--pin KIND,KIND] [--ttl ms] [--apply]  K10.6 pinned blob sweep
-  loom compliance report --db <path> --subject-path <p> [--tenant-path <p>]  data-subject inventory
-  loom inspect --db <path> [--port N]             web inspector (timeline + slider)
+  loom sweep content <store> --content <path> [--archive-db <path>] [--pin KIND,KIND] [--ttl ms] [--apply]  K10.6 pinned blob sweep
+  loom compliance report <store> --subject-path <p> [--tenant-path <p>]  data-subject inventory
+  loom inspect <store> [--port N]                 web inspector (timeline + slider)
+
+  <store>  where a command reads storage. Either half works for every command above:
+    --config <module>    the stores YOUR app wired (defineConfig) — SQLite, Postgres, or any
+                         conforming backend; importing it starts nothing
+    --db <events.db> [--snap <s.db>] [--branches <b.db>] [--leases <l.db>]
+                         SQLite shorthand, one file per store — for a dev machine with loose
+                         files. Flags you omit are stores the command cannot consult, and it
+                         says so rather than reporting them as empty.
 
 New project?  →  npm create loom-app
 ```

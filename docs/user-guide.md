@@ -1018,7 +1018,11 @@ interface LoomConfig {
   agentSurface?: boolean;  // opt-in: auto-register an agent surface per agent (surfaceId = agent.id)
   catalog?: CatalogLike;
   timers?: { store: TimerStore; schedules?: ScheduleDefinition[]; pollMs?: number;
-             fenced?: boolean; warmLeadMs?: number };         // T1 durable timers + cron
+             fenced?: boolean; warmLeadMs?: number;
+             dispatcher?: TimerDispatcher;                    // #392 — wake on the lane it was placed on
+             leases?: { store: LeaseStore; owner: string;     // #380 — claim before waking
+                        ttlMs?: number; renewEveryMs?: number } };  // T1 durable timers + cron
+  autostart?: boolean;   // default true; false builds without starting (then call app.start())
 
   // ── Cross-cutting concerns ──
   security?: {
@@ -1063,9 +1067,10 @@ interface LoomApp {
   effectRuntime: EffectRuntime;
   projectionRuntime: ProjectionRuntime;
   bus: InProcessA2ABus;
-  stores: {                                                     // memoryStore present only when CONFIGURED
+  stores: {                                                     // optional ones present only when CONFIGURED
     eventStore: EventStore; snapshotStore: SnapshotStore;
     branchRegistry?: BranchRegistry; memoryStore?: MemoryStore;
+    timerStore?: TimerStore; leaseStore?: LeaseStore;            // absent = not wired, not "empty"
   };
   tools: ToolDefinition[];                                      // from toolModules (metadata)
   skills: SkillRegistry;                                        // app.skills.find(query) — offline selection
@@ -1077,6 +1082,7 @@ interface LoomApp {
   exportSubject(id: string, o?: { includeEvents?: boolean; tenant?: string }): Promise<SubjectExport>;
   eraseSubject(id: string, tenant?: string): Promise<EraseSubjectResult>;
   verify(o?: { lint?: VerifyLintInputs }): VerificationReport;   // re-run pre-flight on demand (read-only)
+  start(): void;                                                // idempotent; automatic unless autostart: false
   close(): Promise<void>;
 }
 ```
@@ -1141,7 +1147,12 @@ loom inspect --db <path> [--port N]             web inspector (timeline + slider
 
 (Plus `profile` / `introspect` / `optimize`, `learn report|eval`, `compat` / `kernel-manifest`, `retention run` / `sweep content` / `compliance report`, `knowledge sync|list|search`, `lint claim-check`, `dev`, and the `plugin …` family — the CLI guide has all of them.)
 
-- **`logs` / `debug` / `inspect`** operate directly on a SQLite event DB — no app load needed. `debug --at N` folds the exact state at sequence *N* (time-travel); `inspect` serves a web timeline with a slider using the same fold.
+- **`logs` / `debug` / `inspect`** read one execution's log. `debug --at N` folds the exact state at sequence *N* (time-travel); `inspect` serves a web timeline with a slider using the same fold.
+- **Every storage-backed command takes `--config <module>` or `--db <path>`.** `--db` is the SQLite shorthand — a dev machine with loose files, no app load needed. `--config` points at your app's config module and uses **the stores it wired**, whatever they are: SQLite, Postgres, or any backend that passes the conformance kits (ADR 0033). That is what makes these commands usable on a real deployment — leases and placement exist because more than one node is running, and a multi-node deployment is not a file you can pass to `--db`.
+
+  Importing a config module to read it **starts nothing**: the CLI asks for build-without-start, so pointing a diagnostic at production cannot fire due timers or scheduled flows as a side effect. (An app can request the same thing itself with `defineConfig({ autostart: false })`, then call `app.start()` when it means to run.)
+
+  What a command cannot consult, it says: without `--leases`, `census` reports coverage as *not asked* rather than zero; without a `branchRegistry`, `retention` says the live-descendant guard is **off** rather than quietly skipping it.
 - **`gen` / `new`** implement the folder convention via **build-time codegen** (a static `loom.gen.ts`), not runtime globbing ([ADR 0011](adr/0011-folder-convention-codegen.md)). **`appgen`** turns a natural-language intent into a static Loom app *in the same folder convention* (`app/flows/<id>/flow.ts` + `app/loom.gen.ts` + `app/config.ts`, or a full project) via [`@loom/appgen`](../tools/appgen) — deterministic and offline, with no model call at generate time or in the output.
 - **`doctor`** is the front door for the pre-flight gates — the flow-graph check, the `@loom/verify` rules, the memory store (durable? can it retrieve by relevance?), and the claim-check lint. It discovers each one's input, runs what it can, and **names what it skipped and why** — a skipped check never reads as a pass. Build with the Loom compiler and `verify` gets the manifest's three source analyses (non-determinism, loop identity, runner-body reach) injected automatically; nothing is hand-plumbed.
 - **`eval` / `deploy check` / `check` / `verify`** are CI gates (§12).

@@ -1,7 +1,7 @@
 import { SubjectIndex } from "@loom/compliance";
 import type { EventEnvelope } from "@loom/core";
 import { isReservedStream, readRangeOf } from "@loom/event-runtime";
-import { SqliteEventStore } from "@loom/plugin-sqlite";
+import { type StoreFlags, resolveStores } from "./stores";
 
 // ── `loom compliance report` — data-subject inventory over cold storage (T3) ────
 //
@@ -30,11 +30,12 @@ function asId(value: unknown): string | undefined {
  * a subject inventory (per tenant) over the whole store.
  */
 export async function cmdComplianceReport(
-  db: string,
+  flags: StoreFlags,
   subjectPath: string,
   tenantPath?: string
 ): Promise<string> {
-  const store = new SqliteEventStore(db);
+  const resolved = await resolveStores(flags);
+  const store = resolved.eventStore;
   try {
     if (store.listExecutions === undefined) {
       return "this event store does not support listExecutions (cannot enumerate subjects)";
@@ -75,6 +76,6 @@ export async function cmdComplianceReport(
       ? `${header}\n  (no subjects resolved)`
       : `${header}\n${lines.join("\n")}`;
   } finally {
-    await store.close();
+    await resolved.close();
   }
 }

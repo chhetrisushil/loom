@@ -1,5 +1,6 @@
 import { type ContentSweepReport, sweepUnpinnedContent } from "@loom/plugin-content";
 import { SqliteContentStore, SqliteEventStore } from "@loom/plugin-sqlite";
+import { type StoreFlags, resolveStores } from "./stores";
 
 // ── `loom sweep content` — the operator surface for the K10.6 pinned sweep ────
 //
@@ -34,18 +35,26 @@ function formatReport(
 }
 
 /**
- * `loom sweep content --db <events.db> --content <content.db> [--archive-db <path>]
- *   [--pin KIND,KIND] [--ttl <ms>] [--apply]`
+ * `loom sweep content (--config <module> | --db <events.db>) --content <content.db>
+ *   [--archive-db <path>] [--pin KIND,KIND] [--ttl <ms>] [--apply]`
+ *
+ * The event log comes from the composition like every other pass, but `--content` stays a
+ * path: `defineConfig` has no content-store seam — the content plugin wires itself into the
+ * effect runtime, not the composition root — so there is nothing for `--config` to hand over
+ * yet. Asking for it explicitly is honest; inventing a default would guess at which store
+ * holds the blobs this log cites.
  */
-export async function cmdSweepContent(opts: {
-  db: string;
-  content: string;
-  archiveDb?: string;
-  pin?: string;
-  ttlMs: number;
-  apply: boolean;
-}): Promise<string> {
-  const live = new SqliteEventStore(opts.db);
+export async function cmdSweepContent(
+  opts: StoreFlags & {
+    content: string;
+    archiveDb?: string;
+    pin?: string;
+    ttlMs: number;
+    apply: boolean;
+  }
+): Promise<string> {
+  const stores = await resolveStores(opts);
+  const live = stores.eventStore;
   const archive = opts.archiveDb === undefined ? undefined : new SqliteEventStore(opts.archiveDb);
   const content = new SqliteContentStore(opts.content);
   const pins = (opts.pin ?? "")
@@ -63,7 +72,7 @@ export async function cmdSweepContent(opts: {
     });
     return formatReport(report, opts.apply, opts.ttlMs, pins);
   } finally {
-    await live.close();
+    await stores.close();
     await archive?.close();
     await content.close();
   }
