@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { SEAM_KEYS, pluginFiles } from "./plugin";
@@ -17,16 +17,35 @@ import { SEAM_KEYS, pluginFiles } from "./plugin";
 const REPO_ROOT = resolve(__dirname, "../../..");
 const PROBE = join(REPO_ROOT, ".tmp-template-types");
 
-/** `@loom/x` → its built declaration file, wherever that package lives. */
+/**
+ * Every workspace package → its built declaration file.
+ *
+ * Keyed by the package's declared NAME, not its directory: `plugins/content` publishes
+ * `@loom/plugin-content`, and assuming the two match silently omits exactly the seams whose
+ * SPI lives in a plugin package.
+ */
 function loomPaths(): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   for (const base of ["packages", "plugins", "tools"]) {
-    for (const name of readdirSync(join(REPO_ROOT, base), { withFileTypes: true })) {
-      if (!name.isDirectory()) continue;
-      out[`@loom/${name.name}`] = [`${base}/${name.name}/dist/index.d.ts`];
+    for (const entry of readdirSync(join(REPO_ROOT, base), { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const manifest = join(REPO_ROOT, base, entry.name, "package.json");
+      if (!existsSync(manifest)) continue;
+      const { name } = JSON.parse(readFileSync(manifest, "utf8")) as { name?: string };
+      if (name === undefined) continue;
+      out[name] = [`${base}/${entry.name}/dist/index.d.ts`];
     }
   }
   return out;
+}
+
+/** `@types/node` is not hoisted to the root here, so point tsc at wherever pnpm put it. */
+function nodeTypeRoot(): string {
+  const pkg = require.resolve("@types/node/package.json", {
+    paths: [join(REPO_ROOT, "tools/scaffold")],
+  });
+  // typeRoots entries CONTAIN type packages, so this is the @types directory itself.
+  return resolve(pkg, "../..");
 }
 
 describe("seam templates typecheck against the real SPIs", () => {
@@ -50,7 +69,9 @@ describe("seam templates typecheck against the real SPIs", () => {
         compilerOptions: {
           noEmit: true,
           rootDir: "src",
-          types: [],
+          // `Buffer` appears in the KeyStore SPI, so the probe needs node's ambient types.
+          types: ["node"],
+          typeRoots: [nodeTypeRoot()],
           baseUrl: "..",
           paths: loomPaths(),
         },

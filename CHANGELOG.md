@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Four more seams: `content`, `durable-state`, `read-model`, `keystore`.** With `lease`
+  that closes every SPI loom publishes a conformance kit for — and a kit is loom saying
+  "third parties implement this", so an SPI with one and no scaffold was advertising with no
+  door. A fitness test now asserts exactly that: **every kitted SPI is scaffoldable**, which
+  generalises past any hand-maintained list. Each template documents the property its backend
+  is silently wrong about otherwise — content addressing making `put` idempotent, compare-and-set
+  on `expectedRevision`, watermark monotonicity under re-apply, and `destroy` being
+  irreversible because the key IS the erasure boundary.
+
 - **`loom plugin new lease <name>` — a `LeaseStore` seam.** The interface, the conformance
   kit (`runLeaseStoreConformance`), the SPI-map row and the composition wiring
   (`timers.leases`) all existed; the scaffold did not, so loom advertised a seam a third
