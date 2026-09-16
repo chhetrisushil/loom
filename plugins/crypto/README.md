@@ -18,7 +18,7 @@ import {
   EncryptingEventStore, EncryptingSnapshotStore, InMemoryKeyStore, shredSubject,
 } from "@loom/plugin-crypto";
 
-const keys = new InMemoryKeyStore(); // back with a KMS in production
+const keys = new InMemoryKeyStore(); // tests only — `loom doctor` FAILS this in an app
 const eventStore = new EncryptingEventStore(innerEvents, keys, {
   sensitive: { STEP_COMPLETED: ["output.ssn", "output.email"] }, // dot-paths into the payload
 });

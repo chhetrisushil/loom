@@ -450,13 +450,18 @@ safetyMiddleware({ validators: [piiValidator(), denyPatterns([/DROP TABLE/i]), k
 **Secrets & redaction (K10)** — pass secrets as `secretRef("db-password")` placeholders; `redactionMiddleware` resolves them just-in-time so plaintext never enters the log. Pair with **encryption-at-rest**: wrap the store in `EncryptingEventStore` (marked fields encrypted under a per-subject key), and erase a subject with `shredSubject(...)` — crypto-shredding appends `PAYLOAD_SHREDDED` and makes later reads fail *loudly*.
 
 ```ts
-import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
+import { EncryptingEventStore } from "@loom/plugin-crypto";
 
-const events = new EncryptingEventStore(inner, new InMemoryKeyStore(), {
+const events = new EncryptingEventStore(inner, keys, {
   sensitive: { STEP_COMPLETED: ["output.ssn", "output.email"] },
 });
 // later, on erasure request: await shredSubject(keys, inner, executionId);
 ```
+
+`keys` must be a `KeyStore` that **survives a restart** — the key is the erasure boundary, so
+losing one is indistinguishable from shredding the subject, and nothing fails at the moment it
+happens. `InMemoryKeyStore` declares `durable: false` and `loom doctor` refuses it; back it
+with a KMS (`loom-plugin-kms`) or your own store.
 
 **Data-plane isolation & egress (K7)** — run an untrusted tool in a scrubbed child process whose network is restricted to a static allowlist (a target off the list is denied kernel-side with `EGRESS_DENIED`, before any connection):
 
