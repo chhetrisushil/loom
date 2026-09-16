@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { SEAM_KEYS, pluginFiles } from "./plugin";
+import { SEAM_KEYS, pluginFiles, usesNodeGlobals } from "./plugin";
 
 // ── Fitness function: a template must implement the SPI it claims ────────────
 //
@@ -47,6 +47,39 @@ function nodeTypeRoot(): string {
   // typeRoots entries CONTAIN type packages, so this is the @types directory itself.
   return resolve(pkg, "../..");
 }
+
+describe("a scaffolded package declares what its own code needs", () => {
+  // The typecheck below supplies node's ambient types to every seam, which is what hid this:
+  // `loom plugin new keystore` emitted a class with `Buffer` in four signatures and a
+  // package.json with no @types/node, so the package it produced did not compile. A probe
+  // that hands the compiler more than the real package declares cannot see that.
+  it("the detector reads CODE, not prose", () => {
+    // Two seams describe "the process" in a doc comment. Matching those would add a
+    // dependency their code never uses — a sweep over comments measures prose.
+    expect(usesNodeGlobals("const b = Buffer.from(x);")).toBe(true);
+    expect(usesNodeGlobals("/** a resume arrives from OUTSIDE the process */")).toBe(false);
+    expect(usesNodeGlobals("// whichever process happens to poll")).toBe(false);
+    expect(usesNodeGlobals("export class X {}")).toBe(false);
+  });
+
+  it("a template using node globals ships @types/node", () => {
+    const missing: string[] = [];
+    for (const seam of SEAM_KEYS) {
+      const files = pluginFiles(seam, `probe-${seam}`, { firstParty: false });
+      const indexKey = Object.keys(files).find((f) => f.endsWith("src/index.ts")) as string;
+      if (!usesNodeGlobals(files[indexKey] ?? "")) continue;
+      const manifestKey = Object.keys(files).find((f) => f.endsWith("package.json")) as string;
+      const manifest = JSON.parse(files[manifestKey] ?? "{}") as {
+        devDependencies?: Record<string, string>;
+      };
+      if (manifest.devDependencies?.["@types/node"] === undefined) missing.push(seam);
+    }
+    expect(
+      missing,
+      `these seams emit node globals and scaffold a package that cannot compile: ${missing.join(", ")}`
+    ).toEqual([]);
+  });
+});
 
 describe("seam templates typecheck against the real SPIs", () => {
   afterAll(() => rmSync(PROBE, { recursive: true, force: true }));

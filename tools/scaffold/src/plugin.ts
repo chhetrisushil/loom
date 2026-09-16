@@ -1373,6 +1373,11 @@ function pluginPackageJson(seam: SeamDef, packageName: string, firstParty: boole
   if (seam.conformance.length > 0) devDeps["@loom/conformance"] = version;
   devDeps.typescript = "^5.6.3";
   devDeps.vitest = "^2.1.8";
+  // A template that writes `Buffer` in a signature needs node's ambient types, or the package
+  // it scaffolds does not compile — which is how `loom plugin new keystore` shipped code
+  // nobody could build. Derived from the emitted source rather than listed per seam, so a
+  // template that starts using Buffer tomorrow is covered without anyone remembering.
+  if (usesNodeGlobals(seam.index("probe"))) devDeps["@types/node"] = "^22.0.0";
 
   const pkg: Record<string, unknown> = {
     name: packageName,
@@ -1402,6 +1407,21 @@ function pluginPackageJson(seam: SeamDef, packageName: string, firstParty: boole
     devDependencies: firstParty ? devDeps : { ...deps, ...devDeps },
   };
   return `${JSON.stringify(pkg, null, 2)}\n`;
+}
+
+/** Node globals a template can reference that only `@types/node` declares. */
+const NODE_GLOBALS = /\b(Buffer|process|__dirname|NodeJS\.)/;
+
+/**
+ * Does this template's CODE use a node global?
+ *
+ * Comments are stripped first, and that is not a detail: two seams describe "the process" in
+ * their prose, and matching those would have added `@types/node` to packages whose code never
+ * touches it. A sweep that reads comments is measuring prose, not code.
+ */
+export function usesNodeGlobals(source: string): boolean {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  return NODE_GLOBALS.test(code);
 }
 
 function pluginTsconfig(seam: SeamDef, firstParty: boolean): string {
