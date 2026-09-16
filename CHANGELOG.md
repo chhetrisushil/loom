@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`loom plugin new keystore` scaffolded a package that could not compile.** The template
+  writes `Buffer` in four signatures and the generated `package.json` declared no
+  `@types/node`, so the first thing a plugin author did after scaffolding was watch `tsc`
+  fail. The template typecheck added yesterday hid it by handing the compiler node's types —
+  which the real package never declares. A scaffolded package's dependencies are now derived
+  from the code it emits, and a guard asserts that any template using a node global ships the
+  types for it.
+
+  The detector strips comments first, and that is the point of its own unit test: two seams
+  describe "the process" in prose, and matching those would have added a dependency their code
+  never touches. A sweep that reads comments is measuring prose.
+
 - **An encrypting store with in-memory keys now FAILS `loom doctor`.** K10 crypto-shredding
   makes the key the erasure boundary, so losing a key is indistinguishable from shredding the
   subject: the writes succeed, the log survives, and every encrypted field is unreadable from
