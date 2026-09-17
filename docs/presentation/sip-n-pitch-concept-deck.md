@@ -16,7 +16,7 @@ title: "Loom — a bet about how agents should run (concept pitch)"
 *Sip n Pitch · 30 min · this is an idea, not a product*
 
 <!--
-TIMING PLAN (30 min hard stop) — 33 slides (7 are section dividers)
+TIMING PLAN (30 min hard stop) — 35 slides (7 are section dividers)
   0:00  Act I    The itch            3 min  → "The moment it broke for me"
   3:00  Act II   The bet             4 min  → "The bet, in one sentence"
   7:00  Act III  What it predicts    3 min  → "If the bet is right..."
