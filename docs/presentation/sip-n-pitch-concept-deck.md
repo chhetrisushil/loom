@@ -21,9 +21,9 @@ TIMING PLAN (30 min hard stop) — 33 slides (7 are section dividers)
   3:00  Act II   The bet             4 min  → "The bet, in one sentence"
   7:00  Act III  What it predicts    3 min  → "If the bet is right..."
  10:00  Act IV   Am I reinventing?   5 min  → "Has someone already made this bet?"
- 15:00  Act V    THE SPIKE          10 min  → loom-demo/DEMO_SCRIPT.md
- 25:00  Act VI   Unknowns + the ask  4 min  → "What I still don't know"
- 29:00  Q&A
+ 15:00  Act V    THE SPIKE          12 min  → loom-demo/DEMO_SCRIPT.md (Acts 4, 4b, 4c)
+ 27:00  Act VI   Unknowns + the ask  3 min  → "What I still don't know"
+ 30:00  Q&A
 
 POSTURE — this is the whole difference from the product deck. You are NOT
 selling. You are saying: here is a bet, here is how I tested it, here is where
@@ -39,6 +39,7 @@ a product. A kernel and some examples that run. None of it has met a real user."
 Overclaiming here is the only way to lose this room.
 
 CUT ORDER if you're running long, in this order:
+  0. Act 4c "What would a different choice have scored" (keep 4b — it is the visual one)
   1. "More likely complementary than competing"
   2. "The prediction I didn't expect" (branching)
   3. "Why the log, specifically" (the diagram — the thesis survives without it)
@@ -50,7 +51,9 @@ any of them turns the talk back into a product pitch:
   • "What I still don't know"
   • "What would change my mind"
 If you are SO short that the spike has to go, cut the talk instead — the
-crash/resume is the only actual evidence you have.
+crash/resume is the only actual evidence you have. The three demos map to the
+three "still unclaimed" claims; if you cut one, say which claim goes
+undemonstrated.
 -->
 
 ---
@@ -672,6 +675,59 @@ log to an orphaned one."
 Do NOT claim the demo shows automatic recovery. It shows the RESUME is possible
 from a cold process, which is the durability claim. Who triggers it is a
 separate, answerable question.
+-->
+
+---
+
+## Claim 2, run: fork the gate it was parked at
+
+```
+   main   ──●──●──●──●─ #10 suspended at the approval gate
+                     ├──○   spec/direct-ddl   lock 48s   score 0.41
+                     ├──○   spec/online-ddl   lock 4.4s  score 0.76   ← promote
+                     └──○   spec/chunked      lock 0s    score 0.70
+   bolts: 3 · model calls: 0 · parent log: untouched · merge: none
+```
+
+**Predicted, then run:** three branches cost three simulated applies and **zero** model calls.
+The branches inherited everything above the gate. Promotion is a pointer move.
+
+**Did *not* prove:** that branch storage stays cheap (N branches = N × the prefix), or that a
+fork inside a fork is something anyone needs.
+
+<!--
+loom-demo Act 4b: `pnpm fork`. Predict OUT LOUD before enter: "three bolts, none of them
+inspect or assess". Point at `model calls: 0`.
+THE QUESTION: "isn't this just running it three times?" — three runs = nine bolts, three model
+calls. The prefix is shared; that's the whole mechanism.
+WHY NO MERGE — say it before they ask. Refusing to ship the unsound thing is the credibility.
+-->
+
+---
+
+## Claim 3, run: what would a different choice have scored?
+
+| the same 48 migrations, twice | logged with *how sure it was* | logged without |
+|---|---|---|
+| a size-aware policy that **never ran** — steps evaluated | **48** | **0** |
+| its estimated score vs. what actually ran | 0.8x vs 0.6x · lift **+0.1x** | cannot be estimated |
+
+Same executions, same rewards, same dashboard. **That number is the propensity. You either
+wrote it down at the time, or you didn't.** Checkable: `loom learn report --db .data/learn/events.db`.
+
+**Did *not* prove:** that the estimate is tight — effective sample size is small and the report
+says so. It proves the *question can be asked* off real logs, not that 48 runs answer it.
+
+<!--
+loom-demo Act 4c: `pnpm propensity`, then the loom CLI for the same numbers.
+This is the load-bearing claim of the deck now; slow down here. Say "how sure it was"
+until the last sentence, then name it "propensity" once. Point at the two "steps
+evaluated" numbers — 48, then 0 — and nothing else.
+"an estimator that only says yes is useless" → `pnpm propensity --verbose` adds a backwards
+policy with a negative lift. Have it ready; don't run it unprompted.
+"why does it matter?" → "otherwise you learn only from what you did, never from what you didn't."
+"how big is the sample?" → point at effective samples. The estimator refuses to look more
+confident than the log allows — that's a feature, say so.
 -->
 
 ---
