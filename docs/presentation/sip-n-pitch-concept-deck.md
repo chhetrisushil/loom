@@ -21,9 +21,9 @@ TIMING PLAN (30 min hard stop) — 35 slides (7 are section dividers)
   3:00  Act II   The bet             4 min  → "The bet, in one sentence"
   7:00  Act III  What it predicts    3 min  → "If the bet is right..."
  10:00  Act IV   Am I reinventing?   5 min  → "Has someone already made this bet?"
- 15:00  Act V    THE SPIKE          12 min  → loom-demo/DEMO_SCRIPT.md (Acts 4, 4b, 4c)
- 27:00  Act VI   Unknowns + the ask  3 min  → "What I still don't know"
- 30:00  Q&A
+ 15:00  Act V    THE SPIKE          13 min  → loom-demo/DEMO_SCRIPT.md (Acts 4, 4b, 4c)
+ 28:00  Act VI   Unknowns + the ask  1 min  → the ask only
+ 29:00  Q&A
 
 POSTURE — this is the whole difference from the product deck. You are NOT
 selling. You are saying: here is a bet, here is how I tested it, here is where
@@ -39,6 +39,9 @@ a product. A kernel and some examples that run. None of it has met a real user."
 Overclaiming here is the only way to lose this room.
 
 CUT ORDER if you're running long, in this order:
+  The 13-minute Act V budget assumes loom-demo's Acts 0–2 (scaffold, live-code) are NOT
+  run in the concept talk — Act V is DEMO_SCRIPT Acts 3, 4, 4b, 4c (Act 5, the UI, only
+  if ahead).
   0. Act 4c "What would a different choice have scored" (keep 4b — it is the visual one)
   1. "More likely complementary than competing"
   2. "The prediction I didn't expect" (branching)
