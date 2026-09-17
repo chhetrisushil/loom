@@ -710,16 +710,17 @@ WHY NO MERGE — say it before they ask. Refusing to ship the unsound thing is t
 
 ## Claim 3, run: what would a different choice have scored?
 
-| the same 48 migrations, twice | logged with *how sure it was* | logged without |
+| the same 48 migrations, twice | logged with *how sure* | logged without |
 |---|---|---|
-| a size-aware policy that **never ran** — steps evaluated | **48** | **0** |
-| its estimated score vs. what actually ran | 0.8x vs 0.6x · lift **+0.1x** | cannot be estimated |
+| a policy that **never ran** — steps scored | **48** | **0** |
+| its score vs. what actually ran | 0.8x vs 0.6x · lift **+0.1x** | not estimable |
 
-Same executions, same rewards, same dashboard. **That number is the propensity. You either
-wrote it down at the time, or you didn't.** Checkable: `loom learn report --db .data/learn/events.db`.
+Same executions, same rewards, same dashboard. **That number is the propensity.
+You either wrote it down at the time, or you didn't.**
+Checkable: `loom learn report --db .data/learn/events.db`.
 
-**Did *not* prove:** that the estimate is tight — effective sample size is small and the report
-says so. It proves the *question can be asked* off real logs, not that 48 runs answer it.
+**Did *not* prove:** that the estimate is tight — effective sample size is small and
+the report says so. It proves the *question can be asked* off real logs, not that 48 runs answer it.
 
 <!--
 loom-demo Act 4c: `pnpm propensity`, then the loom CLI for the same numbers.
