@@ -18,6 +18,7 @@
   [0088](../adr/0088-blueprint-conformance.md), [0092](../adr/0092-adaptive-operator-profiles-placement.md),
   [0094](../adr/0094-blueprint-node-identity.md), [0095](../adr/0095-binding-semantics-pin.md), and the
   [surface-area audit](2026-09-11-surface-area-audit.md).
+- **Addendum 2026-09-21 (§8):** the §5 move-out list is **withdrawn**. The placement verdict stands.
 
 ---
 
@@ -291,3 +292,23 @@ event store and no persistence**.
 | Build them as a separate framework **on** loom, extracted from `genUI` | **Yes.** Narrow contract, live consumer, two surfaces on day one. |
 | Kernel change | **Zero.** |
 | Loom 1P change | One conformance kit in; widget vocabulary and renderers out, after the framework decides adopt-or-supersede. |
+
+## 8. Addendum — 2026-09-21: the move-out list is withdrawn
+
+Later the same day the maintainer set a constraint this evaluation had not weighed: loom's basic
+UI stays usable with no framework, and the framework *enhances* it. The
+[loom-ui design](2026-09-21-loom-ui-design.md) that followed makes the framework's Experience
+Model **compile to loom's `Blueprint`**, so loom's renderers draw the framework's output.
+
+Under that relationship the §5 "candidates to move out" — `@loom/blueprint-runtime`'s widget
+vocabulary and the two renderer plugins — are the framework's *foundation*, not its competitor,
+and a compile target has to stay where its consumers can pin it. The list is withdrawn.
+What replaces it is [ADR 0096](../adr/0096-blueprint-stable-rendering-ir.md): the Blueprint gains
+a declared `BLUEPRINT_IR_VERSION` and a build-checked, digest-pinned shape manifest, and the
+terminal renderer gains the catalogue coverage this evaluation's source (Part II G5) found missing.
+
+Everything else here holds: separate framework, loom as substrate through a narrow contract,
+kernel change zero, no event store of its own, and the eight TRD defects in §3. The one loom-side
+addition §5 proposed — a log-conformance kit — is deferred in the design (§8) until a second
+artifact-composing framework exists; the framework's own replay tests cover the property for the
+one that does.

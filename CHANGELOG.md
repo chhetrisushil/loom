@@ -57,6 +57,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The Blueprint is a declared rendering IR (ADR 0096).** `@loom/blueprint-runtime` exports
+  `BLUEPRINT_IR_VERSION` (`1.0.0`) beside a shape manifest that `tsc` checks exhaustively against
+  the `Widget`/`Layout`/`Blueprint` types and that a test pins by digest per version — so a shape
+  change fails the build until the manifest agrees, and the manifest cannot change without the
+  version. Needed because a sibling framework ([loom-ui](docs/requirements/2026-09-21-loom-ui-design.md))
+  now compiles to the Blueprint, and a compile target in another repository is an interface.
+
+  `@loom/plugin-renderer-terminal` is kind-aware when given a registry: `defaultTerminalRegistry`
+  covers the eight built-in kinds (asserted with `catalogCoverage`, ADR 0088's second direction,
+  which the terminal surface never had), and a kind the registry lacks is marked `[kind]` instead
+  of flattened silently. With no registry the output is byte-identical to before.
+
 - **Two printable reference cards: [`docs/cheatsheet-features.md`](docs/cheatsheet-features.md)
   and [`docs/cheatsheet-dx.md`](docs/cheatsheet-dx.md).** Card I is what the kernel gives you
   — the ten syscalls, the builders, the three authority rings, the subsystems on the log.
