@@ -1298,6 +1298,9 @@ customWidget$({ kind: string; title?; binding?; props?; id? })   // bring-your-o
 
 interface DataBinding { projectionId: string; path: string; }
 
+// The Blueprint is a declared rendering IR (ADR 0096): bump on any shape change; a test pins the shape digest per version
+const BLUEPRINT_IR_VERSION: string; const BLUEPRINT_IR_SHAPE: Record<string, readonly string[]>
+
 // Framework-agnostic traversal (renderers are built on this)
 function traverseBlueprint<TNode>(node: Layout | Widget, stateMap: Map<string, unknown>, options: {
   renderWidget: (ctx: WidgetRendererProps) => TNode;
