@@ -11,6 +11,7 @@ export {
   StreamingText,
 } from "./widgets";
 export { customWidget$ } from "./customWidget";
+export { BLUEPRINT_IR_SHAPE, BLUEPRINT_IR_VERSION } from "./irVersion";
 export {
   validateBlueprint,
   defineWidgetCatalog,
