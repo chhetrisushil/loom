@@ -1,36 +1,48 @@
-import type { Blueprint, Layout, Widget } from "@loom/blueprint-runtime";
+import type { Blueprint, Layout, RendererRegistry, Widget } from "@loom/blueprint-runtime";
 import { traverseBlueprint } from "@loom/blueprint-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
+import type { TerminalWidgetRenderer } from "./defaultRegistry";
 import { formatValue, indent } from "./format";
 
-// Renders a blueprint to plain text using the framework-agnostic
-// traverseBlueprint<string> walker — the same tree, a different surface. This
-// demonstrates the proposal's multi-surface delivery: web (React), terminal,
-// and any other target share one blueprint and one projection state map.
+export interface TerminalRenderOptions {
+  /**
+   * Kind-aware renderers. Absent → the kind-blind `title: value` output (unchanged since the
+   * plugin shipped). Present → a registered kind renders through its renderer, and a kind the
+   * registry LACKS is prefixed `[kind]` so the gap is visible on the surface rather than
+   * flattened away. `defaultTerminalRegistry` covers loom's eight built-ins.
+   */
+  registry?: RendererRegistry<TerminalWidgetRenderer>;
+}
+
+// The kind-blind rendering: `title: value`, multi-line values indented under the title.
+function renderKindBlind(widget: Widget, value: unknown): string {
+  const title = widget.title ?? widget.kind;
+  const rendered = formatValue(value);
+  return rendered.includes("\n")
+    ? `${title}:\n${indent(rendered, "    ")}`
+    : `${title}: ${rendered}`;
+}
+
+// Renders a blueprint to plain text using the framework-agnostic traverseBlueprint<string>
+// walker — the same tree, a different surface.
 //
-// This renderer is deliberately KIND-BLIND: it never reads `widget.kind`, and
-// flattens every widget to `title: value`. That is legitimate for a text surface
-// — a terminal cannot draw a progress bar — but it has a consequence worth
-// stating rather than leaving implied. It cannot fail on an unknown kind, because
-// it never looks; where the React renderer degrades visibly (a placeholder for a
-// kind it cannot render, caught ahead of time by `catalogCoverage`), this one
-// degrades SILENTLY, by dropping the semantics.
-//
-// So "two people looking at one blueprint see the same thing" holds for the data
-// and not for the presentation. Anything that depends on cross-surface agreement
-// — a shared incident view, two responders on a call — needs a renderer that
-// covers the catalogue (ADR 0088), which this one does not claim to.
+// Without a registry this renderer is KIND-BLIND: it flattens every widget to `title: value`.
+// That is legitimate for a text surface, but it cannot fail on an unknown kind because it never
+// looks, so it degrades SILENTLY. With a registry it looks: a registered kind renders through its
+// renderer and an unregistered one is MARKED. `defaultTerminalRegistry` covers the built-in
+// catalogue, and `catalogCoverage` is how a caller proves theirs does (ADR 0088, ADR 0096).
 export function renderBlueprintToString(
   blueprint: Blueprint,
-  stateMap: Map<string, unknown>
+  stateMap: Map<string, unknown>,
+  options: TerminalRenderOptions = {}
 ): string {
+  const registry = options.registry;
   const body = traverseBlueprint<string>(blueprint.layout, stateMap, {
     renderWidget({ widget, value }: { widget: Widget; value: unknown }) {
-      const title = widget.title ?? widget.kind;
-      const rendered = formatValue(value);
-      return rendered.includes("\n")
-        ? `${title}:\n${indent(rendered, "    ")}`
-        : `${title}: ${rendered}`;
+      if (registry === undefined) return renderKindBlind(widget, value);
+      const renderer = registry.get(widget.kind);
+      if (renderer === undefined) return `[${widget.kind}] ${renderKindBlind(widget, value)}`;
+      return renderer(widget, value);
     },
     renderContainer({ children }: { layout: Layout; children: string[] }) {
       return children.filter((c) => c.length > 0).join("\n");
@@ -44,13 +56,16 @@ export function renderBlueprintToString(
 // Convenience wrapper that pulls each of a blueprint's projections from a
 // ProjectionRuntime for a given execution, then renders to text.
 export class TerminalRenderer {
-  constructor(private readonly projectionRuntime: ProjectionRuntime) {}
+  constructor(
+    private readonly projectionRuntime: ProjectionRuntime,
+    private readonly options: TerminalRenderOptions = {}
+  ) {}
 
   render(blueprint: Blueprint, executionId: string): string {
     const stateMap = new Map<string, unknown>();
     for (const projectionId of blueprint.projections) {
       stateMap.set(projectionId, this.projectionRuntime.getState(projectionId, executionId));
     }
-    return renderBlueprintToString(blueprint, stateMap);
+    return renderBlueprintToString(blueprint, stateMap, this.options);
   }
 }
