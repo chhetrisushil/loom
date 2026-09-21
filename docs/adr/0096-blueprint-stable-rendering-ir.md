@@ -45,6 +45,10 @@ that compiles to the Blueprint pins it the way a storage backend pins the Memory
 version is declared, not derived: a maintainer states that the shape changed and how much, and
 D2 makes an undeclared change fail.
 
+The version is deliberately *not* wired into `@loom/spec`'s `checkCompatibility` / compatibility
+matrix: those grade runtime subsystems a deployment composes, and the Blueprint IR is consumed at
+build time by a compiler in another repository, which pins the constant directly.
+
 ### D2 — The shape is guarded twice, because each guard fails a different way
 
 `irVersion.ts` spells the shape a second time as **manifests** — one object literal per type
@@ -56,10 +60,11 @@ change without a manifest change fails the build.** `irVersion.test.ts` then pin
 version bump fails the suite.** A `WidgetKind` added, a layout type added, a field added or
 removed: each trips the first guard, and satisfying it trips the second until the version moves.
 
-The guard covers field presence and the two literal sets. It does not detect a field's *type*
-being narrowed or widened; a consumer's own typecheck against the built declarations catches
-that, which is why loom-ui's CI typechecks against loom's `dist`. Stated here so nobody reads the
-green test as covering more than it does.
+The guard covers field presence, field optionality (a required↔optional flip fails the build),
+the `WidgetKind` literals and the layout `type` literals. It does not detect a field's *type*
+being narrowed or widened, nor a `readonly` change; a consumer's own typecheck against the built
+declarations catches those, which is why loom-ui's CI typechecks against loom's `dist`. Stated
+here so nobody reads the green test as covering more than it does.
 
 What counts as which bump: **major** — a key removed or renamed, a layout type removed, a
 `WidgetKind` removed, a required field added; **minor** — an optional field added, a `WidgetKind`
@@ -80,7 +85,9 @@ pin is needed).
 `defaultTerminalRegistry` covers loom's eight built-in kinds, and its test asserts
 `catalogCoverage(builtinCatalog, defaultTerminalRegistry).ok` — the same question ADR 0088 D1
 asked of the React registry, now asked of this surface too. Adding a kind to `WidgetKind` without
-a terminal renderer fails that test. The kind-blind default stays because a text surface that
+a terminal renderer fails that test. That check is kind-level: it proves every kind has a
+renderer, not that every declared prop is honoured (`MetricCard.format` is ignored by both
+first-party renderers today). The kind-blind default stays because a text surface that
 flattens is legitimate; what was not legitimate was having no way to do otherwise.
 
 ### D4 — What loom does *not* do here
@@ -91,7 +98,10 @@ flattens is legitimate; what was not legitimate was having no way to do otherwis
 - **No per-child grid `span`.** The framework's layout has one; loom's grid takes a column count.
   It ships as a prop the Lit renderer honours and the React grid ignores — visible degradation.
   It becomes a loom layout field only if a React consumer of the framework needs it; that would
-  be a minor bump under D2.
+  be a minor bump under D2. One collision is already known and deferred to loom-ui slice 2:
+  `validateBlueprint` reports `props.span` as `undeclared-prop` (error) against `builtinCatalog`,
+  so the compiler must either validate against the framework's own catalogue or `span` must
+  become a reserved prop beside `binding`; slice 2 decides, and nothing in this ADR pre-empts it.
 - **No move-out.** The 2026-09-21 evaluation listed `@loom/blueprint-runtime` and the two renderer
   plugins as candidates to leave loom. Its addendum withdraws that: a compile target has to stay
   where its consumers can pin it.
@@ -105,5 +115,6 @@ flattens is legitimate; what was not legitimate was having no way to do otherwis
   omission is a red test.
 - `@loom/plugin-renderer-terminal` exports `defaultTerminalRegistry`, `TerminalWidgetRenderer` and
   `TerminalRenderOptions`. Existing callers see identical output.
-- loom-ui slice 2 onward pins `BLUEPRINT_IR_VERSION ^1.0.0` and registers its own terminal
-  renderers into a `RendererRegistry<TerminalWidgetRenderer>`.
+- loom-ui slice 2 onward pins `BLUEPRINT_IR_VERSION ^1.0.0` and builds its own
+  `RendererRegistry<TerminalWidgetRenderer>` and merges it over `defaultTerminalRegistry` (never
+  registers into the shared export).
