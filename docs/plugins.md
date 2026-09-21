@@ -179,7 +179,9 @@ and compute.
   dependency, so it stays out of the `@loom/sdk` barrel.
 - `@loom/plugin-renderer-terminal` — string/terminal blueprint renderer
   (`renderBlueprintToString`), the second surface that proves blueprint delivery is
-  renderer-agnostic rather than React-shaped.
+  renderer-agnostic rather than React-shaped. Kind-aware when given a registry —
+  `defaultTerminalRegistry` covers the eight built-in kinds and an unregistered kind is marked
+  `[kind]` on the surface rather than flattened silently (ADR 0096).
 
 **Compute**
 

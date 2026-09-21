@@ -1366,8 +1366,11 @@ Built-in React renderers: ~MetricCardRenderer~, ~TimelineRenderer~, ~ApprovalCar
 ** ~@loom/plugin-renderer-terminal~
 
 #+begin_src typescript
-function renderBlueprintToString(blueprint: Blueprint, stateMap: Map<string, unknown>): string
-class TerminalRenderer { constructor(projectionRuntime: ProjectionRuntime); render(blueprint: Blueprint, executionId: string): string }
+type TerminalWidgetRenderer = (widget: Widget, value: unknown) => string
+interface TerminalRenderOptions { registry?: RendererRegistry<TerminalWidgetRenderer> }  // absent → kind-blind `title: value`; present → registered kinds render, unregistered kinds are marked `[kind]`
+const defaultTerminalRegistry: RendererRegistry<TerminalWidgetRenderer>                 // covers the eight built-in kinds (asserted by catalogCoverage)
+function renderBlueprintToString(blueprint: Blueprint, stateMap: Map<string, unknown>, options?: TerminalRenderOptions): string
+class TerminalRenderer { constructor(projectionRuntime: ProjectionRuntime, options?: TerminalRenderOptions); render(blueprint: Blueprint, executionId: string): string }
 #+end_src
 
 -----
