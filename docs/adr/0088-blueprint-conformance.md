@@ -183,6 +183,9 @@ that most callers would leave off.
   it means *"two people looking at one blueprint see the same thing"* is false across surfaces.
   Its doc comment now says so rather than leaving the claim implied.
 
+  > **Update (ADR 0096):** the terminal renderer is kind-aware when given a registry;
+  > `defaultTerminalRegistry` covers the catalogue and unregistered kinds are marked `[kind]`.
+
 ## Consequences
 
 - `@loom/blueprint-runtime` gains `validateBlueprint`, `catalogCoverage`, `defineWidgetCatalog`,

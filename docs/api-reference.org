@@ -1358,10 +1358,10 @@ function useDeferredProjection<TState>(pr, projectionId, executionId): TState   
 function useAgentSurface(runtime: AgentSurfaceRuntime, executionId: string, surface?: string): SurfaceState
 
 type FiberConfig = boolean | { granularUpdates?: boolean; suspense?: boolean; deferStreaming?: boolean }; // all default off
-const defaultRegistry: RendererRegistry<WidgetRenderer>;  // MetricCard/Timeline/ApprovalCard/StatusBadge/StreamingText
+const defaultRegistry: RendererRegistry<WidgetRenderer>;  // MetricCard/Timeline/ApprovalCard/StatusBadge/StreamingText/ProgressBar/DataTable/AlertCard
 #+end_src
 
-Built-in React renderers: ~MetricCardRenderer~, ~TimelineRenderer~, ~ApprovalCardRenderer~, ~StatusBadgeRenderer~, ~StreamingTextRenderer~. (~ProgressBar~ / ~DataTable~ / ~AlertCard~ widget factories exist but ship no default React renderer — bring your own.)
+Built-in React renderers: ~MetricCardRenderer~, ~TimelineRenderer~, ~ApprovalCardRenderer~, ~StatusBadgeRenderer~, ~StreamingTextRenderer~, ~ProgressBarRenderer~, ~DataTableRenderer~, ~AlertCardRenderer~.
 
 ** ~@loom/plugin-renderer-terminal~
 
