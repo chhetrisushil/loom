@@ -9,7 +9,13 @@ import { formatValue, indent } from "./format";
 // `defaultRegistry.test.ts` asks it of this one with `catalogCoverage(builtinCatalog, …)`.
 // Adding a kind to `WidgetKind` without a renderer here fails that test.
 
-/** One widget kind, rendered to a block of text. Multi-line output is the renderer's own. */
+/**
+ * One widget kind, rendered to a block of text. Multi-line output is the renderer's own.
+ *
+ * A renderer that returns `""` makes its widget vanish: `renderContainer` filters out empty
+ * children, so an empty string is indistinguishable from "nothing here" rather than "rendered,
+ * and empty." Return a marker (e.g. `"(empty)"` or `"—"`), never an empty string.
+ */
 export type TerminalWidgetRenderer = (widget: Widget, value: unknown) => string;
 
 const BAR_CELLS = 20;
@@ -21,11 +27,13 @@ const block = (heading: string, body: string): string =>
 
 const metricCard: TerminalWidgetRenderer = (w, v) => {
   const unit = typeof w.props.unit === "string" ? ` ${w.props.unit}` : "";
-  return v === null || v === undefined ? `${title(w)}: —` : `${title(w)}: ${formatValue(v)}${unit}`;
+  if (v === null || v === undefined) return `${title(w)}: —`;
+  const body = formatValue(v);
+  return body.includes("\n") ? block(`${title(w)}${unit}`, body) : `${title(w)}: ${body}${unit}`;
 };
 
 const statusBadge: TerminalWidgetRenderer = (w, v) =>
-  `${title(w)}: [${v === null || v === undefined ? "—" : String(v)}]`;
+  `${title(w)}: [${v === null || v === undefined ? "—" : formatValue(v)}]`;
 
 const progressBar: TerminalWidgetRenderer = (w, v) => {
   if (typeof v !== "number" || Number.isNaN(v)) return `${title(w)}: —`;
@@ -38,32 +46,47 @@ const progressBar: TerminalWidgetRenderer = (w, v) => {
 
 const timeline: TerminalWidgetRenderer = (w, v) => {
   if (!Array.isArray(v)) return block(title(w), formatValue(v));
-  const max = typeof w.props.maxItems === "number" ? w.props.maxItems : v.length;
+  const maxItems = w.props.maxItems;
+  const max =
+    typeof maxItems === "number" && Number.isInteger(maxItems) && maxItems > 0
+      ? maxItems
+      : v.length;
   return block(title(w), formatValue(v.slice(0, max)));
 };
+
+const isRow = (r: unknown): r is Record<string, unknown> => typeof r === "object" && r !== null;
 
 const dataTable: TerminalWidgetRenderer = (w, v) => {
   if (!Array.isArray(v)) return block(title(w), formatValue(v));
   if (v.length === 0) return `${title(w)}: (empty)`;
-  const rows = v.filter((r): r is Record<string, unknown> => typeof r === "object" && r !== null);
+  const objectRows = v.filter(isRow);
   const declared = Array.isArray(w.props.columns) ? (w.props.columns as string[]) : undefined;
-  const columns = declared ?? Object.keys(rows[0] ?? {});
+  const columns = declared ?? Object.keys(objectRows[0] ?? {});
+  if (columns.length === 0) return block(title(w), formatValue(v));
   const lines = [
     columns.join(" | "),
-    ...rows.map((r) => columns.map((c) => String(r[c] ?? "—")).join(" | ")),
+    ...v.map((r) =>
+      isRow(r) ? columns.map((c) => String(r[c] ?? "—")).join(" | ") : `[non-row] ${formatValue(r)}`
+    ),
   ];
   return block(title(w), lines.join("\n"));
 };
 
 const alertCard: TerminalWidgetRenderer = (w, v) => {
   const severity = typeof w.props.severity === "string" ? w.props.severity : "info";
-  return `${severity.toUpperCase()} ${title(w)}: ${formatValue(v)}`;
+  const body = formatValue(v);
+  return body.includes("\n")
+    ? block(`${severity.toUpperCase()} ${title(w)}`, body)
+    : `${severity.toUpperCase()} ${title(w)}: ${body}`;
 };
 
 const approvalCard: TerminalWidgetRenderer = (w, v) => {
   const approve = typeof w.props.approveLabel === "string" ? w.props.approveLabel : "Approve";
   const reject = typeof w.props.rejectLabel === "string" ? w.props.rejectLabel : "Reject";
-  return `${title(w)}: ${formatValue(v)}  (${approve} / ${reject})`;
+  const body = formatValue(v);
+  return body.includes("\n")
+    ? block(`${title(w)}  (${approve} / ${reject})`, body)
+    : `${title(w)}: ${body}  (${approve} / ${reject})`;
 };
 
 const streamingText: TerminalWidgetRenderer = (w, v) => {
@@ -72,7 +95,13 @@ const streamingText: TerminalWidgetRenderer = (w, v) => {
   return `${title(w)}: ${placeholder}`;
 };
 
-/** Renderers for the eight kinds `@loom/blueprint-runtime` ships. Merge your own on top. */
+/**
+ * Renderers for the eight kinds `@loom/blueprint-runtime` ships. Merge your own on top.
+ *
+ * Shared, process-wide. Do not `.register()` on it — that mutates it for every consumer,
+ * including `@loom/sdk` re-exports. Build yours with `defaultTerminalRegistry.merge(mine)`,
+ * which returns a new registry.
+ */
 export const defaultTerminalRegistry: RendererRegistry<TerminalWidgetRenderer> =
   new RendererRegistry<TerminalWidgetRenderer>()
     .register("MetricCard", metricCard)

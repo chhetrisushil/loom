@@ -74,7 +74,18 @@ describe("renderBlueprintToString — with a registry", () => {
   ]);
 
   it("is byte-identical to the kind-blind output when no registry is passed", () => {
-    expect(renderBlueprintToString(bp, state)).toBe(renderBlueprintToString(bp, state, {}));
+    const golden =
+      "════════════════════════\n" +
+      "  Ops Dashboard\n" +
+      "════════════════════════\n" +
+      "Phase: triaging\n" +
+      "CPU %: 87\n" +
+      "Memory: 14000\n" +
+      "Events:\n" +
+      "    • started\n" +
+      "    • fetched metrics\n";
+    expect(renderBlueprintToString(bp, state)).toBe(golden);
+    expect(renderBlueprintToString(bp, state, {})).toBe(golden);
   });
 
   it("uses the registered renderer for a known kind", () => {

@@ -22,52 +22,64 @@ import type {
 // then pins a digest of the manifests to BLUEPRINT_IR_VERSION, so the manifest cannot change
 // without the version changing either. Neither half is sufficient alone.
 //
-// What this guards: field presence, the WidgetKind literals, the layout `type` literals. What it
-// does not: a field's type being narrowed or widened. A consumer's typecheck catches that.
+// What this guards: field presence, field optionality (a required↔optional flip fails the
+// build), the WidgetKind literals, the layout `type` literals. What it does not: a field's type
+// being narrowed or widened, nor a `readonly` change. A consumer's typecheck catches those.
+//
+// Adding a Layout variant means adding its field manifest here too; `Record<Layout["type"], true>`
+// catches the variant, not its fields.
 
 export const BLUEPRINT_IR_VERSION = "1.0.0";
 
-type AllKeys<T> = { readonly [K in keyof T]-?: true };
+type OptionalKeys<T> = { [K in keyof T]-?: object extends Pick<T, K> ? K : never }[keyof T];
+/** Every key of T, each tagged by whether T declares it optional. `satisfies` rejects a missing key,
+ *  an excess key, AND an optional↔required flip — the three shape changes a compile target can break on. */
+type KeyShape<T> = {
+  readonly [K in keyof T]-?: K extends OptionalKeys<T> ? "optional" : "required";
+};
 
 const WIDGET = {
-  _tag: true,
-  id: true,
-  kind: true,
-  title: true,
-  props: true,
-  binding: true,
-} as const satisfies AllKeys<Widget>;
+  _tag: "required",
+  id: "required",
+  kind: "required",
+  title: "optional",
+  props: "required",
+  binding: "optional",
+} as const satisfies KeyShape<Widget>;
 
-const DATA_BINDING = { projectionId: true, path: true } as const satisfies AllKeys<DataBinding>;
+const DATA_BINDING = {
+  projectionId: "required",
+  path: "required",
+} as const satisfies KeyShape<DataBinding>;
 
 const GRID_LAYOUT = {
-  type: true,
-  columns: true,
-  gap: true,
-  children: true,
-} as const satisfies AllKeys<GridLayout>;
+  type: "required",
+  columns: "required",
+  gap: "optional",
+  children: "required",
+} as const satisfies KeyShape<GridLayout>;
 
 const FLEX_LAYOUT = {
-  type: true,
-  direction: true,
-  gap: true,
-  children: true,
-} as const satisfies AllKeys<FlexLayout>;
+  type: "required",
+  direction: "required",
+  gap: "optional",
+  children: "required",
+} as const satisfies KeyShape<FlexLayout>;
 
 const STACK_LAYOUT = {
-  type: true,
-  gap: true,
-  children: true,
-} as const satisfies AllKeys<StackLayout>;
+  type: "required",
+  gap: "optional",
+  children: "required",
+} as const satisfies KeyShape<StackLayout>;
 
 const BLUEPRINT = {
-  _tag: true,
-  id: true,
-  title: true,
-  layout: true,
-  projections: true,
-  projectionVersions: true,
-} as const satisfies AllKeys<Blueprint>;
+  _tag: "required",
+  id: "required",
+  title: "required",
+  layout: "required",
+  projections: "required",
+  projectionVersions: "optional",
+} as const satisfies KeyShape<Blueprint>;
 
 const WIDGET_KINDS = {
   MetricCard: true,
@@ -85,7 +97,16 @@ const LAYOUT_TYPES = { grid: true, flex: true, stack: true } as const satisfies 
   true
 >;
 
-const keysOf = (manifest: object): readonly string[] => Object.keys(manifest).sort();
+// Field manifests emit `"<key>:<required|optional>"` so an optional↔required flip changes the
+// digest even though the key set itself is unchanged. The two literal-union manifests (kinds,
+// layout types) have no optionality to capture, so they stay plain key lists.
+const keysOf = (manifest: Record<string, "required" | "optional">): readonly string[] =>
+  Object.entries(manifest)
+    .map(([key, shape]) => `${key}:${shape}`)
+    .sort();
+
+const plainKeysOf = (manifest: Record<string, true>): readonly string[] =>
+  Object.keys(manifest).sort();
 
 /**
  * The shape of the Blueprint IR at `BLUEPRINT_IR_VERSION`, as sorted key sets. Digest this
@@ -98,6 +119,6 @@ export const BLUEPRINT_IR_SHAPE = {
   flexLayout: keysOf(FLEX_LAYOUT),
   stackLayout: keysOf(STACK_LAYOUT),
   blueprint: keysOf(BLUEPRINT),
-  widgetKinds: keysOf(WIDGET_KINDS),
-  layoutTypes: keysOf(LAYOUT_TYPES),
+  widgetKinds: plainKeysOf(WIDGET_KINDS),
+  layoutTypes: plainKeysOf(LAYOUT_TYPES),
 } as const;
