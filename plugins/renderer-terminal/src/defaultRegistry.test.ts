@@ -52,9 +52,21 @@ describe("defaultTerminalRegistry — per-kind output", () => {
     );
   });
 
+  it("MetricCard puts a multi-line body under the heading, with the unit on the heading", () => {
+    expect(
+      render("MetricCard", MetricCard({ title: "Errors", binding: b, unit: "count" }), [1, 2])
+    ).toBe("Errors count:\n    • 1\n    • 2");
+  });
+
   it("StatusBadge brackets the status", () => {
     expect(render("StatusBadge", StatusBadge({ title: "Phase", binding: b }), "triaging")).toBe(
       "Phase: [triaging]"
+    );
+  });
+
+  it("StatusBadge renders an object value as JSON inside the brackets", () => {
+    expect(render("StatusBadge", StatusBadge({ title: "Phase", binding: b }), { code: 3 })).toBe(
+      'Phase: [{"code":3}]'
     );
   });
 
@@ -79,6 +91,12 @@ describe("defaultTerminalRegistry — per-kind output", () => {
     ).toBe("Events:\n    • a\n    • b");
   });
 
+  it("Timeline ignores a non-positive maxItems and renders every item", () => {
+    expect(
+      render("Timeline", Timeline({ title: "Events", binding: b, maxItems: -1 }), ["a", "b"])
+    ).toBe("Events:\n    • a\n    • b");
+  });
+
   it("DataTable prints a header from columns (or the first row's keys) and one row per line", () => {
     const rows = [
       { db: "orders", p99: 412 },
@@ -93,6 +111,15 @@ describe("defaultTerminalRegistry — per-kind output", () => {
     expect(render("DataTable", DataTable({ title: "Top", binding: b }), [])).toBe("Top: (empty)");
   });
 
+  it("DataTable falls back to bullets when no row has columns, and marks non-row entries instead of dropping them", () => {
+    expect(render("DataTable", DataTable({ title: "Top", binding: b }), [1, 2])).toBe(
+      "Top:\n    • 1\n    • 2"
+    );
+    expect(
+      render("DataTable", DataTable({ title: "Top", binding: b }), [{ a: 1 }, "nope", { a: 2 }])
+    ).toBe("Top:\n    a\n    1\n    [non-row] nope\n    2");
+  });
+
   it("AlertCard leads with the severity (default info)", () => {
     expect(
       render(
@@ -102,6 +129,12 @@ describe("defaultTerminalRegistry — per-kind output", () => {
       )
     ).toBe("CRITICAL Lag: 3m behind");
     expect(render("AlertCard", AlertCard({ title: "Lag", binding: b }), "ok")).toBe("INFO Lag: ok");
+  });
+
+  it("AlertCard puts a multi-line body under the heading, with the severity on the heading", () => {
+    expect(
+      render("AlertCard", AlertCard({ title: "Lag", binding: b, severity: "critical" }), [1, 2])
+    ).toBe("CRITICAL Lag:\n    • 1\n    • 2");
   });
 
   it("ApprovalCard shows the two labels (defaults Approve / Reject)", () => {
@@ -115,6 +148,16 @@ describe("defaultTerminalRegistry — per-kind output", () => {
     expect(render("ApprovalCard", ApprovalCard({ title: "Deploy", binding: b }), "v2.3")).toBe(
       "Deploy: v2.3  (Approve / Reject)"
     );
+  });
+
+  it("ApprovalCard puts a multi-line body under the heading, with the labels on the heading", () => {
+    expect(
+      render(
+        "ApprovalCard",
+        ApprovalCard({ title: "Deploy", binding: b, approveLabel: "Ship", rejectLabel: "Hold" }),
+        [1, 2]
+      )
+    ).toBe("Deploy  (Ship / Hold):\n    • 1\n    • 2");
   });
 
   it("StreamingText falls back to the placeholder, then to an ellipsis", () => {
