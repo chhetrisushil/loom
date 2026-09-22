@@ -1,4 +1,10 @@
-import type { Blueprint, Layout, RendererRegistry, Widget } from "@loom/blueprint-runtime";
+import type {
+  BindingStatus,
+  Blueprint,
+  Layout,
+  RendererRegistry,
+  Widget,
+} from "@loom/blueprint-runtime";
 import { traverseBlueprint } from "@loom/blueprint-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import type { TerminalWidgetRenderer } from "./defaultRegistry";
@@ -38,11 +44,41 @@ export function renderBlueprintToString(
 ): string {
   const registry = options.registry;
   const body = traverseBlueprint<string>(blueprint.layout, stateMap, {
-    renderWidget({ widget, value }: { widget: Widget; value: unknown }) {
-      if (registry === undefined) return renderKindBlind(widget, value);
-      const renderer = registry.get(widget.kind);
-      if (renderer === undefined) return `[${widget.kind}] ${renderKindBlind(widget, value)}`;
-      return renderer(widget, value);
+    renderWidget({
+      widget,
+      value,
+      status,
+    }: {
+      widget: Widget;
+      value: unknown;
+      status?: BindingStatus;
+    }) {
+      const inner = (): string =>
+        registry === undefined
+          ? renderKindBlind(widget, value)
+          : registry.get(widget.kind)
+            ? (registry.get(widget.kind) as TerminalWidgetRenderer)(widget, value, status)
+            : `[${widget.kind}] ${renderKindBlind(widget, value)}`;
+      const title = widget.title ?? widget.kind;
+      const channel = widget.binding?.status !== undefined;
+      let text: string;
+      if (!channel) text = inner();
+      else if (status?.state === "error")
+        text = `✗ ${title}: ${status.finding?.message ?? "error"}`;
+      else if (status?.state === "stale")
+        text =
+          value === undefined
+            ? `~ ${title}: — (${status.finding?.message ?? "stale"})`
+            : `~ ${inner()}`;
+      else if (status?.state === "pending")
+        text = value === undefined ? `⋯ ${title}` : `⋯ ${inner()}`;
+      else text = inner();
+      const chain = widget.source?.degradedFrom?.map((d) => `${d.type}@${d.version}`).join(" › ");
+      if (chain) {
+        const [first, ...rest] = text.split("\n");
+        text = [`${first} (degraded from ${chain})`, ...rest].join("\n");
+      }
+      return text;
     },
     renderContainer({ children }: { layout: Layout; children: string[] }) {
       return children.filter((c) => c.length > 0).join("\n");

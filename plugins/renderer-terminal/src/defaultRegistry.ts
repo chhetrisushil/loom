@@ -1,4 +1,4 @@
-import { RendererRegistry, type Widget } from "@loom/blueprint-runtime";
+import { type BindingStatus, RendererRegistry, type Widget } from "@loom/blueprint-runtime";
 import { formatValue, indent } from "./format";
 
 // ── Kind-aware terminal renderers for loom's eight built-in widgets ──────────
@@ -16,7 +16,11 @@ import { formatValue, indent } from "./format";
  * children, so an empty string is indistinguishable from "nothing here" rather than "rendered,
  * and empty." Return a marker (e.g. `"(empty)"` or `"—"`), never an empty string.
  */
-export type TerminalWidgetRenderer = (widget: Widget, value: unknown) => string;
+export type TerminalWidgetRenderer = (
+  widget: Widget,
+  value: unknown,
+  status?: BindingStatus
+) => string;
 
 const BAR_CELLS = 20;
 
