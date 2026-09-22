@@ -38,18 +38,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `grid({ children: [...] })` call in this repo and its examples keeps compiling unchanged; a
   new `cell(span, node)` builder is how a caller states an explicit span.
 
-  `validateBlueprint` gains five new finding codes: `span-out-of-range`,
-  `status-path-invalid`, `sensitivity-unknown`, `source-invalid`, `ir-version-unknown` — all
-  findings, never throws.
+  `validateBlueprint` gains seven new finding codes: `span-out-of-range`, `columns-invalid`,
+  `malformed-node`, `status-path-invalid`, `sensitivity-unknown`, `source-invalid`,
+  `ir-version-unknown` — all findings, never throws. `columns-invalid` (a grid's `columns` is
+  not a positive integer) suppresses that grid's span check, so one bad `columns` yields one
+  finding rather than one per child; `malformed-node` (a layout child that is neither a
+  `Widget` nor a `Layout` — a stray `null`, a string, a `GridCell` outside a grid) makes the
+  walk total, so a model-composed artifact can never make `validateBlueprint` throw.
 
   `@loom/plugin-renderer-react` gains `WidgetFrame` (applies the canonical binding-status
   matrix and `source` data attributes around a widget's rendered body — adds **no** wrapper
   element for a widget with neither a declared status channel nor a `source`, so a 1.0.0
   artifact's DOM is unchanged) and `useWidgetSlice` (a fiber selector over `{ value, status }`
-  together). `@loom/plugin-renderer-terminal`'s `TerminalWidgetRenderer` gains an optional
+  together). A grid child gains a wrapper element **only** when its span exceeds 1; span-1
+  children, and therefore every 1.0.0 grid, are DOM-identical to 1.0.0 and still reconcile by
+  widget id. `@loom/plugin-renderer-terminal`'s `TerminalWidgetRenderer` gains an optional
   third `status?: BindingStatus` parameter, and the terminal output gains status glyphs
-  (`⋯` pending, `~` stale, `✗` error) and a degraded-from suffix when a channel or `source` is
-  declared — output for a widget with neither is byte-identical to before.
+  (`⋯` pending **and the loading row** — a declared channel with no value yet renders
+  `⋯ <title>` rather than `<title>: —` — `~` stale, `✗` error) and a degraded-from suffix when
+  a channel or `source` is declared — output for a widget with neither is byte-identical to
+  before.
+
+  Both renderers take an optional `check(widget, value)` (`TerminalRenderOptions.check`; the
+  `check` prop on `BlueprintRenderer` and `WidgetFrame`): the value-contract slot the matrix
+  leaves between `error` and `stale`. loom validates nothing about a bound value itself — a
+  framework's own kind contract plugs in there, and a returned `{ code, message }` renders as
+  the error row. It runs only for a widget that declares a status channel and only when
+  delivery has not already failed.
 
   A widget with no declared status channel — the overwhelming majority of existing artifacts —
   renders exactly as it did under IR 1.0.0, on both renderers.
