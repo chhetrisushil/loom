@@ -23,6 +23,9 @@ function shown(
   if (status?.state === "error") return "error";
   if (status?.state === "stale") return "stale";
   if (status?.state === "pending") return value === undefined ? "loading" : "pending";
+  // `status` undefined (not yet written, or malformed) is treated the same as
+  // no status: a value that already exists is shown as "ready" rather than
+  // hidden behind a spinner just because its status write hasn't landed.
   return value === undefined ? "loading" : "ready";
 }
 

@@ -24,6 +24,9 @@ function isEqualSlice(a: WidgetSlice, b: WidgetSlice): boolean {
     Object.is(a.value, b.value) &&
     a.status?.state === b.status?.state &&
     a.status?.seq === b.status?.seq &&
+    // finding.code is deliberately excluded — WidgetFrame renders only
+    // finding.message, so a code-only change wouldn't produce a different
+    // DOM; include it here too if a renderer ever keys on it.
     a.status?.finding?.message === b.status?.finding?.message
   );
 }
