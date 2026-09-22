@@ -5,9 +5,12 @@ import type React from "react";
 //
 // Applies the canonical binding-status matrix (IR 2.0.0) around a widget's
 // rendered body: error/stale/pending/loading markers, and `Widget.source` as
-// data attributes for a degraded-rendering tooltip. A widget with no declared
-// status channel (`binding.status` absent) renders its child untouched — the
-// frame is inert, so 1.0.0 blueprints are byte-for-byte unaffected.
+// data attributes for a degraded-rendering tooltip. A widget with NOTHING to
+// say — no declared status channel (`binding.status` absent) AND no `source`
+// — renders `children` directly with no wrapping element at all: a 1.0.0
+// artifact's DOM is byte-identical to before this component existed. The
+// frame (and its attributes/markers) appears only once there is a status
+// channel or a `source` to report.
 
 type Shown = "error" | "stale" | "pending" | "loading" | "ready";
 
@@ -32,7 +35,13 @@ export const WidgetFrame: React.FC<{
   status?: BindingStatus;
   children: React.ReactNode;
 }> = ({ widget, value, status, children }) => {
-  const state = shown(widget.binding?.status !== undefined, status, value);
+  const hasChannel = widget.binding?.status !== undefined;
+  const hasSource = widget.source !== undefined;
+  if (!hasChannel && !hasSource) {
+    // Nothing to report — no wrapper, no attributes, no DOM node added.
+    return children;
+  }
+  const state = shown(hasChannel, status, value);
   const degraded = chain(widget);
   const title = widget.title ?? widget.kind;
   return (

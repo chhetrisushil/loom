@@ -1,5 +1,6 @@
 import { MetricCard } from "@loom/blueprint-runtime";
 import { render } from "@testing-library/react";
+import React from "react";
 import { describe, expect, it } from "vitest";
 import { WidgetFrame } from "./WidgetFrame";
 
@@ -66,7 +67,7 @@ describe("WidgetFrame status matrix", () => {
       if (row.expectState === "error") expect(frame.querySelector("[role='alert']")).not.toBeNull();
     });
   }
-  it("a widget WITHOUT a declared status channel renders its child untouched — 1.0.0 output is unchanged", () => {
+  it("a widget with NEITHER a status channel NOR a source adds no wrapper at all — 1.0.0 DOM is byte-identical", () => {
     const plain = MetricCard({ id: "p", title: "p", binding: { projectionId: "p", path: "v" } });
     const { container } = render(
       <WidgetFrame widget={plain} value={undefined}>
@@ -74,9 +75,24 @@ describe("WidgetFrame status matrix", () => {
       </WidgetFrame>
     );
     expect(container.querySelector("[data-child]")).not.toBeNull();
-    expect(
-      container.querySelector("[data-widget-frame='p']")?.getAttribute("data-binding-state")
-    ).toBeNull();
+    expect(container.querySelector("[data-widget-frame]")).toBeNull();
+  });
+  it("a widget with a source but no status channel gets the frame (source attrs, no data-binding-state)", () => {
+    const sourced = {
+      ...MetricCard({ id: "src-only", title: "p", binding: { projectionId: "p", path: "v" } }),
+      source: { type: "Trend", version: "1.0.0" },
+    };
+    const { container } = render(
+      <WidgetFrame widget={sourced} value={412}>
+        <span data-child>412</span>
+      </WidgetFrame>
+    );
+    const frame = container.querySelector("[data-widget-frame='src-only']") as HTMLElement;
+    expect(frame).not.toBeNull();
+    expect(frame.getAttribute("data-source-type")).toBe("Trend");
+    expect(frame.getAttribute("data-source-version")).toBe("1.0.0");
+    expect(frame.getAttribute("data-binding-state")).toBeNull();
+    expect(container.querySelector("[data-child]")).not.toBeNull();
   });
   it("exposes source as data attributes and a degradation chain with a tooltip", () => {
     const w = {
