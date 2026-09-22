@@ -32,7 +32,7 @@ export interface DomRenderHandle {
 export interface RecomposeReport {
   /** loom's `preservesBlueprintNodes(before, after)`: ok, dropped-node-id findings, added, compared. */
   readonly identity: IdentityReport;
-  /** Widget ids that kept their id but changed kind, or whose renderer has no `patch`: disposed and mounted again. */
+  /** Every id in `next` whose widget was destroyed and re-created this pass: a kind change, a renderer without `patch`, or — because matching is per container — a move across containers, a container ordinal shift, or a container retype. An id dropped from `next` appears only in `identity.findings`, never here. */
   readonly remounted: readonly string[];
   /** Widget ids whose binding changed and were re-subscribed (their first slice is pushed synchronously). */
   readonly rebound: readonly string[];
@@ -50,7 +50,7 @@ export interface RecomposeFinding {
 
 Invariants, each pinned by a test:
 
-- A widget whose id and kind are unchanged keeps its host element, its Lit element instance (`===` before and after), its projection subscription (when the binding is unchanged) and every piece of DOM state inside it: `<textarea>` value and selection, `document.activeElement`, `scrollTop` of a scrolled widget.
+- A widget whose id and kind are unchanged, and which stays within its container, keeps its host element, its Lit element instance (`===` before and after), its projection subscription (when the binding is unchanged) and every piece of DOM state inside it: `<textarea>` value and selection, `document.activeElement`, `scrollTop` of a scrolled widget. Matching is per container (§3), so a widget that moves to a different container — or whose container shifts ordinal or retypes — is destroyed and re-created there.
 - `update` never throws. A renderer that throws from `patch` or from a fresh mount leaves that one widget on the existing error placeholder and the rest of the tree updated; the failure is in `findings`.
 - `update` with a Blueprint whose `id`, `title` or `projections` differ is allowed: the title node, `data-blueprint-id` and the unregistered-projection placeholders are patched; the state map is rebuilt for the new projection list.
 - `update` after `dispose` is a no-op returning a report with one `patch-failed` finding (`nodeId: ""`, message "disposed"). `dispose` after `update` disposes exactly the widgets alive at that moment (the disposer list is maintained, not appended to).
@@ -102,7 +102,7 @@ A widget whose handle is unchanged keeps its subscription and never flashes to l
 
 ## 5. Reference example — `experience-recompose` (loom-examples)
 
-Headless, offline, happy-dom (as `renderer-lit`'s own tests). A scripted `Planner` (implements loom-ui's planner SPI, no model) composes an experience of three nodes: a `Note` (app semantic type → `NoteInput` custom kind, a Lit renderer with a `<textarea>`), a `Metric`, and a `Collection` (a scrollable list). The test:
+Headless, offline, happy-dom (as `renderer-lit`'s own tests). A scripted `Planner` (implements loom-ui's planner SPI, no model) composes an experience of three nodes: a `Note` (app semantic type → `NoteInput` custom kind, a Lit renderer with a `<textarea>`), a `Metric`, and a `Collection` (a scrollable list). **As shipped**, `NoteInput` is a plain `DomWidgetRenderer` (vanilla DOM, `document.createElement`), not a Lit renderer — loom-ui does not export `LuWidget` for app use. The test:
 
 1. mounts through `renderBlueprintDom` with `litRegistry.merge(appRegistry)`;
 2. types into the textarea, moves the caret to the middle, scrolls the list, and leaves focus in the textarea;
