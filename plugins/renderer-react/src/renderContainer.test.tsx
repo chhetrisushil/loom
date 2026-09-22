@@ -1,4 +1,5 @@
 import { flex, grid, stack } from "@loom/blueprint-runtime";
+import { render } from "@testing-library/react";
 import React, { type ReactElement } from "react";
 import { describe, expect, it } from "vitest";
 import { renderReactContainer } from "./renderContainer";
@@ -35,5 +36,26 @@ describe("renderReactContainer keys children", () => {
     );
     expect(keys.every((k) => k != null)).toBe(true);
     expect(new Set(keys).size).toBe(2);
+  });
+});
+
+describe("renderReactContainer cell spans (IR 2.0.0 grids)", () => {
+  it("wraps a cell whose span > 1 with style.gridColumn = 'span N'; a span of 1 gets no such style", () => {
+    const layout = grid({ columns: 8, children: [] });
+    const cells = [
+      { span: 1, child: <span data-testid="a">a</span> },
+      { span: 8, child: <span data-testid="b">b</span> },
+    ];
+    const { container } = render(
+      renderReactContainer(
+        layout,
+        cells.map((c) => c.child),
+        cells
+      )
+    );
+    const a = container.querySelector("[data-testid='a']") as HTMLElement;
+    const b = container.querySelector("[data-testid='b']") as HTMLElement;
+    expect(b.parentElement?.style.gridColumn).toBe("span 8");
+    expect(a.parentElement?.style.gridColumn).toBe("");
   });
 });

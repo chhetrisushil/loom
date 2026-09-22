@@ -1,7 +1,9 @@
 import {
+  type BindingStatus,
   MetricCard,
   RendererRegistry,
   StreamingText,
+  asCell,
   blueprint$,
   grid,
 } from "@loom/blueprint-runtime";
@@ -74,9 +76,12 @@ const twoMetrics = blueprint$({
   projections: ["metrics"],
 });
 
-// Stable widget ids so render-count assertions can target them.
-const cpuId = (twoMetrics.layout.children[0] as { id: string }).id;
-const memId = (twoMetrics.layout.children[1] as { id: string }).id;
+// Stable widget ids so render-count assertions can target them. `grid()`
+// normalizes every child through `asCell` (IR 2.0.0), so a grid's children are
+// GridCell wrappers `{ span, node }`, not bare widgets — unwrap with `asCell`
+// rather than reading `.id` off the cell itself.
+const cpuId = (asCell(twoMetrics.layout.children[0]).node as { id: string }).id;
+const memId = (asCell(twoMetrics.layout.children[1]).node as { id: string }).id;
 
 describe("useFiber — parity", () => {
   it("fiber={false} and fiber={{granularUpdates}} produce identical DOM (initial + after update)", () => {
@@ -267,5 +272,110 @@ describe("useFiber — deferred streaming", () => {
     });
 
     expect(screen.getByText("Hello")).not.toBeNull();
+  });
+});
+
+// A registry whose renderer counts renders AND records the last status.state
+// seen, per widget id — extends spyRegistry to assert on `status`, which fiber
+// widgets now subscribe to alongside `value`.
+function statusSpyRegistry(
+  counts: Map<string, number>,
+  statuses: Map<string, BindingStatus["state"] | undefined>
+): RendererRegistry<WidgetRenderer> {
+  const reg = new RendererRegistry<WidgetRenderer>();
+  const spy: WidgetRenderer = ({ widget, value, status }) => {
+    counts.set(widget.id, (counts.get(widget.id) ?? 0) + 1);
+    statuses.set(widget.id, status?.state);
+    return (
+      <div data-widget-id={widget.id} data-widget-kind={widget.kind}>
+        {String(value ?? "—")}:{status?.state ?? "none"}
+      </div>
+    );
+  };
+  reg.register("MetricCard", spy);
+  return reg;
+}
+
+// Two widgets on the SAME projection, each with its OWN status path, so a
+// status-only change to one leaves the other's slice ({ value, status })
+// unchanged by every field useWidgetSlice's isEqual compares.
+function makeStatusRuntime() {
+  const runtime = new InMemoryProjectionRuntime();
+  runtime.register({
+    id: "status-metrics",
+    initialState: {
+      cpu: { current: 10 },
+      mem: { current: 20 },
+      s: { a: { state: "pending" }, b: { state: "pending" } },
+    },
+    handlers: {
+      STATUS_A_READY: (state) => {
+        const s = state as { cpu: unknown; mem: unknown; s: { a: unknown; b: unknown } };
+        return { ...s, s: { ...s.s, a: { state: "ready" } } };
+      },
+    },
+  });
+  return runtime;
+}
+
+const statusMetrics = blueprint$({
+  id: "status-metrics-bp",
+  title: "Status Metrics",
+  layout: grid({
+    columns: 2,
+    children: [
+      MetricCard({
+        id: "wA",
+        title: "A",
+        binding: { projectionId: "status-metrics", path: "cpu.current", status: { path: "s.a" } },
+      }),
+      MetricCard({
+        id: "wB",
+        title: "B",
+        binding: { projectionId: "status-metrics", path: "mem.current", status: { path: "s.b" } },
+      }),
+    ],
+  }),
+  projections: ["status-metrics"],
+});
+
+describe("useFiber — status-only re-render", () => {
+  it("changing only a status.state re-renders that widget once and no sibling", () => {
+    const runtime = makeStatusRuntime();
+    const counts = new Map<string, number>();
+    const statuses = new Map<string, BindingStatus["state"] | undefined>();
+
+    render(
+      <BlueprintRenderer
+        blueprint={statusMetrics}
+        projectionRuntime={runtime}
+        executionId={EXECUTION_ID}
+        registry={statusSpyRegistry(counts, statuses)}
+        fiber={{ granularUpdates: true }}
+      />
+    );
+
+    expect(counts.get("wA")).toBe(1);
+    expect(counts.get("wB")).toBe(1);
+    expect(statuses.get("wA")).toBe("pending");
+
+    act(() =>
+      runtime.handleEvent({
+        id: "st1",
+        workflowId: "wf",
+        executionId: EXECUTION_ID,
+        eventType: "STATUS_A_READY",
+        sequence: 1,
+        timestamp: 0,
+        payload: {},
+      })
+    );
+
+    // The status.state at s.a changed → wA re-rendered (and now passes the new
+    // status to its renderer); s.b (and both values) are untouched → wB does
+    // NOT re-render.
+    expect(counts.get("wA")).toBe(2);
+    expect(counts.get("wB")).toBe(1);
+    expect(statuses.get("wA")).toBe("ready");
   });
 });
