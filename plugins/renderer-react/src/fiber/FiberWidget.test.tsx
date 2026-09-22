@@ -299,9 +299,15 @@ function statusSpyRegistry(
 // Two widgets on the SAME projection, each with its OWN status path, so a
 // status-only change to one leaves the other's slice ({ value, status })
 // unchanged by every field useWidgetSlice's isEqual compares.
+type StatusMetrics = {
+  cpu: { current: number };
+  mem: { current: number };
+  s: { a: { state: string }; b: { state: string } };
+};
+
 function makeStatusRuntime() {
   const runtime = new InMemoryProjectionRuntime();
-  runtime.register({
+  runtime.register<StatusMetrics>({
     id: "status-metrics",
     initialState: {
       cpu: { current: 10 },
@@ -309,10 +315,13 @@ function makeStatusRuntime() {
       s: { a: { state: "pending" }, b: { state: "pending" } },
     },
     handlers: {
-      STATUS_A_READY: (state) => {
-        const s = state as { cpu: unknown; mem: unknown; s: { a: unknown; b: unknown } };
-        return { ...s, s: { ...s.s, a: { state: "ready" } } };
-      },
+      // Spreads the PREVIOUS state (not a re-typed subset of it) so the return
+      // type matches StatusMetrics exactly, and preserves the `s.b` object
+      // reference — the whole point of the "no sibling re-render" assertion.
+      STATUS_A_READY: (state) => ({
+        ...state,
+        s: { ...state.s, a: { state: "ready" } },
+      }),
     },
   });
   return runtime;
