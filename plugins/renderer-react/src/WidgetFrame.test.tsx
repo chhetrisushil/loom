@@ -48,11 +48,17 @@ const rows = [
   { status: { state: "pending" }, value: undefined, expectState: "loading", showsChild: false },
   { status: { state: "ready" }, value: 412, expectState: "ready", showsChild: true },
   { status: { state: "ready" }, value: undefined, expectState: "loading", showsChild: false },
+  // A channel-declaring widget whose status hasn't landed yet (or is
+  // malformed) is treated as no status: a present value is shown as "ready"
+  // rather than hidden behind a spinner just because the status write hasn't
+  // arrived; an absent value still reads as "loading".
+  { status: undefined, value: 412, expectState: "ready", showsChild: true },
+  { status: undefined, value: undefined, expectState: "loading", showsChild: false },
 ] as const;
 
 describe("WidgetFrame status matrix", () => {
   for (const row of rows) {
-    it(`${row.status.state} + ${row.value === undefined ? "no value" : "value"} → ${row.expectState}`, () => {
+    it(`${row.status?.state ?? "undefined"} + ${row.value === undefined ? "no value" : "value"} → ${row.expectState}`, () => {
       const { container } = render(
         <WidgetFrame widget={widget} value={row.value} status={row.status}>
           <span data-child>412</span>
