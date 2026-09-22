@@ -1,3 +1,4 @@
+import { BLUEPRINT_IR_VERSION } from "./irVersion";
 import type { Blueprint, Layout } from "./types";
 
 export interface BlueprintConfig {
@@ -15,6 +16,7 @@ export interface BlueprintConfig {
 export function blueprint$(config: BlueprintConfig): Blueprint {
   return {
     _tag: "Blueprint",
+    irVersion: BLUEPRINT_IR_VERSION,
     id: config.id,
     title: config.title,
     layout: config.layout,

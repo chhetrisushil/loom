@@ -1,4 +1,10 @@
+import { resolvePath } from "./normalize";
 import type { Layout, Widget, WidgetAction, WidgetRendererProps } from "./types";
+
+// Re-exported unchanged for existing consumers; it now lives in normalize.ts to avoid an
+// import cycle (normalize.ts's `resolveWidgetStatus` needs it, and this module will import
+// `asCell` from normalize.ts in Task 2).
+export { resolvePath };
 
 // ── Context types ─────────────────────────────────────────────────────────────
 
@@ -8,24 +14,6 @@ export interface ContainerContext<TNode> {
 }
 
 // ── Value resolution ──────────────────────────────────────────────────────────
-
-// Resolve a dot-path (e.g. "a.b.c") against a projection state. Null-safe and
-// generic — no widget/UI coupling — so any live rendering surface can build a
-// slice selector for `ProjectionRuntime.subscribeSelector` without duplicating
-// this traversal (see useWidgetValue). An empty path binds to the whole state.
-export function resolvePath(state: unknown, path: string): unknown {
-  // An empty path binds the widget to the whole projection surface (the root),
-  // not a nested field — otherwise `"".split(".")` yields `[""]` and dereferences
-  // a non-existent "" key, silently returning undefined.
-  if (path === "") return state;
-  const parts = path.split(".");
-  let current: unknown = state;
-  for (const part of parts) {
-    if (current === null || current === undefined) return undefined;
-    current = (current as Record<string, unknown>)[part];
-  }
-  return current;
-}
 
 export function resolveWidgetValue(widget: Widget, stateMap: Map<string, unknown>): unknown {
   if (!widget.binding) return undefined;
