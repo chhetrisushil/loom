@@ -6,6 +6,7 @@ import { useContext } from "react";
 import { LoomContext } from "./LoomProvider";
 import type { WidgetAction, WidgetRenderer } from "./RendererRegistry";
 import { defaultRegistry } from "./RendererRegistry";
+import { WidgetFrame } from "./WidgetFrame";
 import { FiberBlueprintRenderer } from "./fiber/FiberBlueprintRenderer";
 import { type FiberConfig, isFiberMode, resolveFiberConfig } from "./fiber/types";
 import { useBlueprintProjectionValues } from "./hooks/useBlueprint";
@@ -51,26 +52,33 @@ function EagerBlueprintRenderer({
   const reg = registry ?? defaultRegistry;
 
   const root = traverseBlueprint<React.ReactNode>(blueprint.layout, stateMap, {
-    renderWidget({ widget, value, onAction: act }) {
+    renderWidget({ widget, value, status, onAction: act }) {
       const Renderer = reg.get(widget.kind);
-      if (!Renderer) {
-        return (
-          <div key={widget.id} data-widget-id={widget.id} data-widget-kind={widget.kind}>
-            {`[No renderer for ${widget.kind}]`}
-          </div>
-        );
-      }
-      return (
+      const body = !Renderer ? (
+        <div data-widget-id={widget.id} data-widget-kind={widget.kind}>
+          {`[No renderer for ${widget.kind}]`}
+        </div>
+      ) : (
         <Renderer
-          key={widget.id}
           widget={widget}
           value={value}
+          {...(status !== undefined && { status })}
           {...(act !== undefined && { onAction: act })}
         />
       );
+      return (
+        <WidgetFrame
+          key={widget.id}
+          widget={widget}
+          value={value}
+          {...(status !== undefined && { status })}
+        >
+          {body}
+        </WidgetFrame>
+      );
     },
-    renderContainer({ layout, children }) {
-      return renderReactContainer(layout, children);
+    renderContainer({ layout, children, cells }) {
+      return renderReactContainer(layout, children, cells);
     },
     ...(onAction !== undefined && { onAction }),
   });

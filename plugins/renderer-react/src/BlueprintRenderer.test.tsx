@@ -1,3 +1,4 @@
+import type { Blueprint } from "@loom/blueprint-runtime";
 import { ApprovalCard, MetricCard, Timeline, blueprint$, grid } from "@loom/blueprint-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { act, render, screen } from "@testing-library/react";
@@ -154,5 +155,74 @@ describe("BlueprintRenderer", () => {
     );
 
     expect(screen.getByText("[No renderer for Sparkline]")).not.toBeNull();
+  });
+});
+
+describe("BlueprintRenderer — status frame (IR 2.0.0)", () => {
+  it("shows data-binding-state='stale' when the projection carries a stale status at the declared path", () => {
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register({
+      id: "status-metrics",
+      initialState: { v: 412, s: { a: { state: "stale" } } },
+      handlers: {},
+    });
+    const bp = blueprint$({
+      id: "status-bp",
+      title: "Status",
+      layout: grid({
+        columns: 1,
+        children: [
+          MetricCard({
+            id: "m1",
+            title: "p99",
+            binding: { projectionId: "status-metrics", path: "v", status: { path: "s.a" } },
+          }),
+        ],
+      }),
+      projections: ["status-metrics"],
+    });
+
+    render(
+      <BlueprintRenderer blueprint={bp} projectionRuntime={runtime} executionId={EXECUTION_ID} />
+    );
+
+    expect(
+      document.querySelector("[data-widget-frame='m1']")?.getAttribute("data-binding-state")
+    ).toBe("stale");
+  });
+
+  it("renders a legacy bare-children grid blueprint (no GridCell wrapper) without throwing", () => {
+    const projectionRuntime = makeProjectionRuntime();
+    // A 1.0.0 artifact's grid children are bare Widget nodes, not GridCell
+    // wrappers — built by hand here (bypassing the `grid()` builder, which
+    // always normalizes through `asCell`) to reproduce that shape.
+    const legacyBp = {
+      _tag: "Blueprint" as const,
+      id: "legacy-bp",
+      title: "Legacy",
+      layout: {
+        type: "grid" as const,
+        columns: 1,
+        children: [
+          MetricCard({
+            id: "legacy-m",
+            title: "CPU",
+            binding: { projectionId: "metrics", path: "cpu.current" },
+          }),
+        ],
+      },
+      projections: ["metrics"],
+    } as unknown as Blueprint;
+
+    expect(() =>
+      render(
+        <BlueprintRenderer
+          blueprint={legacyBp}
+          projectionRuntime={projectionRuntime}
+          executionId={EXECUTION_ID}
+        />
+      )
+    ).not.toThrow();
+    expect(document.querySelector("[data-widget-id='legacy-m']")).not.toBeNull();
   });
 });

@@ -44,8 +44,8 @@ export function FiberBlueprintRenderer({
         ...(onAction !== undefined && { onAction }),
       });
     },
-    renderContainer({ layout, children }) {
-      return renderReactContainer(layout, children);
+    renderContainer({ layout, children, cells }) {
+      return renderReactContainer(layout, children, cells);
     },
   });
 

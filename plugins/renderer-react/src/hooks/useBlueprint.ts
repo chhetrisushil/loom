@@ -1,5 +1,5 @@
-import type { Blueprint, Widget } from "@loom/blueprint-runtime";
-import { resolveWidgetValue } from "@loom/blueprint-runtime";
+import type { Blueprint, GridCell, Layout, Widget } from "@loom/blueprint-runtime";
+import { asCell, resolveWidgetValue } from "@loom/blueprint-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import { useProjection } from "./useProjection";
 
@@ -16,6 +16,14 @@ function collectWidgets(node: Blueprint["layout"] | Widget): Widget[] {
     return [node as Widget];
   }
   const layout = node as Blueprint["layout"];
+  if (layout.type === "grid") {
+    // A grid's children are GridCell wrappers (IR 2.0.0) or bare Widget/Layout
+    // nodes (a legacy 1.0.0 artifact) — asCell normalizes either into a cell
+    // and this walks its `node`, same as traverseBlueprint does.
+    return layout.children.flatMap((child) =>
+      collectWidgets(asCell(child as GridCell | Widget | Layout).node)
+    );
+  }
   return layout.children.flatMap((child) => collectWidgets(child as Blueprint["layout"] | Widget));
 }
 
