@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { blueprint$ } from "./Blueprint";
 import { blueprintNodeIds, preservesBlueprintNodes, preservesNodes } from "./identity";
 import { grid, stack } from "./layout";
-import type { GridLayout } from "./types";
+import type { GridLayout, Layout } from "./types";
 import { MetricCard, StatusBadge } from "./widgets";
 
 const binding = { projectionId: "db", path: "latency" };
@@ -33,6 +33,39 @@ describe("blueprintNodeIds", () => {
       type: "grid",
       columns: 2,
       children: [metric("Latency", "latency"), stack({ children: [metric("Locks", "locks")] })],
+    } as unknown as GridLayout;
+    const view = blueprint$({
+      id: "v",
+      title: "v",
+      layout: legacyLayout,
+      projections: ["db"],
+    });
+    expect(blueprintNodeIds(view)).toEqual(["latency", "locks"]);
+  });
+
+  it("does not stop at an undefined stack child that precedes real widgets (a malformed node, e.g. an agent-authored hole)", () => {
+    // `stack.pop()` on an empty stack and `stack.pop()` on a stack whose next element IS
+    // `undefined` are indistinguishable to a `!== undefined` loop guard — the walk must not
+    // confuse "nothing left" with "this slot is a hole". Rejecting the hole is
+    // `validateBlueprint`'s job; this walk must stay total and keep going past it.
+    const legacyLayout = {
+      type: "stack",
+      children: [undefined, metric("Latency", "latency"), metric("Locks", "locks")],
+    } as unknown as Layout;
+    const view = blueprint$({
+      id: "v",
+      title: "v",
+      layout: legacyLayout,
+      projections: ["db"],
+    });
+    expect(blueprintNodeIds(view)).toEqual(["latency", "locks"]);
+  });
+
+  it("does not stop at a grid cell whose node is undefined (e.g. cell(6, undefined))", () => {
+    const legacyLayout = {
+      type: "grid",
+      columns: 3,
+      children: [undefined, metric("Latency", "latency"), metric("Locks", "locks")],
     } as unknown as GridLayout;
     const view = blueprint$({
       id: "v",
@@ -100,5 +133,25 @@ describe("preservesBlueprintNodes — the derived-id trap", () => {
     );
     expect(report.ok).toBe(true);
     expect(report.added).toEqual([]);
+  });
+
+  it("compares every id even when an undefined child precedes them on both sides", () => {
+    // If `blueprintNodeIds` truncated at the hole, `before` and `after` would each collect
+    // only zero ids and `compared` would read as a vacuous pass, not the real dropped id.
+    const before = {
+      type: "stack",
+      children: [undefined, metric("Latency", "latency"), metric("Locks", "locks")],
+    } as unknown as Layout;
+    const after = {
+      type: "stack",
+      children: [undefined, metric("Latency", "latency")],
+    } as unknown as Layout;
+    const report = preservesBlueprintNodes(
+      blueprint$({ id: "v", title: "v", layout: before, projections: ["db"] }),
+      blueprint$({ id: "v", title: "v", layout: after, projections: ["db"] })
+    );
+    expect(report.compared).toBe(2);
+    expect(report.ok).toBe(false);
+    expect(report.findings.map((f) => f.nodeId)).toEqual(["locks"]);
   });
 });

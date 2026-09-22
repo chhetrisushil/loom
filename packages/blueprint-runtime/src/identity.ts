@@ -56,15 +56,26 @@ export interface IdentityReport {
 /** Every widget id in a blueprint, in pre-order. Duplicates are `validateBlueprint`'s job. */
 export function blueprintNodeIds(blueprint: Blueprint): string[] {
   const ids: string[] = [];
-  // Iterative, matching `eachWidget` in catalog.ts: a deep composed tree must not be able
+  // Iterative, matching `eachNode` in catalog.ts: a deep composed tree must not be able
   // to blow the call stack.
-  const stack: Array<Layout | Widget> = [blueprint.layout];
-  for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
-    if ("_tag" in node && node._tag === "Widget") {
+  //
+  // Length-driven, not `pop() !== undefined`: a blueprint is data an agent or a composer
+  // may have authored, so a layout child CAN legitimately be `undefined` (a malformed
+  // `cell(6, undefined)`, a hole from a revision) — and `stack.pop()` returns `undefined`
+  // both for "the stack is empty" and for "the next element IS `undefined`". A sentinel
+  // loop conflates the two and stops early, silently dropping every id not yet visited.
+  // Rejecting the hole is `validateBlueprint`'s job (`malformed-node`); this walk stays
+  // total and skips only the one non-object child.
+  const stack: unknown[] = [blueprint.layout];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (typeof node !== "object" || node === null) continue;
+    if ("_tag" in node && (node as Widget)._tag === "Widget") {
       ids.push((node as Widget).id);
       continue;
     }
     const layout = node as Layout;
+    if (!Array.isArray(layout.children)) continue;
     for (let i = layout.children.length - 1; i >= 0; i--) {
       stack.push(
         layout.type === "grid"
