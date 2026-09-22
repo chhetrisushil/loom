@@ -118,7 +118,7 @@ Two more tests: a revision that changes a node's kind remounts that node only (`
 ## 7. Documentation and shipping
 
 - **loom** (this PR): the spec; the IR-2 design's §4 table row "Patch application preserving focus…" gains "→ this spec" once loom-ui's PR merges.
-- **loom-ui** PR: `renderBlueprintDom.update`, `DomWidgetHandle.patch`, tests, README "Recomposing" subsection with the two-line recipe, AGENTS rules: "a kept widget is never re-created — identity is the widget id, and a focused subtree never leaves the DOM"; "user-entered state is DOM state: a renderer overwrites an input only when the bound value changes".
+- **loom-ui** PR: `renderBlueprintDom.update`, `DomWidgetHandle.patch`, tests, README "Recomposing" subsection with the two-line recipe, AGENTS rules: "a kept widget is never re-created within its container — identity is the widget id, and a focused subtree never leaves the DOM; a move across containers, a container ordinal shift, or a container retype re-creates it and is reported in `remounted`"; "user-entered state is DOM state: a renderer overwrites an input only when the bound value changes".
 - **loom-examples** PR: `examples/experience-recompose` + README row.
 - Each `--rebase`, on the maintainer's word; loom-ui first, then loom-examples (it links `@loom-ui/*` from `../loom-ui`).
 
