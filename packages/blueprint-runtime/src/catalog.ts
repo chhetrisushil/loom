@@ -1,4 +1,5 @@
-import { asCell } from "./normalize";
+import { BLUEPRINT_IR_VERSION } from "./irVersion";
+import { IR_VERSION_LEGACY, asCell, isWidget } from "./normalize";
 import type { Blueprint, GridCell, Layout, Widget } from "./types";
 
 // ── The component catalogue, and the check that it is honoured ────────────────
@@ -105,14 +106,29 @@ export type BlueprintFindingCode =
   /** A binding to a projection the blueprint never declares — renders blank, silently. */
   | "undeclared-projection"
   /** Two widgets sharing an id — node identity, and the renderer's key, collide. */
-  | "duplicate-node-id";
+  | "duplicate-node-id"
+  /** A grid cell's `span` is not an integer in `1..columns`. */
+  | "span-out-of-range"
+  /** `binding.status.path` is empty or not a dotted path. */
+  | "status-path-invalid"
+  /** `binding.sensitivity` is not a `@loom/classify` `DataClass`. */
+  | "sensitivity-unknown"
+  /** `widget.source` (or a `degradedFrom` entry) is missing `type` or `version`. */
+  | "source-invalid"
+  /** `blueprint.irVersion` is set but not a version this module recognizes. */
+  | "ir-version-unknown";
 
 export interface BlueprintFinding {
   readonly code: BlueprintFindingCode;
   readonly severity: "error" | "warn";
   readonly message: string;
-  /** The widget the finding applies to. */
+  /**
+   * The widget the finding applies to. For a layout-level finding
+   * (`span-out-of-range` on a container cell, `ir-version-unknown`) this is the
+   * containing grid's first widget id when one is present, else `"<layout>"`.
+   */
   readonly nodeId: string;
+  /** The widget's kind, or `"<layout>"` for a layout-level finding. */
   readonly kind: string;
 }
 
@@ -131,21 +147,48 @@ export interface BlueprintValidation {
 /** Duplicated into `props` by every built-in builder; never a payload. */
 const RESERVED_PROPS = new Set(["binding"]);
 
-/** Iterative pre-order walk — an explicit stack, so a deep tree cannot blow the call stack. */
-function eachWidget(root: Layout | Widget, visit: (widget: Widget) => void): void {
+const KNOWN_IR_VERSIONS = new Set([IR_VERSION_LEGACY, BLUEPRINT_IR_VERSION]);
+const DATA_CLASSES = new Set(["secret", "sensitive", "internal"]);
+const DOTTED = /^[^.\s]+(\.[^.\s]+)*$/;
+
+interface Visit {
+  widget?: Widget;
+  cell?: { span: number; columns: number; firstWidgetId: string | undefined };
+}
+
+/**
+ * Iterative walk — an explicit stack, so a deep tree cannot blow the call stack.
+ * Visits widgets (pre-order) and grid cells. A grid's cells are visited in
+ * forward sibling order (so findings on them read in document order) before
+ * their nodes are pushed onto the stack in reverse, which keeps the overall
+ * widget walk pre-order.
+ */
+function eachNode(root: Layout | Widget, visit: (v: Visit) => void): void {
   const stack: Array<Layout | Widget> = [root];
   for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
-    if ("_tag" in node && node._tag === "Widget") {
-      visit(node as Widget);
+    if (isWidget(node)) {
+      visit({ widget: node });
       continue;
     }
-    const layout = node as Layout;
-    for (let i = layout.children.length - 1; i >= 0; i--) {
-      stack.push(
-        layout.type === "grid"
-          ? asCell(layout.children[i] as GridCell).node
-          : (layout.children[i] as Layout | Widget)
-      );
+    if (node.type === "grid") {
+      for (let i = 0; i < node.children.length; i++) {
+        const c = asCell(node.children[i] as GridCell | Widget | Layout);
+        visit({
+          cell: {
+            span: c.span ?? 1,
+            columns: node.columns,
+            firstWidgetId: isWidget(c.node) ? c.node.id : undefined,
+          },
+        });
+      }
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        const c = asCell(node.children[i] as GridCell | Widget | Layout);
+        stack.push(c.node);
+      }
+    } else {
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        stack.push(node.children[i] as Layout | Widget);
+      }
     }
   }
 }
@@ -167,7 +210,33 @@ export function validateBlueprint(
   const seenIds = new Set<string>();
   let widgets = 0;
 
-  eachWidget(blueprint.layout, (widget) => {
+  if (blueprint.irVersion !== undefined && !KNOWN_IR_VERSIONS.has(blueprint.irVersion)) {
+    findings.push({
+      code: "ir-version-unknown",
+      severity: "error",
+      nodeId: "<layout>",
+      kind: "<layout>",
+      message: `irVersion "${blueprint.irVersion}" is not a version this module recognizes — a reader may not know how to interpret the artifact`,
+    });
+  }
+
+  eachNode(blueprint.layout, (v) => {
+    if (v.cell) {
+      const { span, columns, firstWidgetId } = v.cell;
+      if (!Number.isInteger(span) || span < 1 || span > columns) {
+        findings.push({
+          code: "span-out-of-range",
+          severity: "error",
+          nodeId: firstWidgetId ?? "<layout>",
+          kind: "<layout>",
+          message: `cell span ${span} is outside 1..${columns} — a renderer cannot lay this cell out`,
+        });
+      }
+      return;
+    }
+
+    const widget = v.widget;
+    if (!widget) return;
     widgets++;
     const { id, kind } = widget;
 
@@ -236,6 +305,67 @@ export function validateBlueprint(
         kind,
         message: `prop "${prop}" is not declared by "${kind}" in catalogue "${catalog.id}" — a blueprint carries bindings, never fetched data, and an undeclared prop is how data gets inlined into a shared artifact`,
       });
+    }
+
+    // `binding` and `source` are typed, but a blueprint is data a model can compose —
+    // a malformed value (null, a string, ...) must be a finding, never a property
+    // access on a non-object, so every read below goes through a typeof guard first.
+    const status = widget.binding?.status;
+    if (status !== undefined) {
+      const path =
+        status !== null && typeof status === "object"
+          ? (status as { path?: unknown }).path
+          : undefined;
+      if (typeof path !== "string" || path === "" || !DOTTED.test(path)) {
+        findings.push({
+          code: "status-path-invalid",
+          severity: "error",
+          nodeId: id,
+          kind,
+          message: `binding.status.path ${JSON.stringify(path)} is not a non-empty dotted path`,
+        });
+      }
+    }
+
+    const sensitivity = widget.binding?.sensitivity;
+    if (sensitivity !== undefined && !DATA_CLASSES.has(sensitivity as string)) {
+      findings.push({
+        code: "sensitivity-unknown",
+        severity: "error",
+        nodeId: id,
+        kind,
+        message: `binding.sensitivity ${JSON.stringify(sensitivity)} is not a @loom/classify DataClass`,
+      });
+    }
+
+    const source = widget.source;
+    if (source !== undefined) {
+      const src =
+        source !== null && typeof source === "object"
+          ? (source as { type?: unknown; version?: unknown; degradedFrom?: unknown })
+          : undefined;
+      const degradedFrom = Array.isArray(src?.degradedFrom) ? src.degradedFrom : undefined;
+      const invalid =
+        src === undefined ||
+        !src.type ||
+        !src.version ||
+        (src.degradedFrom !== undefined && degradedFrom === undefined) ||
+        degradedFrom?.some(
+          (d: unknown) =>
+            typeof d !== "object" ||
+            d === null ||
+            !(d as { type?: unknown }).type ||
+            !(d as { version?: unknown }).version
+        );
+      if (invalid) {
+        findings.push({
+          code: "source-invalid",
+          severity: "error",
+          nodeId: id,
+          kind,
+          message: `widget.source is missing a "type" or "version" — either on the source itself or a degradedFrom entry`,
+        });
+      }
     }
   });
 
