@@ -144,7 +144,7 @@ Where each of the paper's rendering-runtime responsibilities lives. **None is de
 | Responsibility (paper) | Owner | Status |
 |---|---|---|
 | Patch protocol and versioning | `@loom/blueprint-runtime` (IR 2.0.0, `irVersion`, pins) | this spec |
-| Patch application preserving focus, scroll, half-entered input | each surface implementation; Lit first | slice 6a (keyed recompose) |
+| Patch application preserving focus, scroll, half-entered input | each surface implementation; Lit first | slice 6a — shipped in loom-ui (`renderBlueprintDom` `handle.update`), design: `2026-09-22-loom-ui-recompose-design.md` |
 | Partial and out-of-order streams, every stage renderable | loom-ui compile emits progressive stages; adapters render each | slice 6c |
 | Scheduling by semantic priority, coalescing agent bursts | React: fiber mode (exists); Lit: adapter scheduler | slice 6b |
 | Resolving semantic type + hint to a component per surface | loom-ui compile (`resolveSurface`), hints as catalogue-declared inputs | exists; hints slice 9 |

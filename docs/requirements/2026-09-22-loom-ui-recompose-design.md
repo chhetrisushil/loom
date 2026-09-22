@@ -85,6 +85,8 @@ export interface DomWidgetHandle {
 4. **Order.** Compute the target child sequence. Let `pinned` be the kept child whose host contains `document.activeElement` (at most one). Walk the target sequence and `insertBefore` every node that is out of place, except `pinned`, which is never moved — its neighbours are moved around it. A node that is already in place is not touched (so an unchanged tree makes zero DOM mutations). Without a focused child this is the ordinary keyed reorder.
 5. **Root.** Title and `data-blueprint-id` patched; the projection placeholders list rebuilt from the new `projections`.
 
+**As shipped.** The root container has no parent, so it is keyed by nothing: a root type change is patched in place, never disposed and remounted. Widgets are matched per container (step 2), so a widget id that moves to a different container is destroyed and re-created there — it is reported in `RecomposeReport.remounted` (every id in `next` whose widget was destroyed and re-created this pass); an id dropped from `next` altogether never reaches that match and appears only in `identity.findings`.
+
 Complexity: one pass per container, `O(children)` with a map; no renderer is re-run for an unchanged node. `sliceSelector` and `sliceIsEqual` are unchanged.
 
 ## 4. Hydration alignment
