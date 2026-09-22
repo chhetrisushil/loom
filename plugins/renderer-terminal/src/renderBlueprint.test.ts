@@ -1,4 +1,5 @@
 import {
+  type Blueprint,
   MetricCard,
   RendererRegistry,
   StatusBadge,
@@ -130,5 +131,92 @@ describe("renderBlueprintToString — with a registry", () => {
     const out = new TerminalRenderer(projectionRuntime, { registry }).render(bp, "exec-1");
     expect(out).toContain("Phase => triaging");
     expect(out).toContain("[MetricCard] CPU %: 87"); // not in this registry → marked
+  });
+});
+
+describe("renderBlueprintToString — binding status matrix and source (IR 2.0.0)", () => {
+  const w = (id: string, path = `v.${id}`) =>
+    MetricCard({
+      id,
+      title: id.toUpperCase(),
+      binding: { projectionId: "p", path, status: { path: `s.${id}` } },
+      unit: "ms",
+    });
+  // Deviation from the brief's literal `id: "b", title: "B"`: the blueprint's own title
+  // collided with widget b's title "B" — `line()`'s `.find` then matched the header line
+  // ("  B") before reaching "✗ B: tool down", since the header renders first. "Matrix" carries
+  // no uppercase A–H substring, so it cannot shadow any of the eight cell assertions below.
+  const bp = blueprint$({
+    id: "b",
+    title: "Matrix",
+    layout: stack({ children: [w("a"), w("b"), w("c"), w("d"), w("e"), w("f"), w("g"), w("h")] }),
+    projections: ["p"],
+  });
+  const state = {
+    v: { a: 412, c: 7, e: 1, g: 2 },
+    s: {
+      a: { state: "error", finding: { code: "x", message: "tool down" } },
+      b: { state: "error", finding: { code: "x", message: "tool down" } },
+      c: { state: "stale" },
+      d: { state: "stale", finding: { code: "d", message: "drifted" } },
+      e: { state: "pending" },
+      f: { state: "pending" },
+      g: { state: "ready" },
+      h: { state: "ready" },
+    },
+  };
+  const out = renderBlueprintToString(bp, new Map([["p", state]]), {
+    registry: defaultTerminalRegistry,
+  }).split("\n");
+  const line = (t: string) => out.find((l) => l.includes(t)) ?? "";
+  it("renders the eight cells", () => {
+    expect(line("A")).toBe("✗ A: tool down");
+    expect(line("B")).toBe("✗ B: tool down");
+    expect(line("C")).toBe("~ C: 7 ms");
+    expect(line("D")).toBe("~ D: — (drifted)");
+    expect(line("E")).toBe("⋯ E: 1 ms");
+    expect(line("F")).toBe("⋯ F");
+    expect(line("G")).toBe("G: 2 ms");
+    expect(line("H")).toBe("H: —"); // ready/no value: loading on the terminal is the plain em-dash, unchanged from 1.0.0
+  });
+  it("a widget without a declared status channel renders exactly as before, even if the state carries a status", () => {
+    const plain = blueprint$({
+      id: "p",
+      title: "P",
+      layout: stack({
+        children: [
+          MetricCard({ id: "z", title: "Z", binding: { projectionId: "p", path: "v.z" } }),
+        ],
+      }),
+      projections: ["p"],
+    });
+    const o = renderBlueprintToString(
+      plain,
+      new Map([["p", { v: { z: 9 }, s: { z: { state: "error" } } }]]),
+      { registry: defaultTerminalRegistry }
+    );
+    expect(o).toContain("Z: 9");
+    expect(o).not.toContain("✗");
+  });
+  it("appends the degradation chain to a degraded widget's first line, and a legacy bare-children grid renders", () => {
+    const degraded = {
+      ...MetricCard({ id: "t", title: "T", binding: { projectionId: "p", path: "v.t" } }),
+      source: {
+        type: "Trend",
+        version: "1.0.0",
+        degradedFrom: [{ type: "Collection", version: "1.0.0" }],
+      },
+    };
+    const legacy = {
+      _tag: "Blueprint",
+      id: "l",
+      title: "L",
+      projections: ["p"],
+      layout: { type: "grid", columns: 2, children: [degraded] },
+    } as unknown as Blueprint;
+    const o = renderBlueprintToString(legacy, new Map([["p", { v: { t: 3 } }]]), {
+      registry: defaultTerminalRegistry,
+    });
+    expect(o).toContain("T: 3 (degraded from Collection@1.0.0)");
   });
 });
