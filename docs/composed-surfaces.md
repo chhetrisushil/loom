@@ -182,6 +182,12 @@ pinned by **declaration** ([ADR 0095](adr/0095-binding-semantics-pin.md)):
 projection$({ id: "latency", name: "Latency", version: "3", initialState, handlers });
 ```
 
+A binding may separately declare `status: { path }` in that same projection — a place, in the
+same state a value already resolves from, where the binding's delivery state
+(`pending`/`ready`/`stale`/`error`) is written. Loom's own renderers read it and show the
+matching pending/stale/error marker; a binding that declares nothing renders exactly as it did
+before the channel existed ([ADR 0097](adr/0097-blueprint-ir-2.md)).
+
 `projectionRuntime.pins()` is what a composer records into
 `Blueprint.projectionVersions`; `checkBlueprintPins(view, pins)` is what a render
 compares it against, reporting `drift` when the fold behind a name changed and

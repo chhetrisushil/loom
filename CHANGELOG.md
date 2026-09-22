@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Blueprint IR 2.0.0 (ADR 0097).** Three leaks loom-ui's adapters had been working around —
+  never reaching loom's own renderers, or a third consumer — are now channels the IR itself
+  carries:
+
+  - `GridLayout.children` is now `GridCell[]` (`{ span?: number; node: Widget | Layout }`)
+    instead of a bare `Array<Widget | Layout>`, so a grid child's column span is a fact of the
+    IR rather than a `props.span` side channel one renderer honoured and the other silently
+    dropped.
+  - `DataBinding.status?: { path }` names where, in the *same* projection state as the bound
+    value, that binding's delivery state (`BindingStatus`: `state: BindingState` —
+    `"pending" | "ready" | "stale" | "error"` — plus optional `seq` and `finding`) lives. Both
+    first-party renderers now show pending/stale/error from a declared channel.
+  - `Widget.source?: WidgetSource` (`{ type, version, degradedFrom? }`) names what a widget
+    actually stands for and the semantic types it was degraded through to reach its rendered
+    `kind` — never smuggled through `props`.
+  - `DataBinding.sensitivity?: DataClass` (from `@loom/classify`, type-only) declares a
+    binding's confidentiality class on the artifact; this ships the field only, audience
+    enforcement is a loom-ui concern.
+
+  This is a **MAJOR** bump: `BLUEPRINT_IR_VERSION` moves `1.0.0` → `2.0.0`, with the `1.0.0`
+  digest kept pinned beside the new `2.0.0` one ([ADR 0096](docs/adr/0096-blueprint-stable-rendering-ir.md)'s
+  guard). Readers accept 1.0.0 transparently — `asCell` normalises a legacy bare grid child on
+  every read path, and `upgradeBlueprint(bp)` re-addresses a whole 1.0.0 artifact to 2.0.0
+  explicitly (identity on already-2.0.0 input) for a caller that wants to. Writers always emit
+  2.0.0: `blueprint$` stamps `irVersion`, and `grid({ columns, children })` now accepts
+  `Array<GridCell | Widget | Layout>` and normalises every element, so every existing
+  `grid({ children: [...] })` call in this repo and its examples keeps compiling unchanged; a
+  new `cell(span, node)` builder is how a caller states an explicit span.
+
+  `validateBlueprint` gains five new finding codes: `span-out-of-range`,
+  `status-path-invalid`, `sensitivity-unknown`, `source-invalid`, `ir-version-unknown` — all
+  findings, never throws.
+
+  `@loom/plugin-renderer-react` gains `WidgetFrame` (applies the canonical binding-status
+  matrix and `source` data attributes around a widget's rendered body — adds **no** wrapper
+  element for a widget with neither a declared status channel nor a `source`, so a 1.0.0
+  artifact's DOM is unchanged) and `useWidgetSlice` (a fiber selector over `{ value, status }`
+  together). `@loom/plugin-renderer-terminal`'s `TerminalWidgetRenderer` gains an optional
+  third `status?: BindingStatus` parameter, and the terminal output gains status glyphs
+  (`⋯` pending, `~` stale, `✗` error) and a degraded-from suffix when a channel or `source` is
+  declared — output for a widget with neither is byte-identical to before.
+
+  A widget with no declared status channel — the overwhelming majority of existing artifacts —
+  renders exactly as it did under IR 1.0.0, on both renderers.
+
 ### Fixed
 
 - **`loom plugin new keystore` scaffolded a package that could not compile.** The template
