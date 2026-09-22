@@ -219,7 +219,10 @@ describe("branch registry rows do not outlive their executions", () => {
     });
 
     await app.runtime.cancel(branchId, "abandoned");
-    await app.lifecycle.applyRetention(branchId, FOREVER, now + 1);
+    // The clock is read at the call, not reused from before the cancel: retention measures from
+    // the terminal event, which is stamped AFTER `now`, so `now + 1` can predate it and keep
+    // the branch (the source of this test's intermittent CI failure).
+    expect(await app.lifecycle.applyRetention(branchId, FOREVER, Date.now() + 1)).toBe("reclaimed");
 
     const summary = await pruneBranchRefs(app.eventStore, app.branchRegistry);
     expect(summary).toMatchObject({ scanned: 3, dangling: 2, deleted: 1 });
