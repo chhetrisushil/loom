@@ -1,3 +1,4 @@
+import { canonicalJson, fnv1a64 } from "@loom/core";
 import { describe, expect, it } from "vitest";
 import { blueprint$ } from "./Blueprint";
 import { BLUEPRINT_IR_VERSION } from "./irVersion";
@@ -74,6 +75,29 @@ describe("irVersion", () => {
     ]);
     expect(upgradeBlueprint(up)).toBe(up);
     expect(legacy.irVersion).toBeUndefined(); // input untouched
+  });
+  it("upgradeBlueprint CHANGES a 1.0.0 artifact's content address, and a second upgrade is a no-op", () => {
+    // ADR 0097 D1/Consequences: "a 1.0.0 artifact re-emitted as 2.0.0 has a different content
+    // address, precisely because its shape changed". The digest is what makes that claim
+    // checkable rather than a paragraph — and the second half (identity on 2.0.0 input) is what
+    // stops a reader that upgrades defensively from re-addressing the same artifact forever.
+    const legacy = {
+      _tag: "Blueprint",
+      id: "l",
+      title: "L",
+      projections: ["p"],
+      layout: { type: "grid", columns: 2, children: [w("a")] },
+    } as unknown as Blueprint;
+    const address = (bp: Blueprint) => fnv1a64(canonicalJson(bp));
+
+    const before = address(legacy);
+    const up = upgradeBlueprint(legacy);
+    expect(address(up)).not.toBe(before);
+
+    const again = upgradeBlueprint(up);
+    expect(again).toBe(up); // same reference, not merely an equal value
+    expect(address(again)).toBe(address(up));
+    expect(address(legacy)).toBe(before); // the input was never mutated
   });
   it("upgradeBlueprint reaches a grid nested inside a stack", () => {
     const legacy = {

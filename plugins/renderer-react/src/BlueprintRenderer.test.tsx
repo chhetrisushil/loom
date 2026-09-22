@@ -1,5 +1,12 @@
 import type { Blueprint } from "@loom/blueprint-runtime";
-import { ApprovalCard, MetricCard, Timeline, blueprint$, grid } from "@loom/blueprint-runtime";
+import {
+  ApprovalCard,
+  MetricCard,
+  Timeline,
+  blueprint$,
+  grid,
+  stack,
+} from "@loom/blueprint-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { act, render, screen } from "@testing-library/react";
 import React from "react";
@@ -191,6 +198,57 @@ describe("BlueprintRenderer — status frame (IR 2.0.0)", () => {
     ).toBe("stale");
   });
 
+  it("a grid renders the SAME DOM as a stack of the same widgets, modulo the container's own style", () => {
+    // ADR 0097 D1: a grid child gains a wrapper element only when its span exceeds 1, so a
+    // 1.0.0 grid (every cell implicitly span 1) adds no element the stack does not. If the
+    // grid ever wraps its cells again, these two innerHTMLs diverge.
+    const widgets = [
+      MetricCard({
+        id: "same-a",
+        title: "CPU",
+        binding: { projectionId: "metrics", path: "cpu.current" },
+      }),
+      Timeline({
+        id: "same-b",
+        title: "Events",
+        binding: { projectionId: "incident", path: "timeline" },
+      }),
+    ];
+    const of = (layout: Blueprint["layout"]) =>
+      ({
+        _tag: "Blueprint" as const,
+        id: "shape",
+        title: "Shape",
+        layout,
+        projections: ["metrics", "incident"],
+      }) as Blueprint;
+
+    const gridC = render(
+      <BlueprintRenderer
+        blueprint={of({
+          type: "grid",
+          columns: 2,
+          children: widgets,
+        } as unknown as Blueprint["layout"])}
+        projectionRuntime={makeProjectionRuntime()}
+        executionId={EXECUTION_ID}
+      />
+    ).container;
+    const stackC = render(
+      <BlueprintRenderer
+        blueprint={of(stack({ children: widgets }))}
+        projectionRuntime={makeProjectionRuntime()}
+        executionId={EXECUTION_ID}
+      />
+    ).container;
+
+    const box = (c: HTMLElement) => c.querySelector("[data-blueprint-id] > div") as HTMLElement;
+    expect(box(gridC).innerHTML).toBe(box(stackC).innerHTML);
+    // ...and the containers themselves are genuinely different, so the check is not vacuous.
+    expect(box(gridC).style.display).toBe("grid");
+    expect(box(stackC).style.display).toBe("flex");
+  });
+
   it("renders a legacy bare-children grid blueprint (no GridCell wrapper) without throwing", () => {
     const projectionRuntime = makeProjectionRuntime();
     // A 1.0.0 artifact's grid children are bare Widget nodes, not GridCell
@@ -225,4 +283,67 @@ describe("BlueprintRenderer — status frame (IR 2.0.0)", () => {
     ).not.toThrow();
     expect(document.querySelector("[data-widget-id='legacy-m']")).not.toBeNull();
   });
+});
+
+// ── The value-contract slot, on BOTH render paths (design §5, ADR 0097 D2) ────
+
+describe("BlueprintRenderer — the check seam", () => {
+  const makeRuntime = (state: unknown) => {
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register({ id: "chk", initialState: state as object, handlers: {} });
+    return runtime;
+  };
+  const bp = blueprint$({
+    id: "check-bp",
+    title: "Check",
+    layout: grid({
+      columns: 1,
+      children: [
+        MetricCard({
+          id: "c1",
+          title: "p99",
+          binding: { projectionId: "chk", path: "v", status: { path: "s" } },
+        }),
+      ],
+    }),
+    projections: ["chk"],
+  });
+  const failing = (_w: unknown, value: unknown) =>
+    value === "oops" ? { code: "shape", message: "not a number" } : undefined;
+
+  it.each([
+    ["eager", undefined],
+    ["fiber", { granularUpdates: true } as const],
+  ])(
+    "%s: a failing check under `stale` renders the error row; undefined leaves the matrix",
+    (_n, fiber) => {
+      const bad = render(
+        <BlueprintRenderer
+          blueprint={bp}
+          projectionRuntime={makeRuntime({ v: "oops", s: { state: "stale" } })}
+          executionId={EXECUTION_ID}
+          check={failing}
+          {...(fiber !== undefined && { fiber })}
+        />
+      ).container;
+      const badFrame = bad.querySelector("[data-widget-frame='c1']") as HTMLElement;
+      expect(badFrame.getAttribute("data-binding-state")).toBe("error");
+      expect(badFrame.querySelector("[role='alert']")?.textContent).toContain("not a number");
+
+      const ok = render(
+        <BlueprintRenderer
+          blueprint={bp}
+          projectionRuntime={makeRuntime({ v: 412, s: { state: "stale" } })}
+          executionId={EXECUTION_ID}
+          check={failing}
+          {...(fiber !== undefined && { fiber })}
+        />
+      ).container;
+      expect(
+        (ok.querySelector("[data-widget-frame='c1']") as HTMLElement).getAttribute(
+          "data-binding-state"
+        )
+      ).toBe("stale");
+    }
+  );
 });

@@ -109,6 +109,10 @@ export type BlueprintFindingCode =
   | "duplicate-node-id"
   /** A grid cell's `span` is not an integer in `1..columns`. */
   | "span-out-of-range"
+  /** A grid's `columns` is not a positive integer — there is no column count to lay cells into. */
+  | "columns-invalid"
+  /** A node that is neither a `Widget` nor a `Layout` (a stray `null`, a string, a stranded `GridCell`). */
+  | "malformed-node"
   /** `binding.status.path` is empty or not a dotted path. */
   | "status-path-invalid"
   /** `binding.sensitivity` is not a `@loom/classify` `DataClass`. */
@@ -123,9 +127,11 @@ export interface BlueprintFinding {
   readonly severity: "error" | "warn";
   readonly message: string;
   /**
-   * The widget the finding applies to. For a layout-level finding
-   * (`span-out-of-range` on a container cell, `ir-version-unknown`) this is the
-   * containing grid's first widget id when one is present, else `"<layout>"`.
+   * The node the finding applies to. For a widget-level finding it is the widget's id. For a
+   * cell-level finding (`span-out-of-range`) it is the id of the cell's OWN node when that node
+   * is a widget, else `"<layout>"` (the cell wraps a nested layout, which has no id). For a
+   * blueprint- or layout-level finding (`ir-version-unknown`, `columns-invalid`,
+   * `malformed-node`) it is always `"<layout>"`.
    */
   readonly nodeId: string;
   /** The widget's kind, or `"<layout>"` for a layout-level finding. */
@@ -153,8 +159,24 @@ const DOTTED = /^[^.\s]+(\.[^.\s]+)*$/;
 
 interface Visit {
   widget?: Widget;
-  cell?: { span: number; columns: number; firstWidgetId: string | undefined };
+  cell?: { span: number; columns: number; cellNodeId: string | undefined };
+  /** A grid whose `columns` is not a positive integer — reported once, and its cells are not checked. */
+  columnsInvalid?: { columns: unknown };
+  /** A tree node that is neither a `Widget` nor a `Layout`; the subtree below it is not walked. */
+  malformed?: { node: unknown };
 }
+
+/**
+ * A blueprint is DATA a model may have composed, so the walk cannot assume its own types hold.
+ * A `Layout` here is structural: an object with a `type` and an array of `children`. Anything
+ * else reaching the stack — `null`, a string, a `GridCell` stranded in a flex/stack — is a
+ * `malformed-node` finding, never a property access on a non-object.
+ */
+const isLayoutNode = (n: unknown): n is Layout =>
+  typeof n === "object" &&
+  n !== null &&
+  "type" in n &&
+  Array.isArray((n as { children?: unknown }).children);
 
 /**
  * Iterative walk — an explicit stack, so a deep tree cannot blow the call stack.
@@ -162,35 +184,63 @@ interface Visit {
  * forward sibling order (so findings on them read in document order) before
  * their nodes are pushed onto the stack in reverse, which keeps the overall
  * widget walk pre-order.
+ *
+ * The loop is length-driven rather than `pop() !== undefined`: a literal `undefined` child is
+ * one of the malformed shapes this walk must REPORT, and a sentinel loop would silently end the
+ * walk on it instead.
  */
 function eachNode(root: Layout | Widget, visit: (v: Visit) => void): void {
-  const stack: Array<Layout | Widget> = [root];
-  for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
     if (isWidget(node)) {
       visit({ widget: node });
       continue;
     }
+    if (!isLayoutNode(node)) {
+      visit({ malformed: { node } });
+      continue;
+    }
     if (node.type === "grid") {
-      for (let i = 0; i < node.children.length; i++) {
-        const c = asCell(node.children[i] as GridCell | Widget | Layout);
-        visit({
-          cell: {
-            span: c.span ?? 1,
-            columns: node.columns,
-            firstWidgetId: isWidget(c.node) ? c.node.id : undefined,
-          },
-        });
+      const children = node.children as Array<GridCell | Widget | Layout>;
+      const columns = (node as { columns?: unknown }).columns;
+      // A grid with no usable column count cannot place ANY cell, so every span would be
+      // "out of range" against it. Report the cause once and skip the cascade.
+      const columnsOk = Number.isInteger(columns) && (columns as number) >= 1;
+      if (!columnsOk) {
+        visit({ columnsInvalid: { columns } });
+      } else {
+        for (let i = 0; i < children.length; i++) {
+          const c = asCell(children[i] as GridCell | Widget | Layout);
+          visit({
+            cell: {
+              span: c.span ?? 1,
+              columns: columns as number,
+              cellNodeId: isWidget(c.node) ? c.node.id : undefined,
+            },
+          });
+        }
       }
-      for (let i = node.children.length - 1; i >= 0; i--) {
-        const c = asCell(node.children[i] as GridCell | Widget | Layout);
-        stack.push(c.node);
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push(asCell(children[i] as GridCell | Widget | Layout).node);
       }
     } else {
-      for (let i = node.children.length - 1; i >= 0; i--) {
-        stack.push(node.children[i] as Layout | Widget);
+      const children = node.children as unknown[];
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push(children[i]);
       }
     }
   }
+}
+
+/** A short, safe description of a malformed node for a finding message. */
+function describeNode(node: unknown): string {
+  if (node === null) return "null";
+  if (Array.isArray(node)) return "an array";
+  const t = typeof node;
+  if (t !== "object") return `a ${t}`;
+  if ("node" in (node as object)) return "a GridCell outside a grid";
+  return "an object with no layout `type` or `children`";
 }
 
 /**
@@ -221,13 +271,35 @@ export function validateBlueprint(
   }
 
   eachNode(blueprint.layout, (v) => {
+    if (v.columnsInvalid) {
+      findings.push({
+        code: "columns-invalid",
+        severity: "error",
+        nodeId: "<layout>",
+        kind: "<layout>",
+        message: `grid columns ${JSON.stringify(v.columnsInvalid.columns) ?? "undefined"} is not a positive integer — there is no column count to place cells into, so this grid's spans are not checked`,
+      });
+      return;
+    }
+
+    if (v.malformed) {
+      findings.push({
+        code: "malformed-node",
+        severity: "error",
+        nodeId: "<layout>",
+        kind: "<layout>",
+        message: `a layout child is neither a Widget nor a Layout (${describeNode(v.malformed.node)}) — it renders nothing, and the subtree below it is not validated`,
+      });
+      return;
+    }
+
     if (v.cell) {
-      const { span, columns, firstWidgetId } = v.cell;
+      const { span, columns, cellNodeId } = v.cell;
       if (!Number.isInteger(span) || span < 1 || span > columns) {
         findings.push({
           code: "span-out-of-range",
           severity: "error",
-          nodeId: firstWidgetId ?? "<layout>",
+          nodeId: cellNodeId ?? "<layout>",
           kind: "<layout>",
           message: `cell span ${span} is outside 1..${columns} — a renderer cannot lay this cell out`,
         });
@@ -345,25 +417,29 @@ export function validateBlueprint(
           ? (source as { type?: unknown; version?: unknown; degradedFrom?: unknown })
           : undefined;
       const degradedFrom = Array.isArray(src?.degradedFrom) ? src.degradedFrom : undefined;
+      // Typed as `string`, so a NON-string is exactly what a hand-assembled artifact gets wrong.
+      // A truthiness test would accept `type: 123` and `version: {}` — both render as garbage.
+      const notAName = (v: unknown) => typeof v !== "string" || v === "";
       const invalid =
         src === undefined ||
-        !src.type ||
-        !src.version ||
+        notAName(src.type) ||
+        notAName(src.version) ||
         (src.degradedFrom !== undefined && degradedFrom === undefined) ||
-        degradedFrom?.some(
+        (degradedFrom?.some(
           (d: unknown) =>
             typeof d !== "object" ||
             d === null ||
-            !(d as { type?: unknown }).type ||
-            !(d as { version?: unknown }).version
-        );
+            notAName((d as { type?: unknown }).type) ||
+            notAName((d as { version?: unknown }).version)
+        ) ??
+          false);
       if (invalid) {
         findings.push({
           code: "source-invalid",
           severity: "error",
           nodeId: id,
           kind,
-          message: `widget.source is missing a "type" or "version" — either on the source itself or a degradedFrom entry`,
+          message: `widget.source is missing a non-empty string "type" or "version" — either on the source itself or a degradedFrom entry (which must be an array)`,
         });
       }
     }

@@ -11,6 +11,10 @@ import type React from "react";
 // artifact's DOM is byte-identical to before this component existed. The
 // frame (and its attributes/markers) appears only once there is a status
 // channel or a `source` to report.
+//
+// Between `error` and `stale` the matrix leaves one documented slot: an optional `check(widget,
+// value)` the CALLER supplies. loom never validates a value; a framework's own kind contract
+// plugs in there and renders as the error row when it fails.
 
 type Shown = "error" | "stale" | "pending" | "loading" | "ready";
 
@@ -32,19 +36,38 @@ function shown(
 const chain = (w: Widget) =>
   w.source?.degradedFrom?.map((d) => `${d.type}@${d.version}`).join(" › ");
 
+/**
+ * A caller-supplied value-contract check — the documented slot the matrix leaves between
+ * `error` and `stale` (design §5). loom validates nothing about a bound VALUE itself: what a
+ * `Trend` or an `Investigation` must look like is a framework's catalogue vocabulary, not the
+ * IR's. A framework plugs its own `checkKindValue` in here; a finding renders as the error row.
+ */
+export type WidgetValueCheck = (
+  widget: Widget,
+  value: unknown
+) => { code: string; message: string } | undefined;
+
 export const WidgetFrame: React.FC<{
   widget: Widget;
   value: unknown;
   status?: BindingStatus;
+  /**
+   * Runs only for a widget whose binding declares a status channel, and only when delivery did
+   * not already fail (`status.state !== "error"` — there is no value to check when the fetch
+   * itself failed). A returned finding outranks `stale`, `pending` and `ready`.
+   */
+  check?: WidgetValueCheck;
   children: React.ReactNode;
-}> = ({ widget, value, status, children }) => {
+}> = ({ widget, value, status, check, children }) => {
   const hasChannel = widget.binding?.status !== undefined;
   const hasSource = widget.source !== undefined;
   if (!hasChannel && !hasSource) {
     // Nothing to report — no wrapper, no attributes, no DOM node added.
     return children;
   }
-  const state = shown(hasChannel, status, value);
+  const contract = hasChannel && status?.state !== "error" ? check?.(widget, value) : undefined;
+  const state = contract ? "error" : shown(hasChannel, status, value);
+  const errorMessage = contract ? contract.message : (status?.finding?.message ?? "error");
   const degraded = chain(widget);
   const title = widget.title ?? widget.kind;
   return (
@@ -62,7 +85,7 @@ export const WidgetFrame: React.FC<{
     >
       {state === "error" && (
         <div role="alert" data-binding-marker="error">
-          ✗ {title}: {status?.finding?.message ?? "error"}
+          ✗ {title}: {errorMessage}
         </div>
       )}
       {state === "stale" && value === undefined && (

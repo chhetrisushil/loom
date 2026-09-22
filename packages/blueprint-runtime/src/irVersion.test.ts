@@ -9,11 +9,14 @@ import { BLUEPRINT_IR_SHAPE, BLUEPRINT_IR_VERSION } from "./irVersion";
 //
 // To bump: change the shape, update the manifest in irVersion.ts, set BLUEPRINT_IR_VERSION,
 // then ADD a row here with the new version and the digest the failing assertion prints.
-// Never edit an existing row's digest.
+// Never edit an existing row's digest — with one exception, taken here: a version that has not
+// yet been PUBLISHED has no reader to break, so 2.0.0's digest was re-pinned in the same
+// unreleased cycle that introduced it when the `bindingFinding`/`degradedFrom` manifests were
+// added. 1.0.0 is released and its row is never touched.
 
 const PINNED: ReadonlyArray<readonly [version: string, digest: string]> = [
   ["1.0.0", "59ee5cb1c37efe75"],
-  ["2.0.0", "30386c2756d01add"],
+  ["2.0.0", "90e690ca0de812fd"],
 ];
 
 const digestOf = (shape: unknown) => fnv1a64(canonicalJson(shape));

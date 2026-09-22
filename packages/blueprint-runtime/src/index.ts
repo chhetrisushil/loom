@@ -6,6 +6,7 @@ export {
   upgradeBlueprint,
   blueprintIrVersion,
   isBindingStatus,
+  isWidget,
   resolveWidgetStatus,
   IR_VERSION_LEGACY,
 } from "./normalize";
