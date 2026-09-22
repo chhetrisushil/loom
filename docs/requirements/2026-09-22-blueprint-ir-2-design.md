@@ -129,6 +129,28 @@ Existing rules are unchanged; `span` is no longer a prop and `undeclared-prop` f
 
 ## 5. Traversal and renderers
 
+### 5.0 The rendering runtime layer
+
+The whitepaper names a **Rendering Runtime**: a thin shared contract with a fat implementation per surface. loom has one; this spec names it so the layering is explicit and so no responsibility is left unowned.
+
+- **Shared contract = `@loom/blueprint-runtime`.** The Blueprint IR (this document), `RendererRegistry`, `traverseBlueprint`, `validateBlueprint`, `catalogCoverage`, `BindingStatus` and the canonical status matrix. This is what an app on loom alone renders with, and it is why loom's basic UI exists without loom-ui.
+- **Per-surface implementations** = loom's React plugin (eager and fiber), loom's terminal plugin, loom-ui's Lit adapter (`renderBlueprintDom` + `litRegistry`), and later loom-ui's chat adapter. The asymmetry the paper predicts is already visible: React with fiber scheduling is large, terminal is nearly empty.
+- **Resolution happens at compile, not at render** — a deliberate difference from the paper. loom-ui's compiler resolves a semantic type to a concrete kind per surface once, and the artifact is content-addressed with that result. Adapters receive concrete kinds and stay deterministic and cheap; the cost is that a surface cannot re-resolve at runtime. Presentation hints (§7, slice 9) are therefore compile-time inputs that change the artifact, never renderer-side switches.
+
+Where each of the paper's rendering-runtime responsibilities lives. **None is deferred**: loom-ui is a framework, so every capability is built first and proven by a reference example in the same slice (§7); "until a consumer asks" is not a status this roadmap uses.
+
+| Responsibility (paper) | Owner | Status |
+|---|---|---|
+| Patch protocol and versioning | `@loom/blueprint-runtime` (IR 2.0.0, `irVersion`, pins) | this spec |
+| Patch application preserving focus, scroll, half-entered input | each surface implementation; Lit first | slice 6a (keyed recompose) |
+| Partial and out-of-order streams, every stage renderable | loom-ui compile emits progressive stages; adapters render each | slice 6c |
+| Scheduling by semantic priority, coalescing agent bursts | React: fiber mode (exists); Lit: adapter scheduler | slice 6b |
+| Resolving semantic type + hint to a component per surface | loom-ui compile (`resolveSurface`), hints as catalogue-declared inputs | exists; hints slice 9 |
+| Accessibility semantics → platform APIs | Lit (`a11y.ts`, `describeValue`); React built-ins; terminal n/a | exists; parity asserted in slice 6b |
+| Interactions upward as intents, never capability calls | `interpretAction` (loom-ui planner) → loom's authorised effect path | exists (slice 5) |
+| Stale vs invalid when the connection drops | `BindingStatus` matrix (stale/error), hydration drift | this spec |
+| Capability and identity negotiation | compile-time `renderer-coverage`; surface `audience` | coverage exists; audience slice 7 |
+
 **`traverseBlueprint`** resolves `status` beside `value`: `resolveWidgetStatus(widget, stateMap)` = `resolvePath(state, binding.status.path)` when `binding.status` is set, else `undefined`, validated structurally (a value that is not a `BindingStatus` shape resolves to `undefined` and is not a throw). `renderWidget` receives `{ widget, value, status?, onAction? }`. `ContainerContext` gains the `GridCell[]` so container renderers can read spans.
 
 **Canonical status precedence**, the same on every surface (adopted from loom-ui slice 4's matrix, now loom's): `error` → value renderer never runs, show the finding; `stale` → marker plus the value if present, marker plus "no value" otherwise; `pending` → marker plus the value if present, loading otherwise; no status or `ready` with `value === undefined` → loading; otherwise ready. Kind-level value contracts stay the framework's (loom validates nothing about values); the slot between `error` and `stale` where loom-ui inserts its contract check is documented so the two matrices compose.
