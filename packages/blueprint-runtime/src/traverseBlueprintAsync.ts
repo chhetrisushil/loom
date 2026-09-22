@@ -1,4 +1,5 @@
 import { throwIfAborted, yieldControl } from "@loom/scheduler";
+import { asCell, isWidget, resolveWidgetStatus } from "./normalize";
 import { resolveWidgetValue } from "./traverseBlueprint";
 import type { Layout, Widget, WidgetAction, WidgetRendererProps } from "./types";
 
@@ -60,21 +61,24 @@ export async function traverseBlueprintAsync<TNode>(
   const walk = async (current: Layout | Widget): Promise<TNode> => {
     await tick();
 
-    if ("_tag" in current && current._tag === "Widget") {
-      const widget = current as Widget;
+    if (isWidget(current)) {
+      const status = resolveWidgetStatus(current, stateMap);
       return renderer.createWidget({
-        widget,
-        value: resolveWidgetValue(widget, stateMap),
+        widget: current,
+        value: resolveWidgetValue(current, stateMap),
+        ...(status !== undefined && { status }),
         ...(onAction !== undefined && { onAction }),
       });
     }
 
-    const layout = current as Layout;
+    const layout = current;
     // Create the container FIRST so children can be committed into it as they
     // resolve (incremental commit / progressive paint between yields).
     const container = renderer.createContainer(layout);
-    for (const child of layout.children) {
-      const childNode = await walk(child as Layout | Widget);
+    const nodes =
+      layout.type === "grid" ? layout.children.map((c) => asCell(c).node) : layout.children;
+    for (const child of nodes) {
+      const childNode = await walk(child);
       renderer.appendChild(container, childNode);
     }
     return container;

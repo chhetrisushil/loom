@@ -1,4 +1,5 @@
-import type { Blueprint, Layout, Widget } from "./types";
+import { asCell } from "./normalize";
+import type { Blueprint, GridCell, Layout, Widget } from "./types";
 
 // ── Node identity across a structural change ─────────────────────────────────
 //
@@ -65,7 +66,11 @@ export function blueprintNodeIds(blueprint: Blueprint): string[] {
     }
     const layout = node as Layout;
     for (let i = layout.children.length - 1; i >= 0; i--) {
-      stack.push(layout.children[i] as Layout | Widget);
+      stack.push(
+        layout.type === "grid"
+          ? asCell(layout.children[i] as GridCell).node
+          : (layout.children[i] as Layout | Widget)
+      );
     }
   }
   return ids;

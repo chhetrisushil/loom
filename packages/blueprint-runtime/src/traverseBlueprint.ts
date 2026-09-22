@@ -1,9 +1,9 @@
-import { resolvePath } from "./normalize";
+import { asCell, isWidget, resolvePath, resolveWidgetStatus } from "./normalize";
 import type { Layout, Widget, WidgetAction, WidgetRendererProps } from "./types";
 
 // Re-exported unchanged for existing consumers; it now lives in normalize.ts to avoid an
-// import cycle (normalize.ts's `resolveWidgetStatus` needs it, and this module will import
-// `asCell` from normalize.ts in Task 2).
+// import cycle (normalize.ts's `resolveWidgetStatus` needs it, and this module imports
+// `asCell`/`isWidget`/`resolveWidgetStatus` from normalize.ts as of Task 2).
 export { resolvePath };
 
 // ── Context types ─────────────────────────────────────────────────────────────
@@ -11,6 +11,8 @@ export { resolvePath };
 export interface ContainerContext<TNode> {
   layout: Layout;
   children: TNode[];
+  /** Grid containers only: each child with the columns it occupies (default 1), in order. */
+  cells?: Array<{ span: number; child: TNode }>;
 }
 
 // ── Value resolution ──────────────────────────────────────────────────────────
@@ -60,19 +62,25 @@ export function traverseBlueprint<TNode>(
 ): TNode {
   const { renderWidget, renderContainer, onAction } = options;
 
-  if ("_tag" in node && node._tag === "Widget") {
-    const widget = node as Widget;
+  if (isWidget(node)) {
+    const status = resolveWidgetStatus(node, stateMap);
     return renderWidget({
-      widget,
-      value: resolveWidgetValue(widget, stateMap),
+      widget: node,
+      value: resolveWidgetValue(node, stateMap),
+      ...(status !== undefined && { status }),
       ...(onAction !== undefined && { onAction }),
     });
   }
 
-  const layout = node as Layout;
-  const children = layout.children.map((child) =>
-    traverseBlueprint(child as Layout | Widget, stateMap, options)
-  );
+  const layout = node;
+  if (layout.type === "grid") {
+    const cells = layout.children
+      .map(asCell)
+      .map((c) => ({ span: c.span ?? 1, child: traverseBlueprint(c.node, stateMap, options) }));
+    return renderContainer({ layout, children: cells.map((c) => c.child), cells });
+  }
+
+  const children = layout.children.map((child) => traverseBlueprint(child, stateMap, options));
 
   return renderContainer({ layout, children });
 }
