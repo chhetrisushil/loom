@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { blueprint$ } from "./Blueprint";
 import { blueprintNodeIds, preservesBlueprintNodes, preservesNodes } from "./identity";
 import { grid, stack } from "./layout";
-import type { GridLayout, Layout } from "./types";
+import type { GridCell, GridLayout, Layout } from "./types";
 import { MetricCard, StatusBadge } from "./widgets";
 
 const binding = { projectionId: "db", path: "latency" };
@@ -61,11 +61,32 @@ describe("blueprintNodeIds", () => {
     expect(blueprintNodeIds(view)).toEqual(["latency", "locks"]);
   });
 
-  it("does not stop at a grid cell whose node is undefined (e.g. cell(6, undefined))", () => {
+  it("does not stop at a bare undefined hole in a grid's children (no GridCell wrapper at all)", () => {
     const legacyLayout = {
       type: "grid",
       columns: 3,
       children: [undefined, metric("Latency", "latency"), metric("Locks", "locks")],
+    } as unknown as GridLayout;
+    const view = blueprint$({
+      id: "v",
+      title: "v",
+      layout: legacyLayout,
+      projections: ["db"],
+    });
+    expect(blueprintNodeIds(view)).toEqual(["latency", "locks"]);
+  });
+
+  it("does not stop at a real GridCell whose node is undefined (e.g. cell(6, undefined))", () => {
+    // Distinct from the bare-hole case above: here the child IS a well-formed GridCell —
+    // `asCell` has nothing to normalise — and it's `.node` itself that's the hole.
+    const legacyLayout = {
+      type: "grid",
+      columns: 3,
+      children: [
+        { span: 6, node: undefined } as unknown as GridCell,
+        metric("Latency", "latency"),
+        metric("Locks", "locks"),
+      ],
     } as unknown as GridLayout;
     const view = blueprint$({
       id: "v",
