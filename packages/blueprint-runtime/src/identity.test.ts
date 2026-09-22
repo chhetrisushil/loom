@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { blueprint$ } from "./Blueprint";
 import { blueprintNodeIds, preservesBlueprintNodes, preservesNodes } from "./identity";
 import { grid, stack } from "./layout";
+import type { GridLayout } from "./types";
 import { MetricCard, StatusBadge } from "./widgets";
 
 const binding = { projectionId: "db", path: "latency" };
@@ -23,6 +24,23 @@ describe("blueprintNodeIds", () => {
       projections: ["db"],
     });
     expect(blueprintNodeIds(view)).toEqual(["latency", "locks", "plan"]);
+  });
+
+  it("returns ids in pre-order for a legacy-grid blueprint (bare children, no GridCell wrapper), including one nested in a stack inside the grid", () => {
+    // Built WITHOUT grid() — a hand-cast literal, so blueprintNodeIds's own asCell handling
+    // is what's under test, not the builder's normalisation.
+    const legacyLayout = {
+      type: "grid",
+      columns: 2,
+      children: [metric("Latency", "latency"), stack({ children: [metric("Locks", "locks")] })],
+    } as unknown as GridLayout;
+    const view = blueprint$({
+      id: "v",
+      title: "v",
+      layout: legacyLayout,
+      projections: ["db"],
+    });
+    expect(blueprintNodeIds(view)).toEqual(["latency", "locks"]);
   });
 });
 

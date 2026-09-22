@@ -17,9 +17,12 @@ describe("traverseBlueprint (2.0.0)", () => {
     const state = { v: { a: 1, b: 2 }, s: { a: { state: "stale", seq: 2 } } };
     const map = new Map<string, unknown>([["p", state]]);
     const seen: Array<[string, unknown, unknown]> = [];
+    let noChannelCtx: object | undefined;
     traverseBlueprint(stack({ children: [w("a", { path: "s.a" }), w("b")] }), map, {
-      renderWidget: ({ widget, value, status }) => {
+      renderWidget: (ctx) => {
+        const { widget, value, status } = ctx;
         seen.push([widget.id, value, status]);
+        if (widget.id === "b") noChannelCtx = ctx;
         return widget.id;
       },
       renderContainer: ({ children }) => children.join(","),
@@ -28,6 +31,9 @@ describe("traverseBlueprint (2.0.0)", () => {
       ["a", 1, { state: "stale", seq: 2 }],
       ["b", 2, undefined],
     ]);
+    // Distinguishes an ABSENT `status` key from a present-`undefined` one — a renderer
+    // testing `"status" in ctx` must see it missing, not present-and-undefined.
+    expect("status" in (noChannelCtx as object)).toBe(false);
   });
   it("hands grid containers their cells with spans, and accepts a legacy bare child", () => {
     const legacy = {
@@ -51,13 +57,17 @@ describe("traverseBlueprint (2.0.0)", () => {
   });
   it("a non-grid container has no cells", () => {
     let cells: unknown = "unset";
+    let stackCtx: object | undefined;
     traverseBlueprint(stack({ children: [w("a")] }), new Map([["p", {}]]), {
       renderWidget: ({ widget }) => widget.id,
       renderContainer: (ctx) => {
         cells = ctx.cells;
+        stackCtx = ctx;
         return "";
       },
     });
     expect(cells).toBeUndefined();
+    // Distinguishes an ABSENT `cells` key from a present-`undefined` one.
+    expect("cells" in (stackCtx as object)).toBe(false);
   });
 });

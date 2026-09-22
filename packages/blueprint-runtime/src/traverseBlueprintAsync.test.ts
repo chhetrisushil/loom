@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { grid, stack } from "./layout";
 import { traverseBlueprintAsync } from "./traverseBlueprintAsync";
 import type { IncrementalRenderer } from "./traverseBlueprintAsync";
-import type { Layout, Widget } from "./types";
+import type { GridLayout, Layout, Widget } from "./types";
 
 // A test-only reference IncrementalRenderer that builds a plain object tree and
 // records the order in which nodes were committed (appendChild) — proving the
@@ -70,6 +70,32 @@ describe("traverseBlueprintAsync", () => {
       "widget:StatusBadge:3",
       "container:stack",
     ]);
+  });
+
+  it("a legacy bare-child grid (no GridCell wrapper) traverses to the same output as the grid()-built equivalent", async () => {
+    // Built WITHOUT grid() — a hand-cast literal, so the walker (not the builder) is what's
+    // under test. grid() would normalise bare children into GridCells before the walker
+    // ever saw them, proving nothing about the walker's own asCell handling.
+    const legacyTree = {
+      type: "grid",
+      columns: 2,
+      children: [
+        widget("a", "MetricCard", "a"),
+        stack({ children: [widget("b", "StatusBadge", "b"), widget("c", "StatusBadge", "c")] }),
+      ],
+    } as unknown as GridLayout;
+
+    const legacyCommitted: string[] = [];
+    const builtCommitted: string[] = [];
+    const legacyRoot = await traverseBlueprintAsync(legacyTree, stateMap, {
+      renderer: refRenderer(legacyCommitted),
+    });
+    const builtRoot = await traverseBlueprintAsync(tree, stateMap, {
+      renderer: refRenderer(builtCommitted),
+    });
+
+    expect(legacyRoot).toEqual(builtRoot);
+    expect(legacyCommitted).toEqual(builtCommitted);
   });
 
   it("yields cooperatively for large trees (default budget)", async () => {

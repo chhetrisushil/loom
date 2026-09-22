@@ -75,6 +75,10 @@ export async function traverseBlueprintAsync<TNode>(
     // Create the container FIRST so children can be committed into it as they
     // resolve (incremental commit / progressive paint between yields).
     const container = renderer.createContainer(layout);
+    // Only the iteration source changes for a grid (unwrap each child via `asCell`) — this
+    // walker has no `cells`/span surface of its own: the container is created and committed
+    // to before its children resolve, so there is nowhere to hand spans alongside them. A
+    // renderer that needs them can read `layout.children` itself in `createContainer`.
     const nodes =
       layout.type === "grid" ? layout.children.map((c) => asCell(c).node) : layout.children;
     for (const child of nodes) {
