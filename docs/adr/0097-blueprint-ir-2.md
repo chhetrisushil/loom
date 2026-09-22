@@ -5,7 +5,7 @@
 - Implements: the [Blueprint IR 2.0.0 design](../requirements/2026-09-22-blueprint-ir-2-design.md).
 - Builds on: [ADR 0096](0096-blueprint-stable-rendering-ir.md) (the version pin this bump uses),
   [ADR 0088](0088-blueprint-conformance.md) (`validateBlueprint`/`catalogCoverage`, extended here
-  with five new codes), [ADR 0095](0095-binding-semantics-pin.md) (declared, not derived, meaning —
+  with seven new codes), [ADR 0095](0095-binding-semantics-pin.md) (declared, not derived, meaning —
   the same discipline this ADR applies to a binding's delivery state), [ADR 0085](0085-untrusted-content-integrity-axis.md)
   (the classify vocabulary `sensitivity` reuses).
 - **KERNEL_ABI unchanged (1.1.0); EVENT_SCHEMA unchanged (1.18.0).** `BLUEPRINT_IR_VERSION`
@@ -25,7 +25,7 @@ around it instead of through it:
 
 1. **A grid child's width.** loom-ui's layout has a per-child `span`; loom's `GridLayout` does
    not. It shipped as `props.span`, a reserved key declared into every derived catalogue
-   contract — [ADR 0096 D4](0096-blueprint-stable-rendering-ir.md#d4---what-loom-does-not-do-here)
+   contract — [ADR 0096 D4](0096-blueprint-stable-rendering-ir.md#d4--what-loom-does-not-do-here)
    named this "visible degradation" and deferred the field rather than pre-empt loom-ui's own
    slice 2 decision. Lit read the prop and honoured it; React's grid renderer did not know to
    look, so a nested container's span was silently dropped, and `validateBlueprint` flagged
@@ -57,7 +57,7 @@ the split.
 
 The maintainer's ruling, made in the same review that produced the design this ADR implements: the
 IR grows, deliberately, under the version pin ADR 0096 built for exactly this. [ADR 0096
-D4](0096-blueprint-stable-rendering-ir.md#d4---what-loom-does-not-do-here) said a loom layout
+D4](0096-blueprint-stable-rendering-ir.md#d4--what-loom-does-not-do-here) said a loom layout
 field for `span` "becomes a loom layout field only if a React consumer of the framework needs it;
 that would be a minor bump under D2" — loom-ui's compiler is that consumer, and the shape of the
 fix (a wrapped cell, not a bare optional) makes it a major bump instead, for the reason [Decision
@@ -75,7 +75,7 @@ what a non-grid container does with a field that means nothing outside a grid. A
 puts the fact exactly where it is true — the *edge* from a grid to its child — and nowhere else.
 
 Because `GridCell` replaces the element type of an existing array rather than adding an optional
-field, this is [ADR 0096 D2](0096-blueprint-stable-rendering-ir.md#d2---the-shape-is-guarded-twice-because-each-guard-fails-a-different-way)'s
+field, this is [ADR 0096 D2](0096-blueprint-stable-rendering-ir.md#d2--the-shape-is-guarded-twice-because-each-guard-fails-a-different-way)'s
 **major** case: `BLUEPRINT_IR_VERSION` moves `1.0.0` → `2.0.0`, `BLUEPRINT_IR_SHAPE` gains a
 `GRID_CELL` manifest entry alongside the widened `GridLayout` one, and `irVersion.test.ts` pins a
 second digest under `2.0.0` beside the untouched `1.0.0` row.
@@ -85,8 +85,9 @@ loom-examples would be the workaround problem again, one level up, so compatibil
 
 - **Readers accept 1.0.0.** `asCell(child: GridCell | Widget | Layout): GridCell` is the one
   place a bare legacy child becomes a cell (`{ span: 1, node: child }`); `traverseBlueprint`,
-  `validateBlueprint`, `blueprintPins` and both renderers call it and branch on the union
-  nowhere else. `Blueprint.irVersion` names the shape an artifact was written in; its absence
+  `validateBlueprint` and both renderers call it and branch on the union nowhere else
+  (`blueprintPins` reads `Blueprint.projectionVersions` and never walks the tree, so it has no
+  grid child to normalise). `Blueprint.irVersion` names the shape an artifact was written in; its absence
   reads as `"1.0.0"` (`blueprintIrVersion`, `IR_VERSION_LEGACY`).
 - **Writers emit 2.0.0.** `blueprint$` stamps `irVersion: BLUEPRINT_IR_VERSION` on every artifact
   it builds. `grid({ columns, children })` accepts `Array<GridCell | Widget | Layout>` and
@@ -103,6 +104,16 @@ loom-examples would be the workaround problem again, one level up, so compatibil
   address, precisely because its shape changed. That is a new artifact with the old one as its
   parent, the same rule every other structural change follows; nothing rewrites what is already
   stored.
+- **A cell is an IR edge, not a DOM element.** A renderer adds an element for a cell only when
+  it has something to say with it: on React, **a grid child gains a wrapper element ONLY when
+  its span exceeds 1**; span-1 children — and therefore every 1.0.0 grid, whose cells are all
+  implicitly span 1 — render DOM identical to 1.0.0. That is not only a cosmetic property. A
+  wrapper interposed on every cell would own the array position React diffs, and keying it by
+  index re-identifies every cell after a removed sibling: React then discards the survivors'
+  DOM (with their focus, scroll offset and uncontrolled input state) and rebuilds it. Emitting
+  the child directly keeps `key={widget.id}` on the element React diffs, so a grid child
+  reconciles by widget id exactly as a `stack` child always has; the span > 1 wrapper takes the
+  child's own key for the same reason.
 
 ### D2 — loom owns the status contract; the matrix is canonical on every surface
 
@@ -131,8 +142,18 @@ can read spans without re-deriving them.
 - `stale` → a marker plus the value when one is present, a marker plus "no value" when it is not.
 - `pending` → a marker plus the value when one is present, a loading state when it is not.
 - `status` undefined (never written, or malformed) or `state: "ready"`, with `value === undefined`
-  → loading.
+  → loading. On the terminal that row is `⋯ <title>`, the same line as pending-with-no-value:
+  "it has not arrived", not `<title>: —`, which reads as "the answer is nothing."
 - Otherwise → ready.
+
+Between `error` and `stale` the matrix leaves one documented slot: an optional `check(widget,
+value)` supplied by the caller — `TerminalRenderOptions.check` and the `check` prop on
+`BlueprintRenderer` and `WidgetFrame`. loom validates nothing about values itself; a framework's
+own kind contract (loom-ui's `checkKindValue`) plugs in here, and a returned `{ code, message }`
+renders exactly as the error row does, suppressing the widget's renderer. It runs only for a
+widget whose binding DECLARES a status channel, and only when delivery has not already failed —
+`status.state === "error"` outranks it, because there is no value to check when the fetch
+itself did. Returning `undefined` leaves the rest of the matrix untouched.
 
 The rule that keeps this from being a spinner trap: **a present value renders ready even when its
 status has not been written yet.** `status` arriving is not a precondition for showing `value` —
@@ -208,21 +229,33 @@ retrofitting a fourth structural field onto artifacts that predate it.
   wrapper are all retired once loom-ui's compiler emits `GridCell`, `binding.status` and
   `binding.sensitivity` directly and its adapters read the Blueprint alone. That PR is out of
   this ADR's scope; this ADR is what makes it possible.
-- **Five new `validateBlueprint` codes**, findings rather than throws, matching [ADR
+- **Seven new `validateBlueprint` codes**, findings rather than throws, matching [ADR
   0088](0088-blueprint-conformance.md)'s "a composer must be able to degrade and record a gap
-  rather than lose the surface": `span-out-of-range`, `status-path-invalid`,
-  `sensitivity-unknown`, `source-invalid`, `ir-version-unknown`. `props.span` continues to fire
-  `undeclared-prop` — the field is retired from `props`, not made legal there.
+  rather than lose the surface": `span-out-of-range`, `columns-invalid`, `malformed-node`,
+  `status-path-invalid`, `sensitivity-unknown`, `source-invalid`, `ir-version-unknown`.
+  `props.span` continues to fire `undeclared-prop` — the field is retired from `props`, not made
+  legal there. Two of them keep the report honest about a defect's SIZE and the walk's totality:
+  a grid whose `columns` is not a positive integer reports `columns-invalid` once and its cells'
+  spans are then not checked (otherwise one bad `columns` invents a `span-out-of-range` per
+  child), and a layout child that is neither a `Widget` nor a `Layout` — a stray `null`, a
+  string, a `GridCell` stranded outside a grid — is `malformed-node` and the walk continues, so
+  a model-composed artifact can never make `validateBlueprint` throw.
 - `@loom/plugin-renderer-react` exports `WidgetFrame` (the matrix wrapper) and `useWidgetSlice`
   (a fiber selector over `{ value, status }` together, so a status-only change re-renders a
-  widget without forcing a value-only render to pay for it, and vice versa). Grid cells with
-  `span > 1` render with `gridColumn: span N`.
+  widget without forcing a value-only render to pay for it, and vice versa). A grid child gains
+  a wrapper element ONLY when its span exceeds 1, where it carries `gridColumn: span N`;
+  span-1 children — and therefore every 1.0.0 grid — are DOM-identical to 1.0.0 and still
+  reconcile by widget id.
+- **Both renderers take an optional `check(widget, value)`** — `TerminalRenderOptions.check`,
+  and the `check` prop on `BlueprintRenderer` (both render paths) and `WidgetFrame`. It is the
+  value-contract slot between `error` and `stale`; loom supplies no check of its own.
 - `@loom/plugin-renderer-terminal`'s `TerminalWidgetRenderer` becomes `(widget, value, status?) =>
   string`, an additive optional third parameter — every existing two-argument renderer in a
   caller's own registry keeps compiling and keeps its old output for widgets with no status
-  channel. `renderBlueprintToString` applies the matrix with `⋯` (pending), `~` (stale) and `✗`
-  (error, finding appended) glyphs, and appends the degraded-from suffix from `source` when
-  present.
+  channel. `renderBlueprintToString` applies the matrix with `⋯` (pending, and the loading row — a
+  declared channel whose value has not arrived renders `⋯ <title>` rather than `<title>: —`),
+  `~` (stale) and `✗` (error, finding appended) glyphs, and appends the degraded-from suffix
+  from `source` to the first line of a widget's render when present.
 - `KERNEL_ABI_VERSION` stays 1.1.0, `EVENT_SCHEMA_VERSION` stays 1.18.0: no event, no fold, no
   syscall changed. `@loom/spec`'s capability registry lists this ADR in `NOT_A_CAPABILITY` for
   the same reason ADR 0096 is there — a declared IR version and two renderer options are a

@@ -108,7 +108,7 @@ No semantic kinds (D4 of ADR 0096 stands). No per-child span on flex or stack (t
 
 ## 3. Compatibility
 
-- **Readers accept 1.0.0.** `asCell(child: GridCell | Widget | Layout): GridCell` wraps a bare child with `span: 1`. `traverseBlueprint`, `validateBlueprint`, `collectAllWidgets`, `blueprintPins`, and both renderers call it and never branch on the union elsewhere. A blueprint without `irVersion` is treated as 1.0.0.
+- **Readers accept 1.0.0.** `asCell(child: GridCell | Widget | Layout): GridCell` wraps a bare child with `span: 1`. `traverseBlueprint`, `validateBlueprint`, `collectAllWidgets` and both renderers call it and never branch on the union elsewhere. (`blueprintPins` does not walk the tree at all — it reads `Blueprint.projectionVersions` — so it never sees a grid child and needs no normaliser.) A blueprint without `irVersion` is treated as 1.0.0.
 - **Writers emit 2.0.0.** `blueprint$` sets `irVersion: BLUEPRINT_IR_VERSION`. `grid({ columns, children })` accepts `Array<GridCell | Widget | Layout>` and normalises to `GridCell[]`, so `grid({ children: [MetricCard(...)] })` in every example and doc keeps compiling and produces a 2.0.0 artifact. A new builder `cell(span, node)` exists for explicit spans.
 - **Explicit upgrade.** `upgradeBlueprint(bp: Blueprint): Blueprint` returns a 2.0.0 artifact (cells wrapped, `irVersion` set), identity on 2.0.0 input. It is what a migration or a `getExperience`-style reader calls when it wants to re-address the artifact; readers do not need it.
 - **Content addresses change.** A 1.0.0 artifact re-emitted as 2.0.0 has a different content address; that is a new artifact with the old as parent, exactly as any structural change is. Nothing rewrites stored artifacts.
@@ -120,6 +120,8 @@ New rules, findings not throws, one code per defect class:
 | Code | Severity | Condition |
 |---|---|---|
 | `span-out-of-range` | error | a `GridCell.span` not an integer in `1..columns` of its parent grid |
+| `columns-invalid` | error | a grid's `columns` is not a positive integer; that grid's cell spans are then not checked, so one defect yields one finding |
+| `malformed-node` | error | a layout child that is neither a `Widget` nor a `Layout` (a stray `null`, a string, a `GridCell` outside a grid); the subtree below it is not walked |
 | `status-path-invalid` | error | `binding.status.path` empty or not a dotted path |
 | `sensitivity-unknown` | error | `binding.sensitivity` not a `DataClass` value |
 | `source-invalid` | error | `source.type`/`version` empty, or a `degradedFrom` entry missing either |
@@ -153,16 +155,16 @@ Where each of the paper's rendering-runtime responsibilities lives. **None is de
 
 **`traverseBlueprint`** resolves `status` beside `value`: `resolveWidgetStatus(widget, stateMap)` = `resolvePath(state, binding.status.path)` when `binding.status` is set, else `undefined`, validated structurally (a value that is not a `BindingStatus` shape resolves to `undefined` and is not a throw). `renderWidget` receives `{ widget, value, status?, onAction? }`. `ContainerContext` gains the `GridCell[]` so container renderers can read spans.
 
-**Canonical status precedence**, the same on every surface (adopted from loom-ui slice 4's matrix, now loom's): `error` → value renderer never runs, show the finding; `stale` → marker plus the value if present, marker plus "no value" otherwise; `pending` → marker plus the value if present, loading otherwise; no status or `ready` with `value === undefined` → loading; otherwise ready. Kind-level value contracts stay the framework's (loom validates nothing about values); the slot between `error` and `stale` where loom-ui inserts its contract check is documented so the two matrices compose.
+**Canonical status precedence**, the same on every surface (adopted from loom-ui slice 4's matrix, now loom's): `error` → value renderer never runs, show the finding; `stale` → marker plus the value if present, marker plus "no value" otherwise; `pending` → marker plus the value if present, loading otherwise; no status or `ready` with `value === undefined` → loading; otherwise ready. Kind-level value contracts stay the framework's (loom validates nothing about values); the slot between `error` and `stale` where loom-ui inserts its contract check is a real parameter on both renderers, so the two matrices compose rather than merely being documented as composable: `check?: (widget, value) => { code, message } | undefined` on `TerminalRenderOptions` and on `BlueprintRenderer`/`WidgetFrame` props. It runs only for a widget whose binding DECLARES a status channel and only when `status?.state !== "error"` (a delivery error outranks it — there is no value to check), and a returned finding renders exactly as the error row does, suppressing the widget's own renderer. Returning `undefined` leaves the matrix untouched.
 
 **React (`@loom/plugin-renderer-react`)**, eager and fiber paths alike:
-- grid cells render with `gridColumn: span N` when `span > 1`;
+- a grid cell gains a wrapper element carrying `gridColumn: span N` ONLY when `span > 1`; a span-1 cell is emitted directly, so every 1.0.0 grid renders the DOM it always did and each child still reconciles by its widget id;
 - a widget with `status` is wrapped in `<div data-binding-state=…>` and, for `pending` and `stale`, a marker element; for `error`, the finding replaces the widget renderer (the widget renderer is still passed `status` so a custom renderer may take over);
 - `source` becomes `data-source-type`, `data-source-version`, and `data-degraded="Trend@1.0.0 › Collection@1.0.0"` with a `title` tooltip on the wrapper;
 - `WidgetRendererProps.status` reaches every registered renderer; the eight built-ins ignore it (the wrapper handles it).
 - Fiber mode subscribes each widget to a selector over `(value, status)` and re-renders on either.
 
-**Terminal (`@loom/plugin-renderer-terminal`)**: `TerminalWidgetRenderer` becomes `(widget, value, status?) => string`; `renderBlueprintToString` applies the matrix with the glyphs `⋯ ` (pending), `~ ` (stale), `✗ ` (error, finding appended); a degraded widget's line ends with ` (degraded from Trend@1.0.0)`; spans are ignored. loom-ui's `withStatus` wrapper is retired (§6).
+**Terminal (`@loom/plugin-renderer-terminal`)**: `TerminalWidgetRenderer` becomes `(widget, value, status?) => string`; `renderBlueprintToString` applies the matrix with the glyphs `⋯ ` (pending, and the loading row — a declared channel with no value yet, whichever state says so), `~ ` (stale), `✗ ` (error, finding appended); a degraded widget's line ends with ` (degraded from Trend@1.0.0)` on its FIRST line only; spans are ignored. loom-ui's `withStatus` wrapper is retired (§6).
 
 ## 6. loom-ui changes (second PR)
 
