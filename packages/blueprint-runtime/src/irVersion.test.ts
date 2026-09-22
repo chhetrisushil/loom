@@ -13,6 +13,7 @@ import { BLUEPRINT_IR_SHAPE, BLUEPRINT_IR_VERSION } from "./irVersion";
 
 const PINNED: ReadonlyArray<readonly [version: string, digest: string]> = [
   ["1.0.0", "59ee5cb1c37efe75"],
+  ["2.0.0", "30386c2756d01add"],
 ];
 
 const digestOf = (shape: unknown) => fnv1a64(canonicalJson(shape));

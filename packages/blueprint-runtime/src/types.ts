@@ -11,9 +11,32 @@ export type WidgetKind =
   | "AlertCard"
   | "StreamingText";
 
+import type { DataClass } from "@loom/classify";
+
+export type BindingState = "pending" | "ready" | "stale" | "error";
+/** A binding's delivery state, read from the same projection state as its value (IR 2.0.0). */
+export interface BindingStatus {
+  state: BindingState;
+  /** Monotonic per binding; lets a renderer coalesce out-of-order updates. */
+  seq?: number;
+  finding?: { code: string; message: string };
+}
+
 export interface DataBinding {
   projectionId: string;
   path: string;
+  /** Where, in the SAME projection state, this binding's status lives. Absent ⇒ no status channel. */
+  status?: { path: string };
+  /** `@loom/classify` DataClass. Read by compilers and delivery; never by renderers. */
+  sensitivity?: DataClass;
+}
+
+/** What a widget stands for: the semantic type it renders and the degradations that led to `kind`. */
+export interface WidgetSource {
+  type: string;
+  version: string;
+  /** Outermost first. */
+  degradedFrom?: Array<{ type: string; version: string }>;
 }
 
 export interface Widget {
@@ -25,13 +48,19 @@ export interface Widget {
   title?: string;
   props: Record<string, unknown>;
   binding?: DataBinding;
+  source?: WidgetSource;
 }
 
+/** One child of a grid with the columns it occupies (default 1). */
+export interface GridCell {
+  span?: number;
+  node: Widget | Layout;
+}
 export interface GridLayout {
   type: "grid";
   columns: number;
   gap?: number;
-  children: Array<Widget | Layout>;
+  children: GridCell[];
 }
 
 export interface FlexLayout {
@@ -51,6 +80,8 @@ export type Layout = GridLayout | FlexLayout | StackLayout;
 
 export interface Blueprint {
   readonly _tag: "Blueprint";
+  /** The IR shape this artifact was written in. Absent ⇒ "1.0.0". Writers always set it. */
+  irVersion?: string;
   id: string;
   title: string;
   layout: Layout;
@@ -81,5 +112,6 @@ export interface WidgetAction {
 export interface WidgetRendererProps {
   widget: Widget;
   value: unknown;
+  status?: BindingStatus;
   onAction?: (action: WidgetAction) => void;
 }

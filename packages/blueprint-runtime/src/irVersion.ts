@@ -1,12 +1,16 @@
 import type {
+  BindingState,
+  BindingStatus,
   Blueprint,
   DataBinding,
   FlexLayout,
+  GridCell,
   GridLayout,
   Layout,
   StackLayout,
   Widget,
   WidgetKind,
+  WidgetSource,
 } from "./types";
 
 // ── The Blueprint as a stable rendering IR (ADR 0096) ─────────────────────────
@@ -29,7 +33,7 @@ import type {
 // Adding a Layout variant means adding its field manifest here too; `Record<Layout["type"], true>`
 // catches the variant, not its fields.
 
-export const BLUEPRINT_IR_VERSION = "1.0.0";
+export const BLUEPRINT_IR_VERSION = "2.0.0";
 
 type OptionalKeys<T> = { [K in keyof T]-?: object extends Pick<T, K> ? K : never }[keyof T];
 /** Every key of T, each tagged by whether T declares it optional. `satisfies` rejects a missing key,
@@ -45,12 +49,43 @@ const WIDGET = {
   title: "optional",
   props: "required",
   binding: "optional",
+  source: "optional",
 } as const satisfies KeyShape<Widget>;
 
 const DATA_BINDING = {
   projectionId: "required",
   path: "required",
+  status: "optional",
+  sensitivity: "optional",
 } as const satisfies KeyShape<DataBinding>;
+
+const BINDING_STATUS_REF = {
+  path: "required",
+} as const satisfies KeyShape<NonNullable<DataBinding["status"]>>;
+
+const BINDING_STATUS = {
+  state: "required",
+  seq: "optional",
+  finding: "optional",
+} as const satisfies KeyShape<BindingStatus>;
+
+const WIDGET_SOURCE = {
+  type: "required",
+  version: "required",
+  degradedFrom: "optional",
+} as const satisfies KeyShape<WidgetSource>;
+
+const GRID_CELL = {
+  span: "optional",
+  node: "required",
+} as const satisfies KeyShape<GridCell>;
+
+const BINDING_STATES = {
+  pending: true,
+  ready: true,
+  stale: true,
+  error: true,
+} as const satisfies Record<BindingState, true>;
 
 const GRID_LAYOUT = {
   type: "required",
@@ -74,6 +109,7 @@ const STACK_LAYOUT = {
 
 const BLUEPRINT = {
   _tag: "required",
+  irVersion: "optional",
   id: "required",
   title: "required",
   layout: "required",
@@ -115,10 +151,15 @@ const plainKeysOf = (manifest: Record<string, true>): readonly string[] =>
 export const BLUEPRINT_IR_SHAPE = {
   widget: keysOf(WIDGET),
   dataBinding: keysOf(DATA_BINDING),
+  bindingStatusRef: keysOf(BINDING_STATUS_REF),
+  bindingStatus: keysOf(BINDING_STATUS),
+  widgetSource: keysOf(WIDGET_SOURCE),
+  gridCell: keysOf(GRID_CELL),
   gridLayout: keysOf(GRID_LAYOUT),
   flexLayout: keysOf(FLEX_LAYOUT),
   stackLayout: keysOf(STACK_LAYOUT),
   blueprint: keysOf(BLUEPRINT),
   widgetKinds: plainKeysOf(WIDGET_KINDS),
   layoutTypes: plainKeysOf(LAYOUT_TYPES),
+  bindingStates: plainKeysOf(BINDING_STATES),
 } as const;

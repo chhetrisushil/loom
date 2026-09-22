@@ -1,6 +1,15 @@
 export { blueprint$ } from "./Blueprint";
 export { grid, flex, stack } from "./layout";
 export {
+  asCell,
+  cell,
+  upgradeBlueprint,
+  blueprintIrVersion,
+  isBindingStatus,
+  resolveWidgetStatus,
+  IR_VERSION_LEGACY,
+} from "./normalize";
+export {
   MetricCard,
   Timeline,
   ApprovalCard,
@@ -33,17 +42,22 @@ export type {
   IncrementalRenderer,
 } from "./traverseBlueprintAsync";
 export type {
+  BindingState,
+  BindingStatus,
   Blueprint,
   DataBinding,
   FlexLayout,
+  GridCell,
   GridLayout,
   Layout,
   StackLayout,
   Widget,
   WidgetKind,
+  WidgetSource,
   WidgetAction,
   WidgetRendererProps,
 } from "./types";
+export type { DataClass } from "@loom/classify";
 export type { ContainerContext, BlueprintTraversalOptions } from "./traverseBlueprint";
 export type {
   CatalogEntry,

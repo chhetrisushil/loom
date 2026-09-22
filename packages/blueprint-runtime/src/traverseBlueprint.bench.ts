@@ -1,4 +1,5 @@
 import { bench, describe } from "vitest";
+import { grid } from "./layout";
 import { traverseBlueprint } from "./traverseBlueprint";
 import type { Layout, Widget } from "./types";
 
@@ -22,11 +23,7 @@ function buildTree(nodeCount: number): Layout {
   while (leaves.length > 1) {
     const parents: Array<Widget | Layout> = [];
     for (let i = 0; i < leaves.length; i += branch) {
-      parents.push({
-        type: "grid",
-        columns: branch,
-        children: leaves.slice(i, i + branch),
-      });
+      parents.push(grid({ columns: branch, children: leaves.slice(i, i + branch) }));
     }
     leaves = parents;
   }

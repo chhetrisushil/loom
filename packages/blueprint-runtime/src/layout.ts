@@ -1,9 +1,10 @@
-import type { FlexLayout, GridLayout, Layout, StackLayout, Widget } from "./types";
+import { asCell } from "./normalize";
+import type { FlexLayout, GridCell, GridLayout, Layout, StackLayout, Widget } from "./types";
 
 export interface GridOptions {
   columns: number;
   gap?: number;
-  children: Array<Widget | Layout>;
+  children: Array<GridCell | Widget | Layout>;
 }
 
 export function grid(options: GridOptions): GridLayout {
@@ -11,7 +12,7 @@ export function grid(options: GridOptions): GridLayout {
     type: "grid",
     columns: options.columns,
     ...(options.gap !== undefined && { gap: options.gap }),
-    children: options.children,
+    children: options.children.map(asCell),
   };
 }
 
