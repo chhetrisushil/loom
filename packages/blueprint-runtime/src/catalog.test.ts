@@ -4,7 +4,7 @@ import { builtinCatalog, defineWidgetCatalog, validateBlueprint } from "./catalo
 import { catalogCoverage } from "./coverage";
 import { customWidget$ } from "./customWidget";
 import { grid, stack } from "./layout";
-import type { Blueprint, Layout, Widget } from "./types";
+import type { Blueprint, GridLayout, Layout, Widget } from "./types";
 import { DataTable, MetricCard, StatusBadge } from "./widgets";
 
 const bp = (children: Array<Widget | Layout>, projections: string[]): Blueprint => ({
@@ -67,6 +67,31 @@ describe("validateBlueprint — a well-formed composition", () => {
     );
     expect(report.widgets).toBe(1);
     expect(codes(report)).toContain("unknown-kind");
+  });
+
+  it("visits every widget in a legacy-grid blueprint (bare children, no GridCell wrapper)", () => {
+    // Built WITHOUT grid() — a hand-cast literal, so eachWidget's own asCell handling is
+    // what's under test, not the builder's normalisation.
+    const legacyLayout = {
+      type: "grid",
+      columns: 2,
+      children: [
+        MetricCard({ title: "CPU", binding: { projectionId: "cpu", path: "current" } }),
+        stack({
+          children: [MetricCard({ title: "Mem", binding: { projectionId: "cpu", path: "mem" } })],
+        }),
+      ],
+    } as unknown as GridLayout;
+    const legacyBp: Blueprint = {
+      _tag: "Blueprint",
+      id: "test",
+      title: "Test",
+      layout: legacyLayout,
+      projections: ["cpu"],
+    };
+    const report = validateBlueprint(legacyBp, builtinCatalog);
+    expect(report.widgets).toBe(2);
+    expect(report.ok).toBe(true);
   });
 });
 
