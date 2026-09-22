@@ -146,3 +146,70 @@ describe("traverseBlueprintAsync", () => {
     expect(processed).toBeLessThan(50);
   });
 });
+
+// ── Status resolution on the async path (IR 2.0.0) ───────────────────────────
+//
+// The synchronous walker's status resolution is covered by traverseBlueprint.test.ts; the async
+// walker gained the same `resolveWidgetStatus` call with no test of its own, so "the two walkers
+// hand a renderer the same context" was an assumption rather than an assertion.
+
+describe("traverseBlueprintAsync — status", () => {
+  const statusState = new Map<string, unknown>([
+    [
+      "p",
+      { v: { a: 1, b: 2 }, s: { a: { state: "stale", finding: { code: "d", message: "m" } } } },
+    ],
+  ]);
+  const withChannel: Widget = {
+    _tag: "Widget",
+    id: "a",
+    kind: "MetricCard",
+    props: {},
+    binding: { projectionId: "p", path: "v.a", status: { path: "s.a" } },
+  };
+  const withoutChannel: Widget = {
+    _tag: "Widget",
+    id: "b",
+    kind: "MetricCard",
+    props: {},
+    binding: { projectionId: "p", path: "v.b" },
+  };
+
+  it("passes `status` for a widget that DECLARES a channel and omits the key entirely for one that does not", async () => {
+    const seen: Array<{ id: string; ctx: Record<string, unknown> }> = [];
+    await traverseBlueprintAsync(stack({ children: [withChannel, withoutChannel] }), statusState, {
+      renderer: {
+        createContainer: (l) => ({ kind: l.type, children: [] }) as RefNode,
+        createWidget: (ctx) => {
+          seen.push({ id: ctx.widget.id, ctx: ctx as unknown as Record<string, unknown> });
+          return { kind: `w:${String(ctx.value)}`, children: [] } as RefNode;
+        },
+        appendChild: () => {},
+      },
+    });
+
+    expect(seen.map((s) => s.id)).toEqual(["a", "b"]);
+    expect(seen[0]?.ctx.status).toEqual({ state: "stale", finding: { code: "d", message: "m" } });
+    // Not `status: undefined` — the key is absent, the same shape the sync walker produces.
+    expect("status" in (seen[1]?.ctx ?? {})).toBe(false);
+  });
+
+  it("a malformed value at the declared status path resolves to no status, never a throw", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    await traverseBlueprintAsync(
+      stack({ children: [withChannel] }),
+      new Map<string, unknown>([["p", { v: { a: 1 }, s: { a: { state: "nonsense" } } }]]),
+      {
+        renderer: {
+          createContainer: (l) => ({ kind: l.type, children: [] }) as RefNode,
+          createWidget: (ctx) => {
+            seen.push(ctx as unknown as Record<string, unknown>);
+            return { kind: "w", children: [] } as RefNode;
+          },
+          appendChild: () => {},
+        },
+      }
+    );
+    expect("status" in (seen[0] ?? {})).toBe(false);
+  });
+});

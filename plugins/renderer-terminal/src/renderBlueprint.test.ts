@@ -177,7 +177,10 @@ describe("renderBlueprintToString — binding status matrix and source (IR 2.0.0
     expect(line("E")).toBe("⋯ E: 1 ms");
     expect(line("F")).toBe("⋯ F");
     expect(line("G")).toBe("G: 2 ms");
-    expect(line("H")).toBe("H: —"); // ready/no value: loading on the terminal is the plain em-dash, unchanged from 1.0.0
+    // ADR 0097 D2 calls the matrix identical on EVERY renderer, and React (and loom-ui's Lit
+    // base) render this row as loading. `H: —` said "the answer is nothing"; `⋯ H` says "it has
+    // not arrived", which is what a declared-but-unwritten channel means.
+    expect(line("H")).toBe("⋯ H");
   });
   it("a widget without a declared status channel renders exactly as before, even if the state carries a status", () => {
     const plain = blueprint$({
@@ -197,6 +200,57 @@ describe("renderBlueprintToString — binding status matrix and source (IR 2.0.0
     );
     expect(o).toContain("Z: 9");
     expect(o).not.toContain("✗");
+  });
+  it("a channel-LESS widget with no value keeps the 1.0.0 em-dash — the loading row is a property of a DECLARED channel", () => {
+    const plain = blueprint$({
+      id: "p",
+      title: "P",
+      layout: stack({
+        children: [
+          MetricCard({ id: "z", title: "Z", binding: { projectionId: "p", path: "v.z" } }),
+        ],
+      }),
+      projections: ["p"],
+    });
+    const o = renderBlueprintToString(plain, new Map([["p", {}]]), {
+      registry: defaultTerminalRegistry,
+    });
+    expect(o).toContain("Z: —");
+    expect(o).not.toContain("⋯");
+  });
+  it("renders the same matrix through the KIND-BLIND path (no registry)", () => {
+    const blind = renderBlueprintToString(bp, new Map([["p", state]])).split("\n");
+    const l = (t: string) => blind.find((x) => x.includes(t)) ?? "";
+    expect(l("A")).toBe("✗ A: tool down");
+    expect(l("C")).toBe("~ C: 7");
+    expect(l("D")).toBe("~ D: — (drifted)");
+    expect(l("E")).toBe("⋯ E: 1");
+    expect(l("F")).toBe("⋯ F");
+    expect(l("G")).toBe("G: 2");
+    expect(l("H")).toBe("⋯ H");
+  });
+  it("appends the degradation chain to the FIRST line only of a multi-line render", () => {
+    const degraded = {
+      ...Timeline({ id: "tl", title: "TL", binding: { projectionId: "p", path: "v.tl" } }),
+      source: {
+        type: "Trend",
+        version: "1.0.0",
+        degradedFrom: [{ type: "Collection", version: "1.0.0" }],
+      },
+    };
+    const multi = blueprint$({
+      id: "m",
+      title: "M",
+      layout: stack({ children: [degraded] }),
+      projections: ["p"],
+    });
+    const lines = renderBlueprintToString(multi, new Map([["p", { v: { tl: ["one", "two"] } }]]), {
+      registry: defaultTerminalRegistry,
+    }).split("\n");
+    const first = lines.findIndex((x) => x.startsWith("TL"));
+    expect(lines[first]).toBe("TL: (degraded from Collection@1.0.0)");
+    expect(lines.slice(first + 1).filter((x) => x.includes("degraded from"))).toEqual([]);
+    expect(lines.some((x) => x.includes("one"))).toBe(true);
   });
   it("appends the degradation chain to a degraded widget's first line, and a legacy bare-children grid renders", () => {
     const degraded = {
@@ -218,5 +272,69 @@ describe("renderBlueprintToString — binding status matrix and source (IR 2.0.0
       registry: defaultTerminalRegistry,
     });
     expect(o).toContain("T: 3 (degraded from Collection@1.0.0)");
+  });
+});
+
+// ── The value-contract slot (design §5, ADR 0097 D2) ─────────────────────────
+//
+// loom validates nothing about a bound VALUE; a framework's own kind contract plugs in between
+// `error` and `stale`. The slot only exists so the two matrices compose — the terminal and
+// React must agree on where it sits and what it outranks.
+
+describe("renderBlueprintToString — the check seam", () => {
+  const w = (id: string, status: { path: string } | undefined) =>
+    MetricCard({
+      id,
+      title: id.toUpperCase(),
+      binding: { projectionId: "p", path: `v.${id}`, ...(status && { status }) },
+    });
+  const bpFor = (children: ReturnType<typeof w>[]) =>
+    blueprint$({ id: "c", title: "Check", layout: stack({ children }), projections: ["p"] });
+  const failing = (_widget: unknown, value: unknown) =>
+    value === "oops" ? { code: "shape", message: "not a number" } : undefined;
+
+  it("a failing check under `stale` renders the error row and suppresses the value", () => {
+    const out = renderBlueprintToString(
+      bpFor([w("a", { path: "s.a" })]),
+      new Map([["p", { v: { a: "oops" }, s: { a: { state: "stale" } } } as unknown]]),
+      { registry: defaultTerminalRegistry, check: failing }
+    );
+    expect(out).toContain("✗ A: not a number");
+    expect(out).not.toContain("~ A");
+    expect(out).not.toContain("oops");
+  });
+
+  it("a check returning undefined leaves the normal matrix alone", () => {
+    const out = renderBlueprintToString(
+      bpFor([w("a", { path: "s.a" })]),
+      new Map([["p", { v: { a: 7 }, s: { a: { state: "stale" } } } as unknown]]),
+      { registry: defaultTerminalRegistry, check: failing }
+    );
+    expect(out).toContain("~ A: 7");
+    expect(out).not.toContain("✗");
+  });
+
+  it("a delivery `error` outranks the check, and a channel-LESS widget is never checked", () => {
+    const calls: string[] = [];
+    const spy = (widget: { id: string }, value: unknown) => {
+      calls.push(widget.id);
+      return value === "oops" ? { code: "shape", message: "not a number" } : undefined;
+    };
+    const out = renderBlueprintToString(
+      bpFor([w("a", { path: "s.a" }), w("b", undefined)]),
+      new Map([
+        [
+          "p",
+          {
+            v: { a: "oops", b: "oops" },
+            s: { a: { state: "error", finding: { code: "x", message: "tool down" } } },
+          } as unknown,
+        ],
+      ]),
+      { registry: defaultTerminalRegistry, check: spy }
+    );
+    expect(out).toContain("✗ A: tool down"); // the delivery error, not the contract message
+    expect(out).toContain("B: oops"); // no channel → 1.0.0 output, unchecked
+    expect(calls).toEqual([]); // never called: one widget errored, the other has no channel
   });
 });

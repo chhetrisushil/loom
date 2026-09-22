@@ -4,6 +4,7 @@ import type { ProjectionRuntime } from "@loom/projection-runtime";
 import type React from "react";
 import type { WidgetAction, WidgetRenderer } from "../RendererRegistry";
 import { defaultRegistry } from "../RendererRegistry";
+import type { WidgetValueCheck } from "../WidgetFrame";
 import { renderReactContainer } from "../renderContainer";
 import { mountFiberWidget } from "./FiberWidget";
 import type { ResolvedFiberConfig } from "./types";
@@ -14,6 +15,8 @@ interface FiberBlueprintRendererProps {
   executionId: string;
   registry?: RendererRegistry<WidgetRenderer>;
   onAction?: (action: WidgetAction) => void;
+  /** See BlueprintRendererProps.check — the same slot, on the fiber path. */
+  check?: WidgetValueCheck;
   config: ResolvedFiberConfig;
 }
 
@@ -30,6 +33,7 @@ export function FiberBlueprintRenderer({
   executionId,
   registry,
   onAction,
+  check,
   config,
 }: FiberBlueprintRendererProps): React.ReactElement {
   const reg = registry ?? defaultRegistry;
@@ -42,6 +46,7 @@ export function FiberBlueprintRenderer({
         executionId,
         registry: reg,
         ...(onAction !== undefined && { onAction }),
+        ...(check !== undefined && { check }),
       });
     },
     renderContainer({ layout, children, cells }) {

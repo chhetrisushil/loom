@@ -388,3 +388,57 @@ describe("useFiber — status-only re-render", () => {
     expect(statuses.get("wA")).toBe("ready");
   });
 });
+
+// The hook's whole claim, stated negatively: a projection write that touches NO key any widget
+// binds must produce zero re-renders. The positive tests above ("only the widget whose slice
+// changed re-renders") are satisfied by a subscription that re-renders one widget too many, as
+// long as the SIBLING is spared; this one is not.
+describe("useFiber — an unrelated projection write re-renders nothing", () => {
+  it("writing a key no widget binds leaves every fiber widget's render count untouched", () => {
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register<StatusMetrics & { unrelated: number }>({
+      id: "status-metrics",
+      initialState: {
+        cpu: { current: 10 },
+        mem: { current: 20 },
+        s: { a: { state: "pending" }, b: { state: "pending" } },
+        unrelated: 0,
+      },
+      handlers: {
+        // A real state change (a new object, a new value) that no binding and no status path
+        // reaches — the projection DOES fire, so the subscription is exercised, not skipped.
+        UNRELATED_WRITE: (state) => ({ ...state, unrelated: state.unrelated + 1 }),
+      },
+    });
+    const counts = new Map<string, number>();
+    const statuses = new Map<string, BindingStatus["state"] | undefined>();
+
+    render(
+      <BlueprintRenderer
+        blueprint={statusMetrics}
+        projectionRuntime={runtime}
+        executionId={EXECUTION_ID}
+        registry={statusSpyRegistry(counts, statuses)}
+        fiber={{ granularUpdates: true }}
+      />
+    );
+    expect([counts.get("wA"), counts.get("wB")]).toEqual([1, 1]);
+
+    for (let i = 1; i <= 3; i++) {
+      act(() =>
+        runtime.handleEvent({
+          id: `u${i}`,
+          workflowId: "wf",
+          executionId: EXECUTION_ID,
+          eventType: "UNRELATED_WRITE",
+          sequence: i,
+          timestamp: 0,
+          payload: {},
+        })
+      );
+    }
+
+    expect(runtime.getState("status-metrics", EXECUTION_ID)).toMatchObject({ unrelated: 3 });
+    expect([counts.get("wA"), counts.get("wB")]).toEqual([1, 1]);
+  });
+});

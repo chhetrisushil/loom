@@ -14,5 +14,6 @@ export type { WidgetSlice } from "./hooks/useWidgetSlice";
 export { useAgentSurface } from "./hooks/useAgentSurface";
 export { LoomProvider, useLoom } from "./LoomProvider";
 export { WidgetFrame } from "./WidgetFrame";
+export type { WidgetValueCheck } from "./WidgetFrame";
 export type { FiberConfig, FiberConfigObject } from "./fiber/types";
 export type { WidgetAction, WidgetRenderer, WidgetRendererProps } from "./RendererRegistry";

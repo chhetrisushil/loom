@@ -11,9 +11,9 @@ import { useCallback, useRef, useSyncExternalStore } from "react";
 // alone forces an extra render of the other.
 //
 // isEqual compares `value` by Object.is and `status` by its observable fields
-// (`state`, `seq`, `finding.message`) rather than by reference — resolveWidgetStatus
-// returns whatever object lives at the status path, so two reads of an unchanged
-// status may not be the same reference even though nothing meaningful changed.
+// (`state`, `seq`, `finding.code`, `finding.message`) rather than by reference —
+// resolveWidgetStatus returns whatever object lives at the status path, so two reads of an
+// unchanged status may not be the same reference even though nothing meaningful changed.
 export interface WidgetSlice {
   value: unknown;
   status?: BindingStatus;
@@ -24,9 +24,11 @@ function isEqualSlice(a: WidgetSlice, b: WidgetSlice): boolean {
     Object.is(a.value, b.value) &&
     a.status?.state === b.status?.state &&
     a.status?.seq === b.status?.seq &&
-    // finding.code is deliberately excluded — WidgetFrame renders only
-    // finding.message, so a code-only change wouldn't produce a different
-    // DOM; include it here too if a renderer ever keys on it.
+    // `BindingStatus` is public API and reaches every kind renderer as a prop, so a third-party
+    // renderer may branch on `finding.code` (the stable machine-readable half) rather than on
+    // the message. Excluding it here would make such a renderer silently miss a code-only
+    // change. `WidgetFrame` itself renders only the message; the hook serves both.
+    a.status?.finding?.code === b.status?.finding?.code &&
     a.status?.finding?.message === b.status?.finding?.message
   );
 }

@@ -6,7 +6,7 @@ import { useContext } from "react";
 import { LoomContext } from "./LoomProvider";
 import type { WidgetAction, WidgetRenderer } from "./RendererRegistry";
 import { defaultRegistry } from "./RendererRegistry";
-import { WidgetFrame } from "./WidgetFrame";
+import { WidgetFrame, type WidgetValueCheck } from "./WidgetFrame";
 import { FiberBlueprintRenderer } from "./fiber/FiberBlueprintRenderer";
 import { type FiberConfig, isFiberMode, resolveFiberConfig } from "./fiber/types";
 import { useBlueprintProjectionValues } from "./hooks/useBlueprint";
@@ -18,6 +18,13 @@ interface BlueprintRendererProps {
   executionId: string;
   registry?: RendererRegistry<WidgetRenderer>;
   onAction?: (action: WidgetAction) => void;
+  /**
+   * Value-contract check, run between `error` and `stale` in the canonical binding-status
+   * matrix and only for a widget whose binding declares a status channel (design §5). loom
+   * validates nothing about a bound value itself; a framework's own kind contract plugs in
+   * here. Applies on both render paths.
+   */
+  check?: WidgetValueCheck;
   // Opt-in render-side fiber capabilities. Defaults off (falls back to an
   // optional LoomProvider default). See ./fiber/types.
   fiber?: FiberConfig;
@@ -47,6 +54,7 @@ function EagerBlueprintRenderer({
   executionId,
   registry,
   onAction,
+  check,
 }: EagerProps) {
   const stateMap = useBlueprintProjectionValues(blueprint, projectionRuntime, executionId);
   const reg = registry ?? defaultRegistry;
@@ -72,6 +80,7 @@ function EagerBlueprintRenderer({
           widget={widget}
           value={value}
           {...(status !== undefined && { status })}
+          {...(check !== undefined && { check })}
         >
           {body}
         </WidgetFrame>

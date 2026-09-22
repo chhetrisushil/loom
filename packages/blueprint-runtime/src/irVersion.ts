@@ -69,11 +69,25 @@ const BINDING_STATUS = {
   finding: "optional",
 } as const satisfies KeyShape<BindingStatus>;
 
+// The NESTED shapes, manifested in their own right. `KeyShape<BindingStatus>` only records that
+// `finding` exists and is optional — a key added to, removed from or flipped inside the finding
+// (or a `degradedFrom` entry) is a change to the compile target that the parent manifest cannot
+// see. A consumer reads `finding.code`/`d.type`, so those key sets are part of the contract.
+const BINDING_FINDING = {
+  code: "required",
+  message: "required",
+} as const satisfies KeyShape<NonNullable<BindingStatus["finding"]>>;
+
 const WIDGET_SOURCE = {
   type: "required",
   version: "required",
   degradedFrom: "optional",
 } as const satisfies KeyShape<WidgetSource>;
+
+const DEGRADED_FROM = {
+  type: "required",
+  version: "required",
+} as const satisfies KeyShape<NonNullable<WidgetSource["degradedFrom"]>[number]>;
 
 const GRID_CELL = {
   span: "optional",
@@ -153,7 +167,9 @@ export const BLUEPRINT_IR_SHAPE = {
   dataBinding: keysOf(DATA_BINDING),
   bindingStatusRef: keysOf(BINDING_STATUS_REF),
   bindingStatus: keysOf(BINDING_STATUS),
+  bindingFinding: keysOf(BINDING_FINDING),
   widgetSource: keysOf(WIDGET_SOURCE),
+  degradedFrom: keysOf(DEGRADED_FROM),
   gridCell: keysOf(GRID_CELL),
   gridLayout: keysOf(GRID_LAYOUT),
   flexLayout: keysOf(FLEX_LAYOUT),

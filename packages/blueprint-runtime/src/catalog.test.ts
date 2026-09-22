@@ -490,3 +490,86 @@ describe("validateBlueprint — IR 2.0.0 slots", () => {
     expect(validateBlueprint(legacy, builtinCatalog).ok).toBe(true);
   });
 });
+
+// ── Totality: a blueprint is data a model composed, so the walk must report, never throw ──────
+
+describe("validateBlueprint — malformed structure is a finding, never a throw", () => {
+  const bind = (path: string): DataBinding => ({ projectionId: "p", path });
+  const bp = (layout: unknown): Blueprint =>
+    ({ _tag: "Blueprint", id: "b", title: "B", layout, projections: ["p"] }) as Blueprint;
+  const w = (id: string) => MetricCard({ id, title: id, binding: bind("x") });
+
+  it.each([
+    ["columns: undefined", undefined],
+    ["columns: 0", 0],
+    ["columns: 2.5", 2.5],
+    ["columns: a string", "2"],
+  ])("a grid whose %s is columns-invalid, and its cells' spans are NOT checked", (_n, columns) => {
+    const r = validateBlueprint(
+      bp({ type: "grid", columns, children: [cell(5, w("m")), cell(0, w("n"))] }),
+      builtinCatalog
+    );
+    expect(codes(r).filter((c) => c === "columns-invalid")).toEqual(["columns-invalid"]);
+    expect(codes(r)).not.toContain("span-out-of-range");
+    // The grid's own widgets are still walked — the cascade is skipped, not the subtree.
+    expect(r.widgets).toBe(2);
+    expect(r.ok).toBe(false);
+    const finding = r.findings.find((f) => f.code === "columns-invalid");
+    expect([finding?.nodeId, finding?.kind]).toEqual(["<layout>", "<layout>"]);
+  });
+
+  it.each([
+    ["a null child", null],
+    ["a string child", "oops"],
+    ["a number child", 7],
+    ["an undefined child", undefined],
+  ])("%s is one malformed-node and does not stop the walk", (_n, child) => {
+    const r = validateBlueprint(
+      bp({ type: "stack", children: [child, w("after")] }),
+      builtinCatalog
+    );
+    expect(codes(r).filter((c) => c === "malformed-node")).toEqual(["malformed-node"]);
+    expect(r.widgets).toBe(1); // the sibling AFTER the malformed child was still visited
+    expect(r.findings.find((f) => f.code === "malformed-node")?.nodeId).toBe("<layout>");
+  });
+
+  it("a GridCell stranded in a stack is malformed-node — a cell is only meaningful under a grid", () => {
+    const r = validateBlueprint(bp({ type: "stack", children: [cell(2, w("m"))] }), builtinCatalog);
+    expect(codes(r)).toEqual(["malformed-node"]);
+    expect(r.widgets).toBe(0); // the subtree below a malformed node is not walked
+  });
+
+  it("a malformed node inside a grid cell is reported once, without throwing", () => {
+    const r = validateBlueprint(
+      bp({ type: "grid", columns: 2, children: [null, cell(1, w("m"))] }),
+      builtinCatalog
+    );
+    expect(codes(r).filter((c) => c === "malformed-node")).toEqual(["malformed-node"]);
+    expect(r.widgets).toBe(1);
+  });
+
+  it("source.type/version must be non-empty STRINGS, not merely truthy", () => {
+    const r = validateBlueprint(
+      bp({
+        type: "stack",
+        children: [
+          { ...w("m"), source: { type: 123, version: {} } } as unknown as Widget,
+          {
+            ...w("n"),
+            source: { type: "Trend", version: "1.0.0", degradedFrom: "Collection" },
+          } as unknown as Widget,
+          {
+            ...w("o"),
+            source: { type: "Trend", version: "1.0.0", degradedFrom: [{ type: 1, version: 2 }] },
+          } as unknown as Widget,
+        ],
+      }),
+      builtinCatalog
+    );
+    expect(r.findings.filter((f) => f.code === "source-invalid").map((f) => f.nodeId)).toEqual([
+      "m",
+      "n",
+      "o",
+    ]);
+  });
+});

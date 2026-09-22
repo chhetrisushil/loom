@@ -2,7 +2,7 @@ import type { BindingStatus, RendererRegistry, Widget } from "@loom/blueprint-ru
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import React, { useDeferredValue } from "react";
 import type { WidgetAction, WidgetRenderer } from "../RendererRegistry";
-import { WidgetFrame } from "../WidgetFrame";
+import { WidgetFrame, type WidgetValueCheck } from "../WidgetFrame";
 import { useWidgetSlice } from "../hooks/useWidgetSlice";
 import type { ResolvedFiberConfig } from "./types";
 
@@ -12,6 +12,8 @@ export interface FiberWidgetProps {
   executionId: string;
   registry: RendererRegistry<WidgetRenderer>;
   onAction?: (action: WidgetAction) => void;
+  /** See BlueprintRendererProps.check — passed straight through to WidgetFrame. */
+  check?: WidgetValueCheck;
 }
 
 // Shared body: registry lookup + the same "No renderer" fallback as the eager
@@ -24,7 +26,8 @@ const WidgetBody: React.FC<{
   status?: BindingStatus;
   registry: RendererRegistry<WidgetRenderer>;
   onAction?: (a: WidgetAction) => void;
-}> = ({ widget, value, status, registry, onAction }) => {
+  check?: WidgetValueCheck;
+}> = ({ widget, value, status, registry, onAction, check }) => {
   const Renderer = registry.get(widget.kind);
   const body = !Renderer ? (
     <div data-widget-id={widget.id} data-widget-kind={widget.kind}>
@@ -39,7 +42,12 @@ const WidgetBody: React.FC<{
     />
   );
   return (
-    <WidgetFrame widget={widget} value={value} {...(status !== undefined && { status })}>
+    <WidgetFrame
+      widget={widget}
+      value={value}
+      {...(status !== undefined && { status })}
+      {...(check !== undefined && { check })}
+    >
       {body}
     </WidgetFrame>
   );
@@ -51,6 +59,7 @@ const EagerFiberWidgetInner: React.FC<FiberWidgetProps> = ({
   executionId,
   registry,
   onAction,
+  check,
 }) => {
   const { value, status } = useWidgetSlice(runtime, widget, executionId);
   return (
@@ -60,6 +69,7 @@ const EagerFiberWidgetInner: React.FC<FiberWidgetProps> = ({
       {...(status !== undefined && { status })}
       registry={registry}
       {...(onAction !== undefined && { onAction })}
+      {...(check !== undefined && { check })}
     />
   );
 };
@@ -81,6 +91,7 @@ const DeferredFiberWidgetInner: React.FC<FiberWidgetProps> = ({
   executionId,
   registry,
   onAction,
+  check,
 }) => {
   const slice = useWidgetSlice(runtime, widget, executionId);
   const deferred = useDeferredValue(slice);
@@ -91,6 +102,7 @@ const DeferredFiberWidgetInner: React.FC<FiberWidgetProps> = ({
       {...(deferred.status !== undefined && { status: deferred.status })}
       registry={registry}
       {...(onAction !== undefined && { onAction })}
+      {...(check !== undefined && { check })}
     />
   );
 };
