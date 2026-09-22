@@ -4,8 +4,9 @@ import { builtinCatalog, defineWidgetCatalog, validateBlueprint } from "./catalo
 import { catalogCoverage } from "./coverage";
 import { customWidget$ } from "./customWidget";
 import { grid, stack } from "./layout";
-import type { Blueprint, GridLayout, Layout, Widget } from "./types";
-import { DataTable, MetricCard, StatusBadge } from "./widgets";
+import { cell } from "./normalize";
+import type { Blueprint, DataBinding, GridLayout, Layout, Widget } from "./types";
+import { DataTable, MetricCard } from "./widgets";
 
 const bp = (children: Array<Widget | Layout>, projections: string[]): Blueprint => ({
   _tag: "Blueprint",
@@ -321,5 +322,171 @@ describe("widget builders — an explicit id survives a revision", () => {
       builtinCatalog
     );
     expect(report.ok).toBe(true);
+  });
+});
+
+describe("validateBlueprint — IR 2.0.0 slots", () => {
+  const bind = (path: string, extra: Partial<DataBinding> = {}): DataBinding => ({
+    projectionId: "p",
+    path,
+    ...extra,
+  });
+  const bp = (layout: Layout, irVersion?: string): Blueprint =>
+    ({
+      _tag: "Blueprint",
+      ...(irVersion !== undefined && { irVersion }),
+      id: "b",
+      title: "B",
+      layout,
+      projections: ["p"],
+    }) as Blueprint;
+
+  it("a cell span outside 1..columns is span-out-of-range; a nested container cell is checked too", () => {
+    const r = validateBlueprint(
+      bp(
+        grid({
+          columns: 4,
+          children: [
+            cell(5, MetricCard({ id: "m", title: "m", binding: bind("x") })),
+            cell(0, stack({ children: [] })),
+          ],
+        })
+      ),
+      builtinCatalog
+    );
+    expect(r.findings.filter((f) => f.code === "span-out-of-range").map((f) => f.nodeId)).toEqual([
+      "m",
+      "<layout>",
+    ]);
+    expect(r.ok).toBe(false);
+  });
+  it("a non-integer span is out of range; span 1..columns is fine; span on a flex child cannot exist by type", () => {
+    const r = validateBlueprint(
+      bp(
+        grid({
+          columns: 12,
+          children: [
+            cell(2.5, MetricCard({ id: "m", title: "m", binding: bind("x") })),
+            cell(12, MetricCard({ id: "n", title: "n", binding: bind("y") })),
+          ],
+        })
+      ),
+      builtinCatalog
+    );
+    expect(r.findings.map((f) => f.code)).toEqual(["span-out-of-range"]);
+  });
+  it("status path must be a non-empty dotted path", () => {
+    const bad = MetricCard({ id: "m", title: "m", binding: bind("x", { status: { path: "" } }) });
+    const bad2 = MetricCard({
+      id: "n",
+      title: "n",
+      binding: bind("x", { status: { path: "a..b" } }),
+    });
+    const good = MetricCard({
+      id: "o",
+      title: "o",
+      binding: bind("x", { status: { path: "s.o" } }),
+    });
+    const r = validateBlueprint(bp(stack({ children: [bad, bad2, good] })), builtinCatalog);
+    expect(r.findings.filter((f) => f.code === "status-path-invalid").map((f) => f.nodeId)).toEqual(
+      ["m", "n"]
+    );
+  });
+  it("sensitivity must be a DataClass", () => {
+    const r = validateBlueprint(
+      bp(
+        stack({
+          children: [
+            MetricCard({
+              id: "m",
+              title: "m",
+              binding: bind("x", { sensitivity: "top-secret" as never }),
+            }),
+          ],
+        })
+      ),
+      builtinCatalog
+    );
+    expect(r.findings.map((f) => f.code)).toEqual(["sensitivity-unknown"]);
+    const ok = validateBlueprint(
+      bp(
+        stack({
+          children: [
+            MetricCard({ id: "m", title: "m", binding: bind("x", { sensitivity: "sensitive" }) }),
+          ],
+        })
+      ),
+      builtinCatalog
+    );
+    expect(ok.ok).toBe(true);
+  });
+  it("source needs a type and version, and every degradedFrom entry needs both", () => {
+    const w = MetricCard({ id: "m", title: "m", binding: bind("x") });
+    const r = validateBlueprint(
+      bp(
+        stack({
+          children: [
+            { ...w, source: { type: "", version: "1" } },
+            {
+              ...w,
+              id: "n",
+              source: { type: "Trend", version: "1.0.0", degradedFrom: [{ type: "Collection" }] },
+            } as Widget,
+            {
+              ...w,
+              id: "o",
+              source: {
+                type: "Trend",
+                version: "1.0.0",
+                degradedFrom: [{ type: "Collection", version: "1.0.0" }],
+              },
+            },
+          ],
+        })
+      ),
+      builtinCatalog
+    );
+    expect(r.findings.filter((f) => f.code === "source-invalid").map((f) => f.nodeId)).toEqual([
+      "m",
+      "n",
+    ]);
+  });
+  it("an unknown irVersion is a finding; absent or a pinned version is not", () => {
+    expect(
+      validateBlueprint(bp(stack({ children: [] }), "9.9.9"), builtinCatalog).findings.map(
+        (f) => f.code
+      )
+    ).toEqual(["ir-version-unknown"]);
+    expect(
+      validateBlueprint(bp(stack({ children: [] }), "1.0.0"), builtinCatalog).findings
+    ).toEqual([]);
+    expect(validateBlueprint(bp(stack({ children: [] })), builtinCatalog).findings).toEqual([]);
+  });
+  it("a literal props.span is undeclared-prop like any other key — span is a cell field, not a prop", () => {
+    const r = validateBlueprint(
+      bp(
+        stack({
+          children: [
+            MetricCard({ id: "m", title: "m", binding: bind("x"), ...({ span: 4 } as object) }),
+          ],
+        })
+      ),
+      builtinCatalog
+    );
+    expect(r.findings.map((f) => f.code)).toContain("undeclared-prop");
+  });
+  it("a legacy 1.0.0 blueprint with bare grid children validates clean", () => {
+    const legacy = {
+      _tag: "Blueprint",
+      id: "l",
+      title: "L",
+      projections: ["p"],
+      layout: {
+        type: "grid",
+        columns: 2,
+        children: [MetricCard({ id: "m", title: "m", binding: bind("x") })],
+      },
+    } as unknown as Blueprint;
+    expect(validateBlueprint(legacy, builtinCatalog).ok).toBe(true);
   });
 });
