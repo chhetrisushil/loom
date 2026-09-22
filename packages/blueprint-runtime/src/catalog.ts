@@ -1,4 +1,5 @@
-import type { Blueprint, Layout, Widget } from "./types";
+import { asCell } from "./normalize";
+import type { Blueprint, GridCell, Layout, Widget } from "./types";
 
 // ── The component catalogue, and the check that it is honoured ────────────────
 //
@@ -140,7 +141,11 @@ function eachWidget(root: Layout | Widget, visit: (widget: Widget) => void): voi
     }
     const layout = node as Layout;
     for (let i = layout.children.length - 1; i >= 0; i--) {
-      stack.push(layout.children[i] as Layout | Widget);
+      stack.push(
+        layout.type === "grid"
+          ? asCell(layout.children[i] as GridCell).node
+          : (layout.children[i] as Layout | Widget)
+      );
     }
   }
 }
