@@ -13,7 +13,7 @@ Made in review on 2026-09-22, after evaluating the whitepaper *The Experience Ru
 | Existing 1.0.0 blueprints | **2.0.0 with a normaliser.** The type is `GridCell[]` only; readers accept a legacy bare child through one `asCell`; writers emit 2.0.0; `Blueprint.irVersion` names the shape. |
 | How does a widget say what it stands for? | **`Widget.source?: { type, version, degradedFrom? }`.** Generic wording; never in `props`. |
 | What else from the paper rides this bump? | **`DataBinding.sensitivity?: DataClass`** (the field only, enforcement later). |
-| Shipping | **Two PRs in order:** loom first, loom-ui second bumping `LOOM_REF`. Then loom-ui slices 6a (keyed recompose), 6 (genUI), 7 (audience + enforcement), 8 (chat adapter), 9 (vocabulary pack). |
+| Shipping | **Two PRs in order:** loom first, loom-ui second bumping `LOOM_REF`. Then the §7 roadmap: 6a keyed recompose, 6 genUI, 6b scheduling, 6c progressive stages, 7 audience, 8 chat adapter, 9 vocabulary + hints, 10 diff refine — each with a reference example in loom-examples. |
 
 Alternatives rejected: an opaque second status path (leaks loom-ui's shape into every consumer); `Widget.status` as a full second binding (two projection pins per widget); `span` as an optional field on `Widget`/`Layout` (two shapes for one fact); a permanent `Widget | Layout | GridCell` union (two canonical shapes, the leak pattern again); a blueprint-level provenance map (one fact in two places).
 
@@ -175,9 +175,23 @@ Where each of the paper's rendering-runtime responsibilities lives. **None is de
 - **planner**: `describeExperience` emits `sensitivity` when set; `planSchema` admits `binding.sensitivity` from the model only if the catalogue entry declares `sensitivity: "model-may-set"` (default: caller-set only) — a small guard so a model cannot lower a class.
 - **Tests**: every slice-4 cross-surface status test moves to assert loom's renderers directly; the parity test gains "React and Lit render the same `data-binding-state` for the same status"; a golden 1.0.0 blueprint fixture renders through `asCell` and `upgradeBlueprint(fixture)` re-addresses it.
 
-## 7. Follow-on slices (not this spec)
+## 7. Roadmap — every capability, with its reference example
 
-6a. **Keyed recompose in renderer-lit**: diff old and new blueprints by widget id, patch in place, preserve focus/scroll/input. 6. **genUI migration.** 7. **Surface audience and enforcement**: `Surface` resolution gains `audience: "viewer" | "broadcast"`; compile withholds or redacts bindings whose `sensitivity` exceeds it, with a finding and a `Widget.source.redacted` marker. 8. **Chat adapter** (Slack Block Kit) as the first broadcast surface. 9. **Core vocabulary pack.** Diff-based refinement in the planner is decided after slice 6 measures token cost.
+loom-ui is a framework: each capability is built first and proven by a reference example in the same slice, so consumers have something to copy. Nothing below is deferred "until a consumer asks". Reference examples live in the sibling **loom-examples** repo (decision 2026-09-22), which gains `pnpm.overrides` `link:` entries for `@loom-ui/*` beside its `@loom/*` ones and a CI pin for each sibling.
+
+| Slice | Capability | Where | Reference example (loom-examples) | Proves |
+|---|---|---|---|---|
+| IR 2.0 (this spec) | grid cells, loom-owned status, source, sensitivity field; both loom renderers | loom, then loom-ui | `blueprint-status` — a plain loom app (no loom-ui) exposing status from its own projection, spans, and source | loom alone gains the channel; the basic UI is enhanced, not taxed |
+| 6a | keyed recompose in renderer-lit: diff old/new Blueprint by widget id, patch in place, preserve focus/scroll/half-typed input | loom-ui | `experience-recompose` — an agent revision lands while the user types into a form | "update lands without regeneration" holds for the DOM, not only the artifact |
+| 6 | genUI migration: server composes through the planner, web renders via renderer-lit, private Blueprint deleted | genUI | genUI itself (the real consumer) | the framework serves a shipped product |
+| 6b | Lit adapter scheduler: semantic render priority, coalescing of agent patch bursts; accessibility parity asserted across React, Lit, terminal | loom-ui | `experience-busy-agent` — a burst of 50 revisions coalesces to what the viewport needs | production behaviour under agent churn |
+| 6c | progressive stages: compile emits stages, adapters render each independently, tolerate out-of-order arrival | loom-ui core + adapters | `experience-streaming` — an experience arrives in three stages, each renderable | partial trees never show an invalid screen |
+| 7 | surface `audience: "viewer" \| "broadcast"`; compile withholds or redacts bindings whose `sensitivity` exceeds it, with a finding and `source.redacted` | loom-ui core + compile | `experience-broadcast` — one experience rendered per-viewer and for a channel, redaction visible | the identity model is enforced, not declared |
+| 8 | chat adapter (Slack Block Kit emitter) as the first broadcast surface, with size-limit degradation | loom-ui `renderer-chat` | `experience-slack` — headless emission of the same experience as a Block Kit payload fixture | the second surface is genuinely different |
+| 9 | core vocabulary pack (Metric, Trend, Collection, Entity, Status, Action, Form, Filter, Timeline, Progress) extracted from genUI's catalogue; presentation hints with precedence surface capability › hint › default, degradation recorded in `source` | loom-ui `vocabulary` + core | `experience-vocabulary` — one experience on three surfaces from the core pack, hints honoured or degraded visibly | domain-neutral core, domain packs above it |
+| 10 | diff-based refinement in the planner (ops rather than a full node list), measured against slice 6's token cost | loom-ui planner | `planner-refine` — same revision both ways with token counts | refinement cost bounded |
+
+Sequencing: IR 2.0 → 6a → 6 → 6b → 6c → 7 → 8 → 9 → 10. Slice 6 sits early because a shipped consumer is the strongest test of the model; every later slice adds a capability genUI can then adopt.
 
 ## 8. Changes in loom, triaged
 
@@ -210,4 +224,5 @@ Negative case first at every layer.
 
 1. loom PR: IR 2.0.0 + renderers + ADR 0097 + docs; loom-examples run against it; rebase-merge on the maintainer's word.
 2. loom-ui PR: `LOOM_REF` bump + §6; rebase-merge on the maintainer's word.
-3. loom-ui slice 6a (keyed recompose), then slice 6 (genUI migration), then 7–9 per §7.
+3. loom-examples PR: `@loom-ui/*` overrides + CI pin + the `blueprint-status` example.
+4. Then the §7 roadmap in order, one slice per PR pair (capability + example).
