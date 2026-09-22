@@ -119,6 +119,8 @@ export const IncidentBlueprint = blueprint$({
   title: "Incident Investigation",
   layout: stack({ gap: 16, children: [
     StatusBadge({ title: "Workflow Phase", binding: { projectionId: "ui", path: "phase" } }),
+    // grid() normalises each child to a GridCell (IR 2.0.0); a bare widget/layout gets span: 1,
+    // or use cell(span, node) for an explicit span
     grid({ columns: 2, children: [
       MetricCard({ title: "CPU Usage %", binding: { projectionId: "metrics", path: "cpu.current" }, unit: "%" }),
       Timeline({ title: "Event Timeline", binding: { projectionId: "incident", path: "timeline" } }),

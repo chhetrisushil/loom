@@ -1287,24 +1287,41 @@ a DOM — is ~mcp-app-release-approval~ in the sibling [[file:examples.md][loom-
 #+begin_src typescript
 function blueprint$(config: { id: string; title: string; layout: Layout; projections: string[] }): Blueprint
 
-// Layout helpers
-grid({ columns: number; gap?: number; children: Array<Widget | Layout> }): GridLayout
+// Layout helpers — a grid child is a GridCell (IR 2.0.0); grid() and asCell() normalise a bare
+// Widget | Layout to { span: 1, node } so every existing call keeps compiling
+grid({ columns: number; gap?: number; children: Array<GridCell | Widget | Layout> }): GridLayout
 flex({ direction?: "row" | "column"; gap?: number; children }): FlexLayout
 stack({ gap?: number; children }): StackLayout
+interface GridCell { span?: number; node: Widget | Layout }   // columns occupied in the parent grid; default 1
+function cell(span: number, node: Widget | Layout): GridCell   // explicit-span builder
+function asCell(child: GridCell | Widget | Layout): GridCell   // the one place a legacy bare child is wrapped
 
 // Widget factories → Widget (each binds via { projectionId, path })
 MetricCard, Timeline, ApprovalCard, StatusBadge, ProgressBar, DataTable, AlertCard, StreamingText
 customWidget$({ kind: string; title?; binding?; props?; id? })   // bring-your-own widget kind
 
-interface DataBinding { projectionId: string; path: string; }
+type BindingState = "pending" | "ready" | "stale" | "error"
+interface BindingStatus { state: BindingState; seq?: number; finding?: { code: string; message: string } }
+interface DataBinding {
+  projectionId: string; path: string;
+  status?: { path: string };       // same projection state as the value; absent ⇒ no status channel
+  sensitivity?: DataClass;         // @loom/classify; read by compilers/delivery, never by renderers
+}
+interface WidgetSource { type: string; version: string; degradedFrom?: Array<{ type: string; version: string }> }
+// Widget gains: source?: WidgetSource                          // never in props
+// Blueprint gains: irVersion?: string                          // absent ⇒ "1.0.0"; writers always set it
+function resolveWidgetStatus(widget: Widget, stateMap: Map<string, unknown>): BindingStatus | undefined
+function upgradeBlueprint(bp: Blueprint): Blueprint   // 2.0.0 artifact from any readable one; identity on 2.0.0 input
+function blueprintIrVersion(bp: Blueprint): string    // bp.irVersion ?? "1.0.0"
 
-// The Blueprint is a declared rendering IR (ADR 0096): bump on any shape change; a test pins the shape digest per version
+// The Blueprint is a declared rendering IR (ADR 0096, bumped to 2.0.0 by ADR 0097): bump on any
+// shape change; a test pins the shape digest per version
 const BLUEPRINT_IR_VERSION: string; const BLUEPRINT_IR_SHAPE: Record<string, readonly string[]>
 
 // Framework-agnostic traversal (renderers are built on this)
 function traverseBlueprint<TNode>(node: Layout | Widget, stateMap: Map<string, unknown>, options: {
-  renderWidget: (ctx: WidgetRendererProps) => TNode;
-  renderContainer: (ctx: { layout: Layout; children: TNode[] }) => TNode;
+  renderWidget: (ctx: WidgetRendererProps) => TNode;                       // WidgetRendererProps.status?: BindingStatus
+  renderContainer: (ctx: { layout: Layout; children: TNode[]; cells?: Array<{ span: number; child: TNode }> }) => TNode;
   onAction?: (action: WidgetAction) => void;
 }): TNode
 function traverseBlueprintAsync<TNode>(node, stateMap, options): Promise<TNode>   // interruptible, for BYOR renderers
@@ -1359,6 +1376,14 @@ function useAgentSurface(runtime: AgentSurfaceRuntime, executionId: string, surf
 
 type FiberConfig = boolean | { granularUpdates?: boolean; suspense?: boolean; deferStreaming?: boolean }; // all default off
 const defaultRegistry: RendererRegistry<WidgetRenderer>;  // MetricCard/Timeline/ApprovalCard/StatusBadge/StreamingText/ProgressBar/DataTable/AlertCard
+
+// IR 2.0.0 (ADR 0097) — the canonical binding-status matrix, applied around a widget's rendered
+// body. Renders NO wrapper element when the widget has neither a declared status channel
+// (binding.status) nor a source — a 1.0.0 artifact's DOM is unchanged.
+function WidgetFrame(props: { widget: Widget; value: unknown; status?: BindingStatus; children: React.ReactNode }): JSX.Element
+// Fiber selector over { value, status } together — sibling to useWidgetValue; a status-only
+// change re-renders without forcing an extra render on a value-only change, and vice versa
+function useWidgetSlice(pr: ProjectionRuntime, widget: Widget, executionId: string): { value: unknown; status?: BindingStatus }
 #+end_src
 
 Built-in React renderers: ~MetricCardRenderer~, ~TimelineRenderer~, ~ApprovalCardRenderer~, ~StatusBadgeRenderer~, ~StreamingTextRenderer~, ~ProgressBarRenderer~, ~DataTableRenderer~, ~AlertCardRenderer~.
@@ -1366,9 +1391,13 @@ Built-in React renderers: ~MetricCardRenderer~, ~TimelineRenderer~, ~ApprovalCar
 ** ~@loom/plugin-renderer-terminal~
 
 #+begin_src typescript
-type TerminalWidgetRenderer = (widget: Widget, value: unknown) => string
+// `status` is optional (ADR 0097): existing two-argument renderers keep compiling and keep
+// their output for widgets with no declared status channel
+type TerminalWidgetRenderer = (widget: Widget, value: unknown, status?: BindingStatus) => string
 interface TerminalRenderOptions { registry?: RendererRegistry<TerminalWidgetRenderer> }  // absent → kind-blind `title: value`; present → registered kinds render, unregistered kinds are marked `[kind]`
 const defaultTerminalRegistry: RendererRegistry<TerminalWidgetRenderer>                 // covers the eight built-in kinds (asserted by catalogCoverage)
+// applies the canonical status matrix (glyphs ⋯ pending / ~ stale / ✗ error) and a degraded-from
+// suffix from `source` when either is declared; byte-identical output otherwise
 function renderBlueprintToString(blueprint: Blueprint, stateMap: Map<string, unknown>, options?: TerminalRenderOptions): string
 class TerminalRenderer { constructor(projectionRuntime: ProjectionRuntime, options?: TerminalRenderOptions); render(blueprint: Blueprint, executionId: string): string }
 #+end_src

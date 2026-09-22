@@ -228,6 +228,10 @@ const NOT_A_CAPABILITY = new Set([
   // 0096 — a declared version constant on the Blueprint IR plus an optional registry on the
   // terminal renderer. A contract and an adapter option; no runtime subsystem to grade.
   "0096",
+  // 0097 — the same IR grown by one major version: wrapped grid cells, a loom-owned binding-
+  // status channel, widget source, and a sensitivity field. A contract and two renderer
+  // options, the same tier as 0096; no runtime subsystem to grade.
+  "0097",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {
