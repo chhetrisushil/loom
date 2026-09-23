@@ -271,3 +271,31 @@ describe("renderReactContainer placement and titles (IR 2.1.0)", () => {
     expect(inner.style.gridTemplateColumns).toBe("repeat(3, 1fr)");
   });
 });
+
+describe("renderReactContainer ignores a layout role (IR 2.2.0, ADR 0099)", () => {
+  // React has no container registry: a role is a hint for a renderer that has one. Whatever the
+  // role — well-formed, unknown, malformed — the DOM is the plain container's, byte for byte.
+  const html = (layout: Parameters<typeof renderReactContainer>[0]) => {
+    const { container, unmount } = render(
+      renderReactContainer(layout, [<span key="x">x</span>, <span key="y">y</span>])
+    );
+    const out = container.innerHTML;
+    unmount();
+    return out;
+  };
+
+  it.each([
+    [
+      "grid",
+      (role?: string) => grid({ columns: 2, title: "T", ...(role && { role }), children: [] }),
+    ],
+    ["flex", (role?: string) => flex({ ...(role && { role }), children: [] })],
+    ["stack", (role?: string) => stack({ title: "T", ...(role && { role }), children: [] })],
+  ])("a roled %s renders exactly as the same layout without a role", (_n, make) => {
+    const plain = html(make());
+    for (const role of ["stepped", "no-renderer-has-this", "Not A Key"]) {
+      expect(html(make(role)), role).toBe(plain);
+    }
+    expect(plain).not.toContain("role");
+  });
+});

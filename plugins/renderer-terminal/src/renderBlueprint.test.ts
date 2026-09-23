@@ -435,3 +435,34 @@ describe("renderBlueprintToString — placement and section titles (IR 2.1.0)", 
     expect(body(stack({ title: "", children: [m("a")] }))).toEqual(["a: 1"]);
   });
 });
+
+describe("renderBlueprintToString ignores a layout role (IR 2.2.0, ADR 0099)", () => {
+  // A one-shot text surface has no interaction for a role to change: every child under the
+  // title, in reading order, IS the complete rendering. Output is byte-identical with or without.
+  const m = (id: string) => MetricCard({ id, title: id, binding: { projectionId: "p", path: id } });
+  const state = new Map<string, unknown>([["p", { a: 1, b: 2, c: 3 }]]);
+  const out = (role?: string) =>
+    renderBlueprintToString(
+      blueprint$({
+        id: "x",
+        title: "X",
+        layout: stack({
+          title: "Onboarding",
+          ...(role && { role }),
+          children: [
+            stack({ title: "Account", ...(role && { role: `${role}-step` }), children: [m("a")] }),
+            grid({ columns: 2, ...(role && { role }), children: [m("b"), m("c")] }),
+          ],
+        }),
+        projections: ["p"],
+      }),
+      state
+    );
+
+  it("prints every child of a roled layout exactly as it prints the unroled one", () => {
+    const plain = out();
+    for (const role of ["stepped", "unknown-role", "Not A Key"]) {
+      expect(out(role), role).toBe(plain);
+    }
+  });
+});

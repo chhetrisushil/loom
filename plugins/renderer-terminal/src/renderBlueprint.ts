@@ -134,6 +134,8 @@ export function renderBlueprintToString(
       return text;
     },
     renderContainer({ layout, children, cells }: ContainerContext<string>) {
+      // `layout.role` (IR 2.2.0, ADR 0099) is ignored on purpose: a role is an interaction hint,
+      // and every child under the title, in reading order, is already the whole content.
       const ordered = cells?.some(isPlaced) ? readingOrder(cells) : children;
       const body = ordered.filter((c) => c.length > 0).join("\n");
       const title = typeof layout.title === "string" && layout.title !== "" ? layout.title : "";

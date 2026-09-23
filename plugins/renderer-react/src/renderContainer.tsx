@@ -44,6 +44,10 @@ import {
 //     `aria-label` is what makes it a landmark at all: per HTML-AAM, a <section> does not take
 //     its accessible name from content, so an unlabelled one (the <h2> notwithstanding) maps to
 //     role `generic`, not `region`. The explicit label names the region.
+//
+// IR 2.2.0 (ADR 0099) adds `Layout.role`, which this renderer deliberately IGNORES: a role is a
+// key into a container-renderer registry, and React has none, so every role draws the plain
+// container above — DOM-identical to the same layout without one. It is never an ARIA role.
 const cellKey = (child: ReactNode, index: number): string | number =>
   isValidElement(child) && child.key !== null ? child.key : index;
 
