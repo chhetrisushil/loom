@@ -1299,6 +1299,7 @@ function isLayoutRole(value: unknown): value is string   // /^[a-z][a-z0-9-]{0,6
 // every Layout has id?: string — container identity (IR 2.4.0, ADR 0101): Widget.id's rule (non-empty
 // string), ONE namespace with widget ids; a renderer that reconciles keys the container by it.
 // Absent or malformed ⇒ keyed positionally. The builders omit it when absent.
+function isLayoutId(value: unknown): value is string     // non-empty string (Widget.id's rule); else ⇒ absent
 interface GridCell { span?: number; row?: number; rowSpan?: number; column?: number; node: Widget | Layout }
 // span = columns occupied (default 1); row/column = 1-based start lines, rowSpan = rows (default 1);
 // all placement absent = flow placement (IR 2.1.0, ADR 0098)
@@ -1407,7 +1408,8 @@ const defaultRegistry: RendererRegistry<WidgetRenderer>;  // MetricCard/Timeline
 // IR 2.1.0: a placed grid cell gets explicit grid-column/grid-row; a titled layout renders <section><h2/>…</section>
 // IR 2.2.0: Layout.role is ignored — a roled layout's DOM is the unroled one's
 // IR 2.4.0: a valid Layout.id is the container element's React key (eager and fiber) — the DOM is unchanged,
-//           and a container inserted/reordered around it keeps its widgets' DOM; absent ⇒ index key, as before
+//           and a container inserted/reordered around it keeps its widgets' DOM; absent ⇒ index key, as before.
+//           Grid cell keys are `k:<child key>` / `i:<index>` (disjoint), a span-1 cell in a keyed Fragment — DOM unchanged
 // IR 2.3.0: status empty → data-binding-state="empty" + <div role="status" data-binding-marker="empty">○ title: no data</div>
 //           (finding.message when present), ranked after error; the value and the check are skipped
 function WidgetFrame(props: { widget: Widget; value: unknown; status?: BindingStatus; check?: WidgetValueCheck; children: React.ReactNode }): JSX.Element

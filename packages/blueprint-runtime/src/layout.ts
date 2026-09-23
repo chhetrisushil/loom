@@ -19,13 +19,19 @@ export function isLayoutRole(value: unknown): value is string {
 }
 
 /**
- * Whether a layout's `id` (IR 2.4.0, ADR 0101) is well-formed: the same rule as `Widget.id`, a
- * non-empty string. Internal — every reader that keys by a layout id (the identity walk,
- * `validateBlueprint`, a renderer) treats anything else as ABSENT.
+ * Whether `value` is a well-formed layout id (IR 2.4.0, ADR 0101): the same rule as `Widget.id`,
+ * a non-empty string — no charset, no length cap. Anything else — absent, `""`, a number, `null`
+ * — is treated as ABSENT by every reader: the container is keyed positionally, the identity walk
+ * skips it, and it collides with nothing. It is the ONE spelling of the rule, so a compiler's
+ * schema and a renderer's keying cannot drift apart (as `isLayoutRole` is for roles).
  */
+export function isLayoutId(value: unknown): value is string {
+  return typeof value === "string" && value !== "";
+}
+
+/** `isLayoutId` on a node's `id`, narrowing the node. Internal. */
 export function hasLayoutId(layout: unknown): layout is { id: string } {
-  const id = (layout as { id?: unknown } | null | undefined)?.id;
-  return typeof id === "string" && id !== "";
+  return isLayoutId((layout as { id?: unknown } | null | undefined)?.id);
 }
 
 export interface GridOptions {

@@ -387,6 +387,88 @@ describe("renderReactContainer keys a container by its layout id (IR 2.4.0, ADR 
       [{ span: 2, child: inner }]
     );
     const kids = (g.props as { children: ReactElement[] }).children;
-    expect(kids[0]?.key).toBe(".$inner");
+    // `k:inner` — Children.toArray escapes `:` as `=2`.
+    expect(kids[0]?.key).toBe(".$k=2inner");
+  });
+
+  // A layout id is ANY non-empty string, so it can be "0" or "1" — the very strings an index key
+  // stringifies to. Keyed and index-keyed cells must live under disjoint prefixes.
+  const numericIdGrid = (order: string[], spans: number) => {
+    const children: ReactElement[] = order.map((name) =>
+      name.startsWith("#")
+        ? renderReactContainer(stack({ id: name.slice(1), children: [] }), [
+            <input key={`${name}-f`} data-testid={name} />,
+          ])
+        : // An UNKEYED cell (a nested container without an id), keyed by index.
+          renderReactContainer(stack({ children: [] }), [<input key="f" data-testid={name} />])
+    );
+    return renderReactContainer(
+      grid({ columns: 4, children: [] }),
+      children,
+      children.map((child) => ({ span: spans, child }))
+    );
+  };
+
+  it.each([
+    ["bare span-1 cells", 1],
+    ["wrapped span > 1 cells", 2],
+  ])('%s: ids "0"/"1" never collide with index-keyed siblings', (_n, spans) => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const g = numericIdGrid(["#1", "plain"], spans);
+      const keys = (g.props as { children: ReactElement[] }).children.map((k) => k.key);
+      expect(new Set(keys).size).toBe(2);
+      const { unmount } = render(g);
+      unmount();
+      expect(errors.mock.calls.flat().join(" ")).not.toMatch(/same key/);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it.each([
+    ["bare span-1 cells", 1],
+    ["wrapped span > 1 cells", 2],
+  ])(
+    "%s: an id'd cell keeps its node when an index-keyed cell shifts onto its id's ordinal",
+    (_n, spans) => {
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        // "#0" at index 1, then an unkeyed cell is inserted first: without disjoint prefixes the
+        // unkeyed cell at index 0 and the keyed "0" collide.
+        const { container, rerender } = render(numericIdGrid(["plain", "#0"], spans));
+        const zero = container.querySelector('[data-testid="#0"]');
+        rerender(numericIdGrid(["new", "plain", "#0"], spans));
+        expect(container.querySelector('[data-testid="#0"]')).toBe(zero);
+        expect(errors.mock.calls.flat().join(" ")).not.toMatch(/same key/);
+      } finally {
+        errors.mockRestore();
+      }
+    }
+  );
+
+  it("the grid path's DOM is unchanged: a bare cell still emits its child directly", () => {
+    const { container } = render(numericIdGrid(["#1", "plain"], 1));
+    const gridEl = container.firstChild as HTMLElement;
+    expect(gridEl.children.length).toBe(2);
+    for (const c of Array.from(gridEl.children))
+      expect((c as HTMLElement).style.gridColumn).toBe("");
+  });
+
+  it('the non-grid path is already disjoint: an id "1" and an index-keyed sibling get distinct keys', () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const s = renderReactContainer(stack({ children: [] }), [
+        renderReactContainer(stack({ id: "1", children: [] }), []),
+        renderReactContainer(stack({ children: [] }), []),
+      ]);
+      const keys = (s.props as { children: ReactElement[] }).children.map((k) => k.key);
+      expect(keys).toEqual([".$1", ".1"]);
+      const { unmount } = render(s);
+      unmount();
+      expect(errors.mock.calls.flat().join(" ")).not.toMatch(/same key/);
+    } finally {
+      errors.mockRestore();
+    }
   });
 });

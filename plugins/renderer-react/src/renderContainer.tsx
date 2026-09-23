@@ -1,7 +1,8 @@
-import type { Layout } from "@loom/blueprint-runtime";
+import { type Layout, isLayoutId } from "@loom/blueprint-runtime";
 import {
   type CSSProperties,
   Children,
+  Fragment,
   type ReactElement,
   type ReactNode,
   isValidElement,
@@ -29,8 +30,11 @@ import {
 //      focus, scroll position and any uncontrolled input state).
 //
 // A span > 1 wrapper therefore takes the CHILD's key when the child has one,
-// falling back to the index only for an unkeyed child (a nested container),
-// where there is no identity to preserve in the first place.
+// falling back to the index only for an unkeyed child (a nested container
+// without an id), where there is no identity to preserve in the first place.
+// Since IR 2.4.0 a bare span-1 cell is carried by a keyed <Fragment> under the
+// same `cellKey` — still no element of its own, so property 1 holds (see the
+// disjoint-prefix note at `cellKey`).
 //
 // IR 2.1.0 (ADR 0098) adds two things, neither of which changes an unplaced, untitled
 // artifact's DOM:
@@ -53,12 +57,19 @@ import {
 // it returns (the <div>, or the <section> when titled). Without it a nested container reaches its
 // parent unkeyed and `Children.toArray` gives it an INDEX key, so inserting a container mid-list
 // (or reordering) matched every later container to a different step and re-created its widgets —
-// typed input and focus lost. `Children.toArray` keeps an existing key, and a span > 1 grid
-// wrapper already inherits the child's key through `cellKey`, so the id reaches React on every
-// path. It is a key, never markup: the DOM is identical with or without it. Absent or malformed
+// typed input and focus lost. `Children.toArray` keeps an existing key, and every grid cell
+// (wrapper or keyed Fragment) inherits the child's key through `cellKey`, so the id reaches React
+// on every path. Validity is `isLayoutId`, the one spelling of the rule. It is a key, never markup: the DOM is identical with or without it. Absent or malformed
 // (not a non-empty string) ⇒ no key, and React keys by index exactly as before.
-const cellKey = (child: ReactNode, index: number): string | number =>
-  isValidElement(child) && child.key !== null ? child.key : index;
+//
+// Grid cell keys live under two DISJOINT prefixes: `k:<key>` for a child that carries a key (a
+// widget id, a layout id) and `i:<index>` for one that does not. A layout id is any non-empty
+// string, so it can be "1" — exactly what a bare index key stringifies to; without the prefixes a
+// container `id: "1"` beside an unkeyed cell at index 1 collided (a duplicate-key warning, and the
+// misreconcile layout ids exist to prevent). A span-1 cell is wrapped in a keyed <Fragment>, which
+// renders no element, so the DOM is unchanged.
+const cellKey = (child: ReactNode, index: number): string =>
+  isValidElement(child) && child.key !== null ? `k:${child.key}` : `i:${index}`;
 
 type Cell = { span: number; row?: number; rowSpan?: number; column?: number; child: ReactNode };
 
@@ -103,14 +114,14 @@ export function renderReactContainer(
                 {c.child}
               </div>
             ) : (
-              c.child
+              <Fragment key={cellKey(c.child, i)}>{c.child}</Fragment>
             )
           )
         )
       : Children.toArray(children);
 
   const id: unknown = (layout as { id?: unknown }).id;
-  const key = typeof id === "string" && id !== "" ? id : undefined;
+  const key = isLayoutId(id) ? id : undefined;
   const title = typeof layout.title === "string" && layout.title !== "" ? layout.title : undefined;
   if (title === undefined) {
     return (

@@ -46,6 +46,11 @@ own schema accepts, splitting one rule in two. Unlike a role (ADR 0099 D2), an i
 registry-object key, a CSS selector or a DOM attribute — a renderer uses it only as a `Map` key
 or a React key — so `__proto__` or a 10 000-character id is harmless.
 
+`isLayoutId(value: unknown): value is string` is the one spelling of the rule, exported from
+`@loom/blueprint-runtime` beside `isLayoutRole`, so a compiler's schema (loom-ui core), a
+renderer's keying (loom-ui's DOM adapter, loom's React renderer) and `validateBlueprint` apply
+the same predicate and cannot drift apart.
+
 ### D2 — One node-id namespace: `duplicate-node-id` spans widgets and layouts
 
 Layout ids and widget ids are one namespace. `validateBlueprint`'s `duplicate-node-id` (error)
@@ -112,7 +117,14 @@ identity. A `role` still is not.
   `<div>`, or the titled `<section>`) when the id is well-formed. `Children.toArray` keeps an
   existing key, and the span > 1 grid wrapper already inherits the child's key, so the id
   reaches React on every path — eager and fiber. The rendered DOM is identical with or without
-  an id; only reconciliation changes. Without an id React keys by index, as before. Pinned: a
+  an id; only reconciliation changes.
+- **Grid cell keys are prefixed.** An id may be `"0"` or `"1"` — exactly what an index key
+  stringifies to — so a grid cell's key is `k:<child key>` for a keyed child and `i:<index>` for
+  an unkeyed one, two disjoint spaces. A span-1 cell (formerly emitted bare) is carried by a keyed
+  `<Fragment>`, which renders no element, so the DOM is unchanged. Before the prefixes a span > 1
+  wrapper around a container `id: "1"` and an unkeyed wrapper at index 1 shared the key `1`: a
+  duplicate-key warning and exactly the misreconcile this ADR fixes. The non-grid path was already
+  disjoint (`Children.toArray` writes a key as `.$1`, an index as `.1`); both are pinned. Without an id React keys by index, as before. Pinned: a
   step inserted above a typed-in, focused step keeps the same `<input>` node, its value and focus,
   on both paths, and the same test without ids still re-creates it.
 - **Terminal** (`renderBlueprintToString`) ignores it: a one-shot string has nothing to
@@ -137,7 +149,8 @@ Writers (`blueprint$`) stamp `2.4.0` from here on.
 - `preservesBlueprintNodes` can now report a dropped CONTAINER id. A caller comparing an id'd
   tree against its own earlier id'd tree gets strictly more findings, all of them real losses of
   identity.
-- `@loom/blueprint-runtime` exports one new value, `blueprintLayoutIds`.
+- `@loom/blueprint-runtime` exports two new values, `blueprintLayoutIds` and `isLayoutId`. Both
+  are part of the IR contract, not vocabulary: they name no container.
 - loom-ui's `packages/core/src/blueprintIr.test.ts` pins the IR version it compiles against and
   goes red when loom-ui bumps its `LOOM_REF` past this ADR. That is the intended signal: the same
   PR teaches its `compile` to emit `ContainerNode.id` on every container and its DOM adapter's

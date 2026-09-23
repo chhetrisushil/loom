@@ -1,5 +1,5 @@
 export { blueprint$ } from "./Blueprint";
-export { grid, flex, stack, isLayoutRole } from "./layout";
+export { grid, flex, stack, isLayoutId, isLayoutRole } from "./layout";
 export {
   asCell,
   cell,
