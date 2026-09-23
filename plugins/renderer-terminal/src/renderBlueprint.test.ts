@@ -402,7 +402,10 @@ describe("renderBlueprintToString — placement and section titles (IR 2.1.0)", 
       body(
         grid({
           columns: 12,
-          children: [cell(6, m("b"), { row: 1, column: 1 }), cell(6, m("a"), { row: 1, column: 1 })],
+          children: [
+            cell(6, m("b"), { row: 1, column: 1 }),
+            cell(6, m("a"), { row: 1, column: 1 }),
+          ],
         })
       )
     ).toEqual(["b: 2", "a: 1"]);
