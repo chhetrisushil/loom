@@ -197,6 +197,10 @@ grid's sparse auto-placement, which drops each into the next free slot at or aft
 auto-placement cursor that only ever advances) and sorted with absent coordinates last in the
 terminal, and the two can disagree about where those cells land.
 
+A layout may also carry a `role` — what the container is to a renderer that has one registered
+for it (`"stepped"`, `"tabbed"`), the way `kind` is for a widget. loom's own renderers ignore
+it and draw the plain container ([ADR 0099](adr/0099-blueprint-ir-layout-roles.md)).
+
 `projectionRuntime.pins()` is what a composer records into
 `Blueprint.projectionVersions`; `checkBlueprintPins(view, pins)` is what a render
 compares it against, reporting `drift` when the fold behind a name changed and

@@ -235,6 +235,9 @@ const NOT_A_CAPABILITY = new Set([
   // 0098 — the same IR grown by a minor version: optional grid-cell placement and layout
   // titles, drawn by both renderers. A contract and renderer behaviour, the tier of 0096/0097.
   "0098",
+  // 0099 — the same IR, one more optional field: a `role` on every layout, the key a
+  // container-renderer registry looks up. A contract; loom's renderers ignore it.
+  "0099",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {
