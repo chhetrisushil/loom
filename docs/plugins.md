@@ -176,7 +176,8 @@ and compute.
   ([ADRs 0069](adr/0069-a2ui-egress-adapter.md)–[0070](adr/0070-a2ui-callfunction-bidirectional-rpc.md)).
   Continuous two-way binding sync is out of scope.
 - `@loom/plugin-renderer-react` — React blueprint renderer (`defaultRegistry`); React is a peer
-  dependency, so it stays out of the `@loom/sdk` barrel.
+  dependency, so it stays out of the `@loom/sdk` barrel. Placed grid cells get explicit
+  `grid-column`/`grid-row`, titled layouts a `<section>` with an `h2` (ADR 0098).
 - `@loom/plugin-renderer-terminal` — string/terminal blueprint renderer
   (`renderBlueprintToString`), the second surface that proves blueprint delivery is
   renderer-agnostic rather than React-shaped. Kind-aware when given a registry —
@@ -184,6 +185,8 @@ and compute.
   `[kind]` on the surface rather than flattened silently (ADR 0096). A widget with a declared
   binding status renders the canonical `⋯`/`~`/`✗` glyph plus, when `source.degradedFrom` is
   set, a trailing `(degraded from …)` suffix — absent either, the line is unchanged (ADR 0097).
+  Placed grid cells print in reading order and a titled layout under an underlined heading
+  (ADR 0098).
 
 **Compute**
 

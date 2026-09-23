@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Blueprint IR 2.1.0 (ADR 0098).** A minor bump for genUI's migration onto loom-ui, which
+  needs free placement and titled views:
+
+  - `GridCell` gains optional `row`, `rowSpan` and `column` (1-based grid lines; `span` is still
+    the width). All absent = flow placement, as before. `cell(span, node, { row, column,
+    rowSpan })` states a placement.
+  - `GridLayout`, `FlexLayout` and `StackLayout` gain an optional `title` (a section heading);
+    `grid`/`flex`/`stack` accept it.
+  - `BLUEPRINT_IR_VERSION` moves `2.0.0` → `2.1.0` with a third pinned digest. 2.0.0 artifacts
+    are read as they are: `validateBlueprint` knows `2.0.0`, and `upgradeBlueprint` is identity
+    on it, so no stored artifact is re-addressed.
+  - `validateBlueprint` gains `placement-out-of-range` (one finding per cell; never a cascade
+    from a bad `span` or `columns`).
+  - `@loom/plugin-renderer-react` wraps a placed cell with explicit `grid-column`/`grid-row`
+    and renders a titled layout as `<section><h2/>…</section>`; `@loom/plugin-renderer-terminal`
+    prints placed cells in reading order and a titled layout under an underlined heading. An
+    unplaced, untitled artifact renders exactly as it did under 2.0.0 on both.
+
 - **Blueprint IR 2.0.0 (ADR 0097).** Three leaks loom-ui's adapters had been working around —
   never reaching loom's own renderers, or a third consumer — are now channels the IR itself
   carries:

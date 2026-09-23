@@ -1289,11 +1289,14 @@ function blueprint$(config: { id: string; title: string; layout: Layout; project
 
 // Layout helpers — a grid child is a GridCell (IR 2.0.0); grid() and asCell() normalise a bare
 // Widget | Layout to { span: 1, node } so every existing call keeps compiling
-grid({ columns: number; gap?: number; children: Array<GridCell | Widget | Layout> }): GridLayout
-flex({ direction?: "row" | "column"; gap?: number; children }): FlexLayout
-stack({ gap?: number; children }): StackLayout
-interface GridCell { span?: number; node: Widget | Layout }   // columns occupied in the parent grid; default 1
-function cell(span: number, node: Widget | Layout): GridCell   // explicit-span builder
+grid({ columns: number; gap?: number; title?: string; children: Array<GridCell | Widget | Layout> }): GridLayout
+flex({ direction?: "row" | "column"; gap?: number; title?: string; children }): FlexLayout
+stack({ gap?: number; title?: string; children }): StackLayout
+// every Layout has title?: string — a section heading (IR 2.1.0, ADR 0098)
+interface GridCell { span?: number; row?: number; rowSpan?: number; column?: number; node: Widget | Layout }
+// span = columns occupied (default 1); row/column = 1-based start lines, rowSpan = rows (default 1);
+// all placement absent = flow placement (IR 2.1.0, ADR 0098)
+function cell(span: number, node: Widget | Layout, placement?: { row?: number; rowSpan?: number; column?: number }): GridCell
 function asCell(child: GridCell | Widget | Layout): GridCell   // the one place a legacy bare child is wrapped
 function isWidget(node: unknown): node is Widget               // the leaf/container discriminator every walker branches on
 
@@ -1312,17 +1315,17 @@ interface WidgetSource { type: string; version: string; degradedFrom?: Array<{ t
 // Widget gains: source?: WidgetSource                          // never in props
 // Blueprint gains: irVersion?: string                          // absent ⇒ "1.0.0"; writers always set it
 function resolveWidgetStatus(widget: Widget, stateMap: Map<string, unknown>): BindingStatus | undefined
-function upgradeBlueprint(bp: Blueprint): Blueprint   // 2.0.0 artifact from any readable one; identity on 2.0.0 input
+function upgradeBlueprint(bp: Blueprint): Blueprint   // current-major artifact from any readable one; identity on 2.0.0 and 2.1.0 input
 function blueprintIrVersion(bp: Blueprint): string    // bp.irVersion ?? "1.0.0"
 
-// The Blueprint is a declared rendering IR (ADR 0096, bumped to 2.0.0 by ADR 0097): bump on any
+// The Blueprint is a declared rendering IR (ADR 0096; 2.0.0 by ADR 0097, 2.1.0 by ADR 0098): bump on any
 // shape change; a test pins the shape digest per version
 const BLUEPRINT_IR_VERSION: string; const BLUEPRINT_IR_SHAPE: Record<string, readonly string[]>
 
 // Framework-agnostic traversal (renderers are built on this)
 function traverseBlueprint<TNode>(node: Layout | Widget, stateMap: Map<string, unknown>, options: {
   renderWidget: (ctx: WidgetRendererProps) => TNode;                       // WidgetRendererProps.status?: BindingStatus
-  renderContainer: (ctx: { layout: Layout; children: TNode[]; cells?: Array<{ span: number; child: TNode }> }) => TNode;
+  renderContainer: (ctx: { layout: Layout; children: TNode[]; cells?: Array<{ span: number; row?: number; rowSpan?: number; column?: number; child: TNode }> }) => TNode;
   onAction?: (action: WidgetAction) => void;
 }): TNode
 function traverseBlueprintAsync<TNode>(node, stateMap, options): Promise<TNode>   // interruptible, for BYOR renderers
@@ -1339,6 +1342,7 @@ const builtinCatalog: WidgetCatalog                                   // loom's 
 function validateBlueprint(blueprint: Blueprint, catalog: WidgetCatalog): BlueprintValidation
 // findings: unknown-kind | missing-binding | unexpected-binding | undeclared-prop |
 //           undeclared-projection | duplicate-node-id      · `widgets` is the DENOMINATOR
+//           + IR checks: span-out-of-range | placement-out-of-range | columns-invalid | malformed-node | …
 function catalogCoverage(catalog: WidgetCatalog, kinds: Iterable<string>): CoverageReport
 
 // ADR 0094 — which node ids did this change DROP? (the failure one tree cannot show)
@@ -1382,6 +1386,7 @@ const defaultRegistry: RendererRegistry<WidgetRenderer>;  // MetricCard/Timeline
 // IR 2.0.0 (ADR 0097) — the canonical binding-status matrix, applied around a widget's rendered
 // body. Renders NO wrapper element when the widget has neither a declared status channel
 // (binding.status) nor a source — a 1.0.0 artifact's DOM is unchanged.
+// IR 2.1.0: a placed grid cell gets explicit grid-column/grid-row; a titled layout renders <section><h2/>…</section>
 function WidgetFrame(props: { widget: Widget; value: unknown; status?: BindingStatus; check?: WidgetValueCheck; children: React.ReactNode }): JSX.Element
 // The caller-supplied value contract. Runs ONLY for a widget whose binding declares a status
 // channel and only when status?.state !== "error"; a finding renders as the error row, outranking
@@ -1409,6 +1414,7 @@ const defaultTerminalRegistry: RendererRegistry<TerminalWidgetRenderer>         
 // applies the canonical status matrix (glyphs ⋯ pending AND loading / ~ stale / ✗ error) and a
 // degraded-from suffix from `source` on the first line; byte-identical output for a widget with
 // neither a declared channel nor a source
+// IR 2.1.0: placed grid cells print in reading order (row, then column); a titled layout prints an underlined heading
 function renderBlueprintToString(blueprint: Blueprint, stateMap: Map<string, unknown>, options?: TerminalRenderOptions): string
 class TerminalRenderer { constructor(projectionRuntime: ProjectionRuntime, options?: TerminalRenderOptions); render(blueprint: Blueprint, executionId: string): string }
 #+end_src
