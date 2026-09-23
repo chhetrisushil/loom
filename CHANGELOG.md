@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     travels the existing status channel (`binding.status.path`); `isBindingStatus` admits it
     under the same rules as the other four states. Not an error; it triggers nothing.
   - The canonical matrix gains an `empty` row right after `error` and before the `check` slot
-    (there is no value to check); a value beside it is ignored.
+    (there is no value to check). A producer must clear the bound value when it publishes `empty`;
+    a reader ignores one if it is there.
     `@loom/plugin-renderer-react` renders `data-binding-state="empty"` with a `role="status"`
     marker `○ <title>: no data` (or the finding's message); `@loom/plugin-renderer-terminal`
     prints the same row. A pre-2.3.0 reader sees `empty` as a malformed status and falls back to
