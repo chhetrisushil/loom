@@ -41,10 +41,9 @@ import {
 //   * a layout with a non-empty string `title` renders as <section aria-label={title}><h2/><div …/></section>.
 //     The grid/flex style stays on the inner <div>, so the heading is never a grid item. Always
 //     h2: the blueprint title is the h1, and a container has no depth to derive a level from.
-//     `aria-label` makes the section a NAMED region landmark — a screen reader announces "Latency
-//     region" rather than an anonymous one, independent of whether the visible <h2> is in the
-//     accessible-name computation for a <section> in every AT (it always is here, but the
-//     explicit label makes the name authoritative rather than incidental).
+//     `aria-label` is what makes it a landmark at all: per HTML-AAM, a <section> does not take
+//     its accessible name from content, so an unlabelled one (the <h2> notwithstanding) maps to
+//     role `generic`, not `region`. The explicit label names the region.
 const cellKey = (child: ReactNode, index: number): string | number =>
   isValidElement(child) && child.key !== null ? child.key : index;
 
