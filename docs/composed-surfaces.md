@@ -188,6 +188,10 @@ same state a value already resolves from, where the binding's delivery state
 matching pending/stale/error marker; a binding that declares nothing renders exactly as it did
 before the channel existed ([ADR 0097](adr/0097-blueprint-ir-2.md)).
 
+A grid cell may also be *placed* — `cell(span, node, { row, column, rowSpan })` — and any layout
+may carry a `title`, a section heading; an artifact that uses neither renders as it always did
+([ADR 0098](adr/0098-blueprint-ir-placement-and-titles.md)).
+
 `projectionRuntime.pins()` is what a composer records into
 `Blueprint.projectionVersions`; `checkBlueprintPins(view, pins)` is what a render
 compares it against, reporting `drift` when the fold behind a name changed and

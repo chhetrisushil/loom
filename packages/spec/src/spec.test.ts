@@ -232,6 +232,9 @@ const NOT_A_CAPABILITY = new Set([
   // status channel, widget source, and a sensitivity field. A contract and two renderer
   // options, the same tier as 0096; no runtime subsystem to grade.
   "0097",
+  // 0098 — the same IR grown by a minor version: optional grid-cell placement and layout
+  // titles, drawn by both renderers. A contract and renderer behaviour, the tier of 0096/0097.
+  "0098",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {
