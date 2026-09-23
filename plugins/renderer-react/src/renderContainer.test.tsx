@@ -242,6 +242,17 @@ describe("renderReactContainer placement and titles (IR 2.1.0)", () => {
     expect(section.children[1]?.querySelector("[data-testid='x']")).not.toBeNull();
   });
 
+  it.each([
+    ["grid", grid({ columns: 2, title: "Latency", children: [] })],
+    ["flex", flex({ title: "Latency", children: [] })],
+    ["stack", stack({ title: "Latency", children: [] })],
+  ])("a titled %s's section carries aria-label so it is a named region landmark", (_n, layout) => {
+    const { container } = render(renderReactContainer(layout, [<span key="x">x</span>]));
+    const section = container.firstChild as HTMLElement;
+    expect(section.tagName).toBe("SECTION");
+    expect(section.getAttribute("aria-label")).toBe("Latency");
+  });
+
   it("an untitled or empty-titled layout renders no section and no heading", () => {
     for (const layout of [stack({ children: [] }), stack({ title: "", children: [] })]) {
       const { container, unmount } = render(renderReactContainer(layout, [<span key="x">x</span>]));

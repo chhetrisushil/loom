@@ -38,9 +38,13 @@ import {
 //   * a PLACED cell (any of row / rowSpan / column set) is wrapped even at span 1, because its
 //     position is exactly the "something to say" a wrapper exists for; the wrapper keeps the
 //     child's key, so identity survives a sibling's removal as above;
-//   * a layout with a non-empty string `title` renders as <section><h2/><div …/></section>. The
-//     grid/flex style stays on the inner <div>, so the heading is never a grid item. Always h2:
-//     the blueprint title is the h1, and a container has no depth to derive a level from.
+//   * a layout with a non-empty string `title` renders as <section aria-label={title}><h2/><div …/></section>.
+//     The grid/flex style stays on the inner <div>, so the heading is never a grid item. Always
+//     h2: the blueprint title is the h1, and a container has no depth to derive a level from.
+//     `aria-label` makes the section a NAMED region landmark — a screen reader announces "Latency
+//     region" rather than an anonymous one, independent of whether the visible <h2> is in the
+//     accessible-name computation for a <section> in every AT (it always is here, but the
+//     explicit label makes the name authoritative rather than incidental).
 const cellKey = (child: ReactNode, index: number): string | number =>
   isValidElement(child) && child.key !== null ? child.key : index;
 
@@ -97,7 +101,7 @@ export function renderReactContainer(
   const title = typeof layout.title === "string" && layout.title !== "" ? layout.title : undefined;
   if (title === undefined) return body;
   return (
-    <section>
+    <section aria-label={title}>
       <h2>{title}</h2>
       {body}
     </section>
