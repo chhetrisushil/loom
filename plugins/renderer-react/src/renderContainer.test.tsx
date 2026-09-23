@@ -305,3 +305,88 @@ describe("renderReactContainer ignores a layout role (IR 2.2.0, ADR 0099)", () =
     }
   });
 });
+
+describe("renderReactContainer keys a container by its layout id (IR 2.4.0, ADR 0101)", () => {
+  // A step container holding one uncontrolled <input>. The input is keyed by its widget id, as
+  // both render paths key widget leaves; the CONTAINER is what this suite is about.
+  const step = (id: string, keyed: boolean) =>
+    renderReactContainer(stack({ ...(keyed && { id }), title: id, children: [] }), [
+      <input key={`${id}-field`} data-testid={`${id}-field`} />,
+    ]);
+  const view = (ids: string[], keyed: boolean) =>
+    renderReactContainer(
+      stack({ ...(keyed && { id: "root" }), children: [] }),
+      ids.map((id) => step(id, keyed))
+    );
+  const field = (container: HTMLElement, id: string) =>
+    container.querySelector<HTMLInputElement>(`[data-testid="${id}-field"]`);
+
+  it("a container inserted before a keyed sibling keeps the sibling's <input> node and its typed value", () => {
+    const { container, rerender } = render(view(["account", "payment"], true));
+    const payment = field(container, "payment");
+    const account = field(container, "account");
+    if (payment === null || account === null) throw new Error("fields not rendered");
+    payment.value = "4111 1111";
+    payment.focus();
+
+    rerender(view(["account", "extra", "payment"], true));
+
+    expect(field(container, "payment")).toBe(payment);
+    expect(field(container, "account")).toBe(account);
+    expect(payment.value).toBe("4111 1111");
+    expect(document.activeElement).toBe(payment);
+    expect(field(container, "extra")).not.toBeNull();
+  });
+
+  it("a reorder keeps both containers' nodes", () => {
+    const { container, rerender } = render(view(["a", "b"], true));
+    const a = field(container, "a");
+    const b = field(container, "b");
+    rerender(view(["b", "a"], true));
+    expect(field(container, "a")).toBe(a);
+    expect(field(container, "b")).toBe(b);
+  });
+
+  it("without ids, the same insert remounts the shifted sibling — the positional behaviour, unchanged", () => {
+    // Pins the defect the id fixes: nested containers get index keys, so every container after
+    // the insertion point is matched to a different step and its widgets are re-created.
+    const { container, rerender } = render(view(["account", "payment"], false));
+    const payment = field(container, "payment");
+    rerender(view(["account", "extra", "payment"], false));
+    expect(field(container, "payment")).not.toBe(payment);
+  });
+
+  it("an id'd tree renders DOM-identical to the unkeyed one — the id is a key, never markup", () => {
+    const html = (keyed: boolean) => {
+      const { container, unmount } = render(view(["a", "b"], keyed));
+      const out = container.innerHTML;
+      unmount();
+      return out;
+    };
+    expect(html(true)).toBe(html(false));
+    expect(html(true)).not.toContain("root");
+  });
+
+  it("sets the React key from a well-formed id only; a malformed id is absent (positional)", () => {
+    expect(renderReactContainer(stack({ id: "s", children: [] }), []).key).toBe("s");
+    expect(renderReactContainer(stack({ id: "t", title: "T", children: [] }), []).key).toBe("t");
+    expect(renderReactContainer(stack({ children: [] }), []).key).toBeNull();
+    for (const id of ["", 42, null]) {
+      const layout = { type: "stack", id, children: [] } as unknown as Parameters<
+        typeof renderReactContainer
+      >[0];
+      expect(renderReactContainer(layout, []).key, String(id)).toBeNull();
+    }
+  });
+
+  it("a span > 1 grid cell wrapping an id'd container takes the container's key", () => {
+    const inner = renderReactContainer(stack({ id: "inner", children: [] }), []);
+    const g = renderReactContainer(
+      grid({ columns: 4, children: [] }),
+      [inner],
+      [{ span: 2, child: inner }]
+    );
+    const kids = (g.props as { children: ReactElement[] }).children;
+    expect(kids[0]?.key).toBe(".$inner");
+  });
+});
