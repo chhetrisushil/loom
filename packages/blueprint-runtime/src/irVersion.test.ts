@@ -1,7 +1,7 @@
 import { canonicalJson, fnv1a64 } from "@loom/core";
 import { describe, expect, it } from "vitest";
 import { BLUEPRINT_IR_SHAPE, BLUEPRINT_IR_VERSION } from "./irVersion";
-import { IR_VERSIONS_READ_AS_IS } from "./normalize";
+import { IR_VERSIONS_READ_AS_IS, isBindingStatus } from "./normalize";
 
 // ADR 0096 — the Blueprint is loom's stable rendering IR. An external framework compiles to
 // it, so its shape is a contract: a change must be visible as a version bump, never as a quiet
@@ -20,12 +20,16 @@ import { IR_VERSIONS_READ_AS_IS } from "./normalize";
 //
 // 2.2.0 (ADR 0099) is a MINOR bump — an optional `role` on every Layout only — and 2.1.0 has an
 // external reader (loom-ui pins it), so its row is frozen too.
+//
+// 2.3.0 (ADR 0100) is a MINOR bump — one more `BindingState` literal, `empty`, only — and 2.2.0
+// has an external reader (loom-ui pins it), so its row is frozen too.
 
 const PINNED: ReadonlyArray<readonly [version: string, digest: string]> = [
   ["1.0.0", "59ee5cb1c37efe75"],
   ["2.0.0", "90e690ca0de812fd"],
   ["2.1.0", "f2b72f769b6a85a1"],
   ["2.2.0", "09d36418d9a034d3"],
+  ["2.3.0", "fb7ee931bd472134"],
 ];
 
 const digestOf = (shape: unknown) => fnv1a64(canonicalJson(shape));
@@ -108,6 +112,29 @@ describe("BLUEPRINT_IR_SHAPE", () => {
     expect(BLUEPRINT_IR_SHAPE.widget).not.toContain("role:optional");
     expect(BLUEPRINT_IR_SHAPE.gridCell).not.toContain("role:optional");
     expect(BLUEPRINT_IR_SHAPE.blueprint).not.toContain("role:optional");
+  });
+
+  it("2.3.0 adds `empty` to the binding states, and nothing else changed (ADR 0100)", () => {
+    expect(BLUEPRINT_IR_SHAPE.bindingStates).toEqual([
+      "empty",
+      "error",
+      "pending",
+      "ready",
+      "stale",
+    ]);
+    // The status object keeps 2.2.0's keys: `empty` is a value of `state`, not a new field.
+    expect(BLUEPRINT_IR_SHAPE.bindingStatus).toEqual([
+      "finding:optional",
+      "seq:optional",
+      "state:required",
+    ]);
+    expect(BLUEPRINT_IR_SHAPE.bindingFinding).toEqual(["code:required", "message:required"]);
+  });
+
+  it("isBindingStatus admits exactly the manifested states — the runtime set cannot drift from the IR", () => {
+    for (const state of BLUEPRINT_IR_SHAPE.bindingStates)
+      expect(isBindingStatus({ state }), state).toBe(true);
+    expect(isBindingStatus({ state: "loading" })).toBe(false);
   });
 });
 

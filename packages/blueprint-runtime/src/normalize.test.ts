@@ -50,7 +50,7 @@ describe("irVersion", () => {
       projections: [],
     });
     expect(bp.irVersion).toBe(BLUEPRINT_IR_VERSION);
-    expect(BLUEPRINT_IR_VERSION).toBe("2.2.0");
+    expect(BLUEPRINT_IR_VERSION).toBe("2.3.0");
     const { irVersion: _v, ...legacy } = bp;
     expect(blueprintIrVersion(legacy as Blueprint)).toBe(IR_VERSION_LEGACY);
   });
@@ -113,6 +113,29 @@ describe("irVersion", () => {
 });
 
 describe("status resolution", () => {
+  it("isBindingStatus accepts `empty` (IR 2.3.0, ADR 0100), with or without a finding, under the same rules as every other state", () => {
+    expect(isBindingStatus({ state: "empty" })).toBe(true);
+    expect(
+      isBindingStatus({
+        state: "empty",
+        seq: 4,
+        finding: { code: "upstream-empty", message: "no rows" },
+      })
+    ).toBe(true);
+    expect(isBindingStatus({ state: "empty", seq: "4" })).toBe(false);
+    expect(isBindingStatus({ state: "empty", finding: { code: "upstream-empty" } })).toBe(false);
+    // Near-misses are not `empty`: the literal is exact and case-sensitive.
+    for (const state of ["Empty", "EMPTY", "empty ", "no-data", "none"])
+      expect(isBindingStatus({ state }), state).toBe(false);
+  });
+  it("resolveWidgetStatus resolves an `empty` status from the declared path like any other state", () => {
+    const map = new Map<string, unknown>([["p", { v: {}, s: { a: { state: "empty", seq: 2 } } }]]);
+    const widget = MetricCard({
+      id: "a",
+      binding: { projectionId: "p", path: "v.a", status: { path: "s.a" } },
+    });
+    expect(resolveWidgetStatus(widget, map)).toEqual({ state: "empty", seq: 2 });
+  });
   it("isBindingStatus accepts the four states with optional seq/finding and rejects everything else", () => {
     expect(isBindingStatus({ state: "ready" })).toBe(true);
     expect(
@@ -216,7 +239,7 @@ describe("layout roles (IR 2.2.0, ADR 0099)", () => {
     );
   });
   it("upgradeBlueprint is identity on 2.1.0 and 2.2.0 artifacts, and keeps a role when it wraps 1.0.0", () => {
-    for (const irVersion of ["2.1.0", "2.2.0"]) {
+    for (const irVersion of ["2.1.0", "2.2.0", "2.3.0"]) {
       const v: Blueprint = {
         ...blueprint$({
           id: "x",

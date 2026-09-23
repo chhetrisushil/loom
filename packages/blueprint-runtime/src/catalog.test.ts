@@ -511,6 +511,24 @@ describe("validateBlueprint — IR 2.0.0 slots", () => {
       );
     }
   });
+  it("2.2.0 is still a known version after the 2.3.0 minor bump, and 2.3.0 is known (ADR 0100)", () => {
+    for (const v of ["2.0.0", "2.1.0", "2.2.0", "2.3.0"]) {
+      expect(validateBlueprint(bp(stack({ children: [] }), v), builtinCatalog).findings, v).toEqual(
+        []
+      );
+    }
+  });
+  it("a binding status is runtime data, so validateBlueprint has no status finding to make (ADR 0100 D5)", () => {
+    // The artifact carries only WHERE a status lives (`binding.status.path`); `empty` is a value
+    // written into projection state at run time, which validateBlueprint never sees.
+    const widget = MetricCard({
+      id: "m",
+      binding: { projectionId: "p", path: "v", status: { path: "s" } },
+    });
+    expect(validateBlueprint(bp(stack({ children: [widget] })), builtinCatalog).findings).toEqual(
+      []
+    );
+  });
   it("a well-formed role is never a finding, known to some renderer or not (ADR 0099 D4)", () => {
     // Whether a renderer has a role registered is registry-dependent, not a loom error.
     for (const role of ["stepped", "no-renderer-has-this", "a", "a--b-", "a".repeat(64)]) {

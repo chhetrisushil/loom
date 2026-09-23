@@ -33,7 +33,7 @@ import type {
 // Adding a Layout variant means adding its field manifest here too; `Record<Layout["type"], true>`
 // catches the variant, not its fields.
 
-export const BLUEPRINT_IR_VERSION = "2.2.0";
+export const BLUEPRINT_IR_VERSION = "2.3.0";
 
 type OptionalKeys<T> = { [K in keyof T]-?: object extends Pick<T, K> ? K : never }[keyof T];
 /** Every key of T, each tagged by whether T declares it optional. `satisfies` rejects a missing key,
@@ -102,6 +102,7 @@ const BINDING_STATES = {
   ready: true,
   stale: true,
   error: true,
+  empty: true,
 } as const satisfies Record<BindingState, true>;
 
 const GRID_LAYOUT = {
