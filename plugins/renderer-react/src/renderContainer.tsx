@@ -48,6 +48,15 @@ import {
 // IR 2.2.0 (ADR 0099) adds `Layout.role`, which this renderer deliberately IGNORES: a role is a
 // key into a container-renderer registry, and React has none, so every role draws the plain
 // container above — DOM-identical to the same layout without one. It is never an ARIA role.
+//
+// IR 2.4.0 (ADR 0101) adds `Layout.id`, which this renderer USES as the React key of the element
+// it returns (the <div>, or the <section> when titled). Without it a nested container reaches its
+// parent unkeyed and `Children.toArray` gives it an INDEX key, so inserting a container mid-list
+// (or reordering) matched every later container to a different step and re-created its widgets —
+// typed input and focus lost. `Children.toArray` keeps an existing key, and a span > 1 grid
+// wrapper already inherits the child's key through `cellKey`, so the id reaches React on every
+// path. It is a key, never markup: the DOM is identical with or without it. Absent or malformed
+// (not a non-empty string) ⇒ no key, and React keys by index exactly as before.
 const cellKey = (child: ReactNode, index: number): string | number =>
   isValidElement(child) && child.key !== null ? child.key : index;
 
@@ -100,11 +109,19 @@ export function renderReactContainer(
         )
       : Children.toArray(children);
 
-  const body = <div style={layoutStyle(layout)}>{items}</div>;
+  const id: unknown = (layout as { id?: unknown }).id;
+  const key = typeof id === "string" && id !== "" ? id : undefined;
   const title = typeof layout.title === "string" && layout.title !== "" ? layout.title : undefined;
-  if (title === undefined) return body;
+  if (title === undefined) {
+    return (
+      <div key={key} style={layoutStyle(layout)}>
+        {items}
+      </div>
+    );
+  }
+  const body = <div style={layoutStyle(layout)}>{items}</div>;
   return (
-    <section aria-label={title}>
+    <section key={key} aria-label={title}>
       <h2>{title}</h2>
       {body}
     </section>

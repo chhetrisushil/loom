@@ -5,6 +5,7 @@ import {
   Timeline,
   blueprint$,
   cell,
+  customWidget$,
   grid,
   stack,
 } from "@loom/blueprint-runtime";
@@ -13,7 +14,7 @@ import { act, render, screen } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it } from "vitest";
 import { BlueprintRenderer } from "./BlueprintRenderer";
-import { defaultRegistry } from "./RendererRegistry";
+import { RendererRegistry, type WidgetRenderer, defaultRegistry } from "./RendererRegistry";
 import { ApprovalCardRenderer, MetricCardRenderer, TimelineRenderer } from "./renderers";
 
 defaultRegistry.register("MetricCard", MetricCardRenderer);
@@ -464,5 +465,81 @@ describe("BlueprintRenderer — placement and section titles (IR 2.1.0)", () => 
     const wrapper = widget.closest("[style*='grid-column']") as HTMLElement;
     expect(wrapper.style.gridColumn).toBe("9 / span 4");
     expect(wrapper.style.gridRow).toBe("2 / span 2");
+  });
+});
+
+describe("BlueprintRenderer — layout ids keep container identity (IR 2.4.0, ADR 0101)", () => {
+  // An uncontrolled field widget: its DOM node IS its state (typed text, focus).
+  const registry = new RendererRegistry<WidgetRenderer>().register("Field", ({ widget }) => (
+    <input data-testid={widget.id} />
+  ));
+  const runtime = () => {
+    const r = new InMemoryProjectionRuntime();
+    r.register({ id: "form", initialState: {}, handlers: {} });
+    return r;
+  };
+  const view = (steps: string[], keyed: boolean): Blueprint =>
+    blueprint$({
+      id: "form",
+      title: "Form",
+      layout: stack({
+        ...(keyed && { id: "root" }),
+        children: steps.map((s) =>
+          stack({
+            ...(keyed && { id: s }),
+            title: s,
+            children: [
+              customWidget$({
+                kind: "Field",
+                id: `${s}-field`,
+                binding: { projectionId: "form", path: s },
+              }),
+            ],
+          })
+        ),
+      }),
+      projections: ["form"],
+    });
+
+  it.each([
+    ["eager", false],
+    ["fiber", true],
+  ])("%s: inserting a step above a typed-in, focused step keeps its <input> node", (_n, fiber) => {
+    const rt = runtime();
+    const el = (bp: Blueprint) => (
+      <BlueprintRenderer
+        blueprint={bp}
+        projectionRuntime={rt}
+        executionId={EXECUTION_ID}
+        registry={registry}
+        fiber={fiber}
+      />
+    );
+    const { rerender } = render(el(view(["account", "payment"], true)));
+    const payment = screen.getByTestId("payment-field") as HTMLInputElement;
+    payment.value = "4111 1111";
+    payment.focus();
+
+    rerender(el(view(["account", "extra", "payment"], true)));
+
+    expect(screen.getByTestId("payment-field")).toBe(payment);
+    expect(payment.value).toBe("4111 1111");
+    expect(document.activeElement).toBe(payment);
+  });
+
+  it("without layout ids the same insert re-creates the shifted step's <input> (positional, as before)", () => {
+    const rt = runtime();
+    const el = (bp: Blueprint) => (
+      <BlueprintRenderer
+        blueprint={bp}
+        projectionRuntime={rt}
+        executionId={EXECUTION_ID}
+        registry={registry}
+      />
+    );
+    const { rerender } = render(el(view(["account", "payment"], false)));
+    const payment = screen.getByTestId("payment-field");
+    rerender(el(view(["account", "extra", "payment"], false)));
+    expect(screen.getByTestId("payment-field")).not.toBe(payment);
   });
 });

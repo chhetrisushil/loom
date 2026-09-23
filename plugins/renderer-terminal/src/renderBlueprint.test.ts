@@ -536,3 +536,44 @@ describe("renderBlueprintToString ignores a layout role (IR 2.2.0, ADR 0099)", (
     }
   });
 });
+
+describe("renderBlueprintToString ignores a layout id (IR 2.4.0, ADR 0101)", () => {
+  // A one-shot string has nothing to reconcile, so a container's identity changes nothing:
+  // output is byte-identical with or without ids, malformed ones included.
+  const m = (id: string) => MetricCard({ id, title: id, binding: { projectionId: "p", path: id } });
+  const state = new Map<string, unknown>([["p", { a: 1, b: 2, c: 3 }]]);
+  const out = (id?: unknown) =>
+    renderBlueprintToString(
+      blueprint$({
+        id: "x",
+        title: "X",
+        layout: {
+          type: "stack",
+          title: "Onboarding",
+          ...(id !== undefined && { id }),
+          children: [
+            stack({
+              title: "Account",
+              ...(typeof id === "string" && { id: `${id}-a` }),
+              children: [m("a")],
+            }),
+            grid({
+              columns: 2,
+              ...(typeof id === "string" && { id: `${id}-g` }),
+              children: [m("b"), m("c")],
+            }),
+          ],
+        } as unknown as Layout,
+        projections: ["p"],
+      }),
+      state
+    );
+
+  it("prints an id'd layout exactly as it prints the same layout without ids", () => {
+    const plain = out();
+    for (const id of ["root", "__proto__", "", 42]) {
+      expect(out(id), String(id)).toBe(plain);
+    }
+    expect(plain).not.toContain("root");
+  });
+});
