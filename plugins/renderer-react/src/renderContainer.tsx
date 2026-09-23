@@ -1,5 +1,11 @@
 import type { Layout } from "@loom/blueprint-runtime";
-import { Children, type ReactElement, type ReactNode, isValidElement } from "react";
+import {
+  type CSSProperties,
+  Children,
+  type ReactElement,
+  type ReactNode,
+  isValidElement,
+} from "react";
 
 // Shared container rendering used by BOTH the eager and fiber render paths, so
 // their layout output stays byte-identical. Extracted verbatim from the original
@@ -25,13 +31,46 @@ import { Children, type ReactElement, type ReactNode, isValidElement } from "rea
 // A span > 1 wrapper therefore takes the CHILD's key when the child has one,
 // falling back to the index only for an unkeyed child (a nested container),
 // where there is no identity to preserve in the first place.
+//
+// IR 2.1.0 (ADR 0098) adds two things, neither of which changes an unplaced, untitled
+// artifact's DOM:
+//
+//   * a PLACED cell (any of row / rowSpan / column set) is wrapped even at span 1, because its
+//     position is exactly the "something to say" a wrapper exists for; the wrapper keeps the
+//     child's key, so identity survives a sibling's removal as above;
+//   * a layout with a non-empty string `title` renders as <section><h2/><div …/></section>. The
+//     grid/flex style stays on the inner <div>, so the heading is never a grid item. Always h2:
+//     the blueprint title is the h1, and a container has no depth to derive a level from.
 const cellKey = (child: ReactNode, index: number): string | number =>
   isValidElement(child) && child.key !== null ? child.key : index;
+
+type Cell = { span: number; row?: number; rowSpan?: number; column?: number; child: ReactNode };
+
+const isPlaced = (c: Cell): boolean =>
+  c.row !== undefined || c.rowSpan !== undefined || c.column !== undefined;
+
+function cellStyle(c: Cell): CSSProperties {
+  const style: CSSProperties = {
+    gridColumn: c.column !== undefined ? `${c.column} / span ${c.span}` : `span ${c.span}`,
+  };
+  if (c.row !== undefined) style.gridRow = `${c.row} / span ${c.rowSpan ?? 1}`;
+  else if (c.rowSpan !== undefined) style.gridRow = `span ${c.rowSpan}`;
+  return style;
+}
+
+function layoutStyle(layout: Layout): CSSProperties {
+  const gap = layout.gap !== undefined ? { gap: `${layout.gap}px` } : {};
+  if (layout.type === "grid") {
+    return { display: "grid", gridTemplateColumns: `repeat(${layout.columns}, 1fr)`, ...gap };
+  }
+  if (layout.type === "flex") return { display: "flex", flexDirection: layout.direction, ...gap };
+  return { display: "flex", flexDirection: "column", ...gap };
+}
 
 export function renderReactContainer(
   layout: Layout,
   children: ReactNode[],
-  cells?: Array<{ span: number; child: ReactNode }>
+  cells?: Cell[]
 ): ReactElement {
   // Key the child array so React does not warn about missing keys. The eager path
   // keys widget leaves by widget.id, but the fiber path's leaves and nested
@@ -43,8 +82,8 @@ export function renderReactContainer(
     layout.type === "grid" && cells !== undefined
       ? Children.toArray(
           cells.map((c, i) =>
-            c.span > 1 ? (
-              <div key={cellKey(c.child, i)} style={{ gridColumn: `span ${c.span}` }}>
+            c.span > 1 || isPlaced(c) ? (
+              <div key={cellKey(c.child, i)} style={cellStyle(c)}>
                 {c.child}
               </div>
             ) : (
@@ -54,41 +93,13 @@ export function renderReactContainer(
         )
       : Children.toArray(children);
 
-  if (layout.type === "grid") {
-    return (
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: `repeat(${layout.columns}, 1fr)`,
-          ...(layout.gap !== undefined && { gap: `${layout.gap}px` }),
-        }}
-      >
-        {items}
-      </div>
-    );
-  }
-  if (layout.type === "flex") {
-    return (
-      <div
-        style={{
-          display: "flex",
-          flexDirection: layout.direction,
-          ...(layout.gap !== undefined && { gap: `${layout.gap}px` }),
-        }}
-      >
-        {items}
-      </div>
-    );
-  }
+  const body = <div style={layoutStyle(layout)}>{items}</div>;
+  const title = typeof layout.title === "string" && layout.title !== "" ? layout.title : undefined;
+  if (title === undefined) return body;
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        ...(layout.gap !== undefined && { gap: `${layout.gap}px` }),
-      }}
-    >
-      {items}
-    </div>
+    <section>
+      <h2>{title}</h2>
+      {body}
+    </section>
   );
 }

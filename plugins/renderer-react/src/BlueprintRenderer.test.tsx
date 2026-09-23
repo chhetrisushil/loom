@@ -4,6 +4,7 @@ import {
   MetricCard,
   Timeline,
   blueprint$,
+  cell,
   grid,
   stack,
 } from "@loom/blueprint-runtime";
@@ -346,4 +347,50 @@ describe("BlueprintRenderer — the check seam", () => {
       ).toBe("stale");
     }
   );
+});
+
+describe("BlueprintRenderer — placement and section titles (IR 2.1.0)", () => {
+  const placed = blueprint$({
+    id: "placed",
+    title: "Placed",
+    layout: stack({
+      title: "Overview",
+      children: [
+        grid({
+          columns: 12,
+          children: [
+            cell(
+              4,
+              MetricCard({
+                id: "cpu",
+                title: "CPU",
+                binding: { projectionId: "metrics", path: "cpu.current" },
+              }),
+              { row: 2, column: 9, rowSpan: 2 }
+            ),
+          ],
+        }),
+      ],
+    }),
+    projections: ["metrics"],
+  });
+
+  it.each([
+    ["eager", undefined],
+    ["fiber", { granularUpdates: true } as const],
+  ])("%s: a placed cell and a section title reach the DOM", (_n, fiber) => {
+    const { container } = render(
+      <BlueprintRenderer
+        blueprint={placed}
+        projectionRuntime={makeProjectionRuntime()}
+        executionId={EXECUTION_ID}
+        {...(fiber !== undefined && { fiber })}
+      />
+    );
+    expect(container.querySelector("section > h2")?.textContent).toBe("Overview");
+    const widget = container.querySelector("[data-widget-kind='MetricCard']") as HTMLElement;
+    const wrapper = widget.closest("[style*='grid-column']") as HTMLElement;
+    expect(wrapper.style.gridColumn).toBe("9 / span 4");
+    expect(wrapper.style.gridRow).toBe("2 / span 2");
+  });
 });
