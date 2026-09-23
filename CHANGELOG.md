@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Blueprint IR 2.3.0 (ADR 0100).** A minor bump so a bound widget whose upstream answered with
+  nothing can say "no data" instead of failing:
+
+  - `BindingState` gains `"empty"` — delivery succeeded and there is no subject to show. It
+    travels the existing status channel (`binding.status.path`); `isBindingStatus` admits it
+    under the same rules as the other four states. Not an error; it triggers nothing.
+  - The canonical matrix gains an `empty` row right after `error` and before the `check` slot
+    (there is no value to check); a value beside it is ignored.
+    `@loom/plugin-renderer-react` renders `data-binding-state="empty"` with a `role="status"`
+    marker `○ <title>: no data` (or the finding's message); `@loom/plugin-renderer-terminal`
+    prints the same row. A pre-2.3.0 reader sees `empty` as a malformed status and falls back to
+    its loading/ready row, never its error row.
+  - `BLUEPRINT_IR_VERSION` moves `2.2.0` → `2.3.0` with a fifth pinned digest; 2.2.0 (like 2.0.0
+    and 2.1.0) is read as it is by `validateBlueprint` and `upgradeBlueprint`. No new finding: a
+    status is runtime projection data, never part of the artifact.
+
 - **Blueprint IR 2.2.0 (ADR 0099).** A minor bump so a container can ask for a renderer of its
   own, the way a widget does through `kind`:
 

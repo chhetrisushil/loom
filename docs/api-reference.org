@@ -1310,7 +1310,7 @@ function isWidget(node: unknown): node is Widget               // the leaf/conta
 MetricCard, Timeline, ApprovalCard, StatusBadge, ProgressBar, DataTable, AlertCard, StreamingText
 customWidget$({ kind: string; title?; binding?; props?; id? })   // bring-your-own widget kind
 
-type BindingState = "pending" | "ready" | "stale" | "error"
+type BindingState = "pending" | "ready" | "stale" | "error" | "empty"   // empty: IR 2.3.0, ADR 0100 — delivered, nothing to show; not an error
 interface BindingStatus { state: BindingState; seq?: number; finding?: { code: string; message: string } }
 interface DataBinding {
   projectionId: string; path: string;
@@ -1321,10 +1321,10 @@ interface WidgetSource { type: string; version: string; degradedFrom?: Array<{ t
 // Widget gains: source?: WidgetSource                          // never in props
 // Blueprint gains: irVersion?: string                          // absent ⇒ "1.0.0"; writers always set it
 function resolveWidgetStatus(widget: Widget, stateMap: Map<string, unknown>): BindingStatus | undefined
-function upgradeBlueprint(bp: Blueprint): Blueprint   // current-major artifact from any readable one; identity on 2.0.0, 2.1.0 and 2.2.0 input
+function upgradeBlueprint(bp: Blueprint): Blueprint   // current-major artifact from any readable one; identity on 2.0.0, 2.1.0, 2.2.0 and 2.3.0 input
 function blueprintIrVersion(bp: Blueprint): string    // bp.irVersion ?? "1.0.0"
 
-// The Blueprint is a declared rendering IR (ADR 0096; 2.0.0 by ADR 0097, 2.1.0 by ADR 0098, 2.2.0 by ADR 0099): bump on any
+// The Blueprint is a declared rendering IR (ADR 0096; 2.0.0 by ADR 0097, 2.1.0 by ADR 0098, 2.2.0 by ADR 0099, 2.3.0 by ADR 0100): bump on any
 // shape change; a test pins the shape digest per version
 const BLUEPRINT_IR_VERSION: string; const BLUEPRINT_IR_SHAPE: Record<string, readonly string[]>
 
@@ -1399,9 +1399,11 @@ const defaultRegistry: RendererRegistry<WidgetRenderer>;  // MetricCard/Timeline
 // (binding.status) nor a source — a 1.0.0 artifact's DOM is unchanged.
 // IR 2.1.0: a placed grid cell gets explicit grid-column/grid-row; a titled layout renders <section><h2/>…</section>
 // IR 2.2.0: Layout.role is ignored — a roled layout's DOM is the unroled one's
+// IR 2.3.0: status empty → data-binding-state="empty" + <div role="status" data-binding-marker="empty">○ title: no data</div>
+//           (finding.message when present), ranked after error; the value and the check are skipped
 function WidgetFrame(props: { widget: Widget; value: unknown; status?: BindingStatus; check?: WidgetValueCheck; children: React.ReactNode }): JSX.Element
 // The caller-supplied value contract. Runs ONLY for a widget whose binding declares a status
-// channel and only when status?.state !== "error"; a finding renders as the error row, outranking
+// channel and only when status?.state is neither "error" nor "empty"; a finding renders as the error row, outranking
 // stale/pending/ready. loom validates nothing about a bound value itself.
 type WidgetValueCheck = (widget: Widget, value: unknown) => { code: string; message: string } | undefined
 // Fiber selector over { value, status } together — sibling to useWidgetValue; a status-only
@@ -1420,14 +1422,15 @@ type TerminalWidgetRenderer = (widget: Widget, value: unknown, status?: BindingS
 type WidgetValueCheck = (widget: Widget, value: unknown) => { code: string; message: string } | undefined
 interface TerminalRenderOptions {
   registry?: RendererRegistry<TerminalWidgetRenderer>  // absent → kind-blind `title: value`; present → registered kinds render, unregistered kinds are marked `[kind]`
-  check?: WidgetValueCheck                             // ADR 0097 — value-contract slot between `error` and `stale`, declared channels only
+  check?: WidgetValueCheck                             // ADR 0097 — value-contract slot between `error`/`empty` and `stale`, declared channels only
 }
 const defaultTerminalRegistry: RendererRegistry<TerminalWidgetRenderer>                 // covers the eight built-in kinds (asserted by catalogCoverage)
-// applies the canonical status matrix (glyphs ⋯ pending AND loading / ~ stale / ✗ error) and a
+// applies the canonical status matrix (glyphs ⋯ pending AND loading / ~ stale / ✗ error / ○ empty) and a
 // degraded-from suffix from `source` on the first line; byte-identical output for a widget with
 // neither a declared channel nor a source
 // IR 2.1.0: placed grid cells print in reading order (row, then column); a titled layout prints an underlined heading
 // IR 2.2.0: Layout.role is ignored — output is byte-identical with or without one
+// IR 2.3.0: status empty → `○ <title>: <finding.message ?? "no data">`, ranked after error; value and check skipped
 function renderBlueprintToString(blueprint: Blueprint, stateMap: Map<string, unknown>, options?: TerminalRenderOptions): string
 class TerminalRenderer { constructor(projectionRuntime: ProjectionRuntime, options?: TerminalRenderOptions); render(blueprint: Blueprint, executionId: string): string }
 #+end_src

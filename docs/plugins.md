@@ -178,13 +178,14 @@ and compute.
 - `@loom/plugin-renderer-react` — React blueprint renderer (`defaultRegistry`); React is a peer
   dependency, so it stays out of the `@loom/sdk` barrel. Placed grid cells get explicit
   `grid-column`/`grid-row`, titled layouts a `<section>` with an `h2` (ADR 0098). A layout's
-  `role` is ignored — it draws the plain container (ADR 0099).
+  `role` is ignored — it draws the plain container (ADR 0099). An `empty` binding status draws a
+  `role="status"` "no data" marker in place of the widget (ADR 0100).
 - `@loom/plugin-renderer-terminal` — string/terminal blueprint renderer
   (`renderBlueprintToString`), the second surface that proves blueprint delivery is
   renderer-agnostic rather than React-shaped. Kind-aware when given a registry —
   `defaultTerminalRegistry` covers the eight built-in kinds and an unregistered kind is marked
   `[kind]` on the surface rather than flattened silently (ADR 0096). A widget with a declared
-  binding status renders the canonical `⋯`/`~`/`✗` glyph plus, when `source.degradedFrom` is
+  binding status renders the canonical `⋯`/`~`/`✗`/`○` glyph (`○` no data, ADR 0100) plus, when `source.degradedFrom` is
   set, a trailing `(degraded from …)` suffix — absent either, the line is unchanged (ADR 0097).
   Placed grid cells print in reading order and a titled layout under an underlined heading
   (ADR 0098); a layout's `role` changes nothing in the output (ADR 0099).
