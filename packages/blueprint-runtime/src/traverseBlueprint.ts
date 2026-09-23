@@ -11,8 +11,12 @@ export { resolvePath };
 export interface ContainerContext<TNode> {
   layout: Layout;
   children: TNode[];
-  /** Grid containers only: each child with the columns it occupies (default 1), in order. */
-  cells?: Array<{ span: number; child: TNode }>;
+  /**
+   * Grid containers only: each child with the columns it occupies (default 1), in document
+   * order, plus its explicit placement (IR 2.1.0) — `row`/`rowSpan`/`column` are present only
+   * when the cell sets them.
+   */
+  cells?: Array<{ span: number; row?: number; rowSpan?: number; column?: number; child: TNode }>;
 }
 
 // ── Value resolution ──────────────────────────────────────────────────────────
@@ -74,9 +78,13 @@ export function traverseBlueprint<TNode>(
 
   const layout = node;
   if (layout.type === "grid") {
-    const cells = layout.children
-      .map(asCell)
-      .map((c) => ({ span: c.span ?? 1, child: traverseBlueprint(c.node, stateMap, options) }));
+    const cells = layout.children.map(asCell).map((c) => ({
+      span: c.span ?? 1,
+      ...(c.row !== undefined && { row: c.row }),
+      ...(c.rowSpan !== undefined && { rowSpan: c.rowSpan }),
+      ...(c.column !== undefined && { column: c.column }),
+      child: traverseBlueprint(c.node, stateMap, options),
+    }));
     return renderContainer({ layout, children: cells.map((c) => c.child), cells });
   }
 

@@ -1,5 +1,4 @@
-import { BLUEPRINT_IR_VERSION } from "./irVersion";
-import { IR_VERSION_LEGACY, asCell, isWidget } from "./normalize";
+import { IR_VERSIONS_READ_AS_IS, IR_VERSION_LEGACY, asCell, isWidget } from "./normalize";
 import type { Blueprint, GridCell, Layout, Widget } from "./types";
 
 // ── The component catalogue, and the check that it is honoured ────────────────
@@ -153,7 +152,7 @@ export interface BlueprintValidation {
 /** Duplicated into `props` by every built-in builder; never a payload. */
 const RESERVED_PROPS = new Set(["binding"]);
 
-const KNOWN_IR_VERSIONS = new Set([IR_VERSION_LEGACY, BLUEPRINT_IR_VERSION]);
+const KNOWN_IR_VERSIONS = new Set([IR_VERSION_LEGACY, ...IR_VERSIONS_READ_AS_IS]);
 const DATA_CLASSES = new Set(["secret", "sensitive", "internal"]);
 const DOTTED = /^[^.\s]+(\.[^.\s]+)*$/;
 

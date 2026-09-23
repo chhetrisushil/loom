@@ -489,6 +489,14 @@ describe("validateBlueprint — IR 2.0.0 slots", () => {
     } as unknown as Blueprint;
     expect(validateBlueprint(legacy, builtinCatalog).ok).toBe(true);
   });
+  it("a 2.0.0 artifact is still a known version after the 2.1.0 minor bump", () => {
+    expect(
+      validateBlueprint(bp(stack({ children: [] }), "2.0.0"), builtinCatalog).findings
+    ).toEqual([]);
+    expect(
+      validateBlueprint(bp(stack({ children: [] }), "2.1.0"), builtinCatalog).findings
+    ).toEqual([]);
+  });
 });
 
 // ── Totality: a blueprint is data a model composed, so the walk must report, never throw ──────
