@@ -1353,6 +1353,7 @@ function validateBlueprint(blueprint: Blueprint, catalog: WidgetCatalog): Bluepr
 // findings: unknown-kind | missing-binding | unexpected-binding | undeclared-prop |
 //           undeclared-projection | duplicate-node-id      · `widgets` is the DENOMINATOR
 //           + IR checks: span-out-of-range | placement-out-of-range | columns-invalid | malformed-node | …
+//           + role-invalid (warn; a present role failing isLayoutRole — IR 2.2.0, ADR 0099)
 function catalogCoverage(catalog: WidgetCatalog, kinds: Iterable<string>): CoverageReport
 
 // ADR 0094 — which node ids did this change DROP? (the failure one tree cannot show)

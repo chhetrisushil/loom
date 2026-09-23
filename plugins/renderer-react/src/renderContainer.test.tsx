@@ -296,6 +296,12 @@ describe("renderReactContainer ignores a layout role (IR 2.2.0, ADR 0099)", () =
     for (const role of ["stepped", "no-renderer-has-this", "Not A Key"]) {
       expect(html(make(role)), role).toBe(plain);
     }
-    expect(plain).not.toContain("role");
+    // The role never reaches the DOM — neither as loom-ui's data attribute nor as an ARIA role.
+    // (Other ARIA roles are not ruled out here; this renderer just must not derive one from it.)
+    for (const role of ["stepped", "no-renderer-has-this", "Not A Key"]) {
+      const roled = html(make(role));
+      expect(roled).not.toContain("data-container-role");
+      expect(roled).not.toContain(`role="${role}"`);
+    }
   });
 });

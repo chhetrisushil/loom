@@ -1,3 +1,4 @@
+import { isLayoutRole } from "./layout";
 import { IR_VERSIONS_READ_AS_IS, IR_VERSION_LEGACY, asCell, isWidget } from "./normalize";
 import type { Blueprint, GridCell, Layout, Widget } from "./types";
 
@@ -113,6 +114,12 @@ export type BlueprintFindingCode =
    * positive integer, `column` exceeds `columns`, or `column + span - 1` overflows the grid.
    */
   | "placement-out-of-range"
+  /**
+   * A layout's `role` (IR 2.2.0) is present but not a well-formed role (`isLayoutRole`): renderers
+   * draw the plain container, so nothing is lost but the custom rendering — a `warn`. An unknown
+   * but well-formed role is NOT a finding: whether a renderer has it registered is not loom's to say.
+   */
+  | "role-invalid"
   /** A grid's `columns` is not a positive integer — there is no column count to lay cells into. */
   | "columns-invalid"
   /** A node that is neither a `Widget` nor a `Layout` (a stray `null`, a string, a stranded `GridCell`). */
@@ -135,7 +142,7 @@ export interface BlueprintFinding {
    * cell-level finding (`span-out-of-range`, `placement-out-of-range`) it is the id of the cell's OWN node when that node
    * is a widget, else `"<layout>"` (the cell wraps a nested layout, which has no id). For a
    * blueprint- or layout-level finding (`ir-version-unknown`, `columns-invalid`,
-   * `malformed-node`) it is always `"<layout>"`.
+   * `malformed-node`, `role-invalid`) it is always `"<layout>"`.
    */
   readonly nodeId: string;
   /** The widget's kind, or `"<layout>"` for a layout-level finding. */
@@ -174,6 +181,8 @@ interface Visit {
   };
   /** A grid whose `columns` is not a positive integer — reported once, and its cells are not checked. */
   columnsInvalid?: { columns: unknown };
+  /** A layout whose `role` is present but not `isLayoutRole` — read as `unknown`. */
+  roleInvalid?: { role: unknown };
   /** A tree node that is neither a `Widget` nor a `Layout`; the subtree below it is not walked. */
   malformed?: { node: unknown };
 }
@@ -213,6 +222,9 @@ function eachNode(root: Layout | Widget, visit: (v: Visit) => void): void {
       visit({ malformed: { node } });
       continue;
     }
+    // `undefined` is absent (it does not survive serialisation, and every builder omits it).
+    const role = (node as { role?: unknown }).role;
+    if (role !== undefined && !isLayoutRole(role)) visit({ roleInvalid: { role } });
     if (node.type === "grid") {
       const children = node.children as Array<GridCell | Widget | Layout>;
       const columns = (node as { columns?: unknown }).columns;
@@ -246,6 +258,14 @@ function eachNode(root: Layout | Widget, visit: (v: Visit) => void): void {
       }
     }
   }
+}
+
+/** A bounded description of a malformed role: a model-composed role can be any size. */
+function describeRole(role: unknown): string {
+  if (typeof role !== "string") return role === null ? "null" : `(a ${typeof role})`;
+  return role.length > 64
+    ? `${JSON.stringify(role.slice(0, 64))}… (${role.length} chars)`
+    : JSON.stringify(role);
 }
 
 /** A short, safe description of a malformed node for a finding message. */
@@ -322,6 +342,17 @@ export function validateBlueprint(
         nodeId: "<layout>",
         kind: "<layout>",
         message: `grid columns ${JSON.stringify(v.columnsInvalid.columns) ?? "undefined"} is not a positive integer — there is no column count to place cells into, so this grid's spans are not checked`,
+      });
+      return;
+    }
+
+    if (v.roleInvalid) {
+      findings.push({
+        code: "role-invalid",
+        severity: "warn",
+        nodeId: "<layout>",
+        kind: "<layout>",
+        message: `layout role ${describeRole(v.roleInvalid.role)} is not a well-formed role (a lowercase letter, then lowercase letters, digits or hyphens, at most 64 characters) — renderers draw the plain container`,
       });
       return;
     }
