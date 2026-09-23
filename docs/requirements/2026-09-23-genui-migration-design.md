@@ -55,6 +55,20 @@ genUI dashboards are free-placed (`x`, `y`, `w`, `h`) and views are titled. loom
 
 Carry-overs re-checked: `removeProvider` is needed (B4). Not needed: setProps key removal (genUI's `configure` also merges), reference-planner reorder/re-type and QuickJS authoring (genUI writes its own planner, which already authors scripts). Newly found: no op changes `span` (B4).
 
+#### Implementation notes (phase 1)
+
+What B2/B3/B4 shipped as (loom-ui PRs #12, #13, #14), where it sharpened or deviated from the design above:
+
+- **D14 — `HydrationCache` key (B3d).** The key is the spec fingerprint + the *declared* overridable params with `$now`-family time tokens left unresolved (not the values they'd resolve to) + the checked kinds, contract mode only, normalised. A key built from a resolved `$now` would never hit; freshness is the TTL's job, not the key's. (PR #13)
+- **D15 — input drift under contract mode (B2).** With `outputCheck: "contract"`, B2's "the shape hash remains the input-drift signal" is read as: input drift is signalled by the tool schema pin only. The contract check governs output/staleness; it does not itself signal input drift. (PR #12)
+- A `report-and-proceed` outcome (B3g) is never cached — only a clean load populates `HydrationCache`. (PR #13)
+- Input-only drift is published as a `schema-drift` finding, not `provider-failed` — the two stay distinguishable downstream. (PR #13)
+- Split hydration (B3a) serves only *public* findings to the client; full findings (including provider identity) reach only the server-side `onFinding` hook. (PR #13)
+- B3f's controller-wide concurrency cap is 32 concurrent tool calls per batch by default, enforced server-wide as one shared `limitInvoker` (`serveHandles`), not per caller. (PR #13)
+- Every op that can place a node (`setPlacement`, `insertNode`, `moveNode`) refuses an off-grid or overflowing result (`placement-outside-grid` / `placement-out-of-range`) rather than accepting it — so a log recorded before this shipped that inserted such a node no longer replays. (PR #14)
+- The reference planner clamps `column` on a widening revision rather than refusing it. (PR #14)
+- B4's planner `usage` is the sum of attempts that reported a value; an absent report is not treated as zero, and an invalid or overflowing usage value is dropped (with a `usage-invalid` finding) rather than summed. (PR #14)
+
 ### 2.3 Stays in genUI (app code)
 
 The HTTP and SSE transport and the `/api/hydrate` wire; message-catalogue loading, i18n extraction and translation; dashboards CRUD, checkpoints, snapshots, share links, comments, experiments, applications, published links, notifications; product governance checks (pin freshness, RBAC feasibility, cost/latency, sensitive-exposure regex, localization); presubmit, approvals and promotions; retiring orphan runs; the embed shells (`genui-page`, `genui-embed-page`, `/api/public/*`); `form` and `controls` as genUI custom kinds; `widget-frame` chrome; the A2UI egress and agent surface; genUI's `Planner` implementation and its prompts.
