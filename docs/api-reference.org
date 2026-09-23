@@ -1293,6 +1293,9 @@ grid({ columns: number; gap?: number; title?: string; children: Array<GridCell |
 flex({ direction?: "row" | "column"; gap?: number; title?: string; children }): FlexLayout
 stack({ gap?: number; title?: string; children }): StackLayout
 // every Layout has title?: string — a section heading (IR 2.1.0, ADR 0098)
+// every Layout has role?: string — the open container axis, as Widget.kind is for widgets
+// (IR 2.2.0, ADR 0099); grid/flex/stack take role? and omit it when absent. Never ARIA, never text.
+function isLayoutRole(value: unknown): value is string   // /^[a-z][a-z0-9-]{0,63}$/; else ⇒ plain container
 interface GridCell { span?: number; row?: number; rowSpan?: number; column?: number; node: Widget | Layout }
 // span = columns occupied (default 1); row/column = 1-based start lines, rowSpan = rows (default 1);
 // all placement absent = flow placement (IR 2.1.0, ADR 0098)
@@ -1318,10 +1321,10 @@ interface WidgetSource { type: string; version: string; degradedFrom?: Array<{ t
 // Widget gains: source?: WidgetSource                          // never in props
 // Blueprint gains: irVersion?: string                          // absent ⇒ "1.0.0"; writers always set it
 function resolveWidgetStatus(widget: Widget, stateMap: Map<string, unknown>): BindingStatus | undefined
-function upgradeBlueprint(bp: Blueprint): Blueprint   // current-major artifact from any readable one; identity on 2.0.0 and 2.1.0 input
+function upgradeBlueprint(bp: Blueprint): Blueprint   // current-major artifact from any readable one; identity on 2.0.0, 2.1.0 and 2.2.0 input
 function blueprintIrVersion(bp: Blueprint): string    // bp.irVersion ?? "1.0.0"
 
-// The Blueprint is a declared rendering IR (ADR 0096; 2.0.0 by ADR 0097, 2.1.0 by ADR 0098): bump on any
+// The Blueprint is a declared rendering IR (ADR 0096; 2.0.0 by ADR 0097, 2.1.0 by ADR 0098, 2.2.0 by ADR 0099): bump on any
 // shape change; a test pins the shape digest per version
 const BLUEPRINT_IR_VERSION: string; const BLUEPRINT_IR_SHAPE: Record<string, readonly string[]>
 
@@ -1394,6 +1397,7 @@ const defaultRegistry: RendererRegistry<WidgetRenderer>;  // MetricCard/Timeline
 // body. Renders NO wrapper element when the widget has neither a declared status channel
 // (binding.status) nor a source — a 1.0.0 artifact's DOM is unchanged.
 // IR 2.1.0: a placed grid cell gets explicit grid-column/grid-row; a titled layout renders <section><h2/>…</section>
+// IR 2.2.0: Layout.role is ignored — a roled layout's DOM is the unroled one's
 function WidgetFrame(props: { widget: Widget; value: unknown; status?: BindingStatus; check?: WidgetValueCheck; children: React.ReactNode }): JSX.Element
 // The caller-supplied value contract. Runs ONLY for a widget whose binding declares a status
 // channel and only when status?.state !== "error"; a finding renders as the error row, outranking
@@ -1422,6 +1426,7 @@ const defaultTerminalRegistry: RendererRegistry<TerminalWidgetRenderer>         
 // degraded-from suffix from `source` on the first line; byte-identical output for a widget with
 // neither a declared channel nor a source
 // IR 2.1.0: placed grid cells print in reading order (row, then column); a titled layout prints an underlined heading
+// IR 2.2.0: Layout.role is ignored — output is byte-identical with or without one
 function renderBlueprintToString(blueprint: Blueprint, stateMap: Map<string, unknown>, options?: TerminalRenderOptions): string
 class TerminalRenderer { constructor(projectionRuntime: ProjectionRuntime, options?: TerminalRenderOptions); render(blueprint: Blueprint, executionId: string): string }
 #+end_src

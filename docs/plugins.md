@@ -177,7 +177,8 @@ and compute.
   Continuous two-way binding sync is out of scope.
 - `@loom/plugin-renderer-react` — React blueprint renderer (`defaultRegistry`); React is a peer
   dependency, so it stays out of the `@loom/sdk` barrel. Placed grid cells get explicit
-  `grid-column`/`grid-row`, titled layouts a `<section>` with an `h2` (ADR 0098).
+  `grid-column`/`grid-row`, titled layouts a `<section>` with an `h2` (ADR 0098). A layout's
+  `role` is ignored — it draws the plain container (ADR 0099).
 - `@loom/plugin-renderer-terminal` — string/terminal blueprint renderer
   (`renderBlueprintToString`), the second surface that proves blueprint delivery is
   renderer-agnostic rather than React-shaped. Kind-aware when given a registry —
@@ -186,7 +187,7 @@ and compute.
   binding status renders the canonical `⋯`/`~`/`✗` glyph plus, when `source.degradedFrom` is
   set, a trailing `(degraded from …)` suffix — absent either, the line is unchanged (ADR 0097).
   Placed grid cells print in reading order and a titled layout under an underlined heading
-  (ADR 0098).
+  (ADR 0098); a layout's `role` changes nothing in the output (ADR 0099).
 
 **Compute**
 
