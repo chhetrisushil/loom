@@ -179,7 +179,9 @@ and compute.
   dependency, so it stays out of the `@loom/sdk` barrel. Placed grid cells get explicit
   `grid-column`/`grid-row`, titled layouts a `<section>` with an `h2` (ADR 0098). A layout's
   `role` is ignored — it draws the plain container (ADR 0099). An `empty` binding status draws a
-  `role="status"` "no data" marker in place of the widget (ADR 0100).
+  `role="status"` "no data" marker in place of the widget (ADR 0100). A layout's `id` is its
+  container's React key, so a container inserted or reordered around it keeps its widgets'
+  DOM; the markup is unchanged (ADR 0101).
 - `@loom/plugin-renderer-terminal` — string/terminal blueprint renderer
   (`renderBlueprintToString`), the second surface that proves blueprint delivery is
   renderer-agnostic rather than React-shaped. Kind-aware when given a registry —
@@ -188,7 +190,7 @@ and compute.
   binding status renders the canonical `⋯`/`~`/`✗`/`○` glyph (`○` no data, ADR 0100) plus, when `source.degradedFrom` is
   set, a trailing `(degraded from …)` suffix — absent either, the line is unchanged (ADR 0097).
   Placed grid cells print in reading order and a titled layout under an underlined heading
-  (ADR 0098); a layout's `role` changes nothing in the output (ADR 0099).
+  (ADR 0098); a layout's `role` or `id` changes nothing in the output (ADR 0099, ADR 0101).
 
 **Compute**
 

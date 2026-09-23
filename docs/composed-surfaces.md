@@ -203,6 +203,13 @@ A layout may also carry a `role` — what the container is to a renderer that ha
 for it (`"stepped"`, `"tabbed"`), the way `kind` is for a widget. loom's own renderers ignore
 it and draw the plain container ([ADR 0099](adr/0099-blueprint-ir-layout-roles.md)).
 
+A layout may also carry an `id` — the same rule as a widget's, in the same namespace
+(`duplicate-node-id` catches a layout sharing a widget's id). A renderer that reconciles keys the
+container by it, so a section inserted above or reordered around it keeps the state of the
+widgets inside it; `preservesBlueprintNodes` compares layout ids with widget ids, so a container
+that was re-identified is reported as dropped. Without an id a container is keyed by position,
+as before ([ADR 0101](adr/0101-blueprint-ir-layout-ids.md)).
+
 `projectionRuntime.pins()` is what a composer records into
 `Blueprint.projectionVersions`; `checkBlueprintPins(view, pins)` is what a render
 compares it against, reporting `drift` when the fold behind a name changed and

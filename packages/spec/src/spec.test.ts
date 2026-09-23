@@ -241,6 +241,9 @@ const NOT_A_CAPABILITY = new Set([
   // 0100 — the same IR, one more BindingState literal: `empty`, drawn as a "no data" row by
   // both renderers. A contract and renderer behaviour; triggers nothing at run time.
   "0100",
+  // 0101 — the same IR, one more optional field: an `id` on every layout, one node-id namespace
+  // with widget ids. A contract; the React renderer keys by it, the terminal ignores it.
+  "0101",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

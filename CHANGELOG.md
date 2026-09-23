@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Blueprint IR 2.4.0 (ADR 0101).** A minor bump so a container keeps its identity when a
+  recompose inserts or reorders containers around it:
+
+  - `GridLayout`, `FlexLayout` and `StackLayout` gain an optional `id` — the same rule as
+    `Widget.id` (a non-empty string, no charset, no length cap). `grid`/`flex`/`stack` accept it
+    and omit the key when absent, so an unid'd layout's bytes and content address are 2.3.0's; a
+    present id enters the address.
+  - Widget ids and layout ids are one namespace: `duplicate-node-id` now also fires for
+    widget↔layout and layout↔layout collisions. `validateBlueprint` gains `layout-id-invalid` — a
+    `warn` for a present id that is not a non-empty string, which every reader then treats as
+    absent. Layout-level findings name the layout by its id when it has a valid one.
+  - New `blueprintLayoutIds`; `preservesBlueprintNodes` compares widget ids AND layout ids, so a
+    re-identified container is a `dropped-node-id` finding. `blueprintNodeIds` stays widget-only.
+  - `@loom/plugin-renderer-react` keys a container by its id, fixing the index keys nested
+    containers got: inserting a container mid-list no longer re-creates the widgets of the
+    containers after it (typed input and focus survive). The DOM is unchanged.
+    `@loom/plugin-renderer-terminal` ignores the id; its output is byte-identical.
+  - `BLUEPRINT_IR_VERSION` moves `2.3.0` → `2.4.0` with a sixth pinned digest; 2.3.0 (like 2.0.0
+    to 2.2.0) is read as it is by `validateBlueprint` and `upgradeBlueprint`.
+
 - **Blueprint IR 2.3.0 (ADR 0100).** A minor bump so a bound widget whose upstream answered with
   nothing can say "no data" instead of failing:
 
