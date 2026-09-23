@@ -108,6 +108,11 @@ export type BlueprintFindingCode =
   | "duplicate-node-id"
   /** A grid cell's `span` is not an integer in `1..columns`. */
   | "span-out-of-range"
+  /**
+   * A grid cell's placement (IR 2.1.0) cannot be laid out: `row`, `rowSpan` or `column` is not a
+   * positive integer, `column` exceeds `columns`, or `column + span - 1` overflows the grid.
+   */
+  | "placement-out-of-range"
   /** A grid's `columns` is not a positive integer — there is no column count to lay cells into. */
   | "columns-invalid"
   /** A node that is neither a `Widget` nor a `Layout` (a stray `null`, a string, a stranded `GridCell`). */
@@ -127,7 +132,7 @@ export interface BlueprintFinding {
   readonly message: string;
   /**
    * The node the finding applies to. For a widget-level finding it is the widget's id. For a
-   * cell-level finding (`span-out-of-range`) it is the id of the cell's OWN node when that node
+   * cell-level finding (`span-out-of-range`, `placement-out-of-range`) it is the id of the cell's OWN node when that node
    * is a widget, else `"<layout>"` (the cell wraps a nested layout, which has no id). For a
    * blueprint- or layout-level finding (`ir-version-unknown`, `columns-invalid`,
    * `malformed-node`) it is always `"<layout>"`.
@@ -158,7 +163,15 @@ const DOTTED = /^[^.\s]+(\.[^.\s]+)*$/;
 
 interface Visit {
   widget?: Widget;
-  cell?: { span: number; columns: number; cellNodeId: string | undefined };
+  cell?: {
+    span: number;
+    columns: number;
+    cellNodeId: string | undefined;
+    /** Read as `unknown`: a model-composed artifact can put anything here. */
+    row: unknown;
+    rowSpan: unknown;
+    column: unknown;
+  };
   /** A grid whose `columns` is not a positive integer — reported once, and its cells are not checked. */
   columnsInvalid?: { columns: unknown };
   /** A tree node that is neither a `Widget` nor a `Layout`; the subtree below it is not walked. */
@@ -216,6 +229,9 @@ function eachNode(root: Layout | Widget, visit: (v: Visit) => void): void {
               span: c.span ?? 1,
               columns: columns as number,
               cellNodeId: isWidget(c.node) ? c.node.id : undefined,
+              row: c.row,
+              rowSpan: c.rowSpan,
+              column: c.column,
             },
           });
         }
@@ -240,6 +256,35 @@ function describeNode(node: unknown): string {
   if (t !== "object") return `a ${t}`;
   if ("node" in (node as object)) return "a GridCell outside a grid";
   return "an object with no layout `type` or `children`";
+}
+
+const isPositiveInt = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 1;
+const show = (v: unknown): string => JSON.stringify(v) ?? String(v);
+
+/**
+ * Why a cell's placement cannot be laid out — empty when it can. `spanOk` gates the overflow
+ * test so an invalid span is reported once (as `span-out-of-range`), not again as an overflow.
+ */
+function placementProblems(c: {
+  row: unknown;
+  rowSpan: unknown;
+  column: unknown;
+  span: number;
+  spanOk: boolean;
+  columns: number;
+}): string[] {
+  const out: string[] = [];
+  if (c.row !== undefined && !isPositiveInt(c.row))
+    out.push(`row ${show(c.row)} is not a positive integer`);
+  if (c.rowSpan !== undefined && !isPositiveInt(c.rowSpan))
+    out.push(`rowSpan ${show(c.rowSpan)} is not a positive integer`);
+  if (c.column !== undefined) {
+    if (!isPositiveInt(c.column) || c.column > c.columns)
+      out.push(`column ${show(c.column)} is outside 1..${c.columns}`);
+    else if (c.spanOk && c.column + c.span - 1 > c.columns)
+      out.push(`column ${c.column} + span ${c.span} overflows the ${c.columns}-column grid`);
+  }
+  return out;
 }
 
 /**
@@ -293,14 +338,25 @@ export function validateBlueprint(
     }
 
     if (v.cell) {
-      const { span, columns, cellNodeId } = v.cell;
-      if (!Number.isInteger(span) || span < 1 || span > columns) {
+      const { span, columns, cellNodeId, row, rowSpan, column } = v.cell;
+      const spanOk = Number.isInteger(span) && span >= 1 && span <= columns;
+      if (!spanOk) {
         findings.push({
           code: "span-out-of-range",
           severity: "error",
           nodeId: cellNodeId ?? "<layout>",
           kind: "<layout>",
           message: `cell span ${span} is outside 1..${columns} — a renderer cannot lay this cell out`,
+        });
+      }
+      const problems = placementProblems({ row, rowSpan, column, span, spanOk, columns });
+      if (problems.length > 0) {
+        findings.push({
+          code: "placement-out-of-range",
+          severity: "error",
+          nodeId: cellNodeId ?? "<layout>",
+          kind: "<layout>",
+          message: `cell placement cannot be laid out — ${problems.join("; ")}`,
         });
       }
       return;
