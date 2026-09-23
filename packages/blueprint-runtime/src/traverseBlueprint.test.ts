@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { grid, stack } from "./layout";
 import { cell } from "./normalize";
-import { traverseBlueprint } from "./traverseBlueprint";
+import { type ContainerContext, traverseBlueprint } from "./traverseBlueprint";
 import type { GridLayout, Widget } from "./types";
 import { MetricCard } from "./widgets";
 
@@ -69,5 +69,25 @@ describe("traverseBlueprint (2.0.0)", () => {
     expect(cells).toBeUndefined();
     // Distinguishes an ABSENT `cells` key from a present-`undefined` one.
     expect("cells" in (stackCtx as object)).toBe(false);
+  });
+  it("hands a placed cell's row, rowSpan and column to renderContainer, and omits absent ones (2.1.0)", () => {
+    const g = grid({
+      columns: 12,
+      children: [cell(6, w("a"), { row: 2, column: 7, rowSpan: 3 }), w("b")],
+    });
+    let cells: ContainerContext<string>["cells"];
+    traverseBlueprint<string>(g, new Map([["p", { v: {} }]]), {
+      renderWidget: ({ widget }) => widget.id,
+      renderContainer: (ctx) => {
+        cells = ctx.cells;
+        return ctx.children.join("|");
+      },
+    });
+    expect(cells).toEqual([
+      { span: 6, row: 2, column: 7, rowSpan: 3, child: "a" },
+      { span: 1, child: "b" },
+    ]);
+    // ABSENT, not present-and-undefined: a renderer testing `"row" in cell` must see it missing.
+    expect(Object.keys(cells?.[1] ?? {}).sort()).toEqual(["child", "span"]);
   });
 });

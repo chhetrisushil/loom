@@ -51,15 +51,26 @@ export interface Widget {
   source?: WidgetSource;
 }
 
-/** One child of a grid with the columns it occupies (default 1). */
+/**
+ * One child of a grid: the columns it occupies (`span`, default 1) and, since IR 2.1.0
+ * (ADR 0098), an optional explicit placement. Every placement field is independently optional;
+ * all absent = flow placement (the grid's auto-placement, exactly as under 2.0.0). Coordinates
+ * are 1-based grid lines: `column` is the start column (the cell occupies `column..column+span-1`),
+ * `row` the start row, `rowSpan` the rows occupied (default 1).
+ */
 export interface GridCell {
   span?: number;
+  row?: number;
+  rowSpan?: number;
+  column?: number;
   node: Widget | Layout;
 }
 export interface GridLayout {
   type: "grid";
   columns: number;
   gap?: number;
+  /** A section heading for this container (IR 2.1.0). Absent ⇒ no heading. */
+  title?: string;
   children: GridCell[];
 }
 
@@ -67,12 +78,16 @@ export interface FlexLayout {
   type: "flex";
   direction: "row" | "column";
   gap?: number;
+  /** A section heading for this container (IR 2.1.0). Absent ⇒ no heading. */
+  title?: string;
   children: Array<Widget | Layout>;
 }
 
 export interface StackLayout {
   type: "stack";
   gap?: number;
+  /** A section heading for this container (IR 2.1.0). Absent ⇒ no heading. */
+  title?: string;
   children: Array<Widget | Layout>;
 }
 

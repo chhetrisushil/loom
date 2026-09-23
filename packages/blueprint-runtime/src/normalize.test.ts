@@ -2,7 +2,7 @@ import { canonicalJson, fnv1a64 } from "@loom/core";
 import { describe, expect, it } from "vitest";
 import { blueprint$ } from "./Blueprint";
 import { BLUEPRINT_IR_VERSION } from "./irVersion";
-import { grid, stack } from "./layout";
+import { flex, grid, stack } from "./layout";
 import {
   IR_VERSION_LEGACY,
   asCell,
@@ -50,7 +50,7 @@ describe("irVersion", () => {
       projections: [],
     });
     expect(bp.irVersion).toBe(BLUEPRINT_IR_VERSION);
-    expect(BLUEPRINT_IR_VERSION).toBe("2.0.0");
+    expect(BLUEPRINT_IR_VERSION).toBe("2.1.0");
     const { irVersion: _v, ...legacy } = bp;
     expect(blueprintIrVersion(legacy as Blueprint)).toBe(IR_VERSION_LEGACY);
   });
@@ -68,7 +68,7 @@ describe("irVersion", () => {
       projections: ["p"],
     } as Blueprint;
     const up = upgradeBlueprint(legacy);
-    expect(up.irVersion).toBe("2.0.0");
+    expect(up.irVersion).toBe(BLUEPRINT_IR_VERSION);
     expect((up.layout as GridLayout).children).toEqual([
       { span: 1, node: w("a") },
       { span: 1, node: stack({ children: [w("b")] }) },
@@ -132,5 +132,68 @@ describe("status resolution", () => {
     expect(resolveWidgetStatus(w("a", { path: "s.missing" }), map)).toBeUndefined();
     map.set("p", { v: { a: 1 }, s: { a: { state: 42 } } });
     expect(resolveWidgetStatus(w("a", { path: "s.a" }), map)).toBeUndefined();
+  });
+});
+
+describe("placement and titles (IR 2.1.0, ADR 0098)", () => {
+  it("cell() carries optional placement and writes only the fields given", () => {
+    expect(cell(4, w("a"), { row: 2, column: 5, rowSpan: 3 })).toEqual({
+      span: 4,
+      node: w("a"),
+      row: 2,
+      column: 5,
+      rowSpan: 3,
+    });
+    expect(Object.keys(cell(4, w("b"))).sort()).toEqual(["node", "span"]);
+    expect(Object.keys(cell(1, w("c"), { row: 1 })).sort()).toEqual(["node", "row", "span"]);
+  });
+  it("asCell and grid() keep a placed cell exactly as given", () => {
+    const placed = cell(6, w("a"), { row: 1, column: 7 });
+    expect(asCell(placed)).toBe(placed);
+    const g = grid({ columns: 12, children: [placed, w("b")] });
+    expect(g.children[0]).toBe(placed);
+    expect(g.children[1]).toEqual({ span: 1, node: w("b") });
+  });
+  it("grid, flex and stack take an optional title and omit the key when it is absent", () => {
+    expect(grid({ columns: 2, title: "Latency", children: [] }).title).toBe("Latency");
+    expect(flex({ title: "Row", children: [] }).title).toBe("Row");
+    expect(stack({ title: "Column", children: [] }).title).toBe("Column");
+    expect("title" in grid({ columns: 2, children: [] })).toBe(false);
+    expect("title" in flex({ children: [] })).toBe(false);
+    expect("title" in stack({ children: [] })).toBe(false);
+  });
+  it("upgradeBlueprint is identity on a 2.0.0 artifact — a minor bump never re-addresses stored content", () => {
+    const v200: Blueprint = {
+      ...blueprint$({
+        id: "x",
+        title: "X",
+        layout: grid({ columns: 2, children: [w("a")] }),
+        projections: ["p"],
+      }),
+      irVersion: "2.0.0",
+    };
+    expect(upgradeBlueprint(v200)).toBe(v200);
+  });
+  it("upgradeBlueprint keeps placement and titles when it wraps a 1.0.0 grid", () => {
+    const legacy = {
+      _tag: "Blueprint",
+      id: "l",
+      title: "L",
+      projections: ["p"],
+      layout: {
+        type: "stack",
+        title: "Overview",
+        children: [
+          { type: "grid", columns: 4, children: [w("a"), cell(2, w("b"), { row: 1, column: 3 })] },
+        ],
+      },
+    } as unknown as Blueprint;
+    const up = upgradeBlueprint(legacy);
+    expect(up.layout.title).toBe("Overview");
+    const inner = (up.layout as { children: GridLayout[] }).children[0];
+    expect(inner?.children).toEqual([
+      { span: 1, node: w("a") },
+      { span: 2, node: w("b"), row: 1, column: 3 },
+    ]);
   });
 });

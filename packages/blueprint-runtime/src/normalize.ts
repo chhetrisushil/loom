@@ -36,8 +36,19 @@ const isCell = (n: unknown): n is GridCell =>
 export function asCell(child: GridCell | Widget | Layout): GridCell {
   return isCell(child) ? child : { span: 1, node: child };
 }
-export function cell(span: number, node: Widget | Layout): GridCell {
-  return { span, node };
+/** An explicit-span cell, optionally placed (IR 2.1.0). Only the placement fields given are written. */
+export function cell(
+  span: number,
+  node: Widget | Layout,
+  placement: Pick<GridCell, "row" | "rowSpan" | "column"> = {}
+): GridCell {
+  return {
+    span,
+    node,
+    ...(placement.row !== undefined && { row: placement.row }),
+    ...(placement.rowSpan !== undefined && { rowSpan: placement.rowSpan }),
+    ...(placement.column !== undefined && { column: placement.column }),
+  };
 }
 
 export function blueprintIrVersion(bp: Blueprint): string {
@@ -57,9 +68,19 @@ function upgradeLayout(layout: Layout): Layout {
   return { ...layout, children: layout.children.map((c) => (isWidget(c) ? c : upgradeLayout(c))) };
 }
 
-/** A 2.0.0 artifact from any readable one. Identity (same reference) on 2.0.0 input; never mutates its input. */
+/**
+ * Every IR version this build reads AS-IS. 2.1.0 only added optional fields (ADR 0098), so a
+ * 2.0.0 artifact is already a valid current-major artifact: re-stamping it would change its
+ * content address with no change to its shape.
+ */
+export const IR_VERSIONS_READ_AS_IS: ReadonlySet<string> = new Set(["2.0.0", BLUEPRINT_IR_VERSION]);
+
+/**
+ * A current-major artifact from any readable one. Identity (same reference) on 2.0.0 and
+ * 2.1.0 input; a 1.0.0 (or unstamped) artifact is wrapped and stamped. Never mutates its input.
+ */
 export function upgradeBlueprint(bp: Blueprint): Blueprint {
-  if (bp.irVersion === BLUEPRINT_IR_VERSION) return bp;
+  if (bp.irVersion !== undefined && IR_VERSIONS_READ_AS_IS.has(bp.irVersion)) return bp;
   return { ...bp, irVersion: BLUEPRINT_IR_VERSION, layout: upgradeLayout(bp.layout) };
 }
 

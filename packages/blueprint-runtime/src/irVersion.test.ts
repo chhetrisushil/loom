@@ -13,10 +13,14 @@ import { BLUEPRINT_IR_SHAPE, BLUEPRINT_IR_VERSION } from "./irVersion";
 // yet been PUBLISHED has no reader to break, so 2.0.0's digest was re-pinned in the same
 // unreleased cycle that introduced it when the `bindingFinding`/`degradedFrom` manifests were
 // added. 1.0.0 is released and its row is never touched.
+//
+// 2.1.0 (ADR 0098) is a MINOR bump — optional cell placement and optional layout titles only —
+// and 2.0.0 now has an external reader (loom-ui pins it), so its row is frozen like 1.0.0's.
 
 const PINNED: ReadonlyArray<readonly [version: string, digest: string]> = [
   ["1.0.0", "59ee5cb1c37efe75"],
   ["2.0.0", "90e690ca0de812fd"],
+  ["2.1.0", "f2b72f769b6a85a1"],
 ];
 
 const digestOf = (shape: unknown) => fnv1a64(canonicalJson(shape));
@@ -68,5 +72,22 @@ describe("BLUEPRINT_IR_SHAPE", () => {
     const mutated = { ...BLUEPRINT_IR_SHAPE, widget: [...BLUEPRINT_IR_SHAPE.widget, "zzz"] };
     const pinned = PINNED.find(([v]) => v === BLUEPRINT_IR_VERSION)?.[1];
     expect(digestOf(mutated)).not.toBe(pinned);
+  });
+
+  it("2.1.0 carries cell placement and layout titles, every one optional (ADR 0098)", () => {
+    expect(BLUEPRINT_IR_SHAPE.gridCell).toEqual([
+      "column:optional",
+      "node:required",
+      "row:optional",
+      "rowSpan:optional",
+      "span:optional",
+    ]);
+    for (const manifest of [
+      BLUEPRINT_IR_SHAPE.gridLayout,
+      BLUEPRINT_IR_SHAPE.flexLayout,
+      BLUEPRINT_IR_SHAPE.stackLayout,
+    ]) {
+      expect(manifest).toContain("title:optional");
+    }
   });
 });
