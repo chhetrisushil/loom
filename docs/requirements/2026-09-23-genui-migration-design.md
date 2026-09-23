@@ -15,6 +15,8 @@ Made in review on 2026-09-23:
 | Approvals across the rehash | **Carried over through a proven old→new hash map** (§4.6). "Approval never transfers" still holds for any content change. |
 | Where does this spec live? | loom `docs/requirements/`, beside the earlier loom-ui designs. |
 
+**loom-ui is a generic UI framework on top of loom.** genUI is its first consumer, never its design centre (user ruling 2026-09-23, during phase 0): loom-ui names no consumer (no `genui` / `gx-` anywhere in the repo — theme tokens are `--lu-*`; a fitness test enforces it; README's `## Consumers` section is the one exception); every capability is stated as a consumer-neutral need; a value contract describes the widget, not a consumer's payload (a consumer with an idiosyncratic shape adapts at its own boundary); and every capability ships with a reference example in loom-examples that is not a specific consumer's app. Every loom-ui review asks: would an unrelated app use this as-is? Where this document says "genUI needs X", X lands in loom-ui only in its consumer-neutral form.
+
 Standing rules that apply: grow the IR, never work around it (a field the Blueprint cannot carry is an IR bump, not a smuggled prop); loom-ui builds a capability before its consumer arrives; a generic capability goes into loom-ui, a genUI product concern stays in genUI.
 
 ## 1. The problem
