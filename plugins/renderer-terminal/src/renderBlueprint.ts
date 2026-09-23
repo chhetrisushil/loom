@@ -1,7 +1,7 @@
 import type {
   BindingStatus,
   Blueprint,
-  Layout,
+  ContainerContext,
   RendererRegistry,
   Widget,
 } from "@loom/blueprint-runtime";
@@ -49,6 +49,23 @@ function renderKindBlind(widget: Widget, value: unknown): string {
   return rendered.includes("\n")
     ? `${title}:\n${indent(rendered, "    ")}`
     : `${title}: ${rendered}`;
+}
+
+type Cells = NonNullable<ContainerContext<string>["cells"]>;
+
+const isPlaced = (c: Cells[number]): boolean =>
+  c.row !== undefined || c.rowSpan !== undefined || c.column !== undefined;
+
+// A text surface has one column, so honouring placement (IR 2.1.0, ADR 0098) means READING
+// order: row, then column. An absent coordinate sorts after every present one, and the sort is
+// stable, so ties keep document order. Only called when a cell is placed — an unplaced grid
+// keeps document order and its output is byte-identical to 2.0.0.
+function readingOrder(cells: Cells): string[] {
+  const at = (v: number | undefined) => (v === undefined ? Number.POSITIVE_INFINITY : v);
+  return cells
+    .map((c, i) => ({ c, i }))
+    .sort((x, y) => at(x.c.row) - at(y.c.row) || at(x.c.column) - at(y.c.column) || x.i - y.i)
+    .map(({ c }) => c.child);
 }
 
 // Renders a blueprint to plain text using the framework-agnostic traverseBlueprint<string>
@@ -114,8 +131,13 @@ export function renderBlueprintToString(
       }
       return text;
     },
-    renderContainer({ children }: { layout: Layout; children: string[] }) {
-      return children.filter((c) => c.length > 0).join("\n");
+    renderContainer({ layout, children, cells }: ContainerContext<string>) {
+      const ordered = cells?.some(isPlaced) ? readingOrder(cells) : children;
+      const body = ordered.filter((c) => c.length > 0).join("\n");
+      const title = typeof layout.title === "string" && layout.title !== "" ? layout.title : "";
+      if (title === "") return body;
+      const heading = `${title}\n${"─".repeat(title.length)}`;
+      return body.length > 0 ? `${heading}\n${body}` : heading;
     },
   });
 

@@ -1,10 +1,12 @@
 import {
   type Blueprint,
+  type Layout,
   MetricCard,
   RendererRegistry,
   StatusBadge,
   Timeline,
   blueprint$,
+  cell,
   customWidget$,
   grid,
   stack,
@@ -336,5 +338,66 @@ describe("renderBlueprintToString — the check seam", () => {
     expect(out).toContain("✗ A: tool down"); // the delivery error, not the contract message
     expect(out).toContain("B: oops"); // no channel → 1.0.0 output, unchecked
     expect(calls).toEqual([]); // never called: one widget errored, the other has no channel
+  });
+});
+
+describe("renderBlueprintToString — placement and section titles (IR 2.1.0)", () => {
+  const m = (id: string) => MetricCard({ id, title: id, binding: { projectionId: "p", path: id } });
+  const state = new Map<string, unknown>([["p", { a: 1, b: 2, c: 3, d: 4 }]]);
+  const body = (layout: Layout) =>
+    renderBlueprintToString(blueprint$({ id: "x", title: "X", layout, projections: ["p"] }), state)
+      .split("\n")
+      .slice(3, -1);
+
+  it("prints placed cells by row, then column — reading order, not document order", () => {
+    expect(
+      body(
+        grid({
+          columns: 12,
+          children: [
+            cell(6, m("d"), { row: 2, column: 7 }),
+            cell(6, m("c"), { row: 2, column: 1 }),
+            cell(6, m("b"), { row: 1, column: 7 }),
+            cell(6, m("a"), { row: 1, column: 1 }),
+          ],
+        })
+      )
+    ).toEqual(["a: 1", "b: 2", "c: 3", "d: 4"]);
+  });
+
+  it("an absent coordinate sorts after every present one; ties keep document order", () => {
+    expect(
+      body(
+        grid({
+          columns: 12,
+          children: [
+            m("d"),
+            cell(1, m("b"), { row: 1 }),
+            cell(1, m("a"), { row: 1, column: 1 }),
+            m("c"),
+          ],
+        })
+      )
+    ).toEqual(["a: 1", "b: 2", "d: 4", "c: 3"]);
+  });
+
+  it("an unplaced grid keeps document order — 2.0.0 output unchanged", () => {
+    expect(body(grid({ columns: 2, children: [m("b"), m("a")] }))).toEqual(["b: 2", "a: 1"]);
+  });
+
+  it("a titled layout prints its title, underlined, above its children", () => {
+    expect(
+      body(
+        stack({
+          title: "Overview",
+          children: [m("a"), grid({ columns: 2, title: "CPU", children: [m("b")] })],
+        })
+      )
+    ).toEqual(["Overview", "────────", "a: 1", "CPU", "───", "b: 2"]);
+  });
+
+  it("a titled empty layout still prints its heading; an empty title prints nothing", () => {
+    expect(body(stack({ title: "Empty", children: [] }))).toEqual(["Empty", "─────"]);
+    expect(body(stack({ title: "", children: [m("a")] }))).toEqual(["a: 1"]);
   });
 });
