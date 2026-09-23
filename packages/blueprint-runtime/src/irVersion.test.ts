@@ -1,6 +1,7 @@
 import { canonicalJson, fnv1a64 } from "@loom/core";
 import { describe, expect, it } from "vitest";
 import { BLUEPRINT_IR_SHAPE, BLUEPRINT_IR_VERSION } from "./irVersion";
+import { IR_VERSIONS_READ_AS_IS } from "./normalize";
 
 // ADR 0096 — the Blueprint is loom's stable rendering IR. An external framework compiles to
 // it, so its shape is a contract: a change must be visible as a version bump, never as a quiet
@@ -88,6 +89,30 @@ describe("BLUEPRINT_IR_SHAPE", () => {
       BLUEPRINT_IR_SHAPE.stackLayout,
     ]) {
       expect(manifest).toContain("title:optional");
+    }
+  });
+});
+
+// `IR_VERSIONS_READ_AS_IS` (normalize.ts) is otherwise only a comment-enforced rule — nothing
+// fails if a future minor bump forgets to add its outgoing version. This turns that rule into a
+// live guard: every PINNED version sharing BLUEPRINT_IR_VERSION's major (i.e. every minor released
+// under the current major, per ADR 0096 D2) must be readable as-is, and the current version
+// itself always must be.
+const majorOf = (version: string): number => Number(version.split(".")[0]);
+
+describe("IR_VERSIONS_READ_AS_IS", () => {
+  it("contains BLUEPRINT_IR_VERSION itself", () => {
+    expect(IR_VERSIONS_READ_AS_IS.has(BLUEPRINT_IR_VERSION)).toBe(true);
+  });
+
+  it("contains every PINNED version that shares BLUEPRINT_IR_VERSION's major", () => {
+    const currentMajor = majorOf(BLUEPRINT_IR_VERSION);
+    const sameMajor = PINNED.map(([version]) => version).filter(
+      (version) => majorOf(version) === currentMajor
+    );
+    expect(sameMajor.length).toBeGreaterThan(0); // the check can't silently cover nothing
+    for (const version of sameMajor) {
+      expect(IR_VERSIONS_READ_AS_IS.has(version), version).toBe(true);
     }
   });
 });
