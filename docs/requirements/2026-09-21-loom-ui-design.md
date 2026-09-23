@@ -218,9 +218,11 @@ is **not** smuggled into `props` (loom's catalogue check would flag it); the exp
 source of truth and the widget id is the join key back to it.
 
 **Two validators, in order.** `validateExperience(exp, catalog, surface)` reports `unknown-type`,
-`undeclared-prop`, `missing-binding`, `floor-violation`, `duplicate-node-id`,
+`undeclared-prop`, `missing-binding`, `text-prop-shape`, `floor-violation`, `duplicate-node-id`,
 `unresolvable-on-surface`. Then loom's `validateBlueprint` and `catalogCoverage` run on the output,
 so a compiler defect that emits an off-catalogue kind is caught by loom's check rather than trusted.
+
+> **`text-prop-shape`** — a declared text prop (`SemanticEntry.textProps`) holds something other than a string or `LocalizedText`. *(Added loom-ui slice 6 phase 0, 2026-09-23.)*
 
 **Known degradation.** Per-child grid `span` has no field in loom's layouts. It is emitted as
 `props.span`; the Lit renderer honours it, loom's React grid ignores it (equal columns). Visible,
