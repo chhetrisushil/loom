@@ -190,7 +190,11 @@ before the channel existed ([ADR 0097](adr/0097-blueprint-ir-2.md)).
 
 A grid cell may also be *placed* — `cell(span, node, { row, column, rowSpan })` — and any layout
 may carry a `title`, a section heading; an artifact that uses neither renders as it always did
-([ADR 0098](adr/0098-blueprint-ir-placement-and-titles.md)).
+([ADR 0098](adr/0098-blueprint-ir-placement-and-titles.md)). Cross-renderer reading order is
+guaranteed only when every cell of a grid has both `row` and `column`, or none has any placement:
+a *partially* placed grid is auto-placed by CSS in React (the unplaced/partial cells fill the
+first free slot) and sorted with absent coordinates last in the terminal, and the two can
+disagree about where those cells land.
 
 `projectionRuntime.pins()` is what a composer records into
 `Blueprint.projectionVersions`; `checkBlueprintPins(view, pins)` is what a render
