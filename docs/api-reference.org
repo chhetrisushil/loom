@@ -1289,13 +1289,16 @@ function blueprint$(config: { id: string; title: string; layout: Layout; project
 
 // Layout helpers — a grid child is a GridCell (IR 2.0.0); grid() and asCell() normalise a bare
 // Widget | Layout to { span: 1, node } so every existing call keeps compiling
-grid({ columns: number; gap?: number; title?: string; children: Array<GridCell | Widget | Layout> }): GridLayout
-flex({ direction?: "row" | "column"; gap?: number; title?: string; children }): FlexLayout
-stack({ gap?: number; title?: string; children }): StackLayout
+grid({ columns: number; id?: string; gap?: number; title?: string; role?: string; children: Array<GridCell | Widget | Layout> }): GridLayout
+flex({ direction?: "row" | "column"; id?: string; gap?: number; title?: string; role?: string; children }): FlexLayout
+stack({ id?: string; gap?: number; title?: string; role?: string; children }): StackLayout
 // every Layout has title?: string — a section heading (IR 2.1.0, ADR 0098)
 // every Layout has role?: string — the open container axis, as Widget.kind is for widgets
 // (IR 2.2.0, ADR 0099); grid/flex/stack take role? and omit it when absent. Never ARIA, never text.
 function isLayoutRole(value: unknown): value is string   // /^[a-z][a-z0-9-]{0,63}$/; else ⇒ plain container
+// every Layout has id?: string — container identity (IR 2.4.0, ADR 0101): Widget.id's rule (non-empty
+// string), ONE namespace with widget ids; a renderer that reconciles keys the container by it.
+// Absent or malformed ⇒ keyed positionally. The builders omit it when absent.
 interface GridCell { span?: number; row?: number; rowSpan?: number; column?: number; node: Widget | Layout }
 // span = columns occupied (default 1); row/column = 1-based start lines, rowSpan = rows (default 1);
 // all placement absent = flow placement (IR 2.1.0, ADR 0098)
@@ -1321,10 +1324,10 @@ interface WidgetSource { type: string; version: string; degradedFrom?: Array<{ t
 // Widget gains: source?: WidgetSource                          // never in props
 // Blueprint gains: irVersion?: string                          // absent ⇒ "1.0.0"; writers always set it
 function resolveWidgetStatus(widget: Widget, stateMap: Map<string, unknown>): BindingStatus | undefined
-function upgradeBlueprint(bp: Blueprint): Blueprint   // current-major artifact from any readable one; identity on 2.0.0, 2.1.0, 2.2.0 and 2.3.0 input
+function upgradeBlueprint(bp: Blueprint): Blueprint   // current-major artifact from any readable one; identity on 2.0.0, 2.1.0, 2.2.0, 2.3.0 and 2.4.0 input
 function blueprintIrVersion(bp: Blueprint): string    // bp.irVersion ?? "1.0.0"
 
-// The Blueprint is a declared rendering IR (ADR 0096; 2.0.0 by ADR 0097, 2.1.0 by ADR 0098, 2.2.0 by ADR 0099, 2.3.0 by ADR 0100): bump on any
+// The Blueprint is a declared rendering IR (ADR 0096; 2.0.0 by ADR 0097, 2.1.0 by ADR 0098, 2.2.0 by ADR 0099, 2.3.0 by ADR 0100, 2.4.0 by ADR 0101): bump on any
 // shape change; a test pins the shape digest per version
 const BLUEPRINT_IR_VERSION: string; const BLUEPRINT_IR_SHAPE: Record<string, readonly string[]>
 
@@ -1354,12 +1357,16 @@ function validateBlueprint(blueprint: Blueprint, catalog: WidgetCatalog): Bluepr
 //           undeclared-projection | duplicate-node-id      · `widgets` is the DENOMINATOR
 //           + IR checks: span-out-of-range | placement-out-of-range | columns-invalid | malformed-node | …
 //           + role-invalid (warn; a present role failing isLayoutRole — IR 2.2.0, ADR 0099)
+//           + layout-id-invalid (warn; a present layout id that is not a non-empty string — IR 2.4.0, ADR 0101)
+//           duplicate-node-id spans widget AND layout ids (IR 2.4.0); a layout-level finding's
+//           nodeId is the layout's valid id, else "<layout>"
 function catalogCoverage(catalog: WidgetCatalog, kinds: Iterable<string>): CoverageReport
 
 // ADR 0094 — which node ids did this change DROP? (the failure one tree cannot show)
-function blueprintNodeIds(blueprint: Blueprint): string[]
+function blueprintNodeIds(blueprint: Blueprint): string[]      // WIDGET ids only, pre-order
+function blueprintLayoutIds(blueprint: Blueprint): string[]    // valid LAYOUT ids, pre-order, root included (IR 2.4.0, ADR 0101)
 function preservesNodes(before: Iterable<string>, after: Iterable<string>): IdentityReport
-function preservesBlueprintNodes(before: Blueprint, after: Blueprint): IdentityReport
+function preservesBlueprintNodes(before: Blueprint, after: Blueprint): IdentityReport   // widget ids ∪ layout ids
 // id SETS, not blueprints: the second consumer (A2UISurfaceBridge.identityDiff) has a flat list
 
 // ADR 0095 — does this view still MEAN what it meant? A binding freezes a NAME
@@ -1399,6 +1406,8 @@ const defaultRegistry: RendererRegistry<WidgetRenderer>;  // MetricCard/Timeline
 // (binding.status) nor a source — a 1.0.0 artifact's DOM is unchanged.
 // IR 2.1.0: a placed grid cell gets explicit grid-column/grid-row; a titled layout renders <section><h2/>…</section>
 // IR 2.2.0: Layout.role is ignored — a roled layout's DOM is the unroled one's
+// IR 2.4.0: a valid Layout.id is the container element's React key (eager and fiber) — the DOM is unchanged,
+//           and a container inserted/reordered around it keeps its widgets' DOM; absent ⇒ index key, as before
 // IR 2.3.0: status empty → data-binding-state="empty" + <div role="status" data-binding-marker="empty">○ title: no data</div>
 //           (finding.message when present), ranked after error; the value and the check are skipped
 function WidgetFrame(props: { widget: Widget; value: unknown; status?: BindingStatus; check?: WidgetValueCheck; children: React.ReactNode }): JSX.Element
@@ -1430,6 +1439,7 @@ const defaultTerminalRegistry: RendererRegistry<TerminalWidgetRenderer>         
 // neither a declared channel nor a source
 // IR 2.1.0: placed grid cells print in reading order (row, then column); a titled layout prints an underlined heading
 // IR 2.2.0: Layout.role is ignored — output is byte-identical with or without one
+// IR 2.4.0: Layout.id is ignored — output is byte-identical with or without one
 // IR 2.3.0: status empty → `○ <title>: <finding.message ?? "no data">`, ranked after error; value and check skipped
 function renderBlueprintToString(blueprint: Blueprint, stateMap: Map<string, unknown>, options?: TerminalRenderOptions): string
 class TerminalRenderer { constructor(projectionRuntime: ProjectionRuntime, options?: TerminalRenderOptions); render(blueprint: Blueprint, executionId: string): string }

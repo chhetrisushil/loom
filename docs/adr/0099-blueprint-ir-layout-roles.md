@@ -83,7 +83,9 @@ container is kept and its chrome state survives, the same rule as a widget's use
 This is a contract for renderers that key containers at all (loom-ui's DOM adapter). loom's React
 renderer keys children positionally and ignores the role (D5), so nothing about its reconcile
 changes. A role does **not** join node identity: `blueprintNodeIds`/`preservesBlueprintNodes`
-remain widget-id sets, and a Layout still has no id.
+remain widget-id sets, and a Layout still has no id. *(Amended by
+[ADR 0101](0101-blueprint-ir-layout-ids.md): a Layout may now carry an optional `id`, which is
+node identity and which `preservesBlueprintNodes` compares; a role still is not.)*
 
 ### D4 — One new finding: `role-invalid`, at `warn`
 
