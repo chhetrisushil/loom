@@ -502,6 +502,19 @@ describe("validateBlueprint — IR 2.0.0 slots", () => {
       validateBlueprint(bp(stack({ children: [] }), "2.1.0"), builtinCatalog).findings
     ).toEqual([]);
   });
+  it("2.1.0 is still a known version after the 2.2.0 minor bump, and 2.2.0 is known (ADR 0099)", () => {
+    for (const v of ["2.0.0", "2.1.0", "2.2.0"]) {
+      expect(validateBlueprint(bp(stack({ children: [] }), v), builtinCatalog).findings, v).toEqual(
+        []
+      );
+    }
+  });
+  it("a role — well-formed, unknown or malformed — is never a finding (ADR 0099 D4, as title)", () => {
+    for (const role of ["stepped", "no-renderer-has-this", "Not A Key", "", 42]) {
+      const layout = { type: "stack", role, children: [] } as unknown as Layout;
+      expect(validateBlueprint(bp(layout), builtinCatalog).findings, String(role)).toEqual([]);
+    }
+  });
 });
 
 // ── Totality: a blueprint is data a model composed, so the walk must report, never throw ──────

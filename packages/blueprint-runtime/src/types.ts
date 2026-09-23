@@ -71,6 +71,13 @@ export interface GridLayout {
   gap?: number;
   /** A section heading for this container (IR 2.1.0). Absent ⇒ no heading. */
   title?: string;
+  /**
+   * What this container IS to a renderer that knows it (IR 2.2.0, ADR 0099) — the open,
+   * app-defined axis for containers that `Widget.kind` is for widgets (`"stepped"`, `"tabbed"`,
+   * …). `type` stays the geometry. Absent, malformed (see `isLayoutRole`) or unknown to the
+   * renderer in use ⇒ the plain container. Never an ARIA role, never display text.
+   */
+  role?: string;
   children: GridCell[];
 }
 
@@ -80,6 +87,13 @@ export interface FlexLayout {
   gap?: number;
   /** A section heading for this container (IR 2.1.0). Absent ⇒ no heading. */
   title?: string;
+  /**
+   * What this container IS to a renderer that knows it (IR 2.2.0, ADR 0099) — the open,
+   * app-defined axis for containers that `Widget.kind` is for widgets (`"stepped"`, `"tabbed"`,
+   * …). `type` stays the geometry. Absent, malformed (see `isLayoutRole`) or unknown to the
+   * renderer in use ⇒ the plain container. Never an ARIA role, never display text.
+   */
+  role?: string;
   children: Array<Widget | Layout>;
 }
 
@@ -88,6 +102,13 @@ export interface StackLayout {
   gap?: number;
   /** A section heading for this container (IR 2.1.0). Absent ⇒ no heading. */
   title?: string;
+  /**
+   * What this container IS to a renderer that knows it (IR 2.2.0, ADR 0099) — the open,
+   * app-defined axis for containers that `Widget.kind` is for widgets (`"stepped"`, `"tabbed"`,
+   * …). `type` stays the geometry. Absent, malformed (see `isLayoutRole`) or unknown to the
+   * renderer in use ⇒ the plain container. Never an ARIA role, never display text.
+   */
+  role?: string;
   children: Array<Widget | Layout>;
 }
 

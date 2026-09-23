@@ -17,11 +17,15 @@ import { IR_VERSIONS_READ_AS_IS } from "./normalize";
 //
 // 2.1.0 (ADR 0098) is a MINOR bump — optional cell placement and optional layout titles only —
 // and 2.0.0 now has an external reader (loom-ui pins it), so its row is frozen like 1.0.0's.
+//
+// 2.2.0 (ADR 0099) is a MINOR bump — an optional `role` on every Layout only — and 2.1.0 has an
+// external reader (loom-ui pins it), so its row is frozen too.
 
 const PINNED: ReadonlyArray<readonly [version: string, digest: string]> = [
   ["1.0.0", "59ee5cb1c37efe75"],
   ["2.0.0", "90e690ca0de812fd"],
   ["2.1.0", "f2b72f769b6a85a1"],
+  ["2.2.0", "09d36418d9a034d3"],
 ];
 
 const digestOf = (shape: unknown) => fnv1a64(canonicalJson(shape));
@@ -90,6 +94,20 @@ describe("BLUEPRINT_IR_SHAPE", () => {
     ]) {
       expect(manifest).toContain("title:optional");
     }
+  });
+
+  it("2.2.0 carries an optional role on every layout, and nothing else changed (ADR 0099)", () => {
+    for (const manifest of [
+      BLUEPRINT_IR_SHAPE.gridLayout,
+      BLUEPRINT_IR_SHAPE.flexLayout,
+      BLUEPRINT_IR_SHAPE.stackLayout,
+    ]) {
+      expect(manifest).toContain("role:optional");
+    }
+    // The widget, cell and blueprint manifests are 2.1.0's exactly: a role is a container fact.
+    expect(BLUEPRINT_IR_SHAPE.widget).not.toContain("role:optional");
+    expect(BLUEPRINT_IR_SHAPE.gridCell).not.toContain("role:optional");
+    expect(BLUEPRINT_IR_SHAPE.blueprint).not.toContain("role:optional");
   });
 });
 
