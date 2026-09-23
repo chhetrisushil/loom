@@ -238,6 +238,9 @@ const NOT_A_CAPABILITY = new Set([
   // 0099 — the same IR, one more optional field: a `role` on every layout, the key a
   // container-renderer registry looks up. A contract; loom's renderers ignore it.
   "0099",
+  // 0100 — the same IR, one more BindingState literal: `empty`, drawn as a "no data" row by
+  // both renderers. A contract and renderer behaviour; triggers nothing at run time.
+  "0100",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

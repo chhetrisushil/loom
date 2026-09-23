@@ -184,9 +184,11 @@ projection$({ id: "latency", name: "Latency", version: "3", initialState, handle
 
 A binding may separately declare `status: { path }` in that same projection — a place, in the
 same state a value already resolves from, where the binding's delivery state
-(`pending`/`ready`/`stale`/`error`) is written. Loom's own renderers read it and show the
+(`pending`/`ready`/`stale`/`error`/`empty`) is written. Loom's own renderers read it and show the
 matching pending/stale/error marker; a binding that declares nothing renders exactly as it did
-before the channel existed ([ADR 0097](adr/0097-blueprint-ir-2.md)).
+before the channel existed ([ADR 0097](adr/0097-blueprint-ir-2.md)). `empty` means the upstream
+answered with nothing to show — the widget renders `○ <title>: no data`, which is not an error
+and triggers nothing ([ADR 0100](adr/0100-blueprint-ir-empty-binding-state.md)).
 
 A grid cell may also be *placed* — `cell(span, node, { row, column, rowSpan })` — and any layout
 may carry a `title`, a section heading; an artifact that uses neither renders as it always did
