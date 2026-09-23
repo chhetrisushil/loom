@@ -13,7 +13,12 @@ export type WidgetKind =
 
 import type { DataClass } from "@loom/classify";
 
-export type BindingState = "pending" | "ready" | "stale" | "error";
+/**
+ * `empty` (IR 2.3.0, ADR 0100): delivery succeeded and the upstream answered with NO subject to
+ * show (e.g. a template indexed past the end of an empty array). It is not an error and triggers
+ * nothing; a value written beside it is ignored by every renderer.
+ */
+export type BindingState = "pending" | "ready" | "stale" | "error" | "empty";
 /** A binding's delivery state, read from the same projection state as its value (IR 2.0.0). */
 export interface BindingStatus {
   state: BindingState;
