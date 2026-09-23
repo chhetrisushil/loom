@@ -57,14 +57,14 @@ Carry-overs re-checked: `removeProvider` is needed (B4). Not needed: setProps ke
 
 #### Implementation notes (phase 1)
 
-What B2/B3/B4 shipped as (loom-ui PRs #12, #13, #14), where it sharpened or deviated from the design above:
+What phase 1 shipped as (loom-ui #12 = P1 layout/IR 2.1, #13 = B2/B3 hydration, #14 = B4 ops and usage), where it sharpened or deviated from the design above:
 
 - **D14 — `HydrationCache` key (B3d).** The key is the spec fingerprint + the *declared* overridable params with `$now`-family time tokens left unresolved (not the values they'd resolve to) + the checked kinds, contract mode only, normalised. A key built from a resolved `$now` would never hit; freshness is the TTL's job, not the key's. (PR #13)
-- **D15 — input drift under contract mode (B2).** With `outputCheck: "contract"`, B2's "the shape hash remains the input-drift signal" is read as: input drift is signalled by the tool schema pin only. The contract check governs output/staleness; it does not itself signal input drift. (PR #12)
+- **D15 — input drift under contract mode (B2).** With `outputCheck: "contract"`, B2's "the shape hash remains the input-drift signal" is read as: input drift is signalled by the tool schema pin only. The contract check governs output/staleness; it does not itself signal input drift. (PR #13)
 - A `report-and-proceed` outcome (B3g) is never cached — only a clean load populates `HydrationCache`. (PR #13)
 - Input-only drift is published as a `schema-drift` finding, not `provider-failed` — the two stay distinguishable downstream. (PR #13)
 - Split hydration (B3a) serves only *public* findings to the client; full findings (including provider identity) reach only the server-side `onFinding` hook. (PR #13)
-- B3f's controller-wide concurrency cap is 32 concurrent tool calls per batch by default, enforced server-wide as one shared `limitInvoker` (`serveHandles`), not per caller. (PR #13)
+- On the split server, `serveHandles` caps concurrent tool calls at 32 **per batch** by default (`DEFAULT_MAX_CONCURRENT_CALLS`); a server-wide bound comes from wrapping the invoker once in `limitInvoker` and sharing it across batches. (PR #13)
 - Every op that can place a node (`setPlacement`, `insertNode`, `moveNode`) refuses an off-grid or overflowing result (`placement-outside-grid` / `placement-out-of-range`) rather than accepting it — so a log recorded before this shipped that inserted such a node no longer replays. (PR #14)
 - The reference planner clamps `column` on a widening revision rather than refusing it. (PR #14)
 - B4's planner `usage` is the sum of attempts that reported a value; an absent report is not treated as zero, and an invalid or overflowing usage value is dropped (with a `usage-invalid` finding) rather than summed. (PR #14)
