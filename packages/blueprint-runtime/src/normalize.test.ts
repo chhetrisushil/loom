@@ -2,7 +2,7 @@ import { canonicalJson, fnv1a64 } from "@loom/core";
 import { describe, expect, it } from "vitest";
 import { blueprint$ } from "./Blueprint";
 import { BLUEPRINT_IR_VERSION } from "./irVersion";
-import { flex, grid, stack } from "./layout";
+import { flex, grid, isLayoutRole, stack } from "./layout";
 import {
   IR_VERSION_LEGACY,
   asCell,
@@ -50,7 +50,7 @@ describe("irVersion", () => {
       projections: [],
     });
     expect(bp.irVersion).toBe(BLUEPRINT_IR_VERSION);
-    expect(BLUEPRINT_IR_VERSION).toBe("2.1.0");
+    expect(BLUEPRINT_IR_VERSION).toBe("2.2.0");
     const { irVersion: _v, ...legacy } = bp;
     expect(blueprintIrVersion(legacy as Blueprint)).toBe(IR_VERSION_LEGACY);
   });
@@ -195,5 +195,69 @@ describe("placement and titles (IR 2.1.0, ADR 0098)", () => {
       { span: 1, node: w("a") },
       { span: 2, node: w("b"), row: 1, column: 3 },
     ]);
+  });
+});
+
+describe("layout roles (IR 2.2.0, ADR 0099)", () => {
+  it("grid, flex and stack take an optional role and omit the key when it is absent", () => {
+    expect(grid({ columns: 2, role: "stepped", children: [] }).role).toBe("stepped");
+    expect(flex({ role: "tabbed", children: [] }).role).toBe("tabbed");
+    expect(stack({ role: "collapsible", children: [] }).role).toBe("collapsible");
+    expect("role" in grid({ columns: 2, children: [] })).toBe(false);
+    expect("role" in flex({ children: [] })).toBe(false);
+    expect("role" in stack({ children: [] })).toBe(false);
+  });
+  it("an absent role leaves a layout's content address exactly as 2.1.0 wrote it", () => {
+    const digest = (v: unknown) => fnv1a64(canonicalJson(v));
+    const before = { type: "stack", title: "T", children: [w("a")] };
+    expect(digest(stack({ title: "T", children: [w("a")] }))).toBe(digest(before));
+    expect(digest(stack({ title: "T", role: "stepped", children: [w("a")] }))).not.toBe(
+      digest(before)
+    );
+  });
+  it("upgradeBlueprint is identity on 2.1.0 and 2.2.0 artifacts, and keeps a role when it wraps 1.0.0", () => {
+    for (const irVersion of ["2.1.0", "2.2.0"]) {
+      const v: Blueprint = {
+        ...blueprint$({
+          id: "x",
+          title: "X",
+          layout: stack({ role: "stepped", children: [w("a")] }),
+          projections: ["p"],
+        }),
+        irVersion,
+      };
+      expect(upgradeBlueprint(v)).toBe(v);
+    }
+    const legacy = {
+      _tag: "Blueprint",
+      id: "l",
+      title: "L",
+      projections: ["p"],
+      layout: { type: "grid", columns: 2, role: "tabbed", children: [w("a")] },
+    } as unknown as Blueprint;
+    expect(upgradeBlueprint(legacy).layout.role).toBe("tabbed");
+  });
+  it("isLayoutRole accepts a lowercase registry key of at most 64 characters", () => {
+    for (const ok of ["stepped", "tabbed", "a", "lu-stepped", "step2", "a".repeat(64)]) {
+      expect(isLayoutRole(ok), ok).toBe(true);
+    }
+    for (const bad of [
+      "",
+      "Stepped",
+      "2step",
+      "-stepped",
+      "stepped panel",
+      "stepped_panel",
+      "stepped.panel",
+      "région",
+      "a".repeat(65),
+      "__proto__",
+      undefined,
+      null,
+      42,
+      {},
+    ]) {
+      expect(isLayoutRole(bad), String(bad)).toBe(false);
+    }
   });
 });

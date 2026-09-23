@@ -90,4 +90,19 @@ describe("traverseBlueprint (2.0.0)", () => {
     // ABSENT, not present-and-undefined: a renderer testing `"row" in cell` must see it missing.
     expect(Object.keys(cells?.[1] ?? {}).sort()).toEqual(["child", "span"]);
   });
+  it("hands renderContainer the layout itself, role included, untouched (2.2.0)", () => {
+    const g = grid({ columns: 2, role: "stepped", children: [w("a")] });
+    const s = stack({ role: "tabbed", children: [g] });
+    const seen: unknown[] = [];
+    traverseBlueprint<string>(s, new Map([["p", { v: {} }]]), {
+      renderWidget: ({ widget }) => widget.id,
+      renderContainer: (ctx) => {
+        seen.push(ctx.layout);
+        return "";
+      },
+    });
+    expect(seen).toEqual([g, s]);
+    expect(seen[0]).toBe(g);
+    expect(seen[1]).toBe(s);
+  });
 });
