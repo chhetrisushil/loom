@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { RendererRegistry } from "./RendererRegistry";
-import { builtinCatalog, defineWidgetCatalog, validateBlueprint } from "./catalog";
+import {
+  type BlueprintValidation,
+  builtinCatalog,
+  defineWidgetCatalog,
+  validateBlueprint,
+} from "./catalog";
 import { catalogCoverage } from "./coverage";
 import { customWidget$ } from "./customWidget";
 import { grid, stack } from "./layout";
 import { cell } from "./normalize";
-import type { Blueprint, DataBinding, GridLayout, Layout, Widget } from "./types";
+import type { Blueprint, DataBinding, GridCell, GridLayout, Layout, Widget } from "./types";
 import { DataTable, MetricCard } from "./widgets";
 
 const bp = (children: Array<Widget | Layout>, projections: string[]): Blueprint => ({
@@ -579,5 +584,127 @@ describe("validateBlueprint — malformed structure is a finding, never a throw"
       "n",
       "o",
     ]);
+  });
+});
+
+describe("validateBlueprint — cell placement (IR 2.1.0, ADR 0098)", () => {
+  const m = (id: string) => MetricCard({ id, title: id, binding: { projectionId: "p", path: id } });
+  const bpOf = (layout: Layout): Blueprint => ({
+    _tag: "Blueprint",
+    id: "b",
+    title: "B",
+    layout,
+    projections: ["p"],
+  });
+  const placementIds = (r: BlueprintValidation) =>
+    r.findings.filter((f) => f.code === "placement-out-of-range").map((f) => f.nodeId);
+
+  it("in-range placement is clean, including a cell that ends on the last column", () => {
+    const r = validateBlueprint(
+      bpOf(
+        grid({
+          columns: 12,
+          children: [
+            cell(6, m("a"), { row: 1, column: 1, rowSpan: 2 }),
+            cell(6, m("b"), { row: 1, column: 7 }),
+            cell(12, m("c"), { row: 3 }),
+          ],
+        })
+      ),
+      builtinCatalog
+    );
+    expect(r.findings).toEqual([]);
+    expect(r.ok).toBe(true);
+  });
+
+  it("row, rowSpan and column must be positive integers", () => {
+    const r = validateBlueprint(
+      bpOf(
+        grid({
+          columns: 4,
+          children: [
+            cell(1, m("r0"), { row: 0 }),
+            cell(1, m("rs0"), { rowSpan: 0 }),
+            cell(1, m("c0"), { column: 0 }),
+            cell(1, m("frac"), { row: 1.5 }),
+            cell(1, m("ok"), { row: 2, column: 4, rowSpan: 1 }),
+          ],
+        })
+      ),
+      builtinCatalog
+    );
+    expect(placementIds(r)).toEqual(["r0", "rs0", "c0", "frac"]);
+    expect(r.ok).toBe(false);
+  });
+
+  it("a cell that starts inside the grid but overflows its right edge is out of range", () => {
+    const r = validateBlueprint(
+      bpOf(
+        grid({
+          columns: 12,
+          children: [cell(6, m("a"), { column: 8 }), cell(1, m("b"), { column: 13 })],
+        })
+      ),
+      builtinCatalog
+    );
+    expect(placementIds(r)).toEqual(["a", "b"]);
+    expect(r.findings.find((f) => f.nodeId === "a")?.message).toContain("column 8 + span 6");
+    expect(r.findings.find((f) => f.nodeId === "b")?.message).toContain("outside 1..12");
+  });
+
+  it("one finding per cell however many fields are wrong; a nested container cell reports <layout>", () => {
+    const r = validateBlueprint(
+      bpOf(
+        grid({
+          columns: 4,
+          children: [
+            cell(1, m("a"), { row: -1, column: 9, rowSpan: 0 }),
+            cell(2, stack({ children: [] }), { column: 4 }),
+          ],
+        })
+      ),
+      builtinCatalog
+    );
+    expect(placementIds(r)).toEqual(["a", "<layout>"]);
+    const msg = r.findings.find((f) => f.nodeId === "a")?.message ?? "";
+    expect(msg).toContain("row -1");
+    expect(msg).toContain("rowSpan 0");
+    expect(msg).toContain("column 9");
+  });
+
+  // Regression guard, not new behaviour: this already passes before the placement check exists
+  // (span-out-of-range short-circuits before any placement fields are read) — it is here to
+  // pin that a bad span never cascades into a SECOND finding once placement checks join it.
+  it("a bad span is reported once as span-out-of-range, never again as a placement overflow", () => {
+    const r = validateBlueprint(
+      bpOf(grid({ columns: 4, children: [cell(9, m("a"), { column: 1 })] })),
+      builtinCatalog
+    );
+    expect(r.findings.map((f) => f.code)).toEqual(["span-out-of-range"]);
+  });
+
+  it("a non-number placement in model-composed data is a finding, never a throw", () => {
+    const hostile = { span: 1, row: "2", column: null, node: m("a") } as unknown as GridCell;
+    const r = validateBlueprint(
+      bpOf({ type: "grid", columns: 4, children: [hostile] } as GridLayout),
+      builtinCatalog
+    );
+    expect(placementIds(r)).toEqual(["a"]);
+  });
+
+  it("columns-invalid still suppresses the grid's cell checks, placement included", () => {
+    const r = validateBlueprint(
+      bpOf({ type: "grid", columns: 0, children: [cell(1, m("a"), { column: 5 })] }),
+      builtinCatalog
+    );
+    expect(r.findings.map((f) => f.code)).toEqual(["columns-invalid"]);
+  });
+
+  it("an unplaced grid is untouched by the new check (2.0.0 artifacts report what they did)", () => {
+    const r = validateBlueprint(
+      bpOf(grid({ columns: 2, children: [m("a"), cell(2, m("b"))] })),
+      builtinCatalog
+    );
+    expect(r.findings).toEqual([]);
   });
 });
