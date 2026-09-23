@@ -20,7 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     absent, malformed or unknown ⇒ the plain container. A renderer that keys containers keys
     them by ordinal + `type` + `role`, so a role change is a remount.
   - `BLUEPRINT_IR_VERSION` moves `2.1.0` → `2.2.0` with a fourth pinned digest; 2.1.0 (like
-    2.0.0) is read as it is by `validateBlueprint` and `upgradeBlueprint`. No new finding.
+    2.0.0) is read as it is by `validateBlueprint` and `upgradeBlueprint`.
+  - `validateBlueprint` gains `role-invalid` — a `warn`, once per layout whose `role` is present
+    but not `isLayoutRole`. A well-formed role no renderer knows is not a finding.
   - `@loom/plugin-renderer-react` and `@loom/plugin-renderer-terminal` ignore the role: a roled
     artifact renders exactly as the unroled one.
 

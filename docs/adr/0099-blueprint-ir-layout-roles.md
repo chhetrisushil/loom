@@ -57,14 +57,19 @@ letters, digits or hyphens, **1–64 characters**. The reasons:
   spellings of one name (`Stepped`/`stepped`) cannot silently select different renderers.
 - **At most 64 characters**, because a role is a name, not a payload, and a model-composed
   artifact is data that must not be able to buy unbounded work in a lookup or a DOM attribute.
+- **Hyphens anywhere after the first character** — trailing (`a-`) and doubled (`a--b`) are
+  accepted. The rule is a key's alphabet and length, not a style guide; a stricter spelling
+  would reject names that are harmless as keys. The pattern is anchored with no multiline flag,
+  so a trailing newline (`"stepped\n"`) or any whitespace is rejected.
 
 `isLayoutRole(value: unknown): value is string` is the one spelling of the rule, exported from
 `@loom/blueprint-runtime` so a compiler's schema (loom-ui core) and a renderer's lookup (loom-ui's
 DOM adapter) apply the same predicate and cannot drift apart.
 
 A role that is **absent, malformed, or unknown to the renderer in use** draws the plain
-container, exactly as it draws under 2.1.0. Malformed and unknown are the same case on purpose: a
-renderer never throws, and never half-honours a role.
+container, exactly as it draws under 2.1.0. At RENDER time malformed and unknown are the same case
+on purpose: a renderer never throws, and never half-honours a role. At VALIDATION time they are
+not (D4).
 
 ### D3 — A role is part of a container's identity for keyed reconcile
 
@@ -80,14 +85,30 @@ renderer keys children positionally and ignores the role (D5), so nothing about 
 changes. A role does **not** join node identity: `blueprintNodeIds`/`preservesBlueprintNodes`
 remain widget-id sets, and a Layout still has no id.
 
-### D4 — No new `validateBlueprint` finding
+### D4 — One new finding: `role-invalid`, at `warn`
 
-The rule ADR 0098 D6 set for `title`: a renderer honours a role only when it is well-formed
-(D2), and a malformed one costs nothing but the custom rendering — the plain container is still
-the complete content. `validateBlueprint` reports nothing for a role, well-formed or not. The
-builders do not validate it either (they validate no other field). A code is added when a
-consumer needs a malformed role to be a refusal rather than a fallback; the place to refuse one
-before it reaches the IR is the compiler's schema, which uses `isLayoutRole`.
+loom has no Blueprint parser: `validateBlueprint` is the only gate a model-composed artifact
+passes before a renderer sees it, so a malformed role that it did not report would pass silently
+everywhere — the author would see a plain container and no reason why. That is the reasoning ADR
+0098 used for `placement-out-of-range`, and it applies here.
+
+`validateBlueprint` reports `role-invalid` once per layout whose `role` is present (not
+`undefined`) and fails `isLayoutRole` — a non-string, empty, uppercase, whitespace, `_`/`.`, or
+more than 64 characters. `nodeId` and `kind` are `"<layout>"` (a layout has no id). The message
+echoes the role bounded to 64 characters plus its length, because the value is untrusted and can
+be any size.
+
+It is a **`warn`**, not an `error`: nothing is lost but the custom rendering — every renderer
+draws the plain container, which is still the complete content — so `ok` stays `true`. A caller
+that wants a malformed role to be a refusal treats the warning as one, or refuses it earlier in
+its compiler's schema with `isLayoutRole`.
+
+A **well-formed but unknown** role is **not** a finding. Whether some renderer has it registered
+is a fact about the registry in use, which `validateBlueprint` does not see; a role unknown to one
+renderer is another's chrome. The builders still validate nothing (as for every other field).
+
+`title` keeps ADR 0098 D6's no-finding rule: a malformed title is display text that renders
+nothing, while a malformed role is a key that silently selects nothing.
 
 ### D5 — loom's own renderers ignore it
 
@@ -117,6 +138,8 @@ added after ADR 0098 fails otherwise), so `validateBlueprint` knows 2.0.0, 2.1.0
 - loom-ui's `packages/core/src/blueprintIr.test.ts` pins `"2.1.0"` and goes red when loom-ui
   bumps its `LOOM_REF` past this ADR. That is the intended signal: the same PR teaches loom-ui's
   `compile` to emit `role` and adds the container-renderer seam that reads it.
+- `BlueprintFindingCode` gains `role-invalid` (warn). A consumer that switches exhaustively over
+  the codes sees a new case; one that gates on `ok` is unaffected.
 - `@loom/blueprint-runtime` exports one new value, `isLayoutRole`. It is part of the IR contract,
   not vocabulary: it names no role.
 - `KERNEL_ABI_VERSION` stays 1.1.0 and `EVENT_SCHEMA_VERSION` stays 1.18.0. `@loom/spec` lists

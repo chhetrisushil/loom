@@ -238,11 +238,24 @@ describe("layout roles (IR 2.2.0, ADR 0099)", () => {
     expect(upgradeBlueprint(legacy).layout.role).toBe("tabbed");
   });
   it("isLayoutRole accepts a lowercase registry key of at most 64 characters", () => {
-    for (const ok of ["stepped", "tabbed", "a", "lu-stepped", "step2", "a".repeat(64)]) {
+    // Trailing and doubled hyphens are accepted (ADR 0099 D2): the rule is a key's alphabet and
+    // length, not a style guide.
+    for (const ok of [
+      "stepped",
+      "tabbed",
+      "a",
+      "lu-stepped",
+      "step2",
+      "a-",
+      "a--b",
+      "a".repeat(64),
+    ]) {
       expect(isLayoutRole(ok), ok).toBe(true);
     }
     for (const bad of [
       "",
+      "stepped\n",
+      " stepped",
       "Stepped",
       "2step",
       "-stepped",

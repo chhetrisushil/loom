@@ -466,6 +466,8 @@ describe("validateBlueprint — IR 2.0.0 slots", () => {
       validateBlueprint(bp(stack({ children: [] }), "1.0.0"), builtinCatalog).findings
     ).toEqual([]);
     expect(validateBlueprint(bp(stack({ children: [] })), builtinCatalog).findings).toEqual([]);
+    const undef = { type: "stack", role: undefined, children: [] } as unknown as Layout;
+    expect(validateBlueprint(bp(undef), builtinCatalog).findings).toEqual([]);
   });
   it("a literal props.span is undeclared-prop like any other key — span is a cell field, not a prop", () => {
     const r = validateBlueprint(
@@ -509,11 +511,55 @@ describe("validateBlueprint — IR 2.0.0 slots", () => {
       );
     }
   });
-  it("a role — well-formed, unknown or malformed — is never a finding (ADR 0099 D4, as title)", () => {
-    for (const role of ["stepped", "no-renderer-has-this", "Not A Key", "", 42]) {
+  it("a well-formed role is never a finding, known to some renderer or not (ADR 0099 D4)", () => {
+    // Whether a renderer has a role registered is registry-dependent, not a loom error.
+    for (const role of ["stepped", "no-renderer-has-this", "a", "a--b-", "a".repeat(64)]) {
       const layout = { type: "stack", role, children: [] } as unknown as Layout;
-      expect(validateBlueprint(bp(layout), builtinCatalog).findings, String(role)).toEqual([]);
+      expect(validateBlueprint(bp(layout), builtinCatalog).findings, role).toEqual([]);
     }
+    expect(validateBlueprint(bp(stack({ children: [] })), builtinCatalog).findings).toEqual([]);
+    const undef = { type: "stack", role: undefined, children: [] } as unknown as Layout;
+    expect(validateBlueprint(bp(undef), builtinCatalog).findings).toEqual([]);
+  });
+  it("a malformed role is exactly one role-invalid WARN on <layout>, and never fails ok (ADR 0099 D4)", () => {
+    const malformed: unknown[] = [
+      "Not A Key",
+      "",
+      "stepped\n",
+      "__proto__",
+      "a".repeat(65),
+      42,
+      null,
+      { role: "stepped" },
+    ];
+    for (const role of malformed) {
+      for (const layout of [
+        { type: "stack", role, children: [] },
+        { type: "flex", direction: "row", role, children: [] },
+        { type: "grid", columns: 2, role, children: [] },
+      ] as unknown as Layout[]) {
+        const r = validateBlueprint(bp(layout), builtinCatalog);
+        expect(
+          r.findings.map((f) => [f.code, f.severity, f.nodeId, f.kind]),
+          `${layout.type} ${String(role)}`
+        ).toEqual([["role-invalid", "warn", "<layout>", "<layout>"]]);
+        expect(r.ok).toBe(true);
+      }
+    }
+  });
+  it("role-invalid reports every malformed layout in a nested tree, and bounds what it echoes", () => {
+    const huge = "X".repeat(100_000);
+    const layout = {
+      type: "stack",
+      role: huge,
+      children: [
+        { type: "grid", columns: 2, role: "Bad", children: [] },
+        { type: "flex", direction: "row", role: "fine", children: [] },
+      ],
+    } as unknown as Layout;
+    const r = validateBlueprint(bp(layout), builtinCatalog);
+    expect(r.findings.map((f) => f.code)).toEqual(["role-invalid", "role-invalid"]);
+    for (const f of r.findings) expect(f.message.length).toBeLessThan(400);
   });
 });
 
