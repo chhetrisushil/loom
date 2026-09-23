@@ -199,6 +199,42 @@ describe("BlueprintRenderer — status frame (IR 2.0.0)", () => {
     ).toBe("stale");
   });
 
+  it("shows the `empty` row when the projection carries an `empty` status, and never the value beside it (IR 2.3.0, ADR 0100)", () => {
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register({
+      id: "empty-metrics",
+      initialState: {
+        v: 412,
+        s: { a: { state: "empty", finding: { code: "upstream-empty", message: "no orders" } } },
+      },
+      handlers: {},
+    });
+    const bp = blueprint$({
+      id: "empty-bp",
+      title: "Empty",
+      layout: grid({
+        columns: 1,
+        children: [
+          MetricCard({
+            id: "m-empty",
+            title: "Latest order",
+            binding: { projectionId: "empty-metrics", path: "v", status: { path: "s.a" } },
+          }),
+        ],
+      }),
+      projections: ["empty-metrics"],
+    });
+
+    render(
+      <BlueprintRenderer blueprint={bp} projectionRuntime={runtime} executionId={EXECUTION_ID} />
+    );
+
+    const frame = document.querySelector("[data-widget-frame='m-empty']") as HTMLElement;
+    expect(frame.getAttribute("data-binding-state")).toBe("empty");
+    expect(frame.querySelector("[role='status']")?.textContent).toBe("○ Latest order: no orders");
+    expect(frame.textContent).not.toContain("412");
+  });
+
   it("a grid renders the SAME DOM as a stack of the same widgets, modulo the container's own style", () => {
     // ADR 0097 D1: a grid child gains a wrapper element only when its span exceeds 1, so a
     // 1.0.0 grid (every cell implicitly span 1) adds no element the stack does not. If the

@@ -4,7 +4,7 @@ import type React from "react";
 // ── WidgetFrame ────────────────────────────────────────────────────────────────
 //
 // Applies the canonical binding-status matrix (IR 2.0.0) around a widget's
-// rendered body: error/stale/pending/loading markers, and `Widget.source` as
+// rendered body: error/empty/stale/pending/loading markers (`empty` since IR 2.3.0, ADR 0100), and `Widget.source` as
 // data attributes for a degraded-rendering tooltip. A widget with NOTHING to
 // say — no declared status channel (`binding.status` absent) AND no `source`
 // — renders `children` directly with no wrapping element at all: a 1.0.0
@@ -12,11 +12,11 @@ import type React from "react";
 // frame (and its attributes/markers) appears only once there is a status
 // channel or a `source` to report.
 //
-// Between `error` and `stale` the matrix leaves one documented slot: an optional `check(widget,
+// Between `error`/`empty` and `stale` the matrix leaves one documented slot: an optional `check(widget,
 // value)` the CALLER supplies. loom never validates a value; a framework's own kind contract
 // plugs in there and renders as the error row when it fails.
 
-type Shown = "error" | "stale" | "pending" | "loading" | "ready";
+type Shown = "error" | "empty" | "stale" | "pending" | "loading" | "ready";
 
 function shown(
   hasChannel: boolean,
@@ -25,6 +25,8 @@ function shown(
 ): Shown | undefined {
   if (!hasChannel) return undefined; // no channel declared → 1.0.0 behaviour, frame is inert
   if (status?.state === "error") return "error";
+  // The upstream answered with no subject to show. Not an error; a value beside it is ignored.
+  if (status?.state === "empty") return "empty";
   if (status?.state === "stale") return "stale";
   if (status?.state === "pending") return value === undefined ? "loading" : "pending";
   // `status` undefined (not yet written, or malformed) is treated the same as
@@ -52,9 +54,9 @@ export const WidgetFrame: React.FC<{
   value: unknown;
   status?: BindingStatus;
   /**
-   * Runs only for a widget whose binding declares a status channel, and only when delivery did
-   * not already fail (`status.state !== "error"` — there is no value to check when the fetch
-   * itself failed). A returned finding outranks `stale`, `pending` and `ready`.
+   * Runs only for a widget whose binding declares a status channel, and only when there is a
+   * value to check: not under `error` (the fetch itself failed) nor `empty` (the upstream
+   * answered with nothing). A returned finding outranks `stale`, `pending` and `ready`.
    */
   check?: WidgetValueCheck;
   children: React.ReactNode;
@@ -65,7 +67,8 @@ export const WidgetFrame: React.FC<{
     // Nothing to report — no wrapper, no attributes, no DOM node added.
     return children;
   }
-  const contract = hasChannel && status?.state !== "error" ? check?.(widget, value) : undefined;
+  const noValue = status?.state === "error" || status?.state === "empty";
+  const contract = hasChannel && !noValue ? check?.(widget, value) : undefined;
   const state = contract ? "error" : shown(hasChannel, status, value);
   const errorMessage = contract ? contract.message : (status?.finding?.message ?? "error");
   const degraded = chain(widget);
@@ -86,6 +89,13 @@ export const WidgetFrame: React.FC<{
       {state === "error" && (
         <div role="alert" data-binding-marker="error">
           ✗ {title}: {errorMessage}
+        </div>
+      )}
+      {state === "empty" && (
+        // A polite live region: announced like a status, never as an alert — it is not an error.
+        // biome-ignore lint/a11y/useSemanticElements: <output> is a calculation result, and its implicit live-region support varies by screen reader; an explicit role="status" on a div is the reliably announced form
+        <div role="status" data-binding-marker="empty">
+          ○ {title}: {status?.finding?.message ?? "no data"}
         </div>
       )}
       {state === "stale" && value === undefined && (
