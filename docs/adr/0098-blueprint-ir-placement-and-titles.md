@@ -80,11 +80,13 @@ Writers (`blueprint$`) stamp `2.1.0` from here on.
   placement (fully unplaced). A *partially* placed grid — some cells placed and some not, or a
   cell missing one of the two axes — is where React and the terminal read differently, and by
   design: React has an actual grid, so an unplaced or partially placed cell falls to CSS grid's
-  own auto-placement algorithm, which fills the first free slot the explicitly placed cells left
-  open. The terminal has no grid to consult — it sorts by `(row, column)` with an absent
-  coordinate placed after every present one — so it is free to disagree with wherever CSS chose
-  to drop that cell. This is a documented divergence, not a defect: the terminal deliberately does
-  not reimplement CSS grid auto-placement to chase parity it cannot cheaply guarantee.
+  own (sparse) auto-placement algorithm, which drops it in the next free slot at or after the
+  auto-placement cursor — a cursor that only ever advances, so it never backtracks into an
+  earlier gap an explicitly placed cell skipped over. The terminal has no grid to consult — it
+  sorts by `(row, column)` with an absent coordinate placed after every present one — so it is
+  free to disagree with wherever CSS chose to drop that cell. This is a documented divergence,
+  not a defect: the terminal deliberately does not reimplement CSS grid auto-placement to chase
+  parity it cannot cheaply guarantee.
 
 ### D5 — One new finding: `placement-out-of-range`
 
