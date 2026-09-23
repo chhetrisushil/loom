@@ -147,3 +147,116 @@ describe("renderReactContainer cell spans (IR 2.0.0 grids)", () => {
     }
   });
 });
+
+describe("renderReactContainer placement and titles (IR 2.1.0)", () => {
+  type Placed = { id: string; span: number; row?: number; rowSpan?: number; column?: number };
+  const placedView = (entries: Placed[]) => {
+    const cells = entries.map(({ id, ...placement }) => ({
+      ...placement,
+      child: (
+        <span key={id} data-testid={id}>
+          {id}
+        </span>
+      ),
+    }));
+    return renderReactContainer(
+      grid({ columns: 12, children: [] }),
+      cells.map((c) => c.child),
+      cells
+    );
+  };
+  const wrapperOf = (container: HTMLElement, id: string) =>
+    (container.querySelector(`[data-testid='${id}']`) as HTMLElement).parentElement as HTMLElement;
+
+  it("a placed cell is wrapped with an explicit start column and row, even at span 1", () => {
+    const { container } = render(
+      placedView([
+        { id: "a", span: 6, row: 2, column: 7, rowSpan: 3 },
+        { id: "b", span: 1, row: 1, column: 1 },
+      ])
+    );
+    expect(wrapperOf(container, "a").style.gridColumn).toBe("7 / span 6");
+    expect(wrapperOf(container, "a").style.gridRow).toBe("2 / span 3");
+    expect(wrapperOf(container, "b").style.gridColumn).toBe("1 / span 1");
+    expect(wrapperOf(container, "b").style.gridRow).toBe("1 / span 1");
+  });
+
+  it("rowSpan alone spans rows from the flow position; column alone leaves the row to flow", () => {
+    const { container } = render(
+      placedView([
+        { id: "a", span: 2, rowSpan: 2 },
+        { id: "b", span: 1, column: 3 },
+      ])
+    );
+    expect(wrapperOf(container, "a").style.gridColumn).toBe("span 2");
+    expect(wrapperOf(container, "a").style.gridRow).toBe("span 2");
+    expect(wrapperOf(container, "b").style.gridColumn).toBe("3 / span 1");
+    expect(wrapperOf(container, "b").style.gridRow).toBe("");
+  });
+
+  it("an unplaced span-1 cell is still emitted directly — 2.0.0 DOM is unchanged", () => {
+    const { container } = render(
+      placedView([
+        { id: "a", span: 1 },
+        { id: "b", span: 4, column: 1 },
+      ])
+    );
+    expect(wrapperOf(container, "a")).toBe(container.firstChild);
+  });
+
+  // Regression guard (controller ruling, D6 pre-flight): the brief's original fixture used
+  // `{ id: "b", span: 3, row: 1, column: 4 }` for this case, but a span > 1 cell was ALREADY
+  // wrapped and keyed before IR 2.1.0 — that fixture could not fail before this change. `b` is
+  // a PLACED span-1 cell instead, so this test actually exercises the new placement-wrap branch
+  // (a span-1 cell wrapped only because it is placed) rather than the pre-existing span-wrap one.
+  it("a placed wrapper keeps the child's key, so a sibling's removal does not rebuild it", () => {
+    const { container, rerender } = render(
+      placedView([
+        { id: "a", span: 1 },
+        { id: "b", span: 1, row: 1, column: 4 },
+      ])
+    );
+    const before = container.querySelector("[data-testid='b']") as HTMLElement;
+    rerender(placedView([{ id: "b", span: 1, row: 1, column: 4 }]));
+    const after = container.querySelector("[data-testid='b']") as HTMLElement;
+    expect(after.isSameNode(before)).toBe(true);
+  });
+
+  it.each([
+    ["grid", grid({ columns: 2, title: "Latency", children: [] })],
+    ["flex", flex({ title: "Latency", children: [] })],
+    ["stack", stack({ title: "Latency", children: [] })],
+  ])("a titled %s renders a section whose h2 precedes the layout element", (_n, layout) => {
+    const { container } = render(
+      renderReactContainer(layout, [
+        <span key="x" data-testid="x">
+          x
+        </span>,
+      ])
+    );
+    const section = container.firstChild as HTMLElement;
+    expect(section.tagName).toBe("SECTION");
+    expect(section.children).toHaveLength(2);
+    expect(section.children[0]?.tagName).toBe("H2");
+    expect(section.children[0]?.textContent).toBe("Latency");
+    expect(section.children[1]?.querySelector("[data-testid='x']")).not.toBeNull();
+  });
+
+  it("an untitled or empty-titled layout renders no section and no heading", () => {
+    for (const layout of [stack({ children: [] }), stack({ title: "", children: [] })]) {
+      const { container, unmount } = render(renderReactContainer(layout, [<span key="x">x</span>]));
+      expect((container.firstChild as HTMLElement).tagName).toBe("DIV");
+      expect(container.querySelector("h2")).toBeNull();
+      unmount();
+    }
+  });
+
+  it("the grid template stays on the inner element, so the heading is not a grid item", () => {
+    const { container } = render(
+      renderReactContainer(grid({ columns: 3, title: "T", children: [] }), [])
+    );
+    const inner = (container.firstChild as HTMLElement).children[1] as HTMLElement;
+    expect(inner.style.display).toBe("grid");
+    expect(inner.style.gridTemplateColumns).toBe("repeat(3, 1fr)");
+  });
+});
