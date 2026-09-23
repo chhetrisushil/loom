@@ -381,7 +381,11 @@ describe("renderBlueprintToString — placement and section titles (IR 2.1.0)", 
     ).toEqual(["a: 1", "b: 2", "d: 4", "c: 3"]);
   });
 
-  it("a column-only placed cell (no row) sorts by column among cells sharing an absent row", () => {
+  // This pins the TERMINAL's own reading order only. The grid here is PARTIALLY placed (some
+  // cells set column but not row, one is fully unplaced) — for exactly that case React's CSS
+  // grid auto-placement and the terminal's absent-last sort are NOT guaranteed to agree (ADR
+  // 0098 D4/D6). Cross-renderer order only matches when every cell is fully placed or none is.
+  it("a column-only placed cell (no row) sorts by column among cells sharing an absent row — pins the TERMINAL's order only, not a cross-renderer guarantee", () => {
     expect(
       body(
         grid({

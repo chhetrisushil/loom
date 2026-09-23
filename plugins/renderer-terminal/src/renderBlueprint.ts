@@ -62,6 +62,8 @@ const isPlaced = (c: Cells[number]): boolean =>
 // keeps document order and its output is byte-identical to 2.0.0.
 function readingOrder(cells: Cells): string[] {
   const at = (v: number | undefined) => (v === undefined ? Number.POSITIVE_INFINITY : v);
+  // When BOTH sides are absent on an axis, `Infinity - Infinity` is NaN — falsy in `||` — so the
+  // comparator falls through to the next key instead of reporting a (wrong) tie-breaking order.
   return cells
     .map((c, i) => ({ c, i }))
     .sort((x, y) => at(x.c.row) - at(y.c.row) || at(x.c.column) - at(y.c.column) || x.i - y.i)
