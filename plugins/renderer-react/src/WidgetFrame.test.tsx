@@ -54,6 +54,24 @@ const rows = [
   // arrived; an absent value still reads as "loading".
   { status: undefined, value: 412, expectState: "ready", showsChild: true },
   { status: undefined, value: undefined, expectState: "loading", showsChild: false },
+  // `empty` (IR 2.3.0, ADR 0100): the upstream answered with nothing to show. Ranked right after
+  // `error`; a value beside it is IGNORED — the child never renders and no stale value leaks.
+  {
+    status: { state: "empty" },
+    value: undefined,
+    expectState: "empty",
+    showsChild: false,
+    marker: "empty",
+    text: "○ p99: no data",
+  },
+  {
+    status: { state: "empty", finding: { code: "upstream-empty", message: "no orders yet" } },
+    value: 412,
+    expectState: "empty",
+    showsChild: false,
+    marker: "empty",
+    text: "○ p99: no orders yet",
+  },
 ] as const;
 
 describe("WidgetFrame status matrix", () => {
@@ -71,8 +89,40 @@ describe("WidgetFrame status matrix", () => {
         expect(container.querySelector(`[data-binding-marker='${row.marker}']`)).not.toBeNull();
       if ("text" in row) expect(frame.textContent).toContain(row.text);
       if (row.expectState === "error") expect(frame.querySelector("[role='alert']")).not.toBeNull();
+      // `empty` is announced politely, like a status — never as an alert (it is not an error).
+      if (row.expectState === "empty") {
+        expect(frame.querySelector("[role='status'][data-binding-marker='empty']")).not.toBeNull();
+        expect(frame.querySelector("[role='alert']")).toBeNull();
+      }
     });
   }
+  it("`empty` outranks the check: there is no value to check, so the check is never called", () => {
+    const calls: unknown[] = [];
+    const check = (_w: unknown, value: unknown) => {
+      calls.push(value);
+      return { code: "shape", message: "contract" };
+    };
+    const { container } = render(
+      <WidgetFrame widget={widget} value="oops" status={{ state: "empty" }} check={check}>
+        <span data-child />
+      </WidgetFrame>
+    );
+    const frame = container.querySelector("[data-widget-frame='m']") as HTMLElement;
+    expect(frame.getAttribute("data-binding-state")).toBe("empty");
+    expect(frame.textContent).not.toContain("contract");
+    expect(frame.textContent).not.toContain("oops");
+    expect(calls).toEqual([]);
+  });
+  it("a channel-LESS widget ignores an `empty` status in the state — the matrix needs a declared channel", () => {
+    const plain = MetricCard({ id: "p", title: "p", binding: { projectionId: "p", path: "v" } });
+    const { container } = render(
+      <WidgetFrame widget={plain} value={412} status={{ state: "empty" }}>
+        <span data-child>412</span>
+      </WidgetFrame>
+    );
+    expect(container.querySelector("[data-child]")).not.toBeNull();
+    expect(container.querySelector("[data-binding-marker='empty']")).toBeNull();
+  });
   it("a widget with NEITHER a status channel NOR a source adds no wrapper at all — 1.0.0 DOM is byte-identical", () => {
     const plain = MetricCard({ id: "p", title: "p", binding: { projectionId: "p", path: "v" } });
     const { container } = render(

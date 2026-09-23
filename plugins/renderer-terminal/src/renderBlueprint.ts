@@ -106,12 +106,17 @@ export function renderBlueprintToString(
             : `[${widget.kind}] ${renderKindBlind(widget, value)}`;
       const title = widget.title ?? widget.kind;
       const channel = widget.binding?.status !== undefined;
-      // The §5 slot: between `error` and `stale`, and only for a declared channel.
-      const contract = channel && status?.state !== "error" ? check?.(widget, value) : undefined;
+      // `empty` (IR 2.3.0, ADR 0100) ranks right after `error`: the upstream answered with no
+      // subject, so there is no value to check or show — a value beside it is ignored.
+      const noValue = status?.state === "error" || status?.state === "empty";
+      // The §5 slot: after `error`/`empty`, before `stale`, and only for a declared channel.
+      const contract = channel && !noValue ? check?.(widget, value) : undefined;
       let text: string;
       if (!channel) text = inner();
       else if (status?.state === "error")
         text = `✗ ${title}: ${status.finding?.message ?? "error"}`;
+      else if (status?.state === "empty")
+        text = `○ ${title}: ${status.finding?.message ?? "no data"}`;
       else if (contract) text = `✗ ${title}: ${contract.message}`;
       else if (status?.state === "stale")
         text =

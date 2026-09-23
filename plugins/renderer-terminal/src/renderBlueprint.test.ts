@@ -277,6 +277,76 @@ describe("renderBlueprintToString — binding status matrix and source (IR 2.0.0
   });
 });
 
+describe("renderBlueprintToString — the `empty` row (IR 2.3.0, ADR 0100)", () => {
+  const w = (id: string, channel = true) =>
+    MetricCard({
+      id,
+      title: id.toUpperCase(),
+      binding: {
+        projectionId: "p",
+        path: `v.${id}`,
+        ...(channel && { status: { path: `s.${id}` } }),
+      },
+      unit: "ms",
+    });
+  const bp = blueprint$({
+    id: "e",
+    title: "Nothing",
+    layout: stack({ children: [w("a"), w("b"), w("c", false)] }),
+    projections: ["p"],
+  });
+  const state = {
+    // `b` and `c` carry a value beside `empty`: a producer should not write one, and a reader
+    // ignores it if it does.
+    v: { b: 412, c: 9 },
+    s: {
+      a: { state: "empty" },
+      b: { state: "empty", finding: { code: "upstream-empty", message: "no orders yet" } },
+      c: { state: "empty" },
+    },
+  };
+  for (const [label, registry] of [
+    ["registry", defaultTerminalRegistry],
+    ["kind-blind", undefined],
+  ] as const) {
+    it(`renders \`○ <title>: no data\` (or the finding's message) and never the value — ${label}`, () => {
+      const out = renderBlueprintToString(bp, new Map([["p", state]]), {
+        ...(registry && { registry }),
+      }).split("\n");
+      expect(out).toContain("○ A: no data");
+      expect(out).toContain("○ B: no orders yet");
+      expect(out.join("\n")).not.toContain("412");
+      // `c` declares no channel: a status in the state is not read, exactly as before.
+      expect(out.some((l) => l.startsWith("C: 9"))).toBe(true);
+      expect(out.join("\n")).not.toContain("✗");
+    });
+  }
+  it("a state this build does not know degrades to loading/ready, never to the error row — how a pre-2.3.0 reader sees `empty` (ADR 0100 D4)", () => {
+    // A reader built before 2.3.0 rejects `{ state: "empty" }` in isBindingStatus exactly as this
+    // build rejects a state from a later IR, so this is that reader's view of an `empty` binding.
+    const out = renderBlueprintToString(
+      bp,
+      new Map([["p", { v: { b: 412 }, s: { a: { state: "later" }, b: { state: "later" } } }]]),
+      { registry: defaultTerminalRegistry }
+    ).split("\n");
+    expect(out).toContain("⋯ A"); // no value → the loading row
+    expect(out).toContain("B: 412 ms"); // a value a producer wrongly left → ready
+    expect(out.join("\n")).not.toContain("✗");
+  });
+  it("`empty` outranks the check: the check is never called", () => {
+    const calls: string[] = [];
+    renderBlueprintToString(bp, new Map([["p", state]]), {
+      registry: defaultTerminalRegistry,
+      check: (widget) => {
+        calls.push(widget.id);
+        return { code: "shape", message: "contract" };
+      },
+    });
+    // `a` and `b` are `empty` (outranks the check); `c` declares no channel (never checked).
+    expect(calls).toEqual([]);
+  });
+});
+
 // ── The value-contract slot (design §5, ADR 0097 D2) ─────────────────────────
 //
 // loom validates nothing about a bound VALUE; a framework's own kind contract plugs in between
