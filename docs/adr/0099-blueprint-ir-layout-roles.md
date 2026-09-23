@@ -85,7 +85,9 @@ renderer keys children positionally and ignores the role (D5), so nothing about 
 changes. A role does **not** join node identity: `blueprintNodeIds`/`preservesBlueprintNodes`
 remain widget-id sets, and a Layout still has no id. *(Amended by
 [ADR 0101](0101-blueprint-ir-layout-ids.md): a Layout may now carry an optional `id`, which is
-node identity and which `preservesBlueprintNodes` compares; a role still is not.)*
+node identity and which `preservesBlueprintNodes` compares; a role still is not. loom's React
+renderer no longer keys containers purely positionally: a container with a well-formed id is keyed
+by it, and only one without an id keeps its index key. It still ignores the role.)*
 
 ### D4 — One new finding: `role-invalid`, at `warn`
 
@@ -96,7 +98,9 @@ everywhere — the author would see a plain container and no reason why. That is
 
 `validateBlueprint` reports `role-invalid` once per layout whose `role` is present (not
 `undefined`) and fails `isLayoutRole` — a non-string, empty, uppercase, whitespace, `_`/`.`, or
-more than 64 characters. `nodeId` and `kind` are `"<layout>"` (a layout has no id). The message
+more than 64 characters. `nodeId` and `kind` are `"<layout>"` (a layout has no id). *(Amended by
+[ADR 0101](0101-blueprint-ir-layout-ids.md) D3: `nodeId` is now the layout's id when it has a
+well-formed one, and `"<layout>"` otherwise; `kind` stays `"<layout>"`.)* The message
 echoes the role bounded to 64 characters plus its length, because the value is untrusted and can
 be any size.
 

@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recompose inserts or reorders containers around it:
 
   - `GridLayout`, `FlexLayout` and `StackLayout` gain an optional `id` — the same rule as
-    `Widget.id` (a non-empty string, no charset, no length cap). `grid`/`flex`/`stack` accept it
+    `Widget.id` (a non-empty string, no charset, no length cap; `isLayoutId` is the one spelling
+    of it). `grid`/`flex`/`stack` accept it
     and omit the key when absent, so an unid'd layout's bytes and content address are 2.3.0's; a
     present id enters the address.
   - Widget ids and layout ids are one namespace: `duplicate-node-id` now also fires for
@@ -24,7 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     re-identified container is a `dropped-node-id` finding. `blueprintNodeIds` stays widget-only.
   - `@loom/plugin-renderer-react` keys a container by its id, fixing the index keys nested
     containers got: inserting a container mid-list no longer re-creates the widgets of the
-    containers after it (typed input and focus survive). The DOM is unchanged.
+    containers after it (typed input and focus survive). Grid cell keys are prefixed (`k:` keyed,
+    `i:` by index) so an id like `"1"` cannot collide with an index key. The DOM is unchanged.
     `@loom/plugin-renderer-terminal` ignores the id; its output is byte-identical.
   - `BLUEPRINT_IR_VERSION` moves `2.3.0` → `2.4.0` with a sixth pinned digest; 2.3.0 (like 2.0.0
     to 2.2.0) is read as it is by `validateBlueprint` and `upgradeBlueprint`.

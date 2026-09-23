@@ -2,7 +2,7 @@ import { canonicalJson, fnv1a64 } from "@loom/core";
 import { describe, expect, it } from "vitest";
 import { blueprint$ } from "./Blueprint";
 import { BLUEPRINT_IR_VERSION } from "./irVersion";
-import { flex, grid, isLayoutRole, stack } from "./layout";
+import { flex, grid, isLayoutId, isLayoutRole, stack } from "./layout";
 import {
   IR_VERSION_LEGACY,
   asCell,
@@ -299,6 +299,14 @@ describe("layout roles (IR 2.2.0, ADR 0099)", () => {
 });
 
 describe("layout ids (IR 2.4.0, ADR 0101)", () => {
+  it("isLayoutId accepts any non-empty string — Widget.id's rule, no charset, no cap", () => {
+    for (const ok of ["a", "1", "0", "__proto__", "Account Step", "x".repeat(10_000)]) {
+      expect(isLayoutId(ok), ok).toBe(true);
+    }
+    for (const bad of ["", undefined, null, 0, 42, {}, ["a"], true]) {
+      expect(isLayoutId(bad), String(bad)).toBe(false);
+    }
+  });
   it("grid, flex and stack take an optional id and omit the key when it is absent", () => {
     expect(grid({ columns: 2, id: "g", children: [] }).id).toBe("g");
     expect(flex({ id: "f", children: [] }).id).toBe("f");
