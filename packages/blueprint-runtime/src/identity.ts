@@ -1,3 +1,4 @@
+import { hasLayoutId } from "./layout";
 import { asCell } from "./normalize";
 import type { Blueprint, GridCell, Layout, Widget } from "./types";
 
@@ -53,9 +54,16 @@ export interface IdentityReport {
   readonly compared: number;
 }
 
-/** Every widget id in a blueprint, in pre-order. Duplicates are `validateBlueprint`'s job. */
-export function blueprintNodeIds(blueprint: Blueprint): string[] {
-  const ids: string[] = [];
+/**
+ * The one total, iterative, pre-order walk behind every id list below. `onWidget` sees each
+ * widget id; `onLayout` each WELL-FORMED layout id (IR 2.4.0, ADR 0101) — an absent or malformed
+ * one is skipped, exactly as a renderer treats it as absent.
+ */
+function walkNodeIds(
+  blueprint: Blueprint,
+  onWidget: ((id: string) => void) | undefined,
+  onLayout: ((id: string) => void) | undefined
+): void {
   // Iterative, matching `eachNode` in catalog.ts: a deep composed tree must not be able
   // to blow the call stack.
   //
@@ -71,11 +79,12 @@ export function blueprintNodeIds(blueprint: Blueprint): string[] {
     const node = stack.pop();
     if (typeof node !== "object" || node === null) continue;
     if ("_tag" in node && (node as Widget)._tag === "Widget") {
-      ids.push((node as Widget).id);
+      onWidget?.((node as Widget).id);
       continue;
     }
     const layout = node as Layout;
     if (!Array.isArray(layout.children)) continue;
+    if (onLayout !== undefined && hasLayoutId(layout)) onLayout(layout.id);
     for (let i = layout.children.length - 1; i >= 0; i--) {
       stack.push(
         layout.type === "grid"
@@ -84,6 +93,28 @@ export function blueprintNodeIds(blueprint: Blueprint): string[] {
       );
     }
   }
+}
+
+/**
+ * Every WIDGET id in a blueprint, in pre-order. Duplicates are `validateBlueprint`'s job.
+ *
+ * Widget-only by contract, also after IR 2.4.0: callers read its output as widget ids (a
+ * renderer's remount report, the a2ui bridge's `identityDiff`). Layout ids are
+ * `blueprintLayoutIds`; `preservesBlueprintNodes` compares both.
+ */
+export function blueprintNodeIds(blueprint: Blueprint): string[] {
+  const ids: string[] = [];
+  walkNodeIds(blueprint, (id) => ids.push(id), undefined);
+  return ids;
+}
+
+/**
+ * Every well-formed LAYOUT id in a blueprint (IR 2.4.0, ADR 0101), in pre-order, the root
+ * included. Absent and malformed ids are skipped. Duplicates are `validateBlueprint`'s job.
+ */
+export function blueprintLayoutIds(blueprint: Blueprint): string[] {
+  const ids: string[] = [];
+  walkNodeIds(blueprint, undefined, (id) => ids.push(id));
   return ids;
 }
 
@@ -126,7 +157,22 @@ export function preservesNodes(before: Iterable<string>, after: Iterable<string>
   return { ok: findings.length === 0, findings, added, compared: seen.size };
 }
 
-/** `preservesNodes` over two blueprints — the common case, spelled once. */
+/** Widget ids and layout ids together, in one pre-order (document) walk. */
+function allNodeIds(blueprint: Blueprint): string[] {
+  const ids: string[] = [];
+  const push = (id: string) => {
+    ids.push(id);
+  };
+  walkNodeIds(blueprint, push, push);
+  return ids;
+}
+
+/**
+ * `preservesNodes` over two blueprints — the common case, spelled once. Compares widget ids AND
+ * layout ids (IR 2.4.0, ADR 0101): they are one identity axis, so a re-identified container is a
+ * `dropped-node-id` finding rather than a silent loss of the state under it. A `before` with no
+ * layout ids (any pre-2.4.0 artifact) contributes none, so upgrading only adds to `added`.
+ */
 export function preservesBlueprintNodes(before: Blueprint, after: Blueprint): IdentityReport {
-  return preservesNodes(blueprintNodeIds(before), blueprintNodeIds(after));
+  return preservesNodes(allNodeIds(before), allNodeIds(after));
 }

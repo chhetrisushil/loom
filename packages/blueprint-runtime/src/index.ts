@@ -29,7 +29,12 @@ export {
   BUILTIN_CATALOG_ID,
 } from "./catalog";
 export { catalogCoverage } from "./coverage";
-export { blueprintNodeIds, preservesBlueprintNodes, preservesNodes } from "./identity";
+export {
+  blueprintLayoutIds,
+  blueprintNodeIds,
+  preservesBlueprintNodes,
+  preservesNodes,
+} from "./identity";
 export { blueprintPins, checkBlueprintPins } from "./pins";
 // Re-exported from @loom/core so a consumer of the blueprint spelling types its report
 // from the package it already imports — `IdentityReport` does not send anyone elsewhere

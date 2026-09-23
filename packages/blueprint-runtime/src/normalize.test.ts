@@ -50,7 +50,7 @@ describe("irVersion", () => {
       projections: [],
     });
     expect(bp.irVersion).toBe(BLUEPRINT_IR_VERSION);
-    expect(BLUEPRINT_IR_VERSION).toBe("2.3.0");
+    expect(BLUEPRINT_IR_VERSION).toBe("2.4.0");
     const { irVersion: _v, ...legacy } = bp;
     expect(blueprintIrVersion(legacy as Blueprint)).toBe(IR_VERSION_LEGACY);
   });
@@ -295,5 +295,49 @@ describe("layout roles (IR 2.2.0, ADR 0099)", () => {
     ]) {
       expect(isLayoutRole(bad), String(bad)).toBe(false);
     }
+  });
+});
+
+describe("layout ids (IR 2.4.0, ADR 0101)", () => {
+  it("grid, flex and stack take an optional id and omit the key when it is absent", () => {
+    expect(grid({ columns: 2, id: "g", children: [] }).id).toBe("g");
+    expect(flex({ id: "f", children: [] }).id).toBe("f");
+    expect(stack({ id: "s", children: [] }).id).toBe("s");
+    expect("id" in grid({ columns: 2, children: [] })).toBe(false);
+    expect("id" in flex({ children: [] })).toBe(false);
+    expect("id" in stack({ children: [] })).toBe(false);
+  });
+  it("an absent id leaves a layout's content address exactly as 2.3.0 wrote it; a present one enters it", () => {
+    const digest = (v: unknown) => fnv1a64(canonicalJson(v));
+    const before = { type: "stack", title: "T", role: "stepped", children: [w("a")] };
+    expect(digest(stack({ title: "T", role: "stepped", children: [w("a")] }))).toBe(digest(before));
+    const withId = digest(stack({ id: "s", title: "T", role: "stepped", children: [w("a")] }));
+    expect(withId).not.toBe(digest(before));
+    // The id is part of the address: re-identifying a container is a different artifact.
+    expect(withId).not.toBe(
+      digest(stack({ id: "s2", title: "T", role: "stepped", children: [w("a")] }))
+    );
+  });
+  it("upgradeBlueprint is identity on 2.3.0 and 2.4.0 artifacts, and keeps a layout id when it wraps 1.0.0", () => {
+    for (const irVersion of ["2.3.0", "2.4.0"]) {
+      const v: Blueprint = {
+        ...blueprint$({
+          id: "x",
+          title: "X",
+          layout: stack({ id: "root", children: [w("a")] }),
+          projections: ["p"],
+        }),
+        irVersion,
+      };
+      expect(upgradeBlueprint(v)).toBe(v);
+    }
+    const legacy = {
+      _tag: "Blueprint",
+      id: "l",
+      title: "L",
+      projections: ["p"],
+      layout: { type: "grid", columns: 2, id: "g", children: [w("a")] },
+    } as unknown as Blueprint;
+    expect(upgradeBlueprint(legacy).layout.id).toBe("g");
   });
 });

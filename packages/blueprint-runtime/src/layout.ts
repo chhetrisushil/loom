@@ -18,7 +18,19 @@ export function isLayoutRole(value: unknown): value is string {
   return typeof value === "string" && LAYOUT_ROLE.test(value);
 }
 
+/**
+ * Whether a layout's `id` (IR 2.4.0, ADR 0101) is well-formed: the same rule as `Widget.id`, a
+ * non-empty string. Internal — every reader that keys by a layout id (the identity walk,
+ * `validateBlueprint`, a renderer) treats anything else as ABSENT.
+ */
+export function hasLayoutId(layout: unknown): layout is { id: string } {
+  const id = (layout as { id?: unknown } | null | undefined)?.id;
+  return typeof id === "string" && id !== "";
+}
+
 export interface GridOptions {
+  /** This container's stable identity, one namespace with widget ids (IR 2.4.0, ADR 0101). */
+  id?: string;
   columns: number;
   gap?: number;
   /** A section heading (IR 2.1.0). */
@@ -31,6 +43,7 @@ export interface GridOptions {
 export function grid(options: GridOptions): GridLayout {
   return {
     type: "grid",
+    ...(options.id !== undefined && { id: options.id }),
     columns: options.columns,
     ...(options.gap !== undefined && { gap: options.gap }),
     ...(options.title !== undefined && { title: options.title }),
@@ -40,6 +53,8 @@ export function grid(options: GridOptions): GridLayout {
 }
 
 export interface FlexOptions {
+  /** This container's stable identity, one namespace with widget ids (IR 2.4.0, ADR 0101). */
+  id?: string;
   direction?: "row" | "column";
   gap?: number;
   /** A section heading (IR 2.1.0). */
@@ -52,6 +67,7 @@ export interface FlexOptions {
 export function flex(options: FlexOptions): FlexLayout {
   return {
     type: "flex",
+    ...(options.id !== undefined && { id: options.id }),
     direction: options.direction ?? "row",
     ...(options.gap !== undefined && { gap: options.gap }),
     ...(options.title !== undefined && { title: options.title }),
@@ -61,6 +77,8 @@ export function flex(options: FlexOptions): FlexLayout {
 }
 
 export interface StackOptions {
+  /** This container's stable identity, one namespace with widget ids (IR 2.4.0, ADR 0101). */
+  id?: string;
   gap?: number;
   /** A section heading (IR 2.1.0). */
   title?: string;
@@ -72,6 +90,7 @@ export interface StackOptions {
 export function stack(options: StackOptions): StackLayout {
   return {
     type: "stack",
+    ...(options.id !== undefined && { id: options.id }),
     ...(options.gap !== undefined && { gap: options.gap }),
     ...(options.title !== undefined && { title: options.title }),
     ...(options.role !== undefined && { role: options.role }),

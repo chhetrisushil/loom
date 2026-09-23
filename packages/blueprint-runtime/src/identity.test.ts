@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { blueprint$ } from "./Blueprint";
-import { blueprintNodeIds, preservesBlueprintNodes, preservesNodes } from "./identity";
-import { grid, stack } from "./layout";
+import {
+  blueprintLayoutIds,
+  blueprintNodeIds,
+  preservesBlueprintNodes,
+  preservesNodes,
+} from "./identity";
+import { flex, grid, stack } from "./layout";
 import type { GridCell, GridLayout, Layout } from "./types";
 import { MetricCard, StatusBadge } from "./widgets";
 
@@ -174,5 +179,110 @@ describe("preservesBlueprintNodes — the derived-id trap", () => {
     expect(report.compared).toBe(2);
     expect(report.ok).toBe(false);
     expect(report.findings.map((f) => f.nodeId)).toEqual(["locks"]);
+  });
+});
+
+// ── Layout ids (IR 2.4.0, ADR 0101): the SAME identity axis, not a second one ──────────────────
+
+describe("blueprintLayoutIds", () => {
+  const bpOf = (layout: Layout) => blueprint$({ id: "v", title: "v", layout, projections: ["db"] });
+
+  it("lists every well-formed layout id in pre-order, the root included", () => {
+    const view = bpOf(
+      stack({
+        id: "root",
+        children: [
+          grid({
+            columns: 2,
+            id: "g",
+            children: [stack({ id: "g1", children: [metric("A", "a")] }), metric("B", "b")],
+          }),
+          flex({ children: [stack({ id: "deep", children: [] })] }),
+          stack({ id: "last", children: [] }),
+        ],
+      })
+    );
+    expect(blueprintLayoutIds(view)).toEqual(["root", "g", "g1", "deep", "last"]);
+  });
+
+  it("skips absent and malformed ids, and stays total over holes", () => {
+    const layout = {
+      type: "stack",
+      children: [
+        undefined,
+        { type: "stack", id: "", children: [] },
+        { type: "stack", id: 42, children: [] },
+        {
+          type: "grid",
+          columns: 2,
+          children: [
+            { span: 1, node: undefined },
+            { type: "stack", id: "ok", children: [] },
+          ],
+        },
+      ],
+    } as unknown as Layout;
+    expect(blueprintLayoutIds(bpOf(layout))).toEqual(["ok"]);
+  });
+
+  it("blueprintNodeIds stays widget-only — a caller reading it as widget ids sees no container", () => {
+    const view = bpOf(
+      stack({ id: "root", children: [stack({ id: "s", children: [metric("A", "a")] })] })
+    );
+    expect(blueprintNodeIds(view)).toEqual(["a"]);
+  });
+});
+
+describe("preservesBlueprintNodes — widget ids and layout ids together", () => {
+  const bpOf = (layout: Layout) => blueprint$({ id: "v", title: "v", layout, projections: ["db"] });
+  const steps = (...ids: string[]) =>
+    bpOf(
+      stack({
+        id: "root",
+        children: ids.map((id) => stack({ id, children: [metric(id, `${id}-field`)] })),
+      })
+    );
+
+  it("inserting a container mid-list drops nothing and lists the new container and its widget as added", () => {
+    const report = preservesBlueprintNodes(
+      steps("account", "payment"),
+      steps("account", "extra", "payment")
+    );
+    expect(report.ok).toBe(true);
+    expect(report.added).toEqual(["extra", "extra-field"]);
+    expect(report.compared).toBe(5); // root + 2 containers + 2 widgets
+  });
+
+  it("a re-identified container is a dropped-node-id finding, not a silent loss", () => {
+    const before = steps("account", "payment");
+    const after = bpOf(
+      stack({
+        id: "root",
+        children: [
+          stack({ id: "account", children: [metric("account", "account-field")] }),
+          stack({ id: "payment-2", children: [metric("payment", "payment-field")] }),
+        ],
+      })
+    );
+    const report = preservesBlueprintNodes(before, after);
+    expect(report.ok).toBe(false);
+    expect(report.findings.map((f) => f.nodeId)).toEqual(["payment"]);
+    expect(report.added).toEqual(["payment-2"]);
+  });
+
+  it("a pre-2.4.0 `before` (no layout ids) is ok, with the new ids listed in added", () => {
+    const before = bpOf(
+      stack({ children: [stack({ children: [metric("account", "account-field")] })] })
+    );
+    const after = bpOf(
+      stack({
+        id: "root",
+        children: [stack({ id: "account", children: [metric("account", "account-field")] })],
+      })
+    );
+    const report = preservesBlueprintNodes(before, after);
+    expect(report.ok).toBe(true);
+    expect(report.added).toEqual(["root", "account"]);
+    expect(report.compared).toBe(1);
   });
 });

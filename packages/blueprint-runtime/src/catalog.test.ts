@@ -8,7 +8,7 @@ import {
 } from "./catalog";
 import { catalogCoverage } from "./coverage";
 import { customWidget$ } from "./customWidget";
-import { grid, stack } from "./layout";
+import { flex, grid, stack } from "./layout";
 import { cell } from "./normalize";
 import type { Blueprint, DataBinding, GridCell, GridLayout, Layout, Widget } from "./types";
 import { DataTable, MetricCard } from "./widgets";
@@ -783,5 +783,134 @@ describe("validateBlueprint — cell placement (IR 2.1.0, ADR 0098)", () => {
       builtinCatalog
     );
     expect(r.findings).toEqual([]);
+  });
+});
+
+// ── Layout ids (IR 2.4.0, ADR 0101): one node-id namespace with widget ids ────────────────────
+
+describe("validateBlueprint — layout ids (IR 2.4.0, ADR 0101)", () => {
+  const bpOf = (layout: Layout, irVersion?: string): Blueprint =>
+    ({
+      _tag: "Blueprint",
+      ...(irVersion !== undefined && { irVersion }),
+      id: "b",
+      title: "B",
+      layout,
+      projections: ["p"],
+    }) as Blueprint;
+  const w = (id: string) =>
+    MetricCard({ id, title: id, binding: { projectionId: "p", path: "x" } });
+  const rows = (r: BlueprintValidation) =>
+    r.findings.map((f) => [f.code, f.severity, f.nodeId, f.kind]);
+
+  it("2.3.0 is still a known version after the 2.4.0 minor bump, and 2.4.0 is known", () => {
+    for (const v of ["2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0"]) {
+      expect(
+        validateBlueprint(bpOf(stack({ children: [] }), v), builtinCatalog).findings,
+        v
+      ).toEqual([]);
+    }
+  });
+
+  it("well-formed, distinct layout ids — root included, any non-empty string — are no finding", () => {
+    const layout = stack({
+      id: "root",
+      children: [
+        grid({ columns: 2, id: "Account Step", children: [w("a")] }),
+        stack({ id: "__proto__", children: [w("b")] }),
+        stack({ id: "x".repeat(10_000), children: [] }),
+      ],
+    });
+    expect(validateBlueprint(bpOf(layout), builtinCatalog).findings).toEqual([]);
+  });
+
+  it("a layout id colliding with a widget id is duplicate-node-id, on whichever node comes second", () => {
+    // Layout first (pre-order), widget second — the widget carries the finding.
+    const r1 = validateBlueprint(bpOf(stack({ id: "a", children: [w("a")] })), builtinCatalog);
+    expect(r1.ok).toBe(false);
+    expect(rows(r1)).toEqual([["duplicate-node-id", "error", "a", "MetricCard"]]);
+    // Widget first, layout second — the layout carries it, as kind "<layout>".
+    const r2 = validateBlueprint(
+      bpOf(stack({ children: [w("a"), stack({ id: "a", children: [] })] })),
+      builtinCatalog
+    );
+    expect(r2.ok).toBe(false);
+    expect(rows(r2)).toEqual([["duplicate-node-id", "error", "a", "<layout>"]]);
+  });
+
+  it("two layouts sharing an id is duplicate-node-id on the second, kind <layout>", () => {
+    const r = validateBlueprint(
+      bpOf(
+        stack({
+          children: [
+            stack({ id: "step", children: [w("a")] }),
+            flex({ id: "step", children: [w("b")] }),
+          ],
+        })
+      ),
+      builtinCatalog
+    );
+    expect(r.ok).toBe(false);
+    expect(rows(r)).toEqual([["duplicate-node-id", "error", "step", "<layout>"]]);
+  });
+
+  it("a malformed id is exactly one layout-id-invalid WARN on <layout>, and never fails ok", () => {
+    for (const id of ["", 42, null, {}, ["a"], true]) {
+      for (const layout of [
+        { type: "stack", id, children: [] },
+        { type: "flex", direction: "row", id, children: [] },
+        { type: "grid", columns: 2, id, children: [] },
+      ] as unknown as Layout[]) {
+        const r = validateBlueprint(bpOf(layout), builtinCatalog);
+        expect(rows(r), `${layout.type} ${JSON.stringify(id)}`).toEqual([
+          ["layout-id-invalid", "warn", "<layout>", "<layout>"],
+        ]);
+        expect(r.ok).toBe(true);
+      }
+    }
+    const undef = { type: "stack", id: undefined, children: [] } as unknown as Layout;
+    expect(validateBlueprint(bpOf(undef), builtinCatalog).findings).toEqual([]);
+  });
+
+  it("a malformed id is treated as absent: two empty ids are two warnings, not a duplicate", () => {
+    const layout = {
+      type: "stack",
+      children: [
+        { type: "stack", id: "", children: [] },
+        { type: "stack", id: "", children: [] },
+      ],
+    } as unknown as Layout;
+    const r = validateBlueprint(bpOf(layout), builtinCatalog);
+    expect(r.findings.map((f) => f.code)).toEqual(["layout-id-invalid", "layout-id-invalid"]);
+    expect(r.ok).toBe(true);
+  });
+
+  it("layout-level findings name the layout by its id when it has a valid one", () => {
+    const layout = {
+      type: "stack",
+      id: "root",
+      role: "Bad Role",
+      children: [
+        { type: "grid", id: "g", columns: 0, children: [] },
+        { type: "grid", id: "", columns: 0, children: [] },
+      ],
+    } as unknown as Layout;
+    expect(rows(validateBlueprint(bpOf(layout), builtinCatalog))).toEqual([
+      ["role-invalid", "warn", "root", "<layout>"],
+      ["columns-invalid", "error", "g", "<layout>"],
+      ["layout-id-invalid", "warn", "<layout>", "<layout>"],
+      ["columns-invalid", "error", "<layout>", "<layout>"],
+    ]);
+  });
+
+  it("a cell-level finding on a cell wrapping an id'd layout names that layout", () => {
+    const layout = grid({
+      columns: 2,
+      children: [cell(3, stack({ id: "inner", children: [] })), cell(3, stack({ children: [] }))],
+    });
+    expect(rows(validateBlueprint(bpOf(layout), builtinCatalog))).toEqual([
+      ["span-out-of-range", "error", "inner", "<layout>"],
+      ["span-out-of-range", "error", "<layout>", "<layout>"],
+    ]);
   });
 });

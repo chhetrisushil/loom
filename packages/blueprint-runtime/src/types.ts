@@ -72,6 +72,15 @@ export interface GridCell {
 }
 export interface GridLayout {
   type: "grid";
+  /**
+   * This container's stable identity (IR 2.4.0, ADR 0101) — the same rule as `Widget.id`: a
+   * non-empty string, no charset, no length cap, and ONE namespace with widget ids
+   * (`duplicate-node-id` spans both). A renderer that reconciles keys the container by it, so a
+   * sibling inserted or moved around it keeps its subtree's state. A renderer uses it only as a
+   * `Map` key — never markup. Absent or malformed (`layout-id-invalid`) ⇒ keyed positionally, as
+   * under 2.3.0.
+   */
+  id?: string;
   columns: number;
   gap?: number;
   /** A section heading for this container (IR 2.1.0). Absent ⇒ no heading. */
@@ -88,6 +97,15 @@ export interface GridLayout {
 
 export interface FlexLayout {
   type: "flex";
+  /**
+   * This container's stable identity (IR 2.4.0, ADR 0101) — the same rule as `Widget.id`: a
+   * non-empty string, no charset, no length cap, and ONE namespace with widget ids
+   * (`duplicate-node-id` spans both). A renderer that reconciles keys the container by it, so a
+   * sibling inserted or moved around it keeps its subtree's state. A renderer uses it only as a
+   * `Map` key — never markup. Absent or malformed (`layout-id-invalid`) ⇒ keyed positionally, as
+   * under 2.3.0.
+   */
+  id?: string;
   direction: "row" | "column";
   gap?: number;
   /** A section heading for this container (IR 2.1.0). Absent ⇒ no heading. */
@@ -104,6 +122,15 @@ export interface FlexLayout {
 
 export interface StackLayout {
   type: "stack";
+  /**
+   * This container's stable identity (IR 2.4.0, ADR 0101) — the same rule as `Widget.id`: a
+   * non-empty string, no charset, no length cap, and ONE namespace with widget ids
+   * (`duplicate-node-id` spans both). A renderer that reconciles keys the container by it, so a
+   * sibling inserted or moved around it keeps its subtree's state. A renderer uses it only as a
+   * `Map` key — never markup. Absent or malformed (`layout-id-invalid`) ⇒ keyed positionally, as
+   * under 2.3.0.
+   */
+  id?: string;
   gap?: number;
   /** A section heading for this container (IR 2.1.0). Absent ⇒ no heading. */
   title?: string;

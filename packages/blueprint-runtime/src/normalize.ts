@@ -71,8 +71,9 @@ function upgradeLayout(layout: Layout): Layout {
 /**
  * Every IR version this build reads AS-IS. 2.1.0 (ADR 0098) and 2.2.0 (ADR 0099) only added
  * optional fields, and 2.3.0 (ADR 0100) only a `BindingState` literal (a runtime status value
- * no artifact carries), so a 2.0.0, 2.1.0 or 2.2.0 artifact is already a valid current-major
- * artifact: re-stamping it would change its content address with no change to its shape.
+ * no artifact carries), and 2.4.0 (ADR 0101) only an optional layout `id`, so a 2.0.0 through
+ * 2.3.0 artifact is already a valid current-major artifact: re-stamping it would change its
+ * content address with no change to its shape.
  *
  * Add the outgoing version here on every minor bump.
  */
@@ -80,13 +81,14 @@ export const IR_VERSIONS_READ_AS_IS: ReadonlySet<string> = new Set([
   "2.0.0",
   "2.1.0",
   "2.2.0",
+  "2.3.0",
   BLUEPRINT_IR_VERSION,
 ]);
 
 /**
  * A current-major artifact from any readable one. Identity (same reference) on 2.0.0, 2.1.0,
- * 2.2.0 and 2.3.0 input; a 1.0.0 (or unstamped) artifact is wrapped and stamped. Never mutates its
- * input.
+ * 2.2.0, 2.3.0 and 2.4.0 input; a 1.0.0 (or unstamped) artifact is wrapped and stamped. Never
+ * mutates its input.
  */
 export function upgradeBlueprint(bp: Blueprint): Blueprint {
   if (bp.irVersion !== undefined && IR_VERSIONS_READ_AS_IS.has(bp.irVersion)) return bp;
