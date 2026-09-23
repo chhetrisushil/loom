@@ -1,4 +1,4 @@
-import { isLayoutRole } from "./layout";
+import { hasLayoutId, isLayoutRole } from "./layout";
 import { IR_VERSIONS_READ_AS_IS, IR_VERSION_LEGACY, asCell, isWidget } from "./normalize";
 import type { Blueprint, GridCell, Layout, Widget } from "./types";
 
@@ -105,7 +105,11 @@ export type BlueprintFindingCode =
   | "undeclared-prop"
   /** A binding to a projection the blueprint never declares — renders blank, silently. */
   | "undeclared-projection"
-  /** Two widgets sharing an id — node identity, and the renderer's key, collide. */
+  /**
+   * Two nodes sharing an id — node identity, and the renderer's key, collide. Widget ids and
+   * layout ids (IR 2.4.0) are ONE namespace: widget↔widget, widget↔layout and layout↔layout all
+   * collide. Reported on the second occurrence in pre-order.
+   */
   | "duplicate-node-id"
   /** A grid cell's `span` is not an integer in `1..columns`. */
   | "span-out-of-range"
@@ -120,6 +124,12 @@ export type BlueprintFindingCode =
    * but well-formed role is NOT a finding: whether a renderer has it registered is not loom's to say.
    */
   | "role-invalid"
+  /**
+   * A layout's `id` (IR 2.4.0, ADR 0101) is present but not a non-empty string: renderers treat it
+   * as absent and key the container positionally, so nothing is lost but state preservation
+   * across a recompose — a `warn`.
+   */
+  | "layout-id-invalid"
   /** A grid's `columns` is not a positive integer — there is no column count to lay cells into. */
   | "columns-invalid"
   /** A node that is neither a `Widget` nor a `Layout` (a stray `null`, a string, a stranded `GridCell`). */
@@ -139,10 +149,11 @@ export interface BlueprintFinding {
   readonly message: string;
   /**
    * The node the finding applies to. For a widget-level finding it is the widget's id. For a
-   * cell-level finding (`span-out-of-range`, `placement-out-of-range`) it is the id of the cell's OWN node when that node
-   * is a widget, else `"<layout>"` (the cell wraps a nested layout, which has no id). For a
-   * blueprint- or layout-level finding (`ir-version-unknown`, `columns-invalid`,
-   * `malformed-node`, `role-invalid`) it is always `"<layout>"`.
+   * cell-level finding (`span-out-of-range`, `placement-out-of-range`) it is the id of the cell's
+   * OWN node — a widget's id, or a nested layout's well-formed id (IR 2.4.0) — else `"<layout>"`.
+   * For a layout-level finding (`columns-invalid`, `role-invalid`, `duplicate-node-id` on a
+   * layout) it is the layout's well-formed id when it has one, else `"<layout>"`. For
+   * `ir-version-unknown`, `malformed-node` and `layout-id-invalid` it is always `"<layout>"`.
    */
   readonly nodeId: string;
   /** The widget's kind, or `"<layout>"` for a layout-level finding. */
@@ -179,10 +190,14 @@ interface Visit {
     rowSpan: unknown;
     column: unknown;
   };
+  /** A layout's well-formed id (IR 2.4.0) — it joins the widget-id namespace. */
+  layoutId?: { id: string };
+  /** A layout whose `id` is present but not a non-empty string — read as `unknown`. */
+  layoutIdInvalid?: { id: unknown };
   /** A grid whose `columns` is not a positive integer — reported once, and its cells are not checked. */
-  columnsInvalid?: { columns: unknown };
+  columnsInvalid?: { columns: unknown; nodeId: string };
   /** A layout whose `role` is present but not `isLayoutRole` — read as `unknown`. */
-  roleInvalid?: { role: unknown };
+  roleInvalid?: { role: unknown; nodeId: string };
   /** A tree node that is neither a `Widget` nor a `Layout`; the subtree below it is not walked. */
   malformed?: { node: unknown };
 }
@@ -223,8 +238,13 @@ function eachNode(root: Layout | Widget, visit: (v: Visit) => void): void {
       continue;
     }
     // `undefined` is absent (it does not survive serialisation, and every builder omits it).
+    // A malformed id is ABSENT for every other purpose: it names nothing and collides with nothing.
+    const id = (node as { id?: unknown }).id;
+    const nodeId = hasLayoutId(node) ? node.id : "<layout>";
+    if (hasLayoutId(node)) visit({ layoutId: { id: node.id } });
+    else if (id !== undefined) visit({ layoutIdInvalid: { id } });
     const role = (node as { role?: unknown }).role;
-    if (role !== undefined && !isLayoutRole(role)) visit({ roleInvalid: { role } });
+    if (role !== undefined && !isLayoutRole(role)) visit({ roleInvalid: { role, nodeId } });
     if (node.type === "grid") {
       const children = node.children as Array<GridCell | Widget | Layout>;
       const columns = (node as { columns?: unknown }).columns;
@@ -232,7 +252,7 @@ function eachNode(root: Layout | Widget, visit: (v: Visit) => void): void {
       // "out of range" against it. Report the cause once and skip the cascade.
       const columnsOk = Number.isInteger(columns) && (columns as number) >= 1;
       if (!columnsOk) {
-        visit({ columnsInvalid: { columns } });
+        visit({ columnsInvalid: { columns, nodeId } });
       } else {
         for (let i = 0; i < children.length; i++) {
           const c = asCell(children[i] as GridCell | Widget | Layout);
@@ -240,7 +260,11 @@ function eachNode(root: Layout | Widget, visit: (v: Visit) => void): void {
             cell: {
               span: c.span ?? 1,
               columns: columns as number,
-              cellNodeId: isWidget(c.node) ? c.node.id : undefined,
+              cellNodeId: isWidget(c.node)
+                ? c.node.id
+                : hasLayoutId(c.node)
+                  ? c.node.id
+                  : undefined,
               row: c.row,
               rowSpan: c.rowSpan,
               column: c.column,
@@ -260,12 +284,15 @@ function eachNode(root: Layout | Widget, visit: (v: Visit) => void): void {
   }
 }
 
-/** A bounded description of a malformed role: a model-composed role can be any size. */
-function describeRole(role: unknown): string {
-  if (typeof role !== "string") return role === null ? "null" : `(a ${typeof role})`;
-  return role.length > 64
-    ? `${JSON.stringify(role.slice(0, 64))}… (${role.length} chars)`
-    : JSON.stringify(role);
+/** A bounded description of a malformed role or id: a model-composed value can be any size. */
+function describeValue(value: unknown): string {
+  if (typeof value !== "string") {
+    if (value === null) return "null";
+    return Array.isArray(value) ? "(an array)" : `(a ${typeof value})`;
+  }
+  return value.length > 64
+    ? `${JSON.stringify(value.slice(0, 64))}… (${value.length} chars)`
+    : JSON.stringify(value);
 }
 
 /** A short, safe description of a malformed node for a finding message. */
@@ -321,7 +348,10 @@ export function validateBlueprint(
   const projections = new Set(blueprint.projections);
 
   const findings: BlueprintFinding[] = [];
-  const seenIds = new Set<string>();
+  // ONE namespace: widget ids and layout ids (IR 2.4.0) are both node identity.
+  // The value records which kind of node claimed the id first, so a widget↔widget collision keeps
+  // its message and a collision involving a layout says so.
+  const seenIds = new Map<string, "widget" | "layout">();
   let widgets = 0;
 
   if (blueprint.irVersion !== undefined && !KNOWN_IR_VERSIONS.has(blueprint.irVersion)) {
@@ -335,11 +365,37 @@ export function validateBlueprint(
   }
 
   eachNode(blueprint.layout, (v) => {
+    if (v.layoutId) {
+      const { id } = v.layoutId;
+      if (seenIds.has(id)) {
+        findings.push({
+          code: "duplicate-node-id",
+          severity: "error",
+          nodeId: id,
+          kind: "<layout>",
+          message: `a layout shares the id "${id}" with an earlier node — widget and layout ids are one namespace, so node identity and the renderer's key collide`,
+        });
+      }
+      if (!seenIds.has(id)) seenIds.set(id, "layout");
+      return;
+    }
+
+    if (v.layoutIdInvalid) {
+      findings.push({
+        code: "layout-id-invalid",
+        severity: "warn",
+        nodeId: "<layout>",
+        kind: "<layout>",
+        message: `layout id ${describeValue(v.layoutIdInvalid.id)} is not a non-empty string — renderers treat it as absent and key this container by position, so its state is not kept across a recompose`,
+      });
+      return;
+    }
+
     if (v.columnsInvalid) {
       findings.push({
         code: "columns-invalid",
         severity: "error",
-        nodeId: "<layout>",
+        nodeId: v.columnsInvalid.nodeId,
         kind: "<layout>",
         message: `grid columns ${JSON.stringify(v.columnsInvalid.columns) ?? "undefined"} is not a positive integer — there is no column count to place cells into, so this grid's spans are not checked`,
       });
@@ -350,9 +406,9 @@ export function validateBlueprint(
       findings.push({
         code: "role-invalid",
         severity: "warn",
-        nodeId: "<layout>",
+        nodeId: v.roleInvalid.nodeId,
         kind: "<layout>",
-        message: `layout role ${describeRole(v.roleInvalid.role)} is not a well-formed role (a lowercase letter, then lowercase letters, digits or hyphens, at most 64 characters) — renderers draw the plain container`,
+        message: `layout role ${describeValue(v.roleInvalid.role)} is not a well-formed role (a lowercase letter, then lowercase letters, digits or hyphens, at most 64 characters) — renderers draw the plain container`,
       });
       return;
     }
@@ -398,16 +454,21 @@ export function validateBlueprint(
     widgets++;
     const { id, kind } = widget;
 
-    if (seenIds.has(id)) {
+    const earlier = seenIds.get(id);
+    if (earlier !== undefined) {
       findings.push({
         code: "duplicate-node-id",
         severity: "error",
         nodeId: id,
         kind,
-        message: `two widgets share the id "${id}" — node identity and the renderer's key collide, so one silently replaces the other`,
+        message:
+          earlier === "widget"
+            ? `two widgets share the id "${id}" — node identity and the renderer's key collide, so one silently replaces the other`
+            : `a widget shares the id "${id}" with an earlier layout — widget and layout ids are one namespace, so node identity and the renderer's key collide`,
       });
+    } else {
+      seenIds.set(id, "widget");
     }
-    seenIds.add(id);
 
     const entry = entries.get(kind);
     if (!entry) {

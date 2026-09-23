@@ -23,6 +23,9 @@ import { IR_VERSIONS_READ_AS_IS, isBindingStatus } from "./normalize";
 //
 // 2.3.0 (ADR 0100) is a MINOR bump — one more `BindingState` literal, `empty`, only — and 2.2.0
 // has an external reader (loom-ui pins it), so its row is frozen too.
+//
+// 2.4.0 (ADR 0101) is a MINOR bump — an optional `id` on every Layout only — and 2.3.0 has an
+// external reader (loom-ui pins it), so its row is frozen too.
 
 const PINNED: ReadonlyArray<readonly [version: string, digest: string]> = [
   ["1.0.0", "59ee5cb1c37efe75"],
@@ -30,6 +33,7 @@ const PINNED: ReadonlyArray<readonly [version: string, digest: string]> = [
   ["2.1.0", "f2b72f769b6a85a1"],
   ["2.2.0", "09d36418d9a034d3"],
   ["2.3.0", "fb7ee931bd472134"],
+  ["2.4.0", "d9e2342f8308c8d5"],
 ];
 
 const digestOf = (shape: unknown) => fnv1a64(canonicalJson(shape));
@@ -129,6 +133,20 @@ describe("BLUEPRINT_IR_SHAPE", () => {
       "state:required",
     ]);
     expect(BLUEPRINT_IR_SHAPE.bindingFinding).toEqual(["code:required", "message:required"]);
+  });
+
+  it("2.4.0 carries an optional id on every layout, and nothing else changed (ADR 0101)", () => {
+    for (const manifest of [
+      BLUEPRINT_IR_SHAPE.gridLayout,
+      BLUEPRINT_IR_SHAPE.flexLayout,
+      BLUEPRINT_IR_SHAPE.stackLayout,
+    ]) {
+      expect(manifest).toContain("id:optional");
+    }
+    // A widget's id stays REQUIRED; the cell and the blueprint gain nothing.
+    expect(BLUEPRINT_IR_SHAPE.widget).toContain("id:required");
+    expect(BLUEPRINT_IR_SHAPE.gridCell).not.toContain("id:optional");
+    expect(BLUEPRINT_IR_SHAPE.blueprint).toContain("id:required");
   });
 
   it("isBindingStatus admits exactly the manifested states — the runtime set cannot drift from the IR", () => {
