@@ -11,7 +11,7 @@ import {
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { act, render, screen } from "@testing-library/react";
 import React from "react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { BlueprintRenderer } from "./BlueprintRenderer";
 import { defaultRegistry } from "./RendererRegistry";
 import { ApprovalCardRenderer, MetricCardRenderer, TimelineRenderer } from "./renderers";
