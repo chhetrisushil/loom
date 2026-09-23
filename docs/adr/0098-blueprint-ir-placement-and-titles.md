@@ -42,7 +42,9 @@ returns a real cell unchanged, so placement survives `grid()` and `upgradeBluepr
 A section heading is a property of the container it heads. A heading *widget* was rejected: it
 would need a `binding: "none"` entry in every catalogue that composes a titled view, and it would
 be a sibling of the section rather than attached to it, which is the relationship a screen
-reader needs. `grid`/`flex`/`stack` take `title?` and omit the key when it is absent.
+reader needs. `grid`/`flex`/`stack` take `title?` and omit the key when it is absent. The React
+renderer's `<section>` also carries `aria-label={title}`, so a titled layout is a NAMED region
+landmark, not merely a section that happens to contain a heading.
 
 ### D3 — A minor bump, and 2.0.0 artifacts are read as they are
 
@@ -73,6 +75,16 @@ Writers (`blueprint$`) stamp `2.1.0` from here on.
   document order. A title prints on its own line, underlined with `─`.
 - An unplaced, untitled artifact renders byte-identical (terminal) and DOM-identical (React) to
   2.0.0 on both.
+- **Cross-renderer reading order is guaranteed only at the two ends of the placement spectrum**:
+  every cell of a grid carries both `row` and `column` (fully placed), or none carries any
+  placement (fully unplaced). A *partially* placed grid — some cells placed and some not, or a
+  cell missing one of the two axes — is where React and the terminal read differently, and by
+  design: React has an actual grid, so an unplaced or partially placed cell falls to CSS grid's
+  own auto-placement algorithm, which fills the first free slot the explicitly placed cells left
+  open. The terminal has no grid to consult — it sorts by `(row, column)` with an absent
+  coordinate placed after every present one — so it is free to disagree with wherever CSS chose
+  to drop that cell. This is a documented divergence, not a defect: the terminal deliberately does
+  not reimplement CSS grid auto-placement to chase parity it cannot cheaply guarantee.
 
 ### D5 — One new finding: `placement-out-of-range`
 
@@ -85,11 +97,18 @@ its grid.
 ### D6 — What this does not do
 
 - **No overlap check.** CSS grid draws overlapping cells; detecting them needs an occupancy map
-  per grid, and genUI's positions come from an editor that already prevents them.
+  per grid, and genUI's positions come from an editor that already prevents them. Nothing renders
+  an overlap as an error either: two cells placed at the same `(row, column)` keep document order
+  in the terminal (the stable sort's tie-break), while CSS simply stacks them on top of each other
+  in React — neither renderer merges or rejects the coincidence.
 - **No upper bound on `row`.** A grid grows implicit rows.
 - **No finding for a malformed `title`.** A renderer draws a title only when it is a non-empty
   string; the migration's need was placement, and a new code is added when a consumer needs it.
 - **No placement or title on the `Blueprint` itself.** It already has a `title`.
+- **No cross-renderer reading-order guarantee for a partially placed grid.** See D4: React and the
+  terminal agree only when a grid is fully placed or fully unplaced; the middle ground is left to
+  each renderer's own placement rule (CSS auto-placement vs. absent-last sort) rather than
+  reconciled.
 
 ## Consequences
 

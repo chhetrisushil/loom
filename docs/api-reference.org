@@ -1296,6 +1296,9 @@ stack({ gap?: number; title?: string; children }): StackLayout
 interface GridCell { span?: number; row?: number; rowSpan?: number; column?: number; node: Widget | Layout }
 // span = columns occupied (default 1); row/column = 1-based start lines, rowSpan = rows (default 1);
 // all placement absent = flow placement (IR 2.1.0, ADR 0098)
+// cross-renderer reading order is guaranteed only when EVERY cell of a grid has both row and
+// column, or none has any placement; a PARTIALLY placed grid is auto-placed by CSS in React and
+// sorted absent-last in the terminal, and the two can differ (ADR 0098 D4/D6)
 function cell(span: number, node: Widget | Layout, placement?: { row?: number; rowSpan?: number; column?: number }): GridCell
 function asCell(child: GridCell | Widget | Layout): GridCell   // the one place a legacy bare child is wrapped
 function isWidget(node: unknown): node is Widget               // the leaf/container discriminator every walker branches on
@@ -1329,6 +1332,10 @@ function traverseBlueprint<TNode>(node: Layout | Widget, stateMap: Map<string, u
   onAction?: (action: WidgetAction) => void;
 }): TNode
 function traverseBlueprintAsync<TNode>(node, stateMap, options): Promise<TNode>   // interruptible, for BYOR renderers
+// traverseBlueprintAsync's createContainer gets the raw Layout only (no shaped cells/placement
+// structure — the push model creates a container before its children resolve, so there is
+// nowhere to hand per-cell placement alongside them); only the sync traverseBlueprint's
+// renderContainer hands a ContainerContext.cells surface (ADR 0098)
 function resolveWidgetValue(widget: Widget, stateMap: Map<string, unknown>): unknown
 class RendererRegistry<TRenderer> { register(kind, renderer): this; get(kind); has(kind); kinds(); merge(other) }
 #+end_src
