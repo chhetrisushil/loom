@@ -381,6 +381,33 @@ describe("renderBlueprintToString — placement and section titles (IR 2.1.0)", 
     ).toEqual(["a: 1", "b: 2", "d: 4", "c: 3"]);
   });
 
+  it("a column-only placed cell (no row) sorts by column among cells sharing an absent row", () => {
+    expect(
+      body(
+        grid({
+          columns: 12,
+          children: [
+            cell(1, m("c"), { column: 7 }),
+            cell(1, m("a"), { column: 1 }),
+            m("d"), // fully unplaced: row and column both absent
+            cell(1, m("b"), { row: 1, column: 1 }),
+          ],
+        })
+      )
+    ).toEqual(["b: 2", "a: 1", "c: 3", "d: 4"]);
+  });
+
+  it("two cells sharing the same explicit (row, column) keep document order", () => {
+    expect(
+      body(
+        grid({
+          columns: 12,
+          children: [cell(6, m("b"), { row: 1, column: 1 }), cell(6, m("a"), { row: 1, column: 1 })],
+        })
+      )
+    ).toEqual(["b: 2", "a: 1"]);
+  });
+
   it("an unplaced grid keeps document order — 2.0.0 output unchanged", () => {
     expect(body(grid({ columns: 2, children: [m("b"), m("a")] }))).toEqual(["b: 2", "a: 1"]);
   });
