@@ -235,6 +235,42 @@ describe("BlueprintRenderer — status frame (IR 2.0.0)", () => {
     expect(frame.textContent).not.toContain("412");
   });
 
+  it("a state this build does not know degrades to loading, never to the error row — how a pre-2.3.0 reader sees `empty` (ADR 0100 D4)", () => {
+    // A reader built before 2.3.0 rejects `{ state: "empty" }` in isBindingStatus exactly as this
+    // build rejects a state from a later IR: the status resolves to undefined and, with the value
+    // cleared as D1 requires, the frame shows the loading row.
+    const runtime = new InMemoryProjectionRuntime();
+    runtime.register({
+      id: "later-metrics",
+      initialState: { s: { a: { state: "later" } } },
+      handlers: {},
+    });
+    const bp = blueprint$({
+      id: "later-bp",
+      title: "Later",
+      layout: grid({
+        columns: 1,
+        children: [
+          MetricCard({
+            id: "m-later",
+            title: "Latest order",
+            binding: { projectionId: "later-metrics", path: "v", status: { path: "s.a" } },
+          }),
+        ],
+      }),
+      projections: ["later-metrics"],
+    });
+
+    render(
+      <BlueprintRenderer blueprint={bp} projectionRuntime={runtime} executionId={EXECUTION_ID} />
+    );
+
+    const frame = document.querySelector("[data-widget-frame='m-later']") as HTMLElement;
+    expect(frame.getAttribute("data-binding-state")).toBe("loading");
+    expect(frame.querySelector("[data-binding-marker='loading']")).not.toBeNull();
+    expect(frame.querySelector("[role='alert']")).toBeNull();
+  });
+
   it("a grid renders the SAME DOM as a stack of the same widgets, modulo the container's own style", () => {
     // ADR 0097 D1: a grid child gains a wrapper element only when its span exceeds 1, so a
     // 1.0.0 grid (every cell implicitly span 1) adds no element the stack does not. If the

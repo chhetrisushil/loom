@@ -44,9 +44,10 @@ rules as the other four (optional numeric `seq`, optional `{ code, message }` fi
 `resolveWidgetStatus` resolves it unchanged. The literal is exact and case-sensitive (`"Empty"`,
 `"no-data"` are malformed, i.e. no status).
 
-A producer SHOULD NOT write a value beside an `empty` status (loom-ui's hydration fold drops the
-bound value when it publishes `empty`, so an earlier `ready` value never shows under "no data");
-a reader ignores one if it does (D2). The optional `finding` carries the producer's reason —
+A producer MUST clear the bound value when it publishes `empty` (loom-ui's hydration fold drops
+it, so an earlier `ready` value never shows under "no data"). This is not optional: a pre-2.3.0
+reader cannot see `empty` and would show a leftover value as READY (D4). A 2.3.0 reader ignores
+a value beside `empty` anyway (D2), as defence in depth, not as licence. The optional `finding` carries the producer's reason —
 loom-ui's is `upstream-empty` — and its `message` is shown as the row's text.
 
 ### D2 — The matrix gains an `empty` row, ranked right after `error`
@@ -88,9 +89,11 @@ written, or malformed" case. Its matrix then shows:
 
 - the **loading** row when there is no value — which is what a producer following D1 leaves
   (React `…`, terminal `⋯ <title>`);
-- the value as **ready** if a producer wrongly left one.
+- the value as **ready** if a producer broke D1's MUST and left one — the reason D1 is a MUST.
 
-Neither is the error row, and nothing throws. That is the safe direction: an older reader shows
+Neither is the error row, and nothing throws. This assumes a caller-supplied `check` accepts an
+`undefined` value (the older reader runs it, since it sees no status); any working check already
+must, because the ordinary loading row passes it `undefined` too. That is the safe direction: an older reader shows
 "not arrived yet" for "arrived, and empty" — incomplete, never alarming, never a repair trigger.
 Pinned by a terminal test that feeds a state this build does not know through the same path.
 
