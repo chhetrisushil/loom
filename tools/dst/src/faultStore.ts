@@ -1,5 +1,10 @@
 import type { EventEnvelope } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
+import {
+  type DecoratorPlan,
+  type EventStore,
+  type OptionalEventStoreMethod,
+  installOptional,
+} from "@loom/event-runtime";
 import type { Rng } from "./rng";
 
 // ── Fault-injecting event store ───────────────────────────────────────────────
@@ -73,8 +78,9 @@ export interface FaultInjectingStore {
 /**
  * Wrap an {@link EventStore} so appends and subscriber deliveries are subject to a
  * seeded {@link FaultModel} (explore) or a recorded {@link FaultDraw} list (replay).
- * Optional store methods are forwarded exactly as `crashingEventStore` does, so a
- * capability probe (`if (store.copyPrefix)`) behaves identically to the inner store.
+ * Every optional store method is carried through (a `DecoratorPlan`), so a capability probe
+ * (`if (store.copyPrefix)`) behaves identically to the inner store; `appendBatch` draws one
+ * fault per batch.
  */
 export function faultInjectingStore(inner: EventStore, source: FaultSource): FaultInjectingStore {
   const draws: FaultDraw[] = [];
@@ -136,16 +142,44 @@ export function faultInjectingStore(inner: EventStore, source: FaultSource): Fau
         handler(e);
       }),
     close: () => inner.close(),
-    ...(inner.readRange !== undefined && { readRange: inner.readRange.bind(inner) }),
-    ...(inner.acquireFence !== undefined && { acquireFence: inner.acquireFence.bind(inner) }),
-    ...(inner.copyPrefix !== undefined && { copyPrefix: inner.copyPrefix.bind(inner) }),
-    ...(inner.deleteExecution !== undefined && {
-      deleteExecution: inner.deleteExecution.bind(inner),
-    }),
-    ...(inner.truncatePrefix !== undefined && {
-      truncatePrefix: inner.truncatePrefix.bind(inner),
-    }),
   };
+
+  // Every optional method decided over the whole union (ADR 0074 Amendment), each installed
+  // only when the inner store has it, so a capability probe behaves identically.
+  const plan = {
+    // ONE fault decision per batch — a batch is one round-trip, so it lands or fails whole.
+    // This is what lets DST exercise the coalescing path at all: before, the method was
+    // dropped and `CoalescingEventStore` quietly degraded to per-envelope appends.
+    appendBatch: async (envelopes: readonly EventEnvelope[]): Promise<void> => {
+      if (envelopes.length === 0) return;
+      const at = tick++;
+      const first = envelopes[0] as EventEnvelope;
+      if (crashed && !restored) {
+        dropped.push(...envelopes);
+        return;
+      }
+      if (shouldFault("crash", at)) {
+        crashed = true;
+        record("crash", first, at);
+        dropped.push(...envelopes);
+        return;
+      }
+      if (shouldFault("appendReject", at)) {
+        record("appendReject", first, at);
+        throw new Error(`dst: injected batch rejection for ${first.id} (+${envelopes.length - 1})`);
+      }
+      await (inner.appendBatch as (es: readonly EventEnvelope[]) => Promise<void>)(envelopes);
+    },
+    head: "forward",
+    readRange: "forward",
+    acquireFence: "forward",
+    copyPrefix: "forward",
+    deleteExecution: "forward",
+    truncatePrefix: "forward",
+    listExecutions: "forward",
+    listExecutionsPage: "forward",
+  } satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;
+  installOptional<EventStore, OptionalEventStoreMethod>(store, inner, plan);
 
   return {
     store,

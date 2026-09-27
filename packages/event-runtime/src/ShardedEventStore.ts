@@ -137,6 +137,18 @@ export class ShardedEventStore implements EventStore {
     if (shards.every((s) => s.listExecutionsPage !== undefined)) {
       this.listExecutionsPage = (opts) => this.pagedScatterGather(opts);
     }
+    // The structural encryption marker (`keys`, see `installOptional`) must survive sharding,
+    // or `Sharded(Encrypting(pg)…)` — the ADR 0074 composition — would look like a plain store
+    // to LogLifecycle's compaction/archive guard and to `loom doctor`. Carried up when every
+    // shard shares ONE KeyStore; shards that disagree (or only some encrypting) get a marker
+    // no snapshot store can match, so the guard fails closed rather than guessing.
+    const markers = shards.map((s) => (s as { keys?: unknown }).keys);
+    if (markers.some((k) => typeof k === "object" && k !== null)) {
+      const first = markers[0];
+      (this as { keys?: unknown }).keys = markers.every((k) => k === first)
+        ? first
+        : Object.freeze({ mixed: true });
+    }
   }
 
   /**

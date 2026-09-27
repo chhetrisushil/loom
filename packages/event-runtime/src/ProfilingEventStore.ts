@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
-import type { EventStore } from "./types";
+import { type DecoratorPlan, installOptional } from "./installOptional";
+import type { EventStore, OptionalEventStoreMethod } from "./types";
 
 /** Store-side timings, in milliseconds unless stated otherwise. */
 export interface WriteProfile {
@@ -57,26 +58,20 @@ export class ProfilingEventStore implements EventStore {
   private lastEnd = 0;
 
   constructor(private readonly inner: EventStore) {
-    if (inner.head !== undefined) this.head = (...a) => inner.head!(...a);
-    if (inner.readRange !== undefined) this.readRange = (...a) => inner.readRange!(...a);
-    if (inner.acquireFence !== undefined) this.acquireFence = (id) => inner.acquireFence!(id);
-    if (inner.copyPrefix !== undefined) this.copyPrefix = (...a) => inner.copyPrefix!(...a);
-    if (inner.deleteExecution !== undefined) {
-      this.deleteExecution = (id) => inner.deleteExecution!(id);
-    }
-    if (inner.truncatePrefix !== undefined) {
-      this.truncatePrefix = (id, t) => inner.truncatePrefix!(id, t);
-    }
-    if (inner.listExecutions !== undefined) this.listExecutions = () => inner.listExecutions!();
-    if (inner.listExecutionsPage !== undefined) {
-      this.listExecutionsPage = (o) => inner.listExecutionsPage!(o);
-    }
-    // Only advertise batching if the inner store has it, so wrapping never changes which
-    // path a caller takes.
-    if (inner.appendBatch !== undefined) {
-      this.appendBatch = (envelopes) =>
-        this.timed(envelopes.length, () => inner.appendBatch!(envelopes));
-    }
+    // Only advertise what the inner store has (installOptional's rule), so wrapping never
+    // changes which path a caller takes. Batches are timed like single appends.
+    const plan = {
+      appendBatch: (envelopes) => this.timed(envelopes.length, () => inner.appendBatch!(envelopes)),
+      head: "forward",
+      readRange: "forward",
+      acquireFence: "forward",
+      copyPrefix: "forward",
+      deleteExecution: "forward",
+      truncatePrefix: "forward",
+      listExecutions: "forward",
+      listExecutionsPage: "forward",
+    } satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;
+    installOptional<EventStore, OptionalEventStoreMethod>(this, inner, plan);
   }
 
   private async timed(envelopes: number, run: () => Promise<void>): Promise<void> {

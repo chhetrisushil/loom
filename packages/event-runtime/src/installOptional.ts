@@ -1,0 +1,81 @@
+/**
+ * How a store decorator handles one OPTIONAL SPI method of the store it wraps (ADR 0074
+ * Amendment, L1):
+ *
+ * - `"forward"` — call the inner store's method verbatim (bound to the inner store);
+ * - a function — the decorator's own implementation (it transforms ids, payloads, …);
+ * - `{ refuse: reason }` — deliberately NOT offered, with the reason recorded. The method is
+ *   left uninstalled, so callers see exactly what they see for a store without it.
+ *
+ * A plan is a mapped type over the WHOLE optional-method union, so a new SPI method is a
+ * compile error in every decorator until it decides which of the three it is. Silently
+ * dropping a capability — the drift this exists to end — stops being expressible.
+ */
+export type DecoratorPlan<S, M extends keyof S> = {
+  readonly [K in M]: "forward" | NonNullable<S[K]> | { readonly refuse: string };
+};
+
+// Refusals, keyed by the decorated object. A WeakMap so a discarded store takes its entry
+// with it; read back by the decorator conformance kit through `refusalsOf`.
+const refusals = new WeakMap<object, ReadonlyMap<string, string>>();
+
+/**
+ * The encryption-boundary marker a store exposes structurally (`EncryptingEventStore.keys`,
+ * `EncryptingSnapshotStore.keys`). `loom doctor` and `LogLifecycle`'s compaction/archive
+ * guard read it by shape, so a decorator stacked ABOVE an encrypting store must carry it up —
+ * otherwise `Coalescing(Encrypting(pg))` looks like a plain store and compaction would write
+ * the decrypted fold to a plaintext snapshot store (ADR 0022 Amendment).
+ */
+const ENCRYPTION_MARKER = "keys";
+
+/**
+ * Install each optional method of `plan` on `target`, **iff the inner store has it** — so a
+ * capability probe (`if (store.copyPrefix)`) answers exactly as it would against `inner`,
+ * and a decorator never advertises a capability its backend lacks. O(|M|) once, at
+ * construction; zero cost per call (a forward is a bound method, not a trampoline).
+ *
+ * A function entry is bound to `bindTo` when given (a decorator whose implementation uses
+ * `this`), else installed as-is. `{ refuse }` entries are recorded for {@link refusalsOf}.
+ *
+ * Also carries the inner store's structural encryption marker (`keys`) onto `target` when
+ * `target` does not define its own — see {@link ENCRYPTION_MARKER}.
+ */
+export function installOptional<S extends object, M extends keyof S>(
+  target: S,
+  inner: S,
+  plan: DecoratorPlan<S, M>,
+  bindTo?: object
+): void {
+  const writable = target as Record<PropertyKey, unknown>;
+  const source = inner as Record<PropertyKey, unknown>;
+  let refused: Map<string, string> | undefined;
+  for (const method of Object.keys(plan) as M[]) {
+    const entry = plan[method] as unknown;
+    if (typeof entry === "object" && entry !== null) {
+      refused ??= new Map();
+      refused.set(String(method), (entry as { refuse: string }).refuse);
+      continue;
+    }
+    const innerMethod = source[method as PropertyKey];
+    if (typeof innerMethod !== "function") continue; // the backend lacks it: so do we
+    if (entry === "forward") {
+      writable[method as PropertyKey] = (innerMethod as (...a: unknown[]) => unknown).bind(inner);
+    } else if (typeof entry === "function") {
+      writable[method as PropertyKey] =
+        bindTo === undefined ? entry : (entry as (...a: unknown[]) => unknown).bind(bindTo);
+    }
+  }
+  if (refused !== undefined) refusals.set(target, refused);
+  const marker = source[ENCRYPTION_MARKER];
+  if (typeof marker === "object" && marker !== null && writable[ENCRYPTION_MARKER] === undefined) {
+    writable[ENCRYPTION_MARKER] = marker;
+  }
+}
+
+/**
+ * The optional methods a decorator deliberately refused through {@link installOptional},
+ * with their reasons. Empty for a store that refused nothing (or did not use the helper).
+ */
+export function refusalsOf(store: object): ReadonlyMap<string, string> {
+  return refusals.get(store) ?? new Map();
+}

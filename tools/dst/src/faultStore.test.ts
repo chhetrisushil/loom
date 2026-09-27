@@ -1,3 +1,4 @@
+import { runEventStoreDecoratorConformance } from "@loom/conformance";
 import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
@@ -102,5 +103,75 @@ describe("faultInjectingStore", () => {
     expect(typeof fis.store.readRange).toBe("function");
     expect(typeof fis.store.acquireFence).toBe("function");
     expect(typeof fis.store.copyPrefix).toBe("function");
+  });
+});
+
+// ── L1 / ADR 0074 Amendment — the fault store carries the whole optional SPI ───────────
+// With no faults drawn it must be indistinguishable from the store it wraps.
+runEventStoreDecoratorConformance(
+  "faultInjectingStore",
+  (inner) => faultInjectingStore(inner, { mode: "replay", draws: [] }).store
+);
+
+describe("faultInjectingStore — appendBatch draws ONE fault per batch (the coalescing path)", () => {
+  it("an appendReject rejects the whole batch and lands none of it", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const f = faultInjectingStore(inner, {
+      mode: "replay",
+      draws: [
+        {
+          tick: 0,
+          kind: "appendReject",
+          envelopeId: "a-0",
+          sequence: 0,
+          eventType: "STEP_COMPLETED",
+        },
+      ],
+    });
+    await expect(f.store.appendBatch!([env("a", 0), env("b", 0)])).rejects.toThrow(
+      /batch rejection/
+    );
+    expect(await inner.read("a")).toEqual([]);
+    expect(await inner.read("b")).toEqual([]);
+    expect(f.draws.map((d) => d.kind)).toEqual(["appendReject"]);
+    // The next batch is a new tick — and lands whole, in one round-trip.
+    await f.store.appendBatch!([env("a", 0), env("b", 0)]);
+    expect((await inner.read("b")).length).toBe(1);
+  });
+
+  it("a crash swallows the batch and every later append; restore() reboots", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const f = faultInjectingStore(inner, {
+      mode: "replay",
+      draws: [
+        { tick: 0, kind: "crash", envelopeId: "a-0", sequence: 0, eventType: "STEP_COMPLETED" },
+      ],
+    });
+    await f.store.appendBatch!([env("a", 0), env("b", 0)]);
+    await f.store.append(env("c", 0));
+    expect(f.crashed).toBe(true);
+    expect(f.dropped.map((e) => e.id)).toEqual(["a-0", "b-0", "c-0"]);
+    expect(await inner.read("a")).toEqual([]);
+    f.restore();
+    await f.store.appendBatch!([env("a", 0)]);
+    expect((await inner.read("a")).length).toBe(1);
+  });
+
+  it("explore mode draws once per batch, so a seeded run replays identically", async () => {
+    const run = async () => {
+      const f = faultInjectingStore(new InMemoryAsyncEventStore(), {
+        mode: "explore",
+        rng: splitmix64(7n),
+        model: { appendReject: 0.5 },
+      });
+      for (let i = 0; i < 20; i++) {
+        await f.store.appendBatch!([env(`x${i}`, 0), env(`y${i}`, 0)]).catch(() => {});
+      }
+      return f.draws;
+    };
+    const first = await run();
+    expect(first.length).toBeGreaterThan(0);
+    expect(first.every((d) => d.tick < 20)).toBe(true); // one tick per batch, not per envelope
+    expect(await run()).toEqual(first);
   });
 });

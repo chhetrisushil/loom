@@ -16,6 +16,12 @@ export type { EventEnvelope };
  *   which is what lets `CoalescingEventStore` raise the write ceiling). Consumers use
  *   {@link appendBatchOf}, which prefers it and falls back to a per-envelope `append` loop,
  *   so a backend that omits it is byte-identical to before.
+ * 1.4.0: added optional `head()` (the tip as one indexed `MAX(sequence)` — `fork()` was
+ *   reading the whole parent log to validate a fork point). Consumers use {@link headOf}.
+ *
+ * Every optional method is listed in {@link OPTIONAL_EVENT_STORE_METHODS}; adding one here
+ * without listing it there is a compile error, and listing it there makes every decorator's
+ * `DecoratorPlan` a compile error until it decides to forward, override or refuse it.
  */
 export const EVENT_STORE_SPI_VERSION = "1.4.0";
 
@@ -196,6 +202,42 @@ export interface EventStore {
   listExecutionsPage?(opts?: { cursor?: string; limit?: number }): Promise<ExecutionPage>;
   close(): Promise<void>;
 }
+
+/**
+ * The names of the OPTIONAL {@link EventStore} methods, derived from the interface itself —
+ * a key whose `Pick` admits `{}` is optional. A decorator that forgets one silently takes that
+ * capability away from everything above it (ADR 0074 Amendment), so decorators declare a
+ * `DecoratorPlan` over this whole union.
+ */
+export type OptionalEventStoreMethod = {
+  // biome-ignore lint/complexity/noBannedTypes: `{}` is exactly the test — a key whose Pick admits the empty object is optional
+  [K in keyof EventStore]-?: {} extends Pick<EventStore, K> ? K : never;
+}[keyof EventStore];
+
+/**
+ * The runtime list of {@link OptionalEventStoreMethod}, for the decorator conformance kit.
+ * The check below makes a new optional method on the interface a compile error here until it
+ * is listed — so the kit can never quietly stop checking one.
+ */
+export const OPTIONAL_EVENT_STORE_METHODS = [
+  "appendBatch",
+  "readRange",
+  "head",
+  "acquireFence",
+  "copyPrefix",
+  "deleteExecution",
+  "truncatePrefix",
+  "listExecutions",
+  "listExecutionsPage",
+] as const satisfies readonly OptionalEventStoreMethod[];
+
+type _MissingOptionalMethod = Exclude<
+  OptionalEventStoreMethod,
+  (typeof OPTIONAL_EVENT_STORE_METHODS)[number]
+>;
+// A new optional EventStore method that is not listed above makes this line a compile error.
+const _exhaustiveOptionalMethods: [_MissingOptionalMethod] extends [never] ? true : never = true;
+void _exhaustiveOptionalMethods;
 
 /** One page of {@link EventStore.listExecutionsPage}. `nextCursor` present iff more remain. */
 export interface ExecutionPage {

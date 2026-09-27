@@ -2,8 +2,10 @@ import type { EventEnvelope } from "@loom/core";
 import { describe, expect, it, vi } from "vitest";
 import { CoalescingEventStore } from "./CoalescingEventStore";
 import { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";
+import { ProfilingEventStore } from "./ProfilingEventStore";
 import { ShardedEventStore } from "./ShardedEventStore";
 import { SubscriberRegistry, bucketOf } from "./SubscriberRegistry";
+import { TenantScopedEventStore } from "./TenantScopedEventStore";
 import type { EventStore } from "./types";
 
 const evt = (executionId: string, sequence: number): EventEnvelope => ({
@@ -147,6 +149,45 @@ describe("CoalescingEventStore", () => {
       store.append(evt("s", 2)),
     ]);
     expect((await store.read("s")).map((e) => e.sequence)).toEqual([0, 1, 2]);
+    await store.close();
+  });
+});
+
+// ADR 0074 Amendment (L1) — the composition the ADR documents is Coalescing OUTSIDE tenant
+// scoping / encryption / content resolution / the audit chain. Every decorator in between
+// must carry `appendBatch` down, or the backend sees N single appends and the batching win is
+// gone without a word. The encrypting, content and audit-chain variants of this regression
+// live in their own plugins' tests (event-runtime cannot depend on them).
+describe("a decorator between the coalescer and the backend (ADR 0074 Amendment)", () => {
+  it("Coalescing(TenantScoped(backend)) still batches: the backend sees appendBatch, never append", async () => {
+    const counting = countingStore(new InMemoryAsyncEventStore());
+    const store = new CoalescingEventStore(new TenantScopedEventStore(counting.store, "acme"));
+    await Promise.all(Array.from({ length: 50 }, (_, i) => store.append(evt(`x${i}`, 0))));
+    expect(counting.calls.appendBatch).toBeGreaterThanOrEqual(1);
+    expect(counting.calls.append).toBe(0);
+    // And the tenant scoping still applies to the batched rows.
+    expect((await store.read("x7")).map((e) => e.executionId)).toEqual(["x7"]);
+    expect((await counting.store.read("acme:x7")).length).toBe(1);
+    await store.close();
+  });
+
+  it("a stale-fence zombie in a coalesced batch rejects its batch-mates AND leaves none of them durable", async () => {
+    // Before L1 the tenant decorator dropped appendBatch, so `appendBatchOf` fell back to a
+    // sequential append loop: A landed, Z threw, and A's writer was told "failed" for an
+    // event that was already in the log.
+    const backend = new InMemoryAsyncEventStore();
+    const store = new CoalescingEventStore(new TenantScopedEventStore(backend, "acme"));
+    await store.acquireFence!("z");
+    await store.acquireFence!("z"); // current fence is 2: a writer holding 1 is a zombie
+    const results = await Promise.allSettled([
+      store.append(evt("a", 0)),
+      store.append({ ...evt("z", 0), metadata: { fence: 1 } }),
+      store.append(evt("b", 0)),
+    ]);
+    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected", "rejected"]);
+    expect(await backend.read("acme:a")).toEqual([]);
+    expect(await backend.read("acme:z")).toEqual([]);
+    expect(await backend.read("acme:b")).toEqual([]);
     await store.close();
   });
 });
@@ -316,5 +357,33 @@ describe("SubscriberRegistry", () => {
       seen.add(b);
     }
     expect(seen.size).toBe(8);
+  });
+});
+
+describe("the encryption marker (`keys`) survives the scale decorators (ADR 0022 Amendment)", () => {
+  // LogLifecycle's compaction/archive guard and `loom doctor` find an encrypting store by its
+  // `keys`. Once the decorators forward truncatePrefix, a wrapper that hid the marker would
+  // make `Coalescing(Encrypting(pg))` compactable into a PLAINTEXT snapshot store.
+  const encrypting = (keys: object) => Object.assign(new InMemoryAsyncEventStore(), { keys });
+
+  it("Coalescing, Tenant and Profiling carry it up", () => {
+    const keys = { durable: true };
+    const inner = encrypting(keys);
+    expect((new CoalescingEventStore(inner) as { keys?: unknown }).keys).toBe(keys);
+    expect((new TenantScopedEventStore(inner, "t") as { keys?: unknown }).keys).toBe(keys);
+    expect((new ProfilingEventStore(inner) as { keys?: unknown }).keys).toBe(keys);
+  });
+
+  it("Sharded carries one shared KeyStore; shards that disagree get a marker nothing matches", () => {
+    const keys = { durable: true };
+    const same = new ShardedEventStore([encrypting(keys), encrypting(keys)]);
+    expect((same as { keys?: unknown }).keys).toBe(keys);
+    const mixed = new ShardedEventStore([encrypting(keys), new InMemoryAsyncEventStore()]);
+    const marker = (mixed as { keys?: unknown }).keys;
+    expect(marker).toBeDefined();
+    expect(marker).not.toBe(keys); // fails closed: no snapshot store shares it
+    expect(
+      (new ShardedEventStore([new InMemoryAsyncEventStore()]) as { keys?: unknown }).keys
+    ).toBeUndefined();
   });
 });

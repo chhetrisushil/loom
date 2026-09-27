@@ -37,3 +37,28 @@ export interface SnapshotStore {
   deleteExecution?(executionId: string): Promise<void>;
   close(): Promise<void>;
 }
+
+/**
+ * The names of the OPTIONAL {@link SnapshotStore} methods, derived from the interface (see
+ * `OptionalEventStoreMethod` in `@loom/event-runtime`). Snapshot decorators declare a
+ * `DecoratorPlan` over this whole union.
+ */
+export type OptionalSnapshotStoreMethod = {
+  // biome-ignore lint/complexity/noBannedTypes: `{}` is exactly the test — a key whose Pick admits the empty object is optional
+  [K in keyof SnapshotStore]-?: {} extends Pick<SnapshotStore, K> ? K : never;
+}[keyof SnapshotStore];
+
+/** The runtime list of {@link OptionalSnapshotStoreMethod}, for the decorator conformance kit. */
+export const OPTIONAL_SNAPSHOT_STORE_METHODS = [
+  "deleteExecution",
+] as const satisfies readonly OptionalSnapshotStoreMethod[];
+
+type _MissingOptionalSnapshotMethod = Exclude<
+  OptionalSnapshotStoreMethod,
+  (typeof OPTIONAL_SNAPSHOT_STORE_METHODS)[number]
+>;
+// A new optional SnapshotStore method that is not listed above makes this line a compile error.
+const _exhaustiveOptionalSnapshotMethods: [_MissingOptionalSnapshotMethod] extends [never]
+  ? true
+  : never = true;
+void _exhaustiveOptionalSnapshotMethods;

@@ -1,10 +1,12 @@
 import {
   runBranchRegistryConformance,
   runEventStoreConformance,
+  runEventStoreDecoratorConformance,
   runLeaseStoreConformance,
   runMemoryStoreConformance,
   runReadModelStoreConformance,
 } from "@loom/conformance";
+import { CoalescingEventStore, TenantScopedEventStore } from "@loom/event-runtime";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe } from "vitest";
 import { PostgresBranchRegistry } from "./PostgresBranchRegistry";
@@ -51,6 +53,12 @@ if (PG_URL === undefined) {
   let nextBranch = 0;
   // Its own cursor as well: the lease kit reuses fixed ids ("x", "y") per case.
   let nextLease = 0;
+  // ADR 0074 Amendment (L1) — the decorator kit over the REAL backend, so the SQL
+  // `appendBatch`, fencing and keyset paging are exercised THROUGH the decorators. Each run
+  // gets its own cursor AND its own tenant: the tenant prefix keeps its rows (and its
+  // enumeration) apart from every other run sharing a schema.
+  let nextTenant = 0;
+  let nextCoalescedTenant = 0;
 
   beforeAll(async () => {
     // Create and migrate every schema up front, so `factory()` can stay synchronous (the
@@ -91,6 +99,18 @@ if (PG_URL === undefined) {
     const pool = pools[next++ % pools.length] as Pool;
     return new PostgresEventStore(pool);
   }, "PostgresEventStore");
+
+  runEventStoreDecoratorConformance(
+    "TenantScopedEventStore over Postgres",
+    (inner) => new TenantScopedEventStore(inner, "dk-tenant"),
+    { inner: () => new PostgresEventStore(pools[nextTenant++ % pools.length] as Pool) }
+  );
+
+  runEventStoreDecoratorConformance(
+    "Coalescing(TenantScopedEventStore) over Postgres",
+    (inner) => new CoalescingEventStore(new TenantScopedEventStore(inner, "dk-coalesced")),
+    { inner: () => new PostgresEventStore(pools[nextCoalescedTenant++ % pools.length] as Pool) }
+  );
 
   runMemoryStoreConformance(() => {
     const pool = pools[nextMemory++ % pools.length] as Pool;

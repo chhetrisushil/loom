@@ -1297,6 +1297,9 @@ importers:
       '@loom/middleware':
         specifier: workspace:*
         version: link:../middleware
+      '@loom/plugin-crypto':
+        specifier: workspace:*
+        version: link:../../plugins/crypto
       '@loom/plugin-sqlite':
         specifier: workspace:*
         version: link:../../plugins/sqlite
@@ -1387,6 +1390,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/event-runtime
     devDependencies:
+      '@loom/conformance':
+        specifier: workspace:*
+        version: link:../../packages/conformance
       '@loom/dst':
         specifier: workspace:*
         version: link:../../tools/dst
@@ -2221,6 +2227,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workflow-runtime
     devDependencies:
+      '@loom/conformance':
+        specifier: workspace:*
+        version: link:../../packages/conformance
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -2313,6 +2322,9 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
     devDependencies:
+      '@loom/conformance':
+        specifier: workspace:*
+        version: link:../../packages/conformance
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../../packages/effect-runtime

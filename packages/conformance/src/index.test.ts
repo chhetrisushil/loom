@@ -9,12 +9,19 @@ import {
   InMemoryBranchRegistry,
   InMemoryLeaseStore,
   InMemoryTimerStore,
+  OPTIONAL_EVENT_STORE_METHODS,
+  ProfilingEventStore,
   ShardPlan,
   ShardedEventStore,
+  TenantScopedEventStore,
 } from "@loom/event-runtime";
 import type { LlmProvider } from "@loom/llm";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { InMemoryAsyncSnapshotStore, SNAPSHOT_STORE_SPI_VERSION } from "@loom/snapshot-runtime";
+import {
+  InMemoryAsyncSnapshotStore,
+  SNAPSHOT_STORE_SPI_VERSION,
+  TenantScopedSnapshotStore,
+} from "@loom/snapshot-runtime";
 import type {
   ExecutionPackage,
   ExecutionResult,
@@ -23,6 +30,11 @@ import type {
   WorkerRuntime,
 } from "@loom/worker-runtime";
 import { describe, expect, it } from "vitest";
+import {
+  optionalSurfaceProblems,
+  runEventStoreDecoratorConformance,
+  runSnapshotStoreDecoratorConformance,
+} from "./decorators";
 import {
   runBranchRegistryConformance,
   runCapabilityAuthorizerConformance,
@@ -110,6 +122,72 @@ runEventStoreConformance(
     ]),
   "Sharded(Coalescing(InMemory))"
 );
+// ADR 0074 Amendment (L1) — every in-package decorator proves it carries the whole optional
+// SPI through, and passes the full suite THROUGH itself. The plugin decorators (encryption,
+// content, audit chain) and the tools (DST fault store, crash harness) register in their own
+// packages; `packages/spec/src/decoratorConformance.test.ts` fails if any decorator does not.
+runEventStoreDecoratorConformance(
+  "TenantScopedEventStore",
+  (inner) => new TenantScopedEventStore(inner, "acme")
+);
+runEventStoreDecoratorConformance(
+  "CoalescingEventStore",
+  (inner) => new CoalescingEventStore(inner)
+);
+runEventStoreDecoratorConformance("ProfilingEventStore", (inner) => new ProfilingEventStore(inner));
+runSnapshotStoreDecoratorConformance(
+  "TenantScopedSnapshotStore",
+  (inner) => new TenantScopedSnapshotStore(inner, "acme")
+);
+
+// The kit's guard must FIRE: a decorator that forgets `appendBatch` is exactly the drift it
+// exists to catch. `optionalSurfaceProblems` is the check the kit's own `it` asserts empty.
+describe("the decorator kit rejects a decorator that drops an optional method", () => {
+  /** Hand-forwards everything EXCEPT appendBatch — the pre-L1 TenantScopedEventStore shape. */
+  const droppingDecorator = (inner: InstanceType<typeof InMemoryAsyncEventStore>) => ({
+    append: inner.append.bind(inner),
+    read: inner.read.bind(inner),
+    readFrom: inner.readFrom.bind(inner),
+    subscribe: inner.subscribe.bind(inner),
+    close: inner.close.bind(inner),
+    readRange: inner.readRange.bind(inner),
+    head: inner.head.bind(inner),
+    acquireFence: inner.acquireFence.bind(inner),
+    copyPrefix: inner.copyPrefix.bind(inner),
+    deleteExecution: inner.deleteExecution.bind(inner),
+    truncatePrefix: inner.truncatePrefix.bind(inner),
+    listExecutions: inner.listExecutions.bind(inner),
+    listExecutionsPage: inner.listExecutionsPage.bind(inner),
+  });
+
+  it("fails it, naming the method", () => {
+    const store = droppingDecorator(new InMemoryAsyncEventStore());
+    const problems = optionalSurfaceProblems("Dropper", store, OPTIONAL_EVENT_STORE_METHODS);
+    expect(problems).toEqual([expect.stringContaining("Dropper silently drops appendBatch")]);
+    // …which is what the kit's `it` asserts is empty — so the kit fails for this decorator.
+    expect(() => expect(problems).toEqual([])).toThrow();
+  });
+
+  it("accepts the same omission once it is refused with a reason — and not with an empty one", () => {
+    const store = droppingDecorator(new InMemoryAsyncEventStore());
+    expect(
+      optionalSurfaceProblems("Dropper", store, OPTIONAL_EVENT_STORE_METHODS, {
+        appendBatch: "cannot batch: each envelope needs its own round-trip",
+      })
+    ).toEqual([]);
+    expect(
+      optionalSurfaceProblems("Dropper", store, OPTIONAL_EVENT_STORE_METHODS, { appendBatch: " " })
+    ).toEqual([expect.stringContaining("without a reason")]);
+  });
+
+  it("rejects a stale refusal — declared refused, still exposed", () => {
+    const store = new InMemoryAsyncEventStore();
+    expect(
+      optionalSurfaceProblems("Liar", store, OPTIONAL_EVENT_STORE_METHODS, { head: "no tips" })
+    ).toEqual([expect.stringContaining("declares head refused")]);
+  });
+});
+
 runSnapshotStoreConformance(() => new InMemoryAsyncSnapshotStore(), "InMemoryAsyncSnapshotStore");
 runBranchRegistryConformance(() => new InMemoryBranchRegistry(), "InMemoryBranchRegistry");
 runLeaseStoreConformance(() => new InMemoryLeaseStore(), "InMemoryLeaseStore");
