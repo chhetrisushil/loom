@@ -153,9 +153,9 @@ export interface ExecutionContext {
   sleepUntil(wakeAt: number): Promise<void>;
 
   // Append a durable domain event, ONCE per execution (ADR 0102): a re-run from the
-  // top serves an emit from the log when the log already holds a stamped emit of the
-  // same content (matched by a digest of type + payload, never by timing). When that
-  // cannot be proven the emit is appended — a duplicate, never a loss.
+  // top serves an emit from the log only when the log proves it: a stamped emit of the
+  // same content in the same gate segment, with every syscall of the segment so far
+  // served. Otherwise it is appended (ADR 0102 D2 states the exact guarantee).
   emit(eventType: string, payload: unknown): void;
 
   // An `emit` of `{ delta, done }` — the same once-per-execution rule.

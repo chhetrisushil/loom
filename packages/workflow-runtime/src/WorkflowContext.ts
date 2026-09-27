@@ -36,9 +36,12 @@ function safeJsonLength(value: unknown): number {
 //
 // Canonical JSON of `[eventType, payload]` as it would be PERSISTED (JSON.stringify
 // semantics: `toJSON` applied, function/symbol/undefined members dropped, `undefined`
-// array slots → null), with object keys sorted, hashed with FNV-1a-64. `undefined` when
-// the payload has no JSON form (a BigInt, a cycle, pathological depth): such an emit is
-// never matched and never stamped — it is appended every time (duplicate beats loss).
+// array slots → null), with object keys sorted, prefixed by the emit's gate SEGMENT
+// (how many resume passthroughs the run had consumed), hashed with FNV-1a-64. A `Map` or
+// `Set` has no enumerable keys and canonicalises to `{}` — harmless, because that is also
+// how it persists. `undefined` when the payload has no JSON form (a BigInt, a cycle,
+// pathological depth): such an emit is never matched and never stamped — it is appended
+// every time (duplicate beats loss).
 const DIGEST_MAX_DEPTH = 256;
 
 function canonicalPersisted(raw: unknown, depth: number): string | undefined {
@@ -81,10 +84,16 @@ function canonicalPersisted(raw: unknown, depth: number): string | undefined {
   }
 }
 
-/** Exported for tests only. */
-export function flowEmitDigest(eventType: string, payload: unknown): string | undefined {
+/** Exported for tests only. `segment` = resume passthroughs consumed at the emit. */
+export function flowEmitDigest(
+  eventType: string,
+  payload: unknown,
+  segment = 0
+): string | undefined {
   try {
-    return fnv1a64(`[${JSON.stringify(eventType)},${canonicalPersisted(payload, 1) ?? "null"}]`);
+    return fnv1a64(
+      `${segment}|[${JSON.stringify(eventType)},${canonicalPersisted(payload, 1) ?? "null"}]`
+    );
   } catch {
     return undefined; // no JSON form (BigInt, cycle past the depth cap)
   }
@@ -100,6 +109,15 @@ export class WorkflowContextImpl implements WorkflowContext {
   // right now (an emit appended meanwhile is left unstamped; see `emit`).
   private readonly flowEmitsSeen = new Map<string, number>();
   private inFlight = 0;
+  // ADR 0102 D4 — `segmentLive`: some syscall of THIS segment was executed live in this
+  // run (a step not served from the log, a decider actually invoked), so nothing later in
+  // the segment can be proven a replay; reset at the next gate passthrough.
+  // `unsettled`: some step/decider of THIS run ended in an outcome a re-run does not
+  // serve (an untyped failure, a timeout, a cancellation, an in-doubt park, a throwing
+  // decider), so a later re-run may take a different path; every emit appended after it,
+  // in any segment, is left unstamped. Sticky for the run.
+  private segmentLive = false;
+  private unsettled = false;
 
   constructor(
     executionId: string,
@@ -137,38 +155,36 @@ export class WorkflowContextImpl implements WorkflowContext {
    * The `emit` syscall — and so `stream` and `ui`, which are emits — appends ONCE per
    * execution (ADR 0102). A flow re-runs from the top on resume and on recovery (ADR
    * 0057), and `execute`/`decide`/`suspend` are served from the fold on that re-run;
-   * so are emits the log already holds.
+   * so are the emits the log PROVES were already made.
    *
-   * Matching is by CONTENT, never by position or timing: an emit's identity is the
-   * digest of its `(eventType, payload)`. The n-th emit of digest d in this run is
-   * served from the log (appends nothing) iff the log holds more than n STAMPED emits
-   * of d. That decision reads only logged stamps and this run's own emits, so it is the
-   * same under any interleaving of concurrent branches, and a code change that adds or
-   * edits an emit produces a new digest that is appended rather than lost.
+   * Identity: a digest of `(segment, eventType, payload)`, where the segment is the
+   * number of gate passthroughs this run had consumed. The n-th emit of digest d is
+   * SERVED (nothing appended) iff
+   *   (1) the log holds more than n STAMPED emits of d, and
+   *   (2) no syscall of this segment has been executed live in this run (every step
+   *       and decision so far in the segment was served from the log).
+   * Otherwise it is appended. An appended emit is STAMPED (so it can serve a later
+   * re-run) only if it goes beyond the logged count, no effect or decider of this
+   * context is in flight (it could come from inside one, and would not recur when that
+   * step is served), and nothing earlier in this run ended unsettled (so the path that
+   * led to it is one a re-run reproduces from logged facts).
    *
-   * Whether an APPENDED emit is stamped (and so counts toward later matching) is the one
-   * place in-flight state is consulted: an emit appended while one of this context's
-   * effects or deciders is still running may come from inside it (a closure over `ctx`,
-   * e.g. an effect's `onDelta` sink), and such an emit does not recur when the step is
-   * served on a re-run. Counting it could make a later, genuinely new emit of the same
-   * content look already-logged — a loss. So it is appended UNSTAMPED: it never serves
-   * anything, and at worst a flow-code emit caught in that window is appended once more
-   * on a later re-run. Timing can therefore cost a duplicate, never an emit.
-   *
-   * An unstamped legacy (pre-1.19.0) log counts nothing, so it re-emits its prefix once
-   * more, stamped, and is stable from then on.
+   * Consequence: a stamp exists only for an emit whose path a re-run reproduces, so a
+   * stamp can serve only its own re-emission. What cannot be proven is appended — a
+   * duplicate, never a loss (the residual conditions are in ADR 0102 D2).
    */
   emit(eventType: string, payload: unknown): void {
-    const digest = flowEmitDigest(eventType, payload);
+    const digest = flowEmitDigest(eventType, payload, this.suspendPassthroughsConsumed);
     if (digest === undefined) {
       this.commit(eventType, payload); // cannot be matched: always append (never stamped)
       return;
     }
     const seen = this.flowEmitsSeen.get(digest) ?? 0;
     this.flowEmitsSeen.set(digest, seen + 1);
-    if (seen < this.vm.flowEmitCount(digest)) return; // a replay of a logged emit
-    if (this.inFlight > 0) {
-      this.commit(eventType, payload);
+    const logged = this.vm.flowEmitCount(digest);
+    if (seen < logged && !this.segmentLive) return; // proven: a replay of a logged emit
+    if (seen < logged || this.inFlight > 0 || this.unsettled) {
+      this.commit(eventType, payload); // appended, unstamped: serves nothing later
       return;
     }
     this.journal.commit(eventType, payload, { metadata: { flowEmit: digest } });
@@ -223,6 +239,23 @@ export class WorkflowContextImpl implements WorkflowContext {
     // STEP_STARTED is even logged (EXECUTION_CANCELLED owns the outcome).
     this.throwIfCancelled();
 
+    // ADR 0102 — from here the step is executed LIVE, not served: nothing later in this
+    // segment is provably a replay. An outcome a re-run will not serve (anything but a
+    // completion or a recorded typed failure) leaves the rest of the run unsettled.
+    this.segmentLive = true;
+    try {
+      return await this.executeLive(task, input, id);
+    } catch (err) {
+      if (this.vm.getTypedFailure(id) === undefined) this.unsettled = true;
+      throw err;
+    }
+  }
+
+  private async executeLive<TIn, TOut>(
+    task: ExecutableTask<TIn, TOut>,
+    input: TIn,
+    id: string
+  ): Promise<TOut> {
     const toolId = task.toolId ?? id;
 
     // K9.3 — in-doubt guard. A frame left "running" by a previous process run
@@ -436,12 +469,17 @@ export class WorkflowContextImpl implements WorkflowContext {
       return this.vm.getDecision(decisionId) as T;
     }
 
-    // ADR 0102 — a decider runs only when the decision is made (served on a re-run),
-    // so an emit appended while it runs is left unstamped (see `emit`).
+    // ADR 0102 — a decider runs only when the decision is made (served on a re-run):
+    // the decision is live for this segment, an emit appended while it runs is left
+    // unstamped, and a decider that throws records nothing a re-run could serve.
+    this.segmentLive = true;
     this.inFlight++;
     let choice: T;
     try {
       choice = await decider();
+    } catch (err) {
+      this.unsettled = true;
+      throw err;
     } finally {
       this.inFlight--;
     }
@@ -536,6 +574,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (this.suspendPassthroughsConsumed < recorded.length) {
       const payload = recorded[this.suspendPassthroughsConsumed];
       this.suspendPassthroughsConsumed++;
+      this.segmentLive = false; // ADR 0102 — a new gate segment starts served
       return Promise.resolve(payload) as Promise<T>;
     }
     throw new SuspendError(_config);

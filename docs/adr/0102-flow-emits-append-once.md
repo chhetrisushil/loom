@@ -54,8 +54,9 @@ safe: an effect runs only when its step runs, and a completed step is served fro
 3. **The fix can be exact about what it knows.** The kernel is the only layer that sees both the
    log and every flow-level emit of a re-run, so it can serve precisely the emits the log proves
    were already made, and append everything else. The first design matched emits by ORDINAL, and
-   review showed it was wrong (D7). The shipped rule matches by content and never trades an emit
-   for a guess.
+   review showed it was wrong (D7). So did a pure content match, which a re-run that does not
+   reproduce an earlier stamp can fool. The shipped rule serves only what logged facts prove
+   (D2), and states its exact residual.
 
 ## Decisions
 
@@ -67,77 +68,105 @@ Every kernel-internal fact in `WorkflowContext.ts` (`EFFECT_INDOUBT`, `STEP_STAR
 `EffectContext.emit` go through it. Their envelopes are unchanged: never stamped, never counted.
 `WorkflowRuntime`'s own `EXECUTION_*` facts already bypass the context and are untouched.
 
-### D2 — The guarantee: served when proven, appended otherwise
+### D2 — The guarantee: served only when the log proves it, appended otherwise
 
-The skip decision is a pure function of LOGGED content and of the re-run's own emits. It never
-depends on timing, interleaving or position. When the kernel cannot prove an emit replays a
-logged one, it APPENDS. A duplicate is acceptable; a lost emit is not. This ruling is binding
-(maintainer review, fix round 1).
+The kernel serves an emit (appends nothing) only when LOGGED facts prove it is a replay. When they
+don't, it appends: a duplicate is acceptable, and a lost emit is not. This ruling is binding
+(maintainer review, fix rounds 1 and 2).
 
-### D3 — Emits are matched by a content digest
+**Proven replay.** On a re-run, the *n*-th emit (counting from 0) of identity
+`(segment, eventType, payload)` is served iff BOTH hold:
 
-An emit's identity is its content:
+1. the log holds more than *n* STAMPED emits of that identity; and
+2. no syscall of the current segment has been executed LIVE in this run. That means every step
+   and every decision so far in the segment was served from the log. Whether a syscall is served
+   is decided by the log, not by timing.
 
-- `d = fnv1a64(canonical JSON of [eventType, payload])`, where the canonical form is the
-  PERSISTED JSON form (JSON.stringify semantics: `toJSON` applied, function/symbol/undefined
-  members dropped) with object keys sorted.
-- The run keeps a count of how many emits of each digest it has made so far, whether served or
-  appended.
-- The *n*-th emit of `d` (from 0) is **served** (nothing is appended) iff the log holds more than
-  *n* stamped emits of `d`. Otherwise it is **appended**, and stamped `metadata.flowEmit = d`
-  (D4 decides the stamp).
+**Stamp.** An appended emit is stamped, so that it can serve a later re-run, only when:
 
-What this buys:
+- it goes beyond the logged count;
+- none of this context's effects or deciders is executing (D4); and
+- nothing earlier in THIS run ended unsettled. Unsettled means an outcome a re-run does not serve:
+  an untyped failure, a timeout, a cancellation, an in-doubt park, or a decider that threw.
 
-- **Interleaving cannot change the outcome.** Emits of identical content are interchangeable,
-  so which one of them is served does not matter. The multiset of skip decisions per digest is
-  the same under any ordering of concurrent branches. The reviewer's counterexample to ordinals
-  is a committed test: a branch's `b-done` fires in a different place relative to a re-executing
-  sibling step on every re-run, and `after` still appears exactly once.
-- **Code changes append instead of displacing.**
-  - A deploy that ADDS an emit before a gate produces a new digest, and it is appended once.
-  - An EDITED emit is new content and is appended once. The old version stays in the log as what
-    the old code emitted, which is not a loss.
-  - A REMOVED emit simply is not re-made.
-  - A REORDERED emit is still served.
-- **A payload with no JSON form** (a BigInt, a cycle past the depth cap) has no digest. It is
-  appended unstamped, on every re-run. This is a duplicate by design, because nothing can prove it
-  was a replay.
-- **Collisions.** A 64-bit collision between two different contents could serve one in place of
-  the other. The probability is about k²/2^65 for k distinct emits in one execution, which is
-  negligible at any realistic k. It is stated here rather than hidden.
+So a stamp exists only for an emit whose path a re-run reproduces from logged facts, and a
+stamp can serve only its own re-emission.
 
-Cost, measured on a heavily loaded machine (load average 300–500, so these numbers are upper
-bounds):
+**Residual loss condition (exact).** An emit is served in place of a new one only when the
+re-run does not reproduce a stamped emit of the same content in the same segment AND no syscall
+before it in that segment is live. Under the determinism contract (ADR 0057 gate order, ADR 0061
+step identity: the sequence of syscalls is a pure function of logged inputs), that happens only
+when:
 
-- the digest of a ~300-byte payload: tens of µs;
-- `fnv1a64` itself, after the limb rewrite (D6): ~14 µs per 314 bytes, against ~144 µs for the
-  BigInt version it replaces, with bit-identical output.
+- (a) **a code change** moves or replaces an emit of identical content within one gate segment
+  whose syscalls are all served. The segment's log then already holds that content the number of
+  times the new code emits it; a committed test pins this outcome;
+- (b) **flow code violates the determinism contract**, for example by branching on a clock or a
+  random number before an emit; or
+- (c) **a 64-bit digest collision**, with probability about k²/2^65 for k distinct emits.
 
-### D4 — What gets STAMPED: an emit appended while none of the run's own effects or deciders is executing
+**Duplicates that remain (bounded, never a loss):**
 
-The stamp decides whether an appended emit can serve a later re-run. That is the only place
-in-flight state is consulted, and it can only ever REMOVE a stamp.
+- an emit in a segment where a step re-executes, or after an unsettled outcome, is appended again
+  on each re-run that re-executes it. Declaring the failure channel (ADR 0060) makes such steps
+  served, and the emits converge;
+- an emit appended while one of the run's own effects or deciders is executing is appended once
+  more on the next re-run that makes it outside that window;
+- a payload with no JSON form is appended on every re-run;
+- a pre-1.19.0 log re-emits its prefix once (D8);
+- a deploy that edits an emit appends the new content, and the old content stays in the log.
 
-- An emit appended while one of this context's effects or deciders is executing may come from
-  inside it. The documented case is a closure over `ctx`, such as the
-  `chunkDeltas((t) => ctx.stream(...))` sink wired to an effect's `onDelta`.
-- Such an emit does not recur when the step or decision is served on a re-run. Had it been
-  stamped, it would sit in the log as an unmatched stamp, and a later, genuinely new emit of the
-  SAME content would look already-logged. That is a loss, and a committed test pins it with an
-  identical `ctx.ui.append` made inside an effect and again after a gate.
-- So the emit is appended **unstamped**: it never serves anything.
-- An effect counts as executing until the effect ITSELF settles, not until the step's deadline
-  wins the race. A timed-out step's zombie effect that emits through the flow `ctx` is therefore
-  unstamped too, and the next live emit of the same content is appended, not served. A test
-  pins this.
+### D3 — Identity: a content digest scoped by gate segment
 
-Why this does not violate D2: the skip decision (D3) never reads in-flight state. Timing
-decides only between "stamped" and "unstamped", and an unstamped emit can only cause a later
-DUPLICATE, never a loss. The bounded cost: a flow-code emit caught in the window (made while
-one of its own steps is still un-awaited) is appended once more on the next re-run that makes it
-outside the window. It repeats on every re-run only if every re-run re-executes an overlapping
-step (an untyped failure under legacy re-execution). A test pins the one-extra-copy case.
+`d = fnv1a64(segment | canonical JSON of [eventType, payload])`.
+
+- **The canonical form** is the PERSISTED JSON form (JSON.stringify semantics: `toJSON` applied,
+  function, symbol and undefined members dropped) with object keys sorted. A `Map` or `Set` has
+  no enumerable keys and canonicalises to `{}`. That is harmless, because it also persists as
+  `{}`.
+- **The segment** is the number of gate passthroughs the run had consumed at the emit. It is the
+  same counter `suspend` uses to match gates ordinally (ADR 0057), so it is a function of the
+  log, not of timing. Scoping by segment makes each turn of a long-lived session (ADR 0081)
+  independent: a `ui.increment` in turn 3 is never compared with one in turn 1. It also means a
+  deploy that removes an emit in one segment and emits the same content in a later segment
+  appends the new one.
+- **Why content and not position.** Emits of identical content are interchangeable, so the set
+  of skip decisions per identity does not depend on how concurrent branches interleave. The
+  round-0 ordinal design lost emits on exactly that (D7).
+- **A payload with no JSON form** has no digest. It is appended unstamped every time.
+
+Cost, measured on a heavily loaded machine (so upper bounds): tens of µs for the digest of a
+~300-byte payload; `fnv1a64` itself ~14 µs per 314 bytes after the D6 rewrite, against ~144 µs
+for BigInt.
+
+### D4 — Two run-local guards, both decided by the log, and the in-flight window
+
+- **The live guard** (`segmentLive`) is set when a step is NOT served (it passes the completed
+  and typed-failure short-circuits) or when a decider is actually invoked. It is reset at the
+  next gate passthrough.
+  - Once it is set, nothing later in the segment is served, because the run has left what the
+    log proves.
+  - Under concurrency it can only add duplicates: an emit that races ahead of the live syscall is
+    still served only if condition 1 of D2 proves it.
+- **The unsettled flag** is set when a step or decider of this run ends in an outcome a re-run
+  does not serve. It is sticky for the rest of the run, across segments, because a later
+  segment's path may depend on that outcome, and the next re-run can re-execute the step and take
+  a different path. Every emit appended after it is left unstamped.
+  - This is what closes the reviewer's round-2 counterexample: an untyped transient failure's
+    `ui.increment` used to be stamped and then absorbed a later, genuinely new increment.
+- **The in-flight window.** An emit appended while this context's effects or deciders are
+  executing is appended unstamped. It may come from inside them, as a closure over `ctx` does
+  (the `chunkDeltas((t) => ctx.stream(...))` + `onDelta` pattern), and such an emit does not recur
+  when the step is served.
+  - An effect counts as executing until the effect ITSELF settles, not until its deadline wins
+    the race, so a timed-out step's zombie is covered.
+  - Timing therefore decides only between "stamped" and "unstamped", and an unstamped emit can
+    only cause a later duplicate.
+- **Mutation-checked.** Each guard has a committed test that fails without it:
+  - live guard: a deploy inserts a live step before identical content;
+  - unsettled flag: the reviewer's P2, and the timeout zombie;
+  - segment scope: a deploy removes an emit and re-emits the content in a later segment;
+  - in-flight window: identical content emitted inside an effect and inside a decider.
 
 ### D5 — The fold: one generic step, keyed on the stamp (EVENT_SCHEMA 1.19.0)
 
@@ -157,13 +186,20 @@ either.
   - The trie measures flat: ~5 µs per stamped emit at k = 10 000 and k = 50 000.
   - Within a multi-event replay pass, fold-owned nodes are updated in place, which gives O(1)
     amortized (the `appendAudit` ownership rule).
-- **Size.** One leaf entry per DISTINCT stamped emit, about 21 bytes of JSON each: roughly 210 KiB
-  of snapshot for 10 000 distinct emits. That is less than the events themselves occupy in the
-  log.
+- **Size.** One leaf entry per DISTINCT stamped identity, about 21 bytes of JSON each, summed
+  over segments: roughly 210 KiB of snapshot for 10 000.
+  - Growth is driven by how many distinct flow-level emits a flow makes, which in practice means
+    the granularity of flow-level `ctx.stream` chunks. Emits made inside effects are never
+    stamped, so they add nothing.
+  - Segment scoping adds one entry per turn for content repeated every turn.
+  - Old segments' counts CANNOT be dropped: a re-run starts from the top and replays every
+    segment, and each segment's emits must still be served. Dropping them would re-append a whole
+    session's history on the next resume. The bound is the log itself: the counts are never
+    larger than the stamped emits they describe.
 - A log that never stamps never gains the key, and replays byte-identically.
-- The counts live in folded state, so they ride snapshots and survive `truncatePrefix` compaction.
-  Committed tests check `fold(snapshot, suffix) == fold(events)` both after compaction and after
-  a mid-run snapshot.
+- The counts live in folded state, so they ride snapshots and survive `truncatePrefix`
+  compaction. Committed tests check `fold(snapshot, suffix) == fold(events)` both after
+  compaction and after a mid-run snapshot.
 - `copyPrefix` (fork) merges fork provenance INTO the copied metadata, so the stamps survive, and
   a forked child serves its inherited prefix.
 - `FOLD_VECTORS` gains a vector. A foreign fold that ignores envelope metadata fails it.
@@ -187,11 +223,17 @@ by a randomized differential test against the BigInt definition.
   on a re-run, the ordinals shift, and a live emit after the gate was skipped FOREVER while an
   earlier one duplicated on every resume. A timed-out step's zombie and a deploy that added an
   emit lost emits the same way. The reviewer's counterexample is now a committed test.
+- **(rejected, shipped in fix round 1 and tightened in round 2) Pure content matching**,
+  global and unscoped. A stamp the re-run does not reproduce absorbs a later, genuinely new emit
+  of the same content. The reviewer's P2 shows it: an untyped transient failure's
+  `ui.increment` swallowed a later step's increment on every resume. It is fixed by D2's gate
+  segment, live guard and unsettled rule, each pinned by a test that fails without it.
 - **(rejected) Ordinal plus a rolling digest**: keep ordinals, fold a rolling hash of the stamped
   prefix, and stop skipping at the first divergence. It detects divergence but cannot avoid it.
   A branch interleaving that differs on a re-run diverges at its first emit, so every later emit
   of that re-run is appended: a duplicate storm on exactly the concurrent flows the defect hits.
-  Content matching has no prefix to diverge from.
+  D2's live guard is the part of this idea that survives, keyed on served-versus-live syscalls
+  (a fact of the log) instead of on emit order (a fact of timing).
 - **(rejected) Anchoring each emit to the preceding completed syscall**. That is replay-stable
   only for a single sequential chain. With concurrent branches, the "preceding" syscall of a
   branch's emit is whichever sibling completed last, which is timing again. Making it stable would
@@ -216,12 +258,12 @@ No migration is needed. A test pins this.
 - Consumers that asserted the duplicate count were asserting the bug. Across `loom-examples` and
   `loom-plugins`, one did: `db-sentinel`'s "replays a month-3 finding" test counted the re-appended
   `FINDING_RECORDED`. Its property is now observed at the retrieval, in `loom-examples`' own change.
-- An emit's CONTENT is its identity. A flow that emits identical content more than once gets
-  them served by count. A flow whose emits depend on unlogged data (a wall clock, a random
+- An emit's CONTENT, within its gate segment, is its identity. A flow that emits identical
+  content more than once in a segment gets them served by count. A flow whose emits depend on unlogged data (a wall clock, a random
   number) produces new content on each re-run, so those emits are appended again. That flow was
   already non-deterministic under ADR 0057 and ADR 0061, and it now duplicates rather than
   loses.
-- Duplicates remain possible and bounded (D3, D4, D8); a lost emit does not, except through a
-  64-bit digest collision (D3).
+- Duplicates remain possible and bounded (D2). The exact residual loss conditions are D2 (a),
+  (b) and (c).
 - `KERNEL_ABI_VERSION` stays 1.1.0. `EVENT_SCHEMA_VERSION` 1.18.0 → 1.19.0 (additive: a fold key,
   no event kind, no payload field).

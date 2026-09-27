@@ -1,6 +1,6 @@
 import { agentSurfaceProjection } from "@loom/agent-surface";
 import type { SurfaceState } from "@loom/agent-surface";
-import { step$ } from "@loom/core";
+import { TypedFailure, step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryBranchRegistry } from "@loom/event-runtime";
@@ -437,8 +437,233 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
       }
     );
     const logs = await driveGates(h, "e-probe", ["go1", "go2"]);
+    // Nothing is lost. A fails UNTYPED, so it re-executes on every re-run: b-done shares
+    // its segment with a live step, and everything after A's unsettled failure depends on
+    // an outcome no re-run reproduces from the log — both are appended again each re-run
+    // (fix round 2: a duplicate, never a loss). The typed twin below converges.
+    expect(logs.map((log) => count(log, "b-done"))).toEqual([1, 2, 3]);
+    expect(logs.map((log) => count(log, "after"))).toEqual([0, 1, 2]);
+  });
+
+  it("the same probe with A failing on a DECLARED channel is served and converges", async () => {
+    const h = boot(
+      async (ctx) => {
+        await Promise.all([
+          (async () => {
+            try {
+              await ctx.run(stepA, {});
+            } catch {
+              /* typed failure: recorded, substituted on replay (ADR 0060) */
+            }
+          })(),
+          (async () => {
+            await ctx.run(stepB, {});
+            ctx.emit("b-done", {});
+          })(),
+        ]);
+        await ctx.suspend({ on: "go1" });
+        ctx.emit("after", {});
+        await ctx.suspend({ on: "go2" });
+        return { done: true };
+      },
+      {
+        effects: (e) => {
+          e.register(
+            "tool-a",
+            new ToolEffect(
+              async () => {
+                await new Promise((r) => setTimeout(r, 1));
+                throw new TypedFailure("flaky", {});
+              },
+              { errors: { flaky: z.object({}) } }
+            )
+          );
+          e.register(
+            "tool-b",
+            new ToolEffect(async () => {
+              await new Promise((r) => setTimeout(r, 30));
+              return { ok: true };
+            })
+          );
+        },
+      }
+    );
+    const logs = await driveGates(h, "e-probe-typed", ["go1", "go2"]);
     expect(logs.map((log) => count(log, "b-done"))).toEqual([1, 1, 1]);
     expect(logs.map((log) => count(log, "after"))).toEqual([0, 1, 1]);
+  });
+
+  // ── Fix round 2 — a stamp the re-run does not reproduce must not absorb a new emit ─
+  //
+  // The reviewer's P2: identical content (`ui.increment`) on both sides of a gate, each
+  // behind an untyped failure. Under round 1, A's original increment (from a transient
+  // failure that succeeds on re-execution) was a stamp nothing reproduced, and it
+  // absorbed B's genuinely new increment on go1 and go2.
+  it("reviewer P2: an unreproduced stamp never absorbs a later identical emit", async () => {
+    let aCalls = 0;
+    const h = boot(
+      async (ctx) => {
+        try {
+          await ctx.run(stepA, {});
+        } catch {
+          ctx.ui.increment("failures", 1);
+        }
+        await ctx.suspend({ on: "go1" });
+        try {
+          await ctx.run(stepB, {});
+        } catch {
+          ctx.ui.increment("failures", 1);
+        }
+        await ctx.suspend({ on: "go2" });
+        return { done: true };
+      },
+      {
+        effects: (e) => {
+          e.register(
+            "tool-a",
+            new ToolEffect(async () => {
+              if (aCalls++ === 0) throw new Error("transient");
+              return { ok: true };
+            })
+          );
+          e.register(
+            "tool-b",
+            new ToolEffect(async () => {
+              throw new Error("b down");
+            })
+          );
+        },
+      }
+    );
+    const logs = await driveGates(h, "e-p2", ["go1", "go2"]);
+    // A failed once (1). B fails on go1 (2) and — untyped, so re-executed — again on go2
+    // (3): every real failure is counted, none is absorbed.
+    expect(logs.map((log) => count(log, "SURFACE_PATCH"))).toEqual([1, 2, 3]);
+    expect(foldSurface(logs.at(-1)!)).toEqual({ failures: 3 });
+  });
+
+  it("crash recovery: a step re-executed with a different outcome never loses the emit it causes", async () => {
+    const never = new Promise<Io>(() => {
+      /* the stranded worker is gone */
+    });
+    const runner: FlowRunner<Io, Io> = async (ctx) => {
+      ctx.ui.increment("failures", 1); // identical content to the one S may cause
+      const out = (await ctx.run(stepB, {})) as { bad?: boolean };
+      if (out.bad === true) ctx.ui.increment("failures", 1);
+      return { done: true };
+    };
+    const a = boot(runner, { effects: (e) => e.register("tool-b", new ToolEffect(() => never)) });
+    void a.runtime.start(a.flow, {}, { executionId: "e-crash2" });
+    await settle();
+    expect(count(await a.eventStore.read("e-crash2"), "SURFACE_PATCH")).toBe(1);
+
+    // A fresh process: S (in flight at the crash) re-executes, and this time reports bad.
+    const b = boot(runner, {
+      stores: a.stores,
+      effects: (e) => e.register("tool-b", new ToolEffect(async () => ({ bad: true }))),
+    });
+    const summary = await recoverAbandoned(b.runtime, {
+      source: b.eventStore,
+      isAbandoned: () => true,
+    });
+    expect(summary.recovered).toBe(1);
+    const log = await b.eventStore.read("e-crash2");
+    expect(log.at(-1)?.eventType).toBe("EXECUTION_COMPLETED");
+    // The pre-crash increment is served once; the one S's new outcome causes is appended
+    // (S ran live, so nothing after it in the segment is taken for a replay).
+    expect(foldSurface(log)).toEqual({ failures: 2 });
+  });
+
+  it("a deploy that removes an emit: the old one stays as history, content that recurs later is appended", async () => {
+    const v1: FlowRunner<Io, Io> = async (ctx) => {
+      ctx.ui.increment("n", 1);
+      await ctx.suspend({ on: "go1" });
+      await ctx.suspend({ on: "go2" });
+      return { done: true };
+    };
+    const first = boot(v1);
+    await (
+      await first.runtime.start(first.flow, {}, { executionId: "e-removed" })
+    ).waitForSuspend();
+
+    // v2 removes the pre-gate increment and increments after go1 instead: a different
+    // gate segment, so it is new content and appended, not served by v1's stamp.
+    const v2: FlowRunner<Io, Io> = async (ctx) => {
+      await ctx.suspend({ on: "go1" });
+      ctx.ui.increment("n", 1);
+      await ctx.suspend({ on: "go2" });
+      return { done: true };
+    };
+    const second = boot(v2, { stores: first.stores });
+    await (
+      await second.runtime.resume("e-removed", { eventType: "go1", payload: {} })
+    ).waitForSuspend();
+    await (
+      await second.runtime.resume("e-removed", { eventType: "go2", payload: {} })
+    ).waitForCompletion();
+    expect(foldSurface(await second.eventStore.read("e-removed"))).toEqual({ n: 2 });
+  });
+
+  it("a deploy that inserts a step: an emit after the live step is appended, not served by an old stamp", async () => {
+    const v1: FlowRunner<Io, Io> = async (ctx) => {
+      ctx.ui.increment("n", 1);
+      await ctx.suspend({ on: "go1" });
+      await ctx.suspend({ on: "go2" });
+      return { done: true };
+    };
+    const first = boot(v1);
+    await (
+      await first.runtime.start(first.flow, {}, { executionId: "e-inserted" })
+    ).waitForSuspend();
+
+    // v2 drops the unconditional increment and inserts a new step whose outcome decides
+    // an increment of the SAME content in the SAME segment. The new step runs live, so the
+    // increment after it cannot be proven a replay of v1's and is appended.
+    const v2: FlowRunner<Io, Io> = async (ctx) => {
+      const r = (await ctx.run(stepA, {})) as { bad?: boolean };
+      if (r.bad === true) ctx.ui.increment("n", 1);
+      await ctx.suspend({ on: "go1" });
+      await ctx.suspend({ on: "go2" });
+      return { done: true };
+    };
+    const second = boot(v2, {
+      stores: first.stores,
+      effects: (e) => e.register("tool-a", new ToolEffect(async () => ({ bad: true }))),
+    });
+    await (
+      await second.runtime.resume("e-inserted", { eventType: "go1", payload: {} })
+    ).waitForSuspend();
+    expect(foldSurface(await second.eventStore.read("e-inserted"))).toEqual({ n: 2 });
+    // On go2 the step is served, the increment is proven by v1's stamp, and nothing repeats.
+    await (
+      await second.runtime.resume("e-inserted", { eventType: "go2", payload: {} })
+    ).waitForCompletion();
+    expect(foldSurface(await second.eventStore.read("e-inserted"))).toEqual({ n: 2 });
+  });
+
+  // The documented residual (ADR 0102 D2): a deploy that MOVES an emit later within the
+  // SAME gate segment, with every syscall before it served, is served by the old stamp —
+  // the segment's log already holds that content once, which is what the new code emits.
+  it("residual, pinned: an emit moved later within the same segment is served by its old stamp", async () => {
+    const v1: FlowRunner<Io, Io> = async (ctx) => {
+      ctx.ui.increment("n", 1);
+      await ctx.decide("route", () => "left");
+      await ctx.suspend({ on: "go1" });
+      return { done: true };
+    };
+    const first = boot(v1);
+    await (await first.runtime.start(first.flow, {}, { executionId: "e-moved" })).waitForSuspend();
+    const v2: FlowRunner<Io, Io> = async (ctx) => {
+      await ctx.decide("route", () => "left");
+      ctx.ui.increment("n", 1);
+      await ctx.suspend({ on: "go1" });
+      return { done: true };
+    };
+    const second = boot(v2, { stores: first.stores });
+    await (
+      await second.runtime.resume("e-moved", { eventType: "go1", payload: {} })
+    ).waitForCompletion();
+    expect(foldSurface(await second.eventStore.read("e-moved"))).toEqual({ n: 1 });
   });
 
   it("a timed-out step's zombie effect emitting through the flow ctx never costs a live emit", async () => {
@@ -478,10 +703,11 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
       }
     );
     const logs = await driveGates(h, "e-zombie", ["go1", "go2"]);
-    // Original run: the zombie's tick (unstamped: its effect had not settled). On the
-    // re-run the anchored deadline fails the step at once and the zombie never runs;
-    // the live tick after go1 is appended (the zombie's never counted) and then served.
-    expect(logs.map((log) => count(log, "tick"))).toEqual([1, 2, 2]);
+    // Original run: the zombie's tick (unstamped: its effect had not settled). On each
+    // re-run the anchored deadline fails the step at once — an untyped timeout, which a
+    // re-run never serves — so the live tick after go1 is never provable and is appended
+    // on every re-run. What matters: it is never absorbed by the zombie's tick.
+    expect(logs.map((log) => count(log, "tick"))).toEqual([1, 2, 3]);
   });
 
   it("a code change that adds an emit before a gate appends it; an edited emit is new content", async () => {
