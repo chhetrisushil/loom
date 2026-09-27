@@ -30,10 +30,11 @@
   },
   "devDependencies": {
     "@loom/middleware": "workspace:*",
+    "@loom/plugin-crypto": "workspace:*",
+    "@loom/plugin-sqlite": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
-    "zod": "^3.23.8",
-    "@loom/plugin-sqlite": "workspace:*"
+    "zod": "^3.23.8"
   }
 }

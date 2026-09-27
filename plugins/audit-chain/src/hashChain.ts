@@ -1,6 +1,11 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { EventEnvelope } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
+import {
+  type DecoratorPlan,
+  type EventStore,
+  type OptionalEventStoreMethod,
+  installOptional,
+} from "@loom/event-runtime";
 
 // ── Tamper-evident hash-chained event store ───────────────────────────────────
 //
@@ -218,25 +223,14 @@ export function hashChainedEventStore(
 
   const store: HashChainedEventStore = {
     async append(envelope: EventEnvelope): Promise<void> {
-      const prevHash = await priorHashFor(envelope.executionId);
-      const hash = hashEvent(prevHash, envelope);
-      const chain: ChainMetadata = signer
-        ? { prevHash, hash, sig: signer.sign(hash), keyId: signer.keyId }
-        : secret
-          ? { prevHash, hash, sig: signHash(secret, hash) }
-          : { prevHash, hash };
-      const stamped: EventEnvelope = {
-        ...envelope,
-        metadata: { ...envelope.metadata, auditChain: chain },
-      };
+      const stamped = stamp(envelope, await priorHashFor(envelope.executionId));
       await inner.append(stamped);
       // Only advance the chain head after a durable append succeeds — a rejected
       // append (e.g. stale fence) must not poison the next event's prevHash. Drop the
       // cache entry once the execution reaches a terminal event so the map stays
       // bounded to in-flight executions (a long-lived writer would otherwise grow it
       // by one entry per execution, forever).
-      if (TERMINAL_EVENTS.has(envelope.eventType)) lastHash.delete(envelope.executionId);
-      else lastHash.set(envelope.executionId, hash);
+      advance(stamped, (chainOf(stamped) as ChainMetadata).hash);
     },
     read: (executionId) => inner.read(executionId),
     readFrom: (executionId, fromSequence) => inner.readFrom(executionId, fromSequence),
@@ -313,18 +307,63 @@ export function hashChainedEventStore(
       }
       return { ok: true, length: events.length, signaturesChecked };
     },
-    ...(inner.head !== undefined && { head: inner.head.bind(inner) }),
-    ...(inner.readRange !== undefined && { readRange: inner.readRange.bind(inner) }),
-    ...(inner.acquireFence !== undefined && { acquireFence: inner.acquireFence.bind(inner) }),
-    ...(inner.copyPrefix !== undefined && { copyPrefix: inner.copyPrefix.bind(inner) }),
-    ...(inner.deleteExecution !== undefined && {
-      deleteExecution: async (executionId: string): Promise<void> => {
-        lastHash.delete(executionId); // drop the cache entry with the log
-        await (inner.deleteExecution as (id: string) => Promise<void>)(executionId);
-      },
-    }),
-    ...(inner.truncatePrefix !== undefined && { truncatePrefix: inner.truncatePrefix.bind(inner) }),
   };
+
+  // Stamp one envelope onto `prevHash`. Shared by `append` and `appendBatch`.
+  const stamp = (envelope: EventEnvelope, prevHash: string): EventEnvelope => {
+    const hash = hashEvent(prevHash, envelope);
+    const chain: ChainMetadata = signer
+      ? { prevHash, hash, sig: signer.sign(hash), keyId: signer.keyId }
+      : secret
+        ? { prevHash, hash, sig: signHash(secret, hash) }
+        : { prevHash, hash };
+    return { ...envelope, metadata: { ...envelope.metadata, auditChain: chain } };
+  };
+
+  // Advance the cached head after a DURABLE append — never before (see `append`).
+  const advance = (envelope: EventEnvelope, hash: string): void => {
+    if (TERMINAL_EVENTS.has(envelope.eventType)) lastHash.delete(envelope.executionId);
+    else lastHash.set(envelope.executionId, hash);
+  };
+
+  // Every optional method decided over the whole union (ADR 0074 Amendment).
+  const plan = {
+    // Group by execution in one pass (a Map keeps arrival order), resolve each execution's
+    // prior hash ONCE, chain sequentially within each group, and emit in the ORIGINAL array
+    // order — the SPI's per-execution order. The heads advance only after the batch is
+    // durable, the same rule as `append`: a rejected batch must not poison the next prevHash.
+    appendBatch: async (envelopes: readonly EventEnvelope[]): Promise<void> => {
+      if (envelopes.length === 0) return;
+      const distinct = new Map<string, string>();
+      for (const e of envelopes) distinct.set(e.executionId, "");
+      await Promise.all(
+        [...distinct.keys()].map(async (id) => distinct.set(id, await priorHashFor(id)))
+      );
+      const stamped = envelopes.map((e) => {
+        const next = stamp(e, distinct.get(e.executionId) as string);
+        distinct.set(e.executionId, (chainOf(next) as ChainMetadata).hash);
+        return next;
+      });
+      await (inner.appendBatch as (es: readonly EventEnvelope[]) => Promise<void>)(stamped);
+      for (const e of stamped) advance(e, (chainOf(e) as ChainMetadata).hash);
+    },
+    head: "forward",
+    readRange: "forward",
+    acquireFence: "forward",
+    copyPrefix: "forward",
+    deleteExecution: async (executionId: string): Promise<void> => {
+      lastHash.delete(executionId); // drop the cache entry with the log
+      await (inner.deleteExecution as (id: string) => Promise<void>)(executionId);
+    },
+    // Compaction keeps sequence 0 and drops (0..through], so the first surviving event's
+    // prevHash names an event that no longer exists and `verifyChain` reports a break
+    // (pinned in hashChain.test.ts). Offering it would let a routine compaction pass make
+    // every later audit fail; refusing it makes the chained log visibly non-compactable.
+    truncatePrefix: { refuse: "a truncated prefix breaks chain verification (ADR 0037)" },
+    listExecutions: "forward",
+    listExecutionsPage: "forward",
+  } satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;
+  installOptional<EventStore, OptionalEventStoreMethod>(store, inner, plan);
 
   return store;
 }

@@ -1,5 +1,10 @@
 import type { EventEnvelope } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
+import {
+  type DecoratorPlan,
+  type EventStore,
+  type OptionalEventStoreMethod,
+  installOptional,
+} from "@loom/event-runtime";
 import type { ContentStore } from "./ContentStore";
 import {
   type ContentRef,
@@ -37,9 +42,14 @@ export interface ContentResolvingEventStoreOptions {
  * the chain hashes only the ref string, so a rewritten blob verifies clean. See
  * `hashChainedEventStore`'s note and `contentOrdering.test.ts`.
  *
- * **Reclamation caveat (v1):** `deleteExecution`/`truncatePrefix` remove the log's events but
- * do NOT delete the referenced blobs — refcounted blob GC (forks share content) is a separate
- * step, deferred per ADR 0046's risks. Erase content explicitly via `contentStore.delete(ref)`.
+ * **Claim-check envelopes are left alone.** An ADR 0054 envelope (`__loomClaimCheck`) is read
+ * back verbatim — its `ref` is resolved only by the claim-check plugin, it may be reclaimed on a
+ * TTL (ADR 0055 D4), and its bytes need not be JSON. A bare ref beside it still resolves.
+ *
+ * **Reclamation:** `deleteExecution`/`truncatePrefix` remove the log's events but do NOT
+ * delete the referenced blobs — forks share content, so a blob outlives any one log. Blobs are
+ * reclaimed by the separate mark-and-sweep `sweepUnpinnedContent` (ADR 0055, which closed the
+ * ADR 0046 "refcounted blob GC" follow-up); erase one explicitly via `contentStore.delete(ref)`.
  */
 /**
  * Own-key lookup for a caller-controlled event type. Plain indexing would resolve
@@ -56,7 +66,7 @@ function pathsFor(
 
 export class ContentResolvingEventStore implements EventStore {
   private readonly externalize: Record<string, readonly string[]>;
-  // A tip is a sequence number — no payload to resolve, so it forwards unchanged.
+  readonly appendBatch?: NonNullable<EventStore["appendBatch"]>;
   readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
@@ -64,6 +74,7 @@ export class ContentResolvingEventStore implements EventStore {
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
   readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
+  readonly listExecutionsPage?: NonNullable<EventStore["listExecutionsPage"]>;
 
   constructor(
     private readonly inner: EventStore,
@@ -71,43 +82,43 @@ export class ContentResolvingEventStore implements EventStore {
     options: ContentResolvingEventStoreOptions
   ) {
     this.externalize = options.externalize;
-    if (inner.head !== undefined) {
-      this.head = (executionId) => inner.head!(executionId);
-    }
-    if (inner.readRange !== undefined) {
-      this.readRange = (executionId, from, to) =>
-        inner.readRange!(executionId, from, to).then((evs) => this.resolveAll(executionId, evs));
-    }
-    if (inner.acquireFence !== undefined) {
-      this.acquireFence = (executionId) => inner.acquireFence!(executionId);
-    }
-    // Refs are content-addressed: copying them verbatim makes the fork share the parent's
-    // blobs (dedup for free) — no decrypt/re-wrap step (contrast the crypto plugin's keys).
-    if (inner.copyPrefix !== undefined) {
-      this.copyPrefix = (from, to, through, metadata) =>
-        inner.copyPrefix!(from, to, through, metadata);
-    }
-    // Forwarded so a content-wrapped store keeps its retention/compaction capabilities. These
-    // reclaim EVENTS only; blob reclamation is separate (see the class note).
-    if (inner.deleteExecution !== undefined) {
-      this.deleteExecution = (executionId) => inner.deleteExecution!(executionId);
-    }
-    if (inner.truncatePrefix !== undefined) {
-      this.truncatePrefix = (executionId, through) => inner.truncatePrefix!(executionId, through);
-    }
-    // Enumeration is over executionIds only — no payload, so no resolution needed.
-    if (inner.listExecutions !== undefined) {
-      this.listExecutions = () => inner.listExecutions!();
-    }
+    // Every optional method decided over the whole union (ADR 0074 Amendment), each
+    // installed only when the inner store has it.
+    const plan = {
+      // Externalize every envelope concurrently, then ONE round-trip. Puts are
+      // content-addressed and idempotent, so a blob orphaned by a failed batch is exactly
+      // what a failed `append` orphans today (and the sweep reclaims it). `Promise.all`
+      // keeps array order, the SPI's per-execution order.
+      appendBatch: async (envelopes) =>
+        inner.appendBatch!(await Promise.all(envelopes.map((e) => this.externalizeEnvelope(e)))),
+      // A tip is a sequence number — no payload to resolve, so it forwards unchanged.
+      head: "forward",
+      readRange: (executionId, from, to) =>
+        inner.readRange!(executionId, from, to).then((evs) => this.resolveAll(executionId, evs)),
+      acquireFence: "forward",
+      // Refs are content-addressed: copying them verbatim makes the fork share the parent's
+      // blobs (dedup for free) — no decrypt/re-wrap step (contrast the crypto plugin's keys).
+      copyPrefix: "forward",
+      // Forwarded so a content-wrapped store keeps its retention/compaction capabilities.
+      // These reclaim EVENTS only; blob reclamation is separate (see the class note).
+      deleteExecution: "forward",
+      truncatePrefix: "forward",
+      // Enumeration is over executionIds only — no payload, so no resolution needed.
+      listExecutions: "forward",
+      listExecutionsPage: "forward",
+    } satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;
+    installOptional<EventStore, OptionalEventStoreMethod>(this, inner, plan);
+  }
+
+  private async externalizeEnvelope(envelope: EventEnvelope): Promise<EventEnvelope> {
+    const paths = pathsFor(this.externalize, envelope.eventType);
+    if (paths === undefined || paths.length === 0) return envelope; // unmarked → verbatim (G2)
+    const payload = await mapPathsAsync(envelope.payload, paths, (v) => this.externalizeValue(v));
+    return { ...envelope, payload };
   }
 
   async append(envelope: EventEnvelope): Promise<void> {
-    const paths = pathsFor(this.externalize, envelope.eventType);
-    if (paths === undefined || paths.length === 0) {
-      return this.inner.append(envelope); // unmarked → verbatim (G2)
-    }
-    const payload = await mapPathsAsync(envelope.payload, paths, (v) => this.externalizeValue(v));
-    return this.inner.append({ ...envelope, payload });
+    return this.inner.append(await this.externalizeEnvelope(envelope));
   }
 
   private async externalizeValue(value: unknown): Promise<ContentRef> {

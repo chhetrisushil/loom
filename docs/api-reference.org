@@ -462,6 +462,8 @@ interface ExecutionContext {
 
 *Retiring an abandoned branch.* Retention never reclaims an execution while a live descendant branch still has events (R5.3) — and a branch nobody answered is suspended forever, so a forked parent returns ~blocked-by-branch~ on every sweep, permanently. ~retireAbandonedBranches(runtime, registry, parentId, { isAbandoned })~ (~@loom/workflow-runtime~) walks that parent's direct children, offers the non-terminal ones to your predicate, and ~cancel()~s the ones it claims — a durable ~EXECUTION_CANCELLED~, not a deletion, so *why* the branch ended survives. Ordinary retention then collects the branch on its own TTL and the parent behind it. ~isAbandoned~ is REQUIRED, for the same reason ~recoverAbandoned~'s is: a branch parked on a human gate is someone's open question, not garbage. The summary reports what it left alone.
 
+*Retention and compaction of an encrypted log (ADR 0022 Amendment).* ~LogLifecycle.compact~ throws ~UnsafeCompactionError~ when the event store encrypts at rest (exposes ~keys~) and the snapshot store does not share that same KeyStore — the checkpoint is the DECRYPTED fold, so a plaintext one would survive a key shred. ~applyRetention~ / ~evaluate~ return ~"unsafe-archive"~ (a ~RetentionOutcome~) when a configured archive does not share the source's keys. Both refuse before anything is read, copied or truncated. A compacted execution is judged on its snapshot plus the surviving suffix, so it is reclaimable.
+
 *Collecting the registry.* After retention reclaims a branch, two rows outlive it. ~LogLifecycle~ forgets the fork edge as it deletes the execution (optional ~removeLineage~ — dead edges otherwise make every future sweep walk them). ~pruneBranchRefs(eventStore, registry, { pageSize?, limit?, protect? })~ (~@loom/workflow-runtime~) pages over ~listRefs~ and deletes refs whose execution has no events — a dangling ref is not merely untidy, since promoting one leaves ~main~ naming an execution nobody can read. It takes NO predicate: unlike "is this branch abandoned", "the execution is gone" is a fact. ~main~ is protected by default and reported as dangling instead.
 
 *Cancellation, deadlines & bounded effects (2.0, K8).* A step's ~timeoutMs~ bounds a single effect; a flow's ~deadlineMs~ (see ~FlowDefinition~) bounds the whole run against the logged ~EXECUTION_STARTED~ timestamp (never reset by recovery). Breach — or ~handle.cancel()~ / ~ExecutionRuntime.cancel()~ — aborts in-flight effects via ~EffectContext.signal~ and records a kernel-driven ~EXECUTION_CANCELLED~.
@@ -616,6 +618,27 @@ class TenantScopedEventStore    implements EventStore    { constructor(inner: Ev
 class TenantScopedSnapshotStore implements SnapshotStore { constructor(inner: SnapshotStore, tenant: string) }  // @loom/snapshot-runtime
 #+end_src
 
+*Writing a store decorator (ADR 0074 Amendment).* A decorator must decide EVERY optional SPI method: forward it, override it, or refuse it with a reason. One that silently drops a method takes the capability away from everything above it — four in-repo decorators dropped ~appendBatch~, so ~Coalescing(TenantScoped(backend))~ never batched. ~installOptional~ installs a plan whose type is a mapped type over the whole optional union, so a new SPI method is a compile error in every decorator until it decides; each method is installed only when the inner store has it (capability probes unchanged), refusals are recorded, and the structural encryption marker (~keys~) is carried up so ~LogLifecycle~'s key rule and ~loom doctor~ still see an encrypting store below. ~runEventStoreDecoratorConformance~ (~@loom/conformance~) is the check.
+
+#+begin_src typescript
+type OptionalEventStoreMethod = "appendBatch" | "readRange" | "head" | "acquireFence" | "copyPrefix"
+  | "deleteExecution" | "truncatePrefix" | "listExecutions" | "listExecutionsPage";  // derived from EventStore
+const OPTIONAL_EVENT_STORE_METHODS: readonly OptionalEventStoreMethod[]            // compile-time exhaustive
+type DecoratorPlan<S, M extends keyof S> = { readonly [K in M]: "forward" | NonNullable<S[K]> | { readonly refuse: string } };
+function installOptional<S extends object, M extends keyof S>(target: S, inner: S, plan: DecoratorPlan<S, M>, bindTo?: object): void
+function refusalsOf(store: object): ReadonlyMap<string, string>                    // what installOptional recorded as refused
+// @loom/snapshot-runtime: OptionalSnapshotStoreMethod ("deleteExecution"), OPTIONAL_SNAPSHOT_STORE_METHODS
+
+class Tenant implements EventStore {
+  readonly appendBatch?: NonNullable<EventStore["appendBatch"]>;   // …one field per optional method
+  constructor(private readonly inner: EventStore) {
+    const plan = { appendBatch: (envs) => inner.appendBatch!(envs.map(scope)), head: "forward", /* …all nine */ }
+      satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;
+    installOptional<EventStore, OptionalEventStoreMethod>(this, inner, plan);
+  }
+}
+#+end_src
+
 ** ~@loom/snapshot-runtime~ — bounded-tail replay
 
 #+begin_src typescript
@@ -744,6 +767,8 @@ interface HashChainedEventStore extends EventStore {
 }
 // compose BELOW tenant-scoping and ABOVE the base store, and OUTSIDE ContentResolvingEventStore —
 // inside it, the chain only ever sees a ref string and rewriting the blob is silent
+// optional SPI: every method forwarded (appendBatch chains per execution, heads advance only after
+// the batch is durable) EXCEPT truncatePrefix, REFUSED — a compacted log fails verifyChain
 #+end_src
 
 * Effects — ~@loom/effect-runtime~
@@ -2219,6 +2244,11 @@ A backend is conformant if it passes the kit, not if it looks right. Every kit i
 #+begin_src typescript
 function runEventStoreConformance(factory: () => EventStore, label?: string): void
 function runSnapshotStoreConformance(factory, label?): void
+// a store DECORATOR: every optional method survives a full-capability inner (or is refused with a
+// reason), the `keys` encryption marker survives, then the whole SPI suite runs THROUGH it
+function runEventStoreDecoratorConformance(label: string, wrap: (inner: EventStore) => EventStore,
+  options?: { refused?: Partial<Record<OptionalEventStoreMethod, string>>; inner?: () => EventStore }): void
+function runSnapshotStoreDecoratorConformance(label, wrap, options?): void
 function runBranchRegistryConformance(factory, label?): void
 function runExecutionDispatcherConformance(factory, label?): void
 function runTimerStoreConformance(factory, label?): void

@@ -47,11 +47,33 @@ export function decodeValue(bytes: Uint8Array): unknown {
   return JSON.parse(UTF8_DECODER.decode(bytes));
 }
 
+/**
+ * An ADR 0054 claim-check envelope, recognised structurally with the same test as
+ * `@loom/middleware`'s `isClaimCheck` (`__loomClaimCheck === true` AND a string
+ * `ref.__loomContent`), so this plugin takes no dependency for it (ADR 0055 D3).
+ *
+ * The read-side walkers below treat one as a LEAF. An envelope is resolved only by the
+ * claim-check plugin (`resolveClaimCheck`): its `ref` is a TTL-reclaimable citation whose
+ * erasure the fold never sees, and its bytes may not be JSON (`codec: "bytes"`). Descending
+ * into it replaced `ref` with the decoded value, threw `ContentMissingError` once the sweep
+ * had reclaimed the blob, and failed outright on a binary one (ADR 0055 D4's known gap).
+ */
+function isClaimCheckEnvelope(value: object): boolean {
+  const v = value as { __loomClaimCheck?: unknown; ref?: { __loomContent?: unknown } };
+  return (
+    v.__loomClaimCheck === true &&
+    typeof v.ref === "object" &&
+    v.ref !== null &&
+    typeof v.ref.__loomContent === "string"
+  );
+}
+
 /** Whether a payload carries any {@link ContentRef} (the read-side fast path). */
 export function hasContentRef(value: unknown): boolean {
   if (isContentRef(value)) return true;
   if (Array.isArray(value)) return value.some(hasContentRef);
   if (typeof value === "object" && value !== null) {
+    if (isClaimCheckEnvelope(value)) return false; // the claim-check plugin's to resolve
     return Object.values(value as Record<string, unknown>).some(hasContentRef);
   }
   return false;
@@ -74,6 +96,7 @@ export function collectContentRefs(value: unknown, into: Map<string, ContentRef>
     return found;
   }
   if (typeof value === "object" && value !== null) {
+    if (isClaimCheckEnvelope(value)) return false; // a leaf: see isClaimCheckEnvelope
     let found = false;
     for (const v of Object.values(value as Record<string, unknown>)) {
       if (collectContentRefs(v, into)) found = true;
@@ -111,6 +134,7 @@ export function substituteContentRefs(
     return changed ? out : value;
   }
   if (typeof value === "object" && value !== null) {
+    if (isClaimCheckEnvelope(value)) return value; // a leaf: see isClaimCheckEnvelope
     let changed = false;
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {

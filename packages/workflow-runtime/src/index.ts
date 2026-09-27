@@ -48,6 +48,7 @@ export {
 } from "./pruneBranchRefs";
 export {
   LogLifecycle,
+  UnsafeCompactionError,
   type RetentionPolicy,
   type ArchiveStores,
   type RetentionOutcome,

@@ -1,6 +1,19 @@
 import { randomBytes } from "node:crypto";
+import {
+  runEventStoreDecoratorConformance,
+  runSnapshotStoreDecoratorConformance,
+} from "@loom/conformance";
+import type { EventEnvelope } from "@loom/core";
+import {
+  CoalescingEventStore,
+  type EventStore,
+  InMemoryAsyncEventStore,
+} from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
+import { EncryptingEventStore } from "./EncryptingEventStore";
+import { EncryptingSnapshotStore } from "./EncryptingSnapshotStore";
 import { decryptValue, encryptValue, hasEnvelope, mapPaths } from "./crypto";
+import { InMemoryKeyStore } from "./keystore";
 
 describe("field-level AES-256-GCM envelope (K10.2)", () => {
   const key = randomBytes(32);
@@ -87,5 +100,106 @@ describe("field-level AES-256-GCM envelope (K10.2)", () => {
     const input = { people: "not-an-array", other: 1 };
     expect(mapPaths(input, ["people[].ssn"], () => "X")).toEqual(input);
     expect(mapPaths({ other: 1 }, ["people[].ssn"], () => "X")).toEqual({ other: 1 });
+  });
+});
+
+// ── L1 / ADR 0074 Amendment — the decorators carry the whole optional SPI ────────────
+//
+// `sensitive` covers the kit's own event shape, so the conformance suite that runs THROUGH
+// the decorator round-trips real ciphertext rather than a verbatim pass-through.
+
+const KIT_SENSITIVE = { STEP_COMPLETED: ["sequence"] };
+
+runEventStoreDecoratorConformance(
+  "EncryptingEventStore",
+  (inner) => new EncryptingEventStore(inner, new InMemoryKeyStore(), { sensitive: KIT_SENSITIVE })
+);
+runSnapshotStoreDecoratorConformance(
+  "EncryptingSnapshotStore",
+  (inner) =>
+    new EncryptingSnapshotStore(inner, new InMemoryKeyStore(), { sensitive: ["workflowId"] })
+);
+
+describe("EncryptingEventStore under the coalescer (ADR 0074 Amendment)", () => {
+  const evt = (executionId: string, sequence: number): EventEnvelope => ({
+    id: `${executionId}-${sequence}`,
+    workflowId: "wf",
+    executionId,
+    eventType: "STEP_COMPLETED",
+    sequence,
+    timestamp: 1000 + sequence,
+    payload: { sequence, ssn: `ssn-${executionId}` },
+  });
+
+  it("Coalescing(Encrypting(backend)) batches — the backend never sees a single append", async () => {
+    const raw = new InMemoryAsyncEventStore();
+    const calls = { append: 0, appendBatch: 0 };
+    const counting: EventStore = {
+      append: (e) => {
+        calls.append++;
+        return raw.append(e);
+      },
+      appendBatch: (es) => {
+        calls.appendBatch++;
+        return raw.appendBatch(es);
+      },
+      read: (id) => raw.read(id),
+      readFrom: (id, f) => raw.readFrom(id, f),
+      subscribe: (id, h) => raw.subscribe(id, h),
+      close: () => raw.close(),
+    };
+    const store = new CoalescingEventStore(
+      new EncryptingEventStore(counting, new InMemoryKeyStore(), {
+        sensitive: { STEP_COMPLETED: ["ssn"] },
+      })
+    );
+    await Promise.all(Array.from({ length: 50 }, (_, i) => store.append(evt(`x${i}`, 0))));
+    expect(calls.appendBatch).toBeGreaterThanOrEqual(1);
+    expect(calls.append).toBe(0);
+    // Ciphertext at rest, plaintext through the decorator.
+    expect(hasEnvelope((await raw.read("x3"))[0]?.payload)).toBe(true);
+    expect((await store.read("x3"))[0]?.payload).toEqual({ sequence: 0, ssn: "ssn-x3" });
+    await store.close();
+  });
+
+  it("appendBatch resolves each DISTINCT subject's key once, not once per envelope", async () => {
+    const keys = new InMemoryKeyStore();
+    const lookups: string[] = [];
+    const counted = Object.assign(Object.create(keys) as InMemoryKeyStore, {
+      getOrCreate: (subject: string) => {
+        lookups.push(subject);
+        return keys.getOrCreate(subject);
+      },
+    });
+    const store = new EncryptingEventStore(new InMemoryAsyncEventStore(), counted, {
+      sensitive: { STEP_COMPLETED: ["ssn"] },
+      subjectOf: (e) => (e.executionId.startsWith("a") ? "subject-a" : "subject-b"),
+    });
+    await store.appendBatch!([
+      evt("a1", 0),
+      evt("a2", 0),
+      evt("b1", 0),
+      evt("a1", 1),
+      evt("b1", 1),
+    ]);
+    expect(lookups.sort()).toEqual(["subject-a", "subject-b"]);
+    // Order preserved and every envelope readable.
+    expect((await store.read("a1")).map((e) => e.sequence)).toEqual([0, 1]);
+    expect((await store.read("b1")).map((e) => e.payload)).toEqual([
+      { sequence: 0, ssn: "ssn-b1" },
+      { sequence: 1, ssn: "ssn-b1" },
+    ]);
+  });
+
+  it("forwards deleteExecution and truncatePrefix (ciphertext only shrinks) — the LogLifecycle key rule guards what leaves", async () => {
+    const raw = new InMemoryAsyncEventStore();
+    const store = new EncryptingEventStore(raw, new InMemoryKeyStore(), {
+      sensitive: { STEP_COMPLETED: ["ssn"] },
+    });
+    for (let i = 0; i < 4; i++) await store.append(evt("t", i));
+    await store.truncatePrefix!("t", 2);
+    expect((await raw.read("t")).map((e) => e.sequence)).toEqual([0, 3]);
+    await store.deleteExecution!("t");
+    expect(await raw.read("t")).toEqual([]);
   });
 });

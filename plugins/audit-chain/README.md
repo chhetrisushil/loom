@@ -44,6 +44,10 @@ if (!v.ok) console.error(`log tampered at seq ${v.brokenAt}: ${v.reason}`);
   why `ContentStore` has no verify-on-read obligation: the correct ordering gives blob
   integrity for one hash per write instead of one per read, across the whole log rather than
   just externalized fields.)
-- **Truncation tension (honest)** — `verifyChain` assumes an un-truncated log. K10 compaction
-  (`truncatePrefix`) deletes prefix events and breaks the chain at the new head; verify (and archive)
-  the full chain *before* truncating.
+- **No compaction through the chain** — `verifyChain` assumes an un-truncated log, and K10
+  compaction (`truncatePrefix`) deletes prefix events, which breaks the chain at the new head.
+  So the chained store **refuses** `truncatePrefix` (ADR 0074 Amendment). `LogLifecycle.compact`
+  over it returns `null` instead of producing a log that fails every later audit. Retention
+  (`deleteExecution`) and enumeration (`listExecutions*`) are forwarded, as is every other
+  optional method; `appendBatch` chains each execution in order and advances the head only
+  after the batch is durable.
