@@ -152,4 +152,67 @@ Transient sinks (`@loom/live-query`, `progressHub`) do not need it — there, pe
   served. Plus recall bounded by `recallLimit`, and a G2 control where neither is configured.
 - `agentLoopCompaction.test.ts` — the transcript folds once the threshold is crossed and stops
   tracking conversation length; the summary is its own `:compact` frame; an un-configured loop still
-  grows (the behaviour being bounded). Plus `chunkDeltas` boundary, `minChars` and flush behaviour.
+  grows (the behaviour being bounded). Plus a byte-based trigger (below), the constructor guard, and
+  `chunkDeltas` boundary, `minChars` and flush behaviour.
+
+## Amendment (2026-09-27) — D5 corrected: claim-check does not bound the growing quantity; a byte-based compaction trigger
+
+A 2026-09-27 backlog audit (Part L item 7) found D5's "bytes per turn" half wrong for the quantity
+that actually grows, and a second, undocumented surprise for adopters who *do* use claim-check on an
+agent's tools.
+
+**How the log actually grows.** Every turn is `ctx.execute(..., { messages, tools, system })`, and
+the kernel journals the whole call as its `STEP_STARTED` `input` (`WorkflowContext.ts:163`,
+`emit("STEP_STARTED", { stepId, input })`). Turn *k* therefore records the whole *k*-message
+transcript, so **uncompacted log bytes are O(n²) in turn count** (Σk·|messages|). `afterMessages`
+compaction bounds this to O(n) by capping each turn's input at `keepRecent + 1` messages — that part
+was always correct.
+
+**What D5 got wrong: claim-check bounds a different quantity.** `claimCheckMiddleware` offloads a
+tool's RESULT — the value an effect returns — not the transcript an agent re-sends on every
+subsequent turn (`packages/middleware/src/claimCheck.ts:139`, `(ctx, _input, next)`: input is
+ignored). D5 named it as the "bytes per turn" answer; it is not. One oversized tool result still
+rides along, uncompacted, in every later turn's journaled `STEP_STARTED` input until it ages past
+`keepRecent` on message COUNT alone — `afterMessages` never looked at bytes.
+
+**The claim-check contract toward the model: documented, not a resolve hook.** The envelope IS the
+recorded and returned value (ADR 0054); `toolResultContent` (`packages/agent/src/toolResultContent.ts`)
+JSON-stringifies it as-is, so a claim-checked tool's result reaches the model as
+`{"tool":…,"result":{"__loomClaimCheck":true,"ref":…,"digest":…}}` plus whatever the middleware's
+`digests[toolId]` projected — a reference and a digest, not the resolved body. This is correct for
+replay (resolving the envelope's bytes into the transcript would put them into the NEXT turn's
+journaled `STEP_STARTED` input, undoing the very offload claim-check exists for) and is now the
+supported, documented shape: **declare a `digests[toolId]` projection for every tool a claim-checking
+agent calls**, so the model sees something legible instead of a bare hash. An `AgentLoopConfig`
+`resolveToolResult` hook was considered and rejected — it would resolve the envelope back into the
+model-facing message, which is exactly the growth this amendment bounds, and it duplicates what a
+digest already does at the point the envelope is produced.
+
+**The fix: `compaction.afterBytes`, alongside the original `afterMessages`.** `agentLoop$` maintains
+a running UTF-8 byte count of the transcript, updated at every message push (O(1) amortized per
+message, never a re-serialization of the array — see `messageBytes` in `agentLoop$.ts`), and folds
+once either threshold is crossed. The byte trigger has its own kept-suffix rule, distinct from
+`afterMessages`'s fixed `keepRecent` count: the longest run of the newest messages whose bytes total
+at most `afterBytes / 2`, floored at 1 (the newest message always reaches the model) and capped at
+`keepRecent`. If that suffix already covers the whole transcript — one message alone is over the
+threshold — compaction is skipped for that turn rather than paying a summary call that folds
+nothing. At least one of `afterMessages` / `afterBytes` is required; the constructor throws if
+neither is set.
+
+The trigger is a pure function of already-journaled message content (never wall-clock, never
+anything outside the recorded turn history), so it recomputes identically on replay: a recovered
+execution decides to compact, and folds the same messages, at the same point a live run would have.
+
+**The lossless option, for adopters who need it, is not built here.** `ContentResolvingEventStore`
+(ADR 0046) already externalizes by reference — `externalize: { STEP_STARTED: ["input.messages"] }`
+keeps the journaled input a pointer instead of inline bytes. That is the lossless answer to O(n²)
+growth; compaction is the lossy one. It is safe under the content sweep only *after* L5a (the sweep
+must not reclaim a still-referenced external input as TTL-eligible). Journaling `STEP_STARTED` input
+by reference or delta as a KERNEL default was considered and rejected: it is a kernel change to serve
+one consumer (bias against the kernel, ADR 0083).
+
+Verified by `agentLoopCompaction.test.ts`: an oversized tool result crosses `afterBytes` with
+`afterMessages` unmet; neither threshold crossed compacts nothing (negative); a single message alone
+over `afterBytes` skips rather than summarizing every turn; replaying a crashed-and-recovered run
+recomputes the identical `:compact` step payload; the constructor guard fires on a compaction block
+with neither threshold set and does not reject `afterBytes` alone.
