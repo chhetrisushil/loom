@@ -268,15 +268,16 @@ describe("ADR 0103 — the barrier's ordering, and the ulid path's byte-identity
     const app = boot(new InMemoryAsyncEventStore(), { trace });
     const handle = await app.runtime.start(FLOW, {});
     await handle.waitForCompletion();
-    // Today's order, pinned: the journal folds + fires onEvent synchronously and enqueues
-    // the durable write behind it, for every event including the bootstrap.
+    // Main's order, pinned (re-measured on main after ADR 0102, whose emit path shifted one
+    // microtask): the journal folds + fires onEvent synchronously and enqueues the durable
+    // write behind it, for every event including the bootstrap.
     expect(trace).toEqual([
       "onEvent:EXECUTION_STARTED@0",
       "onEvent:STEP_STARTED@1",
       "append:EXECUTION_STARTED@0",
       "onEvent:STEP_COMPLETED@2",
-      "onEvent:EXECUTION_COMPLETED@3",
       "append:STEP_STARTED@1",
+      "onEvent:EXECUTION_COMPLETED@3",
       "append:STEP_COMPLETED@2",
       "append:EXECUTION_COMPLETED@3",
     ]);
