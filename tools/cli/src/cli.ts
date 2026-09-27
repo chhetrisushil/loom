@@ -115,8 +115,10 @@ export const USAGE = `loom — project-local commands for a Loom app
   loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
   loom census <store> [--buckets 5m,1h,6h,24h]    what is stuck, and is anything watching it
                                                   (read-only; takes no predicate)
-  loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--apply]
+  loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]
                                                   re-drive executions whose supervisor died
+                                                  (--max-recoveries: skip + list those whose
+                                                   last N re-drives made no progress)
                                                   (needs \`timers.leases\` or --stale; --apply
                                                    needs --config: re-driving runs the flow)
   loom branches retire <store> --parent <id> --stale <d> [--limit N] [--apply]
@@ -178,6 +180,9 @@ async function main(argv: string[]): Promise<number> {
           ...(flags.stale !== undefined && { stale: flags.stale }),
           ...(flags.owner !== undefined && { owner: flags.owner }),
           ...(flags.limit !== undefined && { limit: Number.parseInt(flags.limit, 10) }),
+          ...(flags["max-recoveries"] !== undefined && {
+            maxRecoveries: Number(flags["max-recoveries"]),
+          }),
           apply: flags.apply === "true",
         })
       );

@@ -1,7 +1,9 @@
+import type { EventEnvelope } from "@loom/core";
 import {
   type ExecutionEnumerable,
   type LeaseStore,
   iterateExecutionIds,
+  readRangeOf,
 } from "@loom/event-runtime";
 import type { TimerDispatcher } from "./TimerService";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
@@ -88,16 +90,26 @@ export interface RecoverAbandonedOptions {
   /** Stop after this many successful recoveries. Default: unlimited. */
   limit?: number;
   /**
-   * ADR 0105 — skip an execution this many recoveries have already re-driven. A recovery is
-   * counted from the log (`EXECUTION_RECOVERED` events), so the bound holds across passes,
-   * processes and nodes. An execution that keeps crashing its re-drive (a poison step, an
-   * error text its store refuses) otherwise costs every pass another at-least-once run of its
-   * interrupted step, forever. Skipped executions are reported (`exhausted`,
-   * `onExhausted`) and left for an operator. Default: unbounded, as before. Setting it costs
-   * one log read per candidate.
+   * ADR 0105 — skip an execution whose last `maxRecoveries` re-drives made NO progress. The
+   * count is CONSECUTIVE: the `EXECUTION_RECOVERED` events at the tail of the log since its
+   * last sign of progress (`STEP_COMPLETED`, `EXECUTION_SUSPENDED` or `EXECUTION_RESUMED`), so a
+   * healthy long-lived execution recovered many times over its life, each time moving on, is
+   * never stranded — only one that crashes its re-drive the same way every time (a poison
+   * step, an error text its store refuses) is. Read from the log, so the bound holds across
+   * passes, processes and nodes.
+   *
+   * Checked only for an execution the predicate (or an expired lease) already claimed, and
+   * before this pass claims a lease, so a live execution is never reported and nothing needs
+   * releasing. Skipped executions are counted in `exhausted` and reported through
+   * `onExhausted`; they stay `running` for an operator (cancel, or fix and re-drive), and are
+   * reported again by the next pass. Must be ≥ 1. Default: unbounded, as before.
+   *
+   * Cost: a backward read of the log's tail in pages, stopping at the first progress event or
+   * the bound — O(tail since progress), not O(log). Compaction (`truncatePrefix`) can only
+   * shorten the tail it sees, so it can undercount (re-drive once more), never overcount.
    */
   maxRecoveries?: number;
-  /** Called for each candidate skipped because it reached `maxRecoveries`. */
+  /** Called for each claimed candidate skipped because it reached `maxRecoveries`. */
   onExhausted?: (executionId: string, recoveries: number) => void;
   /** Enumeration page size. Default 1000. */
   pageSize?: number;
@@ -140,7 +152,7 @@ export interface RecoverAbandonedSummary {
   recovered: number;
   /** Those the predicate claimed but whose resume threw (left for the next pass). */
   failed: number;
-  /** Candidates skipped because `maxRecoveries` re-drives are already in their log. */
+  /** Claimed candidates skipped: `maxRecoveries` consecutive re-drives made no progress. */
   exhausted: number;
 }
 
@@ -189,8 +201,9 @@ export async function recoverAbandoned(
     exhausted: 0,
   };
   const maxRecoveries = options.maxRecoveries;
-  if (maxRecoveries !== undefined && (!Number.isSafeInteger(maxRecoveries) || maxRecoveries < 0)) {
-    throw new Error("recoverAbandoned: `maxRecoveries` must be a non-negative integer");
+  if (maxRecoveries !== undefined && (!Number.isSafeInteger(maxRecoveries) || maxRecoveries < 1)) {
+    // 0 would skip every candidate: a pass that recovers nothing while reading as if it ran.
+    throw new Error("recoverAbandoned: `maxRecoveries` must be an integer ≥ 1");
   }
 
   for await (const executionId of candidateIds(options)) {
@@ -203,15 +216,6 @@ export async function recoverAbandoned(
     if (state === null) continue;
     if (state.status !== "running" && state.status !== "pending") continue;
     summary.candidates++;
-
-    if (maxRecoveries !== undefined) {
-      const recoveries = await recoveriesOf(runtime, executionId, maxRecoveries);
-      if (recoveries >= maxRecoveries) {
-        summary.exhausted++;
-        options.onExhausted?.(executionId, recoveries);
-        continue;
-      }
-    }
 
     // With leases, reaching here IS the evidence: this id came from `expired()`. A predicate
     // may still narrow it, and is asked when given — so it never becomes a lie.
@@ -227,6 +231,20 @@ export async function recoverAbandoned(
             sequence: state.sequence,
           });
     if (!claimed) continue;
+
+    if (maxRecoveries !== undefined) {
+      const recoveries = await unproductiveRecoveries(
+        runtime,
+        executionId,
+        state.sequence,
+        maxRecoveries
+      );
+      if (recoveries >= maxRecoveries) {
+        summary.exhausted++;
+        options.onExhausted?.(executionId, recoveries);
+        continue;
+      }
+    }
     options.onCandidate?.(executionId);
 
     // A dry run stops HERE, before the claim: acquiring a lease is a write, and it would
@@ -325,15 +343,35 @@ async function* candidateIds(options: RecoverAbandonedOptions): AsyncGenerator<s
   yield* iterateExecutionIds(options.source as ExecutionEnumerable, options.pageSize);
 }
 
-/** `EXECUTION_RECOVERED` events in the log, counted up to `cap` (enough to decide). */
-async function recoveriesOf(
+/** A re-drive that got somewhere: a step finished, or the flow reached (or passed) a gate. */
+const PROGRESS = new Set(["STEP_COMPLETED", "EXECUTION_SUSPENDED", "EXECUTION_RESUMED"]);
+const TAIL_PAGE = 256;
+
+/**
+ * `EXECUTION_RECOVERED` events since the log's last progress event, counted up to `cap` (enough
+ * to decide). Reads the tail backwards in pages from `head`, so the cost is the events since
+ * progress, not the log.
+ */
+async function unproductiveRecoveries(
   runtime: WorkflowRuntime,
   executionId: string,
+  head: number,
   cap: number
 ): Promise<number> {
   let n = 0;
-  for (const e of await runtime.events.read(executionId)) {
-    if (e.eventType === EXECUTION_RECOVERED && ++n >= cap) break;
+  for (let hi = head; hi >= 0; hi -= TAIL_PAGE) {
+    const page = await readRangeOf(
+      runtime.events,
+      executionId,
+      Math.max(0, hi - TAIL_PAGE + 1),
+      hi
+    );
+    if (page.length === 0) break; // below a truncated prefix
+    for (let i = page.length - 1; i >= 0; i--) {
+      const type = (page[i] as EventEnvelope).eventType;
+      if (PROGRESS.has(type)) return n;
+      if (type === EXECUTION_RECOVERED && ++n >= cap) return n;
+    }
   }
   return n;
 }

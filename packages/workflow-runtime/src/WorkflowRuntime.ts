@@ -748,7 +748,7 @@ export class WorkflowRuntime {
         executionId,
         state.suspendedOn?.on ?? "<none>",
         "ambiguous-legacy-answers",
-        `human step "${ambiguous}" was parked by a pre-ADR 0104 kernel, and its log holds answers that cannot be told apart (it re-parked after an answer, or a recovery/in-doubt payload that answered no gate precedes it). Resuming would hand one of them to a later gate as its approval. Nothing was appended. Inspect the log, then resume with a SIGNED event carrying discardLegacyAnswers: { stepId: "${ambiguous}", count } to discard the entries that are not its answer, or cancel the execution.`
+        `human step "${ambiguous}" was parked by a pre-ADR 0104 kernel, and its log holds answers that cannot be told apart (it re-parked after an answer, or a recovery/in-doubt payload that answered no gate precedes it, or — ADR 0105 — an EVENT_SCHEMA 1.20.0 resumeAs recorded a status-only null at its park after a parallel step failed while it was parked). Resuming would hand one of them to a later gate as its approval. Nothing was appended. Inspect the log, then resume with a SIGNED event carrying discardLegacyAnswers: { stepId: "${ambiguous}", count } to discard the entries that are not its answer, or cancel the execution.`
       );
     }
     const verdict = report.verdict;
@@ -990,7 +990,9 @@ export class WorkflowRuntime {
       preloadedState,
       options
     );
-    const vm = new ReplayVM([], preloadedState);
+    // ADR 0105 — a preloaded state is a stored fold (often a snapshot's): repair a pre-1.21.0
+    // one the same way every snapshot read does.
+    const vm = new ReplayVM([], normalizeSnapshotState(preloadedState));
     const originalInput = preloadedState.variables._input;
     return this.execute(
       preloadedState.executionId,

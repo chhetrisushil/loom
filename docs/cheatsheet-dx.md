@@ -76,7 +76,7 @@ Both halves work for every storage command.
 
 | | |
 |---|---|
-| `loom recover <store> [--stale 15m] [--apply]` | re-drive executions whose supervisor died. Needs `timers.leases` **or** an explicit `--stale` — loom will not guess. `--apply` requires `--config`, because re-driving runs your flow. |
+| `loom recover <store> [--stale 15m] [--apply]` | re-drive executions whose supervisor died. Needs `timers.leases` **or** an explicit `--stale` — loom will not guess. `--apply` requires `--config`, because re-driving runs your flow. `--max-recoveries N` skips and lists executions whose last N re-drives made no progress (ADR 0105). |
 | `loom retention run <store> [--ttl ms] [--apply]` | reclaim aged terminal executions. Without a branchRegistry the live-descendant guard is **off**. |
 | `loom branches retire --parent <id> --stale <d>` | cancel branches nobody is coming back to — they keep the parent uncollectable |
 | `loom branches prune [--protect main]` | delete refs that name nothing; `main` is protected |

@@ -16,33 +16,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under a terminal status. A crash after the catch left an execution `recoverAbandoned` and the
   dispatcher would never re-drive, `cancel` refused, retention could prune as finished, and A2A
   peers polling it were told `failed` (`"unknown error"`). A parallel sibling failing AFTER the
-  flow parked did the same to a suspended execution: its gate could not be resumed and a timed
-  park never woke. `STEP_FAILED` now folds the frame only, like `STEP_CANCELLED`;
+  flow parked did the same to a suspended execution: its gate could not be resumed, and
+  `TimerService` retired a timed park's row as obsolete. `STEP_FAILED` now folds the frame only, like `STEP_CANCELLED`;
   `EXECUTION_FAILED`, which the kernel commits when a failure escapes the runner, stays the
   execution's terminal failure.
 
   - **EVENT_SCHEMA 1.21.0** (no new kind or payload field; KERNEL_ABI unchanged). A `null`
     `EXECUTION_RESUMED` after `EXECUTION_SUSPENDED` + a late `STEP_FAILED` is now the parked
     gate's answer; 1.20.0 read it as a status-only re-open, and a 1.20.0 `resumeAs` wrote exactly
-    that entry. The runtime warns about such entries on resume (`ambiguousNullResumes` from
-    `inspectStrayPassthroughs`).
+    that entry. At a plain gate the runtime warns on resume (`ambiguousNullResumes` from
+    `inspectStrayPassthroughs`); at an open human step's park the resume is refused
+    (`ambiguous-legacy-answers`) unless an authenticated `discardLegacyAnswers` resolves it. Known
+    residual: such a log's outcome depends on whether a 1.20.0 suspend snapshot is read (the gate
+    takes the operator's answer) or the log alone (the gate takes the `null`) — see ADR 0105 D3.
   - Snapshots saved by an older fold are repaired on read: `normalizeSnapshotState`
     (`@loom/replay-vm`, new export) reads `failed` with no `_error` and a failed frame as
-    `running` (`suspended` when parked).
+    `running` (`suspended` when parked) — on every stored-fold read, including `restoreFromState`.
+  - New `reconcileTimers(runtime, { source, timers })` (`@loom/workflow-runtime`) re-arms the
+    timer row of every execution suspended on a `wakeAt` (idempotent). Needed once after
+    upgrading: a timed park whose sibling failed under the old fold had its row retired by
+    `TimerService`, and now reads `suspended` with nothing to wake it.
   - **Behaviour change:** when the `EXECUTION_FAILED` write itself fails, the run now rejects with
     `StorageWriteError` (`cause` = the store's error) instead of the step's error — the log folds
-    `running`, so the caller must not be told "failed".
-  - `recoverAbandoned` takes an optional `maxRecoveries` (counted from `EXECUTION_RECOVERED`
-    events; default unbounded); executions at the bound are skipped, counted in
-    `summary.exhausted` (new field) and reported through `onExhausted`.
+    `running`, so the caller must not be told "failed". `handle.getState()` and `onEvent` remain
+    the in-memory view (they saw the commit) and read `failed`.
+  - `recoverAbandoned` takes an optional `maxRecoveries` (≥ 1; default unbounded): the number of
+    CONSECUTIVE re-drives without progress (`EXECUTION_RECOVERED` at the log's tail since the
+    last `STEP_COMPLETED` / `EXECUTION_SUSPENDED` / `EXECUTION_RESUMED`), checked only for claimed
+    candidates. Executions at the bound are skipped, counted in `summary.exhausted` (new field)
+    and reported through `onExhausted`. `loom recover --max-recoveries N` lists them.
   - `loom eval` goldens that pinned `status: "failed"` for a log ending after a caught failure
     now fail and must be re-recorded.
   - **Upgrade note.** On the first deploy every stored execution whose log ends after a caught
     step failure changes from `failed` to `running`. A staleness-predicate `recoverAbandoned`
     pass then selects all of them, however old, and re-drives each (re-executing an untyped
     failing effect; a changed flow hash throws on every pass), and `LogLifecycle` stops pruning
-    them. Before enabling recovery: run `orphanCensus` or `recoverAbandoned({ dryRun: true })`,
-    bound `isAbandoned` by age, cancel what should not resume, and set `maxRecoveries`.
+    them; timed parks whose row the old `TimerService` retired never wake. Before enabling
+    recovery: run `orphanCensus` or `recoverAbandoned({ dryRun: true })`, bound `isAbandoned` by
+    age, cancel what should not resume, set `maxRecoveries`, and run `reconcileTimers` once.
 
 - **`@loom/workflow-runtime`: a gate is answered only by a resume addressed to it**
   ([ADR 0104](docs/adr/0104-recovery-never-answers-a-gate.md)). **Security fix.**

@@ -37,7 +37,7 @@ function head(action: string, apply: boolean, detail: string): string {
 
 /**
  * `loom recover (--config <module> | --db <events.db>) [--stale 15m] [--owner <id>]
- *   [--limit N] [--apply]`
+ *   [--limit N] [--max-recoveries N] [--apply]`
  *
  * Re-drives executions whose supervisor died. Two ways to decide what counts as abandoned,
  * and the command insists on one of them:
@@ -49,8 +49,21 @@ function head(action: string, apply: boolean, detail: string): string {
  * execution owned by a healthy node elsewhere looks exactly like an orphaned one.
  */
 export async function cmdRecover(
-  flags: StoreFlags & { stale?: string; owner?: string; limit?: number; apply: boolean }
+  flags: StoreFlags & {
+    stale?: string;
+    owner?: string;
+    limit?: number;
+    /** ADR 0105 — skip executions whose last N re-drives made no progress (≥ 1). */
+    maxRecoveries?: number;
+    apply: boolean;
+  }
 ): Promise<string> {
+  if (
+    flags.maxRecoveries !== undefined &&
+    (!Number.isSafeInteger(flags.maxRecoveries) || flags.maxRecoveries < 1)
+  ) {
+    return "loom recover: --max-recoveries must be an integer ≥ 1 (0 would skip every execution).";
+  }
   const stores = await resolveStores(flags);
   try {
     const staleMs = flags.stale === undefined ? undefined : parseDuration(flags.stale);
@@ -82,6 +95,7 @@ export async function cmdRecover(
     const runtime = stores.runtime ?? foldingRuntime(stores);
     const found: string[] = [];
     const failed: string[] = [];
+    const exhausted: string[] = [];
     const summary = await recoverAbandoned(runtime, {
       ...(stores.eventStore.listExecutions !== undefined && {
         source: {
@@ -96,6 +110,10 @@ export async function cmdRecover(
         isAbandoned: (c) => Date.now() - c.updatedAt > staleMs,
       }),
       ...(flags.limit !== undefined && { limit: flags.limit }),
+      ...(flags.maxRecoveries !== undefined && {
+        maxRecoveries: flags.maxRecoveries,
+        onExhausted: (id: string, n: number) => exhausted.push(`${id} (${n})`),
+      }),
       dryRun: !flags.apply,
       fenced: true,
       onCandidate: (id) => found.push(id),
@@ -111,13 +129,25 @@ export async function cmdRecover(
     const lines = [
       head("recover", flags.apply, `${summary.scanned} scanned — evidence: ${evidence}`),
     ];
-    if (found.length === 0) return `${lines[0]}\n  (nothing abandoned)`;
+    // Exhausted executions are reported whatever else happened: they are the ones an operator
+    // must act on (cancel, or fix and re-drive), because no pass will touch them again.
+    const exhaustedLines =
+      exhausted.length > 0
+        ? [
+            `exhausted: ${summary.exhausted} (no progress in the last ${flags.maxRecoveries} re-drives; left for you)`,
+            ...exhausted.map((id) => `  ${id}`),
+          ]
+        : [];
+    if (found.length === 0) {
+      return [`${lines[0]}`, "  (nothing abandoned)", ...exhaustedLines].join("\n");
+    }
     lines.push(
       ...found.map((id) => `  ${id.padEnd(28)} ${flags.apply ? "recovered" : "would recover"}`)
     );
     if (flags.apply) lines.push(`recovered: ${summary.recovered}  failed: ${summary.failed}`);
     else lines.push(`would recover: ${found.length}`);
     if (failed.length > 0) lines.push(`  failed: ${failed.join(", ")}`);
+    lines.push(...exhaustedLines);
     return lines.join("\n");
   } finally {
     await stores.close();
