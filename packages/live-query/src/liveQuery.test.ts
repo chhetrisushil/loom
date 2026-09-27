@@ -342,6 +342,46 @@ function withHoldableSubscribe(inner: EventStore & Required<Pick<EventStore, "he
   };
 }
 
+/**
+ * Same hold/release freeze as {@link withHoldableSubscribe}, but deliberately WITHOUT
+ * `head` — proves the empty-delta eager-recovery check tolerates its absence rather than
+ * falling back to an unbounded read (which would break the O(N) bound) or fabricating a
+ * signal it doesn't have.
+ */
+function withHoldableSubscribeNoHead(inner: InMemoryAsyncEventStore): {
+  store: EventStore;
+  hold: () => void;
+  release: () => void;
+} {
+  let held = false;
+  let deliver: ((e: EventEnvelope) => void) | undefined;
+  const queued: EventEnvelope[] = [];
+  const store: EventStore = {
+    append: (e) => inner.append(e),
+    read: (id) => inner.read(id),
+    readFrom: (id, from) => inner.readFrom(id, from),
+    // no `head` — deliberately omitted
+    subscribe: (id, handler) => {
+      deliver = handler;
+      return inner.subscribe(id, (event) => {
+        if (held) queued.push(event);
+        else handler(event);
+      });
+    },
+  };
+  return {
+    store,
+    hold: () => {
+      held = true;
+    },
+    release: () => {
+      held = false;
+      const q = queued.splice(0);
+      for (const e of q) deliver?.(e);
+    },
+  };
+}
+
 const COMPACT_TICKS = 6;
 
 function buildCompactFlow(): RegisteredFlow<IO, IO> {
@@ -425,6 +465,66 @@ describe("liveQuery — LogLifecycle.compact races a live subscription", () => {
     await new LogLifecycle(rawEventStore, snapshotStore).compact("e1");
 
     release(); // no new event after compaction — the eventual delta is EMPTY
+    await tick();
+
+    expect(seen.at(-1)).toEqual(await runtime.loadState("e1"));
+    unsub();
+  });
+
+  it("without `head`, an empty-delta compaction gap leaves the subscriber silent/stale — never a wrong state — and self-heals on the next real event", async () => {
+    const loopFlow = buildCompactFlow();
+    const rawEventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    // Deliberately no `head` on this wrapper: the empty-delta eager-recovery check has
+    // nothing to consult, so it must not fire (and must not fabricate a read to get one).
+    const { store, hold, release } = withHoldableSubscribeNoHead(rawEventStore);
+
+    const runtime = new WorkflowRuntime({
+      eventStore: store,
+      snapshotStore,
+      effectRuntime: new EffectRuntime(),
+    });
+    runtime.registerFlow(loopFlow.definition, loopFlow.runner);
+
+    const lq = liveQuery({ eventStore: store, reader: runtime });
+    const seen: ExecutionState[] = [];
+
+    await (await runtime.start(loopFlow, { n: 1 }, { executionId: "e1" })).waitForSuspend();
+    const unsub = await lq.subscribe("e1", (s) => seen.push(s));
+    await tick();
+    const staleState = seen.at(-1);
+    const countBeforeLag = seen.length;
+
+    hold();
+    for (let i = 0; i < 3; i++) {
+      await (await runtime.resume("e1", { eventType: "TICK", payload: {} })).waitForSuspend();
+    }
+    const compactedThrough = await new LogLifecycle(rawEventStore, snapshotStore).compact("e1");
+
+    release(); // no new event after compaction, and no `head` to detect the gap either way
+    await tick();
+
+    // No `head`: the empty-delta check can't run, so nothing is emitted at all — the
+    // subscriber stays exactly where it was (stale), never a silently-wrong state.
+    expect(seen.length).toBe(countBeforeLag);
+    expect(seen.at(-1)).toEqual(staleState);
+
+    // Self-heals regardless: append one more real event directly (a compaction-truncated
+    // execution still accepts new appends at the next sequence — resuming the FLOW here
+    // would race WorkflowRuntime's own in-memory sequencer against the truncation this
+    // test just forced, which is a different, unrelated interaction; a direct append
+    // keeps this test to exactly the gap-detection contract under test). Its delta is
+    // non-contiguous (everything between the stale tip and here was truncated), which the
+    // primary gap check catches independent of `head`.
+    await rawEventStore.append({
+      id: "e1-heal",
+      executionId: "e1",
+      workflowId: "lq-compact-flow",
+      eventType: "STEP_COMPLETED",
+      sequence: (compactedThrough ?? 0) + 1,
+      timestamp: Date.now(),
+      payload: { stepId: "heal" },
+    });
     await tick();
 
     expect(seen.at(-1)).toEqual(await runtime.loadState("e1"));
