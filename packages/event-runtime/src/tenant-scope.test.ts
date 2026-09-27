@@ -167,3 +167,14 @@ describe("K12.5 — tenant-scoped paged enumeration (L1: listExecutionsPage is n
     expect(await nobody.listExecutionsPage!({ limit: 2 })).toEqual({ executionIds: [] });
   });
 });
+
+describe("K12.5 — a tenant name cannot contain the separator", () => {
+  it('rejects a tenant containing \':\' — tenant "a" would otherwise prefix-match "a:b"\'s ids', () => {
+    const shared = new InMemoryAsyncEventStore();
+    // Tenant "a" scopes "b:x" to "a:b:x", which is exactly tenant "a:b"'s "x" — one tenant
+    // could address (and enumerate, via the prefix filter) another's executions.
+    expect(() => new TenantScopedEventStore(shared, "a:b")).toThrow(/separator/);
+    expect(() => new TenantScopedEventStore(shared, "")).toThrow(/tenant/);
+    expect(() => new TenantScopedEventStore(shared, "acme")).not.toThrow();
+  });
+});

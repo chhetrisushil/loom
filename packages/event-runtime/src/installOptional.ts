@@ -7,12 +7,16 @@
  * - `{ refuse: reason }` — deliberately NOT offered, with the reason recorded. The method is
  *   left uninstalled, so callers see exactly what they see for a store without it.
  *
- * A plan is a mapped type over the WHOLE optional-method union, so a new SPI method is a
- * compile error in every decorator until it decides which of the three it is. Silently
- * dropping a capability — the drift this exists to end — stops being expressible.
+ * What the compiler enforces: every key in `M` is REQUIRED (`-?` strips the `?` a mapped type
+ * over `S` would otherwise inherit from the optional SPI methods). So a decorator whose plan is
+ * `satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>` fails to compile if it omits
+ * any optional method — including one added to the SPI later, since `OptionalEventStoreMethod`
+ * is derived from the interface. Pinned by `decoratorPlan.typecheck.ts`, which `pnpm typecheck`
+ * checks. What it cannot enforce: that a decorator uses a plan at all — that is the decorator
+ * conformance kit's job, and the `packages/spec` fitness test makes every decorator run it.
  */
 export type DecoratorPlan<S, M extends keyof S> = {
-  readonly [K in M]: "forward" | NonNullable<S[K]> | { readonly refuse: string };
+  readonly [K in M]-?: "forward" | NonNullable<S[K]> | { readonly refuse: string };
 };
 
 // Refusals, keyed by the decorated object. A WeakMap so a discarded store takes its entry

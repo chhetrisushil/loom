@@ -21,6 +21,13 @@ const SEP = ":"; // ":" is not in the ULID alphabet — an unambiguous, collisio
  * retention skips an execution, a read model under-indexes. So the cost is O(ids in the
  * store) per full pass — what the whole-list fallback cost before — in bounded memory (one
  * inner page), and correct under any order a store returns.
+ *
+ * Worst case for ONE call: a sparse tenant (few ids spread through a large shared store) can
+ * make a single call walk many inner pages — up to the whole store — before it finds an id or
+ * the store ends. It does not stop early with an empty page and a cursor, because a non-final
+ * page with no ids is not something consumers are written for: `ShardedEventStore`'s
+ * scatter-gather reads an empty merged page as the end, so `Sharded(TenantScoped(…))` — the
+ * ADR 0074 composition — would silently truncate the enumeration. Memory stays one page.
  */
 async function pageWithinPrefix(
   inner: EventStore,
@@ -76,6 +83,13 @@ export class TenantScopedEventStore implements EventStore {
     private readonly inner: EventStore,
     private readonly tenant: string
   ) {
+    if (tenant === "" || tenant.includes(SEP)) {
+      // Prefix scoping is only isolation if no tenant's prefix is a prefix of another's:
+      // tenant "a" scopes "b:x" to "a:b:x", which is tenant "a:b"'s "x".
+      throw new TypeError(
+        `TenantScopedEventStore: tenant must be non-empty and must not contain the separator "${SEP}" (got ${JSON.stringify(tenant)})`
+      );
+    }
     const scope = (id: string): string => `${this.tenant}${SEP}${id}`;
     const prefix = `${this.tenant}${SEP}`;
     // Every optional method decided here, over the whole union (ADR 0074 Amendment): a new

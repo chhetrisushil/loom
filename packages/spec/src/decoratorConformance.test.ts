@@ -14,7 +14,8 @@ import { describe, expect, it } from "vitest";
 //
 // Discovery, never a hand list: a decorator is any non-test source that
 //   - declares a class `implements EventStore | SnapshotStore` whose constructor's FIRST
-//     parameter is that same store type (it wraps one), or
+//     parameter is that same store type or an array of it (it wraps one, or several —
+//     `ShardedEventStore`), or
 //   - exports a function whose first parameter is an `EventStore | SnapshotStore` and whose
 //     declared return type is a store or a harness around one (its name ends in `Store`:
 //     `hashChainedEventStore` → `HashChainedEventStore`, `faultInjectingStore` →
@@ -48,6 +49,17 @@ function isStoreType(text: string | undefined): text is StoreType {
   return text !== undefined && (STORE_TYPES as readonly string[]).includes(text);
 }
 
+/** `EventStore`, `EventStore[]`, `readonly EventStore[]`, `Array<EventStore>` → `EventStore`. */
+function wrappedStoreType(text: string | undefined): StoreType | undefined {
+  if (text === undefined) return undefined;
+  const bare = text
+    .replace(/^readonly\s+/, "")
+    .replace(/\[\]$/, "")
+    .replace(/^(?:Readonly)?Array<(.+)>$/, "$1")
+    .trim();
+  return isStoreType(bare) ? bare : undefined;
+}
+
 /** Every decorator declared in `sources` (see the header for the rule). */
 function discoverDecorators(sources: readonly SourceFile[]): Decorator[] {
   const found: Decorator[] = [];
@@ -61,8 +73,8 @@ function discoverDecorators(sources: readonly SourceFile[]): Decorator[] {
           .filter((h) => h.token === ts.SyntaxKind.ImplementsKeyword)
           .flatMap((h) => h.types.map((t) => t.expression.getText(sf)));
         const ctor = node.members.find(ts.isConstructorDeclaration);
-        const first = ctor?.parameters[0]?.type?.getText(sf);
-        if (isStoreType(first) && implemented.includes(first)) {
+        const first = wrappedStoreType(ctor?.parameters[0]?.type?.getText(sf));
+        if (first !== undefined && implemented.includes(first)) {
           found.push({ name: node.name.text, store: first, path });
         }
       }
@@ -163,6 +175,8 @@ describe("store decorators run the decorator conformance kit (fitness, ADR 0074 
       "faultInjectingStore",
       "crashingEventStore",
       "CoalescingEventStore",
+      "ShardedEventStore",
+      "ProfilingEventStore",
       "TenantScopedSnapshotStore",
     ]) {
       expect(names, `discovery lost ${known}`).toContain(known);
@@ -185,6 +199,9 @@ describe("store decorators run the decorator conformance kit (fitness, ADR 0074 
       text: `export class DroppingEventStore implements EventStore {
         constructor(private readonly inner: EventStore) {}
       }
+      export class FanOutStore implements EventStore {
+        constructor(shards: readonly EventStore[]) {}
+      }
       export function wrapSnapshots(inner: SnapshotStore): SnapshotStore { return inner; }
       export async function notADecorator(store: EventStore): Promise<number> { return 1; }`,
     };
@@ -196,13 +213,15 @@ describe("store decorators run the decorator conformance kit (fitness, ADR 0074 
     };
     expect(uncoveredDecorators([fixture], [unrelatedTest]).map((d) => d.name)).toEqual([
       "DroppingEventStore",
+      "FanOutStore",
       "wrapSnapshots",
     ]);
     // And the positive: the right kit, constructing it, covers it. The WRONG kit does not.
     const coveringTest: SourceFile = {
       path: "plugins/fixture/src/y.test.ts",
       text: `runEventStoreDecoratorConformance("d", (inner) => new DroppingEventStore(inner));
-       runEventStoreDecoratorConformance("w", (inner) => wrapSnapshots(inner));`,
+       runEventStoreDecoratorConformance("w", (inner) => wrapSnapshots(inner));
+       runEventStoreDecoratorConformance("f", (inner) => new FanOutStore([inner]));`,
     };
     expect(uncoveredDecorators([fixture], [coveringTest]).map((d) => d.name)).toEqual([
       "wrapSnapshots",

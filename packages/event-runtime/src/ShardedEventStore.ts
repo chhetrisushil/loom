@@ -1,7 +1,14 @@
 import type { EventEnvelope } from "@loom/core";
 import type { ShardPlan } from "./ShardPlan";
 import { bucketOf } from "./SubscriberRegistry";
-import { type EventStore, type ExecutionPage, appendBatchOf, readRangeOf } from "./types";
+import { type DecoratorPlan, installOptional } from "./installOptional";
+import {
+  type EventStore,
+  type ExecutionPage,
+  type OptionalEventStoreMethod,
+  appendBatchOf,
+  readRangeOf,
+} from "./types";
 
 export interface ShardedEventStoreOptions {
   /**
@@ -104,39 +111,36 @@ export class ShardedEventStore implements EventStore {
 
     // Optional capabilities are exposed only when EVERY shard has them: a partial
     // capability would work for some executions and not others depending on where they
-    // hashed, which is worse than not advertising it at all.
-    if (shards.every((s) => s.head !== undefined)) {
-      this.head = async (id) => (await this.route(id)).head!(id);
-    }
-    if (shards.every((s) => s.readRange !== undefined)) {
-      this.readRange = async (id, from, to) => (await this.route(id)).readRange!(id, from, to);
-    }
-    if (shards.every((s) => s.acquireFence !== undefined)) {
-      this.acquireFence = async (id) => (await this.route(id)).acquireFence!(id);
-    }
-    if (shards.every((s) => s.deleteExecution !== undefined)) {
-      this.deleteExecution = async (id) => {
+    // hashed, which is worse than not advertising it at all. `appendBatch` and `copyPrefix`
+    // are this class's own methods (they split by shard, and fall back per shard), so the
+    // plan covers every other optional method — a new one is a compile error here too.
+    type Routed = Exclude<OptionalEventStoreMethod, "appendBatch" | "copyPrefix">;
+    const plan = {
+      head: async (id) => (await this.route(id)).head!(id),
+      readRange: async (id, from, to) => (await this.route(id)).readRange!(id, from, to),
+      acquireFence: async (id) => (await this.route(id)).acquireFence!(id),
+      deleteExecution: async (id) => {
         await (await this.route(id)).deleteExecution!(id);
         this.placementCache.delete(id);
-      };
-    }
-    if (shards.every((s) => s.truncatePrefix !== undefined)) {
-      this.truncatePrefix = async (id, through) =>
-        (await this.route(id)).truncatePrefix!(id, through);
-    }
-    if (shards.every((s) => s.listExecutions !== undefined)) {
-      this.listExecutions = async () => {
+      },
+      truncatePrefix: async (id, through) => (await this.route(id)).truncatePrefix!(id, through),
+      listExecutions: async () => {
         const perShard = await Promise.all(this.shards.map((s) => s.listExecutions!()));
         // Dedupe: a crash between migrateExecution's copy and delete can leave an execution
         // on both sides, and enumeration must still report it once.
         return [...new Set(perShard.flat())];
-      };
+      },
+      // Paged enumeration needs EVERY shard to be pageable; falling back to listExecutions
+      // on some would defeat the bounded-memory guarantee the page API exists to provide.
+      listExecutionsPage: (opts) => this.pagedScatterGather(opts),
+    } satisfies DecoratorPlan<EventStore, Routed>;
+    // `installOptional` installs a method iff its `inner` has it; here "inner" is the
+    // capability every shard shares, so hand it a view holding exactly those methods.
+    const common: Record<string, () => void> = {};
+    for (const method of Object.keys(plan) as Routed[]) {
+      if (shards.every((s) => typeof s[method] === "function")) common[method] = () => {};
     }
-    // Paged enumeration needs EVERY shard to be pageable; falling back to listExecutions on
-    // some would defeat the bounded-memory guarantee the page API exists to provide.
-    if (shards.every((s) => s.listExecutionsPage !== undefined)) {
-      this.listExecutionsPage = (opts) => this.pagedScatterGather(opts);
-    }
+    installOptional<EventStore, Routed>(this, common as unknown as EventStore, plan);
     // The structural encryption marker (`keys`, see `installOptional`) must survive sharding,
     // or `Sharded(Encrypting(pg)…)` — the ADR 0074 composition — would look like a plain store
     // to LogLifecycle's compaction/archive guard and to `loom doctor`. Carried up when every

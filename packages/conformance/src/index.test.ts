@@ -135,6 +135,9 @@ runEventStoreDecoratorConformance(
   (inner) => new CoalescingEventStore(inner)
 );
 runEventStoreDecoratorConformance("ProfilingEventStore", (inner) => new ProfilingEventStore(inner));
+// Sharding over ONE shard is the decorator shape the kit can check (every capability the inner
+// has must survive); the multi-shard compositions above cover routing.
+runEventStoreDecoratorConformance("ShardedEventStore", (inner) => new ShardedEventStore([inner]));
 runSnapshotStoreDecoratorConformance(
   "TenantScopedSnapshotStore",
   (inner) => new TenantScopedSnapshotStore(inner, "acme")
@@ -254,3 +257,12 @@ runLlmProviderConformance(() => richProvider, "RichLlmProvider");
 
 // --- CapabilityAuthorizer: the reference GrantTable. ---
 runCapabilityAuthorizerConformance(() => new GrantTable({ w: ["t"] }), "GrantTable");
+
+describe("TenantScopedSnapshotStore rejects a tenant containing the separator (K12.5)", () => {
+  it("throws for 'a:b' and '' — the same prefix-collision rule as the event store", () => {
+    const inner = new InMemoryAsyncSnapshotStore();
+    expect(() => new TenantScopedSnapshotStore(inner, "a:b")).toThrow(/separator/);
+    expect(() => new TenantScopedSnapshotStore(inner, "")).toThrow(/tenant/);
+    expect(() => new TenantScopedSnapshotStore(inner, "acme")).not.toThrow();
+  });
+});

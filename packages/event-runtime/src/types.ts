@@ -20,8 +20,12 @@ export type { EventEnvelope };
  *   reading the whole parent log to validate a fork point). Consumers use {@link headOf}.
  *
  * Every optional method is listed in {@link OPTIONAL_EVENT_STORE_METHODS}; adding one here
- * without listing it there is a compile error, and listing it there makes every decorator's
- * `DecoratorPlan` a compile error until it decides to forward, override or refuse it.
+ * without listing it there is a compile error. `OptionalEventStoreMethod` is derived from this
+ * interface, and `DecoratorPlan` makes every one of its keys REQUIRED, so a new optional method
+ * is also a compile error in every decorator whose plan `satisfies DecoratorPlan<EventStore,
+ * OptionalEventStoreMethod>` until it forwards, overrides or refuses it. A decorator that uses
+ * no plan at all is caught by the decorator conformance kit instead (and the `packages/spec`
+ * fitness test makes every in-repo decorator run it).
  */
 export const EVENT_STORE_SPI_VERSION = "1.4.0";
 
@@ -239,7 +243,11 @@ type _MissingOptionalMethod = Exclude<
 const _exhaustiveOptionalMethods: [_MissingOptionalMethod] extends [never] ? true : never = true;
 void _exhaustiveOptionalMethods;
 
-/** One page of {@link EventStore.listExecutionsPage}. `nextCursor` present iff more remain. */
+/**
+ * One page of {@link EventStore.listExecutionsPage}. `nextCursor` present iff more remain; a
+ * page that carries a `nextCursor` carries at least one id (consumers such as
+ * `ShardedEventStore`'s scatter-gather read an empty page as the end).
+ */
 export interface ExecutionPage {
   executionIds: string[];
   nextCursor?: string;

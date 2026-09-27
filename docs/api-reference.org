@@ -618,13 +618,13 @@ class TenantScopedEventStore    implements EventStore    { constructor(inner: Ev
 class TenantScopedSnapshotStore implements SnapshotStore { constructor(inner: SnapshotStore, tenant: string) }  // @loom/snapshot-runtime
 #+end_src
 
-*Writing a store decorator (ADR 0074 Amendment).* A decorator must decide EVERY optional SPI method: forward it, override it, or refuse it with a reason. One that silently drops a method takes the capability away from everything above it — four in-repo decorators dropped ~appendBatch~, so ~Coalescing(TenantScoped(backend))~ never batched. ~installOptional~ installs a plan whose type is a mapped type over the whole optional union, so a new SPI method is a compile error in every decorator until it decides; each method is installed only when the inner store has it (capability probes unchanged), refusals are recorded, and the structural encryption marker (~keys~) is carried up so ~LogLifecycle~'s key rule and ~loom doctor~ still see an encrypting store below. ~runEventStoreDecoratorConformance~ (~@loom/conformance~) is the check.
+*Writing a store decorator (ADR 0074 Amendment).* A decorator must decide EVERY optional SPI method: forward it, override it, or refuse it with a reason. One that silently drops a method takes the capability away from everything above it — four in-repo decorators dropped ~appendBatch~, so ~Coalescing(TenantScoped(backend))~ never batched. ~installOptional~ installs a plan whose type maps the whole optional union to REQUIRED keys, so a plan that omits a method (including a future one) does not compile — the kit catches a decorator that uses no plan at all; each method is installed only when the inner store has it (capability probes unchanged), refusals are recorded, and the structural encryption marker (~keys~) is carried up so ~LogLifecycle~'s key rule and ~loom doctor~ still see an encrypting store below. ~runEventStoreDecoratorConformance~ (~@loom/conformance~) is the check.
 
 #+begin_src typescript
 type OptionalEventStoreMethod = "appendBatch" | "readRange" | "head" | "acquireFence" | "copyPrefix"
   | "deleteExecution" | "truncatePrefix" | "listExecutions" | "listExecutionsPage";  // derived from EventStore
 const OPTIONAL_EVENT_STORE_METHODS: readonly OptionalEventStoreMethod[]            // compile-time exhaustive
-type DecoratorPlan<S, M extends keyof S> = { readonly [K in M]: "forward" | NonNullable<S[K]> | { readonly refuse: string } };
+type DecoratorPlan<S, M extends keyof S> = { readonly [K in M]-?: "forward" | NonNullable<S[K]> | { readonly refuse: string } };
 function installOptional<S extends object, M extends keyof S>(target: S, inner: S, plan: DecoratorPlan<S, M>, bindTo?: object): void
 function refusalsOf(store: object): ReadonlyMap<string, string>                    // what installOptional recorded as refused
 // @loom/snapshot-runtime: OptionalSnapshotStoreMethod ("deleteExecution"), OPTIONAL_SNAPSHOT_STORE_METHODS

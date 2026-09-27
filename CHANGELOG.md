@@ -219,8 +219,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The audit chain could not be enumerated by `loom retention` or `loom census`.
 
   Each decorator now declares a `DecoratorPlan` over the whole optional-method union and
-  installs it with the new `installOptional` (`@loom/event-runtime`). A future optional SPI
-  method is a compile error in every decorator until it forwards, overrides or refuses it.
+  installs it with the new `installOptional` (`@loom/event-runtime`). Every plan key is
+  required, so a plan that omits a method, including a future optional SPI method, fails to
+  compile (pinned by a `@ts-expect-error` that `pnpm typecheck` checks). The conformance kit
+  catches a decorator that uses no plan at all.
   `OPTIONAL_EVENT_STORE_METHODS` / `OPTIONAL_SNAPSHOT_STORE_METHODS` are compile-time
   exhaustive, `refusalsOf` reads a recorded refusal, and `CoalescingEventStore`,
   `ProfilingEventStore` and `TenantScopedSnapshotStore` moved onto plans too.
@@ -251,6 +253,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **A compacted execution is reclaimable.** `LogLifecycle.evaluate` folded only the surviving
     log, so an execution compacted through its tip read as `not-terminal` forever. It now folds
     from the latest snapshot when the log has a gap or only its bootstrap left.
+  - **Tightening: `TenantScopedEventStore` and `TenantScopedSnapshotStore` reject a tenant
+    name that is empty or contains the `:` separator** (a `TypeError` at construction).
+    Tenant `"a"` scoped `"b:x"` to `"a:b:x"`, which is tenant `"a:b"`'s `"x"`, so one tenant
+    could address another's executions. No in-repo or sibling-repo caller passes such a name.
+  - **`ShardedEventStore` declares a plan too**, and is registered with the kit as
+    `new ShardedEventStore([inner])`. The fitness test now also discovers decorators whose
+    constructor takes an array of stores. The `listExecutionsPage` contract now says, and the
+    kit checks, that a page with a `nextCursor` carries at least one id.
   - **`TenantScopedEventStore.listExecutionsPage` never relies on the store's sort order.** It
     pages the inner store and filters, bounded to one page of memory. Postgres pages in the
     database collation (measured: `"a~"` before `"ab"` on an `en_US.UTF-8` PG 17), so a

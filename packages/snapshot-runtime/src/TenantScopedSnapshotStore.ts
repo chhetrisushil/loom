@@ -15,6 +15,13 @@ export class TenantScopedSnapshotStore implements SnapshotStore {
     private readonly inner: SnapshotStore,
     private readonly tenant: string
   ) {
+    if (tenant === "" || tenant.includes(SEP)) {
+      // Prefix scoping is only isolation if no tenant's prefix is a prefix of another's:
+      // tenant "a" scopes "b:x" to "a:b:x", which is tenant "a:b"'s "x".
+      throw new TypeError(
+        `TenantScopedSnapshotStore: tenant must be non-empty and must not contain the separator "${SEP}" (got ${JSON.stringify(tenant)})`
+      );
+    }
     const plan = {
       deleteExecution: (id) => inner.deleteExecution!(this.scope(id)),
     } satisfies DecoratorPlan<SnapshotStore, OptionalSnapshotStoreMethod>;
