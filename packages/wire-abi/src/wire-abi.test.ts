@@ -57,6 +57,14 @@ describe("T2.3 — language-agnostic fold conformance vectors", () => {
     expect(runFoldVectors(metadataBlind).every((r) => r.passed)).toBe(false);
   });
 
+  it("covers the 1.21.0 STEP_FAILED contract (ADR 0105) — a fold that fails the execution on a step failure fails", () => {
+    const caught = FOLD_VECTORS.find((v) => v.name.startsWith("a caught step failure"));
+    expect(caught).toBeDefined();
+    const preFix = { ...caught!, expected: { ...caught!.expected, status: "failed" } };
+    expect(runFoldVectors([caught!])[0]?.passed).toBe(true);
+    expect(runFoldVectors([preFix])[0]?.passed).toBe(false);
+  });
+
   it("a broken fold is caught (a mutated expectation fails loudly)", () => {
     const broken = [
       { ...FOLD_VECTORS[0]!, expected: { ...FOLD_VECTORS[0]!.expected, status: "failed" } },

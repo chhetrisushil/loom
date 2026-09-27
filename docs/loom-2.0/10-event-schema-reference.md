@@ -182,8 +182,9 @@ generalization.
 - **Folds into:** `frames[stepId].status → "failed"` **only** (preserving `attempts`,
   `startedAt`, `input`, setting `error`; a typed failure also sets
   `errorChannel`/`errorPayload`, which the execute seam SUBSTITUTES on replay — the effect is
-  never re-invoked and the flow re-takes the same catch branch). It does **not** touch the
-  execution `status` (ADR 0105): the flow may catch the throw and carry on, and a failure that
+  never re-invoked and the flow re-takes the same catch branch). Since 1.21.0 it does **not** touch the
+  execution `status` (ADR 0105): the flow may catch the throw and carry on (or a parallel
+  sibling may fail after the flow parked), and a failure that
   escapes the runner is recorded by the `EXECUTION_FAILED` that follows it. (Before ADR 0105 it
   also set `status → "failed"`, so a caught failure read as terminal and a crash after it was
   never recovered.)
@@ -514,7 +515,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.20.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079); 1.19.0 _flowEmits: per-content-digest counts from the envelope stamp metadata.flowEmit — flow-level emits append once per execution (ADR 0102); 1.20.0 a null EXECUTION_RESUMED answering no suspend point adds no gate passthrough, and a human park names its step (EXECUTION_SUSPENDED.condition.stepId) (ADR 0104) — all additive, NO new event kinds
+export const EVENT_SCHEMA_VERSION = "1.21.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079); 1.19.0 _flowEmits: per-content-digest counts from the envelope stamp metadata.flowEmit — flow-level emits append once per execution (ADR 0102); 1.20.0 a null EXECUTION_RESUMED answering no suspend point adds no gate passthrough, and a human park names its step (EXECUTION_SUSPENDED.condition.stepId) (ADR 0104); 1.21.0 STEP_FAILED folds the step's frame only — the execution fails only on EXECUTION_FAILED (ADR 0105) — all NO new event kinds
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

@@ -102,11 +102,11 @@ load-bearing, plus the global guardrails that gate every additive capability:
   Execution `status` MUST be moved only by execution-level events (`EXECUTION_STARTED`,
   `_SUSPENDED`, `_RESUMED`, `_COMPLETED`, `_FAILED`, `_CANCELLED`); a `STEP_*` event folds into
   its frame only. In particular `STEP_FAILED` MUST NOT fail the execution — the flow may catch it
-  — and only `EXECUTION_FAILED` does (ADR 0105; a fold correction with no version bump, since
-  the kernel writes the same events and replay's inputs are unchanged).
+  — and only `EXECUTION_FAILED` does (ADR 0105, EVENT_SCHEMA 1.21.0). A snapshot folded
+  before 1.21.0 MUST be read through `normalizeSnapshotState`.
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
-  the pinned type set MUST change together. The current version is **1.20.0** — after the
+  the pinned type set MUST change together. The current version is **1.21.0** — after the
   K10.1/T3 audit facts (1.13.0/1.14.0), the perpetual-agents series added two additive MINORs
   with **no new event kinds**: 1.15.0 extends `EXECUTION_MIGRATED` with an optional
   `migratedInput` payload field (K11.5 contract-versioned state migration — the fold replaces
@@ -127,8 +127,14 @@ load-bearing, plus the global guardrails that gate every additive capability:
   ADR 0104 added 1.20.0 (no new event kind, no payload field): an `EXECUTION_RESUMED` whose
   payload is `null` and which answers no suspend point — the execution was not parked, or was
   parked in doubt — re-opens the execution WITHOUT adding a gate passthrough.
+  ADR 0105 added 1.21.0 (no new event kind, no payload field): `STEP_FAILED` no longer moves the
+  execution status. A log that ends after a caught step failure now folds `running` (it was
+  `failed`); a parallel sibling's `STEP_FAILED` after the flow parked leaves it `suspended`, so a
+  following `null` resume is that gate's answer (1.20.0 read it as a status-only re-open, and a
+  1.20.0 `resumeAs` wrote exactly that — `inspectStrayPassthroughs` flags it).
   Logs that never migrate state, resume twice, fail typed, record a policy, stamp a flow emit, or
-  resume `null` into an unparked or in-doubt execution replay byte-identically.
+  resume `null` into an unparked or in-doubt execution, or hold a `STEP_FAILED`
+  that no status-setting event follows, replay byte-identically.
 
 ### 4.1 Typed failure channels (ADR 0060)
 

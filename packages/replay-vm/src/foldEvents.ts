@@ -49,3 +49,31 @@ export function foldEvents(
 
   return state;
 }
+
+/**
+ * ADR 0105 (EVENT_SCHEMA 1.21.0) — read a SNAPSHOT's state as the current fold would have
+ * written it. Before 1.21.0 `STEP_FAILED` also set the EXECUTION's status to "failed", so a
+ * snapshot saved after a step failure the flow caught (or a parallel sibling's failure that
+ * landed after the flow parked) records a terminal status for a live execution. A log folds
+ * correctly on its own; a snapshot is a stored fold and does not.
+ *
+ * The artifact is recognisable in O(1) on the common path: the kernel's only
+ * `EXECUTION_FAILED` writer always records `error`, so a genuinely failed execution carries
+ * `variables._error`. "failed" with no `_error` and a failed step frame is the old fold's
+ * doing, and the status it hid is `suspended` when the execution is parked (`suspendedOn`
+ * survives only while parked) and `running` otherwise. Every other state is returned as-is
+ * (same object).
+ */
+export function normalizeSnapshotState<T extends Partial<ExecutionState>>(state: T): T {
+  if (state.status !== "failed" || state.variables?._error !== undefined) return state;
+  const frames = state.frames ?? {};
+  let stepFailed = false;
+  for (const stepId of Object.keys(frames)) {
+    if (frames[stepId]?.status === "failed") {
+      stepFailed = true;
+      break;
+    }
+  }
+  if (!stepFailed) return state;
+  return { ...state, status: state.suspendedOn !== undefined ? "suspended" : "running" };
+}

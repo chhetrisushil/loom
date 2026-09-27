@@ -19,7 +19,12 @@ import { headOf, readRangeOf } from "@loom/event-runtime";
 // the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
 // would otherwise leak into every browser app that builds on the WorkflowRuntime.
 import { sliceBySequence } from "@loom/event-runtime/sequence";
-import { EVENT_SCHEMA_VERSION, ReplayVM, knownEventTypes } from "@loom/replay-vm";
+import {
+  EVENT_SCHEMA_VERSION,
+  ReplayVM,
+  knownEventTypes,
+  normalizeSnapshotState,
+} from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 import { ExecutionJournal } from "./ExecutionJournal";
@@ -27,6 +32,7 @@ import { WorkflowContextImpl } from "./WorkflowContext";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import { COMPUTE_TARGET_KEY } from "./placement";
 import {
+  ambiguousNullResumeMessage,
   discardDecisionId,
   inspectStrayPassthroughs,
   strayPassthroughMessage,
@@ -696,6 +702,18 @@ export class WorkflowRuntime {
    * ("at-risk": the next gate will pass with it). Once per execution and verdict per runtime,
    * in a bounded set, so a long-lived execution does not warn on every resume forever.
    */
+  /** Warn once per key (bounded memory, FIFO eviction). */
+  private warnStrayOnce(key: string, message: () => string): void {
+    if (this.warnedStrayPassthroughs.has(key)) return;
+    if (this.warnedStrayPassthroughs.size >= STRAY_WARNING_MEMORY) {
+      // FIFO eviction: a Set iterates in insertion order.
+      const oldest = this.warnedStrayPassthroughs.values().next().value;
+      if (oldest !== undefined) this.warnedStrayPassthroughs.delete(oldest);
+    }
+    this.warnedStrayPassthroughs.add(key);
+    this.onWarn(message());
+  }
+
   private checkStrayPassthroughs(
     executionId: string,
     events: readonly EventEnvelope[],
@@ -735,16 +753,15 @@ export class WorkflowRuntime {
     }
     const verdict = report.verdict;
     if (verdict !== undefined) {
-      const key = `${verdict.kind}:${executionId}`;
-      if (!this.warnedStrayPassthroughs.has(key)) {
-        if (this.warnedStrayPassthroughs.size >= STRAY_WARNING_MEMORY) {
-          // FIFO eviction: a Set iterates in insertion order.
-          const oldest = this.warnedStrayPassthroughs.values().next().value;
-          if (oldest !== undefined) this.warnedStrayPassthroughs.delete(oldest);
-        }
-        this.warnedStrayPassthroughs.add(key);
-        this.onWarn(strayPassthroughMessage(executionId, verdict));
-      }
+      this.warnStrayOnce(`${verdict.kind}:${executionId}`, () =>
+        strayPassthroughMessage(executionId, verdict)
+      );
+    }
+    const nulls = report.ambiguousNullResumes;
+    if (nulls !== undefined) {
+      this.warnStrayOnce(`null-after-late-failure:${executionId}`, () =>
+        ambiguousNullResumeMessage(executionId, nulls)
+      );
     }
     return discard === undefined
       ? []
@@ -1219,7 +1236,7 @@ export class WorkflowRuntime {
         executionId,
         snapshot.sequence + 1
       );
-      vm = new ReplayVM(eventsAfterSnapshot, snapshot.state);
+      vm = new ReplayVM(eventsAfterSnapshot, normalizeSnapshotState(snapshot.state));
     } else {
       vm = new ReplayVM(allEvents, {
         executionId,
@@ -1343,7 +1360,7 @@ export class WorkflowRuntime {
     let vm: ReplayVM;
     if (snapshot) {
       const tail = await this.eventStore.readFrom(executionId, snapshot.sequence + 1);
-      vm = new ReplayVM(tail, snapshot.state);
+      vm = new ReplayVM(tail, normalizeSnapshotState(snapshot.state));
     } else {
       vm = new ReplayVM(allEvents, {
         executionId,
@@ -1513,7 +1530,7 @@ export class WorkflowRuntime {
       const anchor = await readRangeOf(this.eventStore, executionId, 0, 0);
       if (anchor.length === 0) return null;
       const tail = await this.eventStore.readFrom(executionId, snapshot.sequence + 1);
-      return new ReplayVM(tail, snapshot.state).getState();
+      return new ReplayVM(tail, normalizeSnapshotState(snapshot.state)).getState();
     }
     // No snapshot: the log IS the bounded read (it is shorter than `snapshotEvery`, or
     // snapshots are off), and it answers existence itself — no extra round-trip. Same
@@ -1721,7 +1738,7 @@ export class WorkflowRuntime {
       // `window` may start at 0 (when the copy path needed the whole prefix), so slice the
       // [base+1..at] tail out of it rather than replaying events the snapshot already folded.
       const tail = sliceBySequence(window, base.sequence + 1, atSequence);
-      vm = new ReplayVM(tail, base.state);
+      vm = new ReplayVM(tail, normalizeSnapshotState(base.state));
     } else {
       vm = new ReplayVM(window, { executionId: childId, workflowId, workflowVersion });
     }
@@ -2028,7 +2045,17 @@ export class WorkflowRuntime {
         }
 
         journal.commit("EXECUTION_FAILED", { error: String(err) });
-        await journal.drain().catch(() => {}); // best-effort persist; prefer the original error
+        try {
+          await journal.drain();
+        } catch (drainErr) {
+          // ADR 0105 — the terminal failure is NOT durable. The log ends at the step failure,
+          // which folds `running` (only EXECUTION_FAILED fails an execution), so a later
+          // recovery pass re-drives it. Telling the caller "failed" would be a lie it cannot
+          // detect; report the write failure (StorageWriteError, `cause` = the store's error),
+          // as the storage-died branch above does.
+          rejectCompletion(drainErr);
+          return;
+        }
         rejectCompletion(err);
       }
     };
