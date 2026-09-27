@@ -109,7 +109,9 @@ when:
 
 - an emit in a segment where a step re-executes, or after an unsettled outcome, is appended again
   on each re-run that re-executes it. Declaring the failure channel (ADR 0060) makes such steps
-  served, and the emits converge;
+  served, and the emits converge. For a long-lived session (ADR 0081) this matters most: one that
+  catches an untyped failure early re-appends every later emit on every resume, so declare the
+  failure channel;
 - an emit appended while one of the run's own effects or deciders is executing is appended once
   more on the next re-run that makes it outside that window;
 - a payload with no JSON form is appended on every re-run;

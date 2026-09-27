@@ -75,3 +75,11 @@ behaviour under `snapshotEvery`.
 - **The pending/abandoned distinction stays in userspace.** Two applications may reasonably
   disagree about what supersession means; encoding one opinion as a kernel state would make the
   kernel arbitrate a domain question (P10).
+
+## Amendment (2026-09-28) — emits in a long-lived session
+
+A long-lived session re-runs from the top on every resume, and flow-level emits are served from
+the log only when the log proves them ([ADR 0102](0102-flow-emits-append-once.md) D2). A session
+that catches an untyped failure early re-appends every later emit on every resume. Declare the
+failure channel ([ADR 0060](0060-typed-failure-channels.md)) so the failure is served and the
+emits after it converge.
