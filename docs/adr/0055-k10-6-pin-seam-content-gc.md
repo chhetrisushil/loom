@@ -107,8 +107,8 @@ The rule covers every bare ref, not only the fields a resolving store was config
 externalize. It has to: the raw log does not say which fields were externalized, and
 `ContentResolvingEventStore` resolves every bare ref in a payload, not only its configured paths.
 So a ref an app emits itself (`ctx.emit(KIND, { ref })`) is retained too. An app that wants such
-a ref to age out has to cite it as an envelope's `ref`. Under a resolving store that only
-works once the known gap below is fixed.
+a ref to age out has to cite it as an envelope's `ref`. That works under a resolving store too
+(see the closed gap below).
 
 A bare ref stops being cited when its execution is deleted. Reclaiming the blob then is an
 orphan pass over the content store, which the SPI cannot enumerate yet (tracked with the
@@ -117,8 +117,10 @@ leaks storage but never breaks a read. Cost is unchanged at O(payload) with the 
 guard: an envelope reports its `ref` directly instead of descending into it, so an object an
 in-memory payload aliases at a bare site and as an envelope's `ref` is still seen bare.
 
-Known gap, not closed here: `ContentResolvingEventStore` also descends into claim-check
-envelopes. It replaces `envelope.ref` with the decoded value on read, and throws when the blob is
-gone. So in a composition that stacks a resolving store over claim-checked results, erasing an
-envelope's blob also fails the read. The fix belongs in the resolving store, which should leave
-envelopes alone.
+Closed (2026-09-27, the store-decorator fix recorded in ADR 0074's amendment of that date):
+`ContentResolvingEventStore` used to descend into claim-check envelopes, replacing
+`envelope.ref` with the decoded value on read and throwing when the blob was gone. Its read
+walkers (`hasContentRef`, `collectContentRefs`, `substituteContentRefs`) now treat an envelope,
+recognised by the same structural test, as a leaf. An envelope whose blob was reclaimed reads
+back as the envelope, a `codec: "bytes"` envelope reads, and a bare ref beside it still
+resolves. Only `resolveClaimCheck` readers observe the erasure, as ADR 0054 intends.
