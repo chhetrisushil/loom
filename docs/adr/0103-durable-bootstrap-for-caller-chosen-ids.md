@@ -160,6 +160,12 @@ store, the read-model plugin's shape (ADR 0058).
   existing `CoalescingEventStore` behaviour (all-or-nothing batches reject every caller), the
   same shape L1 documents in ADR 0074 for a stale-fence zombie; this ADR adds a new way to put a
   conflicting envelope into a batch, not the blast radius.
+- **The conflict read-back on a store without `readRange`** falls back to `readFrom(id, 0)`, a
+  whole-log read, but only on the conflict path; a successful bootstrap never reads.
+- **Behind a read-lagging replica decorator** (reads served by a replica that has not caught up),
+  a real duplicate's sequence 0 can read back as absent, so it surfaces as `StorageWriteError`
+  after the single retry instead of `ExecutionAlreadyExistsError`. That is loud and safe (nothing
+  ran), just less specific.
 - **A crash between the bootstrap write and the body** leaves an execution whose log is
   `EXECUTION_STARTED` alone — `running` with nothing in flight. That was already possible on the
   default path (the append is enqueued before the first effect), and `recoverAbandoned` re-drives
