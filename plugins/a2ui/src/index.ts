@@ -42,7 +42,12 @@ export type {
 export { A2UISurfaceBridge } from "./A2UISurfaceBridge";
 export type { A2UISurfaceBridgeOptions } from "./A2UISurfaceBridge";
 
-export { validateComponents, validateFunctionCall, describeFindings } from "./conformance";
+export {
+  validateComponents,
+  validateCatalog,
+  validateFunctionCall,
+  describeFindings,
+} from "./conformance";
 export type {
   A2UIFinding,
   A2UIFindingCode,

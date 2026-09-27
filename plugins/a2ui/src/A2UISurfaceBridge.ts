@@ -11,7 +11,12 @@ import { maskPaths } from "@loom/classify";
 import type { EventEnvelope } from "@loom/core";
 import { DEFAULT_CATALOG_ID, defaultCatalog } from "./catalog";
 import type { A2UICatalog } from "./catalog";
-import { describeFindings, validateComponents, validateFunctionCall } from "./conformance";
+import {
+  describeFindings,
+  validateCatalog,
+  validateComponents,
+  validateFunctionCall,
+} from "./conformance";
 import { A2UI_VERSION } from "./messages";
 import type {
   A2UIClientMessage,
@@ -87,12 +92,24 @@ export class A2UISurfaceBridge {
 
   private state: SurfaceState = {};
   private opened = false;
+  /**
+   * The tree a connected client actually holds — the MERGE of every batch sent
+   * so far, keyed by id, because a client applies `updateComponents` as a merge
+   * while `recompose` here replaces `this.components` outright per batch. Empty
+   * until the session opens (there is no client yet); seeded in full from
+   * `this.components` at that point and merged incrementally thereafter. This is
+   * what `recompose` validates a new batch's `children` references against, so a
+   * batch may correctly reference an already-delivered sibling it did not
+   * re-send.
+   */
+  private clientView = new Map<string, ComponentInstance>();
 
   constructor(options: A2UISurfaceBridgeOptions) {
     this.surface = options.surface ?? DEFAULT_SURFACE;
     this.executionId = options.executionId;
     this.a2uiSurfaceId = options.a2uiSurfaceId ?? `${this.surface}:${this.executionId}`;
     this.catalog = options.catalog ?? defaultCatalog;
+    this.assertWellFormedCatalog(this.catalog);
     if (options.catalog === undefined && options.catalogId !== undefined) {
       if (options.catalogId !== DEFAULT_CATALOG_ID) {
         throw new Error(
@@ -115,14 +132,41 @@ export class A2UISurfaceBridge {
   }
 
   /**
+   * Refuse a catalogue whose own keys disagree with what they declare (an entry
+   * keyed `"Text"` whose discriminator is `{ const: "Txt" }`, say). Checked once,
+   * at construction: every later check indexes `catalog.components` by key, so a
+   * mis-keyed entry would silently never match the very instances it exists to
+   * validate.
+   */
+  private assertWellFormedCatalog(catalog: A2UICatalog): void {
+    const report = validateCatalog(catalog);
+    if (!report.ok) {
+      throw new Error(
+        `A2UISurfaceBridge: catalogue "${catalog.id}" is not well-formed — ${describeFindings(report)}`
+      );
+    }
+  }
+
+  /**
    * Refuse a component tree the declared catalogue does not cover. Throws rather
    * than dropping the message: a bridge that silently emitted nothing would turn
    * an authoring bug into a surface that never updates, which is the silent
    * omission this whole seam exists to prevent. Callers that want to degrade
    * instead can run `validateComponents` first and act on the report.
+   *
+   * `knownComponents`, when supplied, is the client's current merged tree — see
+   * {@link clientView} — so `children` references in `components` may resolve
+   * against it as well as against `components` itself.
    */
-  private assertConformant(components: readonly ComponentInstance[], requireRoot: boolean): void {
-    const report = validateComponents(components, this.catalog, { requireRoot });
+  private assertConformant(
+    components: readonly ComponentInstance[],
+    requireRoot: boolean,
+    knownComponents?: ReadonlyMap<string, ComponentInstance>
+  ): void {
+    const report = validateComponents(components, this.catalog, {
+      requireRoot,
+      ...(knownComponents !== undefined && { knownComponents }),
+    });
     if (!report.ok) {
       throw new Error(
         `A2UISurfaceBridge: component tree does not conform to catalogue "${this.catalog.id}" — ${describeFindings(report)}`
@@ -146,9 +190,15 @@ export class A2UISurfaceBridge {
    * here — an `updateComponents` batch may legitimately replace a subtree.
    */
   recompose(components: ComponentInstance[]): A2UIServerMessage[] {
-    this.assertConformant(components, false);
+    // Validate against what the CLIENT holds, not against this batch alone or
+    // against `this.components` (the previous batch only — `recompose` replaces
+    // it wholesale, so it is not the client's tree once more than one batch has
+    // been sent). Before the session opens there is no client and nothing is
+    // "already known" yet.
+    this.assertConformant(components, false, this.opened ? this.clientView : undefined);
     this.components = components;
     if (!this.opened) return [];
+    for (const instance of components) this.clientView.set(instance.id, instance);
     return [
       {
         version: A2UI_VERSION,
@@ -194,6 +244,16 @@ export class A2UISurfaceBridge {
       : this.state;
   }
 
+  /**
+   * Mark the session opened and seed {@link clientView} from the tree a
+   * `createSurface` carries — a full replace, exactly matching what a client
+   * does on receiving one.
+   */
+  private open(): void {
+    this.opened = true;
+    this.clientView = new Map(this.components.map((c) => [c.id, c]));
+  }
+
   private createSurface(): A2UIServerMessage {
     return {
       version: A2UI_VERSION,
@@ -216,7 +276,7 @@ export class A2UISurfaceBridge {
    * incremental `updateDataModel`s thereafter.
    */
   snapshot(): A2UIServerMessage[] {
-    this.opened = true;
+    this.open();
     return [this.createSurface()];
   }
 
@@ -236,7 +296,7 @@ export class A2UISurfaceBridge {
     if (!this.opened) {
       // First event: fold, then deliver the initial state via createSurface.
       this.state = applySurfacePatches(this.state, payload.patches);
-      this.opened = true;
+      this.open();
       return [this.createSurface()];
     }
 

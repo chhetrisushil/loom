@@ -13,7 +13,8 @@ import { DEFAULT_SURFACE, SURFACE_PATCH, applySurfacePatches } from "@loom/agent
 import type { SurfacePatchPayload, SurfaceState } from "@loom/agent-surface";
 import { maskPaths } from "@loom/classify";
 import type { EventEnvelope } from "@loom/core";
-import type { ComponentInstance } from "@loom/plugin-a2ui";
+import { defaultCatalog, describeFindings, validateComponents } from "@loom/plugin-a2ui";
+import type { A2UICatalog, ComponentInstance } from "@loom/plugin-a2ui";
 
 /** What the template receives as `structuredContent`. */
 export interface SurfacePayload {
@@ -41,6 +42,13 @@ export interface SurfacePayloadOptions {
   /** The component tree. */
   components: ComponentInstance[];
   /**
+   * The catalogue `components` is drawn from, checked before the payload is
+   * built. Defaults to `defaultCatalog` — the same default `A2UISurfaceBridge`
+   * uses, since this is a second transport binding for the same component-tree
+   * vocabulary (ADR 0069/0072), not a second UI model with its own rules.
+   */
+  catalog?: A2UICatalog;
+  /**
    * K10-R6 egress redaction — surface dot-paths masked to `[redacted]` before any
    * value leaves for the View.
    *
@@ -64,6 +72,21 @@ export function surfacePayload(
   events: readonly EventEnvelope[],
   options: SurfacePayloadOptions
 ): SurfacePayload {
+  // The payload delivered here is always a COMPLETE model (see `adopt()` in the
+  // template), never a delta, so this checks `options.components` whole and
+  // requires a root — the same failure class ADR 0088 D5 closed for the A2UI
+  // egress bridge (dangling ids, cycles, an off-catalogue type) reached this
+  // second transport binding unchecked: the template's renderer (`template.ts`)
+  // returns `null` for an unknown component, a silent hole rather than a thrown
+  // defect attributable to the composer.
+  const catalog = options.catalog ?? defaultCatalog;
+  const report = validateComponents(options.components, catalog, { requireRoot: true });
+  if (!report.ok) {
+    throw new Error(
+      `surfacePayload: component tree does not conform to catalogue "${catalog.id}" — ${describeFindings(report)}`
+    );
+  }
+
   const surface = options.surface ?? DEFAULT_SURFACE;
   let state: SurfaceState = {};
   let sequence = 0;
