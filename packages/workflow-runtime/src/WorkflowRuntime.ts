@@ -919,10 +919,19 @@ export class WorkflowRuntime {
   /**
    * ADR 0103 — the bootstrap barrier. Builds sequence 0 exactly as the journal would
    * (`ExecutionJournal.bootstrapEnvelope`: same id, injected-clock timestamp and fence) and
-   * awaits its append. A sequence/id conflict means the execution already exists →
-   * {@link ExecutionAlreadyExistsError}; any other write failure refuses the start with
+   * awaits its append. Only a CONFIRMED conflict — the store refused the write AND this
+   * execution's sequence 0 is readable through the same store — is
+   * {@link ExecutionAlreadyExistsError}. Every other failure refuses the start with
    * {@link StorageWriteError} (reported to `onStorageError` like a journal write failure).
    * Either way nothing has run.
+   *
+   * Why confirm rather than trust the error: a conflict is not always about THIS write.
+   * `CoalescingEventStore` rejects every caller in a failed batch with the same error, so a
+   * fresh id that shared a batch with a real duplicate receives the duplicate's
+   * `DuplicateSequenceError` while nothing of its own was written (the batch is
+   * all-or-nothing). And `err.executionId` cannot tell the cases apart: a scoping decorator
+   * reports the id it wrote (tenant-prefixed), not the caller's. So: read sequence 0 back; if
+   * it is absent, the conflict was someone else's — retry the append ONCE, alone.
    */
   private async writeBootstrap(
     executionId: string,
@@ -940,14 +949,28 @@ export class WorkflowRuntime {
         now: this.now,
       }
     );
-    try {
-      await this.eventStore.append(envelope);
-    } catch (err: unknown) {
-      if (isWriteConflict(err)) throw new ExecutionAlreadyExistsError(executionId, err);
+    const refuse = (err: unknown): never => {
       this.onStorageError?.(executionId, err);
       throw new StorageWriteError(err);
+    };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await this.eventStore.append(envelope);
+        return envelope;
+      } catch (err: unknown) {
+        if (!isWriteConflict(err)) return refuse(err);
+        let exists: boolean;
+        try {
+          exists = (await readRangeOf(this.eventStore, executionId, 0, 0)).length > 0;
+        } catch (readErr: unknown) {
+          return refuse(readErr);
+        }
+        if (exists) throw new ExecutionAlreadyExistsError(executionId, err);
+        if (attempt === 1) return refuse(err); // conflicted twice with no sequence 0 of ours
+      }
     }
-    return envelope;
+    /* c8 ignore next */
+    throw new Error("unreachable");
   }
 
   async resume(
@@ -1783,10 +1806,11 @@ export class WorkflowRuntime {
 }
 
 /**
- * ADR 0103 — did the store refuse a write because the slot or id is already taken? Both
- * conflicts are normalized by every backend (see `EventStore.append`); a decorator passes
- * them through. Matched by `name` as well as class so a second copy of `@loom/event-runtime`
- * in a bundle cannot turn "already exists" into a generic storage failure.
+ * ADR 0103 — did the store refuse a write because A slot or id is already taken? Both
+ * conflicts are normalized by every backend (see `EventStore.append`). This says nothing about
+ * WHOSE write conflicted — a coalesced batch hands every caller the same error — so
+ * `writeBootstrap` confirms by reading sequence 0 back. Matched by `name` as well as class so a
+ * second copy of `@loom/event-runtime` in a bundle cannot hide a conflict.
  */
 function isWriteConflict(err: unknown): boolean {
   if (err instanceof DuplicateSequenceError || err instanceof DuplicateEnvelopeIdError) {

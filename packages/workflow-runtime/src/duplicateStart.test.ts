@@ -5,6 +5,7 @@ import { StorageWriteError, step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import {
+  CoalescingEventStore,
   type EventStore,
   InMemoryAsyncEventStore,
   TenantScopedEventStore,
@@ -158,6 +159,56 @@ describe("ADR 0103 — a duplicate caller-chosen-id start is refused before any 
       "EXECUTION_COMPLETED",
     ]);
     expect(app.seen.filter((e) => e.eventType === "EXECUTION_STARTED")).toHaveLength(1);
+  });
+
+  it("a coalesced batch: a FRESH id sharing a batch with a real duplicate still starts and runs", async () => {
+    // CoalescingEventStore rejects every caller in a failed batch with the SAME error, so the
+    // fresh start sees the duplicate's DuplicateSequenceError. It must not be misreported as
+    // "already exists" — for a TimerService trigger that would drop the occurrence forever.
+    const app = boot(new CoalescingEventStore(new InMemoryAsyncEventStore()));
+    const first = await app.runtime.start(FLOW, {}, { executionId: "dup" });
+    await first.waitForCompletion();
+    expect(app.model).toHaveBeenCalledTimes(1);
+
+    const [dup, fresh] = await Promise.allSettled([
+      app.runtime.start(FLOW, {}, { executionId: "dup" }),
+      app.runtime.start(FLOW, {}, { executionId: "fresh" }),
+    ]);
+    expect(dup.status).toBe("rejected");
+    expect((dup as PromiseRejectedResult).reason).toBeInstanceOf(ExecutionAlreadyExistsError);
+    expect(fresh.status).toBe("fulfilled");
+    const handle = (fresh as PromiseFulfilledResult<Awaited<ReturnType<typeof app.runtime.start>>>)
+      .value;
+    expect((await handle.waitForCompletion()).status).toBe("completed");
+    expect(app.model).toHaveBeenCalledTimes(2); // dup's first run + fresh — never dup twice
+    expect((await app.store.read("fresh")).map((e) => e.eventType)).toEqual([
+      "EXECUTION_STARTED",
+      "STEP_STARTED",
+      "STEP_COMPLETED",
+      "EXECUTION_COMPLETED",
+    ]);
+  });
+
+  it("an id conflict that is NOT this execution's sequence 0 is a storage failure, not 'already exists'", async () => {
+    // Envelope ids are store-wide in some backends: another writer holding `<id>-0` under a
+    // different execution is a minted-twice bug, not an existing execution. Confirmed by
+    // reading sequence 0 back; it is absent, so the single retry fails too → StorageWriteError.
+    const inner = new InMemoryAsyncEventStore();
+    const conflicting = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === "append") {
+          return async (e: EventEnvelope) =>
+            Promise.reject(Object.assign(new Error("taken"), { name: "DuplicateEnvelopeIdError" }));
+        }
+        const v = Reflect.get(target, prop, receiver);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+    const app = boot(conflicting);
+    const start = app.runtime.start(FLOW, {}, { executionId: "ghost" });
+    await expect(start).rejects.toBeInstanceOf(StorageWriteError);
+    expect(app.model).not.toHaveBeenCalled();
+    expect(app.seen).toHaveLength(0);
   });
 
   it("a non-conflict write failure at the bootstrap refuses the start with StorageWriteError, body unrun", async () => {

@@ -59,10 +59,26 @@ Only then does the runner start. The ordering is the whole fix, and only the ker
 
 If that append rejects with `DuplicateSequenceError` or `DuplicateEnvelopeIdError` — the two
 conflicts every backend normalizes to (SQLite and Postgres from their unique constraints, the
-in-memory store from an explicit check) and every decorator passes through —
-`start()` throws `ExecutionAlreadyExistsError(executionId)`, a new typed error exported from
-`@loom/workflow-runtime` beside `InputValidationError`. At that point no event has been folded,
-`onEvent` has seen nothing, and no effect has run. The existing execution is untouched.
+in-memory store from an explicit check) — AND this execution's sequence 0 is then readable
+through the same store, `start()` throws `ExecutionAlreadyExistsError(executionId)`, a new typed
+error exported from `@loom/workflow-runtime` beside `InputValidationError`. At that point no
+event has been folded, `onEvent` has seen nothing, and no effect has run. The existing execution
+is untouched.
+
+**The conflict is confirmed, not trusted.** A conflict error does not always describe the write
+that received it. `CoalescingEventStore` (ADR 0074) rejects EVERY caller in a failed batch with
+the batch's error, so a fresh id that shared a batch with a real duplicate receives the
+duplicate's `DuplicateSequenceError` while nothing of its own was written (the batch is
+all-or-nothing). Mapping that straight to "already exists" would drop a fresh start forever — a
+`TimerService` occurrence would never run. Nor can the error's own `executionId` decide it: a
+scoping decorator (`TenantScopedEventStore`) reports the id it wrote, tenant-prefixed, not the
+caller's. So on a conflict `start()` reads `[0..0]` back through the same decorated store:
+
+- present → `ExecutionAlreadyExistsError`;
+- absent → the conflict was someone else's; retry the append ONCE, alone;
+- a second conflict with sequence 0 still absent (for example `<id>-0` taken as an envelope id
+  by a different execution in a store-wide-id backend — a minted-twice bug, not an existing
+  execution), or a failed read-back → `StorageWriteError`.
 
 The conflict is matched by class and, as a fallback, by `name`, so a bundle carrying a second
 copy of `@loom/event-runtime` cannot turn "already exists" into a generic storage failure.
@@ -81,7 +97,10 @@ writes the same log and delivers the same `onEvent` sequence as a ulid start wit
 clock, fence and placement hint, ids aside.
 
 The cost of D1 — one awaited append before the body starts — is paid only by a caller who chose
-the id, which is the caller who asked for the guarantee.
+the id, which is the caller who asked for the guarantee. Behind a `CoalescingEventStore` with
+`maxLingerMs > 0`, that wait includes the linger as well as the round-trip: the bootstrap is
+held for company like any other append before its batch commits. (A confirmed-absent conflict
+adds one indexed read and one more append.)
 
 ### D4 — `TimerService` treats the typed error as "already started"
 
@@ -126,11 +145,21 @@ store, the read-model plugin's shape (ADR 0058).
   instead of as a duplicate. That refusal also happens at sequence 0, before the body — no second
   effect, which a test pins — but it surfaces as a `StorageWriteError` wrapping `StaleFenceError`,
   and the service still reports it to `onError`: it cannot tell a live winner from a newer holder
-  that died before writing. In the other order — the loser acquires its fence AFTER the winner's
-  bootstrap is durable — the loser gets `ExecutionAlreadyExistsError`, but its `acquireFence`
-  has already superseded the winner, whose next write is refused as stale. That execution is
-  left `running`, which is what `recoverAbandoned` is for. Both are properties of acquiring a
-  fence per start attempt, unchanged by this ADR.
+  that died before writing. The fenced test covers ONLY this stale-at-bootstrap ordering.
+
+  In the other ordering — the loser acquires its fence AFTER the winner's bootstrap is durable —
+  the loser gets `ExecutionAlreadyExistsError`, but its `acquireFence` has already superseded
+  the winner. The winner's body is already running, so **its first effect can run before its
+  next write is refused as stale**; the execution is left `running`, and `recoverAbandoned`
+  re-drives it and runs that step again. That is at-least-once — one extra effect — not
+  exactly-once. It is pre-existing (it comes from acquiring a fence per start attempt) and
+  strictly better than before this ADR, when both nodes ran the body.
+- **A duplicate bootstrap in a coalesced batch aborts innocent writers in that batch.** The
+  batch rejection that D2 guards the fresh START against also reaches any live execution whose
+  envelope shared the batch: its journal records the write error and the run aborts. That is
+  existing `CoalescingEventStore` behaviour (all-or-nothing batches reject every caller), the
+  same shape L1 documents in ADR 0074 for a stale-fence zombie; this ADR adds a new way to put a
+  conflicting envelope into a batch, not the blast radius.
 - **A crash between the bootstrap write and the body** leaves an execution whose log is
   `EXECUTION_STARTED` alone — `running` with nothing in flight. That was already possible on the
   default path (the append is enqueued before the first effect), and `recoverAbandoned` re-drives
