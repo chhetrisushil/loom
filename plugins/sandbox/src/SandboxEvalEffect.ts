@@ -15,9 +15,10 @@ import type { SandboxLimits, SandboxWorkers, ScriptReader } from "./types";
 // loop), nothing injected but a JSON-marshaled `input`, the completion value
 // marshaled back out as JSON. Resource kills and shape mismatches complete on
 // DECLARED channels (ADR 0060) — a planner catches and re-plans, and replay
-// substitutes without re-burning CPU. Environment violations (a script touching
-// fetch/require/process) are ReferenceErrors — deliberately UNTYPED: an
-// environment bug is not a domain outcome.
+// substitutes without re-burning CPU. So does the script's own exception
+// (`scriptError`, incl. a ReferenceError for fetch/require/process): a caller can
+// tell "the script threw on this input" from an infrastructure failure (worker
+// pool, integrity, cancellation), which stays UNTYPED.
 
 const DEFAULT_MEMORY_BYTES = 32 * 1024 * 1024;
 const DEFAULT_INTERRUPT_BUDGET = 10_000;
@@ -185,8 +186,15 @@ export class SandboxEvalEffect implements Effect {
       // Interrupted without a recorded trigger — attribute to CPU budget.
       fail("limitExceeded", { kind: "cpu" });
     }
-    // Ordinary script error (incl. ReferenceError for fetch/require/process) —
-    // deliberately untyped: an environment violation is a bug, not an outcome.
+    if (outcome.thrown !== undefined) {
+      // The script's own exception on this input (incl. a SyntaxError, and a
+      // ReferenceError for fetch/require/process — the VM cannot tell a missing
+      // capability from a typo). A pure function of (script, input), so it is an
+      // outcome: typed, substituted on replay, never retried. The legacy text rides
+      // the error message for anything that logged it.
+      fail("scriptError", outcome.thrown, `sandbox script failed: ${message}`);
+    }
+    // No thrown value and no guard: nothing the script did explains this — untyped.
     throw new Error(`sandbox script failed: ${message}`);
   }
 }

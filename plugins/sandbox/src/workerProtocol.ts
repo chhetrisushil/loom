@@ -1,4 +1,4 @@
-import type { EvalLimits, TrippedGuard } from "./evalCore";
+import type { EvalLimits, ScriptThrow, TrippedGuard } from "./evalCore";
 
 // ── ADR 0089 — the wire between the effect and a sandbox worker ──────────────
 //
@@ -66,6 +66,13 @@ export type FromWorker =
        */
       outputJson: Uint8Array | null;
     }
-  | { type: "failure"; runId: number; message: string; tripped?: TrippedGuard }
+  | {
+      type: "failure";
+      runId: number;
+      message: string;
+      tripped?: TrippedGuard;
+      /** The script's own exception, already reduced to name + bounded message. */
+      thrown?: ScriptThrow;
+    }
   /** The worker itself broke (module load, marshalling) — not a script outcome. */
   | { type: "fatal"; runId: number; message: string };

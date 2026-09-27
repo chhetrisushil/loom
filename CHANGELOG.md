@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`@loom/plugin-sandbox`: a script's own exception is a typed `scriptError` channel**
+  ([ADR 0064](docs/adr/0064-sandbox-eval-plugin.md) D3, amended). `SANDBOX_ERRORS` gains
+  `scriptError { name?: string; message: string }` — whatever the script threw on this input,
+  including a non-Error value (`throw 42` → `{ message: "42" }`), a SyntaxError in its source,
+  and a ReferenceError for `fetch`/`require`/`process` (previously deliberately untyped: the VM
+  cannot tell a missing capability from a typo). `name` is kept only when it is a string
+  (≤ 128 chars), `message` is bounded at 2048, and no stack is ever carried. Callers can now tell
+  "the script threw" from an infrastructure failure without parsing error text: a closed or
+  failed worker pool, a script whose bytes do not match their content address, input
+  marshalling and cancellation all stay untyped, and a guard kill stays `limitExceeded` even
+  when the script catches it and rethrows. Being declared, it is recorded as
+  `STEP_FAILED { channel, payload }`, substituted on replay and not retried (ADR 0060). The error
+  message keeps the old `sandbox script failed: Name: message` text. Additive for replay: an old
+  log's untyped STEP_FAILED has no channel, is never substituted as `scriptError`, and keeps
+  legacy re-execution. `docs/api-reference.org` had the channel map wrong
+  (`limitExceeded`/`badShape`); it now lists all four. No kernel change; EVENT_SCHEMA and
+  KERNEL_ABI unchanged.
+
 - **Blueprint IR 2.4.0 (ADR 0101).** A minor bump so a container keeps its identity when a
   recompose inserts or reorders containers around it:
 

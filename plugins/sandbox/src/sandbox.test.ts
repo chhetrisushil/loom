@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { SANDBOX_TOOL_ID, registerSandboxEval, sandboxEval$ } from "./sandboxEval$";
 import { shapeHash } from "./shape";
-import type { SandboxSpec } from "./types";
+import { SANDBOX_ERRORS, type SandboxSpec } from "./types";
 
 // ── ADR 0064 — the sandbox security test list (the audit's executable form) ──
 //
@@ -131,7 +131,10 @@ describe.each(ENGINES)("sandboxEval (ADR 0064) — $name", ({ workers }) => {
     expect(failure.payload).toEqual({ kind: "wallClock" });
   });
 
-  it("has no ambient I/O: fetch/require/process/setTimeout are ReferenceErrors (deliberately untyped)", async () => {
+  it("has no ambient I/O: fetch/require/process/setTimeout are ReferenceErrors on scriptError", async () => {
+    // Still capability-empty: nothing but `input` exists in the VM. What changed is the
+    // channel — referencing a global that does not exist is the script's own bug, and the
+    // VM cannot tell `fetch` from a typo, so it completes on `scriptError` like any throw.
     const { scripts, effects } = await bootEngine();
     for (const code of [
       `fetch("http://example.com")`,
@@ -140,10 +143,89 @@ describe.each(ENGINES)("sandboxEval (ADR 0064) — $name", ({ workers }) => {
       "setTimeout(() => {}, 1)",
     ]) {
       const ref = await put(scripts, code);
-      await expect(effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx)).rejects.toThrow(
-        /sandbox script failed:.*not defined/
+      const failure = await expectChannel(
+        effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx),
+        "scriptError"
       );
+      expect(failure.payload).toMatchObject({ name: "ReferenceError" });
+      expect((failure.payload as { message: string }).message).toMatch(/not defined/);
     }
+  });
+
+  it("a script's own Error completes on scriptError with its name and message — no stack", async () => {
+    const { scripts, effects } = await bootEngine();
+    const ref = await put(scripts, `throw new TypeError("bad row " + input.i)`);
+    const failure = await expectChannel(
+      effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref, input: { i: 3 } }, baseCtx),
+      "scriptError"
+    );
+    // Exactly these keys: a stack names engine internals and is never carried.
+    expect(failure.payload).toStrictEqual({ name: "TypeError", message: "bad row 3" });
+    // The legacy text survives in the error message for anything that logged it.
+    expect(failure.message).toBe("sandbox script failed: TypeError: bad row 3");
+  });
+
+  it("a non-Error throw completes on scriptError with no name", async () => {
+    const { scripts, effects } = await bootEngine();
+    const cases: [string, unknown][] = [
+      ["throw 42", { message: "42" }],
+      [`throw "nope"`, { message: "nope" }],
+      ["throw null", { message: "null" }],
+      ["throw undefined", { message: "undefined" }],
+      ["throw { code: 7 }", { message: '{"code":7}' }],
+      // Error-LIKE objects: a string `name`/`message` is read; anything else is not.
+      [`throw { name: "Custom", message: "m" }`, { name: "Custom", message: "m" }],
+      ["throw { name: 5, message: {} }", { message: '{"name":5,"message":{}}' }],
+    ];
+    for (const [code, payload] of cases) {
+      const ref = await put(scripts, code);
+      const failure = await expectChannel(
+        effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx),
+        "scriptError"
+      );
+      expect(failure.payload, code).toStrictEqual(payload);
+    }
+  });
+
+  it("a syntax error is the script's own fault: scriptError { name: SyntaxError }", async () => {
+    const { scripts, effects } = await bootEngine();
+    const ref = await put(scripts, "(() => { return input.; })()");
+    const failure = await expectChannel(
+      effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx),
+      "scriptError"
+    );
+    expect(failure.payload).toMatchObject({ name: "SyntaxError" });
+  });
+
+  it("bounds script-authored text: name ≤ 128, message ≤ 2048 characters", async () => {
+    const { scripts, effects } = await bootEngine();
+    const ref = await put(
+      scripts,
+      `const e = new Error("m".repeat(100000)); e.name = "n".repeat(10000); throw e;`
+    );
+    const failure = await expectChannel(
+      effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx),
+      "scriptError"
+    );
+    const payload = failure.payload as { name: string; message: string };
+    expect(payload.name).toBe("n".repeat(128));
+    expect(payload.message).toBe("m".repeat(2048));
+    expect(SANDBOX_ERRORS.scriptError.safeParse(payload).success).toBe(true);
+  });
+
+  it("a guard kill stays limitExceeded even when the script catches and rethrows", async () => {
+    const { scripts, effects } = await bootEngine({
+      limits: { interruptBudget: 50, wallClockMs: 60_000 },
+    });
+    const ref = await put(
+      scripts,
+      `try { while (true) {} } catch (e) { throw new Error("swallowed the kill"); }`
+    );
+    const failure = await expectChannel(
+      effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx),
+      "limitExceeded"
+    );
+    expect(failure.payload).toEqual({ kind: "cpu" });
   });
 
   it("validates the output shape against the pinned hash and fails typed on mismatch", async () => {
@@ -259,5 +341,165 @@ describe("sandboxEval — replay", () => {
 
     expect(state.status).toBe("completed");
     expect(reads2.reads).toBe(0); // replay substituted the recorded typed failure — zero evaluation
+  });
+});
+
+describe("sandboxEval — scriptError vs infrastructure", () => {
+  it("a worker-pool failure is NOT scriptError: it stays an untyped Error", async () => {
+    const { scripts, effects, effect } = await boot({ workers: { count: 1 } });
+    const ref = await put(scripts, `throw new Error("never runs")`);
+    await effect.close();
+    const err = await effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(TypedFailure);
+    expect((err as Error).message).toMatch(/worker pool closed/);
+  });
+
+  it("an integrity failure (bytes do not match the pinned address) is NOT scriptError", async () => {
+    const scripts = new InMemoryContentStore();
+    const ref = await put(scripts, `throw new Error("x")`);
+    const effects = new EffectRuntime();
+    registerSandboxEval(effects, { get: async () => encoder.encode(`throw new Error("y")`) });
+    const err = await effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).not.toBeInstanceOf(TypedFailure);
+    expect((err as Error).message).toMatch(/do not match their content address/);
+  });
+});
+
+describe("sandboxEval — scriptError replay", () => {
+  const io = z.object({}).passthrough() as z.ZodSchema<Record<string, unknown>>;
+  const flowDef: FlowDefinition<Record<string, unknown>, Record<string, unknown>> = {
+    _tag: "FlowDefinition",
+    id: "reshape-flow",
+    name: "reshape-flow",
+    version: "1.0.0",
+    inputSchema: io,
+    outputSchema: io,
+    steps: [],
+  };
+
+  /** Catch whatever the step threw, wait for a gate, and report what was caught. */
+  const runnerFor =
+    (scriptRef: { __loomContent: string }): FlowRunner<
+      Record<string, unknown>,
+      Record<string, unknown>
+    > =>
+    async (ctx) => {
+      try {
+        await ctx.run(sandboxEval$("reshape#0"), { scriptRef });
+        return { branch: "success" };
+      } catch (err) {
+        await (ctx.suspend({ on: "RepairDone" }) as Promise<unknown>);
+        return {
+          branch: err instanceof TypedFailure ? `typed:${err.channel}` : "untyped",
+        };
+      }
+    };
+
+  it("a scriptError is recorded typed and replays with ZERO re-evaluation", async () => {
+    const scripts = new InMemoryContentStore();
+    const ref = await put(scripts, `throw new RangeError("row 9 out of range")`);
+    const eventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const runtimeCounting = (counter: { reads: number }) => {
+      const effects = new EffectRuntime();
+      registerSandboxEval(effects, {
+        get: (r) => {
+          counter.reads++;
+          return scripts.get(r);
+        },
+      });
+      const rt = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime: effects });
+      rt.registerFlow(flowDef, runnerFor(ref));
+      return rt;
+    };
+
+    const first = { reads: 0 };
+    const rt1 = runtimeCounting(first);
+    const started = await rt1.start(
+      { definition: flowDef, runner: runnerFor(ref) },
+      {},
+      { executionId: "se-1" }
+    );
+    await started.waitForSuspend();
+    expect(first.reads).toBe(1);
+    const failed = (await eventStore.read("se-1")).filter((e) => e.eventType === "STEP_FAILED");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.payload).toMatchObject({
+      stepId: "reshape#0",
+      channel: "scriptError",
+      payload: { name: "RangeError", message: "row 9 out of range" },
+    });
+
+    const second = { reads: 0 };
+    const done = await runtimeCounting(second).resume("se-1", {
+      eventType: "RepairDone",
+      payload: {},
+    });
+    const state = await done.waitForCompletion();
+    expect(state.status).toBe("completed");
+    expect(state.variables._output).toEqual({ branch: "typed:scriptError" });
+    expect(second.reads).toBe(0); // substituted, never re-evaluated
+  });
+
+  it("an OLD log's untyped script failure is not retroactively typed: its event and fold are untouched, and it keeps legacy re-execution", async () => {
+    const scripts = new InMemoryContentStore();
+    const ref = await put(scripts, `throw new Error("x")`);
+    const eventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+
+    // Record the log exactly as the pre-scriptError effect did: a plain Error, no channel.
+    const legacy = new EffectRuntime();
+    legacy.register(SANDBOX_TOOL_ID, {
+      kind: "tool",
+      idempotent: true,
+      async execute() {
+        throw new Error("sandbox script failed: Error: x");
+      },
+    });
+    const rt1 = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime: legacy });
+    rt1.registerFlow(flowDef, runnerFor(ref));
+    const started = await rt1.start(
+      { definition: flowDef, runner: runnerFor(ref) },
+      {},
+      { executionId: "old-1" }
+    );
+    await started.waitForSuspend();
+    const recorded = await eventStore.read("old-1");
+    const oldFailure = recorded.find((e) => e.eventType === "STEP_FAILED");
+    expect(oldFailure?.payload).toEqual({
+      stepId: "reshape#0",
+      error: "Error: sandbox script failed: Error: x",
+    });
+
+    // Resume under the NEW effect. An untyped frame has no errorChannel, so it is
+    // never substituted as scriptError — ADR 0060 G2 legacy re-execution applies, and
+    // the recorded prefix is left exactly as written.
+    const reads = { n: 0 };
+    const current = new EffectRuntime();
+    registerSandboxEval(current, {
+      get: (r) => {
+        reads.n++;
+        return scripts.get(r);
+      },
+    });
+    const rt2 = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime: current });
+    rt2.registerFlow(flowDef, runnerFor(ref));
+    const done = await rt2.resume("old-1", { eventType: "RepairDone", payload: {} });
+    const state = await done.waitForCompletion();
+    expect(state.status).toBe("completed");
+    expect(reads.n).toBe(1); // re-executed, as every untyped failure always was
+    // The re-execution's outcome is today's effect's — typed now. That is what legacy
+    // re-execution has always meant: an untyped failure was never a recorded outcome.
+    expect(state.variables._output).toEqual({ branch: "typed:scriptError" });
+
+    const after = await eventStore.read("old-1");
+    expect(after.slice(0, recorded.length)).toEqual(recorded); // the old prefix is byte-identical
   });
 });
