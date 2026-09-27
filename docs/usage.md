@@ -164,6 +164,20 @@ const state = await handle.waitForCompletion();
 console.log(state.variables._output); // { summary: "…" }
 ```
 
+To make a start idempotent, derive the id from whatever triggered it and pass it as `executionId`. A second `start()` with an id that already exists rejects with `ExecutionAlreadyExistsError` **before the flow body runs** — no effect is invoked and `onEvent` sees nothing — so a redelivered message or a schedule occurrence fired by two nodes pays for its effects once ([ADR 0103](adr/0103-durable-bootstrap-for-caller-chosen-ids.md)):
+
+```ts
+import { ExecutionAlreadyExistsError } from "@loom/workflow-runtime";
+
+try {
+  await app.runtime.start(investigateFlow, { target }, { executionId: `investigate:${msg.id}` });
+} catch (err) {
+  if (!(err instanceof ExecutionAlreadyExistsError)) throw err; // already started — nothing ran
+}
+```
+
+Choosing the id costs one awaited write before the body starts; without an `executionId` the runtime mints a ULID, which cannot collide, and skips it.
+
 An `ExecutionHandle` gives you `executionId`, `waitForCompletion()`, `waitForSuspend()`, `getState()`, and `cancel(reason?)`. To resume a suspended execution (from Step 9's gate, or after a restart):
 
 ```ts

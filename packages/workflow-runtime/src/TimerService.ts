@@ -4,7 +4,7 @@ import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type CronSpec, nextOccurrence, parseCron } from "./cron";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
-import { TIMER_FIRED } from "./types";
+import { ExecutionAlreadyExistsError, TIMER_FIRED } from "./types";
 
 export interface TimerServiceOptions {
   /** Poll cadence for due timers, in ms. Default 250. */
@@ -238,8 +238,11 @@ export class TimerService {
 
   private async startOccurrence(def: ScheduleDefinition, occurrence: number): Promise<void> {
     // A2 — the deterministic occurrence id: every node computes the same one,
-    // so dedup needs no coordination (durable-state check + the store's
-    // uniqueness backstop for the raced remainder).
+    // so dedup needs no coordination. `loadState` is the cheap fast path for an
+    // occurrence that is visibly started; the raced remainder (two nodes checking
+    // before either writes) is refused by `start()` itself with
+    // ExecutionAlreadyExistsError BEFORE the loser's body runs (ADR 0103), which
+    // is "already started", not an error.
     const executionId = `${def.id}@${occurrence}`;
     try {
       const existing = await this.runtime.loadState(executionId);
@@ -258,6 +261,7 @@ export class TimerService {
         handle.waitForCompletion().catch(() => undefined),
       ]);
     } catch (err) {
+      if (err instanceof ExecutionAlreadyExistsError) return; // another node won the race
       this.onError?.(executionId, err);
     }
   }

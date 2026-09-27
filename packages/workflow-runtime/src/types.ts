@@ -175,6 +175,18 @@ export type WorkflowContext = ExecutionContext;
 export type ResourceDimension = "tokens" | "costUsd" | "ms" | "memBytes" | "wallMs" | "netBytes";
 
 export interface RunOptions {
+  /**
+   * A caller-chosen execution id (default: a fresh ULID).
+   *
+   * ADR 0103 — when you choose the id, `start()` is START-ONCE for it: the bootstrap
+   * `EXECUTION_STARTED` is made durable BEFORE the flow body runs, so if an execution with
+   * this id already exists `start()` rejects with `ExecutionAlreadyExistsError` and nothing
+   * runs — no effect, no fold, no `onEvent`. Derive the id from the trigger (a schedule
+   * occurrence, a message id, an idempotency key) and catch the error to treat a duplicate
+   * delivery as "already started". The cost is one awaited append before the body, paid
+   * only on this path; a minted ULID cannot collide and keeps the barrier-free path.
+   * Any other failure of that append rejects `start()` with `StorageWriteError`.
+   */
   executionId?: string;
   /**
    * #392 — the compute lane this execution belongs in, recorded on its `EXECUTION_STARTED`
@@ -343,6 +355,31 @@ export class InputValidationError extends Error {
     );
     this.name = "InputValidationError";
     Object.setPrototypeOf(this, InputValidationError.prototype);
+  }
+}
+
+/**
+ * ADR 0103 — `start()` was given a caller-chosen `executionId` that already names an
+ * execution. The bootstrap `EXECUTION_STARTED` was refused by the store at sequence 0
+ * BEFORE the flow body ran: no effect was invoked, no event was folded, and `onEvent`
+ * saw nothing. The existing execution is untouched.
+ *
+ * This is what makes `start()` start-once for a deterministic id: a caller that derives
+ * the id from its trigger (a schedule occurrence, a message id, an idempotency key) and may
+ * deliver it twice catches this and treats it as "already started". Drive the existing
+ * execution with `resume` / `loadState` / `subscribe` by the same id.
+ */
+export class ExecutionAlreadyExistsError extends Error {
+  constructor(
+    readonly executionId: string,
+    /** The store's normalized conflict (`DuplicateSequenceError` / `DuplicateEnvelopeIdError`). */
+    readonly cause?: unknown
+  ) {
+    super(
+      `start of execution "${executionId}" refused: an execution with that id already exists (its EXECUTION_STARTED is already in the log). Nothing ran; treat it as already started, or resume/read it by id.`
+    );
+    this.name = "ExecutionAlreadyExistsError";
+    Object.setPrototypeOf(this, ExecutionAlreadyExistsError.prototype);
   }
 }
 

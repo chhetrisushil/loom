@@ -5,6 +5,7 @@ export {
   ApprovalRejectedError,
   EFFECT_INDOUBT_RESOLVED,
   EXECUTION_RECOVERED,
+  ExecutionAlreadyExistsError,
   ExecutionDeniedError,
   FlowCodeMismatchError,
   FlowMigrationCheckError,

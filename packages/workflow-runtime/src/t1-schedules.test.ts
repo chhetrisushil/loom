@@ -143,6 +143,66 @@ describe("T1.2 — schedule$ firing", () => {
     expect(events.filter((e) => e.eventType === "EXECUTION_STARTED").length).toBe(1);
   });
 
+  it("ADR 0103 — two nodes firing the same occurrence at once: one execution, one effect, no onError", async () => {
+    // The raced remainder the `loadState` fast path cannot see: both nodes check before
+    // either has written. The durable bootstrap refuses the loser's start with
+    // ExecutionAlreadyExistsError before its body runs, and the service reads that as
+    // "already started" rather than an error.
+    const a = boot();
+    const b = boot(a);
+    const onErrorA = vi.fn();
+    const onErrorB = vi.fn();
+    const serviceA = new TimerService(a.runtime, a.timerStore, {
+      schedules: [everyMinute],
+      onError: onErrorA,
+    });
+    const serviceB = new TimerService(b.runtime, b.timerStore, {
+      schedules: [everyMinute],
+      onError: onErrorB,
+    });
+    const occurrence = nextMinute(Date.now());
+    await Promise.all([serviceA.tick(occurrence), serviceB.tick(occurrence)]);
+
+    expect(a.auditFn.mock.calls.length + b.auditFn.mock.calls.length).toBe(1);
+    expect(onErrorA).not.toHaveBeenCalled();
+    expect(onErrorB).not.toHaveBeenCalled();
+    const events = await a.eventStore.read(`audit-schedule@${occurrence}`);
+    expect(events.filter((e) => e.eventType === "EXECUTION_STARTED")).toHaveLength(1);
+    expect(events.at(-1)?.eventType).toBe("EXECUTION_COMPLETED");
+  });
+
+  it("ADR 0103 — the same race in fenced mode: one execution, one effect; a loser can only lose on the fence", async () => {
+    // Each node acquires a fence before starting, so the loser may be refused as STALE at its
+    // bootstrap (the other node holds the newer token) rather than as a duplicate. Either
+    // way the refusal happens at sequence 0, before the body — no second effect. A stale
+    // fence is still reported to onError: it can also mean the newer holder died before
+    // writing, which the service cannot tell apart from a live winner.
+    const a = boot();
+    const b = boot(a);
+    const onErrorA = vi.fn();
+    const onErrorB = vi.fn();
+    const serviceA = new TimerService(a.runtime, a.timerStore, {
+      schedules: [everyMinute],
+      fenced: true,
+      onError: onErrorA,
+    });
+    const serviceB = new TimerService(b.runtime, b.timerStore, {
+      schedules: [everyMinute],
+      fenced: true,
+      onError: onErrorB,
+    });
+    const occurrence = nextMinute(Date.now());
+    await Promise.all([serviceA.tick(occurrence), serviceB.tick(occurrence)]);
+
+    expect(a.auditFn.mock.calls.length + b.auditFn.mock.calls.length).toBe(1);
+    for (const [, err] of [...onErrorA.mock.calls, ...onErrorB.mock.calls]) {
+      expect((err as { cause?: { name?: string } }).cause?.name).toBe("StaleFenceError");
+    }
+    const events = await a.eventStore.read(`audit-schedule@${occurrence}`);
+    expect(events.filter((e) => e.eventType === "EXECUTION_STARTED")).toHaveLength(1);
+    expect(events.at(-1)?.eventType).toBe("EXECUTION_COMPLETED");
+  });
+
   it("no catch-up: occurrences before the service existed are skipped", async () => {
     const app = boot();
     const service = new TimerService(app.runtime, app.timerStore, { schedules: [everyMinute] });

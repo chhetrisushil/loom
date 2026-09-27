@@ -1,4 +1,4 @@
-import { SuspendError, flowContentHash } from "@loom/core";
+import { StorageWriteError, SuspendError, flowContentHash } from "@loom/core";
 import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loom/core";
 import { LazyEffect } from "@loom/effect-runtime";
 import type {
@@ -8,7 +8,12 @@ import type {
   TransientInvokeOptions,
 } from "@loom/effect-runtime";
 import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
-import { RESERVED_STREAM_PREFIX, isReservedStream } from "@loom/event-runtime";
+import {
+  DuplicateEnvelopeIdError,
+  DuplicateSequenceError,
+  RESERVED_STREAM_PREFIX,
+  isReservedStream,
+} from "@loom/event-runtime";
 import { headOf, readRangeOf } from "@loom/event-runtime";
 // Import the pure sequence helper from the browser-safe subpath, not the barrel:
 // the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
@@ -23,6 +28,7 @@ import { COMPUTE_TARGET_KEY } from "./placement";
 import {
   ApprovalRejectedError,
   EXECUTION_RECOVERED,
+  ExecutionAlreadyExistsError,
   ExecutionDeniedError,
   FlowCodeMismatchError,
   FlowMigrationCheckError,
@@ -62,12 +68,30 @@ interface BootstrapEvent {
    * exactly one metadata key, `flowEmit` (ADR 0102), which a bootstrap event never carries.
    */
   metadata?: Record<string, unknown>;
+  /**
+   * ADR 0103 — this event was already made DURABLE (by `start()`'s bootstrap barrier for a
+   * caller-chosen id); `execute` adopts the stored envelope instead of committing it again.
+   */
+  durable?: EventEnvelope;
 }
 
 export interface WorkflowRuntimeDeps {
   eventStore: EventStore;
   snapshotStore: SnapshotStore;
   effectRuntime: EffectRuntime;
+  /**
+   * Live tail: called synchronously with every event this runtime commits, in sequence
+   * order, as it is folded — BEFORE its durable write completes. That is by design (the
+   * journal keeps the in-memory fold independent of store latency, and a failed durable
+   * write aborts the run and fails it at the next drain barrier), so an event seen here can,
+   * on a storage failure, never become durable. A consumer that must act only on DURABLE
+   * facts reads them back (a catch-up read over the store, the read-model plugin's shape,
+   * ADR 0058) rather than acting on this callback.
+   *
+   * One exception (ADR 0103): a start with a caller-chosen `executionId` writes its
+   * `EXECUTION_STARTED` before this fires for it, so a duplicate start — refused with
+   * `ExecutionAlreadyExistsError` — is never seen here at all.
+   */
   onEvent?: (event: EventEnvelope) => void;
   /**
    * Optional branch registry. When provided, `fork()` records fork lineage and
@@ -852,30 +876,78 @@ export class WorkflowRuntime {
     // K11.1 — record the flow-code fingerprint this execution starts under
     // (additive payload field; legacy logs without it resume unchecked).
     const flowHash = this.flowHashes.get(definition.id);
+    const bootstrap: BootstrapEvent = {
+      eventType: "EXECUTION_STARTED",
+      payload: { input: effectiveInput, ...(flowHash !== undefined && { flowHash }) },
+      // #392 — where this execution belongs, recorded where it can be found again.
+      // Sequence 0 is the execution's metadata anchor: `truncatePrefix` preserves it
+      // through compaction, `deleteExecution` removes it with everything else, and
+      // `metadata.fence` already established that operational, non-semantic data rides
+      // here. Descriptive only — nothing folds it, so replay is untouched (G2).
+      ...(options?.computeTarget !== undefined && {
+        metadata: { computeTarget: options.computeTarget },
+      }),
+    };
+
+    // ADR 0103 — a CALLER-CHOSEN id can already exist (a redelivered trigger, a second node
+    // firing the same schedule occurrence), so its sequence 0 is made durable BEFORE the body
+    // runs: the store's uniqueness refuses a duplicate here, before any effect, fold or
+    // onEvent. A minted ulid cannot collide, so the default path pays no barrier and stays
+    // byte-identical (the journal writes sequence 0 behind the fold, as before).
+    if (options?.executionId !== undefined) {
+      bootstrap.durable = await this.writeBootstrap(
+        executionId,
+        definition.id,
+        bootstrap,
+        options.fence
+      );
+    }
+
     return this.execute(
       executionId,
       definition.id,
       vm,
       runner as FlowRunner<unknown, unknown>,
       effectiveInput,
-      [
-        {
-          eventType: "EXECUTION_STARTED",
-          payload: { input: effectiveInput, ...(flowHash !== undefined && { flowHash }) },
-          // #392 — where this execution belongs, recorded where it can be found again.
-          // Sequence 0 is the execution's metadata anchor: `truncatePrefix` preserves it
-          // through compaction, `deleteExecution` removes it with everything else, and
-          // `metadata.fence` already established that operational, non-semantic data rides
-          // here. Descriptive only — nothing folds it, so replay is untouched (G2).
-          ...(options?.computeTarget !== undefined && {
-            metadata: { computeTarget: options.computeTarget },
-          }),
-        },
-      ],
+      [bootstrap],
       options?.fence,
       options?.deadlineMs ?? definition.deadlineMs,
       options?.principal
     );
+  }
+
+  /**
+   * ADR 0103 — the bootstrap barrier. Builds sequence 0 exactly as the journal would
+   * (`ExecutionJournal.bootstrapEnvelope`: same id, injected-clock timestamp and fence) and
+   * awaits its append. A sequence/id conflict means the execution already exists →
+   * {@link ExecutionAlreadyExistsError}; any other write failure refuses the start with
+   * {@link StorageWriteError} (reported to `onStorageError` like a journal write failure).
+   * Either way nothing has run.
+   */
+  private async writeBootstrap(
+    executionId: string,
+    workflowId: string,
+    bootstrap: BootstrapEvent,
+    fence: number | undefined
+  ): Promise<EventEnvelope> {
+    const envelope = ExecutionJournal.bootstrapEnvelope(
+      { executionId, workflowId },
+      bootstrap.eventType,
+      bootstrap.payload,
+      {
+        ...(bootstrap.metadata !== undefined && { metadata: bootstrap.metadata }),
+        ...(fence !== undefined && { fence }),
+        now: this.now,
+      }
+    );
+    try {
+      await this.eventStore.append(envelope);
+    } catch (err: unknown) {
+      if (isWriteConflict(err)) throw new ExecutionAlreadyExistsError(executionId, err);
+      this.onStorageError?.(executionId, err);
+      throw new StorageWriteError(err);
+    }
+    return envelope;
   }
 
   async resume(
@@ -1524,6 +1596,10 @@ export class WorkflowRuntime {
     // Commit bootstrap events (EXECUTION_STARTED / resume+RESUMED / restore) so
     // they flow through the same sequencer + writer as everything else.
     for (const b of bootstrapEvents) {
+      if (b.durable !== undefined) {
+        journal.adopt(b.durable); // ADR 0103 — already stored by start()'s barrier
+        continue;
+      }
       journal.commit(
         b.eventType,
         b.payload,
@@ -1704,4 +1780,18 @@ export class WorkflowRuntime {
 
     return handle;
   }
+}
+
+/**
+ * ADR 0103 — did the store refuse a write because the slot or id is already taken? Both
+ * conflicts are normalized by every backend (see `EventStore.append`); a decorator passes
+ * them through. Matched by `name` as well as class so a second copy of `@loom/event-runtime`
+ * in a bundle cannot turn "already exists" into a generic storage failure.
+ */
+function isWriteConflict(err: unknown): boolean {
+  if (err instanceof DuplicateSequenceError || err instanceof DuplicateEnvelopeIdError) {
+    return true;
+  }
+  const name = (err as { name?: unknown } | null)?.name;
+  return name === "DuplicateSequenceError" || name === "DuplicateEnvelopeIdError";
 }
