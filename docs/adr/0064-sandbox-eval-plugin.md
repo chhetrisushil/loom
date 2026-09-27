@@ -48,7 +48,19 @@ typed `scriptMissing`.
   vs the caller-pinned `expectedOutputShapeHash`.
 - Deliberately UNTYPED: ReferenceErrors from scripts touching `fetch`/`require`/
   `process` — an environment violation is a bug, not a domain outcome; it keeps
-  legacy retry semantics and loud failure.
+  legacy retry semantics and loud failure. *(Amended 2026-09-27: superseded by the
+  `scriptError { name?, message }` channel. A script's OWN exception — any thrown
+  value, a SyntaxError in its source, and a ReferenceError for a global the VM does
+  not have, which the VM cannot tell apart from a typo — completes typed, so a
+  caller can tell "the script threw on this input" from an infrastructure failure
+  without parsing error text. Being a pure function of (script, input) it is an
+  outcome: substituted on replay, not retried. The payload is the thrown value's
+  string `name` (when it has one, ≤ 128 chars) and a text `message` (≤ 2048 chars),
+  never a stack. A guard kill stays `limitExceeded` even when the script catches it
+  and rethrows. What stays untyped is the infrastructure: the worker pool (closed, a
+  worker `fatal`), the content-address check, input marshalling, cancellation.
+  Additive for replay: an old log's untyped STEP_FAILED carries no channel, so it is
+  never substituted as `scriptError` and keeps ADR 0060's legacy re-execution.)*
 
 `idempotent: true` — a pure function of (script, input); at-least-once re-runs
 are safe by construction.

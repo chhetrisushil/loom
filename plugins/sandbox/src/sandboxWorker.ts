@@ -67,11 +67,13 @@ async function handle(msg: ToWorker): Promise<void> {
     const outcome = evalInFreshRuntime(quickjs, msg.script, input, msg.limits);
     Atomics.store(state, STATUS_STATE_INDEX, RUN_FINISHED);
     if (!outcome.ok) {
-      send(
-        outcome.tripped === undefined
-          ? { type: "failure", runId, message: outcome.message }
-          : { type: "failure", runId, message: outcome.message, tripped: outcome.tripped }
-      );
+      send({
+        type: "failure",
+        runId,
+        message: outcome.message,
+        ...(outcome.tripped !== undefined && { tripped: outcome.tripped }),
+        ...(outcome.thrown !== undefined && { thrown: outcome.thrown }),
+      });
       return;
     }
     if (outcome.value === undefined) {

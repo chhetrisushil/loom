@@ -122,8 +122,10 @@ and compute.
   `loom new sentinel` scaffold.
 - `@loom/plugin-sandbox` — hardened QuickJS-in-WASM eval of content-addressed, LLM-authored
   reshaping scripts: in-engine memory/CPU/wall-clock limits, no ambient I/O by construction,
-  output shape-hash validation; `scriptMissing`/`limitExceeded`/`shapeMismatch` are typed
-  channels so a planner re-plans and replay never re-burns CPU
+  output shape-hash validation; `scriptMissing`/`limitExceeded`/`shapeMismatch`/`scriptError`
+  are typed channels so a planner re-plans and replay never re-burns CPU. `scriptError
+  { name?, message }` is the script's own throw (incl. a SyntaxError or a non-Error value),
+  bounded and stack-free; worker-pool, integrity and cancellation failures stay untyped
   ([ADR 0064](adr/0064-sandbox-eval-plugin.md)).
 
 **Protocols**

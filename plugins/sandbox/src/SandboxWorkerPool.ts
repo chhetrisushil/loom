@@ -320,11 +320,12 @@ export class SandboxWorkerPool {
         return;
       }
       if (msg.type === "failure") {
-        settle(
-          msg.tripped === undefined
-            ? { ok: false, message: msg.message }
-            : { ok: false, message: msg.message, tripped: msg.tripped }
-        );
+        settle({
+          ok: false,
+          message: msg.message,
+          ...(msg.tripped !== undefined && { tripped: msg.tripped }),
+          ...(msg.thrown !== undefined && { thrown: msg.thrown }),
+        });
         return;
       }
       settle(new Error(msg.message));

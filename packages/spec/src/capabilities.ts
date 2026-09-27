@@ -256,7 +256,7 @@ export const CAPABILITIES: readonly Capability[] = [
     package: "@loom/plugin-sandbox",
     level: "L2",
     summary:
-      "QuickJS-in-WASM eval of content-addressed, LLM-authored reshaping scripts: in-engine memory/CPU/wall-clock limits, no ambient I/O by construction, output shape-hash validation — typed scriptMissing/limitExceeded/shapeMismatch channels. Opt-in worker-thread evaluation keeps a synchronous eval off the caller's event loop and adds the hard kill the in-engine guards cannot do.",
+      "QuickJS-in-WASM eval of content-addressed, LLM-authored reshaping scripts: in-engine memory/CPU/wall-clock limits, no ambient I/O by construction, output shape-hash validation — typed scriptMissing/limitExceeded/shapeMismatch/scriptError channels (a script's own throw is an outcome; infrastructure failures stay untyped). Opt-in worker-thread evaluation keeps a synchronous eval off the caller's event loop and adds the hard kill the in-engine guards cannot do.",
     evidence: {
       conformanceTest: "plugins/sandbox/src/sandbox.test.ts",
     },

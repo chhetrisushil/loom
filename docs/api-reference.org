@@ -1837,7 +1837,12 @@ Reached through ~app.knowledge(scope)~, over the same ~memoryStore~ that backs ~
 #+begin_src typescript
 function sandboxEval$(config: { id: string; script: string | ContentRef; limits?: SandboxLimits }): TaskDefinition
 function registerSandboxEval(effects: EffectRegistry, options?: { workers?: number }): void
-const SANDBOX_ERRORS: { limitExceeded: string; badShape: string }   // typed failure channels (ADR 0060)
+const SANDBOX_ERRORS: {             // typed failure channels (ADR 0060) — zod schemas
+  scriptMissing: { ref: string };
+  limitExceeded: { kind: "cpu" | "memory" | "wallClock" | "output" };
+  shapeMismatch: { expected: string; observed: string };
+  scriptError: { name?: string; message: string };   // the script's own throw; ≤128 / ≤2048 chars, no stack
+}
 interface SandboxLimits { memoryBytes?: number; interruptBudget?: number; wallClockMs?: number;
                           maxOutputBytes?: number }   // EMISSION is capped too — output lands in the log
 function shapeOf(value: unknown): string; function shapeHash(value: unknown): string

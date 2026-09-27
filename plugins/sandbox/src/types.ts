@@ -92,9 +92,23 @@ export const SandboxEvalInput = z.object({
 
 export type SandboxEvalInputValue = z.infer<typeof SandboxEvalInput>;
 
-/** Declared failure channels (ADR 0060). */
+/**
+ * Declared failure channels (ADR 0060).
+ *
+ * `scriptError` is the script's OWN exception on this input — anything it threw,
+ * including a non-Error (`throw 42`), a SyntaxError in its source, and a
+ * ReferenceError for a global the capability-empty VM does not have. It carries
+ * only the thrown value's `name` (when it has a string one) and a text `message`,
+ * both bounded; never a stack. A guard kill is `limitExceeded` even when the
+ * script catches it and rethrows. Infrastructure failures — the worker pool, the
+ * content address check, input marshalling, cancellation — stay untyped.
+ */
 export const SANDBOX_ERRORS = {
   scriptMissing: z.object({ ref: z.string() }),
   limitExceeded: z.object({ kind: z.enum(["cpu", "memory", "wallClock", "output"]) }),
   shapeMismatch: z.object({ expected: z.string(), observed: z.string() }),
+  scriptError: z.object({
+    name: z.string().max(128).optional(),
+    message: z.string().max(2048),
+  }),
 };
