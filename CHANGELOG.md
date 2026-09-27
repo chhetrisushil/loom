@@ -201,8 +201,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deterministic id invoked its effects (a paid model call in the probe) before the store refused
   sequence 0. Now, when the caller supplies `executionId`, `start()` awaits the durable write of
   sequence 0 first — the same envelope, byte for byte, through a builder shared with the journal —
-  and a sequence/id conflict throws the new `ExecutionAlreadyExistsError` with nothing folded,
-  nothing delivered and nothing run. Any other failure of that write rejects `start()` with
+  and a sequence/id conflict — confirmed by reading this execution's sequence 0 back, because a
+  coalesced batch hands every caller the same conflict error (an unconfirmed one is retried once)
+  — throws the new `ExecutionAlreadyExistsError` with nothing folded, nothing delivered and
+  nothing run. Any other failure of that write rejects `start()` with
   `StorageWriteError`. `TimerService` treats the typed error as "already started", which closes
   the cross-node race its `loadState` pre-check left open. There is no `startOnce` helper: catch
   the error. A minted ULID cannot collide, so `start()` without an `executionId` pays no extra
