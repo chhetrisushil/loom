@@ -7,10 +7,21 @@ import {
   ContentResolvingEventStore,
   InMemoryContentStore,
 } from "@loom/plugin-content";
+import {
+  PostgresEventStore,
+  PostgresSnapshotStore,
+  migratePostgresStores,
+} from "@loom/plugin-postgres";
 import { foldEvents } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { type FlowRunner, type RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
-import { describe, expect, it } from "vitest";
+import {
+  type FlowRunner,
+  LogLifecycle,
+  type RegisteredFlow,
+  WorkflowRuntime,
+} from "@loom/workflow-runtime";
+import { Pool } from "pg";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { type StateReader, liveQuery } from "./liveQuery";
 
@@ -135,70 +146,77 @@ function noSnapshotReader(store: EventStore): StateReader {
   };
 }
 
-describe("liveQuery — incremental fold (O(N), not O(N²))", () => {
-  it("reads O(N) rows over N sequential events, not O(N²) — the negative: a full re-fold per wake-up fails this", async () => {
-    const inner = new InMemoryAsyncEventStore();
-    const { store, rows } = countingStore(inner);
-    const reader = noSnapshotReader(store);
-    const lq = liveQuery({ eventStore: store, reader });
+/**
+ * Appends `n` sequential events to a fresh liveQuery subscription (settling — via
+ * `tick()` — between each, so every wake-up is its own pump) and returns the total rows
+ * `read`/`readFrom` returned across the whole run. Small N by design: the PROPERTY under
+ * test is the growth ratio between two sizes, not an absolute count, so it stays fast and
+ * needs no raised timeout.
+ */
+async function rowsOverNEvents(n: number): Promise<number> {
+  const inner = new InMemoryAsyncEventStore();
+  const { store, rows } = countingStore(inner);
+  const reader = noSnapshotReader(store);
+  const lq = liveQuery({ eventStore: store, reader });
 
-    const unsub = await lq.subscribe("x1", () => {});
-
-    const N = 500;
-    for (let i = 0; i < N; i++) {
-      await store.append({
-        id: `e${i}`,
-        executionId: "x1",
-        workflowId: "w",
-        eventType: "STEP_COMPLETED",
-        sequence: i,
-        timestamp: i,
-        payload: { stepId: `s${i}` },
-      });
-      await tick();
-    }
-    unsub();
-
-    // O(N): a small constant over N, never N(N+1)/2 (≈125,250 at N=500).
-    expect(rows()).toBeLessThanOrEqual(N + 5);
-    // 500 settled (awaited) sequential appends can be slow under a fully-loaded CI
-    // runner — hence the generous 15s timeout below. The assertion itself is a
-    // deterministic row count, not a time budget.
-  }, 15_000);
-
-  // The audit's probe (one event per tick, no coalescing) measured EXACTLY N²/2 rows
-  // folded at N=4000 — 8,002,000 — and 10.6s wall-clock on SQLite. This bench asserts
-  // the row COUNT (deterministic across machines), not the time: even without forcing a
-  // settle between every append (so bursts coalesce, which only helps the old code), the
-  // old re-fold-from-genesis path is still off by more than 1000x from linear.
-  it("bench line: at N=4000, rows folded is ≈N, not the audit's measured N²/2 (8,002,000)", async () => {
-    const inner = new InMemoryAsyncEventStore();
-    const { store, rows } = countingStore(inner);
-    const reader = noSnapshotReader(store);
-    const lq = liveQuery({ eventStore: store, reader });
-
-    const unsub = await lq.subscribe("x1", () => {});
-
-    const N = 4000;
-    for (let i = 0; i < N; i++) {
-      await store.append({
-        id: `e${i}`,
-        executionId: "x1",
-        workflowId: "w",
-        eventType: "STEP_COMPLETED",
-        sequence: i,
-        timestamp: i,
-        payload: { stepId: `s${i}` },
-      });
-    }
+  const unsub = await lq.subscribe("x1", () => {});
+  for (let i = 0; i < n; i++) {
+    await store.append({
+      id: `e${i}`,
+      executionId: "x1",
+      workflowId: "w",
+      eventType: "STEP_COMPLETED",
+      sequence: i,
+      timestamp: i,
+      payload: { stepId: `s${i}` },
+    });
     await tick();
-    unsub();
+  }
+  unsub();
+  return rows();
+}
 
-    expect(rows()).toBeLessThan(N * 2); // O(N): nowhere near the audit's N²/2 = 8,002,000
-    // 4000 sequential appends can be slow under a fully-loaded CI runner — hence the
-    // generous 30s timeout below. The assertion itself is a deterministic row count,
-    // not a time budget.
-  }, 30_000);
+/**
+ * The OLD behaviour, measured directly (independent of `liveQuery`): a full re-fold
+ * (`reader.loadState`, i.e. `store.read` + `foldEvents` from genesis) on every one of `n`
+ * sequential wake-ups — exactly what `subscribe`'s pump called before this fix.
+ */
+async function rowsOverNEventsOldStyle(n: number): Promise<number> {
+  const inner = new InMemoryAsyncEventStore();
+  const { store, rows } = countingStore(inner);
+  const reader = noSnapshotReader(store);
+
+  for (let i = 0; i < n; i++) {
+    await store.append({
+      id: `e${i}`,
+      executionId: "x1",
+      workflowId: "w",
+      eventType: "STEP_COMPLETED",
+      sequence: i,
+      timestamp: i,
+      payload: { stepId: `s${i}` },
+    });
+    await reader.loadState("x1"); // the old subscribe's re-fold-from-genesis per wake-up
+  }
+  return rows();
+}
+
+describe("liveQuery — incremental fold (O(N), not O(N²))", () => {
+  it("rows(2N) ≤ 2·rows(N) + slack — linear growth, not quadratic", async () => {
+    const N = 100;
+    const rowsN = await rowsOverNEvents(N);
+    const rows2N = await rowsOverNEvents(2 * N);
+    expect(rows2N).toBeLessThanOrEqual(2 * rowsN + 10);
+  });
+
+  it("the negative: the OLD per-wake-up full re-fold grows quadratically, not linearly", async () => {
+    const N = 100;
+    const rowsN = await rowsOverNEventsOldStyle(N);
+    const rows2N = await rowsOverNEventsOldStyle(2 * N);
+    // Quadratic: rows(2N) ≈ 4·rows(N). Decisively more than the ≤2x+slack a linear
+    // implementation keeps — this is why the fix was needed.
+    expect(rows2N).toBeGreaterThan(3 * rowsN);
+  });
 });
 
 // ── Equivalence: the incremental state always matches loadState ──────────────
@@ -270,6 +288,276 @@ describe("liveQuery — incremental state matches loadState (equivalence)", () =
     }
     unsub();
   });
+});
+
+// ── LogLifecycle.compact racing a live subscription (P1) ──────────────────────
+//
+// `readFrom(id, tip + 1)` assumes it returns EVERY event since `tip`. `LogLifecycle.compact`
+// (K10.4) breaks that assumption: it truncates `(0..throughSequence]` out of the log after
+// checkpointing a snapshot, so a subscriber still holding a `tip` behind the compaction
+// boundary reads a NON-CONTIGUOUS (or empty) delta and would silently fold a truncated
+// remainder onto stale state — wrong `ExecutionState`, no error. The fix detects the gap
+// (the first returned event's sequence isn't `tip + 1`, or the delta is empty while the
+// store's own `head` has moved BEHIND `tip`) and recovers with a full `reader.loadState`
+// (snapshot + tail) instead of patching the gap onto stale state.
+
+/**
+ * Wraps a store's `subscribe` so real notifications queue up while `held` and are only
+ * forwarded to the handler once `release()` runs — lets a test freeze exactly when a live
+ * subscription "sees" new events, to deterministically race it against a compaction that
+ * runs on the real (unfrozen) log in between. `head` is forwarded so the fix's eager
+ * empty-delta check has something to consult.
+ */
+function withHoldableSubscribe(inner: EventStore & Required<Pick<EventStore, "head">>): {
+  store: EventStore;
+  hold: () => void;
+  release: () => void;
+} {
+  let held = false;
+  let deliver: ((e: EventEnvelope) => void) | undefined;
+  const queued: EventEnvelope[] = [];
+  const store: EventStore = {
+    append: (e) => inner.append(e),
+    read: (id) => inner.read(id),
+    readFrom: (id, from) => inner.readFrom(id, from),
+    head: (id) => inner.head(id),
+    subscribe: (id, handler) => {
+      deliver = handler;
+      return inner.subscribe(id, (event) => {
+        if (held) queued.push(event);
+        else handler(event);
+      });
+    },
+  };
+  return {
+    store,
+    hold: () => {
+      held = true;
+    },
+    release: () => {
+      held = false;
+      const q = queued.splice(0);
+      for (const e of q) deliver?.(e);
+    },
+  };
+}
+
+const COMPACT_TICKS = 6;
+
+function buildCompactFlow(): RegisteredFlow<IO, IO> {
+  const loopRunner: FlowRunner<IO, IO> = async (ctx, input) => {
+    for (let i = 0; i < COMPACT_TICKS; i++) {
+      await ctx.suspend({ on: "TICK" });
+    }
+    return input;
+  };
+  return {
+    definition: { ...flow.definition, id: "lq-compact-flow", name: "lq-compact-flow" },
+    runner: loopRunner,
+  } as RegisteredFlow<IO, IO>;
+}
+
+describe("liveQuery — LogLifecycle.compact races a live subscription", () => {
+  it("a subscriber lagging behind a compaction recovers via a full load when a new event follows (non-contiguous delta)", async () => {
+    const loopFlow = buildCompactFlow();
+    const rawEventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const { store, hold, release } = withHoldableSubscribe(rawEventStore);
+
+    const runtime = new WorkflowRuntime({
+      eventStore: store,
+      snapshotStore,
+      effectRuntime: new EffectRuntime(),
+    });
+    runtime.registerFlow(loopFlow.definition, loopFlow.runner);
+
+    const lq = liveQuery({ eventStore: store, reader: runtime });
+    const seen: ExecutionState[] = [];
+
+    await (await runtime.start(loopFlow, { n: 1 }, { executionId: "e1" })).waitForSuspend();
+    const unsub = await lq.subscribe("e1", (s) => seen.push(s));
+    await tick();
+
+    hold(); // freeze delivery — the subscription's cached tip stops advancing here
+    for (let i = 0; i < 3; i++) {
+      await (await runtime.resume("e1", { eventType: "TICK", payload: {} })).waitForSuspend();
+    }
+
+    // Compact through the CURRENT tip — far ahead of the frozen subscriber's.
+    await new LogLifecycle(rawEventStore, snapshotStore).compact("e1");
+
+    // One more real event after compaction: the eventual delta is non-empty but starts
+    // well past the subscriber's stale `tip + 1` (a gap — events in between were
+    // truncated).
+    await (await runtime.resume("e1", { eventType: "TICK", payload: {} })).waitForSuspend();
+
+    release(); // deliver every queued (now-stale) wake-up
+    await tick();
+
+    expect(seen.at(-1)).toEqual(await runtime.loadState("e1"));
+    unsub();
+  });
+
+  it("a subscriber lagging behind a compaction recovers even with no later event (empty delta, head behind tip)", async () => {
+    const loopFlow = buildCompactFlow();
+    const rawEventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const { store, hold, release } = withHoldableSubscribe(rawEventStore);
+
+    const runtime = new WorkflowRuntime({
+      eventStore: store,
+      snapshotStore,
+      effectRuntime: new EffectRuntime(),
+    });
+    runtime.registerFlow(loopFlow.definition, loopFlow.runner);
+
+    const lq = liveQuery({ eventStore: store, reader: runtime });
+    const seen: ExecutionState[] = [];
+
+    await (await runtime.start(loopFlow, { n: 1 }, { executionId: "e1" })).waitForSuspend();
+    const unsub = await lq.subscribe("e1", (s) => seen.push(s));
+    await tick();
+
+    hold();
+    for (let i = 0; i < 3; i++) {
+      await (await runtime.resume("e1", { eventType: "TICK", payload: {} })).waitForSuspend();
+    }
+    await new LogLifecycle(rawEventStore, snapshotStore).compact("e1");
+
+    release(); // no new event after compaction — the eventual delta is EMPTY
+    await tick();
+
+    expect(seen.at(-1)).toEqual(await runtime.loadState("e1"));
+    unsub();
+  });
+
+  it("a no-gap delta still folds incrementally — the compaction check costs nothing on the common path", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    let headCalls = 0;
+    const store: EventStore = {
+      append: (e) => inner.append(e),
+      read: (id) => inner.read(id),
+      readFrom: (id, from) => inner.readFrom(id, from),
+      head: (id) => {
+        headCalls++;
+        return inner.head(id);
+      },
+      subscribe: (id, handler) => inner.subscribe(id, handler),
+    };
+    const reader = noSnapshotReader(store); // only the one-time initial load ever calls it
+    const lq = liveQuery({ eventStore: store, reader });
+    const unsub = await lq.subscribe("x1", () => {});
+
+    for (let i = 0; i < 20; i++) {
+      await store.append({
+        id: `e${i}`,
+        executionId: "x1",
+        workflowId: "w",
+        eventType: "STEP_COMPLETED",
+        sequence: i,
+        timestamp: i,
+        payload: { stepId: `s${i}` },
+      });
+      await tick();
+    }
+    unsub();
+
+    // Every delta was contiguous (no compaction happened), so `head` is never consulted —
+    // the eager recovery check only runs when a wake-up's delta comes back EMPTY.
+    expect(headCalls).toBe(0);
+  });
+});
+
+// ── Same race, against a real Postgres store ──────────────────────────────────
+//
+// The in-memory tests above prove the fix's LOGIC; this proves it against the backend
+// `LogLifecycle.compact` is actually used with in production. Gated on
+// `LOOM_TEST_POSTGRES_URL` (see `reference-local-postgres-for-tests`) — skips cleanly
+// without a database, same as every other Postgres suite in this repo.
+const PG_URL = process.env.LOOM_TEST_POSTGRES_URL;
+const pgSuite = PG_URL ? describe : describe.skip;
+
+/**
+ * Postgres round-trips are real I/O, unlike the in-memory stores' near-instant
+ * microtask resolution — a single `tick()` is not a reliable wait for the recovery
+ * fold's several sequential queries to land. Polls instead of guessing a sleep
+ * duration, re-fetching `expected` each pass since it is itself an async read.
+ */
+async function waitUntilEqual(
+  getActual: () => ExecutionState | undefined,
+  getExpected: () => Promise<ExecutionState | null>,
+  timeoutMs = 5000
+): Promise<{ actual: ExecutionState | undefined; expected: ExecutionState | null }> {
+  const start = Date.now();
+  for (;;) {
+    const expected = await getExpected();
+    const actual = getActual();
+    if (JSON.stringify(actual) === JSON.stringify(expected)) return { actual, expected };
+    if (Date.now() - start > timeoutMs) return { actual, expected };
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+pgSuite("liveQuery — LogLifecycle.compact races a live subscription (Postgres)", () => {
+  let admin: Pool;
+
+  beforeAll(async () => {
+    admin = new Pool({ connectionString: PG_URL });
+    await migratePostgresStores(admin);
+  });
+
+  afterAll(async () => {
+    await admin.end();
+  });
+
+  beforeEach(async () => {
+    await admin.query(
+      "TRUNCATE events, snapshots, refs, lineage, fences, timers, leases, durable_state, read_model_rows, read_model_watermarks, memory_entries"
+    );
+  });
+
+  it("a subscriber lagging behind a compaction recovers via a full load when a new event follows (non-contiguous delta)", async () => {
+    const loopFlow = buildCompactFlow();
+    const rawEventStore = new PostgresEventStore(PG_URL as string);
+    const snapshotStore = new PostgresSnapshotStore(PG_URL as string);
+    try {
+      const { store, hold, release } = withHoldableSubscribe(rawEventStore);
+
+      const runtime = new WorkflowRuntime({
+        eventStore: store,
+        snapshotStore,
+        effectRuntime: new EffectRuntime(),
+      });
+      runtime.registerFlow(loopFlow.definition, loopFlow.runner);
+
+      const lq = liveQuery({ eventStore: store, reader: runtime });
+      const seen: ExecutionState[] = [];
+
+      await (await runtime.start(loopFlow, { n: 1 }, { executionId: "e1" })).waitForSuspend();
+      const unsub = await lq.subscribe("e1", (s) => seen.push(s));
+      await tick();
+
+      hold();
+      for (let i = 0; i < 3; i++) {
+        await (await runtime.resume("e1", { eventType: "TICK", payload: {} })).waitForSuspend();
+      }
+
+      await new LogLifecycle(rawEventStore, snapshotStore).compact("e1");
+      await (await runtime.resume("e1", { eventType: "TICK", payload: {} })).waitForSuspend();
+
+      release();
+
+      const { actual, expected } = await waitUntilEqual(
+        () => seen.at(-1),
+        () => runtime.loadState("e1")
+      );
+      expect(actual).toEqual(expected);
+      unsub();
+    } finally {
+      await rawEventStore.close();
+      await snapshotStore.close();
+    }
+  }, 20_000);
 });
 
 // ── ContentResolvingEventStore: a failed resolve throws loudly, never a raw ref ──

@@ -32,6 +32,20 @@ import { foldEvents } from "@loom/replay-vm";
 // boolean — because a subscription started before the execution exists must keep asking
 // the reader (cheaply: an empty log) until the reader hands back a real baseline with the
 // executionId/workflowId identity `foldEvents([], undefined)` cannot invent on its own.
+//
+// COMPACTION CAN MOVE THE FLOOR OUT FROM UNDER `tip`. `LogLifecycle.compact` (K10.4)
+// checkpoints a snapshot and then truncates `(0..throughSequence]` out of the log — legal,
+// because `fold(snapshot, suffix) === fold(events)`, but it invalidates `readFrom(tip + 1)`
+// for any subscriber whose `tip` sits behind `throughSequence`: the returned delta either
+// starts PAST `tip + 1` (a gap — the events in between were truncated) or comes back empty
+// while the log's own tip has moved BEHIND ours (nothing left there to read `tip + 1`
+// from). Folding a non-contiguous delta onto stale `state` would silently produce a WRONG
+// `ExecutionState` with no error — so both signals fall back to a full `reader.loadState`
+// (the same one-time-load path as the initial fold) instead, and folding resumes
+// incrementally from ITS tip. The empty-delta check only runs when the store exposes the
+// optional, O(1) `head` — a store without it is tolerated (no fallback full read; the very
+// next non-empty delta still self-heals via the gap check), so this can never turn an
+// empty wake-up into an unbounded read and break the O(N) bound above.
 
 /** The runtime capability a live query needs — just the folding read. */
 export interface StateReader {
@@ -98,12 +112,30 @@ export function liveQuery(deps: LiveQueryDeps): LiveQuery {
               if (state !== null) tip = state.sequence;
             } else {
               const delta = await deps.eventStore.readFrom(executionId, tip + 1);
-              if (delta.length === 0) continue; // nothing new — emit nothing
-              // `foldEvents` treats `state` as immutable (fresh audit-list ownership per
-              // pass), so folding the delta onto the kept state never mutates what a
-              // previous `onState` call was handed.
-              state = foldEvents(delta, state);
-              tip = delta[delta.length - 1]!.sequence;
+              if (delta.length === 0) {
+                // Nothing new — UNLESS a compaction truncated everything after `tip` with
+                // no later event yet to reveal the gap. Only checked when the store has a
+                // cheap indexed tip, so an empty wake-up never costs a full read.
+                const head = deps.eventStore.head
+                  ? await deps.eventStore.head(executionId)
+                  : undefined;
+                if (head === undefined || head === null || head >= tip) continue; // truly nothing new
+                state = await deps.reader.loadState(executionId);
+                if (state !== null) tip = state.sequence;
+              } else if (delta[0]!.sequence !== tip + 1) {
+                // Non-contiguous: a compaction truncated events between `tip` and the
+                // first surviving one out from under this subscription. Folding `delta`
+                // onto `state` here would silently produce a WRONG `ExecutionState` — fall
+                // back to a full fold, exactly like the one-time initial load.
+                state = await deps.reader.loadState(executionId);
+                if (state !== null) tip = state.sequence;
+              } else {
+                // `foldEvents` treats `state` as immutable (fresh audit-list ownership per
+                // pass), so folding the delta onto the kept state never mutates what a
+                // previous `onState` call was handed.
+                state = foldEvents(delta, state);
+                tip = delta[delta.length - 1]!.sequence;
+              }
             }
             if (state !== null) onState(state);
           } while (dirty);
