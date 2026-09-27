@@ -1,11 +1,7 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import { foldEvents } from "@loom/replay-vm";
 import { describe, expect, it } from "vitest";
-import {
-  classifyStrayPassthroughs,
-  discardDecisionId,
-  inspectStrayPassthroughs,
-} from "./strayPassthroughs";
+import { classifyStrayPassthroughs, inspectStrayPassthroughs } from "./strayPassthroughs";
 
 // ADR 0104 D2 — which pre-0104 logs carry a passthrough that answered no gate, and whether
 // it is already spent. Pure over (retained log, folded state).
@@ -252,51 +248,31 @@ describe("the runtime warns once per execution and verdict (ADR 0104)", () => {
   });
 });
 
-// ADR 0105 — EVENT_SCHEMA 1.20.0 folded a parallel sibling's STEP_FAILED after a park to
-// "failed", so its `resumeAs` recorded a status-only EXECUTION_RESUMED(null) there. Since 1.21.0
-// that execution reads `suspended`, and the same null answers the parked gate.
-describe("inspectStrayPassthroughs — a null resume after a late sibling failure (ADR 0105)", () => {
+// ADR 0105 — the mirror follows the fold's `_failedWhileParked` rule: a `null` resume after a
+// STEP_FAILED that landed while parked is status-only (as 1.20.0 folded it), so it is no entry,
+// no stray and no human step's answer.
+describe("inspectStrayPassthroughs — the fail-closed null after a late sibling failure (ADR 0105)", () => {
+  const kindOfStep = (id: string) => (id === "h" ? "human" : "tool");
   const inspect = (events: EventEnvelope[]) =>
-    inspectStrayPassthroughs(events, foldEvents(events, INITIAL));
+    inspectStrayPassthroughs(events, foldEvents(events, INITIAL), { kindOfStep });
 
-  it("flags the 1.20.0 resumeAs shape: park, sibling STEP_FAILED, EXECUTION_MIGRATED, null resume", () => {
+  it("the 1.20.0 resumeAs shape is clean: the null answered nothing, and the mirror agrees with the fold", () => {
     seq = 0;
     const log = [
       ev("EXECUTION_STARTED"),
       ev("STEP_STARTED", { stepId: "slow" }),
       park("Approval"),
       ev("STEP_FAILED", { stepId: "slow", error: "late boom" }),
-      ev("EXECUTION_MIGRATED", { toFlowId: "f", strategy: "replay-check" }),
+      ev("EXECUTION_MIGRATED", { toFlowId: "f", strategy: "operator-ack" }),
       ev("Fixup", { note: "operator" }),
       ev("EXECUTION_RESUMED", null),
-    ];
-    expect(inspect(log).ambiguousNullResumes).toBe(1);
-  });
-
-  it("negative: a null answer to a park with no failure while parked is an ordinary answer", () => {
-    seq = 0;
-    const log = [
-      ev("EXECUTION_STARTED"),
       park("Approval"),
-      ev("Approval", null),
-      ev("EXECUTION_RESUMED", null),
     ];
-    expect(inspect(log).ambiguousNullResumes).toBeUndefined();
+    expect(foldEvents(log, INITIAL).variables._resumePayloads).toBeUndefined();
+    expect(inspect(log)).toEqual({});
   });
 
-  it("negative: a non-null answer after a late sibling failure is unambiguous", () => {
-    seq = 0;
-    const log = [
-      ev("EXECUTION_STARTED"),
-      park("Approval"),
-      ev("STEP_FAILED", { stepId: "slow", error: "late boom" }),
-      ev("Approval", { ok: true }),
-      ev("EXECUTION_RESUMED", { ok: true }),
-    ];
-    expect(inspect(log).ambiguousNullResumes).toBeUndefined();
-  });
-
-  it("at an OPEN HUMAN step's park the same null is refused (ambiguousHumanStep), not just reported", () => {
+  it("at a HUMAN park the same null is not the step's answer, so nothing is ambiguous", () => {
     seq = 0;
     const humanPark = () =>
       ev("EXECUTION_SUSPENDED", { condition: { on: "Approve", stepId: "h" } });
@@ -306,40 +282,23 @@ describe("inspectStrayPassthroughs — a null resume after a late sibling failur
       ev("STEP_STARTED", { stepId: "slow" }),
       humanPark(),
       ev("STEP_FAILED", { stepId: "slow", error: "late boom" }),
-      ev("EXECUTION_MIGRATED", { toFlowId: "f", strategy: "replay-check" }),
       ev("Fixup", { note: "operator" }),
-      ev("EXECUTION_RESUMED", null), // 1.20.0: status-only; 1.21.0: the human step's approval
+      ev("EXECUTION_RESUMED", null),
       ev("STEP_STARTED", { stepId: "h" }),
-      humanPark(), // the 1.20.0 kernel re-parked it, unanswered
+      humanPark(),
     ];
-    const kindOfStep = (id: string) => (id === "h" ? "human" : "tool");
-    const report = inspectStrayPassthroughs(log, foldEvents(log, INITIAL), { kindOfStep });
-    expect(report.ambiguousHumanStep).toBe("h");
-    expect(report.ambiguousNullResumes).toBeUndefined();
-
-    // …and the operator's authenticated discard (ADR 0104) resolves it.
-    const discarded = [
-      ...log,
-      ev("DECISION_RECORDED", {
-        decisionId: discardDecisionId("h"),
-        choice: 1,
-        source: "operator",
-      }),
-    ];
-    expect(
-      inspectStrayPassthroughs(discarded, foldEvents(discarded, INITIAL), { kindOfStep })
-        .ambiguousHumanStep
-    ).toBeUndefined();
+    expect(inspect(log)).toEqual({});
   });
 
-  it("negative: a failure BEFORE the park does not taint the park's answer", () => {
+  it("negative: a null answer to a park with no failure while parked IS an entry (counted as answered)", () => {
     seq = 0;
     const log = [
       ev("EXECUTION_STARTED"),
-      ev("STEP_FAILED", { stepId: "a", error: "caught" }),
       park("Approval"),
+      ev("Approval", null),
       ev("EXECUTION_RESUMED", null),
     ];
-    expect(inspect(log).ambiguousNullResumes).toBeUndefined();
+    expect(foldEvents(log, INITIAL).variables._resumePayloads).toEqual([null]);
+    expect(inspect(log)).toEqual({});
   });
 });

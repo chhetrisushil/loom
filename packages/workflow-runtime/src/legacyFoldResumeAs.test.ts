@@ -11,9 +11,9 @@ import type { FlowRunner } from "./types";
 // ── ADR 0105 D3 — a log a REAL 1.20.0 kernel wrote, replayed by 1.21.0 ─────────
 //
 // A faithful replica of the 1.20.0 fold, in-repo: the 1.20.0 `STEP_FAILED` handler was the
-// current one plus `status: "failed"` — nothing else in the fold changed in 1.21.0 — so the
-// mocked `ReplayVM` applies the current handler and, while `legacy.on`, sets that status after
-// every `STEP_FAILED`. Everything that reads the fold (`answerEvents`, `isStatusOnlyResume`,
+// current one plus `status: "failed"`, and 1.20.0 had no `_failedWhileParked` key — nothing else
+// in the fold changed in 1.21.0 — so the mocked `ReplayVM` applies the current handler and, while
+// `legacy.on`, forces that status and drops that key after every `STEP_FAILED`. Everything that reads the fold (`answerEvents`, `isStatusOnlyResume`,
 // `resumeAs`'s terminal branch) then behaves exactly as the 1.20.0 kernel did, and the log it
 // writes is the log that kernel wrote. `normalizeSnapshotState` is the identity while `legacy.on`
 // (1.20.0 had none).
@@ -32,7 +32,8 @@ vi.mock("@loom/replay-vm", async (importOriginal) => {
       super.applyEvent(event);
       if (legacy.on && event.eventType === "STEP_FAILED") {
         const self = this as unknown as Mutable;
-        self.state = { ...self.state, status: "failed" };
+        const { [actual.FAILED_WHILE_PARKED]: _k, ...variables } = self.state.variables;
+        self.state = { ...self.state, status: "failed", variables };
       }
     }
   }
@@ -91,7 +92,7 @@ function boot(stores?: {
 }
 
 describe("a 1.20.0 resumeAs after a late sibling failure, replayed by 1.21.0 (ADR 0105 D3)", () => {
-  it("1.20.0 wrote a status-only null; 1.21.0 serves it to the gate, and the runtime warns", async () => {
+  it("1.20.0 wrote a status-only null; 1.21.0 reads it the same way through its snapshot and from the log", async () => {
     const old = boot();
     legacy.on = true;
     try {
@@ -121,24 +122,24 @@ describe("a 1.20.0 resumeAs after a late sibling failure, replayed by 1.21.0 (AD
     // A copy of the log with NO snapshots, taken before the upgrade touches anything.
     const logOnly = new InMemoryAsyncEventStore();
     await logOnly.appendBatch(await old.stores.eventStore.read("x"));
+    const answer = { eventType: "Approval", payload: { ok: true } };
 
-    // Upgrade: a 1.21.0 process over the same stores. The execution reads parked again…
+    // Upgrade: a 1.21.0 process over the same stores (it reads the 1.20.0 suspend snapshot)…
     const next = boot(old.stores);
     expect((await next.runtime.loadState("x"))?.status).toBe("suspended");
-    // …and answering the gate is WARNED about (the log holds the 1.20.0 status-only null).
-    const answer = { eventType: "Approval", payload: { ok: true } };
     const viaSnapshot = await (await next.runtime.resume("x", answer)).waitForCompletion();
-    expect(next.warnings.some((m) => m.includes("null resume(s)"))).toBe(true);
-    // Folded from the 1.20.0 SUSPEND SNAPSHOT (which never counted the null) + tail, the gate
-    // takes the operator's answer…
-    expect(viaSnapshot.variables._output).toEqual({ answer: { ok: true } });
 
-    // …but folded from the LOG ALONE, 1.21.0 serves the null to the gate first: the gate passes
-    // without approval. The outcome of this legacy shape depends on which snapshot exists —
-    // recorded in ADR 0105 D3 as the residual the warning covers.
+    // …and one folding the LOG ALONE (no snapshot: the same as an earlier one, or a fork).
     const bare = boot({ eventStore: logOnly, snapshotStore: new InMemoryAsyncSnapshotStore() });
+    expect((await bare.runtime.loadState("x"))?.status).toBe("suspended");
     const viaLog = await (await bare.runtime.resume("x", answer)).waitForCompletion();
-    expect(bare.warnings.some((m) => m.includes("null resume(s)"))).toBe(true);
-    expect(viaLog.variables._output).toEqual({ answer: null });
+
+    // The same outcome either way (snapshot + tail ≡ full log): the 1.20.0 null answered no gate,
+    // so the gate took the operator's real answer — never the null.
+    expect(viaSnapshot.variables._output).toEqual({ answer: { ok: true } });
+    expect(viaLog.variables._output).toEqual({ answer: { ok: true } });
+    expect(viaLog.variables._resumePayloads).toEqual(viaSnapshot.variables._resumePayloads);
+    expect(next.warnings).toEqual([]);
+    expect(bare.warnings).toEqual([]);
   });
 });

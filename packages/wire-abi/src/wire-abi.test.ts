@@ -65,6 +65,17 @@ describe("T2.3 — language-agnostic fold conformance vectors", () => {
     expect(runFoldVectors([preFix])[0]?.passed).toBe(false);
   });
 
+  it("covers the 1.21.0 fail-closed null (ADR 0105) — a fold that serves it to the gate fails", () => {
+    const v = FOLD_VECTORS.find((x) => x.name.startsWith("a null resume after a sibling failed"));
+    expect(v).toBeDefined();
+    expect(runFoldVectors([v!])[0]?.passed).toBe(true);
+    const servesNull = {
+      ...v!,
+      expected: { ...v!.expected, variables: { _input: {}, _resumePayloads: [null] } },
+    };
+    expect(runFoldVectors([servesNull])[0]?.passed).toBe(false);
+  });
+
   it("a broken fold is caught (a mutated expectation fails loudly)", () => {
     const broken = [
       { ...FOLD_VECTORS[0]!, expected: { ...FOLD_VECTORS[0]!.expected, status: "failed" } },

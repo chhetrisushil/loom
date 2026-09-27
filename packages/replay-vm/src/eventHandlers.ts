@@ -149,10 +149,38 @@ export function flowEmitCount(variables: Record<string, unknown>, digest: string
  * no suspend point and would have been served to the NEXT gate as `null` — the stray this fixes.
  */
 const IN_DOUBT_GATE = "EffectInDoubtResolved";
+
+/**
+ * 1.21.0 (ADR 0105) — reserved fold key: `true` while the execution is PARKED and a
+ * `STEP_FAILED` has landed since it parked (a parallel sibling failing after the flow reached
+ * its gate). Set only by that event in that state; removed by the next `EXECUTION_SUSPENDED`
+ * or `EXECUTION_RESUMED`; absent otherwise, so a log without such a failure never gains it.
+ *
+ * It exists to keep one rule the 1.20.0 fold had implicitly. 1.20.0 folded that failure to
+ * "failed", so a following `null` resume was status-only (it answered no gate, and a 1.20.0
+ * `resumeAs` wrote exactly that). Since 1.21.0 the execution stays `suspended`; without this
+ * key the same `null` would become the gate's answer, and a replay's outcome would depend on
+ * whether it was seeded from a 1.20.0 snapshot — breaking snapshot + tail ≡ full log. So a
+ * `null` resume in this position stays status-only (fail-closed: the gate re-parks rather than
+ * passing without an approval). The cost: a caller's explicit `null` answer to such a gate is
+ * not recorded as its answer; the gate re-parks and takes the next non-null one.
+ */
+export const FAILED_WHILE_PARKED = "_failedWhileParked";
+
 function isStatusOnlyResume(state: ExecutionState, payload: unknown): boolean {
   return (
-    payload === null && (state.status !== "suspended" || state.suspendedOn?.on === IN_DOUBT_GATE)
+    payload === null &&
+    (state.status !== "suspended" ||
+      state.suspendedOn?.on === IN_DOUBT_GATE ||
+      state.variables[FAILED_WHILE_PARKED] === true)
   );
+}
+
+/** `variables` without the {@link FAILED_WHILE_PARKED} key (the same object when absent). */
+function withoutFailedWhileParked(variables: Record<string, unknown>): Record<string, unknown> {
+  if (!Object.hasOwn(variables, FAILED_WHILE_PARKED)) return variables;
+  const { [FAILED_WHILE_PARKED]: _cleared, ...rest } = variables;
+  return rest;
 }
 
 const handlers: Record<string, Handler> = {
@@ -246,10 +274,13 @@ const handlers: Record<string, Handler> = {
     // on; folding "failed" here made a live execution read terminal, so a crash after the
     // catch was never re-driven and `cancel` refused it. A failure that escapes the runner is
     // recorded by the EXECUTION_FAILED the kernel commits after it, which owns the terminal
-    // status (as EXECUTION_CANCELLED does for STEP_CANCELLED below).
+    // status (as EXECUTION_CANCELLED does for STEP_CANCELLED below). A failure that lands while
+    // the execution is parked (a parallel sibling) marks FAILED_WHILE_PARKED — see there.
+    const parked = state.status === "suspended" && state.variables[FAILED_WHILE_PARKED] !== true;
     return {
       ...state,
       frames: setFrame(state.frames, payload.stepId, frame),
+      ...(parked && { variables: { ...state.variables, [FAILED_WHILE_PARKED]: true } }),
       updatedAt: event.timestamp,
     };
   },
@@ -318,10 +349,12 @@ const handlers: Record<string, Handler> = {
     const payload = event.payload as {
       condition: { on: string; timeout?: number; correlationKey?: string };
     };
+    const variables = withoutFailedWhileParked(state.variables);
     return {
       ...state,
       status: "suspended",
       suspendedOn: payload.condition,
+      ...(variables !== state.variables && { variables }),
       updatedAt: event.timestamp,
     };
   },
@@ -332,7 +365,7 @@ const handlers: Record<string, Handler> = {
       ...rest,
       status: "running",
       variables: {
-        ...state.variables,
+        ...withoutFailedWhileParked(state.variables),
         ...(event.payload !== undefined &&
           !isStatusOnlyResume(state, event.payload) && {
             // Latest payload (legacy key, kept for compat with pre-1.16 snapshots)…
@@ -888,13 +921,12 @@ export function getHandler(eventType: string): Handler | undefined {
 //   `suspendedOn`, as the condition always was). No new event kind.
 // 1.21.0: STEP_FAILED no longer folds the EXECUTION status to "failed" (ADR 0105) — the flow may
 //   catch it, and EXECUTION_FAILED is the execution's failure. No new kind or payload field; the
-//   kernel writes the same events. Folds differently from 1.20.0 only where a STEP_FAILED is not
-//   followed by a status-setting event before the log ends or before a `null` EXECUTION_RESUMED:
-//   (a) the log ends there (a crash after a caught failure) → `running`, recoverable; (b) a
-//   parallel sibling failed AFTER the flow parked (`EXECUTION_SUSPENDED`, `STEP_FAILED`) → stays
-//   `suspended`, so a following `null` resume answers the parked gate (1.20.0 read it as a
-//   status-only re-open of a "failed" execution). A 1.20.0 `resumeAs` wrote exactly that
-//   status-only `null`; `inspectStrayPassthroughs` flags it. Snapshots saved by an older fold
+//   kernel writes the same events. A STEP_FAILED landing while the execution is parked sets the
+//   reserved fold key `_failedWhileParked` (cleared by the next park or resume), and a `null`
+//   EXECUTION_RESUMED in that position stays status-only, exactly as 1.20.0 folded it — so every
+//   gate passthrough (`_resumePayloads`) is identical under both. What differs from 1.20.0: the
+//   derived `status` after a STEP_FAILED no lifecycle event has followed (`running`/`suspended`,
+//   not `failed`), and the new key while such a park is open. Snapshots saved by an older fold
 //   are read through `normalizeSnapshotState`.
 export const EVENT_SCHEMA_VERSION = "1.21.0";
 
