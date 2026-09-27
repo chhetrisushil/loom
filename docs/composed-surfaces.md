@@ -128,18 +128,30 @@ drifts and the repair must be recorded.
 ## Pin it, or retention will reclaim it
 
 This is the failure this recipe exists to prevent, and it does not show up until
-production: the log keeps a reference forever, content GC does not know the
+production: the log keeps a reference forever, retention does not know the
 reference matters, and the artifact behind a pinned view disappears.
 
-Name the event kind as a pin ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md)):
+The content sweep itself never erases a ref the log cites **bare**, as
+`{ ref }` in `BLUEPRINT_COMPOSED` is: a bare ref is load-bearing, because a
+`ContentResolvingEventStore` resolves it on every read
+([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D4). What removes the citation
+is retention deleting the execution that carries it. Name the event kind as an
+execution pin so the run, and with it the citation, stays:
 
 ```ts
-import { sweepUnpinnedContent } from "@loom/plugin-content";
+import { defineConfig } from "@loom/app";
+import { pinByEventKinds, sweepUnpinnedContent } from "@loom/plugin-content";
+
+defineConfig({
+  durability: {
+    retention: { pinned: pinByEventKinds(eventStore, ["BLUEPRINT_COMPOSED"]) },
+  },
+});
 
 await sweepUnpinnedContent({
   eventStores: [eventStore],
   contentStore,
-  pinnedEventTypes: ["BLUEPRINT_COMPOSED"], // ← the artifact outlives ordinary sweeps
+  pinnedEventTypes: ["BLUEPRINT_COMPOSED"], // ← keeps the artifact even if it is ever claim-checked
   olderThanMs: 30 * 24 * 60 * 60 * 1000,
   now: Date.now(),
 });

@@ -2,7 +2,12 @@ import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { pinByEventKinds, sweepUnpinnedContent } from "./gc";
-import { InMemoryContentStore, contentAddress } from "./index";
+import {
+  ContentMissingError,
+  ContentResolvingEventStore,
+  InMemoryContentStore,
+  contentAddress,
+} from "./index";
 
 /** The ADR 0054 claim-check envelope shape (structural — no middleware dep). */
 interface ClaimCheckEnvelope {
@@ -185,7 +190,12 @@ describe("refs inside arrays (#260)", () => {
     await events.append(
       evt("e1", 0, "STEP_COMPLETED", { output: { docs: [{ body: a }, { body: b }] } }, OLD)
     );
-    await events.append(evt("e1", 1, "TELEMETRY", { samples: [{ blob: stale }] }, OLD));
+    // The control is claim-checked: since ADR 0055 D4 only an envelope-held ref is
+    // TTL-reclaimable (a bare one is load-bearing), so an enveloped ref inside an array
+    // is the thing that must be found AND reclaimed.
+    await events.append(
+      evt("e1", 1, "TELEMETRY", { samples: [{ blob: envelopeFor(stale.__loomContent) }] }, OLD)
+    );
 
     const report = await sweepUnpinnedContent({
       eventStores: [events],
@@ -201,5 +211,166 @@ describe("refs inside arrays (#260)", () => {
     // And the control: an unpinned ref inside an array IS found, and is reclaimed.
     expect(report.reclaimed).toContain(stale.__loomContent);
     expect(await content.get(stale)).toBeNull();
+  });
+});
+
+describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () => {
+  const TTL = 30 * DAY;
+  const OLD = NOW - 60 * DAY;
+
+  it("the probe: an ADR 0046 externalized output of a live execution survives, and the execution still reads", async () => {
+    const content = new InMemoryContentStore();
+    const raw = new InMemoryAsyncEventStore();
+    const store = new ContentResolvingEventStore(raw, content, {
+      externalize: { STEP_COMPLETED: ["output"] },
+    });
+    await store.append(evt("perpetual", 0, "EXECUTION_STARTED", { input: {} }, OLD));
+    await store.append(
+      evt("perpetual", 1, "STEP_COMPLETED", { stepId: "read", output: { rows: [1, 2, 3] } }, OLD)
+    );
+    // Still running: no terminal event. The raw log holds a BARE ref at `output`.
+
+    const report = await sweepUnpinnedContent({
+      eventStores: [raw],
+      contentStore: content,
+      pinnedEventTypes: ["FINDING_RECORDED"],
+      olderThanMs: TTL,
+      now: NOW,
+    });
+
+    expect(report.reclaimed).toEqual([]);
+    expect(report.refsSeen).toBe(1);
+    expect(report.refsLoadBearing).toBe(1);
+    expect(report.refsPinned).toBe(0);
+    const events = await store.read("perpetual");
+    expect((events[1]?.payload as { output: unknown }).output).toEqual({ rows: [1, 2, 3] });
+  });
+
+  it("negative: the TTL rule is not turned off — an envelope-only ref of the same age IS reclaimed", async () => {
+    const content = new InMemoryContentStore();
+    const telemetry = await content.put(bytes("pg_stat sample"));
+    const store = new InMemoryAsyncEventStore();
+    await store.append(
+      evt(
+        "wake",
+        0,
+        "STEP_COMPLETED",
+        { stepId: "read", output: envelopeFor(telemetry.__loomContent) },
+        OLD
+      )
+    );
+
+    const report = await sweepUnpinnedContent({
+      eventStores: [store],
+      contentStore: content,
+      pinnedEventTypes: ["FINDING_RECORDED"],
+      olderThanMs: TTL,
+      now: NOW,
+    });
+
+    expect(report.reclaimed).toEqual([telemetry.__loomContent]);
+    expect(report.refsLoadBearing).toBe(0);
+    expect(await content.get(telemetry)).toBeNull();
+  });
+
+  it("a ref cited both bare and inside an envelope survives (the bare citation wins)", async () => {
+    const content = new InMemoryContentStore();
+    const both = await content.put(bytes("cited two ways"));
+    const store = new InMemoryAsyncEventStore();
+    await store.append(
+      evt("e", 0, "STEP_COMPLETED", { output: envelopeFor(both.__loomContent) }, OLD)
+    );
+    await store.append(
+      evt("e", 1, "STEP_COMPLETED", { other: { __loomContent: both.__loomContent } }, OLD)
+    );
+
+    const report = await sweepUnpinnedContent({
+      eventStores: [store],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+    });
+
+    expect(report.reclaimed).toEqual([]);
+    expect(report.refsLoadBearing).toBe(1);
+    expect(await content.get(both)).not.toBeNull();
+  });
+
+  it("one ref OBJECT aliased inside an envelope and bare in one payload is still load-bearing", async () => {
+    // An in-memory store keeps payloads by reference, so one object can sit at two sites.
+    // The walk pops the envelope's subtree first (LIFO over `{ bare, wrapped }`); a cycle guard
+    // keyed on the object alone would then skip the bare site and reclaim a load-bearing blob.
+    const content = new InMemoryContentStore();
+    const shared = await content.put(bytes("aliased"));
+    const ref = { __loomContent: shared.__loomContent };
+    const store = new InMemoryAsyncEventStore();
+    await store.append(
+      evt(
+        "e",
+        0,
+        "STEP_COMPLETED",
+        { bare: ref, wrapped: { __loomClaimCheck: true, ref, size: 1 } },
+        OLD
+      )
+    );
+
+    const report = await sweepUnpinnedContent({
+      eventStores: [store],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+    });
+
+    expect(report.reclaimed).toEqual([]);
+    expect(report.refsLoadBearing).toBe(1);
+    expect(await content.get(shared)).not.toBeNull();
+  });
+
+  it("terminates on a cycle that crosses an envelope boundary, and on a very deep payload (audit W8)", async () => {
+    const content = new InMemoryContentStore();
+    const blob = await content.put(bytes("in a cycle"));
+    // root → envelope → root: every object is reachable both bare and inside the envelope.
+    const root: Record<string, unknown> = { ref: { __loomContent: blob.__loomContent } };
+    root.wrapped = { __loomClaimCheck: true, back: root, size: 1 };
+    let deep: Record<string, unknown> = { leaf: true };
+    for (let i = 0; i < 100_000; i++) deep = { next: deep };
+    const store = new InMemoryAsyncEventStore();
+    await store.append(evt("c", 0, "STEP_COMPLETED", { root, deep }, OLD));
+
+    const report = await sweepUnpinnedContent({
+      eventStores: [store],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+    });
+    expect(report.refsLoadBearing).toBe(1);
+    expect(report.reclaimed).toEqual([]);
+  });
+
+  it("a bare ref an app emits itself is retained too — the sweep cannot tell it from an externalized one", async () => {
+    // Composed under a ContentResolvingEventStore, EVERY bare ref in a read is resolved (not only
+    // the configured paths), so reclaiming it throws ContentMissingError on the next read.
+    const content = new InMemoryContentStore();
+    const raw = new InMemoryAsyncEventStore();
+    const store = new ContentResolvingEventStore(raw, content, { externalize: {} });
+    const draft = await content.put(bytes(JSON.stringify({ widgets: [] })));
+    await store.append(evt("v", 0, "VIEW_DRAFTED", { ref: draft }, OLD));
+
+    const report = await sweepUnpinnedContent({
+      eventStores: [raw],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+    });
+    expect(report.reclaimed).toEqual([]);
+    await expect(store.read("v")).resolves.toHaveLength(1);
+
+    // The hazard the retention prevents, shown directly: erase it and the read fails loudly.
+    await content.delete(draft);
+    await expect(store.read("v")).rejects.toBeInstanceOf(ContentMissingError);
   });
 });

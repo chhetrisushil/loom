@@ -176,6 +176,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The content sweep no longer erases a load-bearing externalized ref**
+  ([ADR 0055](docs/adr/0055-k10-6-pin-seam-content-gc.md) D4, amended). `sweepUnpinnedContent`
+  treated every `__loomContent` ref as TTL-reclaimable unless a pinned event kind cited it. An
+  ADR 0046 externalized field is a bare ref that `ContentResolvingEventStore.read` resolves, so
+  `loom sweep content --ttl 30d --apply` over a 60-day-old externalized `STEP_COMPLETED.output`
+  erased the blob, and the next read of that still-running execution threw
+  `ContentMissingError`. Resume, replay, fork and compliance export all failed. Now only a ref
+  held inside a claim-check envelope ages out. A ref cited bare anywhere is kept while any
+  scanned event cites it, and a ref cited both ways is kept. `ContentSweepReport` gains
+  `refsLoadBearing`, and `loom sweep content` prints it.
+
+  **Behaviour change:** an app that emits a bare ref itself (`ctx.emit(KIND, { ref })`) and
+  relied on the sweep to reclaim it will find the blob kept. The sweep cannot tell such a ref
+  from an externalized one. To make it reclaimable, cite it inside a claim-check envelope.
+  Nothing is erased that was kept before.
+
 - **`loom plugin new keystore` scaffolded a package that could not compile.** The template
   writes `Buffer` in four signatures and the generated `package.json` declared no
   `@types/node`, so the first thing a plugin author did after scaffolding was watch `tsc`
