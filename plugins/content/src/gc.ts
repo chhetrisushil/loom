@@ -15,7 +15,7 @@ import type { ContentStore } from "./ContentStore";
 // alongside the live one. Keyed by content address, so a blob cited by a
 // finding in an archived month-1 run survives any number of rotations.
 //
-// Only a ref held INSIDE a claim-check envelope is TTL-reclaimable (ADR 0055 D4).
+// Only a claim-check envelope's own `ref` is TTL-reclaimable (ADR 0055 D4).
 // A bare ref is load-bearing: `ContentResolvingEventStore.read` resolves every
 // bare ref in a payload and throws `ContentMissingError` when its blob is gone,
 // so erasing one bricks the execution (resume, replay, fork, export). The raw
@@ -23,12 +23,30 @@ import type { ContentStore } from "./ContentStore";
 // ref is retained while any scanned event cites it.
 
 /**
+ * The structural claim-check test, identical to `isClaimCheck` in `@loom/middleware`
+ * (kept structural so this plugin takes no middleware dependency): the flag AND a string
+ * `ref.__loomContent`. An app object that merely carries the flag is app data.
+ */
+function envelopeRef(value: object): string | undefined {
+  if ((value as { __loomClaimCheck?: unknown }).__loomClaimCheck !== true) return undefined;
+  const address = (value as { ref?: { __loomContent?: unknown } | null }).ref?.__loomContent;
+  return typeof address === "string" ? address : undefined;
+}
+
+/**
  * Collect content addresses out of an event payload. Any object carrying a
  * string `__loomContent` is a ref leaf — this covers bare ADR 0046
  * `ContentRef`s (e.g. a finding's `evidence` list, an externalized field) AND
- * ADR 0054 claim-check envelopes (whose `ref` field is such an object, found by
- * descent). `inEnvelope` is true for a leaf below an object whose
- * `__loomClaimCheck === true` — the one context where erasure is replay-invisible.
+ * the `ref` of an ADR 0054 claim-check envelope. `inEnvelope` is true ONLY for
+ * an envelope's own `ref` — the offloaded value, the one citation whose erasure
+ * is replay-invisible (ADR 0055 D4). Every other envelope field (`digest` above
+ * all: orchestration branches on it) is recorded, replay-visible data and is
+ * walked in the envelope's own context like any other payload.
+ *
+ * Because the enveloped context never descends (the `ref` is a leaf), one
+ * WeakSet cycle guard suffices: an object aliased at a bare site and as an
+ * envelope's `ref` is still visited bare, since the envelope reports its ref
+ * directly rather than through the guard.
  *
  * Iterative with cycle detection: the sweep is a retention job over
  * app-controlled payloads, so a pathologically deep (or, from an in-memory
@@ -38,34 +56,27 @@ function collectContentRefs(
   value: unknown,
   visit: (address: string, inEnvelope: boolean) => void
 ): void {
-  const stack: [unknown, boolean][] = [[value, false]];
-  // The cycle guard is keyed on (object, context): a bare visit dominates an envelope
-  // visit (it marks everything below as load-bearing), but NOT the other way round — an
-  // object an in-memory payload aliases at an envelope site AND a bare site must still be
-  // seen bare. So each object is expanded at most twice: still O(payload), still finite.
-  const seenBare = new WeakSet<object>();
-  const seenInEnvelope = new WeakSet<object>();
+  const stack: unknown[] = [value];
+  const seen = new WeakSet<object>();
   while (stack.length > 0) {
-    const [current, inEnvelope] = stack.pop() as [unknown, boolean];
+    const current = stack.pop();
     if (typeof current !== "object" || current === null) continue;
-    const inside =
-      inEnvelope || (current as { __loomClaimCheck?: unknown }).__loomClaimCheck === true;
-    if (seenBare.has(current)) continue;
-    if (inside) {
-      if (seenInEnvelope.has(current)) continue;
-      seenInEnvelope.add(current);
-    } else {
-      seenBare.add(current);
-    }
+    if (seen.has(current)) continue;
+    seen.add(current);
     const address = (current as { __loomContent?: unknown }).__loomContent;
     if (typeof address === "string") {
-      visit(address, inside);
+      visit(address, false);
       continue;
     }
     if (Array.isArray(current)) {
-      for (const item of current) stack.push([item, inside]);
-    } else {
-      for (const item of Object.values(current)) stack.push([item, inside]);
+      for (const item of current) stack.push(item);
+      continue;
+    }
+    const offloaded = envelopeRef(current);
+    if (offloaded !== undefined) visit(offloaded, true);
+    for (const [key, item] of Object.entries(current)) {
+      if (offloaded !== undefined && key === "ref") continue;
+      stack.push(item);
     }
   }
 }
@@ -112,7 +123,8 @@ export interface ContentSweepReport {
   refsSeen: number;
   refsPinned: number;
   /**
-   * ADR 0055 D4 — refs cited at least once OUTSIDE a claim-check envelope. These are
+   * ADR 0055 D4 — refs cited at least once anywhere but as a claim-check envelope's
+   * `ref` (a digest counts as anywhere). These are
    * load-bearing and are never reclaimed while any scanned event cites them.
    */
   refsLoadBearing: number;
@@ -123,10 +135,11 @@ export interface ContentSweepReport {
 /**
  * Mark: walk every event of every execution across the given stores, collecting
  * each ref's latest citation timestamp, pinning refs cited from events of the
- * designated kinds, and marking refs cited anywhere OUTSIDE a claim-check
- * envelope as load-bearing. Sweep: physically erase refs that are neither pinned
- * nor load-bearing and whose latest citation is older than the TTL — i.e. only
- * envelope-only refs. Their erasure is invisible to replay by the claim-check
+ * designated kinds, and marking refs cited anywhere other than as a
+ * claim-check envelope's `ref` (a `digest` included) as load-bearing. Sweep:
+ * physically erase refs that are neither pinned nor load-bearing and whose
+ * latest citation is older than the TTL — i.e. only refs cited solely as an
+ * envelope's `ref`. Their erasure is invisible to replay by the claim-check
  * contract (ADR 0054 — the fold never resolves); `resolveClaimCheck` readers get
  * `null`. A bare ref is never reclaimed while cited (ADR 0055 D4): the resolving
  * store would throw `ContentMissingError` on the next read. Idempotent:
