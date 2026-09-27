@@ -55,6 +55,7 @@ export {
 export {
   LogLifecycle,
   UnsafeCompactionError,
+  CompactionCheckpointMissingError,
   type RetentionPolicy,
   type ArchiveStores,
   type RetentionOutcome,

@@ -122,9 +122,15 @@ export function liveQuery(deps: LiveQueryDeps): LiveQuery {
                 if (head === undefined || head === null || head >= tip) continue; // truly nothing new
                 state = await deps.reader.loadState(executionId);
                 if (state !== null) tip = state.sequence;
-              } else if (delta[0]!.sequence !== tip + 1) {
+              } else if (
+                delta[0]!.sequence !== tip + 1 ||
+                delta[delta.length - 1]!.sequence - tip !== delta.length
+              ) {
                 // Non-contiguous: a compaction truncated events between `tip` and the
-                // first surviving one out from under this subscription. Folding `delta`
+                // first surviving one out from under this subscription — or, since ADR 0106
+                // keeps an app's pinned-kind events in place, a kept event sits at `tip + 1`
+                // and the gap is INSIDE the delta (sequences are unique and sorted, so the
+                // delta is contiguous iff its span equals its length: O(1)). Folding `delta`
                 // onto `state` here would silently produce a WRONG `ExecutionState` — fall
                 // back to a full fold, exactly like the one-time initial load.
                 state = await deps.reader.loadState(executionId);

@@ -162,6 +162,7 @@ describe("the decorator kit rejects a decorator that drops an optional method", 
     copyPrefix: inner.copyPrefix.bind(inner),
     deleteExecution: inner.deleteExecution.bind(inner),
     truncatePrefix: inner.truncatePrefix.bind(inner),
+    truncatePrefixKeeping: inner.truncatePrefixKeeping.bind(inner),
     listExecutions: inner.listExecutions.bind(inner),
     listExecutionsPage: inner.listExecutionsPage.bind(inner),
   });

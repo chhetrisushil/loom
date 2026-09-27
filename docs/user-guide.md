@@ -1837,6 +1837,8 @@ in-memory) every erase is conditional on the blob's touch time, so a blob re-cit
 kept. `reclaimOrphans` also reclaims blobs nothing cites any more, which requires passing every
 archive. `roots` pins addresses held in your own tables (ADR 0055 D5–D7). The joint rule the perpetual-agents series fixed:
 *findings and their evidence are permanent; runs are archivable; raw telemetry is disposable.*
+Give the same kinds to `retention.pinnedEventTypes` so compaction keeps those events in place
+too (ADR 0106); without it, `lifecycle.compact` leaves any execution `pinned` pins uncompacted.
 The whole pattern — schedule, carry state, claim-check, pin policy — is one declaration via
 `sentinelPreset()` (`@loom/plugin-sentinel`), and `loom new sentinel <name>` scaffolds it.
 
@@ -1883,7 +1885,9 @@ await life.compact(executionId);
 ```
 
 Both run over optional store SPI (`deleteExecution` / `truncatePrefix`, on in-memory, SQLite,
-and Postgres); a store that omits them can't be swept. Over an **encrypting** store, the
+and Postgres); a store that omits them can't be swept. A compacted execution resumes, and
+compacts again, exactly as if it had never been compacted (ADR 0106), and the event kinds in
+`retention.pinnedEventTypes` survive compaction in place (`truncatePrefixKeeping`, SPI 1.5.0). Over an **encrypting** store, the
 destination must share its `KeyStore`: `compact` throws `UnsafeCompactionError` unless the
 snapshot store is an `EncryptingSnapshotStore` on the same keys, and `applyRetention` returns
 `"unsafe-archive"` for an archive that isn't. Otherwise the decrypted fold or events would sit

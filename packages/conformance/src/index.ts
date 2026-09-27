@@ -242,6 +242,39 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       await store.close();
     });
 
+    it("truncatePrefix (if implemented) drops (0..through] and keeps sequence 0", async () => {
+      const store = factory();
+      if (store.truncatePrefix === undefined) return void (await store.close());
+      await store.append(evt("tp", 0, "EXECUTION_STARTED"));
+      for (let i = 1; i <= 4; i++) await store.append(evt("tp", i));
+      await store.truncatePrefix("tp", 2);
+      expect((await store.read("tp")).map((e) => e.sequence)).toEqual([0, 3, 4]);
+      await store.close();
+    });
+
+    it("truncatePrefixKeeping (if implemented) keeps sequence 0 and every kept-type event in place", async () => {
+      // ADR 0106 — compaction keeps an app's pinned event kinds (ADR 0055 D1). A store that
+      // ignored the kept types would silently delete the evidence the pin exists to keep.
+      const store = factory();
+      if (store.truncatePrefixKeeping === undefined) return void (await store.close());
+      await store.append(evt("tk", 0, "EXECUTION_STARTED"));
+      await store.append(evt("tk", 1));
+      await store.append(evt("tk", 2, "FINDING_RECORDED"));
+      await store.append(evt("tk", 3));
+      await store.append(evt("tk", 4, "NOTE_RECORDED"));
+      await store.append(evt("tk", 5));
+      await store.truncatePrefixKeeping("tk", 4, ["FINDING_RECORDED", "NOTE_RECORDED"]);
+      const kept = await store.read("tk");
+      expect(kept.map((e) => e.sequence)).toEqual([0, 2, 4, 5]);
+      expect(kept[1]).toEqual(evt("tk", 2, "FINDING_RECORDED"));
+      // An empty keep list is exactly truncatePrefix.
+      await store.truncatePrefixKeeping("tk", 5, []);
+      expect((await store.read("tk")).map((e) => e.sequence)).toEqual([0]);
+      // The dropped slots are free again, like truncatePrefix's.
+      await expect(store.append(evt("tk", 1))).resolves.toBeUndefined();
+      await store.close();
+    });
+
     it("appendBatch (if implemented) rejects a duplicate id WITHIN the batch", async () => {
       const store = factory();
       if (store.appendBatch === undefined) return void (await store.close());

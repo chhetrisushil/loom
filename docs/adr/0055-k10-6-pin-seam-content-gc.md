@@ -11,6 +11,9 @@
   "K10.5", which the K10 requirement set had already assigned to encryption-at-rest
   (ADR 0022, `docs/loom-2.0/11-encryption-at-rest.md`). The pin seam is K10.6 everywhere
   (docs, code comments, tests); mechanics unchanged.
+- Amendment (2026-09-28, L11): compaction keeps pinned event kinds and the D6 checkpoint
+  lookup follows the kept events — see the closed "known gap" under D6 and
+  [ADR 0106](0106-compaction-integrity.md).
 
 ## Context
 
@@ -245,12 +248,16 @@ blocks the orphan pass until it is re-driven (`loom recover`) or cancelled. The 
 `--archive-snap` whenever `--orphans` runs with `--archive-db`, and every CLI refusal exits
 non-zero.
 
-**Known gap (tracked as backlog L11, not closed here).** Compaction itself breaks D1 for
-userspace events: the fold ignores an app's `FINDING_RECORDED`, so compacting a run truncates
-its finding events away. The checkpoint keeps only what the fold keeps. A ref cited *only* by
-such an event then has no loom-held citation, and the orphan pass may reclaim it. Until L11 is
-fixed, pin the execution (`retention.pinned`) rather than compacting it, or supply the app's
-projection of its findings as `roots` (D7).
+**Known gap (backlog L11) — closed by [ADR 0106](0106-compaction-integrity.md).** Compaction
+used to truncate an app's `FINDING_RECORDED` events away, since the fold ignores them and so
+the checkpoint did not carry them. `LogLifecycle` now takes `pinnedEventTypes` (the same list
+given to this sweep) and keeps those events in place below the checkpoint
+(`EventStore.truncatePrefixKeeping`, SPI 1.5.0). With a `pinned` predicate but no
+`pinnedEventTypes`, a pinned execution is not compacted at all. Kept events move the
+checkpoint lookup: it is the snapshot at exactly the log's **highest missing sequence below
+the tip** (for a log with no kept events that is `events[1].sequence − 1`, as above), or the
+latest snapshot when it lies above the tip and only pinned kinds survive. A contiguous log
+whose post-bootstrap events are all pinned kinds is treated like a bootstrap-only log.
 
 **Unknown touch times.** A touch time of `0` is the column default a pre-1.3.0 writer leaves
 during a mixed-version rollout. It means UNKNOWN, and the orphan pass never erases such a

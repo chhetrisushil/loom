@@ -14,7 +14,7 @@ for the day a MAJOR diverges (e.g. an external adapter pinned to an older SPI).
 | Kernel ABI (K1) | `1.1.0` | `KERNEL_ABI_VERSION` · `abi.test.ts` |
 | Event Schema (K5) | `1.21.0` | `EVENT_SCHEMA_VERSION` · `eventSchema.test.ts` |
 | Wire ABI (T2) | `1.0.0` | `WIRE_ABI_VERSION` · `wire-abi.test.ts` |
-| EventStore SPI | `1.4.0` | `EVENT_STORE_SPI_VERSION` · conformance kit |
+| EventStore SPI | `1.5.0` | `EVENT_STORE_SPI_VERSION` · conformance kit |
 | SnapshotStore SPI | `1.0.0` | `SNAPSHOT_STORE_SPI_VERSION` · conformance kit |
 | BranchRegistry SPI | `1.2.0` | `BRANCH_REGISTRY_SPI_VERSION` · conformance kit |
 | Dispatcher SPI | `1.0.0` | `DISPATCHER_SPI_VERSION` · conformance kit |

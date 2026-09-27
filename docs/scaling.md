@@ -104,7 +104,7 @@ Three backends ship **[code]** (`InMemoryAsyncEventStore`, `SqliteEventStore`,
 | `TenantScopedEventStore` | key-prefix isolation | none |
 | `EncryptingEventStore` | field-level crypto (retention/compaction guarded by the ADR 0022 key rule) | none |
 | `ContentResolvingEventStore` | payload externalization | none |
-| `hashChainedEventStore` | tamper-evident chain (`@loom/plugin-audit-chain`) | `truncatePrefix`, because a compacted log fails `verifyChain` |
+| `hashChainedEventStore` | tamper-evident chain (`@loom/plugin-audit-chain`) | `truncatePrefix` and `truncatePrefixKeeping`, because a compacted log fails `verifyChain` |
 | `CoalescingEventStore` / `ShardedEventStore` / `ProfilingEventStore` | batching, partitioning, write profiling (section 3) | none |
 
 Every one of them forwards, overrides or explicitly refuses each optional method (a
@@ -126,7 +126,7 @@ Loom's own triage discipline (P10, bias outward) demands.
 |---|---|---|
 | **Payload externalization** | Large payloads move out of the hot `events` table into a content store; `getMany` batches resolution (~44× over serialized reads) | `plugins/content` (ADR 0062) |
 | **Snapshot cadence** | `snapshotEvery` bounds replay tail length; pair it with `onStorageError`, the only channel a failed checkpoint has | `defineConfig` or `WorkflowRuntime` |
-| **Log compaction** | `truncatePrefix` drops the pre-snapshot prefix (keeps seq 0 as anchor) | `EventStore` SPI |
+| **Log compaction** | `truncatePrefix` drops the pre-snapshot prefix (keeps seq 0 as anchor); `truncatePrefixKeeping` also keeps the app's pinned event kinds (ADR 0106) | `EventStore` SPI |
 | **Retention sweeps** | `deleteExecution` + keyset-paged `listExecutionsPage` for bounded-memory maintenance at year scale | SPI 1.2.0 |
 | **Read models** | Durable cross-execution index so queries stop scanning logs; idempotent rows + per-execution watermarks | `plugins/read-model` (ADR 0058) |
 | **Compute placement** | Route executions to local / remote-HTTP / Cloud Run targets by policy | `PlacementDispatcher` (ADR 0001/0003) |

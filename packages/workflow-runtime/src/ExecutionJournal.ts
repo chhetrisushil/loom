@@ -26,6 +26,10 @@ export class ExecutionJournal {
 
   constructor(
     private readonly store: EventStore,
+    // L11 (ADR 0106) — WHOSE log this journal writes. Taken from the caller, never from the
+    // folded state: a state seeded from a snapshot carries whatever identity the snapshot was
+    // saved with, and a checkpoint with a blank one sent every appended event to execution "".
+    private readonly identity: { readonly executionId: string; readonly workflowId: string },
     private readonly vm: ReplayVM,
     private readonly onEvent: ((event: EventEnvelope) => void) | undefined,
     // Fired once, on the first durable-write rejection — used to abort in-flight
@@ -112,7 +116,7 @@ export class ExecutionJournal {
   ): EventEnvelope {
     const sequence = ++this.seq;
     const envelope = ExecutionJournal.build(
-      this.vm.getState(),
+      this.identity,
       sequence,
       eventType,
       payload,

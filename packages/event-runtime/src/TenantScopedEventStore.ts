@@ -76,6 +76,7 @@ export class TenantScopedEventStore implements EventStore {
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
+  readonly truncatePrefixKeeping?: NonNullable<EventStore["truncatePrefixKeeping"]>;
   readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
   readonly listExecutionsPage?: NonNullable<EventStore["listExecutionsPage"]>;
 
@@ -107,6 +108,8 @@ export class TenantScopedEventStore implements EventStore {
         inner.copyPrefix!(scope(from), scope(to), through, metadata),
       deleteExecution: (id) => inner.deleteExecution!(scope(id)),
       truncatePrefix: (id, through) => inner.truncatePrefix!(scope(id), through),
+      truncatePrefixKeeping: (id, through, keep) =>
+        inner.truncatePrefixKeeping!(scope(id), through, keep),
       // Enumerate only THIS tenant's executions: keep the ones under our prefix, strip it.
       // Cross-tenant ids are invisible (isolation by construction, K12.5).
       listExecutions: async () =>

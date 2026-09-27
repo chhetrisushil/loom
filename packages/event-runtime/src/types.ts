@@ -18,6 +18,10 @@ export type { EventEnvelope };
  *   so a backend that omits it is byte-identical to before.
  * 1.4.0: added optional `head()` (the tip as one indexed `MAX(sequence)` — `fork()` was
  *   reading the whole parent log to validate a fork point). Consumers use {@link headOf}.
+ * 1.5.0: added optional `truncatePrefixKeeping()` (ADR 0106 — compaction that keeps an app's
+ *   pinned event kinds, ADR 0055 D1). `LogLifecycle.compact` falls back to `truncatePrefix`
+ *   stopped below the first pinned event when a store omits it, so omitting it costs only
+ *   how far a log with pinned events can be compacted — never an event.
  *
  * Every optional method is listed in {@link OPTIONAL_EVENT_STORE_METHODS}; adding one here
  * without listing it there is a compile error. `OptionalEventStoreMethod` is derived from this
@@ -27,7 +31,7 @@ export type { EventEnvelope };
  * no plan at all is caught by the decorator conformance kit instead (and the `packages/spec`
  * fitness test makes every in-repo decorator run it).
  */
-export const EVENT_STORE_SPI_VERSION = "1.4.0";
+export const EVENT_STORE_SPI_VERSION = "1.5.0";
 
 /**
  * Reserved-stream prefix. Control facts (retention `__loom_lifecycle__`, erasure
@@ -186,6 +190,22 @@ export interface EventStore {
    */
   truncatePrefix?(executionId: string, throughSequence: number): Promise<void>;
   /**
+   * OPTIONAL (SPI 1.5.0, ADR 0106). {@link truncatePrefix}, except that events whose
+   * `eventType` is in `keepEventTypes` survive in place: delete the prefix
+   * `(0..throughSequence]` of an execution's log, keeping sequence 0 AND every event of a kept
+   * type. ONE atomic operation (SQL: a single `DELETE … AND event_type <> ALL($3)`), never a
+   * read followed by per-row deletes, so a crash cannot leave a half-truncated prefix. With an
+   * empty `keepEventTypes` it is exactly `truncatePrefix`. The kept events sit BELOW the
+   * compaction checkpoint, where no reader folds them (every fold reads from
+   * `snapshot.sequence + 1`); what reads them is policy that scans the log for its pinned kinds
+   * (`pinByEventKinds`, the content sweep). Same precondition as `truncatePrefix`.
+   */
+  truncatePrefixKeeping?(
+    executionId: string,
+    throughSequence: number,
+    keepEventTypes: readonly string[]
+  ): Promise<void>;
+  /**
    * OPTIONAL enumeration of every distinct executionId in the store (unordered). Powers
    * operator sweeps that must visit all executions — `loom retention run`,
    * `loom compliance report`. Includes reserved control streams (`__loom_*`); callers that
@@ -231,6 +251,7 @@ export const OPTIONAL_EVENT_STORE_METHODS = [
   "copyPrefix",
   "deleteExecution",
   "truncatePrefix",
+  "truncatePrefixKeeping",
   "listExecutions",
   "listExecutionsPage",
 ] as const satisfies readonly OptionalEventStoreMethod[];

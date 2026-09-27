@@ -82,6 +82,18 @@ function collectContentRefs(
 }
 
 /**
+ * The highest sequence missing below the log's tip, or -1 when it is contiguous from 0. The
+ * same test `LogLifecycle` uses to find a compaction checkpoint (ADR 0106). One backward pass.
+ */
+function highestMissingSequence(events: readonly { sequence: number }[]): number {
+  for (let i = events.length - 1; i > 0; i--) {
+    const at = events[i]!.sequence;
+    if (at - events[i - 1]!.sequence > 1) return at - 1;
+  }
+  return events.length > 0 && events[0]!.sequence !== 0 ? events[0]!.sequence - 1 : -1;
+}
+
+/**
  * A {@link PinPredicate} for `LogLifecycle` (K10.6): pin any execution whose log
  * carries at least one event of the designated kinds — e.g. the app's finding
  * events. Use when no archive is configured and reclaiming the run would destroy
@@ -321,12 +333,25 @@ export async function sweepUnpinnedContent(
           if (!inEnvelope) loadBearing.add(address);
         });
       }
-      // No sequence-1 event: compacted (a gap after the bootstrap anchor), or bootstrap-only
-      // (compacted at its tip, or a run that never got past its bootstrap).
-      if (events.length === 0 || events[1]?.sequence === 1) continue;
-      const suffixStart = events[1]?.sequence; // undefined: only sequence 0 remains
+      // Did compaction touch this log, and where is its checkpoint (ADR 0106)? Compaction
+      // removes its checkpoint's own slot and keeps every event above it, plus the app's
+      // pinned-kind events below it. So the checkpoint sits either at `gap` (the highest
+      // sequence missing below the tip) or, when everything above `gap` is a pinned kind, may
+      // lie above the tip (compacted at the tip). A contiguous log with any non-pinned event
+      // after the bootstrap was never compacted and costs no snapshot read.
+      if (events.length === 0) continue;
+      const tipSequence = events[events.length - 1]!.sequence;
+      const gap = highestMissingSequence(events);
+      let onlyPinnedAbove = true;
+      for (let i = events.length - 1; i > 0 && events[i]!.sequence > gap; i--) {
+        if (!pinnedKinds.has(events[i]!.eventType)) {
+          onlyPinnedAbove = false;
+          break;
+        }
+      }
+      if (gap < 0 && !onlyPinnedAbove) continue;
       if (options.snapshotStores === undefined) {
-        if (suffixStart !== undefined) uncovered.push(executionId); // a gap is log evidence
+        if (gap >= 0) uncovered.push(executionId); // a gap is log evidence
         continue;
       }
       const pin = (snapshot: { state: unknown }): void =>
@@ -338,12 +363,11 @@ export async function sweepUnpinnedContent(
       for (const snapshots of options.snapshotStores) {
         const latest = await snapshots.loadLatest(executionId);
         if (latest !== null && latest.sequence >= 1) pin(latest);
-        if (suffixStart === undefined) {
-          // Compacted at the tip: the checkpoint IS the latest snapshot.
-          if (latest !== null && latest.sequence >= 1) covered = true;
-        } else {
-          const checkpoint = await snapshots.loadLatestBefore(executionId, suffixStart - 1);
-          if (checkpoint !== null && checkpoint.sequence === suffixStart - 1) {
+        // Compacted at the tip: the checkpoint IS the latest snapshot, above every event.
+        if (onlyPinnedAbove && latest !== null && latest.sequence > tipSequence) covered = true;
+        if (gap >= 0) {
+          const checkpoint = await snapshots.loadLatestBefore(executionId, gap);
+          if (checkpoint !== null && checkpoint.sequence === gap) {
             pin(checkpoint);
             covered = true;
           }

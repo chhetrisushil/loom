@@ -466,6 +466,8 @@ interface ExecutionContext {
 
 *Retention and compaction of an encrypted log (ADR 0022 Amendment).* ~LogLifecycle.compact~ throws ~UnsafeCompactionError~ when the event store encrypts at rest (exposes ~keys~) and the snapshot store does not share that same KeyStore — the checkpoint is the DECRYPTED fold, so a plaintext one would survive a key shred. ~applyRetention~ / ~evaluate~ return ~"unsafe-archive"~ (a ~RetentionOutcome~) when a configured archive does not share the source's keys. Both refuse before anything is read, copied or truncated. A compacted execution is judged on its snapshot plus the surviving suffix, so it is reclaimable.
 
+*Compaction integrity (ADR 0106).* The checkpoint is named for its execution (a blank one used to send every event a later resume appended to execution ~""~), a log compacted before is folded ON its checkpoint (~CompactionCheckpointMissingError~ when that checkpoint is gone, nothing touched), and ~new LogLifecycle(events, snapshots, { pinnedEventTypes })~ keeps the app's pinned-kind events in place through compaction (~EventStore.truncatePrefixKeeping~, SPI 1.5.0; a store without it compacts only up to the first kept event). Kernel kinds are refused there. With a ~pinned~ predicate but no ~pinnedEventTypes~, a pinned execution is not compacted.
+
 *Collecting the registry.* After retention reclaims a branch, two rows outlive it. ~LogLifecycle~ forgets the fork edge as it deletes the execution (optional ~removeLineage~ — dead edges otherwise make every future sweep walk them). ~pruneBranchRefs(eventStore, registry, { pageSize?, limit?, protect? })~ (~@loom/workflow-runtime~) pages over ~listRefs~ and deletes refs whose execution has no events — a dangling ref is not merely untidy, since promoting one leaves ~main~ naming an execution nobody can read. It takes NO predicate: unlike "is this branch abandoned", "the execution is gone" is a fact. ~main~ is protected by default and reported as dangling instead.
 
 *Cancellation, deadlines & bounded effects (2.0, K8).* A step's ~timeoutMs~ bounds a single effect; a flow's ~deadlineMs~ (see ~FlowDefinition~) bounds the whole run against the logged ~EXECUTION_STARTED~ timestamp (never reset by recovery). Breach — or ~handle.cancel()~ / ~ExecutionRuntime.cancel()~ — aborts in-flight effects via ~EffectContext.signal~ and records a kernel-driven ~EXECUTION_CANCELLED~.
@@ -624,7 +626,8 @@ class TenantScopedSnapshotStore implements SnapshotStore { constructor(inner: Sn
 
 #+begin_src typescript
 type OptionalEventStoreMethod = "appendBatch" | "readRange" | "head" | "acquireFence" | "copyPrefix"
-  | "deleteExecution" | "truncatePrefix" | "listExecutions" | "listExecutionsPage";  // derived from EventStore
+  | "deleteExecution" | "truncatePrefix" | "truncatePrefixKeeping" | "listExecutions"
+  | "listExecutionsPage";                                                          // derived from EventStore
 const OPTIONAL_EVENT_STORE_METHODS: readonly OptionalEventStoreMethod[]            // compile-time exhaustive
 type DecoratorPlan<S, M extends keyof S> = { readonly [K in M]-?: "forward" | NonNullable<S[K]> | { readonly refuse: string } };
 function installOptional<S extends object, M extends keyof S>(target: S, inner: S, plan: DecoratorPlan<S, M>, bindTo?: object): void
@@ -800,7 +803,8 @@ interface HashChainedEventStore extends EventStore {
 // compose BELOW tenant-scoping and ABOVE the base store, and OUTSIDE ContentResolvingEventStore —
 // inside it, the chain only ever sees a ref string and rewriting the blob is silent
 // optional SPI: every method forwarded (appendBatch chains per execution, heads advance only after
-// the batch is durable) EXCEPT truncatePrefix, REFUSED — a compacted log fails verifyChain
+// the batch is durable) EXCEPT truncatePrefix / truncatePrefixKeeping, REFUSED — a compacted
+// log fails verifyChain
 #+end_src
 
 * Effects — ~@loom/effect-runtime~

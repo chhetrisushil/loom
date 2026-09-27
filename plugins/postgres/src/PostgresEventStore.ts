@@ -456,6 +456,19 @@ export class PostgresEventStore implements EventStore {
     );
   }
 
+  async truncatePrefixKeeping(
+    executionId: string,
+    throughSequence: number,
+    keepEventTypes: readonly string[]
+  ): Promise<void> {
+    await this.ready;
+    // ADR 0106 — one statement: sequence 0 and every kept-type event survive in place.
+    await this.pool.query(
+      "DELETE FROM events WHERE execution_id = $1 AND sequence > 0 AND sequence <= $2 AND event_type <> ALL($3::text[])",
+      [executionId, throughSequence, [...keepEventTypes]]
+    );
+  }
+
   async listExecutions(): Promise<string[]> {
     await this.ready;
     const { rows } = await this.pool.query<{ execution_id: string }>(
