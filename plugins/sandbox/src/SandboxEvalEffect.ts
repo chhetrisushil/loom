@@ -111,9 +111,10 @@ export class SandboxEvalEffect implements Effect {
     // effect would execute it. Cheap next to spinning up a VM, and this is the one consumer
     // that runs the bytes rather than merely reading them.
     //
-    // An integrity failure is an environment violation, not a domain outcome, so it throws
-    // rather than completing on a declared channel (the same reasoning as a ReferenceError
-    // for `fetch`/`require`).
+    // An integrity failure is the infrastructure's fault (the store served the wrong bytes),
+    // not an outcome of the script on this input, so it throws UNTYPED rather than completing
+    // on a declared channel — the same line `scriptError` draws: only what the script itself
+    // did is typed.
     assertContentAddress(bytes, call.scriptRef.__loomContent);
     const script = new TextDecoder().decode(bytes);
 
@@ -179,20 +180,28 @@ export class SandboxEvalEffect implements Effect {
     if (outcome.tripped !== undefined) {
       fail("limitExceeded", { kind: outcome.tripped });
     }
-    if (/out of memory|memory limit/i.test(message)) {
-      fail("limitExceeded", { kind: "memory" });
+    // The engine reports its own kills as an `InternalError` (the QuickJS memory limit has
+    // no callback, so there is no trip record for it). Text is read ONLY there: a script's
+    // `throw new Error("connection interrupted")` is its own outcome, not a resource kill.
+    // Residual: a script can construct `new InternalError("out of memory")` itself; that
+    // deliberate forgery is reported as the kill it claims to be — still typed, still bounded.
+    const thrown = outcome.thrown;
+    if (thrown?.name === "InternalError") {
+      if (/out of memory|memory limit/i.test(thrown.message)) {
+        fail("limitExceeded", { kind: "memory" });
+      }
+      if (/^interrupted$/i.test(thrown.message)) {
+        // Interrupted without a recorded trigger — attribute to CPU budget.
+        fail("limitExceeded", { kind: "cpu" });
+      }
     }
-    if (/interrupted/i.test(message)) {
-      // Interrupted without a recorded trigger — attribute to CPU budget.
-      fail("limitExceeded", { kind: "cpu" });
-    }
-    if (outcome.thrown !== undefined) {
+    if (thrown !== undefined) {
       // The script's own exception on this input (incl. a SyntaxError, and a
       // ReferenceError for fetch/require/process — the VM cannot tell a missing
       // capability from a typo). A pure function of (script, input), so it is an
       // outcome: typed, substituted on replay, never retried. The legacy text rides
       // the error message for anything that logged it.
-      fail("scriptError", outcome.thrown, `sandbox script failed: ${message}`);
+      fail("scriptError", thrown, `sandbox script failed: ${message}`);
     }
     // No thrown value and no guard: nothing the script did explains this — untyped.
     throw new Error(`sandbox script failed: ${message}`);

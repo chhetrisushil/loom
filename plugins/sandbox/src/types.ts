@@ -102,6 +102,11 @@ export type SandboxEvalInputValue = z.infer<typeof SandboxEvalInput>;
  * both bounded; never a stack. A guard kill is `limitExceeded` even when the
  * script catches it and rethrows. Infrastructure failures — the worker pool, the
  * content address check, input marshalling, cancellation — stay untyped.
+ *
+ * UNTRUSTED TEXT: `name` and `message` are authored by the script, which is often
+ * model-written. They are bounded and well-formed (no lone surrogates, no NUL) but
+ * NOT taint-wrapped (ADR 0085) — treat them as data for a planner or a log, and never
+ * place them in a prompt's instruction position.
  */
 export const SANDBOX_ERRORS = {
   scriptMissing: z.object({ ref: z.string() }),

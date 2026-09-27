@@ -6,7 +6,7 @@
 
 export { SandboxEvalEffect } from "./SandboxEvalEffect";
 export { SandboxWorkerPool, type SandboxWorkerPoolOptions } from "./SandboxWorkerPool";
-export type { EvalLimits, EvalOutcome, TrippedGuard } from "./evalCore";
+export type { EvalLimits, EvalOutcome, ScriptThrow, TrippedGuard } from "./evalCore";
 export { SANDBOX_TOOL_ID, registerSandboxEval, sandboxEval$ } from "./sandboxEval$";
 export { type Shape, shapeHash, shapeOf } from "./shape";
 export {

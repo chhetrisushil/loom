@@ -24,8 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message keeps the old `sandbox script failed: Name: message` text. Additive for replay: an old
   log's untyped STEP_FAILED has no channel, is never substituted as `scriptError`, and keeps
   legacy re-execution. `docs/api-reference.org` had the channel map wrong
-  (`limitExceeded`/`badShape`); it now lists all four. No kernel change; EVENT_SCHEMA and
-  KERNEL_ABI unchanged.
+  (`limitExceeded`/`badShape`) and stale `sandboxEval$`/`registerSandboxEval` signatures; both
+  are fixed. No kernel change; EVENT_SCHEMA and KERNEL_ABI unchanged.
+
+  Also: memory/CPU kills are read from the text of the engine's own `InternalError` only — a
+  script's `throw new Error("connection interrupted")` (or "…out of memory…") was previously
+  reported as `limitExceeded` and is now `scriptError`. Script-authored text is bounded without
+  splitting a surrogate pair, and lone surrogates and NUL become U+FFFD, so the failure event is
+  storable in Postgres `jsonb`. The text is untrusted and not taint-wrapped: never put it in a
+  prompt's instruction position.
+
+  **Upgrade note:** a run that is paused or suspended past an untyped failed sandbox step (a
+  flow that caught the old `Error("sandbox script failed: …")`) re-runs that step when resumed
+  on this version — untyped failures were never substituted — and the re-run now throws a
+  `TypedFailure` on `scriptError`. A catch that tests `instanceof TypedFailure` or the channel
+  takes that branch on the re-run; the recorded events are untouched.
 
 - **Blueprint IR 2.4.0 (ADR 0101).** A minor bump so a container keeps its identity when a
   recompose inserts or reorders containers around it:
