@@ -109,3 +109,51 @@ Adopted per the [K10 evaluation](../requirements/2026-07-10-kernel-hardening-eva
   real and exposes `app.lifecycle` for an explicit, non-background pass (no timer prunes the
   log). `loom retention run` (dry-run by default, `--apply` to reclaim) is **shipped**, on the
   `listExecutions` store-SPI enumerator (EVENT_STORE_SPI 1.1.0).
+
+## Amendment (2026-09-27) — the compaction/archive key rule
+
+`EncryptingEventStore` used to drop `deleteExecution` and `truncatePrefix`, and
+`EncryptingSnapshotStore` dropped `deleteExecution`. So `applyRetention` reported every
+encrypted execution `unsupported`, `compact` was a silent `null`, and encrypted logs grew
+forever (ADR 0074 Amendment, same date). Both are now forwarded, because deleting or truncating
+ciphertext only removes data. Forwarding is not enough on its own, though. Two lifecycle
+operations move data OUT of the store they read:
+
+- `applyRetention` archives the events it read through the decorator, which are plaintext,
+  along with the latest snapshot, into `archive.eventStore` and `archive.snapshotStore`.
+- `compact` saves the decrypted fold as a snapshot and then truncates the ciphertext.
+
+If the destination does not encrypt under the same keys, shreddable ciphertext becomes
+plaintext at rest, and destroying the subject's key no longer erases it. That is A1's "erasure
+theater" hole reached through a different door.
+
+Decided. Checks are structural (identity of the `keys` object an encrypting store exposes, the
+probe `loom doctor` already uses) and run before anything is read, copied, saved or truncated:
+
+- **`compact` throws `UnsafeCompactionError`** when the event store has `keys` and the snapshot
+  store's `keys` is not that same object. It throws rather than returning `null`, because
+  `null` already means "nothing to compact", and a guard that answers like a no-op is a guard
+  nobody notices firing.
+- **`applyRetention` and `evaluate` return `"unsafe-archive"`** when an archive is configured,
+  the source encrypts, and `archive.eventStore` or `archive.snapshotStore` does not share the
+  source's `keys`. The dry run and the apply agree.
+- **The marker survives decoration.** `installOptional` carries `keys` up through every
+  decorator built on it, and `ShardedEventStore` exposes one shared KeyStore. If its shards
+  disagree it exposes a marker that no snapshot store can match, so the guard fails closed.
+  Without this, forwarding `truncatePrefix` would have made `Coalescing(Encrypting(pg))`
+  compactable into a plaintext snapshot store. The decorator conformance kit asserts that the
+  marker survives.
+- **Not checkable structurally:** whether the destination's `sensitive` paths cover every copy
+  of a value in the fold. A step input held in `frames`, for example, is outside the default
+  `variables._input` path. This is the same limit as the original K10.2 design and
+  `loom doctor`'s encryption check. Declaring coverage stays the operator's job.
+
+Adjacent fix in the same file: `evaluate` folded only the surviving log. A log compacted
+through its tip is just the bootstrap event, so a compacted execution read as `not-terminal`
+forever and could never be reclaimed. The fold now resumes from the latest snapshot when the
+log has a gap or only the bootstrap left.
+
+Tests: `log-lifecycle.test.ts` compacts and retains an encrypting store over SQLite. It then
+shreds the subject and asserts that the compaction snapshot and the archive both throw
+`PayloadShreddedError`. The negative cases assert that a plaintext snapshot store and an archive
+under different keys are refused and that nothing is copied, saved or truncated.

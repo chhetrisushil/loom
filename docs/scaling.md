@@ -96,10 +96,23 @@ The audit. Compose these before changing anything.
 
 ### The EventStore is a decorator seam — this is the main extension point
 
-Six implementations ship **[code]**: three backends (`InMemoryAsyncEventStore`,
-`SqliteEventStore`, `PostgresEventStore`) and three *decorators* that wrap any store —
-`TenantScopedEventStore` (key-prefix isolation), `EncryptingEventStore` (field-level
-crypto), `ContentResolvingEventStore` (payload externalization).
+Three backends ship **[code]** (`InMemoryAsyncEventStore`, `SqliteEventStore`,
+`PostgresEventStore`), along with the decorators that wrap any store:
+
+| decorator | what it adds | optional SPI it refuses |
+|---|---|---|
+| `TenantScopedEventStore` | key-prefix isolation | none |
+| `EncryptingEventStore` | field-level crypto (retention/compaction guarded by the ADR 0022 key rule) | none |
+| `ContentResolvingEventStore` | payload externalization | none |
+| `hashChainedEventStore` | tamper-evident chain (`@loom/plugin-audit-chain`) | `truncatePrefix`, because a compacted log fails `verifyChain` |
+| `CoalescingEventStore` / `ShardedEventStore` / `ProfilingEventStore` | batching, partitioning, write profiling (section 3) | none |
+
+Every one of them forwards, overrides or explicitly refuses each optional method (a
+`DecoratorPlan` via `installOptional`, ADR 0074 Amendment). Each is also held to
+`runEventStoreDecoratorConformance`, which runs the whole SPI suite *through* it. A decorator
+that silently drops a method takes that capability away from everything above it. Until
+2026-09-27 four of them dropped `appendBatch`, which is why the composition in 3.3 got no
+batching. A bring-your-own decorator proves itself with the same kit.
 
 That pattern is the lever. `defineConfig` accepts `storage: { kind: "custom", eventStore,
 snapshotStore, branchRegistry? }` **[code]**, so anything satisfying the `EventStore`
@@ -253,6 +266,20 @@ Measured end to end on Postgres by section A2 of the throughput harness: **1.5×
 default `maxBatch: 16`, **2.0×** at 64. (This page previously said 2.3–4.3×, from a table
 no committed scenario could reproduce — see [benchmarks](benchmarks.md).)
 Opt-in — inert unless wired into `storage`.
+
+**Compose it outside the other decorators, and check they batch.** The order is sharding, then
+coalescing, then tenant scoping / encryption / content resolution / the audit chain, then the
+backend. Every decorator between the coalescer and the backend must implement `appendBatch`.
+One that does not makes the coalescer fall back to one `append` per envelope. That wins
+nothing, and it also loses the batch's atomicity: a failed flush could leave earlier envelopes
+durable while their writers were told it failed. The in-repo decorators all implement it as of
+2026-09-27 (they did not before). For your own decorator, `runEventStoreDecoratorConformance`
+is the check.
+
+**Blast radius.** One stale-fence zombie rejects its whole coalesced batch, so up to `maxBatch`
+healthy writers coalesced with it abort too. Nothing of theirs lands, and recovery re-drives
+them. That is fine while fencing is rare. If fencing is common in your deployment, lower
+`maxBatch`.
 
 **Is your workload even write-bound?** Wrap your store in `ProfilingEventStore` and add
 `effectTimingMiddleware` to your effect runtime, run real traffic, and compare

@@ -137,3 +137,50 @@ flush-boundary semantics — stays rejected. No benchmark reopens those.
   single-writer invariant unchanged.
 - The honest limits are recorded in the requirements doc §5: no real-workload validation,
   single-host measurements, and R5's benefit unmeasured until it exists.
+
+## Amendment (2026-09-27) — every decorator carries the whole optional SPI
+
+The composition order above, sharding then coalescing then tenant scoping / encryption /
+content resolution then the backend, did not deliver the batching it exists for. Four
+decorators in that middle layer dropped `appendBatch`: `TenantScopedEventStore`,
+`EncryptingEventStore`, `ContentResolvingEventStore` and `hashChainedEventStore`. The coalescer
+calls `appendBatchOf`, which falls back to a sequential `append` loop when the method is
+absent. Measured with 50 concurrent appends, `Coalescing(backend)` issued `appendBatch=4,
+append=0`, while `Coalescing(TenantScoped(backend))` issued `appendBatch=0, append=50`. Every
+multi-tenant, encrypted, content-externalized or audit-chained deployment that followed this
+ADR got no batching and no warning. The same drift cost other capabilities. Encrypted logs
+could be neither retained nor compacted. The audit chain lost enumeration. The DST fault store
+and the crash harness hid `head`, `acquireFence` and retention from anything under test.
+
+The fallback also broke D2's failure claim. That loop is not atomic, so when a batch holding a
+stale-fence zombie failed, the healthy envelopes ahead of it were already durable while their
+writers were told the batch had failed.
+
+Decided:
+
+- **Every decorator between the coalescer and the backend MUST implement `appendBatch`**, and
+  every decorator MUST decide each optional method explicitly. It forwards the method,
+  overrides it, or refuses it with a reason. `installOptional` (`@loom/event-runtime`) installs
+  a `DecoratorPlan`, a mapped type over the whole `OptionalEventStoreMethod` union. A new
+  optional SPI method is therefore a compile error in every in-repo decorator until it decides.
+  A method is installed only when the inner store has it, so capability probes are unchanged.
+- **`runEventStoreDecoratorConformance` / `runSnapshotStoreDecoratorConformance`
+  (`@loom/conformance`)** wrap a full-capability store and assert that every optional method
+  survives or is refused with a reason. They then run the whole SPI suite THROUGH the
+  decorator, so the `appendBatch` atomicity cases actually execute. A 3P decorator proves
+  itself the same way. A discovery-based fitness test (`packages/spec`) fails when a decorator
+  in the repo is not registered with the kit.
+- **Refusals are recorded.** `hashChainedEventStore` refuses `truncatePrefix`, because a
+  compacted log fails `verifyChain` at the first surviving event. That was measured: it breaks
+  with `prevHash mismatch` at sequence `through + 1`. The chain was forwarding the method
+  before this amendment, so a routine compaction pass could break every later audit.
+- **Blast radius of a coalesced zombie.** Even with a native `appendBatch`, one stale-fence
+  envelope rejects its whole batch, so up to `maxBatch` healthy writers coalesced with it abort
+  with a storage error. None of their events land, and recovery re-drives them from the log.
+  Coalescing widens a fencing rejection from one execution to one batch. That trade is right
+  while fencing is rare. A split-and-retry of the non-offending rows is deferred until fencing
+  proves common in production.
+
+`EVENT_STORE_SPI_VERSION` stays 1.4.0 because no method was added. The encryption half of this
+change, which covers what may leave the erasure boundary once retention and compaction reach
+an encrypted log, is ADR 0022's amendment of the same date.

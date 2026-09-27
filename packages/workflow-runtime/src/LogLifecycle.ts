@@ -53,7 +53,39 @@ export type RetentionOutcome =
   | "blocked-by-branch" // a live descendant branch still depends on this prefix (R5.3)
   | "pinned" // exempted by the pin predicate (K10.6)
   | "unknown" // no events for this id
-  | "unsupported"; // the store can't delete (no deleteExecution)
+  | "unsupported" // the store can't delete (no deleteExecution)
+  // the log is encrypted and the archive does not share its KeyStore: archiving would copy
+  // decrypted rows out of the erasure boundary (ADR 0022 Amendment) — nothing is touched
+  | "unsafe-archive";
+
+/**
+ * Thrown by {@link LogLifecycle.compact} when the event store encrypts at rest and the
+ * snapshot store does not share its `KeyStore` (ADR 0022 Amendment).
+ *
+ * Compaction saves the DECRYPTED fold as a snapshot and then truncates the ciphertext it came
+ * from. Into a plaintext snapshot store — or one encrypting under different keys — that turns
+ * shreddable ciphertext into data a key shred no longer erases: the A1 "erasure theater" hole.
+ * A throw, not a `null`: `null` already means "nothing to compact", and a guard that answers
+ * like a no-op is one nobody notices firing.
+ */
+export class UnsafeCompactionError extends Error {
+  constructor(readonly executionId: string) {
+    super(
+      `refusing to compact "${executionId}": the event store encrypts at rest, but the snapshot store does not share its KeyStore — the checkpoint would hold the decrypted fold outside the erasure boundary, so shredding the subject would no longer erase it. Wrap the snapshot store in an EncryptingSnapshotStore over the SAME KeyStore.`
+    );
+    this.name = "UnsafeCompactionError";
+  }
+}
+
+/**
+ * The structural encryption marker (`keys`) an encrypting store exposes — the same probe
+ * `loom doctor` uses, so this package does not depend on `@loom/plugin-crypto`. Decorators
+ * carry it up (`installOptional`), so a store wrapped above the encrypting one still shows it.
+ */
+function keysOf(store: unknown): object | undefined {
+  const keys = (store as { keys?: unknown } | undefined)?.keys;
+  return typeof keys === "object" && keys !== null ? keys : undefined;
+}
 
 export class LogLifecycle {
   constructor(
@@ -126,12 +158,15 @@ export class LogLifecycle {
     now: number
   ): Promise<RetentionOutcome | "reclaimable"> {
     if (this.eventStore.deleteExecution === undefined) return "unsupported";
+    if (!this.archiveIsSafe()) return "unsafe-archive";
     const events = await this.eventStore.read(executionId);
     if (events.length === 0) return "unknown";
 
-    const state = new ReplayVM(events).getState();
+    const state = await this.foldForRetention(executionId, events);
     if (!TERMINAL.has(state.status)) return "not-terminal";
-    const endedAt = events[events.length - 1]!.timestamp;
+    // A compacted log's last surviving event may be the bootstrap, so the folded state's
+    // `updatedAt` (the terminal event's timestamp) is the end when it is later.
+    const endedAt = Math.max(events[events.length - 1]!.timestamp, state.updatedAt);
     if (now - endedAt < policy.terminalTtlMs) return "kept";
 
     // R5.3 — never delete a parent a live descendant branch still depends on.
@@ -142,6 +177,48 @@ export class LogLifecycle {
       return "pinned";
     }
     return "reclaimable";
+  }
+
+  /**
+   * Fold what retention judges eligibility on. A contiguous log `[0..n]` with n > 0 IS the
+   * whole history. A log with a gap — or only the bootstrap left, which is what compacting
+   * through the tip leaves — may have been compacted, and its prefix lives in the checkpoint:
+   * folding the surviving suffix alone reads a completed execution as not-terminal forever,
+   * so a compacted execution could never be reclaimed. One snapshot point-read, only then.
+   */
+  private async foldForRetention(
+    executionId: string,
+    events: EventEnvelope[]
+  ): Promise<ExecutionState> {
+    const last = events[events.length - 1]!;
+    if (events.length > 1 && last.sequence === events.length - 1) {
+      return new ReplayVM(events).getState();
+    }
+    const snapshot = await this.snapshotStore.loadLatest(executionId);
+    if (snapshot === null) return new ReplayVM(events).getState();
+    const suffix = events.filter((e) => e.sequence > snapshot.sequence);
+    return new ReplayVM(suffix, snapshot.state).getState();
+  }
+
+  /**
+   * ADR 0022 Amendment — an archive receives what retention READ through the event store,
+   * i.e. plaintext, plus the DECRYPTED latest snapshot. When the source encrypts, each archive
+   * store must encrypt under the SAME KeyStore, or archiving moves the subject's data out of
+   * reach of a key shred. Structural (identity of `keys`); whether the archive's `sensitive`
+   * paths cover the source's cannot be checked this way (ADR 0022, `loom doctor`).
+   */
+  private archiveIsSafe(): boolean {
+    const archive = this.options.archive;
+    if (archive === undefined) return true;
+    const eventKeys = keysOf(this.eventStore);
+    if (eventKeys !== undefined && keysOf(archive.eventStore) !== eventKeys) return false;
+    if (archive.snapshotStore !== undefined) {
+      const snapshotKeys = keysOf(this.snapshotStore);
+      const target = keysOf(archive.snapshotStore);
+      if (eventKeys !== undefined && target !== eventKeys) return false;
+      if (snapshotKeys !== undefined && target !== snapshotKeys) return false;
+    }
+    return true;
   }
 
   async applyRetention(
@@ -198,10 +275,16 @@ export class LogLifecycle {
    * checkpoint, while `fold(snapshot, suffix) === fold(events)` still holds — a
    * resume/replay is byte-identical. Returns the sequence compacted through, or
    * `null` when the store can't truncate (no `truncatePrefix`) or there is
-   * nothing to compact.
+   * nothing to compact. Throws {@link UnsafeCompactionError} when the event store
+   * encrypts at rest and the snapshot store does not share its KeyStore.
    */
   async compact(executionId: string): Promise<number | null> {
     if (this.eventStore.truncatePrefix === undefined) return null;
+    // ADR 0022 Amendment — checked before anything is read, saved or truncated.
+    const eventKeys = keysOf(this.eventStore);
+    if (eventKeys !== undefined && keysOf(this.snapshotStore) !== eventKeys) {
+      throw new UnsafeCompactionError(executionId);
+    }
     const events = await this.eventStore.read(executionId);
     if (events.length <= 1) return null; // nothing beyond the bootstrap to reclaim
     const tip = events[events.length - 1]!.sequence;

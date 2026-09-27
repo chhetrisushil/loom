@@ -1,5 +1,10 @@
 import type { EventEnvelope } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
+import {
+  type DecoratorPlan,
+  type EventStore,
+  type OptionalEventStoreMethod,
+  installOptional,
+} from "@loom/event-runtime";
 import { decryptValue, encryptValue, hasEnvelope, mapPaths } from "./crypto";
 import { PayloadShreddedError } from "./errors";
 import type { KeyStore } from "./keystore";
@@ -48,9 +53,12 @@ export function isShredded(value: unknown): value is { $shredded: true } {
  * destroyed throws {@link PayloadShreddedError} — replay fails loudly, never
  * silently diverges (the forbidden third behavior).
  *
- * Optional store capabilities (fencing, head, readRange, copyPrefix) are forwarded so
- * the wrapper composes with K9.4 and fork(); `copyPrefix` copies CIPHERTEXT
- * verbatim, which is why a fork must share the parent's subject to stay readable.
+ * Every optional store capability is carried through (a `DecoratorPlan`, ADR 0074
+ * Amendment) so the wrapper composes with K9.4, fork(), coalescing, retention and compaction;
+ * `copyPrefix` copies CIPHERTEXT verbatim, which is why a fork must share the parent's subject
+ * to stay readable. Retention archives and compaction snapshots are the two places plaintext
+ * could leave the encryption boundary, and `LogLifecycle` refuses both unless the destination
+ * shares this store's {@link KeyStore} (ADR 0022 Amendment).
  */
 /**
  * Own-key lookup for a caller-controlled event type. Plain indexing would resolve
@@ -69,15 +77,18 @@ export class EncryptingEventStore implements EventStore {
   private readonly sensitive: Record<string, readonly string[]>;
   private readonly subjectOf: (e: Pick<EventEnvelope, "executionId" | "workflowId">) => string;
   private readonly onShredded: "throw" | "tolerate";
-  // K9.4/fork/perf capabilities are forwarded only when the inner store has them,
-  // so a capability probe (`if (store.copyPrefix)`) behaves identically.
-  // A tip is a sequence number, never a payload — nothing to decrypt, and it stays
-  // answerable after a shred (the rows are still there; only their contents are gone).
+  // Every optional capability is decided in the plan below (ADR 0074 Amendment), and each is
+  // installed only when the inner store has it, so a capability probe (`if (store.copyPrefix)`)
+  // behaves identically.
+  readonly appendBatch?: NonNullable<EventStore["appendBatch"]>;
   readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
+  readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
+  readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
   readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
+  readonly listExecutionsPage?: NonNullable<EventStore["listExecutionsPage"]>;
 
   constructor(
     private readonly inner: EventStore,
@@ -92,26 +103,53 @@ export class EncryptingEventStore implements EventStore {
     this.sensitive = options.sensitive;
     this.subjectOf = options.subjectOf ?? ((e) => e.executionId);
     this.onShredded = options.onShredded ?? "throw";
-    if (inner.head !== undefined) {
-      this.head = (executionId) => inner.head!(executionId);
-    }
-    if (inner.readRange !== undefined) {
-      this.readRange = (executionId, from, to) =>
-        inner.readRange!(executionId, from, to).then((evs) => this.decryptAll(executionId, evs));
-    }
-    if (inner.acquireFence !== undefined) {
-      this.acquireFence = (executionId) => inner.acquireFence!(executionId);
-    }
-    // copyPrefix copies CIPHERTEXT verbatim in the inner store — a fork must
-    // resolve to the parent's subject (A2) for the copied prefix to stay readable.
-    if (inner.copyPrefix !== undefined) {
-      this.copyPrefix = (from, to, through, metadata) =>
-        inner.copyPrefix!(from, to, through, metadata);
-    }
-    // Enumeration is over executionIds only — no payload, so no decryption needed.
-    if (inner.listExecutions !== undefined) {
-      this.listExecutions = () => inner.listExecutions!();
-    }
+    const plan = {
+      // One key lookup per DISTINCT subject in the batch, not one per envelope: a coalesced
+      // batch is many executions, and `keys.getOrCreate` is a real lookup (a KMS or table).
+      // `Promise.all` keeps array order, which is the SPI's per-execution order.
+      appendBatch: async (envelopes) => {
+        const keyFor = new Map<string, Promise<Buffer>>();
+        const encrypted = await Promise.all(
+          envelopes.map(async (envelope) => {
+            const paths = pathsFor(this.sensitive, envelope.eventType);
+            if (paths === undefined || paths.length === 0) return envelope; // unmarked (A4)
+            const subject = this.subjectOf(envelope);
+            let key = keyFor.get(subject);
+            if (key === undefined) {
+              key = this.keys.getOrCreate(subject);
+              keyFor.set(subject, key);
+            }
+            return this.encrypt(envelope, paths, await key);
+          })
+        );
+        return inner.appendBatch!(encrypted);
+      },
+      // A tip is a sequence number, never a payload — nothing to decrypt, and it stays
+      // answerable after a shred (the rows are still there; only their contents are gone).
+      head: "forward",
+      readRange: (executionId, from, to) =>
+        inner.readRange!(executionId, from, to).then((evs) => this.decryptAll(executionId, evs)),
+      acquireFence: "forward",
+      // copyPrefix copies CIPHERTEXT verbatim in the inner store — a fork must
+      // resolve to the parent's subject (A2) for the copied prefix to stay readable.
+      copyPrefix: "forward",
+      // Deleting ciphertext only reduces data. Retention's ARCHIVE step is the hazard — it
+      // copies what it read through this store, i.e. plaintext — and `LogLifecycle` refuses
+      // an archive that does not share these keys (ADR 0022 Amendment, "unsafe-archive").
+      deleteExecution: "forward",
+      // Truncating ciphertext only reduces data too. Compaction's SNAPSHOT is the hazard —
+      // the decrypted fold — and `LogLifecycle.compact` throws `UnsafeCompactionError` unless
+      // the snapshot store shares these keys.
+      truncatePrefix: "forward",
+      // Enumeration is over executionIds only — no payload, so no decryption needed.
+      listExecutions: "forward",
+      listExecutionsPage: "forward",
+    } satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;
+    installOptional<EventStore, OptionalEventStoreMethod>(this, inner, plan);
+  }
+
+  private encrypt(envelope: EventEnvelope, paths: readonly string[], key: Buffer): EventEnvelope {
+    return { ...envelope, payload: mapPaths(envelope.payload, paths, (v) => encryptValue(key, v)) };
   }
 
   async append(envelope: EventEnvelope): Promise<void> {
@@ -120,8 +158,7 @@ export class EncryptingEventStore implements EventStore {
       return this.inner.append(envelope); // unmarked → verbatim (A4)
     }
     const key = await this.keys.getOrCreate(this.subjectOf(envelope));
-    const payload = mapPaths(envelope.payload, paths, (v) => encryptValue(key, v));
-    return this.inner.append({ ...envelope, payload });
+    return this.inner.append(this.encrypt(envelope, paths, key));
   }
 
   private async decryptAll(executionId: string, events: EventEnvelope[]): Promise<EventEnvelope[]> {

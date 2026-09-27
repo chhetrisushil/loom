@@ -1,5 +1,10 @@
+import { runEventStoreDecoratorConformance } from "@loom/conformance";
 import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import {
+  CoalescingEventStore,
+  type EventStore,
+  InMemoryAsyncEventStore,
+} from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import { describe, expect, it } from "vitest";
 import { ContentResolvingEventStore } from "./ContentResolvingEventStore";
@@ -171,5 +176,122 @@ describe("ContentResolvingEventStore (ADR 0046)", () => {
     const forked = await store.read("p@fork");
     expect((forked[1]?.payload as { output: { doc: unknown } }).output.doc).toEqual({ v: 42 });
     expect(content.size).toBe(1);
+  });
+});
+
+// ── L1 / ADR 0074 Amendment — the decorator carries the whole optional SPI ─────────────
+// `externalize` covers the kit's own event shape, so the suite that runs THROUGH the
+// decorator round-trips real refs rather than a verbatim pass-through.
+runEventStoreDecoratorConformance(
+  "ContentResolvingEventStore",
+  (inner) =>
+    new ContentResolvingEventStore(inner, new InMemoryContentStore(), {
+      externalize: { STEP_COMPLETED: ["sequence"] },
+    })
+);
+
+describe("ContentResolvingEventStore under the coalescer (ADR 0074 Amendment)", () => {
+  it("Coalescing(ContentResolving(backend)) batches — the backend never sees a single append", async () => {
+    const raw = new InMemoryAsyncEventStore();
+    const calls = { append: 0, appendBatch: 0 };
+    const counting: EventStore = {
+      append: (e) => {
+        calls.append++;
+        return raw.append(e);
+      },
+      appendBatch: (es) => {
+        calls.appendBatch++;
+        return raw.appendBatch(es);
+      },
+      read: (id) => raw.read(id),
+      readFrom: (id, f) => raw.readFrom(id, f),
+      subscribe: (id, h) => raw.subscribe(id, h),
+      close: () => raw.close(),
+    };
+    const store = new CoalescingEventStore(
+      new ContentResolvingEventStore(counting, new InMemoryContentStore(), {
+        externalize: EXTERNALIZE,
+      })
+    );
+    await Promise.all(
+      Array.from({ length: 50 }, (_, i) =>
+        store.append(ev(`x${i}`, 0, "STEP_COMPLETED", { output: { doc: `doc-${i}` } }))
+      )
+    );
+    expect(calls.appendBatch).toBeGreaterThanOrEqual(1);
+    expect(calls.append).toBe(0);
+    // A ref at rest, the value through the decorator — and in array order.
+    const stored = (await raw.read("x3"))[0]?.payload as { output: { doc: unknown } };
+    expect(isContentRef(stored.output.doc)).toBe(true);
+    expect((await store.read("x3"))[0]?.payload).toEqual({ output: { doc: "doc-3" } });
+    await store.close();
+  });
+});
+
+// ── Claim-check envelopes are the claim-check plugin's to resolve, not this store's ──────
+// (ADR 0055 D4 known gap, closed by L1.) An ADR 0054 envelope's `ref` is a TTL-reclaimable
+// citation whose erasure the fold never sees; the resolving store used to descend into the
+// envelope, replace `ref` with the decoded value, throw `ContentMissingError` once the blob was
+// swept, and choke on a `codec: "bytes"` blob it tried to JSON-decode.
+describe("ContentResolvingEventStore leaves claim-check envelopes alone", () => {
+  async function seeded(opts: { eraseEnvelopeBlob?: boolean; bytesCodec?: boolean } = {}) {
+    const { inner, content, store } = setup();
+    const offloaded = opts.bytesCodec
+      ? new Uint8Array([0xff, 0x00, 0xfe]) // not JSON: a streamed binary result
+      : new TextEncoder().encode(JSON.stringify({ rows: [1, 2, 3] }));
+    const blobRef = await content.put(offloaded);
+    const envelope = {
+      __loomClaimCheck: true,
+      ref: { __loomContent: blobRef.__loomContent },
+      size: offloaded.length,
+      digest: { rows: 3 },
+      ...(opts.bytesCodec === true && { codec: "bytes" }),
+    };
+    // A bare ADR 0046 ref beside it, written the way the store itself externalizes one.
+    const bare = await content.put(new TextEncoder().encode(JSON.stringify("the big doc")));
+    await inner.append(
+      ev("cc", 0, "STEP_COMPLETED", {
+        output: { result: envelope, doc: { ...bare, codec: "json" } },
+      })
+    );
+    if (opts.eraseEnvelopeBlob === true) await content.delete(blobRef);
+    return { store, envelope };
+  }
+
+  it("an erased claim-checked blob reads back as the ENVELOPE — no ContentMissingError", async () => {
+    const { store, envelope } = await seeded({ eraseEnvelopeBlob: true });
+    const [event] = await store.read("cc");
+    expect((event?.payload as { output: { result: unknown } }).output.result).toEqual(envelope);
+  });
+
+  it("a codec:'bytes' envelope reads (its bytes are never JSON-decoded here)", async () => {
+    const { store, envelope } = await seeded({ bytesCodec: true });
+    const [event] = await store.read("cc");
+    expect((event?.payload as { output: { result: unknown } }).output.result).toEqual(envelope);
+  });
+
+  it("a bare ref beside the envelope still resolves", async () => {
+    const { store } = await seeded({ eraseEnvelopeBlob: true });
+    const [event] = await store.read("cc");
+    expect((event?.payload as { output: { doc: unknown } }).output.doc).toBe("the big doc");
+    // readRange and readFrom take the same path.
+    const [ranged] = await store.readRange!("cc", 0, 0);
+    expect((ranged?.payload as { output: { doc: unknown } }).output.doc).toBe("the big doc");
+  });
+
+  it("the live subscription delivers the envelope untouched too", async () => {
+    const { inner, content, store } = setup();
+    const blobRef = await content.put(new Uint8Array([1, 2, 3]));
+    await content.delete(blobRef);
+    const envelope = {
+      __loomClaimCheck: true,
+      ref: { __loomContent: blobRef.__loomContent },
+      size: 3,
+    };
+    const seen: unknown[] = [];
+    await store.subscribe("live", (e) => seen.push(e.payload));
+    await inner.append(ev("live", 0, "STEP_COMPLETED", { output: envelope }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen).toEqual([{ output: envelope }]);
   });
 });

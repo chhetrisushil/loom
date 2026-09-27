@@ -1,5 +1,11 @@
+import { runEventStoreDecoratorConformance } from "@loom/conformance";
 import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import {
+  CoalescingEventStore,
+  type EventStore,
+  InMemoryAsyncEventStore,
+  refusalsOf,
+} from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { canonicalize, hashChainedEventStore } from "./hashChain";
 
@@ -174,3 +180,92 @@ describe("hashChainedEventStore", () => {
     expect((await chained.verifyChain("e1")).ok).toBe(true);
   });
 });
+
+describe("hashChainedEventStore — the optional SPI (L1)", () => {
+  it("a truncatePrefix-compacted log FAILS verifyChain — which is why the chain refuses truncatePrefix", async () => {
+    // The probe that decided the plan. Compaction keeps sequence 0 and drops (0..through], so
+    // the first surviving suffix event's prevHash names an event that no longer exists.
+    const raw = new InMemoryAsyncEventStore();
+    const chained = hashChainedEventStore(raw);
+    await appendChain(chained, "x", 5);
+    await raw.truncatePrefix("x", 2); // what compaction would do, one layer down
+    const verdict = await chained.verifyChain("x");
+    expect(verdict.ok).toBe(false);
+    expect(verdict.brokenAt).toBe(3);
+    expect(verdict.reason).toContain("prevHash mismatch");
+    // So the chain does not offer it: a compaction pass sees a store it cannot compact
+    // rather than one that silently breaks every later audit.
+    expect(chained.truncatePrefix).toBeUndefined();
+    expect(refusalsOf(chained).get("truncatePrefix")).toBe(
+      "a truncated prefix breaks chain verification (ADR 0037)"
+    );
+  });
+
+  it("keeps enumeration: listExecutions and listExecutionsPage are forwarded", async () => {
+    const chained = hashChainedEventStore(new InMemoryAsyncEventStore());
+    await appendChain(chained, "b", 1);
+    await appendChain(chained, "a", 1);
+    expect(new Set(await chained.listExecutions!())).toEqual(new Set(["a", "b"]));
+    expect(await chained.listExecutionsPage!({ limit: 10 })).toEqual({ executionIds: ["a", "b"] });
+  });
+
+  it("appendBatch chains each execution in order, across interleaved executions, and verifies", async () => {
+    const raw = new InMemoryAsyncEventStore();
+    const chained = hashChainedEventStore(raw);
+    await chained.append(ev("p", 0)); // p has a durable tail the batch must chain onto
+    await chained.appendBatch!([ev("q", 0), ev("p", 1), ev("q", 1), ev("p", 2)]);
+    expect((await chained.verifyChain("p")).ok).toBe(true);
+    expect((await chained.verifyChain("q")).ok).toBe(true);
+    // And an append after the batch continues from the batch's last hash.
+    await chained.append(ev("p", 3));
+    expect(await chained.verifyChain("p")).toMatchObject({ ok: true, length: 4 });
+  });
+
+  it("a rejected appendBatch does not advance the chain head", async () => {
+    const raw = new InMemoryAsyncEventStore();
+    const chained = hashChainedEventStore(raw);
+    await chained.append(ev("r", 0));
+    // A duplicate sequence inside the batch: the backend rejects the WHOLE batch.
+    await expect(
+      chained.appendBatch!([ev("r", 1), { ...ev("r", 1), id: "dup" }])
+    ).rejects.toThrow();
+    // Had the failed batch advanced the cached head, this append would chain onto a hash
+    // that never became durable and verification would break at sequence 1.
+    await chained.append(ev("r", 1));
+    expect(await chained.verifyChain("r")).toMatchObject({ ok: true, length: 2 });
+  });
+
+  it("Coalescing(hashChained(backend)) batches — the backend never sees a single append", async () => {
+    const raw = new InMemoryAsyncEventStore();
+    const calls = { append: 0, appendBatch: 0 };
+    const counting: EventStore = {
+      append: (e) => {
+        calls.append++;
+        return raw.append(e);
+      },
+      appendBatch: (es) => {
+        calls.appendBatch++;
+        return raw.appendBatch(es);
+      },
+      read: (id) => raw.read(id),
+      readFrom: (id, f) => raw.readFrom(id, f),
+      subscribe: (id, h) => raw.subscribe(id, h),
+      close: () => raw.close(),
+    };
+    const chained = hashChainedEventStore(counting);
+    const store = new CoalescingEventStore(chained);
+    await Promise.all(Array.from({ length: 50 }, (_, i) => store.append(ev(`c${i}`, 0))));
+    expect(calls.appendBatch).toBeGreaterThanOrEqual(1);
+    expect(calls.append).toBe(0);
+    expect((await chained.verifyChain("c7")).ok).toBe(true);
+    await store.close();
+  });
+});
+
+runEventStoreDecoratorConformance(
+  "hashChainedEventStore",
+  (inner) => hashChainedEventStore(inner),
+  {
+    refused: { truncatePrefix: "a truncated prefix breaks chain verification (ADR 0037)" },
+  }
+);

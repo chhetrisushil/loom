@@ -210,10 +210,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Behaviour change:** an app that emits a bare ref itself (`ctx.emit(KIND, { ref })`) and
   relied on the sweep to reclaim it will find the blob kept. The sweep cannot tell such a ref
   from an externalized one. To make it reclaimable, cite it as a claim-check envelope's `ref`.
-  Nothing is erased that was kept before. **Caveat until the L1 fix lands:** under a
-  `ContentResolvingEventStore` that does not work yet. That store also resolves an envelope's
-  `ref` on read, so erasing the blob fails the read exactly as before (the known gap recorded
-  in ADR 0055 D4). In that composition, keep such refs bare.
+  Nothing is erased that was kept before. This also works under a `ContentResolvingEventStore`,
+  which now leaves claim-check envelopes alone (the ADR 0055 D4 gap, closed by the decorator
+  entry below).
+
+- **Every store decorator now carries the whole optional SPI through, so the ADR 0074
+  composition actually batches**
+  ([ADR 0074](docs/adr/0074-storage-scale-out-decorators.md) Amendment,
+  [ADR 0022](docs/adr/0022-k10-log-lifecycle-retention-redaction-encryption.md) Amendment).
+  Seven decorators silently dropped optional methods of the store they wrapped:
+  - `TenantScopedEventStore` dropped `appendBatch` and `listExecutionsPage`.
+  - `EncryptingEventStore` dropped `appendBatch`, `deleteExecution`, `truncatePrefix` and
+    `listExecutionsPage`.
+  - `ContentResolvingEventStore` dropped `appendBatch` and `listExecutionsPage`.
+  - `hashChainedEventStore` dropped `appendBatch`, `listExecutions` and `listExecutionsPage`.
+  - The DST `faultInjectingStore` and the `@loom/testing` `crashingEventStore` dropped up to
+    seven methods between them.
+  - `EncryptingSnapshotStore` dropped `deleteExecution`.
+
+  The consequences:
+  - `Coalescing(TenantScoped(backend))`, the order ADR 0074 documents, issued zero batches (50
+    appends reached the backend as 50 appends).
+  - Over that fallback's non-atomic loop, a batch holding a stale-fence zombie left earlier
+    writers' events durable while telling them the write failed.
+  - Encrypted logs could be neither retained nor compacted.
+  - The audit chain could not be enumerated by `loom retention` or `loom census`.
+
+  Each decorator now declares a `DecoratorPlan` over the whole optional-method union and
+  installs it with the new `installOptional` (`@loom/event-runtime`). A future optional SPI
+  method is a compile error in every decorator until it forwards, overrides or refuses it.
+  `OPTIONAL_EVENT_STORE_METHODS` / `OPTIONAL_SNAPSHOT_STORE_METHODS` are compile-time
+  exhaustive, `refusalsOf` reads a recorded refusal, and `CoalescingEventStore`,
+  `ProfilingEventStore` and `TenantScopedSnapshotStore` moved onto plans too.
+  `runEventStoreDecoratorConformance` / `runSnapshotStoreDecoratorConformance`
+  (`@loom/conformance`) wrap a full-capability store. They assert that every optional method
+  survives (or is refused with a reason) and then run the whole SPI suite THROUGH the
+  decorator, over the in-memory store by default or a real backend via `inner`. Every in-repo
+  decorator is registered, the two tenant compositions also run over Postgres, and
+  `packages/spec/src/decoratorConformance.test.ts` discovers decorators and fails on one that
+  is not registered. `EVENT_STORE_SPI_VERSION` stays 1.4.0; the SPI history comment now
+  records 1.4.0 (`head`).
+
+  Behaviour changes to know about:
+  - **`hashChainedEventStore` no longer offers `truncatePrefix`.** It used to forward it, and a
+    compacted chain fails `verifyChain` at the first surviving event (measured). Compaction
+    over an audit-chained store now returns `null` instead of silently breaking every later
+    audit.
+  - **`LogLifecycle` enforces a key rule for encrypted logs.** `compact` throws the new
+    `UnsafeCompactionError` when the event store encrypts at rest and the snapshot store does
+    not share its `KeyStore`. `applyRetention` / `evaluate` return the new `RetentionOutcome`
+    `"unsafe-archive"` when an archive does not share it. Without the rule, compaction and
+    archiving would write the decrypted fold or events outside the erasure boundary, where a
+    key shred no longer reaches. A test shreds the subject after compacting and archiving an
+    encrypting store over SQLite and asserts that both copies are unreadable.
+  - **The encryption marker (`keys`) now survives decoration**: `installOptional` carries it up,
+    and `ShardedEventStore` exposes one shared KeyStore (or a fail-closed marker if its shards
+    disagree). So `loom doctor` and the key rule see `Coalescing(Encrypting(pg))` as encrypting.
+  - **A compacted execution is reclaimable.** `LogLifecycle.evaluate` folded only the surviving
+    log, so an execution compacted through its tip read as `not-terminal` forever. It now folds
+    from the latest snapshot when the log has a gap or only its bootstrap left.
+  - **`TenantScopedEventStore.listExecutionsPage` never relies on the store's sort order.** It
+    pages the inner store and filters, bounded to one page of memory. Postgres pages in the
+    database collation (measured: `"a~"` before `"ab"` on an `en_US.UTF-8` PG 17), so a
+    "stop at the first id past the tenant's range" shortcut would miss ids.
+  - **`ContentResolvingEventStore` leaves ADR 0054 claim-check envelopes alone.** The
+    `collectContentRefs` / `substituteContentRefs` / `hasContentRef` walkers treat an envelope
+    as a leaf, so an envelope whose blob the sweep reclaimed reads back as the envelope rather
+    than throwing `ContentMissingError`, and a `codec: "bytes"` envelope reads at all. A bare
+    ref beside it still resolves. This closes the known gap ADR 0055 D4 records. The stale
+    "refcounted blob GC … deferred" docstring (it shipped in ADR 0055) is corrected.
+  - `CoalescingEventStore`'s docstring no longer claims a failed flush leaves the log untouched
+    over any inner store: that holds only when the inner store implements `appendBatch`. It
+    also records the coalesced-zombie blast radius.
 
 - **`loom plugin new keystore` scaffolded a package that could not compile.** The template
   writes `Buffer` in four signatures and the generated `package.json` declared no

@@ -1880,7 +1880,11 @@ await life.compact(executionId);
 ```
 
 Both run over optional store SPI (`deleteExecution` / `truncatePrefix`, on in-memory, SQLite,
-and Postgres); a store that omits them can't be swept.
+and Postgres); a store that omits them can't be swept. Over an **encrypting** store, the
+destination must share its `KeyStore`: `compact` throws `UnsafeCompactionError` unless the
+snapshot store is an `EncryptingSnapshotStore` on the same keys, and `applyRetention` returns
+`"unsafe-archive"` for an archive that isn't. Otherwise the decrypted fold or events would sit
+outside the reach of a key shred (ADR 0022 Amendment).
 
 **Redaction markers (K10.3).** Where crypto-shredding stores an *encrypted* secret in the log,
 redaction keeps a secret **out of the log entirely** — a step carries a deterministic

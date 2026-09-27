@@ -1,5 +1,6 @@
 import type { ExecutionState } from "@loom/core";
-import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
+import { type DecoratorPlan, installOptional } from "@loom/event-runtime";
+import type { OptionalSnapshotStoreMethod, Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { decryptValue, encryptValue, hasEnvelope, mapPaths } from "./crypto";
 import { PayloadShreddedError } from "./errors";
 import type { KeyStore } from "./keystore";
@@ -26,6 +27,7 @@ export interface EncryptingSnapshotStoreOptions {
  * {@link PayloadShreddedError} — the same loud failure as the event store.
  */
 export class EncryptingSnapshotStore implements SnapshotStore {
+  readonly deleteExecution?: NonNullable<SnapshotStore["deleteExecution"]>;
   private readonly sensitive: readonly string[];
   private readonly subjectOf: (s: Pick<Snapshot, "executionId" | "workflowId">) => string;
 
@@ -41,6 +43,12 @@ export class EncryptingSnapshotStore implements SnapshotStore {
   ) {
     this.sensitive = options.sensitive;
     this.subjectOf = options.subjectOf ?? ((s) => s.executionId);
+    const plan = {
+      // Deleting ciphertext only reduces data — and without it a retention sweep over an
+      // encrypted snapshot store orphaned every snapshot it should have removed.
+      deleteExecution: "forward",
+    } satisfies DecoratorPlan<SnapshotStore, OptionalSnapshotStoreMethod>;
+    installOptional<SnapshotStore, OptionalSnapshotStoreMethod>(this, inner, plan);
   }
 
   async save(snapshot: Snapshot): Promise<void> {
