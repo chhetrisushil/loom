@@ -2,8 +2,11 @@ import { type ChildProcess, fork } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as path from "node:path";
 import type { Effect, EffectContext } from "@loom/effect-runtime";
+import { knownEventTypes } from "@loom/replay-vm";
 import { EgressDeniedError, brokeredFetch } from "./broker";
 import type { ChildToParent, IsolatedToolSpec, ParentToChild } from "./types";
+
+const KERNEL_EVENT_TYPES: ReadonlySet<string> = new Set(knownEventTypes());
 
 /**
  * K7 — the isolated executor, implemented AT the effect position: `Effect` is
@@ -139,7 +142,22 @@ export class IsolatedToolEffect implements Effect {
       const onMessage = (raw: unknown): void => {
         const msg = raw as ChildToParent;
         if (msg.type === "emit" && msg.runId === runId) {
-          ctx.emit(msg.eventType, msg.payload);
+          // ADR 0104 — the child is untrusted code, so it may emit APPLICATION events only.
+          // Every kernel fact about this run (EGRESS_DENIED, metering, …) is written by the
+          // parent itself; a relayed one would be the tool attesting to its own conduct.
+          if (KERNEL_EVENT_TYPES.has(msg.eventType)) {
+            kill(
+              new Error(
+                `isolated tool "${this.spec.id}" emitted "${msg.eventType}", a kernel event type: an isolated tool may emit application events only (ADR 0104)`
+              )
+            );
+            return;
+          }
+          try {
+            ctx.emit(msg.eventType, msg.payload);
+          } catch (err) {
+            kill(err instanceof Error ? err : new Error(String(err)));
+          }
           return;
         }
         if (msg.type === "fetch" && msg.runId === runId) {

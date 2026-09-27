@@ -4,7 +4,7 @@
 > and the subsystems layered on the log. Everything here survives a process dying mid-step.
 > Card II is [the developer workflow](cheatsheet-dx.md).
 >
-> KERNEL ABI **1.1.0** · EVENT SCHEMA **1.19.0** · EventStore SPI **1.4.0** ·
+> KERNEL ABI **1.1.0** · EVENT SCHEMA **1.20.0** · EventStore SPI **1.4.0** ·
 > BranchRegistry SPI **1.2.0** · LeaseStore SPI **1.1.0** · MemoryStore SPI **2.1.0**
 
 ## The ten syscalls

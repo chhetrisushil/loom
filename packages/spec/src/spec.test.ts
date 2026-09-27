@@ -255,6 +255,10 @@ const NOT_A_CAPABILITY = new Set([
   // so a duplicate is refused (ExecutionAlreadyExistsError) before any effect. No new subsystem;
   // it restores what a deterministic id was always for (graded under workflow-runtime).
   "0103",
+  // 0104 — a correction to what the resume path records on a crash re-drive (no
+  // EXECUTION_RESUMED unless a parked gate is answered). A kernel fix, like 0057; no new
+  // subsystem to grade.
+  "0104",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

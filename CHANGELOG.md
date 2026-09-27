@@ -9,6 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`@loom/workflow-runtime`: a gate is answered only by a resume addressed to it**
+  ([ADR 0104](docs/adr/0104-recovery-never-answers-a-gate.md)). **Security fix.**
+  `ctx.suspend` serves the recorded resume payloads to gates in order (ADR 0057), so every
+  `EXECUTION_RESUMED` payload is some gate's answer. Four writers recorded one that answered no
+  gate, and the flow's NEXT gate consumed it: no resume named the gate, no authenticator saw an
+  approval, and the gate's declared `resumeSchemas` entry (ADR 0077) was never consulted.
+
+  - Crash recovery (`recoverAbandoned`, `LocalWorkerRuntime`) wrote `EXECUTION_RESUMED {}`. A
+    flow that crashed before `ctx.suspend({ on: "go1" })` passed go1 with `{}`. Recovery now
+    records `EXECUTION_RECOVERED` alone.
+  - An in-doubt verdict (K9.3) became the next gate's approval. It is now a kernel
+    `DECISION_RECORDED` keyed by step and attempt, so a verdict also goes stale correctly: a
+    "retry-fresh" attempt that itself crashes re-parks in doubt rather than calling the
+    non-idempotent tool again. A resume at an in-doubt park that is not a verdict for the parked
+    step is now refused (`ResumePayloadValidationError`, nothing appended); it used to be
+    appended and re-park.
+  - A HumanEffect step's answer went to the next gate while the step re-parked forever. A
+    `kind: "human"` step now consumes its answer in order with `ctx.suspend` and completes with
+    it.
+  - `resumeAs` onto a crashed execution answered its next gate. Onto a terminal one it now
+    records `EXECUTION_RESUMED(null)`, which re-opens the execution (a crash during the migrated
+    run is recoverable) without answering a gate.
+  - `resumeAs` onto an execution parked at a gate answered it under ANY event name, with no
+    schema, authenticator or authorizer check. It now enforces all of `resume`'s gate rules
+    there.
+  - Flow and effect code could forge kernel state: `ctx.emit("EXECUTION_RESUMED", …)` answered
+    the flow's own gate, and `STEP_STARTED` + `EFFECT_INDOUBT` + `EXECUTION_RESUMED(verdict)` got
+    a non-idempotent step adopted with no tool call. **Behaviour tightening:** `ctx.emit` /
+    `stream` / `ui` and `EffectContext.emit` now refuse every kernel event type except
+    `RESOURCE_METERED`, `QUOTA_EXCEEDED`, `SAFETY_BLOCKED`, `EGRESS_DENIED`, `EFFECT_DENIED`,
+    `OUTCOME_RECORDED` and `DECISION_RECORDED`, and validate those.
+    - Meter values must be finite, non-negative and plausible.
+    - An EFFECT's `DECISION_RECORDED` is recorded as `effect:<stepId>#<attempt>:<id>`, so it can
+      never pre-empt the flow's `ctx.decide`. `AgentRunner`'s routing facts move to that id.
+    - No userspace emit may change a recorded choice.
+    - An isolated tool's relay forwards application events only; a kernel type fails the run.
+    - Decision ids beginning `__loom_` are reserved (`ctx.decide` and emits refuse them; a getter
+      cannot dodge the check).
+    - A verdict counts only beside the kernel's own `EFFECT_INDOUBT` fact for that step and
+      attempt.
+  - A human step's park now records `condition.stepId` (kernel-only). A pre-0104 log whose open
+    human step's answer cannot be told apart from another entry is refused
+    (`ResumeRefusedError`, new reason `ambiguous-legacy-answers`) unless the operator resumes
+    with an event carrying `discardLegacyAnswers: { stepId, count }` that the configured
+    `ResumeAuthenticator` VERIFIES (never on recovery or a timer). It is recorded durably with
+    the verified actor. The old kernel never completed a human step, so nothing that ran is lost.
+
+  **EVENT_SCHEMA 1.20.0:** the fold treats a `null` `EXECUTION_RESUMED` into an unparked or
+  in-doubt execution as status-only. The EventStore conformance kit now asserts that a `null`
+  payload round-trips. Logs written by the old kernel replay as written, because withdrawing an
+  entry that already passed a gate would re-park the flow behind recorded steps or shift later
+  payloads one gate early. `resume()` classifies them via `onWarn`, once per execution: "passed"
+  (audit which gate) or "at-risk" (the next gate WILL pass with it — act now). **Rolling deploys:**
+  hold in-doubt verdicts and `resumeAs` onto terminal executions until every node runs this
+  version; an old node folds the new `null` resume as a gate answer. Downgrade is unsafe for the
+  same reason. A recovery no longer counts as a
+  resume in `@loom/analytics` or fires telemetry's `onFlowResume`. KERNEL_ABI unchanged (1.1.0).
+
 - **`@loom/agent`: `agentLoop$` compaction also triggers on bytes** ([ADR 0087](docs/adr/0087-durable-agent-loop.md)
   D5, amended). D5 named claim-check as the "bytes per turn" answer to the log-growth trade-off;
   it isn't — claim-check offloads a tool RESULT's bytes, not the transcript an agent journals as

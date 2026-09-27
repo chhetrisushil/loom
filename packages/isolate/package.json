@@ -19,7 +19,8 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@loom/effect-runtime": "workspace:*"
+    "@loom/effect-runtime": "workspace:*",
+    "@loom/replay-vm": "workspace:*"
   },
   "devDependencies": {
     "@loom/middleware": "workspace:*",

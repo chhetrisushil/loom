@@ -6,6 +6,8 @@ import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
 import { parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
+import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
+import { discardDecisionId } from "./strayPassthroughs";
 import { EFFECT_INDOUBT_RESOLVED, StepTimeoutError, TIMER_FIRED } from "./types";
 import type {
   DecideOptions,
@@ -14,6 +16,7 @@ import type {
   SuspendConfig,
   WorkflowContext,
 } from "./types";
+import { assertFlowDecisionId, guardUserspaceEmit } from "./userspaceEmit";
 
 // Audit MEM-HIGH (DE-4 follow-up) — typed-failure payloads land inline in the
 // log and the folded frame with no claim-check path (middleware inspects only
@@ -117,6 +120,15 @@ export class WorkflowContextImpl implements WorkflowContext {
   // decider), so a later re-run may take a different path; every emit appended after it,
   // in any segment, is left unstamped. Sticky for the run.
   private segmentLive = false;
+  // ADR 0104 — a userspace DECISION_RECORDED may not change a decision already recorded.
+  // A choice with no JSON form (a BigInt, a cycle) has no digest and cannot be proven equal, so
+  // it counts as a conflict: unprovable means refused, never "equal".
+  private readonly decisionConflict = (decisionId: string, choice: unknown): boolean => {
+    if (!this.vm.hasDecision(decisionId)) return false;
+    const recorded = flowEmitDigest("choice", this.vm.getDecision(decisionId));
+    const offered = flowEmitDigest("choice", choice);
+    return recorded === undefined || offered === undefined || recorded !== offered;
+  };
   private unsettled = false;
 
   constructor(
@@ -173,7 +185,11 @@ export class WorkflowContextImpl implements WorkflowContext {
    * stamp can serve only its own re-emission. What cannot be proven is appended — a
    * duplicate, never a loss (the residual conditions are in ADR 0102 D2).
    */
-  emit(eventType: string, payload: unknown): void {
+  emit(eventType: string, rawPayload: unknown): void {
+    const payload = guardUserspaceEmit(eventType, rawPayload, {
+      kind: "flow",
+      conflicts: this.decisionConflict,
+    }); // ADR 0104
     const digest = flowEmitDigest(eventType, payload, this.suspendPassthroughsConsumed);
     if (digest === undefined) {
       this.commit(eventType, payload); // cannot be matched: always append (never stamped)
@@ -215,7 +231,17 @@ export class WorkflowContextImpl implements WorkflowContext {
     input: TIn
   ): Promise<TOut> {
     const id = task.id;
+    // ADR 0104 — a `kind: "human"` step (HumanEffect) is a SUSPEND POINT: its effect parks the
+    // execution and the resume that answers it is a `_resumePayloads` entry. It consumes that
+    // entry in order with every `ctx.suspend`, live AND on replay past the completed step —
+    // otherwise the entry was served to the flow's next gate as its approval.
+    const isHuman = this.effectRuntime.kindOf(task.toolId ?? id) === "human";
     if (this.vm.hasCompleted(id)) {
+      if (isHuman) {
+        // It took its answer — after any entries the operator discarded for it — so a
+        // replay past it takes the same number (ADR 0104).
+        for (let k = this.discardedFor(id); k >= 0; k--) this.takePassthrough();
+      }
       return this.vm.getOutput(id) as TOut;
     }
 
@@ -269,7 +295,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       priorFrame?.status === "running" &&
       this.effectRuntime.declaredIdempotence(toolId) === false
     ) {
-      const verdict = this.readInDoubtVerdict(id);
+      const verdict = this.readInDoubtVerdict(id, priorFrame.attempts);
       if (verdict === undefined) {
         // Park once per unknown attempt: a re-dispatch of an already-parked
         // execution re-suspends without appending a duplicate audit fact.
@@ -299,6 +325,25 @@ export class WorkflowContextImpl implements WorkflowContext {
       // "retry-fresh" — fall through to a normal run. The EFFECT_INDOUBT fact
       // that parked us advanced the durable key epoch, so the provider sees a
       // NEW logical attempt (fresh idempotency key).
+    }
+
+    // Only a human step that has PARKED (its frame exists) takes an answer: an answer is
+    // recorded after the park, so an entry available to a step that never started is not
+    // its answer — it is a pre-0104 stray, which a human approval must never be (the runtime
+    // refuses to resume such a log, `ambiguous-legacy-answers`).
+    const isHuman = this.effectRuntime.kindOf(toolId) === "human";
+    if (
+      isHuman &&
+      priorFrame !== undefined &&
+      this.remainingPassthroughs() > this.discardedFor(id)
+    ) {
+      for (let k = this.discardedFor(id); k > 0; k--) this.takePassthrough(); // operator-discarded
+      const answer = this.takePassthrough();
+      if (answer !== undefined) {
+        this.commit("STEP_COMPLETED", { stepId: id, output: answer.payload });
+        this.segmentLive = true; // ADR 0102 — a step outcome committed live, not served
+        return answer.payload as TOut;
+      }
     }
 
     this.commit("STEP_STARTED", { stepId: id, input });
@@ -350,7 +395,16 @@ export class WorkflowContextImpl implements WorkflowContext {
       stepId: id,
       workflowId: this.workflowId,
       attempt: this.vm.getState().frames[id]?.attempts ?? 1,
-      emit: (eventType: string, payload: unknown) => this.commit(eventType, payload),
+      emit: (eventType: string, payload: unknown) =>
+        this.commit(
+          eventType,
+          guardUserspaceEmit(eventType, payload, {
+            kind: "effect",
+            stepId: id,
+            attempt: this.vm.getState().frames[id]?.attempts ?? 1,
+            conflicts: this.decisionConflict,
+          })
+        ), // ADR 0104
       ...(stepSignal !== undefined && { signal: stepSignal }),
       // K12.1 — the principal chain flows to the K2 authorizer (carried opaque).
       ...(this.principal !== undefined && { principal: this.principal }),
@@ -391,6 +445,9 @@ export class WorkflowContextImpl implements WorkflowContext {
       }
     } catch (err) {
       if (err instanceof SuspendError) {
+        // ADR 0104 — a human step's park names the step, so the answer can be attributed to
+        // it (and a pre-0104 park, which never did, told apart).
+        if (isHuman) throw new SuspendError({ ...err.condition, stepId: id });
         throw err;
       }
       // A cancelled execution surfaces here as an effect rejection. Record it as
@@ -465,6 +522,8 @@ export class WorkflowContextImpl implements WorkflowContext {
     decider: () => T | Promise<T>,
     opts?: DecideOptions
   ): Promise<T> {
+    // Checked before the replay lookup too: a reserved id is never a flow's to read either.
+    assertFlowDecisionId(decisionId);
     if (this.vm.hasDecision(decisionId)) {
       return this.vm.getDecision(decisionId) as T;
     }
@@ -567,17 +626,43 @@ export class WorkflowContextImpl implements WorkflowContext {
     // gate's payload in multi-gate flows — the silent bug the list fixes.)
     // Legacy fallback: a pre-1.16 snapshot folded only `_resumePayload`; treat
     // it as a one-entry list so single-gate flows resume byte-identically.
+    const answer = this.takePassthrough();
+    if (answer !== undefined) return Promise.resolve(answer.payload) as Promise<T>;
+    // `stepId` marks a KERNEL human-step park (ADR 0104); a flow cannot claim it.
+    const { stepId: _kernelOnly, ...condition } = _config as SuspendConfig & { stepId?: unknown };
+    throw new SuspendError(condition);
+  }
+
+  /** Recorded gate answers not yet consumed by this run. */
+  private remainingPassthroughs(): number {
+    return this.recordedPassthroughs().length - this.suspendPassthroughsConsumed;
+  }
+
+  private recordedPassthroughs(): unknown[] {
     const variables = this.vm.getState().variables;
-    const recorded =
+    return (
       (variables._resumePayloads as unknown[] | undefined) ??
-      ("_resumePayload" in variables ? [variables._resumePayload] : []);
-    if (this.suspendPassthroughsConsumed < recorded.length) {
-      const payload = recorded[this.suspendPassthroughsConsumed];
-      this.suspendPassthroughsConsumed++;
-      this.segmentLive = false; // ADR 0102 — a new gate segment starts served
-      return Promise.resolve(payload) as Promise<T>;
-    }
-    throw new SuspendError(_config);
+      ("_resumePayload" in variables ? [variables._resumePayload] : [])
+    );
+  }
+
+  /**
+   * ADR 0104 — how many recorded entries the operator discarded at this human step
+   * (`discardLegacyAnswers`, a kernel decision under the reserved `__loom_discard__:` id).
+   */
+  private discardedFor(stepId: string): number {
+    const decisionId = discardDecisionId(stepId);
+    if (!this.vm.hasDecision(decisionId)) return 0;
+    const n = this.vm.getDecision(decisionId);
+    return typeof n === "number" && Number.isSafeInteger(n) && n > 0 ? n : 0;
+  }
+
+  /** The next recorded gate answer, consumed in order; `undefined` when none is left. */
+  private takePassthrough(): { payload: unknown } | undefined {
+    const recorded = this.recordedPassthroughs();
+    if (this.suspendPassthroughsConsumed >= recorded.length) return undefined;
+    this.segmentLive = false; // ADR 0102 — a new gate segment starts served
+    return { payload: recorded[this.suspendPassthroughsConsumed++] };
   }
 
   // T1 — durable sleep. The absolute wake time is computed ONCE on the live
@@ -637,25 +722,31 @@ export class WorkflowContextImpl implements WorkflowContext {
   }
 
   /**
-   * An in-doubt verdict is a resume payload that names THIS step and carries a
-   * valid resolution. Matching on shape (not mere payload presence) keeps
-   * ordinary resumes — approvals, EXECUTION_RECOVERED's empty payload — from
-   * being mistaken for verdicts; a parked execution resumed without a matching
-   * verdict simply re-parks. Verdicts are durable (the resume event is in the
-   * log), so replay re-applies them deterministically.
+   * The operator verdict answering THIS step's in-doubt park at THIS attempt, if any.
+   *
+   * Since ADR 0104 the kernel records a verdict as a `DECISION_RECORDED` keyed by step and
+   * attempt, so a verdict answers exactly the park it was given for: after a "retry-fresh"
+   * attempt itself crashes, the step is in doubt at a NEW attempt, no verdict matches, and it
+   * re-parks instead of calling the non-idempotent tool again.
+   *
+   * Pre-0104 logs carried the verdict as the latest resume payload. That is still honoured,
+   * but only while the step's latest EFFECT_INDOUBT fact is for the current attempt — the
+   * pre-0104 recovery overwrote the key with `{}`, which hid a stale verdict being re-read.
    */
-  private readInDoubtVerdict(stepId: string): EffectInDoubtResolution | undefined {
+  private readInDoubtVerdict(
+    stepId: string,
+    attempts: number
+  ): EffectInDoubtResolution | undefined {
+    // A verdict answers a park, so it needs the park: the kernel's own EFFECT_INDOUBT fact for
+    // this step AT this attempt. A verdict-shaped decision without one (written before the
+    // step was ever in doubt) is not a verdict, whoever wrote it.
+    if (this.lastInDoubtFor(stepId)?.attempts !== attempts) return undefined;
+    const decisionId = inDoubtDecisionId(stepId, attempts);
+    if (this.vm.hasDecision(decisionId)) {
+      return asInDoubtVerdict(this.vm.getDecision(decisionId), stepId);
+    }
     const vars = this.vm.getState().variables;
     if (!("_resumePayload" in vars)) return undefined;
-    const p = vars._resumePayload as Partial<EffectInDoubtResolution> | null;
-    if (p === null || typeof p !== "object" || p.stepId !== stepId) return undefined;
-    if (
-      p.resolution !== "completed-with-result" &&
-      p.resolution !== "retry-fresh" &&
-      p.resolution !== "fail"
-    ) {
-      return undefined;
-    }
-    return p as EffectInDoubtResolution;
+    return asInDoubtVerdict(vars._resumePayload, stepId);
   }
 }

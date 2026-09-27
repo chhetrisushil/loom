@@ -227,17 +227,25 @@ generalization.
 - **Introduced:** 1.x core (P3 — suspension is a first-class outcome).
 - **Emitted by:** `WorkflowRuntime.execute()` when the runner throws `SuspendError`
   (`WorkflowRuntime.ts`).
-- **Payload:** `{ condition: { on: string; timeout?: number; correlationKey?: string } }`
+- **Payload:** `{ condition: { on: string; timeout?: number; correlationKey?: string; wakeAt?: number; stepId?: string } }`
+  — `stepId` (1.20.0, ADR 0104) is set by the kernel only, on a `kind: "human"` step's park: the
+  step the next resume answers. Absent on `ctx.suspend` parks and on every pre-0104 park.
 - **Folds into:** `status → "suspended"`; `suspendedOn = payload.condition`.
 - Handler: `eventHandlers.ts`.
 
 #### `EXECUTION_RESUMED`
 - **Introduced:** 1.x core.
-- **Emitted by:** `WorkflowRuntime.resume()` as a bootstrap event after the caller's resume event
-  (`WorkflowRuntime.ts`).
+- **Emitted by:** `WorkflowRuntime.resume()`/`resumeAs()` as a bootstrap event after the caller's
+  resume event (`WorkflowRuntime.ts`). With the resume payload **only when that resume answers a
+  parked gate**; with `null` when it re-opens a terminal execution (`resumeAs`) or answers an
+  in-doubt park (whose verdict is a kernel `DECISION_RECORDED`); not at all on a crash re-drive
+  (`EXECUTION_RECOVERED`). Every other placement would hand the flow's next gate an answer nobody
+  gave (ADR 0104). Pre-0104 logs may carry such entries; they replay as written.
 - **Payload:** the resume payload (any shape).
 - **Folds into:** `status → "running"`; **removes** `suspendedOn`; if the payload is present,
-  `variables._resumePayload = payload`. That reserved key is consumed by `ctx.suspend`'s
+  `variables._resumePayload = payload` and appended to `_resumePayloads` — except a `null`
+  payload when the execution was not parked or was parked on `EffectInDoubtResolved` (1.20.0,
+  status only). That reserved key is consumed by `ctx.suspend`'s
   replay-passthrough so execution continues *past* the original suspend point
   (`WorkflowContext.ts`).
 - Handler: `eventHandlers.ts`.
@@ -502,7 +510,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.19.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079); 1.19.0 _flowEmits: per-content-digest counts from the envelope stamp metadata.flowEmit — flow-level emits append once per execution (ADR 0102) — all additive, NO new event kinds
+export const EVENT_SCHEMA_VERSION = "1.20.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079); 1.19.0 _flowEmits: per-content-digest counts from the envelope stamp metadata.flowEmit — flow-level emits append once per execution (ADR 0102); 1.20.0 a null EXECUTION_RESUMED answering no suspend point adds no gate passthrough, and a human park names its step (EXECUTION_SUSPENDED.condition.stepId) (ADR 0104) — all additive, NO new event kinds
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

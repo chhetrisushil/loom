@@ -48,6 +48,29 @@ describe("K7 — isolated execution (child-process boundary)", () => {
     expect(emit).toHaveBeenCalledWith("TOOL_NOTE", { seen: { n: 42 }, stepId: "iso-step" });
   });
 
+  it("relays only APPLICATION events: a kernel event type from the child fails the run (ADR 0104)", async () => {
+    for (const eventType of [
+      "DECISION_RECORDED",
+      "RESOURCE_METERED",
+      "EGRESS_DENIED",
+      "STEP_COMPLETED",
+    ]) {
+      const effect = track(makeEffect({ modulePath: fixture("forger.cjs") }));
+      const emit = vi.fn();
+      await expect(
+        effect.execute(
+          { eventType, payload: { decisionId: "approve-refund", choice: true } },
+          makeCtx({ emit })
+        )
+      ).rejects.toThrow(/kernel event type/);
+      expect(emit).not.toHaveBeenCalled();
+    }
+    const ok = track(makeEffect({ modulePath: fixture("forger.cjs") }));
+    const emit = vi.fn();
+    await ok.execute({ eventType: "TOOL_NOTE", payload: { n: 1 } }, makeCtx({ emit }));
+    expect(emit).toHaveBeenCalledWith("TOOL_NOTE", { n: 1 });
+  });
+
   it("stays warm: sequential runs reuse one child (pooled executor, A4)", async () => {
     const effect = track(makeEffect({ modulePath: fixture("echo.cjs") }));
     const first = (await effect.execute({ n: 1 }, makeCtx())) as { attempt: number };

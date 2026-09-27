@@ -101,7 +101,7 @@ load-bearing, plus the global guardrails that gate every additive capability:
   `(state, event) => state`; a `__proto__` container key MUST be rejected (fold hardening).
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
-  the pinned type set MUST change together. The current version is **1.19.0** — after the
+  the pinned type set MUST change together. The current version is **1.20.0** — after the
   K10.1/T3 audit facts (1.13.0/1.14.0), the perpetual-agents series added two additive MINORs
   with **no new event kinds**: 1.15.0 extends `EXECUTION_MIGRATED` with an optional
   `migratedInput` payload field (K11.5 contract-versioned state migration — the fold replaces
@@ -119,8 +119,11 @@ load-bearing, plus the global guardrails that gate every additive capability:
   digest, keyed
   on the envelope stamp `metadata.flowEmit` for ANY event type, so flow-level `emit`/`stream`/`ui`
   append once per execution (§3).
-  Logs that never migrate state, resume twice, fail typed, record a policy, or stamp a flow emit
-  replay byte-identically.
+  ADR 0104 added 1.20.0 (no new event kind, no payload field): an `EXECUTION_RESUMED` whose
+  payload is `null` and which answers no suspend point — the execution was not parked, or was
+  parked in doubt — re-opens the execution WITHOUT adding a gate passthrough.
+  Logs that never migrate state, resume twice, fail typed, record a policy, stamp a flow emit, or
+  resume `null` into an unparked or in-doubt execution replay byte-identically.
 
 ### 4.1 Typed failure channels (ADR 0060)
 
@@ -168,13 +171,51 @@ load-bearing, plus the global guardrails that gate every additive capability:
     so an untimed gate is not wakeable by a synthetic timer event.
   - `EXECUTION_RECOVERED` is the one non-gate resume: a dispatcher re-driving a CRASHED execution,
     so it addresses a `running`/`pending` one and MUST be refused on a parked or terminal execution.
+  - Every `_resumePayloads` entry MUST answer exactly one suspend point: a `ctx.suspend`, or a
+    `kind: "human"` step, which consumes its entry in order with them (live and on replay past
+    the completed step). `ctx.suspend` serves the list positionally, so an entry that answered
+    nothing is served to the flow's NEXT gate as its approval (ADR 0104). Hence a re-drive of a
+    crashed execution (`EXECUTION_RECOVERED`, `resumeAs` onto one) records no `EXECUTION_RESUMED`;
+    `resumeAs` onto a terminal execution records `EXECUTION_RESUMED` with a `null` payload
+    (status only, 1.20.0); and an in-doubt verdict (K9.3) is recorded as a kernel
+    `DECISION_RECORDED` keyed by the step and the attempt it answers, beside a `null`
+    `EXECUTION_RESUMED`. A resume at an in-doubt park that is not a verdict for the parked step
+    MUST be refused (`ResumePayloadValidationError`) with nothing appended. Logs written before
+    this rule MUST be replayed as written; a runtime SHOULD warn about the entries in them that
+    answered no suspend point, saying whether each is already spent.
+  - A resume that arrives before the execution parks (it is still `running`) is refused
+    (`ResumeRefusedError`, `not-suspended`) with nothing appended; the caller retries once the
+    execution is parked. Recording it would make it an answer to whatever gate came next.
   - All of these MUST refuse with nothing appended. Refusal is fold-identical for every legitimate
     log (G2): a non-kernel event type already folds to a no-op, so the resume-typed event never
     contributed to state unless it collided with a kernel name.
-  - `resumeAs` enforces the kernel-namespace rule only. The recorded gate belongs to the code being
-    migrated AWAY from, and migrating a crashed execution onto fixed code is the documented exit
-    from a `FlowCodeMismatchError`, so neither the parked-state nor the gate-name rule can hold
-    there. It is an operator API: no ingress adapter reaches it.
+  - `resumeAs` onto a crashed or terminal execution enforces the kernel-namespace rule only:
+    nothing is parked, and migrating a crashed execution onto fixed code is the documented exit
+    from a `FlowCodeMismatchError`. Onto an execution PARKED at a gate it MUST enforce every rule
+    `resume` does — the gate name (the RECORDED gate), the gate's `resumeSchemas` entry in the
+    target flow, the `ResumeAuthenticator` and the execution authorizer — since its payload is
+    that gate's answer (ADR 0104).
+  - Userspace emits (`ctx.emit`/`stream`/`ui` and `EffectContext.emit`) MUST refuse every kernel
+    event type except `RESOURCE_METERED`, `QUOTA_EXCEEDED`, `SAFETY_BLOCKED`, `EGRESS_DENIED`,
+    `EFFECT_DENIED`, `OUTCOME_RECORDED` and `DECISION_RECORDED` (ADR 0104); otherwise flow code
+    forges kernel state the fold trusts. The allowed types still fold, so they are validated:
+    `RESOURCE_METERED` fields MUST be finite, non-negative and under a sanity ceiling;
+    `QUOTA_EXCEEDED.reason` MUST be a bounded string; an EFFECT-written `DECISION_RECORDED` id MUST
+    be rewritten into its step's namespace (`effect:<stepId>#<attempt>:<id>`) so it never reaches
+    the flow's `ctx.decide`, and no userspace `DECISION_RECORDED` may change an already-recorded
+    choice. An isolated tool's relay MUST forward application event types only.
+  - Decision ids beginning `__loom_` are reserved for the kernel's own records (an in-doubt
+    verdict, a `discardLegacyAnswers` override): `ctx.decide` and userspace `DECISION_RECORDED`
+    emits MUST refuse them, checking the id that is folded (the payload is copied to plain data
+    first). A verdict decision MUST only be honoured beside the kernel's `EFFECT_INDOUBT` fact for
+    the same step and attempt.
+  - A human step's park MUST record `condition.stepId` (kernel-only; `ctx.suspend` strips a
+    caller-supplied one). A pre-0104 log in which an open human step's answer cannot be told apart
+    from another entry (an unattributed park after an answer, or an unspent entry that answered no
+    gate before its first start) MUST be refused (`ResumeRefusedError`, `ambiguous-legacy-answers`)
+    rather than guessed, unless the operator's resume event carries `discardLegacyAnswers
+    { stepId, count }` AND the `ResumeAuthenticator` verifies that event (never on
+    `EXECUTION_RECOVERED`/`TIMER_FIRED`).
 - Resume MAY be authority-gated: a `ResumeAuthenticator` verdict is recorded as `APPROVAL_GRANTED`
   (K12); a rejected resume never reaches the log. That gate authenticates **who** may resume.
 - Resume MAY additionally be **shape**-gated: a flow MAY declare `resumeSchemas` (`on` → schema,
