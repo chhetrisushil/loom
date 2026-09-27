@@ -1,7 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { PostgresEventStore, notifyChannels } from "./PostgresEventStore";
+import { PostgresEventStore } from "./PostgresEventStore";
 import { NOTIFY_CHANNEL, migrate } from "./schema";
 
 // ADR 0074 D4 — cross-node delivery must reach only the nodes that asked for it.
@@ -130,14 +130,14 @@ suite("interest-filtered NOTIFY delivery", () => {
     await store.close();
   });
 
-  it("notifyChannels(notifyBuckets) contains exactly the channel the store LISTENs on", async () => {
-    // Ties the exported enumeration to what the store ACTUALLY subscribes the OS socket
-    // to, rather than re-deriving the same formula and testing it against itself — an
-    // external LISTENer (tools/bench-throughput's fan-out scenarios) has only this export
-    // to go on, so it must agree with the private `channelFor` on the wire.
+  it("instance.notifyChannels() contains exactly the channel the store LISTENs on", async () => {
+    // Ties the instance method to what the store ACTUALLY subscribes the OS socket to,
+    // rather than re-deriving the same formula and testing it against itself — an external
+    // LISTENer (tools/bench-throughput's fan-out scenarios) has only this method to go on,
+    // so it must agree with the private `channelFor` on the wire.
     const buckets = 8;
     const store = new PostgresEventStore(track(new Pool(scoped())), { notifyBuckets: buckets });
-    const all = notifyChannels(buckets);
+    const all = store.notifyChannels();
     expect(all).toHaveLength(buckets);
     await store.subscribe(ID("probe"), () => {});
     // biome-ignore lint/suspicious/noExplicitAny: private listener client — see above
@@ -148,13 +148,27 @@ suite("interest-filtered NOTIFY delivery", () => {
     await store.close();
   });
 
-  it("notifyChannels(1) is the legacy channel a notifyBuckets: 1 store LISTENs on", async () => {
+  it("instance.notifyChannels() reflects THIS instance's notifyBuckets, not a caller's guess at the default", async () => {
+    // The bug this instance method exists to close: a bench (or any external LISTENer)
+    // that hard-codes "16" and passes it to a free function drifts silently the moment a
+    // store is built with a different notifyBuckets. Two instances, two different bucket
+    // counts, each instance's own method must answer for ITSELF.
+    const eight = new PostgresEventStore(track(new Pool(scoped())), { notifyBuckets: 8 });
+    const three = new PostgresEventStore(track(new Pool(scoped())), { notifyBuckets: 3 });
+    expect(eight.notifyChannels()).toHaveLength(8);
+    expect(three.notifyChannels()).toHaveLength(3);
+    expect(eight.notifyChannels()).not.toEqual(three.notifyChannels());
+    await eight.close();
+    await three.close();
+  });
+
+  it("instance.notifyChannels() is the legacy channel a notifyBuckets: 1 store LISTENs on", async () => {
     const store = new PostgresEventStore(track(new Pool(scoped())), { notifyBuckets: 1 });
     await store.subscribe(ID("y"), () => {});
     // biome-ignore lint/suspicious/noExplicitAny: see above.
     const listener = (store as any).listener as { query: Pool["query"] };
     const { rows } = await listener.query("SELECT channel FROM pg_listening_channels() AS channel");
-    expect(notifyChannels(1)).toEqual(rows.map((r: { channel: string }) => r.channel));
+    expect(store.notifyChannels()).toEqual(rows.map((r: { channel: string }) => r.channel));
     await store.close();
   });
 

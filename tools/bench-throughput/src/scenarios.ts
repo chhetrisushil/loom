@@ -8,7 +8,7 @@ import type { EventStore } from "@loom/event-runtime";
 import { NOTIFY_CHANNEL, PostgresEventStore, PostgresSnapshotStore } from "@loom/plugin-postgres";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
-import { Client, type Pool } from "pg";
+import { Client, type Notification, type Pool } from "pg";
 import { z } from "zod";
 import { type Measurement, drive } from "./harness";
 
@@ -231,6 +231,20 @@ export async function appendWithoutNotify(
   });
 }
 
+export interface ListenerSet {
+  /** Aggregate notifications received across every LISTEN connection — for reporting. */
+  received: () => number;
+  /**
+   * The DISTINCT channels that delivered at least one notification to ANY connection —
+   * for {@link assertDelivered}'s per-channel coverage check. An aggregate count alone
+   * cannot tell "every channel delivered a little" from "half the channels delivered
+   * plenty and half delivered nothing" — the second is a real coverage gap (a store built
+   * with fewer buckets than the caller expected, say) that a nonzero total hides.
+   */
+  receivedChannels: () => ReadonlySet<string>;
+  close: () => Promise<void>;
+}
+
 /**
  * Attach `count` idle LISTEN connections, each LISTENing on every channel in
  * `channels`. Returns a disposer.
@@ -239,24 +253,27 @@ export async function appendWithoutNotify(
  * was the whole story. A store built with `notifyBuckets` (default 16) instead publishes
  * on `loom_events_<bucket>`, so a listener parked on the legacy name alone now hears
  * NOTHING — which is exactly the bug this scenario used to have (see `assertDelivered`).
- * Callers pass either every bucket channel (`notifyChannels` from `@loom/plugin-postgres`,
- * approximating a node interested in everything) or a channel nobody publishes to, to
- * measure the writer's cost of a LISTENing backend independent of whether it is on the
- * right channel.
+ * Callers pass either every channel the WRITER's own store instance publishes on
+ * (`store.notifyChannels()` — never a re-guessed literal; see the ADR 0074 amendment on why
+ * that matters) to approximate a node interested in everything, or a channel nobody
+ * publishes to, to measure the writer's cost of a LISTENing backend independent of whether
+ * it is on the right channel.
  */
 export async function attachListeners(
   connectionString: string,
   count: number,
   opts: { channels: string[] }
-): Promise<{ received: () => number; close: () => Promise<void> }> {
+): Promise<ListenerSet> {
   const { channels } = opts;
   const clients: Client[] = new Array(count);
   let received = 0;
+  const receivedChannels = new Set<string>();
   for (let i = 0; i < count; i++) {
     const client = new Client({ connectionString });
     await client.connect();
-    client.on("notification", () => {
+    client.on("notification", (msg: Notification) => {
       received++;
+      receivedChannels.add(msg.channel);
     });
     for (const channel of channels) {
       await client.query(`LISTEN "${channel}"`);
@@ -265,6 +282,7 @@ export async function attachListeners(
   }
   return {
     received: () => received,
+    receivedChannels: () => receivedChannels,
     close: async () => {
       await Promise.all(clients.map((c) => c.end()));
     },
@@ -287,20 +305,34 @@ export class VacuousDeliveryError extends Error {
  * right next to a writer-throughput number that had, in fact, dropped 2.28x from those
  * same listeners. A wrong wire-up produced a self-contradicting but green report.
  *
+ * Checks PER-CHANNEL coverage, not merely that *something* arrived: every channel in
+ * `expectedChannels` must appear in `receivedChannels`, or this throws naming exactly
+ * which ones did not. An aggregate "> 0" check would miss a store that, say, got built
+ * with half as many buckets as the caller expected — the total would still be nonzero
+ * (the buckets that DO exist keep delivering), while half the expected channels silently
+ * deliver nothing. That is still a broken measurement, just a quieter one.
+ *
  * Call this after every listener-fan-out row with `expectDelivery` set to whether the
- * listeners were subscribed to a channel the run's appends actually publish on. When they
- * were and nothing arrived, that is not a small number worth reporting — it means the
- * scenario measured nothing, and printing it anyway is how this bug shipped for a year.
+ * listeners were subscribed to channel(s) the run's appends actually publish on. A row
+ * with zero listeners is a no-op (nothing to check). When delivery was expected and any
+ * expected channel came up empty, that is not a small number worth reporting — it means
+ * the scenario measured nothing (or not everything it claimed to), and printing it anyway
+ * is how this bug shipped for a year.
  */
 export function assertDelivered(
   label: string,
-  delivered: number,
+  expectedChannels: readonly string[],
+  receivedChannels: ReadonlySet<string>,
   listenerCount: number,
   expectDelivery: boolean
 ): void {
-  if (expectDelivery && listenerCount > 0 && delivered === 0) {
+  if (!expectDelivery || listenerCount === 0) return;
+  const missing = expectedChannels.filter((channel) => !receivedChannels.has(channel));
+  if (missing.length > 0) {
+    const shown = missing.slice(0, 5).join(", ");
+    const suffix = missing.length > 5 ? `, … (${missing.length} total)` : "";
     throw new VacuousDeliveryError(
-      `${label}: 0 notifications delivered to ${listenerCount} listener(s) though delivery was expected on the channel(s) they LISTENed on — this scenario measured nothing. (This is the exact shape of the pre-fix bug: idle listeners parked on a channel the writer never publishes on.)`
+      `${label}: ${missing.length} of ${expectedChannels.length} expected channel(s) delivered NOTHING to ${listenerCount} listener(s) [${shown}${suffix}] — this scenario measured nothing, or not everything it claimed to. (This is the shape of the pre-fix bug: idle listeners parked on a channel the writer never publishes on — full or partial.)`
     );
   }
 }

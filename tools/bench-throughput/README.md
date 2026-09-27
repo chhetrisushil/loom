@@ -76,14 +76,17 @@ note that such a coalescer needs a per-row fence check this scenario does not me
 See `docs/scaling.md` for the full argument.
 
 **C. `pg_notify` cost and `LISTEN` fan-out** — the shipped statement versus the same
-statement with the notify CTE removed, then with K listeners attached on the store's real
-bucket channels (`notifyChannels`, ADR 0074 D4 — full interest, the worst case for
-delivery), then with K listeners on a channel nobody publishes to. The unrelated-channel row
-is the point: it isolates the writer's per-LISTENing-backend cost from delivery volume, and
-the two rows read close together — bucketing narrows what a listener receives, not how many
-backends the writer has to signal. `assertDelivered` fails the run outright if a listener set
-expected to receive something delivers zero, so this section cannot go vacuous again (it did,
-for a release — see the ADR 0074 amendment).
+statement with the notify CTE removed, then with K listeners attached on the WRITER's own
+store instance's real bucket channels (`bundle.eventStore.notifyChannels()`, ADR 0074 D4 —
+full interest, the worst case for delivery; asked of the instance rather than hard-coded, so
+it cannot drift out of sync with that store's configured `notifyBuckets`), then with K
+listeners on a channel nobody publishes to. The unrelated-channel row is the point: it
+isolates the writer's per-LISTENing-backend cost from delivery volume, and the two rows read
+close together — bucketing narrows what a listener receives, not how many backends the
+writer has to signal. `assertDelivered` fails the run outright if ANY expected channel
+delivers nothing — not merely if the aggregate total is zero, so a partial coverage gap
+cannot hide behind a nonzero sum — so this section cannot go vacuous again (it did, for a
+release — see the ADR 0074 amendment).
 
 **D. End-to-end durable executions** — a real `WorkflowRuntime`, a real flow, a no-op
 effect, `start()` → `waitForCompletion()`. This is the number that answers "QPS". The

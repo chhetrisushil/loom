@@ -207,10 +207,14 @@ the same run, still dropped 2.28×. A self-contradicting measurement passed as a
 run for a release, because nothing checked that a listener expected to receive something
 actually did (`docs/scaling.md` §3.1 also still read "**[open]** … nothing implements it
 yet" under a heading of SHIPPED — the same drift, in prose). The bench now takes the real
-channel list (`notifyChannels`, exported from `@loom/plugin-postgres` beside
-`NOTIFY_CHANNEL`) and fails outright (`VacuousDeliveryError`) if delivery was expected and
-none arrived — a listener set that receives nothing is a broken measurement, not a small
-number.
+channel list off the WRITER's own store instance (`PostgresEventStore#notifyChannels()`,
+review round 1 — an earlier draft of this fix exported a free function taking
+`notifyBuckets` by hand, which left the bench's own literal free to drift out of sync with
+the store's configured default; an instance method cannot drift, because it answers for the
+exact store the writer appends through) and fails outright (`VacuousDeliveryError`) if
+delivery was expected and any expected channel came up empty — a listener set that receives
+nothing, on any of the channels it should have heard from, is a broken measurement, not a
+small number.
 
 **What re-running the fixed bench found**, against a throwaway local PG 17 (8-core Apple M2,
 a shared host, not a dedicated benchmark machine — ranges below are 3–4 repeat runs, not
