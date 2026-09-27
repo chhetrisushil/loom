@@ -41,6 +41,16 @@ export interface StrayPassthroughReport {
    * has recorded how many entries to discard for it (`discardLegacyAnswers`).
    */
   ambiguousHumanStep?: string;
+  /**
+   * ADR 0105 — `null` resumes into a gate park after a parallel sibling's `STEP_FAILED` landed
+   * while the execution was parked. EVENT_SCHEMA 1.20.0 folded that failure to a terminal
+   * "failed", so its `resumeAs` recorded a status-only `EXECUTION_RESUMED(null)` there; since
+   * 1.21.0 the execution reads `suspended` and the same entry is the parked gate's answer, so
+   * the gate passes with `null` and no approval on replay. The log does not record which
+   * kernel wrote it (a 1.21.0 caller answering the gate with an explicit `null` writes the same
+   * shape), so this is reported, not refused.
+   */
+  ambiguousNullResumes?: number;
 }
 
 /** Reserved decision id of the operator's `discardLegacyAnswers` record for `stepId`. */
@@ -81,6 +91,8 @@ export function inspectStrayPassthroughs(
   let strays = 0;
   let unspent = 0; // strays not yet followed by a gate park
   let parkAfterHidden = false; // a gate park anywhere in the retained log
+  let failedWhileParked = false; // a STEP_FAILED folded since the current park (ADR 0105)
+  let ambiguousNulls = 0;
 
   for (const e of events) {
     switch (e.eventType) {
@@ -100,7 +112,9 @@ export function inspectStrayPassthroughs(
         const stepId = (e.payload as { stepId?: string } | null)?.stepId;
         const h = stepId !== undefined ? humans.get(stepId) : undefined;
         if (h !== undefined) h.open = false;
-        // A step event never moves execution status (ADR 0105): EXECUTION_FAILED does.
+        // A step event never moves execution status (ADR 0105): EXECUTION_FAILED does. A
+        // failure that lands while parked is a parallel sibling's (the flow body is parked).
+        if (e.eventType === "STEP_FAILED" && status === "suspended") failedWhileParked = true;
         break;
       }
       case "EXECUTION_SUSPENDED": {
@@ -110,6 +124,7 @@ export function inspectStrayPassthroughs(
         status = "suspended";
         parkedOn = on;
         parkedHuman = undefined;
+        failedWhileParked = false;
         if (on === EFFECT_INDOUBT_RESOLVED) break;
         let legacy = false;
         if (typeof condition?.stepId === "string") {
@@ -136,6 +151,8 @@ export function inspectStrayPassthroughs(
       case "EXECUTION_RESUMED": {
         const answersGate = status === "suspended" && parkedOn !== EFFECT_INDOUBT_RESOLVED;
         const statusOnly = e.payload === null && !answersGate;
+        if (e.payload === null && answersGate && failedWhileParked) ambiguousNulls++;
+        failedWhileParked = false;
         if (e.payload !== undefined && !statusOnly) {
           appended++;
           if (!answersGate) {
@@ -181,6 +198,7 @@ export function inspectStrayPassthroughs(
   const report = (verdict?: StrayPassthroughVerdict): StrayPassthroughReport => ({
     ...(verdict !== undefined && { verdict }),
     ...(ambiguousHumanStep !== undefined && !terminal && { ambiguousHumanStep }),
+    ...(ambiguousNulls > 0 && !terminal && { ambiguousNullResumes: ambiguousNulls }),
   });
   const atRisk = unspent + humanAtRisk;
   if (atRisk > 0 && !terminal) return report({ kind: "at-risk", count: atRisk });
@@ -218,4 +236,9 @@ export function strayPassthroughMessage(executionId: string, v: StrayPassthrough
     case "unverifiable":
       return `execution "${executionId}": ${v.count} gate passthrough(s) of {} predate the retained log (the prefix was retained away), and the pre-ADR 0104 recovery wrote exactly {}. If one came from a recovery, the flow's next gate will pass with it and no approval — inspect the execution.`;
   }
+}
+
+/** The operator-facing sentence for {@link StrayPassthroughReport.ambiguousNullResumes}. */
+export function ambiguousNullResumeMessage(executionId: string, count: number): string {
+  return `execution "${executionId}": ${count} null resume(s) were recorded at a parked gate after a parallel step failed while it was parked. An EVENT_SCHEMA 1.20.0 kernel folded that failure to "failed", and its resumeAs recorded exactly this entry as a status-only re-open; since 1.21.0 (ADR 0105) it is the parked gate's answer, so that gate passes with null and no approval on replay. If this execution was migrated with resumeAs under 1.20.0, cancel or inspect it; if an operator answered the gate with an explicit null, nothing is wrong.`;
 }

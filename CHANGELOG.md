@@ -15,13 +15,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failure (try/catch around `ctx.run`, a saga compensation, a typed-failure fallback) ran on
   under a terminal status. A crash after the catch left an execution `recoverAbandoned` and the
   dispatcher would never re-drive, `cancel` refused, retention could prune as finished, and A2A
-  peers polling it were told `failed` (`"unknown error"`). `STEP_FAILED` now folds the frame
-  only, like `STEP_CANCELLED`; `EXECUTION_FAILED`, which the kernel commits when a failure
-  escapes the runner, stays the execution's terminal failure. **EVENT_SCHEMA and KERNEL_ABI
-  unchanged:** the kernel writes the same events and replay's inputs are byte-identical; only
-  the derived status of a log that ends between a caught failure and the next lifecycle event
-  changes (to `running`, so it is recovered). A snapshot written by the old kernel inside that
-  window still holds `failed`; delete the execution's snapshots to recover it.
+  peers polling it were told `failed` (`"unknown error"`). A parallel sibling failing AFTER the
+  flow parked did the same to a suspended execution: its gate could not be resumed and a timed
+  park never woke. `STEP_FAILED` now folds the frame only, like `STEP_CANCELLED`;
+  `EXECUTION_FAILED`, which the kernel commits when a failure escapes the runner, stays the
+  execution's terminal failure.
+
+  - **EVENT_SCHEMA 1.21.0** (no new kind or payload field; KERNEL_ABI unchanged). A `null`
+    `EXECUTION_RESUMED` after `EXECUTION_SUSPENDED` + a late `STEP_FAILED` is now the parked
+    gate's answer; 1.20.0 read it as a status-only re-open, and a 1.20.0 `resumeAs` wrote exactly
+    that entry. The runtime warns about such entries on resume (`ambiguousNullResumes` from
+    `inspectStrayPassthroughs`).
+  - Snapshots saved by an older fold are repaired on read: `normalizeSnapshotState`
+    (`@loom/replay-vm`, new export) reads `failed` with no `_error` and a failed frame as
+    `running` (`suspended` when parked).
+  - **Behaviour change:** when the `EXECUTION_FAILED` write itself fails, the run now rejects with
+    `StorageWriteError` (`cause` = the store's error) instead of the step's error — the log folds
+    `running`, so the caller must not be told "failed".
+  - `recoverAbandoned` takes an optional `maxRecoveries` (counted from `EXECUTION_RECOVERED`
+    events; default unbounded); executions at the bound are skipped, counted in
+    `summary.exhausted` (new field) and reported through `onExhausted`.
+  - `loom eval` goldens that pinned `status: "failed"` for a log ending after a caught failure
+    now fail and must be re-recorded.
+  - **Upgrade note.** On the first deploy every stored execution whose log ends after a caught
+    step failure changes from `failed` to `running`. A staleness-predicate `recoverAbandoned`
+    pass then selects all of them, however old, and re-drives each (re-executing an untyped
+    failing effect; a changed flow hash throws on every pass), and `LogLifecycle` stops pruning
+    them. Before enabling recovery: run `orphanCensus` or `recoverAbandoned({ dryRun: true })`,
+    bound `isAbandoned` by age, cancel what should not resume, and set `maxRecoveries`.
 
 - **`@loom/workflow-runtime`: a gate is answered only by a resume addressed to it**
   ([ADR 0104](docs/adr/0104-recovery-never-answers-a-gate.md)). **Security fix.**

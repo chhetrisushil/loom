@@ -247,3 +247,59 @@ describe("the runtime warns once per execution and verdict (ADR 0104)", () => {
     expect(ours[1]).toMatch(/already served/);
   });
 });
+
+// ADR 0105 — EVENT_SCHEMA 1.20.0 folded a parallel sibling's STEP_FAILED after a park to
+// "failed", so its `resumeAs` recorded a status-only EXECUTION_RESUMED(null) there. Since 1.21.0
+// that execution reads `suspended`, and the same null answers the parked gate.
+describe("inspectStrayPassthroughs — a null resume after a late sibling failure (ADR 0105)", () => {
+  const inspect = (events: EventEnvelope[]) =>
+    inspectStrayPassthroughs(events, foldEvents(events, INITIAL));
+
+  it("flags the 1.20.0 resumeAs shape: park, sibling STEP_FAILED, EXECUTION_MIGRATED, null resume", () => {
+    seq = 0;
+    const log = [
+      ev("EXECUTION_STARTED"),
+      ev("STEP_STARTED", { stepId: "slow" }),
+      park("Approval"),
+      ev("STEP_FAILED", { stepId: "slow", error: "late boom" }),
+      ev("EXECUTION_MIGRATED", { toFlowId: "f", strategy: "replay-check" }),
+      ev("Fixup", { note: "operator" }),
+      ev("EXECUTION_RESUMED", null),
+    ];
+    expect(inspect(log).ambiguousNullResumes).toBe(1);
+  });
+
+  it("negative: a null answer to a park with no failure while parked is an ordinary answer", () => {
+    seq = 0;
+    const log = [
+      ev("EXECUTION_STARTED"),
+      park("Approval"),
+      ev("Approval", null),
+      ev("EXECUTION_RESUMED", null),
+    ];
+    expect(inspect(log).ambiguousNullResumes).toBeUndefined();
+  });
+
+  it("negative: a non-null answer after a late sibling failure is unambiguous", () => {
+    seq = 0;
+    const log = [
+      ev("EXECUTION_STARTED"),
+      park("Approval"),
+      ev("STEP_FAILED", { stepId: "slow", error: "late boom" }),
+      ev("Approval", { ok: true }),
+      ev("EXECUTION_RESUMED", { ok: true }),
+    ];
+    expect(inspect(log).ambiguousNullResumes).toBeUndefined();
+  });
+
+  it("negative: a failure BEFORE the park does not taint the park's answer", () => {
+    seq = 0;
+    const log = [
+      ev("EXECUTION_STARTED"),
+      ev("STEP_FAILED", { stepId: "a", error: "caught" }),
+      park("Approval"),
+      ev("EXECUTION_RESUMED", null),
+    ];
+    expect(inspect(log).ambiguousNullResumes).toBeUndefined();
+  });
+});

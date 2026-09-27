@@ -1,7 +1,7 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import { type BranchRegistry, type EventStore, headOf } from "@loom/event-runtime";
 import { appendBatchOf } from "@loom/event-runtime";
-import { ReplayVM } from "@loom/replay-vm";
+import { ReplayVM, normalizeSnapshotState } from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 
@@ -206,7 +206,7 @@ export class LogLifecycle {
     const snapshot = await this.snapshotStore.loadLatest(executionId);
     if (snapshot === null) return new ReplayVM(events).getState();
     const suffix = events.filter((e) => e.sequence > snapshot.sequence);
-    return new ReplayVM(suffix, snapshot.state).getState();
+    return new ReplayVM(suffix, normalizeSnapshotState(snapshot.state)).getState();
   }
 
   /**

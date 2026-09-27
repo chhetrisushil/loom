@@ -171,6 +171,27 @@ export const FOLD_VECTORS: FoldVector[] = [
       frames: {},
     },
   },
+  {
+    // 1.21.0 (ADR 0105) — STEP_FAILED folds the step's frame only. A flow that catches the
+    // failure keeps running; only EXECUTION_FAILED fails the execution. A foreign fold that
+    // still moves the execution status on a step failure reports a live execution terminal.
+    name: "a caught step failure fails the frame, not the execution",
+    events: [
+      ev("v5", 0, "EXECUTION_STARTED", { input: {} }),
+      ev("v5", 1, "STEP_STARTED", { stepId: "a", input: {} }),
+      ev("v5", 2, "STEP_FAILED", { stepId: "a", error: "Error: 503" }),
+      ev("v5", 3, "STEP_STARTED", { stepId: "fallback", input: {} }),
+    ],
+    expected: {
+      status: "running",
+      sequence: 3,
+      variables: { _input: {} },
+      frames: {
+        a: { status: "failed", attempts: 1 },
+        fallback: { status: "running", attempts: 1 },
+      },
+    },
+  },
 ];
 
 /** Run the reference fold over every vector; returns per-vector pass/fail + detail. */

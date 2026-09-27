@@ -149,7 +149,7 @@ Three kernel-grade properties fall out of this design:
 2. If **denied**: the effect **never runs**. The runtime emits an `EFFECT_DENIED` durable fact and throws `CapabilityDeniedError` ([`EffectRuntime.ts`](../../packages/effect-runtime/src/EffectRuntime.ts)). That thrown error propagates to the surrounding step, which fails via the normal `STEP_FAILED` path.
 3. If **allowed**: the effect+middleware chain proceeds as usual ([`EffectRuntime.ts`](../../packages/effect-runtime/src/EffectRuntime.ts)).
 
-The `EFFECT_DENIED` event folds into a reserved `variables._denials` audit list — a pure audit fact that does *not* itself change frame/execution status (the following `STEP_FAILED` owns that) ([`eventHandlers.ts`](../../packages/replay-vm/src/eventHandlers.ts)). So on replay, a denied run reconstructs its denial exactly: the ring's verdict is a logged fact, not a re-decision.
+The `EFFECT_DENIED` event folds into a reserved `variables._denials` audit list — a pure audit fact that does *not* itself change frame/execution status (the following `STEP_FAILED` fails the step's frame; the execution fails only via `EXECUTION_FAILED`, if that failure escapes the runner — ADR 0105) ([`eventHandlers.ts`](../../packages/replay-vm/src/eventHandlers.ts)). So on replay, a denied run reconstructs its denial exactly: the ring's verdict is a logged fact, not a re-decision.
 
 ```mermaid
 sequenceDiagram

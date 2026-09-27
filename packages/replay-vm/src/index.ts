@@ -1,4 +1,4 @@
-export { foldEvents } from "./foldEvents";
+export { foldEvents, normalizeSnapshotState } from "./foldEvents";
 export { ReplayVM } from "./ReplayVM";
 export {
   EVENT_SCHEMA_VERSION,

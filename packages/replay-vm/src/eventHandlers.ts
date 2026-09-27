@@ -886,12 +886,17 @@ export function getHandler(eventType: string): Handler | undefined {
 //   that never carries such a resume replays byte-identically. Also additive: a human step's
 //   EXECUTION_SUSPENDED condition carries the kernel-set `stepId` (folded verbatim into
 //   `suspendedOn`, as the condition always was). No new event kind.
-// (ADR 0105, no bump): STEP_FAILED stopped folding the EXECUTION status to "failed" — a flow may
-//   catch it; EXECUTION_FAILED is the execution's failure. The kernel writes the same events and
-//   no replay input changes (no flow reads `status`; `isStatusOnlyResume` tests "suspended" only),
-//   so an older reader mis-folds no new log. Only a log ending between a caught failure and the
-//   next lifecycle event folds differently: `running`, which is what that execution is.
-export const EVENT_SCHEMA_VERSION = "1.20.0";
+// 1.21.0: STEP_FAILED no longer folds the EXECUTION status to "failed" (ADR 0105) — the flow may
+//   catch it, and EXECUTION_FAILED is the execution's failure. No new kind or payload field; the
+//   kernel writes the same events. Folds differently from 1.20.0 only where a STEP_FAILED is not
+//   followed by a status-setting event before the log ends or before a `null` EXECUTION_RESUMED:
+//   (a) the log ends there (a crash after a caught failure) → `running`, recoverable; (b) a
+//   parallel sibling failed AFTER the flow parked (`EXECUTION_SUSPENDED`, `STEP_FAILED`) → stays
+//   `suspended`, so a following `null` resume answers the parked gate (1.20.0 read it as a
+//   status-only re-open of a "failed" execution). A 1.20.0 `resumeAs` wrote exactly that
+//   status-only `null`; `inspectStrayPassthroughs` flags it. Snapshots saved by an older fold
+//   are read through `normalizeSnapshotState`.
+export const EVENT_SCHEMA_VERSION = "1.21.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

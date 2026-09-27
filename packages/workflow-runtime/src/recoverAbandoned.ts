@@ -87,6 +87,18 @@ export interface RecoverAbandonedOptions {
   };
   /** Stop after this many successful recoveries. Default: unlimited. */
   limit?: number;
+  /**
+   * ADR 0105 — skip an execution this many recoveries have already re-driven. A recovery is
+   * counted from the log (`EXECUTION_RECOVERED` events), so the bound holds across passes,
+   * processes and nodes. An execution that keeps crashing its re-drive (a poison step, an
+   * error text its store refuses) otherwise costs every pass another at-least-once run of its
+   * interrupted step, forever. Skipped executions are reported (`exhausted`,
+   * `onExhausted`) and left for an operator. Default: unbounded, as before. Setting it costs
+   * one log read per candidate.
+   */
+  maxRecoveries?: number;
+  /** Called for each candidate skipped because it reached `maxRecoveries`. */
+  onExhausted?: (executionId: string, recoveries: number) => void;
   /** Enumeration page size. Default 1000. */
   pageSize?: number;
   /**
@@ -128,6 +140,8 @@ export interface RecoverAbandonedSummary {
   recovered: number;
   /** Those the predicate claimed but whose resume threw (left for the next pass). */
   failed: number;
+  /** Candidates skipped because `maxRecoveries` re-drives are already in their log. */
+  exhausted: number;
 }
 
 /**
@@ -172,7 +186,12 @@ export async function recoverAbandoned(
     candidates: 0,
     recovered: 0,
     failed: 0,
+    exhausted: 0,
   };
+  const maxRecoveries = options.maxRecoveries;
+  if (maxRecoveries !== undefined && (!Number.isSafeInteger(maxRecoveries) || maxRecoveries < 0)) {
+    throw new Error("recoverAbandoned: `maxRecoveries` must be a non-negative integer");
+  }
 
   for await (const executionId of candidateIds(options)) {
     // A dry run recovers nothing, so `recovered` would never reach the limit and the scan
@@ -184,6 +203,15 @@ export async function recoverAbandoned(
     if (state === null) continue;
     if (state.status !== "running" && state.status !== "pending") continue;
     summary.candidates++;
+
+    if (maxRecoveries !== undefined) {
+      const recoveries = await recoveriesOf(runtime, executionId, maxRecoveries);
+      if (recoveries >= maxRecoveries) {
+        summary.exhausted++;
+        options.onExhausted?.(executionId, recoveries);
+        continue;
+      }
+    }
 
     // With leases, reaching here IS the evidence: this id came from `expired()`. A predicate
     // may still narrow it, and is asked when given — so it never becomes a lie.
@@ -295,4 +323,17 @@ async function* candidateIds(options: RecoverAbandonedOptions): AsyncGenerator<s
   }
   // Guarded above: without leases, `source` is required.
   yield* iterateExecutionIds(options.source as ExecutionEnumerable, options.pageSize);
+}
+
+/** `EXECUTION_RECOVERED` events in the log, counted up to `cap` (enough to decide). */
+async function recoveriesOf(
+  runtime: WorkflowRuntime,
+  executionId: string,
+  cap: number
+): Promise<number> {
+  let n = 0;
+  for (const e of await runtime.events.read(executionId)) {
+    if (e.eventType === EXECUTION_RECOVERED && ++n >= cap) break;
+  }
+  return n;
 }

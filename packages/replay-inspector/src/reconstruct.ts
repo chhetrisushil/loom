@@ -1,5 +1,5 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { foldEvents } from "@loom/replay-vm";
+import { foldEvents, normalizeSnapshotState } from "@loom/replay-vm";
 import { InspectorBudgetError } from "./types";
 import type { ReadOnlyEventStore, ReadOnlySnapshotStore } from "./types";
 
@@ -126,7 +126,7 @@ export async function reconstructMany(
   // state directly is safe and avoids a clone.
   const seed: Partial<ExecutionState> =
     snapshot !== null
-      ? snapshot.state
+      ? normalizeSnapshotState(snapshot.state)
       : { executionId, workflowId: (segment[0] as EventEnvelope | undefined)?.workflowId ?? "" };
 
   const out: ReconstructionPoint[] = [];
