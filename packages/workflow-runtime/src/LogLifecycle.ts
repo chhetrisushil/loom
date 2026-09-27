@@ -4,6 +4,7 @@ import { appendBatchOf } from "@loom/event-runtime";
 import { ReplayVM, knownEventTypes, normalizeSnapshotState } from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
+import { EFFECT_INDOUBT_RESOLVED, EXECUTION_RECOVERED } from "./types";
 
 /** Reserved control stream carrying retention facts (EXECUTION_ARCHIVED/_DELETED). */
 export const LIFECYCLE_STREAM = "__loom_lifecycle__";
@@ -107,9 +108,10 @@ export class CompactionCheckpointMissingError extends Error {
 
 /**
  * The highest sequence missing BELOW the log's tip, or -1 when the log is contiguous from 0.
- * Compaction is the only thing that removes events, and it always removes its own checkpoint
- * sequence (ADR 0106), so this is the lowest sequence any valid checkpoint may sit at. One
- * backward pass; stops at the first gap from the top.
+ * Compaction is the only thing that removes events; it always removes its own checkpoint's
+ * slot and never the tip unless nothing is kept (the TIP RULE, ADR 0106), so this is exactly
+ * the latest checkpoint's sequence — or, for a log compacted down to `[0]`, -1 with the
+ * checkpoint above the tip. One backward pass; stops at the first gap from the top.
  */
 function highestMissing(events: readonly EventEnvelope[]): number {
   for (let i = events.length - 1; i > 0; i--) {
@@ -119,7 +121,36 @@ function highestMissing(events: readonly EventEnvelope[]): number {
   return events.length > 0 && events[0]!.sequence !== 0 ? events[0]!.sequence - 1 : -1;
 }
 
-const KERNEL_EVENT_TYPES = new Set(knownEventTypes());
+/**
+ * Every event kind the kernel writes: the fold's own kinds plus the resume signals the
+ * runtime records itself (crash re-drive, in-doubt verdict). None may be kept below a
+ * checkpoint: kernel log readers assume no kernel fact survives there.
+ */
+const KERNEL_EVENT_TYPES: ReadonlySet<string> = new Set([
+  ...knownEventTypes(),
+  EXECUTION_RECOVERED,
+  EFFECT_INDOUBT_RESOLVED,
+]);
+
+/**
+ * ADR 0106 — validate `pinnedEventTypes`: non-empty strings, no kernel kinds. Exported for
+ * `defineConfig`, which runs it at config time so a bad list fails at boot, not at the first
+ * compaction pass.
+ */
+export function assertPinnedEventTypes(types: readonly unknown[]): asserts types is string[] {
+  const bad = types.filter((t) => typeof t !== "string" || t.length === 0);
+  if (bad.length > 0) {
+    throw new TypeError(
+      `pinnedEventTypes must be non-empty strings; got ${bad.map((t) => JSON.stringify(t) ?? String(t)).join(", ")}. A non-string would match nothing on SQL stores but still be compared in memory, so backends would disagree about what compaction keeps.`
+    );
+  }
+  const kernel = (types as string[]).filter((t) => KERNEL_EVENT_TYPES.has(t));
+  if (kernel.length > 0) {
+    throw new TypeError(
+      `pinnedEventTypes names kernel event kind(s) ${kernel.join(", ")} — compaction keeps app evidence events, not kernel facts (the checkpoint already carries their fold). To keep an execution's whole log, pin the execution (\`pinned\`): a pinned execution is never compacted.`
+    );
+  }
+}
 
 export class LogLifecycle {
   constructor(
@@ -137,14 +168,15 @@ export class LogLifecycle {
        * and kernel log readers assume none survive below a checkpoint.
        */
       pinnedEventTypes?: readonly string[];
+      /**
+       * Where compaction reports a degraded pass — today, a store without
+       * `truncatePrefixKeeping` that therefore cannot compact past a kept event (ADR 0106 D3).
+       * Default: `console.warn`.
+       */
+      onWarn?: (message: string) => void;
     } = {}
   ) {
-    const kernel = (options.pinnedEventTypes ?? []).filter((t) => KERNEL_EVENT_TYPES.has(t));
-    if (kernel.length > 0) {
-      throw new TypeError(
-        `LogLifecycle: pinnedEventTypes names kernel event kind(s) ${kernel.join(", ")} — compaction keeps app evidence events, not kernel facts (the checkpoint already carries their fold). Pin the execution (\`pinned\`) to keep its whole log.`
-      );
-    }
+    assertPinnedEventTypes(options.pinnedEventTypes ?? []);
     this.keep = new Set(options.pinnedEventTypes);
   }
 
@@ -242,21 +274,24 @@ export class LogLifecycle {
   }
 
   /**
-   * Fold what retention judges eligibility on. A log that was compacted keeps its prefix in
-   * the checkpoint: folding the surviving events alone reads a completed execution as
-   * not-terminal forever, so a compacted execution could never be reclaimed. A compacted log
-   * is not always visibly gapped — compacting past a kept (pinned-kind) event at the tip
-   * leaves `[0, 1, …]` contiguous with the checkpoint above it (ADR 0106) — so the latest
-   * snapshot is always consulted: one point-read.
+   * Fold what retention judges eligibility on. A contiguous log `[0..n]` with n > 0 IS the
+   * whole history: under the tip rule (ADR 0106) compaction always leaves a gap below the tip
+   * it keeps, so a gap-free log was never compacted. A gapped log — or only the bootstrap
+   * left, which is what compacting through the tip leaves — keeps its prefix in the
+   * checkpoint: folding the surviving suffix alone reads a completed execution as
+   * not-terminal forever, so a compacted execution could never be reclaimed. One snapshot
+   * point-read, only then.
    */
   private async foldForRetention(
     executionId: string,
     events: EventEnvelope[]
   ): Promise<ExecutionState> {
-    const snapshot = await this.snapshotStore.loadLatest(executionId);
-    if (snapshot === null || snapshot.sequence < highestMissing(events)) {
+    const last = events[events.length - 1]!;
+    if (events.length > 1 && last.sequence === events.length - 1) {
       return new ReplayVM(events).getState();
     }
+    const snapshot = await this.snapshotStore.loadLatest(executionId);
+    if (snapshot === null) return new ReplayVM(events).getState();
     const suffix = events.filter((e) => e.sequence > snapshot.sequence);
     return new ReplayVM(suffix, normalizeSnapshotState(snapshot.state)).getState();
   }
@@ -338,24 +373,28 @@ export class LogLifecycle {
    * ADR 0106 (L11) — what the checkpoint and the truncation must preserve:
    *
    *  - **Identity.** The checkpoint's `executionId`/`workflowId` come from the log (sequence
-   *    0 names both); `workflowVersion`, which no event records, is carried from the latest
-   *    snapshot. A blank identity made every event a resume appended land in execution `""`.
-   *  - **The earlier prefix.** A log compacted before is folded ON its latest checkpoint, never
-   *    from the surviving events alone (which would drop everything the first compaction
-   *    folded away). A gapped log with no checkpoint covering the gap throws
-   *    {@link CompactionCheckpointMissingError}, touching nothing.
+   *    0 names both); `workflowVersion`, which no event records, from the snapshots the
+   *    runtime took. A blank identity made every event a resume appended land in execution
+   *    `""`.
+   *  - **The earlier prefix.** The fold starts from the latest snapshot at or below `c` when
+   *    there is one, never from the surviving events alone of a compacted log. A gapped log
+   *    with no snapshot at or above its gap throws {@link CompactionCheckpointMissingError},
+   *    touching nothing.
    *  - **Pinned kinds (ADR 0055 D1).** Events of `pinnedEventTypes` stay in place
-   *    (`truncatePrefixKeeping`). `c` is the highest non-kept sequence ≤ the tip, so the
-   *    checkpoint's own sequence is always removed and readers find it as the highest
-   *    missing sequence. On a store without `truncatePrefixKeeping`, `c` stops below the
-   *    first kept event instead — a shorter compaction, never a lost event. With a `pinned`
-   *    predicate but no `pinnedEventTypes`, a pinned execution is not compacted at all: the
-   *    kernel cannot tell which of its events carry the pin.
+   *    (`truncatePrefixKeeping`). THE TIP RULE: when any kept event would survive, `c` is the
+   *    highest non-kept sequence strictly BELOW the tip, so the tip is never removed, `c`'s
+   *    own slot always is, and every reader finds the checkpoint as the highest missing
+   *    sequence — a gap-free log was never compacted. With nothing kept, `c` is the tip (the
+   *    log becomes `[0]`, checkpoint above it), as before. On a store without
+   *    `truncatePrefixKeeping`, `c` stops below the FIRST kept event, forever: such a log is
+   *    never compacted past its first finding, and `onWarn` says so on every pass.
+   *  - **Pinned executions.** One the `pinned` predicate pins is not compacted at all
+   *    (ADR 0055 D1: "leave it exactly where it is"), `pinnedEventTypes` or not.
    *
    * Returns the sequence compacted through, or `null` when the store can't truncate (no
-   * `truncatePrefix`), there is nothing to compact, or the execution is pinned as above.
-   * Throws {@link UnsafeCompactionError} when the event store encrypts at rest and the
-   * snapshot store does not share its KeyStore.
+   * `truncatePrefix`), there is nothing to compact, or the execution is pinned. Throws
+   * {@link UnsafeCompactionError} when the event store encrypts at rest and the snapshot
+   * store does not share its KeyStore.
    */
   async compact(executionId: string): Promise<number | null> {
     const store = this.eventStore;
@@ -367,67 +406,64 @@ export class LogLifecycle {
     }
     const events = await store.read(executionId);
     if (events.length <= 1) return null; // nothing beyond the bootstrap to reclaim
-    const keep = this.keep;
-    if (keep.size === 0 && this.options.pinned !== undefined) {
-      if ((await this.options.pinned(executionId)) === true) return null;
+    if (this.options.pinned !== undefined && (await this.options.pinned(executionId)) === true) {
+      return null;
     }
 
-    // The checkpoint sequence: the highest non-kept event. Its own slot is then removed, which
-    // is what lets every reader find the checkpoint as the log's highest missing sequence.
-    let at = events.length - 1;
-    while (at > 0 && keep.has(events[at]!.eventType)) at--;
-    if (at === 0) return null; // only kept events after the bootstrap
-    let through = events[at]!.sequence;
-    const canKeep = store.truncatePrefixKeeping !== undefined;
-    let keptBelow = false;
-    for (let i = 1; i < at; i++) {
-      if (!keep.has(events[i]!.eventType)) continue;
-      if (canKeep) {
-        keptBelow = true;
+    // Choose the checkpoint slot `at` (an index into `events`) under the tip rule.
+    const keep = this.keep;
+    const tipIndex = events.length - 1;
+    let firstKept = -1;
+    for (let i = 1; i <= tipIndex; i++) {
+      if (keep.has(events[i]!.eventType)) {
+        firstKept = i;
         break;
       }
-      // No atomic keep-in-place: stop below the first kept event. Its predecessor slot is
-      // either a non-kept event (truncated now) or already missing — a valid checkpoint slot.
-      through = events[i]!.sequence - 1;
-      at = i - 1;
-      break;
     }
+    let at = tipIndex;
+    if (firstKept !== -1) {
+      at = tipIndex - 1;
+      while (at > 0 && keep.has(events[at]!.eventType)) at--;
+    }
+    let keptBelow = firstKept !== -1 && firstKept < at;
+    if (keptBelow && store.truncatePrefixKeeping === undefined) {
+      // No atomic keep-in-place: stop below the first kept event. Its predecessor is a
+      // non-kept event (removed now) or the bootstrap (nothing to do).
+      at = firstKept - 1;
+      keptBelow = false;
+      (this.options.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`)))(
+        `compact("${executionId}"): the event store has no truncatePrefixKeeping (EventStore SPI 1.5.0), so compaction cannot pass the pinned ${events[firstKept]!.eventType} event at sequence ${events[firstKept]!.sequence} — this log will never be compacted past it and its replay tail grows without bound. Use a store that implements truncatePrefixKeeping.`
+      );
+    }
+    if (at <= 0) return null;
+    const through = events[at]!.sequence;
 
-    if (through <= 0) return null;
-
-    // The fold at `through`. A gapped log was compacted before: fold ON the checkpoint that
-    // holds the gap, never from the surviving events alone.
+    // Every event above the checkpoint survives and its own slot does not, so a gapped log's
+    // checkpoint sits at its gap or above it: at or below the gap, nothing is new.
     const gap = highestMissing(events);
-    // Every event above the checkpoint survives and the checkpoint's own slot does not, so
-    // the checkpoint of a gapped log sits exactly at `gap`: at or below it, nothing is new.
     if (gap >= 0 && through <= gap) return null;
-    let state: ExecutionState;
-    let identity: { executionId: string; workflowId: string; workflowVersion: string };
-    if (gap >= 0) {
-      const base = await this.snapshotStore.loadLatestBefore(executionId, through);
-      if (base === null || base.sequence < gap) {
-        throw new CompactionCheckpointMissingError(executionId, gap);
-      }
-      // `base` may sit AT `through` (the runtime checkpoints every suspend at its tip): the
-      // fold is then already there, and the truncation below is the whole of the work.
-      identity = {
-        executionId,
-        workflowId: events[0]!.workflowId,
-        workflowVersion: base.state.workflowVersion,
-      };
-      const tail = events.filter((e) => e.sequence > base.sequence && e.sequence <= through);
-      state = new ReplayVM(tail, { ...normalizeSnapshotState(base.state), ...identity }).getState();
-    } else {
-      // Never compacted: the log IS the history. The version is not an event fact; a
-      // snapshot the runtime took (at a suspend, or on its cadence) is where it is recorded.
-      const latest = await this.snapshotStore.loadLatest(executionId);
-      identity = {
-        executionId,
-        workflowId: events[0]!.workflowId,
-        workflowVersion: latest?.state.workflowVersion ?? "",
-      };
-      state = new ReplayVM(events.slice(0, at + 1), identity).getState();
+
+    // The fold at `through`, on the latest snapshot at or below it when there is one — which
+    // a gapped (compacted) log MUST have.
+    const base = await this.snapshotStore.loadLatestBefore(executionId, through);
+    if (gap >= 0 && (base === null || base.sequence < gap)) {
+      throw new CompactionCheckpointMissingError(executionId, gap);
     }
+    let workflowVersion = base?.state.workflowVersion ?? "";
+    if (workflowVersion === "") {
+      // Not an event fact: a pre-0106 checkpoint carries it blank, so ask the latest snapshot
+      // (the runtime checkpoints every suspend) before settling for "unrecorded".
+      workflowVersion =
+        (await this.snapshotStore.loadLatest(executionId))?.state.workflowVersion ?? "";
+    }
+    const identity = { executionId, workflowId: events[0]!.workflowId, workflowVersion };
+    const state =
+      base !== null
+        ? new ReplayVM(
+            events.filter((e) => e.sequence > base.sequence && e.sequence <= through),
+            { ...normalizeSnapshotState(base.state), ...identity }
+          ).getState()
+        : new ReplayVM(events.slice(0, at + 1), identity).getState();
 
     const snapshot: Snapshot = {
       id: ulid(),

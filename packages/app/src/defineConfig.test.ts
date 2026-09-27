@@ -291,6 +291,40 @@ describe("defineConfig — retention (K10.1 log lifecycle)", () => {
   });
 });
 
+describe("defineConfig — retention.pinnedEventTypes (ADR 0106)", () => {
+  it("wires the kinds into app.lifecycle: compaction keeps them in place", async () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      durability: { retention: { pinnedEventTypes: ["FINDING_RECORDED"] } },
+    });
+    const log = app.stores.eventStore;
+    const at = (sequence: number, eventType: string) => ({
+      id: `p-${sequence}`,
+      workflowId: "wf",
+      executionId: "p",
+      eventType,
+      sequence,
+      timestamp: sequence,
+      payload: { input: {} },
+    });
+    await log.append(at(0, "EXECUTION_STARTED"));
+    await log.append(at(1, "FINDING_RECORDED"));
+    await log.append(at(2, "STEP_STARTED"));
+    await log.append(at(3, "STEP_STARTED"));
+    expect(await app.lifecycle.compact("p")).toBe(2);
+    expect((await log.read("p")).map((e) => e.sequence)).toEqual([0, 1, 3]);
+  });
+
+  it("refuses a kernel kind at config time, before any compaction pass", () => {
+    expect(() =>
+      defineConfig({
+        storage: { kind: "memory" },
+        durability: { retention: { pinnedEventTypes: ["STEP_COMPLETED"] } },
+      })
+    ).toThrow(/kernel event kind/);
+  });
+});
+
 describe("defineConfig — secrets (K10-R2)", () => {
   it("resolves input refs for the tool and redacts secret() output fields from the log", async () => {
     const mintStep = step$({

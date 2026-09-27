@@ -45,6 +45,15 @@ export class ExecutionJournal {
     // time-injection principle as TimerStore.due(now)). Default: wall clock.
     private readonly now: () => number = Date.now
   ) {
+    // ADR 0106 — a blank identity is the pre-0106 compaction checkpoint's, and every event this
+    // journal wrote under it went to execution "". Refuse it here, where the writes begin:
+    // whatever path built the identity (a legacy `restoreFromState` state included), nothing
+    // is appended to a log that is not this execution's.
+    if (identity.executionId === "" || identity.workflowId === "") {
+      throw new Error(
+        `ExecutionJournal: refusing a blank identity (executionId "${identity.executionId}", workflowId "${identity.workflowId}") — events would be appended to no execution's log. A state restored from a pre-ADR-0106 compaction checkpoint must be given its identity first.`
+      );
+    }
     // Seed from the folded VM tip: -1 for a fresh start (first commit → seq 0),
     // or the last applied sequence on resume/restore (next commit continues).
     this.seq = vm.getState().sequence;

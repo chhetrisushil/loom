@@ -393,6 +393,27 @@ export class ExecutionAlreadyExistsError extends Error {
 }
 
 /**
+ * ADR 0106 — a snapshot names a DIFFERENT execution (or workflow) than the one it was loaded
+ * for. A blank identity is filled in (compaction before ADR 0106 wrote blank checkpoints);
+ * a non-blank mismatch is refused, because it can only come from a store or tenant-scoping
+ * bug, and folding it would write this execution's events under another's identity.
+ */
+export class SnapshotIdentityMismatchError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly field: "executionId" | "workflowId",
+    readonly expected: string,
+    readonly found: string
+  ) {
+    super(
+      `refusing the snapshot loaded for execution "${executionId}": its ${field} is "${found}", expected "${expected}". A snapshot naming another execution or workflow is a store or tenant-scoping defect; nothing was folded.`
+    );
+    this.name = "SnapshotIdentityMismatchError";
+    Object.setPrototypeOf(this, SnapshotIdentityMismatchError.prototype);
+  }
+}
+
+/**
  * TR (ADR 0077) — `resume()`/`resumeAs()` refused a payload that does not satisfy
  * the flow's declared `resumeSchemas` entry for that gate. Nothing was appended;
  * the execution is untouched and still suspended, so a corrected payload can be

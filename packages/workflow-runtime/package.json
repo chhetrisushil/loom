@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@loom/middleware": "workspace:*",
+    "@loom/plugin-content": "workspace:*",
     "@loom/plugin-crypto": "workspace:*",
     "@loom/plugin-sqlite": "workspace:*",
     "@types/node": "^22.0.0",

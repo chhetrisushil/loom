@@ -124,14 +124,18 @@ export interface ContentSweepOptions {
   eventStores: readonly (Pick<EventStore, "read"> & ExecutionEnumerable)[];
   /**
    * ADR 0055 D6 — where compaction checkpoints live: the live snapshot store AND EACH
-   * ARCHIVE'S snapshot store. `LogLifecycle.compact` checkpoints the fold at the tip and
-   * truncates the prefix, so a ref the prefix cited survives only in snapshot state.
+   * ARCHIVE'S snapshot store. `LogLifecycle.compact` checkpoints the fold and truncates the
+   * prefix, so a ref the prefix cited survives only in snapshot state.
    *
-   * For every execution whose log has no sequence-1 event, the sweep pins every ref in:
-   *  - the COMPACTION CHECKPOINT, the snapshot at exactly `events[1].sequence − 1` (or, for a
-   *    run compacted at its tip so only sequence 0 remains, its latest snapshot). `fork()`
-   *    from any point after it loads that checkpoint, so its refs stay reachable even after a
-   *    later snapshot overwrote them in state.
+   * Which logs were compacted (ADR 0106, superseding "no sequence-1 event"): compaction
+   * removes its checkpoint's slot and, when it keeps pinned-kind events, never the tip. So a
+   * gap-free log with more than the bootstrap was never compacted (no snapshot read); a
+   * gapped log's checkpoint sits at its highest missing sequence `gap`; a bootstrap-only log
+   * was compacted through its tip. For each compacted execution the sweep pins every ref in:
+   *  - the COMPACTION CHECKPOINT: the lowest snapshot in `[gap, tip]` — exactly `gap` for a
+   *    compaction's own, the fork seed for a child forked from a compacted parent — or, for a
+   *    bootstrap-only log, its latest snapshot. `fork()` from any point after it loads that
+   *    checkpoint, so its refs stay reachable even after a later snapshot overwrote them.
    *  - the LATEST snapshot, which resume loads.
    *
    * Snapshots in between hold only checkpoint- or suffix-derived refs, and the suffix is
@@ -142,8 +146,8 @@ export interface ContentSweepOptions {
    * `reclaimOrphans` REFUSES, before erasing anything:
    *  - without this option, when any scanned store can `truncatePrefix`;
    *  - when an execution looks compacted but no checkpoint is found. That covers a gap with no
-   *    snapshot at `events[1].sequence − 1`, and a sequence-0-only log with no snapshot, which
-   *    is either compacted at its tip or a run that never got past its bootstrap. The two are
+   *    snapshot in `[gap, tip]`, and a sequence-0-only log with no snapshot, which is either
+   *    compacted at its tip or a run that never got past its bootstrap. The two are
    *    indistinguishable, so both refuse.
    */
   snapshotStores?: readonly SnapshotLookup[];
@@ -334,22 +338,16 @@ export async function sweepUnpinnedContent(
         });
       }
       // Did compaction touch this log, and where is its checkpoint (ADR 0106)? Compaction
-      // removes its checkpoint's own slot and keeps every event above it, plus the app's
-      // pinned-kind events below it. So the checkpoint sits either at `gap` (the highest
-      // sequence missing below the tip) or, when everything above `gap` is a pinned kind, may
-      // lie above the tip (compacted at the tip). A contiguous log with any non-pinned event
-      // after the bootstrap was never compacted and costs no snapshot read.
+      // removes its checkpoint's own slot and, whenever it keeps pinned-kind events, never
+      // the tip (the tip rule). So a gap-free log with more than the bootstrap was never
+      // compacted and costs no snapshot read; a gapped log's checkpoint sits at its highest
+      // missing sequence `gap`; and a bootstrap-only log was compacted through its tip (or
+      // never got past its bootstrap), its checkpoint above the tip.
       if (events.length === 0) continue;
       const tipSequence = events[events.length - 1]!.sequence;
       const gap = highestMissingSequence(events);
-      let onlyPinnedAbove = true;
-      for (let i = events.length - 1; i > 0 && events[i]!.sequence > gap; i--) {
-        if (!pinnedKinds.has(events[i]!.eventType)) {
-          onlyPinnedAbove = false;
-          break;
-        }
-      }
-      if (gap < 0 && !onlyPinnedAbove) continue;
+      const bootstrapOnly = events.length === 1;
+      if (gap < 0 && !bootstrapOnly) continue;
       if (options.snapshotStores === undefined) {
         if (gap >= 0) uncovered.push(executionId); // a gap is log evidence
         continue;
@@ -363,14 +361,29 @@ export async function sweepUnpinnedContent(
       for (const snapshots of options.snapshotStores) {
         const latest = await snapshots.loadLatest(executionId);
         if (latest !== null && latest.sequence >= 1) pin(latest);
-        // Compacted at the tip: the checkpoint IS the latest snapshot, above every event.
-        if (onlyPinnedAbove && latest !== null && latest.sequence > tipSequence) covered = true;
-        if (gap >= 0) {
-          const checkpoint = await snapshots.loadLatestBefore(executionId, gap);
-          if (checkpoint !== null && checkpoint.sequence === gap) {
-            pin(checkpoint);
-            covered = true;
+        if (bootstrapOnly) {
+          // Compacted at the tip: the checkpoint IS the latest snapshot.
+          if (latest !== null && latest.sequence >= 1) covered = true;
+          continue;
+        }
+        // The checkpoint: the LOWEST snapshot in [gap, tip]. A compaction's own sits exactly
+        // at `gap` (one read). A child forked from a compacted parent copies the gap but its
+        // lowest snapshot is its seed at the fork point, above the gap — walk down to it.
+        let checkpoint = await snapshots.loadLatestBefore(executionId, gap);
+        if (checkpoint === null || checkpoint.sequence !== gap) {
+          checkpoint = null;
+          let s = await snapshots.loadLatestBefore(executionId, tipSequence);
+          while (s !== null && s.sequence >= gap) {
+            checkpoint = s;
+            s =
+              s.sequence > gap
+                ? await snapshots.loadLatestBefore(executionId, s.sequence - 1)
+                : null;
           }
+        }
+        if (checkpoint !== null) {
+          pin(checkpoint);
+          covered = true;
         }
       }
       if (!covered) uncovered.push(executionId);

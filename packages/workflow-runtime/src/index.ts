@@ -6,6 +6,7 @@ export {
   EFFECT_INDOUBT_RESOLVED,
   EXECUTION_RECOVERED,
   ExecutionAlreadyExistsError,
+  SnapshotIdentityMismatchError,
   ExecutionDeniedError,
   FlowCodeMismatchError,
   FlowMigrationCheckError,
@@ -54,6 +55,7 @@ export {
 } from "./pruneBranchRefs";
 export {
   LogLifecycle,
+  assertPinnedEventTypes,
   UnsafeCompactionError,
   CompactionCheckpointMissingError,
   type RetentionPolicy,

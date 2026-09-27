@@ -19,9 +19,10 @@ export type { EventEnvelope };
  * 1.4.0: added optional `head()` (the tip as one indexed `MAX(sequence)` — `fork()` was
  *   reading the whole parent log to validate a fork point). Consumers use {@link headOf}.
  * 1.5.0: added optional `truncatePrefixKeeping()` (ADR 0106 — compaction that keeps an app's
- *   pinned event kinds, ADR 0055 D1). `LogLifecycle.compact` falls back to `truncatePrefix`
- *   stopped below the first pinned event when a store omits it, so omitting it costs only
- *   how far a log with pinned events can be compacted — never an event.
+ *   pinned event kinds, ADR 0055 D1). A store that omits it never loses an event, but
+ *   `LogLifecycle.compact` then can NEVER compact past the first pinned event (it stops just
+ *   below it on every pass, and warns): a long-lived execution that records a finding early
+ *   keeps an unbounded replay tail on such a store.
  *
  * Every optional method is listed in {@link OPTIONAL_EVENT_STORE_METHODS}; adding one here
  * without listing it there is a compile error. `OptionalEventStoreMethod` is derived from this
@@ -198,7 +199,8 @@ export interface EventStore {
    * empty `keepEventTypes` it is exactly `truncatePrefix`. The kept events sit BELOW the
    * compaction checkpoint, where no reader folds them (every fold reads from
    * `snapshot.sequence + 1`); what reads them is policy that scans the log for its pinned kinds
-   * (`pinByEventKinds`, the content sweep). Same precondition as `truncatePrefix`.
+   * (`pinByEventKinds`, the content sweep). Same precondition as `truncatePrefix`. A store that
+   * omits it cannot be compacted past a log's first pinned event, ever.
    */
   truncatePrefixKeeping?(
     executionId: string,
