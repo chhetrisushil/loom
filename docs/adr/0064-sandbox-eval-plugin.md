@@ -48,19 +48,31 @@ typed `scriptMissing`.
   vs the caller-pinned `expectedOutputShapeHash`.
 - Deliberately UNTYPED: ReferenceErrors from scripts touching `fetch`/`require`/
   `process` — an environment violation is a bug, not a domain outcome; it keeps
-  legacy retry semantics and loud failure. *(Amended 2026-09-27: superseded by the
-  `scriptError { name?, message }` channel. A script's OWN exception — any thrown
-  value, a SyntaxError in its source, and a ReferenceError for a global the VM does
-  not have, which the VM cannot tell apart from a typo — completes typed, so a
-  caller can tell "the script threw on this input" from an infrastructure failure
-  without parsing error text. Being a pure function of (script, input) it is an
-  outcome: substituted on replay, not retried. The payload is the thrown value's
-  string `name` (when it has one, ≤ 128 chars) and a text `message` (≤ 2048 chars),
-  never a stack. A guard kill stays `limitExceeded` even when the script catches it
-  and rethrows. What stays untyped is the infrastructure: the worker pool (closed, a
-  worker `fatal`), the content-address check, input marshalling, cancellation.
-  Additive for replay: an old log's untyped STEP_FAILED carries no channel, so it is
-  never substituted as `scriptError` and keeps ADR 0060's legacy re-execution.)*
+  legacy retry semantics and loud failure. *(Superseded 2026-09-27 by the
+  `scriptError` bullet below: those ReferenceErrors are now `scriptError`.)*
+- *(Added 2026-09-27.)* `scriptError { name?: string; message: string }` — the
+  script's OWN exception on this input: any thrown value (an Error, a non-Error such
+  as `throw 42` → `{ message: "42" }`), a SyntaxError in its source, a stack overflow,
+  and a ReferenceError for a global the VM does not have, which the VM cannot tell
+  apart from a typo. A caller can tell "the script threw on this input" from an
+  infrastructure failure without parsing error text; being a pure function of
+  (script, input) it is an outcome — substituted on replay, not retried.
+  - Payload: the thrown value's `name` only when it is a string (≤ 128 UTF-16 units)
+    and a text `message` (≤ 2048), never a stack. Truncation never splits a
+    surrogate pair, and lone surrogates and NUL become U+FFFD, so the event is
+    storable in Postgres `jsonb`. The text is script-authored (often by a model):
+    data for a planner or a log, never a prompt instruction.
+  - Precedence: a guard kill is `limitExceeded` even when the script catches it and
+    rethrows. Memory/CPU are read from the text ONLY of the engine's own
+    `InternalError`, so `throw new Error("connection interrupted")` is `scriptError`
+    (a script constructing `new InternalError("out of memory")` itself is reported
+    as the kill it forges — still typed).
+  - Still untyped (infrastructure): the worker pool (closed, a worker `fatal`, a run
+    that never started), the content-address check, input marshalling, cancellation.
+  - Replay is additive: an old log's untyped STEP_FAILED has no channel, so it is
+    never substituted as `scriptError` and keeps ADR 0060's legacy re-execution — a
+    paused run resumed on this version re-runs that step and now receives a
+    `TypedFailure`.
 
 `idempotent: true` — a pure function of (script, input); at-least-once re-runs
 are safe by construction.

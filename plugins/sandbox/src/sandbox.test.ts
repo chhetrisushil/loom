@@ -51,6 +51,9 @@ const baseCtx: EffectContext = {
   emit: () => {},
 };
 
+/** A high surrogate not followed by a low one, or a low one not preceded by a high one. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
 async function put(scripts: InMemoryContentStore, code: string) {
   return scripts.put(encoder.encode(code));
 }
@@ -211,6 +214,129 @@ describe.each(ENGINES)("sandboxEval (ADR 0064) — $name", ({ workers }) => {
     expect(payload.name).toBe("n".repeat(128));
     expect(payload.message).toBe("m".repeat(2048));
     expect(SANDBOX_ERRORS.scriptError.safeParse(payload).success).toBe(true);
+  });
+
+  it("a script's own text naming a limit is scriptError, not limitExceeded", async () => {
+    const { scripts, effects } = await bootEngine();
+    for (const [code, name] of [
+      [`throw new Error("connection interrupted")`, "Error"],
+      [`throw new Error("out of memory")`, "Error"],
+      [`throw new RangeError("memory limit of the widget reached")`, "RangeError"],
+      [`throw { name: "Oops", message: "interrupted" }`, "Oops"],
+      [`throw "out of memory"`, undefined],
+    ] as const) {
+      const ref = await put(scripts, code);
+      const failure = await expectChannel(
+        effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx),
+        "scriptError"
+      );
+      expect((failure.payload as { name?: string }).name, code).toBe(name);
+    }
+  });
+
+  it("the engine's own InternalError for memory is still limitExceeded; a stack overflow is the script's", async () => {
+    const { scripts, effects } = await bootEngine({
+      limits: { memoryBytes: 4 * 1024 * 1024, interruptBudget: 1_000_000, wallClockMs: 60_000 },
+    });
+    const oom = await put(scripts, `let a = "x"; while (true) { a += a; } a`);
+    const kill = await expectChannel(
+      effects.execute(SANDBOX_TOOL_ID, { scriptRef: oom }, baseCtx),
+      "limitExceeded"
+    );
+    expect(kill.payload).toEqual({ kind: "memory" });
+
+    const recursion = await put(scripts, "function f() { return f(); } f()");
+    const overflow = await expectChannel(
+      effects.execute(SANDBOX_TOOL_ID, { scriptRef: recursion }, baseCtx),
+      "scriptError"
+    );
+    expect(overflow.payload).toMatchObject({ name: "InternalError" });
+  });
+
+  it("hostile thrown values yield a bounded, schema-valid payload and never a host throw", async () => {
+    // Generous wall clock: 10 MB of text is slow on a loaded host, and this test is about
+    // the payload, not the clock.
+    const { scripts, effects } = await bootEngine({ limits: { wallClockMs: 60_000 } });
+    const cases = [
+      // A Proxy whose every trap throws.
+      "throw new Proxy({}, { get() { throw 3; }, ownKeys() { throw 4; }, getOwnPropertyDescriptor() { throw 5; } })",
+      // Throwing getters for the very fields that are read.
+      `throw { get message() { throw new Error("g"); }, get name() { throw 1; } }`,
+      // Throwing toString and toJSON.
+      "throw { toString() { throw 1; }, toJSON() { throw 2; } }",
+      // A cyclic object (no JSON encoding).
+      "const o = {}; o.o = o; throw o",
+      // 10 MB of text, as a string and as an Error message.
+      `throw "y".repeat(10 * 1024 * 1024)`,
+      `throw new Error("x".repeat(10 * 1024 * 1024))`,
+      // A getter returning a megabyte-long name.
+      `throw { get name() { return "N".repeat(1e6); }, message: "m" }`,
+      "throw Symbol('s')",
+      "throw 10n",
+      "throw function f() {}",
+    ];
+    for (const code of cases) {
+      const ref = await put(scripts, code);
+      const failure = await expectChannel(
+        effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx),
+        "scriptError"
+      );
+      const parsed = SANDBOX_ERRORS.scriptError.safeParse(failure.payload);
+      expect(parsed.success, code).toBe(true);
+      expect(
+        Object.keys(failure.payload as object).every((k) => k === "name" || k === "message")
+      ).toBe(true);
+    }
+    // Looping while being inspected is caught by the guards that are still armed. A small
+    // CPU budget and a huge wall clock, so the kind is deterministic under load.
+    const looping = await bootEngine({ limits: { interruptBudget: 50, wallClockMs: 60_000 } });
+    for (const code of [
+      "throw { toJSON() { for (;;) {} } }",
+      "throw new Proxy({}, { get() { for (;;) {} } })",
+    ]) {
+      const ref = await put(looping.scripts, code);
+      const failure = await expectChannel(
+        looping.effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx),
+        "limitExceeded"
+      );
+      expect(failure.payload, code).toEqual({ kind: "cpu" });
+    }
+  });
+
+  it("text is well-formed: truncation never splits a surrogate pair, lone surrogates and NUL become U+FFFD", async () => {
+    const { scripts, effects } = await bootEngine();
+    // Script SOURCE carries `\u` escapes (String.raw), so the surrogates are made by the
+    // script at run time — a literal lone surrogate would not survive UTF-8 encoding of the
+    // source and would prove nothing.
+    const cases: [string, string][] = [
+      // A pair straddling the 2048 cut is dropped whole, never halved.
+      [String.raw`throw new Error("a".repeat(2047) + "\u{1F600}")`, "a".repeat(2047)],
+      // A pair inside the bound survives intact.
+      [String.raw`throw new Error("ok \u{1F600}")`, "ok \u{1F600}"],
+      // Lone surrogates from the script itself, and NUL (both unstorable in Postgres jsonb).
+      [String.raw`throw new Error("x\uD800y\uDC00z\u0000")`, "x\uFFFDy\uFFFDz\uFFFD"],
+      [String.raw`throw "\uD83D"`, "\uFFFD"],
+    ];
+    for (const [code, expected] of cases) {
+      const ref = await put(scripts, code);
+      const failure = await expectChannel(
+        effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx),
+        "scriptError"
+      );
+      const { message } = failure.payload as { message: string };
+      expect(message, code).toBe(expected);
+      expect(LONE_SURROGATE.test(message)).toBe(false);
+      expect(LONE_SURROGATE.test(failure.message)).toBe(false);
+    }
+    const named = await put(
+      scripts,
+      String.raw`const e = new Error("m"); e.name = "n".repeat(127) + "\u{1F600}"; throw e`
+    );
+    const failure = await expectChannel(
+      effects.execute(SANDBOX_TOOL_ID, { scriptRef: named }, baseCtx),
+      "scriptError"
+    );
+    expect((failure.payload as { name: string }).name).toBe("n".repeat(127));
   });
 
   it("a guard kill stays limitExceeded even when the script catches and rethrows", async () => {

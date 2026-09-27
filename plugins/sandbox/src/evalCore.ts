@@ -56,22 +56,53 @@ export const MESSAGE_LIMIT = 2048;
 export const NAME_LIMIT = 128;
 
 /**
+ * Bound script-authored text to at most `limit` UTF-16 units AND make it storable.
+ *
+ * Two hazards beyond length. A plain `slice` can cut a surrogate pair in half, leaving a
+ * lone surrogate; and a script can produce lone surrogates (or NUL) itself. Both encode in
+ * JSON as `\uD800`/`\u0000` escapes, which Postgres `jsonb` REJECTS — so the STEP_FAILED
+ * append would fail on a durable store while passing in memory. A pair straddling the cut is
+ * dropped whole; every remaining lone surrogate and NUL becomes U+FFFD.
+ *
+ * Linear in `limit`, not in the input: the input is sliced first, so a 10 MB string costs
+ * no more than a 2 KB one.
+ */
+export function boundText(text: string, limit: number): string {
+  let head = text.length > limit ? text.slice(0, limit) : text;
+  // A high surrogate in the last slot had its low half cut off (or never had one) — drop it
+  // rather than let the replacement below turn half a character into U+FFFD.
+  if (text.length > limit) {
+    const last = head.charCodeAt(head.length - 1);
+    if (last >= 0xd800 && last <= 0xdbff) head = head.slice(0, -1);
+  }
+  return head.replace(LONE_SURROGATE, "\uFFFD").replaceAll("\u0000", "\uFFFD");
+}
+
+/** A high surrogate not followed by a low one, or a low one not preceded by a high one. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
  * Reduce a dumped thrown value to {@link ScriptThrow}. An Error-like object (a string
  * `name` or `message`) keeps those two fields and nothing else; any other value is
  * rendered as text — a string as itself, an object as JSON, the rest via `String`.
+ *
+ * The value is already a HOST copy (`vm.dump` ran any getter, Proxy trap or `toJSON` the
+ * script planted, inside the VM with the guards still armed), so nothing here re-enters
+ * script code; the guards on `JSON.stringify` below are for host-side oddities (cycles,
+ * BigInt) only.
  */
 function toScriptThrow(thrown: unknown): ScriptThrow {
   if (typeof thrown === "object" && thrown !== null) {
     const { name, message } = thrown as { name?: unknown; message?: unknown };
     if (typeof name === "string" || typeof message === "string") {
       const out: ScriptThrow = {
-        message: typeof message === "string" ? message.slice(0, MESSAGE_LIMIT) : "",
+        message: typeof message === "string" ? boundText(message, MESSAGE_LIMIT) : "",
       };
-      if (typeof name === "string") out.name = name.slice(0, NAME_LIMIT);
+      if (typeof name === "string") out.name = boundText(name, NAME_LIMIT);
       return out;
     }
   }
-  return { message: renderThrown(thrown).slice(0, MESSAGE_LIMIT) };
+  return { message: boundText(renderThrown(thrown), MESSAGE_LIMIT) };
 }
 
 function renderThrown(thrown: unknown): string {
@@ -153,6 +184,8 @@ export function evalInFreshRuntime(
 
     const result = vm.evalCode(script);
     if (result.error !== undefined) {
+      // Known, pre-existing: a thrown (or returned) object nested ~100k deep aborts inside
+      // `dump`/`dispose` (a QuickJS GC assertion) and surfaces as an untyped host error.
       let dumped: unknown;
       try {
         dumped = vm.dump(result.error);
@@ -167,16 +200,15 @@ export function evalInFreshRuntime(
           name?: unknown;
           message?: unknown;
         };
-        const message = `${String(err.name ?? "Error")}: ${String(err.message ?? "unknown")}`.slice(
-          0,
-          MESSAGE_LIMIT
-        );
-        return { ok: false, message, tripped };
+        const name = typeof err.name === "string" ? err.name : "Error";
+        const text = typeof err.message === "string" ? err.message : "unknown";
+        return { ok: false, message: boundText(`${name}: ${text}`, MESSAGE_LIMIT), tripped };
       }
       const thrown = toScriptThrow(dumped);
-      const message = (
-        thrown.name === undefined ? thrown.message : `${thrown.name}: ${thrown.message}`
-      ).slice(0, MESSAGE_LIMIT);
+      const message = boundText(
+        thrown.name === undefined ? thrown.message : `${thrown.name}: ${thrown.message}`,
+        MESSAGE_LIMIT
+      );
       return { ok: false, message, thrown };
     }
     const value = vm.dump(result.value) as unknown;

@@ -1835,8 +1835,10 @@ Reached through ~app.knowledge(scope)~, over the same ~memoryStore~ that backs ~
 ** ~@loom/plugin-sandbox~ — untrusted code as an effect
 
 #+begin_src typescript
-function sandboxEval$(config: { id: string; script: string | ContentRef; limits?: SandboxLimits }): TaskDefinition
-function registerSandboxEval(effects: EffectRegistry, options?: { workers?: number }): void
+function sandboxEval$(id: string, toolId?: string /* default SANDBOX_TOOL_ID */): StepDefinition<SandboxEvalInputValue, unknown>
+function registerSandboxEval(effectRuntime: EffectRuntime, scripts: ScriptReader, spec?: SandboxSpec): SandboxEvalEffect
+interface SandboxSpec { id?: string; limits?: SandboxLimits; workers?: { count?: number; hardKillGraceMs?: number } }
+// step input: { scriptRef: ContentRef; input?: unknown; expectedOutputShapeHash?: string }
 const SANDBOX_ERRORS: {             // typed failure channels (ADR 0060) — zod schemas
   scriptMissing: { ref: string };
   limitExceeded: { kind: "cpu" | "memory" | "wallClock" | "output" };
