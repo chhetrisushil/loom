@@ -30,6 +30,7 @@ import type {
   WorkerRuntime,
 } from "@loom/worker-runtime";
 import { describe, expect, it } from "vitest";
+import { checkContentStoreTouchContract } from "./contentTouchContract";
 import {
   optionalSurfaceProblems,
   runEventStoreDecoratorConformance,
@@ -37,7 +38,6 @@ import {
 } from "./decorators";
 import {
   type ContentStoreLike,
-  checkContentStoreTouchContract,
   runBranchRegistryConformance,
   runCapabilityAuthorizerConformance,
   runEventStoreConformance,

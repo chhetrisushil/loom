@@ -1,6 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { ReplayVM } from "@loom/replay-vm";
+import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { type ContentSweepOptions, pinByEventKinds, sweepUnpinnedContent } from "./gc";
 import {
@@ -472,7 +473,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
 
   /** A store whose clock the test moves: touch times are the STORE's, as in production. */
   /** A snapshot store holding nothing â€” for scans over logs nothing compacted. */
-  const NO_SNAPSHOTS = { loadLatest: async () => null };
+  const NO_SNAPSHOTS = { loadLatest: async () => null, loadLatestBefore: async () => null };
 
   function clockedStore(start: number) {
     const clock = { now: start };
@@ -591,7 +592,8 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     await live.append(
       evt("gone", 0, "STEP_COMPLETED", { output: envelopeFor(ofDeleted.__loomContent) }, OLD)
     );
-    await live.append(evt("kept", 0, "STEP_COMPLETED", { output: citedBare }, OLD));
+    await live.append(evt("kept", 0, "EXECUTION_STARTED", { input: {} }, OLD));
+    await live.append(evt("kept", 1, "STEP_COMPLETED", { output: citedBare }, OLD));
     await live.deleteExecution("gone"); // applyRetention with no archive configured
 
     const base = {
@@ -629,8 +631,9 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     const alsoEnveloped = await content.put(bytes("a claim-checked result an app table kept"));
     clock.now = NOW;
     const live = new InMemoryAsyncEventStore();
+    await live.append(evt("run", 0, "EXECUTION_STARTED", { input: {} }, OLD));
     await live.append(
-      evt("run", 0, "STEP_COMPLETED", { output: envelopeFor(alsoEnveloped.__loomContent) }, OLD)
+      evt("run", 1, "STEP_COMPLETED", { output: envelopeFor(alsoEnveloped.__loomContent) }, OLD)
     );
     let rootReads = 0;
     // What a Postgres app would yield from e.g. `SELECT hash FROM experience_refs`.
@@ -804,7 +807,13 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       snapshots.set("perpetual", { sequence: 3, state: new ReplayVM(events).getState() });
       await live.truncatePrefix("perpetual", 3);
       expect((await live.read("perpetual")).map((e) => e.sequence)).toEqual([0]);
-      const snapshotStore = { loadLatest: async (id: string) => snapshots.get(id) ?? null };
+      const snapshotStore = {
+        loadLatest: async (id: string) => snapshots.get(id) ?? null,
+        loadLatestBefore: async (id: string, at: number) => {
+          const found = snapshots.get(id);
+          return found !== undefined && found.sequence <= at ? found : null;
+        },
+      };
       return { evidence, live, snapshotStore };
     }
 
@@ -872,6 +881,115 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         })
       ).rejects.toThrow(/compact/);
       expect(await content.get(stale)).not.toBeNull(); // the TTL pass did not run either
+    });
+
+    /** Fold â†’ checkpoint at the tip â†’ truncate, exactly as LogLifecycle.compact does. */
+    async function compact(
+      live: InMemoryAsyncEventStore,
+      snapshots: InMemoryAsyncSnapshotStore,
+      id: string,
+      folded: EventEnvelope[]
+    ): Promise<void> {
+      const tip = (folded[folded.length - 1] as EventEnvelope).sequence;
+      await snapshots.save({
+        id: `cp-${id}-${tip}`,
+        executionId: id,
+        workflowId: "wf",
+        sequence: tip,
+        state: new ReplayVM(folded).getState(),
+        createdAt: 0,
+      });
+      await live.truncatePrefix(id, tip);
+    }
+
+    it("pins the COMPACTION checkpoint, not just the latest snapshot â€” fork() between them still resolves", async () => {
+      const { clock, content } = clockedStore(OLD);
+      const prefixOutput = await content.put(bytes("step output from the compacted prefix"));
+      const live = new InMemoryAsyncEventStore();
+      const snapshots = new InMemoryAsyncSnapshotStore();
+      const prefix = [
+        evt("loop", 0, "EXECUTION_STARTED", { input: {} }, OLD),
+        evt("loop", 1, "STEP_STARTED", { stepId: "poll" }, OLD),
+        evt(
+          "loop",
+          2,
+          "STEP_COMPLETED",
+          { stepId: "poll", output: envelopeFor(prefixOutput.__loomContent) },
+          OLD
+        ),
+      ];
+      for (const e of prefix) await live.append(e);
+      await compact(live, snapshots, "loop", prefix); // checkpoint at 2; log is [0]
+      // The loop runs again: the same step id's output is OVERWRITTEN in state, and a later
+      // snapshot (a suspend) no longer holds the prefix ref.
+      const suffix = [
+        evt("loop", 3, "STEP_STARTED", { stepId: "poll" }, NOW - 2 * DAY),
+        evt("loop", 4, "STEP_COMPLETED", { stepId: "poll", output: { rows: 0 } }, NOW - 2 * DAY),
+      ];
+      for (const e of suffix) await live.append(e);
+      await snapshots.save({
+        id: "later",
+        executionId: "loop",
+        workflowId: "wf",
+        sequence: 4,
+        state: new ReplayVM([...prefix, ...suffix]).getState(),
+        createdAt: 0,
+      });
+      expect(JSON.stringify((await snapshots.loadLatest("loop"))?.state)).not.toContain(
+        prefixOutput.__loomContent
+      );
+
+      clock.now = NOW;
+      await sweepUnpinnedContent({
+        eventStores: [live],
+        snapshotStores: [snapshots],
+        contentStore: content,
+        pinnedEventTypes: [],
+        olderThanMs: TTL,
+        now: NOW,
+        reclaimOrphans: true,
+      });
+      expect(await content.get(prefixOutput)).not.toBeNull();
+      // fork() at 3 loads the checkpoint (loadLatestBefore) and folds on: the ref must resolve.
+      const base = await snapshots.loadLatestBefore("loop", 3);
+      expect(base?.sequence).toBe(2);
+      const output = (base?.state as { frames: Record<string, { output: ClaimCheckEnvelope }> })
+        .frames.poll?.output;
+      expect(await content.get(output?.ref as { __loomContent: string })).not.toBeNull();
+    });
+
+    it("a run compacted at its tip (only sequence 0 left) with no snapshot found is uncovered â€” refused", async () => {
+      const { clock, content } = clockedStore(OLD);
+      const output = await content.put(bytes("a finished run's step output"));
+      const live = new InMemoryAsyncEventStore();
+      const done = [
+        evt("done", 0, "EXECUTION_STARTED", { input: {} }, OLD),
+        evt("done", 1, "STEP_STARTED", { stepId: "s" }, OLD),
+        evt(
+          "done",
+          2,
+          "STEP_COMPLETED",
+          { stepId: "s", output: envelopeFor(output.__loomContent) },
+          OLD
+        ),
+      ];
+      for (const e of done) await live.append(e);
+      // Its checkpoint went to a snapshot store this sweep was NOT given.
+      await compact(live, new InMemoryAsyncSnapshotStore(), "done", done);
+      expect((await live.read("done")).map((e) => e.sequence)).toEqual([0]);
+      clock.now = NOW;
+      await expect(
+        sweepUnpinnedContent({
+          eventStores: [live],
+          snapshotStores: [new InMemoryAsyncSnapshotStore()],
+          contentStore: content,
+          pinnedEventTypes: [],
+          olderThanMs: TTL,
+          now: NOW,
+          reclaimOrphans: true,
+        })
+      ).rejects.toThrow(/done/);
+      expect(await content.get(output)).not.toBeNull();
     });
   });
 });

@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteContentStore, SqliteEventStore } from "@loom/plugin-sqlite";
@@ -185,16 +186,9 @@ describe("loom sweep content (DX-2, K10.6)", () => {
 
   it("refuses --orphans --apply with no archive unless --no-archive says there is none", async () => {
     const { db, snap, contentDb, orphan } = await orphanSeed();
-    const refused = await cmdSweepContent({
-      db,
-      snap,
-      content: contentDb,
-      ttlMs: 30 * DAY,
-      apply: true,
-      orphans: true,
-    });
-    expect(refused).toMatch(/--no-archive/);
-    expect(refused).not.toContain("reclaimed");
+    await expect(
+      cmdSweepContent({ db, snap, content: contentDb, ttlMs: 30 * DAY, apply: true, orphans: true })
+    ).rejects.toThrow(/--no-archive/);
     expect(await stillThere(contentDb, orphan)).toBe(true);
   });
 
@@ -224,15 +218,69 @@ describe("loom sweep content (DX-2, K10.6)", () => {
 
   it("refuses --orphans on the --db path without --snap: a compacted prefix lives in its snapshot", async () => {
     const { db, contentDb, orphan } = await orphanSeed();
-    const refused = await cmdSweepContent({
-      db,
-      content: contentDb,
-      ttlMs: 30 * DAY,
-      apply: true,
-      orphans: true,
-      noArchive: true,
-    });
-    expect(refused).toMatch(/--snap/);
+    await expect(
+      cmdSweepContent({
+        db,
+        content: contentDb,
+        ttlMs: 30 * DAY,
+        apply: true,
+        orphans: true,
+        noArchive: true,
+      })
+    ).rejects.toThrow(/--snap/);
     expect(await stillThere(contentDb, orphan)).toBe(true);
+  });
+
+  it("refuses --orphans with --archive-db but no --archive-snap: an archived run's checkpoint lives there", async () => {
+    const { db, snap, contentDb, orphan } = await orphanSeed();
+    const archiveDb = join(dir, "archive.db");
+    await new SqliteEventStore(archiveDb).close();
+    await expect(
+      cmdSweepContent({
+        db,
+        snap,
+        content: contentDb,
+        archiveDb,
+        ttlMs: 30 * DAY,
+        apply: true,
+        orphans: true,
+      })
+    ).rejects.toThrow(/--archive-snap/);
+    expect(await stillThere(contentDb, orphan)).toBe(true);
+  });
+
+  it("the built binary EXITS NON-ZERO on a refusal, so a script can tell", async () => {
+    const cli = join(__dirname, "..", "dist", "cli.js");
+    if (!existsSync(cli)) {
+      execFileSync("npx", ["tsc", "--build", join(__dirname, "..", "tsconfig.json")]);
+    }
+    const { db, snap, contentDb, orphan } = await orphanSeed();
+    const refused = spawnSync(
+      process.execPath,
+      [
+        cli,
+        "sweep",
+        "content",
+        "--db",
+        db,
+        "--snap",
+        snap,
+        "--content",
+        contentDb,
+        "--orphans",
+        "--apply",
+      ],
+      { encoding: "utf8" }
+    );
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toMatch(/--no-archive/);
+    expect(await stillThere(contentDb, orphan)).toBe(true);
+
+    const ok = spawnSync(
+      process.execPath,
+      [cli, "sweep", "content", "--db", db, "--snap", snap, "--content", contentDb, "--orphans"],
+      { encoding: "utf8" }
+    );
+    expect(ok.status).toBe(0); // a dry run is not a refusal
   });
 });

@@ -644,7 +644,7 @@ The operator surface for the K10.6 **pinned blob sweep** ([ADR 0055](adr/0055-k1
 | `--ttl` | no | `2592000000` (30 days) | age threshold in ms |
 | `--orphans` | no | off | also erase blobs that NO scanned event cites and that were untouched for the TTL: runs deleted without an archive, crashes between `put` and the append ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D6). Needs the snapshot store (`--snap`, `--archive-snap`), because a compacted execution's prefix refs live only in its checkpoint. **Every archive must be scanned**: under `--config` the app's `durability.retention.archive` is scanned automatically; on the `--db` path pass `--archive-db`. With `--apply` and no archive the command refuses. |
 | `--no-archive` | no | off | with `--orphans --apply`: assert that retention archives nowhere. The command then warns on stderr before erasing anything. |
-| `--snap` / `--archive-snap` | with `--orphans` | — | the live / archive snapshot stores, where compaction checkpoints live |
+| `--snap` / `--archive-snap` | with `--orphans` (`--archive-snap` whenever `--archive-db` is given) | — | the live / archive snapshot stores, where compaction checkpoints live |
 | `--apply` | no | dry run | actually erase |
 
 ```bash
@@ -662,7 +662,9 @@ content sweep DRY RUN (pass --apply to erase) — ttl 2592000000ms — pins: (no
     … +226 more
 ```
 
-At most 20 addresses are listed, then `… +N more`. `race-safe: yes` means every erase is
+Every refusal (a missing snapshot store, `--orphans --apply` with no archive, an execution that
+looks compacted with no checkpoint) exits non-zero and erases nothing. At most 20 addresses are
+listed, then `… +N more`. `race-safe: yes` means every erase is
 conditional on the blob's touch time: a blob that some execution `put` again while the sweep ran
 is kept ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D5). The SQLite content store
 supports this. An app with blobs cited from its own tables sweeps through the API instead, with
