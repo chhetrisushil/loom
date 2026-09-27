@@ -28,6 +28,7 @@ export class CachingContentStore implements ContentStore {
   readonly getMany: NonNullable<ContentStore["getMany"]>;
   readonly deleteIfUntouchedSince?: NonNullable<ContentStore["deleteIfUntouchedSince"]>;
   readonly listPage?: NonNullable<ContentStore["listPage"]>;
+  readonly touchClock?: NonNullable<ContentStore["touchClock"]>;
 
   constructor(
     private readonly inner: ContentStore,
@@ -51,6 +52,9 @@ export class CachingContentStore implements ContentStore {
     }
     if (inner.listPage !== undefined) {
       this.listPage = (opts) => inner.listPage!(opts);
+    }
+    if (inner.touchClock !== undefined) {
+      this.touchClock = () => inner.touchClock!();
     }
     this.getMany = async (refs) => {
       const results = new Array<Uint8Array | null>(refs.length);

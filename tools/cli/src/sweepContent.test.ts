@@ -122,26 +122,45 @@ describe("loom sweep content (DX-2, K10.6)", () => {
     await after.close();
   });
 
-  it("--orphans reclaims a blob nothing cites once untouched for the TTL, and warns about archives (ADR 0055 D6)", async () => {
+  /** An events.db, a snap.db and a content.db holding one blob put 60 days ago that nothing cites. */
+  async function orphanSeed() {
     dir = mkdtempSync(join(tmpdir(), "loom-sweep-"));
     const db = join(dir, "events.db");
+    const snap = join(dir, "snap.db");
     const contentDb = join(dir, "content.db");
     const events = new SqliteEventStore(db);
+    await events.close();
     const old = Date.now() - 60 * DAY;
     const content = new SqliteContentStore(contentDb, { now: () => old });
     // Put, then the process died before the append: nothing in the log cites it.
     const orphan = await content.put(new TextEncoder().encode("crashed before append"));
     await content.close();
-    await events.close();
+    return { db, snap, contentDb, orphan };
+  }
 
-    const without = await cmdSweepContent({ db, content: contentDb, ttlMs: 30 * DAY, apply: true });
+  async function stillThere(contentDb: string, ref: { __loomContent: string }) {
+    const check = new SqliteContentStore(contentDb);
+    const bytes = await check.get(ref);
+    await check.close();
+    return bytes !== null;
+  }
+
+  it("--orphans reclaims a blob nothing cites once untouched for the TTL (ADR 0055 D6)", async () => {
+    const { db, snap, contentDb, orphan } = await orphanSeed();
+
+    const without = await cmdSweepContent({
+      db,
+      snap,
+      content: contentDb,
+      ttlMs: 30 * DAY,
+      apply: true,
+    });
     expect(without).not.toContain("orphans");
-    const kept = new SqliteContentStore(contentDb);
-    expect(await kept.get(orphan)).not.toBeNull();
-    await kept.close();
+    expect(await stillThere(contentDb, orphan)).toBe(true);
 
     const dry = await cmdSweepContent({
       db,
+      snap,
       content: contentDb,
       ttlMs: 30 * DAY,
       apply: false,
@@ -153,14 +172,67 @@ describe("loom sweep content (DX-2, K10.6)", () => {
 
     const applied = await cmdSweepContent({
       db,
+      snap,
+      content: contentDb,
+      ttlMs: 30 * DAY,
+      apply: true,
+      orphans: true,
+      noArchive: true,
+    });
+    expect(applied).toContain("reclaimed orphans (1)");
+    expect(await stillThere(contentDb, orphan)).toBe(false);
+  });
+
+  it("refuses --orphans --apply with no archive unless --no-archive says there is none", async () => {
+    const { db, snap, contentDb, orphan } = await orphanSeed();
+    const refused = await cmdSweepContent({
+      db,
+      snap,
       content: contentDb,
       ttlMs: 30 * DAY,
       apply: true,
       orphans: true,
     });
-    expect(applied).toContain("reclaimed orphans (1)");
-    const after = new SqliteContentStore(contentDb);
-    expect(await after.get(orphan)).toBeNull();
-    await after.close();
+    expect(refused).toMatch(/--no-archive/);
+    expect(refused).not.toContain("reclaimed");
+    expect(await stillThere(contentDb, orphan)).toBe(true);
+  });
+
+  it("warns BEFORE erasing when --no-archive is given", async () => {
+    const { db, snap, contentDb } = await orphanSeed();
+    const order: string[] = [];
+    const warn = console.error;
+    console.error = (m: string) => order.push(`warn:${m}`);
+    try {
+      const out = await cmdSweepContent({
+        db,
+        snap,
+        content: contentDb,
+        ttlMs: 30 * DAY,
+        apply: true,
+        orphans: true,
+        noArchive: true,
+      });
+      order.push("report");
+      expect(out).toContain("reclaimed orphans (1)");
+    } finally {
+      console.error = warn;
+    }
+    expect(order[0]).toMatch(/^warn:.*archive/);
+    expect(order.at(-1)).toBe("report");
+  });
+
+  it("refuses --orphans on the --db path without --snap: a compacted prefix lives in its snapshot", async () => {
+    const { db, contentDb, orphan } = await orphanSeed();
+    const refused = await cmdSweepContent({
+      db,
+      content: contentDb,
+      ttlMs: 30 * DAY,
+      apply: true,
+      orphans: true,
+      noArchive: true,
+    });
+    expect(refused).toMatch(/--snap/);
+    expect(await stillThere(contentDb, orphan)).toBe(true);
   });
 });

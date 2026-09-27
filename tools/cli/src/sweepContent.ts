@@ -1,5 +1,7 @@
+import type { EventStore, ExecutionEnumerable } from "@loom/event-runtime";
 import { type ContentSweepReport, sweepUnpinnedContent } from "@loom/plugin-content";
-import { SqliteContentStore, SqliteEventStore } from "@loom/plugin-sqlite";
+import { SqliteContentStore, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+import type { SnapshotStore } from "@loom/snapshot-runtime";
 import { type StoreFlags, resolveStores } from "./stores";
 
 // ── `loom sweep content` — the operator surface for the K10.6 pinned sweep ────
@@ -45,7 +47,7 @@ function formatReport(
   if (orphans !== undefined) {
     if (!orphans.archive) {
       lines.push(
-        "  WARNING: --orphans with no --archive-db — a blob cited only by an ARCHIVED run is an orphan to this sweep and is erased. Pass every store that holds citations."
+        "  WARNING: --orphans with no archive (no --archive-db, none wired in the config) — a blob cited only by an ARCHIVED run is an orphan to this sweep and is erased. Pass every store that holds citations."
       );
     }
     lines.push(`  ${verb} orphans (${report.orphansReclaimed.length}):`);
@@ -55,12 +57,22 @@ function formatReport(
 }
 
 /**
- * `loom sweep content (--config <module> | --db <events.db>) --content <content.db>
- *   [--archive-db <path>] [--pin KIND,KIND] [--ttl <ms>] [--orphans] [--apply]`
+ * `loom sweep content (--config <module> | --db <events.db> [--snap <snap.db>]) --content <content.db>
+ *   [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl <ms>]
+ *   [--orphans [--no-archive]] [--apply]`
  *
- * `--orphans` (ADR 0055 D6) also reclaims blobs nothing scanned cites. The sweep cannot tell
- * an archive you did not pass from no archive at all, so it warns whenever `--archive-db` is
- * absent. An app whose blobs are also cited from its own tables sweeps through the API
+ * `--orphans` (ADR 0055 D6) also reclaims blobs nothing scanned cites. Everything that can
+ * cite a blob must be scanned, so:
+ *  - the archive: under `--config`, the app's `durability.retention.archive` is scanned
+ *    automatically. On the `--db` path, `--archive-db`. The sweep cannot tell an archive left
+ *    out from no archive at all, so `--orphans --apply` with neither REFUSES unless
+ *    `--no-archive` asserts there is none, and then it warns before erasing anything.
+ *  - compaction snapshots: a compacted prefix's refs live only in its checkpoint, so
+ *    `--orphans` needs the snapshot store (`--snap`, `--archive-snap`; a config always has one).
+ *
+ * Scan order is live first, then archive: retention copies to the archive before it deletes
+ * from the live store, so an execution that moves mid-sweep is seen in one of them.
+ * An app whose blobs are also cited from its own tables sweeps through the API
  * (`sweepUnpinnedContent({ roots })`, D7): the CLI has no way to read those tables.
  *
  * The event log comes from the composition like every other pass, but `--content` stays a
@@ -77,11 +89,46 @@ export async function cmdSweepContent(
     ttlMs: number;
     apply: boolean;
     orphans?: boolean;
+    /** `--no-archive`: the operator asserts retention archives nowhere (ADR 0055 D6). */
+    noArchive?: boolean;
+    archiveSnap?: string;
   }
 ): Promise<string> {
+  const orphans = opts.orphans === true;
   const stores = await resolveStores(opts);
   const live = stores.eventStore;
-  const archive = opts.archiveDb === undefined ? undefined : new SqliteEventStore(opts.archiveDb);
+  const configArchive = stores.archive;
+  const archive =
+    opts.archiveDb !== undefined
+      ? new SqliteEventStore(opts.archiveDb)
+      : (configArchive?.eventStore as (EventStore & ExecutionEnumerable) | undefined);
+  const archiveSnap =
+    opts.archiveSnap !== undefined
+      ? new SqliteSnapshotStore(opts.archiveSnap)
+      : configArchive?.snapshotStore;
+  const snapshotStores = [stores.snapshotStore, archiveSnap].filter(
+    (s): s is SnapshotStore => s !== undefined
+  );
+  const hasArchive = archive !== undefined;
+  const closeOwned = async (): Promise<void> => {
+    await stores.close();
+    if (opts.archiveDb !== undefined) await archive?.close();
+    if (opts.archiveSnap !== undefined) await archiveSnap?.close();
+  };
+  if (orphans && stores.snapshotStore === undefined) {
+    await closeOwned();
+    return "loom sweep content --orphans needs the snapshot store: a compacted execution's prefix refs live only in its snapshot, and would look like orphans. Pass --snap <snap.db> (and --archive-snap for an archive), or use --config.";
+  }
+  if (orphans && opts.apply && !hasArchive && opts.noArchive !== true) {
+    await closeOwned();
+    return "loom sweep content --orphans --apply refuses to run with no archive: a blob cited only by an ARCHIVED run is an orphan to this sweep and would be erased. Pass --archive-db (or wire durability.retention.archive under --config), or --no-archive if retention archives nowhere.";
+  }
+  if (orphans && opts.apply && !hasArchive) {
+    // Said BEFORE anything is erased, not only in the report afterwards.
+    console.error(
+      "WARNING: --orphans --apply with --no-archive — every blob no scanned event cites will be erased; if any archive holds citations, stop now."
+    );
+  }
   const content = new SqliteContentStore(opts.content);
   const pins = (opts.pin ?? "")
     .split(",")
@@ -89,7 +136,9 @@ export async function cmdSweepContent(
     .filter((k) => k.length > 0);
   try {
     const report = await sweepUnpinnedContent({
+      // Live first, then archive (see above).
       eventStores: archive === undefined ? [live] : [live, archive],
+      ...(orphans && { snapshotStores }),
       contentStore: content,
       pinnedEventTypes: pins,
       olderThanMs: opts.ttlMs,
@@ -102,11 +151,10 @@ export async function cmdSweepContent(
       opts.apply,
       opts.ttlMs,
       pins,
-      opts.orphans === true ? { archive: archive !== undefined } : undefined
+      orphans ? { archive: hasArchive } : undefined
     );
   } finally {
-    await stores.close();
-    await archive?.close();
+    await closeOwned();
     await content.close();
   }
 }

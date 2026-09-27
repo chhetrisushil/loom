@@ -111,3 +111,56 @@ export default defineConfig({
     expect(out).not.toContain("--branches");
   });
 });
+
+// ADR 0055 D6 — under --config, `loom sweep content --orphans` scans the archive the app wired
+// (`durability.retention.archive`), so an archived run's evidence is not an orphan.
+describe("sweep content --orphans honours the config's retention archive", () => {
+  beforeEach(() => {
+    rmSync(SCRATCH, { recursive: true, force: true });
+    mkdirSync(SCRATCH, { recursive: true });
+  });
+  afterEach(() => rmSync(SCRATCH, { recursive: true, force: true }));
+
+  it("keeps a blob cited only by an archived run, and needs no --no-archive", async () => {
+    const { SqliteContentStore } = await import("@loom/plugin-sqlite");
+    const { cmdSweepContent } = await import("./sweepContent");
+    const contentDb = join(SCRATCH, "content.db");
+    const old = Date.now() - 60 * 24 * 3_600_000;
+    const content = new SqliteContentStore(contentDb, { now: () => old });
+    const evidence = await content.put(new TextEncoder().encode("archived finding's evidence"));
+    const orphan = await content.put(new TextEncoder().encode("cited by nothing"));
+    await content.close();
+    const config = writeConfig(
+      "archived.mjs",
+      `
+import { defineConfig } from "@loom/app";
+import { InMemoryAsyncEventStore } from "@loom/event-runtime/memory";
+import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+
+const archiveEvents = new InMemoryAsyncEventStore();
+await archiveEvents.append({
+  id: "a-0", executionId: "month-1", workflowId: "wf", eventType: "FINDING_RECORDED",
+  sequence: 0, timestamp: ${old}, payload: { evidence: [{ __loomContent: "${evidence.__loomContent}" }] },
+});
+export default defineConfig({
+  storage: { kind: "custom", eventStore: new InMemoryAsyncEventStore(), snapshotStore: new InMemoryAsyncSnapshotStore() },
+  durability: { retention: { archive: { eventStore: archiveEvents, snapshotStore: new InMemoryAsyncSnapshotStore() } } },
+});
+`
+    );
+    const out = await cmdSweepContent({
+      config,
+      content: contentDb,
+      ttlMs: 30 * 24 * 3_600_000,
+      apply: true,
+      orphans: true,
+    });
+    expect(out).toContain("reclaimed orphans (1)");
+    expect(out).toContain(orphan.__loomContent);
+    expect(out).not.toMatch(/no --archive-db/);
+    const check = new SqliteContentStore(contentDb);
+    expect(await check.get(evidence)).not.toBeNull();
+    expect(await check.get(orphan)).toBeNull();
+    await check.close();
+  });
+});

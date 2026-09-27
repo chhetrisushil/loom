@@ -103,19 +103,49 @@ export interface ContentSweepOptions {
    * SP-2, bounded memory — or `listExecutions()`): a store that cannot be
    * enumerated cannot be swept safely (its pins would be invisible), so the
    * sweep refuses rather than silently under-pinning.
+   *
+   * List the LIVE store BEFORE its archive. Retention copies an execution to the archive and
+   * then deletes it from the live store. Scanned live-first, an execution that moves during
+   * the sweep is seen in one store or the other. Scanned archive-first, it can be missed by
+   * both, and its blobs then look like orphans.
    */
   eventStores: readonly (Pick<EventStore, "read"> & ExecutionEnumerable)[];
+  /**
+   * ADR 0055 D6 — where compaction checkpoints live (the live snapshot store AND each
+   * archive's). `LogLifecycle.compact` folds a prefix into a snapshot and truncates it, so a
+   * ref the prefix cited survives only inside that snapshot's state. For every execution whose
+   * log has no sequence-1 event (compacted, or bootstrap-only) the sweep loads the latest
+   * snapshot from these stores. If it is a checkpoint past sequence 0, every ref in its state
+   * is PINNED: compaction folded away the event kinds, so the sweep cannot tell telemetry from
+   * evidence. They are released when retention deletes the execution, which deletes its
+   * snapshots too. `reclaimOrphans` REFUSES to run without this when any scanned store can
+   * `truncatePrefix`, and when a log shows a compaction gap that no snapshot covers.
+   */
+  snapshotStores?: readonly SnapshotLookup[];
   /**
    * The blob store. With `deleteIfUntouchedSince` (SPI 1.3.0) every erase is conditional on
    * the blob's touch time, which closes the re-cite race (ADR 0055 D5); without it the sweep
    * falls back to `delete` and reports `raceSafe: false`. `listPage` enables `reclaimOrphans`.
    */
-  contentStore: Pick<ContentStore, "delete" | "deleteIfUntouchedSince" | "listPage">;
+  contentStore: Pick<ContentStore, "delete" | "deleteIfUntouchedSince" | "listPage" | "touchClock">;
   /** Event kinds whose cited refs are pinned — retained as long as the citing fact exists. */
   pinnedEventTypes: Iterable<string>;
   /** Reclaim an unpinned ref only when its latest citation is older than this. */
   olderThanMs: number;
+  /**
+   * LOG time, in epoch ms: the instant the TTL is measured back from, compared against event
+   * `timestamp`s (`now − latest citation ≥ olderThanMs`). It is NOT the store's clock. A
+   * simulated or replayed log may run far from the store's wall clock; the race guard uses
+   * `touchedBefore` for that reason.
+   */
   now: number;
+  /**
+   * STORE time, in epoch ms, on the clock the content store stamps touch times with: the
+   * cutoff for the conditional delete and for orphan eligibility (ADR 0055 D5). Default: the
+   * store's `touchClock()` read ONCE at the sweep's start, minus `olderThanMs`. A store with
+   * `deleteIfUntouchedSince` but no `touchClock` requires it explicitly.
+   */
+  touchedBefore?: number;
   /**
    * DX-2 — report what WOULD be reclaimed without deleting anything (the
    * `loom sweep content` operator default; `--apply` turns it off).
@@ -140,6 +170,11 @@ export interface ContentSweepOptions {
    * orphan, and this pass erases it.
    */
   reclaimOrphans?: boolean;
+}
+
+/** Structural view of a snapshot store: just `loadLatest` (no snapshot-runtime dependency). */
+export interface SnapshotLookup {
+  loadLatest(executionId: string): Promise<{ sequence: number; state: unknown } | null>;
 }
 
 /** Orphan-pass page size (ADR 0055 D6): bounded memory per page. */
@@ -203,10 +238,33 @@ export async function sweepUnpinnedContent(
       "sweepUnpinnedContent: reclaimOrphans needs a content store with deleteIfUntouchedSince() (ContentStore SPI 1.3.0) — a plain delete of a listed orphan loses a blob re-put since the listing"
     );
   }
-  // ADR 0055 D5 — one cutoff for the whole sweep, fixed at its START: a blob touched after
-  // it (a re-citing put the scan could not see yet) is refused by the conditional delete.
-  const cutoff = options.now - options.olderThanMs;
+  if (
+    orphans &&
+    options.snapshotStores === undefined &&
+    options.eventStores.some(
+      (s) => typeof (s as { truncatePrefix?: unknown }).truncatePrefix === "function"
+    )
+  ) {
+    throw new TypeError(
+      "sweepUnpinnedContent: reclaimOrphans over an event store that can truncatePrefix needs snapshotStores — a compacted prefix's refs live only in its snapshot, and without it they look like orphans"
+    );
+  }
+  // ADR 0055 D5 — the guard cutoff is on the STORE's clock, read once at the START: a blob
+  // touched after it (a re-citing put the scan could not see yet) is refused. The TTL on the
+  // log (`now`) is a different clock and never feeds it.
   const raceSafe = store.deleteIfUntouchedSince !== undefined;
+  let cutoff = Number.NEGATIVE_INFINITY;
+  if (raceSafe) {
+    if (options.touchedBefore !== undefined) {
+      cutoff = options.touchedBefore;
+    } else if (store.touchClock !== undefined) {
+      cutoff = (await store.touchClock()) - options.olderThanMs;
+    } else {
+      throw new TypeError(
+        "sweepUnpinnedContent: the content store has deleteIfUntouchedSince() but no touchClock() — pass touchedBefore (a cutoff on the store's clock) explicitly"
+      );
+    }
+  }
   const dryRun = options.dryRun === true;
   /** Erase one address; `true` iff it is gone because of this sweep (or would be). */
   const erase = async (address: string): Promise<boolean> => {
@@ -219,11 +277,13 @@ export async function sweepUnpinnedContent(
     return true;
   };
 
+  // Mark memory is O(distinct cited addresses): one Map entry per address plus the Sets.
   const pinnedKinds = new Set(options.pinnedEventTypes);
   const lastCited = new Map<string, number>();
   const pinned = new Set<string>();
   const loadBearing = new Set<string>();
   let executionsScanned = 0;
+  let uncoveredCompactions = 0;
 
   for (const eventStore of options.eventStores) {
     if (eventStore.listExecutions === undefined && eventStore.listExecutionsPage === undefined) {
@@ -233,7 +293,8 @@ export async function sweepUnpinnedContent(
     }
     for await (const executionId of iterateExecutionIds(eventStore)) {
       executionsScanned++;
-      for (const event of await eventStore.read(executionId)) {
+      const events = await eventStore.read(executionId);
+      for (const event of events) {
         collectContentRefs(event.payload, (address, inEnvelope) => {
           const prior = lastCited.get(address);
           if (prior === undefined || event.timestamp > prior) {
@@ -243,7 +304,31 @@ export async function sweepUnpinnedContent(
           if (!inEnvelope) loadBearing.add(address);
         });
       }
+      // No sequence-1 event: compacted (a gap after the bootstrap anchor) or bootstrap-only.
+      // Either way the prefix, if there was one, now lives in a checkpoint.
+      if (events.length === 0 || events[1]?.sequence === 1) continue;
+      const gap = events.length > 1;
+      let checkpoint: { sequence: number; state: unknown } | null = null;
+      for (const snapshots of options.snapshotStores ?? []) {
+        const found = await snapshots.loadLatest(executionId);
+        if (found !== null && (checkpoint === null || found.sequence > checkpoint.sequence)) {
+          checkpoint = found;
+        }
+      }
+      if (checkpoint !== null && checkpoint.sequence >= 1) {
+        collectContentRefs(checkpoint.state, (address) => {
+          if (!lastCited.has(address)) lastCited.set(address, Number.POSITIVE_INFINITY);
+          pinned.add(address);
+        });
+      } else if (gap) {
+        uncoveredCompactions++;
+      }
     }
+  }
+  if (orphans && uncoveredCompactions > 0) {
+    throw new TypeError(
+      `sweepUnpinnedContent: ${uncoveredCompactions} execution(s) show a compaction gap that no snapshot in snapshotStores covers — their prefix refs cannot be seen, so reclaimOrphans refuses before erasing anything`
+    );
   }
 
   // ADR 0055 D7 — external root sets pin like a pinned event kind does.
@@ -259,7 +344,7 @@ export async function sweepUnpinnedContent(
     if (await erase(address)) reclaimed.push(address);
   }
 
-  // ADR 0055 D6 — orphans: stored, untouched for the TTL, and cited by nothing scanned.
+  // ADR 0055 D6 — orphans: stored, untouched since the cutoff, and cited by nothing scanned.
   // `pinned` and `loadBearing` are subsets of `lastCited`, so two Set lookups decide.
   // Keyset paging on address: erasing entries of a page never skips a later one.
   const orphansReclaimed: string[] = [];
@@ -271,7 +356,9 @@ export async function sweepUnpinnedContent(
         limit: ORPHAN_PAGE_LIMIT,
         touchedBefore: cutoff,
       });
-      for (const { address } of page.entries) {
+      for (const { address, touchedAt } of page.entries) {
+        // 0 = UNKNOWN: the column default a pre-1.3.0 writer leaves during a mixed rollout.
+        if (!(touchedAt > 0)) continue;
         if (lastCited.has(address) || roots.has(address)) continue;
         if (await erase(address)) orphansReclaimed.push(address);
       }

@@ -1,7 +1,8 @@
 import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { ReplayVM } from "@loom/replay-vm";
 import { describe, expect, it } from "vitest";
-import { pinByEventKinds, sweepUnpinnedContent } from "./gc";
+import { type ContentSweepOptions, pinByEventKinds, sweepUnpinnedContent } from "./gc";
 import {
   ContentMissingError,
   ContentResolvingEventStore,
@@ -26,7 +27,14 @@ const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
  * stamp a touch time on `put`, and the sweep only erases a blob untouched since its cutoff,
  * so the blobs must be put BEFORE their citations: at the epoch, not at today's wall clock.
  */
-const storedAtEpoch = (): InMemoryContentStore => new InMemoryContentStore({ now: () => 0 });
+const storedAtEpoch = (): InMemoryContentStore => new InMemoryContentStore({ now: () => 1 });
+
+/**
+ * These fixtures run the log and the store on ONE fabricated clock, so the guard cutoff on
+ * the store's clock is the TTL cutoff on the log's (ADR 0055 D5 keeps the two apart).
+ */
+const sweepOneClock = (options: ContentSweepOptions) =>
+  sweepUnpinnedContent({ touchedBefore: options.now - options.olderThanMs, ...options });
 
 function envelopeFor(address: string): ClaimCheckEnvelope {
   return { __loomClaimCheck: true, ref: { __loomContent: address }, size: 1 };
@@ -95,7 +103,7 @@ async function fixture() {
 describe("sweepUnpinnedContent (K10.6, ADR 0055)", () => {
   it("reclaims stale unpinned telemetry; finding-cited evidence survives archival, hash-verifiable", async () => {
     const f = await fixture();
-    const report = await sweepUnpinnedContent({
+    const report = await sweepOneClock({
       eventStores: [f.live, f.archive],
       contentStore: f.content,
       pinnedEventTypes: ["FINDING_RECORDED"],
@@ -125,8 +133,8 @@ describe("sweepUnpinnedContent (K10.6, ADR 0055)", () => {
       pinnedEventTypes: ["FINDING_RECORDED"],
       olderThanMs: 30 * DAY,
     };
-    await sweepUnpinnedContent({ ...opts, now: NOW });
-    const second = await sweepUnpinnedContent({ ...opts, now: NOW + 300 * DAY });
+    await sweepOneClock({ ...opts, now: NOW });
+    const second = await sweepOneClock({ ...opts, now: NOW + 300 * DAY });
     // Fresh telemetry aged out by the later sweep; evidence STILL pinned. (An
     // already-reclaimed ref may be re-reported â€” delete is idempotent.)
     expect(second.reclaimed).toContain(f.freshTelemetry.__loomContent);
@@ -143,7 +151,7 @@ describe("sweepUnpinnedContent (K10.6, ADR 0055)", () => {
     await store.append(
       evt("run-1", 0, "FINDING_RECORDED", { evidence: [{ __loomContent: plan.__loomContent }] }, 1)
     );
-    const report = await sweepUnpinnedContent({
+    const report = await sweepOneClock({
       eventStores: [store],
       contentStore: content,
       pinnedEventTypes: ["FINDING_RECORDED"],
@@ -159,7 +167,7 @@ describe("sweepUnpinnedContent (K10.6, ADR 0055)", () => {
     const f = await fixture();
     const blind = { read: f.live.read.bind(f.live), listExecutions: undefined };
     await expect(
-      sweepUnpinnedContent({
+      sweepOneClock({
         eventStores: [blind],
         contentStore: f.content,
         pinnedEventTypes: [],
@@ -204,7 +212,7 @@ describe("refs inside arrays (#260)", () => {
       evt("e1", 1, "TELEMETRY", { samples: [{ blob: envelopeFor(stale.__loomContent) }] }, OLD)
     );
 
-    const report = await sweepUnpinnedContent({
+    const report = await sweepOneClock({
       eventStores: [events],
       contentStore: content,
       pinnedEventTypes: ["STEP_COMPLETED"],
@@ -237,7 +245,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
     );
     // Still running: no terminal event. The raw log holds a BARE ref at `output`.
 
-    const report = await sweepUnpinnedContent({
+    const report = await sweepOneClock({
       eventStores: [raw],
       contentStore: content,
       pinnedEventTypes: ["FINDING_RECORDED"],
@@ -267,7 +275,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
       )
     );
 
-    const report = await sweepUnpinnedContent({
+    const report = await sweepOneClock({
       eventStores: [store],
       contentStore: content,
       pinnedEventTypes: ["FINDING_RECORDED"],
@@ -291,7 +299,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
       evt("e", 1, "STEP_COMPLETED", { other: { __loomContent: both.__loomContent } }, OLD)
     );
 
-    const report = await sweepUnpinnedContent({
+    const report = await sweepOneClock({
       eventStores: [store],
       contentStore: content,
       pinnedEventTypes: [],
@@ -323,7 +331,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
       )
     );
 
-    const report = await sweepUnpinnedContent({
+    const report = await sweepOneClock({
       eventStores: [store],
       contentStore: content,
       pinnedEventTypes: [],
@@ -354,7 +362,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
     const store = new InMemoryAsyncEventStore();
     await store.append(evt("c", 0, "STEP_COMPLETED", { root, deep }, OLD));
 
-    const report = await sweepUnpinnedContent({
+    const report = await sweepOneClock({
       eventStores: [store],
       contentStore: content,
       pinnedEventTypes: [],
@@ -389,7 +397,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
       )
     );
 
-    const report = await sweepUnpinnedContent({
+    const report = await sweepOneClock({
       eventStores: [store],
       contentStore: content,
       pinnedEventTypes: [],
@@ -421,7 +429,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
       )
     );
 
-    const report = await sweepUnpinnedContent({
+    const report = await sweepOneClock({
       eventStores: [store],
       contentStore: content,
       pinnedEventTypes: [],
@@ -441,7 +449,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
     const draft = await content.put(bytes(JSON.stringify({ widgets: [] })));
     await store.append(evt("v", 0, "VIEW_DRAFTED", { ref: draft }, OLD));
 
-    const report = await sweepUnpinnedContent({
+    const report = await sweepOneClock({
       eventStores: [raw],
       contentStore: content,
       pinnedEventTypes: [],
@@ -463,6 +471,9 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
   const OLD = NOW - 60 * DAY;
 
   /** A store whose clock the test moves: touch times are the STORE's, as in production. */
+  /** A snapshot store holding nothing â€” for scans over logs nothing compacted. */
+  const NO_SNAPSHOTS = { loadLatest: async () => null };
+
   function clockedStore(start: number) {
     const clock = { now: start };
     const content = new InMemoryContentStore({ now: () => clock.now });
@@ -500,8 +511,9 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     // A new execution re-fetches the unchanged report: its `put` dedups to the same ref, and
     // the sweep's scan has already passed the only (60-day-old) citation. Its STEP_COMPLETED
     // append lands after the sweep.
+    clock.now = NOW; // the store's clock when the sweep starts
     const store = racing(live, "old-run", async () => {
-      clock.now = NOW;
+      clock.now = NOW + 1;
       const again = await content.put(report);
       expect(again.__loomContent).toBe(ref.__loomContent);
     });
@@ -529,8 +541,9 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     await live.append(
       evt("old-run", 0, "STEP_COMPLETED", { output: envelopeFor(ref.__loomContent) }, OLD)
     );
+    clock.now = NOW;
     const store = racing(live, "old-run", async () => {
-      clock.now = NOW;
+      clock.now = NOW + 1;
       await content.put(report);
     });
     const result = await sweepUnpinnedContent({
@@ -546,8 +559,9 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
   });
 
   it("negative: the guard is not a no-op â€” a genuinely stale envelope blob IS still deleted", async () => {
-    const { content } = clockedStore(OLD);
+    const { clock, content } = clockedStore(OLD);
     const stale = await content.put(bytes("pg_stat sample, month 1"));
+    clock.now = NOW;
     const live = new InMemoryAsyncEventStore();
     await live.append(
       evt("run", 0, "STEP_COMPLETED", { output: envelopeFor(stale.__loomContent) }, OLD)
@@ -582,6 +596,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
 
     const base = {
       eventStores: [live],
+      snapshotStores: [NO_SNAPSHOTS],
       contentStore: content,
       pinnedEventTypes: [],
       olderThanMs: TTL,
@@ -609,9 +624,10 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
   });
 
   it("an external root set pins a blob through BOTH passes â€” an app table the log never sees", async () => {
-    const { content } = clockedStore(OLD);
+    const { clock, content } = clockedStore(OLD);
     const onlyInAppTable = await content.put(bytes("a saved dashboard's frozen snapshot"));
     const alsoEnveloped = await content.put(bytes("a claim-checked result an app table kept"));
+    clock.now = NOW;
     const live = new InMemoryAsyncEventStore();
     await live.append(
       evt("run", 0, "STEP_COMPLETED", { output: envelopeFor(alsoEnveloped.__loomContent) }, OLD)
@@ -631,6 +647,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       now: NOW,
       roots,
       reclaimOrphans: true,
+      snapshotStores: [NO_SNAPSHOTS],
     });
     expect(rootReads).toBe(1);
     expect(result.reclaimed).toEqual([]);
@@ -645,6 +662,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     clock.now = NOW;
     const result = await sweepUnpinnedContent({
       eventStores: [new InMemoryAsyncEventStore()],
+      snapshotStores: [NO_SNAPSHOTS],
       contentStore: content,
       pinnedEventTypes: [],
       olderThanMs: TTL,
@@ -661,6 +679,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     const blob = await content.put(bytes("never touched by a refused sweep"));
     const base = {
       eventStores: [new InMemoryAsyncEventStore()],
+      snapshotStores: [NO_SNAPSHOTS],
       pinnedEventTypes: [],
       olderThanMs: TTL,
       now: NOW,
@@ -685,5 +704,174 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       })
     ).rejects.toThrow(/deleteIfUntouchedSince/);
     expect(await content.get(blob)).not.toBeNull();
+  });
+
+  it("two clocks: a caller `now` far ahead of the store's clock does not disarm the guard", async () => {
+    // Log time (a simulated year, a replayed archive) and the store's clock differ. The TTL is
+    // measured on the log; the race guard on the store's own clock.
+    const { clock, content } = clockedStore(OLD);
+    const report = bytes("EXPLAIN â€” unchanged");
+    const ref = await content.put(report);
+    const live = new InMemoryAsyncEventStore();
+    await live.append(
+      evt("old-run", 0, "STEP_COMPLETED", { output: envelopeFor(ref.__loomContent) }, OLD)
+    );
+    clock.now = NOW;
+    const store = racing(live, "old-run", async () => {
+      clock.now = NOW + 1;
+      await content.put(report); // re-cited by a run whose append has not landed
+    });
+    const result = await sweepUnpinnedContent({
+      eventStores: [store],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW + 1_000 * DAY, // the caller's log-time instant, far ahead of the store
+    });
+    expect(await content.get(ref)).not.toBeNull();
+    expect(result.reclaimed).toEqual([]);
+  });
+
+  it("an explicit touchedBefore is the guard cutoff; a 1.3.0 store with neither it nor touchClock is refused", async () => {
+    const { clock, content } = clockedStore(OLD);
+    const stale = await content.put(bytes("old telemetry"));
+    clock.now = NOW;
+    const live = new InMemoryAsyncEventStore();
+    await live.append(
+      evt("run", 0, "STEP_COMPLETED", { output: envelopeFor(stale.__loomContent) }, OLD)
+    );
+    const base = { eventStores: [live], pinnedEventTypes: [], olderThanMs: TTL, now: NOW };
+    const noClock = {
+      delete: (r: { __loomContent: string }) => content.delete(r),
+      deleteIfUntouchedSince: (r: { __loomContent: string }, c: number) =>
+        content.deleteIfUntouchedSince(r, c),
+    };
+    await expect(sweepUnpinnedContent({ ...base, contentStore: noClock })).rejects.toThrow(
+      /touchedBefore|touchClock/
+    );
+    expect(await content.get(stale)).not.toBeNull();
+    // An explicit cutoff BEFORE the blob's touch time keeps it; one after it erases it.
+    const kept = await sweepUnpinnedContent({
+      ...base,
+      contentStore: noClock,
+      touchedBefore: OLD,
+    });
+    expect(kept.reclaimed).toEqual([]);
+    const erased = await sweepUnpinnedContent({
+      ...base,
+      contentStore: noClock,
+      touchedBefore: OLD + 1,
+    });
+    expect(erased.reclaimed).toEqual([stale.__loomContent]);
+  });
+
+  it("a touch time of 0 is UNKNOWN (a pre-1.3.0 writer's default) â€” never orphan-eligible", async () => {
+    const { clock, content } = clockedStore(0);
+    const unknown = await content.put(bytes("written by an old-version process"));
+    clock.now = NOW;
+    const result = await sweepUnpinnedContent({
+      eventStores: [new InMemoryAsyncEventStore()],
+      snapshotStores: [NO_SNAPSHOTS],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+      reclaimOrphans: true,
+    });
+    expect(result.orphansReclaimed).toEqual([]);
+    expect(await content.get(unknown)).not.toBeNull();
+  });
+
+  describe("compaction (LogLifecycle.compact folds the prefix into a snapshot)", () => {
+    /** A real compaction: fold, checkpoint at the tip, truncate the prefix (seq 0 stays). */
+    async function compacted(content: InMemoryContentStore) {
+      const evidence = await content.put(bytes("EXPLAIN â€” the finding's evidence"));
+      const live = new InMemoryAsyncEventStore();
+      const events = [
+        evt("perpetual", 0, "EXECUTION_STARTED", { input: {} }, OLD),
+        evt("perpetual", 1, "STEP_STARTED", { stepId: "explain" }, OLD),
+        evt(
+          "perpetual",
+          2,
+          "STEP_COMPLETED",
+          { stepId: "explain", output: envelopeFor(evidence.__loomContent) },
+          OLD
+        ),
+        evt("perpetual", 3, "FINDING_RECORDED", { evidence: [evidence] }, OLD),
+      ];
+      for (const e of events) await live.append(e);
+      const snapshots = new Map<string, { sequence: number; state: unknown }>();
+      snapshots.set("perpetual", { sequence: 3, state: new ReplayVM(events).getState() });
+      await live.truncatePrefix("perpetual", 3);
+      expect((await live.read("perpetual")).map((e) => e.sequence)).toEqual([0]);
+      const snapshotStore = { loadLatest: async (id: string) => snapshots.get(id) ?? null };
+      return { evidence, live, snapshotStore };
+    }
+
+    it("the orphan pass keeps a blob only the compaction snapshot still cites", async () => {
+      const { clock, content } = clockedStore(OLD);
+      const { evidence, live, snapshotStore } = await compacted(content);
+      clock.now = NOW;
+      const result = await sweepUnpinnedContent({
+        eventStores: [live],
+        snapshotStores: [snapshotStore],
+        contentStore: content,
+        pinnedEventTypes: ["FINDING_RECORDED"],
+        olderThanMs: TTL,
+        now: NOW,
+        reclaimOrphans: true,
+      });
+      expect(await content.get(evidence)).not.toBeNull();
+      expect(result.orphansReclaimed).toEqual([]);
+      expect(result.reclaimed).toEqual([]);
+    });
+
+    it("without snapshotStores, the orphan pass over a store that can truncate is REFUSED (fail closed)", async () => {
+      const { clock, content } = clockedStore(OLD);
+      const { evidence, live } = await compacted(content);
+      clock.now = NOW;
+      await expect(
+        sweepUnpinnedContent({
+          eventStores: [live],
+          contentStore: content,
+          pinnedEventTypes: ["FINDING_RECORDED"],
+          olderThanMs: TTL,
+          now: NOW,
+          reclaimOrphans: true,
+        })
+      ).rejects.toThrow(/snapshotStores/);
+      expect(await content.get(evidence)).not.toBeNull();
+    });
+
+    it("a log with a compaction gap but no snapshot anywhere is refused too, before any erase", async () => {
+      const { clock, content } = clockedStore(OLD);
+      const stale = await content.put(bytes("stale telemetry"));
+      const gapped = {
+        read: async () => [
+          evt("x", 0, "EXECUTION_STARTED", { input: {} }, OLD),
+          evt(
+            "x",
+            7,
+            "STEP_COMPLETED",
+            { stepId: "s", output: envelopeFor(stale.__loomContent) },
+            OLD
+          ),
+        ],
+        listExecutions: async () => ["x"],
+      };
+      clock.now = NOW;
+      await expect(
+        sweepUnpinnedContent({
+          eventStores: [gapped],
+          snapshotStores: [NO_SNAPSHOTS],
+          contentStore: content,
+          pinnedEventTypes: [],
+          olderThanMs: TTL,
+          now: NOW,
+          reclaimOrphans: true,
+        })
+      ).rejects.toThrow(/compact/);
+      expect(await content.get(stale)).not.toBeNull(); // the TTL pass did not run either
+    });
   });
 });

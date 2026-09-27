@@ -99,6 +99,15 @@ export class LogLifecycle {
   ) {}
 
   /**
+   * The archive retention copies into, if one is configured. Read-only. Operator passes that
+   * must see every store holding citations (the content sweep's orphan pass, ADR 0055 D6)
+   * take it from here, so a `--config` run cannot forget it.
+   */
+  get archive(): ArchiveStores | undefined {
+    return this.options.archive;
+  }
+
+  /**
    * R5.3 — a terminal execution MUST NOT be deleted while a live descendant branch still
    * exists (a fork's copied prefix may alias this one, and deleting it would break that
    * branch's replay/lineage). Conservative: block if any direct child still has events.

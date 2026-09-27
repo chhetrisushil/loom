@@ -1260,6 +1260,56 @@ export interface ContentStoreLike {
     entries: { address: string; touchedAt: number }[];
     nextCursor?: string;
   }>;
+  /** OPTIONAL (SPI 1.3.0, ADR 0055 D5): now, on the clock touch times are stamped with. */
+  touchClock?(): Promise<number>;
+}
+
+/** Options for {@link runContentStoreConformance}. */
+export interface ContentStoreConformanceOptions {
+  /**
+   * A factory whose store stamps touch times from the given clock. With it the kit also
+   * checks that a touch time never moves backwards when the clock steps back (SPI 1.3.0).
+   */
+  clocked?: (now: () => number) => ContentStoreLike;
+}
+
+const SPI_1_3_METHODS = ["deleteIfUntouchedSince", "listPage", "touchClock"] as const;
+
+const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 15));
+
+/**
+ * ContentStore SPI 1.3.0 (ADR 0055 D5): the race guard's contract, checked through the
+ * conditional delete ALONE (no `listPage` read-back a store could get right while its delete
+ * gets it wrong). Throws, naming the violation, when:
+ *  - the store implements only part of `deleteIfUntouchedSince` / `listPage` / `touchClock`;
+ *  - a put of bytes it already holds does not bump the touch time the delete compares, which
+ *    is the `INSERT OR IGNORE` shape that loses a re-cited blob to a concurrent sweep.
+ * Resolves for a store with none of the three (an SPI 1.2 store) and for a conforming one.
+ * Exported so the kit's own negative tests can prove it fires.
+ */
+export async function checkContentStoreTouchContract(store: ContentStoreLike): Promise<void> {
+  const present = SPI_1_3_METHODS.filter((m) => store[m] !== undefined);
+  if (present.length === 0) return;
+  if (present.length !== SPI_1_3_METHODS.length) {
+    throw new Error(
+      `ContentStore SPI 1.3.0: implement deleteIfUntouchedSince, listPage and touchClock together — this store has only ${present.join(", ")}`
+    );
+  }
+  const bytes = new TextEncoder().encode(`touch-contract-${Math.random()}`);
+  const ref = await store.put(bytes);
+  await settle();
+  const between = await store.touchClock!(); // after the first put, before the re-put
+  await settle();
+  await store.put(bytes); // the re-citation
+  if (await store.deleteIfUntouchedSince!(ref, between + 1)) {
+    throw new Error(
+      "ContentStore SPI 1.3.0: a put of bytes the store already held did not bump the touch time — deleteIfUntouchedSince erased a blob re-cited after the cutoff (INSERT OR IGNORE instead of ON CONFLICT DO UPDATE?)"
+    );
+  }
+  if ((await store.get(ref)) === null) {
+    throw new Error("ContentStore SPI 1.3.0: a refused deleteIfUntouchedSince erased the blob");
+  }
+  await store.delete(ref);
 }
 
 /**
@@ -1269,7 +1319,8 @@ export interface ContentStoreLike {
  */
 export function runContentStoreConformance(
   factory: () => ContentStoreLike,
-  label = "ContentStore"
+  label = "ContentStore",
+  options: ContentStoreConformanceOptions = {}
 ): void {
   const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
   const eq = (a: Uint8Array, b: Uint8Array): boolean =>
@@ -1372,7 +1423,9 @@ export function runContentStoreConformance(
       throw new Error(`listPage never returned ${address}`);
     }
 
-    const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 15));
+    it("implements the SPI 1.3.0 methods as a set, and a re-put bumps the touch time the conditional delete compares", async () => {
+      await checkContentStoreTouchContract(factory());
+    });
 
     it("deleteIfUntouchedSince erases only an untouched blob, atomically reporting whether it did (when supported)", async () => {
       const store = factory();
@@ -1388,30 +1441,32 @@ export function runContentStoreConformance(
       expect(await store.deleteIfUntouchedSince(ref, Number.MAX_SAFE_INTEGER)).toBe(false);
     });
 
-    it("a put of bytes already held bumps the touch time, and the conditional delete then refuses (when supported)", async () => {
+    it("putStream of bytes already held bumps the touch time too (when supported)", async () => {
       const store = factory();
-      if (store.deleteIfUntouchedSince === undefined || store.listPage === undefined) return;
-      const ref = await store.put(bytes("re-cited"));
-      const first = await touchedAt(store, ref.__loomContent);
-      await tick();
-      const again = await store.put(bytes("re-cited")); // dedup — and a re-citation
-      expect(again.__loomContent).toBe(ref.__loomContent);
-      const second = await touchedAt(store, ref.__loomContent);
-      expect(second).toBeGreaterThan(first); // INSERT OR IGNORE would leave it at `first`
-      // A sweep that decided on the OLD touch time is refused; the guard is not a no-op.
-      expect(await store.deleteIfUntouchedSince(ref, first + 1)).toBe(false);
-      expect(await store.get(ref)).not.toBeNull();
-      expect(await store.deleteIfUntouchedSince(ref, second + 1)).toBe(true);
-
-      if (store.putStream === undefined) return;
-      const streamed = await store.put(bytes("streamed-re-cite"));
-      const before = await touchedAt(store, streamed.__loomContent);
-      await tick();
+      if (store.touchClock === undefined || store.putStream === undefined) return;
+      const text = "streamed-re-cite";
+      const ref = await store.put(bytes(text));
+      await settle();
+      const between = await store.touchClock();
+      await settle();
       async function* once(): AsyncGenerator<Uint8Array> {
-        yield bytes("streamed-re-cite");
+        yield bytes(text);
       }
       await store.putStream(once());
-      expect(await touchedAt(store, streamed.__loomContent)).toBeGreaterThan(before);
+      expect(await store.deleteIfUntouchedSince!(ref, between + 1)).toBe(false);
+    });
+
+    it("a touch time never moves backwards when the clock steps back (when a clocked factory is given)", async () => {
+      if (options.clocked === undefined) return;
+      let clock = 2_000;
+      const store = options.clocked(() => clock);
+      if (store.deleteIfUntouchedSince === undefined || store.listPage === undefined) return;
+      const ref = await store.put(bytes("monotonic"));
+      clock = 1_000; // NTP stepped back
+      await store.put(bytes("monotonic"));
+      expect(await touchedAt(store, ref.__loomContent)).toBe(2_000);
+      expect(await store.deleteIfUntouchedSince(ref, 1_500)).toBe(false);
+      if (store.touchClock !== undefined) expect(await store.touchClock()).toBe(1_000);
     });
 
     it("listPage covers every blob exactly once across pages, even while the pages are being deleted (when supported)", async () => {
@@ -1450,10 +1505,27 @@ export function runContentStoreConformance(
       if (store.listPage === undefined) return;
       const ref = await store.put(bytes("aged"));
       const at = await touchedAt(store, ref.__loomContent);
-      const addresses = async (touchedBefore: number): Promise<string[]> =>
-        (await store.listPage!({ touchedBefore, limit: 1000 })).entries.map((e) => e.address);
-      expect(await addresses(at)).not.toContain(ref.__loomContent);
-      expect(await addresses(at + 1)).toContain(ref.__loomContent);
+      /** Every address the filtered scan returns, paged to the end. */
+      const addresses = async (touchedBefore: number): Promise<Set<string>> => {
+        const all = new Set<string>();
+        let cursor: string | undefined;
+        do {
+          const page = await store.listPage!({
+            ...(cursor !== undefined && { cursor }),
+            touchedBefore,
+            limit: 3,
+          });
+          for (const e of page.entries) {
+            expect(e.touchedAt).toBeLessThan(touchedBefore);
+            all.add(e.address);
+          }
+          cursor = page.nextCursor;
+        } while (cursor !== undefined);
+        return all;
+      };
+      for (let i = 0; i < 7; i++) await store.put(bytes(`aged-filler-${i}`)); // > one page
+      expect((await addresses(at)).has(ref.__loomContent)).toBe(false);
+      expect((await addresses(at + 1)).has(ref.__loomContent)).toBe(true);
     });
 
     it("listPage rejects a limit that is not a positive integer — never 'no limit' (when supported)", async () => {
