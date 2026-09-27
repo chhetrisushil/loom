@@ -1,7 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { PostgresEventStore } from "./PostgresEventStore";
+import { PostgresEventStore, notifyChannels } from "./PostgresEventStore";
 import { NOTIFY_CHANNEL, migrate } from "./schema";
 
 // ADR 0074 D4 — cross-node delivery must reach only the nodes that asked for it.
@@ -127,6 +127,34 @@ suite("interest-filtered NOTIFY delivery", () => {
     const listener = (store as any).listener as { query: Pool["query"] };
     const { rows } = await listener.query("SELECT channel FROM pg_listening_channels() AS channel");
     expect(rows.map((r: { channel: string }) => r.channel)).toEqual([NOTIFY_CHANNEL]);
+    await store.close();
+  });
+
+  it("notifyChannels(notifyBuckets) contains exactly the channel the store LISTENs on", async () => {
+    // Ties the exported enumeration to what the store ACTUALLY subscribes the OS socket
+    // to, rather than re-deriving the same formula and testing it against itself — an
+    // external LISTENer (tools/bench-throughput's fan-out scenarios) has only this export
+    // to go on, so it must agree with the private `channelFor` on the wire.
+    const buckets = 8;
+    const store = new PostgresEventStore(track(new Pool(scoped())), { notifyBuckets: buckets });
+    const all = notifyChannels(buckets);
+    expect(all).toHaveLength(buckets);
+    await store.subscribe(ID("probe"), () => {});
+    // biome-ignore lint/suspicious/noExplicitAny: private listener client — see above
+    const listener = (store as any).listener as { query: Pool["query"] };
+    const { rows } = await listener.query("SELECT channel FROM pg_listening_channels() AS channel");
+    expect(rows).toHaveLength(1);
+    expect(all).toContain(rows[0].channel);
+    await store.close();
+  });
+
+  it("notifyChannels(1) is the legacy channel a notifyBuckets: 1 store LISTENs on", async () => {
+    const store = new PostgresEventStore(track(new Pool(scoped())), { notifyBuckets: 1 });
+    await store.subscribe(ID("y"), () => {});
+    // biome-ignore lint/suspicious/noExplicitAny: see above.
+    const listener = (store as any).listener as { query: Pool["query"] };
+    const { rows } = await listener.query("SELECT channel FROM pg_listening_channels() AS channel");
+    expect(notifyChannels(1)).toEqual(rows.map((r: { channel: string }) => r.channel));
     await store.close();
   });
 

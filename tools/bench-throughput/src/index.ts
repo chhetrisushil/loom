@@ -1,22 +1,32 @@
-import { migratePostgresStores } from "@loom/plugin-postgres";
+import { CoalescingEventStore } from "@loom/event-runtime";
+import { migratePostgresStores, notifyChannels } from "@loom/plugin-postgres";
 import { Pool } from "pg";
 import type { Measurement } from "./harness";
 import {
   type BenchConfig,
   appendWatched,
   appendWithoutNotify,
+  assertDelivered,
   attachListeners,
   batchedAppend,
   coalescedAppend,
   crossExecutionBatch,
   durableExecutions,
   makeRuntime,
+  partitionDisjoint,
   rawAppend,
   readPath,
   spawnSubscriberNodes,
   subscribedExecutionIds,
   transientInvocations,
 } from "./scenarios";
+
+// The channel(s) a store built with the default `notifyBuckets` (16) actually publishes
+// on — what section C's listeners must LISTEN on to receive anything post-ADR-0074.
+const DEFAULT_NOTIFY_BUCKETS = 16;
+// A channel no store in this process, or any other, ever publishes on — pins the
+// channel-INDEPENDENT part of the writer cost (backlog-A item 3).
+const UNRELATED_CHANNEL = "loom_events_bench_unrelated_channel";
 
 // Reuses the same env var the Postgres store's integration tests are gated on, so one
 // database serves both. LOOM_BENCH_POSTGRES_URL overrides when you want the bench
@@ -160,32 +170,84 @@ async function main(): Promise<void> {
   );
 
   // ── C. pg_notify cost + LISTEN fan-out ──────────────────────────────────────
+  //
+  // `bundle.eventStore` is built with the default `notifyBuckets` (16 — see
+  // DEFAULT_NOTIFY_BUCKETS), so it publishes on `loom_events_<bucket>`, NOT the legacy
+  // `NOTIFY_CHANNEL`. Listeners below must LISTEN on the real bucket channels
+  // (`notifyChannels`) to receive anything; this section used to LISTEN on the legacy
+  // channel alone and silently measured zero deliveries every run (backlog-A item 3).
   const notifyConcurrency = batchConcurrency;
   const notifyRows: Measurement[] = [];
   notifyRows.push(await appendWithoutNotify(pool, cfg, notifyConcurrency));
   await truncate();
   notifyRows.push(await rawAppend(bundle.eventStore, cfg, notifyConcurrency));
   await truncate();
-  const listeners = await attachListeners(PG_URL, cfg.listeners);
-  const withListeners = await rawAppend(bundle.eventStore, cfg, notifyConcurrency);
-  withListeners.label = `append (shipped) + ${cfg.listeners} idle LISTEN conns · c=${notifyConcurrency}`;
-  notifyRows.push(withListeners);
+
+  // Real bucket channels: a node interested in every execution, which is the worst case
+  // for delivery and the case the pre-bucketing global channel always was.
+  const realChannels = notifyChannels(DEFAULT_NOTIFY_BUCKETS);
+  const realListeners = await attachListeners(PG_URL, cfg.listeners, { channels: realChannels });
+  const withRealListeners = await rawAppend(bundle.eventStore, cfg, notifyConcurrency);
+  withRealListeners.label =
+    `append (shipped) + ${cfg.listeners} LISTEN conns on the ${realChannels.length} real ` +
+    `bucket channel(s) · c=${notifyConcurrency}`;
+  notifyRows.push(withRealListeners);
   // Notifications are delivered asynchronously; give the listeners a beat to drain
   // before reading the counter, so the fan-out figure is not truncated.
   await new Promise((resolve) => setTimeout(resolve, 500));
-  const delivered = listeners.received();
-  await listeners.close();
+  const realDelivered = realListeners.received();
+  await realListeners.close();
   await truncate();
-  const appendsWhileListening = withListeners.ops + withListeners.warmupOps;
+  const appendsWithRealListeners = withRealListeners.ops + withRealListeners.warmupOps;
+  // The section is worthless if this fires silently as "0 delivered" — it must fail
+  // outright, because real listeners on the real channels receiving nothing means the
+  // wiring is broken, not that the cost is zero.
+  assertDelivered(
+    "C. real bucket-channel listeners",
+    realDelivered,
+    cfg.listeners,
+    /* expectDelivery */ true
+  );
+
+  // Unrelated channel: listeners LISTEN on a channel nobody, ever, publishes on. If the
+  // writer still slows down here, the cost cannot be about WHICH channel is used — it is
+  // per LISTENing backend, independent of channel or interest (backlog-A item 3's finding;
+  // ADR 0074 Amendment).
+  const unrelatedListeners = await attachListeners(PG_URL, cfg.listeners, {
+    channels: [UNRELATED_CHANNEL],
+  });
+  const withUnrelatedListeners = await rawAppend(bundle.eventStore, cfg, notifyConcurrency);
+  withUnrelatedListeners.label =
+    `append (shipped) + ${cfg.listeners} LISTEN conns on an UNRELATED channel · ` +
+    `c=${notifyConcurrency}`;
+  notifyRows.push(withUnrelatedListeners);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const unrelatedDelivered = unrelatedListeners.received();
+  await unrelatedListeners.close();
+  await truncate();
+  // Zero delivered here is the CORRECT reading (nothing publishes on this channel) —
+  // expectDelivery is false, so the guard does not fire on a legitimately empty count.
+  assertDelivered(
+    "C. unrelated-channel listeners",
+    unrelatedDelivered,
+    cfg.listeners,
+    /* expectDelivery */ false
+  );
+
   sections.push(
     [
       "## C. `pg_notify` cost and LISTEN fan-out\n\n",
       `${table(notifyRows, "events")}\n\n`,
-      `Notifications delivered to ${cfg.listeners} idle listeners: **${fmt(delivered, 0)}** across `,
-      `${appendsWhileListening} appends (measured + warmup) = `,
-      `**${fmt(delivered / Math.max(1, appendsWhileListening), 2)} per event**. `,
-      "That figure IS the listener count: the channel has no server-side interest filter, ",
-      "so every subscribing node receives every event and discards the ones it does not want.",
+      `Real bucket channels: **${fmt(realDelivered, 0)}** notifications delivered to `,
+      `${cfg.listeners} listeners across ${appendsWithRealListeners} appends (measured + `,
+      `warmup) = **${fmt(realDelivered / Math.max(1, appendsWithRealListeners), 2)} per `,
+      "event** — close to the listener count, since every listener holds interest in every ",
+      "bucket. Unrelated channel: **",
+      `${fmt(unrelatedDelivered, 0)}** delivered (expected — nothing publishes there), yet `,
+      "the writer paid almost the same throughput cost in both rows above. That is the ",
+      "point of this section: the cost is NOT about which channel, or whether it matches — ",
+      "it is per LISTENing backend on the connection, channel-independent. See ADR 0074's ",
+      "amendment to D4.",
     ].join("")
   );
 
@@ -335,29 +397,96 @@ async function main(): Promise<void> {
   );
 
   // ── H. multi-node fan-out with real subscriber processes ────────────────────
-  const fanoutRows: Measurement[] = [];
-  const fanoutNodeCounts = [0, 2, 4];
-  const deliveries: { nodes: number; delivered: number; appends: number }[] = [];
-  for (const nodeCount of fanoutNodeCounts) {
-    await truncate();
-    const ids = subscribedExecutionIds(batchConcurrency, `n${nodeCount}`);
-    const subs = await spawnSubscriberNodes(PG_URL, nodeCount, ids);
-    const m = await appendWatched(
-      bundle.eventStore,
-      cfg,
-      batchConcurrency,
-      ids,
-      `append · ${nodeCount} real subscriber node(s) · c=${batchConcurrency}`
-    );
+  interface FanoutDelivery {
+    nodes: number;
+    delivered: number;
+    appends: number;
+  }
+  const deliveryRow = (d: FanoutDelivery): string =>
+    `| ${d.nodes} | ${fmt(d.delivered, 0)} | ${d.appends} | ` +
+    `${d.nodes === 0 ? "—" : fmt(d.delivered / d.nodes / Math.max(1, d.appends), 2)} |`;
+
+  /** Run one fan-out measurement: spawn subscriber processes, append, drain, stop. */
+  async function measureFanout(
+    idsPerNode: string[][],
+    writer: { store: typeof bundle.eventStore | CoalescingEventStore; label: string },
+    ids: string[]
+  ): Promise<{ measurement: Measurement; delivery: FanoutDelivery }> {
+    const subs = await spawnSubscriberNodes(PG_URL as string, idsPerNode);
+    const measurement = await appendWatched(writer.store, cfg, batchConcurrency, ids, writer.label);
+    if (writer.store instanceof CoalescingEventStore) await writer.store.drain();
     // Cross-process delivery is asynchronous; let it drain before counting.
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     const { delivered, nodes } = await subs.stop();
-    fanoutRows.push(m);
-    deliveries.push({ nodes, delivered, appends: m.ops + m.warmupOps });
+    return {
+      measurement,
+      delivery: { nodes, delivered, appends: measurement.ops + measurement.warmupOps },
+    };
+  }
+
+  // H-shared: every node subscribes to every execution the writer touches. This is the
+  // pre-existing shape, kept as the baseline — but it CANNOT show bucketing's own benefit,
+  // because there is no execution any node lacks interest in.
+  const sharedRows: Measurement[] = [];
+  const sharedNodeCounts = [0, 2, 4];
+  const sharedDeliveries: FanoutDelivery[] = [];
+  for (const nodeCount of sharedNodeCounts) {
+    await truncate();
+    const ids = subscribedExecutionIds(batchConcurrency, `hs${nodeCount}`);
+    const { measurement, delivery } = await measureFanout(
+      Array.from({ length: nodeCount }, () => ids),
+      {
+        store: bundle.eventStore,
+        label: `append · ${nodeCount} node(s), shared interest · c=${batchConcurrency}`,
+      },
+      ids
+    );
+    sharedRows.push(measurement);
+    sharedDeliveries.push(delivery);
   }
   await truncate();
-  const baseline = fanoutRows[0];
-  const worst = fanoutRows[fanoutRows.length - 1];
+
+  // H-disjoint: the SAME total execution count, but `partitionDisjoint` gives each node
+  // its own non-overlapping share. Delivery should track that share (bucketing's client-
+  // side benefit); writer throughput is the open question this variant exists to check.
+  const disjointNodeCounts = [2, 4];
+  const disjointRows: Measurement[] = [];
+  const disjointDeliveries: FanoutDelivery[] = [];
+  for (const nodeCount of disjointNodeCounts) {
+    await truncate();
+    const ids = subscribedExecutionIds(batchConcurrency, `hd${nodeCount}`);
+    const { measurement, delivery } = await measureFanout(
+      partitionDisjoint(ids, nodeCount),
+      {
+        store: bundle.eventStore,
+        label: `append · ${nodeCount} node(s), disjoint interest · c=${batchConcurrency}`,
+      },
+      ids
+    );
+    disjointRows.push(measurement);
+    disjointDeliveries.push(delivery);
+  }
+  await truncate();
+
+  // H-coalesced: the writer appends through the SHIPPED `CoalescingEventStore` instead of
+  // one `pg_notify` per event — the mitigation ADR 0074's amendment recommends for
+  // multi-node fan-out, since it amortizes the per-commit signalling cost across a batch.
+  const coalNodeCount = sharedNodeCounts[sharedNodeCounts.length - 1] as number;
+  await truncate();
+  const coalIds = subscribedExecutionIds(batchConcurrency, `hc${coalNodeCount}`);
+  const coalescingStore = new CoalescingEventStore(bundle.eventStore, { maxBatch: 16 });
+  const { measurement: coalescedFanout, delivery: coalescedDelivery } = await measureFanout(
+    Array.from({ length: coalNodeCount }, () => coalIds),
+    {
+      store: coalescingStore,
+      label: `append via CoalescingEventStore · ${coalNodeCount} node(s), shared interest · c=${batchConcurrency}`,
+    },
+    coalIds
+  );
+  await truncate();
+
+  const sharedBaseline = sharedRows[0];
+  const sharedWorst = sharedRows[sharedRows.length - 1];
   sections.push(
     [
       "## H. Multi-node fan-out (real subscriber processes)\n\n",
@@ -365,21 +494,41 @@ async function main(): Promise<void> {
       "processes each holding a `PostgresEventStore` with live `subscribe()` calls, so ",
       "`onNotify`'s per-notification `SELECT` is included — the read amplification a real ",
       "node pays.\n\n",
-      `${table(fanoutRows, "events")}\n\n`,
+      "### H1 — shared interest (every node wants every execution)\n\n",
+      `${table(sharedRows, "events")}\n\n`,
       "| nodes | notifications delivered | appends | per node per event |\n|---:|---:|---:|---:|\n",
-      deliveries
-        .map(
-          (d) =>
-            `| ${d.nodes} | ${fmt(d.delivered, 0)} | ${d.appends} | ` +
-            `${d.nodes === 0 ? "—" : fmt(d.delivered / d.nodes / Math.max(1, d.appends), 2)} |`
-        )
-        .join("\n"),
-      baseline !== undefined && worst !== undefined && worst.opsPerSec > 0
+      sharedDeliveries.map(deliveryRow).join("\n"),
+      sharedBaseline !== undefined && sharedWorst !== undefined && sharedWorst.opsPerSec > 0
         ? [
-            `\n\nWriter throughput with ${worst.concurrency} writers falls `,
-            `**${fmt(baseline.opsPerSec / worst.opsPerSec, 2)}×** from 0 to `,
-            `${fanoutNodeCounts[fanoutNodeCounts.length - 1]} subscriber nodes — the cost of `,
-            "fan-out landing on the WRITER, which is what makes this the scale-out blocker.",
+            `\n\nWriter throughput with ${sharedWorst.concurrency} writers falls `,
+            `**${fmt(sharedBaseline.opsPerSec / sharedWorst.opsPerSec, 2)}×** from 0 to `,
+            `${sharedNodeCounts[sharedNodeCounts.length - 1]} subscriber nodes.\n\n`,
+          ].join("")
+        : "\n\n",
+      "### H2 — disjoint interest (delivery drops; writer cost does not, cleanly)\n\n",
+      `${table(disjointRows, "events")}\n\n`,
+      "| nodes | notifications delivered | appends | per node per event |\n|---:|---:|---:|---:|\n",
+      disjointDeliveries.map(deliveryRow).join("\n"),
+      "\n\n*Delivered* per node per event tracks the prediction exactly: `1/nodeCount` of H1's, ",
+      "since a node's listener set now sees only the buckets its own share touches. *Writer* ",
+      "throughput does NOT track a clean prediction either way — across repeat runs it is ",
+      "sometimes close to H1 at the same node count and sometimes visibly higher, which is not ",
+      "the bucketing win it might look like: fewer per-node `onNotify` SELECTs mean the ",
+      "subscriber processes do less work, which can free CPU/connections on this SAME, ",
+      "single-host loopback Postgres that the writer is also contending for (see the loopback ",
+      "caveat in `docs/scaling.md`). A distributed deployment would not get that side effect. ",
+      "The writer-side finding stands: bucketing does not itself reduce the per-LISTENing- ",
+      "backend cost (section C).\n\n",
+      "### H3 — coalesced writer (the shipped mitigation)\n\n",
+      `${table([coalescedFanout], "events")}\n\n`,
+      `${deliveryRow(coalescedDelivery)}\n\n`,
+      sharedWorst !== undefined && coalescedFanout.opsPerSec > 0
+        ? [
+            `Against H1 at the same node count (**${fmt(sharedWorst.opsPerSec)} events/sec**): `,
+            `**${fmt(coalescedFanout.opsPerSec / sharedWorst.opsPerSec, 2)}×**. `,
+            "One notifying commit per BATCH rather than per event amortizes the per-commit ",
+            "signalling cost that H1/H2 pay per event — this is the recommended mitigation for ",
+            "multi-node fan-out (ADR 0074 D4 amendment), not a transport change.",
           ].join("")
         : "",
     ].join("")

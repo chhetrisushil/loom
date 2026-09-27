@@ -188,3 +188,73 @@ Decided:
 `EVENT_STORE_SPI_VERSION` stays 1.4.0 because no method was added. The encryption half of this
 change, which covers what may leave the erasure boundary once retention and compaction reach
 an encrypted log, is ADR 0022's amendment of the same date.
+
+## Amendment (2026-09-28) — bucketing fixes delivery, not the writer cost
+
+D4 claimed bucketed `LISTEN loom_events_<hash % N>` "fixes an O(events × nodes) broadcast
+whose cost lands on the **writer**." That claim is wrong. Bucketing fixes what a listener
+*receives* (client-side filtering) and the per-notification `SELECT` volume that follows
+from it. It does not fix what the writer pays to have listeners on the database at all,
+which is the actual O(events × nodes) mechanism, and which bucketing cannot touch because it
+does not change how many backends are LISTENing — only which channel each one is on.
+
+**How this was caught.** `tools/bench-throughput` section C, the bench this ADR's own D4
+numbers came from, still attached its fan-out listeners to the pre-bucketing global
+channel (`NOTIFY_CHANNEL`) after the store had moved to bucketed channels
+(`loom_events_<bucket>`). Every listener in that section therefore received nothing, and the
+section printed "0 delivered … = 0 per event" next to a writer-throughput number that had, in
+the same run, still dropped 2.28×. A self-contradicting measurement passed as a green bench
+run for a release, because nothing checked that a listener expected to receive something
+actually did (`docs/scaling.md` §3.1 also still read "**[open]** … nothing implements it
+yet" under a heading of SHIPPED — the same drift, in prose). The bench now takes the real
+channel list (`notifyChannels`, exported from `@loom/plugin-postgres` beside
+`NOTIFY_CHANNEL`) and fails outright (`VacuousDeliveryError`) if delivery was expected and
+none arrived — a listener set that receives nothing is a broken measurement, not a small
+number.
+
+**What re-running the fixed bench found**, against a throwaway local PG 17 (8-core Apple M2,
+a shared host, not a dedicated benchmark machine — ranges below are 3–4 repeat runs, not
+single points; see `docs/scaling.md` §3.1 for the full tables):
+
+| listener shape (c=128, 16 listeners) | events/sec vs. no-listener baseline (same run) |
+|---|---:|
+| 16 listeners on a channel **nobody publishes to** | **1.18× – 1.73×** slower |
+| 16 listeners on the **real** bucket channels (full interest) | **1.22× – 1.90×** slower |
+
+Listeners that receive **zero** notifications cost the writer almost as much as listeners
+receiving every notification. The cost is per LISTENing backend on the connection, not per
+channel and not per delivered event. Real subscriber processes (scenario H, shared
+interest) confirm the same shape end to end: **1.68× – 2.63×** writer throughput lost to 4
+nodes, matching the pre-bucketing 2.07–2.19× within run-to-run noise — bucketing changed
+nothing here, because a fully-shared-interest deployment gives bucketing no filtering to do.
+A disjoint-interest variant (`partitionDisjoint`) shows bucketing's real, narrower win —
+delivered notifications per node per event drop to exactly `1/nodeCount` — without a clean
+writer-throughput win alongside it (see `docs/scaling.md` §3.1's caveat on that variant
+possibly being a single-host contention artifact rather than a fan-out result).
+
+**Decided:**
+
+- **D4's writer-cost claim is corrected**, not merely softened: bucketing is a client-side
+  delivery fix. State the writer-side cost as unsolved by D4, open, and channel-independent.
+- **Recommend `CoalescingEventStore` (D2) for multi-node deployments carrying live
+  subscribers.** It already ships, needs no further work, and directly targets the
+  mechanism: one notifying commit per BATCH instead of per event amortizes the per-commit
+  signalling cost every per-event append pays regardless of channel. Measured recovery,
+  coalesced writer vs. the uncoalesced 4-subscriber-node case: **1.21× – 1.54×** (3 valid
+  runs).
+- **A transport change for the writer-side cost is considered and rejected for now.**
+  Options, cost order: (1) a separate batched notifier connection — the same amortization
+  `CoalescingEventStore` already gives, for more moving parts; (2) watermark polling instead
+  of LISTEN — trades a push model for a pull one, unevaluated latency/load trade; (3) a
+  purpose-built bus (Redis, NATS) behind the existing `subscribe` seam, as a **3P plugin**
+  via `SubscriberRegistry` — never kernel, never 1P, absent a second unrelated consumer
+  (ADR 0083). `CoalescingEventStore`'s measured headroom is enough that none of these earn
+  their complexity today. Revisit only if a real multi-node deployment is still writer-bound
+  after coalescing is wired in.
+- `tools/bench-throughput` section C now LISTENs on the store's real bucket channels and on
+  an unrelated channel (pinning the channel-independent reading), and fails the run if
+  expected delivery does not arrive. Scenario H gains a disjoint-interest variant and a
+  `CoalescingEventStore` variant. `docs/scaling.md` §3.1 is rewritten to match this
+  amendment, including the re-captured numbers and the same machine caveats.
+
+No SPI change, no kernel change. `EVENT_STORE_SPI_VERSION` stays 1.4.0.

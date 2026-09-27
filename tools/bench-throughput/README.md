@@ -76,9 +76,14 @@ note that such a coalescer needs a per-row fence check this scenario does not me
 See `docs/scaling.md` for the full argument.
 
 **C. `pg_notify` cost and `LISTEN` fan-out** — the shipped statement versus the same
-statement with the notify CTE removed, then with K idle listeners attached. Every append
-notifies one global channel and every subscribing node receives every event, filtering
-client-side; the delivered-notifications count makes that concrete.
+statement with the notify CTE removed, then with K listeners attached on the store's real
+bucket channels (`notifyChannels`, ADR 0074 D4 — full interest, the worst case for
+delivery), then with K listeners on a channel nobody publishes to. The unrelated-channel row
+is the point: it isolates the writer's per-LISTENing-backend cost from delivery volume, and
+the two rows read close together — bucketing narrows what a listener receives, not how many
+backends the writer has to signal. `assertDelivered` fails the run outright if a listener set
+expected to receive something delivers zero, so this section cannot go vacuous again (it did,
+for a release — see the ADR 0074 amendment).
 
 **D. End-to-end durable executions** — a real `WorkflowRuntime`, a real flow, a no-op
 effect, `start()` → `waitForCompletion()`. This is the number that answers "QPS". The
@@ -111,8 +116,14 @@ against section B **at the same batch size**; the report does this automatically
 (`subscriberChild.ts`), each holding a `PostgresEventStore` with live `subscribe()` calls,
 and sweeps writer throughput against node count. Unlike section C's idle `LISTEN`
 connections, this includes `onNotify`'s per-notification `SELECT` — the read amplification
-a real node pays. Reports delivered notifications per node per event, which should be
-exactly 1: that is the broadcast, confirmed rather than inferred.
+a real node pays. Three variants: **H1** shared interest (every node subscribes to every
+execution — delivered notifications per node per event should be exactly 1, the broadcast
+confirmed rather than inferred); **H2** disjoint interest (`partitionDisjoint` gives each
+node its own non-overlapping share — delivered per node per event should drop to exactly
+`1/nodeCount`; writer throughput does not track a clean prediction, and may reflect
+single-host resource contention rather than a fan-out result — see `docs/scaling.md` §3.1);
+**H3** a `CoalescingEventStore` writer under H1's shared interest, showing the shipped
+mitigation for the writer-side cost that bucketing alone does not fix.
 
 ## Comparing hosts
 
