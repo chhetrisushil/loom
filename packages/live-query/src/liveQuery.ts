@@ -1,5 +1,6 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import type { EventStore } from "@loom/event-runtime";
+import { foldEvents } from "@loom/replay-vm";
 
 // ── Live query over an in-flight execution ────────────────────────────────────
 //
@@ -8,6 +9,29 @@ import type { EventStore } from "@loom/event-runtime";
 // push the new state each time an event lands. This needs NO syscall and NO new event
 // type — it composes `loadState` with `EventStore.subscribe`, so it stays a read-model
 // concern (P10), never a kernel primitive.
+//
+// INCREMENTAL FOLD — the one-time full load, then deltas only. `loadState` bounds a
+// single fold's I/O with snapshots, but a live subscriber re-folding from genesis on
+// EVERY event is still O(N) rows per event and O(N²) over an execution's lifetime (see
+// `WorkflowRuntime.foldState`'s docstring). So `subscribe` calls `reader.loadState`
+// exactly ONCE per subscription — establishing `state` and `tip` (the last folded
+// sequence) — and every later wake-up instead reads only the tail since `tip`
+// (`eventStore.readFrom(id, tip + 1)`) and folds that delta onto the kept `state` with
+// the kernel's own `foldEvents` (no new fold, no new version — `fold(snapshot, suffix)
+// === fold(events)` is already load-bearing for snapshots/compaction). Total I/O goes
+// from O(N²) to O(N).
+//
+// It reads the delta rather than folding the delivered envelope because delivery can be
+// gapped, duplicated or cross-node — `readFrom` handles all three for free — and because
+// `ContentResolvingEventStore.subscribe` deliberately delivers the RAW ref-bearing event
+// when resolution fails, whereas its read path throws `ContentMissingError` loudly. An
+// empty delta emits nothing; a deleted execution (`readFrom` returns `[]` forever) stays
+// silent, same as today's `null`-skipping.
+//
+// The gate for "still need the one-time full load" is `state === null` — not a separate
+// boolean — because a subscription started before the execution exists must keep asking
+// the reader (cheaply: an empty log) until the reader hands back a real baseline with the
+// executionId/workflowId identity `foldEvents([], undefined)` cannot invent on its own.
 
 /** The runtime capability a live query needs — just the folding read. */
 export interface StateReader {
@@ -54,6 +78,12 @@ export function liveQuery(deps: LiveQueryDeps): LiveQuery {
       let refolding = false;
       let dirty = false;
 
+      // Per-subscription incremental fold state. `state === null` means "no baseline
+      // yet" — the ONLY condition under which a pass does the full `reader.loadState`;
+      // every other pass reads just the tail past `tip` and folds it onto `state`.
+      let state: ExecutionState | null = null;
+      let tip = -1;
+
       const pump = async (): Promise<void> => {
         if (refolding) {
           dirty = true;
@@ -63,7 +93,18 @@ export function liveQuery(deps: LiveQueryDeps): LiveQuery {
         try {
           do {
             dirty = false;
-            const state = await snapshot(executionId);
+            if (state === null) {
+              state = await deps.reader.loadState(executionId);
+              if (state !== null) tip = state.sequence;
+            } else {
+              const delta = await deps.eventStore.readFrom(executionId, tip + 1);
+              if (delta.length === 0) continue; // nothing new — emit nothing
+              // `foldEvents` treats `state` as immutable (fresh audit-list ownership per
+              // pass), so folding the delta onto the kept state never mutates what a
+              // previous `onState` call was handed.
+              state = foldEvents(delta, state);
+              tip = delta[delta.length - 1]!.sequence;
+            }
             if (state !== null) onState(state);
           } while (dirty);
         } finally {

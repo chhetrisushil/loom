@@ -21,10 +21,12 @@
   "dependencies": {
     "@loom/core": "workspace:*",
     "@loom/event-runtime": "workspace:*",
+    "@loom/replay-vm": "workspace:*",
     "@loom/workflow-runtime": "workspace:*"
   },
   "devDependencies": {
     "@loom/effect-runtime": "workspace:*",
+    "@loom/plugin-content": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",

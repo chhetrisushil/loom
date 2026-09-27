@@ -11,8 +11,11 @@
  * through the sanctioned door. Wrapping the sink turns the delta count from a
  * property of the provider's tokenizer into a choice the author makes.
  *
- * Purely transient sinks (`@loom/live-query`, `progressHub`) do not need this —
- * there, per-token is free and smoother.
+ * A purely transient sink (`progressHub`, or the app's own `onDelta` handler) does not
+ * need this — there, per-token is free and smoother. `@loom/live-query` is not such a
+ * sink: it has no delta-push API — its `subscribe` re-folds DURABLE events (`snapshot` +
+ * `EventStore.subscribe`), not a channel a streaming effect can push deltas into
+ * (2026-09-27 audit).
  *
  * ```ts
  * const sink = chunkDeltas((text) => ctx.stream("answer", text), { minChars: 40 });

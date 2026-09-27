@@ -95,6 +95,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it as (it has no delta-push API — see the 2026-09-27 backlog audit's item 2 and
   [ADR 0040](docs/adr/0040-live-query-and-orchestration.md)).
 
+- **`@loom/live-query`: `subscribe` folds incrementally — O(N), not O(N²)**
+  ([ADR 0040](docs/adr/0040-live-query-and-orchestration.md) Amendment). The 2026-09-27 audit
+  confirmed `subscribe` re-folded from genesis (`reader.loadState`) on every wake-up — exactly
+  the O(N) rows/event, O(N²)/lifetime cost `WorkflowRuntime.foldState`'s own docstring names
+  (measured: N²/2 rows folded, 10.6s at N=4,000 on SQLite). `subscribe` now calls
+  `reader.loadState` exactly once per subscription and folds every later delta
+  (`eventStore.readFrom(id, tip + 1)`) onto the kept state with `@loom/replay-vm`'s
+  `foldEvents` — no new fold, no new version (`fold(snapshot, suffix) === fold(events)`, already
+  load-bearing for snapshots/compaction). Also fixes a doc bug the same audit found:
+  `createLlmEffect.ts` and `chunkDeltas.ts` named live-query a "natural"/"purely transient" sink
+  for streamed deltas, but live-query has no delta-push API (`snapshot` + `subscribe` over
+  DURABLE events) — both now name `progressHub` (or the app's own `onDelta` handler). New
+  dependency: `@loom/replay-vm`. No kernel change; EVENT_SCHEMA and KERNEL_ABI unchanged.
+
 - **`@loom/plugin-sandbox`: a script's own exception is a typed `scriptError` channel**
   ([ADR 0064](docs/adr/0064-sandbox-eval-plugin.md) D3, amended). `SANDBOX_ERRORS` gains
   `scriptError { name?: string; message: string }` — whatever the script threw on this input,
