@@ -88,15 +88,44 @@ function fnv1a64Reference(text: string): string {
 }
 
 describe("fnv1a64 — limb arithmetic equals the BigInt definition", () => {
-  it("matches on fixed and randomized inputs, including multi-byte UTF-8", () => {
-    const fixed = ["", "a", "foobar", "\u00e9\u4e2d\ud83d\ude00", "x".repeat(10_000)];
+  it("matches across the full code-point range, lone surrogates and the BMP private/specials block", () => {
+    const fixed = [
+      "",
+      "a",
+      "foobar",
+      "\u00e9\u4e2d\ud83d\ude00",
+      "x".repeat(10_000),
+      "\ud800", // lone high surrogate (encodes as U+FFFD)
+      "\udfff", // lone low surrogate
+      "a\udc00b\ud800", // lone surrogates between and after text
+      "\ue000\uf8ff\ufeff\ufffd\uffff", // 0xE000–0xFFFF, incl. BOM and noncharacters
+      String.fromCodePoint(0x10000, 0x10ffff, 0x1f600),
+    ];
     let seed = 42;
     const rand = () => {
       seed = (seed * 1103515245 + 12345) & 0x7fffffff;
       return seed;
     };
-    const random = Array.from({ length: 500 }, () =>
-      String.fromCharCode(...Array.from({ length: rand() % 64 }, () => rand() % 0xd7ff))
+    // Random strings drawn from EVERY code-unit/code-point class: ASCII, 2- and 3-byte
+    // UTF-8, lone surrogates (0xD800–0xDFFF), 0xE000–0xFFFF, and astral code points.
+    const pick = (): string => {
+      switch (rand() % 6) {
+        case 0:
+          return String.fromCharCode(rand() % 0x80);
+        case 1:
+          return String.fromCharCode(0x80 + (rand() % 0x780));
+        case 2:
+          return String.fromCharCode(0x800 + (rand() % (0xd800 - 0x800)));
+        case 3:
+          return String.fromCharCode(0xd800 + (rand() % 0x800)); // a lone surrogate
+        case 4:
+          return String.fromCharCode(0xe000 + (rand() % 0x2000));
+        default:
+          return String.fromCodePoint(0x10000 + (rand() % 0x100000));
+      }
+    };
+    const random = Array.from({ length: 2000 }, () =>
+      Array.from({ length: rand() % 48 }, pick).join("")
     );
     for (const text of [...fixed, ...random]) {
       expect(fnv1a64(text)).toBe(fnv1a64Reference(text));

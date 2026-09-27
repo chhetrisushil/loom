@@ -204,26 +204,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   appended again every time, so an `emit` before a gate appeared N times after N resumes, and a
   surface built with `ctx.ui.append` before a gate folded to `["x","x"]`.
 
-  Emits are now matched by CONTENT:
-  - A flow-level emit is stamped `metadata.flowEmit = <digest of (type, payload)>`, and the fold
-    counts stamped emits per digest (`variables._flowEmits`).
-  - On a re-run, the *n*-th emit of a given content is served from the log while the log holds
-    more than *n* of them.
-  - The decision reads only the log and the run's own emits, never timing. When loom cannot prove
-    an emit is a replay, it appends: a duplicate is possible, a lost emit is not.
+  Now an emit is served from the log only when the log PROVES it was already made. That means
+  a stamped emit of the same `(type, payload)` in the same gate segment that this run has not
+  yet matched, with every step and decision so far in the segment itself served from the log.
+  Everything else is appended.
+  - Stamps: `metadata.flowEmit = <digest of segment, type, payload>`; the fold counts them per
+    digest in `variables._flowEmits`.
+  - An emit is stamped only if nothing earlier in the run ended unsettled (an untyped failure, a
+    timeout, a throwing decider) and none of the run's own steps or deciders was still
+    executing.
+  - Timing never decides a skip, so a different interleaving cannot cost an emit.
   - Kernel facts (`STEP_*`, `DECISION_RECORDED`, `EFFECT_INDOUBT`) and `EffectContext.emit` are
     unchanged and never stamped.
 
   **Upgrade note:** an execution written before 1.19.0 re-emits its pre-resume emits **once
-  more**, stamped, on its next resume or recovery, then never again. No migration is needed. A
-  test or projection that counted the duplicates was counting the bug. Remaining duplicates are
-  bounded, and nothing is ever lost:
-  - An emit made while one of the run's own steps or deciders is still running is appended
-    unstamped, and is appended once more on the next re-run that makes it outside that window.
-    Await a step before emitting after it.
-  - A payload with no JSON form (a BigInt, a cycle) is appended on every re-run.
-  - A deploy that edits an emit's payload appends the new content. The old content stays in the
-    log.
+  more** on its next resume or recovery. No migration is needed. A test or projection that
+  counted the duplicates was counting the bug.
+
+  Duplicates remain possible in these cases; none of them loses an emit:
+  - Emits after a step that fails untyped: it re-executes on every re-run, so they are appended
+    again each time. Declare its failure channel (ADR 0060) and they converge.
+  - An emit made while one of the run's own steps is still un-awaited: one extra copy.
+  - A payload with no JSON form: appended on every re-run.
+  - A deploy that edits an emit: the new content is appended and the old stays.
+
+  An emit can be served in place of a new one only if a deploy moves identical content within a
+  segment whose steps are all served, if flow code breaks ADR 0061 determinism, or on a 64-bit
+  hash collision (ADR 0102 D2).
 
   Also: `fnv1a64` (`@loom/core`) now uses 16-bit limb arithmetic instead of BigInt. The output
   is identical, pinned by a differential test, and the cost per byte is roughly a tenth.

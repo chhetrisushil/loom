@@ -19,8 +19,10 @@
   ("kernel: none", with `emitOnce` and `startOnce` as 1P helpers). The maintainer ruled both into
   the kernel as bug fixes. Neither changes `KERNEL_ABI` (1.1.0).
   - The emit defect (§2.1) is fixed by [ADR 0102](../adr/0102-flow-emits-append-once.md): flow-level `ctx.emit` / `ctx.stream` / `ctx.ui`
-    append once per execution. They are matched against the log by a content digest (never by
-    timing), and an emit that cannot be matched is appended rather than dropped.
+    append once per execution. An emit is served from the log only when logged facts prove it
+    was already made: a stamped emit of the same content in the same gate segment, with every
+    syscall of the segment so far served. Anything else is appended, never dropped. ADR 0102 D2
+    states the exact residual.
     `EVENT_SCHEMA` 1.18.0 → 1.19.0, and `emitOnce` is the alternative that ADR rejects (D6).
   - The duplicate-start defect (§2.2) is fixed by ADR 0103 (task L9): `start()` refuses a
     duplicate deterministic id before any effect runs, which makes `startOnce` redundant.
@@ -133,8 +135,9 @@ and fixable in 1P by routing `ctx.ui` through the same replay-safe path without 
 > A 1P `emitOnce` would fix only the call sites that remember to use it, and a forgotten site is a
 > silent duplicate that no check can see. This section's objection to ordinal matching turned out
 > to be right: in review, ordinal matching lost emits when concurrent branches interleaved
-> differently on a re-run. ADR 0102 therefore matches emits by a digest of their content, and
-> appends whenever it cannot prove a match. It records `emitOnce` as the rejected alternative,
+> differently on a re-run. ADR 0102 therefore serves an emit only when logged facts prove it:
+> the same content in the same gate segment, with every syscall so far in the segment served.
+> It appends whenever it cannot prove a match. It records `emitOnce` as the rejected alternative,
 > and covers a case this section did not: an emit made from inside an effect through a closure
 > over `ctx`.
 

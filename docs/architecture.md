@@ -204,7 +204,7 @@ stateDiagram-v2
   completed --> [*]
 ```
 
-Crucially, on resume the flow function **re-runs from the top**, but every already-completed step is served from the log (its `STEP_COMPLETED` event is replayed, the effect is *not* re-executed) — so effects happen exactly once and the suspend point is reached deterministically. This is P2 (deterministic replay) doing the heavy lifting. The same holds for the flow's own `ctx.emit`/`ctx.stream`/`ctx.ui` calls: each is matched by the digest of its content against the stamped emits in the log and served from it, so a domain event or a surface patch made before a gate is appended once per execution, not once per resume — and an emit loom cannot match is appended, never dropped ([ADR 0102](adr/0102-flow-emits-append-once.md)).
+Crucially, on resume the flow function **re-runs from the top**, but every already-completed step is served from the log (its `STEP_COMPLETED` event is replayed, the effect is *not* re-executed) — so effects happen exactly once and the suspend point is reached deterministically. This is P2 (deterministic replay) doing the heavy lifting. The same holds for the flow's own `ctx.emit`/`ctx.stream`/`ctx.ui` calls: each is served from the log only when the log proves it was already made (a stamped emit of the same content in the same gate segment, with every syscall of the segment so far served), so a domain event or a surface patch made before a gate is appended once per execution, not once per resume — and an emit loom cannot match is appended, never dropped ([ADR 0102](adr/0102-flow-emits-append-once.md)).
 
 ### 4.3.1 Step identity & the interpreter pattern
 

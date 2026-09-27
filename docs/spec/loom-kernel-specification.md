@@ -56,25 +56,31 @@ load-bearing, plus the global guardrails that gate every additive capability:
 - **Resume = re-run, served from the log.** Resuming an execution re-executes its flow runner; each
   `ctx.execute`/`run`/`decide`/suspend short-circuits from the recorded log, so completed work is
   never repeated and the orchestration between recorded points re-runs deterministically.
-- **Flow-level emits are served from the log too (ADR 0102).** `emit`, `stream` and `ui` append
-  ONCE per execution, matched by CONTENT. An emit's identity is `d = fnv1a64(canonical JSON of
-  [eventType, payload])`, where the canonical form is the persisted JSON form with object keys
-  sorted. An emit appended while none of the run's own effects or deciders is executing is stamped
-  `metadata.flowEmit = d`; the fold counts stamped emits per digest in `variables._flowEmits`.
-  On a re-run, the *n*-th emit of digest *d* (counting from 0) MUST NOT be appended when the log
-  holds more than *n* stamped emits of *d*, and MUST be appended otherwise. The skip decision
-  depends only on logged stamps and on the run's own sequence of emits; it MUST NOT depend on
-  timing or interleaving. An emit that cannot be proven to replay a logged one MUST be appended:
-  a duplicate is permitted, and a lost emit is not.
-  - An emit appended while one of the run's own effects or deciders is executing is appended
-    UNSTAMPED. It may come from inside that step or decision, which does not recur when the step
-    or decision is served.
-  - An effect counts as executing until it settles, not until its deadline fires.
-  - A payload with no JSON form is appended unstamped.
-  - Kernel facts (`STEP_*`, `DECISION_RECORDED`, `EFFECT_INDOUBT`, `EXECUTION_*`) and
+- **Flow-level emits are served from the log only when the log proves them (ADR 0102).** `emit`,
+  `stream` and `ui` append ONCE per execution.
+  - **Identity.** `d = fnv1a64(segment | canonical JSON of [eventType, payload])`. The segment is
+    the number of gate passthroughs consumed at the emit. The canonical form is the persisted JSON
+    form with object keys sorted.
+  - **Stamp and fold.** A stamped emit carries `metadata.flowEmit = d`. The fold counts stamped
+    emits per `d` in `variables._flowEmits`.
+  - **Serving.** On a re-run, the *n*-th emit of `d` MUST NOT be appended iff the log holds more
+    than *n* stamped emits of `d` AND no step or decision of the current segment has been
+    executed live in this run (i.e. not served from the log). Otherwise it MUST be appended.
+  - **Stamping.** An appended emit MUST be stamped only when all of these hold:
+    - it exceeds the logged count;
+    - none of the run's own effects or deciders is executing (an effect counts until it
+      settles);
+    - no step or decider earlier in the run ended in an outcome a re-run does not serve (an
+      untyped failure, a timeout, a cancellation, an in-doubt park, a throwing decider).
+  - **Never timing.** Skip decisions MUST NOT depend on timing or interleaving.
+  - **Residual.** An emit can be served in place of a new one only if a code change moves
+    identical content within a segment whose syscalls are all served, if flow code violates the
+    determinism contract (ADR 0057/0061), or on a digest collision.
+  - **Unmatchable payloads.** A payload with no JSON form is appended unstamped.
+  - **Kernel facts** (`STEP_*`, `DECISION_RECORDED`, `EFFECT_INDOUBT`, `EXECUTION_*`) and
     `EffectContext.emit` are never stamped.
-  - An unstamped (pre-1.19.0) log counts nothing, so its pre-resume emits are appended once
-    more, stamped, and are stable from then on.
+  - **Legacy logs.** An unstamped (pre-1.19.0) log counts nothing, so its pre-resume emits are
+    appended once more, stamped where eligible.
 - The fold is **copy-on-write** and **never mutates in place** a caller-visible state; audit lists
   grow via structural sharing within a single fold pass (`packages/replay-vm/src/eventHandlers.ts`).
 - **Snapshots** (`SnapshotStore`, §7) bound the replay tail: `state = fold(snapshot, suffix)` MUST
@@ -109,7 +115,8 @@ load-bearing, plus the global guardrails that gate every additive capability:
   saw it (with the propensity that makes unbiased off-policy evaluation possible), folded
   verbatim into `_decisions` and never read back by `getDecision`.
   A kernel replay fix added 1.19.0 (ADR 0102, no new event kind, no payload change): the fold
-  step `variables._flowEmits`: the count of stamped flow-level emits per content digest, keyed
+  step `variables._flowEmits`: the count of stamped flow-level emits per (gate segment, content)
+  digest, keyed
   on the envelope stamp `metadata.flowEmit` for ANY event type, so flow-level `emit`/`stream`/`ui`
   append once per execution (§3).
   Logs that never migrate state, resume twice, fail typed, record a policy, or stamp a flow emit
