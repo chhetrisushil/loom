@@ -186,8 +186,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that is an envelope's own `ref` ages out. A ref cited anywhere else, including inside an
   envelope's `digest`, is kept while any scanned event cites it, and so is a ref cited both
   ways. An envelope is recognised by the same structural test as `isClaimCheck`, so an app
-  object that only carries `__loomClaimCheck: true` does not make its refs reclaimable. `ContentSweepReport` gains
-  `refsLoadBearing`, and `loom sweep content` prints it.
+  object that only carries `__loomClaimCheck: true` does not make its refs reclaimable.
+  `ContentSweepReport` gains `refsLoadBearing`, and `loom sweep content` prints it.
 
   **Behaviour change:** an app that emits a bare ref itself (`ctx.emit(KIND, { ref })`) and
   relied on the sweep to reclaim it will find the blob kept. The sweep cannot tell such a ref
