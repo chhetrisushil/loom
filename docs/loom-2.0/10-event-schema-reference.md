@@ -70,6 +70,7 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._cancelReason` | `EXECUTION_CANCELLED` | cancel reason |
 | `variables._resumePayload` | `EXECUTION_RESUMED` | LATEST resume payload (legacy key, kept for pre-1.16 snapshots) |
 | `variables._resumePayloads` | `EXECUTION_RESUMED` | ORDERED list of every resume payload — gate *i* passes through with payload *i* on replay (1.16.0, ADR 0057) |
+| `variables._failedWhileParked` | `STEP_FAILED` while `suspended` (removed by `EXECUTION_SUSPENDED` / `EXECUTION_RESUMED`) | `true` — a `null` resume in this position is status-only (1.21.0, ADR 0105) |
 | `variables._decisions` | `DECISION_RECORDED` | `Record<decisionId, { choice, rationale?, source?, alternatives?, estimatedCostUsd?, estimatedLatencyMs?, confidence?, context?, policy? }>` — only `choice` is ever read back (P9) |
 | `variables._denials` | `EFFECT_DENIED` | `Array<{ toolId, stepId?, reason? }>` |
 | `variables._executionDenials` | `EXECUTION_DENIED` | `Array<{ op, reason?, actor? }>` — refused lifecycle ops (C.1) |
@@ -187,7 +188,11 @@ generalization.
   sibling may fail after the flow parked), and a failure that
   escapes the runner is recorded by the `EXECUTION_FAILED` that follows it. (Before ADR 0105 it
   also set `status → "failed"`, so a caught failure read as terminal and a crash after it was
-  never recovered.)
+  never recovered.) When it lands while the execution is `suspended` it also sets
+  `variables._failedWhileParked = true` (removed by the next `EXECUTION_SUSPENDED` /
+  `EXECUTION_RESUMED`); a `null` `EXECUTION_RESUMED` while it is set is status-only
+  (fail-closed — a gate never passes on it, and a caller's explicit `null` answer there re-parks
+  the gate).
 - Handler: `eventHandlers.ts`.
 
 #### `STEP_CANCELLED`
@@ -249,7 +254,8 @@ generalization.
 - **Folds into:** `status → "running"`; **removes** `suspendedOn`; if the payload is present,
   `variables._resumePayload = payload` and appended to `_resumePayloads` — except a `null`
   payload when the execution was not parked or was parked on `EffectInDoubtResolved` (1.20.0,
-  status only). That reserved key is consumed by `ctx.suspend`'s
+  status only), or carries `_failedWhileParked` (1.21.0, ADR 0105 — also status only; the key is
+  removed). That reserved key is consumed by `ctx.suspend`'s
   replay-passthrough so execution continues *past* the original suspend point
   (`WorkflowContext.ts`).
 - Handler: `eventHandlers.ts`.
@@ -515,7 +521,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.21.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079); 1.19.0 _flowEmits: per-content-digest counts from the envelope stamp metadata.flowEmit — flow-level emits append once per execution (ADR 0102); 1.20.0 a null EXECUTION_RESUMED answering no suspend point adds no gate passthrough, and a human park names its step (EXECUTION_SUSPENDED.condition.stepId) (ADR 0104); 1.21.0 STEP_FAILED folds the step's frame only — the execution fails only on EXECUTION_FAILED (ADR 0105) — all NO new event kinds
+export const EVENT_SCHEMA_VERSION = "1.21.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079); 1.19.0 _flowEmits: per-content-digest counts from the envelope stamp metadata.flowEmit — flow-level emits append once per execution (ADR 0102); 1.20.0 a null EXECUTION_RESUMED answering no suspend point adds no gate passthrough, and a human park names its step (EXECUTION_SUSPENDED.condition.stepId) (ADR 0104); 1.21.0 STEP_FAILED folds the step's frame only — the execution fails only on EXECUTION_FAILED — and _failedWhileParked keeps a null resume after a while-parked failure status-only (ADR 0105) — all NO new event kinds
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

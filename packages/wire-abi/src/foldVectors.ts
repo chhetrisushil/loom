@@ -192,6 +192,26 @@ export const FOLD_VECTORS: FoldVector[] = [
       },
     },
   },
+  {
+    // 1.21.0 (ADR 0105) — a STEP_FAILED that lands while the execution is PARKED (a parallel
+    // sibling) leaves it suspended and sets `_failedWhileParked`; a following `null` resume is
+    // status-only (no gate passthrough) and clears it. A foreign fold that serves that null to
+    // the gate lets it pass with no approval.
+    name: "a null resume after a sibling failed while parked answers no gate",
+    events: [
+      ev("v6", 0, "EXECUTION_STARTED", { input: {} }),
+      ev("v6", 1, "STEP_STARTED", { stepId: "slow", input: {} }),
+      ev("v6", 2, "EXECUTION_SUSPENDED", { condition: { on: "Approval" } }),
+      ev("v6", 3, "STEP_FAILED", { stepId: "slow", error: "Error: late" }),
+      ev("v6", 4, "EXECUTION_RESUMED", null),
+    ],
+    expected: {
+      status: "running",
+      sequence: 4,
+      variables: { _input: {} },
+      frames: { slow: { status: "failed", attempts: 1 } },
+    },
+  },
 ];
 
 /** Run the reference fold over every vector; returns per-vector pass/fail + detail. */

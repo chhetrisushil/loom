@@ -21,14 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EXECUTION_FAILED`, which the kernel commits when a failure escapes the runner, stays the
   execution's terminal failure.
 
-  - **EVENT_SCHEMA 1.21.0** (no new kind or payload field; KERNEL_ABI unchanged). A `null`
-    `EXECUTION_RESUMED` after `EXECUTION_SUSPENDED` + a late `STEP_FAILED` is now the parked
-    gate's answer; 1.20.0 read it as a status-only re-open, and a 1.20.0 `resumeAs` wrote exactly
-    that entry. At a plain gate the runtime warns on resume (`ambiguousNullResumes` from
-    `inspectStrayPassthroughs`); at an open human step's park the resume is refused
-    (`ambiguous-legacy-answers`) unless an authenticated `discardLegacyAnswers` resolves it. Known
-    residual: such a log's outcome depends on whether a 1.20.0 suspend snapshot is read (the gate
-    takes the operator's answer) or the log alone (the gate takes the `null`) — see ADR 0105 D3.
+  - **EVENT_SCHEMA 1.21.0** (no new kind or payload field; KERNEL_ABI unchanged): the status
+    fold changed, and a new reserved fold key `_failedWhileParked` (`FAILED_WHILE_PARKED`) marks a
+    parked execution a `STEP_FAILED` landed on. A `null` `EXECUTION_RESUMED` in that position stays
+    status-only, as 1.20.0 folded it (a 1.20.0 `resumeAs` wrote exactly that entry), so every gate
+    passthrough folds as under 1.20.0 and the result no longer depends on which snapshot seeds the
+    fold. **Cost (fail-closed):** a caller's explicit `null` answer to such a gate is not recorded
+    as its answer; the gate re-parks and the next non-null resume answers it.
   - Snapshots saved by an older fold are repaired on read: `normalizeSnapshotState`
     (`@loom/replay-vm`, new export) reads `failed` with no `_error` and a failed frame as
     `running` (`suspended` when parked) — on every stored-fold read, including `restoreFromState`.

@@ -302,43 +302,44 @@ describe("a caught step failure is not the execution's failure (ADR 0105)", () =
   });
 });
 
-describe("a parallel sibling that fails after the flow parked (ADR 0105)", () => {
-  function parkedBoot() {
-    const effects = new EffectRuntime();
-    effects.register(
-      "tool-slow",
-      new ToolEffect(async () => {
-        await settle(30);
-        throw new Error("late boom");
-      })
-    );
-    const eventStore = new InMemoryAsyncEventStore();
-    const runtime = new WorkflowRuntime({
-      eventStore,
-      snapshotStore: new InMemoryAsyncSnapshotStore(),
-      effectRuntime: effects,
-    });
-    const slow = step$({ id: "slow", name: "slow", toolId: "tool-slow", ...io });
-    const definition: FlowDefinition<Record<string, never>, { ok: boolean }> = {
-      _tag: "FlowDefinition",
-      id: "par",
-      name: "par",
-      version: "1.0.0",
-      inputSchema: io.inputSchema,
-      outputSchema: io.outputSchema,
-      steps: [slow],
-    };
-    const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) => {
-      const [, answer] = await Promise.all([
-        ctx.run(slow, {}).catch(() => "caught"),
-        ctx.suspend<{ ok: boolean }>({ on: "Approval" }),
-      ]);
-      return answer;
-    };
-    runtime.registerFlow(definition, runner);
-    return { runtime, eventStore, flow: { definition, runner } };
-  }
+/** A flow whose parallel sibling fails AFTER the flow parks on `Approval`. */
+function parkedBoot() {
+  const effects = new EffectRuntime();
+  effects.register(
+    "tool-slow",
+    new ToolEffect(async () => {
+      await settle(30);
+      throw new Error("late boom");
+    })
+  );
+  const eventStore = new InMemoryAsyncEventStore();
+  const runtime = new WorkflowRuntime({
+    eventStore,
+    snapshotStore: new InMemoryAsyncSnapshotStore(),
+    effectRuntime: effects,
+  });
+  const slow = step$({ id: "slow", name: "slow", toolId: "tool-slow", ...io });
+  const definition: FlowDefinition<Record<string, never>, { ok: boolean }> = {
+    _tag: "FlowDefinition",
+    id: "par",
+    name: "par",
+    version: "1.0.0",
+    inputSchema: io.inputSchema,
+    outputSchema: io.outputSchema,
+    steps: [slow],
+  };
+  const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) => {
+    const [, answer] = await Promise.all([
+      ctx.run(slow, {}).catch(() => "caught"),
+      ctx.suspend<{ ok: boolean }>({ on: "Approval" }),
+    ]);
+    return answer;
+  };
+  runtime.registerFlow(definition, runner);
+  return { runtime, eventStore, flow: { definition, runner } };
+}
 
+describe("a parallel sibling that fails after the flow parked (ADR 0105)", () => {
   it("the execution stays suspended on its gate, and the gate can still be answered", async () => {
     const { runtime, eventStore, flow } = parkedBoot();
     const handle = await runtime.start(flow, {}, { executionId: "late" });
@@ -353,6 +354,31 @@ describe("a parallel sibling that fails after the flow parked (ADR 0105)", () =>
 
     const resumed = await runtime.resume("late", { eventType: "Approval", payload: { ok: true } });
     await expect(resumed.waitForCompletion()).resolves.toMatchObject({ status: "completed" });
+  });
+});
+
+describe("the documented cost of the fail-closed rule (ADR 0105 D3)", () => {
+  it("an explicit null answer to a gate whose sibling failed while parked re-parks the gate; the next answer lands", async () => {
+    const { runtime, flow } = parkedBoot();
+    const handle = await runtime.start(flow, {}, { executionId: "null-answer" });
+    await handle.waitForSuspend();
+    await settle(80); // the sibling fails after the park
+
+    const nulled = await runtime.resume("null-answer", { eventType: "Approval", payload: null });
+    const reparked = await nulled.waitForSuspend();
+    expect(reparked.status).toBe("suspended");
+    expect(reparked.suspendedOn?.on).toBe("Approval");
+    // The null was status-only: it is not recorded as any gate's answer.
+    expect(reparked.variables._resumePayloads).toBeUndefined();
+
+    const answered = await runtime.resume("null-answer", {
+      eventType: "Approval",
+      payload: { ok: true },
+    });
+    await expect(answered.waitForCompletion()).resolves.toMatchObject({
+      status: "completed",
+      variables: { _output: { ok: true } },
+    });
   });
 });
 

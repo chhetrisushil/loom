@@ -1,5 +1,11 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { FLOW_EMIT_DIGEST, countFlowEmit, getHandler, resetFoldOwnership } from "./eventHandlers";
+import {
+  FAILED_WHILE_PARKED,
+  FLOW_EMIT_DIGEST,
+  countFlowEmit,
+  getHandler,
+  resetFoldOwnership,
+} from "./eventHandlers";
 
 const DEFAULT_STATE: Omit<ExecutionState, "executionId" | "workflowId" | "workflowVersion"> = {
   status: "pending",
@@ -75,5 +81,14 @@ export function normalizeSnapshotState<T extends Partial<ExecutionState>>(state:
     }
   }
   if (!stepFailed) return state;
-  return { ...state, status: state.suspendedOn !== undefined ? "suspended" : "running" };
+  // A parked artifact means the failure landed AFTER the park (a STEP_FAILED before it would
+  // have been overwritten by the park's "suspended"; a resume removes `suspendedOn`) — exactly
+  // what the current fold records as `_failedWhileParked`, so the repaired snapshot folds its
+  // tail as the full log would.
+  if (state.suspendedOn === undefined) return { ...state, status: "running" };
+  return {
+    ...state,
+    status: "suspended",
+    variables: { ...state.variables, [FAILED_WHILE_PARKED]: true },
+  };
 }

@@ -41,19 +41,6 @@ export interface StrayPassthroughReport {
    * has recorded how many entries to discard for it (`discardLegacyAnswers`).
    */
   ambiguousHumanStep?: string;
-  /**
-   * ADR 0105 — `null` resumes into a gate park after a parallel sibling's `STEP_FAILED` landed
-   * while the execution was parked. EVENT_SCHEMA 1.20.0 folded that failure to a terminal
-   * "failed", so its `resumeAs` recorded a status-only `EXECUTION_RESUMED(null)` there; since
-   * 1.21.0 the execution reads `suspended` and the same entry is the parked gate's answer, so
-   * the gate passes with `null` and no approval on replay. The log does not record which
-   * kernel wrote it (a 1.21.0 caller answering the gate with an explicit `null` writes the same
-   * shape), so at a plain `ctx.suspend` gate this is reported, not refused. At an OPEN human
-   * step's park it would become the step's approval, so that case is not counted here: it sets
-   * {@link ambiguousHumanStep} and the resume is refused (`ambiguous-legacy-answers`) unless an
-   * authenticated `discardLegacyAnswers` says how many entries to discard.
-   */
-  ambiguousNullResumes?: number;
 }
 
 /** Reserved decision id of the operator's `discardLegacyAnswers` record for `stepId`. */
@@ -89,16 +76,12 @@ export function inspectStrayPassthroughs(
   let parkedHuman: string | undefined; // the human step this park belongs to
   let previous: EventEnvelope | undefined;
   const unspentAtStart = new Map<string, number>(); // first STEP_STARTED of each step
-  const humans = new Map<
-    string,
-    { answers: number; reparked: boolean; open: boolean; tainted?: boolean }
-  >();
+  const humans = new Map<string, { answers: number; reparked: boolean; open: boolean }>();
   let appended = 0;
   let strays = 0;
   let unspent = 0; // strays not yet followed by a gate park
   let parkAfterHidden = false; // a gate park anywhere in the retained log
-  let failedWhileParked = false; // a STEP_FAILED folded since the current park (ADR 0105)
-  let ambiguousNulls = 0;
+  let failedWhileParked = false; // mirrors the fold's `_failedWhileParked` (ADR 0105)
 
   for (const e of events) {
     switch (e.eventType) {
@@ -119,7 +102,8 @@ export function inspectStrayPassthroughs(
         const h = stepId !== undefined ? humans.get(stepId) : undefined;
         if (h !== undefined) h.open = false;
         // A step event never moves execution status (ADR 0105): EXECUTION_FAILED does. A
-        // failure that lands while parked is a parallel sibling's (the flow body is parked).
+        // failure that lands while parked (a parallel sibling's) makes a following `null`
+        // resume status-only — the fold's `_failedWhileParked` rule.
         if (e.eventType === "STEP_FAILED" && status === "suspended") failedWhileParked = true;
         break;
       }
@@ -156,14 +140,9 @@ export function inspectStrayPassthroughs(
       }
       case "EXECUTION_RESUMED": {
         const answersGate = status === "suspended" && parkedOn !== EFFECT_INDOUBT_RESOLVED;
-        const statusOnly = e.payload === null && !answersGate;
-        if (e.payload === null && answersGate && failedWhileParked) {
-          // ADR 0105 — at a HUMAN park this null would become the step's approval on replay:
-          // routed to the ambiguous-human-step refusal below. At a plain gate: reported.
-          const h = parkedHuman !== undefined ? humans.get(parkedHuman) : undefined;
-          if (h !== undefined) h.tainted = true;
-          else ambiguousNulls++;
-        }
+        // Mirrors the fold's `isStatusOnlyResume` (1.20.0 + 1.21.0), so the entry count lines
+        // up with `_resumePayloads`.
+        const statusOnly = e.payload === null && (!answersGate || failedWhileParked);
         failedWhileParked = false;
         if (e.payload !== undefined && !statusOnly) {
           appended++;
@@ -197,13 +176,9 @@ export function inspectStrayPassthroughs(
   let ambiguousHumanStep: string | undefined;
   let humanAtRisk = 0;
   for (const [stepId, h] of humans) {
-    if (!h.open) {
-      // A step the log already completed is past refusing; say what it may have taken.
-      if (h.tainted === true) ambiguousNulls++;
-      continue;
-    }
+    if (!h.open) continue;
     const strayBefore = (unspentAtStart.get(stepId) ?? 0) > 0;
-    if (!strayBefore && !h.reparked && h.tainted !== true) continue;
+    if (!strayBefore && !h.reparked) continue;
     // A re-parked step's answers are not its own to take one-by-one: on the 0104 kernel the
     // first would complete it and the rest would reach later gates.
     if (h.reparked) humanAtRisk += h.answers;
@@ -214,7 +189,6 @@ export function inspectStrayPassthroughs(
   const report = (verdict?: StrayPassthroughVerdict): StrayPassthroughReport => ({
     ...(verdict !== undefined && { verdict }),
     ...(ambiguousHumanStep !== undefined && !terminal && { ambiguousHumanStep }),
-    ...(ambiguousNulls > 0 && !terminal && { ambiguousNullResumes: ambiguousNulls }),
   });
   const atRisk = unspent + humanAtRisk;
   if (atRisk > 0 && !terminal) return report({ kind: "at-risk", count: atRisk });
@@ -252,9 +226,4 @@ export function strayPassthroughMessage(executionId: string, v: StrayPassthrough
     case "unverifiable":
       return `execution "${executionId}": ${v.count} gate passthrough(s) of {} predate the retained log (the prefix was retained away), and the pre-ADR 0104 recovery wrote exactly {}. If one came from a recovery, the flow's next gate will pass with it and no approval — inspect the execution.`;
   }
-}
-
-/** The operator-facing sentence for {@link StrayPassthroughReport.ambiguousNullResumes}. */
-export function ambiguousNullResumeMessage(executionId: string, count: number): string {
-  return `execution "${executionId}": ${count} null resume(s) were recorded at a parked gate after a parallel step failed while it was parked. An EVENT_SCHEMA 1.20.0 kernel folded that failure to "failed", and its resumeAs recorded exactly this entry as a status-only re-open; since 1.21.0 (ADR 0105) it is the parked gate's answer, so that gate passes with null and no approval on replay. If this execution was migrated with resumeAs under 1.20.0, cancel or inspect it; if an operator answered the gate with an explicit null, nothing is wrong.`;
 }

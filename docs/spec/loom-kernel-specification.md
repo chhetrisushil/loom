@@ -102,8 +102,12 @@ load-bearing, plus the global guardrails that gate every additive capability:
   Execution `status` MUST be moved only by execution-level events (`EXECUTION_STARTED`,
   `_SUSPENDED`, `_RESUMED`, `_COMPLETED`, `_FAILED`, `_CANCELLED`); a `STEP_*` event folds into
   its frame only. In particular `STEP_FAILED` MUST NOT fail the execution — the flow may catch it
-  — and only `EXECUTION_FAILED` does (ADR 0105, EVENT_SCHEMA 1.21.0). A snapshot folded
-  before 1.21.0 MUST be read through `normalizeSnapshotState`.
+  — and only `EXECUTION_FAILED` does (ADR 0105, EVENT_SCHEMA 1.21.0). A `STEP_FAILED` that lands
+  while the execution is `suspended` MUST set `variables._failedWhileParked` (removed by the next
+  park or resume), and a `null` `EXECUTION_RESUMED` while it is set MUST be status-only
+  (fail-closed). A snapshot folded before 1.21.0 MUST be read through `normalizeSnapshotState`.
+  For every log and every sequence k, folding the snapshot at k plus the tail MUST equal folding
+  the whole log.
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
   the pinned type set MUST change together. The current version is **1.21.0** — after the
@@ -128,10 +132,11 @@ load-bearing, plus the global guardrails that gate every additive capability:
   payload is `null` and which answers no suspend point — the execution was not parked, or was
   parked in doubt — re-opens the execution WITHOUT adding a gate passthrough.
   ADR 0105 added 1.21.0 (no new event kind, no payload field): `STEP_FAILED` no longer moves the
-  execution status. A log that ends after a caught step failure now folds `running` (it was
-  `failed`); a parallel sibling's `STEP_FAILED` after the flow parked leaves it `suspended`, so a
-  following `null` resume is that gate's answer (1.20.0 read it as a status-only re-open, and a
-  1.20.0 `resumeAs` wrote exactly that — `inspectStrayPassthroughs` flags it).
+  execution status — a log that ends after a caught step failure now folds `running` (it was
+  `failed`), and a parallel sibling's `STEP_FAILED` after the flow parked leaves it `suspended`
+  with the new reserved key `_failedWhileParked`, under which a `null` resume stays status-only
+  exactly as 1.20.0 folded it. Every gate passthrough is therefore unchanged from 1.20.0; the
+  status and the new key are what differ.
   Logs that never migrate state, resume twice, fail typed, record a policy, stamp a flow emit, or
   resume `null` into an unparked or in-doubt execution, or hold a `STEP_FAILED`
   that no status-setting event follows, replay byte-identically.

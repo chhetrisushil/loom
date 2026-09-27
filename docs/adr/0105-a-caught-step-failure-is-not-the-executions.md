@@ -98,7 +98,7 @@ it should see after a caught (or late sibling) step failure.
 | `LocalWorkerRuntime` redispatch | same | returned `null` (no re-drive) | re-driven |
 | `resume` with `EXECUTION_RECOVERED` | same | refused (`not-suspended`) | re-driven |
 | `resume` at a gate (late sibling failure) | fold status = suspended | refused (`not-suspended`) | answers the gate |
-| `resumeAs` / `answerEvents` | fold status | wrote a status-only `EXECUTION_RESUMED(null)` (terminal branch) | answers the parked gate with the caller's payload, with every gate check (D3) |
+| `resumeAs` / `answerEvents` | fold status | wrote a status-only `EXECUTION_RESUMED(null)` (terminal branch) | answers the parked gate with the caller's payload, with every gate check; a `null` payload after a while-parked failure is status-only and the gate re-parks (D3) |
 | `TimerService` wake | status = suspended ∧ `wakeAt` | treated a timed park after a late sibling failure as obsolete and RETIRED its row | a failure after 1.21.0 keeps the row and wakes; a row a pre-1.21.0 service already retired is gone — `reconcileTimers` (D4) re-arms it |
 | `orphanCensus`, `retireAbandonedBranches` | fold status (+ suspended) | skipped as terminal | counted / retirable |
 | `cancel` (detached) | fold status terminal? | `false`, not cancellable | cancelled |
@@ -114,48 +114,59 @@ it should see after a caught (or late sibling) step failure.
 The last row is the tell: every consumer that derived status from the events themselves already
 treated only `EXECUTION_FAILED` as the execution's failure. The fold was the outlier.
 
-### D3 — EVENT_SCHEMA 1.21.0; KERNEL_ABI unchanged
+### D3 — the fail-closed `null`; EVENT_SCHEMA 1.21.0; KERNEL_ABI unchanged
 
-The K5 version tells a reader that a stored log folds differently. The kernel writes the same
-events, and for a log that ends after a caught failure the only difference is the derived
-status. But one existing log shape now replays differently, and it reaches a replay input:
+**The shape D1 alone would have misread.**
 
 ```
 EXECUTION_SUSPENDED {on: "Approval"} · STEP_FAILED (late sibling) · … · EXECUTION_RESUMED(null)
 ```
 
 1.20.0 folded the failure to `failed`, so `isStatusOnlyResume` read the `null` as a status-only
-re-open and added no passthrough. 1.21.0 keeps the execution `suspended`, so the same `null` is
-the parked gate's answer (`_resumePayloads: [null]`). And a 1.20.0 kernel WROTE exactly this
-shape: `resumeAs` onto what its fold called a `failed` execution took the terminal branch of
-`answerEvents` and recorded `EXECUTION_RESUMED(null)`. Replayed by 1.21.0, that entry is served
-to the gate as its approval — ADR 0104's stray-answer class. So the version bumps (1.21.0; no new
-kind, no payload field), and:
+re-open and recorded no gate passthrough. A 1.20.0 kernel also WROTE this shape: `resumeAs` onto
+what its fold called a `failed` execution took the terminal branch of `answerEvents` and recorded
+`EXECUTION_RESUMED(null)`. With D1 alone the execution stays `suspended`, so the same `null`
+would become the parked gate's answer (`_resumePayloads: [null]`) — ADR 0104's stray-answer
+class. Worse, the outcome would depend on where the fold started: a 1.20.0 suspend snapshot
+taken after that `resumeAs` never counted the `null`, so a resume through it gave the gate the
+operator's answer, while a fold of the log alone (no snapshot, an earlier one, a fork) gave it
+the `null` and the gate passed with no approval. That breaks snapshot + tail ≡ full log, a kernel
+invariant.
 
-- **`inspectStrayPassthroughs` reports it** (`ambiguousNullResumes`): a `null` resume into a
-  gate park after a `STEP_FAILED` that landed while parked. The runtime warns once per execution
-  on resume. At a plain `ctx.suspend` gate it is reported, not refused: no log records which
-  kernel wrote an entry, and a 1.21.0 caller answering the gate with an explicit `null` writes
-  the same shape, which is legitimate. The operator decides (cancel, or inspect and continue).
-  At an OPEN human step's park (ADR 0104: `condition.stepId`) the same `null` would become the
-  step's approval, so that case joins ADR 0104's ambiguous-human-step refusal: `resume` is
-  refused (`ambiguous-legacy-answers`) unless an authenticator-verified `discardLegacyAnswers`
-  says how many entries to discard.
-- **Residual — the answer depends on which snapshot exists.** A 1.20.0 suspend snapshot taken
-  after that `resumeAs` never counted the `null` (its fold called it status-only). Resumed
-  through that snapshot, the gate takes the operator's real answer; folded from the log alone
-  (no snapshot, a snapshot from before it, a fork), 1.21.0 serves the `null` first and the gate
-  passes without approval. `legacyFoldResumeAs.test.ts` drives a real `resumeAs` under a replica
-  of the 1.20.0 fold and observes both. The warning above names these executions; an operator
-  should cancel or re-drive each deliberately. A fold rule that treated a `null` after a
-  while-parked failure as status-only (fail-closed) would remove the divergence at the cost of
-  losing a 1.21.0 caller's explicit `null` gate answer in that position; it is not adopted here.
-- The window is narrow — the 1.20.0 status-only `null` exists only since ADR 0104, and only a
-  `resumeAs` after a late sibling failure wrote it here. A log a pre-1.20.0 kernel wrote folds as
-  it did under that kernel: `resumeAs` then recorded the operator's payload, which every fold
-  before 1.20.0 treated as the gate's answer.
+**Rule.** A `STEP_FAILED` that lands while the execution is `suspended` sets the reserved fold
+key `variables._failedWhileParked = true` (exported as `FAILED_WHILE_PARKED`). The next
+`EXECUTION_SUSPENDED` or `EXECUTION_RESUMED` removes it; it is absent otherwise, so a log without
+such a failure never gains it. An `EXECUTION_RESUMED` whose payload is `null` is status-only when
+the execution is not `suspended`, is parked in doubt (1.20.0), **or carries
+`_failedWhileParked`** (1.21.0). `inspectStrayPassthroughs` mirrors exactly this condition (its
+own `failedWhileParked`, set on a `STEP_FAILED` while its mirrored status is `suspended`, cleared
+at every park and resume), so its entry count still lines up with `_resumePayloads`.
+`normalizeSnapshotState` sets the key when it repairs a parked 1.20.0 artifact: `failed` with
+`suspendedOn` can only mean the failure landed after the park, because a resume removes
+`suspendedOn` and a park overwrites an earlier `failed`.
 
-No syscall changed: KERNEL_ABI stays 1.1.0.
+**Cost (fail-closed).** A 1.21.0 caller that answers such a gate with an explicit `null` does not
+have it recorded as the gate's answer: the gate re-parks, and the next non-null resume answers
+it. Re-parking is recoverable and visible; a gate passing with no approval is neither. A `null`
+answer to a gate with no failure since it parked is unaffected.
+
+**Re-derived: what now differs between a 1.20.0 and a 1.21.0 reader.** Every gate passthrough is
+identical: `_resumePayloads` folds the same for every log (a `null` after a while-parked failure
+is status-only in both; every other resume is unchanged). What differs:
+
+- the derived `status` after a `STEP_FAILED` that no lifecycle event has yet followed —
+  `running` or `suspended` where 1.20.0 said `failed` — and everything that reads it (D2);
+- the new reserved fold key `_failedWhileParked`, present while such a park is open.
+
+That is a change in how existing logs fold plus a new fold key, which K5 versions (1.16.0 bumped
+for an additive fold key alone). So the bump stays: **EVENT_SCHEMA 1.21.0**, no new event kind,
+no payload field. No syscall changed: **KERNEL_ABI stays 1.1.0.**
+
+**What this removed.** An earlier revision of this ADR served that `null` to the gate and added
+machinery to cope: an `ambiguousNullResumes` report and warning, and a route into ADR 0104's
+`ambiguous-legacy-answers` refusal for a human park. With the fail-closed rule the shape can no
+longer be misread, by the fold or by its mirror, so both were deleted rather than left as checks
+of a case that cannot arise.
 
 ### D4 — legacy logs, snapshots and the upgrade
 
@@ -177,7 +188,7 @@ followed by a status-setting event:
   `@loom/workflow-runtime`) re-arms every suspended execution's `wakeAt` row. It needs no lookup
   in the TimerStore, because `schedule` is idempotent per (executionId, wakeAt): a healthy row is
   a no-op and a missing one is restored, and `TimerService`'s own still-waiting guard makes a
-  duplicate fire a no-op. A following `null` resume is covered by D3.
+  duplicate fire a no-op. A following `null` resume is status-only (D3).
 - **The process died after `STEP_FAILED` was durable but before `EXECUTION_FAILED` was
   written**, or **storage died** (`journal.failed`: the kernel deliberately writes no
   `EXECUTION_FAILED` into a store that cannot accept it). Both used to fold `failed`; both now
@@ -262,20 +273,24 @@ the interrupted step, forever. It now takes an optional `maxRecoveries`:
   frame.
 - A caller whose run's terminal failure could not be written gets `StorageWriteError`, not the
   step's error.
+- A gate never passes on a `null` resume recorded after a sibling failed while it was parked,
+  whichever snapshot the fold starts from.
 - Tests: `replay-vm/src/stepFailureStatus.test.ts` (the fold; the status property over every
-  `STEP_*` kind × pending/running/suspended; the 1.21.0 `[SUSPENDED, STEP_FAILED,
-  RESUMED(null)]` pin; `normalizeSnapshotState`, with negatives), `wire-abi` fold vector
-  "a caught step failure fails the frame, not the execution",
-  `workflow-runtime/src/caughtStepFailure.test.ts` (two-process crash → recovery for untyped and
-  typed failures — the typed one never re-invokes the effect —, through a mid-run snapshot and a
-  hand-built pre-1.21.0 snapshot; cancel; the late sibling failure stays resumable; the
-  undurable `EXECUTION_FAILED` rejects with `StorageWriteError` while the handle keeps the
-  in-memory view; `restoreFromState` repairs a preloaded pre-1.21.0 state; `maxRecoveries` —
-  consecutive, only for claimed candidates, two REAL passes over a poison flow, `0` refused; the
-  negative:
-  an escaped failure is `failed`, never a recovery candidate, not cancellable), and
-  `strayPassthroughs.test.ts` (the ambiguous `null` at a gate, the refusal at an open human
-  step and its discard, three negatives), `reconcileTimers.test.ts` (a row the old service
-  retired is re-armed and wakes; idempotent), `legacyFoldResumeAs.test.ts` (a real `resumeAs`
-  under a replica of the 1.20.0 fold, replayed by 1.21.0 through the snapshot and from the log)
-  and the CLI's `--max-recoveries`.
+  `STEP_*` kind × pending/running/suspended; the fail-closed `null` and its negatives; the
+  property snapshot + tail ≡ full log from EVERY sequence, for snapshots written by the current
+  fold and by a 1.20.0 replica read through `normalizeSnapshotState`, with the gate passthroughs
+  equal to 1.20.0's; `normalizeSnapshotState`), `wire-abi` fold vectors for a caught failure and
+  for the fail-closed `null`, `workflow-runtime/src/caughtStepFailure.test.ts` (two-process crash
+  → recovery for untyped and typed failures — the typed one never re-invokes the effect —,
+  through a mid-run snapshot and a hand-built pre-1.21.0 snapshot; cancel; the late sibling
+  failure stays resumable; an explicit `null` answer in that position re-parks and the next
+  answer lands (the D3 cost); the undurable `EXECUTION_FAILED` rejects with `StorageWriteError`
+  while the handle keeps the in-memory view; `restoreFromState` repairs a preloaded pre-1.21.0
+  state; `maxRecoveries` — consecutive, only for claimed candidates, two REAL passes over a
+  poison flow, `0` refused; the negative: an escaped failure is `failed`, never a recovery
+  candidate, not cancellable), `strayPassthroughs.test.ts` (the mirror reads the 1.20.0 shape
+  as clean at a gate and at a human park; a `null` answer with no failure while parked is still
+  an entry), `reconcileTimers.test.ts` (a row the old service retired is re-armed and wakes;
+  idempotent), `legacyFoldResumeAs.test.ts` (a real `resumeAs` under a replica of the 1.20.0
+  fold, replayed by 1.21.0 through the 1.20.0 snapshot and from the log alone: the same
+  outcome, the operator's real answer) and the CLI's `--max-recoveries`.
