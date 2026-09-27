@@ -56,6 +56,16 @@ load-bearing, plus the global guardrails that gate every additive capability:
 - **Resume = re-run, served from the log.** Resuming an execution re-executes its flow runner; each
   `ctx.execute`/`run`/`decide`/suspend short-circuits from the recorded log, so completed work is
   never repeated and the orchestration between recorded points re-runs deterministically.
+- **Flow-level emits are served from the log too (ADR 0102).** `emit`, `stream` and `ui` append
+  ONCE per execution. The *i*-th flow-level emit of a run is stamped `metadata.flowEmit = i`; the
+  fold keeps `variables._flowEmits` (the high-water mark `i + 1`); a re-run MUST NOT append emit
+  *i* while `i < _flowEmits`. Matching is ordinal, the rule gates already follow (§5), so the
+  number of emits before a resume point MUST be a pure function of logged inputs (ADR 0061). An
+  emit made while one of the run's own effects or deciders is executing belongs to that
+  step/decision: it takes the effect path (appended, unstamped, uncounted), exactly like
+  `EffectContext.emit`. Kernel facts (`STEP_*`, `DECISION_RECORDED`, `EFFECT_INDOUBT`, `EXECUTION_*`)
+  are never stamped. An unstamped (pre-1.19.0) log counts nothing, so its pre-resume emits are
+  appended once more, stamped, and are stable from then on.
 - The fold is **copy-on-write** and **never mutates in place** a caller-visible state; audit lists
   grow via structural sharing within a single fold pass (`packages/replay-vm/src/eventHandlers.ts`).
 - **Snapshots** (`SnapshotStore`, §7) bound the replay tail: `state = fold(snapshot, suffix)` MUST
@@ -76,7 +86,7 @@ load-bearing, plus the global guardrails that gate every additive capability:
   `(state, event) => state`; a `__proto__` container key MUST be rejected (fold hardening).
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
-  the pinned type set MUST change together. The current version is **1.18.0** — after the
+  the pinned type set MUST change together. The current version is **1.19.0** — after the
   K10.1/T3 audit facts (1.13.0/1.14.0), the perpetual-agents series added two additive MINORs
   with **no new event kinds**: 1.15.0 extends `EXECUTION_MIGRATED` with an optional
   `migratedInput` payload field (K11.5 contract-versioned state migration — the fold replaces
@@ -89,8 +99,11 @@ load-bearing, plus the global guardrails that gate every additive capability:
   `policy` fields on `DECISION_RECORDED` — the observation a policy saw and the policy that
   saw it (with the propensity that makes unbiased off-policy evaluation possible), folded
   verbatim into `_decisions` and never read back by `getDecision`.
-  Logs that never migrate state, resume twice, fail typed, or record a policy replay
-  byte-identically.
+  A kernel replay fix added 1.19.0 (ADR 0102, no new event kind, no payload change): the fold
+  step `variables._flowEmits` keyed on the envelope stamp `metadata.flowEmit`, for ANY event
+  type, so flow-level `emit`/`stream`/`ui` append once per execution (§3).
+  Logs that never migrate state, resume twice, fail typed, record a policy, or stamp a flow emit
+  replay byte-identically.
 
 ### 4.1 Typed failure channels (ADR 0060)
 

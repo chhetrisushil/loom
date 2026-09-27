@@ -27,7 +27,8 @@ function ev(
   executionId: string,
   sequence: number,
   eventType: string,
-  payload: unknown
+  payload: unknown,
+  metadata?: Record<string, unknown>
 ): EventEnvelope {
   return {
     id: `${executionId}-${sequence}`,
@@ -37,6 +38,7 @@ function ev(
     sequence,
     timestamp: 1000 + sequence,
     payload,
+    ...(metadata !== undefined && { metadata }),
   };
 }
 
@@ -90,6 +92,25 @@ export const FOLD_VECTORS: FoldVector[] = [
         _resources: { tokens: 100, costUsd: 0.5, ms: 10, count: 1 },
         _denials: [{ toolId: "delete-prod", reason: "not granted" }],
       },
+      frames: {},
+    },
+  },
+  {
+    // 1.19.0 (ADR 0102) — the one fold step keyed on an envelope stamp, not a type:
+    // `metadata.flowEmit` on ANY event type (here a domain event and SURFACE_PATCH,
+    // neither of which has a handler) raises `_flowEmits` to `ordinal + 1`; an
+    // unstamped event (a legacy log's emit) counts nothing.
+    name: "stamped flow-level emits fold a high-water mark; unstamped ones do not count",
+    events: [
+      ev("v4", 0, "EXECUTION_STARTED", { input: {} }),
+      ev("v4", 1, "response.committed", { msg: "m1" }, { flowEmit: 0 }),
+      ev("v4", 2, "SURFACE_PATCH", { patches: [] }, { flowEmit: 1, fence: 2 }),
+      ev("v4", 3, "legacy.domain", {}),
+    ],
+    expected: {
+      status: "running",
+      sequence: 3,
+      variables: { _input: {}, _flowEmits: 2 },
       frames: {},
     },
   },

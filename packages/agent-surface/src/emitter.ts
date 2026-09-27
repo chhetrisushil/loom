@@ -4,6 +4,13 @@ import type { PatchProvenance, SurfacePatch } from "./types";
 // The producer half of the protocol. Any context that can emit events (a
 // WorkflowContext, a step's EffectContext, an agent) can drive the UI through
 // this ergonomic wrapper — every method emits a single SURFACE_PATCH event.
+//
+// Durability is the emit function's, not this wrapper's. Driven by a flow's
+// `ctx.ui`, each patch is appended ONCE per execution: a resume or recovery
+// re-runs the flow from the top and the kernel serves the patches the log already
+// holds (ADR 0102), so a non-idempotent `append`/`increment` before a gate does
+// not repeat. Driven by an `EffectContext`, a patch appends when the step runs,
+// and a completed step is served from the log.
 export interface SurfaceEmitter {
   // Replace the value at `path` ("" replaces the whole surface).
   set(path: string, value: unknown): void;

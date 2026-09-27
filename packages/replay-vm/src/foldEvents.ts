@@ -34,6 +34,21 @@ export function foldEvents(
     if (handler) {
       state = handler(state, event);
     }
+    // 1.19.0 (ADR 0102) — the one fold step keyed on an envelope STAMP rather than an
+    // event type: a flow-level emit (`ctx.emit`/`ctx.stream`/`ctx.ui`, usually a domain
+    // event with no handler) carries `metadata.flowEmit = ordinal`, and `_flowEmits` is
+    // the high-water mark `ordinal + 1`, so a re-run from the top can serve the emits
+    // the log already holds instead of appending them again. An unstamped log (legacy,
+    // or kernel facts only) never gains the key and folds byte-identically.
+    const stamp = event.metadata?.flowEmit;
+    if (typeof stamp === "number" && Number.isInteger(stamp) && stamp >= 0) {
+      const prev = (state.variables._flowEmits as number | undefined) ?? 0;
+      if (stamp + 1 > prev) {
+        // Copy-on-write like every `_`-prefixed kernel variable: `state` is always an
+        // object this function created, but `variables` may be the caller's.
+        state.variables = { ...state.variables, _flowEmits: stamp + 1 };
+      }
+    }
     state.sequence = event.sequence;
   }
 

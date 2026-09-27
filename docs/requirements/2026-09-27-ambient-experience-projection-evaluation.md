@@ -1,7 +1,8 @@
 # Ambient Experience Projection — placement evaluation (loom and loom-ui)
 
-- Status: **Verdicts recorded. Kernel change: none. Loom 1P: four small additive items, each with
-  a named second consumer, plus two gated ones. loom-ui: one new slice before 7, slices 7 and 8
+- Status: **Verdicts recorded. Kernel change: two bug fixes, no ABI change (corrected 2026-09-27,
+  see below). Loom 1P: four small additive items, each with a named second consumer, plus two gated
+  ones; two of the four (`emitOnce`, `startOnce`) are superseded by the kernel fixes. loom-ui: one new slice before 7, slices 7 and 8
   widened, two new slices (11, 12). Blueprint IR: one minor bump (2.5.0), one optional catalogue
   addendum, each with its own ADR.** Nothing here is built yet; this document records placements
   and a plan.
@@ -14,6 +15,16 @@
   `packages/replay-vm/src/eventHandlers.ts`, `EVENT_STORE_SPI_VERSION = "1.4.0"`, Blueprint IR
   2.4.0) and the sibling `loom-ui` repo at `main` f4a6b02 (after its PR #24). Paths below are loom
   paths unless prefixed `loom-ui/`.
+- **Correction (2026-09-27).** This evaluation first placed both §2 defects outside the kernel
+  ("kernel: none", with `emitOnce` and `startOnce` as 1P helpers). The maintainer ruled both into
+  the kernel as bug fixes. Neither changes `KERNEL_ABI` (1.1.0).
+  - The emit defect (§2.1) is fixed by [ADR 0102](../adr/0102-flow-emits-append-once.md): flow-level `ctx.emit` / `ctx.stream` / `ctx.ui`
+    append once per execution. They are matched ordinally against the log, like gates.
+    `EVENT_SCHEMA` 1.18.0 → 1.19.0, and `emitOnce` is the alternative that ADR rejects (D6).
+  - The duplicate-start defect (§2.2) is fixed by ADR 0103 (task L9): `start()` refuses a
+    duplicate deterministic id before any effect runs, which makes `startOnce` redundant.
+
+  The verdict rows below are amended to match. The rest of the document stands as written.
 - Method: the ADR 0051 discipline — a placement verdict per mechanism (kernel / loom 1P / 3P / app
   / loom-ui / Blueprint IR), bias outward (P10), and the
   [second-consumer rule](../adr/0083-second-consumer-rule.md) before anything becomes loom 1P
@@ -35,9 +46,9 @@
 
 | Tier | Verdict |
 |---|---|
-| **Kernel** | **No change.** No syscall, no event kind, no fold change. `KERNEL_ABI` stays 1.1.0, `EVENT_SCHEMA` stays 1.18.0, `EVENT_STORE_SPI` stays 1.4.0. Every durability, ordering, replay, idempotency, cancellation and authorization requirement in the paper resolves to an existing mechanism or to app code over one. This is the sixth evaluation in a row to reach zero. |
-| **Pre-existing loom defects** | Two, found by running code while evaluating (§2). **`ctx.emit` and `ctx.ui` re-append on every resume**, and **a duplicate `start()` with the same deterministic id runs its effects before the store refuses it, while `onEvent` fires for events that are never stored.** Neither needs an ABI change. Both would break the paper's idempotency and patch model if it were built the obvious way. |
-| **Loom 1P** | Four small additive items, none a new package: `emitOnce`, `startOnce`, an evidence-contract check that generalises `@loom/knowledge`'s `checkCitations`, and recording the router's intent through `ctx.decide`. One correction: `DataBinding.sensitivity` gets a reader or is relabelled declaration-only. Two items are **gated, app first**: a value-level audience label, and cross-execution outcome attribution in `@loom/learning`. Second consumers are named per item in §7. |
+| **Kernel** | **Two bug fixes, no new mechanism** (corrected 2026-09-27). No syscall, no event kind; `KERNEL_ABI` stays 1.1.0 and `EVENT_STORE_SPI` stays 1.4.0. [ADR 0102](../adr/0102-flow-emits-append-once.md) makes flow-level emits append once per execution (`EVENT_SCHEMA` 1.18.0 → 1.19.0, one additive fold key). ADR 0103 refuses a duplicate deterministic-id `start()` before any effect runs. Every other durability, ordering, replay, idempotency, cancellation and authorization requirement in the paper resolves to an existing mechanism or to app code over one. |
+| **Pre-existing loom defects** | Two, found by running code while evaluating (§2). **`ctx.emit` and `ctx.ui` re-append on every resume**, and **a duplicate `start()` with the same deterministic id runs its effects before the store refuses it, while `onEvent` fires for events that are never stored.** Neither needs an ABI change. Both would break the paper's idempotency and patch model if it were built the obvious way. Both are fixed in the kernel: [ADR 0102](../adr/0102-flow-emits-append-once.md) and ADR 0103. |
+| **Loom 1P** | Four small additive items, none a new package: ~~`emitOnce`~~, ~~`startOnce`~~ (both superseded by the kernel fixes above), an evidence-contract check that generalises `@loom/knowledge`'s `checkCitations`, and recording the router's intent through `ctx.decide`. One correction: `DataBinding.sensitivity` gets a reader or is relabelled declaration-only. Two items are **gated, app first**: a value-level audience label, and cross-execution outcome attribution in `@loom/learning`. Second consumers are named per item in §7. |
 | **App** | Most of the paper: the commit record (derived, §3.2), the augmenter's trigger, the gate's rules, supersession, time budgets and the evaluation metrics. |
 | **3P** | A learned gate policy behind the existing `Policy` SPI (like `loom-plugin-linucb`); any cross-run result cache. |
 | **loom-ui** | The experience layer and the rendering runtime: evidence-bound providers, surface profiles, fail-closed classification, message-anchored conversations, typed outcome types with per-surface resolvers, and a lifter SPI. Four of the paper's ten rendering-side mechanisms are Missing and six are Partial (§3). |
@@ -115,6 +126,15 @@ duplicating is a *bug* in `@loom/agent-surface` rather than a documentation gap 
 maintainer; the read here is that it is a bug (the rendered surface is deterministically wrong)
 and fixable in 1P by routing `ctx.ui` through the same replay-safe path without touching `emit`.
 
+> **Superseded (2026-09-27): [ADR 0102](../adr/0102-flow-emits-append-once.md).** The placement above was overruled. The fix is in the
+> kernel, and it is a bug fix rather than a change of meaning. The ABI table already said `ui`
+> drives "durable, replayable" surfaces, and `usage.md` already said emits are "folded on replay".
+> A 1P `emitOnce` would fix only the call sites that remember to use it, and a forgotten site is a
+> silent duplicate that no check can see. Ordinal matching is already the kernel's contract for
+> gates (ADR 0057) and for step ids (ADR 0061). ADR 0102 records `emitOnce` as the rejected
+> alternative. It also covers the case this section did not: an emit made from inside an effect
+> through a closure over `ctx`.
+
 ### 2.2 A duplicate `start()` with the same deterministic id runs effects twice before the store refuses it
 
 The paper's idempotency is naturally spelled in loom as a deterministic execution id,
@@ -142,6 +162,10 @@ order in the code; the double-effect half is the probe.
 (§7). The cross-node check-then-start race remains; fencing narrows it and the store's sequence-0
 uniqueness keeps the log correct. The residual cost is one wasted effect in a race, which is
 acceptable if documented.
+
+> **Superseded (2026-09-27): ADR 0103.** The fix is in the kernel. Only the kernel can order the
+> sequence-0 write before the body runs, and `start()` itself refuses the duplicate, so
+> `startOnce` is not built.
 
 ## 3. Mechanism by mechanism
 
@@ -436,9 +460,9 @@ is the argument ADR 0087 made when it fixed `AgentRunner`. **Correction:** route
 
 | # | Item | Package | Second consumer / argument | Status | Size |
 |---|---|---|---|---|---|
-| L1 | Document emit/ui resume re-append; resume test asserting the log; rule bug-vs-docs for `ctx.ui.append` | docs + `workflow-runtime` / `agent-surface` tests | every suspending `ctx.emit` / `ctx.ui` caller | do | S |
-| L2 | `emitOnce(ctx, key, type, payload)` (decide- or step-backed) | `workflow-runtime` or `agent-surface` | `@loom/agent-surface` `append` / `increment` callers; `BLUEPRINT_COMPOSED` emitters in the composed-surfaces recipe; ADR 0051 D4 findings emitters | do | S |
-| L3 | `startOnce(runtime, flow, input, { executionId })`, extracted from `TimerService.startOccurrence` | `workflow-runtime` | schedules (in-tree today); the orchestration supervisor's in-memory `started` set; domain argument: any trigger fed from an at-least-once source | do | S |
+| L1 | Document emit/ui resume re-append; resume test asserting the log; rule bug-vs-docs for `ctx.ui.append` | docs + `workflow-runtime` / `agent-surface` tests | every suspending `ctx.emit` / `ctx.ui` caller | **ruled a bug; fixed in the kernel — [ADR 0102](../adr/0102-flow-emits-append-once.md)** | S |
+| L2 | `emitOnce(ctx, key, type, payload)` (decide- or step-backed) | `workflow-runtime` or `agent-surface` | `@loom/agent-surface` `append` / `increment` callers; `BLUEPRINT_COMPOSED` emitters in the composed-surfaces recipe; ADR 0051 D4 findings emitters | **rejected — the kernel fix supersedes it (ADR 0102 D6)** | S |
+| L3 | `startOnce(runtime, flow, input, { executionId })`, extracted from `TimerService.startOccurrence` | `workflow-runtime` | schedules (in-tree today); the orchestration supervisor's in-memory `started` set; domain argument: any trigger fed from an at-least-once source | **superseded — ADR 0103 (kernel)** | S |
 | L4 | Evidence-contract check: generalise `checkCitations` over `readonly string[]`, recorded as a finding | `@loom/agent` (owns the turn's id space) | `@loom/knowledge` (shipped) — same mechanism | do | S |
 | L5 | `DataBinding.sensitivity`: relabel declaration-only (a loom delivery reader only on a consumer outside loom-ui) | `blueprint-runtime` | vacuous-check fix; needs no second consumer as a relabel | do (relabel) | S |
 | L6 | Record the router's intent via `ctx.decide` with policy and propensity | `@loom/intent` | `@loom/learning` (an unrecorded route cannot be evaluated); ADR 0087 precedent | do | S |
@@ -446,7 +470,7 @@ is the argument ADR 0087 made when it fixed `AgentRunner`. **Correction:** route
 | L8 | External-outcome join in `trajectories` | `@loom/learning` | delayed, out-of-run reward in any intervention policy | **gated — app re-keying first** | S |
 | — | `spawnDetached` in orchestration | — | none; the observer model serves the paper better | **not recommended** | (M) |
 
-Kernel: nothing.
+Kernel (corrected 2026-09-27): two bug fixes, no ABI change. [ADR 0102](../adr/0102-flow-emits-append-once.md) covers emits and ADR 0103 covers a duplicate start.
 
 ## 8. loom-ui slice plan
 
@@ -584,9 +608,9 @@ slices and tasks each stage needs.
 
 | Claim | Verdict |
 |---|---|
-| Kernel change | **None.** `KERNEL_ABI` 1.1.0, `EVENT_SCHEMA` 1.18.0, `EVENT_STORE_SPI` 1.4.0. |
+| Kernel change | **Two bug fixes, no ABI change** (corrected 2026-09-27): [ADR 0102](../adr/0102-flow-emits-append-once.md) (emits append once, `EVENT_SCHEMA` 1.19.0) and ADR 0103 (a duplicate start is refused before its effects). `KERNEL_ABI` 1.1.0, `EVENT_STORE_SPI` 1.4.0. |
 | Pre-existing defects | Two, probed: emit/ui re-append on resume; duplicate start pays for effects and leaks phantom `onEvent`s. |
-| Loom 1P | `emitOnce`, `startOnce`, evidence-contract check, recorded routing, `sensitivity` relabel — each with a second consumer. Audience label and outcome join gated, app first. |
+| Loom 1P | ~~`emitOnce`~~, ~~`startOnce`~~ (superseded by the kernel fixes), evidence-contract check, recorded routing, `sensitivity` relabel — each with a second consumer. Audience label and outcome join gated, app first. |
 | loom-ui | Slice E before 7; 7 and 8 widened; new 11 (outcome package) and 12 (Lifter SPI). |
 | Blueprint IR | 2.5.0 `Layout.defer`; `WidgetSource.redacted`; optional `CatalogEntry.actions` — each with an ADR and a reader in both loom renderers. |
 | Prior decisions corrected | ADR 0085 D1 (audience is value-level), `DataBinding.sensitivity` (no reader), `IntentRuntime` (route unrecorded), emit/ui docs. |

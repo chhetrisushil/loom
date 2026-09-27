@@ -44,6 +44,19 @@ describe("T2.3 — language-agnostic fold conformance vectors", () => {
     expect(runFoldVectors(roundTripped).every((r) => r.passed)).toBe(true);
   });
 
+  it("covers the 1.19.0 `_flowEmits` stamp (ADR 0102) — a foreign fold that ignores metadata fails", () => {
+    const stamped = FOLD_VECTORS.filter((v) =>
+      v.events.some((e) => typeof e.metadata?.flowEmit === "number")
+    );
+    expect(stamped.length).toBeGreaterThan(0);
+    // A fold that drops envelope metadata (reads type + payload only) must NOT pass it.
+    const metadataBlind = stamped.map((v) => ({
+      ...v,
+      events: v.events.map(({ metadata: _m, ...e }) => e),
+    }));
+    expect(runFoldVectors(metadataBlind).every((r) => r.passed)).toBe(false);
+  });
+
   it("a broken fold is caught (a mutated expectation fails loudly)", () => {
     const broken = [
       { ...FOLD_VECTORS[0]!, expected: { ...FOLD_VECTORS[0]!.expected, status: "failed" } },

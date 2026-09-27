@@ -152,11 +152,17 @@ export interface ExecutionContext {
   sleep(ms: number): Promise<void>;
   sleepUntil(wakeAt: number): Promise<void>;
 
+  // Append a durable domain event, ONCE per execution (ADR 0102): a re-run from the
+  // top serves the i-th emit from the log when the log already holds it (ordinal
+  // matching, like gates). An emit made while one of this run's own effects or
+  // deciders is executing belongs to that step and appends when it runs.
   emit(eventType: string, payload: unknown): void;
 
+  // An `emit` of `{ delta, done }` — the same once-per-execution rule.
   stream(eventType: string, delta: string, done?: boolean): void;
 
   // Agent-surface — drive the UI with durable, replayable patch/event updates.
+  // Each patch is an `emit`, so it is appended once per execution (ADR 0102).
   // ctx.ui.set(path, value) / append / merge / increment / remove / patch.
   readonly ui: SurfaceEmitter;
 }

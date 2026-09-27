@@ -78,6 +78,7 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._outcomes` | `OUTCOME_RECORDED` | `Array<{ key, success?, score?, decisionId? }>` |
 | `variables._indoubt` | `EFFECT_INDOUBT` | `Array<{ stepId, toolId?, attempts?, idempotencyKey? }>` |
 | `variables._flowHash` | `EXECUTION_STARTED` / `EXECUTION_MIGRATED` | the flow-code content hash this execution currently resolves against (K11.1/.3) |
+| `variables._flowEmits` | ANY event whose envelope carries `metadata.flowEmit` | high-water mark `ordinal + 1` of the flow-level `ctx.emit`/`stream`/`ui` calls already in the log; a re-run serves emit *i* from the log while `i < _flowEmits` (1.19.0, ADR 0102). The one fold step keyed on an envelope stamp rather than an event type |
 | `variables._migratedTo` | `EXECUTION_MIGRATED` | the flow id this execution now resolves to after a migration (K11.3) |
 | `variables._migrations` | `EXECUTION_MIGRATED` | `Array<{ toFlowId, toHash?, fromHash?, strategy?, stateMigrated? }>` — migration audit trail |
 | `variables._input` (replaced) | `EXECUTION_MIGRATED` | when the payload carries `migratedInput` (K11.5, 1.15.0), the recorded TRANSFORMED input replaces `_input` so every later resume folds it |
@@ -501,7 +502,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.18.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079) — all additive, NO new event kinds
+export const EVENT_SCHEMA_VERSION = "1.19.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079); 1.19.0 _flowEmits from the envelope stamp metadata.flowEmit — flow-level emits append once per execution (ADR 0102) — all additive, NO new event kinds
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

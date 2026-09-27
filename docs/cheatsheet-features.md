@@ -4,7 +4,7 @@
 > and the subsystems layered on the log. Everything here survives a process dying mid-step.
 > Card II is [the developer workflow](cheatsheet-dx.md).
 >
-> KERNEL ABI **1.1.0** · EVENT SCHEMA **1.18.0** · EventStore SPI **1.4.0** ·
+> KERNEL ABI **1.1.0** · EVENT SCHEMA **1.19.0** · EventStore SPI **1.4.0** ·
 > BranchRegistry SPI **1.2.0** · LeaseStore SPI **1.1.0** · MemoryStore SPI **2.1.0**
 
 ## The ten syscalls
@@ -20,8 +20,8 @@ Everything else is built from these.
 | `ctx.suspend` | pause until an external signal, then resume *here* |
 | `ctx.sleep` | pause for a duration; the wake is a logged `TIMER_FIRED` |
 | `ctx.sleepUntil` | pause until an absolute time recorded in the log |
-| `ctx.emit` | append a durable domain event |
-| `ctx.stream` | emit an incremental delta event |
+| `ctx.emit` | append a durable domain event — once per execution; a re-run serves it from the log |
+| `ctx.stream` | emit an incremental delta event (once per execution, like `emit`) |
 | `ctx.ui` | drive durable, replayable UI surfaces |
 
 > **Nothing else is durable.** A bare `await fetch()` in a runner re-runs on replay and is
