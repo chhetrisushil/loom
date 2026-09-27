@@ -241,9 +241,14 @@ const handlers: Record<string, Handler> = {
         errorPayload: payload.payload,
       }),
     };
+    // ADR 0105 — the STEP failed, not the execution: leave execution `status` alone. A flow
+    // may catch the throw (try/catch, a saga compensation, a typed-failure fallback) and carry
+    // on; folding "failed" here made a live execution read terminal, so a crash after the
+    // catch was never re-driven and `cancel` refused it. A failure that escapes the runner is
+    // recorded by the EXECUTION_FAILED the kernel commits after it, which owns the terminal
+    // status (as EXECUTION_CANCELLED does for STEP_CANCELLED below).
     return {
       ...state,
-      status: "failed",
       frames: setFrame(state.frames, payload.stepId, frame),
       updatedAt: event.timestamp,
     };
@@ -881,6 +886,11 @@ export function getHandler(eventType: string): Handler | undefined {
 //   that never carries such a resume replays byte-identically. Also additive: a human step's
 //   EXECUTION_SUSPENDED condition carries the kernel-set `stepId` (folded verbatim into
 //   `suspendedOn`, as the condition always was). No new event kind.
+// (ADR 0105, no bump): STEP_FAILED stopped folding the EXECUTION status to "failed" — a flow may
+//   catch it; EXECUTION_FAILED is the execution's failure. The kernel writes the same events and
+//   no replay input changes (no flow reads `status`; `isStatusOnlyResume` tests "suspended" only),
+//   so an older reader mis-folds no new log. Only a log ending between a caught failure and the
+//   next lifecycle event folds differently: `running`, which is what that execution is.
 export const EVENT_SCHEMA_VERSION = "1.20.0";
 
 export function knownEventTypes(): string[] {

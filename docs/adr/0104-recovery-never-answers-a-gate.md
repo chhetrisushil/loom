@@ -357,4 +357,4 @@ as `null`, which is exactly the stray this ADR removes.
   `failed` even when the flow catches the failure and continues. A crash after such a catch
   leaves an execution `recoverAbandoned` refuses as terminal, and it also makes a live execution
   read as `failed`. The cause is in the fold, and fixing it changes the folded status of existing
-  logs, so it needs its own decision.
+  logs, so it needs its own decision. **Fixed by [ADR 0105](0105-a-caught-step-failure-is-not-the-executions.md).**

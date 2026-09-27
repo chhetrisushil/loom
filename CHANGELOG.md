@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`@loom/replay-vm`: a step failure the flow catches no longer fails the execution**
+  ([ADR 0105](docs/adr/0105-a-caught-step-failure-is-not-the-executions.md)). `STEP_FAILED`
+  folded the EXECUTION status to `failed` as well as the step's frame, so a flow that caught the
+  failure (try/catch around `ctx.run`, a saga compensation, a typed-failure fallback) ran on
+  under a terminal status. A crash after the catch left an execution `recoverAbandoned` and the
+  dispatcher would never re-drive, `cancel` refused, retention could prune as finished, and A2A
+  peers polling it were told `failed` (`"unknown error"`). `STEP_FAILED` now folds the frame
+  only, like `STEP_CANCELLED`; `EXECUTION_FAILED`, which the kernel commits when a failure
+  escapes the runner, stays the execution's terminal failure. **EVENT_SCHEMA and KERNEL_ABI
+  unchanged:** the kernel writes the same events and replay's inputs are byte-identical; only
+  the derived status of a log that ends between a caught failure and the next lifecycle event
+  changes (to `running`, so it is recovered). A snapshot written by the old kernel inside that
+  window still holds `failed`; delete the execution's snapshots to recover it.
+
 - **`@loom/workflow-runtime`: a gate is answered only by a resume addressed to it**
   ([ADR 0104](docs/adr/0104-recovery-never-answers-a-gate.md)). **Security fix.**
   `ctx.suspend` serves the recorded resume payloads to gates in order (ADR 0057), so every

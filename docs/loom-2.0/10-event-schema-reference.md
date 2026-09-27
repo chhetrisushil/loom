@@ -179,11 +179,14 @@ generalization.
   `channel`/`payload` present only for a **typed failure** on a contract-declared error
   channel; the payload is Zod-validated against the channel schema and capped at 16 KiB
   before the append (over-cap / invalid / undeclared degrade to the untyped form).
-- **Folds into:** `status → "failed"` (execution-level) **and** `frames[stepId].status →
-  "failed"` (preserving `attempts`, `startedAt`, `input`, setting `error`; a typed failure
-  also sets `errorChannel`/`errorPayload`, which the execute seam SUBSTITUTES on replay —
-  the effect is never re-invoked and the flow re-takes the same catch branch). This is the
-  only `STEP_*` event that also moves the *execution* status.
+- **Folds into:** `frames[stepId].status → "failed"` **only** (preserving `attempts`,
+  `startedAt`, `input`, setting `error`; a typed failure also sets
+  `errorChannel`/`errorPayload`, which the execute seam SUBSTITUTES on replay — the effect is
+  never re-invoked and the flow re-takes the same catch branch). It does **not** touch the
+  execution `status` (ADR 0105): the flow may catch the throw and carry on, and a failure that
+  escapes the runner is recorded by the `EXECUTION_FAILED` that follows it. (Before ADR 0105 it
+  also set `status → "failed"`, so a caught failure read as terminal and a crash after it was
+  never recovered.)
 - Handler: `eventHandlers.ts`.
 
 #### `STEP_CANCELLED`
@@ -254,8 +257,8 @@ generalization.
 
 These are the genuinely new event types. All are **purely additive** and fold into reserved
 `variables` keys; none changes how a pre-existing event folds, and none changes frame or
-execution `status` (except via the ordinary `STEP_FAILED` that a denial / quota / safety breach
-triggers downstream).
+execution `status` (a denial / quota / safety breach fails the STEP via the ordinary
+`STEP_FAILED`, and the execution only if that failure escapes the runner — `EXECUTION_FAILED`).
 
 #### `DECISION_RECORDED`
 - **Introduced:** Loom 2.0 — P9, the Decision seam. Extended twice, both additive: the D1
@@ -437,14 +440,15 @@ stateDiagram-v2
   running --> suspended: EXECUTION_SUSPENDED
   suspended --> running: EXECUTION_RESUMED
   running --> completed: EXECUTION_COMPLETED
-  running --> failed: EXECUTION_FAILED / STEP_FAILED
+  running --> failed: EXECUTION_FAILED
   running --> cancelled: EXECUTION_CANCELLED
   suspended --> cancelled: EXECUTION_CANCELLED
   completed --> [*]
   failed --> [*]
   cancelled --> [*]
   note right of running
-    STEP_STARTED / STEP_COMPLETED / STEP_CANCELLED,
+    STEP_STARTED / STEP_COMPLETED / STEP_FAILED /
+    STEP_CANCELLED,
     PARALLEL_*, STEP_RETRYING, and all advisory
     events (DECISION_RECORDED, EFFECT_DENIED,
     RESOURCE_METERED, QUOTA_EXCEEDED) fold into
@@ -454,8 +458,8 @@ stateDiagram-v2
 
 Only these events move the execution `status`: `EXECUTION_STARTED` (→ running),
 `EXECUTION_SUSPENDED` (→ suspended), `EXECUTION_RESUMED` (→ running), `EXECUTION_COMPLETED`
-(→ completed), `EXECUTION_FAILED` and `STEP_FAILED` (→ failed), `EXECUTION_CANCELLED`
-(→ cancelled). Everything else folds only into `frames` / `variables`.
+(→ completed), `EXECUTION_FAILED` (→ failed), `EXECUTION_CANCELLED` (→ cancelled). Everything
+else — including `STEP_FAILED` (ADR 0105) — folds only into `frames` / `variables`.
 
 ---
 
