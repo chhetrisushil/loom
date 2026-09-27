@@ -63,6 +63,8 @@ describe("loom sweep content (DX-2, K10.6)", () => {
       apply: false,
     });
     expect(dry).toContain("DRY RUN");
+    // The finding's evidence is a BARE ref: load-bearing as well as pinned (ADR 0055 D4).
+    expect(dry).toContain("load-bearing: 1");
     expect(dry).toContain("would-reclaim (1)");
     expect(dry).toContain(telemetry.__loomContent);
     // Nothing deleted yet.
@@ -81,6 +83,40 @@ describe("loom sweep content (DX-2, K10.6)", () => {
     const after = new SqliteContentStore(contentDb);
     expect(await after.get(telemetry)).toBeNull(); // disposable telemetry gone
     expect(await after.get(evidence)).not.toBeNull(); // pinned evidence survives
+    await after.close();
+  });
+
+  it("never reclaims a stale BARE ref, and says why (ADR 0055 D4)", async () => {
+    dir = mkdtempSync(join(tmpdir(), "loom-sweep-"));
+    const db = join(dir, "events.db");
+    const contentDb = join(dir, "content.db");
+    const events = new SqliteEventStore(db);
+    const content = new SqliteContentStore(contentDb);
+    // What ContentResolvingEventStore leaves in the raw log for an externalized field.
+    const externalized = await content.put(new TextEncoder().encode('{"rows":[1,2,3]}'));
+    await events.append({
+      id: "p-0",
+      workflowId: "wf",
+      executionId: "perpetual",
+      eventType: "STEP_COMPLETED",
+      sequence: 0,
+      timestamp: Date.now() - 60 * DAY,
+      payload: { stepId: "read", output: { ...externalized, codec: "json" } },
+    });
+    await events.close();
+    await content.close();
+
+    const applied = await cmdSweepContent({
+      db,
+      content: contentDb,
+      pin: "FINDING_RECORDED",
+      ttlMs: 30 * DAY,
+      apply: true,
+    });
+    expect(applied).toContain("load-bearing: 1");
+    expect(applied).toContain("reclaimed (0)");
+    const after = new SqliteContentStore(contentDb);
+    expect(await after.get(externalized)).not.toBeNull();
     await after.close();
   });
 });

@@ -152,8 +152,9 @@ pnpm --filter @loom/db-observability start
   the first consumer it has ever had. A view is composed from a **closed** catalogue,
   validated *before* anything is recorded, stored by `sha256:` ref, and promoted with
   `ctx.emit(BLUEPRINT_COMPOSED, { ref })` — so which **event** cites the ref is the whole
-  difference between a saved view and an ephemeral one, and `sweepUnpinnedContent` proves it
-  by reclaiming the draft and keeping the promotion. Its centre is the failure
+  difference between a saved view and an ephemeral one. (Its sweep step predates
+  [ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D4: `sweepUnpinnedContent` no longer
+  reclaims the draft, because a bare ref is load-bearing.) Its centre is the failure
   [ADR 0095](adr/0095-binding-semantics-pin.md) closes: halfway through, the fold registered
   under `spend` moves from a rolling week to a calendar month. Same blueprint, same hash,
   every binding resolving, catalogue still validating — and $750 becomes $1,650.

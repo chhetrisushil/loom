@@ -8,7 +8,8 @@ import { type StoreFlags, resolveStores } from "./stores";
 // by default — reports what WOULD be reclaimed; `--apply` erases. Pins are
 // re-derived from the log every sweep (ADR 0055 mark-and-sweep), scanning the
 // live store AND the archive when given, so evidence cited by findings in
-// archived runs stays protected.
+// archived runs stays protected. Only claim-checked (enveloped) refs age out on
+// the TTL; a bare ref is load-bearing and kept while cited (ADR 0055 D4).
 
 const LIST_CAP = 20;
 
@@ -23,7 +24,8 @@ function formatReport(
   const lines = [
     `content sweep ${mode} — ttl ${ttlMs}ms — pins: ${pins.length === 0 ? "(none)" : pins.join(", ")}`,
     `  executions scanned: ${report.executionsScanned}`,
-    `  refs seen: ${report.refsSeen}   pinned: ${report.refsPinned}`,
+    // Load-bearing = cited bare somewhere (ADR 0055 D4): never reclaimed while cited.
+    `  refs seen: ${report.refsSeen}   pinned: ${report.refsPinned}   load-bearing: ${report.refsLoadBearing}`,
     `  ${verb} (${report.reclaimed.length}):`,
   ];
   for (const address of report.reclaimed.slice(0, LIST_CAP)) lines.push(`    ${address}`);
