@@ -27,6 +27,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejected for the same reason. No kernel change; EVENT_SCHEMA and KERNEL_ABI unchanged; existing
   `afterMessages`-only configurations are unaffected.
 
+- **`@loom/plugin-a2ui`, `@loom/plugin-mcp-app`: A2UI structural validation — dangling ids,
+  cycles, unreachable components, malformed catalogues** ([ADR 0088](docs/adr/0088-blueprint-conformance.md)
+  D5, amended). `validateComponents` gains four finding codes checkable without JSON Schema —
+  `dangling-child`/`dangling-template` (error; a `children` reference no component in scope
+  defines), `child-cycle` (error; a component reachable from itself via `children`), and
+  `unreachable-component` (warn; no path from `root` reaches it, reported only when
+  `requireRoot` and a root exists) — via one iterative white/grey/black DFS, O(V+E), no
+  recursion. `column("root", ["ghost"])` and `column("root", ["root"])` previously passed with
+  `ok: true`; both now fail. New `validateCatalog(catalog)` checks that every `components`/
+  `functions` entry's key agrees with its own `component.const`/`name`
+  (`catalog-entry-key-mismatch`/`catalog-function-key-mismatch`), run in the
+  `A2UISurfaceBridge` constructor. `ValidateComponentsOptions` gains
+  `knownComponents?: ReadonlyMap<string, ComponentInstance>` so a batch's `children` may resolve
+  against ids outside itself. `@loom/plugin-mcp-app`'s `surfacePayload` never validated at all
+  (an unknown component silently rendered as nothing); `SurfacePayloadOptions` gains
+  `catalog?: A2UICatalog` (default `defaultCatalog`) and `surfacePayload` now validates with
+  `requireRoot: true` and throws like the A2UI bridge — **one breaking change, loud:** a
+  previously-unexamined bad tree now throws.
+
+  **The correction that made recompose checkable:** `A2UISurfaceBridge.recompose` replaces its
+  stored tree with each batch, while an A2UI client MERGES `updateComponents` by id — so
+  validating a batch against only itself (or the bridge's previous batch) would reject a
+  batch's correct reference to an already-delivered sibling. The bridge now keeps
+  `clientView: Map<id, ComponentInstance>`, seeded in full when the session opens and merged
+  incrementally per batch (O(batch)), and `recompose` validates and walks cycle detection
+  against the batch overlaid on that view — so a batch may reference any earlier batch's
+  component, and a batch that closes a cycle back through an already-sent component is still
+  caught. Deferred: prop-VALUE JSON-Schema checking and `callFunction` argument validation
+  (need a JSON-Schema engine plus A2UI `common_types.json` `$ref` resolution — a consumer with
+  a typed catalogue, likely loom-ui, is the trigger). No kernel change; EVENT_SCHEMA and
+  KERNEL_ABI unchanged.
+
 - **`@loom/plugin-sandbox`: a script's own exception is a typed `scriptError` channel**
   ([ADR 0064](docs/adr/0064-sandbox-eval-plugin.md) D3, amended). `SANDBOX_ERRORS` gains
   `scriptError { name?: string; message: string }` — whatever the script threw on this input,

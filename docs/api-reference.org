@@ -1092,7 +1092,8 @@ class A2UISurfaceBridge {
     components: ComponentInstance[];      // the view (component tree); one node must be id:"root"
     surface?: string;                     // Loom surface id (default "ui")
     a2uiSurfaceId?: string;               // emitted wire id (default `${surface}:${executionId}`)
-    catalogId?: string;                   // default DEFAULT_CATALOG_ID
+    catalog?: A2UICatalog;                // default `defaultCatalog`; makes catalogId a checked claim
+    catalogId?: string;                   // default DEFAULT_CATALOG_ID; REFUSED if named without `catalog`
     redact?: readonly string[];           // K10-R6 egress dot-paths
     surfaceProperties?: Record<string, unknown>;
   });
@@ -1133,6 +1134,29 @@ function button(id, label, action: string): ComponentInstance; // raises an inbo
 function jsonDebugView(): ComponentInstance[];                  // render the whole model as JSON
 
 function dotPathToPointer(dotPath: string): string;   // "a.b" → "/a/b" (RFC 6901)
+#+end_src
+
+*Structural conformance* ([[file:adr/0088-blueprint-conformance.md][ADR 0088]] D5, amended). Never
+throws; every finding from one pass. Exact and structural only — checks `children` REFERENCES, not
+component prop VALUES (still JSON-Schema `$ref` documents, unchecked).
+
+#+begin_src typescript
+function validateComponents(components: readonly ComponentInstance[], catalog: A2UICatalog, options: {
+  requireRoot: boolean;   // true for a createSurface tree; false for an updateComponents batch
+  // ids already known outside `components` (e.g. what a client already holds) that
+  // `children` references may resolve against, in addition to `components` itself —
+  // what `A2UISurfaceBridge.recompose` passes as its merged clientView (see below)
+  knownComponents?: ReadonlyMap<string, ComponentInstance>;
+}): A2UIValidation
+// findings: unknown-component | undeclared-prop | duplicate-component-id | missing-root |
+//           unchecked-props (warn) | dangling-child | dangling-template | child-cycle |
+//           unreachable-component (warn; only when requireRoot AND a root exists)
+function validateFunctionCall(name: string, catalog: A2UICatalog): A2UIValidation
+// findings: unknown-function — a catalogue declaring no `functions` at all refuses every call
+function validateCatalog(catalog: A2UICatalog): A2UIValidation
+// findings: catalog-entry-key-mismatch | catalog-function-key-mismatch — a components/functions
+// key must equal its own component.const / name, or routing and rendering disagree
+function describeFindings(report: A2UIValidation): string   // one-line message for a thrown error
 #+end_src
 
 Usage — bridge a surface to a connected client (e.g. an SSE endpoint):
@@ -1203,11 +1227,16 @@ function surfaceHostPin(template?: string): string          // `fnv1a64:<hex16>`
 function verifySurfaceHostPin(expected: string, template?: string): string  // throws TemplateDriftError
 function surfaceHostResource(opts?: { pin?; uri?; connectDomains?; resourceDomains? }): McpServedResource
 
-// Fold a loom event stream into the payload the template renders.
+// Fold a loom event stream into the payload the template renders. Validates
+// `components` against `catalog` (requireRoot: true — this payload is always a
+// COMPLETE model, never a delta) and throws exactly as A2UISurfaceBridge does
+// (ADR 0088 D5 amendment): the template's renderer returns `null` for an
+// unknown component, which was a silent hole in the view.
 function surfacePayload(events: readonly EventEnvelope[], options: {
   executionId: string; components: ComponentInstance[];
   redact: readonly string[];        // REQUIRED — see below
   surface?: string; surfaceId?: string;
+  catalog?: A2UICatalog;             // default `defaultCatalog`, mirroring A2UISurfaceBridge
 }): SurfacePayload   // { surfaceId, executionId, components, dataModel, sequence }
 
 // The app-visibility cursor tool — the View's refresh channel.

@@ -7,7 +7,15 @@ import { describe, expect, it } from "vitest";
 import { A2UISurfaceBridge } from "./A2UISurfaceBridge";
 import type { A2UICallFunctionInput } from "./callFunction";
 import { A2UI_CALL_FUNCTION_TOOL_ID, registerA2UICallFunction } from "./callFunction";
-import { DEFAULT_CATALOG_ID, bind, column, defaultCatalog, defineCatalog, text } from "./catalog";
+import {
+  DEFAULT_CATALOG_ID,
+  bind,
+  column,
+  defaultCatalog,
+  defineCatalog,
+  row,
+  text,
+} from "./catalog";
 import type { A2UIServerMessage, CallFunctionPayload, FunctionResponsePayload } from "./messages";
 import { A2UI_VERSION } from "./messages";
 import { dotPathToParts, dotPathToPointer } from "./pointer";
@@ -479,5 +487,32 @@ describe("registerA2UICallFunction (grain B)", () => {
         name: "confirm",
       })
     ).rejects.toThrow(EffectModeViolationError);
+  });
+});
+
+// ── recompose across multiple batches — the client's merged view ──────────────
+//
+// A client MERGES `updateComponents` by id, so a component sent in one batch is
+// still there when a LATER batch arrives — even though the bridge's own
+// `components` field is replaced wholesale by each `recompose` call. Structural
+// validation has to track that merge, not just the latest batch.
+describe("A2UISurfaceBridge — validation tracks the client's MERGED tree across recomposes", () => {
+  it("a third batch may reference a sibling introduced by an EARLIER batch, not just the first one", () => {
+    const b = newBridge(); // view = [column("root", ["status"]), text("status", bind("/status"))]
+    b.snapshot();
+    // Batch 1 adds "panel", unconnected to root (fine — requireRoot is false).
+    expect(b.recompose([row("panel", ["status"])])).toHaveLength(1);
+    // Batch 2 references "panel" from batch 1, not anything in batch 2 itself.
+    const messages = b.recompose([text("panelLabel", "hi")]);
+    expect(messages).toHaveLength(1);
+    // Batch 3 finally wires "panel" to "panelLabel" — both from earlier batches.
+    expect(b.recompose([row("panel", ["panelLabel"])])).toHaveLength(1);
+  });
+
+  it("REFUSES a batch referencing an id that was never sent in any batch", () => {
+    const b = newBridge();
+    b.snapshot();
+    b.recompose([row("panel", ["status"])]);
+    expect(() => b.recompose([row("other", ["never-sent"])])).toThrow(/dangling-child/);
   });
 });

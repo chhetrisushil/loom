@@ -2,6 +2,7 @@ import { SURFACE_PATCH } from "@loom/agent-surface";
 import type { EventEnvelope } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { defineCatalog } from "@loom/plugin-a2ui";
 import { McpClient, createMcpServer, servedEffect } from "@loom/plugin-mcp";
 import type { McpServer } from "@loom/plugin-mcp";
 import { afterEach, describe, expect, it } from "vitest";
@@ -168,6 +169,74 @@ describe("surface payload", () => {
     // masked — masking before the fold would have corrupted the arithmetic.
     expect(payload.dataModel.secretCount).not.toBe(15);
     expect(payload.dataModel.title).toBe("ok");
+  });
+
+  // The residual gap this closes: `surfacePayload` reused `ComponentInstance`
+  // with no `validateComponents` call, so an off-catalogue or malformed tree
+  // reached the template's renderer, which returns `null` for an unknown
+  // component — a silent hole in the view rather than a defect attributable to
+  // whatever composed the tree.
+  describe("validates the component tree, like the A2UI egress bridge does", () => {
+    it("REFUSES an unknown component type", () => {
+      expect(() =>
+        surfacePayload([], {
+          executionId: "x1",
+          components: [{ id: "root", component: "Sparkline" }],
+          redact: [],
+        })
+      ).toThrow(/unknown-component/);
+    });
+
+    it("REFUSES a dangling child id", () => {
+      expect(() =>
+        surfacePayload([], {
+          executionId: "x1",
+          components: [{ id: "root", component: "Column", children: ["ghost"] }],
+          redact: [],
+        })
+      ).toThrow(/dangling-child/);
+    });
+
+    it("REFUSES a tree with no root", () => {
+      expect(() =>
+        surfacePayload([], {
+          executionId: "x1",
+          components: [{ id: "title", component: "Text", text: "hi" }],
+          redact: [],
+        })
+      ).toThrow(/missing-root/);
+    });
+
+    it("passes the conformant default COMPONENTS fixture", () => {
+      expect(() =>
+        surfacePayload([], { executionId: "x1", components: COMPONENTS, redact: [] })
+      ).not.toThrow();
+    });
+
+    it("validates against a supplied `catalog` instead of the default", () => {
+      const custom = defineCatalog({
+        id: "acme.v1",
+        components: { Panel: { component: { const: "Panel" }, properties: {} } },
+      });
+      // "Panel" is not in `defaultCatalog`, so this only passes when `catalog` is
+      // actually consulted instead of the default.
+      expect(() =>
+        surfacePayload([], {
+          executionId: "x1",
+          components: [{ id: "root", component: "Panel" }],
+          redact: [],
+          catalog: custom,
+        })
+      ).not.toThrow();
+      // And the default catalogue is still the one enforced when none is given.
+      expect(() =>
+        surfacePayload([], {
+          executionId: "x1",
+          components: [{ id: "root", component: "Panel" }],
+          redact: [],
+        })
+      ).toThrow(/unknown-component/);
+    });
   });
 });
 

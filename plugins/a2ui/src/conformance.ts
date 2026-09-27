@@ -31,7 +31,19 @@ export type A2UIFindingCode =
   /** A catalogue entry that declares no `properties`, so its props go unchecked. */
   | "unchecked-props"
   /** A `callFunction` name the catalogue does not declare. */
-  | "unknown-function";
+  | "unknown-function"
+  /** A `children: string[]` entry naming an id no component in scope defines. */
+  | "dangling-child"
+  /** A `children: { componentId }` (List template) naming an id in scope defines. */
+  | "dangling-template"
+  /** A component reachable from itself through `children` references. */
+  | "child-cycle"
+  /** A component no path from `root` ever reaches — it will never render. */
+  | "unreachable-component"
+  /** A catalogue entry's key disagrees with its `component` discriminator const. */
+  | "catalog-entry-key-mismatch"
+  /** A catalogue function's key disagrees with its declared `name`. */
+  | "catalog-function-key-mismatch";
 
 export interface A2UIFinding {
   readonly code: A2UIFindingCode;
@@ -63,8 +75,42 @@ export interface ValidateComponentsOptions {
    * its entry point. False for an `updateComponents` batch, which may legitimately
    * replace a subtree — demanding a root there would reject correct usage, and a
    * check that rejects correct usage gets turned off.
+   *
+   * Reachability (`unreachable-component`) is only reported when this is true: a
+   * partial batch legitimately omits most of the tree, so "not reached from root"
+   * is meaningless for it.
    */
   readonly requireRoot: boolean;
+  /**
+   * Ids already known outside `components` — e.g. what a client already holds —
+   * against which `children` references in `components` may resolve, in addition
+   * to ids within `components` itself.
+   *
+   * `A2UISurfaceBridge.recompose` REPLACES its stored tree with each batch, while
+   * an A2UI client MERGES `updateComponents` by id: a batch that references an
+   * already-delivered sibling is correct usage, not a dangling reference. Without
+   * this, checking a batch against only itself would reject exactly that and get
+   * turned off. Cycle detection also walks through `knownComponents`, so a batch
+   * that closes a loop back through an already-sent component is still caught.
+   */
+  readonly knownComponents?: ReadonlyMap<string, ComponentInstance>;
+}
+
+/** The two `children` shapes A2UI components use to reference other components. */
+function childIdsOf(instance: ComponentInstance | undefined): readonly string[] {
+  if (!instance) return [];
+  const children = instance.children;
+  if (Array.isArray(children)) {
+    return children.filter((c): c is string => typeof c === "string");
+  }
+  if (
+    children !== null &&
+    typeof children === "object" &&
+    typeof (children as { componentId?: unknown }).componentId === "string"
+  ) {
+    return [(children as { componentId: string }).componentId];
+  }
+  return [];
 }
 
 /**
@@ -137,11 +183,158 @@ export function validateComponents(
     });
   }
 
+  // ── Structural checks: dangling references, cycles, reachability ────────────
+  //
+  // These are pure adjacency-list graph properties — checkable without JSON
+  // Schema and without any claim about prop VALUES. `merged` is the graph a
+  // client actually resolves references against: `components` (this batch)
+  // overlaid on `knownComponents` (what is already known/delivered), because a
+  // batch legitimately references an existing sibling it did not re-send.
+  const known = options.knownComponents;
+  const merged: Map<string, ComponentInstance> = known ? new Map(known) : new Map();
+  for (const instance of components) merged.set(instance.id, instance);
+
+  for (const instance of components) {
+    const children = instance.children;
+    if (Array.isArray(children)) {
+      for (const childId of children) {
+        if (typeof childId === "string" && !merged.has(childId)) {
+          findings.push({
+            code: "dangling-child",
+            severity: "error",
+            subject: instance.id,
+            message: `component "${instance.id}" references child id "${childId}", which no component in scope defines`,
+          });
+        }
+      }
+    } else if (
+      children !== null &&
+      typeof children === "object" &&
+      typeof (children as { componentId?: unknown }).componentId === "string"
+    ) {
+      const templateId = (children as { componentId: string }).componentId;
+      if (!merged.has(templateId)) {
+        findings.push({
+          code: "dangling-template",
+          severity: "error",
+          subject: instance.id,
+          message: `list "${instance.id}" templates component id "${templateId}", which no component in scope defines`,
+        });
+      }
+    }
+  }
+
+  // One iterative DFS per unvisited node, white(absent)/grey(1, on the current
+  // path)/black(2, fully explored) colouring — O(V+E) total, no recursion, so
+  // depth is bounded by heap rather than call-stack size. Starting at "root"
+  // (when present) also gives reachability for free; any node left unvisited
+  // after that is picked up by the second loop purely for cycle coverage, since
+  // an orphaned subtree can still loop on itself.
+  const color = new Map<string, 1 | 2>();
+  const reachableFromRoot = new Set<string>();
+
+  const dfsFrom = (startId: string, markReachable: boolean): void => {
+    if (color.has(startId)) return;
+    const stack: { id: string; kids: readonly string[]; idx: number }[] = [
+      { id: startId, kids: childIdsOf(merged.get(startId)), idx: 0 },
+    ];
+    color.set(startId, 1);
+    if (markReachable) reachableFromRoot.add(startId);
+
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1] as { id: string; kids: readonly string[]; idx: number };
+      if (frame.idx < frame.kids.length) {
+        const childId = frame.kids[frame.idx++] as string;
+        if (!merged.has(childId)) continue; // dangling — already reported above
+        const childColor = color.get(childId);
+        if (childColor === 1) {
+          findings.push({
+            code: "child-cycle",
+            severity: "error",
+            subject: childId,
+            message: `component "${frame.id}" references "${childId}", which is its own ancestor via \`children\` — a cycle`,
+          });
+          continue;
+        }
+        if (childColor === 2) continue; // already fully explored elsewhere
+        color.set(childId, 1);
+        if (markReachable) reachableFromRoot.add(childId);
+        stack.push({ id: childId, kids: childIdsOf(merged.get(childId)), idx: 0 });
+      } else {
+        color.set(frame.id, 2);
+        stack.pop();
+      }
+    }
+  };
+
+  if (merged.has("root")) dfsFrom("root", true);
+  for (const id of merged.keys()) {
+    if (!color.has(id)) dfsFrom(id, false);
+  }
+
+  if (options.requireRoot && roots > 0) {
+    // Reachability is only meaningful once a root actually exists — with none,
+    // `missing-root` already says everything there is to say, and reporting
+    // every other component as "unreachable" on top of it would be noise about
+    // the same defect rather than a second one.
+    for (const instance of components) {
+      if (instance.id !== "root" && !reachableFromRoot.has(instance.id)) {
+        findings.push({
+          code: "unreachable-component",
+          severity: "warn",
+          subject: instance.id,
+          message: `component "${instance.id}" is not reachable from "root" — it will never render`,
+        });
+      }
+    }
+  }
+
   return {
     ok: findings.every((f) => f.severity !== "error"),
     findings,
     components: components.length,
   };
+}
+
+/**
+ * Check a catalogue's own well-formedness: an entry's key must equal its
+ * `component` discriminator const, and a function's key must equal its `name`.
+ *
+ * A catalogue is looked up by both directions — `validateComponents` indexes
+ * `catalog.components` by key to check an instance's `component` field, and a
+ * client indexes it the same way to route a wire message to a renderer. A
+ * mis-keyed entry (declared under `"Text"`, discriminator `{ const: "Txt" }`)
+ * passes as a bare `unchecked-props` warn today: the key routes lookups but the
+ * const is never compared to it, so nothing catches the two disagreeing.
+ */
+export function validateCatalog(catalog: A2UICatalog): A2UIValidation {
+  const findings: A2UIFinding[] = [];
+
+  for (const [key, entry] of Object.entries(catalog.components)) {
+    if (entry.component.const !== key) {
+      findings.push({
+        code: "catalog-entry-key-mismatch",
+        severity: "error",
+        subject: key,
+        message: `catalogue "${catalog.id}" entry "${key}" declares component discriminator "${entry.component.const}" — a component instance is routed by one and rendered by the other, and the two disagree`,
+      });
+    }
+  }
+
+  if (catalog.functions) {
+    for (const [key, fn] of Object.entries(catalog.functions)) {
+      if (fn.name !== key) {
+        findings.push({
+          code: "catalog-function-key-mismatch",
+          severity: "error",
+          subject: key,
+          message: `catalogue "${catalog.id}" function "${key}" declares name "${fn.name}" — the two must agree`,
+        });
+      }
+    }
+  }
+
+  return { ok: findings.every((f) => f.severity !== "error"), findings, components: 0 };
 }
 
 /**

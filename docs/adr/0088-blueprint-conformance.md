@@ -202,3 +202,76 @@ that most callers would leave off.
   went red for it — because a declared check and an enforced one look identical in a green suite.
 - Second-consumer rule: satisfied three times before a line was written (CON P3/§5.1/§9.1,
   TRD KP-4/BP-2/KC-2.2, and AET as the case for why runtime synthesis is refused).
+
+## Amendment (2026-09-27) — dangling ids, cycles, malformed catalogues; the second transport binding
+
+D5 closed the catalogue hole but only for *props*: `column("root", ["ghost"])` (a child id no
+component defines) and `column("root", ["root"])` (a component that is its own ancestor) both
+passed `validateComponents` with `ok: true`. Both are exactly the class of defect an automated
+composer — the recompose path this ADR added — gets wrong, and both are checkable without JSON
+Schema: they are pure adjacency-list properties of the `children` references already being
+iterated, not a claim about a prop *value*. A `defineCatalog` entry keyed differently from its own
+`component` discriminator const (declared `"Text"`, discriminator `{ const: "Txt" }`) was also
+unchecked — routing and rendering would disagree on the same catalogue.
+
+**Four finding codes**, all in `validateComponents`:
+
+- `dangling-child` (error) — a `children: string[]` entry (Column/Row) naming an id no component
+  in scope defines.
+- `dangling-template` (error) — a `children: { componentId }` entry (a List's template) naming an
+  id no component in scope defines.
+- `child-cycle` (error) — a component reachable from itself through `children` references.
+- `unreachable-component` (warn) — no path from `root` reaches this component. Reported only when
+  `requireRoot` **and** a root actually exists: with no root, `missing-root` already says
+  everything there is to say, and flagging every other component as unreachable on top of it would
+  be noise about the same defect, not a second one.
+
+**Algorithm.** One iterative DFS, white/grey/black colouring, starting at `root` when present and
+then continuing over any node the first pass left unvisited (an orphaned subtree can still loop on
+itself) — O(V+E), no recursion. Untrusted, composer-generated payloads are exactly where a
+thousands-of-nodes accidental cycle would show up; a recursive walk would blow the call stack
+before a naive one even finished. A negative test builds a 50,000-node chain to prove this is
+iterative rather than merely correct on small inputs.
+
+**The correction that made this checkable at all — `A2UISurfaceBridge.recompose` vs. the client.**
+`recompose` REPLACES the bridge's own stored `components` with each batch. An A2UI client, per the
+protocol, MERGES an `updateComponents` batch into what it already holds, **by id**. Validating a
+batch against only itself (or against the bridge's previous batch) would reject the correct,
+intended usage of `recompose` — a subtree update naming an already-delivered sibling it did not
+re-send — and a check that rejects correct usage gets turned off (this ADR's own D5 rule, applied
+to itself). The bridge now keeps `clientView: Map<id, ComponentInstance>`, seeded in full when the
+session opens (a `createSurface` is a full replace, matching what a client does on receiving one)
+and merged incrementally on every subsequent `recompose` — in O(batch), not O(tree). `recompose`
+validates each batch's `children` references, and walks cycle detection, against `components`
+overlaid on `clientView`, so a batch may correctly reference a sibling from *any* earlier batch,
+and a batch that closes a cycle back through an already-sent component is still caught.
+
+**Catalogue well-formedness.** `validateCatalog(catalog)` checks that every `components` entry's
+key equals its own `component.const`, and every `functions` entry's key equals its own `name`
+(codes `catalog-entry-key-mismatch` / `catalog-function-key-mismatch`). Run once, in the
+`A2UISurfaceBridge` constructor (`defaultCatalog` included, though it happens to be well-formed) —
+every later check indexes `catalog.components` by key, so a mis-keyed entry would silently never
+match the instances it exists to validate.
+
+**`@loom/plugin-mcp-app` never validated at all.** `surfacePayload` reused `ComponentInstance` with
+no `validateComponents` call, and the template's renderer (`template.ts`) returns `null` for an
+unknown component type — a silent hole in the rendered view, one transport binding away from the
+defect D5 closed on the A2UI egress path. `SurfacePayloadOptions` gains `catalog?: A2UICatalog`
+(default `defaultCatalog` — the same default the A2UI bridge uses, since this is a second transport
+binding for one component-tree vocabulary, not a second UI model); `surfacePayload` validates with
+`requireRoot: true` (its payload is always a *complete* model, never a delta — see `adopt()` in the
+template) and throws exactly as `A2UISurfaceBridge` does.
+
+**What this does NOT do.** Prop *values* remain unchecked — a component's `properties` are still
+JSON-Schema documents with `$ref`s into A2UI's `common_types.json`, and closing that needs a
+JSON-Schema engine plus `$ref` resolution, deferred until a consumer ships a catalogue with typed
+values (loom-ui is the likelier home). `callFunction` argument validation is deferred with it, for
+the same reason.
+
+- `@loom/plugin-a2ui` gains `validateCatalog` and the four finding codes above; `ValidateComponentsOptions`
+  gains `knownComponents?: ReadonlyMap<string, ComponentInstance>`. Additive — no existing signature
+  changed, and every existing conformant tree still validates.
+- `@loom/plugin-mcp-app` gains `SurfacePayloadOptions.catalog`. **One breaking change, loud:**
+  `surfacePayload` now throws for a tree it previously passed through unexamined.
+- No new event type, no syscall, no fold change. **KERNEL_ABI unchanged (1.1.0); EVENT_SCHEMA
+  unchanged (1.18.0).**
