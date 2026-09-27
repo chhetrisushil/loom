@@ -229,7 +229,7 @@ describe("ContentResolvingEventStore under the coalescer (ADR 0074 Amendment)", 
 });
 
 // ── Claim-check envelopes are the claim-check plugin's to resolve, not this store's ──────
-// (ADR 0055 D4 known gap, closed by L1.) An ADR 0054 envelope's `ref` is a TTL-reclaimable
+// (Closes the known gap ADR 0055 D4 recorded.) An ADR 0054 envelope's `ref` is a TTL-reclaimable
 // citation whose erasure the fold never sees; the resolving store used to descend into the
 // envelope, replace `ref` with the decoded value, throw `ContentMissingError` once the blob was
 // swept, and choke on a `codec: "bytes"` blob it tried to JSON-decode.
