@@ -8,8 +8,8 @@ import { type StoreFlags, resolveStores } from "./stores";
 // by default — reports what WOULD be reclaimed; `--apply` erases. Pins are
 // re-derived from the log every sweep (ADR 0055 mark-and-sweep), scanning the
 // live store AND the archive when given, so evidence cited by findings in
-// archived runs stays protected. Only claim-checked (enveloped) refs age out on
-// the TTL; a bare ref is load-bearing and kept while cited (ADR 0055 D4).
+// archived runs stays protected. Only a claim-check envelope's own `ref` ages
+// out on the TTL; any other ref is load-bearing, kept while cited (ADR 0055 D4).
 
 const LIST_CAP = 20;
 

@@ -299,8 +299,9 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
 
   it("one ref OBJECT aliased inside an envelope and bare in one payload is still load-bearing", async () => {
     // An in-memory store keeps payloads by reference, so one object can sit at two sites.
-    // The walk pops the envelope's subtree first (LIFO over `{ bare, wrapped }`); a cycle guard
-    // keyed on the object alone would then skip the bare site and reclaim a load-bearing blob.
+    // The walk pops the envelope first (LIFO over `{ bare, wrapped }`); had the envelope's ref
+    // gone through the cycle guard, the bare site would then be skipped and a load-bearing
+    // blob reclaimed.
     const content = new InMemoryContentStore();
     const shared = await content.put(bytes("aliased"));
     const ref = { __loomContent: shared.__loomContent };
@@ -328,12 +329,19 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
     expect(await content.get(shared)).not.toBeNull();
   });
 
-  it("terminates on a cycle that crosses an envelope boundary, and on a very deep payload (audit W8)", async () => {
+  it("terminates on a cycle that runs through an envelope's digest, and on a very deep payload (audit W8)", async () => {
     const content = new InMemoryContentStore();
     const blob = await content.put(bytes("in a cycle"));
-    // root → envelope → root: every object is reachable both bare and inside the envelope.
+    const offloaded = await content.put(bytes("offloaded"));
+    // root → envelope.digest → root: the cycle crosses the envelope, which is walked
+    // in the parent's context everywhere but its `ref`.
     const root: Record<string, unknown> = { ref: { __loomContent: blob.__loomContent } };
-    root.wrapped = { __loomClaimCheck: true, back: root, size: 1 };
+    root.wrapped = {
+      __loomClaimCheck: true,
+      ref: { __loomContent: offloaded.__loomContent },
+      size: 1,
+      digest: { back: root },
+    };
     let deep: Record<string, unknown> = { leaf: true };
     for (let i = 0; i < 100_000; i++) deep = { next: deep };
     const store = new InMemoryAsyncEventStore();
@@ -347,7 +355,74 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
       now: NOW,
     });
     expect(report.refsLoadBearing).toBe(1);
+    expect(report.reclaimed).toEqual([offloaded.__loomContent]);
+  });
+
+  it("a ref inside an envelope's DIGEST stays load-bearing — the digest is replay-visible", async () => {
+    // Only `envelope.ref` is the offloaded value; the digest is recorded, branched on by
+    // orchestration and resolved on read, so a ref inside it is as load-bearing as any bare one.
+    const content = new InMemoryContentStore();
+    const offloaded = await content.put(bytes("the big result"));
+    const inDigest = await content.put(bytes("cited from the digest"));
+    const store = new InMemoryAsyncEventStore();
+    await store.append(
+      evt(
+        "d",
+        0,
+        "STEP_COMPLETED",
+        {
+          output: {
+            __loomClaimCheck: true,
+            ref: { __loomContent: offloaded.__loomContent },
+            size: 1,
+            digest: { top: [{ __loomContent: inDigest.__loomContent }] },
+          },
+        },
+        OLD
+      )
+    );
+
+    const report = await sweepUnpinnedContent({
+      eventStores: [store],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+    });
+    expect(report.reclaimed).toEqual([offloaded.__loomContent]);
+    expect(report.refsLoadBearing).toBe(1);
+    expect(await content.get(inDigest)).not.toBeNull();
+  });
+
+  it("an object merely carrying the flag is not an envelope — its bare refs stay load-bearing", async () => {
+    // The envelope check is structural, exactly `isClaimCheck`: the flag AND a string
+    // `ref.__loomContent`. Anything less is app data, and its refs are bare.
+    const content = new InMemoryContentStore();
+    const a = await content.put(bytes("flag, no ref"));
+    const b = await content.put(bytes("flag, ref not a ContentRef"));
+    const store = new InMemoryAsyncEventStore();
+    await store.append(
+      evt(
+        "f",
+        0,
+        "STEP_COMPLETED",
+        {
+          one: { __loomClaimCheck: true, items: [{ __loomContent: a.__loomContent }] },
+          two: { __loomClaimCheck: true, ref: { nested: { __loomContent: b.__loomContent } } },
+        },
+        OLD
+      )
+    );
+
+    const report = await sweepUnpinnedContent({
+      eventStores: [store],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+    });
     expect(report.reclaimed).toEqual([]);
+    expect(report.refsLoadBearing).toBe(2);
   });
 
   it("a bare ref an app emits itself is retained too — the sweep cannot tell it from an externalized one", async () => {

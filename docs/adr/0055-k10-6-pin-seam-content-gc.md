@@ -58,6 +58,13 @@ deletes evidence.
 direction; `@loom/workflow-runtime` gains no new dependencies (the predicate is structural). The
 envelope stays a leaf in the payload walk — digests are projections, not containers.
 
+> **Amended 2026-09-27 (see D4).** Both halves above were stale. The sweep never took the
+> `@loom/middleware` dependency: it recognises an envelope structurally, with the same test as
+> `isClaimCheck` (`__loomClaimCheck === true` AND a string `ref.__loomContent`). And the envelope
+> is not a leaf in the walk. Its `ref` is reported as the one enveloped (TTL-reclaimable)
+> citation, and every other field, `digest` included, is walked as ordinary payload. A digest is
+> replay-visible, so a ref inside it is load-bearing.
+
 ## Consequences
 
 - Aggressive raw-telemetry TTLs are now safe: the W7 acceptance test (delete blobs 30d+, archive
@@ -87,23 +94,28 @@ command, `loom sweep content --ttl 30d --apply`, did this to any perpetual agent
 externalized its large step outputs.
 
 Decided: **only refs reached inside a claim-check envelope are TTL-reclaimable; a bare ref is
-load-bearing (ADR 0046 resolves it), pinned while cited.** The walk carries one flag, set for
-descendants of an object with `__loomClaimCheck === true`. A ref cited anywhere outside an
-envelope is never reclaimed while any scanned event cites it, and when one ref is seen both ways
-the bare citation wins. The report gains `refsLoadBearing`; `loom sweep content` prints it.
+load-bearing (ADR 0046 resolves it), pinned while cited.** "Inside an envelope" means exactly
+the envelope's own `ref`, the offloaded value. An envelope is recognised structurally, with the
+same test as `isClaimCheck`: `__loomClaimCheck === true` AND a string `ref.__loomContent`. An
+app object that only carries the flag is app data. Every other envelope field is recorded,
+replay-visible data and is walked in the envelope's own context. That matters most for
+`digest`, which orchestration branches on (ADR 0054 CC-2), so a ref inside a digest is
+load-bearing. A ref cited anywhere other than an envelope's `ref` is never reclaimed while any
+scanned event cites it, and when one ref is seen both ways the bare citation wins. The report gains `refsLoadBearing`; `loom sweep content` prints it.
 
 The rule covers every bare ref, not only the fields a resolving store was configured to
 externalize. It has to: the raw log does not say which fields were externalized, and
 `ContentResolvingEventStore` resolves every bare ref in a payload, not only its configured paths.
 So a ref an app emits itself (`ctx.emit(KIND, { ref })`) is retained too. An app that wants such
-a ref to age out has to cite it inside an envelope.
+a ref to age out has to cite it as an envelope's `ref`. Under a resolving store that only
+works once the known gap below is fixed.
 
 A bare ref stops being cited when its execution is deleted. Reclaiming the blob then is an
 orphan pass over the content store, which the SPI cannot enumerate yet (tracked with the
 re-citation race as the follow-up to this amendment). Until then such a blob is kept, which
-leaks storage but never breaks a read. Cost is unchanged at O(payload): the cycle guard is keyed
-on (object, bare-or-enveloped), so an object an in-memory payload aliases at both sites is
-expanded at most twice.
+leaks storage but never breaks a read. Cost is unchanged at O(payload) with the one WeakSet cycle
+guard: an envelope reports its `ref` directly instead of descending into it, so an object an
+in-memory payload aliases at a bare site and as an envelope's `ref` is still seen bare.
 
 Known gap, not closed here: `ContentResolvingEventStore` also descends into claim-check
 envelopes. It replaces `envelope.ref` with the decoded value on read, and throws when the blob is

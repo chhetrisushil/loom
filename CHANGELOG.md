@@ -183,14 +183,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `loom sweep content --ttl 30d --apply` over a 60-day-old externalized `STEP_COMPLETED.output`
   erased the blob, and the next read of that still-running execution threw
   `ContentMissingError`. Resume, replay, fork and compliance export all failed. Now only a ref
-  held inside a claim-check envelope ages out. A ref cited bare anywhere is kept while any
-  scanned event cites it, and a ref cited both ways is kept. `ContentSweepReport` gains
+  that is an envelope's own `ref` ages out. A ref cited anywhere else, including inside an
+  envelope's `digest`, is kept while any scanned event cites it, and so is a ref cited both
+  ways. An envelope is recognised by the same structural test as `isClaimCheck`, so an app
+  object that only carries `__loomClaimCheck: true` does not make its refs reclaimable. `ContentSweepReport` gains
   `refsLoadBearing`, and `loom sweep content` prints it.
 
   **Behaviour change:** an app that emits a bare ref itself (`ctx.emit(KIND, { ref })`) and
   relied on the sweep to reclaim it will find the blob kept. The sweep cannot tell such a ref
-  from an externalized one. To make it reclaimable, cite it inside a claim-check envelope.
-  Nothing is erased that was kept before.
+  from an externalized one. To make it reclaimable, cite it as a claim-check envelope's `ref`.
+  Nothing is erased that was kept before. **Caveat until the L1 fix lands:** under a
+  `ContentResolvingEventStore` that does not work yet. That store also resolves an envelope's
+  `ref` on read, so erasing the blob fails the read exactly as before (the known gap recorded
+  in ADR 0055 D4). In that composition, keep such refs bare.
 
 - **`loom plugin new keystore` scaffolded a package that could not compile.** The template
   writes `Buffer` in four signatures and the generated `package.json` declared no
