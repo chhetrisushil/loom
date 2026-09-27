@@ -26,7 +26,7 @@ export { canServePin, describePin, pinOf } from "./pinning";
 export { indexByEventType, reconstructProjections } from "./projections";
 export type { ProjectionReconstructOptions } from "./projections";
 
-export { InspectorBudgetError } from "./types";
+export { CompactedHistoryError, InspectorBudgetError } from "./types";
 export type {
   PinStatus,
   ProjectionSlice,

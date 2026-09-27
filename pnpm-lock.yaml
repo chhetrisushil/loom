@@ -1315,6 +1315,9 @@ importers:
       '@loom/middleware':
         specifier: workspace:*
         version: link:../middleware
+      '@loom/plugin-content':
+        specifier: workspace:*
+        version: link:../../plugins/content
       '@loom/plugin-crypto':
         specifier: workspace:*
         version: link:../../plugins/crypto

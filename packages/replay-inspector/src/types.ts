@@ -130,3 +130,25 @@ export class InspectorBudgetError extends Error {
     Object.setPrototypeOf(this, InspectorBudgetError.prototype);
   }
 }
+
+/**
+ * ADR 0106 — the state at `position` cannot be reconstructed: compaction removed events
+ * `missingFrom..missingThrough` below it, and no snapshot at or above `missingThrough` anchors
+ * the fold. Folding across the gap would return a plausible-looking wrong state. Positions at
+ * or above a compaction checkpoint reconstruct normally; a kept (pinned-kind) event BELOW the
+ * checkpoint is a position like this — its event survives, the state around it does not.
+ */
+export class CompactedHistoryError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly position: number,
+    readonly missingFrom: number,
+    readonly missingThrough: number
+  ) {
+    super(
+      `replay-inspector: "${executionId}" at ${position} is inside compacted history — events ${missingFrom}..${missingThrough} were compacted away and no snapshot at or above ${missingThrough} anchors that position`
+    );
+    this.name = "CompactedHistoryError";
+    Object.setPrototypeOf(this, CompactedHistoryError.prototype);
+  }
+}

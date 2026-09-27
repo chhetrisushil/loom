@@ -48,6 +48,7 @@ import {
   InputValidationError,
   ResumePayloadValidationError,
   ResumeRefusedError,
+  SnapshotIdentityMismatchError,
   StateMigrationError,
   TIMER_FIRED,
 } from "./types";
@@ -1234,21 +1235,6 @@ export class WorkflowRuntime {
 
     const workflowId = firstEvent.workflowId;
 
-    // C.1 — gate the resume; the execution exists, so best-effort record the denial.
-    const resumeDenial = this.authzDenial("resume", executionId, workflowId, options?.principal);
-    if (resumeDenial !== undefined) {
-      const lastSeq = (allEvents[allEvents.length - 1] as EventEnvelope).sequence;
-      // recordExecutionDenied dedups consecutive identical denials internally.
-      await this.denyOp(
-        "resume",
-        executionId,
-        workflowId,
-        options?.principal,
-        resumeDenial.reason,
-        lastSeq
-      );
-    }
-
     // NOTE: the runner/deadline come from resolveFlowFor below (current, pinned
     // version, or migrated target) — this lookup only seeds identity metadata,
     // and may legitimately be undefined when a migrated execution's ORIGINAL
@@ -1270,6 +1256,24 @@ export class WorkflowRuntime {
         workflowId,
         workflowVersion: flow?.definition.version ?? "",
       });
+    }
+
+    // C.1 — gate the resume; the execution exists, so best-effort record the denial. It is
+    // recorded after the FOLDED tip, not the log's last event: a log compacted at its tip is
+    // `[0]` with the checkpoint above it, and a denial appended at `lastEvent + 1` landed in
+    // the checkpoint's freed slot — the log then looked never-compacted and the next fold
+    // started from scratch, losing the suspension (ADR 0106).
+    const resumeDenial = this.authzDenial("resume", executionId, workflowId, options?.principal);
+    if (resumeDenial !== undefined) {
+      // recordExecutionDenied dedups consecutive identical denials internally.
+      await this.denyOp(
+        "resume",
+        executionId,
+        workflowId,
+        options?.principal,
+        resumeDenial.reason,
+        vm.getState().sequence
+      );
     }
 
     // K8.2 — cancelled is TERMINAL: a cancel-by-id of a suspended/detached
@@ -1531,16 +1535,39 @@ export class WorkflowRuntime {
   }
 
   /**
-   * L11 (ADR 0106) — the state a snapshot seeds a fold with, named for the execution it was
-   * loaded FOR. A snapshot's identity fields are a copy, and a copy can be wrong: compaction
-   * before ADR 0106 checkpointed `executionId`/`workflowId`/`workflowVersion` as `""`, and
-   * those checkpoints are durable. Identity is taken from the caller (the id it read, the
-   * workflowId sequence 0 records); a blank version is filled from the registered flow —
-   * exactly what the un-snapshotted path seeds, so both paths fold to the same state. A
-   * snapshot that already names its execution is returned as-is (no copy).
+   * L11 (ADR 0106) — the state a snapshot seeds a fold with, checked against the execution it
+   * was loaded FOR. Compaction before ADR 0106 checkpointed `executionId`/`workflowId`/
+   * `workflowVersion` as `""`, and those checkpoints are durable: a BLANK field is filled —
+   * the id the caller read, the workflowId sequence 0 records, and the registered flow's
+   * version (exactly what the un-snapshotted path seeds, so both paths fold to the same
+   * state). A NON-blank field that disagrees is refused ({@link SnapshotIdentityMismatchError}):
+   * only a store or tenant-scoping defect produces one, and papering over it would write this
+   * execution's events under another's identity. `retarget` is fork's explicit exception: a
+   * parent's snapshot seeds a CHILD, so its executionId is replaced, never compared.
    */
-  private seedOf(snapshot: Snapshot, executionId: string, workflowId: string): ExecutionState {
+  private seedOf(
+    snapshot: Snapshot,
+    executionId: string,
+    workflowId: string,
+    retarget = false
+  ): ExecutionState {
     const state = normalizeSnapshotState(snapshot.state);
+    if (!retarget && state.executionId !== "" && state.executionId !== executionId) {
+      throw new SnapshotIdentityMismatchError(
+        executionId,
+        "executionId",
+        executionId,
+        state.executionId
+      );
+    }
+    if (state.workflowId !== "" && state.workflowId !== workflowId) {
+      throw new SnapshotIdentityMismatchError(
+        executionId,
+        "workflowId",
+        workflowId,
+        state.workflowId
+      );
+    }
     if (
       state.executionId === executionId &&
       state.workflowId === workflowId &&
@@ -1802,7 +1829,7 @@ export class WorkflowRuntime {
       // `window` may start at 0 (when the copy path needed the whole prefix), so slice the
       // [base+1..at] tail out of it rather than replaying events the snapshot already folded.
       const tail = sliceBySequence(window, base.sequence + 1, atSequence);
-      vm = new ReplayVM(tail, this.seedOf(base, childId, workflowId));
+      vm = new ReplayVM(tail, this.seedOf(base, childId, workflowId, true));
     } else {
       vm = new ReplayVM(window, { executionId: childId, workflowId, workflowVersion });
     }

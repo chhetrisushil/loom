@@ -214,6 +214,13 @@ sweep is O(events + blobs). A blob younger than the TTL is never an orphan, so a
 `listPage` or `deleteIfUntouchedSince`: without the conditional delete, erasing a listed orphan
 reintroduces D5's race. The report gains `orphansReclaimed`.
 
+> **Superseded in part by [ADR 0106](0106-compaction-integrity.md) D4.** The "no
+> sequence-1 event" test and the checkpoint "at exactly `events[1].sequence − 1`" below were
+> true only while compaction removed everything below its checkpoint. Compaction now keeps
+> pinned-kind events in place and never removes the tip when it does. So "compacted" means
+> gapped or bootstrap-only, and the checkpoint is the lowest snapshot in `[gap, tip]`, where
+> `gap` is the log's highest missing sequence. The rest of this section stands.
+
 **Compaction snapshots are scanned (`snapshotStores`: the live snapshot store and each
 archive's).** `LogLifecycle.compact` checkpoints the fold at the tip and truncates the prefix, so
 the next surviving event after sequence 0 is `tip + 1`. For every execution whose log has no
@@ -252,12 +259,12 @@ non-zero.
 used to truncate an app's `FINDING_RECORDED` events away, since the fold ignores them and so
 the checkpoint did not carry them. `LogLifecycle` now takes `pinnedEventTypes` (the same list
 given to this sweep) and keeps those events in place below the checkpoint
-(`EventStore.truncatePrefixKeeping`, SPI 1.5.0). With a `pinned` predicate but no
-`pinnedEventTypes`, a pinned execution is not compacted at all. Kept events move the
-checkpoint lookup: it is the snapshot at exactly the log's **highest missing sequence below
-the tip** (for a log with no kept events that is `events[1].sequence − 1`, as above), or the
-latest snapshot when it lies above the tip and only pinned kinds survive. A contiguous log
-whose post-bootstrap events are all pinned kinds is treated like a bootstrap-only log.
+(`EventStore.truncatePrefixKeeping`, SPI 1.5.0). An execution the `pinned` predicate pins
+is never compacted at all. Kept events move the checkpoint lookup (ADR 0106 D2/D4, the tip
+rule): a gap-free log with more than the bootstrap was never compacted; a gapped log's
+checkpoint is the lowest snapshot in `[gap, tip]`, where `gap` is its highest missing
+sequence (for a log with no kept events, `events[1].sequence − 1`, as above); and a
+bootstrap-only log's checkpoint is its latest snapshot.
 
 **Unknown touch times.** A touch time of `0` is the column default a pre-1.3.0 writer leaves
 during a mixed-version rollout. It means UNKNOWN, and the orphan pass never erases such a

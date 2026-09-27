@@ -992,26 +992,27 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5�
       expect(await content.get(output)).not.toBeNull();
     });
 
-    // ADR 0106 — compaction keeps the app's pinned-kind events in place, BELOW the checkpoint.
-    // `events[1]` is then a kept finding, not the first event after the checkpoint, so the
-    // checkpoint is found as the highest missing sequence instead.
-    /** Fold → checkpoint at `at` → truncate keeping FINDING_RECORDED, as compact does. */
+    // ADR 0106 — compaction keeps the app's pinned-kind events in place, BELOW the checkpoint,
+    // and (the tip rule) never removes the tip when it does. The checkpoint is the log's
+    // highest missing sequence; `events[1]` may be a kept finding.
+    /** Fold → checkpoint at `at` (below the tip) → truncate keeping `kinds`, as compact does. */
     async function compactKeeping(
       live: InMemoryAsyncEventStore,
       snapshots: InMemoryAsyncSnapshotStore,
       id: string,
-      folded: EventEnvelope[]
+      log: EventEnvelope[],
+      at: number,
+      kinds: string[] = ["FINDING_RECORDED"]
     ): Promise<void> {
-      const at = (folded[folded.length - 1] as EventEnvelope).sequence;
       await snapshots.save({
         id: `cp-${id}-${at}`,
         executionId: id,
         workflowId: "wf",
         sequence: at,
-        state: new ReplayVM(folded).getState(),
+        state: new ReplayVM(log.filter((e) => e.sequence <= at)).getState(),
         createdAt: 0,
       });
-      await live.truncatePrefixKeeping(id, at, ["FINDING_RECORDED"]);
+      await live.truncatePrefixKeeping(id, at, kinds);
     }
 
     it("a finding kept at sequence 1 does not hide the compaction — the checkpoint's refs stay pinned", async () => {
@@ -1019,7 +1020,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5�
       const prefixOutput = await content.put(bytes("step output only the checkpoint holds"));
       const live = new InMemoryAsyncEventStore();
       const snapshots = new InMemoryAsyncSnapshotStore();
-      const prefix = [
+      const log = [
         evt("kept", 0, "EXECUTION_STARTED", { input: {} }, OLD),
         evt("kept", 1, "FINDING_RECORDED", { summary: "lag spike" }, OLD),
         evt("kept", 2, "STEP_STARTED", { stepId: "poll" }, OLD),
@@ -1030,14 +1031,22 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5�
           { stepId: "poll", output: envelopeFor(prefixOutput.__loomContent) },
           OLD
         ),
+        evt("kept", 4, "STEP_STARTED", { stepId: "poll" }, NOW - 2 * DAY),
+        evt("kept", 5, "STEP_COMPLETED", { stepId: "poll", output: { rows: 0 } }, NOW - 2 * DAY),
       ];
-      for (const e of prefix) await live.append(e);
-      await compactKeeping(live, snapshots, "kept", prefix); // checkpoint at 3
-      await live.append(evt("kept", 4, "STEP_STARTED", { stepId: "poll" }, NOW - 2 * DAY));
-      await live.append(
-        evt("kept", 5, "STEP_COMPLETED", { stepId: "poll", output: { rows: 0 } }, NOW - 2 * DAY)
-      );
-      // [0, 1, 4, 5]: sequence 1 exists, so the pre-0106 test read this log as never compacted.
+      for (const e of log.slice(0, 5)) await live.append(e);
+      await compactKeeping(live, snapshots, "kept", log, 3); // then-tip 4 survives
+      await live.append(log[5]!);
+      // A later snapshot (a suspend) no longer holds the prefix ref: only the checkpoint does.
+      await snapshots.save({
+        id: "later",
+        executionId: "kept",
+        workflowId: "wf",
+        sequence: 5,
+        state: new ReplayVM(log).getState(),
+        createdAt: 0,
+      });
+      // [0, 1, 4, 5]: sequence 1 exists, so the pre-0106 sweep read this log as uncompacted.
       expect((await live.read("kept")).map((e) => e.sequence)).toEqual([0, 1, 4, 5]);
 
       clock.now = NOW;
@@ -1054,39 +1063,94 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5�
       expect(await content.get(prefixOutput)).not.toBeNull();
     });
 
-    it("compacted at its tip with a kept finding below: the checkpoint above the tip covers it", async () => {
+    it("a kept kind the SWEEP does not pin still leaves the checkpoint found (sweep kinds ⊂ compaction kinds)", async () => {
       const { clock, content } = clockedStore(OLD);
-      const output = await content.put(bytes("a finished run's step output"));
+      const output = await content.put(bytes("held only by the checkpoint"));
       const live = new InMemoryAsyncEventStore();
       const snapshots = new InMemoryAsyncSnapshotStore();
-      const done = [
-        evt("tipk", 0, "EXECUTION_STARTED", { input: {} }, OLD),
-        evt("tipk", 1, "STEP_STARTED", { stepId: "s" }, OLD),
-        evt("tipk", 2, "FINDING_RECORDED", { summary: "f" }, OLD),
+      const log = [
+        evt("sub", 0, "EXECUTION_STARTED", { input: {} }, OLD),
+        evt("sub", 1, "NOTE_RECORDED", { note: "n" }, OLD),
+        evt("sub", 2, "STEP_STARTED", { stepId: "s" }, OLD),
         evt(
-          "tipk",
+          "sub",
           3,
           "STEP_COMPLETED",
           { stepId: "s", output: envelopeFor(output.__loomContent) },
           OLD
         ),
+        evt("sub", 4, "STEP_STARTED", { stepId: "s" }, OLD),
+        evt("sub", 5, "STEP_COMPLETED", { stepId: "s", output: { rows: 0 } }, OLD),
+        evt("sub", 6, "NOTE_RECORDED", { note: "tip" }, OLD),
       ];
-      for (const e of done) await live.append(e);
-      await compactKeeping(live, snapshots, "tipk", done);
-      expect((await live.read("tipk")).map((e) => e.sequence)).toEqual([0, 2]);
+      for (const e of log) await live.append(e);
+      await compactKeeping(live, snapshots, "sub", log, 3, ["FINDING_RECORDED", "NOTE_RECORDED"]);
+      await snapshots.save({
+        id: "later",
+        executionId: "sub",
+        workflowId: "wf",
+        sequence: 6,
+        state: new ReplayVM(log).getState(),
+        createdAt: 0,
+      });
       clock.now = NOW;
-      // Pre-0106 this looked for a checkpoint at 1 (events[1] − 1), found none, and refused.
       const result = await sweepUnpinnedContent({
         eventStores: [live],
         snapshotStores: [snapshots],
         contentStore: content,
-        pinnedEventTypes: ["FINDING_RECORDED"],
+        pinnedEventTypes: ["FINDING_RECORDED"], // NOTE_RECORDED is kept by compaction only
         olderThanMs: TTL,
         now: NOW,
         reclaimOrphans: true,
       });
       expect(result.orphansReclaimed).toEqual([]);
       expect(await content.get(output)).not.toBeNull();
+    });
+
+    it("a child forked from a compacted parent is covered by its fork seed, above the copied gap", async () => {
+      const { clock, content } = clockedStore(OLD);
+      const seeded = await content.put(bytes("in the fork seed"));
+      const live = new InMemoryAsyncEventStore();
+      const snapshots = new InMemoryAsyncSnapshotStore();
+      // The child's copied prefix carries the parent's compaction gap (1..2); its only
+      // snapshot is the seed at the fork point, 4 — not at the gap.
+      await live.append(evt("child", 0, "EXECUTION_STARTED", { input: {} }, OLD));
+      await live.append(evt("child", 3, "STEP_STARTED", { stepId: "s" }, OLD));
+      await live.append(
+        evt("child", 4, "STEP_COMPLETED", { stepId: "s", output: { rows: 1 } }, OLD)
+      );
+      await snapshots.save({
+        id: "seed",
+        executionId: "child",
+        workflowId: "wf",
+        sequence: 4,
+        state: { frames: { s: { output: envelopeFor(seeded.__loomContent) } } } as never,
+        createdAt: 0,
+      });
+      await live.append(
+        evt("child", 5, "STEP_COMPLETED", { stepId: "t", output: { rows: 2 } }, OLD)
+      );
+      await snapshots.save({
+        id: "later",
+        executionId: "child",
+        workflowId: "wf",
+        sequence: 5,
+        state: { frames: {} } as never,
+        createdAt: 0,
+      });
+      clock.now = NOW;
+      // Pre-0106 this required a snapshot at exactly 2 and refused.
+      const result = await sweepUnpinnedContent({
+        eventStores: [live],
+        snapshotStores: [snapshots],
+        contentStore: content,
+        pinnedEventTypes: [],
+        olderThanMs: TTL,
+        now: NOW,
+        reclaimOrphans: true,
+      });
+      expect(result.orphansReclaimed).toEqual([]);
+      expect(await content.get(seeded)).not.toBeNull();
     });
   });
 });

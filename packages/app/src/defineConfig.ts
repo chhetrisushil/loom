@@ -278,8 +278,8 @@ export interface DurabilityOptions {
     /**
      * ADR 0106 — the pinned event KINDS (the list given to `pinByEventKinds` and
      * `sweepUnpinnedContent`). `lifecycle.compact` keeps these events in place, so a
-     * compacted run keeps its findings (ADR 0055 D1). Without it, compaction skips any
-     * execution `pinned` pins, since the kernel cannot tell which events carry the pin.
+     * compacted run keeps its findings (ADR 0055 D1). An execution `pinned` pins is never
+     * compacted at all. Validated at boot: non-empty strings, no kernel kinds.
      */
     pinnedEventTypes?: readonly string[];
   };
@@ -1000,6 +1000,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     ...(config.retention?.pinnedEventTypes !== undefined && {
       pinnedEventTypes: config.retention.pinnedEventTypes,
     }),
+    ...(config.onWarn !== undefined && { onWarn: config.onWarn }),
     ...(stores.branchRegistry !== undefined && { branchRegistry: stores.branchRegistry }),
   });
 

@@ -1,6 +1,6 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import { foldEvents, normalizeSnapshotState } from "@loom/replay-vm";
-import { InspectorBudgetError } from "./types";
+import { CompactedHistoryError, InspectorBudgetError } from "./types";
 import type { ReadOnlyEventStore, ReadOnlySnapshotStore } from "./types";
 
 // ── IX-2 — state reconstruction at any event ──────────────────────────────────
@@ -119,6 +119,42 @@ export async function reconstructMany(
   const segment = await readSegment(events, executionId, anchorSequence + 1, last);
   if (segment.length > maxEvents) {
     throw new InspectorBudgetError(executionId, segment.length, maxEvents);
+  }
+
+  // ADR 0106 — compaction leaves gaps. A fold that crosses one returns a wrong state, so the
+  // positions at or above the FIRST gap after the anchor are re-anchored on their own nearest
+  // snapshot (one recursive call); if that anchor is still below the gap — the position sits
+  // inside compacted history — it is refused rather than guessed. A gap can also END the
+  // segment (positions inside a hole with nothing below them in range), so when the segment
+  // stops short of `last`, the first event past it is probed: none means "past the tip".
+  let expected = anchorSequence + 1;
+  let hole: { from: number; through: number } | undefined;
+  for (const e of segment) {
+    if (e.sequence !== expected) {
+      hole = { from: expected, through: e.sequence - 1 };
+      break;
+    }
+    expected++;
+  }
+  if (hole === undefined && expected <= last) {
+    const next = (await events.readFrom(executionId, expected))[0];
+    if (next !== undefined) hole = { from: expected, through: next.sequence - 1 };
+  }
+  if (hole !== undefined) {
+    const from = hole.from;
+    const cut = sorted.findIndex((p) => p >= from);
+    if (cut === 0) {
+      throw new CompactedHistoryError(executionId, first, hole.from, hole.through);
+    }
+    const before = await reconstructMany(
+      events,
+      snapshots,
+      executionId,
+      sorted.slice(0, cut),
+      options
+    );
+    const after = await reconstructMany(events, snapshots, executionId, sorted.slice(cut), options);
+    return [...before, ...after];
   }
 
   // `foldEvents` shallow-spreads `initial` into a fresh object and treats the caller's

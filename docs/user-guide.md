@@ -1838,7 +1838,7 @@ kept. `reclaimOrphans` also reclaims blobs nothing cites any more, which require
 archive. `roots` pins addresses held in your own tables (ADR 0055 D5–D7). The joint rule the perpetual-agents series fixed:
 *findings and their evidence are permanent; runs are archivable; raw telemetry is disposable.*
 Give the same kinds to `retention.pinnedEventTypes` so compaction keeps those events in place
-too (ADR 0106); without it, `lifecycle.compact` leaves any execution `pinned` pins uncompacted.
+too (ADR 0106). An execution `pinned` pins is never compacted at all.
 The whole pattern — schedule, carry state, claim-check, pin policy — is one declaration via
 `sentinelPreset()` (`@loom/plugin-sentinel`), and `loom new sentinel <name>` scaffolds it.
 

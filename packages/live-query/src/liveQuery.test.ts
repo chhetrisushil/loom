@@ -487,6 +487,51 @@ describe("liveQuery — LogLifecycle.compact races a live subscription", () => {
     unsub();
   });
 
+  it("ADR 0106 tip rule — compacting past a kept event while a subscriber lags never strands it", async () => {
+    // The pre-tip-rule shape: subscriber at 1; 2 FINDING, 3 COMPLETED land; compaction took
+    // 3 and kept 2, leaving [0, 2] with the checkpoint ABOVE the tip. The delta [2] looked
+    // contiguous and folded to "running" forever. Under the tip rule the tip survives.
+    const FINDING = "FINDING_RECORDED";
+    const rawEventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const { store, hold, release } = withHoldableSubscribe(rawEventStore);
+    const runtime = new WorkflowRuntime({
+      eventStore: store,
+      snapshotStore,
+      effectRuntime: new EffectRuntime(),
+    });
+    const at = (sequence: number, eventType: string, payload: unknown): EventEnvelope => ({
+      id: `t-${sequence}`,
+      workflowId: "raw",
+      executionId: "t",
+      eventType,
+      sequence,
+      timestamp: sequence,
+      payload,
+    });
+    await rawEventStore.append(at(0, "EXECUTION_STARTED", { input: {} }));
+    await rawEventStore.append(at(1, "STEP_STARTED", { stepId: "s" }));
+    const lq = liveQuery({ eventStore: store, reader: runtime });
+    const seen: ExecutionState[] = [];
+    const unsub = await lq.subscribe("t", (s) => seen.push(s));
+    await tick();
+    expect(seen.at(-1)?.sequence).toBe(1);
+
+    hold();
+    await rawEventStore.append(at(2, FINDING, { f: 1 }));
+    await rawEventStore.append(at(3, "EXECUTION_COMPLETED", { output: {} }));
+    await new LogLifecycle(rawEventStore, snapshotStore, {
+      pinnedEventTypes: [FINDING],
+    }).compact("t");
+    expect((await rawEventStore.read("t")).map((e) => e.sequence)).toEqual([0, 2, 3]);
+    release();
+    await tick();
+
+    expect(seen.at(-1)?.status).toBe("completed");
+    expect(seen.at(-1)).toEqual(await runtime.loadState("t"));
+    unsub();
+  });
+
   it("a subscriber lagging behind a compaction recovers even with no later event (empty delta, head behind tip)", async () => {
     const loopFlow = buildCompactFlow();
     const rawEventStore = new InMemoryAsyncEventStore();

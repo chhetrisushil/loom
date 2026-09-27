@@ -5,7 +5,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { beforeEach, describe, expect, it } from "vitest";
 import { anchorFor, reconstructAt, reconstructMany } from "./reconstruct";
 import type { ReadOnlyEventStore } from "./types";
-import { InspectorBudgetError } from "./types";
+import { CompactedHistoryError, InspectorBudgetError } from "./types";
 
 const EXEC = "exec-1";
 const WF = "wf-1";
@@ -262,5 +262,59 @@ describe("reconstructMany — fidelity to the kernel's skip behaviour (IX-2)", (
     // Sequence still advances across the skipped event — the inspector must not
     // "helpfully" error where the kernel silently continues.
     expect(inspector.state.sequence).toBe(6);
+  });
+});
+
+describe("ADR 0106 — compacted history", () => {
+  // buildLog(3): 0 start, 1..6 steps. A FINDING is appended at 7, then 8..9 another step.
+  // Compaction (pinned FINDING) checkpoints at 8 and keeps 7 in place: [0, 7, 9].
+  async function compacted() {
+    const log = [
+      ...buildLog(3),
+      envelope(7, "FINDING_RECORDED", { f: 1 }),
+      envelope(8, "STEP_STARTED", { stepId: "s3", input: { i: 3 } }),
+      envelope(9, "STEP_COMPLETED", { stepId: "s3", output: { i: 3, ok: true } }),
+    ];
+    const events = new InMemoryAsyncEventStore();
+    await seed(events, log);
+    const snapshots = new InMemoryAsyncSnapshotStore();
+    const full = (at: number) =>
+      foldEvents(
+        log.filter((e) => e.sequence <= at),
+        { executionId: EXEC, workflowId: WF }
+      );
+    await snapshots.save({
+      id: "cp",
+      executionId: EXEC,
+      workflowId: WF,
+      sequence: 8,
+      state: full(8),
+      createdAt: 0,
+    });
+    await events.truncatePrefixKeeping(EXEC, 8, ["FINDING_RECORDED"]);
+    expect((await events.read(EXEC)).map((e) => e.sequence)).toEqual([0, 7, 9]);
+    return { events, snapshots, full };
+  }
+
+  it("refuses a position inside compacted history — including a kept event below the checkpoint", async () => {
+    const { events, snapshots } = await compacted();
+    await expect(reconstructAt(events, snapshots, EXEC, 7)).rejects.toThrow(CompactedHistoryError);
+    await expect(reconstructAt(events, snapshots, EXEC, 3)).rejects.toThrow(CompactedHistoryError);
+  });
+
+  it("reconstructs positions at and above the checkpoint, and below the first gap", async () => {
+    const { events, snapshots, full } = await compacted();
+    const points = await reconstructMany(events, snapshots, EXEC, [0, 8, 9]);
+    expect(points.map((p) => p.position)).toEqual([0, 8, 9]);
+    expect(points[0]!.state).toEqual(full(0));
+    expect(points[1]!.state).toEqual(full(8));
+    expect(points[2]!.state).toEqual(full(9));
+  });
+
+  it("a batch spanning compacted history is refused, not partially guessed", async () => {
+    const { events, snapshots } = await compacted();
+    await expect(reconstructMany(events, snapshots, EXEC, [0, 5, 9])).rejects.toThrow(
+      CompactedHistoryError
+    );
   });
 });

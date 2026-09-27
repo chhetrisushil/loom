@@ -2,12 +2,15 @@ import { step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import { ExecutionJournal } from "./ExecutionJournal";
 import { LogLifecycle } from "./LogLifecycle";
 import { WorkflowRuntime } from "./WorkflowRuntime";
-import type { FlowRunner } from "./types";
+import { SnapshotIdentityMismatchError } from "./types";
+import type { ExecutionAuthorizer, FlowRunner, PrincipalChain } from "./types";
 
 // L11 (ADR 0106) — compaction must be invisible to everything that reads the log afterwards:
 // a resume across one compaction, or two, produces the same log suffix and the same state as
@@ -42,7 +45,15 @@ const runner: FlowRunner<{ n: number }, { n: number }> = async (ctx, input) => {
   return { n: c.n };
 };
 
-function boot() {
+const alice: PrincipalChain = { tenant: "acme", actor: "alice" };
+const mallory: PrincipalChain = { tenant: "evil", actor: "mallory" };
+const acmeOnly: ExecutionAuthorizer = {
+  authorize: (req) =>
+    req.principal?.tenant === "acme" ? { allowed: true } : { allowed: false, reason: "nope" },
+};
+
+function boot(opts: { authorizer?: ExecutionAuthorizer } = {}) {
+  const warnings: string[] = [];
   const calls = { t1: 0, t2: 0, t3: 0 };
   const effects = new EffectRuntime();
   for (const id of ["t1", "t2", "t3"] as const) {
@@ -61,9 +72,11 @@ function boot() {
     snapshotStore,
     effectRuntime: effects,
     now: () => 1_000,
+    onWarn: (m) => warnings.push(m),
+    ...(opts.authorizer !== undefined && { executionAuthorizer: opts.authorizer }),
   });
   runtime.registerFlow(definition, runner);
-  return { runtime, eventStore, snapshotStore, calls };
+  return { runtime, eventStore, snapshotStore, calls, warnings };
 }
 
 type App = ReturnType<typeof boot>;
@@ -74,7 +87,9 @@ async function toFirstGate(app: App, id: string): Promise<void> {
 }
 
 async function resume(app: App, id: string, on: string) {
-  const h = await app.runtime.resume(id, { eventType: on, payload: {} });
+  // Non-empty answers: an empty `{}` is indistinguishable from a pre-0104 stray passthrough
+  // once compaction removed the RESUMED events around it (ADR 0104's classifier would warn).
+  const h = await app.runtime.resume(id, { eventType: on, payload: { answer: on } });
   return on === "go2" ? h.waitForCompletion() : h.waitForSuspend();
 }
 
@@ -213,9 +228,10 @@ describe("L11 (c) — pinned event kinds survive compaction (ADR 0055 D1)", () =
 });
 
 describe("L11 (c) — the edges of keeping pinned kinds", () => {
-  it("on a store without truncatePrefixKeeping, compaction stops below the first kept event — shorter, never lossy", async () => {
+  it("on a store without truncatePrefixKeeping, compaction stops below the first kept event — and says so", async () => {
     const app = boot();
     await toFirstGate(app, "e");
+    await resume(app, "e", "go1"); // a non-kept tail above the finding
     const inner = app.eventStore;
     // The SPI 1.4.0 surface: truncatePrefix, no truncatePrefixKeeping.
     const legacy = {
@@ -228,31 +244,40 @@ describe("L11 (c) — the edges of keeping pinned kinds", () => {
     };
     const before = await inner.read("e");
     const finding = before.find((e) => e.eventType === FINDING)!;
-    const life = new LogLifecycle(legacy, app.snapshotStore, { pinnedEventTypes: [FINDING] });
+    const warned: string[] = [];
+    const life = new LogLifecycle(legacy, app.snapshotStore, {
+      pinnedEventTypes: [FINDING],
+      onWarn: (m) => warned.push(m),
+    });
     const through = await life.compact("e");
     expect(through).toBe(finding.sequence - 1);
+    expect(warned).toEqual([expect.stringMatching(/truncatePrefixKeeping.*never be compacted/)]);
     const after = await inner.read("e");
     expect(after.map((e) => e.sequence)).toEqual(
       before.filter((e) => e.sequence === 0 || e.sequence > through!).map((e) => e.sequence)
     );
-    // A second pass has nothing more it can safely take.
+    // Every later pass is stuck below the finding, and warns again.
     expect(await life.compact("e")).toBeNull();
-    await resume(app, "e", "go1");
+    expect(warned).toHaveLength(2);
     await resume(app, "e", "go2");
     expect((await app.runtime.loadState("e"))?.status).toBe("completed");
   });
 
-  it("refuses kernel event kinds as pinnedEventTypes", () => {
+  it("refuses kernel event kinds — including the kernel's own resume signals — and non-strings", () => {
     const app = boot();
-    expect(
-      () =>
-        new LogLifecycle(app.eventStore, app.snapshotStore, {
-          pinnedEventTypes: [FINDING, "STEP_COMPLETED"],
-        })
-    ).toThrow(/STEP_COMPLETED/);
+    const lifeWith = (pinnedEventTypes: unknown[]) => () =>
+      new LogLifecycle(app.eventStore, app.snapshotStore, {
+        pinnedEventTypes: pinnedEventTypes as string[],
+      });
+    expect(lifeWith([FINDING, "STEP_COMPLETED"])).toThrow(/STEP_COMPLETED/);
+    expect(lifeWith(["EXECUTION_RECOVERED"])).toThrow(/EXECUTION_RECOVERED/);
+    expect(lifeWith(["EffectInDoubtResolved"])).toThrow(/EffectInDoubtResolved/);
+    expect(lifeWith([""])).toThrow(/non-empty strings/);
+    expect(lifeWith([null])).toThrow(/non-empty strings/);
+    expect(lifeWith([FINDING])).not.toThrow();
   });
 
-  it("retention reads a log compacted past a kept event at its tip as the terminal execution it is", async () => {
+  it("retention reads a log compacted around a kept event as the terminal execution it is", async () => {
     const app = boot();
     const at = (sequence: number, eventType: string, payload: unknown): EventEnvelope => ({
       id: `r-${sequence}`,
@@ -264,15 +289,298 @@ describe("L11 (c) — the edges of keeping pinned kinds", () => {
       payload,
     });
     await app.eventStore.append(at(0, "EXECUTION_STARTED", { input: { n: 1 } }));
-    await app.eventStore.append(at(1, FINDING, { finding: "f" }));
-    await app.eventStore.append(at(2, "EXECUTION_COMPLETED", { output: { n: 1 } }));
+    await app.eventStore.append(at(1, "STEP_STARTED", { stepId: "s1" }));
+    await app.eventStore.append(at(2, FINDING, { finding: "f" }));
+    await app.eventStore.append(at(3, "STEP_COMPLETED", { stepId: "s1", output: { n: 2 } }));
+    await app.eventStore.append(at(4, "EXECUTION_COMPLETED", { output: { n: 2 } }));
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
       pinnedEventTypes: [FINDING],
     });
-    expect(await life.compact("r")).toBe(2);
-    // [0, 1] is CONTIGUOUS, yet compacted: the checkpoint at 2 holds the completion.
-    expect((await app.eventStore.read("r")).map((e) => e.sequence)).toEqual([0, 1]);
+    // The tip rule: kept events survive, so the tip does too and the checkpoint is below it.
+    expect(await life.compact("r")).toBe(3);
+    expect((await app.eventStore.read("r")).map((e) => e.sequence)).toEqual([0, 2, 4]);
     expect(await life.evaluate("r", { terminalTtlMs: 0 }, 1_000)).toBe("reclaimable");
     expect(await life.compact("r")).toBeNull();
+  });
+
+  it("the tip rule — with kept events, compaction never removes the tip", async () => {
+    const app = boot();
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      pinnedEventTypes: [FINDING],
+    });
+    await toFirstGate(app, "e");
+    await resume(app, "e", "go1");
+    const before = await app.eventStore.read("e");
+    const tip = before.at(-1)!.sequence;
+    const through = await life.compact("e");
+    expect(through).toBe(tip - 1);
+    const after = await app.eventStore.read("e");
+    expect(after.at(-1)!.sequence).toBe(tip);
+    // The checkpoint's slot is the highest missing sequence.
+    expect(after.some((e) => e.sequence === through)).toBe(false);
+    expect((await app.snapshotStore.loadLatestBefore("e", through!))?.sequence).toBe(through);
+  });
+
+  it("a pinned execution is never compacted, even with pinnedEventTypes declared (ADR 0055 D1)", async () => {
+    const app = boot();
+    await toFirstGate(app, "e");
+    const before = await app.eventStore.read("e");
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      pinned: () => true,
+      pinnedEventTypes: [FINDING],
+    });
+    expect(await life.compact("e")).toBeNull();
+    expect(await app.eventStore.read("e")).toEqual(before);
+  });
+
+  it("compaction runs print no stray-passthrough warning (ADR 0104)", async () => {
+    const app = boot();
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      pinnedEventTypes: [FINDING],
+    });
+    await toFirstGate(app, "e");
+    await life.compact("e");
+    await resume(app, "e", "go1");
+    await life.compact("e");
+    await resume(app, "e", "go2");
+    expect(app.warnings).toEqual([]);
+  });
+});
+
+describe("L11 P1 — a denied resume never writes into the checkpoint's slot", () => {
+  const flowOneGate: FlowRunner<{ n: number }, { n: number }> = async (ctx, input) => {
+    await ctx.suspend({ on: "go1" });
+    return input;
+  };
+
+  it("finding then suspend: compact, unauthorized resume, compact again — still suspended", async () => {
+    const app = boot({ authorizer: acmeOnly });
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      pinnedEventTypes: [FINDING],
+    });
+    const h = await app.runtime.start(
+      { definition, runner },
+      { n: 1 },
+      {
+        executionId: "d",
+        principal: alice,
+      }
+    );
+    await h.waitForSuspend();
+    const want = await app.runtime.loadState("d");
+    const first = await life.compact("d");
+    await expect(
+      app.runtime.resume("d", { eventType: "go1", payload: { a: 1 } }, { principal: mallory })
+    ).rejects.toThrow(/denied/);
+    const denied = (await app.eventStore.read("d")).find((e) => e.eventType === "EXECUTION_DENIED");
+    expect(denied!.sequence).toBeGreaterThan(first!);
+    await life.compact("d");
+    const state = await app.runtime.loadState("d");
+    expect(state?.status).toBe("suspended");
+    expect(state?.suspendedOn).toEqual(want?.suspendedOn);
+    const r = await app.runtime.resume(
+      "d",
+      { eventType: "go1", payload: { a: 1 } },
+      {
+        principal: alice,
+      }
+    );
+    expect((await r.waitForSuspend()).suspendedOn?.on).toBe("go2");
+  });
+
+  it("immediate suspend (log [0] after compaction, checkpoint above the tip) — the denial lands above the checkpoint", async () => {
+    const app = boot({ authorizer: acmeOnly });
+    const def = { ...definition, id: "one-gate", name: "one-gate", steps: [] };
+    app.runtime.registerFlow(def, flowOneGate);
+    const h = await app.runtime.start(
+      { definition: def, runner: flowOneGate },
+      { n: 1 },
+      {
+        executionId: "i",
+        principal: alice,
+      }
+    );
+    await h.waitForSuspend();
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore);
+    const through = await life.compact("i");
+    expect((await app.eventStore.read("i")).map((e) => e.sequence)).toEqual([0]);
+    await expect(
+      app.runtime.resume("i", { eventType: "go1", payload: { a: 1 } }, { principal: mallory })
+    ).rejects.toThrow(/denied/);
+    const log = await app.eventStore.read("i");
+    expect(log.map((e) => e.sequence)).toEqual([0, through! + 1]);
+    await life.compact("i");
+    expect((await app.runtime.loadState("i"))?.status).toBe("suspended");
+    const r = await app.runtime.resume(
+      "i",
+      { eventType: "go1", payload: { a: 1 } },
+      {
+        principal: alice,
+      }
+    );
+    expect((await r.waitForCompletion()).status).toBe("completed");
+  });
+});
+
+describe("L11 P3 — identity at every snapshot-seeded path", () => {
+  /** Suspend at go1, then replace every snapshot with one blank checkpoint and compact. */
+  async function legacyCheckpoint(app: App, id: string): Promise<number> {
+    await toFirstGate(app, id);
+    const tip = (await app.eventStore.head(id))!;
+    const state = (await app.runtime.loadState(id))!;
+    await app.snapshotStore.deleteExecution!(id);
+    await app.snapshotStore.save({
+      id: `legacy-${id}`,
+      executionId: id,
+      workflowId: FLOW,
+      sequence: tip,
+      state: { ...state, executionId: "", workflowId: "", workflowVersion: "" },
+      createdAt: 0,
+    });
+    await app.eventStore.truncatePrefix(id, tip);
+    return tip;
+  }
+
+  it("resumeAs over a blank checkpoint writes into the execution's own log", async () => {
+    const app = boot();
+    await legacyCheckpoint(app, "e");
+    const h = await app.runtime.resumeAs(
+      "e",
+      FLOW,
+      { eventType: "go1", payload: { answer: "go1" } },
+      { strategy: "operator-ack" }
+    );
+    const parked = await h.waitForSuspend();
+    expect(parked.executionId).toBe("e");
+    expect(parked.workflowId).toBe(FLOW);
+    expect(parked.workflowVersion).toBe("2.3.0");
+    expect(await app.eventStore.read("")).toEqual([]);
+    expect((await app.eventStore.read("e")).some((e) => e.eventType === "EXECUTION_MIGRATED")).toBe(
+      true
+    );
+  });
+
+  it("loadState over a blank checkpoint names the execution and the registered version", async () => {
+    const app = boot();
+    await legacyCheckpoint(app, "e");
+    const state = await app.runtime.loadState("e");
+    expect(state?.executionId).toBe("e");
+    expect(state?.workflowId).toBe(FLOW);
+    expect(state?.workflowVersion).toBe("2.3.0");
+  });
+
+  it("cancel over a blank checkpoint records EXECUTION_CANCELLED under the right workflow", async () => {
+    const app = boot();
+    await legacyCheckpoint(app, "e");
+    expect(await app.runtime.cancel("e", "stop")).toBe(true);
+    const cancelled = (await app.eventStore.read("e")).find(
+      (e) => e.eventType === "EXECUTION_CANCELLED"
+    );
+    expect(cancelled?.workflowId).toBe(FLOW);
+    expect((await app.runtime.loadState("e"))?.status).toBe("cancelled");
+  });
+
+  it("fork at a blank checkpoint takes the workflowId from the log (the || chain)", async () => {
+    const app = boot();
+    await toFirstGate(app, "e");
+    const tip = (await app.eventStore.head("e"))!;
+    const log = await app.eventStore.read("e");
+    const state = new ReplayVM(log.filter((e) => e.sequence < tip)).getState();
+    await app.snapshotStore.deleteExecution!("e");
+    await app.snapshotStore.save({
+      id: "legacy",
+      executionId: "e",
+      workflowId: FLOW,
+      sequence: tip - 1,
+      state: { ...state, executionId: "", workflowId: "", workflowVersion: "" },
+      createdAt: 0,
+    });
+    await app.eventStore.truncatePrefix("e", tip - 1); // [0, tip], blank checkpoint at tip − 1
+    // At the checkpoint: no window events above it, so the anchor (sequence 0) names it.
+    const atCheckpoint = await app.runtime.fork("e", tip - 1, { executionId: "c1" });
+    expect(atCheckpoint.state.workflowId).toBe(FLOW);
+    expect(atCheckpoint.state.executionId).toBe("c1");
+    expect((await app.snapshotStore.loadLatest("c1"))?.workflowId).toBe(FLOW);
+    // At the tip: the window event above the blank checkpoint names it.
+    const atTip = await app.runtime.fork("e", tip, { executionId: "c2" });
+    expect(atTip.state.workflowId).toBe(FLOW);
+    expect(atTip.state.status).toBe("suspended");
+    const h = await app.runtime.resume("c2", { eventType: "go1", payload: { answer: "go1" } });
+    await h.waitForSuspend();
+    expect(await app.eventStore.read("")).toEqual([]);
+  });
+
+  it("a NON-blank snapshot naming another execution is refused, not papered over", async () => {
+    const app = boot();
+    await toFirstGate(app, "e");
+    const tip = (await app.eventStore.head("e"))!;
+    const state = (await app.runtime.loadState("e"))!;
+    await app.snapshotStore.save({
+      id: "foreign",
+      executionId: "e",
+      workflowId: FLOW,
+      sequence: tip,
+      state: { ...state, executionId: "someone-else" },
+      createdAt: 0,
+    });
+    const before = await app.eventStore.read("e");
+    await expect(
+      app.runtime.resume("e", { eventType: "go1", payload: { answer: "go1" } })
+    ).rejects.toThrow(SnapshotIdentityMismatchError);
+    await expect(app.runtime.loadState("e")).rejects.toThrow(SnapshotIdentityMismatchError);
+    expect(await app.eventStore.read("e")).toEqual(before);
+  });
+
+  it("the journal writes under the identity it was given, not the vm state's", async () => {
+    const store = new InMemoryAsyncEventStore();
+    const vm = new ReplayVM([], { executionId: "wrong", workflowId: "other", workflowVersion: "" });
+    const journal = new ExecutionJournal(
+      store,
+      { executionId: "right", workflowId: FLOW },
+      vm,
+      undefined,
+      () => {}
+    );
+    journal.commit("SOMETHING_HAPPENED", { x: 1 });
+    await journal.drain();
+    const [event] = await store.read("right");
+    expect(event).toMatchObject({ executionId: "right", workflowId: FLOW, id: "right-0" });
+    expect(await store.read("wrong")).toEqual([]);
+  });
+
+  it("the journal refuses a blank identity — a legacy restoreFromState state writes nothing", async () => {
+    const store = new InMemoryAsyncEventStore();
+    expect(
+      () =>
+        new ExecutionJournal(
+          store,
+          { executionId: "", workflowId: FLOW },
+          new ReplayVM([]),
+          undefined,
+          () => {}
+        )
+    ).toThrow(/blank identity/);
+    const app = boot();
+    await toFirstGate(app, "e");
+    const state = (await app.runtime.loadState("e"))!;
+    await expect(
+      app.runtime.restoreFromState(
+        { ...state, executionId: "" },
+        { eventType: "go1", payload: { answer: "go1" } }
+      )
+    ).rejects.toThrow(/blank identity/);
+    expect(await app.eventStore.read("")).toEqual([]);
+  });
+
+  it("the gap path fills a legacy blank workflowVersion from the latest snapshot", async () => {
+    const app = boot();
+    await legacyCheckpoint(app, "e");
+    await resume(app, "e", "go1"); // the runtime's suspend checkpoint at the tip carries 2.3.0
+    // Keep the gate event so the tip rule compacts BELOW the tip, onto the legacy base.
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, { pinnedEventTypes: ["go1"] });
+    const through = await life.compact("e");
+    const checkpoint = await app.snapshotStore.loadLatestBefore("e", through!);
+    expect(checkpoint?.sequence).toBe(through);
+    expect(checkpoint?.state.workflowVersion).toBe("2.3.0");
   });
 });

@@ -48,89 +48,130 @@ finding's evidence (ADR 0055 D6 recorded this as the L11 known gap).
 ### D1 — Identity comes from the log and the caller, never from a snapshot's copy
 
 - `compact` seeds the fold with `executionId` (the argument) and `workflowId` (sequence 0's
-  envelope). `workflowVersion` is not an event fact: it is carried from the snapshot the
-  runtime already took (every suspend checkpoints its tip) and is `""` only when no snapshot
-  ever recorded one.
+  envelope). `workflowVersion` is not an event fact. It comes from the fold's base snapshot,
+  and when that is blank (a pre-0106 checkpoint) from the latest snapshot (the runtime
+  checkpoints every suspend). It is `""` only when no snapshot ever recorded one.
 - `ExecutionJournal` takes the identity it writes under as a constructor argument, from
   `execute(executionId, workflowId, …)`. The folded state no longer decides whose log an event
-  lands in.
-- Blank checkpoints written before this fix are durable, so the runtime re-stamps identity
-  when it seeds a fold from any snapshot (`resume`, `resumeAs`, `loadState`/`foldState`,
-  `cancel`, `fork`). A blank version is filled from the registered flow, which is what the
-  un-snapshotted path seeds, so both paths fold to the same state. A snapshot that already
-  names its execution is used as-is.
+  lands in. The constructor refuses a blank `executionId` or `workflowId`. That covers every
+  path that builds one, including `restoreFromState` given a legacy blank state.
+- Blank checkpoints written before this fix are durable, so the runtime checks identity when it
+  seeds a fold from any snapshot (`resume`, `resumeAs`, `loadState`/`foldState`, `cancel`,
+  `fork`). A **blank** field is filled: the id the caller read, the workflowId sequence 0
+  records, and the registered flow's version. The version is what the un-snapshotted path seeds,
+  so both paths fold to the same state. A **non-blank field that disagrees** is refused with
+  `SnapshotIdentityMismatchError`: only a store or tenant-scoping defect produces one, and
+  filling it over would hide that defect. `fork` passes an explicit retarget flag, because a
+  parent's snapshot seeds a child and its executionId is replaced, never compared.
 
-### D2 — A compacted log is folded on its checkpoint
+### D2 — The tip rule, and a compacted log folded on its checkpoint
 
-Compaction always removes its own checkpoint's slot and keeps every event above it. So in a
-compacted log the checkpoint sits exactly at the **highest sequence missing below the tip**
-(`gap`), or, when only kept events survive above `gap`, above the tip. `compact` folds a gapped
-log from `loadLatestBefore(through)` plus the events up to `through`. If no snapshot at or
-above `gap` exists, it throws `CompactionCheckpointMissingError` and touches nothing: folding
-the survivors would checkpoint a state missing the whole earlier prefix, and truncating on top
-of it would make that permanent. A runtime snapshot at exactly `through` is a valid base; the
-truncation is then the whole of the work.
+**The tip rule.** When any kept event would survive a compaction, its checkpoint `c` is the
+highest non-kept sequence **strictly below the tip**. So the tip is never removed and `c`'s own
+slot always is. When nothing is kept, `c` is the tip, as before: the log becomes `[0]` with the
+checkpoint above it. Every log then has one of three shapes:
 
-Retention's `foldForRetention` always consults the latest snapshot (one point read). A log
-compacted past a kept event at its tip is contiguous (`[0, 1]` with the checkpoint at 2), so
-"contiguous" no longer implies "never compacted".
+- **Gap-free, more than the bootstrap:** never compacted.
+- **Gapped:** its latest checkpoint sits at its **highest missing sequence** `gap`. That is the
+  sequence the compaction chose, and nothing above it was removed.
+- **Bootstrap-only (`[0]`):** compacted through its tip (or it never got past its bootstrap).
+  The checkpoint is its latest snapshot.
+
+A checkpoint could lie above a non-bootstrap tip only if compaction removed the tip. The tip
+rule forbids that, so readers need no special case for it.
+
+`compact` folds on the latest snapshot at or below `c` when one exists. That is the checkpoint
+for a compacted log. For a gap-free log it is a defensive base (the runtime's own snapshot)
+that the fold invariant allows. A gapped log whose base is below `gap`, or missing, throws
+`CompactionCheckpointMissingError` and touches nothing: folding the survivors would checkpoint
+a state missing the whole earlier prefix, and truncating on top of it would make that
+permanent. A base **at or above** `gap` is accepted. That is the compaction's own checkpoint
+(exactly `gap`) or a later runtime snapshot. A child forked from a compacted parent copies the
+gap, and its lowest snapshot is its fork seed, above the gap.
+
+Retention's cheap path is unchanged. A gap-free log with more than the bootstrap is folded
+directly. Anything else costs one snapshot point read.
+
+**A denial never writes into the checkpoint's slot.** `resume`'s authorization denial used to
+record `EXECUTION_DENIED` at the log's last event + 1. On a log compacted through its tip
+(`[0]`, checkpoint `c ≥ 1`), that is sequence 1, at or below the checkpoint. The log then
+looked never-compacted (`[0, 1]`), and the next compaction folded it from scratch and lost the
+suspension.
+The denial is now recorded after the **folded** tip (`max` of the log tip and the snapshot's
+sequence).
 
 ### D3 — Pinned event kinds survive compaction in place
 
-- `LogLifecycle` takes `pinnedEventTypes` (the same list the app gives `pinByEventKinds` and
-  `sweepUnpinnedContent`; `defineConfig({ durability: { retention: { pinnedEventTypes } } })`
-  wires it). Kernel kinds are refused at construction: the checkpoint already carries their
-  fold, and kernel log readers (`inspectStrayPassthroughs`, the fold's readers) assume no
-  kernel fact survives below a checkpoint. To keep a kernel fact, pin the execution.
-- The checkpoint is the **highest non-kept event at or below the tip**, so its slot is always
-  removed and D2's rule finds it. Kept events at the tip stay above it and fold normally.
-- New optional SPI method `truncatePrefixKeeping(executionId, through, keepEventTypes)`: the
-  `truncatePrefix` range minus the kept types, as ONE atomic operation (Postgres: one
+- `LogLifecycle` takes `pinnedEventTypes`: the same list the app gives `pinByEventKinds` and
+  `sweepUnpinnedContent`, wired by `defineConfig({ durability: { retention: { pinnedEventTypes }
+  } })`. The list is validated at construction, and so at boot. Entries must be non-empty strings:
+  a `null` would match nothing in SQL but still be compared in memory, so backends would
+  disagree. **Every kernel-written kind** is refused: the fold's kinds plus the resume signals
+  the runtime records itself (`EXECUTION_RECOVERED`, `EffectInDoubtResolved`). The checkpoint
+  already carries their fold, and kernel log readers assume no kernel fact survives below a
+  checkpoint.
+- **A pinned execution is never compacted.** When the `pinned` predicate pins an execution,
+  `compact` returns `null`, with or without `pinnedEventTypes`. This is ADR 0055 D1: "leave it
+  exactly where it is". `pinnedEventTypes` governs the executions that are *not* pinned
+  wholesale, and the error message and docs say the same.
+- New optional SPI method `truncatePrefixKeeping(executionId, through, keepEventTypes)`. It
+  deletes the `truncatePrefix` range minus the kept types as ONE atomic operation (Postgres: one
   `DELETE … AND event_type <> ALL($3)`; SQLite: `… AND event_type NOT IN (SELECT value FROM
-  json_each(?))`). A separate method rather than a third argument to
-  `truncatePrefix`, because a store that predates it would silently ignore the argument and
-  delete the evidence. Kept events sit below the checkpoint, where no fold reads (every fold
-  reads from `snapshot.sequence + 1`).
-- A store without it (SPI 1.4.0) still compacts, stopping below the first kept event. That
-  is a shorter compaction, never a lost event.
-- With a `pinned` predicate and no `pinnedEventTypes`, `compact` returns `null` for an
-  execution the predicate pins. The kernel cannot tell which of its events carry the pin, so
-  ADR 0055 D1's "leave it exactly where it is" applies.
+  json_each(?))`). It is a separate method rather than a third argument to `truncatePrefix`,
+  because a store that predates it would silently ignore the argument and delete the evidence.
+  Kept events sit below the checkpoint, where no fold reads (every fold reads from
+  `snapshot.sequence + 1`).
+- **A store without it (SPI 1.4.0) cannot compact past the first kept event, ever.** `c` stops
+  just below it on every pass. For a long-lived execution that records a finding early (a
+  sentinel), that means the replay tail grows without bound. `compact` reports it through
+  `onWarn` (default `console.warn`; `defineConfig` passes the app's) on every pass where it
+  applies. The SPI docstring and CHANGELOG say so too. Use a store that implements the method.
 - The hash-chained store refuses `truncatePrefixKeeping` for the same reason it refuses
   `truncatePrefix` (ADR 0037). Every in-repo decorator forwards it. The `DecoratorPlan` type
   made each one a compile error until it did.
 
 ### D4 — Readers that inferred "compacted" from `events[1]` were updated
 
-- **Content sweep (ADR 0055 D6).** It found the checkpoint at `events[1].sequence − 1`. A kept
-  finding at sequence 1 made a compacted log look uncompacted, so the checkpoint's refs went
-  unpinned and the orphan pass could erase them. A kept finding below the checkpoint pointed
-  the lookup at the wrong sequence, and the sweep refused. It now uses D2's rule: the snapshot
-  at exactly `gap`, or the latest snapshot when it is above the tip and only pinned kinds
-  survive above `gap`. A contiguous log with a non-pinned event after the bootstrap still costs
-  no snapshot read. A contiguous log whose post-bootstrap events are all pinned kinds is
-  treated like a bootstrap-only log: it may have been compacted at its tip, so its latest
-  snapshot must cover it or the orphan pass refuses.
-- **`liveQuery`.** It checked only that a delta's first event was `tip + 1`. With a kept event
-  at `tip + 1`, the truncated range is inside the delta. It now also checks the delta's span
+- **Content sweep (ADR 0055 D6).** It looked for the checkpoint at `events[1].sequence − 1`.
+  A kept finding at sequence 1 made a compacted log look uncompacted, so the checkpoint's refs
+  went unpinned and the orphan pass could erase them. A kept finding below the checkpoint
+  pointed the lookup at the wrong sequence, and the sweep refused. It now uses D2's shapes:
+  - A gap-free log with more than the bootstrap is skipped (no snapshot read).
+  - A gapped log is covered by the **lowest snapshot in `[gap, tip]`**. That is one read in
+    the common case, where it sits exactly at `gap`. For a forked child it is a walk down to
+    the fork seed.
+  - A bootstrap-only log is covered by its latest snapshot.
+
+  The sweep's own `pinnedEventTypes` no longer affects this decision. A sweep that pins fewer
+  kinds than compaction keeps still finds the checkpoint.
+- **`liveQuery`.** It checked only that a delta's first event was `tip + 1`. A kept event at
+  `tip + 1` hides the truncated range inside the delta, so it also checks the delta's span
   (`last − tip === length`, O(1)) and falls back to a full load on a mismatch.
+- **Replay inspector.** `reconstructMany` folded straight across a gap. At a kept event below
+  the checkpoint, or anywhere in compacted history, it returned a plausible wrong state. A
+  position at or above a gap is now re-anchored on its own nearest snapshot. If no snapshot at
+  or above the gap anchors it, the position is refused with `CompactedHistoryError`. A gap that
+  ends the read segment is found by probing the first event past it.
 
 ## Consequences
 
 - A resume, a second compaction and a resume across it give the same log suffix, the same
   state and the same effect-call count as the same execution never compacted
-  (`compactionIntegrity.test.ts`).
+  (`compactionIntegrity.test.ts`). The content sweep over what the real `compact()` wrote
+  keeps every checkpoint-held and finding-cited blob and still reclaims a true orphan
+  (`compactionSweep.e2e.test.ts`).
 - `EVENT_STORE_SPI_VERSION` 1.4.0 → **1.5.0**. The conformance kit checks `truncatePrefix`
   and, when present, `truncatePrefixKeeping`: kept types survive in place, an empty keep list is
   exactly `truncatePrefix`, and freed slots can be re-appended. `InMemoryAsyncEventStore`,
   `SqliteEventStore` and `PostgresEventStore` implement it.
-- Checkpoints written before this fix still carry blank identity. They resume correctly now
-  (D1), and the next compaction writes a checkpoint with its identity filled in.
-  Events already appended to execution `""` by the old bug are not recovered. An operator can
-  find them with `read("")`.
+- Checkpoints written before this fix may carry a blank identity. They resume correctly now
+  (D1). A later compaction folds on such a checkpoint and fills the blank `workflowVersion`
+  from the latest snapshot. It stays `""` only if no snapshot ever recorded a version. Events
+  already appended to execution `""` by the old bug are not recovered; `read("")` finds them.
+- `compact` through a log's tip still leaves `[0]`. `fork()` cannot fork at a sequence above
+  the surviving events (its range check is `0..head`). This was already the case before 0106.
 
 ### Not changed
 
 - `fork()` at a sequence inside a compacted prefix is still wrong: the events it would copy
-  and fold are gone. It predates this ADR and is not a compaction-integrity regression.
-  Recorded as a residual.
+  and fold are gone. It predates this ADR and is recorded as a residual.
