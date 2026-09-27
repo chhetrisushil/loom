@@ -307,9 +307,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Stamps: `metadata.flowEmit = <digest of segment, type, payload>`; the fold counts them per
     digest in `variables._flowEmits`.
   - An emit is stamped only if nothing earlier in the run ended unsettled (an untyped failure, a
-    timeout, a throwing decider) and none of the run's own steps or deciders was still
-    executing.
-  - Timing never decides a skip, so a different interleaving cannot cost an emit.
+    timeout, a cancellation, an in-doubt park, a throwing decider) and none of the run's own
+    steps or deciders was still executing.
+  - Timing can cost a duplicate, never an emit: a different interleaving can turn a served emit
+    into an unstamped append, never into a lost one.
   - Kernel facts (`STEP_*`, `DECISION_RECORDED`, `EFFECT_INDOUBT`) and `EffectContext.emit` are
     unchanged and never stamped.
 
