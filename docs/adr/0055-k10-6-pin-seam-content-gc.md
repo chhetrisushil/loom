@@ -77,7 +77,7 @@ envelope stays a leaf in the payload walk — digests are projections, not conta
 
 ## Amendment (2026-09-27) — D4: a bare ref is load-bearing
 
-### D4 — Only refs reached inside a claim-check envelope are TTL-reclaimable
+### D4 — Only a claim-check envelope's own ref is TTL-reclaimable
 
 D2 said the sweep deep-collects *claim-check* refs; the code collected every object with a string
 `__loomContent`, and reclaimed each one on the TTL unless a pinned event kind cited it. That is
@@ -93,8 +93,8 @@ fork and compliance export all read the log through the resolving store. The doc
 command, `loom sweep content --ttl 30d --apply`, did this to any perpetual agent that also
 externalized its large step outputs.
 
-Decided: **only refs reached inside a claim-check envelope are TTL-reclaimable; a bare ref is
-load-bearing (ADR 0046 resolves it), pinned while cited.** "Inside an envelope" means exactly
+Decided: **only a claim-check envelope's own `ref` is TTL-reclaimable; every other ref is
+load-bearing (ADR 0046 resolves it), pinned while cited.** "An envelope's own ref" means exactly
 the envelope's own `ref`, the offloaded value. An envelope is recognised structurally, with the
 same test as `isClaimCheck`: `__loomClaimCheck === true` AND a string `ref.__loomContent`. An
 app object that only carries the flag is app data. Every other envelope field is recorded,
