@@ -297,6 +297,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handle now gets `ExecutionAlreadyExistsError` from `start()` itself. A test that relied on the
   duplicate "succeeding" was testing the defect.
 
+- **The content sweep is race-safe, reclaims orphans, and takes external root sets; ContentStore
+  SPI 1.3.0** ([ADR 0055](docs/adr/0055-k10-6-pin-seam-content-gc.md) D5–D7, amended).
+  - **D5, the re-cite race.** A `put` of bytes the store already held was a no-op (`INSERT OR
+    IGNORE`). A sweep that ran between a re-citing `put` and that execution's event append
+    therefore erased the blob by its *old* citation time, and the new event cited a blob that
+    was gone. SPI 1.3.0 adds an optional atomic `deleteIfUntouchedSince(ref, cutoffMs)`. A store
+    that implements it MUST bump a blob's touch time on every `put`/`putStream`. The sweep now
+    fixes one cutoff at its start (`now − olderThanMs`) and erases only through the conditional
+    delete when the store has it. Otherwise it falls back to `delete` and reports
+    `raceSafe: false`; `loom sweep content` prints `race-safe:`.
+  - **D6, orphans.** Blobs nothing cited any more were never reclaimed: a run deleted with no
+    archive, a crash between `put` and the append, a truncated prefix. SPI 1.3.0 adds an
+    optional `listPage({ cursor, limit, touchedBefore })`, keyset on address, and a bad `limit`
+    is a `RangeError`. With `reclaimOrphans: true` (CLI `--orphans`), the sweep erases
+    conditionally every stored address untouched for the TTL that no scanned event and no root
+    cites. It refuses a store without both optionals. The report gains `orphansReclaimed`. **The
+    sweep cannot see a citing store you did not pass it**, so pass every retention archive:
+    `--orphans` without `--archive-db` warns.
+  - **D7, roots.** `sweepUnpinnedContent({ roots: () => AsyncIterable<string> })` pins
+    addresses held in an app's own tables through both passes.
+  - `SqliteContentStore` implements both optionals. On open it migrates an older file: it adds
+    `touched_at` and backfills existing blobs to the migration time once, so nothing ages out
+    until a full TTL after the upgrade. The re-put bump is monotonic
+    (`max(touched_at, excluded.touched_at)`). `InMemoryContentStore` implements both with an
+    injectable clock (`new InMemoryContentStore({ now })`), and so does `SqliteContentStore`
+    (`new SqliteContentStore(path, { now })`). `CachingContentStore` forwards both. The
+    conformance kit checks the optionals when present. The kernel manifest and the
+    compatibility matrix now list ContentStore SPI 1.3.0, and `checkCompatibility` accepts
+    `contentStoreSpi`. The `loom plugin new content` template names the new methods.
+  - `docs/data-protection-patterns.md` says the archive is REQUIRED once retention archives,
+    and scopes "erasable without history rewrite" to the log. Content-store blobs have no
+    subject mapping; erase them with an explicit `contentStore.delete(ref)`.
+    `docs/api-reference.org` had the wrong signatures for `collectContentRefs` and
+    `pinByEventKinds`; both are fixed.
+
+  **Behaviour change:** a test fixture that puts a blob at today's wall clock and then cites it
+  at a fabricated past time now sees the blob kept, because it was touched after the cutoff.
+  Give such a store a clock that matches the fabricated history.
+
 - **The content sweep no longer erases a load-bearing externalized ref**
   ([ADR 0055](docs/adr/0055-k10-6-pin-seam-content-gc.md) D4, amended). `sweepUnpinnedContent`
   treated every `__loomContent` ref as TTL-reclaimable unless a pinned event kind cited it. An

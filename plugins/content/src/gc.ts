@@ -105,7 +105,12 @@ export interface ContentSweepOptions {
    * sweep refuses rather than silently under-pinning.
    */
   eventStores: readonly (Pick<EventStore, "read"> & ExecutionEnumerable)[];
-  contentStore: Pick<ContentStore, "delete">;
+  /**
+   * The blob store. With `deleteIfUntouchedSince` (SPI 1.3.0) every erase is conditional on
+   * the blob's touch time, which closes the re-cite race (ADR 0055 D5); without it the sweep
+   * falls back to `delete` and reports `raceSafe: false`. `listPage` enables `reclaimOrphans`.
+   */
+  contentStore: Pick<ContentStore, "delete" | "deleteIfUntouchedSince" | "listPage">;
   /** Event kinds whose cited refs are pinned — retained as long as the citing fact exists. */
   pinnedEventTypes: Iterable<string>;
   /** Reclaim an unpinned ref only when its latest citation is older than this. */
@@ -116,7 +121,29 @@ export interface ContentSweepOptions {
    * `loom sweep content` operator default; `--apply` turns it off).
    */
   dryRun?: boolean;
+  /**
+   * ADR 0055 D7 — external root sets: content addresses held OUTSIDE the scanned logs (an app
+   * table such as a Postgres `experience_refs`). Every yielded address is pinned through both
+   * passes. Read once per sweep, after the mark phase. An app that records a new root for
+   * bytes the store already holds must `put` them (the put is the touch the conditional
+   * delete sees), exactly as a flow does.
+   */
+  roots?: () => AsyncIterable<string>;
+  /**
+   * ADR 0055 D6 — also reclaim ORPHANS: blobs no scanned event and no root cites (their
+   * execution was deleted with no archive, a crash between `put` and the append, a truncated
+   * prefix), once untouched for the TTL. Requires the store's `listPage` and
+   * `deleteIfUntouchedSince`; refuses otherwise.
+   *
+   * HAZARD the sweep cannot detect: a citing store that was NOT passed in `eventStores`. Pass
+   * every archive (`retention.archive`) — an archived finding's evidence is otherwise an
+   * orphan, and this pass erases it.
+   */
+  reclaimOrphans?: boolean;
 }
+
+/** Orphan-pass page size (ADR 0055 D6): bounded memory per page. */
+const ORPHAN_PAGE_LIMIT = 500;
 
 export interface ContentSweepReport {
   executionsScanned: number;
@@ -130,6 +157,14 @@ export interface ContentSweepReport {
   refsLoadBearing: number;
   /** Content addresses erased this sweep — or, under `dryRun`, that WOULD be. */
   reclaimed: string[];
+  /**
+   * ADR 0055 D5 — every erase was conditional on the blob's touch time
+   * (`deleteIfUntouchedSince`), so a `put` that re-cited a blob during the sweep kept it.
+   * `false` = the store lacks it and the sweep used plain `delete`: such a re-cite is lost.
+   */
+  raceSafe: boolean;
+  /** ADR 0055 D6 — orphans erased (or, under `dryRun`, that WOULD be); `[]` unless `reclaimOrphans`. */
+  orphansReclaimed: string[];
 }
 
 /**
@@ -145,25 +180,60 @@ export interface ContentSweepReport {
  * store would throw `ContentMissingError` on the next read. Idempotent:
  * `ContentStore.delete` is idempotent and a reclaimed ref simply no longer
  * resolves on the next sweep.
+ *
+ * Race-safe (ADR 0055 D5) when the store has `deleteIfUntouchedSince`: every erase is
+ * conditional on the blob being untouched since `now − olderThanMs`, so a `put` that re-cites
+ * old bytes between the scan and its own append keeps the blob. That holds while a flow's
+ * put→append window is shorter than the TTL. `roots` (D7) pins addresses held outside the
+ * log; `reclaimOrphans` (D6) also erases stored blobs nothing scanned cites. Cost:
+ * O(events + blobs), all membership tests are Set/Map lookups.
  */
 export async function sweepUnpinnedContent(
   options: ContentSweepOptions
 ): Promise<ContentSweepReport> {
+  const store = options.contentStore;
+  const orphans = options.reclaimOrphans === true;
+  if (orphans && store.listPage === undefined) {
+    throw new TypeError(
+      "sweepUnpinnedContent: reclaimOrphans needs a content store with listPage() (ContentStore SPI 1.3.0) — orphans cannot be found without enumerating the store"
+    );
+  }
+  if (orphans && store.deleteIfUntouchedSince === undefined) {
+    throw new TypeError(
+      "sweepUnpinnedContent: reclaimOrphans needs a content store with deleteIfUntouchedSince() (ContentStore SPI 1.3.0) — a plain delete of a listed orphan loses a blob re-put since the listing"
+    );
+  }
+  // ADR 0055 D5 — one cutoff for the whole sweep, fixed at its START: a blob touched after
+  // it (a re-citing put the scan could not see yet) is refused by the conditional delete.
+  const cutoff = options.now - options.olderThanMs;
+  const raceSafe = store.deleteIfUntouchedSince !== undefined;
+  const dryRun = options.dryRun === true;
+  /** Erase one address; `true` iff it is gone because of this sweep (or would be). */
+  const erase = async (address: string): Promise<boolean> => {
+    if (dryRun) return true;
+    const ref = { __loomContent: address };
+    if (store.deleteIfUntouchedSince !== undefined) {
+      return store.deleteIfUntouchedSince(ref, cutoff);
+    }
+    await store.delete(ref);
+    return true;
+  };
+
   const pinnedKinds = new Set(options.pinnedEventTypes);
   const lastCited = new Map<string, number>();
   const pinned = new Set<string>();
   const loadBearing = new Set<string>();
   let executionsScanned = 0;
 
-  for (const store of options.eventStores) {
-    if (store.listExecutions === undefined && store.listExecutionsPage === undefined) {
+  for (const eventStore of options.eventStores) {
+    if (eventStore.listExecutions === undefined && eventStore.listExecutionsPage === undefined) {
       throw new TypeError(
         "sweepUnpinnedContent: every event store must support listExecutionsPage() or listExecutions() — a store that cannot be enumerated cannot be swept safely"
       );
     }
-    for await (const executionId of iterateExecutionIds(store)) {
+    for await (const executionId of iterateExecutionIds(eventStore)) {
       executionsScanned++;
-      for (const event of await store.read(executionId)) {
+      for (const event of await eventStore.read(executionId)) {
         collectContentRefs(event.payload, (address, inEnvelope) => {
           const prior = lastCited.get(address);
           if (prior === undefined || event.timestamp > prior) {
@@ -176,20 +246,46 @@ export async function sweepUnpinnedContent(
     }
   }
 
+  // ADR 0055 D7 — external root sets pin like a pinned event kind does.
+  const roots = new Set<string>();
+  if (options.roots !== undefined) {
+    for await (const address of options.roots()) roots.add(address);
+  }
+
   const reclaimed: string[] = [];
   for (const [address, citedAt] of lastCited) {
-    if (pinned.has(address) || loadBearing.has(address)) continue;
+    if (pinned.has(address) || loadBearing.has(address) || roots.has(address)) continue;
     if (options.now - citedAt < options.olderThanMs) continue;
-    if (options.dryRun !== true) {
-      await options.contentStore.delete({ __loomContent: address });
-    }
-    reclaimed.push(address);
+    if (await erase(address)) reclaimed.push(address);
   }
+
+  // ADR 0055 D6 — orphans: stored, untouched for the TTL, and cited by nothing scanned.
+  // `pinned` and `loadBearing` are subsets of `lastCited`, so two Set lookups decide.
+  // Keyset paging on address: erasing entries of a page never skips a later one.
+  const orphansReclaimed: string[] = [];
+  if (orphans) {
+    let cursor: string | undefined;
+    do {
+      const page = await store.listPage!({
+        ...(cursor !== undefined && { cursor }),
+        limit: ORPHAN_PAGE_LIMIT,
+        touchedBefore: cutoff,
+      });
+      for (const { address } of page.entries) {
+        if (lastCited.has(address) || roots.has(address)) continue;
+        if (await erase(address)) orphansReclaimed.push(address);
+      }
+      cursor = page.nextCursor;
+    } while (cursor !== undefined);
+  }
+
   return {
     executionsScanned,
     refsSeen: lastCited.size,
     refsPinned: pinned.size,
     refsLoadBearing: loadBearing.size,
     reclaimed,
+    raceSafe,
+    orphansReclaimed,
   };
 }

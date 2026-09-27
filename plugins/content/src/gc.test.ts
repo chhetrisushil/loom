@@ -21,6 +21,13 @@ const NOW = 100 * DAY;
 
 const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 
+/**
+ * These fixtures cite blobs at fabricated times (days since the epoch). SPI 1.3.0 stores
+ * stamp a touch time on `put`, and the sweep only erases a blob untouched since its cutoff,
+ * so the blobs must be put BEFORE their citations: at the epoch, not at today's wall clock.
+ */
+const storedAtEpoch = (): InMemoryContentStore => new InMemoryContentStore({ now: () => 0 });
+
 function envelopeFor(address: string): ClaimCheckEnvelope {
   return { __loomClaimCheck: true, ref: { __loomContent: address }, size: 1 };
 }
@@ -44,7 +51,7 @@ function evt(
 }
 
 async function fixture() {
-  const content = new InMemoryContentStore();
+  const content = storedAtEpoch();
   const evidence = await content.put(bytes("EXPLAIN plan — the finding's evidence"));
   const staleTelemetry = await content.put(bytes("pg_stat sample, month 1"));
   const freshTelemetry = await content.put(bytes("pg_stat sample, today"));
@@ -129,7 +136,7 @@ describe("sweepUnpinnedContent (K10.6, ADR 0055)", () => {
   });
 
   it("pins BARE ContentRefs cited by pinned events (a finding's evidence list)", async () => {
-    const content = new InMemoryContentStore();
+    const content = storedAtEpoch();
     const plan = await content.put(bytes("EXPLAIN output"));
     const store = new InMemoryAsyncEventStore();
     // Evidence cited as a bare ADR 0046 ref — no claim-check envelope wrapper.
@@ -180,7 +187,7 @@ describe("refs inside arrays (#260)", () => {
     // (ADR 0076). The mark phase must see through the array or it would orphan live blobs.
     // Both citations are older than the TTL, so retention here rests ENTIRELY on the walk
     // finding them — a sweep that never looked inside the array would reclaim `a`/`b` too.
-    const content = new InMemoryContentStore();
+    const content = storedAtEpoch();
     const a = await content.put(bytes("body A"));
     const b = await content.put(bytes("body B"));
     const stale = await content.put(bytes("an old telemetry sample"));
@@ -219,7 +226,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
   const OLD = NOW - 60 * DAY;
 
   it("the probe: an ADR 0046 externalized output of a live execution survives, and the execution still reads", async () => {
-    const content = new InMemoryContentStore();
+    const content = storedAtEpoch();
     const raw = new InMemoryAsyncEventStore();
     const store = new ContentResolvingEventStore(raw, content, {
       externalize: { STEP_COMPLETED: ["output"] },
@@ -247,7 +254,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
   });
 
   it("negative: the TTL rule is not turned off — an envelope-only ref of the same age IS reclaimed", async () => {
-    const content = new InMemoryContentStore();
+    const content = storedAtEpoch();
     const telemetry = await content.put(bytes("pg_stat sample"));
     const store = new InMemoryAsyncEventStore();
     await store.append(
@@ -274,7 +281,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
   });
 
   it("a ref cited both bare and inside an envelope survives (the bare citation wins)", async () => {
-    const content = new InMemoryContentStore();
+    const content = storedAtEpoch();
     const both = await content.put(bytes("cited two ways"));
     const store = new InMemoryAsyncEventStore();
     await store.append(
@@ -302,7 +309,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
     // The walk pops the envelope first (LIFO over `{ bare, wrapped }`); had the envelope's ref
     // gone through the cycle guard, the bare site would then be skipped and a load-bearing
     // blob reclaimed.
-    const content = new InMemoryContentStore();
+    const content = storedAtEpoch();
     const shared = await content.put(bytes("aliased"));
     const ref = { __loomContent: shared.__loomContent };
     const store = new InMemoryAsyncEventStore();
@@ -330,7 +337,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
   });
 
   it("terminates on a cycle that runs through an envelope's digest, and on a very deep payload (audit W8)", async () => {
-    const content = new InMemoryContentStore();
+    const content = storedAtEpoch();
     const blob = await content.put(bytes("in a cycle"));
     const offloaded = await content.put(bytes("offloaded"));
     // root → envelope.digest → root: the cycle crosses the envelope, which is walked
@@ -361,7 +368,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
   it("a ref inside an envelope's DIGEST stays load-bearing — the digest is replay-visible", async () => {
     // Only `envelope.ref` is the offloaded value; the digest is recorded, branched on by
     // orchestration and resolved on read, so a ref inside it is as load-bearing as any bare one.
-    const content = new InMemoryContentStore();
+    const content = storedAtEpoch();
     const offloaded = await content.put(bytes("the big result"));
     const inDigest = await content.put(bytes("cited from the digest"));
     const store = new InMemoryAsyncEventStore();
@@ -397,7 +404,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
   it("an object merely carrying the flag is not an envelope — its bare refs stay load-bearing", async () => {
     // The envelope check is structural, exactly `isClaimCheck`: the flag AND a string
     // `ref.__loomContent`. Anything less is app data, and its refs are bare.
-    const content = new InMemoryContentStore();
+    const content = storedAtEpoch();
     const a = await content.put(bytes("flag, no ref"));
     const b = await content.put(bytes("flag, ref not a ContentRef"));
     const store = new InMemoryAsyncEventStore();
@@ -428,7 +435,7 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
   it("a bare ref an app emits itself is retained too — the sweep cannot tell it from an externalized one", async () => {
     // Composed under a ContentResolvingEventStore, EVERY bare ref in a read is resolved (not only
     // the configured paths), so reclaiming it throws ContentMissingError on the next read.
-    const content = new InMemoryContentStore();
+    const content = storedAtEpoch();
     const raw = new InMemoryAsyncEventStore();
     const store = new ContentResolvingEventStore(raw, content, { externalize: {} });
     const draft = await content.put(bytes(JSON.stringify({ widgets: [] })));
@@ -447,5 +454,236 @@ describe("load-bearing (bare) refs are never TTL-reclaimed (ADR 0055 D4)", () =>
     // The hazard the retention prevents, shown directly: erase it and the read fails loudly.
     await content.delete(draft);
     await expect(store.read("v")).rejects.toBeInstanceOf(ContentMissingError);
+  });
+});
+
+// ── ADR 0055 D5–D7 — the re-cite race, orphans, external root sets ─────────────
+describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5–D7)", () => {
+  const TTL = 30 * DAY;
+  const OLD = NOW - 60 * DAY;
+
+  /** A store whose clock the test moves: touch times are the STORE's, as in production. */
+  function clockedStore(start: number) {
+    const clock = { now: start };
+    const content = new InMemoryContentStore({ now: () => clock.now });
+    return { clock, content };
+  }
+
+  /**
+   * An event store whose `read` runs `during` right after the scan reads `executionId` —
+   * the concurrent work a real sweep's mark window overlaps with.
+   */
+  function racing(
+    inner: InMemoryAsyncEventStore,
+    executionId: string,
+    during: () => Promise<void>
+  ): InMemoryAsyncEventStore {
+    const read = inner.read.bind(inner);
+    return Object.assign(Object.create(inner) as InMemoryAsyncEventStore, {
+      read: async (id: string) => {
+        const events = await read(id);
+        if (id === executionId) await during();
+        return events;
+      },
+    });
+  }
+
+  it("the re-cite race: a put of a 60-day-old blob's bytes during the mark window keeps the blob", async () => {
+    const { clock, content } = clockedStore(OLD);
+    const report = bytes("EXPLAIN — unchanged since month 1");
+    const ref = await content.put(report);
+    const live = new InMemoryAsyncEventStore();
+    await live.append(
+      evt("old-run", 0, "STEP_COMPLETED", { output: envelopeFor(ref.__loomContent) }, OLD)
+    );
+
+    // A new execution re-fetches the unchanged report: its `put` dedups to the same ref, and
+    // the sweep's scan has already passed the only (60-day-old) citation. Its STEP_COMPLETED
+    // append lands after the sweep.
+    const store = racing(live, "old-run", async () => {
+      clock.now = NOW;
+      const again = await content.put(report);
+      expect(again.__loomContent).toBe(ref.__loomContent);
+    });
+    const result = await sweepUnpinnedContent({
+      eventStores: [store],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+    });
+    await live.append(
+      evt("new-run", 0, "STEP_COMPLETED", { output: envelopeFor(ref.__loomContent) }, NOW)
+    );
+
+    expect(await content.get(ref)).not.toBeNull(); // the new run's result still resolves
+    expect(result.reclaimed).toEqual([]);
+    expect(result.raceSafe).toBe(true);
+  });
+
+  it("the fallback is honest: over a store without the conditional delete the race still loses the blob, and the report says raceSafe: false", async () => {
+    const { clock, content } = clockedStore(OLD);
+    const report = bytes("EXPLAIN — unchanged since month 1");
+    const ref = await content.put(report);
+    const live = new InMemoryAsyncEventStore();
+    await live.append(
+      evt("old-run", 0, "STEP_COMPLETED", { output: envelopeFor(ref.__loomContent) }, OLD)
+    );
+    const store = racing(live, "old-run", async () => {
+      clock.now = NOW;
+      await content.put(report);
+    });
+    const result = await sweepUnpinnedContent({
+      eventStores: [store],
+      contentStore: { delete: (r) => content.delete(r) }, // SPI 1.2.0 surface only
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+    });
+    expect(result.raceSafe).toBe(false);
+    expect(result.reclaimed).toEqual([ref.__loomContent]);
+    expect(await content.get(ref)).toBeNull();
+  });
+
+  it("negative: the guard is not a no-op — a genuinely stale envelope blob IS still deleted", async () => {
+    const { content } = clockedStore(OLD);
+    const stale = await content.put(bytes("pg_stat sample, month 1"));
+    const live = new InMemoryAsyncEventStore();
+    await live.append(
+      evt("run", 0, "STEP_COMPLETED", { output: envelopeFor(stale.__loomContent) }, OLD)
+    );
+    const result = await sweepUnpinnedContent({
+      eventStores: [live],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+    });
+    expect(result.raceSafe).toBe(true);
+    expect(result.reclaimed).toEqual([stale.__loomContent]);
+    expect(await content.get(stale)).toBeNull();
+  });
+
+  it("orphans: a deleted execution's blob (no archive) and a put-then-crash blob are reclaimed after the TTL, and only with reclaimOrphans", async () => {
+    const { clock, content } = clockedStore(OLD);
+    const ofDeleted = await content.put(bytes("output of a run retention deleted"));
+    const crashed = await content.put(bytes("put, then the process died before the append"));
+    const citedBare = await content.put(bytes("externalized output, still cited"));
+    clock.now = NOW - 1 * DAY;
+    const inFlight = await content.put(bytes("put a moment ago, append not landed yet"));
+    clock.now = NOW;
+
+    const live = new InMemoryAsyncEventStore();
+    await live.append(
+      evt("gone", 0, "STEP_COMPLETED", { output: envelopeFor(ofDeleted.__loomContent) }, OLD)
+    );
+    await live.append(evt("kept", 0, "STEP_COMPLETED", { output: citedBare }, OLD));
+    await live.deleteExecution("gone"); // applyRetention with no archive configured
+
+    const base = {
+      eventStores: [live],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+    };
+    const without = await sweepUnpinnedContent(base);
+    expect(without.orphansReclaimed).toEqual([]);
+    expect(await content.get(ofDeleted)).not.toBeNull(); // the pre-D6 leak: never reclaimed
+
+    const dry = await sweepUnpinnedContent({ ...base, reclaimOrphans: true, dryRun: true });
+    expect(new Set(dry.orphansReclaimed)).toEqual(
+      new Set([ofDeleted.__loomContent, crashed.__loomContent])
+    );
+    expect(await content.get(ofDeleted)).not.toBeNull(); // dry run deletes nothing
+
+    const swept = await sweepUnpinnedContent({ ...base, reclaimOrphans: true });
+    expect(new Set(swept.orphansReclaimed)).toEqual(
+      new Set([ofDeleted.__loomContent, crashed.__loomContent])
+    );
+    expect(swept.reclaimed).toEqual([]);
+    expect(await content.get(ofDeleted)).toBeNull();
+    expect(await content.get(crashed)).toBeNull();
+    expect(await content.get(citedBare)).not.toBeNull(); // cited (load-bearing) — not an orphan
+    expect(await content.get(inFlight)).not.toBeNull(); // younger than the TTL — may be in flight
+  });
+
+  it("an external root set pins a blob through BOTH passes — an app table the log never sees", async () => {
+    const { content } = clockedStore(OLD);
+    const onlyInAppTable = await content.put(bytes("a saved dashboard's frozen snapshot"));
+    const alsoEnveloped = await content.put(bytes("a claim-checked result an app table kept"));
+    const live = new InMemoryAsyncEventStore();
+    await live.append(
+      evt("run", 0, "STEP_COMPLETED", { output: envelopeFor(alsoEnveloped.__loomContent) }, OLD)
+    );
+    let rootReads = 0;
+    // What a Postgres app would yield from e.g. `SELECT hash FROM experience_refs`.
+    async function* roots(): AsyncGenerator<string> {
+      rootReads++;
+      yield onlyInAppTable.__loomContent;
+      yield alsoEnveloped.__loomContent;
+    }
+    const result = await sweepUnpinnedContent({
+      eventStores: [live],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+      roots,
+      reclaimOrphans: true,
+    });
+    expect(rootReads).toBe(1);
+    expect(result.reclaimed).toEqual([]);
+    expect(result.orphansReclaimed).toEqual([]);
+    expect(await content.get(onlyInAppTable)).not.toBeNull();
+    expect(await content.get(alsoEnveloped)).not.toBeNull();
+  });
+
+  it("the orphan pass pages through a store larger than one page, deleting as it goes", async () => {
+    const { clock, content } = clockedStore(OLD);
+    for (let i = 0; i < 1_250; i++) await content.put(bytes(`orphan-${i}`));
+    clock.now = NOW;
+    const result = await sweepUnpinnedContent({
+      eventStores: [new InMemoryAsyncEventStore()],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+      reclaimOrphans: true,
+    });
+    expect(result.orphansReclaimed).toHaveLength(1_250);
+    expect(new Set(result.orphansReclaimed).size).toBe(1_250);
+    expect(content.size).toBe(0);
+  });
+
+  it("reclaimOrphans refuses a store that cannot enumerate (listPage) or conditionally delete", async () => {
+    const { content } = clockedStore(OLD);
+    const blob = await content.put(bytes("never touched by a refused sweep"));
+    const base = {
+      eventStores: [new InMemoryAsyncEventStore()],
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+      reclaimOrphans: true,
+    };
+    await expect(
+      sweepUnpinnedContent({
+        ...base,
+        contentStore: {
+          delete: (r) => content.delete(r),
+          deleteIfUntouchedSince: (r, c) => content.deleteIfUntouchedSince(r, c),
+        },
+      })
+    ).rejects.toThrow(/listPage/);
+    await expect(
+      sweepUnpinnedContent({
+        ...base,
+        contentStore: {
+          delete: (r) => content.delete(r),
+          listPage: (o) => content.listPage(o),
+        },
+      })
+    ).rejects.toThrow(/deleteIfUntouchedSince/);
+    expect(await content.get(blob)).not.toBeNull();
   });
 });

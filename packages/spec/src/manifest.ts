@@ -2,6 +2,7 @@ import { COMPILER_MANIFEST_VERSION } from "@loom/compiler";
 import { DISPATCHER_SPI_VERSION } from "@loom/dispatcher";
 import { BRANCH_REGISTRY_SPI_VERSION, EVENT_STORE_SPI_VERSION } from "@loom/event-runtime";
 import { MEMORY_STORE_SPI_VERSION } from "@loom/memory";
+import { CONTENT_STORE_SPI_VERSION } from "@loom/plugin-content";
 import { EVENT_SCHEMA_VERSION, knownEventTypes } from "@loom/replay-vm";
 import { SNAPSHOT_STORE_SPI_VERSION } from "@loom/snapshot-runtime";
 import { WIRE_ABI_VERSION } from "@loom/wire-abi";
@@ -28,6 +29,8 @@ export interface KernelManifest {
     branchRegistry: string;
     dispatcher: string;
     memoryStore: string;
+    /** `@loom/plugin-content` — the blob seam 3P backends implement (ADR 0046/0062/0055). */
+    contentStore: string;
   };
   /** The compiler manifest schema version. */
   compilerManifest: { version: string };
@@ -51,6 +54,7 @@ export function kernelManifest(): KernelManifest {
       branchRegistry: BRANCH_REGISTRY_SPI_VERSION,
       dispatcher: DISPATCHER_SPI_VERSION,
       memoryStore: MEMORY_STORE_SPI_VERSION,
+      contentStore: CONTENT_STORE_SPI_VERSION,
     },
     compilerManifest: { version: COMPILER_MANIFEST_VERSION },
   };
@@ -71,6 +75,7 @@ export interface DeploymentVersions {
   branchRegistrySpi?: string;
   dispatcherSpi?: string;
   memoryStoreSpi?: string;
+  contentStoreSpi?: string;
   compilerManifest?: string;
 }
 
@@ -103,6 +108,7 @@ export function checkCompatibility(actual: DeploymentVersions): CompatReport {
     ["branchRegistrySpi", actual.branchRegistrySpi, m.spis.branchRegistry],
     ["dispatcherSpi", actual.dispatcherSpi, m.spis.dispatcher],
     ["memoryStoreSpi", actual.memoryStoreSpi, m.spis.memoryStore],
+    ["contentStoreSpi", actual.contentStoreSpi, m.spis.contentStore],
     ["compilerManifest", actual.compilerManifest, m.compilerManifest.version],
   ];
   const issues: CompatIssue[] = [];

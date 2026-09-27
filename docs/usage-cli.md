@@ -87,7 +87,10 @@ loom — project-local commands for a Loom app
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
                                                    branches is NOT protected)
-  loom sweep content <store> --content <path> [--archive-db <path>] [--pin KIND,KIND] [--ttl ms] [--apply]  K10.6 pinned blob sweep
+  loom sweep content <store> --content <path> [--archive-db <path>] [--pin KIND,KIND] [--ttl ms] [--orphans] [--apply]  K10.6 pinned blob sweep
+                                                  (--orphans also erases blobs NOTHING scanned
+                                                   cites: without --archive-db, evidence cited
+                                                   only by an archived run IS erased)
   loom compliance report <store> --subject-path <p> [--tenant-path <p>]  data-subject inventory
   loom inspect <store> [--port N]                 web inspector (timeline + slider)
 
@@ -627,7 +630,7 @@ npx loom retention run --db .loom/events.db --snap .loom/snapshots.db --ttl 7776
 npx loom retention run --db .loom/events.db --snap .loom/snapshots.db --ttl 7776000000 --apply
 ```
 
-### `loom sweep content --db <events.db> --content <content.db> [--archive-db <path>] [--pin KIND,KIND] [--ttl <ms>] [--apply]`
+### `loom sweep content --db <events.db> --content <content.db> [--archive-db <path>] [--pin KIND,KIND] [--ttl <ms>] [--orphans] [--apply]`
 
 The operator surface for the K10.6 **pinned blob sweep** ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md)) — content-store garbage collection for claim-check payloads whose log references have aged out.
 
@@ -638,6 +641,7 @@ The operator surface for the K10.6 **pinned blob sweep** ([ADR 0055](adr/0055-k1
 | `--archive-db` | no | — | also scan an archived event store, so evidence cited by findings in archived runs stays pinned |
 | `--pin` | no | — | comma-separated event **kinds** to treat as pinning |
 | `--ttl` | no | `2592000000` (30 days) | age threshold in ms |
+| `--orphans` | no | off | also erase blobs that NO scanned event cites and that were untouched for the TTL: runs deleted without an archive, crashes between `put` and the append ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D6). **Pass `--archive-db` whenever retention archives**, or an archived run's evidence is erased. Without it the command warns. |
 | `--apply` | no | dry run | actually erase |
 
 ```bash
@@ -648,13 +652,18 @@ npx loom sweep content --db .loom/events.db --content .loom/content.db --apply
 ```text
 content sweep DRY RUN (pass --apply to erase) — ttl 2592000000ms — pins: (none)
   executions scanned: 412
-  refs seen: 1180   pinned: 934
+  refs seen: 1180   pinned: 934   load-bearing: 934
+  race-safe: yes
   would-reclaim (246):
     sha256:9f2c…
     … +226 more
 ```
 
-At most 20 addresses are listed, then `… +N more`. Pins are recomputed from the log on **every** sweep, so a run that becomes pinned between sweeps is protected without any bookkeeping.
+At most 20 addresses are listed, then `… +N more`. `race-safe: yes` means every erase is
+conditional on the blob's touch time: a blob that some execution `put` again while the sweep ran
+is kept ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D5). The SQLite content store
+supports this. An app with blobs cited from its own tables sweeps through the API instead, with
+`sweepUnpinnedContent({ roots })` (D7). Pins are recomputed from the log on **every** sweep, so a run that becomes pinned between sweeps is protected without any bookkeeping.
 
 ### `loom compliance report --db <path> --subject-path <dotpath> [--tenant-path <dotpath>]`
 
@@ -913,7 +922,7 @@ npx loom plugin search postgres
 | `loom eval` | replay golden logs vs expectations | `--dir` *(req)* | any golden fails |
 | `loom deploy check` | replay logs vs new flow defs | `--logs` *(req)*, `--config` *(req)* | resume-breaking change |
 | `loom retention run` | reclaim aged terminal executions | `--db` *(req)*, `--snap` *(req)*, `--ttl`, `--apply` | error |
-| `loom sweep content` | K10.6 pinned blob sweep | `--db` *(req)*, `--content` *(req)*, `--archive-db`, `--pin`, `--ttl`, `--apply` | error |
+| `loom sweep content` | K10.6 pinned blob sweep | `--db` *(req)*, `--content` *(req)*, `--archive-db`, `--pin`, `--ttl`, `--orphans`, `--apply` | error |
 | `loom compliance report` | data-subject inventory | `--db` *(req)*, `--subject-path` *(req)*, `--tenant-path` | error |
 | `loom knowledge sync` | reconcile a directory into a corpus | `--config` *(req)*, `--scope` *(req)*, `--dir` *(req)*, `--ext`, `--max-bytes`, `--source`, `--apply` | error |
 | `loom knowledge list` | what the corpus holds | `--config` *(req)*, `--scope` *(req)* | error |

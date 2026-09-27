@@ -1132,6 +1132,9 @@ importers:
       '@loom/memory':
         specifier: workspace:*
         version: link:../memory
+      '@loom/plugin-content':
+        specifier: workspace:*
+        version: link:../../plugins/content
       '@loom/replay-vm':
         specifier: workspace:*
         version: link:../replay-vm

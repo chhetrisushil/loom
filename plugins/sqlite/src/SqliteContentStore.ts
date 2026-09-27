@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import type { ContentRef, ContentStore } from "@loom/plugin-content";
+import {
+  type ContentListPage,
+  type ContentListPageOptions,
+  type ContentRef,
+  type ContentStore,
+  contentListPageLimit,
+} from "@loom/plugin-content";
 import Database from "better-sqlite3";
 
 /**
@@ -10,14 +16,30 @@ import Database from "better-sqlite3";
  * idempotent by hash, `putStream` per the ADR 0059 outcome contract
  * (hash-while-spooling). Point it at its own file — blob I/O must not contend
  * with event-append latency (TS-7 discipline).
+ *
+ * SPI 1.3.0 (ADR 0055 D5/D6): every blob carries `touched_at`, bumped by EVERY put (a dedup'd
+ * put is a re-citation), so `deleteIfUntouchedSince` is one conditional `DELETE` and
+ * `listPage` is a keyset scan on the `address` primary key. A pre-1.3.0 file is migrated on
+ * open: the column is added and existing blobs are backfilled to the migration time
+ * (conservative — none ages out until a full TTL after the upgrade).
  */
+export interface SqliteContentStoreOptions {
+  /** Clock for touch times (epoch ms). Default `Date.now`. */
+  now?: () => number;
+}
+
 export class SqliteContentStore implements ContentStore {
   private readonly db: Database.Database;
+  private readonly now: () => number;
   private readonly insertStmt: Database.Statement;
   private readonly getStmt: Database.Statement;
   private readonly deleteStmt: Database.Statement;
+  private readonly deleteIfUntouchedStmt: Database.Statement;
+  private readonly pageStmt: Database.Statement;
+  private readonly pageBeforeStmt: Database.Statement;
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string, options: SqliteContentStoreOptions = {}) {
+    this.now = options.now ?? Date.now;
     this.db = new Database(dbPath);
     try {
       this.db.pragma("journal_mode = WAL");
@@ -25,14 +47,29 @@ export class SqliteContentStore implements ContentStore {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS content_blobs (
           address TEXT PRIMARY KEY,
-          bytes BLOB NOT NULL
+          bytes BLOB NOT NULL,
+          touched_at INTEGER NOT NULL DEFAULT 0
         );
       `);
+      this.migrateTouchedAt();
+      // Monotonic bump: a clock stepping back cannot make a re-cited blob look older.
       this.insertStmt = this.db.prepare(
-        "INSERT OR IGNORE INTO content_blobs (address, bytes) VALUES (?, ?)"
+        `INSERT INTO content_blobs (address, bytes, touched_at) VALUES (?, ?, ?)
+         ON CONFLICT(address) DO UPDATE SET touched_at = max(touched_at, excluded.touched_at)`
       );
       this.getStmt = this.db.prepare("SELECT bytes FROM content_blobs WHERE address = ?");
       this.deleteStmt = this.db.prepare("DELETE FROM content_blobs WHERE address = ?");
+      this.deleteIfUntouchedStmt = this.db.prepare(
+        "DELETE FROM content_blobs WHERE address = ? AND touched_at < ?"
+      );
+      this.pageStmt = this.db.prepare(
+        `SELECT address, touched_at AS touchedAt FROM content_blobs
+         WHERE address > ? ORDER BY address LIMIT ?`
+      );
+      this.pageBeforeStmt = this.db.prepare(
+        `SELECT address, touched_at AS touchedAt FROM content_blobs
+         WHERE address > ? AND touched_at < ? ORDER BY address LIMIT ?`
+      );
     } catch (err) {
       this.db.close(); // don't leak the file handle if setup fails on a bad/locked file
       throw err;
@@ -41,7 +78,7 @@ export class SqliteContentStore implements ContentStore {
 
   async put(bytes: Uint8Array): Promise<ContentRef> {
     const address = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-    this.insertStmt.run(address, Buffer.from(bytes));
+    this.insertStmt.run(address, Buffer.from(bytes), this.now());
     return { __loomContent: address, size: bytes.byteLength };
   }
 
@@ -57,7 +94,7 @@ export class SqliteContentStore implements ContentStore {
       size += chunk.byteLength;
     }
     const address = `sha256:${hash.digest("hex")}`;
-    this.insertStmt.run(address, Buffer.concat(chunks, size));
+    this.insertStmt.run(address, Buffer.concat(chunks, size), this.now());
     return { __loomContent: address, size };
   }
 
@@ -68,6 +105,43 @@ export class SqliteContentStore implements ContentStore {
 
   async delete(ref: ContentRef): Promise<void> {
     this.deleteStmt.run(ref.__loomContent);
+  }
+
+  async deleteIfUntouchedSince(ref: ContentRef, cutoffMs: number): Promise<boolean> {
+    return this.deleteIfUntouchedStmt.run(ref.__loomContent, cutoffMs).changes > 0;
+  }
+
+  async listPage(opts: ContentListPageOptions = {}): Promise<ContentListPage> {
+    const limit = contentListPageLimit(opts.limit);
+    const after = opts.cursor ?? "";
+    const entries = (
+      opts.touchedBefore === undefined
+        ? this.pageStmt.all(after, limit)
+        : this.pageBeforeStmt.all(after, opts.touchedBefore, limit)
+    ) as { address: string; touchedAt: number }[];
+    const last = entries[entries.length - 1];
+    return entries.length === limit && last !== undefined
+      ? { entries, nextCursor: last.address }
+      : { entries };
+  }
+
+  /**
+   * One-time upgrade of a pre-1.3.0 file. IMMEDIATE so two processes opening the same file
+   * cannot both add the column; the re-check inside the transaction makes it idempotent.
+   */
+  private migrateTouchedAt(): void {
+    const hasColumn = (): boolean =>
+      (this.db.prepare("PRAGMA table_info(content_blobs)").all() as { name: string }[]).some(
+        (c) => c.name === "touched_at"
+      );
+    if (hasColumn()) return;
+    this.db
+      .transaction(() => {
+        if (hasColumn()) return;
+        this.db.exec("ALTER TABLE content_blobs ADD COLUMN touched_at INTEGER NOT NULL DEFAULT 0");
+        this.db.prepare("UPDATE content_blobs SET touched_at = ?").run(this.now());
+      })
+      .immediate();
   }
 
   async close(): Promise<void> {

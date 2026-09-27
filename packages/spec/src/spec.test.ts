@@ -20,6 +20,8 @@ describe("kernelManifest", () => {
       m.spis.snapshotStore,
       m.spis.branchRegistry,
       m.spis.dispatcher,
+      m.spis.memoryStore,
+      m.spis.contentStore,
     ]) {
       expect(v).toMatch(/^\d+\.\d+\.\d+$/);
     }
@@ -78,6 +80,7 @@ describe("capability maturity — evidence is real (badges can't rot)", () => {
       "BRANCH_REGISTRY_SPI_VERSION",
       "DISPATCHER_SPI_VERSION",
       "MEMORY_STORE_SPI_VERSION",
+      "CONTENT_STORE_SPI_VERSION",
       "COMPILER_MANIFEST_VERSION",
     ]);
     for (const c of CAPABILITIES) {
@@ -293,6 +296,13 @@ describe("checkCompatibility", () => {
     });
     expect(report.ok).toBe(true);
     expect(report.issues).toEqual([]);
+  });
+
+  it("checks a 3P content store's SPI major (ContentStore SPI 1.3.0 is in the manifest)", () => {
+    expect(checkCompatibility({ contentStoreSpi: "1.2.0" }).ok).toBe(true);
+    const report = checkCompatibility({ contentStoreSpi: "2.0.0" });
+    expect(report.ok).toBe(false);
+    expect(report.issues[0]?.component).toBe("contentStoreSpi");
   });
 
   it("accepts a same-major (MINOR-bumped) deployment", () => {

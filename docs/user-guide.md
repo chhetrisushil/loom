@@ -1832,7 +1832,10 @@ lifecycle without ever creating a silent third behavior between "replays identic
 ["FINDING_RECORDED"])` pins runs carrying your designated domain events. The companion
 `sweepUnpinnedContent` (in `@loom/plugin-content`) reclaims content-store blobs on a TTL while
 refs cited by pinned event kinds survive — across archival, re-derived from the log on every
-sweep (mark-and-sweep, no mutable index). The joint rule the perpetual-agents series fixed:
+sweep (mark-and-sweep, no mutable index). Over a store with ContentStore SPI 1.3.0 (SQLite,
+in-memory) every erase is conditional on the blob's touch time, so a blob re-cited mid-sweep is
+kept. `reclaimOrphans` also reclaims blobs nothing cites any more, which requires passing every
+archive. `roots` pins addresses held in your own tables (ADR 0055 D5–D7). The joint rule the perpetual-agents series fixed:
 *findings and their evidence are permanent; runs are archivable; raw telemetry is disposable.*
 The whole pattern — schedule, carry state, claim-check, pin policy — is one declaration via
 `sentinelPreset()` (`@loom/plugin-sentinel`), and `loom new sentinel <name>` scaffolds it.

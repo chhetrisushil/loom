@@ -16,12 +16,13 @@ describe("loom sweep content (DX-2, K10.6)", () => {
     const db = join(dir, "events.db");
     const contentDb = join(dir, "content.db");
     const events = new SqliteEventStore(db);
-    const content = new SqliteContentStore(contentDb);
+    const old = Date.now() - 90 * DAY;
+    // SPI 1.3.0 stamps a touch time on put: the blobs were put when they were cited.
+    const content = new SqliteContentStore(contentDb, { now: () => old });
     const enc = (s: string) => new TextEncoder().encode(s);
 
     const evidence = await content.put(enc("EXPLAIN plan"));
     const telemetry = await content.put(enc("pg_stat sample"));
-    const old = Date.now() - 90 * DAY;
     await events.append({
       id: "w1-0",
       workflowId: "wf",
@@ -66,6 +67,7 @@ describe("loom sweep content (DX-2, K10.6)", () => {
     // The finding's evidence is a BARE ref: load-bearing as well as pinned (ADR 0055 D4).
     expect(dry).toContain("load-bearing: 1");
     expect(dry).toContain("would-reclaim (1)");
+    expect(dry).toContain("race-safe: yes"); // SQLite has the conditional delete (ADR 0055 D5)
     expect(dry).toContain(telemetry.__loomContent);
     // Nothing deleted yet.
     const check = new SqliteContentStore(contentDb);
@@ -91,7 +93,7 @@ describe("loom sweep content (DX-2, K10.6)", () => {
     const db = join(dir, "events.db");
     const contentDb = join(dir, "content.db");
     const events = new SqliteEventStore(db);
-    const content = new SqliteContentStore(contentDb);
+    const content = new SqliteContentStore(contentDb, { now: () => Date.now() - 60 * DAY });
     // What ContentResolvingEventStore leaves in the raw log for an externalized field.
     const externalized = await content.put(new TextEncoder().encode('{"rows":[1,2,3]}'));
     await events.append({
@@ -117,6 +119,48 @@ describe("loom sweep content (DX-2, K10.6)", () => {
     expect(applied).toContain("reclaimed (0)");
     const after = new SqliteContentStore(contentDb);
     expect(await after.get(externalized)).not.toBeNull();
+    await after.close();
+  });
+
+  it("--orphans reclaims a blob nothing cites once untouched for the TTL, and warns about archives (ADR 0055 D6)", async () => {
+    dir = mkdtempSync(join(tmpdir(), "loom-sweep-"));
+    const db = join(dir, "events.db");
+    const contentDb = join(dir, "content.db");
+    const events = new SqliteEventStore(db);
+    const old = Date.now() - 60 * DAY;
+    const content = new SqliteContentStore(contentDb, { now: () => old });
+    // Put, then the process died before the append: nothing in the log cites it.
+    const orphan = await content.put(new TextEncoder().encode("crashed before append"));
+    await content.close();
+    await events.close();
+
+    const without = await cmdSweepContent({ db, content: contentDb, ttlMs: 30 * DAY, apply: true });
+    expect(without).not.toContain("orphans");
+    const kept = new SqliteContentStore(contentDb);
+    expect(await kept.get(orphan)).not.toBeNull();
+    await kept.close();
+
+    const dry = await cmdSweepContent({
+      db,
+      content: contentDb,
+      ttlMs: 30 * DAY,
+      apply: false,
+      orphans: true,
+    });
+    expect(dry).toContain("would-reclaim orphans (1)");
+    expect(dry).toContain(orphan.__loomContent);
+    expect(dry).toMatch(/no --archive-db/); // the hazard the sweep cannot detect, said loudly
+
+    const applied = await cmdSweepContent({
+      db,
+      content: contentDb,
+      ttlMs: 30 * DAY,
+      apply: true,
+      orphans: true,
+    });
+    expect(applied).toContain("reclaimed orphans (1)");
+    const after = new SqliteContentStore(contentDb);
+    expect(await after.get(orphan)).toBeNull();
     await after.close();
   });
 });
