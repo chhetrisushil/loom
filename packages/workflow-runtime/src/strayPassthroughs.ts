@@ -48,7 +48,10 @@ export interface StrayPassthroughReport {
    * 1.21.0 the execution reads `suspended` and the same entry is the parked gate's answer, so
    * the gate passes with `null` and no approval on replay. The log does not record which
    * kernel wrote it (a 1.21.0 caller answering the gate with an explicit `null` writes the same
-   * shape), so this is reported, not refused.
+   * shape), so at a plain `ctx.suspend` gate this is reported, not refused. At an OPEN human
+   * step's park it would become the step's approval, so that case is not counted here: it sets
+   * {@link ambiguousHumanStep} and the resume is refused (`ambiguous-legacy-answers`) unless an
+   * authenticated `discardLegacyAnswers` says how many entries to discard.
    */
   ambiguousNullResumes?: number;
 }
@@ -86,7 +89,10 @@ export function inspectStrayPassthroughs(
   let parkedHuman: string | undefined; // the human step this park belongs to
   let previous: EventEnvelope | undefined;
   const unspentAtStart = new Map<string, number>(); // first STEP_STARTED of each step
-  const humans = new Map<string, { answers: number; reparked: boolean; open: boolean }>();
+  const humans = new Map<
+    string,
+    { answers: number; reparked: boolean; open: boolean; tainted?: boolean }
+  >();
   let appended = 0;
   let strays = 0;
   let unspent = 0; // strays not yet followed by a gate park
@@ -151,7 +157,13 @@ export function inspectStrayPassthroughs(
       case "EXECUTION_RESUMED": {
         const answersGate = status === "suspended" && parkedOn !== EFFECT_INDOUBT_RESOLVED;
         const statusOnly = e.payload === null && !answersGate;
-        if (e.payload === null && answersGate && failedWhileParked) ambiguousNulls++;
+        if (e.payload === null && answersGate && failedWhileParked) {
+          // ADR 0105 — at a HUMAN park this null would become the step's approval on replay:
+          // routed to the ambiguous-human-step refusal below. At a plain gate: reported.
+          const h = parkedHuman !== undefined ? humans.get(parkedHuman) : undefined;
+          if (h !== undefined) h.tainted = true;
+          else ambiguousNulls++;
+        }
         failedWhileParked = false;
         if (e.payload !== undefined && !statusOnly) {
           appended++;
@@ -185,9 +197,13 @@ export function inspectStrayPassthroughs(
   let ambiguousHumanStep: string | undefined;
   let humanAtRisk = 0;
   for (const [stepId, h] of humans) {
-    if (!h.open) continue;
+    if (!h.open) {
+      // A step the log already completed is past refusing; say what it may have taken.
+      if (h.tainted === true) ambiguousNulls++;
+      continue;
+    }
     const strayBefore = (unspentAtStart.get(stepId) ?? 0) > 0;
-    if (!strayBefore && !h.reparked) continue;
+    if (!strayBefore && !h.reparked && h.tainted !== true) continue;
     // A re-parked step's answers are not its own to take one-by-one: on the 0104 kernel the
     // first would complete it and the rest would reach later gates.
     if (h.reparked) humanAtRisk += h.answers;

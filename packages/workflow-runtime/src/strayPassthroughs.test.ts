@@ -1,7 +1,11 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import { foldEvents } from "@loom/replay-vm";
 import { describe, expect, it } from "vitest";
-import { classifyStrayPassthroughs, inspectStrayPassthroughs } from "./strayPassthroughs";
+import {
+  classifyStrayPassthroughs,
+  discardDecisionId,
+  inspectStrayPassthroughs,
+} from "./strayPassthroughs";
 
 // ADR 0104 D2 — which pre-0104 logs carry a passthrough that answered no gate, and whether
 // it is already spent. Pure over (retained log, folded state).
@@ -290,6 +294,42 @@ describe("inspectStrayPassthroughs — a null resume after a late sibling failur
       ev("EXECUTION_RESUMED", { ok: true }),
     ];
     expect(inspect(log).ambiguousNullResumes).toBeUndefined();
+  });
+
+  it("at an OPEN HUMAN step's park the same null is refused (ambiguousHumanStep), not just reported", () => {
+    seq = 0;
+    const humanPark = () =>
+      ev("EXECUTION_SUSPENDED", { condition: { on: "Approve", stepId: "h" } });
+    const log = [
+      ev("EXECUTION_STARTED"),
+      ev("STEP_STARTED", { stepId: "h" }),
+      ev("STEP_STARTED", { stepId: "slow" }),
+      humanPark(),
+      ev("STEP_FAILED", { stepId: "slow", error: "late boom" }),
+      ev("EXECUTION_MIGRATED", { toFlowId: "f", strategy: "replay-check" }),
+      ev("Fixup", { note: "operator" }),
+      ev("EXECUTION_RESUMED", null), // 1.20.0: status-only; 1.21.0: the human step's approval
+      ev("STEP_STARTED", { stepId: "h" }),
+      humanPark(), // the 1.20.0 kernel re-parked it, unanswered
+    ];
+    const kindOfStep = (id: string) => (id === "h" ? "human" : "tool");
+    const report = inspectStrayPassthroughs(log, foldEvents(log, INITIAL), { kindOfStep });
+    expect(report.ambiguousHumanStep).toBe("h");
+    expect(report.ambiguousNullResumes).toBeUndefined();
+
+    // …and the operator's authenticated discard (ADR 0104) resolves it.
+    const discarded = [
+      ...log,
+      ev("DECISION_RECORDED", {
+        decisionId: discardDecisionId("h"),
+        choice: 1,
+        source: "operator",
+      }),
+    ];
+    expect(
+      inspectStrayPassthroughs(discarded, foldEvents(discarded, INITIAL), { kindOfStep })
+        .ambiguousHumanStep
+    ).toBeUndefined();
   });
 
   it("negative: a failure BEFORE the park does not taint the park's answer", () => {

@@ -43,6 +43,11 @@ export {
   type OrphanCensusOptions,
 } from "./orphanCensus";
 export {
+  reconcileTimers,
+  type ReconcileTimersOptions,
+  type ReconcileTimersSummary,
+} from "./reconcileTimers";
+export {
   pruneBranchRefs,
   type PruneBranchRefsOptions,
   type PruneBranchRefsSummary,

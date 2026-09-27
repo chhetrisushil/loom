@@ -68,6 +68,30 @@ describe("loom recover", () => {
     expect(out).toContain("can preview");
   });
 
+  it("--max-recoveries lists executions whose last N re-drives made no progress", async () => {
+    // Two re-drives at the tail and nothing since: a poison execution.
+    const store = new SqliteEventStore(db);
+    await store.append(evt("stuck-1", 1, "STEP_STARTED", 3_600_000));
+    await store.append(evt("stuck-1", 2, "EXECUTION_RECOVERED", 3_000_000));
+    await store.append(evt("stuck-1", 3, "EXECUTION_RECOVERED", 2_000_000));
+    store.close();
+
+    const out = await cmdRecover({ db, stale: "15m", maxRecoveries: 2, apply: false });
+    expect(out).toContain("exhausted: 1");
+    expect(out).toContain("stuck-1 (2)");
+    expect(out).not.toContain("would recover: 1");
+
+    // Below the bound it is an ordinary candidate.
+    const below = await cmdRecover({ db, stale: "15m", maxRecoveries: 3, apply: false });
+    expect(below).toContain("would recover: 1");
+    expect(below).not.toContain("exhausted");
+  });
+
+  it("refuses --max-recoveries 0: it would skip every execution", async () => {
+    const out = await cmdRecover({ db, stale: "15m", maxRecoveries: 0, apply: false });
+    expect(out).toContain("must be an integer ≥ 1");
+  });
+
   it("uses expired leases as evidence when the app wires them", async () => {
     const leases = new SqliteLeaseStore(leasesDb);
     // Expired 10 minutes ago: the node holding it stopped saying it was alive.

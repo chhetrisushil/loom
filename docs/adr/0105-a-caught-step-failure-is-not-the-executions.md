@@ -11,7 +11,8 @@
   [ADR 0104](0104-recovery-never-answers-a-gate.md) (a `null` resume into an unparked
   execution is status-only).
 - Placement: **kernel** (`@loom/replay-vm`, the fold; `@loom/workflow-runtime`, the snapshot
-  reads, the terminal-failure write and the recovery bound). No 1P or 3P surface could hold it:
+  reads, the terminal-failure write, the recovery bound and the timer reconcile pass that repairs
+  what the old fold made the timer service discard). No 1P or 3P surface could hold it:
   the wrong value is produced by the fold, and every consumer reads the fold.
 - **KERNEL_ABI unchanged (1.1.0). EVENT_SCHEMA 1.20.0 → 1.21.0** (D3): no event kind, no
   payload field, no fold key, and the kernel writes the same events — but the fold reads one
@@ -38,7 +39,8 @@ status — until the next lifecycle event overwrote it.
 `EXECUTION_SUSPENDED`, then the sibling's `STEP_FAILED` (the journal has no closed-after-settle
 guard, and a sibling's commit is legitimate log content). The old fold turned that `suspended`
 into `failed`, which kept `suspendedOn` but read terminal: `resume` refused the gate
-(`not-suspended`), `TimerService` never woke a timed park (it requires `suspended`), and
+(`not-suspended`), `TimerService` retired a timed park's timer row as obsolete (it fires only a `suspended`
+execution) so it never woke, and
 retention could prune the execution. The same can happen to a SUSPEND snapshot: the snapshot is
 taken after `journal.drain()`, and a sibling can commit during that drain.
 
@@ -97,7 +99,7 @@ it should see after a caught (or late sibling) step failure.
 | `resume` with `EXECUTION_RECOVERED` | same | refused (`not-suspended`) | re-driven |
 | `resume` at a gate (late sibling failure) | fold status = suspended | refused (`not-suspended`) | answers the gate |
 | `resumeAs` / `answerEvents` | fold status | wrote a status-only `EXECUTION_RESUMED(null)` (terminal branch) | answers the parked gate with the caller's payload, with every gate check (D3) |
-| `TimerService` wake | status = suspended ∧ `wakeAt` | never woke a timed park after a late sibling failure | wakes |
+| `TimerService` wake | status = suspended ∧ `wakeAt` | treated a timed park after a late sibling failure as obsolete and RETIRED its row | a failure after 1.21.0 keeps the row and wakes; a row a pre-1.21.0 service already retired is gone — `reconcileTimers` (D4) re-arms it |
 | `orphanCensus`, `retireAbandonedBranches` | fold status (+ suspended) | skipped as terminal | counted / retirable |
 | `cancel` (detached) | fold status terminal? | `false`, not cancellable | cancelled |
 | `LogLifecycle` retention, `eraseSubject` | fold status terminal? | eligible for pruning / "settled" | `not-terminal` / live |
@@ -132,9 +134,22 @@ kind, no payload field), and:
 
 - **`inspectStrayPassthroughs` reports it** (`ambiguousNullResumes`): a `null` resume into a
   gate park after a `STEP_FAILED` that landed while parked. The runtime warns once per execution
-  on resume. It is reported, not refused: no log records which kernel wrote an entry, and a
-  1.21.0 caller answering the gate with an explicit `null` writes the same shape, which is
-  legitimate. The operator decides (cancel, or inspect and continue).
+  on resume. At a plain `ctx.suspend` gate it is reported, not refused: no log records which
+  kernel wrote an entry, and a 1.21.0 caller answering the gate with an explicit `null` writes
+  the same shape, which is legitimate. The operator decides (cancel, or inspect and continue).
+  At an OPEN human step's park (ADR 0104: `condition.stepId`) the same `null` would become the
+  step's approval, so that case joins ADR 0104's ambiguous-human-step refusal: `resume` is
+  refused (`ambiguous-legacy-answers`) unless an authenticator-verified `discardLegacyAnswers`
+  says how many entries to discard.
+- **Residual — the answer depends on which snapshot exists.** A 1.20.0 suspend snapshot taken
+  after that `resumeAs` never counted the `null` (its fold called it status-only). Resumed
+  through that snapshot, the gate takes the operator's real answer; folded from the log alone
+  (no snapshot, a snapshot from before it, a fork), 1.21.0 serves the `null` first and the gate
+  passes without approval. `legacyFoldResumeAs.test.ts` drives a real `resumeAs` under a replica
+  of the 1.20.0 fold and observes both. The warning above names these executions; an operator
+  should cancel or re-drive each deliberately. A fold rule that treated a `null` after a
+  while-parked failure as status-only (fail-closed) would remove the divergence at the cost of
+  losing a 1.21.0 caller's explicit `null` gate answer in that position; it is not adopted here.
 - The window is narrow — the 1.20.0 status-only `null` exists only since ADR 0104, and only a
   `resumeAs` after a late sibling failure wrote it here. A log a pre-1.20.0 kernel wrote folds as
   it did under that kernel: `resumeAs` then recorded the operator's payload, which every fold
@@ -155,7 +170,14 @@ followed by a status-setting event:
   recovery), a typed failure is substituted without calling the effect, the flow takes its catch
   branch again, and continues.
 - **A late sibling failure while parked** now folds `suspended`: the gate can be answered, and a
-  timed park wakes. A following `null` resume is covered by D3.
+  timed park whose failure lands after the upgrade wakes. One that a pre-1.21.0 `TimerService`
+  already polled did NOT keep its timer: that service saw "failed" and retired the row as
+  obsolete, so after the upgrade the execution reads `suspended` with a past `wakeAt` and no
+  row, and nothing wakes it. `reconcileTimers(runtime, { source, timers })` (new,
+  `@loom/workflow-runtime`) re-arms every suspended execution's `wakeAt` row. It needs no lookup
+  in the TimerStore, because `schedule` is idempotent per (executionId, wakeAt): a healthy row is
+  a no-op and a missing one is restored, and `TimerService`'s own still-waiting guard makes a
+  duplicate fire a no-op. A following `null` resume is covered by D3.
 - **The process died after `STEP_FAILED` was durable but before `EXECUTION_FAILED` was
   written**, or **storage died** (`journal.failed`: the kernel deliberately writes no
   `EXECUTION_FAILED` into a store that cannot accept it). Both used to fold `failed`; both now
@@ -166,6 +188,12 @@ followed by a status-setting event:
   "failed" while the log folds `running` and a later recovery could complete it. The run now
   rejects with `StorageWriteError` (`cause` = the store's error), as the storage-died branch
   already did: the caller learns the outcome is not durable.
+  The handle and `onEvent` are the kernel's IN-MEMORY view: `journal.commit` folds and publishes
+  `EXECUTION_FAILED` before its write settles (as it does every event — a projection is fed in
+  commit order, and holding one event back until its drain would reorder it against a
+  sibling's later commit). So `handle.getState()` and an `onEvent` projection read `failed`
+  while the log folds `running`. The rejection (and `onStorageError`) is what tells the caller
+  which is durable; `loadState` and every recovery path read the log.
 
 **Snapshots.** A snapshot is a stored fold, so one saved by an older fold inside that window
 still holds `status: "failed"` — a cadence snapshot (`snapshotEvery`), a fork seed, or a
@@ -173,9 +201,9 @@ suspend snapshot a sibling's commit raced (Context). It is repaired on read, in 
 common path: `normalizeSnapshotState` (`@loom/replay-vm`) reads `failed` with no
 `variables._error` and a failed step frame as the old fold's artifact — the kernel's only
 `EXECUTION_FAILED` writer always records `error` — and restores `suspended` when the snapshot
-is parked (`suspendedOn` survives only while parked), `running` otherwise. Every snapshot read
-path uses it: `resume`, `resumeAs`, `loadState`/`foldState`, `fork`, `LogLifecycle` and the
-replay inspector. It cannot repair one case: an execution that genuinely failed, was re-opened
+is parked (`suspendedOn` survives only while parked), `running` otherwise. Every stored-fold
+read path uses it: `resume`, `resumeAs`, `loadState`/`foldState`, `fork`, `restoreFromState`
+(a preloaded state), `LogLifecycle` and the replay inspector. It cannot repair one case: an execution that genuinely failed, was re-opened
 by `resumeAs` (which keeps `_error`), and then caught a step failure under an older fold — its
 snapshot carries `_error`. Deleting that execution's snapshots (`snapshotStore.deleteExecution`)
 makes the log authoritative.
@@ -187,23 +215,42 @@ after a caught step failure changes from `failed` to `running`, all at once:
   selects ALL of them, however old, and re-drives each — re-executing its untyped failing
   effect; an execution whose flow code changed since throws `FlowCodeMismatchError` on every
   pass;
-- `LogLifecycle` stops pruning them (they are no longer terminal).
+- `LogLifecycle` stops pruning them (they are no longer terminal);
+- executions parked on a timer whose sibling failed under the old fold read `suspended` again
+  but have NO timer row (the old service retired it), so nothing wakes them until
+  `reconcileTimers` runs.
 
 Before enabling recovery on the new version: run `orphanCensus` or
 `recoverAbandoned({ dryRun: true })` to see the set; bound `isAbandoned` by age (and by
-workflow) so years-old executions are not re-driven; cancel what should not resume; and set
-`maxRecoveries` (D5) so a poison execution stops costing every pass.
+workflow) so years-old executions are not re-driven; cancel what should not resume; set
+`maxRecoveries` (D5) so a poison execution stops costing every pass; and run
+`reconcileTimers` once, so timed parks a pre-1.21.0 `TimerService` retired are re-armed (their
+wake is already past, so they fire on the next poll).
 
 ### D5 — `recoverAbandoned({ maxRecoveries })`
 
 This fix widens what recovery re-drives, including executions that can never succeed (a step
 whose error text its store refuses — Postgres `jsonb` rejects `\u0000` — crashes every re-drive
 the same way). `recoverAbandoned` had no bound, so each pass paid another at-least-once run of
-the interrupted step, forever. It now takes an optional `maxRecoveries`, counted from the log's
-`EXECUTION_RECOVERED` events (so the bound holds across passes, processes and nodes); an
-execution at the bound is skipped, counted in `summary.exhausted`, and reported through
-`onExhausted(executionId, recoveries)`. The default is unchanged: unbounded. Setting it costs
-one log read per candidate.
+the interrupted step, forever. It now takes an optional `maxRecoveries`:
+
+- **Consecutive, not lifetime.** It counts the `EXECUTION_RECOVERED` events at the tail of the
+  log since the last sign of progress — `STEP_COMPLETED`, `EXECUTION_SUSPENDED` or
+  `EXECUTION_RESUMED`. A long-lived execution recovered many times over months, each re-drive
+  moving on, is never stranded; only one whose re-drives keep dying the same way is. (A
+  re-drive's replayed steps write nothing, so only real progress resets the count.)
+- **Only for claimed candidates.** It is checked after `isAbandoned` (or the expired lease)
+  claimed the execution and before this pass takes a lease, so a live execution is never
+  reported and there is no lease to release. Skipped executions are counted in
+  `summary.exhausted`, reported through `onExhausted(executionId, n)`, and left `running` for an
+  operator; the next pass reports them again.
+- **Cost:** a backward, paged read of the log's tail (`readRange`), stopping at the first progress
+  event or at the bound — O(events since progress), not O(log).
+- **Compaction** (`truncatePrefix`) can only hide older events, so it can undercount (one more
+  re-drive), never overcount.
+- **`≥ 1`, refused otherwise.** `0` would skip every candidate: a pass that recovers nothing
+  while reading as if it ran. The default is unchanged: unbounded.
+- `loom recover --max-recoveries N` exposes it and lists the exhausted executions.
 
 ## Consequences
 
@@ -222,6 +269,13 @@ one log read per candidate.
   `workflow-runtime/src/caughtStepFailure.test.ts` (two-process crash → recovery for untyped and
   typed failures — the typed one never re-invokes the effect —, through a mid-run snapshot and a
   hand-built pre-1.21.0 snapshot; cancel; the late sibling failure stays resumable; the
-  undurable `EXECUTION_FAILED` rejects with `StorageWriteError`; `maxRecoveries`; the negative:
+  undurable `EXECUTION_FAILED` rejects with `StorageWriteError` while the handle keeps the
+  in-memory view; `restoreFromState` repairs a preloaded pre-1.21.0 state; `maxRecoveries` —
+  consecutive, only for claimed candidates, two REAL passes over a poison flow, `0` refused; the
+  negative:
   an escaped failure is `failed`, never a recovery candidate, not cancellable), and
-  `strayPassthroughs.test.ts` (the ambiguous `null`, with three negatives).
+  `strayPassthroughs.test.ts` (the ambiguous `null` at a gate, the refusal at an open human
+  step and its discard, three negatives), `reconcileTimers.test.ts` (a row the old service
+  retired is re-armed and wakes; idempotent), `legacyFoldResumeAs.test.ts` (a real `resumeAs`
+  under a replica of the 1.20.0 fold, replayed by 1.21.0 through the snapshot and from the log)
+  and the CLI's `--max-recoveries`.

@@ -21,6 +21,10 @@ import type { FlowRunner, RegisteredFlow } from "./types";
 
 const io = { inputSchema: z.object({}), outputSchema: z.object({ ok: z.boolean() }) };
 const Outage = z.object({ code: z.number() });
+// `errors: { outage }` declares the typed channel the `typed: true` boots fail on. It does NOT
+// make the default boots typed: their tool throws a plain `Error`, which is an UNTYPED failure
+// (no channel) and keeps the legacy at-least-once re-execution — only `fail("outage", …)` is
+// recorded with a channel and substituted on replay.
 const stepFlaky = step$({
   id: "flaky",
   name: "Flaky",
@@ -36,15 +40,18 @@ interface Stores {
   snapshotStore: InMemoryAsyncSnapshotStore;
 }
 
-/** An event store whose disk refuses the execution's terminal failure, and nothing else. */
-class RefusesExecutionFailed extends InMemoryAsyncEventStore {
+/** An event store whose disk refuses one event type (and, like a real one, nothing after it). */
+class Refuses extends InMemoryAsyncEventStore {
   readonly refusal = new Error("disk full");
+  constructor(private readonly refusedType: string) {
+    super();
+  }
   override async append(envelope: EventEnvelope): Promise<void> {
-    if (envelope.eventType === "EXECUTION_FAILED") throw this.refusal;
+    if (envelope.eventType === this.refusedType) throw this.refusal;
     return super.append(envelope);
   }
   override async appendBatch(envelopes: readonly EventEnvelope[]): Promise<void> {
-    if (envelopes.some((e) => e.eventType === "EXECUTION_FAILED")) throw this.refusal;
+    if (envelopes.some((e) => e.eventType === this.refusedType)) throw this.refusal;
     return super.appendBatch(envelopes);
   }
 }
@@ -224,6 +231,22 @@ describe("a caught step failure is not the execution's failure (ADR 0105)", () =
     expect((await b.runtime.loadState("legacy-snap"))?.status).toBe("completed");
   });
 
+  it("restoreFromState repairs a preloaded pre-1.21.0 state the same way", async () => {
+    const a = boot({ gated: true, catches: true });
+    void a.runtime.start(a.flow, {}, { executionId: "legacy-restore" });
+    await settle();
+    const live = await a.runtime.loadState("legacy-restore");
+    if (live === null) throw new Error("no state");
+
+    const b = boot({ shared: a.stores, catches: true });
+    const handle = await b.runtime.restoreFromState({ ...live, status: "failed" });
+    // Seen at once, before the re-run settles: the preloaded fold is read as what it was.
+    const seen = handle.getState().status;
+    await handle.waitForCompletion();
+    expect(seen).toBe("running");
+    expect((await b.runtime.loadState("legacy-restore"))?.status).toBe("completed");
+  });
+
   it("a crashed execution that caught a failure can still be cancelled", async () => {
     const a = boot({ gated: true, catches: true });
     void a.runtime.start(a.flow, {}, { executionId: "caught-cancel" });
@@ -260,7 +283,7 @@ describe("a caught step failure is not the execution's failure (ADR 0105)", () =
   });
 
   it("an escaped failure whose EXECUTION_FAILED is not durable rejects with StorageWriteError, not the step's error", async () => {
-    const eventStore = new RefusesExecutionFailed();
+    const eventStore = new Refuses("EXECUTION_FAILED");
     const a = boot({ catches: false, eventStore });
     const handle = await a.runtime.start(a.flow, {}, { executionId: "undurable" });
     const err = await handle.waitForCompletion().then(
@@ -272,6 +295,10 @@ describe("a caught step failure is not the execution's failure (ADR 0105)", () =
     expect(err).toBeInstanceOf(StorageWriteError);
     expect((err as StorageWriteError).cause).toBe(eventStore.refusal);
     expect((await a.runtime.loadState("undurable"))?.status).toBe("running");
+    // D4: the handle and `onEvent` are the IN-MEMORY view — the EXECUTION_FAILED was committed
+    // (folded, published) before its write failed — while the log, which recovery reads, folds
+    // `running`. The rejection is what tells the caller which one is durable.
+    expect(handle.getState().status).toBe("failed");
   });
 });
 
@@ -381,14 +408,92 @@ describe("recoverAbandoned `maxRecoveries` (ADR 0105)", () => {
     ).toMatchObject({ exhausted: 0, recovered: 1 });
   });
 
-  it("refuses a malformed bound", async () => {
-    const a = boot({ catches: true });
-    await expect(
-      recoverAbandoned(a.runtime, {
-        source: a.stores.eventStore,
+  it("counts CONSECUTIVE re-drives without progress: recoveries that each moved on never exhaust", async () => {
+    const a = boot({ gated: true, catches: true });
+    void a.runtime.start(a.flow, {}, { executionId: "healthy" });
+    await settle();
+    // A long-lived execution recovered three times over its life, each re-drive completing work.
+    let seq = (await a.stores.eventStore.read("healthy")).at(-1)?.sequence ?? 0;
+    const base = (await a.stores.eventStore.read("healthy"))[0] as EventEnvelope;
+    for (let i = 0; i < 3; i++) {
+      for (const [eventType, payload] of [
+        ["EXECUTION_RECOVERED", {}],
+        ["STEP_COMPLETED", { stepId: `w${i}`, output: {} }],
+      ] as const) {
+        seq++;
+        await a.stores.eventStore.append({
+          ...base,
+          id: `h-${seq}`,
+          eventType,
+          sequence: seq,
+          payload,
+        });
+      }
+    }
+    const b = boot({ shared: a.stores, catches: true });
+    const summary = await recoverAbandoned(b.runtime, {
+      source: b.stores.eventStore,
+      isAbandoned: () => true,
+      maxRecoveries: 2,
+    });
+    expect(summary).toMatchObject({ exhausted: 0, recovered: 1 });
+  });
+
+  it("is checked only for claimed candidates: a live execution the predicate declines is never reported", async () => {
+    const a = await strandedWithRecoveries(3);
+    const b = boot({ shared: a.stores, catches: true });
+    const exhausted: string[] = [];
+    const summary = await recoverAbandoned(b.runtime, {
+      source: b.stores.eventStore,
+      isAbandoned: () => false,
+      maxRecoveries: 1,
+      onExhausted: (id) => exhausted.push(id),
+    });
+    expect(summary).toMatchObject({ candidates: 1, exhausted: 0, recovered: 0 });
+    expect(exhausted).toEqual([]);
+  });
+
+  it("two REAL passes over a poison execution produce the count the third pass stops at", async () => {
+    // The store refuses the step's failure record (as Postgres jsonb refuses a \u0000 in an
+    // error text): every run dies with StorageWriteError, the log never records a terminal
+    // outcome, and the execution stays `running` — the re-drive that crashes the same way forever.
+    const store = new Refuses("STEP_FAILED");
+    const a = boot({ catches: true, eventStore: store });
+    const first = await a.runtime.start(a.flow, {}, { executionId: "poison-real" });
+    await expect(first.waitForCompletion()).rejects.toBeInstanceOf(StorageWriteError);
+    expect((await a.runtime.loadState("poison-real"))?.status).toBe("running");
+
+    const pass = () => {
+      const node = boot({ shared: a.stores, catches: true });
+      const exhausted: Array<[string, number]> = [];
+      return recoverAbandoned(node.runtime, {
+        source: store,
         isAbandoned: () => true,
-        maxRecoveries: -1,
-      })
-    ).rejects.toThrow(/non-negative integer/);
+        maxRecoveries: 2,
+        onExhausted: (id, n) => exhausted.push([id, n]),
+      }).then((summary) => ({ summary, exhausted }));
+    };
+    expect((await pass()).summary).toMatchObject({ recovered: 1, exhausted: 0 });
+    expect((await pass()).summary).toMatchObject({ recovered: 1, exhausted: 0 });
+    const third = await pass();
+    expect(third.summary).toMatchObject({ recovered: 0, exhausted: 1 });
+    expect(third.exhausted).toEqual([["poison-real", 2]]);
+    const recovered = (await store.read("poison-real")).filter(
+      (e) => e.eventType === "EXECUTION_RECOVERED"
+    );
+    expect(recovered).toHaveLength(2);
+  });
+
+  it("refuses a malformed bound, including 0 (it would skip everything)", async () => {
+    const a = boot({ catches: true });
+    for (const maxRecoveries of [-1, 0, 1.5]) {
+      await expect(
+        recoverAbandoned(a.runtime, {
+          source: a.stores.eventStore,
+          isAbandoned: () => true,
+          maxRecoveries,
+        })
+      ).rejects.toThrow(/integer ≥ 1/);
+    }
   });
 });
