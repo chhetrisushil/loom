@@ -5,6 +5,7 @@ import { type DecoratorPlan, installOptional } from "./installOptional";
 import {
   type EventStore,
   type ExecutionPage,
+  OPTIONAL_EVENT_STORE_METHODS,
   type OptionalEventStoreMethod,
   appendBatchOf,
   readRangeOf,
@@ -86,6 +87,24 @@ export interface MigrationResult {
  * and sequence 0 (the bootstrap anchor) exists for as long as the execution does — which is
  * what makes "which side holds it?" a single indexed point-read.
  */
+/**
+ * The optional-capability surface EVERY shard shares: an object carrying each optional
+ * `EventStore` method that all shards implement (bound to the first shard, so it is a real
+ * method, never a stub) and nothing else. Used as the `inner` of `installOptional`, whose
+ * rule is "install a method iff the inner store has it" — for a sharded store, "has it" means
+ * every shard has it. O(shards × optional methods), once, at construction.
+ */
+function commonOptional(shards: readonly EventStore[]): EventStore {
+  const surface: Partial<Record<OptionalEventStoreMethod, unknown>> = {};
+  const first = shards[0] as EventStore;
+  for (const method of OPTIONAL_EVENT_STORE_METHODS) {
+    if (shards.every((s) => typeof s[method] === "function")) {
+      surface[method] = (first[method] as (...a: unknown[]) => unknown).bind(first);
+    }
+  }
+  return surface as unknown as EventStore;
+}
+
 export class ShardedEventStore implements EventStore {
   readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
@@ -135,12 +154,8 @@ export class ShardedEventStore implements EventStore {
       listExecutionsPage: (opts) => this.pagedScatterGather(opts),
     } satisfies DecoratorPlan<EventStore, Routed>;
     // `installOptional` installs a method iff its `inner` has it; here "inner" is the
-    // capability every shard shares, so hand it a view holding exactly those methods.
-    const common: Record<string, () => void> = {};
-    for (const method of Object.keys(plan) as Routed[]) {
-      if (shards.every((s) => typeof s[method] === "function")) common[method] = () => {};
-    }
-    installOptional<EventStore, Routed>(this, common as unknown as EventStore, plan);
+    // capability surface every shard shares.
+    installOptional<EventStore, Routed>(this, commonOptional(shards), plan);
     // The structural encryption marker (`keys`, see `installOptional`) must survive sharding,
     // or `Sharded(Encrypting(pg)…)` — the ADR 0074 composition — would look like a plain store
     // to LogLifecycle's compaction/archive guard and to `loom doctor`. Carried up when every
