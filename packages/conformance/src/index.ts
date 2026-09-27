@@ -287,6 +287,8 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
           limit: 5,
         });
         expect(page.executionIds.length).toBeLessThanOrEqual(5);
+        // A non-final page is never empty: scatter-gather consumers read [] as the end.
+        if (page.nextCursor !== undefined) expect(page.executionIds.length).toBeGreaterThan(0);
         seen.push(...page.executionIds);
         if (page.nextCursor === undefined) break;
         cursor = page.nextCursor;
