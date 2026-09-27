@@ -176,6 +176,8 @@ interface BootBytesOptions {
   bigBytes?: number;
   /** Oversize the INITIAL user prompt instead of a tool result. */
   bigPrompt?: boolean;
+  /** Every `lookup` call (unless overridden by `bigOnCall`) returns a blob this many bytes long. */
+  everyBytes?: number;
   eventStore?: InMemoryAsyncEventStore;
 }
 
@@ -188,6 +190,7 @@ function bootBytes(opts: BootBytesOptions) {
     bigOnCall,
     bigBytes = 5000,
     bigPrompt = false,
+    everyBytes,
   } = opts;
   const seen: LlmRequest[] = [];
   const summaries: string[] = [];
@@ -198,7 +201,9 @@ function bootBytes(opts: BootBytesOptions) {
     "lookup",
     new ToolEffect(async () => {
       call++;
-      return call === bigOnCall ? { blob: "x".repeat(bigBytes) } : { ok: true };
+      if (call === bigOnCall) return { blob: "x".repeat(bigBytes) };
+      if (everyBytes !== undefined) return { blob: "x".repeat(everyBytes) };
+      return { ok: true };
     })
   );
   effects.register(
@@ -351,6 +356,90 @@ describe("the loop can bound its own transcript on BYTES", () => {
     // Same stepId, same folded `input.messages` — byte-identical, recomputed
     // purely from replayed values rather than served off a prior decision.
     expect(recoveredCompact?.payload).toEqual((compactStarted as EventEnvelope).payload);
+  });
+
+  it("resuming AFTER a first compaction reproduces an identical SECOND compaction, prior summary included", async () => {
+    // Enough turns and a steady per-turn byte cost so the threshold is crossed
+    // TWICE: the second fold must include the first compaction's SUMMARY
+    // message, reconstructed from the log rather than read off in-process
+    // state that a resumed process never had.
+    const opts: BootBytesOptions = {
+      afterBytes: 800,
+      keepRecent: 2,
+      turns: 8,
+      everyBytes: 250,
+    };
+    const first = bootBytes(opts);
+    const handle = await first.runtime.start(first.flowDef, {}, { executionId: "b5" });
+    await handle.waitForCompletion();
+    const full = await first.eventStore.read("b5");
+
+    const stepId = (e: EventEnvelope) => (e.payload as { stepId: string }).stepId;
+    const compactStarts = full.filter(
+      (e) => e.eventType === "STEP_STARTED" && stepId(e).endsWith(":compact")
+    );
+    expect(compactStarts.length).toBeGreaterThanOrEqual(2);
+    const [firstStarted, secondStarted] = compactStarts as [EventEnvelope, EventEnvelope];
+
+    const firstCompleted = full.find(
+      (e) => e.eventType === "STEP_COMPLETED" && stepId(e) === stepId(firstStarted)
+    ) as EventEnvelope;
+    const firstSummary = (firstCompleted.payload as { output: { summary: string } }).output.summary;
+
+    // The fold that produced the SECOND frame must contain the FIRST summary
+    // message — proof the kept suffix survived across compactions.
+    const secondFoldMessages = (
+      secondStarted.payload as { input: { messages: { content: unknown }[] } }
+    ).input.messages;
+    expect(secondFoldMessages[0]?.content).toBe(`Summary of earlier turns: ${firstSummary}`);
+
+    // Cut AFTER the first compaction is durably recorded (its STEP_COMPLETED
+    // included, the second frame excluded), so recovery must reconstruct that
+    // summary from the LOG before it can decide whether — and what — to fold
+    // a second time.
+    const cutoff = full.indexOf(firstCompleted) + 1;
+    const prefix = full.slice(0, cutoff);
+    expect(
+      prefix.some((e) => e.eventType === "STEP_COMPLETED" && stepId(e) === stepId(firstStarted))
+    ).toBe(true);
+    expect(prefix.includes(secondStarted)).toBe(false);
+
+    const crashedStore = new InMemoryAsyncEventStore();
+    for (const e of prefix) await crashedStore.append(e);
+
+    const folded = new ReplayVM(prefix, {
+      executionId: "b5",
+      workflowId: "ask-bytes",
+      workflowVersion: "1.0.0",
+    }).getState();
+    expect(folded.status).toBe("running");
+
+    const second = bootBytes({ ...opts, eventStore: crashedStore });
+    const recovered = await second.runtime.restoreFromState(folded);
+    await recovered.waitForCompletion();
+
+    const recoveredSecondStarted = (await crashedStore.read("b5")).find(
+      (e) => e.eventType === "STEP_STARTED" && stepId(e) === stepId(secondStarted)
+    ) as EventEnvelope;
+    expect(recoveredSecondStarted).toBeDefined();
+    // Same stepId, same folded messages (the reconstructed summary included) —
+    // recomputed live from a replayed prefix, not read off a prior decision.
+    expect(recoveredSecondStarted.payload).toEqual(secondStarted.payload);
+
+    // Byte counts line up too: not merely deep-equal objects, but the same
+    // total UTF-8 bytes the trigger itself measures.
+    const totalBytes = (msgs: readonly { content: unknown }[]): number => {
+      const enc = new TextEncoder();
+      return msgs.reduce((sum, m) => {
+        const raw =
+          typeof m.content === "string" ? m.content : (m.content as { value: string }).value;
+        return sum + enc.encode(raw).length;
+      }, 0);
+    };
+    const recoveredFoldMessages = (
+      recoveredSecondStarted.payload as { input: { messages: { content: unknown }[] } }
+    ).input.messages;
+    expect(totalBytes(recoveredFoldMessages)).toBe(totalBytes(secondFoldMessages));
   });
 });
 
