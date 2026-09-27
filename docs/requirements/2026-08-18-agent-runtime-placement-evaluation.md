@@ -585,6 +585,16 @@ usage mid-stream would feed it through the same accumulation loop, and until one
 application that wants mid-flight severance has a better lever anyway — `onDelta` plus its own
 `AbortSignal`, which needs no new seam and lets the app decide what "too much" means.
 
+**Status note (2026-09-27): the paragraph above is stale.** K8.4 shipped the same day as this
+document, not via the dropped `EffectContext.reportUsage` hook but via ADR 0020's **A8** —
+`streamTokenBudget` (`packages/middleware/src/streamTokenBudget.ts`), which estimates output
+tokens from the deltas `collectStream` already sees, adds what `ctx.resources` says the execution
+has spent, and severs through the same K8.1 abort path on breach. That observes what a stream
+*does* report continuously (its own output) rather than waiting on usage accounting no provider
+gives incrementally, so it does not need the field this section spent its length arguing against.
+See [ADR 0020](../adr/0020-k8-cancellation-deadlines-bounded-effects.md) A8 and
+[ADR 0087](../adr/0087-durable-agent-loop.md).
+
 **One invariant is covered rather than duplicated.** "Replay does not re-emit" is a property of the
 runtime, not of this effect: `packages/app/src/defineConfig.test.ts` ("middleware is NOT re-invoked
 for replayed/completed steps") already proves a completed step is served from the log, and anything
@@ -595,7 +605,14 @@ tested property. It is documented on `onDelta` instead, because the expectation 
 
 **What this still does not license.** Deltas do not enter the log by default. An author who routes
 them through `ctx.stream` opts into per-delta durability and owes the granularity choice R7 names;
-the effect's own sink is transient (`@loom/live-query`, `progressHub`). An effect that *returns* a
+the effect's own sink is transient — `progressHub`, or the app's own `onDelta` handler.
+
+**Correction (2026-09-27): `@loom/live-query` is not that sink.** An earlier draft of this
+paragraph named it alongside `progressHub` as a transient delta destination. `LiveQuery` is
+`snapshot` + `subscribe` over DURABLE events — it has no delta-push API — so a reader following
+that advice found nothing to call, and a delta actually routed through it would be exactly the
+quadratic re-fold case the 2026-09-27 audit measured (`packages/live-query/src/liveQuery.ts`; see
+[ADR 0040](../adr/0040-live-query-and-orchestration.md)'s amendment). An effect that *returns* a
 stream to the flow remains ST-R and rejected (§3.5).
 
 **Does not require R1.** The transient sink needs no syscall, so a streaming effect works from
@@ -737,6 +754,11 @@ trigger, so whoever lands R9 should record that ADR 0020's condition has been me
 implement the usage-reporter hook or say explicitly that it is still outstanding. A reserved item
 whose precondition quietly arrives is how "conditional on X" turns into a sentence nobody rechecks.
 
+**Status note (2026-09-27):** this did not go quiet. ADR 0020 A8 records the arrival explicitly —
+the usage-reporter hook was designed, then dropped for the reason at §2.9 above, and
+`streamTokenBudget` shipped as the mechanism instead, the same day as R9. See ADR 0020 A8 and
+ADR 0087.
+
 ADRs the accepted work would need: one for R1 (the durable agent loop, its log-growth trade-off, and
 the per-turn summarize pass), one covering R2+R3 (the agent as a first-class effect and reach
 source), and **one covering R8+R9** — the streamed model call: SPI parity, the transient-sink rule,
@@ -744,6 +766,14 @@ the five invariants, and the `EffectContext` usage-reporter field. R8+R9 earn an
 not, because they add surface (an SPI field, an effect-seam field) rather than fixing a defect, and
 because the transient-sink rule is a decision a future reader will otherwise re-litigate as ST-R for
 the fourth time.
+
+**Status note (2026-09-27): the `EffectContext` usage-reporter field named above was never
+built.** §2.9 records why (it was designed, then dropped when both wired providers turned out to
+report usage once, at the end, rather than incrementally) — a future reader should not go looking
+for it. R8+R9 also shipped without a dedicated ADR of their own; ADR 0087 (R1) is the nearest
+record, and the SPI parity rule and its 2026-09-27 tightening (a `toolRequest` fixture the kit can
+check tool calls against) are recorded in `CHANGELOG.md` and on `LlmStreamChunk`
+(`packages/llm/src/types.ts`) instead.
 
 R4, R5, R6 and R7 need none — R6 rides [ADR 0060](../adr/0060-typed-failure-channels.md)'s existing
 channel, and R7 restates [ADR 0059](../adr/0059-content-put-stream.md)/ST-R economics for a shipped

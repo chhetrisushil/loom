@@ -59,6 +59,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a typed catalogue, likely loom-ui, is the trigger). No kernel change; EVENT_SCHEMA and
   KERNEL_ABI unchanged.
 
+- **`@loom/conformance`: `runLlmProviderConformance` no longer passes a stream that
+  silently drops a tool call.** The kit's own request carries no `tools`, so the general
+  parity test could never observe a dropped `toolCalls` — a vacuous input twice over
+  (the 2026-09-27 backlog audit, item 4). `runLlmProviderConformance` gains a third,
+  optional argument, `opts?: { toolRequest?: LlmRequest | null }`:
+  - given a `toolRequest` (a request the provider is known to answer WITH a tool call),
+    and when the provider has `stream`, `complete(toolRequest)` MUST itself return ≥1
+    tool call (a fixture that makes none is a refusal, not a pass), the stream's
+    assembled `toolCalls` MUST `toEqual` it, and when `completed.stopReason` is
+    `"tool_use"` the streamed `stopReason` MUST equal it;
+  - omitting `toolRequest` on a provider that has `stream` is now a FAILING case —
+    "stream parity for tool calls is unproven — pass `toolRequest`" — an absent input is
+    a refusal, per the vacuous-check pattern;
+  - a text-only provider that genuinely cannot call tools opts out explicitly with
+    `{ toolRequest: null }`, visible in its own test file rather than inherited from an
+    unset default.
+
+  This is a behavioural tightening of the conformance contract, not an SPI shape change:
+  there is no `LLM_SPI_VERSION` constant to bump (`@loom/llm` has none, and the LLM SPI
+  is absent from `docs/spec/compatibility-matrix.md`), so the tightening is recorded here
+  and on `LlmStreamChunk`'s docstring (`packages/llm/src/types.ts`) instead. The rule
+  itself is extracted to an exported `checkToolCallStreamParity` so its negative cases
+  (a stream that drops a tool call, a vacuous fixture, a missing `toolRequest`) are
+  unit-tested directly — vitest has no supported way to prove a nested `describe`/`it`
+  fails from inside a running test. `loom-plugins` and `loom-examples` call the kit zero
+  times today (re-grepped at execution time), so the blast radius is the scaffold
+  template only (`tools/scaffold/src/plugin.ts`), which now shows `toolRequest` in its
+  generated example call. `docs/requirements/2026-08-18-agent-runtime-placement-evaluation.md`
+  gets three status notes: K8.4 shipped via ADR 0020 A8's `streamTokenBudget`, not the
+  dropped `EffectContext` usage-reporter field the doc still described as pending; and
+  `@loom/live-query` is not the "transient delta sink" a since-corrected paragraph named
+  it as (it has no delta-push API — see ADR 0040's amendment).
+
 - **`@loom/plugin-sandbox`: a script's own exception is a typed `scriptError` channel**
   ([ADR 0064](docs/adr/0064-sandbox-eval-plugin.md) D3, amended). `SANDBOX_ERRORS` gains
   `scriptError { name?: string; message: string }` — whatever the script threw on this input,
