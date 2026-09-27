@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`@loom/agent`: `agentLoop$` compaction also triggers on bytes** ([ADR 0087](docs/adr/0087-durable-agent-loop.md)
+  D5, amended). D5 named claim-check as the "bytes per turn" answer to the log-growth trade-off;
+  it isn't — claim-check offloads a tool RESULT's bytes, not the transcript an agent journals as
+  every turn's `STEP_STARTED` input, so one oversized tool result rode along uncompacted until it
+  aged past `keepRecent` on message count alone. `compaction` gains `afterBytes` (a running UTF-8
+  byte count maintained per message push, O(1) amortized, never a re-serialization — so it stays
+  replay-deterministic) alongside the original `afterMessages`; at least one is now required,
+  enforced by a constructor guard. The byte trigger keeps the longest run of the newest messages
+  whose bytes total at most `afterBytes / 2` (floored at 1, capped at `keepRecent`), and skips
+  compacting a turn where the newest message alone is already over budget rather than paying a
+  summary call that folds nothing. Also documents, rather than adds a hook for, the claim-check
+  contract toward the model: a claim-checked tool's result reaches the model as the recorded
+  envelope (ref + digest), never resolved back to its bytes — resolving it would put those bytes
+  into the NEXT turn's journaled input, undoing the offload — so declare a `digests[toolId]`
+  projection for model-facing claim-checked tools. A `resolveToolResult` hook was considered and
+  rejected for the same reason. No kernel change; EVENT_SCHEMA and KERNEL_ABI unchanged; existing
+  `afterMessages`-only configurations are unaffected.
+
 - **`@loom/plugin-sandbox`: a script's own exception is a typed `scriptError` channel**
   ([ADR 0064](docs/adr/0064-sandbox-eval-plugin.md) D3, amended). `SANDBOX_ERRORS` gains
   `scriptError { name?: string; message: string }` — whatever the script threw on this input,
