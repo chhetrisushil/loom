@@ -99,6 +99,11 @@ load-bearing, plus the global guardrails that gate every additive capability:
   `{ id, workflowId, executionId, eventType, sequence, timestamp, payload, metadata? }`.
 - **Fold contract:** an unknown event type is **inert** (ignored); a handler MUST be a pure
   `(state, event) => state`; a `__proto__` container key MUST be rejected (fold hardening).
+  Execution `status` MUST be moved only by execution-level events (`EXECUTION_STARTED`,
+  `_SUSPENDED`, `_RESUMED`, `_COMPLETED`, `_FAILED`, `_CANCELLED`); a `STEP_*` event folds into
+  its frame only. In particular `STEP_FAILED` MUST NOT fail the execution — the flow may catch it
+  — and only `EXECUTION_FAILED` does (ADR 0105; a fold correction with no version bump, since
+  the kernel writes the same events and replay's inputs are unchanged).
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
   the pinned type set MUST change together. The current version is **1.20.0** — after the

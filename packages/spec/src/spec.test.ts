@@ -259,6 +259,10 @@ const NOT_A_CAPABILITY = new Set([
   // EXECUTION_RESUMED unless a parked gate is answered). A kernel fix, like 0057; no new
   // subsystem to grade.
   "0104",
+  // 0105 — a kernel fold BUG FIX: STEP_FAILED no longer moves the execution status (only
+  // EXECUTION_FAILED does), so a caught step failure followed by a crash is recoverable. No new
+  // subsystem (graded under replay-vm/workflow-runtime; no version bumps).
+  "0105",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

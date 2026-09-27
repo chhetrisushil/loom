@@ -100,7 +100,7 @@ export function inspectStrayPassthroughs(
         const stepId = (e.payload as { stepId?: string } | null)?.stepId;
         const h = stepId !== undefined ? humans.get(stepId) : undefined;
         if (h !== undefined) h.open = false;
-        if (e.eventType === "STEP_FAILED") status = "failed";
+        // A step event never moves execution status (ADR 0105): EXECUTION_FAILED does.
         break;
       }
       case "EXECUTION_SUSPENDED": {
