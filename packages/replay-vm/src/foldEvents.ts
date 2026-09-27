@@ -1,5 +1,5 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { getHandler, resetFoldOwnership } from "./eventHandlers";
+import { FLOW_EMIT_DIGEST, countFlowEmit, getHandler, resetFoldOwnership } from "./eventHandlers";
 
 const DEFAULT_STATE: Omit<ExecutionState, "executionId" | "workflowId" | "workflowVersion"> = {
   status: "pending",
@@ -36,18 +36,13 @@ export function foldEvents(
     }
     // 1.19.0 (ADR 0102) — the one fold step keyed on an envelope STAMP rather than an
     // event type: a flow-level emit (`ctx.emit`/`ctx.stream`/`ctx.ui`, usually a domain
-    // event with no handler) carries `metadata.flowEmit = ordinal`, and `_flowEmits` is
-    // the high-water mark `ordinal + 1`, so a re-run from the top can serve the emits
-    // the log already holds instead of appending them again. An unstamped log (legacy,
-    // or kernel facts only) never gains the key and folds byte-identically.
+    // event with no handler) may carry `metadata.flowEmit = <content digest>`, and
+    // `_flowEmits` counts the stamped emits per digest, so a re-run from the top can serve
+    // the emits the log already holds instead of appending them again. An unstamped log
+    // (legacy, or kernel facts only) never gains the key and folds byte-identically.
     const stamp = event.metadata?.flowEmit;
-    if (typeof stamp === "number" && Number.isInteger(stamp) && stamp >= 0) {
-      const prev = (state.variables._flowEmits as number | undefined) ?? 0;
-      if (stamp + 1 > prev) {
-        // Copy-on-write like every `_`-prefixed kernel variable: `state` is always an
-        // object this function created, but `variables` may be the caller's.
-        state.variables = { ...state.variables, _flowEmits: stamp + 1 };
-      }
+    if (typeof stamp === "string" && FLOW_EMIT_DIGEST.test(stamp)) {
+      state.variables = countFlowEmit(state.variables, stamp);
     }
     state.sequence = event.sequence;
   }

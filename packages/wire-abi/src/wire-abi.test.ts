@@ -46,7 +46,7 @@ describe("T2.3 — language-agnostic fold conformance vectors", () => {
 
   it("covers the 1.19.0 `_flowEmits` stamp (ADR 0102) — a foreign fold that ignores metadata fails", () => {
     const stamped = FOLD_VECTORS.filter((v) =>
-      v.events.some((e) => typeof e.metadata?.flowEmit === "number")
+      v.events.some((e) => typeof e.metadata?.flowEmit === "string")
     );
     expect(stamped.length).toBeGreaterThan(0);
     // A fold that drops envelope metadata (reads type + payload only) must NOT pass it.

@@ -69,6 +69,75 @@ function appendAudit<T>(existing: T[] | undefined, item: T): T[] {
   return next;
 }
 
+// ── 1.19.0 (ADR 0102) — `_flowEmits`: stamped flow-level emits counted per digest ──
+//
+// Shape: a fixed-depth, 16-way trie over the digest's LAST three hex digits (FNV-1a's
+// best-mixed bits). Inner nodes are 16-slot arrays (`null` = empty), leaves are
+// `{ [digest]: count }`:
+//
+//   _flowEmits[hex(d[15])][hex(d[14])][hex(d[13])][d] = count
+//
+// Why a trie and not a flat `{ [digest]: count }`: a live commit is its own fold pass, so
+// copy-on-write must copy what it touches, and a flat map costs O(k) per emit (worse in
+// practice: a many-key object is a dictionary, and its spread is slow). The trie copies
+// the root-to-leaf path — three 16-slot arrays (`slice`, no hidden-class churn) plus one
+// leaf of ~k/4096 entries — O(1) for any realistic k, still plain JSON (it rides snapshots
+// and survives `truncatePrefix` compaction), and O(1) amortized within a multi-event
+// replay pass, where fold-owned nodes are updated in place (`appendAudit`'s ownership
+// rule). Size is one leaf entry per DISTINCT stamped emit plus the touched inner arrays.
+export const FLOW_EMIT_DIGEST = /^[0-9a-f]{16}$/;
+export type FlowEmitLeaf = Record<string, number>;
+/** A 16-slot inner node of the `_flowEmits` trie; the third level holds leaves. */
+export type FlowEmitCounts = Array<FlowEmitCounts | FlowEmitLeaf | null>;
+const TRIE_PATH = [15, 14, 13] as const;
+
+function ownedNode(existing: FlowEmitCounts | null | undefined): FlowEmitCounts {
+  if (existing != null && foldOwned.has(existing)) return existing;
+  const next: FlowEmitCounts = existing == null ? new Array(16).fill(null) : existing.slice();
+  foldOwned.add(next);
+  return next;
+}
+
+function ownedLeaf(existing: FlowEmitLeaf | null | undefined): FlowEmitLeaf {
+  if (existing != null && foldOwned.has(existing)) return existing;
+  const next: FlowEmitLeaf = existing == null ? {} : { ...existing };
+  foldOwned.add(next);
+  return next;
+}
+
+export function countFlowEmit(
+  variables: Record<string, unknown>,
+  digest: string
+): Record<string, unknown> {
+  const root = variables._flowEmits as FlowEmitCounts | undefined;
+  const nextRoot = ownedNode(root);
+  const a = Number.parseInt(digest[15] as string, 16);
+  const b = Number.parseInt(digest[14] as string, 16);
+  const c = Number.parseInt(digest[13] as string, 16);
+  const mid = ownedNode(nextRoot[a] as FlowEmitCounts | null);
+  nextRoot[a] = mid;
+  const low = ownedNode(mid[b] as FlowEmitCounts | null);
+  mid[b] = low;
+  const leaf = ownedLeaf(low[c] as FlowEmitLeaf | null);
+  low[c] = leaf;
+  leaf[digest] = (leaf[digest] ?? 0) + 1;
+  // A fold-owned root is already inside a fold-created `variables`; only a fresh root
+  // needs a new `variables` object (never mutate the caller's).
+  return nextRoot === root ? variables : { ...variables, _flowEmits: nextRoot };
+}
+
+/** How many stamped flow-level emits with this digest the folded log holds. */
+export function flowEmitCount(variables: Record<string, unknown>, digest: string): number {
+  let node: unknown = variables._flowEmits;
+  for (const i of TRIE_PATH) {
+    if (!Array.isArray(node)) return 0;
+    node = node[Number.parseInt(digest[i] as string, 16)];
+  }
+  if (node == null || typeof node !== "object" || !Object.hasOwn(node, digest)) return 0;
+  const count = (node as FlowEmitLeaf)[digest];
+  return typeof count === "number" ? count : 0;
+}
+
 const handlers: Record<string, Handler> = {
   EXECUTION_STARTED: (state, event) => {
     // `flowHash` (K11.1, additive — absent on legacy logs) is the content hash
@@ -784,9 +853,9 @@ export function getHandler(eventType: string): Handler | undefined {
 //   neither field replays byte-identically.
 // 1.19.0: additive fold key `_flowEmits` from an additive envelope stamp (ADR 0102 —
 //   flow-level emits append once per execution). A flow-level `ctx.emit` / `ctx.stream` /
-//   `ctx.ui` envelope carries `metadata.flowEmit = ordinal`; the fold keeps the
-//   high-water mark `ordinal + 1` for ANY event type (a generic step in `foldEvents`,
-//   not a handler), so a re-run skips the emits the log already holds. No new kind, no
+//   `ctx.ui` envelope may carry `metadata.flowEmit = <16-hex content digest>`; the fold
+//   counts stamped emits per digest for ANY event type (a generic step in `foldEvents`,
+//   not a handler), so a re-run serves the emits the log already holds. No new kind, no
 //   payload change; a log that never stamps replays byte-identically.
 export const EVENT_SCHEMA_VERSION = "1.19.0";
 
