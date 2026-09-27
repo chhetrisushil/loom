@@ -698,7 +698,7 @@ interface ContentPageEntry { address: string; touchedAt: number }
 function contentListPageLimit(limit: number | undefined): number   // RangeError unless a positive integer
 function encodeValue(value: unknown): Uint8Array; function decodeValue(bytes: Uint8Array): unknown
 function isContentRef(value: unknown): value is ContentRef
-// adds every ref in `value` to `into` (first occurrence per address wins); true iff it found one
+// adds every ref in `value` to `into` (first per address wins; a claim-check envelope is a leaf); true iff it found one
 function collectContentRefs(value: unknown, into: Map<string, ContentRef>): boolean
 class ContentResolvingEventStore implements EventStore {}   // externalize on write, resolve on read
 class CachingContentStore implements ContentStore {}        // forwards every optional the inner store has
