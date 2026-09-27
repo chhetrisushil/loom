@@ -302,28 +302,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **D5, the re-cite race.** A `put` of bytes the store already held was a no-op (`INSERT OR
     IGNORE`). A sweep that ran between a re-citing `put` and that execution's event append
     therefore erased the blob by its *old* citation time, and the new event cited a blob that
-    was gone. SPI 1.3.0 adds an optional atomic `deleteIfUntouchedSince(ref, cutoffMs)`. A store
-    that implements it MUST bump a blob's touch time on every `put`/`putStream`. The sweep now
-    fixes one cutoff at its start (`now − olderThanMs`) and erases only through the conditional
-    delete when the store has it. Otherwise it falls back to `delete` and reports
-    `raceSafe: false`; `loom sweep content` prints `race-safe:`.
+    was gone. SPI 1.3.0 adds an optional atomic `deleteIfUntouchedSince(ref, cutoffMs)` and
+    `touchClock()`. A store implementing them MUST bump a blob's touch time, monotonically, on
+    every `put`/`putStream`. The guard cutoff is on the STORE's clock: `touchedBefore`, which
+    defaults to `touchClock() − olderThanMs` read at the sweep's start. The caller's `now` is
+    log time and only measures the TTL, so a simulated or skewed log clock cannot disarm the
+    guard. The sweep erases only through the conditional delete when the store has one.
+    Otherwise it falls back to `delete` and reports `raceSafe: false`; `loom sweep content`
+    prints `race-safe:`.
   - **D6, orphans.** Blobs nothing cited any more were never reclaimed: a run deleted with no
     archive, a crash between `put` and the append, a truncated prefix. SPI 1.3.0 adds an
     optional `listPage({ cursor, limit, touchedBefore })`, keyset on address, and a bad `limit`
     is a `RangeError`. With `reclaimOrphans: true` (CLI `--orphans`), the sweep erases
-    conditionally every stored address untouched for the TTL that no scanned event and no root
-    cites. It refuses a store without both optionals. The report gains `orphansReclaimed`. **The
-    sweep cannot see a citing store you did not pass it**, so pass every retention archive:
-    `--orphans` without `--archive-db` warns.
+    conditionally every stored address untouched since the cutoff that no scanned event, no
+    compaction snapshot and no root cites. A touch time of 0 (a pre-1.3.0 writer) is unknown
+    and never erased. It refuses a store without the optionals. The report gains
+    `orphansReclaimed`. `snapshotStores` lets the sweep read compaction checkpoints: refs in a
+    compacted execution's latest snapshot are pinned. The orphan pass refuses to run without
+    them over a store that can `truncatePrefix`, and whenever a log's compaction gap has no
+    snapshot. **The sweep cannot see a citing store you did not pass it**, so scan live first,
+    then every archive. The CLI scans the config's `durability.retention.archive`, and refuses
+    `--orphans --apply` with no archive unless `--no-archive` (warning before it erases).
+    `--orphans` needs `--snap`/`--archive-snap` on the `--db` path.
   - **D7, roots.** `sweepUnpinnedContent({ roots: () => AsyncIterable<string> })` pins
     addresses held in an app's own tables through both passes.
-  - `SqliteContentStore` implements both optionals. On open it migrates an older file: it adds
+  - `SqliteContentStore` implements all three optionals. On open it migrates an older file: it adds
     `touched_at` and backfills existing blobs to the migration time once, so nothing ages out
     until a full TTL after the upgrade. The re-put bump is monotonic
-    (`max(touched_at, excluded.touched_at)`). `InMemoryContentStore` implements both with an
+    (`max(touched_at, excluded.touched_at)`). `InMemoryContentStore` implements all three with an
     injectable clock (`new InMemoryContentStore({ now })`), and so does `SqliteContentStore`
-    (`new SqliteContentStore(path, { now })`). `CachingContentStore` forwards both. The
-    conformance kit checks the optionals when present. The kernel manifest and the
+    (`new SqliteContentStore(path, { now })`). `CachingContentStore` forwards all three. The
+    conformance kit checks the optionals when present. The three must come as a set, and the
+    re-put bump is checked through the conditional delete alone (`checkContentStoreTouchContract`,
+    which fails an `INSERT OR IGNORE` store). Monotonicity is checked with a clocked factory.
+    `LogLifecycle` exposes its configured `archive` (read-only). The kernel manifest and the
     compatibility matrix now list ContentStore SPI 1.3.0, and `checkCompatibility` accepts
     `contentStoreSpi`. The `loom plugin new content` template names the new methods.
   - `docs/data-protection-patterns.md` says the archive is REQUIRED once retention archives,
@@ -334,7 +346,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   **Behaviour change:** a test fixture that puts a blob at today's wall clock and then cites it
   at a fabricated past time now sees the blob kept, because it was touched after the cutoff.
-  Give such a store a clock that matches the fabricated history.
+  Give such a store a clock that matches the fabricated history. Likewise, a harness that runs
+  the log on a simulated clock must give the content store that clock or pass `touchedBefore`.
+  Otherwise nothing it "aged" is erased, because the guard is on the store's clock.
 
 - **The content sweep no longer erases a load-bearing externalized ref**
   ([ADR 0055](docs/adr/0055-k10-6-pin-seam-content-gc.md) D4, amended). `sweepUnpinnedContent`

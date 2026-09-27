@@ -686,9 +686,11 @@ interface ContentStore {
   getMany?(refs: readonly ContentRef[]): Promise<(Uint8Array | null)[]>   // OPTIONAL, coalesced
   putStream?(stream: AsyncIterable<Uint8Array>): Promise<ContentRef>      // OPTIONAL
   delete(ref: ContentRef): Promise<void>
-  // SPI 1.3.0 (ADR 0055 D5/D6), OPTIONAL, implement both — then EVERY put bumps the touch time
+  // SPI 1.3.0 (ADR 0055 D5/D6), OPTIONAL, all three or none — then EVERY put bumps the touch
+  // time, monotonically; a touch time of 0 is UNKNOWN (never orphan-eligible)
   deleteIfUntouchedSince?(ref: ContentRef, cutoffMs: number): Promise<boolean>   // one atomic statement
   listPage?(opts: ContentListPageOptions): Promise<ContentListPage>              // keyset on address
+  touchClock?(): Promise<number>          // now, on the clock touch times are stamped with
 }
 interface ContentListPageOptions { cursor?: string; limit?: number; touchedBefore?: number }
 interface ContentListPage { entries: ContentPageEntry[]; nextCursor?: string }   // no cursor = done
@@ -705,10 +707,15 @@ function sweepUnpinnedContent(options: ContentSweepOptions): Promise<ContentSwee
 interface ContentSweepOptions {
   eventStores: readonly (Pick<EventStore, "read"> & ExecutionEnumerable)[]   // live AND every archive
   contentStore: Pick<ContentStore, "delete" | "deleteIfUntouchedSince" | "listPage">
-  pinnedEventTypes: Iterable<string>; olderThanMs: number; now: number; dryRun?: boolean
+  pinnedEventTypes: Iterable<string>; olderThanMs: number; dryRun?: boolean
+  now: number                           // LOG time: the TTL is measured back from it
+  touchedBefore?: number                // STORE time: guard cutoff (default touchClock() − olderThanMs)
+  snapshotStores?: readonly SnapshotLookup[]   // compaction checkpoints; refs in them are pinned
   roots?: () => AsyncIterable<string>   // D7: addresses held in your own tables, pinned
-  reclaimOrphans?: boolean              // D6: needs listPage + deleteIfUntouchedSince, else throws
+  reclaimOrphans?: boolean              // D6: needs listPage + deleteIfUntouchedSince, and
+                                        // snapshotStores when a scanned store can truncatePrefix
 }
+interface SnapshotLookup { loadLatest(executionId: string): Promise<{ sequence: number; state: unknown } | null> }
 interface ContentSweepReport {
   executionsScanned: number; refsSeen: number; refsPinned: number; refsLoadBearing: number
   reclaimed: string[]; orphansReclaimed: string[]

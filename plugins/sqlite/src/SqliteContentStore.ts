@@ -111,6 +111,10 @@ export class SqliteContentStore implements ContentStore {
     return this.deleteIfUntouchedStmt.run(ref.__loomContent, cutoffMs).changes > 0;
   }
 
+  async touchClock(): Promise<number> {
+    return this.now();
+  }
+
   async listPage(opts: ContentListPageOptions = {}): Promise<ContentListPage> {
     const limit = contentListPageLimit(opts.limit);
     const after = opts.cursor ?? "";

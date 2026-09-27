@@ -13,8 +13,9 @@ import { type ContentRef, contentAddress } from "./content";
  *  - 1.0.0: `put`/`get`/`delete` (ADR 0046).
  *  - 1.1.0: optional `putStream` (ST-1, ADR 0059).
  *  - 1.2.0: optional `getMany` (TS-10, ADR 0062 — batched interactive reads).
- *  - 1.3.0: optional `deleteIfUntouchedSince` + `listPage`, and a per-blob touch time that
- *    every `put`/`putStream` bumps (ADR 0055 D5/D6 — the race-safe, orphan-reclaiming sweep).
+ *  - 1.3.0: optional `deleteIfUntouchedSince` + `listPage` + `touchClock`, implemented all
+ *    three or none, and a per-blob touch time that every `put`/`putStream` bumps,
+ *    monotonically (ADR 0055 D5/D6 — the race-safe, orphan-reclaiming sweep).
  */
 export const CONTENT_STORE_SPI_VERSION = "1.3.0";
 
@@ -105,6 +106,19 @@ export interface ContentStore {
    * with {@link deleteIfUntouchedSince}: the orphan pass requires both.
    */
   listPage?(opts: ContentListPageOptions): Promise<ContentListPage>;
+  /**
+   * OPTIONAL (SPI 1.3.0, ADR 0055 D5) — the current time on the clock this store stamps touch
+   * times with (a database server's `now()`, the process clock of an embedded store). The
+   * sweep derives its guard cutoff from it, so the guard never compares a log-time instant
+   * with a store-time touch.
+   *
+   * The three 1.3.0 methods come as a set: a store implements all of `deleteIfUntouchedSince`,
+   * `listPage` and `touchClock`, or none of them (the conformance kit fails a partial set).
+   * The touch time never moves backwards: a put under a clock that stepped back keeps the
+   * later time. `0` means UNKNOWN (a pre-1.3.0 writer's column default) and is never
+   * orphan-eligible.
+   */
+  touchClock?(): Promise<number>;
 }
 
 /** Options for {@link InMemoryContentStore}. */
@@ -153,7 +167,7 @@ export class InMemoryContentStore implements ContentStore {
     const address = `sha256:${hash.digest("hex")}`;
     const existing = this.blobs.get(address);
     if (existing !== undefined) {
-      existing.touchedAt = this.now();
+      existing.touchedAt = Math.max(existing.touchedAt, this.now()); // monotonic
     } else {
       const bytes = new Uint8Array(size);
       let offset = 0;
@@ -183,6 +197,10 @@ export class InMemoryContentStore implements ContentStore {
     const blob = this.blobs.get(ref.__loomContent);
     if (blob === undefined || !(blob.touchedAt < cutoffMs)) return false;
     return this.blobs.delete(ref.__loomContent);
+  }
+
+  async touchClock(): Promise<number> {
+    return this.now();
   }
 
   async listPage(opts: ContentListPageOptions = {}): Promise<ContentListPage> {
@@ -216,7 +234,8 @@ export class InMemoryContentStore implements ContentStore {
     const touchedAt = this.now();
     const existing = this.blobs.get(address);
     if (existing !== undefined) {
-      existing.touchedAt = touchedAt; // a re-citation: bump, keep the stored bytes
+      // A re-citation: bump (never backwards), keep the stored bytes.
+      existing.touchedAt = Math.max(existing.touchedAt, touchedAt);
       return;
     }
     this.blobs.set(address, { bytes, touchedAt });

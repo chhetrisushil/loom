@@ -32,4 +32,5 @@ export {
   sweepUnpinnedContent,
   type ContentSweepOptions,
   type ContentSweepReport,
+  type SnapshotLookup,
 } from "./gc";

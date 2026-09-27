@@ -32,5 +32,7 @@ runDurableStateStoreConformance(
 );
 
 runReadModelStoreConformance(() => new SqliteReadModelStore(":memory:"), "SqliteReadModelStore");
-runContentStoreConformance(() => new SqliteContentStore(":memory:"), "SqliteContentStore");
+runContentStoreConformance(() => new SqliteContentStore(":memory:"), "SqliteContentStore", {
+  clocked: (now) => new SqliteContentStore(":memory:", { now }),
+});
 runMemoryStoreConformance(() => new SqliteMemoryStore(":memory:"), "SqliteMemoryStore");

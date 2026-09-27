@@ -4,12 +4,18 @@ import { CachingContentStore } from "./CachingContentStore";
 import { InMemoryContentStore } from "./ContentStore";
 
 // The reference ContentStore must uphold the ADR-0046 contract every backing (S3/FS/KMS) owes.
-runContentStoreConformance(() => new InMemoryContentStore(), "InMemoryContentStore");
+runContentStoreConformance(() => new InMemoryContentStore(), "InMemoryContentStore", {
+  clocked: (now) => new InMemoryContentStore({ now }),
+});
 
 // ADR 0062 — a caching decorator is still a conformant store (incl. delete-evicts-first).
 runContentStoreConformance(
   () => new CachingContentStore(new InMemoryContentStore(), { maxBytes: 1024 * 1024 }),
-  "CachingContentStore(InMemory)"
+  "CachingContentStore(InMemory)",
+  {
+    clocked: (now) =>
+      new CachingContentStore(new InMemoryContentStore({ now }), { maxBytes: 1024 * 1024 }),
+  }
 );
 
 // SPI 1.3.0 (ADR 0055 D5/D6): a decorator that drops an optional method silently turns a
@@ -21,6 +27,7 @@ describe("CachingContentStore forwards the SPI 1.3.0 optionals", () => {
     const full = new CachingContentStore(new InMemoryContentStore(), { maxBytes: 1024 });
     expect(typeof full.deleteIfUntouchedSince).toBe("function");
     expect(typeof full.listPage).toBe("function");
+    expect(typeof full.touchClock).toBe("function");
 
     const bare = {
       put: async () => ({ __loomContent: "sha256:x", size: 0 }),
@@ -30,6 +37,7 @@ describe("CachingContentStore forwards the SPI 1.3.0 optionals", () => {
     const minimal = new CachingContentStore(bare, { maxBytes: 1024 });
     expect(minimal.deleteIfUntouchedSince).toBeUndefined();
     expect(minimal.listPage).toBeUndefined();
+    expect(minimal.touchClock).toBeUndefined();
   });
 
   it("a conditional delete that erases also evicts — erasure is never served from cache", async () => {

@@ -148,15 +148,27 @@ citation time. The new event then cited a blob that was gone. For a claim-check 
 D4. The window is any effect whose result dedups against an old blob: a retried tool with
 identical output, a re-fetched unchanged document, a repeated `EXPLAIN`.
 
-Decided: ContentStore SPI **1.3.0** adds an optional
+Decided: ContentStore SPI **1.3.0** adds three optional methods that come as a set: a store
+implements all three or none, and the conformance kit fails a partial set. The first is
 `deleteIfUntouchedSince(ref, cutoffMs): Promise<boolean>`. It is ONE atomic statement (SQLite:
 `DELETE … WHERE address = ? AND touched_at < ?`), never a read followed by a delete. A store
 that implements it MUST bump the blob's touch time on **every** `put`/`putStream`, including a
 put of bytes it already holds (SQLite: `INSERT … ON CONFLICT(address) DO UPDATE SET touched_at =
 max(touched_at, excluded.touched_at)`). The `max` means a clock that steps backwards cannot make
-a re-cited blob look older. The sweep fixes one cutoff at its **start**, `now − olderThanMs`,
-and erases only through the conditional delete when the store has it. A put during the mark
-window therefore makes the delete refuse. Without the method, the sweep falls back to `delete`
+a re-cited blob look older: touch times are monotonic, and the kit checks it with a clocked
+factory.
+
+**Two clocks, kept apart.** The TTL is measured on the LOG: `now` is a log-time instant,
+compared with event `timestamp`s. The guard compares against touch times, which are on the
+STORE's clock. A simulated year, a replayed archive, or a database server whose clock is not
+the caller's all make the two differ. A cutoff derived from the caller's `now` could then
+disarm the guard: with `now` ahead of the store, every re-cited blob already looks untouched.
+So the third method is `touchClock(): Promise<number>`, the store's own current time. The
+guard cutoff is `touchedBefore`, which defaults to `touchClock() − olderThanMs` read once at
+the sweep's **start**. A caller may pass `touchedBefore` explicitly. A store with the
+conditional delete but no `touchClock` requires it explicitly, and the sweep refuses otherwise.
+The sweep erases only through the conditional delete when the store has one, so a put during
+the mark window makes the delete refuse. Without the method, the sweep falls back to `delete`
 and reports `raceSafe: false`; `loom sweep content` prints `race-safe: NO`.
 
 The guarantee holds while a flow's put→append window is shorter than the TTL. A put more than a
@@ -176,7 +188,14 @@ So a blob was never reclaimed once nothing in the scanned logs cited it:
 - its execution was deleted by retention with no archive configured,
 - the process crashed between `put` and the event append (the claim-check middleware puts
   inside the effect, before `STEP_COMPLETED`), or
-- `deleteExecution`, `truncatePrefix` or a branch prune removed the only citing events.
+- `deleteExecution` or a branch prune removed the only citing events.
+
+`truncatePrefix` does NOT orphan.
+`LogLifecycle.compact` folds the prefix into a snapshot before truncating. A ref the prefix
+cited in step state (a claim-checked output in `frames`) lives on in that snapshot, and the
+fold still carries it. Only a ref cited solely by an event the fold ignores (an app's
+`FINDING_RECORDED`) loses its last loom-held citation on compaction. An app that projected
+such an event elsewhere contributes that projection as `roots` (D7).
 
 D4 made this larger, since a bare ref is only released when its execution goes.
 
@@ -184,7 +203,7 @@ Decided: SPI 1.3.0 adds an optional `listPage({ cursor?, limit?, touchedBefore? 
 **keyset on address**. Memory is bounded per page, and deleting entries mid-scan never skips a
 survivor. The page limit must be a positive integer; anything else is a `RangeError`, never "no
 limit" (SQLite reads `LIMIT -1` as unbounded). With `reclaimOrphans: true` (CLI `--orphans`),
-after the TTL pass the sweep streams `listPage({ touchedBefore: start − TTL })`. It erases,
+after the TTL pass the sweep streams `listPage({ touchedBefore })`, using D5's store-clock cutoff. It erases,
 conditionally, every address NOT in `lastCited ∪ pinned ∪ loadBearing ∪ roots`. `pinned` and
 `loadBearing` are subsets of `lastCited`, so each decision is two `Set` lookups and the whole
 sweep is O(events + blobs). A blob younger than the TTL is never an orphan, so an in-flight
@@ -192,11 +211,38 @@ sweep is O(events + blobs). A blob younger than the TTL is never an orphan, so a
 `listPage` or `deleteIfUntouchedSince`: without the conditional delete, erasing a listed orphan
 reintroduces D5's race. The report gains `orphansReclaimed`.
 
+**Compaction snapshots are scanned (`snapshotStores`).** For every execution whose log has no
+sequence-1 event (compacted, or bootstrap-only), the sweep loads the latest snapshot from each
+given snapshot store: the live one and each archive's. A checkpoint past sequence 0 means the
+prefix was folded into it, so every ref in its state is **pinned**. Compaction folded away the
+event kinds, so the sweep cannot tell telemetry from evidence, and a pinned FINDING's evidence
+must not age out because it was compacted (D1). Such refs are released when retention deletes
+the execution, which deletes its snapshots too; the next orphan pass then reclaims them. Only
+executions that lack a sequence-1 event cost a snapshot read, so an uncompacted log pays
+nothing. The pass **fails closed** in two cases, both before anything is erased:
+`reclaimOrphans` refuses when any scanned event store can `truncatePrefix` and no
+`snapshotStores` were given, and when a log shows a compaction gap that no snapshot covers.
+
+**Unknown touch times.** A touch time of `0` is the column default a pre-1.3.0 writer leaves
+during a mixed-version rollout. It means UNKNOWN, and the orphan pass never erases such a
+blob. Such a writer also does not bump on a re-put, so the D5 race stays open for blobs it
+writes until every writer runs 1.3.0.
+
+**Scan order and memory.** List the live store BEFORE its archive. Retention copies an
+execution to the archive and then deletes it from the live store, so scanned live-first, an
+execution that moves mid-sweep is seen in one of them. Scanned archive-first, it can be missed
+by both and its blobs then look like orphans. The CLI scans live then archive. Mark memory
+grows with the number of DISTINCT cited addresses (one map entry each, plus the pinned,
+load-bearing and root sets). Content is never held; pages bound the store scan, not the mark.
+
 **The hazard the sweep cannot detect.** To this pass, a blob cited only from a store that was
 not passed in `eventStores` is an orphan, and it is erased. The usual case is the retention
-archive. The sweep cannot tell "no archive" from "an archive you forgot". So `--orphans`
-without `--archive-db` prints a WARNING, the CLI help says the same, and so does the
-`reclaimOrphans` docstring. `docs/data-protection-patterns.md` now says the archive is REQUIRED
+archive. The sweep cannot tell "no archive" from "an archive you forgot". The CLI therefore
+scans the app's `durability.retention.archive` automatically under `--config`, and refuses
+`--orphans --apply` with no archive unless `--no-archive` asserts there is none. In that case
+it warns on stderr BEFORE erasing anything, and the dry-run report carries the same WARNING.
+`--orphans` also needs the snapshot store (`--snap`/`--archive-snap`; a config always has one).
+The CLI help and the `reclaimOrphans` docstring say the same. `docs/data-protection-patterns.md` now says the archive is REQUIRED
 whenever retention archives.
 
 ### D7 — External root sets
@@ -216,11 +262,18 @@ an app's tables, so roots are API-only.
 - `CONTENT_STORE_SPI_VERSION` 1.2.0 → **1.3.0** (additive MINOR). The kernel manifest now
   carries it, so the compatibility matrix lists it and `checkCompatibility({ contentStoreSpi })`
   checks it.
-- The conformance kit checks the optionals when present: a put bumps the touch time, the
-  conditional delete refuses a touched blob and erases an untouched one, `listPage` returns
-  every blob exactly once across pages even while deleting, `touchedBefore` is strict, and a
-  bad limit rejects. `CachingContentStore` forwards both, and a conditional delete that erases
+- The conformance kit checks the optionals when present. The three methods must come as a
+  set. A re-put must bump the touch time, checked through the conditional delete alone with a
+  cutoff taken from `touchClock` between the two puts; an `INSERT OR IGNORE` store fails
+  (`checkContentStoreTouchContract`, whose negative tests prove it fires). Touch times must be
+  monotonic (with a clocked factory). The conditional delete refuses a touched blob and erases
+  an untouched one, `listPage` returns
+  every blob exactly once across pages even while deleting, `touchedBefore` is strict across a
+  full paged scan, and a bad limit rejects. `CachingContentStore` forwards both, and a conditional delete that erases
   evicts before and after.
+- A caller running the log on a simulated clock (a DST harness) must give the content store
+  the same clock, or pass `touchedBefore`. Otherwise the guard, which is correctly on the
+  store's clock, keeps every blob the simulation "aged".
 - A test that fabricates history (cites a blob at a synthetic past time after putting it at
   today's wall clock) now sees it kept, because the blob was touched after the cutoff. Such
   fixtures give the store a clock (`new InMemoryContentStore({ now })`,

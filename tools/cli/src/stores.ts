@@ -9,7 +9,7 @@ import {
   SqliteSnapshotStore,
 } from "@loom/plugin-sqlite";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
-import type { WorkflowRuntime } from "@loom/workflow-runtime";
+import type { ArchiveStores, WorkflowRuntime } from "@loom/workflow-runtime";
 
 // ── Where an operator command gets its storage ───────────────────────────────
 //
@@ -43,6 +43,11 @@ export interface ResolvedStores {
    * writes must refuse the `--db` shorthand rather than re-drive into an empty registry.
    */
   runtime?: WorkflowRuntime;
+  /**
+   * The archive retention copies into — `durability.retention.archive`, present only on the
+   * `--config` path (the `--db` shorthand names archives with its own flags).
+   */
+  archive?: ArchiveStores;
   /** How these were resolved — messages about what is MISSING must say which half to fix. */
   origin: "config" | "db";
   close(): Promise<void>;
@@ -142,6 +147,7 @@ async function fromConfig(modulePath: string): Promise<ResolvedStores> {
     ...(branchRegistry !== undefined && { branchRegistry }),
     ...(leaseStore !== undefined && { leaseStore }),
     ...(timerStore !== undefined && { timerStore }),
+    ...(app.lifecycle?.archive !== undefined && { archive: app.lifecycle.archive }),
     origin: "config",
     close: async () => {
       await app.close?.();

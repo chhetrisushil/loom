@@ -36,6 +36,8 @@ import {
   runSnapshotStoreDecoratorConformance,
 } from "./decorators";
 import {
+  type ContentStoreLike,
+  checkContentStoreTouchContract,
   runBranchRegistryConformance,
   runCapabilityAuthorizerConformance,
   runEventStoreConformance,
@@ -354,5 +356,60 @@ describe("TenantScopedSnapshotStore rejects a tenant containing the separator (K
     expect(() => new TenantScopedSnapshotStore(inner, "a:b")).toThrow(/separator/);
     expect(() => new TenantScopedSnapshotStore(inner, "")).toThrow(/tenant/);
     expect(() => new TenantScopedSnapshotStore(inner, "acme")).not.toThrow();
+  });
+});
+
+// ── ContentStore SPI 1.3.0: the touch-contract check must FIRE (ADR 0055 D5) ───
+describe("checkContentStoreTouchContract", () => {
+  /** A tiny content store; `bump: false` is the INSERT OR IGNORE shape that loses re-cites. */
+  function fixture(opts: { bump: boolean; methods?: readonly string[] }) {
+    const blobs = new Map<string, { bytes: Uint8Array; touchedAt: number }>();
+    const key = (b: Uint8Array) => Buffer.from(b).toString("hex");
+    const store: Record<string, unknown> = {
+      put: async (bytes: Uint8Array) => {
+        const address = key(bytes);
+        const existing = blobs.get(address);
+        if (existing === undefined) blobs.set(address, { bytes, touchedAt: Date.now() });
+        else if (opts.bump) existing.touchedAt = Math.max(existing.touchedAt, Date.now());
+        return { __loomContent: address };
+      },
+      get: async (ref: { __loomContent: string }) => blobs.get(ref.__loomContent)?.bytes ?? null,
+      delete: async (ref: { __loomContent: string }) => {
+        blobs.delete(ref.__loomContent);
+      },
+      deleteIfUntouchedSince: async (ref: { __loomContent: string }, cutoff: number) => {
+        const blob = blobs.get(ref.__loomContent);
+        return blob !== undefined && blob.touchedAt < cutoff && blobs.delete(ref.__loomContent);
+      },
+      listPage: async () => ({
+        entries: [...blobs].map(([address, b]) => ({ address, touchedAt: b.touchedAt })),
+      }),
+      touchClock: async () => Date.now(),
+    };
+    for (const m of ["deleteIfUntouchedSince", "listPage", "touchClock"]) {
+      if (opts.methods !== undefined && !opts.methods.includes(m)) delete store[m];
+    }
+    return store as unknown as ContentStoreLike;
+  }
+
+  it("passes a store that bumps the touch time on a re-put", async () => {
+    await expect(checkContentStoreTouchContract(fixture({ bump: true }))).resolves.toBeUndefined();
+  });
+
+  it("FAILS a store whose re-put leaves the touch time alone (INSERT OR IGNORE)", async () => {
+    await expect(checkContentStoreTouchContract(fixture({ bump: false }))).rejects.toThrow(
+      /did not bump/
+    );
+  });
+
+  it("FAILS a partial SPI 1.3.0 set, and passes a store with none of it", async () => {
+    await expect(
+      checkContentStoreTouchContract(
+        fixture({ bump: true, methods: ["deleteIfUntouchedSince", "listPage"] })
+      )
+    ).rejects.toThrow(/together/);
+    await expect(
+      checkContentStoreTouchContract(fixture({ bump: true, methods: [] }))
+    ).resolves.toBeUndefined();
   });
 });

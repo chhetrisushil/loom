@@ -44,7 +44,7 @@ Not legal advice.*
    });
    // operator cadence (nothing prunes on a timer):
    //   loom retention run  --db … --snap … --ttl 5184000000 --apply
-   //   loom sweep content  --db … --content … --archive-db … \
+   //   loom sweep content  --db … --snap … --content … --archive-db … --archive-snap … \
    //     --pin FINDING_RECORDED --ttl 2592000000 --orphans --apply
    ```
 
@@ -53,9 +53,13 @@ Not legal advice.*
    run without the archive treats it as an orphan and `--orphans` erases it (ADR 0055 D6). The
    sweep cannot tell "no archive" from "an archive you left out", so it warns and proceeds.
    Without `--orphans`, blobs whose runs were deleted, or whose `put` crashed before its event
-   was appended, are never reclaimed. An app that also cites blobs from its own tables passes
-   them as `roots` to `sweepUnpinnedContent` (D7). The SQLite content store makes every erase
-   conditional on the blob's touch time, so a blob re-cited while the sweep runs is kept (D5).
+   was appended, are never reclaimed. The command refuses `--orphans --apply` with no archive
+   unless `--no-archive` asserts there is none. Under `--config` it scans the app's
+   `durability.retention.archive` itself. `--orphans` also needs the snapshot stores: a
+   compacted run's prefix refs live only in its checkpoint. An app that also cites blobs from
+   its own tables passes them as `roots` to `sweepUnpinnedContent` (D7). The SQLite content
+   store makes every erase conditional on the blob's touch time, measured on the store's own
+   clock, so a blob re-cited while the sweep runs is kept (D5).
 
 4. **Scope tenants by construction.** Wrap stores in `TenantScopedEventStore` per tenant at
    composition time. Everything downstream — reads, retention enumeration, the pinned sweep,
