@@ -15,7 +15,7 @@ import {
   ShardedEventStore,
   TenantScopedEventStore,
 } from "@loom/event-runtime";
-import type { LlmProvider } from "@loom/llm";
+import type { LlmProvider, LlmRequest } from "@loom/llm";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import {
   InMemoryAsyncSnapshotStore,
@@ -36,6 +36,7 @@ import {
   runSnapshotStoreDecoratorConformance,
 } from "./decorators";
 import {
+  checkToolCallStreamParity,
   runBranchRegistryConformance,
   runCapabilityAuthorizerConformance,
   runEventStoreConformance,
@@ -227,7 +228,9 @@ const echoProvider: LlmProvider = {
     yield { delta: "", done: true };
   },
 };
-runLlmProviderConformance(() => echoProvider, "EchoLlmProvider");
+// Echo never calls a tool for any request, so it opts out of the R8 tool-call parity
+// check explicitly rather than leaving `toolRequest` unset.
+runLlmProviderConformance(() => echoProvider, "EchoLlmProvider", { toolRequest: null });
 
 // A provider that REPORTS the outcome on its terminal chunk — the shape an agent
 // turn needs. Without one of these in the fixture set, the parity assertions all
@@ -253,7 +256,94 @@ const richProvider: LlmProvider = {
     };
   },
 };
-runLlmProviderConformance(() => richProvider, "RichLlmProvider");
+const richToolRequest: LlmRequest = { messages: [{ role: "user", content: "look something up" }] };
+runLlmProviderConformance(() => richProvider, "RichLlmProvider", { toolRequest: richToolRequest });
+
+// --- checkToolCallStreamParity: the R8 tool-call parity rule, unit-tested directly. ---
+//
+// `runLlmProviderConformance` can only be driven through vitest's own `it`, and vitest
+// refuses to collect a nested describe/it once a test has started running — so these
+// negative cases prove the rule FIRES by calling the extracted function directly,
+// rather than by asserting that the kit's own generated suite fails (which vitest has
+// no supported way to observe from inside a test).
+describe("checkToolCallStreamParity (the R8 tool-call parity rule)", () => {
+  const toolReq: LlmRequest = { messages: [{ role: "user", content: "use the tool" }] };
+
+  it("passes when the provider has no stream at all", async () => {
+    const textOnly: LlmProvider = {
+      async complete() {
+        return { content: "hi", stopReason: "end_turn" };
+      },
+    };
+    await expect(checkToolCallStreamParity(textOnly, undefined)).resolves.toBeUndefined();
+  });
+
+  it("passes on an explicit `toolRequest: null` opt-out, even with a stream present", async () => {
+    await expect(checkToolCallStreamParity(echoProvider, null)).resolves.toBeUndefined();
+  });
+
+  it("fails when `toolRequest` is missing on a streaming provider", async () => {
+    await expect(checkToolCallStreamParity(richProvider, undefined)).rejects.toThrow(
+      /stream parity for tool calls is unproven/
+    );
+  });
+
+  it("fails when complete(toolRequest) itself makes no tool call (a vacuous fixture)", async () => {
+    const noToolCall: LlmProvider = {
+      async complete() {
+        return { content: "no tools here", stopReason: "end_turn" };
+      },
+      async *stream() {
+        yield { delta: "no tools here", done: true };
+      },
+    };
+    await expect(checkToolCallStreamParity(noToolCall, toolReq)).rejects.toThrow(
+      /complete\(toolRequest\) returned no tool call/
+    );
+  });
+
+  it("fails when the stream drops a tool call complete(toolRequest) made", async () => {
+    const dropsToolCall: LlmProvider = {
+      async complete() {
+        return {
+          content: "thinking",
+          toolCalls: [{ id: "c1", name: "lookup", input: { q: "x" } }],
+          stopReason: "tool_use",
+        };
+      },
+      async *stream() {
+        // Text only — the terminal chunk reports neither `toolCalls` nor `stopReason`.
+        yield { delta: "thinking", done: true };
+      },
+    };
+    await expect(checkToolCallStreamParity(dropsToolCall, toolReq)).rejects.toThrow();
+  });
+
+  it("fails when the streamed stopReason disagrees with a completed tool_use", async () => {
+    const wrongStopReason: LlmProvider = {
+      async complete() {
+        return {
+          content: "thinking",
+          toolCalls: [{ id: "c1", name: "lookup", input: { q: "x" } }],
+          stopReason: "tool_use",
+        };
+      },
+      async *stream() {
+        yield {
+          delta: "thinking",
+          done: true,
+          toolCalls: [{ id: "c1", name: "lookup", input: { q: "x" } }],
+          stopReason: "end_turn",
+        };
+      },
+    };
+    await expect(checkToolCallStreamParity(wrongStopReason, toolReq)).rejects.toThrow();
+  });
+
+  it("passes when the stream faithfully reports the same tool call and stopReason", async () => {
+    await expect(checkToolCallStreamParity(richProvider, richToolRequest)).resolves.toBeUndefined();
+  });
+});
 
 // --- CapabilityAuthorizer: the reference GrantTable. ---
 runCapabilityAuthorizerConformance(() => new GrantTable({ w: ["t"] }), "GrantTable");

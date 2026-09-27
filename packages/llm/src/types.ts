@@ -76,6 +76,13 @@ export interface LlmResponse {
  * and is unchanged (G2). What is NOT optional is honesty — when a field IS
  * reported it must equal what `complete` would have returned for the same request.
  * `runLlmProviderConformance` pins exactly that (see {@link assembleStream}).
+ *
+ * **`toolCalls` is optional in the type, but not silently so at the point of use.**
+ * A provider that supports `stream` and is proven against `runLlmProviderConformance`
+ * with a `toolRequest` (a request it is known to answer with a tool call) MUST report
+ * `toolCalls` on the terminal chunk, matching `complete`'s — an omission there fails
+ * the kit rather than passing as "not reported". Only a provider that opts out with
+ * `{ toolRequest: null }` (because it genuinely never calls tools) is exempt.
  */
 export interface LlmStreamChunk {
   delta: string;

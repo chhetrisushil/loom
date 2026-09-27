@@ -15,7 +15,7 @@ import {
   headOf,
   readRangeOf,
 } from "@loom/event-runtime";
-import type { LlmProvider, LlmStreamChunk } from "@loom/llm";
+import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loom/llm";
 import { assembleStream } from "@loom/llm";
 import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
@@ -871,8 +871,32 @@ export function runWorkerRuntimeConformance(
  * requires a provider that answers the same request the same way — true of the
  * offline fakes this suite is meant to be run against, not of a live model at
  * temperature.
+ *
+ * **`toolRequest` (tool-call parity).** The kit's own default request
+ * (`{ messages: [{ role: "user", content: "hi" }] }`) carries no `tools`, so
+ * `completed.toolCalls` is always empty for it and the general parity test above can
+ * never observe a dropped tool call — a vacuous input proves nothing. `toolRequest` is
+ * a SEPARATE request the caller supplies, one the provider is known to answer WITH a
+ * tool call, so the kit can pin the one failure mode that matters: a `stream` that
+ * silently drops the call the model actually made, which is indistinguishable, to an
+ * agent loop, from a model that chose not to act.
+ *
+ * - Given a `toolRequest`, and when the provider has `stream`: `complete(toolRequest)`
+ *   MUST itself return at least one tool call (this guards the fixture — a fixture that
+ *   makes no call is a refusal, not a pass, and the parity check below would be
+ *   vacuous against it too). The stream's assembled `toolCalls` MUST `toEqual` it, and
+ *   when `completed.stopReason` is `"tool_use"`, the streamed `stopReason` MUST equal it.
+ * - Omitting `toolRequest` on a provider that has `stream` is a FAILING case — an
+ *   absent input is a refusal, not a pass (the vacuous-check rule).
+ * - A text-only provider that genuinely cannot call tools opts out explicitly with
+ *   `{ toolRequest: null }`, which is then visible in that provider's own test file
+ *   rather than silently inherited from an unset default.
  */
-export function runLlmProviderConformance(factory: () => LlmProvider, label = "LlmProvider"): void {
+export function runLlmProviderConformance(
+  factory: () => LlmProvider,
+  label = "LlmProvider",
+  opts?: { toolRequest?: LlmRequest | null }
+): void {
   const req = { messages: [{ role: "user" as const, content: "hi" }] };
   describe(`${label} conformance (LlmProvider SPI)`, () => {
     it("complete returns content and a valid stopReason", async () => {
@@ -925,7 +949,54 @@ export function runLlmProviderConformance(factory: () => LlmProvider, label = "L
         expect(streamed.usage).toEqual(completed.usage);
       }
     });
+
+    it("a streamed tool call matches the completed one, or the omission is explicit (R8 tool-call parity)", async () => {
+      await checkToolCallStreamParity(factory(), opts?.toolRequest);
+    });
   });
+}
+
+/**
+ * The `toolRequest` rule from {@link runLlmProviderConformance}, extracted to a plain
+ * function so it can be exercised directly (a provider factory can only be driven
+ * through vitest's `it`, and vitest refuses to collect a nested `describe`/`it` once a
+ * test has started running, so the negative cases that prove this rule FIRES are unit
+ * tests against this function rather than against the kit's own generated suite).
+ *
+ * Resolves when the rule is satisfied, including every legitimate skip (no `stream`,
+ * or an explicit `toolRequest: null` opt-out). Rejects, naming the violation, otherwise.
+ */
+export async function checkToolCallStreamParity(
+  provider: LlmProvider,
+  toolRequest: LlmRequest | null | undefined
+): Promise<void> {
+  if (provider.stream === undefined) return; // nothing to keep in parity
+  if (toolRequest === null) return; // explicit opt-out: this provider cannot call tools
+  if (toolRequest === undefined) {
+    throw new Error(
+      "stream parity for tool calls is unproven — pass `toolRequest` (a request this " +
+        "provider answers with a tool call) to runLlmProviderConformance, or " +
+        "`{ toolRequest: null }` to opt out for a provider that cannot call tools."
+    );
+  }
+
+  const completed = await provider.complete(toolRequest);
+  if (completed.toolCalls === undefined || completed.toolCalls.length === 0) {
+    throw new Error(
+      "toolRequest fixture is a refusal, not a pass — complete(toolRequest) returned no " +
+        "tool call, so there is nothing to check the stream against. Fix the fixture (or " +
+        "the request) so complete(toolRequest) actually calls a tool."
+    );
+  }
+
+  const chunks: LlmStreamChunk[] = [];
+  for await (const c of provider.stream(toolRequest)) chunks.push(c);
+  const streamed = assembleStream(chunks);
+
+  expect(streamed.toolCalls).toEqual(completed.toolCalls);
+  if (completed.stopReason === "tool_use") {
+    expect(streamed.stopReason).toBe(completed.stopReason);
+  }
 }
 
 /**
