@@ -36,7 +36,10 @@ export interface CreateLlmEffectOptions<TIn, TOut> {
    * a token stream through it is a choice an author makes deliberately, at a
    * granularity they pick.
    *
-   * The natural sinks are `@loom/live-query` `subscribe` and `progressHub`.
+   * The natural sink is `progressHub` (or the app's own `onDelta` handler). `@loom/live-query`
+   * is NOT such a sink: it has no delta-push API — `subscribe` re-folds DURABLE events
+   * (`snapshot` + `EventStore.subscribe`), so there is nothing there to push a per-token
+   * delta into (2026-09-27 audit).
    *
    * Not called on replay: a completed effect is served from the log and never
    * re-invoked, so a tail attached to a replay sees silence. That is true of every

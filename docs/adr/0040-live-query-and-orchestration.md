@@ -57,3 +57,49 @@ event-schema change** — the fullest P10 outcome.
   replay-safety — a completed run started the child exactly once.
 - `@loom/spec` registers `live-query` and `orchestration` at L2. No `abi.test`/`eventSchema.test`
   change (nothing was added to either contract).
+
+## Amendment (2026-09-27) — incremental fold: O(N) rows over an execution's lifetime, not O(N²)
+
+**Confirmed defect (2026-09-27 audit, backlog item 2).** `subscribe`'s re-fold called
+`reader.loadState` — a full `loadState`/`foldState` — on **every** wake-up. `foldState`'s own
+docstring names the cost: "liveQuery re-folds on every event, making a live subscriber O(N) rows
+per event and O(N²) over an execution's lifetime." Measured (probe, one event per tick, no
+snapshot): rows folded came out at exactly N²/2 — 500,500 at N=1,000, 8,002,000 at N=4,000
+(10.6s on SQLite, on the same process and event loop as the writer). Loom has no production
+caller today, but the docs *sold* live-query for exactly the quadratic case: `createLlmEffect`
+and `chunkDeltas` named it a "natural"/"purely transient" sink for a streamed generation, where
+`ctx.stream` appends one durable event per delta — both docstrings were wrong on a second count
+too: **live-query has no delta-push API** (it is `snapshot` + `subscribe` over durable events,
+not a channel to receive pushed deltas), so following that advice found nothing to call. Both
+docstrings are corrected to name `progressHub` (or the app's own `onDelta` handler) as the
+transient sink.
+
+**Fix.** `subscribe` now folds incrementally: `reader.loadState` runs exactly ONCE per
+subscription (establishing `state` and the last-folded sequence, `tip`), and every later
+wake-up reads only `eventStore.readFrom(id, tip + 1)` — a bounded, indexed read — and folds
+that delta onto the kept `state` with `@loom/replay-vm`'s `foldEvents`. This is **no new fold
+and no new version**: `foldEvents`/`ReplayVM(tail, state)` is the same fold `foldState` already
+uses for its snapshot-plus-tail path, and `fold(snapshot, suffix) === fold(events)` was already
+load-bearing there and in `LogLifecycle.compact`. Total I/O drops from O(N²) to O(N).
+
+The delta is read, not folded from the delivered envelope, for two reasons: delivery can be
+gapped, duplicated or cross-node (`readFrom` absorbs all three for free), and
+`ContentResolvingEventStore.subscribe` deliberately delivers the RAW ref-bearing event when
+resolution fails, whereas its read path throws `ContentMissingError` loudly — folding the
+delivered envelope would risk a silent `ContentRef` in state instead of a loud failure. An empty
+delta emits nothing; a deleted execution (`readFrom` returns `[]` forever) stays silent, as
+before. Burst coalescing (one refold in flight, one more if dirty) is unchanged — it now
+coalesces a delta *read* rather than a full re-fold, so a burst is one indexed read of the whole
+burst's tail, not one full-log read.
+
+**Verification.** `packages/live-query/src/liveQuery.test.ts`: a counting store proves rows read
+over N=500 sequential events stays ≤ N + a small constant (the old re-fold-per-wake-up fails
+this — 125,250, i.e. N(N+1)/2); a bench line at N=4,000 asserts the same as a row count, not a
+time; an equivalence property holds the incremental state to `toEqual` `loadState` after every
+event across a `snapshotEvery: 7` boundary, under injected duplicate and deferred/out-of-order
+subscribe deliveries; a `ContentResolvingEventStore` case with an unresolvable ref proves the
+state never carries a `__loomContent` ref (the failure surfaces via `onError` from the read
+path); the pre-existing terminal-state and `onError` tests stay green (the background-failure
+ones now inject the failure into the store's `readFrom`, since the background fold no longer
+calls the reader). Placement unchanged (1P, `@loom/live-query`, no kernel/syscall/ABI change);
+one new dependency, `@loom/replay-vm` (already a transitive kernel package — no new 1P surface).

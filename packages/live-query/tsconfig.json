@@ -9,6 +9,7 @@
   "references": [
     { "path": "../core" },
     { "path": "../event-runtime" },
+    { "path": "../replay-vm" },
     { "path": "../workflow-runtime" }
   ]
 }

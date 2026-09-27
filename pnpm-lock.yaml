@@ -661,6 +661,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/replay-vm':
+        specifier: workspace:*
+        version: link:../replay-vm
       '@loom/workflow-runtime':
         specifier: workspace:*
         version: link:../workflow-runtime
@@ -668,6 +671,9 @@ importers:
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../effect-runtime
+      '@loom/plugin-content':
+        specifier: workspace:*
+        version: link:../../plugins/content
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
