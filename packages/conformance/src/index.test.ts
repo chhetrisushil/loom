@@ -36,7 +36,6 @@ import {
   runSnapshotStoreDecoratorConformance,
 } from "./decorators";
 import {
-  checkToolCallStreamParity,
   runBranchRegistryConformance,
   runCapabilityAuthorizerConformance,
   runEventStoreConformance,
@@ -47,6 +46,7 @@ import {
   runSnapshotStoreConformance,
   runTimerStoreConformance,
 } from "./index";
+import { checkToolCallStreamParity } from "./toolCallParity";
 
 /** A minimal in-memory WorkerRuntime for the dispatcher conformance self-test. */
 class FakeWorker implements WorkerRuntime {

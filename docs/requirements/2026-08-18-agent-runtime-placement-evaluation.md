@@ -611,9 +611,10 @@ the effect's own sink is transient — `progressHub`, or the app's own `onDelta`
 paragraph named it alongside `progressHub` as a transient delta destination. `LiveQuery` is
 `snapshot` + `subscribe` over DURABLE events — it has no delta-push API — so a reader following
 that advice found nothing to call, and a delta actually routed through it would be exactly the
-quadratic re-fold case the 2026-09-27 audit measured (`packages/live-query/src/liveQuery.ts`; see
-[ADR 0040](../adr/0040-live-query-and-orchestration.md)'s amendment). An effect that *returns* a
-stream to the flow remains ST-R and rejected (§3.5).
+quadratic re-fold case the 2026-09-27 backlog audit measured (item 2:
+`packages/live-query/src/liveQuery.ts` re-folds from genesis on every wake; see
+[ADR 0040](../adr/0040-live-query-and-orchestration.md)). An effect that *returns* a stream to the
+flow remains ST-R and rejected (§3.5).
 
 **Does not require R1.** The transient sink needs no syscall, so a streaming effect works from
 inside today's `agentStep$` as well as from R1's `agentLoop$`. Its real dependencies are R2 (be

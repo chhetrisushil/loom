@@ -80,17 +80,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   there is no `LLM_SPI_VERSION` constant to bump (`@loom/llm` has none, and the LLM SPI
   is absent from `docs/spec/compatibility-matrix.md`), so the tightening is recorded here
   and on `LlmStreamChunk`'s docstring (`packages/llm/src/types.ts`) instead. The rule
-  itself is extracted to an exported `checkToolCallStreamParity` so its negative cases
-  (a stream that drops a tool call, a vacuous fixture, a missing `toolRequest`) are
-  unit-tested directly — vitest has no supported way to prove a nested `describe`/`it`
-  fails from inside a running test. `loom-plugins` and `loom-examples` call the kit zero
-  times today (re-grepped at execution time), so the blast radius is the scaffold
-  template only (`tools/scaffold/src/plugin.ts`), which now shows `toolRequest` in its
-  generated example call. `docs/requirements/2026-08-18-agent-runtime-placement-evaluation.md`
-  gets three status notes: K8.4 shipped via ADR 0020 A8's `streamTokenBudget`, not the
-  dropped `EffectContext` usage-reporter field the doc still described as pending; and
+  itself lives in a new internal module, `packages/conformance/src/toolCallParity.ts`
+  (not re-exported from the package's single public entry point — no second consumer has
+  named a standalone need for it, ADR 0083), so its negative cases (a stream that drops a
+  tool call, a vacuous fixture, a missing `toolRequest`) can be unit-tested directly —
+  vitest has no supported way to prove a nested `describe`/`it` fails from inside a
+  running test. `loom-plugins` and `loom-examples` call the kit zero times today
+  (re-grepped at execution time), so the blast radius is the scaffold template only
+  (`tools/scaffold/src/plugin.ts`), which now shows `toolRequest` in its generated example
+  call. `docs/requirements/2026-08-18-agent-runtime-placement-evaluation.md` gets three
+  status notes: K8.4 shipped via ADR 0020 A8's `streamTokenBudget`, not the dropped
+  `EffectContext` usage-reporter field the doc still described as pending; and
   `@loom/live-query` is not the "transient delta sink" a since-corrected paragraph named
-  it as (it has no delta-push API — see ADR 0040's amendment).
+  it as (it has no delta-push API — see the 2026-09-27 backlog audit's item 2 and
+  [ADR 0040](docs/adr/0040-live-query-and-orchestration.md)).
 
 - **`@loom/plugin-sandbox`: a script's own exception is a typed `scriptError` channel**
   ([ADR 0064](docs/adr/0064-sandbox-eval-plugin.md) D3, amended). `SANDBOX_ERRORS` gains
