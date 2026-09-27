@@ -138,6 +138,23 @@ export function flowEmitCount(variables: Record<string, unknown>, digest: string
   return typeof count === "number" ? count : 0;
 }
 
+/**
+ * 1.20.0 (ADR 0104) — a `null` EXECUTION_RESUMED that answers no suspend point re-opens the
+ * execution and records NO gate passthrough. The kernel writes one on `resumeAs` onto a
+ * terminal execution and on an in-doubt verdict (whose answer is recorded as a decision):
+ * `null` because every store round-trips it (SQLite's payload column is NOT NULL, so an
+ * absent payload cannot be written). Keyed on the state being answered, not on `null` alone,
+ * so a caller's `null` approval of a real gate is still that gate's answer. The one pre-0104 log
+ * this changes is one where a caller resumed `null` into either position: that entry answered
+ * no suspend point and would have been served to the NEXT gate as `null` — the stray this fixes.
+ */
+const IN_DOUBT_GATE = "EffectInDoubtResolved";
+function isStatusOnlyResume(state: ExecutionState, payload: unknown): boolean {
+  return (
+    payload === null && (state.status !== "suspended" || state.suspendedOn?.on === IN_DOUBT_GATE)
+  );
+}
+
 const handlers: Record<string, Handler> = {
   EXECUTION_STARTED: (state, event) => {
     // `flowHash` (K11.1, additive — absent on legacy logs) is the content hash
@@ -311,17 +328,18 @@ const handlers: Record<string, Handler> = {
       status: "running",
       variables: {
         ...state.variables,
-        ...(event.payload !== undefined && {
-          // Latest payload (legacy key, kept for compat with pre-1.16 snapshots)…
-          _resumePayload: event.payload,
-          // …and the ORDERED list of every resume payload (1.16.0): a flow with
-          // N suspend gates passes gate i through with payload i on replay —
-          // the single-latest key silently fed gate 1 the LAST gate's payload.
-          _resumePayloads: appendAudit(
-            state.variables._resumePayloads as unknown[] | undefined,
-            event.payload
-          ),
-        }),
+        ...(event.payload !== undefined &&
+          !isStatusOnlyResume(state, event.payload) && {
+            // Latest payload (legacy key, kept for compat with pre-1.16 snapshots)…
+            _resumePayload: event.payload,
+            // …and the ORDERED list of every resume payload (1.16.0): a flow with
+            // N suspend gates passes gate i through with payload i on replay —
+            // the single-latest key silently fed gate 1 the LAST gate's payload.
+            _resumePayloads: appendAudit(
+              state.variables._resumePayloads as unknown[] | undefined,
+              event.payload
+            ),
+          }),
       },
       updatedAt: event.timestamp,
     };
@@ -857,7 +875,13 @@ export function getHandler(eventType: string): Handler | undefined {
 //   counts stamped emits per digest for ANY event type (a generic step in `foldEvents`,
 //   not a handler), so a re-run serves the emits the log already holds. No new kind, no
 //   payload change; a log that never stamps replays byte-identically.
-export const EVENT_SCHEMA_VERSION = "1.19.0";
+// 1.20.0: EXECUTION_RESUMED with a `null` payload that answers no suspend point (the execution
+//   was not parked, or was parked in doubt on "EffectInDoubtResolved") re-opens the execution
+//   WITHOUT adding a gate passthrough (ADR 0104). Every other resume folds as before, so a log
+//   that never carries such a resume replays byte-identically. Also additive: a human step's
+//   EXECUTION_SUSPENDED condition carries the kernel-set `stepId` (folded verbatim into
+//   `suspendedOn`, as the condition always was). No new event kind.
+export const EVENT_SCHEMA_VERSION = "1.20.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

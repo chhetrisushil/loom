@@ -577,6 +577,9 @@ importers:
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../effect-runtime
+      '@loom/replay-vm':
+        specifier: workspace:*
+        version: link:../replay-vm
     devDependencies:
       '@loom/middleware':
         specifier: workspace:*

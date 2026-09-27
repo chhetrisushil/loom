@@ -114,6 +114,19 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       await store.close();
     });
 
+    it("a null payload round-trips as null (ADR 0104: the kernel's status-only resume)", async () => {
+      // The kernel writes `EXECUTION_RESUMED` with payload `null` to re-open an execution
+      // without answering a gate, and the fold keys on exactly `null`. A store that turned it
+      // into `undefined`, `{}` or a string would either fail the write or hand the flow's next
+      // gate an answer nobody gave.
+      const store = factory();
+      await store.append(evt("n", 0, "EXECUTION_STARTED"));
+      await store.append({ ...evt("n", 1, "EXECUTION_RESUMED"), payload: null });
+      const [, resumed] = await store.read("n");
+      expect(resumed?.payload).toBeNull();
+      await store.close();
+    });
+
     it("read isolates executions", async () => {
       const store = factory();
       await store.append(evt("x", 0));

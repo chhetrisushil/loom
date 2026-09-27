@@ -24,9 +24,16 @@ import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { WorkflowContextImpl } from "./WorkflowContext";
+import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import { COMPUTE_TARGET_KEY } from "./placement";
 import {
+  discardDecisionId,
+  inspectStrayPassthroughs,
+  strayPassthroughMessage,
+} from "./strayPassthroughs";
+import {
   ApprovalRejectedError,
+  EFFECT_INDOUBT_RESOLVED,
   EXECUTION_RECOVERED,
   ExecutionAlreadyExistsError,
   ExecutionDeniedError,
@@ -206,6 +213,105 @@ function assertNotReserved(executionId: string): void {
   }
 }
 
+/**
+ * ADR 0104 — what a resume records BESIDE its resume-typed event. The invariant: every entry
+ * the fold adds to `_resumePayloads` answers exactly one suspend point (`ctx.suspend`, or a
+ * `kind: "human"` step), because `ctx.suspend` serves that list positionally — an entry that
+ * answered nothing is served to the flow's NEXT gate as its approval. So:
+ *
+ * - parked at a gate → `EXECUTION_RESUMED(payload)`: the payload IS that gate's answer;
+ * - parked IN DOUBT (K9.3, thrown from `ctx.run`, not a suspend point) → the verdict is
+ *   recorded as a kernel `DECISION_RECORDED` keyed by the step and the attempt it answers,
+ *   then `EXECUTION_RESUMED(null)`, which re-opens the execution with no passthrough;
+ * - crashed (`running`/`pending`: `EXECUTION_RECOVERED`, or `resumeAs` onto one) → nothing:
+ *   already running, and parked at no gate;
+ * - terminal (`resumeAs` onto a failed/completed execution) → `EXECUTION_RESUMED(null)`, which
+ *   re-opens it (so a crash afterwards is recoverable) without answering a gate.
+ *
+ * `null` rather than an absent payload because every store round-trips it (SQLite's payload
+ * column is NOT NULL); the fold treats a null resume in those two positions as status-only
+ * (EVENT_SCHEMA 1.20.0). An in-doubt payload that is not a verdict for the parked step is
+ * refused before this is reached (`assertInDoubtVerdict`).
+ */
+function answerEvents(
+  before: ExecutionState,
+  payload: unknown
+): Array<{ eventType: string; payload: unknown }> {
+  if (before.status === "suspended") {
+    const condition = before.suspendedOn;
+    if (condition?.on !== EFFECT_INDOUBT_RESOLVED) {
+      return [{ eventType: "EXECUTION_RESUMED", payload }];
+    }
+    const stepId = condition.correlationKey ?? "";
+    const verdict = asInDoubtVerdict(payload, stepId);
+    const attempts = before.frames[stepId]?.attempts;
+    return [
+      ...(verdict !== undefined && attempts !== undefined
+        ? [
+            {
+              eventType: "DECISION_RECORDED",
+              payload: {
+                decisionId: inDoubtDecisionId(stepId, attempts),
+                choice: verdict,
+                source: "operator",
+              },
+            },
+          ]
+        : []),
+      { eventType: "EXECUTION_RESUMED", payload: null },
+    ];
+  }
+  if (before.status === "running" || before.status === "pending") return [];
+  return [{ eventType: "EXECUTION_RESUMED", payload: null }];
+}
+
+/**
+ * ADR 0104 — an in-doubt park is answered by a verdict for THAT step, or not at all. The
+ * pre-0104 kernel recorded anything and let the step re-park; a non-verdict is now refused
+ * with nothing appended, so every recorded answer to an in-doubt park is a verdict decision.
+ */
+function assertInDoubtVerdict(executionId: string, before: ExecutionState, payload: unknown): void {
+  const condition = before.suspendedOn;
+  if (before.status !== "suspended" || condition?.on !== EFFECT_INDOUBT_RESOLVED) return;
+  const stepId = condition.correlationKey ?? "";
+  if (asInDoubtVerdict(payload, stepId) === undefined || before.frames[stepId] === undefined) {
+    throw new ResumePayloadValidationError(
+      executionId,
+      EFFECT_INDOUBT_RESOLVED,
+      `expected an EffectInDoubtResolution for step "${stepId}" ({ stepId, resolution: "completed-with-result" | "retry-fresh" | "fail" })`
+    );
+  }
+}
+
+/**
+ * ADR 0104 — `discardLegacyAnswers` decides what a human step accepts as its approval, so it is
+ * an approval itself: honoured only on a resume the `ResumeAuthenticator` VERIFIED (which, since
+ * the authenticator is handed the whole event, covers the override), and never on a resume the
+ * kernel raises itself. An unauthenticated override would let anyone allowed to resume make a
+ * human step take a pre-0104 `{}` as its approval.
+ */
+function assertAuthorizedOverride(
+  executionId: string,
+  event: ResumeEvent,
+  approval: { eventType: string; payload: unknown } | undefined
+): void {
+  if (event.discardLegacyAnswers === undefined) return;
+  if (event.eventType === EXECUTION_RECOVERED || event.eventType === TIMER_FIRED) {
+    throw new Error(
+      `discardLegacyAnswers refused for execution "${executionId}": "${event.eventType}" is raised by the kernel, never an operator's override. Nothing was appended.`
+    );
+  }
+  if (approval === undefined) {
+    throw new ApprovalRejectedError(
+      executionId,
+      "discardLegacyAnswers is an operator override of what a human step accepts as its approval, so it requires a VERIFIED approval: configure a ResumeAuthenticator that covers the override and have it verify this event"
+    );
+  }
+}
+
+/** How many (execution, verdict) stray-passthrough warnings a runtime remembers (ADR 0104). */
+const STRAY_WARNING_MEMORY = 4096;
+
 export class WorkflowRuntime {
   private readonly eventStore: EventStore;
   private readonly snapshotStore: SnapshotStore;
@@ -216,6 +322,7 @@ export class WorkflowRuntime {
   private readonly onWarn: (message: string) => void;
   /** One warning per (flow, gate) — a hot loop must not narrate the same dropped deadline. */
   private readonly warnedDroppedDeadlines = new Set<string>();
+  private readonly warnedStrayPassthroughs = new Set<string>();
   private readonly snapshotEvery: number | undefined;
   private readonly timerStore: TimerStore | undefined;
   private readonly resumeAuthenticator: ResumeAuthenticator | undefined;
@@ -504,21 +611,21 @@ export class WorkflowRuntime {
    * unless it collides with a kernel name (G2).
    *
    * `EXECUTION_RECOVERED` is the one non-gate resume: a dispatcher re-driving a
-   * crashed execution, which is `running`/`pending` and has no `suspendedOn`.
+   * crashed execution, which is `running`/`pending` and has no `suspendedOn`. Being
+   * no gate's answer, it records no `EXECUTION_RESUMED` either (ADR 0104, `answerEvents`).
    */
   private assertResumable(
     executionId: string,
     state: ExecutionState,
     event: ResumeEvent,
     /**
-     * `resumeAs` checks the kernel namespace and stops there. The recorded gate
-     * belongs to the code being migrated AWAY from — a target flow may legitimately
-     * have renamed or dropped it — and an operator migrating a crashed execution onto
-     * fixed code is the documented exit from {@link FlowCodeMismatchError}, so
-     * neither the parked-state nor the gate-name check can hold there. It is also an
-     * operator API: no ingress adapter reaches it (A2A `provideInput` and the wire ABI
-     * both call `resume`), and it already demands a registered target flow and an
-     * explicit strategy.
+     * `resumeAs` onto a CRASHED or TERMINAL execution checks the kernel namespace and
+     * stops there: nothing is parked, so there is no gate to name, and migrating a
+     * crashed execution onto fixed code is the documented exit from
+     * {@link FlowCodeMismatchError}. Onto an execution PARKED at a gate it runs every
+     * check (ADR 0104): the resume is that gate's answer, so it must name the recorded
+     * gate — which the operator can read, even if the target flow renamed it — and pass
+     * that gate's declared shape, or any event name would answer it unchecked.
      */
     checks: "all" | "kernel-namespace-only" = "all"
   ): void {
@@ -579,6 +686,96 @@ export class WorkflowRuntime {
         }. A resume must name the gate it answers — the flow's declared resumeSchemas entry is looked up by this name, so a mismatched one would also skip the shape check (ADR 0077).`
       );
     }
+  }
+
+  /**
+   * ADR 0104 D2 — flag a log in which a pre-0104 kernel recorded a gate passthrough that
+   * answered no gate. The fold still serves it (withdrawing one already spent would re-park
+   * the flow behind recorded steps, or shift every later payload one gate early), so the
+   * runtime says which executions carry one and whether it is spent ("passed": audit) or not
+   * ("at-risk": the next gate will pass with it). Once per execution and verdict per runtime,
+   * in a bounded set, so a long-lived execution does not warn on every resume forever.
+   */
+  private checkStrayPassthroughs(
+    executionId: string,
+    events: readonly EventEnvelope[],
+    state: ExecutionState,
+    definition: FlowDefinition<unknown, unknown>,
+    reopening: boolean,
+    discard: ResumeEvent["discardLegacyAnswers"],
+    approval: { eventType: string; payload: unknown } | undefined
+  ): Array<{ eventType: string; payload: unknown }> {
+    const report = inspectStrayPassthroughs(events, state, {
+      kindOfStep: this.stepKindResolver(definition),
+      reopening,
+    });
+    const ambiguous = report.ambiguousHumanStep;
+    if (discard !== undefined) {
+      if (
+        ambiguous === undefined ||
+        discard.stepId !== ambiguous ||
+        !Number.isSafeInteger(discard.count) ||
+        discard.count < 0
+      ) {
+        throw new Error(
+          `discardLegacyAnswers refused for execution "${executionId}": ${
+            ambiguous === undefined
+              ? "its log holds no ambiguous pre-ADR 0104 human-step answers"
+              : `the ambiguous human step is "${ambiguous}", and count must be a non-negative integer`
+          }. Nothing was appended.`
+        );
+      }
+    } else if (ambiguous !== undefined) {
+      throw new ResumeRefusedError(
+        executionId,
+        state.suspendedOn?.on ?? "<none>",
+        "ambiguous-legacy-answers",
+        `human step "${ambiguous}" was parked by a pre-ADR 0104 kernel, and its log holds answers that cannot be told apart (it re-parked after an answer, or a recovery/in-doubt payload that answered no gate precedes it). Resuming would hand one of them to a later gate as its approval. Nothing was appended. Inspect the log, then resume with a SIGNED event carrying discardLegacyAnswers: { stepId: "${ambiguous}", count } to discard the entries that are not its answer, or cancel the execution.`
+      );
+    }
+    const verdict = report.verdict;
+    if (verdict !== undefined) {
+      const key = `${verdict.kind}:${executionId}`;
+      if (!this.warnedStrayPassthroughs.has(key)) {
+        if (this.warnedStrayPassthroughs.size >= STRAY_WARNING_MEMORY) {
+          // FIFO eviction: a Set iterates in insertion order.
+          const oldest = this.warnedStrayPassthroughs.values().next().value;
+          if (oldest !== undefined) this.warnedStrayPassthroughs.delete(oldest);
+        }
+        this.warnedStrayPassthroughs.add(key);
+        this.onWarn(strayPassthroughMessage(executionId, verdict));
+      }
+    }
+    return discard === undefined
+      ? []
+      : [
+          {
+            eventType: "DECISION_RECORDED",
+            payload: {
+              decisionId: discardDecisionId(discard.stepId),
+              choice: discard.count,
+              source: "operator",
+              rationale: {
+                adr: "0104",
+                override: "discardLegacyAnswers",
+                approval: approval?.payload, // { actor, verifiedBy, on } — who signed it
+              },
+            },
+          },
+        ];
+  }
+
+  /**
+   * `stepId → the effect kind it runs`, resolved the way `ctx.run` resolves a tool id: the
+   * declared step's `toolId`, else the id itself. `undefined` for a dynamic step the runtime
+   * cannot resolve — the stray classifier treats that as possibly human (fail closed).
+   */
+  private stepKindResolver(
+    definition: FlowDefinition<unknown, unknown>
+  ): (stepId: string) => string | undefined {
+    const toolOf = new Map<string, string>();
+    for (const step of definition.steps) toolOf.set(step.id, step.toolId ?? step.id);
+    return (stepId) => this.effectRuntime.kindOf(toolOf.get(stepId) ?? stepId);
   }
 
   // K12.2 — verify an approval-gating resume event. Returns an APPROVAL_GRANTED
@@ -1051,6 +1248,7 @@ export class WorkflowRuntime {
     // unverified) approval REFUSES the resume; a verified one records a durable
     // APPROVAL_GRANTED fact so "who approved" is evidence, not a claim.
     const approval = this.verifyApproval(executionId, resumeEvent);
+    assertAuthorizedOverride(executionId, resumeEvent, approval);
 
     // #304/#305 — the ingress gate: WHICH event, to an execution in WHICH state. Placed
     // after the authenticator for the same reason the shape check is (below): the
@@ -1063,6 +1261,17 @@ export class WorkflowRuntime {
     // unauthenticated caller learns nothing about the gate's contract. Both refuse before
     // `execute`, so neither appends.
     const resumePayload = this.parseResumePayload(executionId, resolved.definition, resumeEvent);
+    assertInDoubtVerdict(executionId, vm.getState(), resumePayload);
+
+    const discardEvents = this.checkStrayPassthroughs(
+      executionId,
+      allEvents,
+      vm.getState(),
+      resolved.definition,
+      false,
+      resumeEvent.discardLegacyAnswers,
+      approval
+    );
 
     return this.execute(
       executionId,
@@ -1072,8 +1281,9 @@ export class WorkflowRuntime {
       effectiveInput,
       [
         ...(approval !== undefined ? [approval] : []),
+        ...discardEvents,
         { eventType: resumeEvent.eventType, payload: resumePayload },
-        { eventType: "EXECUTION_RESUMED", payload: resumePayload },
+        ...answerEvents(vm.getState(), resumePayload),
       ],
       options?.fence,
       options?.deadlineMs ?? resolved.definition.deadlineMs,
@@ -1175,16 +1385,51 @@ export class WorkflowRuntime {
       stateMigrated = true;
     }
 
+    // C.1 / K12.2 — the same identity gates as `resume`. A migration that answers a parked
+    // gate IS an approval of that gate; before ADR 0104 it skipped both.
+    const resumeDenial = this.authzDenial("resume", executionId, workflowId, options.principal);
+    if (resumeDenial !== undefined) {
+      await this.denyOp(
+        "resume",
+        executionId,
+        workflowId,
+        options.principal,
+        resumeDenial.reason,
+        state.sequence
+      );
+    }
+    const approval = this.verifyApproval(executionId, resumeEvent);
+    assertAuthorizedOverride(executionId, resumeEvent, approval);
+
     // #304 — the kernel namespace is closed here too: a migration is still a caller-supplied
     // event landing in the log, and `EXECUTION_MIGRATED` is precisely the type that rewrites
-    // the K11 code pin. The gate-name and parked-state checks do NOT apply (see
-    // `assertResumable`), so this is the namespace check alone.
-    this.assertResumable(executionId, state, resumeEvent, "kernel-namespace-only");
+    // the K11 code pin. ADR 0104 — onto an execution PARKED at a gate, the resume is that
+    // gate's answer, so it must name that gate (the recorded one, which the operator can
+    // read) and pass its declared shape, exactly as `resume` requires; otherwise any event
+    // name answered the gate with a payload no schema checked. Onto a crashed or terminal
+    // execution nothing is parked and nothing is answered (see `answerEvents`), so the gate
+    // checks cannot apply and the namespace check stands alone.
+    this.assertResumable(
+      executionId,
+      state,
+      resumeEvent,
+      state.status === "suspended" ? "all" : "kernel-namespace-only"
+    );
 
     // TR (ADR 0077) — validate against the TARGET flow's gate contract: the execution is being
     // resumed onto that code, so that code's declared shape is the one that must hold. Refuses
     // before the EXECUTION_MIGRATED append, so a rejected payload leaves no migration behind.
     const resumePayload = this.parseResumePayload(executionId, target.definition, resumeEvent);
+    assertInDoubtVerdict(executionId, state, resumePayload);
+    const discardEvents = this.checkStrayPassthroughs(
+      executionId,
+      allEvents,
+      state,
+      target.definition,
+      state.status !== "suspended" && state.status !== "running" && state.status !== "pending",
+      resumeEvent.discardLegacyAnswers,
+      approval
+    );
 
     const recorded = state.variables._flowHash;
     return this.execute(
@@ -1194,6 +1439,8 @@ export class WorkflowRuntime {
       target.runner as FlowRunner<unknown, unknown>,
       stateMigrated ? migratedInput : recordedInput,
       [
+        ...(approval !== undefined ? [approval] : []),
+        ...discardEvents,
         {
           eventType: "EXECUTION_MIGRATED",
           payload: {
@@ -1205,7 +1452,7 @@ export class WorkflowRuntime {
           },
         },
         { eventType: resumeEvent.eventType, payload: resumePayload },
-        { eventType: "EXECUTION_RESUMED", payload: resumePayload },
+        ...answerEvents(state, resumePayload),
       ],
       options.fence,
       options.deadlineMs ?? target.definition.deadlineMs,

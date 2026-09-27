@@ -5,7 +5,11 @@ import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { EFFECT_INDOUBT_RESOLVED, WorkflowRuntime } from "@loom/workflow-runtime";
+import {
+  EFFECT_INDOUBT_RESOLVED,
+  ResumePayloadValidationError,
+  WorkflowRuntime,
+} from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -166,24 +170,26 @@ describe("K9 — in-doubt parking (K9.3, idempotent: false)", () => {
     });
   });
 
-  it("re-parks on a non-verdict resume without duplicating the audit fact", async () => {
+  it("refuses a non-verdict resume with nothing appended; the park and its audit fact stand", async () => {
     const { mkEffect, eventStore, inner, snapshots } = await parkedAfterCrash();
 
     // Delivered to the gate the execution is parked on (#305 — a resume names the gate it
-    // answers, and EXECUTION_RECOVERED re-drives a CRASHED execution, which a parked one is
-    // not; the real dispatcher agrees, returning `null` rather than resuming a suspended
-    // execution). The payload is deliberately not a verdict: `readInDoubtVerdict` matches on
-    // SHAPE, so an operator who resumes without one simply re-parks.
+    // answers). The payload is deliberately not a verdict. Before ADR 0104 it was appended and
+    // the step re-parked — but as a resume payload it was ALSO a gate passthrough the flow's
+    // next `ctx.suspend` consumed. Now every recorded answer to an in-doubt park is a verdict.
     const runtime3 = boot(eventStore, snapshots, mkEffect());
-    const handle = await runtime3.resume(EXEC, {
-      eventType: EFFECT_INDOUBT_RESOLVED,
-      payload: { note: "still investigating" },
-    });
-    const state = await handle.waitForSuspend();
+    const before = (await inner.read(EXEC)).length;
+    await expect(
+      runtime3.resume(EXEC, {
+        eventType: EFFECT_INDOUBT_RESOLVED,
+        payload: { note: "still investigating" },
+      })
+    ).rejects.toBeInstanceOf(ResumePayloadValidationError);
 
-    expect(state.status).toBe("suspended");
     const events = await inner.read(EXEC);
+    expect(events.length).toBe(before);
     expect(events.filter((e) => e.eventType === "EFFECT_INDOUBT").length).toBe(1);
+    expect((await runtime3.loadState(EXEC))?.status).toBe("suspended");
   });
 
   it('verdict "completed-with-result" adopts the operator output without re-running the tool', async () => {

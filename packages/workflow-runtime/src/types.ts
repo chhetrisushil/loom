@@ -20,8 +20,10 @@ export const TIMER_FIRED = "TIMER_FIRED";
 /**
  * The resume eventType a dispatcher re-drives a CRASHED execution with: not a
  * gate, so it addresses a `running`/`pending` execution rather than a suspended
- * one, and it folds to a no-op (there is no handler of this name — the log
- * records only the EXECUTION_RESUMED beside it). Raised by
+ * one, and it folds to a no-op (there is no handler of this name). Since ADR 0104
+ * it is recorded ALONE: no EXECUTION_RESUMED beside it, because that event's payload
+ * is a gate passthrough and a re-drive answers no gate (pre-0104 logs carry the pair,
+ * replayed as written). Raised by
  * `LocalWorkerRuntime.resolveHandle`; it is not a signal an external caller has
  * any reason to send, and the resume gate refuses it on a parked execution.
  */
@@ -289,6 +291,13 @@ export class ExecutionDeniedError extends Error {
  *    and the resume proceeds;
  *  - `rejected` → the resume is REFUSED (a forged approval does not resume);
  *  - `not-applicable` → an ordinary resume, no approval semantics.
+ *
+ * A verification MUST cover the WHOLE event it is handed, not just `payload`. In particular
+ * `ResumeEvent.discardLegacyAnswers` (ADR 0104) is honoured only on a `verified` event: it
+ * decides what a pre-0104 human step accepts as its approval, so an authenticator that signs
+ * `payload` alone would let a caller attach or alter the override under a valid signature.
+ * Reject (or return `not-applicable` for) an event whose override your signature does not
+ * cover.
  */
 export interface ResumeAuthenticator {
   verify(event: ResumeEvent): ResumeVerdict;
@@ -417,7 +426,14 @@ export type ResumeRefusalReason =
   /** The execution is not parked at a gate (already running, terminal, …). */
   | "not-suspended"
   /** The event type is not the gate the execution is parked on. */
-  | "gate-mismatch";
+  | "gate-mismatch"
+  /**
+   * ADR 0104 — a pre-0104 log in which an open human step's answer cannot be told apart from
+   * another recorded answer (the old kernel re-parked it after an answer, or an unspent stray
+   * precedes it). Guessing would hand a later gate an approval nobody gave it, so the kernel
+   * refuses; nothing is appended. Not retriable: cancel the execution and start it again.
+   */
+  | "ambiguous-legacy-answers";
 
 /**
  * The resume ingress gate refused. Nothing was appended: the execution is
@@ -518,6 +534,20 @@ export interface RegisteredFlow<TIn = unknown, TOut = unknown> {
 export interface ResumeEvent {
   eventType: string;
   payload: unknown;
+  /**
+   * ADR 0104 — the operator override for a pre-0104 log whose open human step's answer is
+   * ambiguous (the resume is otherwise refused, `ambiguous-legacy-answers`): discard the first
+   * `count` recorded entries at that step, so it takes the next one as its answer (`count: 0`
+   * acknowledges that the next entry already is its answer).
+   *
+   * Part of the EVENT, not of the run options, because it decides what a human step accepts
+   * as its approval: it is honoured only when the configured `ResumeAuthenticator` VERIFIES
+   * this event — which must therefore cover this field — and never on a kernel-raised resume
+   * (`EXECUTION_RECOVERED`, `TIMER_FIRED`). Recorded durably as a kernel `DECISION_RECORDED`
+   * (`__loom_discard__:<stepId>`, `source: "operator"`, naming the verified actor), so every
+   * replay discards the same entries. Refused when the log holds no such ambiguity for `stepId`.
+   */
+  discardLegacyAnswers?: { stepId: string; count: number };
 }
 
 // ── K9 — effect delivery: in-doubt parking & operator resolution ─────────────

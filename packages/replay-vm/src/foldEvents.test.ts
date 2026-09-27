@@ -72,6 +72,53 @@ describe("foldEvents", () => {
     expect(state.variables._resumePayload).toEqual({ approved: true });
   });
 
+  // ADR 0104 (1.20.0) — a NULL payload on a resume that answers no suspend point is a
+  // status-only resume: it re-opens the execution and records no gate passthrough.
+  it("EXECUTION_RESUMED null on a non-parked execution re-opens it without a passthrough", () => {
+    const events = [
+      makeEvent(EXECUTION_ID, 0, "EXECUTION_STARTED"),
+      makeEvent(EXECUTION_ID, 1, "EXECUTION_FAILED", { error: "boom" }),
+      makeEvent(EXECUTION_ID, 2, "EXECUTION_RESUMED", null),
+    ];
+    const state = foldEvents(events, INITIAL);
+    expect(state.status).toBe("running");
+    expect(state.variables._resumePayloads).toBeUndefined();
+    expect("_resumePayload" in state.variables).toBe(false);
+  });
+
+  it("EXECUTION_RESUMED null answering an in-doubt park records no passthrough", () => {
+    const events = [
+      makeEvent(EXECUTION_ID, 0, "EXECUTION_STARTED"),
+      makeEvent(EXECUTION_ID, 1, "EXECUTION_SUSPENDED", {
+        condition: { on: "EffectInDoubtResolved", correlationKey: "a" },
+      }),
+      makeEvent(EXECUTION_ID, 2, "EXECUTION_RESUMED", null),
+    ];
+    const state = foldEvents(events, INITIAL);
+    expect(state.status).toBe("running");
+    expect(state.variables._resumePayloads).toBeUndefined();
+  });
+
+  it("EXECUTION_RESUMED null answering a GATE is still that gate's answer (legacy-identical)", () => {
+    const events = [
+      makeEvent(EXECUTION_ID, 0, "EXECUTION_STARTED"),
+      makeEvent(EXECUTION_ID, 1, "EXECUTION_SUSPENDED", { condition: { on: "go1" } }),
+      makeEvent(EXECUTION_ID, 2, "EXECUTION_RESUMED", null),
+    ];
+    const state = foldEvents(events, INITIAL);
+    expect(state.variables._resumePayloads).toEqual([null]);
+  });
+
+  it("a non-null payload on a non-parked execution is still folded (pre-0104 logs replay as written)", () => {
+    const events = [
+      makeEvent(EXECUTION_ID, 0, "EXECUTION_STARTED"),
+      makeEvent(EXECUTION_ID, 1, "EXECUTION_RECOVERED", {}),
+      makeEvent(EXECUTION_ID, 2, "EXECUTION_RESUMED", {}),
+    ];
+    const state = foldEvents(events, INITIAL);
+    expect(state.variables._resumePayloads).toEqual([{}]);
+  });
+
   it("reaches completed status on EXECUTION_COMPLETED", () => {
     const events = [
       makeEvent(EXECUTION_ID, 0, "EXECUTION_STARTED"),

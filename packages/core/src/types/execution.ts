@@ -48,6 +48,12 @@ export interface SuspendCondition {
    * from `timeout` when a timer service is wired.
    */
   wakeAt?: number;
+  /**
+   * ADR 0104 — set by the KERNEL (never by `ctx.suspend`, which strips it) when a
+   * `kind: "human"` step's effect parked the execution: the step whose answer the next resume
+   * is. Absent on every `ctx.suspend` park and on every pre-0104 human park.
+   */
+  stepId?: string;
 }
 
 export interface ExecutionState {
