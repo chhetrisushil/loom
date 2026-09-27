@@ -1,5 +1,5 @@
 import { CoalescingEventStore } from "@loom/event-runtime";
-import { migratePostgresStores, notifyChannels } from "@loom/plugin-postgres";
+import { migratePostgresStores } from "@loom/plugin-postgres";
 import { Pool } from "pg";
 import type { Measurement } from "./harness";
 import {
@@ -21,9 +21,6 @@ import {
   transientInvocations,
 } from "./scenarios";
 
-// The channel(s) a store built with the default `notifyBuckets` (16) actually publishes
-// on — what section C's listeners must LISTEN on to receive anything post-ADR-0074.
-const DEFAULT_NOTIFY_BUCKETS = 16;
 // A channel no store in this process, or any other, ever publishes on — pins the
 // channel-INDEPENDENT part of the writer cost (backlog-A item 3).
 const UNRELATED_CHANNEL = "loom_events_bench_unrelated_channel";
@@ -171,11 +168,13 @@ async function main(): Promise<void> {
 
   // ── C. pg_notify cost + LISTEN fan-out ──────────────────────────────────────
   //
-  // `bundle.eventStore` is built with the default `notifyBuckets` (16 — see
-  // DEFAULT_NOTIFY_BUCKETS), so it publishes on `loom_events_<bucket>`, NOT the legacy
-  // `NOTIFY_CHANNEL`. Listeners below must LISTEN on the real bucket channels
-  // (`notifyChannels`) to receive anything; this section used to LISTEN on the legacy
-  // channel alone and silently measured zero deliveries every run (backlog-A item 3).
+  // `bundle.eventStore.notifyChannels()` — read off the WRITER's own store instance, never
+  // a re-guessed literal — is what section C's listeners must LISTEN on to receive
+  // anything post-ADR-0074 (the store publishes on `loom_events_<bucket>`, not the legacy
+  // `NOTIFY_CHANNEL`). A hard-coded bucket count here would silently drift the moment the
+  // store's default changed; asking the instance cannot drift, because it IS the store the
+  // writer appends through. This section used to LISTEN on the legacy channel alone and
+  // silently measured zero deliveries every run (backlog-A item 3).
   const notifyConcurrency = batchConcurrency;
   const notifyRows: Measurement[] = [];
   notifyRows.push(await appendWithoutNotify(pool, cfg, notifyConcurrency));
@@ -185,7 +184,7 @@ async function main(): Promise<void> {
 
   // Real bucket channels: a node interested in every execution, which is the worst case
   // for delivery and the case the pre-bucketing global channel always was.
-  const realChannels = notifyChannels(DEFAULT_NOTIFY_BUCKETS);
+  const realChannels = bundle.eventStore.notifyChannels();
   const realListeners = await attachListeners(PG_URL, cfg.listeners, { channels: realChannels });
   const withRealListeners = await rawAppend(bundle.eventStore, cfg, notifyConcurrency);
   withRealListeners.label =
@@ -196,15 +195,18 @@ async function main(): Promise<void> {
   // before reading the counter, so the fan-out figure is not truncated.
   await new Promise((resolve) => setTimeout(resolve, 500));
   const realDelivered = realListeners.received();
+  const realReceivedChannels = realListeners.receivedChannels();
   await realListeners.close();
   await truncate();
   const appendsWithRealListeners = withRealListeners.ops + withRealListeners.warmupOps;
-  // The section is worthless if this fires silently as "0 delivered" — it must fail
-  // outright, because real listeners on the real channels receiving nothing means the
-  // wiring is broken, not that the cost is zero.
+  // The section is worthless if this fires silently as "0 delivered", but a nonzero TOTAL
+  // is not enough either: it must fail if even ONE of the real bucket channels delivered
+  // nothing, because a partial coverage gap (say, half the expected buckets silently idle)
+  // hides behind a nonzero aggregate just as easily as a total outage does.
   assertDelivered(
     "C. real bucket-channel listeners",
-    realDelivered,
+    realChannels,
+    realReceivedChannels,
     cfg.listeners,
     /* expectDelivery */ true
   );
@@ -223,13 +225,15 @@ async function main(): Promise<void> {
   notifyRows.push(withUnrelatedListeners);
   await new Promise((resolve) => setTimeout(resolve, 500));
   const unrelatedDelivered = unrelatedListeners.received();
+  const unrelatedReceivedChannels = unrelatedListeners.receivedChannels();
   await unrelatedListeners.close();
   await truncate();
   // Zero delivered here is the CORRECT reading (nothing publishes on this channel) —
   // expectDelivery is false, so the guard does not fire on a legitimately empty count.
   assertDelivered(
     "C. unrelated-channel listeners",
-    unrelatedDelivered,
+    [UNRELATED_CHANNEL],
+    unrelatedReceivedChannels,
     cfg.listeners,
     /* expectDelivery */ false
   );

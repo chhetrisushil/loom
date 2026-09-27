@@ -30,17 +30,18 @@ export interface PostgresEventStoreOptions {
 }
 
 /**
- * Every NOTIFY channel a store built with `notifyBuckets` publishes across (ADR 0074 D4).
- * Exported so an external LISTENer that is not itself a `PostgresEventStore` — a
- * bring-your-own subscriber, a conformance check, or `tools/bench-throughput`'s fan-out
- * scenarios — can subscribe to everything this store's `append` fires without re-deriving
- * the bucket-naming scheme (`${NOTIFY_CHANNEL}_<bucket>`) by hand. `notifyBuckets <= 1`
- * returns the single legacy channel, byte-identical to what {@link PostgresEventStore}
- * itself publishes on in that mode. Pure and independent of any store instance: the
- * per-append hot path (`channelFor`, below) computes a channel name directly rather than
- * allocating this array, so this helper is additive and changes no existing behaviour.
+ * Every NOTIFY channel name for a store built with `notifyBuckets` buckets (ADR 0074 D4).
+ * Module-private: the one caller that needs the whole list is
+ * {@link PostgresEventStore.notifyChannels}, an INSTANCE method, not this free function —
+ * an instance is the only thing that actually knows its own configured `notifyBuckets`.
+ * (An earlier version exported this as a free function taking `notifyBuckets` by hand; its
+ * one external caller, `tools/bench-throughput`, had to keep its own copy of the default in
+ * sync with {@link PostgresEventStoreOptions.notifyBuckets}'s default, which is exactly the
+ * two-sources-of-truth bug this instance method exists to close.) `notifyBuckets <= 1`
+ * returns the single legacy channel, byte-identical to what `channelFor` (below) computes
+ * per envelope in that mode.
  */
-export function notifyChannels(notifyBuckets: number): string[] {
+function computeNotifyChannels(notifyBuckets: number): string[] {
   const buckets = Math.max(1, notifyBuckets);
   return buckets === 1
     ? [NOTIFY_CHANNEL]
@@ -498,6 +499,19 @@ export class PostgresEventStore implements EventStore {
 
   private notifyLocal(_executionId: string, event: EventEnvelope): void {
     this.subscribers.emit(event);
+  }
+
+  /**
+   * Every NOTIFY channel THIS instance publishes and LISTENs across (ADR 0074 D4) — read
+   * off the instance's own configured `notifyBuckets`, not a caller's guess at the default.
+   * The single source of truth for an external LISTENer (a bring-your-own subscriber, a
+   * conformance check, or `tools/bench-throughput`'s fan-out scenarios) that wants to
+   * subscribe to everything this store fires: it asks the instance it is actually paired
+   * with, rather than hard-coding a bucket count that could silently drift out of sync with
+   * whatever this instance was actually constructed with.
+   */
+  notifyChannels(): string[] {
+    return computeNotifyChannels(this.notifyBuckets);
   }
 
   /** The channel an execution's notifications travel on. */

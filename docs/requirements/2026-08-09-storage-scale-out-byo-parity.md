@@ -111,10 +111,18 @@ Consequences to handle explicitly:
 
 Bucketed channels: `LISTEN loom_events_<hash(executionId) % N>` so a node receives only
 buckets it holds subscriptions for, instead of every event in the database. Fixes the
-O(events × nodes) broadcast whose cost lands on the *writer* (F3, F4).
+client-side half of the O(events × nodes) broadcast (F3, F4).
 
 Backend-specific by nature — a store on Redis/NATS/Kafka gets interest filtering natively
 from topics. R1 is what makes that cheap for them to write.
+
+**Correction (2026-09-28):** shipped as specified, but "fixes ... whose cost lands on the
+writer" overstated it — bucketing fixes client-side filtering and the per-notification
+`SELECT` it saves interested nodes; it does not fix the writer-side cost, which is per
+LISTENing backend and channel-independent, confirmed by re-measuring after this shipped
+(see the [ADR 0074 amendment](../adr/0074-storage-scale-out-decorators.md) and
+[`docs/scaling.md` §3.1](../scaling.md)). `CoalescingEventStore` (R2) is the mitigation for
+the writer-side cost F3/F4 describe.
 
 ### R6 — Pool consolidation → **plugin** (`plugins/postgres`)
 

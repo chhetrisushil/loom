@@ -10,37 +10,77 @@ import { VacuousDeliveryError, assertDelivered, partitionDisjoint } from "./scen
 // section outright, not print a number and move on.
 
 describe("assertDelivered — the bench cannot go vacuous again", () => {
-  it("fails when delivery was expected but nothing arrived (the historical bug)", () => {
+  it("fails when delivery was expected but nothing arrived at all (the historical bug)", () => {
     // A fake listener set standing in for `attachListeners`: connected, but wired to the
-    // wrong channel — exactly the pre-fix state of section C.
-    const fakeListenersThatHeardNothing = { count: 16, delivered: 0 };
+    // wrong channel entirely — exactly the pre-fix state of section C.
+    const expectedChannels = Array.from({ length: 16 }, (_, i) => `loom_events_${i}`);
+    const receivedNothing = new Set<string>();
     expect(() =>
       assertDelivered(
         "C. real bucket channels",
-        fakeListenersThatHeardNothing.delivered,
-        fakeListenersThatHeardNothing.count,
+        expectedChannels,
+        receivedNothing,
+        /* listenerCount */ 16,
+        /* expectDelivery */ true
+      )
+    ).toThrow(VacuousDeliveryError);
+  });
+
+  it("fails on PARTIAL coverage even though the aggregate total would read nonzero", () => {
+    // The gap a plain `delivered > 0` check cannot see: a store built with fewer buckets
+    // than the caller expected (a hard-coded literal drifting out of sync with the
+    // instance's real `notifyBuckets`, say) still delivers plenty on the buckets that DO
+    // exist — the aggregate count is nonzero — while every channel beyond that silently
+    // delivers nothing. Per-channel coverage is the only check that catches this.
+    const expectedChannels = Array.from({ length: 16 }, (_, i) => `loom_events_${i}`);
+    const receivedOnlyHalf = new Set(expectedChannels.slice(0, 8)); // buckets 8-15 silent
+    expect(() =>
+      assertDelivered(
+        "C. real bucket channels",
+        expectedChannels,
+        receivedOnlyHalf,
+        /* listenerCount */ 16,
         /* expectDelivery */ true
       )
     ).toThrow(VacuousDeliveryError);
   });
 
   it("does not fire when delivery is genuinely not expected (the unrelated-channel row)", () => {
-    // Listeners on a channel nobody publishes to: 0 delivered is the CORRECT reading, not
-    // a vacuous one, so the assertion must not treat every zero as a bug.
+    // Listeners on a channel nobody publishes to: an empty received-channels set is the
+    // CORRECT reading, not a vacuous one, so the assertion must not treat it as a bug.
     expect(() =>
-      assertDelivered("C. unrelated channel", 0, 16, /* expectDelivery */ false)
+      assertDelivered(
+        "C. unrelated channel",
+        ["loom_events_bench_unrelated_channel"],
+        new Set(),
+        /* listenerCount */ 16,
+        /* expectDelivery */ false
+      )
     ).not.toThrow();
   });
 
   it("does not fire when there are no listeners at all", () => {
     expect(() =>
-      assertDelivered("C. baseline, no listeners", 0, 0, /* expectDelivery */ true)
+      assertDelivered(
+        "C. baseline, no listeners",
+        Array.from({ length: 16 }, (_, i) => `loom_events_${i}`),
+        new Set(),
+        /* listenerCount */ 0,
+        /* expectDelivery */ true
+      )
     ).not.toThrow();
   });
 
-  it("passes once real delivery is observed", () => {
+  it("passes once every expected channel delivered something (full coverage)", () => {
+    const expectedChannels = Array.from({ length: 16 }, (_, i) => `loom_events_${i}`);
     expect(() =>
-      assertDelivered("C. real bucket channels", 128, 16, /* expectDelivery */ true)
+      assertDelivered(
+        "C. real bucket channels",
+        expectedChannels,
+        new Set(expectedChannels),
+        /* listenerCount */ 16,
+        /* expectDelivery */ true
+      )
     ).not.toThrow();
   });
 });

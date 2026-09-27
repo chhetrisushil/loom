@@ -230,8 +230,17 @@ Sixteen *idle* listeners — subscribed to nothing in particular, doing no work 
 throughput in half. Measured delivery was exactly **16 notifications per appended event**:
 the channel has no server-side interest filter, so every node receives every event and
 discards what it does not want. This is an O(events × nodes) broadcast, and it degrades
-the writer, not just the readers. Interest-filtered or partitioned delivery is the
-prerequisite for horizontal scale-out, ahead of any sharding work.
+the writer, not just the readers.
+
+**Correction (2026-09-28):** interest-filtered delivery (bucketed `LISTEN`, ADR 0074 D4)
+shipped and fixed exactly the part of this measurement that is client-side — a node no
+longer receives events it has no interest in. It did **not** fix the writer-side cost
+measured above: that turned out to be per LISTENing backend and channel-independent, so a
+listener LISTENing on a channel nobody publishes to costs the writer almost as much as one
+receiving every event. `CoalescingEventStore`, not further interest-filtering, is the
+mitigation for that cost. See the [ADR 0074 amendment](adr/0074-storage-scale-out-decorators.md)
+and [`scaling.md` §3.1](scaling.md) for the re-measured numbers; this baseline is kept
+verbatim above as the historical measurement that motivated bucketing in the first place.
 
 ### End-to-end durable executions
 
@@ -309,8 +318,18 @@ end-to-end across processes rather than inferred.
 Put against section C: **16 idle listeners cost ~1.97×; just 4 real subscriber nodes cost
 ~2.1×.** The difference is `onNotify`'s per-event `SELECT`. Fan-out is therefore roughly
 4× worse per node than the idle-listener approximation suggested, and the cost lands on the
-**writer**. This is the measurement that makes interest-filtered delivery the
-highest-priority change in [`scaling.md`](scaling.md).
+**writer**.
+
+**Correction (2026-09-28):** this measurement's framing — that interest-filtered delivery
+would be *the* fix, ahead of everything else in `scaling.md` — did not hold up. Bucketing
+shipped (ADR 0074 D4) and removed the `onNotify` per-event `SELECT` difference this section
+measures for nodes outside a listener's interest, but the writer-side fall-off measured here
+(2.07×–2.19× at 4 nodes) is caused by the number of LISTENing backends, not by what they are
+interested in, and re-measuring after bucketing shipped found the same order of loss
+(1.68×–2.63× across repeat runs). The actual highest-leverage change for this cost is
+`CoalescingEventStore` (measured 1.21×–1.54× recovery), not further interest-filtering. See
+the [ADR 0074 amendment](adr/0074-storage-scale-out-decorators.md) and
+[`scaling.md` §3.1](scaling.md).
 
 ### Coalescing, as shipped (ADR 0074)
 

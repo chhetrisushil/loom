@@ -348,10 +348,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   C's listeners received nothing every run and printed "0 delivered … = 0 per event" beside a
   writer-throughput number that still dropped 2.28× in the same run — and `scaling.md` §3.1 read
   "**[open]** … nothing implements it yet" under a heading of SHIPPED. `attachListeners` now
-  takes the real channel list (`notifyChannels`, newly exported from `@loom/plugin-postgres`
-  beside `NOTIFY_CHANNEL`) and the bench fails outright (`VacuousDeliveryError` via
-  `assertDelivered`) if a listener set expected to receive something delivers zero — including
-  a negative case proving the guard does NOT fire on a legitimately-empty unrelated-channel row.
+  takes the real channel list off the writer's own store instance
+  (`PostgresEventStore#notifyChannels()`, an instance method, not a free function taking
+  `notifyBuckets` by hand — review round 1: a bench-side literal has no way to notice the
+  instance's configured value change) and the bench fails outright (`VacuousDeliveryError` via
+  `assertDelivered`) if any expected channel delivers nothing — a PER-CHANNEL check, not
+  merely a nonzero total, so a partial coverage gap (half the expected buckets silently idle)
+  cannot hide behind an aggregate that still reads nonzero. A negative case proves the guard
+  does NOT fire on a legitimately-empty unrelated-channel row, and another proves it fires on
+  partial coverage even when the aggregate total is nonzero.
   Scenario H gains a disjoint-interest variant (`partitionDisjoint`, confirming delivered
   notifications per node drop to exactly `1/nodeCount` while writer throughput does not track a
   clean prediction — plausibly single-host contention, not a fan-out win) and a
