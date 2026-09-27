@@ -26,6 +26,8 @@ export class CachingContentStore implements ContentStore {
   private cachedBytes = 0;
   readonly putStream?: NonNullable<ContentStore["putStream"]>;
   readonly getMany: NonNullable<ContentStore["getMany"]>;
+  readonly deleteIfUntouchedSince?: NonNullable<ContentStore["deleteIfUntouchedSince"]>;
+  readonly listPage?: NonNullable<ContentStore["listPage"]>;
 
   constructor(
     private readonly inner: ContentStore,
@@ -34,6 +36,21 @@ export class CachingContentStore implements ContentStore {
     // Forwarded uncached: the stream's bytes are consumed by the inner upload.
     if (inner.putStream !== undefined) {
       this.putStream = (stream) => inner.putStream!(stream);
+    }
+    // SPI 1.3.0 (ADR 0055 D5/D6): forwarded iff the inner store has them — a decorator that
+    // dropped them would silently make the sweep racy and `reclaimOrphans` refuse. Touch
+    // times are the inner store's; `put` already forwards, so a re-citation still bumps.
+    if (inner.deleteIfUntouchedSince !== undefined) {
+      this.deleteIfUntouchedSince = async (ref, cutoffMs) => {
+        this.evict(ref.__loomContent); // before: erasure is never served from a warm cache
+        const deleted = await inner.deleteIfUntouchedSince!(ref, cutoffMs);
+        // after: a concurrent miss may have re-admitted the bytes while the delete ran
+        if (deleted) this.evict(ref.__loomContent);
+        return deleted;
+      };
+    }
+    if (inner.listPage !== undefined) {
+      this.listPage = (opts) => inner.listPage!(opts);
     }
     this.getMany = async (refs) => {
       const results = new Array<Uint8Array | null>(refs.length);
@@ -85,12 +102,16 @@ export class CachingContentStore implements ContentStore {
 
   async delete(ref: ContentRef): Promise<void> {
     // Evict FIRST — erasure must never be resurrected from cache.
-    const cached = this.cache.get(ref.__loomContent);
+    this.evict(ref.__loomContent);
+    return this.inner.delete(ref);
+  }
+
+  private evict(address: string): void {
+    const cached = this.cache.get(address);
     if (cached !== undefined) {
-      this.cache.delete(ref.__loomContent);
+      this.cache.delete(address);
       this.cachedBytes -= cached.byteLength;
     }
-    return this.inner.delete(ref);
   }
 
   /** Cache hit with LRU touch (delete+set moves the key to the Map's tail). */

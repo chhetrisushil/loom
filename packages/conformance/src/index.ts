@@ -1249,6 +1249,17 @@ export interface ContentStoreLike {
   /** OPTIONAL (TS-10, ADR 0062): batched get — positional, null-on-absence. */
   getMany?(refs: readonly { __loomContent: string }[]): Promise<(Uint8Array | null)[]>;
   delete(ref: { __loomContent: string }): Promise<void>;
+  /**
+   * OPTIONAL (SPI 1.3.0, ADR 0055 D5): erase only if the blob's touch time is older than
+   * `cutoffMs`, atomically. `true` iff it deleted. A store that implements it MUST bump the
+   * touch time on every `put`/`putStream`, including a put of bytes it already holds.
+   */
+  deleteIfUntouchedSince?(ref: { __loomContent: string }, cutoffMs: number): Promise<boolean>;
+  /** OPTIONAL (SPI 1.3.0, ADR 0055 D6): keyset-paged enumeration, ascending by address. */
+  listPage?(opts: { cursor?: string; limit?: number; touchedBefore?: number }): Promise<{
+    entries: { address: string; touchedAt: number }[];
+    nextCursor?: string;
+  }>;
 }
 
 /**
@@ -1340,6 +1351,117 @@ export function runContentStoreConformance(
         expect(batched === null ? null : [...(batched as Uint8Array)]).toEqual(
           single === null ? null : [...single]
         );
+      }
+    });
+
+    // ── SPI 1.3.0 (ADR 0055 D5/D6): touch time, conditional delete, enumeration ──
+    //
+    // Clock-free on purpose: every cutoff below is derived from the touch time the store
+    // itself reports through `listPage`, so a backend stamping with its own clock (a database
+    // server's `now()`) is checked against that clock, not the test runner's.
+
+    /** The store's recorded touch time for one address, found by paging. */
+    async function touchedAt(store: ContentStoreLike, address: string): Promise<number> {
+      let cursor: string | undefined;
+      do {
+        const page = await store.listPage!({ ...(cursor !== undefined && { cursor }), limit: 100 });
+        const hit = page.entries.find((e) => e.address === address);
+        if (hit !== undefined) return hit.touchedAt;
+        cursor = page.nextCursor;
+      } while (cursor !== undefined);
+      throw new Error(`listPage never returned ${address}`);
+    }
+
+    const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 15));
+
+    it("deleteIfUntouchedSince erases only an untouched blob, atomically reporting whether it did (when supported)", async () => {
+      const store = factory();
+      if (store.deleteIfUntouchedSince === undefined) return; // OPTIONAL (SPI 1.3.0)
+      const ref = await store.put(bytes("conditional"));
+      // Touched after any cutoff at or before the epoch: refused, blob intact.
+      expect(await store.deleteIfUntouchedSince(ref, 0)).toBe(false);
+      expect(await store.get(ref)).not.toBeNull();
+      // Untouched since a cutoff far in the future: erased.
+      expect(await store.deleteIfUntouchedSince(ref, Number.MAX_SAFE_INTEGER)).toBe(true);
+      expect(await store.get(ref)).toBeNull();
+      // Absent: false, never a throw.
+      expect(await store.deleteIfUntouchedSince(ref, Number.MAX_SAFE_INTEGER)).toBe(false);
+    });
+
+    it("a put of bytes already held bumps the touch time, and the conditional delete then refuses (when supported)", async () => {
+      const store = factory();
+      if (store.deleteIfUntouchedSince === undefined || store.listPage === undefined) return;
+      const ref = await store.put(bytes("re-cited"));
+      const first = await touchedAt(store, ref.__loomContent);
+      await tick();
+      const again = await store.put(bytes("re-cited")); // dedup — and a re-citation
+      expect(again.__loomContent).toBe(ref.__loomContent);
+      const second = await touchedAt(store, ref.__loomContent);
+      expect(second).toBeGreaterThan(first); // INSERT OR IGNORE would leave it at `first`
+      // A sweep that decided on the OLD touch time is refused; the guard is not a no-op.
+      expect(await store.deleteIfUntouchedSince(ref, first + 1)).toBe(false);
+      expect(await store.get(ref)).not.toBeNull();
+      expect(await store.deleteIfUntouchedSince(ref, second + 1)).toBe(true);
+
+      if (store.putStream === undefined) return;
+      const streamed = await store.put(bytes("streamed-re-cite"));
+      const before = await touchedAt(store, streamed.__loomContent);
+      await tick();
+      async function* once(): AsyncGenerator<Uint8Array> {
+        yield bytes("streamed-re-cite");
+      }
+      await store.putStream(once());
+      expect(await touchedAt(store, streamed.__loomContent)).toBeGreaterThan(before);
+    });
+
+    it("listPage covers every blob exactly once across pages, even while the pages are being deleted (when supported)", async () => {
+      const store = factory();
+      if (store.listPage === undefined) return; // OPTIONAL (SPI 1.3.0)
+      const mine = new Set<string>();
+      for (let i = 0; i < 23; i++) mine.add((await store.put(bytes(`page-${i}`))).__loomContent);
+
+      const seen = new Map<string, number>();
+      let cursor: string | undefined;
+      let previous = "";
+      let deleteNext = false;
+      do {
+        const page = await store.listPage({ ...(cursor !== undefined && { cursor }), limit: 5 });
+        expect(page.entries.length).toBeLessThanOrEqual(5);
+        for (const entry of page.entries) {
+          expect(entry.address > previous).toBe(true); // ascending, keyset on address
+          previous = entry.address;
+          seen.set(entry.address, (seen.get(entry.address) ?? 0) + 1);
+          expect(typeof entry.touchedAt).toBe("number");
+          // Delete every other entry mid-scan: keyset paging must not skip a survivor.
+          if (deleteNext && mine.has(entry.address)) {
+            await store.delete({ __loomContent: entry.address });
+          }
+          deleteNext = !deleteNext;
+        }
+        cursor = page.nextCursor;
+      } while (cursor !== undefined);
+
+      for (const address of mine) expect(seen.get(address), address).toBe(1);
+      for (const count of seen.values()) expect(count).toBe(1);
+    });
+
+    it("listPage touchedBefore keeps only blobs touched strictly before it (when supported)", async () => {
+      const store = factory();
+      if (store.listPage === undefined) return;
+      const ref = await store.put(bytes("aged"));
+      const at = await touchedAt(store, ref.__loomContent);
+      const addresses = async (touchedBefore: number): Promise<string[]> =>
+        (await store.listPage!({ touchedBefore, limit: 1000 })).entries.map((e) => e.address);
+      expect(await addresses(at)).not.toContain(ref.__loomContent);
+      expect(await addresses(at + 1)).toContain(ref.__loomContent);
+    });
+
+    it("listPage rejects a limit that is not a positive integer — never 'no limit' (when supported)", async () => {
+      const store = factory();
+      if (store.listPage === undefined) return;
+      await store.put(bytes("bounded"));
+      for (const limit of [0, -1, 1.5, Number.NaN]) {
+        await expect(store.listPage({ limit }), String(limit)).rejects.toThrow(RangeError);
       }
     });
   });

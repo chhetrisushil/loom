@@ -23,6 +23,7 @@
     "@loom/dispatcher": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/memory": "workspace:*",
+    "@loom/plugin-content": "workspace:*",
     "@loom/replay-vm": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@loom/wire-abi": "workspace:*",

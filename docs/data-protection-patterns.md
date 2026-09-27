@@ -45,8 +45,17 @@ Not legal advice.*
    // operator cadence (nothing prunes on a timer):
    //   loom retention run  --db … --snap … --ttl 5184000000 --apply
    //   loom sweep content  --db … --content … --archive-db … \
-   //     --pin FINDING_RECORDED --ttl 2592000000 --apply
+   //     --pin FINDING_RECORDED --ttl 2592000000 --orphans --apply
    ```
+
+   **Once retention archives, `--archive-db` is REQUIRED.** The sweep sees only the citations in
+   the stores you pass it. An archived run's evidence is cited only from the archive, so a sweep
+   run without the archive treats it as an orphan and `--orphans` erases it (ADR 0055 D6). The
+   sweep cannot tell "no archive" from "an archive you left out", so it warns and proceeds.
+   Without `--orphans`, blobs whose runs were deleted, or whose `put` crashed before its event
+   was appended, are never reclaimed. An app that also cites blobs from its own tables passes
+   them as `roots` to `sweepUnpinnedContent` (D7). The SQLite content store makes every erase
+   conditional on the blob's touch time, so a blob re-cited while the sweep runs is kept (D5).
 
 4. **Scope tenants by construction.** Wrap stores in `TenantScopedEventStore` per tenant at
    composition time. Everything downstream — reads, retention enumeration, the pinned sweep,
@@ -64,10 +73,16 @@ Not legal advice.*
 ## What to write in a product proposal's governance section
 
 The three sentences a security review wants, all mechanically true here: *query literals never
-enter the durable log in plaintext* (redaction refs); *any subject's data is erasable without
-history rewrite, and erased data fails loudly rather than silently* (crypto-shredding +
+enter the durable log in plaintext* (redaction refs); *any subject's data in the log is erasable
+without history rewrite, and erased data fails loudly rather than silently* (crypto-shredding +
 `PAYLOAD_SHREDDED`/`ContentMissingError`); *evidence retention is a declared policy with an
 operator-driven, dry-run-first enforcement path* (K10.1 + K10.6 CLIs).
+
+Say the scope of the second sentence out loud: it covers the **log**. Content-store blobs
+(claim-checked and externalized bytes) are deduped plaintext keyed by hash, with no subject
+mapping, and `EraseCoordinator` never touches them. That is a gap. Erasing a subject's blobs
+takes an explicit `contentStore.delete(ref)` for each ref you know to be theirs (ADR 0055,
+Consequences of D5–D7).
 
 See also: [data-classification.md](data-classification.md), [compliance.md](compliance.md),
 [user-guide.md → Log lifecycle](user-guide.md), ADRs 0022/0046/0054/0055.

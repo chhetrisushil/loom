@@ -9,9 +9,16 @@ export {
   substituteContentRefs,
 } from "./content";
 export {
+  CONTENT_LIST_PAGE_DEFAULT_LIMIT,
+  CONTENT_LIST_PAGE_MAX_LIMIT,
   CONTENT_STORE_SPI_VERSION,
+  type ContentListPage,
+  type ContentListPageOptions,
+  type ContentPageEntry,
   type ContentStore,
+  contentListPageLimit,
   InMemoryContentStore,
+  type InMemoryContentStoreOptions,
 } from "./ContentStore";
 export { CachingContentStore, type CachingContentStoreOptions } from "./CachingContentStore";
 export {

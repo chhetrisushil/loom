@@ -686,17 +686,37 @@ interface ContentStore {
   getMany?(refs: readonly ContentRef[]): Promise<(Uint8Array | null)[]>   // OPTIONAL, coalesced
   putStream?(stream: AsyncIterable<Uint8Array>): Promise<ContentRef>      // OPTIONAL
   delete(ref: ContentRef): Promise<void>
+  // SPI 1.3.0 (ADR 0055 D5/D6), OPTIONAL, implement both — then EVERY put bumps the touch time
+  deleteIfUntouchedSince?(ref: ContentRef, cutoffMs: number): Promise<boolean>   // one atomic statement
+  listPage?(opts: ContentListPageOptions): Promise<ContentListPage>              // keyset on address
 }
+interface ContentListPageOptions { cursor?: string; limit?: number; touchedBefore?: number }
+interface ContentListPage { entries: ContentPageEntry[]; nextCursor?: string }   // no cursor = done
+interface ContentPageEntry { address: string; touchedAt: number }
+function contentListPageLimit(limit: number | undefined): number   // RangeError unless a positive integer
 function encodeValue(value: unknown): Uint8Array; function decodeValue(bytes: Uint8Array): unknown
 function isContentRef(value: unknown): value is ContentRef
-function collectContentRefs(value: unknown, visit: (address: string) => void): void
+// adds every ref in `value` to `into` (first occurrence per address wins); true iff it found one
+function collectContentRefs(value: unknown, into: Map<string, ContentRef>): boolean
 class ContentResolvingEventStore implements EventStore {}   // externalize on write, resolve on read
-class CachingContentStore implements ContentStore {}
-// GC: a ref is reachable only from the log, so a sweep needs to know what PINS one
+class CachingContentStore implements ContentStore {}        // forwards every optional the inner store has
+// GC: a ref is reachable only from the log (and from `roots`), so a sweep needs to know what PINS one
 function sweepUnpinnedContent(options: ContentSweepOptions): Promise<ContentSweepReport>
-function pinByEventKinds(store: EventStore, kinds: readonly string[]): PinPredicate
-const CONTENT_STORE_SPI_VERSION: string
-class InMemoryContentStore implements ContentStore {}
+interface ContentSweepOptions {
+  eventStores: readonly (Pick<EventStore, "read"> & ExecutionEnumerable)[]   // live AND every archive
+  contentStore: Pick<ContentStore, "delete" | "deleteIfUntouchedSince" | "listPage">
+  pinnedEventTypes: Iterable<string>; olderThanMs: number; now: number; dryRun?: boolean
+  roots?: () => AsyncIterable<string>   // D7: addresses held in your own tables, pinned
+  reclaimOrphans?: boolean              // D6: needs listPage + deleteIfUntouchedSince, else throws
+}
+interface ContentSweepReport {
+  executionsScanned: number; refsSeen: number; refsPinned: number; refsLoadBearing: number
+  reclaimed: string[]; orphansReclaimed: string[]
+  raceSafe: boolean                     // D5: false = plain delete, a mid-sweep re-cite can be lost
+}
+function pinByEventKinds(store: Pick<EventStore, "read">, kinds: Iterable<string>): (executionId: string) => Promise<boolean>
+const CONTENT_STORE_SPI_VERSION: string   // "1.3.0"
+class InMemoryContentStore implements ContentStore { constructor(opts?: { now?: () => number }) }
 #+end_src
 
 ** ~@loom/plugin-durable-state~ — carry state across wakes
@@ -722,7 +742,7 @@ class SqliteBranchRegistry implements BranchRegistry {}
 class SqliteMemoryStore implements MemoryStore {}        // FTS5 external-content index for `search`
 class SqliteReadModelStore implements ReadModelStore {}
 class SqliteDurableStateStore implements DurableStateStore {}
-class SqliteContentStore implements ContentStore {}
+class SqliteContentStore implements ContentStore { constructor(path: string, opts?: { now?: () => number }) }   // SPI 1.3.0
 class SqliteTimerStore implements TimerStore {}
 function sqliteStorage(path: string): CustomStorage      // the preset for defineConfig({ storage })
 #+end_src
