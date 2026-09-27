@@ -163,7 +163,12 @@ export function validateComponents(
     }
 
     for (const key of Object.keys(instance)) {
-      if (RESERVED_KEYS.has(key) || key in entry.properties) continue;
+      // `Object.hasOwn`, not `in` — `in` walks the prototype chain, and
+      // `entry.properties` is a plain object, so a prop keyed "toString",
+      // "hasOwnProperty" or an own "__proto__" (JSON.parse creates one as a
+      // normal own property, never as prototype assignment) would read as
+      // "declared" via Object.prototype and skip this check entirely.
+      if (RESERVED_KEYS.has(key) || Object.hasOwn(entry.properties, key)) continue;
       findings.push({
         code: "undeclared-prop",
         severity: "error",

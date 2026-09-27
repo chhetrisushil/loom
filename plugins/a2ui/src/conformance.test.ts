@@ -65,6 +65,35 @@ describe("validateComponents", () => {
     expect(report.findings[0]?.message).toContain("rows");
   });
 
+  it("FAILS a prop keyed like an inherited Object.prototype member, not skips it", () => {
+    // `key in entry.properties` walks the PROTOTYPE CHAIN, and `entry.properties`
+    // is a plain object — so "toString"/"hasOwnProperty"/"constructor" read as
+    // "declared" even though no catalogue ever declares them. JSON.parse gives an
+    // instance real OWN properties under these names (it never does prototype
+    // assignment, unlike an object-literal `__proto__:` key), so a wire payload
+    // can smuggle exactly these keys past the check.
+    const instance = JSON.parse(
+      '{"id":"root","component":"Text","text":"hi","toString":"evil","hasOwnProperty":"evil"}'
+    ) as ComponentInstance;
+    const report = validateComponents([instance], defaultCatalog, { requireRoot: true });
+    expect(report.ok).toBe(false);
+    expect(codes(report).filter((c) => c === "undeclared-prop")).toHaveLength(2);
+  });
+
+  it('FAILS an own property literally named "__proto__" from a JSON payload', () => {
+    // JSON.parse always creates a normal OWN data property, even for the name
+    // "__proto__" — unlike an object-literal `__proto__:` key, this is not
+    // prototype assignment, so `instance`'s own prototype is untouched. It must
+    // still be checked against the catalogue's OWN declared keys.
+    const instance = JSON.parse(
+      '{"id":"root","component":"Text","text":"hi","__proto__":{"evil":1}}'
+    ) as ComponentInstance;
+    expect(Object.prototype.hasOwnProperty.call(instance, "__proto__")).toBe(true);
+    const report = validateComponents([instance], defaultCatalog, { requireRoot: true });
+    expect(report.ok).toBe(false);
+    expect(codes(report)).toContain("undeclared-prop");
+  });
+
   it("FAILS two components sharing an id", () => {
     const report = validateComponents(
       [column("root", ["t"]), text("t", "a"), text("t", "b")],
@@ -238,6 +267,24 @@ describe("validateComponents — knownComponents (the recompose merge)", () => {
     expect(report.ok).toBe(false);
     expect(codes(report)).toContain("dangling-child");
   });
+
+  it("FAILS when a later batch REPLACES an already-known parent with one whose reference no longer resolves", () => {
+    // "root" previously resolved fine (it pointed at "a", which existed). This
+    // batch resends "root" — replacing it outright, as recompose always does —
+    // pointing at "ghost" instead. The parent that already existed is exactly
+    // the one whose reference now breaks; nothing about "a" having once been
+    // valid carries over to the replacement.
+    const known = new Map<string, ComponentInstance>([
+      ["root", column("root", ["a"])],
+      ["a", text("a", "hello")],
+    ]);
+    const report = validateComponents([column("root", ["ghost"])], defaultCatalog, {
+      requireRoot: false,
+      knownComponents: known,
+    });
+    expect(report.ok).toBe(false);
+    expect(codes(report)).toContain("dangling-child");
+  });
 });
 
 // ── validateCatalog ──────────────────────────────────────────────────────────
@@ -398,6 +445,15 @@ describe("A2UISurfaceBridge.recompose — the structural update", () => {
     // "root" — only a cycle once combined with the "root" the client already
     // holds, which `this.components` (the previous batch only) would not show.
     expect(() => b.recompose([row("a", ["root"])])).toThrow(/child-cycle/);
+  });
+
+  it("REFUSES a batch that REPLACES an already-delivered parent with one whose reference no longer resolves", () => {
+    // The client already holds "root" -> "t" (from the initial view/snapshot).
+    // This batch resends "root" — a full replacement, exactly what `recompose`
+    // does — now pointing at an id nothing defines.
+    const b = bridge(); // view = [column("root", ["t"]), text("t", "hello")]
+    b.snapshot();
+    expect(() => b.recompose([column("root", ["ghost"])])).toThrow(/dangling-child/);
   });
 });
 

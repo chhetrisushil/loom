@@ -1082,6 +1082,15 @@ sync RPC in the log, but by the client's *result* re-entering as an ordinary rec
 runtime is needed; determinism rests on **result-as-recorded-fact + a deterministic
 ~callId~**. No new event types; ~EVENT_SCHEMA~/~KERNEL_ABI~ unchanged (ADR 0070).
 
+The catalogue named by ~catalogId~ is an enforced claim, not a label
+([[file:adr/0088-blueprint-conformance.md][ADR 0088]] D5, amended): the constructor and
+~recompose~ both throw for a component tree the supplied ~catalog~ does not cover (structural
+checks below), and ~callFunction~ throws for a name the catalogue does not declare under
+~functions~ — a catalogue declaring none refuses every call rather than allowing one
+unverifiably. Naming ~catalogId~ without supplying ~catalog~ is refused outright (unless it is
+the default, which ~defaultCatalog~ backs) — the bridge would otherwise stamp an id it cannot
+check a single component against.
+
 #+begin_src typescript
 const A2UI_VERSION = "v1.0";
 
@@ -1100,6 +1109,18 @@ class A2UISurfaceBridge {
   get surfaceId(): string;
   snapshot(): A2UIServerMessage[];             // createSurface + current data (late-joining client)
   handleEvent(event: EventEnvelope): A2UIServerMessage[];  // 0+ createSurface/updateDataModel messages
+  // Structural update — a new/edited subtree, as opposed to the data updates
+  // handleEvent produces. Validated (throws, like the constructor) against the
+  // CLIENT's merged view (every batch sent so far, keyed by id — a client MERGES
+  // updateComponents by id, it does not replace), not against this batch alone,
+  // so a batch may correctly reference a sibling delivered in any earlier batch.
+  // requireRoot is false: an updateComponents batch may legitimately be a
+  // subtree. Before the session opens, emits nothing — the tree becomes what the
+  // pending createSurface will carry.
+  recompose(components: ComponentInstance[]): A2UIServerMessage[];
+  // Which ids a proposed recompose would DROP (ADR 0094's preservesNodes,
+  // shared with blueprint identity) — a pure query, run BEFORE committing.
+  identityDiff(next: readonly ComponentInstance[]): IdentityReport;
   close(): A2UIServerMessage[];                // deleteSurface
   ingestAction(msg: A2UIClientMessage): ActionPayload | null;  // inbound: normalize a client action
   // callFunction (bidirectional RPC). callId MUST be deterministic (never random)
@@ -1137,8 +1158,8 @@ function dotPathToPointer(dotPath: string): string;   // "a.b" → "/a/b" (RFC 6
 #+end_src
 
 *Structural conformance* ([[file:adr/0088-blueprint-conformance.md][ADR 0088]] D5, amended). Never
-throws; every finding from one pass. Exact and structural only — checks `children` REFERENCES, not
-component prop VALUES (still JSON-Schema `$ref` documents, unchecked).
+throws; every finding from one pass. Exact and structural only — checks ~children~ REFERENCES, not
+component prop VALUES (still JSON-Schema ~$ref~ documents, unchecked).
 
 #+begin_src typescript
 function validateComponents(components: readonly ComponentInstance[], catalog: A2UICatalog, options: {
