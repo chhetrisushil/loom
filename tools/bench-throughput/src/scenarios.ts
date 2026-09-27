@@ -4,6 +4,7 @@ import type { EventEnvelope } from "@loom/core";
 import { flow$, step$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { CoalescingEventStore } from "@loom/event-runtime";
+import type { EventStore } from "@loom/event-runtime";
 import { NOTIFY_CHANNEL, PostgresEventStore, PostgresSnapshotStore } from "@loom/plugin-postgres";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
@@ -230,11 +231,25 @@ export async function appendWithoutNotify(
   });
 }
 
-/** Attach `count` idle LISTEN connections; returns a disposer. */
+/**
+ * Attach `count` idle LISTEN connections, each LISTENing on every channel in
+ * `channels`. Returns a disposer.
+ *
+ * `channels` matters: before ADR 0074 D4 bucketing, one global channel (`NOTIFY_CHANNEL`)
+ * was the whole story. A store built with `notifyBuckets` (default 16) instead publishes
+ * on `loom_events_<bucket>`, so a listener parked on the legacy name alone now hears
+ * NOTHING — which is exactly the bug this scenario used to have (see `assertDelivered`).
+ * Callers pass either every bucket channel (`notifyChannels` from `@loom/plugin-postgres`,
+ * approximating a node interested in everything) or a channel nobody publishes to, to
+ * measure the writer's cost of a LISTENing backend independent of whether it is on the
+ * right channel.
+ */
 export async function attachListeners(
   connectionString: string,
-  count: number
+  count: number,
+  opts: { channels: string[] }
 ): Promise<{ received: () => number; close: () => Promise<void> }> {
+  const { channels } = opts;
   const clients: Client[] = new Array(count);
   let received = 0;
   for (let i = 0; i < count; i++) {
@@ -243,7 +258,9 @@ export async function attachListeners(
     client.on("notification", () => {
       received++;
     });
-    await client.query(`LISTEN ${NOTIFY_CHANNEL}`);
+    for (const channel of channels) {
+      await client.query(`LISTEN "${channel}"`);
+    }
     clients[i] = client;
   }
   return {
@@ -252,6 +269,55 @@ export async function attachListeners(
       await Promise.all(clients.map((c) => c.end()));
     },
   };
+}
+
+/** Raised by {@link assertDelivered} — see its docstring. */
+export class VacuousDeliveryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "VacuousDeliveryError";
+  }
+}
+
+/**
+ * The guard that keeps section C honest. Before ADR 0074 D4 bucketing shipped,
+ * `attachListeners` LISTENed on the pre-bucketing global channel while
+ * `PostgresEventStore` had moved to bucketed channels — so every listener heard nothing,
+ * and the section printed "0 delivered … = 0 per event" as if that were a measurement,
+ * right next to a writer-throughput number that had, in fact, dropped 2.28x from those
+ * same listeners. A wrong wire-up produced a self-contradicting but green report.
+ *
+ * Call this after every listener-fan-out row with `expectDelivery` set to whether the
+ * listeners were subscribed to a channel the run's appends actually publish on. When they
+ * were and nothing arrived, that is not a small number worth reporting — it means the
+ * scenario measured nothing, and printing it anyway is how this bug shipped for a year.
+ */
+export function assertDelivered(
+  label: string,
+  delivered: number,
+  listenerCount: number,
+  expectDelivery: boolean
+): void {
+  if (expectDelivery && listenerCount > 0 && delivered === 0) {
+    throw new VacuousDeliveryError(
+      `${label}: 0 notifications delivered to ${listenerCount} listener(s) though delivery was expected on the channel(s) they LISTENed on — this scenario measured nothing. (This is the exact shape of the pre-fix bug: idle listeners parked on a channel the writer never publishes on.)`
+    );
+  }
+}
+
+/**
+ * Split `ids` into `nodeCount` disjoint shares whose union is `ids` — scenario H's
+ * disjoint-interest variant, where no two subscriber nodes are interested in the same
+ * execution. Round-robin, so each share's bucket spread is close to uniform rather than
+ * a contiguous run landing disproportionately in a few buckets.
+ */
+export function partitionDisjoint(ids: readonly string[], nodeCount: number): string[][] {
+  if (nodeCount <= 0) return [];
+  const shares: string[][] = Array.from({ length: nodeCount }, () => []);
+  for (let i = 0; i < ids.length; i++) {
+    (shares[i % nodeCount] as string[]).push(ids[i] as string);
+  }
+  return shares;
 }
 
 // ── D. End-to-end durable executions ──────────────────────────────────────────
@@ -535,6 +601,17 @@ export async function crossExecutionBatch(
 // delivered notification to fetch the row. This spawns genuine processes running the real
 // store, so the writer faces a realistic multi-node load and the per-event read
 // amplification is included rather than assumed.
+//
+// Two interest shapes, because "every node subscribed to everything" cannot show
+// bucketing's own benefit either way:
+//   - shared:   every node subscribes to every execution the writer touches (the original
+//               shape; a stand-in for a fully-overlapping deployment).
+//   - disjoint: `partitionDisjoint` gives each node its own, non-overlapping share, which
+//               is where bucketing actually helps — a node no longer receives, and
+//               `onNotify`-SELECTs on, another node's traffic.
+// Plus a coalesced variant: the writer appends through `CoalescingEventStore` instead of
+// one `pg_notify` per event, to show the mitigation ADR 0074 recommends for multi-node
+// fan-out (one notifying commit per batch, not per event).
 
 export interface SubscriberNodes {
   /** Total notifications delivered across all nodes, once stopped. */
@@ -542,22 +619,24 @@ export interface SubscriberNodes {
 }
 
 /**
- * Fork `count` subscriber processes, each subscribing to every id in `executionIds`.
- * Resolves once all of them report ready, so no node misses events the writer emits.
+ * Fork one subscriber process per entry of `idsPerNode`, each subscribing to exactly its
+ * own share of execution ids — same-array entries for scenario H's shared-interest variant
+ * (every node wants everything), disjoint entries for the disjoint-interest variant
+ * (`partitionDisjoint`). Resolves once every node reports ready, so no node misses events
+ * the writer emits.
  */
 export async function spawnSubscriberNodes(
   pgUrl: string,
-  count: number,
-  executionIds: string[]
+  idsPerNode: readonly string[][]
 ): Promise<SubscriberNodes> {
-  if (count === 0) {
+  if (idsPerNode.length === 0) {
     return { stop: async () => ({ delivered: 0, nodes: 0 }) };
   }
   // Sibling of this module in dist/ — the child is compiled alongside it.
   const childPath = join(__dirname, "subscriberChild.js");
   const children: ChildProcess[] = [];
   await Promise.all(
-    Array.from({ length: count }, () => {
+    idsPerNode.map((executionIds) => {
       const child = fork(childPath, [pgUrl, executionIds.join(",")], { stdio: "inherit" });
       children.push(child);
       return new Promise<void>((resolve, reject) => {
@@ -606,7 +685,7 @@ export function subscribedExecutionIds(concurrency: number, tag: string): string
 }
 
 export async function appendWatched(
-  store: PostgresEventStore,
+  store: EventStore,
   cfg: BenchConfig,
   concurrency: number,
   ids: string[],

@@ -1,4 +1,4 @@
-export { PostgresEventStore } from "./PostgresEventStore";
+export { PostgresEventStore, notifyChannels } from "./PostgresEventStore";
 export { PostgresSnapshotStore } from "./PostgresSnapshotStore";
 export { PostgresBranchRegistry } from "./PostgresBranchRegistry";
 export { migrate as migratePostgresStores, NOTIFY_CHANNEL } from "./schema";

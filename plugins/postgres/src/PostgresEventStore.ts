@@ -30,6 +30,24 @@ export interface PostgresEventStoreOptions {
 }
 
 /**
+ * Every NOTIFY channel a store built with `notifyBuckets` publishes across (ADR 0074 D4).
+ * Exported so an external LISTENer that is not itself a `PostgresEventStore` — a
+ * bring-your-own subscriber, a conformance check, or `tools/bench-throughput`'s fan-out
+ * scenarios — can subscribe to everything this store's `append` fires without re-deriving
+ * the bucket-naming scheme (`${NOTIFY_CHANNEL}_<bucket>`) by hand. `notifyBuckets <= 1`
+ * returns the single legacy channel, byte-identical to what {@link PostgresEventStore}
+ * itself publishes on in that mode. Pure and independent of any store instance: the
+ * per-append hot path (`channelFor`, below) computes a channel name directly rather than
+ * allocating this array, so this helper is additive and changes no existing behaviour.
+ */
+export function notifyChannels(notifyBuckets: number): string[] {
+  const buckets = Math.max(1, notifyBuckets);
+  return buckets === 1
+    ? [NOTIFY_CHANNEL]
+    : Array.from({ length: buckets }, (_, bucket) => `${NOTIFY_CHANNEL}_${bucket}`);
+}
+
+/**
  * #306 — normalize the `UNIQUE (execution_id, sequence)` violation (SQLSTATE 23505) to the
  * portable {@link DuplicateSequenceError}, so a caller need not know which backend it is
  * talking to (or match on driver text) to recognise a lost sequence race.

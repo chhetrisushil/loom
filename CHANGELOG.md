@@ -334,6 +334,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`docs/scaling.md` and ADR 0074 D4 corrected: bucketed NOTIFY fixes client-side delivery,
+  not the writer-side cost; `tools/bench-throughput` section C is un-vacuated**
+  ([ADR 0074](docs/adr/0074-storage-scale-out-decorators.md) Amendment). D4 claimed bucketed
+  `LISTEN loom_events_<bucket>` "fixes an O(events × nodes) broadcast whose cost lands on the
+  writer." It fixes client-side filtering and the follow-up per-notification `SELECT`; it does
+  not fix the writer cost, which is per LISTENing backend and channel-independent — a listener
+  that receives **zero** notifications (LISTENing on a channel nobody publishes to) costs the
+  writer almost as much as one receiving every notification (measured 1.18×–1.73× vs.
+  1.22×–1.90×, 4 runs, own local PG 17). The bug this corrects was caught because the bench
+  that produced D4's original numbers had gone vacuous: `attachListeners` still LISTENed on the
+  pre-bucketing legacy channel after `PostgresEventStore` moved to bucketed channels, so section
+  C's listeners received nothing every run and printed "0 delivered … = 0 per event" beside a
+  writer-throughput number that still dropped 2.28× in the same run — and `scaling.md` §3.1 read
+  "**[open]** … nothing implements it yet" under a heading of SHIPPED. `attachListeners` now
+  takes the real channel list (`notifyChannels`, newly exported from `@loom/plugin-postgres`
+  beside `NOTIFY_CHANNEL`) and the bench fails outright (`VacuousDeliveryError` via
+  `assertDelivered`) if a listener set expected to receive something delivers zero — including
+  a negative case proving the guard does NOT fire on a legitimately-empty unrelated-channel row.
+  Scenario H gains a disjoint-interest variant (`partitionDisjoint`, confirming delivered
+  notifications per node drop to exactly `1/nodeCount` while writer throughput does not track a
+  clean prediction — plausibly single-host contention, not a fan-out win) and a
+  `CoalescingEventStore` variant (measured 1.21×–1.54× recovery). **Recommend
+  `CoalescingEventStore` for multi-node deployments with live subscribers**, and record a
+  transport change (separate notifier connection, watermark polling, or a Redis/NATS bus as a
+  3P plugin) as considered and rejected for now — `CoalescingEventStore`'s measured headroom is
+  enough without it. No SPI change, no kernel change; `EVENT_STORE_SPI_VERSION` stays 1.4.0.
+
 - **Kernel: a duplicate `start()` with a caller-chosen execution id is refused before any effect
   runs** ([ADR 0103](docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md); KERNEL_ABI and
   EVENT_SCHEMA unchanged). `start()` checked nothing: the bootstrap `EXECUTION_STARTED` was folded,

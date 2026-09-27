@@ -142,8 +142,11 @@ and log scans on the read path.
 
 - **`appendBatch` / group commit** — designed and frozen, deferred behind an evidence gate
   (ADR 0065). Not implemented.
-- **Interest-filtered event delivery** — `PostgresEventStore` broadcasts on one global
-  channel; filtering is client-side **[code]**.
+- **Writer-side NOTIFY fan-out** — `PostgresEventStore` now buckets delivery (section 3.1),
+  which fixes client-side filtering and the per-notification `SELECT`. It does **not** fix
+  the cost landing on the writer: that scales with the number of LISTENing backends,
+  independent of channel, and is unsolved **[measured]**. `CoalescingEventStore` is the
+  available mitigation (section 3.3).
 - **Log partitioning / sharding** — nothing. One `events` table, one primary. No
   consistent-hash routing, no multi-primary support, nowhere in the codebase **[code]**.
 - **Cross-execution append coalescing** — nothing, and not in any ADR.
@@ -154,62 +157,98 @@ and log scans on the read path.
 
 This ordering deliberately does **not** lead with the biggest headline multiplier.
 
-### 3.1 Interest-filtered notify delivery — SHIPPED (ADR 0074 D4)
+### 3.1 Interest-filtered notify delivery — SHIPPED, client-side only (ADR 0074 D4, amended 2026-09-28)
 
-**Status: implemented.** `PostgresEventStore` now publishes and LISTENs on bucketed
-channels (`notifyBuckets`, default 16), so a node receives only the buckets it holds
-subscriptions for. `notifyBuckets: 1` keeps the legacy single-channel behaviour verbatim as
-a rolling-upgrade escape hatch. The backend-independent half — the subscriber registry and
+**Status: implemented, but narrower than first claimed.** `PostgresEventStore` now
+publishes and LISTENs on bucketed channels (`notifyBuckets`, default 16), so a node
+receives only the buckets it holds subscriptions for instead of every event in the
+database. `notifyBuckets: 1` keeps the legacy single-channel behaviour verbatim as a
+rolling-upgrade escape hatch. The backend-independent half — the subscriber registry and
 the interest set a transport narrows on — is `SubscriberRegistry` in
 `packages/event-runtime`, so a bring-your-own backend writes only its transport.
 
-The measurements below are what motivated it.
+Bucketing fixes exactly two things: client-side filtering (a node no longer receives, and
+discards, events for executions it has no interest in) and the follow-up `SELECT` volume
+(fewer deliveries ⇒ fewer per-notification row fetches). **It does not fix the cost that
+lands on the writer.** That cost turned out to be per LISTENing backend on the
+database, independent of which channel it LISTENs on — bucketing changes what a listener
+*receives*, not how many backends the writer has to signal. This was verified against a
+prior "SHIPPED" claim in this section that turned out to be wrong: `tools/bench-throughput`
+section C was still LISTENing on the pre-bucketing global channel while the store had moved
+to bucketed channels, so it measured "0 delivered" every run — a vacuous, self-contradicting
+result that shipped for a release. `attachListeners` now takes the real channel list and the
+bench fails outright (`assertDelivered`) if a listener set that should receive something
+receives nothing.
 
-Every append fires `pg_notify` on a single global channel, and every subscribing node
-receives every event and filters client-side **[code]**. The measured cost **[measured]**:
+**Pre-bucketing measurements (what motivated bucketing in the first place) [measured]:**
 
 | variant (c=128) | events/sec |
 |---|---:|
 | without the notify CTE | 30,884 |
-| shipped | 19,453 |
-| shipped + 16 **idle** LISTEN connections | 9,886 |
+| shipped (pre-bucketing, single global channel) | 19,453 |
+| + 16 **idle** LISTEN connections on that channel | 9,886 |
 
-Notify alone costs ~37% of append throughput. Sixteen listeners subscribed to *nothing in
-particular* halve it again — delivery measured at exactly 16 notifications per appended
-event. This is O(events × nodes), and critically **the cost lands on the writer**, not just
-on readers. It gets worse with every node you add, which makes it the thing that breaks
-horizontal scale-out specifically.
+Notify alone cost ~37% of append throughput; 16 listeners subscribed to *nothing in
+particular* (the pre-bucketing shape — every listener held the global channel) roughly
+halved it again, with delivery of exactly 16 notifications per event.
 
-There is a further multiplier: `onNotify` issues a `SELECT` per notification to fetch the
-event row **[code]**, so each interested node adds a round-trip per event on top.
+**Post-bucketing measurements, re-captured against the fixed bench (own throwaway PG 17,
+Apple M2, 8 cores, single host, shared with other local work — see the machine caveat below)
+[measured]**, 4 runs at c=128, 16 listeners:
 
-**Why this is the cleanest change in the document:** `EventStore.subscribe(executionId,
-handler)` is *already* per-execution. The interest scope exists in the API — only the
-Postgres transport ignores it. So this is a transport-internal fix: no SPI change, no
-kernel change, no event-schema change, no ADR conflict. Options, cheapest first:
+| variant | events/sec (4 runs) | vs. no-listener baseline (same run) |
+|---|---|---:|
+| no listeners (baseline) | 14,651 – 21,330 | 1× |
+| 16 listeners on an **unrelated** channel (nothing published there) | 10,041 – 16,726 | **1.18× – 1.73×** |
+| 16 listeners on the real bucket channels (full interest — receives every event, 16/event) | 11,202 – 12,975 | **1.22× – 1.90×** |
 
-1. **Per-execution channels** — `LISTEN loom_events_<hash(executionId)>` over a fixed
-   channel space, so a node receives only buckets it subscribes to.
-2. **Carry the payload in the notification** to eliminate the follow-up SELECT (bounded by
-   the 8000-byte NOTIFY limit — falls back to a fetch when over).
-3. Drop to a purpose-built bus (Redis, NATS) behind the same `subscribe` seam if Postgres
-   delivery stays the constraint.
+The unrelated-channel row is the finding: listeners that receive **zero notifications**
+still cost the writer nearly as much as listeners receiving every notification. Bucketing
+narrows *what* a listener receives; it does not reduce *how many backends the writer has to
+signal*, and that signalling is where most of the cost is. This reading of PostgreSQL's
+notify internals (one global, in-memory notify queue that every LISTENing backend on the
+database is signalled from, independent of channel) is **[open]** as a mechanism — the
+measurement above is what is confirmed.
 
-Option 1 alone should recover most of the fan-out cost. **[open]** — the specific recovery
-is still unmeasured (nothing implements it yet), but the cost being recovered is now
-measured end-to-end. Scenario H forks **real subscriber processes** rather than idle
-listeners, so `onNotify`'s per-notification `SELECT` is included:
+**Real subscriber processes (scenario H), re-captured — 3 runs, discarding one run that
+showed a simultaneous 5–10× slowdown across every H row including the baseline, consistent
+with contention from other work on the shared host, not the fan-out mechanism itself:**
 
-| subscriber nodes | writer events/sec (2 runs) |
+| subscriber nodes, shared interest | writer events/sec (3 runs) |
 |---|---:|
-| 0 | 18,096 · 21,175 |
-| 2 | 12,521 · 12,742 |
-| 4 | 8,275 · 10,223 |
+| 0 | 16,759 – 20,414 |
+| 2 | 8,218 – 15,297 |
+| 4 | 7,755 – 9,964 |
 
-**2.19× / 2.07× writer throughput lost to 4 subscriber nodes**, with delivery confirmed at
-exactly 1 notification per node per event. For scale: 16 *idle* listeners cost ~1.97×, so
-**4 real nodes cost about what 16 idle ones did** — the gap is the per-event `SELECT`. The
-idle-listener approximation understated fan-out by roughly 4× per node.
+**1.68× – 2.63× writer throughput lost to 4 subscriber nodes** (consistent with the
+pre-bucketing 2.07–2.19× within run-to-run noise), with delivery confirmed at exactly 1
+notification per node per event — bucketing did not move this number, because every node in
+this variant subscribes to every execution.
+
+A **disjoint-interest** variant (each node subscribed to its own non-overlapping share of
+executions, `partitionDisjoint`) confirms bucketing's actual, narrower benefit: delivered
+notifications per node per event drop to `1/nodeCount` exactly (1.0 → 0.5 → 0.25 for
+2/4 nodes), matching the bucket filter working as designed. Writer throughput does **not**
+track a clean prediction from that alone — across runs it sometimes matched shared interest
+at the same node count and sometimes measured visibly higher, most plausibly because fewer
+per-node `onNotify` SELECTs freed CPU/connections that the writer was contending for **on
+this same single-host loopback Postgres** (see the re-measuring caveat below), not because
+the writer's own signalling cost went down. A distributed deployment would not get that
+side effect.
+
+**The available mitigation is `CoalescingEventStore` (section 3.3), not a transport
+change.** Batching appends means one notifying commit per BATCH instead of per event, which
+amortizes the per-commit signalling cost that the per-event path pays regardless of
+channel. Measured recovery, coalesced writer vs. the uncoalesced 4-node case (3 valid runs):
+**1.21× – 1.54×**.
+
+**Transport options for the writer-side cost, considered and rejected for now** (see the
+[ADR 0074 amendment](adr/0074-storage-scale-out-decorators.md) for the full analysis): a
+separate batched notifier connection (the same amortization `CoalescingEventStore` already
+gives), watermark polling instead of LISTEN, and a Redis/NATS bus behind `subscribe` as a
+3P plugin. `CoalescingEventStore`'s measured headroom is enough that none of these earn
+their complexity today; revisit if a real multi-node deployment is still writer-bound after
+coalescing.
 
 ### 3.2 The read path — fixed, and what it revealed
 
@@ -394,16 +433,31 @@ LOOM_TEST_POSTGRES_URL=postgres://… pnpm --filter @loom/bench-throughput bench
 
 See `tools/bench-throughput/README.md`. Absolute numbers are host-relative — compare
 relative movement between scenarios on one host, and re-capture a baseline on the hardware
-you intend to quote.
+you intend to quote. The section 3.1 numbers above were captured on a throwaway local PG 17
+cluster on an 8-core Apple M2, on a host also running other local work — not a dedicated
+benchmark machine — which is exactly why they are reported as 3–4-run ranges rather than
+single points; do not read the specific bounds as a portable SLA.
 
 Scenario coverage: A–F as described above, plus **G** (cross-execution coalescing with
-per-row fencing) and **H** (multi-node fan-out with real forked subscriber processes).
+per-row fencing) and **H** (multi-node fan-out with real forked subscriber processes: **H1**
+shared interest, **H2** disjoint interest, **H3** a coalesced writer). Section C also LISTENs
+on the real bucket channels the store publishes on (not the legacy channel — a prior version
+of this bench got that wrong; see 3.1) and on a channel nobody publishes to, and fails the
+run outright (`assertDelivered`) if a listener set that should receive something delivers
+zero.
 
 Reading notes: section F's ops/sec column carries tail-outlier noise on long logs — compare
 p50. Section G's absolutes are noisy run to run; compare the ratio against section B at the
-same batch size, and repeat runs before quoting a number. Section H is stable across runs.
+same batch size, and repeat runs before quoting a number. **Section H is NOT stable across
+runs** (corrected — a prior version of this document claimed it was): writer throughput
+under fan-out varied 1.68×–2.63× loss at 4 nodes across otherwise-identical repeat runs, and
+one run showed every H row simultaneously degrade 5–10×, consistent with contention from
+other processes on the host rather than the mechanism being measured. Run it more than
+once, on an otherwise-idle host, before quoting a number from section H.
 
 Remaining gap: every measurement is single-host loopback Postgres. Scenario H's "nodes" are
 separate processes on one machine, which captures the per-node `SELECT` amplification and
 the notify broadcast but not real network latency or a contended NIC. A genuinely
-distributed run would likely make the fan-out cost worse, not better.
+distributed run would likely make the fan-out cost worse, not better. H2's writer-throughput
+numbers in particular may be a single-host artifact (see 3.1) rather than a fan-out result
+that would reproduce across a real network.
