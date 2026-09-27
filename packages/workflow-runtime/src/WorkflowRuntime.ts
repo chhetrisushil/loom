@@ -1263,7 +1263,7 @@ export class WorkflowRuntime {
         executionId,
         snapshot.sequence + 1
       );
-      vm = new ReplayVM(eventsAfterSnapshot, normalizeSnapshotState(snapshot.state));
+      vm = new ReplayVM(eventsAfterSnapshot, this.seedOf(snapshot, executionId, workflowId));
     } else {
       vm = new ReplayVM(allEvents, {
         executionId,
@@ -1388,7 +1388,7 @@ export class WorkflowRuntime {
     let vm: ReplayVM;
     if (snapshot) {
       const tail = await this.eventStore.readFrom(executionId, snapshot.sequence + 1);
-      vm = new ReplayVM(tail, normalizeSnapshotState(snapshot.state));
+      vm = new ReplayVM(tail, this.seedOf(snapshot, executionId, workflowId));
     } else {
       vm = new ReplayVM(allEvents, {
         executionId,
@@ -1531,6 +1531,33 @@ export class WorkflowRuntime {
   }
 
   /**
+   * L11 (ADR 0106) — the state a snapshot seeds a fold with, named for the execution it was
+   * loaded FOR. A snapshot's identity fields are a copy, and a copy can be wrong: compaction
+   * before ADR 0106 checkpointed `executionId`/`workflowId`/`workflowVersion` as `""`, and
+   * those checkpoints are durable. Identity is taken from the caller (the id it read, the
+   * workflowId sequence 0 records); a blank version is filled from the registered flow —
+   * exactly what the un-snapshotted path seeds, so both paths fold to the same state. A
+   * snapshot that already names its execution is returned as-is (no copy).
+   */
+  private seedOf(snapshot: Snapshot, executionId: string, workflowId: string): ExecutionState {
+    const state = normalizeSnapshotState(snapshot.state);
+    if (
+      state.executionId === executionId &&
+      state.workflowId === workflowId &&
+      state.workflowVersion !== ""
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      executionId,
+      workflowId,
+      workflowVersion:
+        state.workflowVersion || (this.flows.get(workflowId)?.definition.version ?? ""),
+    };
+  }
+
+  /**
    * The un-authorized fold used by the kernel internally (cancel, timers, recovery).
    *
    * Snapshot FIRST, then a bounded tail — never the whole log. Reading the full log up
@@ -1559,7 +1586,10 @@ export class WorkflowRuntime {
       const anchor = await readRangeOf(this.eventStore, executionId, 0, 0);
       if (anchor.length === 0) return null;
       const tail = await this.eventStore.readFrom(executionId, snapshot.sequence + 1);
-      return new ReplayVM(tail, normalizeSnapshotState(snapshot.state)).getState();
+      return new ReplayVM(
+        tail,
+        this.seedOf(snapshot, executionId, anchor[0]!.workflowId)
+      ).getState();
     }
     // No snapshot: the log IS the bounded read (it is shorter than `snapshotEvery`, or
     // snapshots are off), and it answers existence itself — no extra round-trip. Same
@@ -1623,7 +1653,12 @@ export class WorkflowRuntime {
     const window = await readRangeOf(this.eventStore, parentExecutionId, from, atSequence);
     const parentEvents = window;
 
-    const workflowId = base?.state.workflowId ?? window[0]?.workflowId ?? "";
+    // `||`, not `??`: a checkpoint written before ADR 0106 carries a BLANK workflowId.
+    const workflowId =
+      base?.state.workflowId ||
+      window[0]?.workflowId ||
+      (await readRangeOf(this.eventStore, parentExecutionId, 0, 0))[0]?.workflowId ||
+      "";
     const workflowVersion = this.flows.get(workflowId)?.definition.version ?? "";
 
     // 1. Materialize state at the fork point (reusing the nearest prior snapshot).
@@ -1767,7 +1802,7 @@ export class WorkflowRuntime {
       // `window` may start at 0 (when the copy path needed the whole prefix), so slice the
       // [base+1..at] tail out of it rather than replaying events the snapshot already folded.
       const tail = sliceBySequence(window, base.sequence + 1, atSequence);
-      vm = new ReplayVM(tail, normalizeSnapshotState(base.state));
+      vm = new ReplayVM(tail, this.seedOf(base, childId, workflowId));
     } else {
       vm = new ReplayVM(window, { executionId: childId, workflowId, workflowVersion });
     }
@@ -1898,6 +1933,7 @@ export class WorkflowRuntime {
 
     const journal = new ExecutionJournal(
       this.eventStore,
+      { executionId, workflowId },
       vm,
       this.onEvent,
       (err) => {

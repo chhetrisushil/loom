@@ -46,7 +46,8 @@ if (!v.ok) console.error(`log tampered at seq ${v.brokenAt}: ${v.reason}`);
   just externalized fields.)
 - **No compaction through the chain** — `verifyChain` assumes an un-truncated log, and K10
   compaction (`truncatePrefix`) deletes prefix events, which breaks the chain at the new head.
-  So the chained store **refuses** `truncatePrefix` (ADR 0074 Amendment). `LogLifecycle.compact`
+  So the chained store **refuses** `truncatePrefix` and `truncatePrefixKeeping` (ADR 0074
+  Amendment, ADR 0106). `LogLifecycle.compact`
   over it returns `null` instead of producing a log that fails every later audit. Retention
   (`deleteExecution`) and enumeration (`listExecutions*`) are forwarded, as is every other
   optional method; `appendBatch` chains each execution in order and advances the head only

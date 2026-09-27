@@ -438,6 +438,55 @@ describe("liveQuery — LogLifecycle.compact races a live subscription", () => {
     unsub();
   });
 
+  it("ADR 0106 — a kept (pinned-kind) event at tip + 1 hides the gap INSIDE the delta; the subscriber still recovers", async () => {
+    // The gate event IS the app's pinned kind, so compaction keeps it in place: after it the
+    // lagging subscriber's delta starts exactly at `tip + 1` and the truncated range sits
+    // behind that first event. Checking only the first event would fold the gap silently.
+    const FINDING = "FINDING_RECORDED";
+    const loopRunner: FlowRunner<IO, IO> = async (ctx, input) => {
+      for (let i = 0; i < COMPACT_TICKS; i++) await ctx.suspend({ on: FINDING });
+      return input;
+    };
+    const loopFlow = {
+      definition: { ...flow.definition, id: "lq-kept-flow", name: "lq-kept-flow" },
+      runner: loopRunner,
+    } as RegisteredFlow<IO, IO>;
+    const rawEventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const { store, hold, release } = withHoldableSubscribe(rawEventStore);
+    const runtime = new WorkflowRuntime({
+      eventStore: store,
+      snapshotStore,
+      effectRuntime: new EffectRuntime(),
+    });
+    runtime.registerFlow(loopFlow.definition, loopFlow.runner);
+    const lq = liveQuery({ eventStore: store, reader: runtime });
+    const seen: ExecutionState[] = [];
+
+    await (await runtime.start(loopFlow, { n: 1 }, { executionId: "k1" })).waitForSuspend();
+    const unsub = await lq.subscribe("k1", (s) => seen.push(s));
+    await tick();
+
+    hold();
+    for (let i = 0; i < 3; i++) {
+      await (await runtime.resume("k1", { eventType: FINDING, payload: { i } })).waitForSuspend();
+    }
+    const tipBefore = seen.at(-1)!.sequence;
+    await new LogLifecycle(rawEventStore, snapshotStore, {
+      pinnedEventTypes: [FINDING],
+    }).compact("k1");
+    await (await runtime.resume("k1", { eventType: FINDING, payload: { i: 3 } })).waitForSuspend();
+    const delta = await rawEventStore.readFrom("k1", tipBefore + 1);
+    expect(delta[0]!.sequence).toBe(tipBefore + 1); // contiguous at its head…
+    expect(delta.at(-1)!.sequence - tipBefore).toBeGreaterThan(delta.length); // …gapped inside
+
+    release();
+    await tick();
+
+    expect(seen.at(-1)).toEqual(await runtime.loadState("k1"));
+    unsub();
+  });
+
   it("a subscriber lagging behind a compaction recovers even with no later event (empty delta, head behind tip)", async () => {
     const loopFlow = buildCompactFlow();
     const rawEventStore = new InMemoryAsyncEventStore();

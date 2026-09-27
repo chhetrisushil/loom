@@ -111,6 +111,7 @@ export class ShardedEventStore implements EventStore {
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
+  readonly truncatePrefixKeeping?: NonNullable<EventStore["truncatePrefixKeeping"]>;
   readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
   readonly listExecutionsPage?: NonNullable<EventStore["listExecutionsPage"]>;
 
@@ -143,6 +144,8 @@ export class ShardedEventStore implements EventStore {
         this.placementCache.delete(id);
       },
       truncatePrefix: async (id, through) => (await this.route(id)).truncatePrefix!(id, through),
+      truncatePrefixKeeping: async (id, through, keep) =>
+        (await this.route(id)).truncatePrefixKeeping!(id, through, keep),
       listExecutions: async () => {
         const perShard = await Promise.all(this.shards.map((s) => s.listExecutions!()));
         // Dedupe: a crash between migrateExecution's copy and delete can leave an execution

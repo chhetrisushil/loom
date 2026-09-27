@@ -87,6 +87,7 @@ export class EncryptingEventStore implements EventStore {
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
+  readonly truncatePrefixKeeping?: NonNullable<EventStore["truncatePrefixKeeping"]>;
   readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
   readonly listExecutionsPage?: NonNullable<EventStore["listExecutionsPage"]>;
 
@@ -141,6 +142,7 @@ export class EncryptingEventStore implements EventStore {
       // the decrypted fold — and `LogLifecycle.compact` throws `UnsafeCompactionError` unless
       // the snapshot store shares these keys.
       truncatePrefix: "forward",
+      truncatePrefixKeeping: "forward",
       // Enumeration is over executionIds only — no payload, so no decryption needed.
       listExecutions: "forward",
       listExecutionsPage: "forward",

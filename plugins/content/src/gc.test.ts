@@ -991,5 +991,102 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5�
       ).rejects.toThrow(/done/);
       expect(await content.get(output)).not.toBeNull();
     });
+
+    // ADR 0106 — compaction keeps the app's pinned-kind events in place, BELOW the checkpoint.
+    // `events[1]` is then a kept finding, not the first event after the checkpoint, so the
+    // checkpoint is found as the highest missing sequence instead.
+    /** Fold → checkpoint at `at` → truncate keeping FINDING_RECORDED, as compact does. */
+    async function compactKeeping(
+      live: InMemoryAsyncEventStore,
+      snapshots: InMemoryAsyncSnapshotStore,
+      id: string,
+      folded: EventEnvelope[]
+    ): Promise<void> {
+      const at = (folded[folded.length - 1] as EventEnvelope).sequence;
+      await snapshots.save({
+        id: `cp-${id}-${at}`,
+        executionId: id,
+        workflowId: "wf",
+        sequence: at,
+        state: new ReplayVM(folded).getState(),
+        createdAt: 0,
+      });
+      await live.truncatePrefixKeeping(id, at, ["FINDING_RECORDED"]);
+    }
+
+    it("a finding kept at sequence 1 does not hide the compaction — the checkpoint's refs stay pinned", async () => {
+      const { clock, content } = clockedStore(OLD);
+      const prefixOutput = await content.put(bytes("step output only the checkpoint holds"));
+      const live = new InMemoryAsyncEventStore();
+      const snapshots = new InMemoryAsyncSnapshotStore();
+      const prefix = [
+        evt("kept", 0, "EXECUTION_STARTED", { input: {} }, OLD),
+        evt("kept", 1, "FINDING_RECORDED", { summary: "lag spike" }, OLD),
+        evt("kept", 2, "STEP_STARTED", { stepId: "poll" }, OLD),
+        evt(
+          "kept",
+          3,
+          "STEP_COMPLETED",
+          { stepId: "poll", output: envelopeFor(prefixOutput.__loomContent) },
+          OLD
+        ),
+      ];
+      for (const e of prefix) await live.append(e);
+      await compactKeeping(live, snapshots, "kept", prefix); // checkpoint at 3
+      await live.append(evt("kept", 4, "STEP_STARTED", { stepId: "poll" }, NOW - 2 * DAY));
+      await live.append(
+        evt("kept", 5, "STEP_COMPLETED", { stepId: "poll", output: { rows: 0 } }, NOW - 2 * DAY)
+      );
+      // [0, 1, 4, 5]: sequence 1 exists, so the pre-0106 test read this log as never compacted.
+      expect((await live.read("kept")).map((e) => e.sequence)).toEqual([0, 1, 4, 5]);
+
+      clock.now = NOW;
+      const result = await sweepUnpinnedContent({
+        eventStores: [live],
+        snapshotStores: [snapshots],
+        contentStore: content,
+        pinnedEventTypes: ["FINDING_RECORDED"],
+        olderThanMs: TTL,
+        now: NOW,
+        reclaimOrphans: true,
+      });
+      expect(result.orphansReclaimed).toEqual([]);
+      expect(await content.get(prefixOutput)).not.toBeNull();
+    });
+
+    it("compacted at its tip with a kept finding below: the checkpoint above the tip covers it", async () => {
+      const { clock, content } = clockedStore(OLD);
+      const output = await content.put(bytes("a finished run's step output"));
+      const live = new InMemoryAsyncEventStore();
+      const snapshots = new InMemoryAsyncSnapshotStore();
+      const done = [
+        evt("tipk", 0, "EXECUTION_STARTED", { input: {} }, OLD),
+        evt("tipk", 1, "STEP_STARTED", { stepId: "s" }, OLD),
+        evt("tipk", 2, "FINDING_RECORDED", { summary: "f" }, OLD),
+        evt(
+          "tipk",
+          3,
+          "STEP_COMPLETED",
+          { stepId: "s", output: envelopeFor(output.__loomContent) },
+          OLD
+        ),
+      ];
+      for (const e of done) await live.append(e);
+      await compactKeeping(live, snapshots, "tipk", done);
+      expect((await live.read("tipk")).map((e) => e.sequence)).toEqual([0, 2]);
+      clock.now = NOW;
+      // Pre-0106 this looked for a checkpoint at 1 (events[1] − 1), found none, and refused.
+      const result = await sweepUnpinnedContent({
+        eventStores: [live],
+        snapshotStores: [snapshots],
+        contentStore: content,
+        pinnedEventTypes: ["FINDING_RECORDED"],
+        olderThanMs: TTL,
+        now: NOW,
+        reclaimOrphans: true,
+      });
+      expect(result.orphansReclaimed).toEqual([]);
+      expect(await content.get(output)).not.toBeNull();
+    });
   });
 });

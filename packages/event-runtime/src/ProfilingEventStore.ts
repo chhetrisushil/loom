@@ -44,6 +44,7 @@ export class ProfilingEventStore implements EventStore {
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
+  readonly truncatePrefixKeeping?: NonNullable<EventStore["truncatePrefixKeeping"]>;
   readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
   readonly listExecutionsPage?: NonNullable<EventStore["listExecutionsPage"]>;
   readonly appendBatch?: NonNullable<EventStore["appendBatch"]>;
@@ -68,6 +69,7 @@ export class ProfilingEventStore implements EventStore {
       copyPrefix: "forward",
       deleteExecution: "forward",
       truncatePrefix: "forward",
+      truncatePrefixKeeping: "forward",
       listExecutions: "forward",
       listExecutionsPage: "forward",
     } satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;

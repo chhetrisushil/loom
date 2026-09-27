@@ -360,6 +360,7 @@ export function hashChainedEventStore(
     // (pinned in hashChain.test.ts). Offering it would let a routine compaction pass make
     // every later audit fail; refusing it makes the chained log visibly non-compactable.
     truncatePrefix: { refuse: "a truncated prefix breaks chain verification (ADR 0037)" },
+    truncatePrefixKeeping: { refuse: "a truncated prefix breaks chain verification (ADR 0037)" },
     listExecutions: "forward",
     listExecutionsPage: "forward",
   } satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;

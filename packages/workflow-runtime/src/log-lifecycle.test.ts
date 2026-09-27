@@ -166,7 +166,13 @@ describe("K10.4 — compaction (fold(snapshot, suffix) === fold(events))", () =>
     await handle.waitForCompletion();
 
     const before = await app.eventStore.read("comp-1");
-    const foldBefore = foldEvents(before);
+    // L11 (ADR 0106) — the checkpoint names its execution; the version is not a log fact and
+    // no runtime snapshot recorded one here.
+    const foldBefore = foldEvents(before, {
+      executionId: "comp-1",
+      workflowId: FLOW,
+      workflowVersion: "",
+    });
     expect(before.length).toBeGreaterThan(3);
 
     const life = new LogLifecycle(app.eventStore, app.snapshotStore);

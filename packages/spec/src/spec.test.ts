@@ -263,6 +263,10 @@ const NOT_A_CAPABILITY = new Set([
   // EXECUTION_FAILED does), so a caught step failure followed by a crash is recoverable. No new
   // subsystem (graded under replay-vm/workflow-runtime; EVENT_SCHEMA 1.21.0).
   "0105",
+  // 0106 — a correction to compaction (checkpoint identity, re-compaction folding on the
+  // earlier checkpoint, pinned kinds kept in place); one additive optional SPI method on an
+  // existing capability. No new subsystem to grade.
+  "0106",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

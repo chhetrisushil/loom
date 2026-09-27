@@ -57,7 +57,10 @@ export interface SentinelPreset<TState> {
   state: SentinelStateHandle<TState>;
   /** Wire into `defineConfig({ execution: { effectMiddleware: preset.middleware } })`. */
   middleware: EffectMiddleware[];
-  /** The K10.6 pin policy — feed to the sweep and `retention.pinned`. */
+  /**
+   * The K10.6 pin policy — feed to the sweep, and to `retention.pinnedEventTypes` so
+   * compaction keeps these events (ADR 0106).
+   */
   pinnedEventTypes: readonly string[];
   /** Registers the carry-state effects; register your own tools alongside. */
   register(effects: EffectRegistry): void;

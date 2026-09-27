@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`@loom/workflow-runtime`: compaction integrity**
+  ([ADR 0106](docs/adr/0106-compaction-integrity.md), backlog L11). Three defects in
+  `LogLifecycle.compact`:
+
+  - **A resume after compaction lost its events.** The checkpoint was folded with no identity,
+    so its `executionId`/`workflowId`/`workflowVersion` were `""`, and the journal stamped
+    every envelope from the folded state: the resume's events were appended to execution `""`.
+    The checkpoint now takes its identity from the log (the version from the runtime's own
+    snapshot), the journal writes under the id it was started for, and every snapshot-seeded
+    fold (`resume`, `resumeAs`, `loadState`, `cancel`, `fork`) re-stamps a blank identity, so
+    checkpoints written before the fix resume correctly.
+  - **A second compaction dropped the first one's prefix.** It folded the surviving events
+    from scratch. It now folds on the checkpoint that holds the gap, and throws
+    `CompactionCheckpointMissingError` (nothing saved or truncated) when that checkpoint is
+    gone.
+  - **Compaction deleted pinned events (ADR 0055 D1).** `LogLifecycle` takes
+    `pinnedEventTypes` (`defineConfig({ durability: { retention: { pinnedEventTypes } } })`)
+    and keeps those events in place. Kernel kinds are refused. A `pinned` predicate with no
+    `pinnedEventTypes` now leaves a pinned execution uncompacted.
+
+  **EventStore SPI 1.5.0:** optional `truncatePrefixKeeping(executionId, through,
+  keepEventTypes)`, one atomic delete. In-memory, SQLite and Postgres implement it, and every
+  decorator forwards it; the hash-chained store refuses it, as it refuses `truncatePrefix`. A
+  store without it compacts only up to the first kept event. The conformance kit now checks
+  `truncatePrefix` and `truncatePrefixKeeping`. Readers that inferred "compacted" from
+  `events[1]` were updated: the content sweep finds the checkpoint at the log's highest
+  missing sequence (a kept finding at sequence 1 used to hide a compaction and let the orphan
+  pass erase checkpoint-only refs), and `liveQuery` checks a delta's whole span, not just its
+  first event. Retention always consults the latest snapshot, since a log compacted past a
+  kept event at its tip is contiguous.
+
 ### Changed
 
 - **`@loom/replay-vm`: a step failure the flow catches no longer fails the execution**

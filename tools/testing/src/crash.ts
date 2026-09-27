@@ -100,6 +100,7 @@ export function crashingEventStore(
     copyPrefix: "forward",
     deleteExecution: "forward",
     truncatePrefix: "forward",
+    truncatePrefixKeeping: "forward",
     listExecutions: "forward",
     listExecutionsPage: "forward",
   } satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;

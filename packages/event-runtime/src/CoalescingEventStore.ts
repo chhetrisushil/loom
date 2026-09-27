@@ -67,6 +67,7 @@ export class CoalescingEventStore implements EventStore {
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
+  readonly truncatePrefixKeeping?: NonNullable<EventStore["truncatePrefixKeeping"]>;
   readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
   readonly listExecutionsPage?: NonNullable<EventStore["listExecutionsPage"]>;
 
@@ -96,6 +97,7 @@ export class CoalescingEventStore implements EventStore {
       copyPrefix: "forward",
       deleteExecution: "forward",
       truncatePrefix: "forward",
+      truncatePrefixKeeping: "forward",
       listExecutions: "forward",
       listExecutionsPage: "forward",
     } satisfies DecoratorPlan<EventStore, Exclude<OptionalEventStoreMethod, "appendBatch">>;

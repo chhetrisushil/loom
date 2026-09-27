@@ -270,14 +270,27 @@ export class InMemoryAsyncEventStore implements EventStore {
   }
 
   async truncatePrefix(executionId: string, throughSequence: number): Promise<void> {
+    await this.truncatePrefixKeeping(executionId, throughSequence, []);
+  }
+
+  async truncatePrefixKeeping(
+    executionId: string,
+    throughSequence: number,
+    keepEventTypes: readonly string[]
+  ): Promise<void> {
     await this.tick();
     const list = this.log.get(executionId);
     if (list === undefined) return;
-    // Preserve sequence 0 (bootstrap anchor); drop (0..throughSequence].
+    const keepTypes = new Set(keepEventTypes);
+    // Preserve sequence 0 (bootstrap anchor) and every kept-type event; drop the rest of
+    // (0..throughSequence]. One synchronous pass, so no reader sees a half-truncated prefix.
     const kept: EventEnvelope[] = [];
     for (const e of list) {
-      if (e.sequence === 0 || e.sequence > throughSequence) kept.push(e);
-      else this.ids.delete(e.id); // compacted away — its id is free again
+      if (e.sequence === 0 || e.sequence > throughSequence || keepTypes.has(e.eventType)) {
+        kept.push(e);
+      } else {
+        this.ids.delete(e.id); // compacted away — its id is free again
+      }
     }
     this.log.set(executionId, kept);
   }

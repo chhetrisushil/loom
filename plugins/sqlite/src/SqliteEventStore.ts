@@ -274,6 +274,20 @@ export class SqliteEventStore implements EventStore {
       .run(executionId, throughSequence);
   }
 
+  async truncatePrefixKeeping(
+    executionId: string,
+    throughSequence: number,
+    keepEventTypes: readonly string[]
+  ): Promise<void> {
+    // ADR 0106 — one statement: sequence 0 and every kept-type event survive in place. The
+    // kept types ride as one JSON array parameter, so the statement text never varies.
+    this.db
+      .prepare<[string, number, string]>(
+        "DELETE FROM events WHERE execution_id = ? AND sequence > 0 AND sequence <= ? AND event_type NOT IN (SELECT value FROM json_each(?))"
+      )
+      .run(executionId, throughSequence, JSON.stringify(keepEventTypes));
+  }
+
   async listExecutions(): Promise<string[]> {
     // The (execution_id, sequence) index makes DISTINCT a cheap index-only scan.
     const rows = this.db

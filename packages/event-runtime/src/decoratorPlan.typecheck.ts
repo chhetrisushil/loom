@@ -19,6 +19,7 @@ const complete = {
   copyPrefix: "forward",
   deleteExecution: "forward",
   truncatePrefix: "forward",
+  truncatePrefixKeeping: "forward",
   listExecutions: "forward",
   listExecutionsPage: { refuse: "a refusal is a decision, and still a key" },
 } satisfies Plan;
@@ -33,6 +34,7 @@ const missingOne: Plan = {
   copyPrefix: "forward",
   deleteExecution: "forward",
   truncatePrefix: "forward",
+  truncatePrefixKeeping: "forward",
   listExecutions: "forward",
 };
 void missingOne;

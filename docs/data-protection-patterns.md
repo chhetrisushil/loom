@@ -39,6 +39,7 @@ Not legal advice.*
        retention: {
          archive: { eventStore: archiveEvents, snapshotStore: archiveSnaps }, // K10.1
          pinned: preset.pinPredicate(eventStore),                             // K10.6
+         pinnedEventTypes: preset.pinnedEventTypes, // compaction keeps findings (ADR 0106)
        },
      },
    });
