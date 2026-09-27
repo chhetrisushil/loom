@@ -1,3 +1,4 @@
+import { runEventStoreDecoratorConformance } from "@loom/conformance";
 import { step$ } from "@loom/core";
 import type { EventEnvelope } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
@@ -230,5 +231,46 @@ describe("K9 — in-doubt parking (K9.3, idempotent: false)", () => {
     const failed = events.filter((e) => e.eventType === "STEP_FAILED");
     expect(failed.length).toBe(1);
     expect(failed[0]?.payload).toMatchObject({ stepId: "pay" });
+  });
+});
+
+// ── L1 / ADR 0074 Amendment — the crash harness carries the whole optional SPI ─────────
+// Before, it dropped appendBatch/head/acquireFence/deleteExecution/truncatePrefix/listExecutions*,
+// so a runtime under test lost fencing, retention and coalescing the moment it was wrapped.
+runEventStoreDecoratorConformance(
+  "crashingEventStore",
+  (inner) => crashingEventStore(inner, { dropFrom: () => false }).store
+);
+
+describe("crashingEventStore — appendBatch honours the crash (a coalesced write cannot slip past it)", () => {
+  const e = (
+    executionId: string,
+    sequence: number,
+    eventType = "STEP_COMPLETED"
+  ): EventEnvelope => ({
+    id: `${executionId}-${sequence}`,
+    workflowId: "w",
+    executionId,
+    eventType,
+    sequence,
+    timestamp: sequence,
+    payload: {},
+  });
+
+  it("lands the envelopes before the trigger, swallows the trigger and everything after", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const crash = crashingEventStore(inner, { dropFrom: (x) => x.executionId === "b" });
+    await crash.store.appendBatch!([e("a", 0), e("b", 0), e("c", 0)]);
+    expect(crash.crashed).toBe(true);
+    expect(crash.dropped.map((x) => x.id)).toEqual(["b-0", "c-0"]);
+    expect((await inner.read("a")).length).toBe(1);
+    expect(await inner.read("c")).toEqual([]);
+    // Crashed: a later batch is swallowed whole, until restore().
+    await crash.store.appendBatch!([e("d", 0)]);
+    expect(await inner.read("d")).toEqual([]);
+    crash.restore();
+    await crash.store.appendBatch!([e("b", 0), e("d", 0)]);
+    expect((await inner.read("b")).length).toBe(1);
+    expect((await inner.read("d")).length).toBe(1);
   });
 });

@@ -23,6 +23,7 @@
     "@loom/event-runtime": "workspace:*"
   },
   "devDependencies": {
+    "@loom/conformance": "workspace:*",
     "@loom/dst": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
     "@loom/plugin-content": "workspace:*",

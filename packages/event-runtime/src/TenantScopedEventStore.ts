@@ -1,9 +1,54 @@
 import type { EventEnvelope } from "@loom/core";
-import type { EventStore } from "./types";
+import { type DecoratorPlan, installOptional } from "./installOptional";
+import type { EventStore, ExecutionPage, OptionalEventStoreMethod } from "./types";
 
 // The tenant/execution key separator — a control char that can't appear in a
 // normal executionId, so prefixing is unambiguous and un-stripping is exact.
 const SEP = ":"; // ":" is not in the ULID alphabet — an unambiguous, collision-free tenant separator
+
+/**
+ * One tenant's page of a shared store's keyset-paged enumeration.
+ *
+ * The inner cursor is opaque, so there is no seek to the tenant's range: this pages the inner
+ * store, keeps the ids under `prefix` (stripped), and loops until a page yields at least one
+ * id or the inner store is exhausted. It passes the inner cursor through unchanged, so the
+ * next call resumes exactly where this one stopped.
+ *
+ * It deliberately does NOT stop at the first id that sorts past the prefix. That shortcut is
+ * sound only if ids sharing a prefix are contiguous, i.e. strict code-unit order — and the
+ * Postgres backend pages in the database's collation, where `"a~"` sorts before `"ab"`
+ * (measured on a PG 17 `en_US.UTF-8` cluster). A missed id here is a silent partial pass:
+ * retention skips an execution, a read model under-indexes. So the cost is O(ids in the
+ * store) per full pass — what the whole-list fallback cost before — in bounded memory (one
+ * inner page), and correct under any order a store returns.
+ */
+async function pageWithinPrefix(
+  inner: EventStore,
+  prefix: string,
+  opts: { cursor?: string; limit?: number } | undefined
+): Promise<ExecutionPage> {
+  let cursor = opts?.cursor;
+  for (;;) {
+    const page = await inner.listExecutionsPage!({
+      ...(cursor !== undefined && { cursor }),
+      ...(opts?.limit !== undefined && { limit: opts.limit }),
+    });
+    const executionIds: string[] = [];
+    for (const id of page.executionIds) {
+      if (id.startsWith(prefix)) executionIds.push(id.slice(prefix.length));
+    }
+    if (page.nextCursor === undefined) return { executionIds };
+    if (executionIds.length > 0) return { executionIds, nextCursor: page.nextCursor };
+    if (page.nextCursor === cursor) {
+      // The same guard `iterateExecutionIds` applies — except this loop is internal, so
+      // without it a store bug would spin here where no caller could see it.
+      throw new TypeError(
+        "TenantScopedEventStore: listExecutionsPage returned a non-advancing cursor (store bug)"
+      );
+    }
+    cursor = page.nextCursor;
+  }
+}
 
 /**
  * K12.5 — a tenant-scoped view of a shared {@link EventStore}. Every execution
@@ -17,6 +62,7 @@ const SEP = ":"; // ":" is not in the ULID alphabet — an unambiguous, collisio
  * row-level security is an optional hardening layer on top, not a replacement.
  */
 export class TenantScopedEventStore implements EventStore {
+  readonly appendBatch?: NonNullable<EventStore["appendBatch"]>;
   readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
@@ -24,43 +70,38 @@ export class TenantScopedEventStore implements EventStore {
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
   readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
+  readonly listExecutionsPage?: NonNullable<EventStore["listExecutionsPage"]>;
 
   constructor(
     private readonly inner: EventStore,
     private readonly tenant: string
   ) {
     const scope = (id: string): string => `${this.tenant}${SEP}${id}`;
-    if (inner.head !== undefined) {
-      this.head = (id) => inner.head!(scope(id));
-    }
-    if (inner.readRange !== undefined) {
-      this.readRange = (id, from, to) =>
-        inner.readRange!(scope(id), from, to).then((evs) => evs.map((e) => this.unscope(e)));
-    }
-    if (inner.acquireFence !== undefined) {
-      this.acquireFence = (id) => inner.acquireFence!(scope(id));
-    }
-    if (inner.copyPrefix !== undefined) {
+    const prefix = `${this.tenant}${SEP}`;
+    // Every optional method decided here, over the whole union (ADR 0074 Amendment): a new
+    // SPI method is a compile error until this decorator forwards, overrides or refuses it.
+    const plan = {
+      // Order preserved: the SPI's per-execution order is array order.
+      appendBatch: (envs) => inner.appendBatch!(envs.map((e) => this.scopeEnvelope(e))),
+      head: (id) => inner.head!(scope(id)),
+      readRange: (id, from, to) =>
+        inner.readRange!(scope(id), from, to).then((evs) => evs.map((e) => this.unscope(e))),
+      acquireFence: (id) => inner.acquireFence!(scope(id)),
       // Fork stays IN-TENANT: both ids are scoped, so a fork can never cross the
       // tenant boundary (a cross-tenant copy is unaddressable here).
-      this.copyPrefix = (from, to, through, metadata) =>
-        inner.copyPrefix!(scope(from), scope(to), through, metadata);
-    }
-    if (inner.deleteExecution !== undefined) {
-      this.deleteExecution = (id) => inner.deleteExecution!(scope(id));
-    }
-    if (inner.truncatePrefix !== undefined) {
-      this.truncatePrefix = (id, through) => inner.truncatePrefix!(scope(id), through);
-    }
-    if (inner.listExecutions !== undefined) {
+      copyPrefix: (from, to, through, metadata) =>
+        inner.copyPrefix!(scope(from), scope(to), through, metadata),
+      deleteExecution: (id) => inner.deleteExecution!(scope(id)),
+      truncatePrefix: (id, through) => inner.truncatePrefix!(scope(id), through),
       // Enumerate only THIS tenant's executions: keep the ones under our prefix, strip it.
       // Cross-tenant ids are invisible (isolation by construction, K12.5).
-      const prefix = `${this.tenant}${SEP}`;
-      this.listExecutions = async () =>
+      listExecutions: async () =>
         (await inner.listExecutions!())
           .filter((id) => id.startsWith(prefix))
-          .map((id) => id.slice(prefix.length));
-    }
+          .map((id) => id.slice(prefix.length)),
+      listExecutionsPage: (opts) => pageWithinPrefix(inner, prefix, opts),
+    } satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;
+    installOptional<EventStore, OptionalEventStoreMethod>(this, inner, plan);
   }
 
   private scope(id: string): string {

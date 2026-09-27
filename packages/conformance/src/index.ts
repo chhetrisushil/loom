@@ -22,6 +22,12 @@ import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
 import { describe, expect, it } from "vitest";
 
+export {
+  runEventStoreDecoratorConformance,
+  runSnapshotStoreDecoratorConformance,
+  type DecoratorConformanceOptions,
+} from "./decorators.js";
+
 /**
  * `ExecutionAuthorizer` and `TimerDispatcher` live in `@loom/workflow-runtime`, and importing
  * them here would close a cycle: workflow-runtime dev-depends on `@loom/plugin-sqlite`, which

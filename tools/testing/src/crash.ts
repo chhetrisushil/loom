@@ -1,5 +1,10 @@
 import type { EventEnvelope } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
+import {
+  type DecoratorPlan,
+  type EventStore,
+  type OptionalEventStoreMethod,
+  installOptional,
+} from "@loom/event-runtime";
 
 export interface CrashingEventStoreOptions {
   /**
@@ -64,15 +69,41 @@ export function crashingEventStore(
     readFrom: (executionId, fromSequence) => inner.readFrom(executionId, fromSequence),
     subscribe: (executionId, handler) => inner.subscribe(executionId, handler),
     close: () => inner.close(),
-    // Forward the optional fast-paths only when the inner store has them, so
-    // capability probes (`if (store.copyPrefix)`) behave identically.
-    ...(inner.readRange !== undefined && {
-      readRange: inner.readRange.bind(inner),
-    }),
-    ...(inner.copyPrefix !== undefined && {
-      copyPrefix: inner.copyPrefix.bind(inner),
-    }),
   };
+
+  // Every optional method decided over the whole union (ADR 0074 Amendment), each installed
+  // only when the inner store has it, so capability probes (`if (store.copyPrefix)`) behave
+  // identically. Everything forwards except `appendBatch`, which must honour the crash: a
+  // verbatim forward would let a coalesced write sail past the simulated death.
+  const plan = {
+    // Same shape as N sequential appends: the envelopes BEFORE the trigger land (in one
+    // round-trip), the trigger and everything after it are swallowed.
+    appendBatch: async (envelopes: readonly EventEnvelope[]): Promise<void> => {
+      let cut = envelopes.length;
+      if (!restored) {
+        cut = crashed ? 0 : envelopes.findIndex((e) => options.dropFrom(e));
+        if (cut === -1) cut = envelopes.length;
+      }
+      if (cut < envelopes.length) {
+        crashed = true;
+        dropped.push(...envelopes.slice(cut));
+      }
+      if (cut > 0) {
+        await (inner.appendBatch as (es: readonly EventEnvelope[]) => Promise<void>)(
+          cut === envelopes.length ? envelopes : envelopes.slice(0, cut)
+        );
+      }
+    },
+    head: "forward",
+    readRange: "forward",
+    acquireFence: "forward",
+    copyPrefix: "forward",
+    deleteExecution: "forward",
+    truncatePrefix: "forward",
+    listExecutions: "forward",
+    listExecutionsPage: "forward",
+  } satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;
+  installOptional<EventStore, OptionalEventStoreMethod>(store, inner, plan);
 
   return {
     store,

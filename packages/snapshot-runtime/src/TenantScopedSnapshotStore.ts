@@ -1,4 +1,5 @@
-import type { Snapshot, SnapshotStore } from "./types";
+import { type DecoratorPlan, installOptional } from "@loom/event-runtime";
+import type { OptionalSnapshotStoreMethod, Snapshot, SnapshotStore } from "./types";
 
 const SEP = ":"; // ":" is not in the ULID alphabet — an unambiguous, collision-free tenant separator
 
@@ -14,9 +15,10 @@ export class TenantScopedSnapshotStore implements SnapshotStore {
     private readonly inner: SnapshotStore,
     private readonly tenant: string
   ) {
-    if (inner.deleteExecution !== undefined) {
-      this.deleteExecution = (id) => inner.deleteExecution!(this.scope(id));
-    }
+    const plan = {
+      deleteExecution: (id) => inner.deleteExecution!(this.scope(id)),
+    } satisfies DecoratorPlan<SnapshotStore, OptionalSnapshotStoreMethod>;
+    installOptional<SnapshotStore, OptionalSnapshotStoreMethod>(this, inner, plan);
   }
 
   private scope(id: string): string {

@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
-import { type EventStore, appendBatchOf } from "./types";
+import { type DecoratorPlan, installOptional } from "./installOptional";
+import { type EventStore, type OptionalEventStoreMethod, appendBatchOf } from "./types";
 
 export interface CoalescingEventStoreOptions {
   /**
@@ -44,7 +45,17 @@ interface Pending {
  *
  * **Failure.** A batch rejection rejects every caller in that batch, so a partial write can
  * never look like success. Combined with `appendBatch`'s all-or-nothing contract, a failed
- * flush leaves the log untouched and every writer informed.
+ * flush leaves the log untouched and every writer informed — **but only when the inner store
+ * implements `appendBatch`**. Over a store without it, `appendBatchOf` falls back to a
+ * sequential `append` loop, which is not atomic: envelopes ahead of the failing one are
+ * already durable while their writers are told the batch failed. Every decorator between
+ * this one and the backend must therefore carry `appendBatch` down (ADR 0074 Amendment —
+ * `runEventStoreDecoratorConformance` checks it).
+ *
+ * **Blast radius.** One stale-fence zombie in a batch rejects the whole batch, so every
+ * healthy writer coalesced with it is told "failed" too (nothing of theirs lands; they abort
+ * and recovery re-drives them from the log). Coalescing widens a fencing rejection from one
+ * execution to up to `maxBatch` of them — a price worth paying while fencing is rare.
  *
  * Inert unless wired: compose it explicitly in `storage`, outermost-but-one (sharding
  * outside it, since routing must pick a shard before a batch is formed for that shard).
@@ -76,21 +87,23 @@ export class CoalescingEventStore implements EventStore {
     this.maxLingerMs = Math.max(0, options.maxLingerMs ?? 0);
     // Pass through every optional capability the inner store has, so wrapping never
     // silently downgrades a backend (a missing `readRange` would push callers onto the
-    // slow fallback for no reason).
-    if (inner.head !== undefined) this.head = (...a) => inner.head!(...a);
-    if (inner.readRange !== undefined) this.readRange = (...a) => inner.readRange!(...a);
-    if (inner.acquireFence !== undefined) this.acquireFence = (id) => inner.acquireFence!(id);
-    if (inner.copyPrefix !== undefined) this.copyPrefix = (...a) => inner.copyPrefix!(...a);
-    if (inner.deleteExecution !== undefined) {
-      this.deleteExecution = (id) => inner.deleteExecution!(id);
-    }
-    if (inner.truncatePrefix !== undefined) {
-      this.truncatePrefix = (id, t) => inner.truncatePrefix!(id, t);
-    }
-    if (inner.listExecutions !== undefined) this.listExecutions = () => inner.listExecutions!();
-    if (inner.listExecutionsPage !== undefined) {
-      this.listExecutionsPage = (o) => inner.listExecutionsPage!(o);
-    }
+    // slow fallback for no reason). `appendBatch` is this class's own method — batching is
+    // what it is for — so the plan covers every other optional method.
+    const plan = {
+      head: "forward",
+      readRange: "forward",
+      acquireFence: "forward",
+      copyPrefix: "forward",
+      deleteExecution: "forward",
+      truncatePrefix: "forward",
+      listExecutions: "forward",
+      listExecutionsPage: "forward",
+    } satisfies DecoratorPlan<EventStore, Exclude<OptionalEventStoreMethod, "appendBatch">>;
+    installOptional<EventStore, Exclude<OptionalEventStoreMethod, "appendBatch">>(
+      this,
+      inner,
+      plan
+    );
   }
 
   append(envelope: EventEnvelope): Promise<void> {

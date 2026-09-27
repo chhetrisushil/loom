@@ -10,8 +10,17 @@ export { ProfilingEventStore } from "./ProfilingEventStore";
 export type { WriteProfile } from "./ProfilingEventStore";
 export { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";
 export type { InMemoryAsyncEventStoreOptions } from "./InMemoryAsyncEventStore";
-export type { EventStore, EventStoreOptions, ExecutionEnumerable, ExecutionPage } from "./types";
+export type {
+  EventStore,
+  EventStoreOptions,
+  ExecutionEnumerable,
+  ExecutionPage,
+  OptionalEventStoreMethod,
+} from "./types";
+export { installOptional, refusalsOf } from "./installOptional";
+export type { DecoratorPlan } from "./installOptional";
 export {
+  OPTIONAL_EVENT_STORE_METHODS,
   headOf,
   readRangeOf,
   appendBatchOf,
