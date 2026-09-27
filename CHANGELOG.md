@@ -293,6 +293,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     over any inner store: that holds only when the inner store implements `appendBatch`. It
     also records the coalesced-zombie blast radius.
 
+- **Kernel: flow-level `ctx.emit` / `ctx.stream` / `ctx.ui` append once per execution**
+  ([ADR 0102](docs/adr/0102-flow-emits-append-once.md), EVENT_SCHEMA **1.19.0**, KERNEL_ABI
+  unchanged at 1.1.0). A flow re-runs from the top on resume and on recovery. `execute`,
+  `decide` and `suspend` were served from the log on that re-run, but a flow-level emit was
+  appended again every time: an `emit` before a gate appeared N times after N resumes, and a
+  surface built with `ctx.ui.append` before a gate folded to `["x","x"]`. Now the *i*-th
+  flow-level emit of a run is stamped `metadata.flowEmit = i`, the fold keeps
+  `variables._flowEmits`, and a re-run serves every emit the log already holds (ordinal matching,
+  the rule gates already follow). Kernel facts (`STEP_*`, `DECISION_RECORDED`, `EFFECT_INDOUBT`)
+  and `EffectContext.emit` are unchanged and never stamped. An emit made while one of the run's
+  own effects or deciders is running (a closure over `ctx` inside an effect's `onDelta`) belongs
+  to that step and appends when the step runs.
+
+  **Upgrade note:** an execution written before 1.19.0 re-emits its pre-resume emits **once
+  more**, stamped, on its next resume or recovery, then never again. No migration is needed. A
+  test or projection that counted the duplicates was counting the bug. Emits are now matched by
+  position, so the number of emits a flow makes before a resume point must depend only on logged
+  inputs, as the number of gates already must. Emitting from flow code while a step you started is
+  still un-awaited costs one extra copy of the later emits on the next re-run; await the step
+  first.
+
+
 - **`loom plugin new keystore` scaffolded a package that could not compile.** The template
   writes `Buffer` in four signatures and the generated `package.json` declared no
   `@types/node`, so the first thing a plugin author did after scaffolding was watch `tsc`

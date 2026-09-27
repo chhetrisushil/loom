@@ -244,6 +244,10 @@ const NOT_A_CAPABILITY = new Set([
   // 0101 — the same IR, one more optional field: an `id` on every layout, one node-id namespace
   // with widget ids. A contract; the React renderer keys by it, the terminal ignores it.
   "0101",
+  // 0102 — a kernel replay BUG FIX: flow-level emit/stream/ui append once per execution, as the
+  // ABI table already said. No new subsystem; it restores the meaning of three existing syscalls
+  // (graded under workflow-runtime/replay-vm, whose versions it bumps).
+  "0102",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

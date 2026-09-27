@@ -782,7 +782,13 @@ export function getHandler(eventType: string): Handler | undefined {
 //   contract as the 1.10.0 D1 fields: folded verbatim into `_decisions`, NEVER read by
 //   getDecision, so `choice` stays the sole replay input. A log whose decisions carry
 //   neither field replays byte-identically.
-export const EVENT_SCHEMA_VERSION = "1.18.0";
+// 1.19.0: additive fold key `_flowEmits` from an additive envelope stamp (ADR 0102 —
+//   flow-level emits append once per execution). A flow-level `ctx.emit` / `ctx.stream` /
+//   `ctx.ui` envelope carries `metadata.flowEmit = ordinal`; the fold keeps the
+//   high-water mark `ordinal + 1` for ANY event type (a generic step in `foldEvents`,
+//   not a handler), so a re-run skips the emits the log already holds. No new kind, no
+//   payload change; a log that never stamps replays byte-identically.
+export const EVENT_SCHEMA_VERSION = "1.19.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

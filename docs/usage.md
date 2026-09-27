@@ -92,11 +92,13 @@ Inside a runner you have the full `ExecutionContext` (`WorkflowContext` is an al
 | `ctx.negotiateBudget(dim, request, opts?)` | **Recorded** budget grant through the decision seam — advisory and replay-safe; enforcement stays with metering middleware (`QUOTA_EXCEEDED`) |
 | `ctx.suspend({ on, correlationKey, timeout })` | **Durable** pause for a human/signal. `resume()` routes by **executionId**; `correlationKey` is metadata for an external dispatcher that knows a business key instead |
 | `ctx.sleep(ms)` / `ctx.sleepUntil(wakeAt)` | **Durable** timer suspension — the absolute wake time is in the log, so restarts survive it and wall-clock drift never enters the fold |
-| `ctx.emit(type, payload)` | Append a domain event — **durable**, folded on replay, and load-bearing forever |
-| `ctx.stream(type, delta, done?)` | Stream incremental output (e.g. LLM output). **Each call appends a durable event** — chunk at a semantic granularity (sentence / tool call), not per token; for per-token feedback use `@loom/live-query` `subscribe` or `progressHub` instead |
-| `ctx.ui.set/merge/append(path, …)` | Push updates to a UI surface (agent-surface) — **durable per patch**, so the same granularity rule as `ctx.stream` applies |
+| `ctx.emit(type, payload)` | Append a domain event — **durable**, appended **once per execution**: a resume or recovery re-runs the flow from the top, and each emit the log already holds is served from it rather than appended again (ADR 0102). Load-bearing forever |
+| `ctx.stream(type, delta, done?)` | Stream incremental output (e.g. LLM output). **Each call appends a durable event**, once per execution like `ctx.emit` — chunk at a semantic granularity (sentence / tool call), not per token; for per-token feedback use `@loom/live-query` `subscribe` or `progressHub` instead |
+| `ctx.ui.set/merge/append(path, …)` | Push updates to a UI surface (agent-surface) — **durable per patch**, appended once per execution (so `append`/`increment` before a gate do not repeat on resume), and the same granularity rule as `ctx.stream` applies |
 
 `ctx.executionId` and `ctx.workflowId` are plain identity fields — nothing is written, so durability does not apply.
+
+**Emits are matched by position, like gates.** The *i*-th `emit`/`stream`/`ui` call of a run is the *i*-th one in the log, the same rule `ctx.suspend` uses for gates (ADR 0057) and the step-identity rule asks of step ids (ADR 0061): how many emits a flow makes before a resume point must depend only on logged inputs. An emit made while one of the run's own steps or deciders is running — a closure over `ctx` inside an effect's `onDelta` — belongs to that step and appends when the step runs, like `EffectContext.emit`. Emitting from flow code while a step you started is still in flight (not yet awaited) is legal but costs one extra copy of the later emits on the next re-run; await the step first. An execution written before 1.19.0 re-emits its pre-resume prefix once more, then never again (ADR 0102).
 
 ---
 

@@ -37,6 +37,11 @@ export class WorkflowContextImpl implements WorkflowContext {
   readonly workflowId: string;
   readonly ui: SurfaceEmitter;
   private suspendPassthroughsConsumed = 0;
+  // ADR 0102 — flow-level emits issued by THIS run (the next ordinal), and how many
+  // effects/deciders of this context are running right now (emits made inside one
+  // take the effect path; see `emit`).
+  private flowEmitsIssued = 0;
+  private liveOnlyDepth = 0;
 
   constructor(
     executionId: string,
@@ -70,9 +75,43 @@ export class WorkflowContextImpl implements WorkflowContext {
     this.decide = this.decide.bind(this);
   }
 
+  /**
+   * The `emit` syscall — and so `stream` and `ui`, which are emits — appends ONCE per
+   * execution (ADR 0102). A flow re-runs from the top on resume and on recovery (ADR
+   * 0057), and `execute`/`decide`/`suspend` are served from the fold on that re-run;
+   * this is the same for emits. The i-th flow-level emit of a run is matched
+   * ORDINALLY against the log (the rule `suspend` already uses for gates): it is
+   * stamped `metadata.flowEmit = i`, the fold keeps `_flowEmits` = the high-water mark,
+   * and a re-run serves emit i from the log when `i < _flowEmits`.
+   *
+   * An emit made while an effect or a decider of this context is running takes the
+   * EFFECT path instead (appended, never stamped, never counted): it belongs to that
+   * step/decision and happens only when it runs — a closure over `ctx` inside an
+   * effect's `onDelta` is the documented case. Counting it would shift every later
+   * ordinal down on a re-run where the step is served, silently dropping a LIVE emit.
+   *
+   * A legacy (unstamped) log counts nothing, so it re-emits its prefix once more,
+   * stamped, and is stable from then on.
+   */
+  emit(eventType: string, payload: unknown): void {
+    if (this.liveOnlyDepth > 0) {
+      this.commit(eventType, payload);
+      return;
+    }
+    const ordinal = this.flowEmitsIssued++;
+    // Served from the log: an earlier run of this execution already appended flow-level
+    // emit #ordinal before it suspended or crashed.
+    if (ordinal < ((this.vm.getState().variables._flowEmits as number | undefined) ?? 0)) return;
+    this.journal.commit(eventType, payload, { metadata: { flowEmit: ordinal } });
+  }
+
   // Synchronous: the journal allocates a sequence, folds the VM, fires onEvent,
   // and enqueues the durable write. The async persistence is drained at barriers.
-  emit(eventType: string, payload: unknown): void {
+  // The kernel's own facts (STEP_*, DECISION_RECORDED, EFFECT_INDOUBT) and
+  // `EffectContext.emit` come through here, never through the flow-level `emit`:
+  // their callers are already served from the fold on a re-run, and they must not
+  // consume a flow-emit ordinal (ADR 0102).
+  private commit(eventType: string, payload: unknown): void {
     this.journal.commit(eventType, payload);
   }
 
@@ -133,7 +172,7 @@ export class WorkflowContextImpl implements WorkflowContext {
         // Park once per unknown attempt: a re-dispatch of an already-parked
         // execution re-suspends without appending a duplicate audit fact.
         if (this.lastInDoubtFor(id)?.attempts !== priorFrame.attempts) {
-          this.emit("EFFECT_INDOUBT", {
+          this.commit("EFFECT_INDOUBT", {
             stepId: id,
             toolId,
             attempts: priorFrame.attempts,
@@ -145,14 +184,14 @@ export class WorkflowContextImpl implements WorkflowContext {
       if (verdict.resolution === "completed-with-result") {
         // The operator confirmed the prior attempt's effect took place: adopt
         // its result durably without re-running the tool.
-        this.emit("STEP_COMPLETED", { stepId: id, output: verdict.output });
+        this.commit("STEP_COMPLETED", { stepId: id, output: verdict.output });
         return verdict.output as TOut;
       }
       if (verdict.resolution === "fail") {
         const error = String(
           verdict.error ?? `effect in doubt: step "${id}" settled as failed by operator verdict`
         );
-        this.emit("STEP_FAILED", { stepId: id, error });
+        this.commit("STEP_FAILED", { stepId: id, error });
         throw new Error(error);
       }
       // "retry-fresh" — fall through to a normal run. The EFFECT_INDOUBT fact
@@ -160,7 +199,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       // NEW logical attempt (fresh idempotency key).
     }
 
-    this.emit("STEP_STARTED", { stepId: id, input });
+    this.commit("STEP_STARTED", { stepId: id, input });
 
     // K8.3 — declared step deadline (`timeoutMs`), anchored to the step's FIRST
     // logged start so a crash-recovery re-run resumes the countdown rather than
@@ -176,7 +215,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       const remaining = timeoutMs - (Date.now() - anchor);
       if (remaining <= 0) {
         const timeoutErr = new StepTimeoutError(id, timeoutMs);
-        this.emit("STEP_FAILED", { stepId: id, error: String(timeoutErr) });
+        this.commit("STEP_FAILED", { stepId: id, error: String(timeoutErr) });
         throw timeoutErr;
       }
       const controller = new AbortController();
@@ -209,7 +248,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       stepId: id,
       workflowId: this.workflowId,
       attempt: this.vm.getState().frames[id]?.attempts ?? 1,
-      emit: (eventType: string, payload: unknown) => this.emit(eventType, payload),
+      emit: (eventType: string, payload: unknown) => this.commit(eventType, payload),
       ...(stepSignal !== undefined && { signal: stepSignal }),
       // K12.1 — the principal chain flows to the K2 authorizer (carried opaque).
       ...(this.principal !== undefined && { principal: this.principal }),
@@ -226,6 +265,9 @@ export class WorkflowContextImpl implements WorkflowContext {
     };
 
     let output: TOut;
+    // ADR 0102 — while this effect runs, a flow-level emit made from inside it (a
+    // closure over `ctx`) belongs to the step and takes the effect path.
+    this.liveOnlyDepth++;
     try {
       const effectPromise = this.effectRuntime.execute<TIn, TOut>(toolId, input, effectCtx);
       if (deadline !== undefined) {
@@ -244,7 +286,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       // timeout is NOT a cancellation — this.signal stays quiet — so it falls to
       // the ordinary STEP_FAILED below.)
       if (this.signal?.aborted === true) {
-        this.emit("STEP_CANCELLED", { stepId: id });
+        this.commit("STEP_CANCELLED", { stepId: id });
         throw err;
       }
       // DE-4 — a TypedFailure on a DECLARED channel is a domain outcome: record
@@ -266,7 +308,7 @@ export class WorkflowContextImpl implements WorkflowContext {
             // untyped path: no channel/payload recorded, legacy semantics.
             const payloadSize = safeJsonLength(parsed.data);
             if (payloadSize <= TYPED_FAILURE_PAYLOAD_CAP) {
-              this.emit("STEP_FAILED", {
+              this.commit("STEP_FAILED", {
                 stepId: id,
                 error: String(err),
                 channel: err.channel,
@@ -274,26 +316,27 @@ export class WorkflowContextImpl implements WorkflowContext {
               });
               throw err;
             }
-            this.emit("STEP_FAILED", {
+            this.commit("STEP_FAILED", {
               stepId: id,
               error: `typed-failure payload for channel "${err.channel}" exceeds the inline cap (${payloadSize} > ${TYPED_FAILURE_PAYLOAD_CAP} JSON chars) — degraded to untyped; carry a content ref in the payload instead (ADR 0054/0060)`,
             });
             throw err;
           }
-          this.emit("STEP_FAILED", {
+          this.commit("STEP_FAILED", {
             stepId: id,
             error: `typed-failure payload for channel "${err.channel}" failed validation: ${parsed.error.message}`,
           });
           throw err;
         }
       }
-      this.emit("STEP_FAILED", { stepId: id, error: String(err) });
+      this.commit("STEP_FAILED", { stepId: id, error: String(err) });
       throw err;
     } finally {
+      this.liveOnlyDepth--;
       deadline?.cleanup();
     }
 
-    this.emit("STEP_COMPLETED", { stepId: id, output });
+    this.commit("STEP_COMPLETED", { stepId: id, output });
     return output;
   }
 
@@ -314,9 +357,17 @@ export class WorkflowContextImpl implements WorkflowContext {
       return this.vm.getDecision(decisionId) as T;
     }
 
-    const choice = await decider();
+    // ADR 0102 — a decider runs only when the decision is made (served on a re-run),
+    // so an emit inside it belongs to the decision and takes the effect path.
+    this.liveOnlyDepth++;
+    let choice: T;
+    try {
+      choice = await decider();
+    } finally {
+      this.liveOnlyDepth--;
+    }
 
-    this.emit("DECISION_RECORDED", {
+    this.commit("DECISION_RECORDED", {
       decisionId,
       choice,
       ...(opts?.rationale !== undefined && { rationale: opts.rationale }),
