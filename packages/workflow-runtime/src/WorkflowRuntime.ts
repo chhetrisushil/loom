@@ -57,7 +57,10 @@ const KERNEL_EVENT_TYPES: ReadonlySet<string> = new Set(knownEventTypes());
 interface BootstrapEvent {
   eventType: string;
   payload: unknown;
-  /** Envelope metadata — operational, never folded. Carries the placement hint (#392). */
+  /**
+   * Envelope metadata — operational. Carries the placement hint (#392). The fold reads
+   * exactly one metadata key, `flowEmit` (ADR 0102), which a bootstrap event never carries.
+   */
   metadata?: Record<string, unknown>;
 }
 
@@ -1252,7 +1255,9 @@ export class WorkflowRuntime {
     //    would perturb sequence numbering and break the prefix-identity guarantee.
     // The copy merges this into every copied envelope's metadata. An override therefore
     // lands on sequence 0 — the anchor `placementOf` reads — as well as on the rest of the
-    // prefix, which is harmless: metadata is operational and nothing folds it.
+    // prefix, which is harmless: metadata is operational, and the one key the fold reads
+    // (`flowEmit`, ADR 0102) is preserved by the merge — which is what lets a forked child
+    // serve its inherited emits instead of re-appending them.
     const forkMeta = {
       forkedFrom: parentExecutionId,
       forkSequence: atSequence,

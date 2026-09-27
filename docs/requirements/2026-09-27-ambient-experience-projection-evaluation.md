@@ -19,7 +19,8 @@
   ("kernel: none", with `emitOnce` and `startOnce` as 1P helpers). The maintainer ruled both into
   the kernel as bug fixes. Neither changes `KERNEL_ABI` (1.1.0).
   - The emit defect (§2.1) is fixed by [ADR 0102](../adr/0102-flow-emits-append-once.md): flow-level `ctx.emit` / `ctx.stream` / `ctx.ui`
-    append once per execution. They are matched ordinally against the log, like gates.
+    append once per execution. They are matched against the log by a content digest (never by
+    timing), and an emit that cannot be matched is appended rather than dropped.
     `EVENT_SCHEMA` 1.18.0 → 1.19.0, and `emitOnce` is the alternative that ADR rejects (D6).
   - The duplicate-start defect (§2.2) is fixed by ADR 0103 (task L9): `start()` refuses a
     duplicate deterministic id before any effect runs, which makes `startOnce` redundant.
@@ -130,10 +131,12 @@ and fixable in 1P by routing `ctx.ui` through the same replay-safe path without 
 > kernel, and it is a bug fix rather than a change of meaning. The ABI table already said `ui`
 > drives "durable, replayable" surfaces, and `usage.md` already said emits are "folded on replay".
 > A 1P `emitOnce` would fix only the call sites that remember to use it, and a forgotten site is a
-> silent duplicate that no check can see. Ordinal matching is already the kernel's contract for
-> gates (ADR 0057) and for step ids (ADR 0061). ADR 0102 records `emitOnce` as the rejected
-> alternative. It also covers the case this section did not: an emit made from inside an effect
-> through a closure over `ctx`.
+> silent duplicate that no check can see. This section's objection to ordinal matching turned out
+> to be right: in review, ordinal matching lost emits when concurrent branches interleaved
+> differently on a re-run. ADR 0102 therefore matches emits by a digest of their content, and
+> appends whenever it cannot prove a match. It records `emitOnce` as the rejected alternative,
+> and covers a case this section did not: an emit made from inside an effect through a closure
+> over `ctx`.
 
 ### 2.2 A duplicate `start()` with the same deterministic id runs effects twice before the store refuses it
 

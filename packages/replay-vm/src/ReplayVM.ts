@@ -1,4 +1,5 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
+import { flowEmitCount } from "./eventHandlers";
 import { foldEvents } from "./foldEvents";
 
 export class ReplayVM {
@@ -52,6 +53,13 @@ export class ReplayVM {
     // through the prototype chain.
     if (decisions === undefined || !Object.hasOwn(decisions, decisionId)) return undefined;
     return decisions[decisionId]?.choice;
+  }
+
+  // ADR 0102 — how many stamped flow-level emits with this content digest the log holds
+  // (the `_flowEmits` fold). A re-run serves its n-th emit of a digest from the log while
+  // n < this count.
+  flowEmitCount(digest: string): number {
+    return flowEmitCount(this.state.variables, digest);
   }
 
   getState(): ExecutionState {

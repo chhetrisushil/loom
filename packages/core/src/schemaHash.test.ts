@@ -75,3 +75,31 @@ describe("jsonSchemaHash (ADR 0063)", () => {
     expect(jsonSchemaHash(retyped)).not.toBe(base);
   });
 });
+
+// ADR 0102 — the limb implementation must be bit-identical to the BigInt definition.
+function fnv1a64Reference(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let h = 0xcbf29ce484222325n;
+  for (const b of bytes) {
+    h ^= BigInt(b);
+    h = (h * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return h.toString(16).padStart(16, "0");
+}
+
+describe("fnv1a64 — limb arithmetic equals the BigInt definition", () => {
+  it("matches on fixed and randomized inputs, including multi-byte UTF-8", () => {
+    const fixed = ["", "a", "foobar", "\u00e9\u4e2d\ud83d\ude00", "x".repeat(10_000)];
+    let seed = 42;
+    const rand = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed;
+    };
+    const random = Array.from({ length: 500 }, () =>
+      String.fromCharCode(...Array.from({ length: rand() % 64 }, () => rand() % 0xd7ff))
+    );
+    for (const text of [...fixed, ...random]) {
+      expect(fnv1a64(text)).toBe(fnv1a64Reference(text));
+    }
+  });
+});

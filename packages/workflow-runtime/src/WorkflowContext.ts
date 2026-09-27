@@ -1,6 +1,6 @@
 import { createSurfaceEmitter } from "@loom/agent-surface";
 import type { SurfaceEmitter } from "@loom/agent-surface";
-import { SuspendError, TypedFailure } from "@loom/core";
+import { SuspendError, TypedFailure, fnv1a64 } from "@loom/core";
 import type { ExecutableTask, StepDefinition } from "@loom/core";
 import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
@@ -32,16 +32,74 @@ function safeJsonLength(value: unknown): number {
   }
 }
 
+// ── ADR 0102 — the content digest a flow-level emit is matched by ──────────────
+//
+// Canonical JSON of `[eventType, payload]` as it would be PERSISTED (JSON.stringify
+// semantics: `toJSON` applied, function/symbol/undefined members dropped, `undefined`
+// array slots → null), with object keys sorted, hashed with FNV-1a-64. `undefined` when
+// the payload has no JSON form (a BigInt, a cycle, pathological depth): such an emit is
+// never matched and never stamped — it is appended every time (duplicate beats loss).
+const DIGEST_MAX_DEPTH = 256;
+
+function canonicalPersisted(raw: unknown, depth: number): string | undefined {
+  let value = raw;
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as { toJSON?: unknown }).toJSON === "function"
+  ) {
+    value = (value as { toJSON: () => unknown }).toJSON();
+  }
+  if (value === null) return "null";
+  switch (typeof value) {
+    case "string":
+      return JSON.stringify(value);
+    case "boolean":
+      return value ? "true" : "false";
+    case "number":
+      return Number.isFinite(value) ? JSON.stringify(value) : "null";
+    case "undefined":
+    case "function":
+    case "symbol":
+      return undefined; // omitted as a member, null in an array (callers handle)
+    case "bigint":
+      throw new TypeError("no JSON form");
+    default: {
+      if (depth >= DIGEST_MAX_DEPTH) throw new TypeError("too deep");
+      if (Array.isArray(value)) {
+        const parts = value.map((v) => canonicalPersisted(v, depth + 1) ?? "null");
+        return `[${parts.join(",")}]`;
+      }
+      const record = value as Record<string, unknown>;
+      const parts: string[] = [];
+      for (const k of Object.keys(record).sort()) {
+        const v = canonicalPersisted(record[k], depth + 1);
+        if (v !== undefined) parts.push(`${JSON.stringify(k)}:${v}`);
+      }
+      return `{${parts.join(",")}}`;
+    }
+  }
+}
+
+/** Exported for tests only. */
+export function flowEmitDigest(eventType: string, payload: unknown): string | undefined {
+  try {
+    return fnv1a64(`[${JSON.stringify(eventType)},${canonicalPersisted(payload, 1) ?? "null"}]`);
+  } catch {
+    return undefined; // no JSON form (BigInt, cycle past the depth cap)
+  }
+}
+
 export class WorkflowContextImpl implements WorkflowContext {
   readonly executionId: string;
   readonly workflowId: string;
   readonly ui: SurfaceEmitter;
   private suspendPassthroughsConsumed = 0;
-  // ADR 0102 — flow-level emits issued by THIS run (the next ordinal), and how many
-  // effects/deciders of this context are running right now (emits made inside one
-  // take the effect path; see `emit`).
-  private flowEmitsIssued = 0;
-  private liveOnlyDepth = 0;
+  // ADR 0102 — how many flow-level emits of each content digest THIS run has made
+  // (served or appended), and how many of this context's effects/deciders are running
+  // right now (an emit appended meanwhile is left unstamped; see `emit`).
+  private readonly flowEmitsSeen = new Map<string, number>();
+  private inFlight = 0;
 
   constructor(
     executionId: string,
@@ -79,30 +137,41 @@ export class WorkflowContextImpl implements WorkflowContext {
    * The `emit` syscall — and so `stream` and `ui`, which are emits — appends ONCE per
    * execution (ADR 0102). A flow re-runs from the top on resume and on recovery (ADR
    * 0057), and `execute`/`decide`/`suspend` are served from the fold on that re-run;
-   * this is the same for emits. The i-th flow-level emit of a run is matched
-   * ORDINALLY against the log (the rule `suspend` already uses for gates): it is
-   * stamped `metadata.flowEmit = i`, the fold keeps `_flowEmits` = the high-water mark,
-   * and a re-run serves emit i from the log when `i < _flowEmits`.
+   * so are emits the log already holds.
    *
-   * An emit made while an effect or a decider of this context is running takes the
-   * EFFECT path instead (appended, never stamped, never counted): it belongs to that
-   * step/decision and happens only when it runs — a closure over `ctx` inside an
-   * effect's `onDelta` is the documented case. Counting it would shift every later
-   * ordinal down on a re-run where the step is served, silently dropping a LIVE emit.
+   * Matching is by CONTENT, never by position or timing: an emit's identity is the
+   * digest of its `(eventType, payload)`. The n-th emit of digest d in this run is
+   * served from the log (appends nothing) iff the log holds more than n STAMPED emits
+   * of d. That decision reads only logged stamps and this run's own emits, so it is the
+   * same under any interleaving of concurrent branches, and a code change that adds or
+   * edits an emit produces a new digest that is appended rather than lost.
    *
-   * A legacy (unstamped) log counts nothing, so it re-emits its prefix once more,
-   * stamped, and is stable from then on.
+   * Whether an APPENDED emit is stamped (and so counts toward later matching) is the one
+   * place in-flight state is consulted: an emit appended while one of this context's
+   * effects or deciders is still running may come from inside it (a closure over `ctx`,
+   * e.g. an effect's `onDelta` sink), and such an emit does not recur when the step is
+   * served on a re-run. Counting it could make a later, genuinely new emit of the same
+   * content look already-logged — a loss. So it is appended UNSTAMPED: it never serves
+   * anything, and at worst a flow-code emit caught in that window is appended once more
+   * on a later re-run. Timing can therefore cost a duplicate, never an emit.
+   *
+   * An unstamped legacy (pre-1.19.0) log counts nothing, so it re-emits its prefix once
+   * more, stamped, and is stable from then on.
    */
   emit(eventType: string, payload: unknown): void {
-    if (this.liveOnlyDepth > 0) {
+    const digest = flowEmitDigest(eventType, payload);
+    if (digest === undefined) {
+      this.commit(eventType, payload); // cannot be matched: always append (never stamped)
+      return;
+    }
+    const seen = this.flowEmitsSeen.get(digest) ?? 0;
+    this.flowEmitsSeen.set(digest, seen + 1);
+    if (seen < this.vm.flowEmitCount(digest)) return; // a replay of a logged emit
+    if (this.inFlight > 0) {
       this.commit(eventType, payload);
       return;
     }
-    const ordinal = this.flowEmitsIssued++;
-    // Served from the log: an earlier run of this execution already appended flow-level
-    // emit #ordinal before it suspended or crashed.
-    if (ordinal < ((this.vm.getState().variables._flowEmits as number | undefined) ?? 0)) return;
-    this.journal.commit(eventType, payload, { metadata: { flowEmit: ordinal } });
+    this.journal.commit(eventType, payload, { metadata: { flowEmit: digest } });
   }
 
   // Synchronous: the journal allocates a sequence, folds the VM, fires onEvent,
@@ -265,11 +334,22 @@ export class WorkflowContextImpl implements WorkflowContext {
     };
 
     let output: TOut;
-    // ADR 0102 — while this effect runs, a flow-level emit made from inside it (a
-    // closure over `ctx`) belongs to the step and takes the effect path.
-    this.liveOnlyDepth++;
     try {
-      const effectPromise = this.effectRuntime.execute<TIn, TOut>(toolId, input, effectCtx);
+      // ADR 0102 — the effect counts as in flight until IT settles, not until this
+      // await does: a step whose deadline won keeps a zombie effect running, and an emit
+      // from it must not be stamped either.
+      this.inFlight++;
+      let effectPromise: Promise<TOut>;
+      try {
+        effectPromise = this.effectRuntime.execute<TIn, TOut>(toolId, input, effectCtx);
+      } catch (syncErr) {
+        this.inFlight--;
+        throw syncErr;
+      }
+      const settled = (): void => {
+        this.inFlight--;
+      };
+      effectPromise.then(settled, settled);
       if (deadline !== undefined) {
         effectPromise.catch(() => {}); // a late rejection after the deadline won is settled
         output = await Promise.race([effectPromise, deadline.promise]);
@@ -332,7 +412,6 @@ export class WorkflowContextImpl implements WorkflowContext {
       this.commit("STEP_FAILED", { stepId: id, error: String(err) });
       throw err;
     } finally {
-      this.liveOnlyDepth--;
       deadline?.cleanup();
     }
 
@@ -358,13 +437,13 @@ export class WorkflowContextImpl implements WorkflowContext {
     }
 
     // ADR 0102 — a decider runs only when the decision is made (served on a re-run),
-    // so an emit inside it belongs to the decision and takes the effect path.
-    this.liveOnlyDepth++;
+    // so an emit appended while it runs is left unstamped (see `emit`).
+    this.inFlight++;
     let choice: T;
     try {
       choice = await decider();
     } finally {
-      this.liveOnlyDepth--;
+      this.inFlight--;
     }
 
     this.commit("DECISION_RECORDED", {
