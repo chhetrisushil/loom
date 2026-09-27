@@ -318,12 +318,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     compaction snapshot and no root cites. A touch time of 0 (a pre-1.3.0 writer) is unknown
     and never erased. It refuses a store without the optionals. The report gains
     `orphansReclaimed`. `snapshotStores` lets the sweep read compaction checkpoints: refs in a
-    compacted execution's latest snapshot are pinned. The orphan pass refuses to run without
-    them over a store that can `truncatePrefix`, and whenever a log's compaction gap has no
-    snapshot. **The sweep cannot see a citing store you did not pass it**, so scan live first,
+    compacted execution's compaction checkpoint (`loadLatestBefore(events[1].sequence − 1)`) and
+    latest snapshot are pinned, so `fork()` from between them still resolves. The orphan pass
+    refuses to run without them over a store that can `truncatePrefix`, and whenever an
+    execution looks compacted (a gap, or only sequence 0 left) but no checkpoint is found. **The sweep cannot see a citing store you did not pass it**, so scan live first,
     then every archive. The CLI scans the config's `durability.retention.archive`, and refuses
     `--orphans --apply` with no archive unless `--no-archive` (warning before it erases).
-    `--orphans` needs `--snap`/`--archive-snap` on the `--db` path.
+    `--orphans` needs `--snap` on the `--db` path, and `--archive-snap` with `--archive-db`.
+    Every `loom sweep content` refusal exits non-zero.
   - **D7, roots.** `sweepUnpinnedContent({ roots: () => AsyncIterable<string> })` pins
     addresses held in an app's own tables through both passes.
   - `SqliteContentStore` implements all three optionals. On open it migrates an older file: it adds
@@ -333,8 +335,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     injectable clock (`new InMemoryContentStore({ now })`), and so does `SqliteContentStore`
     (`new SqliteContentStore(path, { now })`). `CachingContentStore` forwards all three. The
     conformance kit checks the optionals when present. The three must come as a set, and the
-    re-put bump is checked through the conditional delete alone (`checkContentStoreTouchContract`,
-    which fails an `INSERT OR IGNORE` store). Monotonicity is checked with a clocked factory.
+    re-put bump is checked through the conditional delete alone (an internal kit check that
+    fails an `INSERT OR IGNORE` store). Monotonicity is checked with a clocked factory.
     `LogLifecycle` exposes its configured `archive` (read-only). The kernel manifest and the
     compatibility matrix now list ContentStore SPI 1.3.0, and `checkCompatibility` accepts
     `contentStoreSpi`. The `loom plugin new content` template names the new methods.

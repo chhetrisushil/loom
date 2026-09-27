@@ -211,17 +211,46 @@ sweep is O(events + blobs). A blob younger than the TTL is never an orphan, so a
 `listPage` or `deleteIfUntouchedSince`: without the conditional delete, erasing a listed orphan
 reintroduces D5's race. The report gains `orphansReclaimed`.
 
-**Compaction snapshots are scanned (`snapshotStores`).** For every execution whose log has no
-sequence-1 event (compacted, or bootstrap-only), the sweep loads the latest snapshot from each
-given snapshot store: the live one and each archive's. A checkpoint past sequence 0 means the
-prefix was folded into it, so every ref in its state is **pinned**. Compaction folded away the
-event kinds, so the sweep cannot tell telemetry from evidence, and a pinned FINDING's evidence
-must not age out because it was compacted (D1). Such refs are released when retention deletes
-the execution, which deletes its snapshots too; the next orphan pass then reclaims them. Only
-executions that lack a sequence-1 event cost a snapshot read, so an uncompacted log pays
-nothing. The pass **fails closed** in two cases, both before anything is erased:
-`reclaimOrphans` refuses when any scanned event store can `truncatePrefix` and no
-`snapshotStores` were given, and when a log shows a compaction gap that no snapshot covers.
+**Compaction snapshots are scanned (`snapshotStores`: the live snapshot store and each
+archive's).** `LogLifecycle.compact` checkpoints the fold at the tip and truncates the prefix, so
+the next surviving event after sequence 0 is `tip + 1`. For every execution whose log has no
+sequence-1 event, the sweep pins every ref in two snapshots:
+
+- the **compaction checkpoint**, the snapshot at exactly `events[1].sequence − 1`. If only
+  sequence 0 remains (compacted at its tip), the checkpoint is the latest snapshot.
+- the **latest** snapshot, which resume loads.
+
+Pinning only the latest is not enough. A later snapshot (a suspend, a loop that overwrote the
+same step's output) can drop a prefix ref from state, while `fork()` from any point between the
+checkpoint and that snapshot loads the checkpoint (`loadLatestBefore`) and needs the ref.
+Snapshots in between hold only checkpoint- or suffix-derived refs, and the suffix is scanned as
+log. Anything below the checkpoint is unreachable, because the events that would fold on from it
+are gone.
+
+The refs are **pinned** because compaction folded away the event kinds, so the sweep cannot tell
+telemetry from evidence (D1). They are released when retention deletes the execution, which
+deletes its snapshots too; the next orphan pass then reclaims them. Only executions that lack a
+sequence-1 event cost a snapshot read, so an uncompacted log pays nothing.
+
+The orphan pass **fails closed**, before anything is erased, in two cases:
+
+- any scanned event store can `truncatePrefix` and no `snapshotStores` were given;
+- an execution looks compacted and no checkpoint is found, meaning either a gap with no
+  snapshot at `events[1].sequence − 1`, or a sequence-0-only log with no snapshot.
+
+A sequence-0-only log is either compacted at its tip or a run that never got past its
+bootstrap, and the two cannot be told apart, so both refuse. The refusal names the executions.
+A transient bootstrap clears as soon as the run progresses. A run that crashed at its bootstrap
+blocks the orphan pass until it is re-driven (`loom recover`) or cancelled. The CLI requires
+`--archive-snap` whenever `--orphans` runs with `--archive-db`, and every CLI refusal exits
+non-zero.
+
+**Known gap (tracked as backlog L11, not closed here).** Compaction itself breaks D1 for
+userspace events: the fold ignores an app's `FINDING_RECORDED`, so compacting a run truncates
+its finding events away. The checkpoint keeps only what the fold keeps. A ref cited *only* by
+such an event then has no loom-held citation, and the orphan pass may reclaim it. Until L11 is
+fixed, pin the execution (`retention.pinned`) rather than compacting it, or supply the app's
+projection of its findings as `roots` (D7).
 
 **Unknown touch times.** A touch time of `0` is the column default a pre-1.3.0 writer leaves
 during a mixed-version rollout. It means UNKNOWN, and the orphan pass never erases such a
@@ -265,7 +294,7 @@ an app's tables, so roots are API-only.
 - The conformance kit checks the optionals when present. The three methods must come as a
   set. A re-put must bump the touch time, checked through the conditional delete alone with a
   cutoff taken from `touchClock` between the two puts; an `INSERT OR IGNORE` store fails
-  (`checkContentStoreTouchContract`, whose negative tests prove it fires). Touch times must be
+  (the kit's internal touch-contract check, whose negative tests prove it fires; it is not exported, since nothing outside the kit consumes it, ADR 0083). Touch times must be
   monotonic (with a clocked factory). The conditional delete refuses a touched blob and erases
   an untouched one, `listPage` returns
   every blob exactly once across pages even while deleting, `touchedBefore` is strict across a

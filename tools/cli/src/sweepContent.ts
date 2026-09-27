@@ -68,7 +68,10 @@ function formatReport(
  *    out from no archive at all, so `--orphans --apply` with neither REFUSES unless
  *    `--no-archive` asserts there is none, and then it warns before erasing anything.
  *  - compaction snapshots: a compacted prefix's refs live only in its checkpoint, so
- *    `--orphans` needs the snapshot store (`--snap`, `--archive-snap`; a config always has one).
+ *    `--orphans` needs the snapshot store (`--snap`; a config always has one), and with
+ *    `--archive-db` also the archive's (`--archive-snap`).
+ *
+ * Every refusal throws, so the binary exits non-zero.
  *
  * Scan order is live first, then archive: retention copies to the archive before it deletes
  * from the live store, so an execution that moves mid-sweep is seen in one of them.
@@ -115,13 +118,25 @@ export async function cmdSweepContent(
     if (opts.archiveDb !== undefined) await archive?.close();
     if (opts.archiveSnap !== undefined) await archiveSnap?.close();
   };
-  if (orphans && stores.snapshotStore === undefined) {
+  // Refusals THROW: the binary exits non-zero, so a script can tell a refusal from a sweep.
+  const refuse = async (message: string): Promise<never> => {
     await closeOwned();
-    return "loom sweep content --orphans needs the snapshot store: a compacted execution's prefix refs live only in its snapshot, and would look like orphans. Pass --snap <snap.db> (and --archive-snap for an archive), or use --config.";
+    throw new Error(message);
+  };
+  if (orphans && stores.snapshotStore === undefined) {
+    return refuse(
+      "loom sweep content --orphans needs the snapshot store: a compacted execution's prefix refs live only in its snapshot, and would look like orphans. Pass --snap <snap.db> (and --archive-snap for an archive), or use --config."
+    );
+  }
+  if (orphans && opts.archiveDb !== undefined && opts.archiveSnap === undefined) {
+    return refuse(
+      "loom sweep content --orphans with --archive-db needs --archive-snap <path>: an archived run compacted before it was archived keeps its prefix refs only in the archive's snapshot store."
+    );
   }
   if (orphans && opts.apply && !hasArchive && opts.noArchive !== true) {
-    await closeOwned();
-    return "loom sweep content --orphans --apply refuses to run with no archive: a blob cited only by an ARCHIVED run is an orphan to this sweep and would be erased. Pass --archive-db (or wire durability.retention.archive under --config), or --no-archive if retention archives nowhere.";
+    return refuse(
+      "loom sweep content --orphans --apply refuses to run with no archive: a blob cited only by an ARCHIVED run is an orphan to this sweep and would be erased. Pass --archive-db (or wire durability.retention.archive under --config), or --no-archive if retention archives nowhere."
+    );
   }
   if (orphans && opts.apply && !hasArchive) {
     // Said BEFORE anything is erased, not only in the report afterwards.

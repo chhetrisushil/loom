@@ -139,8 +139,12 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 
 const archiveEvents = new InMemoryAsyncEventStore();
 await archiveEvents.append({
-  id: "a-0", executionId: "month-1", workflowId: "wf", eventType: "FINDING_RECORDED",
-  sequence: 0, timestamp: ${old}, payload: { evidence: [{ __loomContent: "${evidence.__loomContent}" }] },
+  id: "a-0", executionId: "month-1", workflowId: "wf", eventType: "EXECUTION_STARTED",
+  sequence: 0, timestamp: ${old}, payload: { input: {} },
+});
+await archiveEvents.append({
+  id: "a-1", executionId: "month-1", workflowId: "wf", eventType: "FINDING_RECORDED",
+  sequence: 1, timestamp: ${old}, payload: { evidence: [{ __loomContent: "${evidence.__loomContent}" }] },
 });
 export default defineConfig({
   storage: { kind: "custom", eventStore: new InMemoryAsyncEventStore(), snapshotStore: new InMemoryAsyncSnapshotStore() },

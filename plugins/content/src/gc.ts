@@ -111,15 +111,28 @@ export interface ContentSweepOptions {
    */
   eventStores: readonly (Pick<EventStore, "read"> & ExecutionEnumerable)[];
   /**
-   * ADR 0055 D6 — where compaction checkpoints live (the live snapshot store AND each
-   * archive's). `LogLifecycle.compact` folds a prefix into a snapshot and truncates it, so a
-   * ref the prefix cited survives only inside that snapshot's state. For every execution whose
-   * log has no sequence-1 event (compacted, or bootstrap-only) the sweep loads the latest
-   * snapshot from these stores. If it is a checkpoint past sequence 0, every ref in its state
-   * is PINNED: compaction folded away the event kinds, so the sweep cannot tell telemetry from
-   * evidence. They are released when retention deletes the execution, which deletes its
-   * snapshots too. `reclaimOrphans` REFUSES to run without this when any scanned store can
-   * `truncatePrefix`, and when a log shows a compaction gap that no snapshot covers.
+   * ADR 0055 D6 — where compaction checkpoints live: the live snapshot store AND EACH
+   * ARCHIVE'S snapshot store. `LogLifecycle.compact` checkpoints the fold at the tip and
+   * truncates the prefix, so a ref the prefix cited survives only in snapshot state.
+   *
+   * For every execution whose log has no sequence-1 event, the sweep pins every ref in:
+   *  - the COMPACTION CHECKPOINT, the snapshot at exactly `events[1].sequence − 1` (or, for a
+   *    run compacted at its tip so only sequence 0 remains, its latest snapshot). `fork()`
+   *    from any point after it loads that checkpoint, so its refs stay reachable even after a
+   *    later snapshot overwrote them in state.
+   *  - the LATEST snapshot, which resume loads.
+   *
+   * Snapshots in between hold only checkpoint- or suffix-derived refs, and the suffix is
+   * scanned as log. Anything below the checkpoint is unreachable. The refs are PINNED because
+   * compaction folded away the event kinds, so the sweep cannot tell telemetry from evidence.
+   * They are released when retention deletes the execution, which deletes its snapshots too.
+   *
+   * `reclaimOrphans` REFUSES, before erasing anything:
+   *  - without this option, when any scanned store can `truncatePrefix`;
+   *  - when an execution looks compacted but no checkpoint is found. That covers a gap with no
+   *    snapshot at `events[1].sequence − 1`, and a sequence-0-only log with no snapshot, which
+   *    is either compacted at its tip or a run that never got past its bootstrap. The two are
+   *    indistinguishable, so both refuse.
    */
   snapshotStores?: readonly SnapshotLookup[];
   /**
@@ -175,6 +188,10 @@ export interface ContentSweepOptions {
 /** Structural view of a snapshot store: just `loadLatest` (no snapshot-runtime dependency). */
 export interface SnapshotLookup {
   loadLatest(executionId: string): Promise<{ sequence: number; state: unknown } | null>;
+  loadLatestBefore(
+    executionId: string,
+    sequence: number
+  ): Promise<{ sequence: number; state: unknown } | null>;
 }
 
 /** Orphan-pass page size (ADR 0055 D6): bounded memory per page. */
@@ -283,7 +300,7 @@ export async function sweepUnpinnedContent(
   const pinned = new Set<string>();
   const loadBearing = new Set<string>();
   let executionsScanned = 0;
-  let uncoveredCompactions = 0;
+  const uncovered: string[] = [];
 
   for (const eventStore of options.eventStores) {
     if (eventStore.listExecutions === undefined && eventStore.listExecutionsPage === undefined) {
@@ -304,30 +321,42 @@ export async function sweepUnpinnedContent(
           if (!inEnvelope) loadBearing.add(address);
         });
       }
-      // No sequence-1 event: compacted (a gap after the bootstrap anchor) or bootstrap-only.
-      // Either way the prefix, if there was one, now lives in a checkpoint.
+      // No sequence-1 event: compacted (a gap after the bootstrap anchor), or bootstrap-only
+      // (compacted at its tip, or a run that never got past its bootstrap).
       if (events.length === 0 || events[1]?.sequence === 1) continue;
-      const gap = events.length > 1;
-      let checkpoint: { sequence: number; state: unknown } | null = null;
-      for (const snapshots of options.snapshotStores ?? []) {
-        const found = await snapshots.loadLatest(executionId);
-        if (found !== null && (checkpoint === null || found.sequence > checkpoint.sequence)) {
-          checkpoint = found;
-        }
+      const suffixStart = events[1]?.sequence; // undefined: only sequence 0 remains
+      if (options.snapshotStores === undefined) {
+        if (suffixStart !== undefined) uncovered.push(executionId); // a gap is log evidence
+        continue;
       }
-      if (checkpoint !== null && checkpoint.sequence >= 1) {
-        collectContentRefs(checkpoint.state, (address) => {
+      const pin = (snapshot: { state: unknown }): void =>
+        collectContentRefs(snapshot.state, (address) => {
           if (!lastCited.has(address)) lastCited.set(address, Number.POSITIVE_INFINITY);
           pinned.add(address);
         });
-      } else if (gap) {
-        uncoveredCompactions++;
+      let covered = false;
+      for (const snapshots of options.snapshotStores) {
+        const latest = await snapshots.loadLatest(executionId);
+        if (latest !== null && latest.sequence >= 1) pin(latest);
+        if (suffixStart === undefined) {
+          // Compacted at the tip: the checkpoint IS the latest snapshot.
+          if (latest !== null && latest.sequence >= 1) covered = true;
+        } else {
+          const checkpoint = await snapshots.loadLatestBefore(executionId, suffixStart - 1);
+          if (checkpoint !== null && checkpoint.sequence === suffixStart - 1) {
+            pin(checkpoint);
+            covered = true;
+          }
+        }
       }
+      if (!covered) uncovered.push(executionId);
     }
   }
-  if (orphans && uncoveredCompactions > 0) {
+  if (orphans && uncovered.length > 0) {
+    const shown = uncovered.slice(0, 5).join(", ");
+    const more = uncovered.length > 5 ? ` (+${uncovered.length - 5} more)` : "";
     throw new TypeError(
-      `sweepUnpinnedContent: ${uncoveredCompactions} execution(s) show a compaction gap that no snapshot in snapshotStores covers — their prefix refs cannot be seen, so reclaimOrphans refuses before erasing anything`
+      `sweepUnpinnedContent: ${uncovered.length} execution(s) look compacted but no checkpoint in snapshotStores covers them (${shown}${more}) — their prefix refs cannot be seen, so reclaimOrphans refuses before erasing anything. A run that never got past its bootstrap looks the same: let it progress, or pass the snapshot store its checkpoint went to (each archive's too)`
     );
   }
 

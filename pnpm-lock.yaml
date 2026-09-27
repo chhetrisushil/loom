@@ -1503,6 +1503,9 @@ importers:
       '@loom/replay-vm':
         specifier: workspace:*
         version: link:../../packages/replay-vm
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

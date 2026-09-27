@@ -710,12 +710,15 @@ interface ContentSweepOptions {
   pinnedEventTypes: Iterable<string>; olderThanMs: number; dryRun?: boolean
   now: number                           // LOG time: the TTL is measured back from it
   touchedBefore?: number                // STORE time: guard cutoff (default touchClock() − olderThanMs)
-  snapshotStores?: readonly SnapshotLookup[]   // compaction checkpoints; refs in them are pinned
+  snapshotStores?: readonly SnapshotLookup[]   // checkpoint + latest snapshot refs are pinned
   roots?: () => AsyncIterable<string>   // D7: addresses held in your own tables, pinned
   reclaimOrphans?: boolean              // D6: needs listPage + deleteIfUntouchedSince, and
                                         // snapshotStores when a scanned store can truncatePrefix
 }
-interface SnapshotLookup { loadLatest(executionId: string): Promise<{ sequence: number; state: unknown } | null> }
+interface SnapshotLookup {   // structurally a SnapshotStore; pass the live one AND each archive's
+  loadLatest(executionId: string): Promise<{ sequence: number; state: unknown } | null>
+  loadLatestBefore(executionId: string, sequence: number): Promise<{ sequence: number; state: unknown } | null>
+}
 interface ContentSweepReport {
   executionsScanned: number; refsSeen: number; refsPinned: number; refsLoadBearing: number
   reclaimed: string[]; orphansReclaimed: string[]
