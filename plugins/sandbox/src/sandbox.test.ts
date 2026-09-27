@@ -234,6 +234,26 @@ describe.each(ENGINES)("sandboxEval (ADR 0064) — $name", ({ workers }) => {
     }
   });
 
+  it("an InternalError reads as a CPU kill only when its whole message is `interrupted`", async () => {
+    const { scripts, effects } = await bootEngine();
+    const exact = await put(scripts, `throw new InternalError("interrupted")`);
+    const kill = await expectChannel(
+      effects.execute(SANDBOX_TOOL_ID, { scriptRef: exact }, baseCtx),
+      "limitExceeded"
+    );
+    expect(kill.payload).toEqual({ kind: "cpu" });
+
+    const partial = await put(scripts, `throw new InternalError("request was interrupted")`);
+    const own = await expectChannel(
+      effects.execute(SANDBOX_TOOL_ID, { scriptRef: partial }, baseCtx),
+      "scriptError"
+    );
+    expect(own.payload).toMatchObject({
+      name: "InternalError",
+      message: "request was interrupted",
+    });
+  });
+
   it("the engine's own InternalError for memory is still limitExceeded; a stack overflow is the script's", async () => {
     const { scripts, effects } = await bootEngine({
       limits: { memoryBytes: 4 * 1024 * 1024, interruptBudget: 1_000_000, wallClockMs: 60_000 },
