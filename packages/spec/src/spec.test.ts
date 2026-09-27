@@ -248,6 +248,10 @@ const NOT_A_CAPABILITY = new Set([
   // ABI table already said. No new subsystem; it restores the meaning of three existing syscalls
   // (graded under workflow-runtime/replay-vm; only EVENT_SCHEMA_VERSION bumps).
   "0102",
+  // 0103 — a kernel BUG FIX: a caller-chosen-id start writes its bootstrap before the body runs,
+  // so a duplicate is refused (ExecutionAlreadyExistsError) before any effect. No new subsystem;
+  // it restores what a deterministic id was always for (graded under workflow-runtime).
+  "0103",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

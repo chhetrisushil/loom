@@ -194,6 +194,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Kernel: a duplicate `start()` with a caller-chosen execution id is refused before any effect
+  runs** ([ADR 0103](docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md); KERNEL_ABI and
+  EVENT_SCHEMA unchanged). `start()` checked nothing: the bootstrap `EXECUTION_STARTED` was folded,
+  delivered to `onEvent` and only enqueued, and the body ran at once, so a second start of the same
+  deterministic id invoked its effects (a paid model call in the probe) before the store refused
+  sequence 0. Now, when the caller supplies `executionId`, `start()` awaits the durable write of
+  sequence 0 first — the same envelope, byte for byte, through a builder shared with the journal —
+  and a sequence/id conflict throws the new `ExecutionAlreadyExistsError` with nothing folded,
+  nothing delivered and nothing run. Any other failure of that write rejects `start()` with
+  `StorageWriteError`. `TimerService` treats the typed error as "already started", which closes
+  the cross-node race its `loadState` pre-check left open. There is no `startOnce` helper: catch
+  the error. A minted ULID cannot collide, so `start()` without an `executionId` pays no extra
+  write and behaves byte-identically. `onEvent` remains pre-durability for every later event, now
+  documented; a consumer that must act only on durable facts uses a catch-up read.
+
+  **Upgrade note:** code that started the same caller-chosen id twice and awaited the second
+  handle now gets `ExecutionAlreadyExistsError` from `start()` itself. A test that relied on the
+  duplicate "succeeding" was testing the defect.
+
 - **The content sweep no longer erases a load-bearing externalized ref**
   ([ADR 0055](docs/adr/0055-k10-6-pin-seam-content-gc.md) D4, amended). `sweepUnpinnedContent`
   treated every `__loomContent` ref as TTL-reclaimable unless a pinned event kind cited it. An

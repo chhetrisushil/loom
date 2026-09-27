@@ -47,6 +47,61 @@ export class ExecutionJournal {
   }
 
   /**
+   * The ONE envelope builder, shared by {@link commit} and {@link bootstrapEnvelope} so the
+   * two can never drift: a caller-chosen-id start (ADR 0103) writes its sequence 0 through
+   * `bootstrapEnvelope` BEFORE a journal exists, and that envelope must be byte-identical to
+   * the one `commit` would have written — same id, same injected-clock timestamp, same
+   * `fence` stamp merged over the caller's metadata.
+   */
+  private static build(
+    identity: { executionId: string; workflowId: string },
+    sequence: number,
+    eventType: string,
+    payload: unknown,
+    opts: { id?: string; timestamp?: number; metadata?: Record<string, unknown> } | undefined,
+    fence: number | undefined,
+    now: () => number
+  ): EventEnvelope {
+    const metadata =
+      opts?.metadata !== undefined || fence !== undefined
+        ? { ...opts?.metadata, ...(fence !== undefined && { fence }) }
+        : undefined;
+    return {
+      id: opts?.id ?? `${identity.executionId}-${sequence}`,
+      workflowId: identity.workflowId,
+      executionId: identity.executionId,
+      eventType,
+      sequence,
+      timestamp: opts?.timestamp ?? now(),
+      payload,
+      ...(metadata !== undefined && { metadata }),
+    };
+  }
+
+  /**
+   * ADR 0103 — the sequence-0 envelope a fresh execution's journal WOULD commit, built
+   * without a journal so `start()` can make it durable before the body runs. Pass the same
+   * `fence` and clock the journal will be constructed with; then hand the stored envelope to
+   * {@link adopt} so the journal folds it without writing it again.
+   */
+  static bootstrapEnvelope(
+    identity: { executionId: string; workflowId: string },
+    eventType: string,
+    payload: unknown,
+    opts: { metadata?: Record<string, unknown>; fence?: number; now?: () => number } = {}
+  ): EventEnvelope {
+    return ExecutionJournal.build(
+      identity,
+      0,
+      eventType,
+      payload,
+      opts.metadata !== undefined ? { metadata: opts.metadata } : undefined,
+      opts.fence,
+      opts.now ?? Date.now
+    );
+  }
+
+  /**
    * SYNCHRONOUS. Allocate the next sequence, fold the envelope into the VM, fire
    * onEvent, and enqueue the durable write. Returns the committed envelope.
    */
@@ -56,26 +111,38 @@ export class ExecutionJournal {
     opts?: { id?: string; timestamp?: number; metadata?: Record<string, unknown> }
   ): EventEnvelope {
     const sequence = ++this.seq;
-    const state = this.vm.getState();
-    const metadata =
-      opts?.metadata !== undefined || this.fence !== undefined
-        ? { ...opts?.metadata, ...(this.fence !== undefined && { fence: this.fence }) }
-        : undefined;
-    const envelope: EventEnvelope = {
-      id: opts?.id ?? `${state.executionId}-${sequence}`,
-      workflowId: state.workflowId,
-      executionId: state.executionId,
-      eventType,
+    const envelope = ExecutionJournal.build(
+      this.vm.getState(),
       sequence,
-      timestamp: opts?.timestamp ?? this.now(),
+      eventType,
       payload,
-      ...(metadata !== undefined && { metadata }),
-    };
+      opts,
+      this.fence,
+      this.now
+    );
     this.vm.applyEvent(envelope); // in-memory fold — synchronous, authoritative
     this.onEvent?.(envelope); // live projection fold — synchronous, durability-independent
     this.enqueue(envelope); // durable write — async, order-preserving
     this.onCommit?.(sequence); // snapshot cadence hook
     return envelope;
+  }
+
+  /**
+   * ADR 0103 — take in an envelope that is ALREADY DURABLE (written by `start()`'s bootstrap
+   * barrier): claim its sequence, fold it, fire onEvent and onCommit — everything
+   * {@link commit} does except the append, which has already happened. It must be the next
+   * sequence this journal would have allocated; anything else is a kernel bug, not input.
+   */
+  adopt(envelope: EventEnvelope): void {
+    if (envelope.sequence !== this.seq + 1) {
+      throw new Error(
+        `ExecutionJournal.adopt: expected sequence ${this.seq + 1}, got ${envelope.sequence}`
+      );
+    }
+    this.seq = envelope.sequence;
+    this.vm.applyEvent(envelope);
+    this.onEvent?.(envelope);
+    this.onCommit?.(envelope.sequence);
   }
 
   private enqueue(envelope: EventEnvelope): void {

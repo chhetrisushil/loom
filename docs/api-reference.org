@@ -456,6 +456,8 @@ interface ExecutionContext {
 
 *Recovering an abandoned execution ([[file:adr/0004-failure-recovery.md][ADR 0004]]).* A dead or wedged *worker* is redispatched by the dispatcher (~executeTimeoutMs~) and resumes idempotently. A dead *supervisor* is not covered — detection lives in its process — so ~recoverAbandoned(runtime, { source, isAbandoned })~ (~@loom/workflow-runtime~) enumerates ~running~/~pending~ executions and resumes the ones your predicate claims, via the same ~EXECUTION_RECOVERED~ resume the worker uses. ~isAbandoned~ is REQUIRED: a running execution on a healthy node is byte-identical in the log to an orphaned one, so only the deployment can decide. Run it from a cron or Job, not as a service.
 
+*Start-once for a caller-chosen id ([[file:adr/0103-durable-bootstrap-for-caller-chosen-ids.md][ADR 0103]]).* ~start(flow, input, { executionId })~ makes the execution's ~EXECUTION_STARTED~ durable BEFORE the flow body runs, so a duplicate start (a redelivered trigger, two nodes firing the same schedule occurrence) rejects with ~ExecutionAlreadyExistsError~ and nothing runs — no effect, no fold, no ~onEvent~. Catch it to treat the duplicate as "already started"; there is no separate ~startOnce~. Any other failure of that write rejects with ~StorageWriteError~. A minted ULID cannot collide, so ~start~ without an ~executionId~ pays no extra write and is byte-identical to before. ~onEvent~ otherwise stays pre-durability for every later event: a consumer that must act only on durable facts reads them back (the ADR 0058 catch-up shape).
+
 *Durable placement (#392).* ~start(flow, input, { computeTarget })~ records the compute lane on the execution's ~EXECUTION_STARTED~ anchor (envelope metadata — descriptive, never folded, so replay is untouched), and ~placementOf(eventStore, executionId)~ (~@loom/workflow-runtime~) reads it back in one point-read. ~TimerService~ and ~recoverAbandoned~ accept a ~dispatcher~ and re-drive to that lane instead of resuming in-process; a fork inherits its parent's lane and ~fork(…, { computeTarget })~ overrides it. A HINT, not a pin: ~PlacementDispatcher~ falls back for an unregistered target (and warns once), because a retired lane must not strand the executions that named it.
 
 *What is stuck, and is anything watching it.* ~orphanCensus(runtime, { source, leases?, buckets? })~ (~@loom/workflow-runtime~) is the READ-ONLY pass beside the acting ones: no predicate, no writes, no policy — a predicate is what a census must not need, since the question it answers is whether YOURS is right. It bands ~running~/~pending~ executions by age (cumulative, with a sample of ids) and, given a lease store, classifies each as ~held~ / ~expired~ / ~none~. `none` is the one to watch: a stuck execution nothing ever leased cannot be recovered from evidence at all.
@@ -490,7 +492,7 @@ interface ExecutionHandle {
 
 type FlowRunner<TIn, TOut> = (ctx: WorkflowContext, input: TIn) => Promise<TOut>;
 interface RegisteredFlow<TIn, TOut> { definition: FlowDefinition<TIn, TOut>; runner: FlowRunner<TIn, TOut>; }
-interface RunOptions   { executionId?: string; }
+interface RunOptions   { executionId?: string; /* caller-chosen ⇒ start-once (ADR 0103) */ }
 interface ResumeEvent  { eventType: string; payload: unknown; }
 interface ForkOptions  { branchName?: string; executionId?: string; }
 interface ForkResult   { executionId: string; parentExecutionId: string; forkSequence: number; branchName: string; state: ExecutionState; }
@@ -2340,6 +2342,7 @@ class CapabilityInvokeDeniedError extends Error  { readonly capabilityId: string
 
 #+begin_src typescript
 class InputValidationError extends Error         { readonly workflowId: string; readonly executionId: string; readonly detail: string; }  // validateInput refused the start input
+class ExecutionAlreadyExistsError extends Error  { readonly executionId: string; readonly cause?: unknown; }   // ADR 0103 — a caller-chosen-id start found the id taken; nothing ran
 class ApprovalRejectedError extends Error        { readonly executionId: string; readonly reason: string; }   // a resume carried a rejection
 class ExecutionDeniedError extends Error         { readonly op: ExecutionOp; readonly executionId: string; readonly reason?: string; }  // ADR 0039 lifecycle authz
 class ResumePayloadValidationError extends Error { readonly executionId: string; readonly eventType: string; readonly detail: string; }  // ADR 0077 resumeSchemas
