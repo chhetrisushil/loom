@@ -17,11 +17,11 @@ import {
 } from "@loom/event-runtime";
 import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loom/llm";
 import { assembleStream } from "@loom/llm";
-import { checkToolCallStreamParity } from "./toolCallParity";
 import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
 import { describe, expect, it } from "vitest";
+import { checkToolCallStreamParity } from "./toolCallParity";
 
 export {
   runEventStoreDecoratorConformance,
