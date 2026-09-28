@@ -211,10 +211,11 @@ export class PostgresEventStore implements EventStore {
   /**
    * ADR 0074 D1 — bulk append in ONE round-trip and ONE statement.
    *
-   * `jsonb_to_recordset` keeps it a single bind parameter regardless of batch size. The
-   * fence check is a JOIN rather than the scalar subquery `append` uses, because a batch
-   * may span executions (that is exactly what `CoalescingEventStore` produces) and each
-   * envelope must be checked against its OWN execution's fence.
+   * One JSON-array bind parameter (`jsonb_array_elements`) keeps it a single parameter
+   * regardless of batch size. The fence check is a JOIN rather than the scalar subquery
+   * `append` uses, because a batch may span executions (that is exactly what
+   * `CoalescingEventStore` produces) and each envelope must be checked against its OWN
+   * execution's fence.
    *
    * Atomicity comes from the statement itself: the CTE inserts all qualifying rows or the
    * statement fails, so no execution is left with a hole. If any envelope is fenced out
@@ -243,6 +244,13 @@ export class PostgresEventStore implements EventStore {
     // Everything in one statement: the insert, the all-or-nothing fence guard, and one
     // notification per envelope.
     //
+    // `payload` is read as `e->'payload'`, NOT as a typed recordset column: the
+    // `jsonb_to_record(set)` family maps a JSON `null` field to SQL NULL, which the
+    // `payload JSONB NOT NULL` column rejects — so the kernel's status-only
+    // `EXECUTION_RESUMED` (payload `null`, ADR 0104) failed here while `append` stored it.
+    // `->` keeps JSON `null` as the jsonb value `null` and yields SQL NULL only for an
+    // ABSENT key (a JS `undefined` payload), which fails exactly as it does in `append`.
+    //
     // The `rejected` CTE is what makes it atomic. Filtering the INSERT to only the
     // qualifying rows would COMMIT the good ones and leave us throwing afterwards, with the
     // statement already succeeded — exactly the hole the SPI forbids. With the NOT EXISTS
@@ -255,11 +263,14 @@ export class PostgresEventStore implements EventStore {
     const { rows: notified } = await this.pool
       .query<{ inserted: number }>(
         `WITH batch AS (
-         SELECT * FROM jsonb_to_recordset($1::jsonb) AS x(
-           id text, workflow_id text, execution_id text, event_type text,
-           "sequence" bigint, "timestamp" bigint, payload jsonb, metadata jsonb,
-           fence bigint, channel text
-         )
+         SELECT x.id, x.workflow_id, x.execution_id, x.event_type, x."sequence", x."timestamp",
+                e->'payload' AS payload, x.metadata, x.fence, x.channel
+         FROM jsonb_array_elements($1::jsonb) AS e,
+              LATERAL jsonb_to_record(e) AS x(
+                id text, workflow_id text, execution_id text, event_type text,
+                "sequence" bigint, "timestamp" bigint, metadata jsonb,
+                fence bigint, channel text
+              )
        ), rejected AS (
          SELECT 1 FROM batch b
          LEFT JOIN fences f ON f.execution_id = b.execution_id

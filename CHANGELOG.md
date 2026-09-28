@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`@loom/plugin-postgres`: `appendBatch` refused a `null` payload** (backlog L16). The bulk
+  insert decoded its batch with `jsonb_to_recordset`, which maps a JSON `null` field to SQL
+  NULL, so `payload JSONB NOT NULL` rejected the kernel's status-only `EXECUTION_RESUMED`
+  (payload `null`, [ADR 0104](docs/adr/0104-recovery-never-answers-a-gate.md)) whenever it went
+  through `CoalescingEventStore` — while `append` stored it fine. `payload` is now read as
+  `e->'payload'` over `jsonb_array_elements`, which keeps JSON `null` as jsonb `null` and
+  still yields SQL NULL only for an absent (`undefined`) payload, failing exactly as
+  `append` does. The conformance kit gains a direct `appendBatch` null-payload case, so an
+  undecorated store catches this without the coalescer. Every other Postgres write path
+  (`append`, `copyPrefix`, snapshot / read-model / durable-state / memory stores) binds
+  `JSON.stringify(...)::jsonb` or copies jsonb server-side and was already correct; the
+  SQLite batch path stringifies per row and was unaffected.
+
 - **`@loom/workflow-runtime`: compaction integrity**
   ([ADR 0106](docs/adr/0106-compaction-integrity.md), backlog L11). Defects in
   `LogLifecycle.compact` and the code that reads what it leaves:
