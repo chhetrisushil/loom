@@ -61,3 +61,10 @@ unchanged.
   replay. Covers `/health`, straight-through completion, suspend-then-resume
   across two POSTs, and folded-state parity with in-process `LocalWorkerRuntime`.
 - Full repo: build + typecheck clean, 62/62 test tasks green, biome clean.
+
+---
+
+**Amendment (2026-09-28, L20).** `POST /execute` answers a refusal because another holder owns
+the execution with `409 { code: "superseded" }` instead of a 500, and `RemoteWorkerRuntime`
+maps it to `ExecutionSupersededError`, so a retrying dispatcher can decline to redispatch it.
+See [ADR 0004's amendment](0004-failure-recovery.md).

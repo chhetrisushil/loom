@@ -190,8 +190,13 @@ store, the read-model plugin's shape (ADR 0058).
   `fencing.test.ts` pins the racing-first-dispatch case. That argument holds PER ATTEMPT: a
   retrying dispatcher (`LocalDispatcher` with `maxAttempts > 1`) counts a lost race
   (`ExecutionAlreadyExistsError`) or a fenced-out attempt as failed and redispatches, and the
-  redispatch's new fence can still supersede a live holder (the two can ping-pong) — tracked
-  as follow-up L20, outside this ADR.
+  redispatch's new fence could still supersede a live holder (the two ping-ponged: with
+  `maxAttempts: 3` on two dispatchers, fences went 1→6 and one step's effect ran 5–6 times).
+  **Resolved (L20)** under [ADR 0004's 2026-09-28 amendment](0004-failure-recovery.md): a
+  refusal that names this execution — `ExecutionAlreadyExistsError`, or a `StaleFenceError`
+  bare or as a `StorageWriteError`'s cause — is a superseded dispatch, not a failed attempt,
+  and neither `LocalDispatcher` nor `SupervisingDispatcher` retries it
+  (`worker-runtime-local`'s `dispatcherSupersede.test.ts`).
 - **Open: duplicate cross-node timer FIRES without `leases` supersede each other.** A fire is
   still fenced (`TimerService.fire` acquires a token before resuming), and a token acquired
   after another node's resume is durable fences that node out mid-body, after its effect —

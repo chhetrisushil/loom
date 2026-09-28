@@ -1,8 +1,9 @@
-import type {
-  ExecutionPackage,
-  ExecutionResult,
-  WorkerLease,
-  WorkerRuntime,
+import {
+  type ExecutionPackage,
+  type ExecutionResult,
+  type WorkerLease,
+  type WorkerRuntime,
+  isSupersededRefusal,
 } from "@loom/worker-runtime";
 import type { DispatchMetadata, DispatcherHealth, ExecutionDispatcher } from "./types";
 
@@ -12,6 +13,13 @@ export interface LocalDispatcherOptions {
    * the worker throws (transport/allocation error or a crashed instance) or when
    * it exceeds {@link LocalDispatcherOptions.executeTimeoutMs} — NOT when the flow
    * returns a "failed" result, which is a normal terminal outcome. Default 1.
+   *
+   * NOR when the worker was refused because another holder owns the execution — a lost
+   * start race or a fenced-out attempt ({@link isSupersededRefusal}, L20). That refusal is
+   * rethrown at once, never retried: `allocate` fences every attempt, so a retry would
+   * supersede the holder that won, and the two would ping-pong, re-running the in-flight
+   * step on every bounce. Declining it keeps ADR 0004's bound — the one interrupted step
+   * runs at most twice — whatever this is set to.
    *
    * Redispatch is safe: the worker is idempotent (it inspects durable state and
    * resumes a crashed execution from its latest snapshot rather than restarting),
@@ -67,6 +75,8 @@ export class LocalDispatcher implements ExecutionDispatcher {
             ? withTimeout(run, this.executeTimeoutMs, pkg.executionId)
             : run);
         } catch (err) {
+          // L20 — superseded, not failed: someone else is driving this execution now.
+          if (isSupersededRefusal(err, pkg.executionId)) throw err;
           lastErr = err;
         } finally {
           this.leases.delete(pkg.executionId);

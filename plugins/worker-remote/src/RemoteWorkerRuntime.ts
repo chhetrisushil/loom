@@ -1,9 +1,10 @@
-import type {
-  ExecutionPackage,
-  ExecutionResult,
-  WorkerLease,
-  WorkerRequest,
-  WorkerRuntime,
+import {
+  type ExecutionPackage,
+  type ExecutionResult,
+  ExecutionSupersededError,
+  type WorkerLease,
+  type WorkerRequest,
+  type WorkerRuntime,
 } from "@loom/worker-runtime";
 
 // Minimal structural fetch types so this package needs no DOM lib. Node 20's
@@ -69,6 +70,12 @@ export class RemoteWorkerRuntime implements WorkerRuntime {
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
+      // L20 — the worker's "another holder owns this execution" (409, code "superseded")
+      // becomes the typed refusal a dispatcher declines to retry. Keyed on the code, not the
+      // status alone, so an unrelated 409 from a proxy stays an ordinary failure.
+      if (res.status === 409 && supersededCode(detail)) {
+        throw new ExecutionSupersededError(pkg.executionId);
+      }
       throw new Error(`worker POST /execute failed: ${res.status} ${detail}`);
     }
     return (await res.json()) as ExecutionResult;
@@ -98,5 +105,13 @@ export class RemoteWorkerRuntime implements WorkerRuntime {
     } catch {
       return false;
     }
+  }
+}
+
+function supersededCode(detail: string): boolean {
+  try {
+    return (JSON.parse(detail) as { code?: unknown } | null)?.code === "superseded";
+  } catch {
+    return false;
   }
 }

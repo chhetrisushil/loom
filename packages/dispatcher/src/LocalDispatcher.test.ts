@@ -181,3 +181,57 @@ describe("LocalDispatcher", () => {
     expect(executes).toBe(1); // NOT retried despite maxAttempts: 3
   });
 });
+
+// L20 — "another holder owns this execution" is not a failed attempt. Name-shaped errors stand
+// in for `@loom/event-runtime` / `@loom/workflow-runtime` classes this package does not depend
+// on; the predicate matches by name for exactly that reason.
+function named(name: string, fields: Record<string, unknown>, cause?: unknown): Error {
+  const err = Object.assign(new Error(name), fields, cause !== undefined ? { cause } : {});
+  err.name = name;
+  return err;
+}
+const staleFence = (executionId: string) =>
+  named("StaleFenceError", { executionId, staleFence: 1, currentFence: 2 });
+
+describe("LocalDispatcher — superseded refusals (L20)", () => {
+  function scripted(errs: unknown[]): WorkerRuntime & { attempts: number } {
+    const w = {
+      attempts: 0,
+      async allocate(request: WorkerRequest): Promise<WorkerLease> {
+        return { leaseId: `lease-${request.executionId}` };
+      },
+      async execute(_lease: WorkerLease, p: ExecutionPackage): Promise<ExecutionResult> {
+        const err = errs[w.attempts++];
+        if (err !== undefined) throw err;
+        return resultStub(p.executionId);
+      },
+      async release() {},
+    };
+    return w;
+  }
+
+  it.each([
+    ["a lost start race", named("ExecutionAlreadyExistsError", { executionId: "e1" })],
+    ["a fenced-out write", named("StorageWriteError", {}, staleFence("e1"))],
+    ["a bare stale fence", staleFence("e1")],
+    ["the wire form", named("ExecutionSupersededError", { executionId: "e1" })],
+  ])("rethrows %s at once, without a second attempt", async (_label, err) => {
+    const worker = scripted([err]);
+    const dispatcher = new LocalDispatcher(worker, { maxAttempts: 3 });
+    await expect(dispatcher.dispatch(pkg)).rejects.toBe(err);
+    expect(worker.attempts).toBe(1);
+  });
+
+  it.each([
+    ["a genuine storage failure", named("StorageWriteError", {}, new Error("disk full"))],
+    // A coalesced batch rejects every caller with ONE writer's error: a stale fence that
+    // names a DIFFERENT execution is, for this one, a genuine failure.
+    ["another execution's stale fence", named("StorageWriteError", {}, staleFence("other"))],
+    ["another execution's lost race", named("ExecutionAlreadyExistsError", { executionId: "x" })],
+  ])("still retries %s", async (_label, err) => {
+    const worker = scripted([err]);
+    const dispatcher = new LocalDispatcher(worker, { maxAttempts: 3 });
+    await expect(dispatcher.dispatch(pkg)).resolves.toMatchObject({ status: "completed" });
+    expect(worker.attempts).toBe(2);
+  });
+});
