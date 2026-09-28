@@ -57,7 +57,7 @@ export function createA2AClientEffect(
     while (Date.now() < deadline) {
       await sleep(pollIntervalMs);
 
-      const statusResp = await fetch(`${agentUrl}/tasks/${encodeURIComponent(taskId)}`, {
+      const statusResp = await fetch(`${agentUrl}/tasks/${encodeTaskIdSegment(taskId)}`, {
         headers: baseHeaders,
       });
       if (!statusResp.ok) {
@@ -79,6 +79,31 @@ const terminalStatuses = new Set<A2ATaskStatus>(["completed", "failed"]);
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Escape only the characters that are unsafe in a SINGLE path segment: `/` (would otherwise
+ * split the segment — this is what stops a `../admin`-style id from being collapsed by URL
+ * dot-segment normalization into a request for a different route), `?` and `#` (would start a
+ * query string / fragment), and a literal `%` (would corrupt the escape sequence itself on
+ * decode). Everything else — INCLUDING `:` — is left byte-identical to the pre-encoding wire
+ * format.
+ *
+ * `:` matters because every loom task id contains one (`A2APeerClient` sets
+ * `task.id = `${executionId}:${stepId}``, and `TenantScoped` uses `:` as its own separator). A
+ * full `encodeURIComponent` here would send `exec%3Astep` — a NEW client talking to an OLD
+ * `A2AServer` (or any third-party peer) that does not `decodeURIComponent` the path segment
+ * would then 404 every poll during a rolling upgrade. `A2AServer`'s `GET /tasks/:id` route still
+ * `decodeURIComponent`s the segment on the way in, which is a no-op for an id with no `%` in it
+ * and round-trips one of the escaped characters above, so both old- and new-server peers resolve
+ * the same id from the same request.
+ *
+ * Trade-off accepted deliberately: an id containing a literal `%` cannot be resolved by an old,
+ * non-decoding server (it would look up the literal `...%25...` instead of the real id) — but no
+ * loom-issued task id contains one.
+ */
+function encodeTaskIdSegment(id: string): string {
+  return id.replace(/[/?#%]/g, (c) => encodeURIComponent(c));
 }
 
 export { terminalStatuses };
