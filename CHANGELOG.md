@@ -97,6 +97,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-sorting every key per page. The conformance kit gains a code point
   order + arbitrary-cursor case, and `@loom/plugin-postgres` runs the EventStore kit through
   `ShardedEventStore` over three real Postgres shards (raw and tenant-scoped).
+- **`BranchRegistry.listRefs` ordered refs three different ways across backends** (backlog
+  L21, addendum to [ADR 0108](docs/adr/0108-execution-id-order-and-fail-soft-migrations.md);
+  BranchRegistry SPI **1.2.0 → 2.0.0, MAJOR**: a store conforming to 1.x can fail the new kit
+  case). Postgres paged in the database collation, SQLite in BINARY (already correct), and
+  the in-memory store with `String.prototype.localeCompare` — which is normalization-aware,
+  so it can return `0` for two DISTINCT names (an NFC "é" and its NFD decomposition are
+  canonically equivalent under most locales). `pruneBranchRefs` pages `listRefs` with an
+  `after` cursor, so a comparator that disagrees with the store's own order, or ties two
+  distinct names, skips or repeats refs at a page boundary — the same failure mode L10 fixed
+  for execution ids, on a second SPI. `listRefs` now orders names in the same Unicode code
+  point order D1 pinned (`compareExecutionIds`), and `after` may be any string, not only a
+  name the store returned. The in-memory store sorts with `compareExecutionIds` and caches
+  the sorted name list across calls (invalidated only when a name is added or removed), same
+  shape as the in-memory EventStore's `sortedIds`. `@loom/plugin-postgres` declares
+  `refs.name` `COLLATE "C"`, states it explicitly in `listRefs`'s query, and converts an
+  existing table in place on the next migration (one index rebuilt — `refs`'s own primary
+  key — under an ACCESS EXCLUSIVE lock, following D3's bounded-wait / fail-soft-WARNING
+  policy exactly; the two migrations now share one `loom.migration_lock_timeout` setting,
+  renamed from `loom.l10_lock_timeout`). The conformance kit gains a code point order +
+  arbitrary-cursor case for `listRefs` (mixed case, `-`/`_`, digits, NFC vs. NFD "é", an
+  astral name), and `@loom/plugin-postgres` runs the L21 migration against a real pre-L21
+  `refs` table the same way it does for L10's `events` table. `pruneBranchRefs` needed no
+  code change: it was already contract-driven.
 - **`@loom/workflow-runtime`: a fenced `TimerService` could pay for a schedule occurrence's
   first effect twice** (backlog L12, closing the "loser's fence" residual of
   [ADR 0103](docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md)). With `fenced: true`

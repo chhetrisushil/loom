@@ -97,12 +97,19 @@ export class PostgresBranchRegistry implements BranchRegistry {
   }
 
   async listRefs(options?: ListRefsOptions): Promise<BranchRef[]> {
+    // SPI 2.0.0 (L21, ADR 0108 addendum): in code point order, i.e. `COLLATE "C"`, NOT the
+    // database's collation — the same rule `PostgresEventStore.listExecutionsPage` follows
+    // for execution ids (ADR 0108/L10), for the same reason: a cursor produced in one order
+    // and consumed in another skips or repeats rows at a page boundary. `name` is declared
+    // `COLLATE "C"` (schema.ts), so the primary key serves this index-only; the explicit
+    // clause keeps the ORDER correct even on a table whose column predates that (fail-soft,
+    // ADR 0108 D3 — see schema.ts's `L21_COLLATION`).
     assertListRefsLimit(options?.limit);
     await this.ready;
     const { rows } = await this.pool.query<RefRow>(
       `SELECT * FROM refs
-        WHERE ($1::text IS NULL OR name > $1)
-        ORDER BY name ASC
+        WHERE ($1::text IS NULL OR name COLLATE "C" > $1)
+        ORDER BY name COLLATE "C" ASC
         LIMIT $2::int`,
       [options?.after ?? null, options?.limit ?? null]
     );

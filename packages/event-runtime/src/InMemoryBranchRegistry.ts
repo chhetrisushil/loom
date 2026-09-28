@@ -7,6 +7,7 @@ import {
   type PromoteOptions,
   assertListRefsLimit,
 } from "./BranchRegistry";
+import { compareExecutionIds } from "./executionIdOrder";
 
 export interface InMemoryBranchRegistryOptions {
   /** Injectable clock for createdAt/updatedAt (defaults to Date.now). */
@@ -22,12 +23,26 @@ export class InMemoryBranchRegistry implements BranchRegistry {
   private readonly refs = new Map<string, BranchRef>();
   private readonly lineage = new Map<string, LineageRecord>();
   private readonly now: () => number;
+  // SPI 2.0.0 (L21, ADR 0108 addendum) — ref names in Unicode CODE POINT order
+  // (`compareExecutionIds`), cached across calls and invalidated only when a name is
+  // ADDED or REMOVED (a tip/executionId mutation never changes name order). Mirrors
+  // `InMemoryAsyncEventStore`'s `sortedIds` cache, so a page costs a binary search plus
+  // the page size, not an O(n log n) re-sort of the whole registry on every call.
+  //
+  // NOT `String.prototype.localeCompare`: it is locale- and normalization-aware, so two
+  // DISTINCT, canonically-equivalent names (an NFC "é", U+00E9, and its NFD decomposition
+  // "e\u0301") can compare equal. `listRefs`'s `after` filter used to test
+  // `name.localeCompare(after) > 0`, so a name tied with the cursor by that comparator was
+  // silently excluded — an L10-style skip at exactly the page boundary `pruneBranchRefs`
+  // resumes from.
+  private sortedNames: string[] | undefined;
 
   constructor(options: InMemoryBranchRegistryOptions = {}) {
     this.now = options.now ?? (() => Date.now());
   }
 
   async putRef(ref: BranchRef): Promise<void> {
+    if (!this.refs.has(ref.name)) this.sortedNames = undefined;
     this.refs.set(ref.name, { ...ref });
   }
 
@@ -38,12 +53,23 @@ export class InMemoryBranchRegistry implements BranchRegistry {
 
   async listRefs(options?: ListRefsOptions): Promise<BranchRef[]> {
     assertListRefsLimit(options?.limit);
+    this.sortedNames ??= [...this.refs.keys()].sort(compareExecutionIds);
+    const sorted = this.sortedNames;
     const after = options?.after;
-    const page = [...this.refs.values()]
-      .map((r) => ({ ...r }))
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .filter((r) => after === undefined || r.name.localeCompare(after) > 0);
-    return options?.limit === undefined ? page : page.slice(0, options.limit);
+    // Binary-search the first name strictly after the cursor (any string, not only one
+    // this store returned) — the same seek `InMemoryAsyncEventStore.listExecutionsPage`
+    // does for execution ids.
+    let start = 0;
+    if (after !== undefined) {
+      let hi = sorted.length;
+      while (start < hi) {
+        const mid = (start + hi) >>> 1;
+        if (compareExecutionIds(sorted[mid] as string, after) > 0) hi = mid;
+        else start = mid + 1;
+      }
+    }
+    const end = options?.limit === undefined ? sorted.length : start + options.limit;
+    return sorted.slice(start, end).map((name) => ({ ...(this.refs.get(name) as BranchRef) }));
   }
 
   async moveTip(name: string, tip: number): Promise<void> {
@@ -69,6 +95,7 @@ export class InMemoryBranchRegistry implements BranchRegistry {
       }
     }
     if (to === undefined) {
+      this.sortedNames = undefined; // a new name enters the order
       this.refs.set(toName, {
         name: toName,
         executionId: from.executionId,
@@ -84,7 +111,7 @@ export class InMemoryBranchRegistry implements BranchRegistry {
   }
 
   async deleteRef(name: string): Promise<void> {
-    this.refs.delete(name);
+    if (this.refs.delete(name)) this.sortedNames = undefined;
   }
 
   async recordLineage(rec: Omit<LineageRecord, "createdAt">): Promise<void> {

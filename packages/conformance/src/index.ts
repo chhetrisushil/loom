@@ -791,6 +791,68 @@ export function runBranchRegistryConformance(
       await reg.close();
     });
 
+    // SPI 2.0.0 (L21, ADR 0108 addendum). Before this, three backends ordered `listRefs`
+    // three different ways: Postgres in the database collation, SQLite in BINARY, and the
+    // in-memory store with `String.prototype.localeCompare` — which can return 0 for
+    // DISTINCT names (an NFC "é", U+00E9, and its NFD decomposition "é" are
+    // canonically equivalent, so most locales collate them equal). `pruneBranchRefs` pages
+    // with an `after` cursor, and a comparator that disagrees with the store's own order —
+    // or that ties two distinct names — skips or repeats refs at a page boundary, the same
+    // failure mode L10 fixed for `listExecutionsPage`. The contract is now the same one:
+    // Unicode CODE POINT order (= UTF-8 byte order, SQL `COLLATE "C"`, SQLite BINARY), and
+    // `after` may be any string, not only a name the store returned.
+    it("listRefs orders by Unicode code point (not locale collation), pages without skips or duplicates, incl. NFC/NFD and an astral name (SPI 2.0.0, L21)", async () => {
+      const reg = factory();
+      // Hand-written in code point order — NOT computed with a comparator, so the kit does
+      // not share a bug with the implementation it checks. Mixed case, digits, '-', '_', the
+      // NFD form of "é" (e + combining acute, U+0301) immediately followed by its NFC form
+      // (U+00E9) — two DISTINCT names a locale-aware compare can treat as equal — and an
+      // astral name (a surrogate pair), which disagrees with a BMP name under UTF-16
+      // code-UNIT order but not under code-POINT order.
+      const ordered = [
+        "-z",
+        "0z",
+        "A1",
+        "Ab",
+        "Z",
+        "_z",
+        "a-b",
+        "a1",
+        "aB",
+        "a_b",
+        "ab",
+        "b",
+        "é",
+        "é",
+        "！x",
+        "\u{1f600}x",
+      ];
+      // Inserted out of order, so an insertion-ordered store cannot pass by accident.
+      for (const name of [...ordered].reverse()) await reg.putRef(ref(name, `exec-${name}`, 1));
+
+      const seen: string[] = [];
+      let after: string | undefined;
+      const pageSize = 3;
+      // Bounded: a store whose order disagrees with the cursor it hands back (or a
+      // comparator that ties two distinct names) must fail this case, not hang it.
+      for (let pages = 0; pages <= ordered.length; pages++) {
+        const page = await reg.listRefs({ limit: pageSize, ...(after !== undefined && { after }) });
+        if (page.length === 0) break;
+        seen.push(...page.map((r) => r.name));
+        const last = page[page.length - 1]!.name;
+        expect(last).not.toBe(after); // real forward progress, or this loop would never end
+        after = last;
+        if (page.length < pageSize) break;
+      }
+      expect(seen).toEqual(ordered); // exact code point order, no skips, no duplicates
+
+      // A cursor the store never returned (and holds no ref for) resumes strictly after it —
+      // the same contract `ShardedEventStore` and `pruneBranchRefs` rely on.
+      const resumed = await reg.listRefs({ after: "a0", limit: 100 });
+      expect(resumed.map((r) => r.name)).toEqual(ordered.slice(ordered.indexOf("a1")));
+      await reg.close();
+    });
+
     it("deleteRef removes a ref", async () => {
       const reg = factory();
       await reg.putRef(ref("tmp", "execA", 1));

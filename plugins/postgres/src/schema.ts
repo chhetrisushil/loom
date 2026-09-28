@@ -38,9 +38,11 @@ const migrations = new WeakMap<PoolLike, Promise<void>>();
  */
 export interface MigrateOptions {
   /**
-   * L10 — how long the one-time `events.execution_id` collation conversion may WAIT for its
-   * table lock before giving up (with a WARNING; boot continues). Short on purpose: while
-   * the ALTER waits, every append queues behind it. Default 2000 ms.
+   * L10/L21 — how long a one-time collation conversion (`events.execution_id`, then
+   * `refs.name`) may WAIT for its table lock before giving up (with a WARNING; boot
+   * continues). Short on purpose: while the ALTER waits, every append/putRef queues behind
+   * it. Default 2000 ms. Governs BOTH conversions — they share one migration transaction and
+   * one `loom.migration_lock_timeout` setting.
    *
    * The migration runs ONCE per pool and the first migrator's value wins, so the reliable way
    * to set it is `await migratePostgresStores(pool, { lockTimeoutMs })` BEFORE constructing any
@@ -100,8 +102,8 @@ async function runMigration(pool: PoolLike, lockTimeoutMs: number): Promise<void
       "SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true)",
       [callerStatementTimeout, callerLockTimeout]
     );
-    // Read by the L10 DO block.
-    await client.query("SELECT set_config('loom.l10_lock_timeout', $1, true)", [
+    // Read by the L10/L21 DO blocks below (ADR 0108 D3's shared lock-wait budget).
+    await client.query("SELECT set_config('loom.migration_lock_timeout', $1, true)", [
       `${lockTimeoutMs}ms`,
     ]);
     await client.query(DDL_EVENTS);
@@ -113,6 +115,13 @@ async function runMigration(pool: PoolLike, lockTimeoutMs: number): Promise<void
       callerStatementTimeout,
     ]);
     await client.query(DDL_REST);
+    // L21 (ADR 0108 addendum) — same policy, for `refs.name`. Runs AFTER DDL_REST, which is
+    // what creates `refs` on a fresh database.
+    await client.query("SELECT set_config('statement_timeout', '0', true)");
+    await client.query(L21_COLLATION);
+    await client.query("SELECT set_config('statement_timeout', $1, true)", [
+      callerStatementTimeout,
+    ]);
     await client.query("COMMIT");
   } catch (err) {
     // Best-effort rollback; the original error is what the caller needs to see.
@@ -148,7 +157,7 @@ const DDL_EVENTS = `
  * comparisons are plain memcmp, so appends get cheaper.
  *
  * The boot-migration policy of ADR 0108 D3:
- *  - The LOCK WAIT is bounded (`loom.l10_lock_timeout`, set by runMigration): an ALTER queued
+ *  - The LOCK WAIT is bounded (`loom.migration_lock_timeout`, set by runMigration): an ALTER queued
  *    behind a long transaction would otherwise queue every append behind ITSELF. The caller's
  *    `lock_timeout` is captured and RESTORED after the ALTER, so the rest of the migration runs
  *    under the operator's setting, not an unbounded one.
@@ -184,7 +193,7 @@ const L10_COLLATION = `
         BEGIN
           PERFORM set_config(
             'lock_timeout',
-            COALESCE(NULLIF(current_setting('loom.l10_lock_timeout', true), ''), '2s'),
+            COALESCE(NULLIF(current_setting('loom.migration_lock_timeout', true), ''), '2s'),
             true
           );
           ALTER TABLE events ALTER COLUMN execution_id TYPE TEXT COLLATE "C";
@@ -215,7 +224,7 @@ const DDL_REST = `
     CREATE INDEX IF NOT EXISTS idx_snapshots_exec ON snapshots (execution_id, sequence DESC);
 
     CREATE TABLE IF NOT EXISTS refs (
-      name TEXT NOT NULL PRIMARY KEY,
+      name TEXT COLLATE "C" NOT NULL PRIMARY KEY,
       execution_id TEXT NOT NULL,
       tip BIGINT NOT NULL,
       parent_execution_id TEXT,
@@ -319,6 +328,52 @@ const DDL_REST = `
     CREATE INDEX IF NOT EXISTS idx_memory_entries_id
       ON memory_entries (key, (entry->>'id')) WHERE entry->>'id' IS NOT NULL;
   `;
+
+/**
+ * L21 (BranchRegistry SPI 2.0.0, ADR 0108 addendum): ref names page in code point order,
+ * which is COLLATE "C", never the database's collation. Same shape as {@link L10_COLLATION}
+ * — see its doc comment for the full rationale (ALTER ... TYPE TEXT COLLATE "C" here is
+ * binary-coercible, no table rewrite, but rebuilds the ONE index that depends on `name`:
+ * `refs`'s own primary key, under an ACCESS EXCLUSIVE lock). Differences from L10:
+ *  - Runs AFTER `DDL_REST`, which is what creates `refs` on a fresh database (L10 runs
+ *    between `DDL_EVENTS` and `DDL_REST` because `events` already exists by then).
+ *  - Shares `loom.migration_lock_timeout` and the caller-timeout dance with L10 — one
+ *    migration transaction, one budget, set once in `runMigration`.
+ *  - `ANALYZE refs (name)` re-establishes the column's statistics; a table this small rarely
+ *    needs it for a plan to stay index-only, but a large registry (forking is cheap) can.
+ */
+const L21_COLLATION = `
+    DO $l21$
+    DECLARE
+      caller_lock_timeout text := current_setting('lock_timeout');
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_attribute
+        WHERE attrelid = 'refs'::regclass AND attname = 'name'
+          AND attcollation <> (
+            SELECT oid FROM pg_collation
+            WHERE collname = 'C' AND collnamespace = 'pg_catalog'::regnamespace
+          )
+      ) THEN
+        BEGIN
+          PERFORM set_config(
+            'lock_timeout',
+            COALESCE(NULLIF(current_setting('loom.migration_lock_timeout', true), ''), '2s'),
+            true
+          );
+          ALTER TABLE refs ALTER COLUMN name TYPE TEXT COLLATE "C";
+          PERFORM set_config('lock_timeout', caller_lock_timeout, true);
+          ANALYZE refs (name);
+        EXCEPTION
+          WHEN lock_not_available OR query_canceled OR feature_not_supported
+            OR dependent_objects_still_exist THEN
+            RAISE WARNING 'loom: refs.name is not COLLATE "C" (%: %). Branch-ref paging stays correct but cannot serve ORDER BY from the primary-key index until you run: ALTER TABLE refs ALTER COLUMN name TYPE TEXT COLLATE "C"; ANALYZE refs;',
+              SQLSTATE, SQLERRM;
+        END;
+      END IF;
+    END
+    $l21$;
+`;
 
 // The channel every EventStore instance LISTENs on for cross-node subscribe.
 export const NOTIFY_CHANNEL = "loom_events";

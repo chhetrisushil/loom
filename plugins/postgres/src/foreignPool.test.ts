@@ -77,11 +77,11 @@ describe("a pool from another copy of pg (or no pg at all)", () => {
     expect(releases()).toBe(1); // checked back in, exactly once
   });
 
-  it("postgresStorage passes migrationLockTimeoutMs to the migration (L10, ADR 0108 D3)", async () => {
+  it("postgresStorage passes migrationLockTimeoutMs to the migration (L10/L21, ADR 0108 D3)", async () => {
     const { pool, clientCalls } = recordingPool();
     const storage = postgresStorage({ url: pool as never, migrationLockTimeoutMs: 750 });
     await storage.eventStore.read("x1");
-    const set = clientCalls.find((c) => c.sql.includes("loom.l10_lock_timeout"));
+    const set = clientCalls.find((c) => c.sql.includes("loom.migration_lock_timeout"));
     expect(set?.values).toEqual(["750ms"]);
   });
 
