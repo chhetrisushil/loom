@@ -49,27 +49,47 @@ describe("InMemoryBranchRegistry: a prune-style walk (list a page, delete what i
     expect(await reg.listRefs()).toEqual([]);
   });
 
-  it("stays fast at 500k refs — a regression guard for the invalidate-per-delete cost", async () => {
+  // Review round 2 (P3) — a wall-clock bound here flaked under load (this repo already
+  // removed the same pattern once, in L18): 398ms/559ms measured on an idle machine against a
+  // 2000ms budget is ~25% noise, and this test runs in the default suite with no gating. The
+  // property under test is DETERMINISTIC — how many times the full O(n log n) rebuild/sort
+  // runs during the walk — so assert that directly, the same way `enumerate.test.ts` proves
+  // `InMemoryAsyncEventStore` "sorts once per change": monkey-patch `Array.prototype.sort` for
+  // the duration of the walk and count calls into it. `Array.prototype.sort` is otherwise
+  // unused by `pruneStyleWalk`/`InMemoryBranchRegistry`, so every call counted here is one of
+  // this store's own rebuilds, not incidental sorting elsewhere.
+  it("rebuilds its sorted index O(log n) times over a full prune, not once per page", async () => {
     const reg = new InMemoryBranchRegistry();
-    const n = 500_000;
+    const n = 5_000;
+    const pageSize = 50;
     for (let i = 0; i < n; i++) {
       const name = `ref-${String(i).padStart(6, "0")}`;
       await reg.putRef(ref(name, `exec-${i}`));
     }
 
-    const started = performance.now();
-    const { scanned, pages } = await pruneStyleWalk(reg, 500);
-    const elapsedMs = performance.now() - started;
+    const nativeSort = Array.prototype.sort;
+    let rebuilds = 0;
+    Array.prototype.sort = function (this: unknown[], ...args) {
+      rebuilds++;
+      return nativeSort.apply(this, args as [((a: unknown, b: unknown) => number)?]);
+    };
+    let scanned: string[];
+    let pages: number;
+    try {
+      ({ scanned, pages } = await pruneStyleWalk(reg, pageSize));
+    } finally {
+      Array.prototype.sort = nativeSort;
+    }
 
     expect(scanned).toHaveLength(n);
-    expect(pages).toBe(n / 500 + 1); // one extra, empty, terminating page
+    expect(pages).toBe(n / pageSize + 1); // one extra, empty, terminating page
     expect(await reg.listRefs()).toEqual([]);
-    // Invalidating the sorted-name cache on every delete forces a full O(n log n) re-sort of
-    // the WHOLE registry on every one of `pages` pages. Measured on this machine: ~170ms with
-    // lazy tombstoning (this test's whole point), ~9.4s with the bug reintroduced (still far
-    // short of the reviewer's own 179s/100k, but the ~50x gap is what this bound is checking
-    // for, not an absolute number that would vary by machine) — 2s leaves generous margin
-    // above the fix and is comfortably under the regression either way.
-    expect(elapsedMs).toBeLessThan(2_000);
+    // Lazy compaction rebuilds only when tombstones reach half the array, which halves the
+    // live count each time it fires — O(log n) rebuilds for a full sweep to empty (measured:
+    // 8 at n=5000), independent of how many pages the walk took (101 here). Invalidating on
+    // every delete (the bug this guards against) rebuilds once PER PAGE — measured 101, equal
+    // to `pages` — so the assertion is against `pages` itself, not a hand-picked constant that
+    // could quietly stop meaning anything if the compaction schedule changes.
+    expect(rebuilds).toBeLessThan(pages / 2);
   });
 });
