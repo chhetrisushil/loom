@@ -1,5 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
-import { type EventStore, headOf } from "@loom/event-runtime";
+import { type EventStore, headOf, isReservedStream } from "@loom/event-runtime";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
 import { PayloadShreddedError } from "./errors";
 import type { KeyStore } from "./keystore";
@@ -137,6 +137,16 @@ export async function shredSubject(
 ): Promise<void> {
   const subjectId = options.subjectId ?? executionId;
   const executionIds = options.executionIds ?? [executionId];
+  // ADR 0107 — a tombstone belongs in an execution's log. `""` names no execution (it holds
+  // what the pre-0106 compaction bug misfiled) and `__loom_*` are the kernel's control streams.
+  // The SUBJECT may still be "" — to destroy the key the blank stream was encrypted under, pass
+  // `{ executionIds: [] }` (or the real executions its events were re-homed into).
+  const reserved = executionIds.filter(isReservedStream);
+  if (reserved.length > 0) {
+    throw new TypeError(
+      `shredSubject: ${reserved.map((id) => JSON.stringify(id)).join(", ")} ${reserved.length === 1 ? "is a" : "are"} reserved stream id${reserved.length === 1 ? "" : "s"}, not an execution to tombstone. To destroy a subject's key without tombstoning a reserved stream, pass the real executionIds (or []).`
+    );
+  }
   // Refused BEFORE the key is destroyed: nothing irreversible happens on a call that cannot
   // place its tombstone safely.
   if (

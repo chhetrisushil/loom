@@ -1,7 +1,7 @@
 import { step$ } from "@loom/core";
 import type { ExecutionState, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { type EventStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { type EventStore, InMemoryAsyncEventStore, headOf } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -103,7 +103,7 @@ describe.each([
   it("compacted through its tip ([0]): the checkpoint is forkable, served exactly, and the child resumes", async () => {
     const app = boot(copyPrefix);
     await toGate(app, "p", 1);
-    const tip = (await app.eventStore.head("p"))!;
+    const tip = (await headOf(app.eventStore, "p"))!;
     expect(await new LogLifecycle(app.eventStore, app.snapshotStore).compact("p")).toBe(tip);
     expect((await app.eventStore.read("p")).map((e) => e.sequence)).toEqual([0]);
 
@@ -124,7 +124,7 @@ describe.each([
   it("refuses every point inside the hole, writes nothing, and names the lowest forkable sequence", async () => {
     const app = boot(copyPrefix);
     await toGate(app, "p", 1);
-    const tip = (await app.eventStore.head("p"))!;
+    const tip = (await headOf(app.eventStore, "p"))!;
     await new LogLifecycle(app.eventStore, app.snapshotStore).compact("p");
     for (let at = 1; at < tip; at++) {
       const err = await app.runtime.fork("p", at, { executionId: `c${at}` }).catch((e) => e);
@@ -134,17 +134,42 @@ describe.each([
     }
     // Sequence 0 survives every compaction, so its state is exact.
     same((await app.runtime.fork("p", 0, { executionId: "z" })).state, await reference(1, 0));
-    // Past every event AND every snapshot is out of range, named against the folded tip.
+    // Past every event AND every snapshot is out of range, named against the folded tip —
+    // and so is a negative one.
     await expect(app.runtime.fork("p", tip + 1)).rejects.toThrow(`valid range 0..${tip}`);
+    await expect(app.runtime.fork("p", -1)).rejects.toThrow(`valid range 0..${tip}`);
+    // The checkpoint IS the folded tip: the message names one sequence, not a span above it.
+    const err = await app.runtime.fork("p", 1).catch((e) => e);
+    expect(err.forkableThrough).toBe(tip);
+    expect(err.message).toContain(`Fork at 0, or at ${tip}.`);
+  });
+
+  it("a branch of a compacted parent names its fork seed as forkable (P3-1)", async () => {
+    const app = boot(copyPrefix);
+    await toGate(app, "p", 1);
+    await new LogLifecycle(app.eventStore, app.snapshotStore).compact("p");
+    const r = await app.runtime.resume("p", { eventType: "go1", payload: { answer: "go1" } });
+    await r.waitForSuspend();
+    const tip = (await headOf(app.eventStore, "p"))!;
+    await app.runtime.fork("p", tip, { executionId: "k" });
+    // k copied p's gap but not p's checkpoint: its only snapshot is its seed at the tip.
+    const err = await app.runtime.fork("k", tip - 1, { executionId: "k2" }).catch((e) => e);
+    expect(err).toMatchObject({ reason: "compacted", forkableFrom: tip, forkableThrough: tip });
+    expect(err.message).toContain(`Fork at 0, or at ${tip}.`);
+    same((await app.runtime.fork("k", tip, { executionId: "k3" })).state, await reference(2, tip));
+    // The parent itself is forkable across its whole tail, which the message names as a span.
+    const below = await app.runtime.fork("p", 1).catch((e) => e);
+    expect(below.message).toMatch(/Fork at 0, or at \d+\.\.\d+\./);
+    expect(below.forkableThrough).toBe(tip);
   });
 
   it("an older suspend snapshot below a later checkpoint is forkable, served exactly", async () => {
     const app = boot(copyPrefix);
     await toGate(app, "p", 1);
-    const gate1 = (await app.eventStore.head("p"))!;
+    const gate1 = (await headOf(app.eventStore, "p"))!;
     const r = await app.runtime.resume("p", { eventType: "go1", payload: { answer: "go1" } });
     await r.waitForSuspend();
-    const gate2 = (await app.eventStore.head("p"))!;
+    const gate2 = (await headOf(app.eventStore, "p"))!;
     await new LogLifecycle(app.eventStore, app.snapshotStore).compact("p");
 
     const child = await app.runtime.fork("p", gate1, { executionId: "c" });
@@ -158,7 +183,7 @@ describe.each([
   it("a pinned event kept ABOVE the checkpoint: the checkpoint and everything above it are forkable", async () => {
     const app = boot(copyPrefix);
     await toGate(app, "p", 1);
-    const tip = (await app.eventStore.head("p"))!;
+    const tip = (await headOf(app.eventStore, "p"))!;
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
       pinnedEventTypes: [FINDING],
     });
@@ -183,7 +208,7 @@ describe.each([
   it("a pinned event kept BELOW the checkpoint: the tail is forkable, the checkpoint's slot and the kept event are not", async () => {
     const app = boot(copyPrefix);
     await toGate(app, "p", 2);
-    const tip = (await app.eventStore.head("p"))!;
+    const tip = (await headOf(app.eventStore, "p"))!;
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
       pinnedEventTypes: [FINDING],
     });
@@ -217,7 +242,7 @@ describe.each([
   it("a gapped parent whose checkpoint is gone is refused — no snapshot anchors anything above 0", async () => {
     const app = boot(copyPrefix);
     await toGate(app, "p", 2);
-    const tip = (await app.eventStore.head("p"))!;
+    const tip = (await headOf(app.eventStore, "p"))!;
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
       pinnedEventTypes: [FINDING],
     });
@@ -232,7 +257,7 @@ describe.each([
   it("a never-compacted parent forks at every position, as before", async () => {
     const app = boot(copyPrefix);
     await toGate(app, "p", 2);
-    const tip = (await app.eventStore.head("p"))!;
+    const tip = (await headOf(app.eventStore, "p"))!;
     for (let at = 0; at <= tip; at++) {
       const child = await app.runtime.fork("p", at, { executionId: `c${at}` });
       expect((await app.eventStore.read(`c${at}`)).length).toBe(at + 1);

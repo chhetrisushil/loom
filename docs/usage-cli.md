@@ -677,36 +677,57 @@ is kept ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D5). The SQLite conte
 supports this. An app with blobs cited from its own tables sweeps through the API instead, with
 `sweepUnpinnedContent({ roots })` (D7). Pins are recomputed from the log on **every** sweep, so a run that becomes pinned between sweeps is protected without any bookkeeping.
 
-### `loom repair blank-stream --db <events.db> --snap <snap.db> [--assign <id>:<from>-<through>,…] [--apply]`
+### `loom repair blank-stream (--config <module> | --db <events.db> --snap <snap.db>) [--assign <id>:<from>-<through>,…] [--apply]`
 
 Before [ADR 0106](adr/0106-compaction-integrity.md), a compaction checkpoint named execution
 `""`, and every resume that followed a compaction wrote its events to execution `""` instead of
 its own log. This censuses that stream and repairs what can be proven ([ADR 0107](adr/0107-compacted-fork-points-and-the-blank-stream.md)).
-**Dry run by default.** It needs the snapshot store: the proof lives there.
+**Dry run by default.** It needs the snapshot store, because the proof lives there. Prefer
+`--config`: it uses your app's own stores, including an encrypting store that can decrypt the
+stray events. With `--config`, `--db`/`--snap` are not needed.
 
-- **Proven segments are re-homed.** A resumed run saved its suspend snapshot under its REAL id
-  (only the state inside was blank). When that snapshot, taken at a drain barrier, is exactly
-  the fold of the stray events above the execution's previous snapshot, those events are that
-  execution's. `--apply` writes them into its log at the same sequences (`metadata.rehomedFrom`
-  names the stray id) and journals `EVENTS_REHOMED` on the lifecycle stream. A re-run is a
-  no-op. The `""` stream is left in place as evidence.
+- **Proven segments are re-homed.** A resumed run saved its suspend snapshot under its REAL id,
+  with only the state inside blank. A segment is proven when that snapshot is exactly the fold
+  of the stray events onto the execution's previous blank snapshot. `--apply` writes the
+  segments into the execution's log at the same sequences, in one batch per execution
+  (`metadata.rehomedFrom` names the stray id). A fenced execution is written under a new fence,
+  which also fences out a runner still holding the old one. Each segment is journaled as
+  `EVENTS_REHOMED` on the lifecycle stream. A re-run is a no-op, and finishes a repair (or a
+  fact) that stopped halfway. The `""` stream is left in place as evidence.
 - **Everything else is listed, never guessed.** A run that completed without a checkpoint left
   nothing that names its writer. Such a range is printed as `UNATTRIBUTED`, with the executions
   parked at the sequence just below it. If your own records say whose it is, assert it with
-  `--assign <executionId>:<from>-<through>`. The repair still checks that the range folds onto
-  that execution's snapshot at `<from − 1>`, and that the execution has not moved past it.
-- **Refused, with a reason:** a segment the execution's own log already has an event in
-  (`occupied`, e.g. a pre-0106 denial in the checkpoint's slot), one below a later compaction
-  (`superseded`, whose checkpoint already folds it), and two executions proving one slot
-  (`conflict`).
+  `--assign <executionId>:<from>-<through>`. The execution must hold a pre-0106 (blank)
+  snapshot at `<from − 1>`, parked at the gate the range's first event answers, with nothing of
+  its own above it, and the range must fold onto it. A healthy execution can never be assigned
+  a stray run.
+- **Refused, with a reason:**
+  - `occupied`: the execution's own log already has an event there, e.g. a pre-0106 denial in
+    the checkpoint's slot;
+  - `superseded`: compacted again after the fix, so its checkpoint already folds these events;
+  - `conflict`: two executions prove one slot;
+  - `invalid`: an assignment that fails its checks.
 
-Run it with the affected executions quiesced. An assigned range lands where a concurrent resume
-of the same execution would write.
+  An execution that changed between the census and the apply is reported as failed and left
+  alone, and the others proceed.
+- **Encrypted stores.** Through `--db` the stray payloads are ciphertext the command cannot
+  read. It says so, and refuses `--apply` before writing anything. Use `--config`.
+
+Run it with the affected executions quiesced and with retention and compaction paused. After
+`--apply`, two things are yours to do, and the command prints both:
+
+- **Rebuild read models.** They never saw the re-homed events: purge their `""` rows and
+  rebuild them.
+- **Destroy the blank stream's key.** If your stores encrypt, the kept stream still holds the
+  re-homed payloads under the key of subject `""`, beyond the reach of the owning execution's
+  erasure. Once nothing is left to re-home, destroy that key:
+  `shredSubject(keys, raw, "", { executionIds: [] })` or `keys.destroy("")`.
 
 ```bash
-npx loom repair blank-stream --db .loom/events.db --snap .loom/snapshots.db            # census
-npx loom repair blank-stream --db .loom/events.db --snap .loom/snapshots.db --apply    # re-home proven
-npx loom repair blank-stream --db .loom/events.db --snap .loom/snapshots.db --assign e1:13-15 --apply
+npx loom repair blank-stream --config ./loom.config.ts                     # census
+npx loom repair blank-stream --config ./loom.config.ts --apply             # re-home proven
+npx loom repair blank-stream --config ./loom.config.ts --assign e1:13-15 --apply
+npx loom repair blank-stream --db .loom/events.db --snap .loom/snapshots.db   # SQLite shorthand
 ```
 
 ### `loom compliance report --db <path> --subject-path <dotpath> [--tenant-path <dotpath>]`
@@ -965,7 +986,7 @@ npx loom plugin search postgres
 | `loom learn eval` | shadow-evaluate a candidate policy | `--db` *(req)*, `--policy` *(req)*, `--min-steps N` | promotion gate refuses |
 | `loom eval` | replay golden logs vs expectations | `--dir` *(req)* | any golden fails |
 | `loom deploy check` | replay logs vs new flow defs | `--logs` *(req)*, `--config` *(req)* | resume-breaking change |
-| `loom repair blank-stream` | re-home events the pre-0106 compaction bug wrote to `""` (ADR 0107) | `--db` *(req)*, `--snap` *(req)*, `--assign`, `--apply` | error |
+| `loom repair blank-stream` | re-home events the pre-0106 compaction bug wrote to `""` (ADR 0107) | `--config` (preferred) or `--db` + `--snap`, `--assign`, `--apply` | error |
 | `loom retention run` | reclaim aged terminal executions | `--db` *(req)*, `--snap` *(req)*, `--ttl`, `--apply` | error |
 | `loom sweep content` | K10.6 pinned blob sweep | `--db` *(req)*, `--content` *(req)*, `--snap`, `--archive-db`, `--archive-snap`, `--pin`, `--ttl`, `--orphans`, `--no-archive`, `--apply` | error |
 | `loom compliance report` | data-subject inventory | `--db` *(req)*, `--subject-path` *(req)*, `--tenant-path` | error |

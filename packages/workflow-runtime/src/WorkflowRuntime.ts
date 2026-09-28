@@ -66,6 +66,7 @@ import type {
   ResumeEvent,
   RunOptions,
 } from "./types";
+import { isWriteConflict } from "./writeConflict";
 
 /**
  * The kernel's own event namespace (#304). Built once from the K5-governed list the
@@ -1667,24 +1668,21 @@ export class WorkflowRuntime {
     if (tip === null) {
       throw new Error(`No execution found for id: ${parentExecutionId}`);
     }
-    if (!Number.isSafeInteger(atSequence) || atSequence < 0) {
-      throw new Error(
-        `Invalid fork point ${atSequence} for execution ${parentExecutionId} (valid range 0..${tip})`
+    // ADR 0107 — the range is the FOLDED tip: a log compacted through its tip is `[0]` with
+    // its checkpoint above it, and that checkpoint is a fork point like any other. Only a point
+    // past every event AND every snapshot is out of range; anything else above the log's tip
+    // is compacted history, refused below. The latest snapshot is read only on these paths.
+    const outOfRange = async (): Promise<Error> => {
+      const latest = await this.snapshotStore.loadLatest(parentExecutionId);
+      return new Error(
+        `Invalid fork point ${atSequence} for execution ${parentExecutionId} (valid range 0..${Math.max(tip, latest?.sequence ?? tip)})`
       );
-    }
+    };
+    if (!Number.isSafeInteger(atSequence) || atSequence < 0) throw await outOfRange();
     const base = await this.snapshotStore.loadLatestBefore(parentExecutionId, atSequence);
     if (atSequence > tip && base?.sequence !== atSequence) {
-      // ADR 0107 — the range is the FOLDED tip: a log compacted through its tip is `[0]` with
-      // its checkpoint above it, and that checkpoint is a fork point like any other. Only a
-      // point past every event AND every snapshot is out of range; anything else above the
-      // log's tip is compacted history, refused below.
       const latest = await this.snapshotStore.loadLatest(parentExecutionId);
-      const foldedTip = Math.max(tip, latest?.sequence ?? tip);
-      if (atSequence > foldedTip) {
-        throw new Error(
-          `Invalid fork point ${atSequence} for execution ${parentExecutionId} (valid range 0..${foldedTip})`
-        );
-      }
+      if (atSequence > Math.max(tip, latest?.sequence ?? tip)) throw await outOfRange();
     }
 
     const childId = opts?.executionId ?? ulid();
@@ -1896,10 +1894,11 @@ export class WorkflowRuntime {
     reason: "compacted" | "checkpoint-above-prefix"
   ): Promise<CompactedForkPointError> {
     const events = await this.eventStore.read(parentExecutionId);
+    const latest = await this.snapshotStore.loadLatest(parentExecutionId);
+    const foldedTip = Math.max(events[events.length - 1]?.sequence ?? 0, latest?.sequence ?? 0);
     let forkableFrom: number | null = null;
     if (events.length <= 1) {
       // `[0]`: compacted through its tip; its latest snapshot is its checkpoint.
-      const latest = await this.snapshotStore.loadLatest(parentExecutionId);
       forkableFrom = latest !== null && latest.sequence > 0 ? latest.sequence : null;
     } else {
       const gap = highestMissing(events);
@@ -1912,10 +1911,49 @@ export class WorkflowRuntime {
         if (anchor !== null && anchor.sequence >= gap) {
           const keptBelow = events.some((e) => e.sequence > 0 && e.sequence < gap);
           forkableFrom = anchor.sequence === gap && !keptBelow ? gap : gap + 1;
+        } else {
+          // A branch of a compacted parent copies the gap but not the parent's checkpoint: its
+          // lowest snapshot above the gap (its fork seed) anchors everything from there up.
+          forkableFrom = await this.lowestSnapshotFrom(parentExecutionId, gap, events[0]!);
         }
       }
     }
-    return new CompactedForkPointError(parentExecutionId, atSequence, reason, forkableFrom);
+    return new CompactedForkPointError(
+      parentExecutionId,
+      atSequence,
+      reason,
+      forkableFrom,
+      forkableFrom === null ? null : foldedTip
+    );
+  }
+
+  /**
+   * The lowest snapshot sequence at or above `floor`, or null. A forked child's sequence 0
+   * names its fork seed (`metadata.forkSequence`), which is its first snapshot: one point read.
+   * Otherwise the snapshots are walked down from the top — only on a refusal, over a
+   * compacted log's tail.
+   */
+  private async lowestSnapshotFrom(
+    executionId: string,
+    floor: number,
+    anchor: EventEnvelope
+  ): Promise<number | null> {
+    const seed = anchor.metadata?.forkSequence;
+    if (typeof seed === "number" && seed >= floor) {
+      if ((await this.snapshotStore.loadAt(executionId, seed)) !== null) return seed;
+    }
+    let lowest: number | null = null;
+    for (
+      let s = await this.snapshotStore.loadLatest(executionId);
+      s !== null && s.sequence >= floor;
+      s =
+        s.sequence > 0
+          ? await this.snapshotStore.loadLatestBefore(executionId, s.sequence - 1)
+          : null
+    ) {
+      lowest = s.sequence;
+    }
+    return lowest;
   }
 
   /**
@@ -2276,19 +2314,4 @@ export class WorkflowRuntime {
 
     return handle;
   }
-}
-
-/**
- * ADR 0103 — did the store refuse a write because A slot or id is already taken? Both
- * conflicts are normalized by every backend (see `EventStore.append`). This says nothing about
- * WHOSE write conflicted — a coalesced batch hands every caller the same error — so
- * `writeBootstrap` confirms by reading sequence 0 back. Matched by `name` as well as class so a
- * second copy of `@loom/event-runtime` in a bundle cannot hide a conflict.
- */
-function isWriteConflict(err: unknown): boolean {
-  if (err instanceof DuplicateSequenceError || err instanceof DuplicateEnvelopeIdError) {
-    return true;
-  }
-  const name = (err as { name?: unknown } | null)?.name;
-  return name === "DuplicateSequenceError" || name === "DuplicateEnvelopeIdError";
 }

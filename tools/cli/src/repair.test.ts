@@ -132,6 +132,36 @@ describe("loom repair blank-stream", () => {
     expect(await cmdRepairBlankStream({ db, snap, apply: true })).toContain("re-homed now: 0");
   });
 
+  it('after --apply it names what the repair cannot do: read models, and the key of subject ""', async () => {
+    const out = await cmdRepairBlankStream({ db, snap, apply: true });
+    expect(out).toContain('purge their "" rows and rebuild them');
+    expect(out).toContain("destroy");
+    expect(out).toContain('keys.destroy("")');
+  });
+
+  it("refuses to --apply ciphertext it cannot decrypt, pointing at --config", async () => {
+    const events = new SqliteEventStore(db);
+    await events.append({
+      id: `-${h.done + 1}`,
+      executionId: "",
+      workflowId: "",
+      eventType: "go3",
+      sequence: h.done + 1,
+      timestamp: 1,
+      payload: { n: { __loomEnc: "loom/aes-256-gcm", iv: "a", tag: "b", data: "c" } },
+    });
+    events.close();
+    expect(await cmdRepairBlankStream({ db, snap, apply: false })).toContain(
+      "still carry ciphertext"
+    );
+    const out = await cmdRepairBlankStream({ db, snap, apply: true });
+    expect(out).toContain("refused --apply (nothing written)");
+    expect(out).toContain("--config");
+    const after = new SqliteEventStore(db);
+    expect((await after.read("e1")).map((e) => e.sequence)).toEqual([0]);
+    after.close();
+  });
+
   it("needs the snapshot store — the proof lives there", async () => {
     expect(await cmdRepairBlankStream({ db, apply: false })).toContain("needs the snapshot store");
   });

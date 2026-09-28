@@ -397,3 +397,32 @@ describe("ADR 0106 — shredSubject is retry-safe and takes the app's ENCRYPTING
     for (const id of ids) expect(await tombstones(inner, id)).toHaveLength(0);
   });
 });
+
+describe("ADR 0107 — shredSubject never tombstones a reserved stream", () => {
+  it('refuses "" and __loom_* as executionIds, before the key is destroyed', async () => {
+    const { inner, keys, store } = setup();
+    await store.append(ev("", 3, "STEP_COMPLETED", { stepId: "s", output: { ssn: "1" } }));
+    const key = await keys.get("");
+    expect(key).not.toBeNull();
+    for (const executionIds of [[""], ["e1", "__loom_lifecycle__"]]) {
+      await expect(
+        shredSubject(keys, inner, "", { executionIds, snapshotStore: NO_SNAPSHOTS })
+      ).rejects.toThrow(/reserved stream/);
+    }
+    // The default executionIds is the subject itself: "" is refused there too.
+    await expect(shredSubject(keys, inner, "", { snapshotStore: NO_SNAPSHOTS })).rejects.toThrow(
+      /reserved stream/
+    );
+    expect(await keys.get("")).toEqual(key);
+    expect((await inner.read("")).map((e) => e.eventType)).toEqual(["STEP_COMPLETED"]);
+  });
+
+  it('still destroys the key of subject "" when no reserved stream is named', async () => {
+    const { inner, keys, store } = setup();
+    await store.append(ev("", 3, "STEP_COMPLETED", { stepId: "s", output: { ssn: "1" } }));
+    await shredSubject(keys, inner, "", { executionIds: [], snapshotStore: NO_SNAPSHOTS });
+    expect(await keys.get("")).toBeNull();
+    await expect(store.read("")).rejects.toBeInstanceOf(PayloadShreddedError);
+    expect(await inner.read("")).toHaveLength(1); // no tombstone written into ""
+  });
+});

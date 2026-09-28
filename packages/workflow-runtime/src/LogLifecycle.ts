@@ -2,8 +2,10 @@ import type { EventEnvelope, ExecutionState } from "@loom/core";
 import {
   type BranchRegistry,
   type EventStore,
+  StaleFenceError,
   headOf,
   isReservedStream,
+  readRangeOf,
 } from "@loom/event-runtime";
 import { appendBatchOf } from "@loom/event-runtime";
 import { ReplayVM, knownEventTypes, normalizeSnapshotState } from "@loom/replay-vm";
@@ -17,6 +19,7 @@ import {
   rehomedEnvelope,
 } from "./blankStream";
 import { EFFECT_INDOUBT_RESOLVED, EXECUTION_RECOVERED } from "./types";
+import { isWriteConflict } from "./writeConflict";
 
 /** Reserved control stream carrying retention facts (EXECUTION_ARCHIVED/_DELETED). */
 export const LIFECYCLE_STREAM = "__loom_lifecycle__";
@@ -132,6 +135,9 @@ export function highestMissing(events: readonly EventEnvelope[]): number {
   }
   return events.length > 0 && events[0]!.sequence !== 0 ? events[0]!.sequence - 1 : -1;
 }
+
+/** Appends of one lifecycle fact before a write conflict is reported rather than retried. */
+const LIFECYCLE_FACT_ATTEMPTS = 5;
 
 /** How many executions a {@link LogLifecycle} remembers having warned about. */
 const WARNED_MEMORY = 10_000;
@@ -254,17 +260,26 @@ export class LogLifecycle {
     now: number,
     detail: Record<string, unknown> = {}
   ): Promise<void> {
-    const prior = await this.eventStore.read(LIFECYCLE_STREAM);
-    const fact: EventEnvelope = {
-      id: ulid(),
-      workflowId: LIFECYCLE_STREAM,
-      executionId: LIFECYCLE_STREAM,
-      eventType,
-      sequence: prior.length,
-      timestamp: now,
-      payload: { executionId, ...detail },
-    };
-    await this.eventStore.append(fact);
+    // Two lifecycle writers (a retention sweep beside a repair, say) can read the same length.
+    // The loser's append is a write conflict and nothing was written, so re-read and retry.
+    for (let attempt = 1; ; attempt++) {
+      const prior = await this.eventStore.read(LIFECYCLE_STREAM);
+      const fact: EventEnvelope = {
+        id: ulid(),
+        workflowId: LIFECYCLE_STREAM,
+        executionId: LIFECYCLE_STREAM,
+        eventType,
+        sequence: prior.length,
+        timestamp: now,
+        payload: { executionId, ...detail },
+      };
+      try {
+        await this.eventStore.append(fact);
+        return;
+      } catch (err) {
+        if (attempt >= LIFECYCLE_FACT_ATTEMPTS || !isWriteConflict(err)) throw err;
+      }
+    }
   }
 
   /**
@@ -418,40 +433,120 @@ export class LogLifecycle {
   /**
    * ADR 0107 — re-home the blank stream's provable events (and any `assign`ed range that folds
    * onto its execution) into the execution they belong to, at the sequences they were written
-   * at. A DRY RUN unless `apply: true`: without it this is {@link blankStreamCensus}. Each
-   * re-homed segment is one batch (`appendBatchOf`), re-stamped with its execution's identity,
-   * `id` `<executionId>-<sequence>` and `metadata.rehomedFrom` (its blank-stream id), then
-   * journaled as an `EVENTS_REHOMED` fact on the lifecycle stream. The blank stream itself is
-   * left as it is: append-only evidence, and what makes a re-run idempotent (a slot holding
-   * its `rehomedFrom` twin is done; only still-empty slots are written).
+   * at. A DRY RUN unless `apply: true`: without it this is {@link blankStreamCensus}.
    *
-   * Run it with the affected executions quiesced: an operator-assigned range lands where a
-   * concurrent resume of the same execution would write.
+   * Per execution, ONE batch (`appendBatchOf`) carries every slot its segments still lack, so a
+   * crash never leaves half of an execution re-homed. Each event is re-stamped with that
+   * execution's identity, `id` `<executionId>-<sequence>` and `metadata.rehomedFrom` (its
+   * blank-stream id). Before writing, the execution's tip is re-read and must equal what the
+   * census saw, and its sequence 0 must exist; anything else refuses that execution. A fenced
+   * execution (a worker, a fenced `TimerService`, `recoverAbandoned({ fenced })` or `cancel`
+   * ever fenced it) refuses an unfenced append: the repair then takes a NEW fence and writes
+   * under it, which also fences out any runner still holding the old one. An execution that
+   * was never fenced is not given a fence, because every later unfenced write to it would then
+   * be refused.
+   *
+   * Then every re-homed segment gets its `EVENTS_REHOMED` fact on the lifecycle stream,
+   * including a segment an earlier run re-homed whose fact never landed. One failing execution
+   * is reported in `failed` and does not stop the others. The blank stream itself is left as it
+   * is: append-only evidence, and what makes a re-run idempotent.
+   *
+   * Refuses to apply (nothing written) when the stray events still carry ciphertext: the store
+   * is the raw one under an encrypting store, and would copy ciphertext under the wrong key.
+   * Run it with the affected executions quiesced and retention/compaction paused.
    */
   async rehomeBlankStream(
     opts: { assign?: readonly RehomeAssignment[]; apply?: boolean; now?: number } = {}
-  ): Promise<BlankStreamCensus & { rehomed: BlankStreamSegment[] }> {
+  ): Promise<
+    BlankStreamCensus & {
+      rehomed: BlankStreamSegment[];
+      failed: Array<{ executionId: string; error: string }>;
+    }
+  > {
     const plan = await planBlankStreamRepair(this.eventStore, this.snapshotStore, opts.assign);
     const rehomed: BlankStreamSegment[] = [];
-    if (opts.apply === true) {
-      const now = opts.now ?? Date.now();
-      for (const [seg, sequences] of plan.missing) {
-        const workflowId = plan.workflowIdOf.get(seg.executionId)!;
-        const envelopes = sequences.map((q) =>
-          rehomedEnvelope(plan.stray.get(q)!, seg.executionId, workflowId)
-        );
-        await appendBatchOf(this.eventStore, envelopes);
+    const failed: Array<{ executionId: string; error: string }> = [];
+    if (opts.apply !== true) return { ...plan.census, rehomed, failed };
+    if (plan.census.ciphertext) {
+      throw new TypeError(
+        'rehomeBlankStream: the events in execution "" still carry ciphertext as this store reads them. It is the raw store under an encrypting one, and re-homing through it would copy ciphertext under the wrong key. Run the repair through the app\'s own stores (`loom repair blank-stream --config <module>`).'
+      );
+    }
+    const now = opts.now ?? Date.now();
+    const byExecution = new Map<string, BlankStreamSegment[]>();
+    for (const seg of plan.missing.keys()) {
+      const list = byExecution.get(seg.executionId);
+      if (list === undefined) byExecution.set(seg.executionId, [seg]);
+      else list.push(seg);
+    }
+    for (const [id, segs] of byExecution) {
+      try {
+        await this.rehomeExecution(id, segs, plan);
+        for (const seg of segs) {
+          seg.status = "rehomed";
+          rehomed.push(seg);
+        }
+      } catch (err) {
+        failed.push({ executionId: id, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    // The facts, after the events: a segment re-homed now, or by an earlier run whose fact
+    // never landed. One read of the lifecycle stream says which exist.
+    const journaled = new Set<string>();
+    for (const f of await this.eventStore.read(LIFECYCLE_STREAM)) {
+      if (f.eventType !== "EVENTS_REHOMED") continue;
+      const p = f.payload as { executionId: string; fromSequence: number; throughSequence: number };
+      journaled.add(`${p.executionId}\u0000${p.fromSequence}\u0000${p.throughSequence}`);
+    }
+    for (const seg of plan.census.segments) {
+      if (seg.status !== "rehomed") continue;
+      const key = `${seg.executionId}\u0000${seg.fromSequence}\u0000${seg.throughSequence}`;
+      if (journaled.has(key)) continue;
+      try {
         await this.emitLifecycleFact("EVENTS_REHOMED", seg.executionId, now, {
           fromSequence: seg.fromSequence,
           throughSequence: seg.throughSequence,
           proof: seg.proof,
-          count: envelopes.length,
+          count: seg.throughSequence - seg.fromSequence + 1,
         });
-        seg.status = "rehomed";
-        rehomed.push(seg);
+        journaled.add(key);
+      } catch (err) {
+        failed.push({
+          executionId: seg.executionId,
+          error: `re-homed ${seg.fromSequence}..${seg.throughSequence}, but its EVENTS_REHOMED fact did not land (a re-run writes it): ${err instanceof Error ? err.message : String(err)}`,
+        });
       }
     }
-    return { ...plan.census, rehomed };
+    return { ...plan.census, rehomed, failed };
+  }
+
+  /** One execution's missing slots, in one batch, fenced if the execution is. */
+  private async rehomeExecution(
+    id: string,
+    segs: readonly BlankStreamSegment[],
+    plan: Awaited<ReturnType<typeof planBlankStreamRepair>>
+  ): Promise<void> {
+    const planned = plan.tipOf.get(id);
+    const tip = await headOf(this.eventStore, id);
+    const anchor = await readRangeOf(this.eventStore, id, 0, 0);
+    if (anchor.length === 0 || tip !== planned) {
+      throw new Error(
+        `${id} changed since the census (tip ${planned} then, ${tip ?? "none"} now${anchor.length === 0 ? ", no sequence 0" : ""}) — re-run the census with it quiesced`
+      );
+    }
+    const workflowId = plan.workflowIdOf.get(id)!;
+    const sequences = segs.flatMap((seg) => plan.missing.get(seg) ?? []).sort((a, b) => a - b);
+    const batch = (fence?: number) =>
+      sequences.map((q) => rehomedEnvelope(plan.stray.get(q)!, id, workflowId, fence));
+    try {
+      await appendBatchOf(this.eventStore, batch());
+    } catch (err) {
+      const fenced =
+        err instanceof StaleFenceError ||
+        (err as { name?: unknown } | null)?.name === "StaleFenceError";
+      if (!fenced || this.eventStore.acquireFence === undefined) throw err;
+      await appendBatchOf(this.eventStore, batch(await this.eventStore.acquireFence(id)));
+    }
   }
 
   /**

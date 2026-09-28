@@ -32,7 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     compacted prefix folded the nearest snapshot across the hole and copied a prefix missing the
     history it claimed. `fork()` now serves a fork point exactly (every event between the
     nearest snapshot and it survives, or a snapshot sits exactly at it) or throws
-    `CompactedForkPointError` (`reason`, `forkableFrom`) with nothing written. A snapshot-seeded
+    `CompactedForkPointError` (`reason`, `forkableFrom`, `forkableThrough`) with nothing
+    written. For a branch of a compacted parent, `forkableFrom` is its fork seed. A snapshot-seeded
     child whose copied prefix would carry pinned events below its seed is refused
     (`checkpoint-above-prefix`): that shape reads as never compacted. The range is now the
     folded tip, so the checkpoint of a log compacted through its tip (`[0]`) is forkable. Before,
@@ -46,9 +47,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     as **`EVENTS_REHOMED`** on the lifecycle stream (**EVENT_SCHEMA 1.22.0**, pure audit into
     `_lifecycle`). Unprovable runs (a completion with no checkpoint) are listed with their
     candidate executions, never attributed. An operator who knows the owner asserts it with
-    `--assign`, which is still checked against that execution's snapshot. `occupied`,
-    `superseded` and `conflict` segments are refused. Re-runs are idempotent, and the `""` stream
-    is left as evidence.
+    `--assign`. The assignment is still checked: the execution must hold a pre-0106 snapshot at
+    `from − 1`, parked at the gate the range opens by answering, with nothing above it. A
+    healthy execution can therefore never be assigned a stray run. `occupied`, `superseded` and
+    `conflict` segments are refused. Each execution's slots land in one batch. A fenced
+    execution is written under a new fence, and a never-fenced one stays unfenced. An execution
+    that changed since the census is reported in `failed` without stopping the others. A
+    missing `EVENTS_REHOMED` fact is written on the next run, and lifecycle facts retry a write
+    conflict. A raw store that reads the stray events as ciphertext refuses to apply (use
+    `--config`). Re-runs are idempotent, and the `""` stream is left as evidence. After a repair,
+    rebuild read models, and in an encrypted deployment destroy subject `""`'s key
+    (`shredSubject(keys, raw, "", { executionIds: [] })`), which `shredSubject` now allows while
+    refusing reserved ids among the `executionIds` it tombstones.
   - **`""` is reserved.** `isReservedStream("")` is `true`, so enumerators skip it. `start`,
     `resume`, `resumeAs`, `cancel`, `fork` and `restoreFromState` refuse it, `loadState("")`
     returns `null` and `compact("")` throws. `cancel("")` used to append `EXECUTION_CANCELLED`
