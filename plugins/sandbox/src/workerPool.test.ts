@@ -475,20 +475,35 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       // spawn can be (Node 24). So the dead slot sat in `this.slots`, not busy and not ready,
       // and the next `run()` picked it, posted `warm` to a corpse, and waited the full
       // allowance again before anything served it.
-      const pool = new SandboxWorkerPool({ size: 1, coldStartMs: 200 });
+      //
+      // ONE allowance judges both workers here, the wedged one and the fresh one that must serve
+      // the follow-up — so it cannot be short (L18). It used to be a real 200 ms, and the fresh
+      // worker's REAL spawn + compile (~25 ms idle, measured 217–245 ms under a full-suite
+      // run) then lost that race and failed the follow-up with the very error this test
+      // provokes on purpose. Instead the allowance is generous and only the wedged worker's is
+      // fired, on a fake clock: the wedge is exact, and the fresh worker is judged by a clock no
+      // real compile will run into.
+      const COLD_START_MS = 20_000; // < SLOW: a run stranded on the corpse fails, not times out
+      const pool = new SandboxWorkerPool({ size: 1, coldStartMs: COLD_START_MS });
       opened.push(pool);
-      const warming = pool.warm().catch((e: unknown) => e);
-      // biome-ignore lint/suspicious/noExplicitAny: reaching the private slot to wedge it
-      const [dead] = (pool as any).slots as { worker: import("node:worker_threads").Worker }[];
-      dead!.worker.removeAllListeners("message");
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const warming = pool.warm().catch((e: unknown) => e);
+        // biome-ignore lint/suspicious/noExplicitAny: reaching the private slot to wedge it
+        const [dead] = (pool as any).slots as { worker: import("node:worker_threads").Worker }[];
+        dead!.worker.removeAllListeners("message");
+        vi.advanceTimersByTime(COLD_START_MS); // the wedged worker's allowance, and only it
 
-      const err = await warming;
-      expect(err).toBeInstanceOf(SandboxWorkerStartupError);
-      expect(err).toMatchObject({ limitMs: 200, phase: "compile" });
-      // The dead slot is gone the instant the allowance fires — not merely destined to be
-      // removed once its `exit` event happens to reach the death handler.
-      // biome-ignore lint/suspicious/noExplicitAny: asserting the slot was replaced synchronously
-      expect((pool as any).slots).not.toContain(dead);
+        const err = await warming;
+        expect(err).toBeInstanceOf(SandboxWorkerStartupError);
+        expect(err).toMatchObject({ limitMs: COLD_START_MS, phase: "compile" });
+        // The dead slot is gone the instant the allowance fires — not merely destined to be
+        // removed once its `exit` event happens to reach the death handler.
+        // biome-ignore lint/suspicious/noExplicitAny: asserting the slot was replaced synchronously
+        expect((pool as any).slots).not.toContain(dead);
+      } finally {
+        vi.useRealTimers();
+      }
 
       // A run posted now must be served by a FRESH worker, not hang on the corpse.
       const result = await pool.runJson(
