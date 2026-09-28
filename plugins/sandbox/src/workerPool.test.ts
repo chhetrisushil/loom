@@ -3,7 +3,7 @@ import { EffectRuntime } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
 import { InMemoryContentStore } from "@loom/plugin-content";
 import { getQuickJS } from "quickjs-emscripten";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SandboxWorkerPool, SandboxWorkerStartupError } from "./SandboxWorkerPool";
 import { type EvalLimits, evalInFreshRuntime } from "./evalCore";
 import { SANDBOX_TOOL_ID, registerSandboxEval } from "./sandboxEval$";
@@ -269,7 +269,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       const memoryBytes = 512 * 1024 * 1024;
 
       // Calibrate on EXACTLY the phase in question — call to `onScriptStart` — rather than
-      // on a whole run. The MINIMUM of three, because load can only lengthen this work: a
+      // on a whole run. The MINIMUM of two, because load can only lengthen this work: a
       // spike during calibration would otherwise inflate the budget past what the worker
       // needs and pass vacuously, while the minimum is a floor the worker's identical work
       // cannot come in under.
@@ -280,7 +280,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         wallClockMs: 60_000,
       };
       let preScriptMs = Number.POSITIVE_INFINITY;
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 2; i++) {
         const calledAt = Date.now();
         let startedAt = Number.NaN;
         const probe = evalInFreshRuntime(
@@ -321,7 +321,8 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         )
       ).resolves.toEqual({ ok: true, value: input.length });
     },
-    SLOW
+    // Three 32 MiB seedings (two calibrations + the run): ~35 s on a saturated full-suite host.
+    SLOW * 3
   );
 
   it(
@@ -422,13 +423,19 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
   );
 
   it(
-    "puts a cold worker's compile under the same window: a hung compile is reclaimed",
+    "reclaims a hung cold compile under its own allowance, whatever the run's limits",
     async () => {
       // `ensureReady` runs before any eval is posted, so before `begin` arms a timer. A
       // compile that never acknowledged used to strand its run forever. Simulated
       // deterministically: detach the pool's listener for the worker's `ready`, which is
-      // exactly what a compile that never finishes looks like from the parent.
-      const pool = new SandboxWorkerPool({ size: 1, hardKillGraceMs: 0, startupLivenessMs: 200 });
+      // exactly what a compile that never finishes looks like from the parent. The run's own
+      // window would be 0 ms; the compile is judged against `coldStartMs` alone.
+      const pool = new SandboxWorkerPool({
+        size: 1,
+        hardKillGraceMs: 0,
+        startupLivenessMs: 0,
+        coldStartMs: 200,
+      });
       opened.push(pool);
       const limits: EvalLimits = {
         memoryBytes: 32 * 1024 * 1024,
@@ -442,20 +449,133 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
 
       const err = await pending.catch((e: unknown) => e);
       expect(err).toBeInstanceOf(SandboxWorkerStartupError);
-      expect(err).toMatchObject({ limitMs: 200 });
-      // The wedged worker is gone and a fresh one serves the next run.
-      // biome-ignore lint/suspicious/noExplicitAny: asserting the slot was replaced
-      expect((pool as any).slots).not.toContain(slot);
-      await expect(
-        pool.run("(() => 2)()", null, { ...limits, wallClockMs: 60_000 }, undefined)
-      ).resolves.toEqual({ ok: true, value: 2 });
+      expect(err).toMatchObject({ limitMs: 200, phase: "compile" });
+      // The wedged worker is gone. (That a replacement then serves is "survives a hard kill";
+      // not re-asserted here, where the 200 ms allowance would also judge the replacement's
+      // REAL cold start — which a loaded host can exceed.)
+      await vi.waitFor(() => {
+        // biome-ignore lint/suspicious/noExplicitAny: asserting the slot was replaced
+        expect((pool as any).slots).not.toContain(slot);
+      });
+    },
+    SLOW
+  );
+
+  it(
+    "after a hard kill, the next run succeeds on the fresh cold worker however tight its limits",
+    async () => {
+      // ADR 0089 D4's failure loop. A hard kill leaves a COLD worker; if its spawn + compile
+      // were judged against the next run's `wallClockMs + grace + liveness`, a window shorter
+      // than this host's cold start would fail that run, replace the worker cold, and repeat
+      // (retry middleware multiplies it). The compile has its own allowance instead.
+      //
+      // Made deterministic rather than calibrated (an idle host cold-starts in ~25 ms, too
+      // close to any window a trivial script can be trusted to start inside): the fresh
+      // worker's `ready` is held back 3 s, a slow cold start on demand, against a follow-up
+      // whose whole window is 1 s. A pool that folds the compile into that window fails. The
+      // 1 s is also what a loaded host needs to START a trivial script (measured >50 ms).
+      const pool = new SandboxWorkerPool({ size: 1, hardKillGraceMs: 0, startupLivenessMs: 0 });
+      opened.push(pool);
+      await pool.warm();
+      const memoryBytes = 512 * 1024 * 1024;
+      const interruptBudget = Number.MAX_SAFE_INTEGER;
+      const killed = await pool.run(
+        RUNS_FOR_SECONDS,
+        null,
+        { memoryBytes, interruptBudget, wallClockMs: 1_000 },
+        undefined
+      );
+      expect(killed.ok === false && killed.message).toMatch(POOL_KILL);
+
+      // The only worker was terminated: this run pays a cold spawn + compile.
+      const next = pool.run(
+        "(() => 1 + 1)()",
+        null,
+        { memoryBytes, interruptBudget, wallClockMs: 1_000 },
+        undefined
+      );
+      // biome-ignore lint/suspicious/noExplicitAny: slowing the fresh worker's compile
+      const [fresh] = (pool as any).slots as { worker: import("node:worker_threads").Worker }[];
+      const emit = fresh!.worker.emit.bind(fresh!.worker);
+      fresh!.worker.emit = ((event: string, ...args: unknown[]) => {
+        if (event === "message" && (args[0] as { type?: string })?.type === "ready") {
+          setTimeout(() => emit(event, ...args), 3_000);
+          return true;
+        }
+        return emit(event, ...args);
+      }) as typeof fresh.worker.emit;
+
+      await expect(next).resolves.toEqual({ ok: true, value: 2 });
+    },
+    SLOW
+  );
+
+  it(
+    "warm() settles when its worker is reclaimed or the pool closes",
+    async () => {
+      // `ensureReady` listened for `ready` and `error` only. A worker terminated while warming
+      // — by the compile allowance, or by `close()` — emits neither, so `warm()` hung.
+      const reclaimed = new SandboxWorkerPool({ size: 1, coldStartMs: 0 });
+      opened.push(reclaimed);
+      const limits: EvalLimits = {
+        memoryBytes: 32 * 1024 * 1024,
+        interruptBudget: 1_000,
+        wallClockMs: 1_000,
+      };
+      const [warmErr, runErr] = await Promise.all([
+        reclaimed.warm().catch((e: unknown) => e),
+        reclaimed.run("(() => 1)()", null, limits, undefined).catch((e: unknown) => e),
+      ]);
+      // ONE warm-up, shared: both waiters get the same verdict.
+      expect(warmErr).toBeInstanceOf(SandboxWorkerStartupError);
+      expect(warmErr).toMatchObject({ phase: "compile", limitMs: 0 });
+      expect(runErr).toBe(warmErr);
+
+      const closing = new SandboxWorkerPool({ size: 1 });
+      const warming = closing.warm().catch((e: unknown) => e);
+      await closing.close();
+      expect(await warming).toMatchObject({ message: "sandbox: worker pool closed" });
+    },
+    SLOW
+  );
+
+  it(
+    "an abort during warm-up rejects the run and frees the slot",
+    async () => {
+      // The abort listener used to be attached only in `begin`, after the compile, so a run
+      // aborted while its worker warmed sat out the whole compile first.
+      const pool = new SandboxWorkerPool({ size: 1 });
+      opened.push(pool);
+      const limits: EvalLimits = {
+        memoryBytes: 32 * 1024 * 1024,
+        interruptBudget: 1_000,
+        wallClockMs: 1_000,
+      };
+      const controller = new AbortController();
+      const pending = pool.run("(() => 1)()", null, limits, controller.signal);
+      // biome-ignore lint/suspicious/noExplicitAny: observing the private slot
+      const [slot] = (pool as any).slots as { busy: boolean; ready: boolean }[];
+      expect(slot!.ready).toBe(false); // still warming: this is the window under test
+      controller.abort(new Error("caller went away"));
+
+      await expect(pending).rejects.toThrow(/caller went away/);
+      // Rejected DURING the warm-up, not after it: the worker has still not reported ready.
+      expect(slot!.ready).toBe(false);
+      expect(slot!.busy).toBe(false);
+      // The warm-up ran on; the same worker serves the next run.
+      await expect(pool.run("(() => 2)()", null, limits, undefined)).resolves.toEqual({
+        ok: true,
+        value: 2,
+      });
+      // biome-ignore lint/suspicious/noExplicitAny: same worker, not a replacement
+      expect((pool as any).slots[0]).toBe(slot);
     },
     SLOW
   );
 
   it("close() settles a run still waiting on a cold worker's compile", async () => {
     // During the compile no eval is in flight, so `close()` had nothing to settle and the
-    // run hung until (at best) the liveness window. It is the slot's to settle now.
+    // run hung until (at best) the compile allowance. It is the slot's to settle now.
     const pool = new SandboxWorkerPool({ size: 1 });
     const pending = pool.run(
       "(() => 1)()",
@@ -469,21 +589,38 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
   });
 
   it(
-    "SandboxWorkers.startupLivenessMs reaches the pool through the effect",
+    "the timing options reach the pool through the effect",
     async () => {
-      // A cold worker cannot spawn and compile WASM inside a 1 ms window; the 10 s default
-      // would let this run succeed. So a startup failure here proves the option arrived.
+      // `coldStartMs: 0` — no worker spawns and compiles inside 0 ms; the 10 s default would
+      // let this succeed.
+      const coldScripts = new InMemoryContentStore();
+      const coldEffects = new EffectRuntime();
+      opened.push(
+        registerSandboxEval(coldEffects, coldScripts, { workers: { count: 1, coldStartMs: 0 } })
+      );
+      const coldRef = await coldScripts.put(encoder.encode("(() => 1)()"));
+      await expect(
+        coldEffects.execute(SANDBOX_TOOL_ID, { scriptRef: coldRef }, baseCtx)
+      ).rejects.toMatchObject({ name: "SandboxWorkerStartupError", phase: "compile" });
+
+      // `startupLivenessMs: 0` on a WARM worker with a 32 MiB input: seeding cannot finish
+      // inside a 1 ms window; the default would let this succeed.
       const scripts = new InMemoryContentStore();
       const effects = new EffectRuntime();
       const effect = registerSandboxEval(effects, scripts, {
-        limits: { wallClockMs: 1 },
+        limits: { memoryBytes: 512 * 1024 * 1024, wallClockMs: 1 },
         workers: { count: 1, hardKillGraceMs: 0, startupLivenessMs: 0 },
       });
       opened.push(effect);
-      const ref = await scripts.put(encoder.encode("(() => 1)()"));
+      await effect.warm();
+      const ref = await scripts.put(encoder.encode("input.length"));
       await expect(
-        effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx)
-      ).rejects.toBeInstanceOf(SandboxWorkerStartupError);
+        effects.execute(
+          SANDBOX_TOOL_ID,
+          { scriptRef: ref, input: "x".repeat(32 * 1024 * 1024) },
+          baseCtx
+        )
+      ).rejects.toMatchObject({ name: "SandboxWorkerStartupError", phase: "start" });
     },
     SLOW
   );
@@ -491,13 +628,14 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
   it("refuses a duration option that would silently disable its bound", () => {
     // `NaN` makes every deadline comparison false and `Infinity` never comes due: both turn
     // a bound off without saying so. Refused at construction, as a bad `size` is.
+    const names = ["hardKillGraceMs", "startupLivenessMs", "coldStartMs"] as const;
     for (const bad of [Number.NaN, -1, Number.POSITIVE_INFINITY, "5" as unknown as number]) {
-      expect(() => new SandboxWorkerPool({ size: 1, hardKillGraceMs: bad }), String(bad)).toThrow(
-        /hardKillGraceMs must be a finite number >= 0/
-      );
-      expect(() => new SandboxWorkerPool({ size: 1, startupLivenessMs: bad }), String(bad)).toThrow(
-        /startupLivenessMs must be a finite number >= 0/
-      );
+      for (const name of names) {
+        expect(
+          () => new SandboxWorkerPool({ size: 1, [name]: bad }),
+          `${name}=${String(bad)}`
+        ).toThrow(new RegExp(`${name} must be a finite number >= 0`));
+      }
     }
     // …through the effect too, which builds its pool from `SandboxSpec.workers`.
     expect(() =>
@@ -505,9 +643,13 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         workers: { count: 1, startupLivenessMs: Number.NaN },
       })
     ).toThrow(/startupLivenessMs must be a finite number >= 0/);
-    // Zero is a legitimate (if strict) value, not a refusal.
+    // Zero is accepted: it means "no allowance at all", which a caller may choose on purpose —
+    // e.g. a pool that is always warmed before use. It does NOT set off the cold-worker loop,
+    // because a run's window never judges the compile; only `coldStartMs` does, and 0 there
+    // fails every cold start by the caller's own choice.
     expect(
-      () => new SandboxWorkerPool({ size: 1, hardKillGraceMs: 0, startupLivenessMs: 0 })
+      () =>
+        new SandboxWorkerPool({ size: 1, hardKillGraceMs: 0, startupLivenessMs: 0, coldStartMs: 0 })
     ).not.toThrow();
   });
 

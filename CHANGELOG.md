@@ -109,14 +109,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from any other. It is now `SandboxWorkerStartupError` (`waitedMs`, `limitMs`), exported,
   and deliberately not a `TypedFailure`: it is the environment failing, not the script, so
   it must not reach `limitExceeded`/drift-repair, and `retryMiddleware`'s default retries it.
-  The window is configurable as `SandboxWorkerPoolOptions.startupLivenessMs` and
-  `SandboxSpec.workers.startupLivenessMs` (default 10 000 ms, unchanged), and is now counted
-  from DISPATCH, so it also covers a cold worker's spawn and WASM compile: a compile that
-  never acknowledged used to strand its run forever, since no timer was armed until the
-  worker was ready. `close()` now also settles a run still waiting on a cold compile (it
-  used to hang). `hardKillGraceMs` and `startupLivenessMs` must be finite and `>= 0`; the
-  pool refuses anything else at construction, since `NaN` silently disabled the bound. Also:
-  a worker whose run threw before starting now stamps the run id with `RUN_FINISHED`, so the
+  Two allowances, both reported through that error (its `phase` says which): a READY worker
+  that has not started the script within `wallClockMs + hardKillGraceMs + startupLivenessMs`
+  of the eval being posted (`phase: "start"`), and a cold worker's spawn + WASM compile,
+  which has its OWN allowance `coldStartMs` measured from the start of the warm-up and
+  independent of any run's limits (`phase: "compile"`) — a compile that never acknowledged
+  used to strand its run forever, and judging it against a run's tight wall clock would
+  bring back the cold-worker failure loop ADR 0089 D4 prevents. Both are configurable on
+  `SandboxWorkerPoolOptions` and `SandboxSpec.workers` (default 10 000 ms each). Duration
+  options must be finite and `>= 0`; the pool refuses anything else at construction, since
+  `NaN` silently disabled the bound. `warm()` now settles when its worker exits (it hung on a
+  worker terminated mid-warm-up, including by `close()`); `close()` settles a run still
+  waiting on a cold compile; and an abort during warm-up rejects the run and frees the slot
+  at once rather than after the compile. Also: a worker whose run threw before starting now
+  stamps the run id with `RUN_FINISHED`, so the
   parent recognises the finish as its own.
 
 - **`@loom/plugin-postgres`: `appendBatch` refused a `null` payload** (backlog L16). The bulk
