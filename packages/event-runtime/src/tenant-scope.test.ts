@@ -164,6 +164,30 @@ describe("K12.5 — tenant-scoped paged enumeration (L1: listExecutionsPage is n
     });
   });
 
+  it("a fresh scan never reads tenants whose names extend its own ('acme-eu', 'acme.io', 'acme0')", async () => {
+    const events = new InMemoryAsyncEventStore();
+    const others = ["acme-eu", "acme.io", "acme0", "acme9"].flatMap((t) =>
+      Array.from({ length: 20 }, (_, i) => `${t}:${i}`)
+    );
+    for (const id of [...others, "acme:", "acme:r1"]) await events.append(ev(id, 0));
+    const read: string[] = [];
+    const recording = new Proxy(events, {
+      get(target, prop, receiver) {
+        if (prop === "listExecutionsPage") {
+          return async (opts?: { cursor?: string; limit?: number }) => {
+            const page = await target.listExecutionsPage(opts);
+            read.push(...page.executionIds);
+            return page;
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const acme = new TenantScopedEventStore(recording, "acme");
+    expect(await acme.listExecutionsPage!({ limit: 10 })).toEqual({ executionIds: ["", "r1"] });
+    expect(read).toEqual(["acme:", "acme:r1"]);
+  });
+
   it("refuses a non-advancing inner cursor instead of spinning", async () => {
     const events = new InMemoryAsyncEventStore();
     await events.append(ev("acme-corp:1", 0));
@@ -172,7 +196,7 @@ describe("K12.5 — tenant-scoped paged enumeration (L1: listExecutionsPage is n
         if (prop === "listExecutionsPage") {
           // Another tenant's id (inside the walked gap, so not "past" acme) and a cursor that
           // never moves off where this decorator started.
-          return async () => ({ executionIds: ["acme-corp:1"], nextCursor: "acme" });
+          return async () => ({ executionIds: ["acme-corp:1"], nextCursor: "acme9\u{10FFFF}" });
         }
         return Reflect.get(target, prop, receiver);
       },

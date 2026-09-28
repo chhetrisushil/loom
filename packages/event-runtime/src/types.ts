@@ -237,7 +237,9 @@ export interface EventStore {
    * database's collation), `limit` per page. `cursor` is an executionId — any string, not
    * only one this store returned — and the page holds the ids strictly after it; `nextCursor`
    * is the page's last id. `ShardedEventStore` depends on all three: it merges shard pages in
-   * this order and resumes EVERY shard from the merged page's last id. Bounded-memory alternative to {@link listExecutions} for maintenance passes
+   * this order and resumes EVERY shard from the merged page's last id. The guarantee covers
+   * well-formed Unicode ids; a lone surrogate cannot round-trip through UTF-8 (node-postgres
+   * sends U+FFFD), so no ordering or identity is promised for one. Bounded-memory alternative to {@link listExecutions} for maintenance passes
    * (retention, the K10.6 sweep, read-model catch-up) over year-scale stores. Executions
    * created DURING iteration whose ids sort before the cursor may be missed — acceptable
    * for periodic maintenance jobs (they are visited on the next pass); do not use this for

@@ -26,12 +26,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `events.execution_id` `COLLATE "C"` and converts an existing table in place on the next
   migration (binary-coercible: no table rewrite, but the two `execution_id` indexes are rebuilt
   under an ACCESS EXCLUSIVE lock once — ~4.5 s per 2M events measured; plan a window for a
-  large log), so paging stays index-only and appends get cheaper (memcmp instead of `strcoll`).
+  large log), then re-`ANALYZE`s the column (the ALTER drops its statistics, and the planner
+  then pages with a seq scan + sort), so paging stays index-only and appends get cheaper
+  (memcmp instead of `strcoll`). The conversion waits at most `lockTimeoutMs` (default 2000;
+  `migratePostgresStores(pool, { lockTimeoutMs })` or
+  `PostgresEventStoreOptions.migrationLockTimeoutMs`) for its lock, so it cannot queue every
+  append behind itself; if the lock times out, a user view or rule depends on the column, or
+  the role does not own the table, boot continues with a WARNING naming the two statements to
+  run by hand — paging stays correct (the query says `COLLATE "C"` itself), only slower.
   Also fixed on the same path: `Sharded(TenantScoped(…))`, the composition
   `TenantScopedEventStore` documents, re-served its first page forever, because the tenant view
   handed out its INNER (prefixed) cursor while the sharded merge handed back an outer id; it now
-  speaks outer ids and, with the order pinned, seeks to its tenant's contiguous range and stops
-  at its end instead of walking the whole shared store. The conformance kit gains a code point
+  speaks outer ids and, with the order pinned, seeks to its tenant's contiguous range (past
+  tenants whose names extend its own, such as `acme-eu`) and stops at its end instead of walking
+  the whole shared store. The in-memory store keeps its sorted id index across pages instead of
+  re-sorting every key per page. The conformance kit gains a code point
   order + arbitrary-cursor case, and `@loom/plugin-postgres` runs the EventStore kit through
   `ShardedEventStore` over three real Postgres shards (raw and tenant-scoped).
 - **`@loom/workflow-runtime`: a fenced `TimerService` could pay for a schedule occurrence's

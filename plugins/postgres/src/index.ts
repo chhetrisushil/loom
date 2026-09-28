@@ -2,6 +2,7 @@ export { PostgresEventStore } from "./PostgresEventStore";
 export { PostgresSnapshotStore } from "./PostgresSnapshotStore";
 export { PostgresBranchRegistry } from "./PostgresBranchRegistry";
 export { migrate as migratePostgresStores, NOTIFY_CHANNEL } from "./schema";
+export type { MigrateOptions } from "./schema";
 // `PoolLike` is the whole pool surface these stores use. Exported because it is the
 // contract for bringing your own pool: satisfy it and the stores take it, whichever copy
 // of `pg` built it — or whether `pg` built it at all.

@@ -27,6 +27,12 @@ export interface PostgresEventStoreOptions {
    * upgrade or a deployment that wants the old semantics. Default 16.
    */
   notifyBuckets?: number;
+  /**
+   * L10 — the lock wait bound for the one-time `events.execution_id` collation conversion
+   * (see `MigrateOptions.lockTimeoutMs`). Only takes effect if this store is the first to
+   * migrate its pool. Default 2000 ms.
+   */
+  migrationLockTimeoutMs?: number;
 }
 
 /**
@@ -142,7 +148,11 @@ export class PostgresEventStore implements EventStore {
     const { pool, owned } = toPool(config);
     this.pool = pool;
     this.ownsPool = owned;
-    this.ready = migrate(this.pool);
+    this.ready = migrate(this.pool, {
+      ...(options.migrationLockTimeoutMs !== undefined && {
+        lockTimeoutMs: options.migrationLockTimeoutMs,
+      }),
+    });
   }
 
   async append(envelope: EventEnvelope): Promise<void> {

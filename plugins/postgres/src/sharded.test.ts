@@ -82,66 +82,162 @@ if (PG_URL === undefined) {
   );
 
   // An existing deployment: `events` created before L10, so its column carries the DATABASE
-  // collation. The migration must convert it in place, keep the rows, and leave the paging
-  // query index-served.
+  // collation. The migration must convert it in place, keep the rows, re-ANALYZE the column
+  // (ALTER ... TYPE drops its statistics, and the planner then seq-scans + sorts), and — when
+  // the conversion cannot run — boot anyway with a WARNING naming the manual statements.
   describe("L10 migration of a pre-L10 events table", () => {
     const legacy = `loom_shard_${process.pid}_legacy`;
+    const LEGACY_EXECUTIONS = 50_000;
+
     afterAll(async () => {
       const admin = new Pool({ connectionString: PG_URL });
       await admin.query(`DROP SCHEMA IF EXISTS ${legacy} CASCADE`).finally(() => admin.end());
     });
 
-    it('converts execution_id to COLLATE "C" in place, and pages in code point order', async () => {
+    /** A fresh schema holding the pre-L10 `events` table, analyzed as a live one would be. */
+    async function legacyTable(admin: Pool): Promise<void> {
+      await admin.query(`DROP SCHEMA IF EXISTS ${legacy} CASCADE`);
+      await admin.query(`CREATE SCHEMA ${legacy}`);
+      // The pre-L10 DDL, verbatim for the columns that matter.
+      await admin.query(`CREATE TABLE events (
+        id TEXT NOT NULL PRIMARY KEY, workflow_id TEXT NOT NULL, execution_id TEXT NOT NULL,
+        event_type TEXT NOT NULL, sequence BIGINT NOT NULL, timestamp BIGINT NOT NULL,
+        payload JSONB NOT NULL, metadata JSONB, UNIQUE (execution_id, sequence))`);
+      await admin.query("CREATE INDEX idx_events_exec ON events (execution_id, sequence ASC)");
+      for (const id of ["a_b", "A1", "ab", "a-b", "B"]) {
+        await admin.query(
+          `INSERT INTO events VALUES ($1, 'wf', $2, 'STEP_COMPLETED', 0, 0, '{}'::jsonb, NULL)`,
+          [`${id}-0`, id]
+        );
+      }
+      // Enough rows that the planner's choice depends on the column's statistics.
+      await admin.query(
+        `INSERT INTO events SELECT 'z' || g || '-0', 'wf', 'z' || g, 'STEP_COMPLETED', 0, 0, '{}'::jsonb, NULL
+         FROM generate_series(1, $1) g`,
+        [LEGACY_EXECUTIONS]
+      );
+      await admin.query("ANALYZE events");
+    }
+
+    const collation = async (admin: Pool): Promise<string> =>
+      (
+        await admin.query<{ c: string }>(
+          `SELECT c.collname AS c FROM pg_attribute a JOIN pg_collation c ON c.oid = a.attcollation
+           WHERE a.attrelid = 'events'::regclass AND a.attname = 'execution_id'`
+        )
+      ).rows[0]!.c;
+
+    /** A pool whose connections report every server WARNING into `warnings`. */
+    function noticingPool(warnings: string[]): Pool {
+      const pool = new Pool({
+        connectionString: PG_URL,
+        options: `-c search_path=${legacy}`,
+        max: 2,
+      });
+      pool.on("connect", (client) => {
+        client.on("notice", (n) => {
+          if (n.severity === "WARNING") warnings.push(n.message ?? "");
+        });
+      });
+      return pool;
+    }
+
+    it('converts execution_id to COLLATE "C" in place, re-analyzes it, and pages index-only', async () => {
       const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
       try {
-        await admin.query(`DROP SCHEMA IF EXISTS ${legacy} CASCADE`);
-        await admin.query(`CREATE SCHEMA ${legacy}`);
-        // The pre-L10 DDL, verbatim for the columns that matter.
-        await admin.query(`CREATE TABLE events (
-          id TEXT NOT NULL PRIMARY KEY, workflow_id TEXT NOT NULL, execution_id TEXT NOT NULL,
-          event_type TEXT NOT NULL, sequence BIGINT NOT NULL, timestamp BIGINT NOT NULL,
-          payload JSONB NOT NULL, metadata JSONB, UNIQUE (execution_id, sequence))`);
-        await admin.query("CREATE INDEX idx_events_exec ON events (execution_id, sequence ASC)");
-        const ids = ["a_b", "A1", "ab", "a-b", "B"];
-        for (const id of ids) {
-          await admin.query(
-            `INSERT INTO events VALUES ($1, 'wf', $2, 'STEP_COMPLETED', 0, 0, '{}'::jsonb, NULL)`,
-            [`${id}-0`, id]
-          );
-        }
-        const collation = async (): Promise<string> =>
-          (
-            await admin.query<{ c: string }>(
-              `SELECT attcollation::regcollation::text AS c FROM pg_attribute
-               WHERE attrelid = 'events'::regclass AND attname = 'execution_id'`
-            )
-          ).rows[0]!.c;
-        expect(await collation()).not.toBe('"C"');
+        await legacyTable(admin);
+        expect(await collation(admin)).not.toBe("C");
 
-        const store = new PostgresEventStore({
-          connectionString: PG_URL,
-          options: `-c search_path=${legacy}`,
-          max: 2,
-        });
-        const page = await store.listExecutionsPage({ limit: 10 });
+        const warnings: string[] = [];
+        const pool = noticingPool(warnings);
+        const store = new PostgresEventStore(pool);
+        const page = await store.listExecutionsPage({ limit: 5 });
         await store.close();
+        await pool.end();
         expect(page.executionIds).toEqual(["A1", "B", "a-b", "a_b", "ab"]);
-        expect(await collation()).toBe('"C"');
-        // Still index-served: a sequential scan + sort here is O(table) per page.
-        await admin.query("SET enable_seqscan = off");
+        expect(await collation(admin)).toBe("C");
+        expect(warnings).toEqual([]);
+        // The ALTER dropped the column's statistics; the migration must have restored them.
+        const stats = await admin.query(
+          `SELECT 1 FROM pg_stats WHERE schemaname = $1 AND tablename = 'events' AND attname = 'execution_id'`,
+          [legacy]
+        );
+        expect(stats.rowCount).toBe(1);
+        // The planner's own choice, NOT forced: a seq scan + sort here is O(table) per page.
         const plan = (
           await admin.query<{ "QUERY PLAN": string }>(
             `EXPLAIN SELECT DISTINCT execution_id COLLATE "C" AS execution_id FROM events
-             WHERE execution_id COLLATE "C" > 'a' ORDER BY 1 LIMIT 10`
+             WHERE execution_id COLLATE "C" > 'a' ORDER BY 1 LIMIT 1001`
           )
         ).rows
           .map((r) => r["QUERY PLAN"])
           .join("\n");
         expect(plan).toMatch(/Index Only Scan using idx_events_exec/);
-        expect(plan).not.toMatch(/Sort/);
+        expect(plan).not.toMatch(/Sort|Seq Scan|HashAggregate/);
       } finally {
         await admin.end();
       }
-    });
+    }, 60_000);
+
+    it("boots with a WARNING when a user view depends on the column, and still pages correctly", async () => {
+      const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
+      try {
+        await legacyTable(admin);
+        await admin.query("CREATE VIEW exec_ids AS SELECT DISTINCT execution_id FROM events");
+        const warnings: string[] = [];
+        const pool = noticingPool(warnings);
+        const store = new PostgresEventStore(pool);
+        const page = await store.listExecutionsPage({ limit: 5 });
+        await store.close();
+        await pool.end();
+        expect(page.executionIds).toEqual(["A1", "B", "a-b", "a_b", "ab"]);
+        expect(await collation(admin)).not.toBe("C");
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toMatch(/0A000/);
+        expect(warnings[0]).toContain(
+          'ALTER TABLE events ALTER COLUMN execution_id TYPE TEXT COLLATE "C"; ANALYZE events;'
+        );
+      } finally {
+        await admin.end();
+      }
+    }, 60_000);
+
+    it("gives up on a held table lock after lockTimeoutMs with a WARNING, instead of queueing appends", async () => {
+      const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
+      const holder = await admin.connect();
+      try {
+        await legacyTable(admin);
+        // An open transaction holding even the weakest lock blocks the ALTER's ACCESS EXCLUSIVE.
+        await holder.query("BEGIN");
+        await holder.query("SELECT 1 FROM events LIMIT 1");
+        const warnings: string[] = [];
+        const pool = noticingPool(warnings);
+        const started = Date.now();
+        const store = new PostgresEventStore(pool, { migrationLockTimeoutMs: 200 });
+        const page = await store.listExecutionsPage({ limit: 5 });
+        const waited = Date.now() - started;
+        await store.close();
+        await pool.end();
+        expect(page.executionIds).toEqual(["A1", "B", "a-b", "a_b", "ab"]);
+        expect(waited).toBeLessThan(5_000);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toMatch(/55P03/);
+        await holder.query("ROLLBACK");
+        expect(await collation(admin)).not.toBe("C");
+        // With the lock released, the next boot converts it.
+        const retry = new PostgresEventStore({
+          connectionString: PG_URL,
+          options: `-c search_path=${legacy}`,
+          max: 2,
+        });
+        await retry.listExecutionsPage({ limit: 1 });
+        await retry.close();
+        expect(await collation(admin)).toBe("C");
+      } finally {
+        await holder.query("ROLLBACK").catch(() => {});
+        holder.release();
+        await admin.end();
+      }
+    }, 60_000);
   });
 }

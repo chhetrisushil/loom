@@ -94,8 +94,9 @@ export interface CompatReport {
 /**
  * Validate a deployment's declared versions against this kernel's manifest. Same-major is
  * compatible (an additive MINOR bump never breaks a stored log or a wire client). Today Loom
- * is a lockstep monorepo — every contract is 1.x and mutually compatible — so a real
- * incompatibility only appears once a MAJOR diverges; the mechanism is here for that day.
+ * is a lockstep monorepo — every contract ships together and is mutually compatible (majors
+ * are per contract: MemoryStore SPI is 2.x) — so a real incompatibility only appears once a
+ * deployment's MAJOR diverges from this manifest's; the mechanism is here for that day.
  */
 export function checkCompatibility(actual: DeploymentVersions): CompatReport {
   const m = kernelManifest();

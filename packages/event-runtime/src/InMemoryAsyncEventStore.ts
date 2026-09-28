@@ -26,6 +26,12 @@ export interface InMemoryAsyncEventStoreOptions {
 export class InMemoryAsyncEventStore implements EventStore {
   private readonly log = new Map<string, EventEnvelope[]>();
   /**
+   * The executionIds in SPI order (code point), built lazily by `listExecutionsPage` and
+   * dropped only when the SET of executions changes (a new one, or a delete). A full paged
+   * walk is then one O(n log n) sort plus O(log n) per page, not a re-sort per page.
+   */
+  private sortedIds: string[] | undefined;
+  /**
    * #309 — every envelope id in the store, the index behind the `id` PRIMARY KEY both SQL
    * backends have. GLOBAL, not per-execution, because that is what the SQL constraint is:
    * two executions may not share an envelope id either.
@@ -160,7 +166,7 @@ export class InMemoryAsyncEventStore implements EventStore {
     } else {
       list.splice(lowerBoundBySequence(list, envelope.sequence), 0, envelope);
     }
-    this.log.set(envelope.executionId, list);
+    this.setLog(envelope.executionId, list);
   }
 
   async read(executionId: string): Promise<EventEnvelope[]> {
@@ -225,7 +231,7 @@ export class InMemoryAsyncEventStore implements EventStore {
       this.ids.add(e.id);
       dst.push(e);
     }
-    this.log.set(toExecutionId, dst);
+    this.setLog(toExecutionId, dst);
   }
 
   async acquireFence(executionId: string): Promise<number> {
@@ -240,8 +246,13 @@ export class InMemoryAsyncEventStore implements EventStore {
     // Release the ids too, or a re-created execution could never re-append the events it
     // just erased — and the index would grow forever across a retention sweep.
     for (const e of this.log.get(executionId) ?? []) this.ids.delete(e.id);
-    this.log.delete(executionId);
+    if (this.log.delete(executionId)) this.sortedIds = undefined;
     this.fences.delete(executionId);
+  }
+
+  private setLog(executionId: string, list: EventEnvelope[]): void {
+    if (!this.log.has(executionId)) this.sortedIds = undefined;
+    this.log.set(executionId, list);
   }
 
   async listExecutions(): Promise<string[]> {
@@ -258,7 +269,8 @@ export class InMemoryAsyncEventStore implements EventStore {
     const cursor = opts?.cursor;
     // SPI 1.6.0 — code point order, and the cursor may be any string: binary-search the
     // first id strictly after it.
-    const sorted = [...this.log.keys()].sort(compareExecutionIds);
+    this.sortedIds ??= [...this.log.keys()].sort(compareExecutionIds);
+    const sorted = this.sortedIds;
     let start = 0;
     if (cursor !== undefined) {
       let hi = sorted.length;
@@ -299,7 +311,7 @@ export class InMemoryAsyncEventStore implements EventStore {
         this.ids.delete(e.id); // compacted away — its id is free again
       }
     }
-    this.log.set(executionId, kept);
+    this.setLog(executionId, kept);
   }
 
   async subscribe(

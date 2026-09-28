@@ -36,11 +36,28 @@ const migrations = new WeakMap<PoolLike, Promise<void>>();
  * The memo is deliberately NOT sufficient on its own — the shipped preset uses
  * distinct pools — and the lock is not made redundant by it.
  */
-export async function migrate(pool: PoolLike): Promise<void> {
+export interface MigrateOptions {
+  /**
+   * L10 — how long the one-time `events.execution_id` collation conversion may WAIT for its
+   * table lock before giving up (with a WARNING; boot continues). Short on purpose: while
+   * the ALTER waits, every append queues behind it. Default 2000 ms. The migration runs once
+   * per pool, so the first caller's value wins — pass it to `migratePostgresStores` before
+   * constructing stores, or via `PostgresEventStoreOptions.migrationLockTimeoutMs`.
+   */
+  lockTimeoutMs?: number;
+}
+
+export async function migrate(pool: PoolLike, options: MigrateOptions = {}): Promise<void> {
   const inFlight = migrations.get(pool);
   if (inFlight !== undefined) return inFlight;
 
-  const run = runMigration(pool);
+  const lockTimeoutMs = options.lockTimeoutMs ?? 2000;
+  if (!Number.isInteger(lockTimeoutMs) || lockTimeoutMs <= 0) {
+    throw new RangeError(
+      `migrate: lockTimeoutMs must be a positive integer (got ${lockTimeoutMs})`
+    );
+  }
+  const run = runMigration(pool, lockTimeoutMs);
   migrations.set(pool, run);
   // Never cache a rejection: a migration that failed (transient connection loss, a
   // database not yet accepting connections) must be retryable by the next caller.
@@ -51,7 +68,7 @@ export async function migrate(pool: PoolLike): Promise<void> {
   return run;
 }
 
-async function runMigration(pool: PoolLike): Promise<void> {
+async function runMigration(pool: PoolLike, lockTimeoutMs: number): Promise<void> {
   // A dedicated client, not `pool.query`: the advisory lock and the DDL must run in
   // ONE session and one transaction, which a pooled per-query checkout cannot promise.
   const client = await pool.connect();
@@ -60,6 +77,10 @@ async function runMigration(pool: PoolLike): Promise<void> {
     await client.query("SELECT pg_advisory_xact_lock($1, $2)", [
       MIGRATION_LOCK_NAMESPACE,
       MIGRATION_LOCK_ID,
+    ]);
+    // Read by the L10 DO block; transaction-local, so it never leaks into the pooled session.
+    await client.query("SELECT set_config('loom.l10_lock_timeout', $1, true)", [
+      `${lockTimeoutMs}ms`,
     ]);
     await client.query(DDL);
     await client.query("COMMIT");
@@ -92,14 +113,42 @@ const DDL = `
     -- under an ACCESS EXCLUSIVE lock, ONCE (~4.5 s per 2M events measured; see the L10 PR).
     -- Guarded by the catalog, so every later boot is a no-op. Equality lookups are unchanged
     -- by the collation, and "C" comparisons are plain memcmp, so appends get cheaper.
+    --
+    -- * ALTER ... TYPE drops the column's statistics, and the planner then pages with a seq
+    --   scan + sort, so the column is re-ANALYZEd in the same step.
+    -- * The lock wait is bounded (loom.l10_lock_timeout, set by runMigration): an ALTER queued
+    --   behind a long transaction would otherwise queue every append behind ITSELF.
+    -- * If the conversion cannot run — the lock timed out, a user view/rule depends on the
+    --   column, or the role does not own the table — boot continues with a WARNING naming the
+    --   statements to run by hand. Correctness does not depend on it (the paging query says
+    --   COLLATE "C" explicitly); only paging speed does, and loudly. The subtransaction's
+    --   rollback also restores lock_timeout.
+    -- The collation is looked up in pg_collation rather than cast via ::regcollation (PG 13+).
     DO $l10$
     BEGIN
       IF EXISTS (
         SELECT 1 FROM pg_attribute
         WHERE attrelid = 'events'::regclass AND attname = 'execution_id'
-          AND attcollation <> 'pg_catalog."C"'::regcollation
+          AND attcollation <> (
+            SELECT oid FROM pg_collation
+            WHERE collname = 'C' AND collnamespace = 'pg_catalog'::regnamespace
+          )
       ) THEN
-        ALTER TABLE events ALTER COLUMN execution_id TYPE TEXT COLLATE "C";
+        BEGIN
+          PERFORM set_config(
+            'lock_timeout',
+            COALESCE(NULLIF(current_setting('loom.l10_lock_timeout', true), ''), '2s'),
+            true
+          );
+          ALTER TABLE events ALTER COLUMN execution_id TYPE TEXT COLLATE "C";
+          PERFORM set_config('lock_timeout', '0', true);
+          ANALYZE events (execution_id);
+        EXCEPTION
+          WHEN lock_not_available OR feature_not_supported OR insufficient_privilege
+            OR dependent_objects_still_exist THEN
+            RAISE WARNING 'loom: events.execution_id is not COLLATE "C" (%: %). Execution-id paging stays correct but cannot use idx_events_exec until you run: ALTER TABLE events ALTER COLUMN execution_id TYPE TEXT COLLATE "C"; ANALYZE events;',
+              SQLSTATE, SQLERRM;
+        END;
       END IF;
     END
     $l10$;

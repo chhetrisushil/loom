@@ -20,21 +20,34 @@ const SEP = ":"; // ":" is not in the ULID alphabet — an unambiguous, collisio
  * Since EventStore SPI 1.6.0 every store pages in code point order, where the ids under
  * `prefix` are CONTIGUOUS. So a page seeks to the tenant (the empty id `prefix` included —
  * a blank stream is still this tenant's, and repair must be able to find it) and stops at
- * the first id past the prefix, instead of walking the whole shared store. It seeks to the
- * bare tenant name rather than `prefix` because the cursor is exclusive; ids between the two
- * (another tenant named `acme-corp`, say: `-` sorts before `:`) are walked and dropped.
+ * the first id past the prefix, instead of walking the whole shared store. The cursor is
+ * exclusive, so a fresh scan cannot start AT `prefix`; it starts at {@link seekBelow}, the
+ * largest practical string below `prefix` (`acme9\u{10FFFF}` for `acme:`): every other
+ * tenant whose name extends this one with a character below `:` (`acme-eu`, `acme.io`,
+ * `acme0`…`acme9`) sorts before it and is never read.
  *
  * It does not stop early with an empty page and a cursor: a non-final page with no ids is not
  * something consumers are written for (`ShardedEventStore` reads an empty merged page as the
  * end). Memory stays one inner page.
  */
+/**
+ * The exclusive cursor a fresh tenant scan starts from: `SEP` is `:` (U+003A), so the string
+ * just below `tenant + ":"` is `tenant + "9"` (U+0039) followed by the highest code point.
+ * Only an id that continues past `tenant + "9\u{10FFFF}"` (never produced by an id
+ * generator) could sit between it and the tenant's range, and would be walked and dropped.
+ * The tenant's blank stream (`tenant + ":"`) sorts after it, so repair still finds it.
+ */
+function seekBelow(tenant: string): string {
+  return `${tenant}9\u{10FFFF}`;
+}
+
 async function pageWithinPrefix(
   inner: EventStore,
   tenant: string,
   prefix: string,
   opts: { cursor?: string; limit?: number } | undefined
 ): Promise<ExecutionPage> {
-  let cursor = opts?.cursor === undefined ? tenant : `${prefix}${opts.cursor}`;
+  let cursor = opts?.cursor === undefined ? seekBelow(tenant) : `${prefix}${opts.cursor}`;
   for (;;) {
     const page = await inner.listExecutionsPage!({
       cursor,
