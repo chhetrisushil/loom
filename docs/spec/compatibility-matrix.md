@@ -18,7 +18,7 @@ mechanism (`checkCompatibility`) exists for the day a deployment's MAJOR diverge
 | Wire ABI (T2) | `1.0.0` | `WIRE_ABI_VERSION` · `wire-abi.test.ts` |
 | EventStore SPI | `2.0.0` | `EVENT_STORE_SPI_VERSION` · conformance kit |
 | SnapshotStore SPI | `1.1.0` | `SNAPSHOT_STORE_SPI_VERSION` · conformance kit |
-| BranchRegistry SPI | `1.2.0` | `BRANCH_REGISTRY_SPI_VERSION` · conformance kit |
+| BranchRegistry SPI | `2.0.0` | `BRANCH_REGISTRY_SPI_VERSION` · conformance kit |
 | Dispatcher SPI | `1.1.0` | `DISPATCHER_SPI_VERSION` · conformance kit |
 | MemoryStore SPI | `2.1.0` | `MEMORY_STORE_SPI_VERSION` · conformance kit |
 | ContentStore SPI | `1.3.0` | `CONTENT_STORE_SPI_VERSION` · conformance kit |

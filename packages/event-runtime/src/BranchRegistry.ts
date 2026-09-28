@@ -12,8 +12,23 @@
 /**
  * SPI version for the {@link BranchRegistry} contract (ADR 0033). Pinned by
  * `runBranchRegistryConformance` in `@loom/testing`.
+ *
+ * **2.0.0 (L21, ADR 0108 addendum, MAJOR):** `listRefs` orders names in Unicode **code
+ * point** order — the same order `EventStore.listExecutionsPage` pins (ADR 0108, SPI
+ * 2.0.0): UTF-8 byte order, SQL `COLLATE "C"`, SQLite BINARY, and `compareExecutionIds`
+ * (`@loom/event-runtime`) as the reference comparator. Not a database's default collation,
+ * and not `String.prototype.localeCompare` — both can disagree with code point order, and
+ * `localeCompare` can return 0 for two DISTINCT, canonically-equivalent names (an NFC "é"
+ * and its NFD decomposition). `after` may be **any string**, not only a name a previous
+ * `listRefs` call returned, and the page holds the names strictly after it. Before this, the
+ * three backends ordered `listRefs` three different ways (Postgres: database collation;
+ * SQLite: BINARY, already conforming; in-memory: `localeCompare`), so a cursor produced by
+ * one order and consumed by another skipped or repeated refs at a page boundary — the same
+ * failure mode ADR 0108 fixed for execution ids. MAJOR because a store conforming to 1.x
+ * (any order, an opaque cursor) can fail the new conformance case (the ADR 0091 rule); no
+ * method was added or removed.
  */
-export const BRANCH_REGISTRY_SPI_VERSION = "1.2.0";
+export const BRANCH_REGISTRY_SPI_VERSION = "2.0.0";
 
 /** A named, movable pointer to an execution head. */
 export interface BranchRef {
@@ -43,7 +58,12 @@ export interface LineageRecord {
 export interface ListRefsOptions {
   /** Max rows to return. Must be a positive integer — an unbounded page is not a default. */
   limit?: number;
-  /** Return refs whose name sorts strictly AFTER this one. Pass the last name of the previous page. */
+  /**
+   * Return refs whose name sorts strictly AFTER this one, in Unicode CODE POINT order
+   * (SPI 2.0.0, ADR 0108 addendum / L21 — {@link BRANCH_REGISTRY_SPI_VERSION}). May be ANY
+   * string, not only a name a previous `listRefs` call returned — pass the last name of the
+   * previous page.
+   */
   after?: string;
 }
 
@@ -97,8 +117,10 @@ export interface BranchRegistry {
   putRef(ref: BranchRef): Promise<void>;
   getRef(name: string): Promise<BranchRef | null>;
   /**
-   * Refs in name order. Unpaged by default; pass `limit`/`after` to walk a registry that has
-   * grown — forking is cheap, so the ref table is unbounded by design.
+   * Refs in name order — Unicode CODE POINT order (SPI 2.0.0, see
+   * {@link BRANCH_REGISTRY_SPI_VERSION}), never a database collation or
+   * `String.prototype.localeCompare`. Unpaged by default; pass `limit`/`after` to walk a
+   * registry that has grown — forking is cheap, so the ref table is unbounded by design.
    */
   listRefs(options?: ListRefsOptions): Promise<BranchRef[]>;
   /** Advance a ref's tip as its execution grows. No-op if the ref is absent. */
