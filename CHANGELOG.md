@@ -52,6 +52,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   covered only by its own dispatcher policy and by `recoverAbandoned`, which deployments MUST
   run to cover dead holders — and it can be the caller's own timed-out earlier attempt, so a
   caller that needs the outcome awaits the execution by id rather than treating it as failed.
+- **An A2A peer that answered `/tasks/send` with the finished task was polled for it anyway**
+  (backlog L18). `createA2AClientEffect` — and so every `A2APeerClient` call — read only `id`
+  from the send answer, slept `pollIntervalMs` (default 500 ms) and asked `/tasks/:id` for a
+  result it already held: a synchronous peer (for instance a thin shim whose send handler runs
+  a graph and returns its artifact) cost every call a fixed half-second and a second request,
+  and one that does not keep finished tasks failed with `A2A status error 404`. A `completed`
+  or `failed` task in the send answer is now returned as-is; an `{ id }` answer (loom's own
+  `createA2AServer`, which submits asynchronously) and a non-terminal one are polled exactly as
+  before. Found as a full-suite load flake: `peerTaint.test.ts` spent ~500 ms of each test in
+  that sleep.
 
 - **`ShardedEventStore` over Postgres skipped execution ids when paging** (backlog L10,
   [ADR 0108](docs/adr/0108-execution-id-order-and-fail-soft-migrations.md); EventStore SPI
