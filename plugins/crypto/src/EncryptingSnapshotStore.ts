@@ -71,6 +71,15 @@ export class EncryptingSnapshotStore implements SnapshotStore {
     return this.decrypt(await this.inner.loadLatest(executionId));
   }
 
+  /**
+   * ADR 0106 — the latest snapshot's SEQUENCE, read without decrypting. A sequence is not a
+   * sensitive field, and `shredSubject` needs it after the subject's key is gone: a retried
+   * shred must still place a missing tombstone after the folded tip.
+   */
+  async latestSequence(executionId: string): Promise<number | null> {
+    return (await this.inner.loadLatest(executionId))?.sequence ?? null;
+  }
+
   async loadAt(executionId: string, sequence: number): Promise<Snapshot | null> {
     return this.decrypt(await this.inner.loadAt(executionId, sequence));
   }

@@ -1,4 +1,9 @@
-import { StorageWriteError, SuspendError, flowContentHash } from "@loom/core";
+import {
+  StorageWriteError,
+  SuspendError,
+  assertSnapshotIdentity,
+  flowContentHash,
+} from "@loom/core";
 import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loom/core";
 import { LazyEffect } from "@loom/effect-runtime";
 import type {
@@ -48,7 +53,6 @@ import {
   InputValidationError,
   ResumePayloadValidationError,
   ResumeRefusedError,
-  SnapshotIdentityMismatchError,
   StateMigrationError,
   TIMER_FIRED,
 } from "./types";
@@ -1552,22 +1556,7 @@ export class WorkflowRuntime {
     retarget = false
   ): ExecutionState {
     const state = normalizeSnapshotState(snapshot.state);
-    if (!retarget && state.executionId !== "" && state.executionId !== executionId) {
-      throw new SnapshotIdentityMismatchError(
-        executionId,
-        "executionId",
-        executionId,
-        state.executionId
-      );
-    }
-    if (state.workflowId !== "" && state.workflowId !== workflowId) {
-      throw new SnapshotIdentityMismatchError(
-        executionId,
-        "workflowId",
-        workflowId,
-        state.workflowId
-      );
-    }
+    assertSnapshotIdentity(state, executionId, workflowId, { retarget });
     if (
       state.executionId === executionId &&
       state.workflowId === workflowId &&

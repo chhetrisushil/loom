@@ -1,4 +1,4 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
+import { type EventEnvelope, type ExecutionState, assertSnapshotIdentity } from "@loom/core";
 import type { EventStore } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import { DEFAULT_TENANT, type SubjectIndex } from "./SubjectIndex";
@@ -23,9 +23,11 @@ const TERMINAL_EVENTS = new Set(["EXECUTION_COMPLETED", "EXECUTION_FAILED", "EXE
 
 /**
  * Destroy a subject's erasure key across the given executions. Wire this to the crypto
- * plugin's `shredSubject` (bound to the KeyStore + raw store). MUST be idempotent — a
- * re-invocation for an already-erased subject should be a no-op (guard on key existence) so
- * restart-time re-completion never double-tombstones.
+ * plugin's `shredSubject` (bound to the KeyStore + raw store + snapshot store). MUST be
+ * idempotent — a re-invocation for an already-erased subject must not double-tombstone.
+ * `shredSubject` is (ADR 0106): it skips every log already carrying the subject's
+ * `PAYLOAD_SHREDDED` and writes the rest. Do NOT guard on key existence — a key can be gone
+ * while a tombstone append failed, and that guard would never retry it.
  */
 export type Shredder = (subjectId: string, executionIds: readonly string[]) => Promise<void>;
 
@@ -124,6 +126,11 @@ export class EraseCoordinator {
       const events = await this.options.eventStore.read(executionId);
       if (events.length === 0) continue; // deleted by retention — nothing to protect
       const snapshot = (await this.options.snapshotStore?.loadLatest(executionId)) ?? null;
+      // Fill a blank legacy identity; a NON-blank one naming another execution is a store or
+      // tenant-scoping defect, refused as everywhere else a fold is seeded (ADR 0106).
+      if (snapshot !== null) {
+        assertSnapshotIdentity(snapshot.state, executionId, events[0]?.workflowId ?? "");
+      }
       const state =
         snapshot !== null
           ? foldEvents(

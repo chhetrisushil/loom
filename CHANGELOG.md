@@ -36,13 +36,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     kind are refused, including `EXECUTION_RECOVERED` and `EffectInDoubtResolved`. `compact`
     consults the `pinned` predicate only when no kinds are declared. With kinds declared, a
     pinned execution (the documented sentinel setup pins by the same kinds) compacts around
-    them. Reserved control streams are refused.
+    them. A new `compactionExempt` predicate (also `retention.compactionExempt`) is consulted
+    always, and keeps a whole log uncompacted (a legal hold by tag). Reserved control streams
+    are refused.
   - **The shred tombstone landed in the checkpoint's slot.** `shredSubject` placed
     `PAYLOAD_SHREDDED` at `read().length`, at or below a compacted log's checkpoint. The next
     compaction then deleted the A3 evidence, or the log read as never compacted. It now follows
     the folded tip. **Breaking:** on a store that can `truncatePrefix`, pass the raw
     `snapshotStore` (or `tombstoneSequenceOf`). Otherwise it refuses, before the key is
-    destroyed.
+    destroyed. Sequences for every execution are resolved BEFORE the key is destroyed, so the
+    app's encrypting snapshot store works. A partial append failure throws
+    `ShredIncompleteError` after attempting every execution. A re-run with the key already gone
+    writes only the missing tombstones. The documented shredder no longer guards on key
+    existence, which would never have retried. `EraseCoordinator` also refuses a snapshot whose
+    non-blank identity names another execution (`SnapshotIdentityMismatchError`, now exported
+    from `@loom/core`).
   - **Erasure waited forever on a compacted terminal execution.** `EraseCoordinator` folded
     the log alone. It now takes `snapshotStore` (`defineConfig` wires it).
   - **The tip rule.** When compaction keeps events, it never removes the log's tip. A

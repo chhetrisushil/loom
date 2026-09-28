@@ -8,7 +8,7 @@ import { EncryptingEventStore, isShredded } from "./EncryptingEventStore";
 import { EncryptingSnapshotStore } from "./EncryptingSnapshotStore";
 import { PayloadShreddedError } from "./errors";
 import { InMemoryKeyStore } from "./keystore";
-import { shredSubject } from "./shred";
+import { ShredIncompleteError, shredSubject } from "./shred";
 
 /** No snapshots: these logs are never compacted, so the folded tip is the log head (ADR 0106). */
 const NO_SNAPSHOTS = { loadLatest: async () => null };
@@ -251,5 +251,92 @@ describe("EncryptingEventStore.subscribe — a failing key lookup", () => {
 
     expect(seen).toHaveLength(1);
     expect(seen[0]?.executionId).toBe("x1");
+  });
+});
+
+describe("ADR 0106 — shredSubject is retry-safe and takes the app's ENCRYPTING snapshot store", () => {
+  const snapState = (executionId: string, sequence: number) =>
+    ({
+      executionId,
+      workflowId: "wf",
+      workflowVersion: "1.0.0",
+      status: "completed",
+      frames: {},
+      variables: { _input: { ssn: "secret" } },
+      sequence,
+      startedAt: 0,
+      updatedAt: 0,
+    }) as unknown as ExecutionState;
+
+  /** Three executions of one subject, each compacted to `[0]` with its checkpoint at 5. */
+  async function compactedSubject() {
+    const inner = new InMemoryAsyncEventStore();
+    const innerSnaps = new InMemoryAsyncSnapshotStore();
+    const keys = new InMemoryKeyStore();
+    const snaps = new EncryptingSnapshotStore(innerSnaps, keys, {
+      sensitive: ["variables._input.ssn"],
+      subjectOf: () => "subj",
+    });
+    const ids = ["a", "b", "c"];
+    for (const id of ids) {
+      await inner.append(ev(id, 0, "EXECUTION_STARTED", { input: {} }));
+      await snaps.save({
+        id: `cp-${id}`,
+        executionId: id,
+        workflowId: "wf",
+        sequence: 5,
+        state: snapState(id, 5),
+        createdAt: 0,
+      });
+    }
+    return { inner, snaps, keys, ids };
+  }
+  const tombstones = async (store: InMemoryAsyncEventStore, id: string) =>
+    (await store.read(id)).filter((e) => e.eventType === "PAYLOAD_SHREDDED");
+
+  it("resolves sequences before the key is gone: the encrypting snapshot store works", async () => {
+    const { inner, snaps, keys, ids } = await compactedSubject();
+    await keys.getOrCreate("subj");
+    await shredSubject(keys, inner, "a", {
+      subjectId: "subj",
+      executionIds: ids,
+      snapshotStore: snaps,
+    });
+    for (const id of ids) {
+      const [t] = await tombstones(inner, id);
+      expect(t?.sequence).toBe(6); // after the checkpoint at 5, not in its slot
+    }
+    expect(await keys.get("subj")).toBeNull();
+  });
+
+  it("an append conflict mid-list does not strand the rest; a re-run (key gone) writes only what is missing", async () => {
+    const { inner, snaps, keys, ids } = await compactedSubject();
+    await keys.getOrCreate("subj");
+    let failB = true;
+    const flaky = Object.assign(Object.create(inner) as InMemoryAsyncEventStore, {
+      append: async (e: Parameters<InMemoryAsyncEventStore["append"]>[0]) => {
+        if (e.executionId === "b" && failB) {
+          failB = false;
+          throw new Error("write conflict");
+        }
+        return inner.append(e);
+      },
+    });
+    await expect(
+      shredSubject(keys, flaky, "a", { subjectId: "subj", executionIds: ids, snapshotStore: snaps })
+    ).rejects.toBeInstanceOf(ShredIncompleteError);
+    expect(await keys.get("subj")).toBeNull(); // erased regardless
+    expect(await tombstones(inner, "a")).toHaveLength(1);
+    expect(await tombstones(inner, "b")).toHaveLength(0);
+    expect(await tombstones(inner, "c")).toHaveLength(1); // not stranded behind b
+
+    // The retry: key already gone, encrypting snapshot store — still completes b, once.
+    await shredSubject(keys, flaky, "a", {
+      subjectId: "subj",
+      executionIds: ids,
+      snapshotStore: snaps,
+    });
+    for (const id of ids) expect(await tombstones(inner, id)).toHaveLength(1);
+    expect((await tombstones(inner, "b"))[0]?.sequence).toBe(6);
   });
 });

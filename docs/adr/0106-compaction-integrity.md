@@ -106,10 +106,19 @@ checkpoint.
   (checkpoint 3) that is 3, the checkpoint's slot, and the next compaction deleted the
   evidence. On `[0]` it is 1, which gives a gap-free `[0, 1]` that retention's cheap path
   misreads and the next compaction folds from scratch. It now defaults to the folded tip:
-  `max(head, latest snapshot) + 1` from a `snapshotStore` option, which is the RAW snapshot
-  store, because it is read after the key is gone. A store that can `truncatePrefix` REQUIRES
-  either `snapshotStore` or `tombstoneSequenceOf`. The refusal comes before the key is
-  destroyed.
+  `max(head, latest snapshot) + 1` from a `snapshotStore` option. A store that can
+  `truncatePrefix` REQUIRES either `snapshotStore` or `tombstoneSequenceOf`, and the refusal
+  comes before the key is destroyed.
+  - **Retry-safety.** Every tombstone sequence, for ALL executions, is resolved **before**
+    `keys.destroy`, so the app's `EncryptingSnapshotStore` can still decrypt. Every append
+    is then attempted, and failures are collected into `ShredIncompleteError` instead of
+    stopping at the first one. A re-run with the key already gone writes exactly the
+    missing tombstones. Idempotency is keyed on each log already carrying the subject's
+    `PAYLOAD_SHREDDED`, not on the key. After the key is gone, only the snapshot's sequence
+    is needed (`EncryptingSnapshotStore.latestSequence`, no decrypt).
+  - The documented shredder no longer guards on `keys.get(subjectId) !== null`. That guard
+    never retried a failed tombstone once the key was gone. `KeyStore.destroy` is now
+    documented as idempotent.
 - The reserved control streams (`__loom_lifecycle__`, `__loom_erasure__`) take their next
   sequence from `read().length` too (`LogLifecycle.emitLifecycleFact`,
   `EraseCoordinator.appendPending`). That is correct only for a log that is never compacted,
@@ -132,8 +141,13 @@ checkpoint.
   `sentinelPreset`) pins by the very kinds it keeps: `pinned: pinByEventKinds(FINDING_RECORDED)`
   beside `pinnedEventTypes: [FINDING_RECORDED]`. Honouring the predicate there would stop a
   sentinel compacting after its first finding. (ADR 0055 D1 governs `applyRetention`, not
-  compaction; retention still honours the predicate unconditionally.) No separate
-  "compaction-exempt" predicate is added, because nothing needs one.
+  compaction; retention still honours the predicate unconditionally.)
+- **`compactionExempt` keeps a whole log uncompacted.** It is a separate optional predicate
+  (`LogLifecycle` option and `defineConfig` `retention.compactionExempt`) that `compact`
+  consults **always**. It exists for pins that no event kind expresses, such as a legal hold
+  by tag. Once kinds are declared, such a hold no longer stops compaction through `pinned`.
+  The division: `pinned` governs retention, and governs compaction only when no kinds are
+  declared. `pinnedEventTypes` keeps kinds in place. `compactionExempt` keeps everything.
 - New optional SPI method `truncatePrefixKeeping(executionId, through, keepEventTypes)`. It
   deletes the `truncatePrefix` range minus the kept types as ONE atomic operation (Postgres: one
   `DELETE … AND event_type <> ALL($3)`; SQLite: `… AND event_type NOT IN (SELECT value FROM

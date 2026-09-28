@@ -1839,7 +1839,9 @@ archive. `roots` pins addresses held in your own tables (ADR 0055 D5–D7). The 
 *findings and their evidence are permanent; runs are archivable; raw telemetry is disposable.*
 Give the same kinds to `retention.pinnedEventTypes` so compaction keeps those events in place
 too (ADR 0106): a pinned execution then compacts around its findings. (With no
-`pinnedEventTypes`, `lifecycle.compact` leaves an execution `pinned` pins uncompacted.)
+`pinnedEventTypes`, `lifecycle.compact` leaves an execution `pinned` pins uncompacted.) To keep
+a WHOLE log uncompacted — a legal hold by tag — use `retention.compactionExempt`, which
+`compact` always consults.
 The whole pattern — schedule, carry state, claim-check, pin policy — is one declaration via
 `sentinelPreset()` (`@loom/plugin-sentinel`), and `loom new sentinel <name>` scaffolds it.
 
