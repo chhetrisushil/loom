@@ -66,7 +66,7 @@ import type {
   ResumeEvent,
   RunOptions,
 } from "./types";
-import { isWriteConflict } from "./writeConflict";
+import { isStaleFence, isWriteConflict } from "./writeConflict";
 
 /**
  * The kernel's own event namespace (#304). Built once from the K5-governed list the
@@ -926,7 +926,15 @@ export class WorkflowRuntime {
    * K9.4 — acquire the next monotonic fencing token for an execution, when the
    * event store supports fencing. Returns `undefined` on a non-fencing store
    * (e.g. single-node SQLite), so callers can thread it opportunistically:
-   * `start(flow, input, { fence: await runtime.acquireFence(id) ?? undefined })`.
+   * `resume(id, event, { fence: await runtime.acquireFence(id) })`.
+   *
+   * Acquiring a fence SUPERSEDES whoever holds the current one — that is its purpose on a
+   * re-dispatch. So do not acquire one to START a caller-chosen id that another node may have
+   * started already (L12, ADR 0103): if that execution exists and is running, the new token
+   * fences its live runner out mid-body, after its first effect has been paid for, and a
+   * recovery pass pays for it again. A start needs no fence: the durable bootstrap refuses a
+   * duplicate at sequence 0, and an execution started unfenced is still fenced out by the
+   * first later `acquireFence` (a fencing store refuses a MISSING token once one exists).
    */
   async acquireFence(executionId: string): Promise<number | undefined> {
     if (this.eventStore.acquireFence === undefined) return undefined;
@@ -1185,6 +1193,12 @@ export class WorkflowRuntime {
    * all-or-nothing). And `err.executionId` cannot tell the cases apart: a scoping decorator
    * reports the id it wrote (tenant-prefixed), not the caller's. So: read sequence 0 back; if
    * it is absent, the conflict was someone else's — retry the append ONCE, alone.
+   *
+   * A {@link StaleFenceError} is treated the same way (L12): an existing execution that has
+   * been fenced refuses a duplicate's sequence 0 on the fence before the slot, so it is
+   * {@link ExecutionAlreadyExistsError} when sequence 0 reads back, and otherwise (a token
+   * acquired for an id nobody has written, or a batch-mate's zombie write) a single retry and
+   * then {@link StorageWriteError}.
    */
   private async writeBootstrap(
     executionId: string,
@@ -1211,7 +1225,10 @@ export class WorkflowRuntime {
         await this.eventStore.append(envelope);
         return envelope;
       } catch (err: unknown) {
-        if (!isWriteConflict(err)) return refuse(err);
+        // L12 — a stale fence at sequence 0 is confirmed exactly like a conflict: the
+        // execution may exist and be fenced (then this start is a duplicate), or the rejection
+        // may be a coalesced batch's zombie error that says nothing about this write.
+        if (!isWriteConflict(err) && !isStaleFence(err)) return refuse(err);
         let exists: boolean;
         try {
           exists = (await readRangeOf(this.eventStore, executionId, 0, 0)).length > 0;

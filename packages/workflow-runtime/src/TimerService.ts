@@ -33,11 +33,18 @@ export interface TimerServiceOptions {
    */
   warmLeadMs?: number;
   /**
-   * T1.2/K9.4 — acquire a fencing token per fire/start (on a fencing store),
+   * T1.2/K9.4 — acquire a fencing token per timer FIRE (on a fencing store),
    * so a duplicate cross-node fire loses at the store instead of double-
    * writing. Enable in multi-node deployments where dispatches are fenced
    * everywhere; default false (a fenced execution refuses unfenced writes,
    * which would surprise single-node apps that also resume manually).
+   *
+   * Schedule occurrence STARTS are never fenced, in either mode (L12, ADR 0103):
+   * a start's fence would supersede the token of a live winner that already
+   * started the same occurrence, fencing it out mid-body after its first effect
+   * and inviting a recovery pass to pay for that effect again. The durable
+   * bootstrap already refuses the duplicate at sequence 0, and the first later
+   * fence (a fenced wake, a recovery pass) still fences out the unfenced starter.
    */
   fenced?: boolean;
   /**
@@ -251,11 +258,13 @@ export class TimerService {
       if (!flow) {
         throw new Error(`schedule "${def.id}": no flow registered for flowId "${def.flowId}"`);
       }
-      const fence = this.fenced ? await this.runtime.acquireFence(executionId) : undefined;
-      const handle = await this.runtime.start(flow, def.input, {
-        executionId,
-        ...(fence !== undefined && { fence }),
-      });
+      // L12 — no fence, even with `fenced: true`. A start that loses the race must not touch
+      // the fence of an execution it does not own: acquiring a token here superseded a live
+      // winner's, so the winner's next write was refused as stale AFTER its first effect ran,
+      // the execution was left `running`, and recovery paid for the effect again. Unfenced,
+      // the loser can only be refused at its bootstrap (a duplicate at sequence 0, or a stale
+      // fence if the winner has since been fenced), before any body runs.
+      const handle = await this.runtime.start(flow, def.input, { executionId });
       await Promise.race([
         handle.waitForSuspend().catch(() => undefined),
         handle.waitForCompletion().catch(() => undefined),

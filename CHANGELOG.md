@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`@loom/workflow-runtime`: a fenced `TimerService` could pay for a schedule occurrence's
+  first effect twice** (backlog L12, closing the "loser's fence" residual of
+  [ADR 0103](docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md)). With `fenced: true`
+  the service acquired a fence before every occurrence START. When the losing node acquired
+  it after the winner's bootstrap was durable, the loser was correctly refused as a duplicate,
+  but its new token had already superseded the winner's: the winner's next write was refused
+  as stale after its first effect had run, the execution was left `running`, and a recovery
+  pass re-drove the step. Occurrence starts are now never fenced. The durable bootstrap
+  already refuses the duplicate at sequence 0, and the first later fence (a fenced wake or a
+  recovery pass) still fences the unfenced starter out, because a fencing store refuses a
+  missing token once one exists. Fires (resumes) are still fenced. A deterministic test pins
+  exactly one effect across the race and a recovery pass. As a consequence, the other
+  ordering no longer reaches `onError` either: the loser is always refused as "already
+  started".
+
+  `start()` with a caller-chosen id now confirms a `StaleFenceError` at sequence 0 the same way
+  it confirms a conflict. If sequence 0 reads back, the id belongs to an existing execution
+  that has since been fenced, and the start throws `ExecutionAlreadyExistsError` (it used to
+  throw `StorageWriteError`). If sequence 0 is absent, the start retries once alone, so a
+  fresh start that shared a `CoalescingEventStore` batch with a zombie's stale write still
+  runs. Then it throws `StorageWriteError`. The `acquireFence` JSDoc no longer recommends
+  fencing a start, and warns that a fence supersedes a live holder. No SPI, KERNEL_ABI or
+  EVENT_SCHEMA change.
+
 - **`@loom/plugin-postgres`: `appendBatch` refused a `null` payload** (backlog L16). The bulk
   insert decoded its batch with `jsonb_to_recordset`, which maps a JSON `null` field to SQL
   NULL, so `payload JSONB NOT NULL` rejected the kernel's status-only `EXECUTION_RESUMED`

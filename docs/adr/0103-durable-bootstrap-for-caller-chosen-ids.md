@@ -140,20 +140,36 @@ store, the read-model plugin's shape (ADR 0058).
 
 ## Residuals
 
-- **Fenced mode, the loser's fence.** `TimerService` with `fenced: true` acquires a fence before
-  each start. In a race, the loser may be refused as STALE (the winner holds a newer token)
-  instead of as a duplicate. That refusal also happens at sequence 0, before the body — no second
-  effect, which a test pins — but it surfaces as a `StorageWriteError` wrapping `StaleFenceError`,
-  and the service still reports it to `onError`: it cannot tell a live winner from a newer holder
-  that died before writing. The fenced test covers ONLY this stale-at-bootstrap ordering.
+- **Fenced mode, the loser's fence. RESOLVED (L12, 2026-09-28).** `TimerService` with
+  `fenced: true` acquired a fence before each occurrence start, and that caused two problems.
+  If the loser acquired its fence FIRST, it was refused as STALE at its bootstrap and reported
+  to `onError`. If it acquired its fence AFTER the winner's bootstrap was durable, it was
+  refused as a duplicate, but its token had already superseded the winner's. The winner's
+  first effect ran, its next write was refused as stale, the execution was left `running`,
+  and `recoverAbandoned` re-drove the step, which paid for the effect a second time
+  (at-least-once, not exactly-once).
 
-  In the other ordering — the loser acquires its fence AFTER the winner's bootstrap is durable —
-  the loser gets `ExecutionAlreadyExistsError`, but its `acquireFence` has already superseded
-  the winner. The winner's body is already running, so **its first effect can run before its
-  next write is refused as stale**; the execution is left `running`, and `recoverAbandoned`
-  re-drives it and runs that step again. That is at-least-once — one extra effect — not
-  exactly-once. It is pre-existing (it comes from acquiring a fence per start attempt) and
-  strictly better than before this ADR, when both nodes ran the body.
+  The fix: **a start does not acquire a fence.** `startOccurrence` no longer fences in either
+  mode, while fires (resumes) still do. A start's fence protected nothing that D1 and the
+  fencing SPI do not already cover. D1 refuses a duplicate at sequence 0 before its body
+  runs, and a fencing store MUST refuse a *missing* token once an execution has one, so the
+  first later `acquireFence` (a fenced wake, a recovery pass) fences out an unfenced starter
+  exactly as it would a fenced one. The alternatives were rejected. A `loadState` check
+  before the fence narrows the window without closing it, which is the race D4 already
+  describes. An acquire-if-absent fence SPI would have to be atomic with the append in every
+  store and decorator, which means SPI growth to protect a token the start does not need.
+  Both orderings now refuse the loser as `ExecutionAlreadyExistsError` without calling
+  `onError`, and a deterministic test (`t1-schedules.test.ts`) pins exactly one effect across
+  the race and a recovery pass.
+
+  D2 also treats a `StaleFenceError` at sequence 0 like a conflict and confirms it by read-back.
+  If sequence 0 is present, the execution exists and has been fenced since, so the start
+  throws `ExecutionAlreadyExistsError`. If it is absent, the start retries once alone (for
+  example, a coalesced batch rejected because of a zombie's write) and then throws
+  `StorageWriteError`. The `acquireFence` JSDoc no longer suggests fencing a start. The
+  dispatcher path (`LocalWorkerRuntime.allocate`) still fences every dispatch, including a
+  first one. That is deliberate: a dispatch of an id that already exists is a takeover by
+  design (ADR 0004 redispatch), and that path's contract is at-least-once.
 - **A duplicate bootstrap in a coalesced batch aborts innocent writers in that batch.** The
   batch rejection that D2 guards the fresh START against also reaches any live execution whose
   envelope shared the batch: its journal records the write error and the run aborts. That is

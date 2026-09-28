@@ -211,6 +211,67 @@ describe("ADR 0103 — a duplicate caller-chosen-id start is refused before any 
     expect(app.seen).toHaveLength(0);
   });
 
+  it("L12 — a duplicate of an execution that has since been FENCED is 'already exists', not a storage failure", async () => {
+    // A fencing store checks the token before the slot, so an unfenced duplicate of a fenced
+    // execution is refused as stale, never as a conflict. Sequence 0 reads back, so it is the
+    // same typed refusal as any other duplicate — and nothing ran.
+    const store = new InMemoryAsyncEventStore();
+    const app = boot(store);
+    const first = await app.runtime.start(FLOW, {}, { executionId: "fenced-dup" });
+    await first.waitForCompletion();
+    await store.acquireFence("fenced-dup"); // a recovery pass / fenced wake since
+    const logBefore = await store.read("fenced-dup");
+    const seenBefore = app.seen.length;
+
+    const second = app.runtime.start(FLOW, {}, { executionId: "fenced-dup" });
+    await expect(second).rejects.toBeInstanceOf(ExecutionAlreadyExistsError);
+    await expect(second).rejects.toMatchObject({ cause: { name: "StaleFenceError" } });
+    expect(app.model).toHaveBeenCalledTimes(1);
+    expect(app.seen.length).toBe(seenBefore);
+    expect(await store.read("fenced-dup")).toEqual(logBefore);
+  });
+
+  it("L12 — a stale fence on an id nobody has written is a storage failure after one retry", async () => {
+    // A token was acquired for a fresh id (and its holder never wrote); this unfenced start
+    // cannot write sequence 0 and it does not exist — not a duplicate.
+    const store = new InMemoryAsyncEventStore();
+    const appends = vi.spyOn(store, "append");
+    const app = boot(store);
+    await store.acquireFence("pre-fenced");
+    const start = app.runtime.start(FLOW, {}, { executionId: "pre-fenced" });
+    await expect(start).rejects.toBeInstanceOf(StorageWriteError);
+    expect(appends).toHaveBeenCalledTimes(2);
+    expect(app.model).not.toHaveBeenCalled();
+    expect(app.seen).toHaveLength(0);
+    expect(await store.read("pre-fenced")).toHaveLength(0);
+  });
+
+  it("L12 — a coalesced batch: a FRESH id sharing a batch with a zombie's stale write still starts", async () => {
+    // The batch is all-or-nothing and rejects every caller with the zombie's StaleFenceError.
+    // Sequence 0 of the fresh id is absent, so the start retries alone and runs.
+    const inner = new InMemoryAsyncEventStore();
+    const app = boot(new CoalescingEventStore(inner));
+    const zombie = await app.runtime.start(FLOW, {}, { executionId: "zombie" });
+    await zombie.waitForCompletion();
+    await inner.acquireFence("zombie");
+    const stale: EventEnvelope = {
+      ...(await inner.read("zombie")).at(-1)!,
+      id: "zombie-99",
+      sequence: 99,
+    };
+
+    const [z, fresh] = await Promise.allSettled([
+      app.store.append(stale),
+      app.runtime.start(FLOW, {}, { executionId: "fresh-beside-zombie" }),
+    ]);
+    expect(z.status).toBe("rejected");
+    expect((z as PromiseRejectedResult).reason).toMatchObject({ name: "StaleFenceError" });
+    expect(fresh.status).toBe("fulfilled");
+    const handle = (fresh as PromiseFulfilledResult<Awaited<ReturnType<typeof app.runtime.start>>>)
+      .value;
+    expect((await handle.waitForCompletion()).status).toBe("completed");
+  });
+
   it("a non-conflict write failure at the bootstrap refuses the start with StorageWriteError, body unrun", async () => {
     const inner = new InMemoryAsyncEventStore();
     const failing = new Proxy(inner, {

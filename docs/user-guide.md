@@ -1642,7 +1642,7 @@ const app = defineConfig({
   timers: {
     store: new PostgresTimerStore(url), // same DB as the log — one backup, full kernel state
     schedules: [nightlyAudit],
-    fenced: true,                       // multi-node: K9.4 token per fire/start
+    fenced: true,                       // multi-node: K9.4 token per fire (starts are never fenced, ADR 0103 L12)
   },
 });
 ```

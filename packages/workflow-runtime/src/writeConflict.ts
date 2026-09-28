@@ -1,4 +1,8 @@
-import { DuplicateEnvelopeIdError, DuplicateSequenceError } from "@loom/event-runtime";
+import {
+  DuplicateEnvelopeIdError,
+  DuplicateSequenceError,
+  StaleFenceError,
+} from "@loom/event-runtime";
 
 /**
  * ADR 0103 — did the store refuse a write because A slot or id is already taken? Both
@@ -13,4 +17,18 @@ export function isWriteConflict(err: unknown): boolean {
   }
   const name = (err as { name?: unknown } | null)?.name;
   return name === "DuplicateSequenceError" || name === "DuplicateEnvelopeIdError";
+}
+
+/**
+ * ADR 0103 (L12) — did a fencing store refuse a write because the execution holds a newer
+ * token? At a bootstrap this is the other way a duplicate start is refused: the existing
+ * execution has been fenced (by a recovery pass, a fenced wake, or a start that fenced itself),
+ * so an unfenced or older-token sequence 0 loses on the fence before it can conflict on the
+ * slot. Like a conflict it says nothing about WHOSE write it was (a coalesced batch rejects
+ * every caller with a zombie's error), so `writeBootstrap` confirms it the same way. Matched by
+ * `name` as well as class, for the same reason as {@link isWriteConflict}.
+ */
+export function isStaleFence(err: unknown): boolean {
+  if (err instanceof StaleFenceError) return true;
+  return (err as { name?: unknown } | null)?.name === "StaleFenceError";
 }
