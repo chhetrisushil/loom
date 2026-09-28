@@ -187,7 +187,11 @@ store, the read-model plugin's shape (ADR 0058).
   redispatch rule. A loser that allocates between the winner's fence and its bootstrap makes
   the winner's bootstrap stale, so the winner never starts and the loser does. In no ordering
   is a live runner fenced out while nobody drives the execution; `worker-runtime-local`'s
-  `fencing.test.ts` pins the racing-first-dispatch case.
+  `fencing.test.ts` pins the racing-first-dispatch case. That argument holds PER ATTEMPT: a
+  retrying dispatcher (`LocalDispatcher` with `maxAttempts > 1`) counts a lost race
+  (`ExecutionAlreadyExistsError`) or a fenced-out attempt as failed and redispatches, and the
+  redispatch's new fence can still supersede a live holder (the two can ping-pong) — tracked
+  as follow-up L20, outside this ADR.
 - **Open: duplicate cross-node timer FIRES without `leases` supersede each other.** A fire is
   still fenced (`TimerService.fire` acquires a token before resuming), and a token acquired
   after another node's resume is durable fences that node out mid-body, after its effect —
