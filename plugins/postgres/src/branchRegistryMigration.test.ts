@@ -108,6 +108,35 @@ if (PG_URL === undefined) {
     return pool;
   }
 
+  /**
+   * Poll `pg_locks` until SOME backend other than `excludePid` holds a NOT GRANTED lock
+   * request on `table` — i.e. is genuinely blocked waiting for it, not merely "some time has
+   * passed" (review round 2, P3). Same technique `sharded.test.ts`'s
+   * "restores the caller's lock_timeout..." L10 test uses via `to_regclass`, factored out
+   * here since the L21 deadlock repro below needs the identical wait.
+   */
+  async function waitForBlockedOn(
+    admin: Pool,
+    table: string,
+    excludePid: number,
+    timeoutMs = 60_000
+  ): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const { rowCount } = await admin.query(
+        `SELECT 1 FROM pg_locks
+         WHERE locktype = 'relation' AND NOT granted AND pid <> $1
+           AND relation = to_regclass($2)`,
+        [excludePid, `${legacy}.${table}`]
+      );
+      if ((rowCount ?? 0) > 0) return;
+      if (Date.now() > deadline) {
+        throw new Error(`timed out waiting for a blocked lock request on ${table}`);
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+
   describe("L21 migration of a pre-L21 refs table", () => {
     it('converts name to COLLATE "C" in place, re-analyzes it, and pages index-only', async () => {
       const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
@@ -330,6 +359,8 @@ if (PG_URL === undefined) {
         // starts, so migration is guaranteed to block on `events` once it gets there.
         await holder.query("BEGIN");
         await holder.query("SELECT 1 FROM events LIMIT 1");
+        const holderPid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid"))
+          .rows[0]!.pid;
 
         const warnings: string[] = [];
         const pool = noticingPool(warnings);
@@ -337,13 +368,14 @@ if (PG_URL === undefined) {
         // ACCESS EXCLUSIVE on refs until COMMIT), then blocks on L10 (events, held by `holder`).
         const migration = migrate(pool);
 
-        // Step 3: once migration is blocked on `events` (comfortably longer than L21's own
-        // conversion of a 50k-row table takes), `holder` asks for `refs` too — which migration
-        // now holds exclusively. Two transactions, each waiting on a lock the OTHER holds: a
-        // real deadlock. `holder` started waiting on `events` BEFORE migration ever attempted
-        // it, so migration's own wait is the OLDER one and (per Postgres's deadlock detector)
+        // Step 3: wait until migration's backend is ACTUALLY blocked on `events` (a NOT
+        // granted lock request, polled — not a fixed sleep guessing how long L21's conversion
+        // of a 50k-row table takes) before `holder` asks for `refs` too — which migration now
+        // holds exclusively. Two transactions, each waiting on a lock the OTHER holds: a real
+        // deadlock. `holder` started waiting on `events` BEFORE migration ever attempted it,
+        // so migration's own wait is the OLDER one and (per Postgres's deadlock detector)
         // migration is the side whose statement receives the 40P01 — not `holder`'s.
-        await new Promise((r) => setTimeout(r, 300));
+        await waitForBlockedOn(admin, "events", holderPid);
         const holderBlocked = holder.query("SELECT 1 FROM refs LIMIT 1");
 
         // Migration must fail soft (D3), not throw — the deadlock resolves once its own
