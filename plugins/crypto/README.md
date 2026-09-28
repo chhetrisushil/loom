@@ -27,7 +27,9 @@ const snapshotStore = new EncryptingSnapshotStore(innerSnaps, keys, {
 });
 
 // …later, an erasure request:
-await shredSubject(keys, innerEvents, executionId, { reason: "gdpr-erasure" });
+// innerSnaps (RAW): the tombstone follows the folded tip — required when innerEvents can be
+// compacted (ADR 0106).
+await shredSubject(keys, innerEvents, executionId, { reason: "gdpr-erasure", snapshotStore: innerSnaps });
 // key destroyed; PAYLOAD_SHREDDED tombstoned; reads of the sensitive fields now throw.
 ```
 

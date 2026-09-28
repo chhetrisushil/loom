@@ -137,8 +137,16 @@ export async function reconstructMany(
     expected++;
   }
   if (hole === undefined && expected <= last) {
-    const next = (await events.readFrom(executionId, expected))[0];
-    if (next !== undefined) hole = { from: expected, through: next.sequence - 1 };
+    // Nothing in [expected, last] exists. If ANY event lies beyond it, those positions are a
+    // hole (it runs at least through `last`). One indexed tip read when the store has `head`;
+    // otherwise the first event of the tail, which is the unbounded fallback.
+    if (events.head !== undefined) {
+      const head = await events.head(executionId);
+      if (head !== null && head > last) hole = { from: expected, through: last };
+    } else {
+      const next = (await events.readFrom(executionId, expected))[0];
+      if (next !== undefined) hole = { from: expected, through: next.sequence - 1 };
+    }
   }
   if (hole !== undefined) {
     const from = hole.from;

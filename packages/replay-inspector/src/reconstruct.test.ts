@@ -317,4 +317,22 @@ describe("ADR 0106 — compacted history", () => {
       CompactedHistoryError
     );
   });
+
+  it("finds a hole ending the segment with one head read, never the tail", async () => {
+    const { events, snapshots } = await compacted();
+    let tailReads = 0;
+    const probing = {
+      read: events.read.bind(events),
+      readRange: events.readRange.bind(events),
+      head: events.head.bind(events),
+      readFrom: (id: string, from: number) => {
+        tailReads++;
+        return events.readFrom(id, from);
+      },
+    };
+    await expect(reconstructAt(probing, snapshots, EXEC, 3)).rejects.toThrow(CompactedHistoryError);
+    expect(tailReads).toBe(0);
+    // Past the tip is not a hole.
+    expect((await reconstructAt(probing, snapshots, EXEC, 50)).position).toBe(50);
+  });
 });

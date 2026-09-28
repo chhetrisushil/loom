@@ -17,8 +17,11 @@ import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 // subscription is a retained listener (a leak surface) and a source of load on the
 // writer path (IX-7 non-perturbation). The inspector never tails.
 
-/** The only event-log capability the inspector has: bounded, ordered reads. */
-export type ReadOnlyEventStore = Pick<EventStore, "read" | "readFrom" | "readRange">;
+/**
+ * The only event-log capability the inspector has: bounded, ordered reads, plus the optional
+ * O(1) tip (`head`) it uses to tell "past the tip" from "inside compacted history" (ADR 0106).
+ */
+export type ReadOnlyEventStore = Pick<EventStore, "read" | "readFrom" | "readRange" | "head">;
 
 /** The only snapshot capability the inspector has: point-in-time loads. */
 export type ReadOnlySnapshotStore = Pick<
@@ -143,6 +146,7 @@ export class CompactedHistoryError extends Error {
     readonly executionId: string,
     readonly position: number,
     readonly missingFrom: number,
+    /** The hole runs at least through here (exactly, unless found by the tip probe). */
     readonly missingThrough: number
   ) {
     super(

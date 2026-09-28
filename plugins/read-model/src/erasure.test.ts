@@ -82,6 +82,9 @@ const CREDULOUS: ReadModelDefinition = {
   },
 };
 
+/** No snapshots: these logs are never compacted, so the folded tip is the log head (ADR 0106). */
+const NO_SNAPSHOTS = { loadLatest: async () => null };
+
 async function boot(onShredded: "throw" | "tolerate") {
   const keys = new InMemoryKeyStore();
   const raw = new InMemoryAsyncEventStore();
@@ -112,7 +115,11 @@ describe("subject erasure and derived read-model rows (ADR 0092 D6)", () => {
     await service.catchUp([encrypting]);
     expect(await operatorsIn(service)).toEqual(["ana", "ana", "bo"]);
 
-    await shredSubject(keys, raw, "ana:1", { subjectId: "ana", executionIds: ["ana:1", "ana:2"] });
+    await shredSubject(keys, raw, "ana:1", {
+      subjectId: "ana",
+      executionIds: ["ana:1", "ana:2"],
+      snapshotStore: NO_SNAPSHOTS,
+    });
 
     // The erasure took: the LOG can no longer produce the name. Asserting this is what
     // stops the next assertion passing vacuously — "the rows are unchanged" is equally
@@ -128,7 +135,11 @@ describe("subject erasure and derived read-model rows (ADR 0092 D6)", () => {
   it("cannot be rebuilt through the default source: the scan throws", async () => {
     const { keys, raw, encrypting, service } = await boot("throw");
     await service.catchUp([encrypting]);
-    await shredSubject(keys, raw, "ana:1", { subjectId: "ana", executionIds: ["ana:1", "ana:2"] });
+    await shredSubject(keys, raw, "ana:1", {
+      subjectId: "ana",
+      executionIds: ["ana:1", "ana:2"],
+      snapshotStore: NO_SNAPSHOTS,
+    });
 
     // "Drop it and rebuild" is RM-2's whole promise, and after an erasure it is
     // unavailable on a strict source: the authoritative read fails loudly by design
@@ -142,7 +153,11 @@ describe("subject erasure and derived read-model rows (ADR 0092 D6)", () => {
   it("rebuilds through a tolerant source, and the erased rows are gone", async () => {
     const { keys, raw, encrypting, service } = await boot("tolerate");
     await service.catchUp([encrypting]);
-    await shredSubject(keys, raw, "ana:1", { subjectId: "ana", executionIds: ["ana:1", "ana:2"] });
+    await shredSubject(keys, raw, "ana:1", {
+      subjectId: "ana",
+      executionIds: ["ana:1", "ana:2"],
+      snapshotStore: NO_SNAPSHOTS,
+    });
 
     const report = await service.rebuild(ACTIONS.id, [encrypting]);
 
@@ -154,7 +169,11 @@ describe("subject erasure and derived read-model rows (ADR 0092 D6)", () => {
   it("purge erases the subject's rows without reading the log at all", async () => {
     const { keys, raw, encrypting, service } = await boot("throw"); // the STRICT source
     await service.catchUp([encrypting]);
-    await shredSubject(keys, raw, "ana:1", { subjectId: "ana", executionIds: ["ana:1", "ana:2"] });
+    await shredSubject(keys, raw, "ana:1", {
+      subjectId: "ana",
+      executionIds: ["ana:1", "ana:2"],
+      snapshotStore: NO_SNAPSHOTS,
+    });
 
     // No rebuild, so no scan, so the strict source that made the rebuild impossible two
     // cases up is irrelevant here: purge works over the ROWS, and the rows are plaintext.
@@ -178,7 +197,11 @@ describe("subject erasure and derived read-model rows (ADR 0092 D6)", () => {
   it("a credulous extractor rebuilds the placeholder INTO the cache", async () => {
     const { keys, raw, encrypting, service } = await boot("tolerate");
     await service.catchUp([encrypting]);
-    await shredSubject(keys, raw, "ana:1", { subjectId: "ana", executionIds: ["ana:1", "ana:2"] });
+    await shredSubject(keys, raw, "ana:1", {
+      subjectId: "ana",
+      executionIds: ["ana:1", "ana:2"],
+      snapshotStore: NO_SNAPSHOTS,
+    });
     await service.rebuild(CREDULOUS.id, [encrypting]);
 
     // Not a leak — the name is genuinely gone — but the rows survive erasure as

@@ -1838,7 +1838,8 @@ kept. `reclaimOrphans` also reclaims blobs nothing cites any more, which require
 archive. `roots` pins addresses held in your own tables (ADR 0055 D5–D7). The joint rule the perpetual-agents series fixed:
 *findings and their evidence are permanent; runs are archivable; raw telemetry is disposable.*
 Give the same kinds to `retention.pinnedEventTypes` so compaction keeps those events in place
-too (ADR 0106). An execution `pinned` pins is never compacted at all.
+too (ADR 0106): a pinned execution then compacts around its findings. (With no
+`pinnedEventTypes`, `lifecycle.compact` leaves an execution `pinned` pins uncompacted.)
 The whole pattern — schedule, carry state, claim-check, pin policy — is one declaration via
 `sentinelPreset()` (`@loom/plugin-sentinel`), and `loom new sentinel <name>` scaffolds it.
 
@@ -1858,7 +1859,9 @@ const snapshotStore = new EncryptingSnapshotStore(innerSnaps, keys, {
   sensitive: ["variables._input.ssn"],                // snapshots fold plaintext — cover them too (A1)
 });
 
-await shredSubject(keys, inner, executionId, { reason: "gdpr-erasure" });
+// `snapshotStore` is the RAW one: the tombstone follows the folded tip, which a compacted log's
+// last event can sit below (ADR 0106). Required when `inner` can truncatePrefix.
+await shredSubject(keys, inner, executionId, { reason: "gdpr-erasure", snapshotStore: innerSnaps });
 // key destroyed; PAYLOAD_SHREDDED tombstoned at shred time (A3); any decrypting read now
 // throws PayloadShreddedError — loud, never a silent divergence.
 ```

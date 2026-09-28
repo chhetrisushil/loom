@@ -357,7 +357,7 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
 
     // The security property compaction must not break: destroying the key erases the subject
     // EVERYWHERE, the compaction snapshot included.
-    await shredSubject(app.keys, app.rawEvents, "ec-1");
+    await shredSubject(app.keys, app.rawEvents, "ec-1", { snapshotStore: app.rawSnaps });
     await expect(app.snapshotStore.loadLatest("ec-1")).rejects.toThrow(PayloadShreddedError);
     await expect(app.eventStore.read("ec-1")).rejects.toThrow(PayloadShreddedError);
   });
@@ -434,7 +434,7 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
       input: { n: SECRET },
     });
 
-    await shredSubject(app.keys, rawArchive, "er-1");
+    await shredSubject(app.keys, rawArchive, "er-1", { snapshotStore: rawArchiveSnaps });
     await expect(archive.eventStore.read("er-1")).rejects.toThrow(PayloadShreddedError);
     await expect(archive.snapshotStore.loadLatest("er-1")).rejects.toThrow(PayloadShreddedError);
   });

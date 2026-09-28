@@ -259,8 +259,8 @@ non-zero.
 used to truncate an app's `FINDING_RECORDED` events away, since the fold ignores them and so
 the checkpoint did not carry them. `LogLifecycle` now takes `pinnedEventTypes` (the same list
 given to this sweep) and keeps those events in place below the checkpoint
-(`EventStore.truncatePrefixKeeping`, SPI 1.5.0). An execution the `pinned` predicate pins
-is never compacted at all. Kept events move the checkpoint lookup (ADR 0106 D2/D4, the tip
+(`EventStore.truncatePrefixKeeping`, SPI 1.5.0). Compaction consults the `pinned` predicate
+only when no kinds are declared (ADR 0106 D3); D1 above governs retention. Kept events move the checkpoint lookup (ADR 0106 D2/D4, the tip
 rule): a gap-free log with more than the bootstrap was never compacted; a gapped log's
 checkpoint is the lowest snapshot in `[gap, tip]`, where `gap` is its highest missing
 sequence (for a log with no kept events, `events[1].sequence − 1`, as above); and a

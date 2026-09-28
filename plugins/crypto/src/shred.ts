@@ -1,5 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
+import { type EventStore, headOf } from "@loom/event-runtime";
 import type { KeyStore } from "./keystore";
 
 export interface ShredOptions {
@@ -19,6 +19,28 @@ export interface ShredOptions {
    * wrapper wraps; the append carries a monotonic sequence you supply.
    */
   tombstoneSequenceOf?: (executionId: string) => Promise<number>;
+  /**
+   * ADR 0106 — the snapshot store beside `rawEventStore`, so the default tombstone sequence
+   * is the FOLDED tip + 1: `max(log head, latest snapshot) + 1`. A compacted log's last event
+   * can sit BELOW its checkpoint (`[0]` after compacting through the tip), and a tombstone at
+   * `head + 1` then lands in or below the checkpoint's slot — the next compaction deletes the
+   * A3 evidence, and a gap-free `[0, 1]` reads as never compacted. REQUIRED (or
+   * `tombstoneSequenceOf`) when `rawEventStore` can `truncatePrefix`.
+   */
+  snapshotStore?: {
+    loadLatest(executionId: string): Promise<{ sequence: number } | null>;
+  };
+}
+
+/** The next sequence after the folded tip — or the log head, on a store that never compacts. */
+async function nextSequence(
+  store: EventStore,
+  executionId: string,
+  snapshots: ShredOptions["snapshotStore"]
+): Promise<number> {
+  const head = (await headOf(store, executionId)) ?? -1;
+  const checkpoint = (await snapshots?.loadLatest(executionId))?.sequence ?? -1;
+  return Math.max(head, checkpoint) + 1;
 }
 
 /**
@@ -44,6 +66,17 @@ export async function shredSubject(
 ): Promise<void> {
   const subjectId = options.subjectId ?? executionId;
   const executionIds = options.executionIds ?? [executionId];
+  // Refused BEFORE the key is destroyed: nothing irreversible happens on a call that cannot
+  // place its tombstone safely.
+  if (
+    options.tombstoneSequenceOf === undefined &&
+    options.snapshotStore === undefined &&
+    rawEventStore.truncatePrefix !== undefined
+  ) {
+    throw new TypeError(
+      "shredSubject: this event store can be compacted (truncatePrefix), so the tombstone's sequence must follow the FOLDED tip — pass `snapshotStore` (the snapshot store beside it) or `tombstoneSequenceOf`. After compaction the log's last event can sit below the checkpoint, and a tombstone there would be deleted by the next compaction (ADR 0106)."
+    );
+  }
 
   // 1. Destroy the key FIRST — the erasure is effective even if a tombstone
   //    append later fails (a retry re-appends; the data is already unrecoverable).
@@ -54,7 +87,7 @@ export async function shredSubject(
     const sequence =
       options.tombstoneSequenceOf !== undefined
         ? await options.tombstoneSequenceOf(exId)
-        : (await rawEventStore.read(exId)).length; // next sequence after the tip
+        : await nextSequence(rawEventStore, exId, options.snapshotStore);
     const tombstone: EventEnvelope = {
       id: `${exId}-shred-${sequence}`,
       workflowId: "",

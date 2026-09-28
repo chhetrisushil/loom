@@ -33,6 +33,15 @@ export interface EraseCoordinatorOptions {
   index: SubjectIndex;
   eventStore: Pick<EventStore, "read" | "append">;
   shred: Shredder;
+  /**
+   * ADR 0106 — where compaction checkpoints live. A compacted execution's log no longer holds
+   * its prefix (`[0]` after compacting through the tip), so folding the log alone reads a
+   * TERMINAL execution as still running and a parked erasure would wait for it forever. With
+   * this, liveness folds on the latest snapshot. Pass it whenever the log can be compacted.
+   */
+  snapshotStore?: {
+    loadLatest(executionId: string): Promise<{ sequence: number; state: ExecutionState } | null>;
+  };
 }
 
 export interface EraseSubjectResult {
@@ -114,12 +123,26 @@ export class EraseCoordinator {
     for (const executionId of executions) {
       const events = await this.options.eventStore.read(executionId);
       if (events.length === 0) continue; // deleted by retention — nothing to protect
-      const state = foldEvents(events, { executionId });
+      const snapshot = (await this.options.snapshotStore?.loadLatest(executionId)) ?? null;
+      const state =
+        snapshot !== null
+          ? foldEvents(
+              events.filter((e) => e.sequence > snapshot.sequence),
+              // A pre-ADR-0106 checkpoint may carry a blank identity: fill it, as the kernel does.
+              {
+                ...snapshot.state,
+                executionId: snapshot.state.executionId || executionId,
+                workflowId: snapshot.state.workflowId || (events[0]?.workflowId ?? ""),
+              }
+            )
+          : foldEvents(events, { executionId });
       if (!TERMINAL_STATUS.has(state.status)) live.push(executionId);
     }
     return live;
   }
 
+  // `prior.length` is the next sequence only because a reserved stream is never compacted:
+  // `LogLifecycle.compact` refuses one (ADR 0106).
   private async appendPending(subjectId: string, tenant: string): Promise<void> {
     const prior = await this.options.eventStore.read(ERASURE_STREAM);
     await this.options.eventStore.append({

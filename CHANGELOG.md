@@ -33,8 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Compaction deleted pinned events (ADR 0055 D1).** `LogLifecycle` takes
     `pinnedEventTypes` (`defineConfig({ durability: { retention: { pinnedEventTypes } } })`,
     validated at boot) and keeps those events in place. Non-strings and every kernel-written
-    kind are refused, including `EXECUTION_RECOVERED` and `EffectInDoubtResolved`. An execution
-    the `pinned` predicate pins is never compacted.
+    kind are refused, including `EXECUTION_RECOVERED` and `EffectInDoubtResolved`. `compact`
+    consults the `pinned` predicate only when no kinds are declared. With kinds declared, a
+    pinned execution (the documented sentinel setup pins by the same kinds) compacts around
+    them. Reserved control streams are refused.
+  - **The shred tombstone landed in the checkpoint's slot.** `shredSubject` placed
+    `PAYLOAD_SHREDDED` at `read().length`, at or below a compacted log's checkpoint. The next
+    compaction then deleted the A3 evidence, or the log read as never compacted. It now follows
+    the folded tip. **Breaking:** on a store that can `truncatePrefix`, pass the raw
+    `snapshotStore` (or `tombstoneSequenceOf`). Otherwise it refuses, before the key is
+    destroyed.
+  - **Erasure waited forever on a compacted terminal execution.** `EraseCoordinator` folded
+    the log alone. It now takes `snapshotStore` (`defineConfig` wires it).
   - **The tip rule.** When compaction keeps events, it never removes the log's tip. A
     checkpoint is therefore always the log's highest missing sequence, a gap-free log was never
     compacted, and no reader needs a "checkpoint above the tip" special case (except the
@@ -45,7 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decorator forwards it; the hash-chained store refuses it, as it refuses `truncatePrefix`.
   **A store without it can never compact past a log's first pinned event**, so a long-lived
   execution that records a finding early keeps an unbounded replay tail there. `compact` warns
-  on every such pass (`onWarn`). The conformance kit now checks `truncatePrefix` and
+  (`onWarn`) once per execution. The conformance kit now checks `truncatePrefix` and
   `truncatePrefixKeeping`.
 
   Readers updated:
@@ -54,7 +64,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     checkpoint-only refs, and a child forked from a compacted parent was refused.
   - `liveQuery` checks a delta's whole span.
   - The replay inspector refuses a position inside compacted history (`CompactedHistoryError`)
-    instead of folding across the gap.
+    instead of folding across the gap. It probes past the segment with one `head` read.
+  - The content sweep reads a forked child's seed directly (`metadata.forkSequence`,
+    `loadAt`).
 
 ### Changed
 

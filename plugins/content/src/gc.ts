@@ -133,8 +133,10 @@ export interface ContentSweepOptions {
    * gapped log's checkpoint sits at its highest missing sequence `gap`; a bootstrap-only log
    * was compacted through its tip. For each compacted execution the sweep pins every ref in:
    *  - the COMPACTION CHECKPOINT: the lowest snapshot in `[gap, tip]` — exactly `gap` for a
-   *    compaction's own, the fork seed for a child forked from a compacted parent — or, for a
-   *    bootstrap-only log, its latest snapshot. `fork()` from any point after it loads that
+   *    compaction's own, the fork seed (`metadata.forkSequence`, one `loadAt`) for a child
+   *    forked from a compacted parent — or, for a bootstrap-only log, its latest snapshot.
+   *    ANY snapshot at or above `gap` covers a lost checkpoint, matching `LogLifecycle.compact`,
+   *    which accepts a base at or above the gap; below `gap` nothing does. `fork()` from any point after it loads that
    *    checkpoint, so its refs stay reachable even after a later snapshot overwrote them.
    *  - the LATEST snapshot, which resume loads.
    *
@@ -204,6 +206,11 @@ export interface ContentSweepOptions {
 /** Structural view of a snapshot store: just `loadLatest` (no snapshot-runtime dependency). */
 export interface SnapshotLookup {
   loadLatest(executionId: string): Promise<{ sequence: number; state: unknown } | null>;
+  /** Exact-sequence load; used for a forked child's seed (optional — falls back to a walk). */
+  loadAt?(
+    executionId: string,
+    sequence: number
+  ): Promise<{ sequence: number; state: unknown } | null>;
   loadLatestBefore(
     executionId: string,
     sequence: number
@@ -366,11 +373,27 @@ export async function sweepUnpinnedContent(
           if (latest !== null && latest.sequence >= 1) covered = true;
           continue;
         }
-        // The checkpoint: the LOWEST snapshot in [gap, tip]. A compaction's own sits exactly
-        // at `gap` (one read). A child forked from a compacted parent copies the gap but its
-        // lowest snapshot is its seed at the fork point, above the gap — walk down to it.
+        // The checkpoint: the LOWEST snapshot in [gap, tip] — any snapshot at or above the gap
+        // covers a lost checkpoint, exactly as `compact` accepts a base at or above it. A
+        // compaction's own sits exactly at `gap` (one read). A child forked from a compacted
+        // parent copies the gap, and its lowest snapshot is its fork seed, whose sequence the
+        // copied envelopes record (`metadata.forkSequence`): one exact read. Only a log with
+        // neither walks the snapshots down from the tip.
         let checkpoint = await snapshots.loadLatestBefore(executionId, gap);
-        if (checkpoint === null || checkpoint.sequence !== gap) {
+        const forkSequence = (events[0]!.metadata as { forkSequence?: unknown } | undefined)
+          ?.forkSequence;
+        if (
+          (checkpoint === null || checkpoint.sequence !== gap) &&
+          typeof forkSequence === "number" &&
+          forkSequence >= gap
+        ) {
+          const seed =
+            snapshots.loadAt !== undefined
+              ? await snapshots.loadAt(executionId, forkSequence)
+              : await snapshots.loadLatestBefore(executionId, forkSequence);
+          checkpoint = seed !== null && seed.sequence === forkSequence ? seed : checkpoint;
+        }
+        if (checkpoint === null || checkpoint.sequence < gap) {
           checkpoint = null;
           let s = await snapshots.loadLatestBefore(executionId, tipSequence);
           while (s !== null && s.sequence >= gap) {
