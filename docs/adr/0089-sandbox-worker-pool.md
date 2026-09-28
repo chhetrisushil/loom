@@ -75,9 +75,12 @@ is why the pool is worth having even for a caller that does not care about
 concurrency.
 
 The grace (default 2000 ms) exists because the in-VM clock is the *primary*
-guard and this is the backstop. It must leave room for the legitimate work the
-clock does not cover: marshalling a `maxOutputBytes`-sized result (~25 ms at
-4 MiB).
+guard and this is the backstop. The hard-kill clock runs from the instant the
+in-VM clock is armed to the moment the worker marks the run finished, so the
+grace must leave room only for what sits between the script's last op and that
+mark: the in-VM `dump` of the result (which can run the script's own `toJSON`)
+and disposing the runtime. Encoding the result for transfer happens after the
+mark and is not charged.
 
 **Worker startup is excluded from the deadline**, which is armed only after the
 worker acknowledges its WASM module compiled. `wallClockMs` bounds the script;
@@ -97,6 +100,22 @@ itself (`evalInFreshRuntime`'s `onScriptStart`), so the two clocks share one
 origin. The worker used to stamp its own start before creating the runtime and
 seeding the input, and a 16 MiB input then came back `limitExceeded { wallClock }`
 from worker mode for a trivial script in-process mode completed.
+
+#### The uncharged phases are bounded by startup liveness
+
+Excluding a phase from the script's budget does not leave it unbounded. Every
+phase before the in-VM clock is armed — the worker being scheduled, parsing the
+input, creating the runtime, seeding the input — is bounded by the pool's
+startup-liveness window: a run that has not *started* within
+`wallClockMs + hardKillGraceMs + startupLivenessMs` (default 10 s past the
+budget) has its worker terminated and replaced, and fails with
+`SandboxWorkerStartupError`. That failure is deliberately **not** a typed
+channel. `limitExceeded` is recorded as the script's outcome and routes to
+drift-repair, and nothing the script did explains a worker that never started
+it. It is a named error class instead, so retry middleware can tell it apart
+from a script failure — and because it is not a `TypedFailure`,
+`retryMiddleware`'s default already retries it. How large an input may be is a
+separate question (an input-size ceiling), not this backstop's job.
 
 ### D5 — Payloads cross as transferred JSON bytes, not structured clones
 

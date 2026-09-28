@@ -58,10 +58,13 @@ export interface SandboxWorkers {
    * Grace past `wallClockMs` before a worker is terminated outright. Default
    * 2000 ms. The in-VM wall clock is a SOFT bound — it is only checked when
    * QuickJS invokes the interrupt handler, so a script allocating heavily
-   * between callbacks runs past it. This is the backstop that ends that class,
-   * so it must still leave room for the legitimate work the clock does not
-   * cover: marshalling a `maxOutputBytes`-sized result, and the WASM compile on
-   * a cold worker.
+   * between callbacks runs past it. This is the backstop that ends that class.
+   * It is measured from the same instant as the in-VM clock, and it stops when
+   * the worker marks the run finished, so the grace need only cover the in-VM
+   * `dump` of the result and disposing the runtime. The WASM compile on a cold
+   * worker, input parse/seeding, and encoding the result afterwards are not
+   * charged to it; they are bounded by the pool's startup-liveness window
+   * instead (`SandboxWorkerStartupError`).
    */
   hardKillGraceMs?: number;
 }

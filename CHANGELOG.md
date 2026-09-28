@@ -102,6 +102,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stop. One of the two causes of the full-suite "survives a hard kill" flake; the other was
   the test asserting a 100 ms wall budget for its follow-up run, and is fixed in the test.
 
+- **`@loom/plugin-sandbox`: a worker that never starts a run now fails with a named
+  `SandboxWorkerStartupError`** (L13 review). The phases excluded from the script's budget
+  (worker scheduling, input parse, runtime creation, seeding) were already bounded by the
+  pool's startup-liveness window, but the failure was a plain `Error`, indistinguishable
+  from any other. It is now `SandboxWorkerStartupError` (`waitedMs`, `limitMs`), exported,
+  and deliberately not a `TypedFailure`: it is the environment failing, not the script, so
+  it must not reach `limitExceeded`/drift-repair, and `retryMiddleware`'s default retries it.
+  The window is configurable as `SandboxWorkerPoolOptions.startupLivenessMs` (default
+  10 000 ms, unchanged). Also: a worker whose run threw before starting now stamps the run id
+  with `RUN_FINISHED`, so the parent recognises the finish as its own.
+
 - **`@loom/plugin-postgres`: `appendBatch` refused a `null` payload** (backlog L16). The bulk
   insert decoded its batch with `jsonb_to_recordset`, which maps a JSON `null` field to SQL
   NULL, so `payload JSONB NOT NULL` rejected the kernel's status-only `EXECUTION_RESUMED`
