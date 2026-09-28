@@ -1,6 +1,6 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import type { EventStore } from "@loom/event-runtime";
-import { foldEvents } from "@loom/replay-vm";
+import { foldEvents, normalizeSnapshotState } from "@loom/replay-vm";
 import { assertSnapshotIdentity } from "@loom/snapshot-runtime";
 import { DEFAULT_TENANT, type SubjectIndex } from "./SubjectIndex";
 
@@ -137,8 +137,10 @@ export class EraseCoordinator {
           ? foldEvents(
               events.filter((e) => e.sequence > snapshot.sequence),
               // A pre-ADR-0106 checkpoint may carry a blank identity: fill it, as the kernel does.
+              // A pre-1.21.0 snapshot may read `failed` for a caught step failure: repair it
+              // (ADR 0105), or a live execution would read terminal and be shredded.
               {
-                ...snapshot.state,
+                ...normalizeSnapshotState(snapshot.state),
                 executionId: snapshot.state.executionId || executionId,
                 workflowId: snapshot.state.workflowId || (events[0]?.workflowId ?? ""),
               }
