@@ -107,19 +107,68 @@ describe("createA2AClientEffect", () => {
     expect(peer.requests).toEqual(["POST /tasks/send", "GET /tasks/t1"]);
   });
 
-  it("encodes a peer-supplied task id before polling for it", async () => {
-    // A peer's `id` goes straight into the poll URL. Unencoded, `../admin` would be collapsed
-    // by URL dot-segment normalization into a request for a completely different route.
-    const weirdId = "../admin";
-    const done = { id: weirdId, status: "completed", artifacts: [] };
-    peer = await startPeer({ id: weirdId }, done);
-    const effect = createA2AClientEffect(peer.url, { pollIntervalMs: 1 });
+  describe("task id encoding (minimal escaping, not full encodeURIComponent)", () => {
+    // Every loom task id contains `:` (`A2APeerClient` sets
+    // `task.id = `${executionId}:${stepId}``, and `TenantScoped` uses `:` as its own separator).
+    // `encodeURIComponent` would turn that into `%3A` on the wire — fine against a NEW
+    // `A2AServer` (it decodes), but a 404 against an OLD one, or any third-party peer, that does
+    // not. The client must escape only what breaks a single path segment (`/`, `?`, `#`, `%`)
+    // and leave everything else — `:` included — byte-identical.
 
-    await expect(effect.execute(task, ctx)).resolves.toEqual(done);
-    expect(peer.requests).toEqual([
-      "POST /tasks/send",
-      `GET /tasks/${encodeURIComponent(weirdId)}`,
-    ]);
+    it("(a) an id containing ':' polls unencoded: GET /tasks/exec:step", async () => {
+      const weirdId = "exec:step";
+      const done = { id: weirdId, status: "completed", artifacts: [] };
+      peer = await startPeer({ id: weirdId }, done);
+      const effect = createA2AClientEffect(peer.url, { pollIntervalMs: 1 });
+
+      await expect(effect.execute(task, ctx)).resolves.toEqual(done);
+      expect(peer.requests).toEqual(["POST /tasks/send", `GET /tasks/${weirdId}`]);
+    });
+
+    it("(a) a new client resolves the task against an OLD server that does no decoding", async () => {
+      // Stands in for a released `A2AServer` (or any third-party A2A peer) from before
+      // `GET /tasks/:id` learned to `decodeURIComponent` its path segment: it matches the route
+      // on the RAW, unescaped id it was given at submit time.
+      const weirdId = "exec:step";
+      const done = { id: weirdId, status: "completed", artifacts: [] };
+      const oldServer = http.createServer((req, res) => {
+        if (req.url === "/tasks/send") {
+          req.resume();
+          req.on("end", () => {
+            res.writeHead(202, { "content-type": "application/json" });
+            res.end(JSON.stringify({ id: weirdId }));
+          });
+          return;
+        }
+        if (req.url === `/tasks/${weirdId}`) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify(done));
+          return;
+        }
+        res.writeHead(404).end();
+      });
+      await new Promise<void>((resolve) => oldServer.listen(0, "127.0.0.1", resolve));
+      const { port } = oldServer.address() as AddressInfo;
+      try {
+        const effect = createA2AClientEffect(`http://127.0.0.1:${port}`, { pollIntervalMs: 1 });
+        await expect(effect.execute(task, ctx)).resolves.toEqual(done);
+      } finally {
+        oldServer.closeAllConnections();
+        await new Promise<void>((resolve) => oldServer.close(() => resolve()));
+      }
+    });
+
+    it("(b) '../admin' is still escaped: GET /tasks/..%2Fadmin", async () => {
+      // `/` still must be escaped — otherwise URL dot-segment normalization would collapse
+      // `../admin` into a request for a completely different route.
+      const weirdId = "../admin";
+      const done = { id: weirdId, status: "completed", artifacts: [] };
+      peer = await startPeer({ id: weirdId }, done);
+      const effect = createA2AClientEffect(peer.url, { pollIntervalMs: 1 });
+
+      await expect(effect.execute(task, ctx)).resolves.toEqual(done);
+      expect(peer.requests).toEqual(["POST /tasks/send", "GET /tasks/..%2Fadmin"]);
+    });
   });
 
   describe("a malformed send answer", () => {

@@ -1,12 +1,14 @@
 import { flow$, handler$, step$ } from "@loom/core";
 import type { EventEnvelope } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
+import type { EffectContext } from "@loom/effect-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
+import { createA2AClientEffect } from "./A2AClientEffect";
 import { createA2AServer } from "./A2AServer";
 import type { A2AServer } from "./A2AServer";
 import type { A2ATask, A2ATaskResult } from "./types";
@@ -191,6 +193,39 @@ describe("createA2AServer", () => {
 
     expect(result?.status).toBe("completed");
     expect(result?.id).toBe(weirdId);
+  });
+
+  it("(c) round-trips a task id containing ':' through the real client, unencoded on the wire", async () => {
+    // `:` is not one of the characters `createA2AClientEffect` escapes (see its
+    // `encodeTaskIdSegment` — full `encodeURIComponent` would break wire compatibility with a
+    // server that has not learned to decode). This proves the pair still works end to end: the
+    // server never sees anything but the exact id it was given at submit time.
+    server = createA2AServer(
+      makeRuntime(),
+      echoFlow,
+      { name: "Echo Agent", version: "1.0.0", capabilities: {}, skills: [] },
+      { port: 0 }
+    );
+    await server.start();
+
+    const weirdId = "exec-1:step-1";
+    const task: A2ATask = {
+      id: weirdId,
+      message: { role: "user", parts: [{ type: "text", text: "hello" }] },
+    };
+    const ctx: EffectContext = {
+      executionId: "e",
+      workflowId: "w",
+      stepId: "s",
+      attempt: 1,
+      emit: () => {},
+    };
+
+    const effect = createA2AClientEffect(server.url, { pollIntervalMs: 10 });
+    const result = await effect.execute(task, ctx);
+
+    expect(result.status).toBe("completed");
+    expect(result.id).toBe(weirdId);
   });
 
   it("returns 404 for unknown tasks", async () => {

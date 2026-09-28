@@ -63,10 +63,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before. Found as a full-suite load flake: `peerTaint.test.ts` spent ~500 ms of each test in
   that sleep. Review follow-ups: a non-object or otherwise malformed send answer (a bare string,
   `null`, or a terminal task with no `id`) now throws a clear `A2A send error: malformed answer`
-  instead of a bare `TypeError`; and a peer-supplied task id is percent-encoded before it is
-  used to build the poll URL (and decoded again by `A2AServer`'s `GET /tasks/:id` route), so an
-  id containing `/` can no longer be collapsed by URL normalization into a request for a
-  different route.
+  instead of a bare `TypeError`; and a peer-supplied task id has its `/`, `?`, `#` and `%`
+  characters escaped before it is used to build the poll URL (and `A2AServer`'s `GET /tasks/:id`
+  route decodes them again), so an id containing `/` can no longer be collapsed by URL
+  normalization into a request for a different route. Deliberately NOT a full
+  `encodeURIComponent`: every loom task id contains `:` (`A2APeerClient` sets
+  `task.id = `${executionId}:${stepId}``), and escaping it would send `exec%3Astep` on the wire —
+  a 404 against an older, non-decoding `A2AServer` (or third-party peer) during a rolling
+  upgrade. Minimal escaping keeps that byte-identical while still closing the path-traversal gap.
 
 - **`ShardedEventStore` over Postgres skipped execution ids when paging** (backlog L10,
   [ADR 0108](docs/adr/0108-execution-id-order-and-fail-soft-migrations.md); EventStore SPI
