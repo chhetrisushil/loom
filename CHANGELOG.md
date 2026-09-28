@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Two retrying dispatchers ping-ponged one execution, re-running its step on every bounce**
+  (backlog L20, [ADR 0004 amendment](docs/adr/0004-failure-recovery.md); from the L12 review of
+  [ADR 0103](docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md)). With `maxAttempts > 1`,
+  `LocalDispatcher` counted a lost start race (`ExecutionAlreadyExistsError`) or a fenced-out
+  attempt (`StorageWriteError` caused by `StaleFenceError`) as a failed attempt and
+  redispatched; the redispatch's fence superseded the healthy holder, which did the same. A
+  one-step flow's effect ran 5–6 times on a duplicate dispatch (18 under
+  `SupervisingDispatcher({ maxRestarts: 2 })`), past ADR 0004's "the interrupted step may run
+  twice". New `isSupersededRefusal(err, executionId)` and `ExecutionSupersededError` in
+  `@loom/worker-runtime`; `LocalDispatcher` and `SupervisingDispatcher` rethrow such a refusal
+  without retrying (and without tripping the circuit). It must name THIS execution, so a
+  coalesced batch's stale fence for another execution, and every other storage error, are
+  still retried. The HTTP worker answers it `409 { code: "superseded" }` instead of an opaque
+  500, and `RemoteWorkerRuntime` / `CloudRunWorkerRuntime` rethrow it as
+  `ExecutionSupersededError`. Now 1 effect (race) / 2 (after bootstrap). Defaults
+  (`maxAttempts: 1`, `maxRestarts: 0`) were already safe.
+
 - **`ShardedEventStore` over Postgres skipped execution ids when paging** (backlog L10,
   [ADR 0108](docs/adr/0108-execution-id-order-and-fail-soft-migrations.md); EventStore SPI
   **1.5.0 → 2.0.0, MAJOR**: `checkCompatibility` refuses a `1.x` store). `listExecutionsPage` promised "lexicographic" order, which names no

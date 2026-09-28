@@ -1,4 +1,8 @@
-import type { ExecutionResult } from "@loom/worker-runtime";
+import {
+  type ExecutionResult,
+  ExecutionSupersededError,
+  isSupersededRefusal,
+} from "@loom/worker-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { RemoteWorkerRuntime } from "./RemoteWorkerRuntime";
 
@@ -103,5 +107,31 @@ describe("RemoteWorkerRuntime", () => {
       const worker = new RemoteWorkerRuntime("http://worker.local", { fetchImpl });
       await expect(worker.cancel("e1")).resolves.toBe(false);
     });
+  });
+});
+
+describe("RemoteWorkerRuntime — superseded refusals (L20)", () => {
+  const p = { executionId: "e1", workflowId: "wf", flowId: "wf", input: {} };
+  const reply = (status: number, body: string) =>
+    vi.fn(async () => ({ ok: false, status, text: async () => body, json: async () => ({}) }));
+
+  it("maps 409 `superseded` to ExecutionSupersededError", async () => {
+    const worker = new RemoteWorkerRuntime("http://w", {
+      fetchImpl: reply(409, JSON.stringify({ error: "execution superseded", code: "superseded" })),
+    });
+    const err = await worker
+      .execute(await worker.allocate({ executionId: "e1" }), p)
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(ExecutionSupersededError);
+    expect(isSupersededRefusal(err, "e1")).toBe(true);
+  });
+
+  it("leaves any other 409 an ordinary failure", async () => {
+    const worker = new RemoteWorkerRuntime("http://w", { fetchImpl: reply(409, "conflict") });
+    const err = await worker
+      .execute(await worker.allocate({ executionId: "e1" }), p)
+      .catch((e) => e);
+    expect(isSupersededRefusal(err, "e1")).toBe(false);
+    expect(String(err)).toMatch(/409 conflict/);
   });
 });

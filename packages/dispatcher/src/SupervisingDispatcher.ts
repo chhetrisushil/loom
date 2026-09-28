@@ -1,4 +1,8 @@
-import type { ExecutionPackage, ExecutionResult } from "@loom/worker-runtime";
+import {
+  type ExecutionPackage,
+  type ExecutionResult,
+  isSupersededRefusal,
+} from "@loom/worker-runtime";
 import type { DispatchMetadata, DispatcherHealth, ExecutionDispatcher } from "./types";
 
 export interface CircuitPolicy {
@@ -12,7 +16,10 @@ export interface CircuitPolicy {
 
 export interface SupervisionPolicy {
   /** Restart a *throwing* dispatch up to N extra times (default 0). A returned
-   *  "failed" result is a normal outcome, not a restartable error. */
+   *  "failed" result is a normal outcome, not a restartable error — and neither is a
+   *  refusal because another holder owns the execution ({@link isSupersededRefusal},
+   *  L20): it is rethrown at once, without a restart and without counting against the
+   *  circuit, because restarting it would fence out the holder that won. */
   maxRestarts?: number;
   /** Base backoff between restarts, in ms (default 0). */
   backoffMs?: number;
@@ -81,6 +88,8 @@ export class SupervisingDispatcher implements ExecutionDispatcher {
         this.recordSuccess(key);
         return result;
       } catch (err) {
+        // L20 — superseded, not failed: not restartable, and not the target's fault.
+        if (isSupersededRefusal(err, pkg.executionId)) throw err;
         lastErr = err;
         if (attempt < maxRestarts) await this.sleep(base * factor ** attempt);
       }

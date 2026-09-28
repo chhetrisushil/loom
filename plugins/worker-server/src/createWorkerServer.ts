@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import * as http from "node:http";
 import { BadRequestError, exposeError } from "@loom/core";
-import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
+import {
+  type ExecutionPackage,
+  type WorkerRuntime,
+  isSupersededRefusal,
+} from "@loom/worker-runtime";
 
 export interface WorkerServerOptions {
   /** Port to listen on. 0 (default) picks a free port — read `.port` after start. */
@@ -124,6 +128,19 @@ export function createWorkerServer(
           try {
             const result = await worker.execute(lease, pkg);
             json(res, 200, result);
+          } catch (err) {
+            // L20 — "another holder owns this execution" is not an internal error: it is a
+            // settled outcome the caller must NOT redispatch (a redispatch fences out the
+            // winner and the two ping-pong). A 500 would hide it behind "internal error", so
+            // it gets its own status and a stable code that `RemoteWorkerRuntime` maps back
+            // to `ExecutionSupersededError`. Nothing internal is exposed: the id is the
+            // caller's own.
+            if (!isSupersededRefusal(err, pkg.executionId)) throw err;
+            json(res, 409, {
+              error: "execution superseded",
+              code: "superseded",
+              executionId: pkg.executionId,
+            });
           } finally {
             await worker.release(lease);
           }

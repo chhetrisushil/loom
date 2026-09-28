@@ -6,3 +6,4 @@ export type {
   WorkerRequest,
   WorkerRuntime,
 } from "./types";
+export { ExecutionSupersededError, isSupersededRefusal } from "./superseded";

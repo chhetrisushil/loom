@@ -102,3 +102,57 @@ Per [ADR 0083](0083-second-consumer-rule.md), it waits for a second, unrelated c
 **Positioning consequence.** Loom has *in-process* supervision, not *durable* supervision.
 That is an honest thing to say out loud: a dead worker is handled; a dead supervisor is a
 deployment concern, the same as it is for any library rather than a hosted control plane.
+
+---
+
+## Amendment (2026-09-28) — a superseded dispatch is not a failed attempt (L20)
+
+"An attempt that throws is a failed attempt" was too broad. Two throws mean *another holder
+owns this execution*, not *this attempt failed*:
+
+- `ExecutionAlreadyExistsError` — a start lost the sequence-0 race ([ADR 0103](0103-durable-bootstrap-for-caller-chosen-ids.md));
+- `StaleFenceError`, bare or as the `cause` of a `StorageWriteError` — a newer `acquireFence`
+  (another dispatch, a recovery pass, a fenced wake, a cancel) superseded this attempt's token.
+
+Redispatching either is harmful, not merely wasted: `LocalWorkerRuntime.allocate` fences every
+attempt, so the retry supersedes the holder that won, which is fenced out and retries in turn.
+Measured on a one-step flow with `maxAttempts: 3` on two dispatchers: fences 1→6 and the step's
+effect ran 5 times (sequence-0 race) or 6 (duplicate dispatch after the bootstrap);
+`SupervisingDispatcher({ maxRestarts: 2 })` over them, 18. The bound this ADR states — *the
+single interrupted step may run twice* — held only at `maxAttempts: 1`.
+
+**Decision.** `isSupersededRefusal(err, executionId)` in `@loom/worker-runtime` names that
+refusal, and a retrying caller MUST NOT retry on it. `LocalDispatcher` rethrows it on the
+attempt that saw it; `SupervisingDispatcher` rethrows it without a restart and without counting
+it against the circuit (losing to another holder is not the target's fault). The dispatch
+settles with the typed refusal; the execution is being driven by its current holder and is read
+by id (`loadState` / `subscribe`). The predicate is precise on two axes:
+
+- it requires the error to **name this execution**. A coalesced batch rejects every caller in it
+  with one writer's error (ADR 0074, L1), so a stale fence naming another execution is, for
+  this one, a genuine storage failure — still retried;
+- every other error, including every other `StorageWriteError`, is still a failed attempt.
+  Nothing genuine is swallowed.
+
+It matches by `name` rather than class, because the SPI package sits below the packages that
+define those errors, and so a second bundled copy of one cannot hide a refusal (the rule
+`isStaleFence` already follows).
+
+**Across the wire.** The HTTP worker ([ADR 0002](0002-http-worker-and-remote-worker-runtime.md))
+used to answer the refusal as an opaque 500, which a remote caller could not tell from a crash.
+It now answers `409 { error: "execution superseded", code: "superseded", executionId }`, and
+`RemoteWorkerRuntime` (and so `CloudRunWorkerRuntime`, which delegates to it) rethrows that as
+`ExecutionSupersededError`, which the predicate accepts. A 409 without that code stays an
+ordinary failure.
+
+**Unchanged.** Takeover of an execution whose holder is dead still works: that path is a
+successful `allocate` + `EXECUTION_RECOVERED` resume, never a refusal. The superseded holder,
+when it wakes, is fenced out and now settles instead of re-taking the execution. Defaults were
+already safe (`maxAttempts: 1`, `maxRestarts: 0`).
+
+**Verification.** `packages/worker-runtime-local/src/dispatcherSupersede.test.ts` — two real
+dispatchers over one store, `maxAttempts: 3`, deterministic (no timers): the sequence-0 race runs
+the effect once, the duplicate-after-bootstrap twice with fences `[1, 2]`, the supervised stack
+twice with its circuit closed, and a dead holder's execution is taken over with exactly one
+re-run. Reverting the two dispatcher checks restores 5 / 6 / 18. Unit cases pin the
+predicate's negatives (other execution, other storage errors) and the 409 mapping end to end.

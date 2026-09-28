@@ -147,3 +147,39 @@ describe("circuit bookkeeping is bounded", () => {
     }
   });
 });
+
+describe("SupervisingDispatcher — superseded refusals (L20)", () => {
+  it("neither restarts a superseded dispatch nor counts it against the circuit", async () => {
+    const superseded = Object.assign(new Error("lost"), {
+      name: "ExecutionAlreadyExistsError",
+      executionId: "e1",
+    });
+    let calls = 0;
+    const child: ExecutionDispatcher = {
+      async dispatch() {
+        calls += 1;
+        throw superseded;
+      },
+      async cancel() {},
+      async health() {
+        return { healthy: true, inFlight: 0 };
+      },
+    };
+    const sup = new SupervisingDispatcher(child, {
+      policy: { maxRestarts: 3, circuit: { threshold: 1, cooldownMs: 60_000 } },
+      sleep: noSleep,
+    });
+
+    await expect(sup.dispatch(pkg())).rejects.toBe(superseded);
+    await expect(sup.dispatch(pkg())).rejects.toBe(superseded); // not CircuitOpenError
+    expect(calls).toBe(2);
+    expect((await sup.health()).healthy).toBe(true);
+  });
+
+  it("still restarts a genuine storage failure", async () => {
+    const child = new ScriptedDispatcher((n) => (n === 1 ? "throw" : "ok"));
+    const sup = new SupervisingDispatcher(child, { policy: { maxRestarts: 1 }, sleep: noSleep });
+    await expect(sup.dispatch(pkg())).resolves.toMatchObject({ status: "completed" });
+    expect(child.calls).toBe(2);
+  });
+});

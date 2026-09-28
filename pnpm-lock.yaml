@@ -1263,6 +1263,9 @@ importers:
       '@loom/conformance':
         specifier: workspace:*
         version: link:../conformance
+      '@loom/dispatcher':
+        specifier: workspace:*
+        version: link:../dispatcher
       '@loom/effect-runtime':
         specifier: workspace:*
         version: link:../effect-runtime
