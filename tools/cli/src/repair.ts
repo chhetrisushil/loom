@@ -38,7 +38,8 @@ export function parseAssignments(spec: string): RehomeAssignment[] {
 export function renderBlankStream(
   census: BlankStreamCensus,
   apply: boolean,
-  rehomed: number
+  rehomed: number,
+  failed: ReadonlyArray<{ executionId: string; error: string }> = []
 ): string {
   const lines = [
     `repair blank-stream ${apply ? "run" : "DRY RUN (pass --apply to re-home)"} — ${census.strayEvents} event(s) in execution "", ${census.scanned} execution(s) scanned, ${census.affected.length} resumed after a pre-0106 compaction`,
@@ -66,10 +67,31 @@ export function renderBlankStream(
     lines.push(
       "  Unattributed events have no surviving proof of their writer, and loom will not guess.",
       "  If your own records name the owner, assert it: --assign <executionId>:<from>-<through>",
-      "  (checked: the range must fold onto that execution's snapshot at <from − 1>)."
+      "  (checked: the execution must hold a pre-0106 snapshot at <from − 1>, parked at the gate",
+      "   the range's first event answers, with nothing of its own above it)."
     );
   }
-  if (apply) lines.push(`re-homed now: ${rehomed} segment(s)`);
+  if (census.ciphertext) {
+    lines.push(
+      "  ⚠ these events still carry ciphertext: this store is the raw one under an encrypting store,",
+      "    and re-homing through it would copy ciphertext under the wrong key. Use --config."
+    );
+  }
+  for (const f of failed) lines.push(`  ✗ ${f.executionId}: ${f.error}`);
+  if (apply) {
+    lines.push(
+      `re-homed now: ${rehomed} segment(s)${failed.length > 0 ? `, failed: ${failed.length}` : ""}`
+    );
+    if (rehomed > 0) {
+      lines.push(
+        "After a repair:",
+        '  • read models and projections never saw these events: purge their "" rows and rebuild them;',
+        "  • the blank stream is kept as evidence, so if your stores encrypt, the re-homed payloads",
+        '    still sit there under the key of subject "" — once nothing is left to re-home, destroy',
+        '    that key (shredSubject(keys, raw, "", { executionIds: [] }) or keys.destroy("")).'
+      );
+    }
+  }
   return lines.join("\n");
 }
 
@@ -92,8 +114,17 @@ export async function cmdRepairBlankStream(
       return "loom repair blank-stream needs the snapshot store — the proof of whose events these are lives there: pass --snap <snap.db>, or use --config.";
     }
     const lifecycle = new LogLifecycle(events, stores.snapshotStore);
-    const result = await lifecycle.rehomeBlankStream({ assign, apply: flags.apply });
-    return renderBlankStream(result, flags.apply, result.rehomed.length);
+    let result: Awaited<ReturnType<LogLifecycle["rehomeBlankStream"]>>;
+    try {
+      result = await lifecycle.rehomeBlankStream({ assign, apply: flags.apply });
+    } catch (err) {
+      // The library refuses, before writing, to copy events it cannot decrypt.
+      if (err instanceof TypeError && /ciphertext/.test(err.message)) {
+        return `loom repair blank-stream refused --apply (nothing written): the events in "" are still encrypted as this store reads them. Re-run with --config <module>, whose stores decrypt them.`;
+      }
+      throw err;
+    }
+    return renderBlankStream(result, flags.apply, result.rehomed.length, result.failed);
   } finally {
     await stores.close();
   }

@@ -19,21 +19,32 @@ import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 // keyed its checkpoints by the id it was driving, and only the state inside them was blank.
 //
 // **Proof (a "snapshot" segment).** Execution X owns the blank-stream events in `(b, S]` when
-//  1. X has a snapshot at S whose state carries the blank identity (only a run seeded from a
-//     pre-0106 checkpoint writes one, and that run's journal wrote to `""`),
-//  2. that snapshot was taken at a drain barrier (suspended or terminal — never the running
-//     cadence checkpoint), so every event its run committed through S is durable,
-//  3. `b` is X's next snapshot below S, and the blank stream holds every sequence in (b, S],
-//  4. folding those events onto the snapshot at b reproduces the snapshot at S exactly.
-// Slots are unique per stream, so an event another execution had written first would have
-// failed X's append, and X's run could not have reached its drain barrier at S.
+//  1. X has snapshots at `b` and at `S` whose states BOTH carry the blank identity. Only a run
+//     seeded from a pre-0106 checkpoint writes one, and that run's journal wrote to `""`. A
+//     pre-0106 COMPACTION checkpoint is blank too, but its base is the runtime's own (named)
+//     snapshot, so requiring a blank base keeps a checkpoint from claiming a stretch of `""`
+//     some other execution wrote.
+//  2. The snapshot at `S` is suspended or terminal: the runtime's suspend and settle
+//     checkpoints, taken after a drain barrier. This is a filter, not the proof. A pre-0106
+//     cadence checkpoint fired on COMMIT, before its event was durable, and one landing on a
+//     suspend has the same status.
+//  3. The blank stream holds every sequence in `(b, S]`, and
+//  4. folding those events onto `b` reproduces `S` exactly (canonical JSON, identity aside).
+//     This is the proof. It covers every timestamp and payload the fold records. When a
+//     blank running (cadence) snapshot sits between two such snapshots, the base walks down
+//     across it only while the fold reproduces it too.
+// Two executions proving one slot are a `conflict`, and neither is touched. What stays
+// unproven: two executions whose events are identical in every field the fold reads, where
+// one of them has no snapshot of its own. Re-homing then gives X the history its snapshot
+// already claims.
 //
 // **Not provable.** Events above X's LAST such snapshot: a run that completed without a
 // checkpoint (the default cadence takes none), or crashed. Nothing that survives names their
 // writer, and several executions can sit at the same sequence. The census lists them with the
-// executions that could have written them; an operator who knows the owner assigns them
-// explicitly (proof "operator"), and the repair still checks that they fold onto that
-// execution's snapshot. It never guesses.
+// executions that could have written them. An operator who knows the owner assigns them
+// explicitly (proof "operator"), and the repair still checks the assignment: the seed at
+// `from − 1` must be a blank snapshot of X, suspended, with nothing of X's above it, and the
+// range must open with the resume answering that gate. It never guesses.
 
 /** How a segment's ownership was established. */
 export type RehomeProof = "snapshot" | "operator";
@@ -90,6 +101,13 @@ export interface BlankStreamCensus {
   affected: string[];
   segments: BlankStreamSegment[];
   unattributed: UnattributedRun[];
+  /**
+   * The blank stream's events still carry ciphertext as this store read them: it is the raw
+   * store under an encrypting one, which cannot decrypt them. Copying them into an execution
+   * would plant ciphertext under the wrong key, so a repair refuses to apply. Run it through
+   * the app's own (encrypting) stores.
+   */
+  ciphertext: boolean;
 }
 
 /** An operator's assertion that `[fromSequence, throughSequence]` of `""` is `executionId`'s. */
@@ -106,6 +124,8 @@ export interface BlankStreamPlan {
   /** Per segment in `census.segments`, the sequences its execution's log still lacks. */
   missing: ReadonlyMap<BlankStreamSegment, number[]>;
   workflowIdOf: ReadonlyMap<string, string>;
+  /** Per execution with segments to apply, its log's tip when planned (re-checked at apply). */
+  tipOf: ReadonlyMap<string, number>;
 }
 
 /** The metadata key a re-homed event carries: the id it had in the blank stream. */
@@ -119,6 +139,36 @@ const DRAINED = new Set<ExecutionState["status"]>([
 ]);
 
 const isBlank = (s: Snapshot): boolean => s.state.executionId === "";
+
+const statusOf = (s: Snapshot): ExecutionState["status"] => normalizeSnapshotState(s.state).status;
+
+/** The field-level ciphertext envelope `@loom/plugin-crypto` writes, found anywhere in `v`. */
+function carriesCiphertext(v: unknown): boolean {
+  const stack: unknown[] = [v];
+  // Bounded: a payload is plain JSON, and the walk is iterative, so depth cannot blow the stack.
+  for (let budget = 100_000; stack.length > 0 && budget > 0; budget--) {
+    const x = stack.pop();
+    if (typeof x !== "object" || x === null) continue;
+    if ((x as { __loomEnc?: unknown }).__loomEnc !== undefined) return true;
+    for (const child of Object.values(x)) stack.push(child);
+  }
+  return false;
+}
+
+/**
+ * X's snapshot at exactly `sequence`, preferring a blank one. A pre-0106 compaction checkpoint
+ * and the runtime's own suspend snapshot can share a sequence, and which of the two a
+ * `loadLatestBefore` returns is the store's tie-break.
+ */
+async function preferBlank(
+  snapshotStore: SnapshotStore,
+  id: string,
+  s: Snapshot
+): Promise<Snapshot> {
+  if (isBlank(s)) return s;
+  const other = await snapshotStore.loadAt(id, s.sequence);
+  return other !== null && isBlank(other) ? other : s;
+}
 
 /** A state with its identity blanked, as canonical JSON, or null when it is not plain JSON. */
 function identityFree(state: ExecutionState): string | null {
@@ -176,11 +226,13 @@ export async function planBlankStreamRepair(
     affected: [],
     segments: [],
     unattributed: [],
+    ciphertext: strayEvents.some((e) => carriesCiphertext(e.payload)),
   };
   const missing = new Map<BlankStreamSegment, number[]>();
   const workflowIdOf = new Map<string, string>();
+  const tipOf = new Map<string, number>();
   if (strayEvents.length === 0 && assign.length === 0) {
-    return { census, stray, missing, workflowIdOf };
+    return { census, stray, missing, workflowIdOf, tipOf };
   }
   if (eventStore.listExecutions === undefined && eventStore.listExecutionsPage === undefined) {
     throw new TypeError(
@@ -204,7 +256,7 @@ export async function planBlankStreamRepair(
       s !== null && s.sequence >= minS - 1;
       s = s.sequence > 0 ? await snapshotStore.loadLatestBefore(id, s.sequence - 1) : null
     ) {
-      chain.push(s);
+      chain.push(await preferBlank(snapshotStore, id, s));
     }
     if (!chain.some(isBlank)) continue;
     census.affected.push(id);
@@ -214,15 +266,28 @@ export async function planBlankStreamRepair(
       if (at === undefined) blankAt.set(s.sequence, [id]);
       else at.push(id);
     }
+    const reproduces = (base: Snapshot, top: Snapshot): boolean => {
+      const events = strayRange(stray, base.sequence + 1, top.sequence);
+      return events !== null && foldReproduces(base, events, top);
+    };
     for (let i = chain.length - 2; i >= 0; i--) {
       const top = chain[i]!;
-      const base = chain[i + 1]!;
-      if (!isBlank(top) || !DRAINED.has(normalizeSnapshotState(top.state).status)) continue;
-      const events = strayRange(stray, base.sequence + 1, top.sequence);
-      if (events === null || !foldReproduces(base, events, top)) continue;
+      if (!isBlank(top) || !DRAINED.has(statusOf(top))) continue;
+      let j = i + 1;
+      if (!isBlank(chain[j]!) || !reproduces(chain[j]!, top)) continue;
+      // A blank RUNNING snapshot below is a cadence checkpoint inside the same run: walk the
+      // base down across it while the stream stays contiguous and the fold reproduces it too.
+      while (
+        j + 1 < chain.length &&
+        !DRAINED.has(statusOf(chain[j]!)) &&
+        isBlank(chain[j + 1]!) &&
+        reproduces(chain[j + 1]!, chain[j]!)
+      ) {
+        j++;
+      }
       census.segments.push({
         executionId: id,
-        fromSequence: base.sequence + 1,
+        fromSequence: chain[j]!.sequence + 1,
         throughSequence: top.sequence,
         proof: "snapshot",
         status: "rehomable",
@@ -262,6 +327,7 @@ export async function planBlankStreamRepair(
   for (const [id, segs] of byExecution) {
     const own = await eventStore.read(id);
     workflowIdOf.set(id, own[0]?.workflowId ?? "");
+    tipOf.set(id, own[own.length - 1]?.sequence ?? -1);
     const latest = await snapshotStore.loadLatest(id);
     judge(id, segs, own, latest?.sequence ?? -1, stray, missing);
   }
@@ -294,7 +360,7 @@ export async function planBlankStreamRepair(
   census.segments.sort(
     (a, b) => a.fromSequence - b.fromSequence || a.executionId.localeCompare(b.executionId)
   );
-  return { census, stray, missing, workflowIdOf };
+  return { census, stray, missing, workflowIdOf, tipOf };
 }
 
 /** Check an operator assignment; the result carries its status (`rehomable` or `invalid`). */
@@ -336,10 +402,17 @@ async function assess(
     }
   }
   if ((await headOf(eventStore, a.executionId)) === null) return refuse("no such execution");
-  const seed = await snapshotStore.loadLatestBefore(a.executionId, a.fromSequence - 1);
-  if (seed === null || seed.sequence !== a.fromSequence - 1) {
+  // The run that wrote the range resumed from a pre-0106 checkpoint of THIS execution: a blank
+  // snapshot of X at exactly `from − 1`. A healthy execution — even one compacted after the
+  // fix — has none, so an assignment can never graft a stray run onto it.
+  const found = await snapshotStore.loadLatestBefore(a.executionId, a.fromSequence - 1);
+  const seed =
+    found !== null && found.sequence === a.fromSequence - 1
+      ? await preferBlank(snapshotStore, a.executionId, found)
+      : null;
+  if (seed === null || !isBlank(seed)) {
     return refuse(
-      `no snapshot of ${a.executionId} at ${a.fromSequence - 1} to fold the range onto — a run that wrote it resumed from exactly there`
+      `${a.executionId} has no pre-0106 (blank) snapshot at ${a.fromSequence - 1}, so no run of it resumed into "" from there`
     );
   }
   const latest = await snapshotStore.loadLatest(a.executionId);
@@ -349,6 +422,12 @@ async function assess(
     );
   }
   const seedState = normalizeSnapshotState(seed.state);
+  const gate = seedState.status === "suspended" ? seedState.suspendedOn?.on : undefined;
+  if (gate === undefined || events[0]!.eventType !== gate) {
+    return refuse(
+      `the range must open with the resume answering ${a.executionId}'s gate at ${seed.sequence}${gate !== undefined ? ` ("${gate}")` : " (it is not parked at one)"}; it opens with ${events[0]!.eventType}`
+    );
+  }
   const folded = new ReplayVM(events, seedState).getState();
   if (folded.sequence !== a.throughSequence) {
     return refuse("the range does not fold onto the snapshot contiguously");
@@ -435,13 +514,18 @@ function judge(
 export function rehomedEnvelope(
   e: EventEnvelope,
   executionId: string,
-  workflowId: string
+  workflowId: string,
+  fence?: number
 ): EventEnvelope {
   return {
     ...e,
     executionId,
     workflowId,
     id: `${executionId}-${e.sequence}`,
-    metadata: { ...e.metadata, [REHOMED_FROM_KEY]: e.id },
+    metadata: {
+      ...e.metadata,
+      [REHOMED_FROM_KEY]: e.id,
+      ...(fence !== undefined && { fence }),
+    },
   };
 }

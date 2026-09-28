@@ -1,7 +1,13 @@
 import { step$ } from "@loom/core";
 import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import {
+  DuplicateSequenceError,
+  type EventStore,
+  InMemoryAsyncEventStore,
+  headOf,
+} from "@loom/event-runtime";
+import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
 import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
@@ -43,12 +49,13 @@ const runner: FlowRunner<{ n: number }, { n: number }> = async (ctx, input) => {
   return { n: c.n };
 };
 
-function boot() {
+function boot(wrap?: (raw: InMemoryAsyncEventStore) => EventStore) {
   const effects = new EffectRuntime();
   for (const id of ["t1", "t2", "t3"]) {
     effects.register(id, new ToolEffect(async (x: { n: number }) => ({ n: x.n + 1 })));
   }
-  const eventStore = new InMemoryAsyncEventStore();
+  const raw = new InMemoryAsyncEventStore();
+  const eventStore = wrap?.(raw) ?? raw;
   const snapshotStore = new InMemoryAsyncSnapshotStore();
   const runtime = new WorkflowRuntime({
     eventStore,
@@ -58,7 +65,13 @@ function boot() {
     onWarn: () => {},
   });
   runtime.registerFlow(definition, runner);
-  return { runtime, eventStore, snapshotStore, life: new LogLifecycle(eventStore, snapshotStore) };
+  return {
+    runtime,
+    eventStore,
+    raw,
+    snapshotStore,
+    life: new LogLifecycle(eventStore, snapshotStore),
+  };
 }
 type App = ReturnType<typeof boot>;
 
@@ -74,9 +87,9 @@ async function history(n: number) {
   const app = boot();
   const h = await app.runtime.start({ definition, runner }, { n }, { executionId: "x" });
   await h.waitForSuspend();
-  const gate1 = (await app.eventStore.head("x"))!;
+  const gate1 = (await headOf(app.eventStore, "x"))!;
   await (await app.runtime.resume("x", { eventType: "go1", payload: { n } })).waitForSuspend();
-  const gate2 = (await app.eventStore.head("x"))!;
+  const gate2 = (await headOf(app.eventStore, "x"))!;
   await (await app.runtime.resume("x", { eventType: "go2", payload: { n } })).waitForCompletion();
   const log = await app.eventStore.read("x");
   const at = (q: number) => new ReplayVM(log.filter((e) => e.sequence <= q)).getState();
@@ -192,6 +205,7 @@ describe("ADR 0107 (B) — census of the blank stream", () => {
       affected: [],
       segments: [],
       unattributed: [],
+      ciphertext: false,
     });
   });
 });
@@ -320,7 +334,7 @@ describe("ADR 0107 (B) — the repair", () => {
     expect(operator.map((s) => s.status)).toEqual(["invalid", "invalid", "invalid", "invalid"]);
     expect(operator.map((s) => s.detail)).toEqual([
       expect.stringContaining("already proven for e1"),
-      expect.stringContaining(`no snapshot of e2 at ${h.gate2}`),
+      expect.stringContaining(`e2 has no pre-0106 (blank) snapshot at ${h.gate2}`),
       expect.stringContaining("no such execution"),
       expect.stringContaining("does not hold every sequence"),
     ]);
@@ -386,5 +400,355 @@ describe("ADR 0107 (B) — the repair", () => {
     const repair = await app.life.rehomeBlankStream({ apply: true });
     expect(repair.segments[0]!.status).toBe("superseded");
     expect(repair.rehomed).toEqual([]);
+  });
+});
+
+/**
+ * A pre-0106 image, spelled out: `id`'s bootstrap, the runtime's own (named) snapshot plus a
+ * blank compaction checkpoint at `checkpoint`, blank snapshots the resumed runs took at `blanks`,
+ * and the stray events `(checkpoint, through]` in "" (slots already there are left alone — two
+ * executions can write the same history).
+ */
+async function image(
+  app: App,
+  id: string,
+  h: History,
+  o: { checkpoint: number; blanks: number[]; through: number; named?: number[] }
+): Promise<void> {
+  await app.raw.append({ ...h.log[0]!, id: `${id}-0`, executionId: id });
+  const save = (q: number, state: ExecutionState) =>
+    app.snapshotStore.save({
+      id: `${id}@${q}@${Math.random()}`,
+      executionId: id,
+      workflowId: FLOW,
+      sequence: q,
+      state,
+      createdAt: 0,
+    });
+  for (const q of o.named ?? [o.checkpoint]) await save(q, { ...h.at(q), executionId: id });
+  await save(o.checkpoint, blank(h.at(o.checkpoint)));
+  for (const q of o.blanks) await save(q, blank(h.at(q)));
+  const present = new Set((await app.raw.read("")).map((e) => e.sequence));
+  for (const e of h.log.filter((e) => e.sequence > o.checkpoint && e.sequence <= o.through)) {
+    if (present.has(e.sequence)) continue;
+    await app.raw.append({ ...e, id: `-${e.sequence}`, executionId: "", workflowId: "" });
+  }
+}
+
+const spans = (census: {
+  segments: Array<{
+    executionId: string;
+    fromSequence: number;
+    throughSequence: number;
+    status: string;
+  }>;
+}) =>
+  census.segments.map((s) => `${s.executionId}:${s.fromSequence}-${s.throughSequence}:${s.status}`);
+
+describe("ADR 0107 (B) — review round 1", () => {
+  it("two executions' segments interleaved in one stream are each proven and re-homed", async () => {
+    const h = await history(1);
+    const app = boot();
+    // e1 resumed gate 1 → gate 2; e2 (compacted at gate 2) resumed gate 2 → done, with a
+    // settle checkpoint (snapshotEvery) at completion.
+    await image(app, "e1", h, { checkpoint: h.gate1, blanks: [h.gate2], through: h.gate2 });
+    await image(app, "e2", h, {
+      checkpoint: h.gate2,
+      named: [h.gate1, h.gate2],
+      blanks: [h.done],
+      through: h.done,
+    });
+    const repair = await app.life.rehomeBlankStream({ apply: true });
+    expect(spans(repair)).toEqual([
+      `e1:${h.gate1 + 1}-${h.gate2}:rehomed`,
+      `e2:${h.gate2 + 1}-${h.done}:rehomed`,
+    ]);
+    expect(repair.unattributed).toEqual([]);
+    expect((await app.runtime.loadState("e2"))?.status).toBe("completed");
+    expect(seqs(await app.eventStore.read("e2"))).toEqual([0, ...range(h.gate2 + 1, h.done)]);
+  });
+
+  it("two executions proving the same slots are a conflict — nothing is written", async () => {
+    const h = await history(1);
+    const app = boot();
+    for (const id of ["e1", "e2"]) {
+      await image(app, id, h, { checkpoint: h.gate1, blanks: [h.gate2], through: h.gate2 });
+    }
+    const repair = await app.life.rehomeBlankStream({ apply: true });
+    expect(repair.segments.map((s) => s.status)).toEqual(["conflict", "conflict"]);
+    expect(repair.rehomed).toEqual([]);
+    expect(repair.unattributed[0]?.candidates.sort()).toEqual(["e1", "e2"]);
+    for (const id of ["e1", "e2"]) expect(seqs(await app.eventStore.read(id))).toEqual([0]);
+  });
+
+  it("a pre-0106 COMPACTION checkpoint over a named base proves nothing (P2-2)", async () => {
+    const h = await history(1);
+    const app = boot();
+    // X ran to gate 2 in its own log and was compacted there: blank checkpoint at gate 2 over
+    // its runtime snapshot at gate 1. Y was compacted at gate 1 and its resume wrote (gate1,
+    // gate2] into "", but Y's suspend snapshot was lost.
+    await image(app, "X", h, {
+      checkpoint: h.gate2,
+      named: [h.gate1],
+      blanks: [],
+      through: h.gate1,
+    });
+    await image(app, "Y", h, { checkpoint: h.gate1, blanks: [], through: h.gate2 });
+    const census = await app.life.blankStreamCensus();
+    expect(census.segments).toEqual([]);
+    expect(census.unattributed).toEqual([
+      expect.objectContaining({
+        fromSequence: h.gate1 + 1,
+        throughSequence: h.gate2,
+        candidates: ["Y"],
+      }),
+    ]);
+  });
+
+  it("a cadence (running) snapshot inside the resumed run does not strand a hole (P2-3, snapshotEvery)", async () => {
+    const h = await history(1);
+    const r = h.gate1 + 2;
+    expect(h.at(r).status).toBe("running");
+    const app = boot();
+    await image(app, "e1", h, { checkpoint: h.gate1, blanks: [r, h.gate2], through: h.gate2 });
+    const repair = await app.life.rehomeBlankStream({ apply: true });
+    expect(spans(repair)).toEqual([`e1:${h.gate1 + 1}-${h.gate2}:rehomed`]);
+    expect(seqs(await app.eventStore.read("e1"))).toEqual([0, ...range(h.gate1 + 1, h.gate2)]);
+
+    // A cadence snapshot the fold does NOT reproduce stops the walk: only the part above it is
+    // proven, and the rest is listed, never guessed.
+    const bad = boot();
+    await image(bad, "e1", h, { checkpoint: h.gate1, blanks: [h.gate2], through: h.gate2 });
+    await bad.snapshotStore.save({
+      id: "cadence",
+      executionId: "e1",
+      workflowId: FLOW,
+      sequence: r,
+      state: { ...blank(h.at(r)), updatedAt: 42 },
+      createdAt: 0,
+    });
+    const census = await bad.life.blankStreamCensus();
+    expect(spans(census)).toEqual([`e1:${r + 1}-${h.gate2}:rehomable`]);
+    expect(census.unattributed.map((u) => [u.fromSequence, u.throughSequence])).toEqual([
+      [h.gate1 + 1, r],
+    ]);
+  });
+
+  it("an assignment never grafts a stray run onto a healthy execution, even one compacted after the fix (P2-1)", async () => {
+    const h = await history(1);
+    const app = boot();
+    await pre0106(app, "e1", h, "completed");
+    // Z: healthy, compacted after the fix through its tip at gate 2 (its checkpoint names Z).
+    await (
+      await app.runtime.start({ definition, runner }, { n: 5 }, { executionId: "Z" })
+    ).waitForSuspend();
+    await (await app.runtime.resume("Z", { eventType: "go1", payload: { n: 5 } })).waitForSuspend();
+    await app.life.compact("Z");
+    const repair = await app.life.rehomeBlankStream({
+      apply: true,
+      assign: [{ executionId: "Z", fromSequence: h.gate2 + 1, throughSequence: h.done }],
+    });
+    const operator = repair.segments.filter((s) => s.proof === "operator");
+    expect(operator.map((s) => [s.executionId, s.status])).toEqual([["Z", "invalid"]]);
+    expect(operator[0]!.detail).toContain(`Z has no pre-0106 (blank) snapshot at ${h.gate2}`);
+    expect((await app.runtime.loadState("Z"))?.status).toBe("suspended");
+    expect(seqs(await app.eventStore.read("Z"))).toEqual([0]);
+
+    // The right execution, but a range that does not open with the resume of its gate.
+    const other = boot();
+    await image(other, "e1", h, { checkpoint: h.gate1, blanks: [h.gate2 + 1], through: h.done });
+    const census = await other.life.blankStreamCensus({
+      assign: [{ executionId: "e1", fromSequence: h.gate2 + 2, throughSequence: h.done }],
+    });
+    const assigned = census.segments.find((s) => s.proof === "operator")!;
+    expect(assigned.status).toBe("invalid");
+    expect(assigned.detail).toContain("must open with the resume answering");
+  });
+
+  it("re-homes into a fenced execution under a new fence, and leaves an unfenced one unfenced (P1)", async () => {
+    const h = await history(1);
+    const app = boot();
+    await image(app, "e1", h, { checkpoint: h.gate1, blanks: [h.gate2], through: h.gate2 });
+    await image(app, "e2", h, {
+      checkpoint: h.gate2,
+      named: [h.gate1, h.gate2],
+      blanks: [h.done],
+      through: h.done,
+    });
+    await app.raw.acquireFence("e1"); // a worker, a fenced TimerService or cancel() once did this
+    const repair = await app.life.rehomeBlankStream({ apply: true });
+    expect(repair.failed).toEqual([]);
+    expect(repair.rehomed).toHaveLength(2);
+    const e1 = await app.eventStore.read("e1");
+    expect(e1.slice(1).every((e) => e.metadata?.fence === 2)).toBe(true);
+    const e2 = await app.eventStore.read("e2");
+    expect(e2.slice(1).every((e) => e.metadata?.fence === undefined)).toBe(true);
+    // e2 was never fenced, and still takes an unfenced write.
+    await app.raw.append({ ...e2[e2.length - 1]!, id: "later", sequence: h.done + 1 });
+  });
+
+  it("one execution failing does not stop the others; its failure is reported (P1)", async () => {
+    const h = await history(1);
+    const app = boot(
+      (raw) =>
+        new Proxy(raw, {
+          get: (t, k, r) =>
+            k === "appendBatch"
+              ? async (batch: EventEnvelope[]) => {
+                  if (batch[0]?.executionId === "e1") throw new Error("disk full");
+                  return t.appendBatch(batch);
+                }
+              : Reflect.get(t, k, r),
+        })
+    );
+    await image(app, "e1", h, { checkpoint: h.gate1, blanks: [h.gate2], through: h.gate2 });
+    await image(app, "e2", h, {
+      checkpoint: h.gate2,
+      named: [h.gate1, h.gate2],
+      blanks: [h.done],
+      through: h.done,
+    });
+    const repair = await app.life.rehomeBlankStream({ apply: true });
+    expect(repair.failed).toEqual([{ executionId: "e1", error: "disk full" }]);
+    expect(repair.rehomed.map((s) => s.executionId)).toEqual(["e2"]);
+    expect(seqs(await app.eventStore.read("e1"))).toEqual([0]);
+  });
+
+  it("all of one execution's slots land in ONE batch (P3-2)", async () => {
+    const h = await history(1);
+    const batches: number[][] = [];
+    const app = boot(
+      (raw) =>
+        new Proxy(raw, {
+          get: (t, k, r) =>
+            k === "appendBatch"
+              ? async (batch: EventEnvelope[]) => {
+                  batches.push(batch.map((e) => e.sequence));
+                  return t.appendBatch(batch);
+                }
+              : Reflect.get(t, k, r),
+        })
+    );
+    await pre0106(app, "e1", h, "completed");
+    await app.life.rehomeBlankStream({
+      apply: true,
+      assign: [{ executionId: "e1", fromSequence: h.gate2 + 1, throughSequence: h.done }],
+    });
+    expect(batches).toEqual([range(h.gate1 + 1, h.done)]);
+  });
+
+  it("a fact that did not land is written by the next run; a lifecycle write conflict is retried (P3-3)", async () => {
+    const h = await history(1);
+    let failLifecycle: "error" | "conflict" | undefined = "error";
+    const app = boot(
+      (raw) =>
+        new Proxy(raw, {
+          get: (t, k, r) =>
+            k === "append"
+              ? async (e: EventEnvelope) => {
+                  const mode = e.executionId === LIFECYCLE_STREAM ? failLifecycle : undefined;
+                  if (mode !== undefined) {
+                    failLifecycle = undefined;
+                    if (mode === "conflict")
+                      throw new DuplicateSequenceError(e.executionId, e.sequence);
+                    throw new Error("lifecycle stream unavailable");
+                  }
+                  return t.append(e);
+                }
+              : Reflect.get(t, k, r),
+        })
+    );
+    await pre0106(app, "e1", h, "resumed");
+    const first = await app.life.rehomeBlankStream({ apply: true });
+    expect(first.rehomed).toHaveLength(1);
+    expect(first.failed[0]?.error).toContain("EVENTS_REHOMED fact did not land");
+    expect(await app.raw.read(LIFECYCLE_STREAM)).toEqual([]);
+
+    failLifecycle = "conflict";
+    const second = await app.life.rehomeBlankStream({ apply: true });
+    expect(second.rehomed).toEqual([]);
+    expect(second.failed).toEqual([]);
+    expect((await app.raw.read(LIFECYCLE_STREAM)).map((f) => f.eventType)).toEqual([
+      "EVENTS_REHOMED",
+    ]);
+    // And not again.
+    await app.life.rehomeBlankStream({ apply: true });
+    expect(await app.raw.read(LIFECYCLE_STREAM)).toHaveLength(1);
+  });
+
+  it("refuses an execution that changed between the census and the apply (P3-6)", async () => {
+    const h = await history(1);
+    let raced = false;
+    const app = boot(
+      (raw) =>
+        new Proxy(raw, {
+          get: (t, k, r) =>
+            k === "read"
+              ? async (id: string) => {
+                  const out = await t.read(id);
+                  if (id === "e1" && !raced) {
+                    raced = true; // a concurrent writer lands right after the census read
+                    await t.append({
+                      ...h.log[h.log.length - 1]!,
+                      id: "late",
+                      executionId: "e1",
+                      sequence: 99,
+                    });
+                  }
+                  return out;
+                }
+              : Reflect.get(t, k, r),
+        })
+    );
+    await pre0106(app, "e1", h, "resumed");
+    const repair = await app.life.rehomeBlankStream({ apply: true });
+    expect(repair.rehomed).toEqual([]);
+    expect(repair.failed[0]?.error).toContain("changed since the census");
+    expect(seqs(await app.raw.read("e1"))).toEqual([0, 99]);
+  });
+
+  it("encrypted at rest: through the app's encrypting store it re-homes under the execution's key; the raw store refuses (P2-4)", async () => {
+    const h = await history(1);
+    const keys = new InMemoryKeyStore();
+    const sensitive = { go1: ["n"], EXECUTION_RESUMED: ["n"] };
+    const app = boot((raw) => new EncryptingEventStore(raw, keys, { sensitive }));
+    // The pre-0106 journal wrote through the encrypting store as execution "": key "".
+    const enc = app.eventStore;
+    await app.raw.append({ ...h.log[0]!, id: "e1-0", executionId: "e1" });
+    for (const q of [h.gate1]) {
+      await app.snapshotStore.save({
+        id: `c${q}`,
+        executionId: "e1",
+        workflowId: FLOW,
+        sequence: q,
+        state: blank(h.at(q)),
+        createdAt: 0,
+      });
+    }
+    await app.snapshotStore.save({
+      id: "s",
+      executionId: "e1",
+      workflowId: FLOW,
+      sequence: h.gate2,
+      state: blank(h.at(h.gate2)),
+      createdAt: 0,
+    });
+    for (const e of h.log.filter((e) => e.sequence > h.gate1 && e.sequence <= h.gate2)) {
+      await enc.append({ ...e, id: `-${e.sequence}`, executionId: "", workflowId: "" });
+    }
+    // Raw: the payloads are ciphertext it cannot read. The census says so; the apply refuses.
+    const rawLife = new LogLifecycle(app.raw, app.snapshotStore);
+    expect((await rawLife.blankStreamCensus()).ciphertext).toBe(true);
+    await expect(rawLife.rehomeBlankStream({ apply: true })).rejects.toThrow(/ciphertext/);
+    expect(seqs(await app.raw.read("e1"))).toEqual([0]);
+    // Through the app's stores: decrypted, proven, and re-encrypted under e1's key.
+    const repair = await app.life.rehomeBlankStream({ apply: true });
+    expect(repair.ciphertext).toBe(false);
+    expect(repair.rehomed).toHaveLength(1);
+    const resumed = (await enc.read("e1")).find((e) => e.eventType === "go1")!;
+    expect(resumed.payload).toEqual({ n: 1 });
+    const atRest = (await app.raw.read("e1")).find((e) => e.eventType === "go1")!;
+    expect((atRest.payload as { n: unknown }).n).toMatchObject({ __loomEnc: "loom/aes-256-gcm" });
+    expect(await keys.get("e1")).not.toBeNull();
   });
 });

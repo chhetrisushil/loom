@@ -405,22 +405,32 @@ export { SnapshotIdentityMismatchError } from "@loom/snapshot-runtime";
  *   checkpoint above a non-bootstrap tip, the one shape ADR 0106's tip rule forbids and every
  *   log reader assumes it never sees.
  *
- * Sequence 0 is always forkable. `forkableFrom` is the lowest sequence from which every
- * position through the parent's tip can be forked (its latest compaction checkpoint, or the
- * event just above it), or `null` when no snapshot anchors the history above the compacted
- * prefix.
+ * Sequence 0 is always forkable. `forkableFrom..forkableThrough` is the span every position
+ * of which can be forked: from the parent's latest compaction checkpoint (or the event just
+ * above it, or a branch's fork seed) to its folded tip. Both are `null` when no snapshot
+ * anchors the history above the compacted prefix.
  */
 export class CompactedForkPointError extends Error {
   constructor(
     readonly executionId: string,
     readonly atSequence: number,
     readonly reason: "compacted" | "checkpoint-above-prefix",
-    readonly forkableFrom: number | null
+    readonly forkableFrom: number | null,
+    /** The parent's folded tip: the highest forkable sequence (null with `forkableFrom`). */
+    readonly forkableThrough: number | null = null
   ) {
+    const span =
+      forkableFrom === null
+        ? ""
+        : forkableThrough === null || forkableThrough === forkableFrom
+          ? `at ${forkableFrom}`
+          : `at ${forkableFrom}..${forkableThrough}`;
     const where =
       forkableFrom === null
         ? "Only sequence 0 can be forked: no snapshot anchors the history above the compacted prefix."
-        : `Fork at 0, or at ${forkableFrom} or above.`;
+        : forkableFrom === 0
+          ? `Fork ${span}.`
+          : `Fork at 0, or ${span}.`;
     super(
       reason === "compacted"
         ? `fork("${executionId}", ${atSequence}) refused: ${atSequence} is inside compacted history — events below it were compacted away and no snapshot between them and ${atSequence} anchors the fold, so the copied prefix and the forked state would both be wrong. ${where}`
