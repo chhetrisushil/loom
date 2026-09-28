@@ -78,23 +78,40 @@ async function runMigration(pool: PoolLike, lockTimeoutMs: number): Promise<void
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    // The caller's timeouts, captured once and restored after each exempt step. Every
+    // set_config here is transaction-local, so nothing leaks into the pooled session.
+    const { rows } = await client.query<{ st: string; lt: string }>(
+      "SELECT current_setting('statement_timeout') AS st, current_setting('lock_timeout') AS lt"
+    );
+    const callerStatementTimeout = rows[0]?.st ?? "0";
+    const callerLockTimeout = rows[0]?.lt ?? "0";
+    // ADR 0108 D3 — waiting on the migration lock is intended serialization, so it is NOT
+    // bounded by the caller's timeouts (lock_timeout applies to advisory locks too). Otherwise
+    // a peer booting while another node runs a long one-time conversion fails its migration,
+    // and its store's `ready` rejects every operation until the process restarts.
+    await client.query(
+      "SELECT set_config('statement_timeout', '0', true), set_config('lock_timeout', '0', true)"
+    );
     await client.query("SELECT pg_advisory_xact_lock($1, $2)", [
       MIGRATION_LOCK_NAMESPACE,
       MIGRATION_LOCK_ID,
     ]);
-    // Read by the L10 DO block; transaction-local, so it never leaks into the pooled session.
+    await client.query(
+      "SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true)",
+      [callerStatementTimeout, callerLockTimeout]
+    );
+    // Read by the L10 DO block.
     await client.query("SELECT set_config('loom.l10_lock_timeout', $1, true)", [
       `${lockTimeoutMs}ms`,
     ]);
     await client.query(DDL_EVENTS);
     // L10 — the collation conversion may rebuild two indexes on a large log: exempt THAT
-    // statement (only) from the caller's statement_timeout, then restore it. Transaction-local.
-    const { rows } = await client.query<{ st: string }>(
-      "SELECT current_setting('statement_timeout') AS st"
-    );
+    // statement (only) from the caller's statement_timeout, then restore it.
     await client.query("SELECT set_config('statement_timeout', '0', true)");
     await client.query(L10_COLLATION);
-    await client.query("SELECT set_config('statement_timeout', $1, true)", [rows[0]?.st ?? "0"]);
+    await client.query("SELECT set_config('statement_timeout', $1, true)", [
+      callerStatementTimeout,
+    ]);
     await client.query(DDL_REST);
     await client.query("COMMIT");
   } catch (err) {
@@ -139,6 +156,8 @@ const DDL_EVENTS = `
  *    (and restores the caller's value after it), because a pool-level statement timeout
  *    shorter than the rebuild would abort it on every boot, which is a crash loop that also
  *    takes the exclusive lock each time. A one-time bounded stall is the accepted cost.
+ *  - Peers WAIT for it: runMigration takes the advisory lock with both timeouts at 0, then
+ *    restores the caller's values, so a node booting mid-rebuild queues instead of failing.
  *  - ALTER ... TYPE drops the column's statistics, and the planner then pages with a seq scan
  *    + sort, so the column is re-ANALYZEd in the same step.
  *  - If the conversion cannot run (the lock wait timed out, an operator cancelled it, or a
