@@ -112,7 +112,10 @@ export interface SandboxWorkerPoolOptions {
    * fails with {@link SandboxWorkerStartupError} (`phase: "compile"`). Deliberately
    * independent of any run's limits: a hard kill leaves a cold worker behind, and a compile
    * judged against a tight `wallClockMs` would fail the next run, replace the worker cold,
-   * and loop. Default 10 000 ms; must be finite and >= 0.
+   * and loop. Default 10 000 ms; must be finite and STRICTLY greater than 0 — it is the only
+   * clock a cold compile is ever judged against, so 0 does not mean "always warmed before
+   * use" (a run's window never judges the compile), it means every cold start fails, forever.
+   * Set it above this host's real cold spawn + WASM-compile time.
    */
   coldStartMs?: number;
 }
@@ -176,7 +179,7 @@ export class SandboxWorkerPool {
       options.startupLivenessMs,
       DEFAULT_STARTUP_LIVENESS_MS
     );
-    this.coldStartMs = nonNegativeMs("coldStartMs", options.coldStartMs, DEFAULT_COLD_START_MS);
+    this.coldStartMs = positiveMs("coldStartMs", options.coldStartMs, DEFAULT_COLD_START_MS);
   }
 
   /**
@@ -226,16 +229,19 @@ export class SandboxWorkerPool {
         cleanup();
         reject(err);
       };
-      // A worker that exits while warming — terminated by `close()`, or by the allowance
-      // below — sends neither `ready` nor `error`. Without this, `warm()` never settled.
-      const onExit = (code: number): void => {
+      // A worker that exits while warming — terminated by `close()`, by the allowance below
+      // (which already rejects and detaches this listener before it terminates, so this path
+      // is for an UNEXPECTED exit: a crash mid-compile, or anything else external) — sends
+      // neither `ready` nor `error`. Without this, `warm()` never settled. Typed the same way
+      // a wedged compile is (`SandboxWorkerStartupError`, `phase: "compile"`) rather than a
+      // plain `Error`, so a caller (or retry middleware) sees one consistent error shape for
+      // "this worker never finished compiling" regardless of why.
+      const onExit = (): void => {
         cleanup();
         reject(
-          new Error(
-            this.closed
-              ? "sandbox: worker pool closed"
-              : `sandbox: worker exited while warming (code ${code})`
-          )
+          this.closed
+            ? new Error("sandbox: worker pool closed")
+            : new SandboxWorkerStartupError(Date.now() - startedAt, this.coldStartMs, "compile")
         );
       };
       // A compile that never acknowledges is a wedged worker. Its allowance is its own,
@@ -243,8 +249,14 @@ export class SandboxWorkerPool {
       const allowance = setTimeout(() => {
         cleanup();
         reject(new SandboxWorkerStartupError(Date.now() - startedAt, this.coldStartMs, "compile"));
-        // `exit` then reaches `ensureSlot`'s death handler, which replaces the slot.
+        // Replace the slot NOW rather than waiting for `exit` to reach `ensureSlot`'s death
+        // handler: a worker `terminate()`d this soon after spawn can exit with code 0 (Node
+        // 24), which that handler used to ignore, stranding the dead slot until a queued
+        // run's own rejection happened to call `replace`. There is also a real gap between
+        // `terminate()` returning and `exit` firing; closing over it here, rather than
+        // waiting on the event, means no caller can observe the dead slot in between.
         void slot.worker.terminate();
+        this.replace(slot);
       }, this.coldStartMs);
       slot.worker.on("message", onMessage);
       slot.worker.once("error", onError);
@@ -320,8 +332,13 @@ export class SandboxWorkerPool {
       this.replace(slot);
     };
     slot.worker.on("error", onDeath);
+    // Any exit is death, not just a non-zero one: a worker `terminate()`d shortly after spawn
+    // can exit with code 0 (measured on Node 24), so filtering on `code !== 0` let a dead slot
+    // sit in `this.slots` — not busy, not ready — until some run's own rejection happened to
+    // call `replace`. The one exit that must NOT be treated as death is a pool-requested
+    // shutdown (`close()` already settles every slot and empties `this.slots` itself).
     slot.worker.on("exit", (code) => {
-      if (code !== 0) onDeath(new Error(`sandbox: worker exited with code ${code}`));
+      if (!this.closed) onDeath(new Error(`sandbox: worker exited with code ${code}`));
     });
     this.slots[index] = slot;
     return slot;
@@ -558,6 +575,23 @@ function nonNegativeMs(name: string, value: number | undefined, fallback: number
   if (value === undefined) return fallback;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     throw new Error(`sandbox: ${name} must be a finite number >= 0 (got ${String(value)})`);
+  }
+  return value;
+}
+
+/**
+ * `coldStartMs` cannot be 0 the way `hardKillGraceMs`/`startupLivenessMs` can: those bounds
+ * mean "no allowance", a caller's deliberate choice, and a run's own window never judges the
+ * compile anyway. `coldStartMs` is the ONLY clock a cold compile is ever judged against, and a
+ * host always takes some nonzero, nonnegotiable time to spawn a thread and compile the WASM
+ * module — so 0 (or any value under that floor) does not mean "always warmed before use", it
+ * means EVERY cold worker fails forever (and, chained through a hard kill, loops: ADR 0089
+ * D4). Refused at construction, same as a bad `size`.
+ */
+function positiveMs(name: string, value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new RangeError(`sandbox: ${name} must be a finite number > 0 (got ${String(value)})`);
   }
   return value;
 }

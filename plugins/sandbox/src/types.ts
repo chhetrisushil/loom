@@ -85,7 +85,10 @@ export interface SandboxWorkers {
    * (`phase: "compile"`). Independent of any run's limits on purpose: a hard
    * kill leaves a cold worker behind, and a compile judged against a tight
    * `wallClockMs` would fail the next run, replace the worker cold, and loop.
-   * Default 10 000 ms. Must be a finite number >= 0.
+   * Default 10 000 ms. Must be a finite number STRICTLY greater than 0 — unlike
+   * `hardKillGraceMs`/`startupLivenessMs`, 0 is not "no allowance" here: it is
+   * the only clock a cold compile is ever judged against, so 0 fails every cold
+   * start, forever. Set it above this host's real cold spawn + WASM-compile time.
    */
   coldStartMs?: number;
 }

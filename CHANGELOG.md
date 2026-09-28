@@ -116,14 +116,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   independent of any run's limits (`phase: "compile"`) — a compile that never acknowledged
   used to strand its run forever, and judging it against a run's tight wall clock would
   bring back the cold-worker failure loop ADR 0089 D4 prevents. Both are configurable on
-  `SandboxWorkerPoolOptions` and `SandboxSpec.workers` (default 10 000 ms each). Duration
-  options must be finite and `>= 0`; the pool refuses anything else at construction, since
-  `NaN` silently disabled the bound. `warm()` now settles when its worker exits (it hung on a
-  worker terminated mid-warm-up, including by `close()`); `close()` settles a run still
-  waiting on a cold compile; and an abort during warm-up rejects the run and frees the slot
-  at once rather than after the compile. Also: a worker whose run threw before starting now
-  stamps the run id with `RUN_FINISHED`, so the
-  parent recognises the finish as its own.
+  `SandboxWorkerPoolOptions` and `SandboxSpec.workers` (default 10 000 ms each).
+  `hardKillGraceMs`/`startupLivenessMs` must be finite and `>= 0`; `coldStartMs` must be
+  finite and strictly `> 0`, since it is the only clock a cold compile is ever judged
+  against — 0 there does not mean "always warmed before use" (a run's own window never
+  judges the compile), it means every cold start fails, forever, and (chained through a hard
+  kill) loops. All three refuse anything else at construction, since `NaN` silently disabled
+  the bound. `warm()` now settles when its worker exits (it hung on a worker terminated
+  mid-warm-up, including by `close()`), and does so with `SandboxWorkerStartupError` rather
+  than a plain `Error` for an unexpected exit, matching the wedged-compile case; `close()`
+  settles a run still waiting on a cold compile; and an abort during warm-up rejects the run
+  and frees the slot at once rather than after the compile. A worker the cold-start allowance
+  terminates is now replaced synchronously rather than waiting for its `exit` event to reach
+  the pool's death handler — that handler ignored a `terminate()`d worker's exit when its code
+  was 0 (which it can be, this soon after spawn, on Node 24), so the dead slot could sit
+  un-replaced until some later run's own rejection happened to reclaim it, or a `warm()`-only
+  waiter's allowance fired and nothing ever did. The death handler now treats ANY exit as
+  death unless the pool itself requested the shutdown. Also: a worker whose run threw before
+  starting now stamps the run id with `RUN_FINISHED`, so the parent recognises the finish as
+  its own.
 
 - **`@loom/plugin-postgres`: `appendBatch` refused a `null` payload** (backlog L16). The bulk
   insert decoded its batch with `jsonb_to_recordset`, which maps a JSON `null` field to SQL

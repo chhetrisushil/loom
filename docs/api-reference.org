@@ -1966,7 +1966,8 @@ interface SandboxWorkers { count?: number;
                            hardKillGraceMs?: number;    // past wallClockMs before a hard kill; default 2000
                            startupLivenessMs?: number;  // ready worker hasn't STARTED the script within wallClockMs + grace + this → error; default 10000
                            coldStartMs?: number }       // cold spawn + WASM compile allowance, independent of run limits; default 10000
-                                                        // all three must be finite and >= 0
+                                                        // hardKillGraceMs/startupLivenessMs: finite and >= 0; coldStartMs: finite and > 0
+                                                        // (0 would fail every cold start forever — it is the only clock a compile is judged against)
 // step input: { scriptRef: ContentRef; input?: unknown; expectedOutputShapeHash?: string }
 const SANDBOX_ERRORS: {             // typed failure channels (ADR 0060) — zod schemas
   scriptMissing: { ref: string };
