@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@loom/event-runtime": "workspace:*",
+    "@loom/middleware": "workspace:*",
     "@loom/plugin-content": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@loom/workflow-runtime": "workspace:*",

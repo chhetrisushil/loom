@@ -125,6 +125,12 @@ function renderThrown(thrown: unknown): string {
  * exists — not because the guards are weaker here, but because the caller's
  * event loop should not be the thing that waits.
  *
+ * `inputJson` is already JSON text (the caller's `input ?? null`, `JSON.stringify`d
+ * once) rather than the raw value: every caller here already needs that string for
+ * something else — measuring `maxInputBytes`, or (worker mode) putting it on the wire —
+ * so seeding the VM from it directly avoids a second full serialization of the same
+ * input on the same thread.
+ *
  * `onScriptStart` is called with the instant the wall clock starts — after the runtime
  * exists and the input is seeded — so an outside observer can measure the SAME budget.
  *
@@ -137,7 +143,7 @@ function renderThrown(thrown: unknown): string {
 export function evalInFreshRuntime(
   module: QuickJSWASMModule,
   script: string,
-  input: unknown,
+  inputJson: string,
   limits: EvalLimits,
   isAborted: () => boolean = () => false,
   onScriptStart?: (startedAt: number) => void
@@ -156,8 +162,9 @@ export function evalInFreshRuntime(
     // makes the engine parse the input as JS source, slower than JSON.parse
     // and — before the fix — charged against the caller's interrupt budget).
     // No fetch, no require, no process, no timers — capability-empty by
-    // construction.
-    const json = vm.newString(JSON.stringify(input ?? null));
+    // construction. `inputJson` is already the caller's JSON text, so this is
+    // the only place it is turned into a VM value.
+    const json = vm.newString(inputJson);
     vm.setProp(vm.global, "__loomInputJson", json);
     json.dispose();
     const seed = vm.evalCode(
