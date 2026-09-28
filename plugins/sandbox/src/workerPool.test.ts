@@ -3,6 +3,7 @@ import { EffectRuntime } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
 import { InMemoryContentStore } from "@loom/plugin-content";
 import { afterEach, describe, expect, it } from "vitest";
+import { SandboxWorkerPool } from "./SandboxWorkerPool";
 import { SANDBOX_TOOL_ID, registerSandboxEval } from "./sandboxEval$";
 import type { SandboxSpec } from "./types";
 
@@ -131,11 +132,28 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
   it(
     "survives a hard kill: the pool replaces the worker and keeps serving",
     async () => {
-      const { put, run } = await boot({
-        limits: { memoryBytes: 512 * 1024 * 1024, wallClockMs: 50 },
-        workers: { count: 1, hardKillGraceMs: 50 },
+      // Driven through the pool directly, because the pool takes limits PER RUN and the two
+      // runs here want different ones. Through the effect both runs shared one 50 + 50 ms
+      // budget, so the follow-up asserted "a trivial script finishes within 100 ms of wall
+      // time" — which a host running ~129 vitest processes does not promise: the worker
+      // thread is simply not scheduled, and a wall clock correctly counts that (L13). What is
+      // under test is the REPLACEMENT, so the kill keeps its tight deadline and the follow-up
+      // gets a budget that only a broken pool could miss.
+      const pool = new SandboxWorkerPool({ size: 1, hardKillGraceMs: 50 });
+      opened.push(pool);
+      await pool.warm();
+      const memoryBytes = 512 * 1024 * 1024;
+      const interruptBudget = Number.MAX_SAFE_INTEGER;
+
+      const killed = await pool.run(NON_YIELDING, null, {
+        memoryBytes,
+        interruptBudget,
+        wallClockMs: 50,
       });
-      await expect(run(await put(NON_YIELDING))).rejects.toBeInstanceOf(TypedFailure);
+      expect(killed).toMatchObject({ ok: false, tripped: "wallClock" });
+      // The pool's own kill, not the in-VM clock — or this proves nothing about replacement.
+      expect(killed.ok === false && killed.message).toMatch(/without yielding/);
+
       // The only worker was terminated; the next run must get a fresh one.
       //
       // Asserted directly again. This briefly tolerated a retry, because under a full-repo
@@ -143,7 +161,9 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       // (#383) — the parent's kill timer charging its own latency to the script. That is
       // fixed at the source (#399), so tolerating it here would now hide a regression
       // rather than absorb a known artifact.
-      await expect(run(await put("(() => 1 + 1)()"))).resolves.toBe(2);
+      await expect(
+        pool.run("(() => 1 + 1)()", null, { memoryBytes, interruptBudget, wallClockMs: 60_000 })
+      ).resolves.toEqual({ ok: true, value: 2 });
     },
     SLOW
   );
@@ -210,6 +230,42 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       const ref = await scripts.put(encoder.encode("(() => 1 + 1)()"));
       // Deliberately NOT warmed: this run pays the spawn and the WASM compile.
       await expect(effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx)).resolves.toBe(2);
+    },
+    SLOW
+  );
+
+  it(
+    "does not charge runtime creation or input seeding to the script's wall clock (L13)",
+    async () => {
+      // The in-VM wall clock is armed AFTER the runtime exists and the input is seeded. The
+      // pool's hard kill used to stamp its own start BEFORE both, so a large input spent the
+      // budget before the script ran: in-process completed what worker mode killed as
+      // `limitExceeded { wallClock }` — a resource kill, routed to drift-repair, for a script
+      // that never ran long. It also showed up as a full-suite flake, where a loaded host
+      // makes even an empty runtime slow to create.
+      //
+      // Self-calibrating, like the cold-start guard above: time THIS host seeding the input
+      // in-process, then give the worker a budget of half that. A pool that charges the
+      // seeding must kill; one that measures the script alone has a trivial script to time.
+      const input = "x".repeat(16 * 1024 * 1024);
+      const memoryBytes = 512 * 1024 * 1024;
+      const inProcess = await boot({ limits: { memoryBytes, wallClockMs: 60_000 } });
+      const baselineRef = await inProcess.put("input.length");
+      const seededAt = Date.now();
+      await expect(
+        inProcess.effects.execute(SANDBOX_TOOL_ID, { scriptRef: baselineRef, input }, baseCtx)
+      ).resolves.toBe(input.length);
+      const seedMs = Date.now() - seededAt;
+
+      const wallClockMs = 10;
+      const { effects, put } = await boot({
+        limits: { memoryBytes, wallClockMs },
+        workers: { count: 1, hardKillGraceMs: Math.max(0, Math.floor(seedMs / 2) - wallClockMs) },
+      });
+      const ref = await put("input.length");
+      await expect(
+        effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref, input }, baseCtx)
+      ).resolves.toBe(input.length);
     },
     SLOW
   );

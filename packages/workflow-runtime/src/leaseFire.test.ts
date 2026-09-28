@@ -263,10 +263,15 @@ describe("#380 L5a — the claim is renewed while the wake is in flight", () => 
     const leaseStore = new InMemoryLeaseStore();
     const slow = slowFlow();
 
+    let entered!: () => void;
+    const running = new Promise<void>((r) => {
+      entered = r;
+    });
     const effects = new EffectRuntime();
     effects.register(
       "expensive-tool",
       new ToolEffect(async () => {
+        entered();
         await slow.blocked; // the run is still going
         return { done: true };
       })
@@ -283,20 +288,34 @@ describe("#380 L5a — the claim is renewed while the wake is in flight", () => 
     const handle = await runtime.start(slow.flow, { n: 1 }, { executionId: "long-run" });
     const parked = await handle.waitForSuspend();
 
-    const service = new TimerService(runtime, timerStore, {
-      leases: { store: leaseStore, owner: "node-a", ttlMs: 40, renewEveryMs: 5 },
-    });
-    const firing = service.tick((parked.suspendedOn?.wakeAt ?? 0) + 1);
+    // The lease clock and the renewal timer are both FAKE from here on (L13). With a real
+    // 40 ms TTL this asserted "the OS scheduled this process at least every 40 ms", which a
+    // full `turbo test` (~129 vitest processes on every core) does not promise: the process
+    // was descheduled long enough for the lease to lapse between two awaits with no timer
+    // able to run in between. What is under test is the renewal CADENCE against the TTL, and
+    // time that only moves when the test says so asserts exactly that. `setTimeout` stays
+    // real, so nothing on the runtime's own path is perturbed.
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    try {
+      const service = new TimerService(runtime, timerStore, {
+        leases: { store: leaseStore, owner: "node-a", ttlMs: 40, renewEveryMs: 5 },
+      });
+      const firing = service.tick((parked.suspendedOn?.wakeAt ?? 0) + 1);
+      // The fire has claimed the execution and the resumed run is now in flight.
+      await running;
 
-    // Well past the TTL, with the run still in flight.
-    await new Promise((r) => setTimeout(r, 200));
-    expect(await leaseStore.expired(Date.now())).toEqual([]);
-    // And still exclusively ours: a recovery pass would find nothing to take.
-    expect(await leaseStore.acquire("long-run", "rescuer", 1000)).toBeNull();
+      // Five TTLs later, with the run still in flight. Unrenewed, this lapses the lease.
+      await vi.advanceTimersByTimeAsync(200);
+      expect(await leaseStore.expired(Date.now())).toEqual([]);
+      // And still exclusively ours: a recovery pass would find nothing to take.
+      expect(await leaseStore.acquire("long-run", "rescuer", 1000)).toBeNull();
 
-    slow.release();
-    await firing;
-    // Released once the wake settled — ownership covers the fire, not the execution's life.
-    expect(await leaseStore.acquire("long-run", "rescuer", 1000)).not.toBeNull();
+      slow.release();
+      await firing;
+      // Released once the wake settled — ownership covers the fire, not the execution's life.
+      expect(await leaseStore.acquire("long-run", "rescuer", 1000)).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   }, 20_000);
 });

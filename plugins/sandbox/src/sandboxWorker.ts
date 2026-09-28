@@ -53,18 +53,21 @@ async function handle(msg: ToWorker): Promise<void> {
 
   const runId = msg.runId;
   // The parent reads these from inside its kill timer, where it cannot receive a message
-  // (#399). Written around the eval ONLY: booting the engine and marshalling the input are
-  // the sandbox's own work, not the script running long — the same distinction `ensureReady`
-  // draws for a cold start.
+  // (#399). Written around the eval ONLY: booting the engine, creating the runtime and
+  // seeding the input are the sandbox's own work, not the script running long — the same
+  // distinction `ensureReady` draws for a cold start. So the stamp comes from the engine at
+  // the instant it arms its own wall clock, never from here: stamping before the call
+  // charged runtime creation and input seeding to the script (L13).
   const state = new Int32Array(msg.status, 0, 2);
   const startedAt = new Float64Array(msg.status, STATUS_STARTED_AT_OFFSET, 1);
   try {
     quickjs ??= await getQuickJS();
     const input = JSON.parse(decoder.decode(msg.inputJson)) as unknown;
-    startedAt[0] = Date.now();
-    Atomics.store(state, STATUS_RUN_ID_INDEX, runId);
-    Atomics.store(state, STATUS_STATE_INDEX, RUN_EVALUATING);
-    const outcome = evalInFreshRuntime(quickjs, msg.script, input, msg.limits);
+    const outcome = evalInFreshRuntime(quickjs, msg.script, input, msg.limits, undefined, (at) => {
+      startedAt[0] = at;
+      Atomics.store(state, STATUS_RUN_ID_INDEX, runId);
+      Atomics.store(state, STATUS_STATE_INDEX, RUN_EVALUATING);
+    });
     Atomics.store(state, STATUS_STATE_INDEX, RUN_FINISHED);
     if (!outcome.ok) {
       send({
