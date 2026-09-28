@@ -14,6 +14,7 @@ export {
   InputValidationError,
   ResumePayloadValidationError,
   ResumeRefusedError,
+  StartFencedOutError,
   StateMigrationError,
   StepTimeoutError,
   TIMER_FIRED,

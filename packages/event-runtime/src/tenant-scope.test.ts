@@ -2,6 +2,8 @@ import type { EventEnvelope } from "@loom/core";
 import { describe, expect, it } from "vitest";
 import { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";
 import { TenantScopedEventStore } from "./TenantScopedEventStore";
+import { StaleFenceError } from "./fencing";
+import { DuplicateEnvelopeIdError, DuplicateSequenceError } from "./writeConflicts";
 
 function ev(executionId: string, sequence: number): EventEnvelope {
   return {
@@ -219,5 +221,50 @@ describe("K12.5 — a tenant name cannot contain the separator", () => {
     expect(() => new TenantScopedEventStore(shared, "a:b")).toThrow(/separator/);
     expect(() => new TenantScopedEventStore(shared, "")).toThrow(/tenant/);
     expect(() => new TenantScopedEventStore(shared, "acme")).not.toThrow();
+  });
+});
+
+describe("L20 — a tenant-scoped store's write refusals name the caller's id", () => {
+  it("unscopes StaleFenceError, keeping class, name and the original as cause", async () => {
+    const shared = new InMemoryAsyncEventStore();
+    const a = new TenantScopedEventStore(shared, "acme");
+    await a.acquireFence?.("x");
+    await a.acquireFence?.("x");
+    for (const write of [
+      () => a.append({ ...ev("x", 0), metadata: { fence: 1 } }),
+      () => a.appendBatch!([{ ...ev("x", 0), metadata: { fence: 1 } }]),
+    ]) {
+      const err = await write().catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StaleFenceError);
+      expect(err).toMatchObject({
+        name: "StaleFenceError",
+        executionId: "x",
+        staleFence: 1,
+        currentFence: 2,
+        cause: { name: "StaleFenceError", executionId: "acme:x" },
+      });
+    }
+  });
+
+  it("unscopes DuplicateSequenceError and DuplicateEnvelopeIdError", async () => {
+    const a = new TenantScopedEventStore(new InMemoryAsyncEventStore(), "acme");
+    await a.append(ev("x", 0));
+    const seq = await a.append({ ...ev("x", 0), id: "other-id" }).catch((e: unknown) => e);
+    expect(seq).toBeInstanceOf(DuplicateSequenceError);
+    expect(seq).toMatchObject({ executionId: "x", sequence: 0, cause: { executionId: "acme:x" } });
+
+    const dupId = await a.append({ ...ev("x", 1), id: ev("x", 0).id }).catch((e: unknown) => e);
+    expect(dupId).toBeInstanceOf(DuplicateEnvelopeIdError);
+    expect(dupId).toMatchObject({ executionId: "x", envelopeId: ev("x", 0).id });
+  });
+
+  it("passes every other error through untouched", async () => {
+    const boom = new Error("disk full");
+    const inner = new InMemoryAsyncEventStore();
+    inner.append = async () => {
+      throw boom;
+    };
+    const a = new TenantScopedEventStore(inner, "acme");
+    await expect(a.append(ev("x", 0))).rejects.toBe(boom);
   });
 });

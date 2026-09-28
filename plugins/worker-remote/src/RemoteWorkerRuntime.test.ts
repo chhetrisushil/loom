@@ -117,13 +117,26 @@ describe("RemoteWorkerRuntime — superseded refusals (L20)", () => {
 
   it("maps 409 `superseded` to ExecutionSupersededError", async () => {
     const worker = new RemoteWorkerRuntime("http://w", {
-      fetchImpl: reply(409, JSON.stringify({ error: "execution superseded", code: "superseded" })),
+      fetchImpl: reply(
+        409,
+        JSON.stringify({ error: "execution superseded", code: "superseded", executionId: "e1" })
+      ),
     });
     const err = await worker
       .execute(await worker.allocate({ executionId: "e1" }), p)
       .catch((e) => e);
     expect(err).toBeInstanceOf(ExecutionSupersededError);
     expect(isSupersededRefusal(err, "e1")).toBe(true);
+  });
+
+  it("ignores a `superseded` 409 that names another execution", async () => {
+    const worker = new RemoteWorkerRuntime("http://w", {
+      fetchImpl: reply(409, JSON.stringify({ code: "superseded", executionId: "other" })),
+    });
+    const err = await worker
+      .execute(await worker.allocate({ executionId: "e1" }), p)
+      .catch((e) => e);
+    expect(isSupersededRefusal(err, "e1")).toBe(false);
   });
 
   it("leaves any other 409 an ordinary failure", async () => {

@@ -196,7 +196,10 @@ store, the read-model plugin's shape (ADR 0058).
   refusal that names this execution — `ExecutionAlreadyExistsError`, or a `StaleFenceError`
   bare or as a `StorageWriteError`'s cause — is a superseded dispatch, not a failed attempt,
   and neither `LocalDispatcher` nor `SupervisingDispatcher` retries it
-  (`worker-runtime-local`'s `dispatcherSupersede.test.ts`).
+  (`worker-runtime-local`'s `dispatcherSupersede.test.ts`). The same fix amends D2's last
+  branch: a stale fence on both tries with sequence 0 still absent is re-caused as
+  `StartFencedOutError` — the newer token's holder wrote nothing and may be dead — so it stays
+  retryable instead of losing the start.
 - **Open: duplicate cross-node timer FIRES without `leases` supersede each other.** A fire is
   still fenced (`TimerService.fire` acquires a token before resuming), and a token acquired
   after another node's resume is durable fences that node out mid-body, after its effect —

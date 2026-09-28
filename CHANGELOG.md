@@ -24,7 +24,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still retried. The HTTP worker answers it `409 { code: "superseded" }` instead of an opaque
   500, and `RemoteWorkerRuntime` / `CloudRunWorkerRuntime` rethrow it as
   `ExecutionSupersededError`. Now 1 effect (race) / 2 (after bootstrap). Defaults
-  (`maxAttempts: 1`, `maxRestarts: 0`) were already safe.
+  (`maxAttempts: 1`, `maxRestarts: 0`) were already safe. **Dispatcher SPI 1.0.0 → 1.1.0**
+  (MINOR: a new MUST that non-retrying dispatchers already meet; the kit case runs only with
+  `runExecutionDispatcherConformance(…, { overWorker })`). `SupervisingDispatcher` still counts
+  an earlier genuine failure in the same dispatch; the worker server reports 409s to a new
+  `onSuperseded` hook; `RemoteWorkerRuntime` also requires the 409 body to name its execution.
+  Two things this required elsewhere: `TenantScopedEventStore` now re-raises
+  `StaleFenceError` / `DuplicateSequenceError` / `DuplicateEnvelopeIdError` with the caller's
+  (unscoped) ids — it forwarded the scoped `acme:x`, which brought the ping-pong back in full
+  under tenancy — and a start refused on the fence twice with sequence 0 still absent is now
+  `StorageWriteError` caused by the new, retryable `StartFencedOutError` (from
+  `@loom/workflow-runtime`), because settling it as superseded lost the start outright when the
+  newer token's holder had died before writing. **What settling means:** a superseded refusal
+  transfers ownership to the newer fence holder without checking it is alive — its liveness is
+  covered only by its own dispatcher policy and by `recoverAbandoned`, which deployments MUST
+  run to cover dead holders — and it can be the caller's own timed-out earlier attempt, so a
+  caller that needs the outcome awaits the execution by id rather than treating it as failed.
 
 - **`ShardedEventStore` over Postgres skipped execution ids when paging** (backlog L10,
   [ADR 0108](docs/adr/0108-execution-id-order-and-fail-soft-migrations.md); EventStore SPI

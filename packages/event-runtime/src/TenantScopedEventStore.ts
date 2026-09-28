@@ -1,7 +1,9 @@
 import type { EventEnvelope } from "@loom/core";
 import { compareExecutionIds } from "./executionIdOrder";
+import { StaleFenceError } from "./fencing";
 import { type DecoratorPlan, installOptional } from "./installOptional";
 import type { EventStore, ExecutionPage, OptionalEventStoreMethod } from "./types";
+import { DuplicateEnvelopeIdError, DuplicateSequenceError } from "./writeConflicts";
 
 // The tenant/execution key separator — a control char that can't appear in a
 // normal executionId, so prefixing is unambiguous and un-stripping is exact.
@@ -117,7 +119,8 @@ export class TenantScopedEventStore implements EventStore {
     // SPI method is a compile error until this decorator forwards, overrides or refuses it.
     const plan = {
       // Order preserved: the SPI's per-execution order is array order.
-      appendBatch: (envs) => inner.appendBatch!(envs.map((e) => this.scopeEnvelope(e))),
+      appendBatch: (envs) =>
+        inner.appendBatch!(envs.map((e) => this.scopeEnvelope(e))).catch(this.rethrowUnscoped),
       head: (id) => inner.head!(scope(id)),
       readRange: (id, from, to) =>
         inner.readRange!(scope(id), from, to).then((evs) => evs.map((e) => this.unscope(e))),
@@ -125,7 +128,7 @@ export class TenantScopedEventStore implements EventStore {
       // Fork stays IN-TENANT: both ids are scoped, so a fork can never cross the
       // tenant boundary (a cross-tenant copy is unaddressable here).
       copyPrefix: (from, to, through, metadata) =>
-        inner.copyPrefix!(scope(from), scope(to), through, metadata),
+        inner.copyPrefix!(scope(from), scope(to), through, metadata).catch(this.rethrowUnscoped),
       deleteExecution: (id) => inner.deleteExecution!(scope(id)),
       truncatePrefix: (id, through) => inner.truncatePrefix!(scope(id), through),
       truncatePrefixKeeping: (id, through, keep) =>
@@ -159,7 +162,51 @@ export class TenantScopedEventStore implements EventStore {
   }
 
   async append(envelope: EventEnvelope): Promise<void> {
-    return this.inner.append(this.scopeEnvelope(envelope));
+    return this.inner.append(this.scopeEnvelope(envelope)).catch(this.rethrowUnscoped);
+  }
+
+  /**
+   * L20 — the store's write refusals name the id it WROTE, which is the scoped one (`acme:x`).
+   * The app never sees scoped ids anywhere else, and callers key on the refusal's id: a
+   * dispatcher decides "another holder owns THIS execution" by comparing it with its own
+   * (`isSupersededRefusal`), so a prefixed id made every fenced-out attempt read as a genuine
+   * failure and the ping-pong came back under tenancy. The three normalized refusals are
+   * re-raised as the same class and name with the ids unscoped and the original as `cause`.
+   * Anything else — and a refusal naming another tenant's key, which cannot be unscoped — passes
+   * through untouched.
+   */
+  private readonly rethrowUnscoped = (err: unknown): never => {
+    throw this.unscopeError(err);
+  };
+
+  private unscopeError(err: unknown): unknown {
+    if (err === null || typeof err !== "object") return err;
+    const prefix = `${this.tenant}${SEP}`;
+    const e = err as Record<string, unknown>;
+    const executionId = e.executionId;
+    if (typeof executionId !== "string" || !executionId.startsWith(prefix)) return err;
+    const id = executionId.slice(prefix.length);
+    switch (e.name) {
+      case "StaleFenceError":
+        return new StaleFenceError(
+          id,
+          e.staleFence as number | undefined,
+          e.currentFence as number,
+          err
+        );
+      case "DuplicateSequenceError":
+        return new DuplicateSequenceError(id, e.sequence as number, err);
+      case "DuplicateEnvelopeIdError": {
+        const envelopeId = String(e.envelopeId);
+        return new DuplicateEnvelopeIdError(
+          envelopeId.startsWith(prefix) ? envelopeId.slice(prefix.length) : envelopeId,
+          id,
+          err
+        );
+      }
+      default:
+        return err;
+    }
   }
 
   async read(executionId: string): Promise<EventEnvelope[]> {

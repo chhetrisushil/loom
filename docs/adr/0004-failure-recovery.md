@@ -122,37 +122,75 @@ effect ran 5 times (sequence-0 race) or 6 (duplicate dispatch after the bootstra
 single interrupted step may run twice* — held only at `maxAttempts: 1`.
 
 **Decision.** `isSupersededRefusal(err, executionId)` in `@loom/worker-runtime` names that
-refusal, and a retrying caller MUST NOT retry on it. `LocalDispatcher` rethrows it on the
-attempt that saw it; `SupervisingDispatcher` rethrows it without a restart and without counting
-it against the circuit (losing to another holder is not the target's fault). The dispatch
-settles with the typed refusal; the execution is being driven by its current holder and is read
-by id (`loadState` / `subscribe`). The predicate is precise on two axes:
+refusal, and a dispatcher MUST NOT retry or redispatch on it (Dispatcher SPI **1.1.0**, a
+conformance-kit case enabled by `runExecutionDispatcherConformance(…, { overWorker })`).
+`LocalDispatcher` rethrows it on the attempt that saw it; `SupervisingDispatcher` rethrows it
+without a restart and without counting it against the circuit (losing to another holder is not
+the target's fault — though an earlier genuine failure in the same dispatch still counts). The
+predicate is precise on two axes:
 
 - it requires the error to **name this execution**. A coalesced batch rejects every caller in it
   with one writer's error (ADR 0074, L1), so a stale fence naming another execution is, for
-  this one, a genuine storage failure — still retried;
+  this one, a genuine storage failure — still retried. That leaves one accepted imprecision: a
+  batch holding writes for TWO fenced-out executions names only the first, so the second
+  retries once, may supersede its live holder and re-run that step once more, and the holder it
+  fenced out then settles. One bounded extra bounce per such batch, not a ping-pong;
 - every other error, including every other `StorageWriteError`, is still a failed attempt.
   Nothing genuine is swallowed.
 
 It matches by `name` rather than class, because the SPI package sits below the packages that
 define those errors, and so a second bundled copy of one cannot hide a refusal (the rule
-`isStaleFence` already follows).
+`isStaleFence` already follows). Because it matches the id, every layer between the store and
+the dispatcher must report the CALLER's id: `TenantScopedEventStore` used to forward the store's
+refusal naming the scoped key (`acme:x`), which read as a genuine failure and brought the
+ping-pong back in full under tenancy. It now re-raises `StaleFenceError`,
+`DuplicateSequenceError` and `DuplicateEnvelopeIdError` with the ids unscoped (same class and
+name, original as `cause`); the predicate was deliberately not loosened to suffix matching.
+
+**A start fenced out by a holder that wrote nothing is NOT superseded.** If a dispatcher takes
+a fence and dies before its sequence 0, a racing start is refused on the fence with sequence 0
+absent on both of `writeBootstrap`'s tries. Settling that as superseded lost the start outright:
+an empty log, `loadState` null, invisible to `recoverAbandoned`. `writeBootstrap` now raises
+`StorageWriteError` caused by `StartFencedOutError` there, which the predicate rejects, so the
+dispatcher retries (nothing ran; the retry takes a newer fence and starts). A LIVE racer that
+writes its sequence 0 meanwhile makes that retry lose cleanly as `ExecutionAlreadyExistsError`.
+
+**What settling does and does not promise.** A superseded refusal TRANSFERS ownership to the
+newer fence holder, and nothing checks that holder is alive. If it is a duplicate dispatcher
+that dies mid-run — or one that times out at `maxAttempts: 1` while its wedged instance keeps
+the fence — the execution sits in `running` with the refused dispatcher already settled. Its
+liveness is then covered only by the new holder's own dispatcher policy and, beyond it, by
+`recoverAbandoned` (the amendment above), which **a deployment MUST run** to cover dead holders.
+The newer holder can even be the caller's own earlier HTTP attempt that timed out but kept
+running: the execution completes there while `dispatch()` rejects with the refusal. So a
+caller that needs the outcome treats the refusal as *await by id* (`loadState` / `subscribe`),
+not as the execution failing. `executeGraph`, `InProcessA2ABus` and `dispatchPlan` do not do
+that for you, and were left as they are: `executeGraph` holds only a dispatcher (no store to
+await by id), `InProcessA2ABus` mints its own task ids (a collision needs a caller-supplied
+`executionId`, and an injected dispatcher may place the run on stores its local runtime cannot
+read), and `dispatchPlan` calls an app callback. The refusal surfaces to their caller as a
+dispatch error, documented on `ExecutionDispatcher.dispatch` and `executeGraph`.
 
 **Across the wire.** The HTTP worker ([ADR 0002](0002-http-worker-and-remote-worker-runtime.md))
 used to answer the refusal as an opaque 500, which a remote caller could not tell from a crash.
-It now answers `409 { error: "execution superseded", code: "superseded", executionId }`, and
+It now answers `409 { error: "execution superseded", code: "superseded", executionId }` (and
+calls `onSuperseded` so operators see it — it never reaches `onError`), and
 `RemoteWorkerRuntime` (and so `CloudRunWorkerRuntime`, which delegates to it) rethrows that as
-`ExecutionSupersededError`, which the predicate accepts. A 409 without that code stays an
-ordinary failure.
+`ExecutionSupersededError` only when both the code and the executionId match. Any other 409
+stays an ordinary failure.
 
-**Unchanged.** Takeover of an execution whose holder is dead still works: that path is a
-successful `allocate` + `EXECUTION_RECOVERED` resume, never a refusal. The superseded holder,
+**Takeover is unchanged.** Redispatching an execution whose holder is dead is a successful
+`allocate` + `EXECUTION_RECOVERED` resume, never a refusal, so it still recovers; the zombie,
 when it wakes, is fenced out and now settles instead of re-taking the execution. Defaults were
 already safe (`maxAttempts: 1`, `maxRestarts: 0`).
 
-**Verification.** `packages/worker-runtime-local/src/dispatcherSupersede.test.ts` — two real
-dispatchers over one store, `maxAttempts: 3`, deterministic (no timers): the sequence-0 race runs
-the effect once, the duplicate-after-bootstrap twice with fences `[1, 2]`, the supervised stack
-twice with its circuit closed, and a dead holder's execution is taken over with exactly one
-re-run. Reverting the two dispatcher checks restores 5 / 6 / 18. Unit cases pin the
-predicate's negatives (other execution, other storage errors) and the 409 mapping end to end.
+**Verification.** `packages/worker-runtime-local/src/dispatcherSupersede.test.ts`, every case
+over a plain store AND a `TenantScopedEventStore` — two real dispatchers over one store,
+`maxAttempts: 3`, deterministic (no timers): the sequence-0 race runs the effect once, the
+duplicate-after-bootstrap twice with fences `[1, 2]`, the supervised stack twice with its
+circuit closed; a dead holder's execution is taken over with exactly one re-run while the
+zombie (itself `maxAttempts: 3`) does not take it back; and a start fenced out by a holder that
+never wrote completes. Mutation-checked: reverting the dispatcher checks restores 5 / 6 / 18,
+reverting the tenant unscoping fails the tenant variants, reverting the `StartFencedOutError`
+cause fails the lost-start cases. Unit cases pin the predicate's negatives, the unscoped
+errors, and the 409 mapping end to end.

@@ -11,7 +11,9 @@ export class StaleFenceError extends Error {
   constructor(
     readonly executionId: string,
     readonly staleFence: number | undefined,
-    readonly currentFence: number
+    readonly currentFence: number,
+    /** The error this was re-raised from, when a decorator rewrote it (e.g. tenant unscoping). */
+    readonly cause?: unknown
   ) {
     super(
       `stale fence for execution "${executionId}": append carried ` +

@@ -844,13 +844,26 @@ function pkg(executionId: string): ExecutionPackage {
   return { executionId, workflowId: "wf", flowId: "f", input: {} };
 }
 
+export interface ExecutionDispatcherConformanceOptions {
+  /**
+   * L20 (DISPATCHER_SPI 1.1.0) — build the dispatcher under test over the given
+   * {@link WorkerRuntime}, configured WITH its retries/restarts turned on (the MUST only bites
+   * when there is something to retry with). Enables the superseded-refusal case: a dispatcher
+   * MUST NOT retry or redispatch when the worker was refused because another holder owns the
+   * execution. Omit it and that case is reported as skipped, by name — not silently passed.
+   */
+  overWorker?: (worker: WorkerRuntime) => ExecutionDispatcher;
+}
+
 /**
  * The ExecutionDispatcher contract (`@loom/dispatcher`): dispatch a package to a terminal
- * result, report health, and accept a cancel without throwing.
+ * result, report health, and accept a cancel without throwing — and (1.1.0, with
+ * `options.overWorker`) never retry a superseded refusal.
  */
 export function runExecutionDispatcherConformance(
   factory: () => ExecutionDispatcher,
-  label = "ExecutionDispatcher"
+  label = "ExecutionDispatcher",
+  options: ExecutionDispatcherConformanceOptions = {}
 ): void {
   describe(`${label} conformance (ExecutionDispatcher SPI)`, () => {
     it("dispatch runs a package to a terminal result for the same executionId", async () => {
@@ -872,6 +885,46 @@ export function runExecutionDispatcherConformance(
       const d = factory();
       await expect(d.cancel("nope")).resolves.toBeUndefined();
     });
+
+    const overWorker = options.overWorker;
+    const supersededCase = overWorker === undefined ? it.skip : it;
+    supersededCase(
+      `MUST NOT retry or redispatch a superseded refusal (L20)${overWorker === undefined ? " — NOT CHECKED: pass options.overWorker" : ""}`,
+      async () => {
+        // The three refusal shapes `isSupersededRefusal` accepts, by name (the kit does not
+        // depend on the packages that define them): a lost start race, a fenced-out write, and
+        // the wire form. Each is a settled outcome — another holder owns the execution — and a
+        // retry would fence that holder out (the ping-pong).
+        const refusals = (id: string): Error[] => {
+          const named = (name: string, fields: Record<string, unknown>) => {
+            const e = Object.assign(new Error(name), fields);
+            e.name = name;
+            return e;
+          };
+          return [
+            named("ExecutionAlreadyExistsError", { executionId: id }),
+            named("StorageWriteError", {
+              cause: named("StaleFenceError", { executionId: id, staleFence: 1, currentFence: 2 }),
+            }),
+            named("ExecutionSupersededError", { executionId: id }),
+          ];
+        };
+        for (const [i, refusal] of refusals("exec-superseded").entries()) {
+          let executes = 0;
+          const worker: WorkerRuntime = {
+            allocate: async (r) => ({ leaseId: `l-${r.executionId}-${i}` }),
+            execute: async () => {
+              executes += 1;
+              throw refusal;
+            },
+            release: async () => {},
+          };
+          const d = overWorker!(worker);
+          await expect(d.dispatch(pkg("exec-superseded"))).rejects.toBeDefined();
+          expect(executes, `refusal ${refusal.name} was retried`).toBe(1);
+        }
+      }
+    );
   });
 }
 

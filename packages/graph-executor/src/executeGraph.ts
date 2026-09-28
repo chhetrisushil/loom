@@ -54,6 +54,11 @@ export interface GraphExecution {
  * in a shared, concurrently-written log.
  *
  * The join is the barrier: results are returned only once all branches settle.
+ *
+ * A node whose dispatch is SUPERSEDED (`isSupersededRefusal` from `@loom/worker-runtime` — its
+ * executionId is already owned by another holder, e.g. a duplicate graph run) rejects the join
+ * like any other dispatch error; this function has no store to await it by id. A caller that
+ * re-runs graphs with deterministic ids should catch it and await that node by id.
  */
 export async function executeGraph(
   dispatcher: ExecutionDispatcher,

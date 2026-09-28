@@ -183,3 +183,31 @@ describe("SupervisingDispatcher — superseded refusals (L20)", () => {
     expect(child.calls).toBe(2);
   });
 });
+
+describe("SupervisingDispatcher — a refusal after a genuine failure (L20)", () => {
+  it("still records the earlier failure with the breaker", async () => {
+    const superseded = Object.assign(new Error("lost"), {
+      name: "ExecutionAlreadyExistsError",
+      executionId: "e1",
+    });
+    let calls = 0;
+    const child: ExecutionDispatcher = {
+      async dispatch() {
+        calls += 1;
+        if (calls === 1) throw new Error("transport blip");
+        throw superseded;
+      },
+      async cancel() {},
+      async health() {
+        return { healthy: true, inFlight: 0 };
+      },
+    };
+    const sup = new SupervisingDispatcher(child, {
+      policy: { maxRestarts: 3, circuit: { threshold: 1, cooldownMs: 60_000 } },
+      sleep: noSleep,
+    });
+    await expect(sup.dispatch(pkg())).rejects.toBe(superseded);
+    expect(calls).toBe(2); // the refusal ended it; no third call
+    await expect(sup.dispatch(pkg())).rejects.toBeInstanceOf(CircuitOpenError);
+  });
+});

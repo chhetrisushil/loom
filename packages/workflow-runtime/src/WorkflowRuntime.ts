@@ -50,6 +50,7 @@ import {
   InputValidationError,
   ResumePayloadValidationError,
   ResumeRefusedError,
+  StartFencedOutError,
   StateMigrationError,
   TIMER_FIRED,
 } from "./types";
@@ -1191,15 +1192,26 @@ export class WorkflowRuntime {
    * `CoalescingEventStore` rejects every caller in a failed batch with the same error, so a
    * fresh id that shared a batch with a real duplicate receives the duplicate's
    * `DuplicateSequenceError` while nothing of its own was written (the batch is
-   * all-or-nothing). And `err.executionId` cannot tell the cases apart: a scoping decorator
-   * reports the id it wrote (tenant-prefixed), not the caller's. So: read sequence 0 back; if
-   * it is absent, the conflict was someone else's — retry the append ONCE, alone.
+   * all-or-nothing). And `err.executionId` cannot tell the cases apart: in a coalesced batch it
+   * names whichever writer failed the batch, not necessarily this one. (A scoping decorator
+   * reports the caller's id — `TenantScopedEventStore` unscopes its refusals, L20 — but that
+   * does not help with a batch-mate's error.) So: read sequence 0 back; if it is absent, the
+   * conflict was someone else's — retry the append ONCE, alone.
    *
    * A {@link StaleFenceError} is treated the same way (L12): an existing execution that has
    * been fenced refuses a duplicate's sequence 0 on the fence before the slot, so it is
    * {@link ExecutionAlreadyExistsError} when sequence 0 reads back, and otherwise (a token
    * acquired for an id nobody has written, or a batch-mate's zombie write) a single retry and
    * then {@link StorageWriteError}.
+   *
+   * L20 — when BOTH tries were refused on the fence and sequence 0 is still absent, the cause is
+   * {@link StartFencedOutError}, never the bare `StaleFenceError`. A newer token exists but its
+   * holder has written nothing — it may have died between `acquireFence` and its bootstrap — so
+   * this is not "another holder owns the execution": a dispatcher must be free to retry (the
+   * retry takes a newer fence and starts; nothing ran, so it is cheap). Were it the bare stale
+   * fence, `isSupersededRefusal` would settle the dispatch and the start would be lost outright:
+   * an empty log that no recovery pass can see. A LIVE racer that later writes sequence 0 makes
+   * the retry lose cleanly as {@link ExecutionAlreadyExistsError}.
    */
   private async writeBootstrap(
     executionId: string,
@@ -1242,7 +1254,11 @@ export class WorkflowRuntime {
           return refuse(readErr);
         }
         if (exists) throw new ExecutionAlreadyExistsError(executionId, err);
-        if (attempt === 1) return refuse(err); // conflicted twice with no sequence 0 of ours
+        if (attempt === 1) {
+          // Conflicted twice with no sequence 0 of ours. A stale fence here names a holder that
+          // has written nothing, so it must stay retryable (L20): re-cause it.
+          return refuse(isStaleFence(err) ? new StartFencedOutError(executionId, err) : err);
+        }
       }
     }
     /* c8 ignore next */
