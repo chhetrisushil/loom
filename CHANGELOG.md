@@ -52,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `TIMER_FIRED` at its wake time, after any approval/`resumeAs` fact), with nothing above it.
     An assigned range once re-homed is reported `rehomed`, not unattributed again. Shredded
     placeholders (key of `""` gone) are refused. A
-    healthy execution can therefore never be assigned a stray run. `occupied`, `superseded` and
+    healthy execution can never be assigned a stray run. `occupied`, `superseded` and
     `conflict` segments are refused. Each execution's slots land in one batch. A fenced
     execution is written under a new fence, and a never-fenced one stays unfenced. An execution
     that changed since the census is reported in `failed` without stopping the others. A
