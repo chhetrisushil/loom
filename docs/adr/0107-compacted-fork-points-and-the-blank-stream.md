@@ -170,7 +170,14 @@ is a dry run unless `apply: true`. It is exposed as
     stray run onto it (review round 1);
   - nothing of X's sits above that seed, because an execution that moved past it abandoned that
     continuation;
-  - the seed is parked at a gate, and the range opens with the resume answering it;
+  - the seed is parked at a gate, and the range opens with a resume answering THAT park, the
+    way the kernel records one:
+    - optional prefix facts: a verified approval (`APPROVAL_GRANTED`), a discarded legacy
+      answer (`DECISION_RECORDED`), or a `resumeAs` migration (`EXECUTION_MIGRATED`);
+    - then the answer itself: the awaited event, including `EffectInDoubtResolved` for an
+      in-doubt park, or `TIMER_FIRED` carrying exactly the park's `wakeAt`;
+    - then, for an in-doubt park only, the verdict (`DECISION_RECORDED`);
+    - then `EXECUTION_RESUMED`;
   - the range folds onto the seed contiguously.
 
   A range that fails any check is `invalid`, with the reason.
@@ -195,7 +202,14 @@ is a dry run unless `apply: true`. It is exposed as
 - **Encryption.** A pre-0106 `EncryptingEventStore` encrypted the stray events under the key
   of subject `""`. Read through the app's stores (`--config`) they decrypt, and re-homing
   re-encrypts them under X's key. Read raw (`--db`), their payloads are ciphertext: the census
-  reports `ciphertext: true`, and applying is refused before anything is written.
+  reports `ciphertext: true`, and applying is refused before anything is written. If the key of
+  `""` is already gone, a tolerant store reads `{ $shredded: true }` placeholders. The census
+  reports `shredded: true` and applying is refused: those payloads are unrecoverable, and
+  placeholders are not history.
+- **Re-homed assignments stay accounted for.** An assigned range an earlier run re-homed has no
+  snapshot proof, so the census would list it as unattributed again. Before listing a run, the
+  census checks each candidate's log over it. A stretch holding every slot's `rehomedFrom` twin
+  is reported as the `rehomed` operator segment it is.
 - **What the repair does not do**, which the command prints after an apply:
   - Read models and projections never saw the re-homed events (the repair has no `onEvent`,
     and a caught-up watermark sits above them), and rows indexed under `""` remain. Purge the

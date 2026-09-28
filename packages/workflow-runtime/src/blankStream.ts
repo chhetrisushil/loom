@@ -5,9 +5,11 @@ import {
   headOf,
   isReservedStream,
   iterateExecutionIds,
+  readRangeOf,
 } from "@loom/event-runtime";
 import { ReplayVM, normalizeSnapshotState } from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
+import { TIMER_FIRED } from "./types";
 
 // ── ADR 0107 — the blank stream the pre-0106 compaction bug wrote ─────────────
 //
@@ -108,6 +110,13 @@ export interface BlankStreamCensus {
    * the app's own (encrypting) stores.
    */
   ciphertext: boolean;
+  /**
+   * The blank stream's events carry `{ $shredded: true }` placeholders: a tolerant encrypting
+   * store whose key for subject `""` is gone. Their payloads are unrecoverable, and copying the
+   * placeholders into an execution would record a fabricated history, so a repair refuses to
+   * apply.
+   */
+  shredded: boolean;
 }
 
 /** An operator's assertion that `[fromSequence, throughSequence]` of `""` is `executionId`'s. */
@@ -142,17 +151,58 @@ const isBlank = (s: Snapshot): boolean => s.state.executionId === "";
 
 const statusOf = (s: Snapshot): ExecutionState["status"] => normalizeSnapshotState(s.state).status;
 
-/** The field-level ciphertext envelope `@loom/plugin-crypto` writes, found anywhere in `v`. */
-function carriesCiphertext(v: unknown): boolean {
+/**
+ * Whether `v` holds an object with `key` anywhere: the field-level ciphertext envelope
+ * `@loom/plugin-crypto` writes (`__loomEnc`), or the placeholder a tolerant read leaves for a
+ * destroyed key (`$shredded`).
+ */
+function carriesKey(v: unknown, key: "__loomEnc" | "$shredded"): boolean {
   const stack: unknown[] = [v];
   // Bounded: a payload is plain JSON, and the walk is iterative, so depth cannot blow the stack.
   for (let budget = 100_000; stack.length > 0 && budget > 0; budget--) {
     const x = stack.pop();
     if (typeof x !== "object" || x === null) continue;
-    if ((x as { __loomEnc?: unknown }).__loomEnc !== undefined) return true;
+    if ((x as Record<string, unknown>)[key] !== undefined) return true;
     for (const child of Object.values(x)) stack.push(child);
   }
   return false;
+}
+
+/**
+ * Kernel facts a resume records BEFORE its answer: a verified approval, a discarded legacy
+ * answer, a `resumeAs` migration.
+ */
+const RESUME_PREFIX = new Set(["APPROVAL_GRANTED", "DECISION_RECORDED", "EXECUTION_MIGRATED"]);
+
+/**
+ * Why `events` does NOT open with a resume that answers the park `seed` records, or
+ * `undefined` when it does. What a pre-0106 resume wrote, in order: optional prefix facts
+ * (`RESUME_PREFIX`), the answer, an in-doubt verdict (`DECISION_RECORDED`) only when the park
+ * is in doubt, then `EXECUTION_RESUMED`. The answer is the event the park waits on
+ * (`suspendedOn.on`, which is `EffectInDoubtResolved` for an in-doubt park), or `TIMER_FIRED`
+ * carrying exactly the park's recorded `wakeAt`.
+ */
+function answersPark(seed: ExecutionState, events: readonly EventEnvelope[]): string | undefined {
+  const park = seed.status === "suspended" ? seed.suspendedOn : undefined;
+  if (park === undefined) return "it is not parked at a gate";
+  let i = 0;
+  while (i < events.length && RESUME_PREFIX.has(events[i]!.eventType)) i++;
+  const answer = events[i];
+  const wakeAt = (answer?.payload as { wakeAt?: unknown } | null | undefined)?.wakeAt;
+  const answers =
+    answer !== undefined &&
+    (answer.eventType === park.on ||
+      (answer.eventType === TIMER_FIRED && park.wakeAt !== undefined && wakeAt === park.wakeAt));
+  const expected = `"${park.on}"${park.wakeAt !== undefined ? ` or ${TIMER_FIRED} at ${park.wakeAt}` : ""}`;
+  if (!answers) {
+    return `the range must open with the resume answering its gate (${expected}); it opens with ${answer?.eventType ?? "nothing"}`;
+  }
+  let j = i + 1;
+  if (park.on === "EffectInDoubtResolved" && events[j]?.eventType === "DECISION_RECORDED") j++;
+  if (events[j]?.eventType !== "EXECUTION_RESUMED") {
+    return `the answer to ${expected} is not followed by EXECUTION_RESUMED, as every resume records it`;
+  }
+  return undefined;
 }
 
 /**
@@ -226,7 +276,8 @@ export async function planBlankStreamRepair(
     affected: [],
     segments: [],
     unattributed: [],
-    ciphertext: strayEvents.some((e) => carriesCiphertext(e.payload)),
+    ciphertext: strayEvents.some((e) => carriesKey(e.payload, "__loomEnc")),
+    shredded: strayEvents.some((e) => carriesKey(e.payload, "$shredded")),
   };
   const missing = new Map<BlankStreamSegment, number[]>();
   const workflowIdOf = new Map<string, string>();
@@ -338,6 +389,7 @@ export async function planBlankStreamRepair(
     if (seg.status === "conflict" || seg.status === "invalid") continue;
     for (let q = seg.fromSequence; q <= seg.throughSequence; q++) covered.add(q);
   }
+  const runs: UnattributedRun[] = [];
   let run: UnattributedRun | undefined;
   for (const e of strayEvents) {
     if (covered.has(e.sequence)) {
@@ -354,13 +406,63 @@ export async function planBlankStreamRepair(
         eventTypes: [e.eventType],
         candidates: blankAt.get(e.sequence - 1) ?? [],
       };
-      census.unattributed.push(run);
+      runs.push(run);
     }
+  }
+  // An operator-assigned range an earlier run re-homed is no proof's, so it reaches here. It is
+  // not unattributed: a candidate's log holds every slot's `rehomedFrom` twin. It is reported as
+  // the `rehomed` operator segment it is, and only the rest of the run stays listed.
+  for (const r of runs) {
+    const rest = await recogniseRehomed(eventStore, stray, r, blankAt, census.segments);
+    if (rest !== undefined) census.unattributed.push(rest);
   }
   census.segments.sort(
     (a, b) => a.fromSequence - b.fromSequence || a.executionId.localeCompare(b.executionId)
   );
   return { census, stray, missing, workflowIdOf, tipOf };
+}
+
+/**
+ * The part of an unattributed run left after a leading stretch some candidate already holds as
+ * re-homed twins (pushed onto `segments` as a `rehomed` operator segment), or `undefined` when
+ * the whole run is accounted for. One log range read per candidate.
+ */
+async function recogniseRehomed(
+  eventStore: EventStore,
+  stray: ReadonlyMap<number, EventEnvelope>,
+  run: UnattributedRun,
+  blankAt: ReadonlyMap<number, string[]>,
+  segments: BlankStreamSegment[]
+): Promise<UnattributedRun | undefined> {
+  for (const candidate of run.candidates) {
+    const own = await readRangeOf(eventStore, candidate, run.fromSequence, run.throughSequence);
+    let through = run.fromSequence - 1;
+    for (const e of own) {
+      if (
+        e.sequence !== through + 1 ||
+        e.metadata?.[REHOMED_FROM_KEY] !== stray.get(e.sequence)?.id
+      ) {
+        break;
+      }
+      through = e.sequence;
+    }
+    if (through < run.fromSequence) continue;
+    segments.push({
+      executionId: candidate,
+      fromSequence: run.fromSequence,
+      throughSequence: through,
+      proof: "operator",
+      status: "rehomed",
+    });
+    if (through === run.throughSequence) return undefined;
+    return {
+      fromSequence: through + 1,
+      throughSequence: run.throughSequence,
+      eventTypes: run.eventTypes.slice(through + 1 - run.fromSequence),
+      candidates: blankAt.get(through) ?? [],
+    };
+  }
+  return run;
 }
 
 /** Check an operator assignment; the result carries its status (`rehomable` or `invalid`). */
@@ -422,11 +524,9 @@ async function assess(
     );
   }
   const seedState = normalizeSnapshotState(seed.state);
-  const gate = seedState.status === "suspended" ? seedState.suspendedOn?.on : undefined;
-  if (gate === undefined || events[0]!.eventType !== gate) {
-    return refuse(
-      `the range must open with the resume answering ${a.executionId}'s gate at ${seed.sequence}${gate !== undefined ? ` ("${gate}")` : " (it is not parked at one)"}; it opens with ${events[0]!.eventType}`
-    );
+  const unanswered = answersPark(seedState, events);
+  if (unanswered !== undefined) {
+    return refuse(`${a.executionId} at ${seed.sequence}: ${unanswered}`);
   }
   const folded = new ReplayVM(events, seedState).getState();
   if (folded.sequence !== a.throughSequence) {

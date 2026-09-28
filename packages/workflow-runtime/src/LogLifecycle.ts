@@ -262,6 +262,9 @@ export class LogLifecycle {
   ): Promise<void> {
     // Two lifecycle writers (a retention sweep beside a repair, say) can read the same length.
     // The loser's append is a write conflict and nothing was written, so re-read and retry.
+    // One imprecision, accepted: a `CoalescingEventStore` over a store without `appendBatch`
+    // can hand a caller the conflict of a batch its own fact was part of AND landed in, so the
+    // retry may journal that fact twice. A duplicated audit fact is harmless; a lost one is not.
     for (let attempt = 1; ; attempt++) {
       const prior = await this.eventStore.read(LIFECYCLE_STREAM);
       const fact: EventEnvelope = {
@@ -467,6 +470,11 @@ export class LogLifecycle {
     const rehomed: BlankStreamSegment[] = [];
     const failed: Array<{ executionId: string; error: string }> = [];
     if (opts.apply !== true) return { ...plan.census, rehomed, failed };
+    if (plan.census.shredded) {
+      throw new TypeError(
+        'rehomeBlankStream: the events in execution "" carry { $shredded: true } placeholders — the key they were encrypted under is gone, so their payloads are unrecoverable. Re-homing would write placeholders into an execution\'s history as if they were its events. Nothing was written.'
+      );
+    }
     if (plan.census.ciphertext) {
       throw new TypeError(
         'rehomeBlankStream: the events in execution "" still carry ciphertext as this store reads them. It is the raw store under an encrypting one, and re-homing through it would copy ciphertext under the wrong key. Run the repair through the app\'s own stores (`loom repair blank-stream --config <module>`).'

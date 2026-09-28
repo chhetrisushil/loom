@@ -77,6 +77,12 @@ export function renderBlankStream(
       "    and re-homing through it would copy ciphertext under the wrong key. Use --config."
     );
   }
+  if (census.shredded) {
+    lines.push(
+      '  ⚠ these events carry { $shredded: true } placeholders: the key of subject "" is gone, so',
+      "    their payloads are unrecoverable and nothing will be re-homed."
+    );
+  }
   for (const f of failed) lines.push(`  ✗ ${f.executionId}: ${f.error}`);
   if (apply) {
     lines.push(
@@ -119,6 +125,9 @@ export async function cmdRepairBlankStream(
       result = await lifecycle.rehomeBlankStream({ assign, apply: flags.apply });
     } catch (err) {
       // The library refuses, before writing, to copy events it cannot decrypt.
+      if (err instanceof TypeError && /\$shredded/.test(err.message)) {
+        return `loom repair blank-stream refused --apply (nothing written): the events in "" are shredded placeholders — the key they were encrypted under is gone, and their payloads cannot be recovered.`;
+      }
       if (err instanceof TypeError && /ciphertext/.test(err.message)) {
         return `loom repair blank-stream refused --apply (nothing written): the events in "" are still encrypted as this store reads them. Re-run with --config <module>, whose stores decrypt them.`;
       }

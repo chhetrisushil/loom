@@ -48,7 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `_lifecycle`). Unprovable runs (a completion with no checkpoint) are listed with their
     candidate executions, never attributed. An operator who knows the owner asserts it with
     `--assign`. The assignment is still checked: the execution must hold a pre-0106 snapshot at
-    `from − 1`, parked at the gate the range opens by answering, with nothing above it. A
+    `from − 1`, parked at the gate the range opens by answering (the awaited event, or
+    `TIMER_FIRED` at its wake time, after any approval/`resumeAs` fact), with nothing above it.
+    An assigned range once re-homed is reported `rehomed`, not unattributed again. Shredded
+    placeholders (key of `""` gone) are refused. A
     healthy execution can therefore never be assigned a stray run. `occupied`, `superseded` and
     `conflict` segments are refused. Each execution's slots land in one batch. A fenced
     execution is written under a new fence, and a never-fenced one stays unfenced. An execution

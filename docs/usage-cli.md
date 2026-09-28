@@ -698,9 +698,11 @@ stray events. With `--config`, `--db`/`--snap` are not needed.
   nothing that names its writer. Such a range is printed as `UNATTRIBUTED`, with the executions
   parked at the sequence just below it. If your own records say whose it is, assert it with
   `--assign <executionId>:<from>-<through>`. The execution must hold a pre-0106 (blank)
-  snapshot at `<from − 1>`, parked at the gate the range's first event answers, with nothing of
-  its own above it, and the range must fold onto it. A healthy execution can never be assigned
-  a stray run.
+  snapshot at `<from − 1>`, with nothing of its own above it. That snapshot must be parked at a
+  gate the range opens by answering: with the awaited event, or `TIMER_FIRED` at the park's
+  wake time, after any approval or `resumeAs` migration fact. The range must also fold onto the
+  snapshot. A healthy execution can never be assigned a stray run. Once re-homed, an assigned
+  range is reported as `rehomed`, and the census does not list it again.
 - **Refused, with a reason:**
   - `occupied`: the execution's own log already has an event there, e.g. a pre-0106 denial in
     the checkpoint's slot;
@@ -711,7 +713,9 @@ stray events. With `--config`, `--db`/`--snap` are not needed.
   An execution that changed between the census and the apply is reported as failed and left
   alone, and the others proceed.
 - **Encrypted stores.** Through `--db` the stray payloads are ciphertext the command cannot
-  read. It says so, and refuses `--apply` before writing anything. Use `--config`.
+  read. It says so, and refuses `--apply` before writing anything. Use `--config`. If the key of
+  subject `""` has already been destroyed, the payloads are shredded placeholders, and nothing
+  is re-homed.
 
 Run it with the affected executions quiesced and with retention and compaction paused. After
 `--apply`, two things are yours to do, and the command prints both:
