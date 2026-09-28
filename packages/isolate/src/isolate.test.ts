@@ -49,22 +49,23 @@ describe("K7 — isolated execution (child-process boundary)", () => {
   });
 
   it("relays only APPLICATION events: a kernel event type from the child fails the run (ADR 0104)", async () => {
-    for (const eventType of [
-      "DECISION_RECORDED",
-      "RESOURCE_METERED",
-      "EGRESS_DENIED",
-      "STEP_COMPLETED",
-    ]) {
-      const effect = track(makeEffect({ modulePath: fixture("forger.cjs") }));
-      const emit = vi.fn();
-      await expect(
-        effect.execute(
-          { eventType, payload: { decisionId: "approve-refund", choice: true } },
-          makeCtx({ emit })
-        )
-      ).rejects.toThrow(/kernel event type/);
-      expect(emit).not.toHaveBeenCalled();
-    }
+    // One child per forger, run side by side: each refusal kills its child, so these are four
+    // cold forks, and in series they cost four spawn latencies on a loaded host (L18).
+    await Promise.all(
+      ["DECISION_RECORDED", "RESOURCE_METERED", "EGRESS_DENIED", "STEP_COMPLETED"].map(
+        async (eventType) => {
+          const effect = track(makeEffect({ modulePath: fixture("forger.cjs") }));
+          const emit = vi.fn();
+          await expect(
+            effect.execute(
+              { eventType, payload: { decisionId: "approve-refund", choice: true } },
+              makeCtx({ emit })
+            )
+          ).rejects.toThrow(/kernel event type/);
+          expect(emit).not.toHaveBeenCalled();
+        }
+      )
+    );
     const ok = track(makeEffect({ modulePath: fixture("forger.cjs") }));
     const emit = vi.fn();
     await ok.execute({ eventType: "TOOL_NOTE", payload: { n: 1 } }, makeCtx({ emit }));
@@ -120,16 +121,36 @@ describe("K7 — isolated execution (child-process boundary)", () => {
 
   it("A5/K8 — the kill path is NON-cooperative: aborting SIGKILLs a hung tool", async () => {
     const effect = track(makeEffect({ modulePath: fixture("hang.cjs") }));
+    effect.warm();
+    // biome-ignore lint/suspicious/noExplicitAny: private field probe — the child the run uses
+    const child = (effect as any).child as import("node:child_process").ChildProcess;
+    const exited = new Promise<NodeJS.Signals | null>((resolve) =>
+      child.once("exit", (_code, signal) => resolve(signal))
+    );
     const controller = new AbortController();
-    const ctx = makeCtx({ signal: controller.signal });
-
-    const started = Date.now();
+    // Abort once the tool is provably RUNNING (it emits before it hangs), not on a timer that a
+    // loaded host may fire before the child has even booted.
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const ctx = makeCtx({
+      signal: controller.signal,
+      emit: vi.fn((type: string) => {
+        if (type === "TOOL_ENTERED") markEntered();
+      }),
+    });
     const pending = effect.execute({}, ctx);
     pending.catch(() => {});
-    setTimeout(() => controller.abort(new Error("operator kill")), 30);
 
+    await entered;
+    controller.abort(new Error("operator kill"));
+
+    // The tool never settles on its own, so a settlement at all is the boundary ending it; the
+    // SIGKILL is what makes that non-cooperative. (This used to assert < 1 s of wall clock from
+    // spawn, which a saturated host exceeded without anything being wrong — L18.)
     await expect(pending).rejects.toThrow(/operator kill/);
-    expect(Date.now() - started).toBeLessThan(1000);
+    expect(await exited).toBe("SIGKILL");
   });
 
   it("timeoutMs reclaims a hung tool without any signal", async () => {

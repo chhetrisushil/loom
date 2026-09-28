@@ -1,6 +1,11 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
+import { EffectRuntime } from "@loom/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
+import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
+import { WorkflowRuntime } from "./WorkflowRuntime";
 import { classifyStrayPassthroughs, inspectStrayPassthroughs } from "./strayPassthroughs";
 
 // ADR 0104 D2 — which pre-0104 logs carry a passthrough that answered no gate, and whether
@@ -180,12 +185,12 @@ describe("human parks prove nothing consumed (ADR 0104, fix round 2)", () => {
 });
 
 describe("the runtime warns once per execution and verdict (ADR 0104)", () => {
+  // The runtime is imported at the top of the file, not inside this test (L18). Its work here
+  // is ~3 ms; loading it — WorkflowRuntime's whole source graph through vite's transform — is
+  // 250–600 ms on a busy host and measured past 5 s under a saturated full-suite run, and a
+  // dynamic import inside the body charged all of it to this test's hang detector. At module
+  // scope it is collection cost, which vitest does not time out.
   it("at-risk on the recovery that will spend it, passed afterwards, then silence", async () => {
-    const { EffectRuntime } = await import("@loom/effect-runtime");
-    const { InMemoryAsyncEventStore } = await import("@loom/event-runtime");
-    const { InMemoryAsyncSnapshotStore } = await import("@loom/snapshot-runtime");
-    const { WorkflowRuntime } = await import("./WorkflowRuntime");
-    const { z } = await import("zod");
     const io = z.object({}).passthrough();
     const eventStore = new InMemoryAsyncEventStore();
     const warnings: string[] = [];

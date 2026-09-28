@@ -60,22 +60,45 @@ describe("cross-seam cancellation (orchestrator → HTTP worker, K8.5)", () => {
   let eventStore: SqliteEventStore;
   let server: WorkerServer;
   let remote: RemoteWorkerRuntime;
+  // Barriers on the effect itself (L18): `entered` resolves when the hang tool is running on the
+  // worker — the moment the cancel must reach — and `severed` when the abort arrives inside it.
+  // They replace a poll of the store that gave up silently after ~2 s and a wall-clock bound
+  // that a saturated host exceeded with nothing wrong.
+  let entered: Map<string, Promise<void>>;
+  let severed: Set<string>;
+  let markEntered: Map<string, () => void>;
+  const enteredFor = (executionId: string): Promise<void> => {
+    let p = entered.get(executionId);
+    if (p === undefined) {
+      p = new Promise<void>((resolve) => markEntered.set(executionId, resolve));
+      entered.set(executionId, p);
+    }
+    return p;
+  };
 
   beforeEach(async () => {
     dbDir = mkdtempSync(join(tmpdir(), "loom-xseam-"));
+    entered = new Map();
+    severed = new Set();
+    markEntered = new Map();
     const effectRuntime = new EffectRuntime();
     effectRuntime.register(
       "hang-tool",
-      new ToolEffect(
-        (_i: unknown, ctx: EffectContext) =>
-          new Promise((_, reject) => {
-            ctx.signal?.addEventListener(
-              "abort",
-              () => reject(ctx.signal?.reason ?? new Error("aborted")),
-              { once: true }
-            );
-          })
-      )
+      new ToolEffect((_i: unknown, ctx: EffectContext) => {
+        const running = new Promise((_, reject) => {
+          ctx.signal?.addEventListener(
+            "abort",
+            () => {
+              severed.add(ctx.executionId);
+              reject(ctx.signal?.reason ?? new Error("aborted"));
+            },
+            { once: true }
+          );
+        });
+        void enteredFor(ctx.executionId);
+        markEntered.get(ctx.executionId)?.();
+        return running;
+      })
     );
 
     eventStore = new SqliteEventStore(join(dbDir, "events.db"));
@@ -96,13 +119,16 @@ describe("cross-seam cancellation (orchestrator → HTTP worker, K8.5)", () => {
     rmSync(dbDir, { recursive: true, force: true });
   });
 
-  async function waitFor(pred: () => Promise<boolean>, tries = 400): Promise<void> {
-    for (let i = 0; i < tries && !(await pred()); i++) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
+  /**
+   * Poll until `pred` holds. Unbounded on purpose: the test's timeout is the hang detector, so a
+   * condition that never holds FAILS rather than falling through to the assertions after it (the
+   * previous helper stopped after 400 tries and returned as if it had seen the condition).
+   */
+  async function until(pred: () => Promise<boolean>): Promise<void> {
+    while (!(await pred())) await new Promise((r) => setTimeout(r, 5));
   }
 
-  it("cancelling on the orchestrator severs the in-flight effect on the remote worker in <1s", async () => {
+  it("cancelling on the orchestrator severs the in-flight effect on the remote worker", async () => {
     const lease = await remote.allocate({ executionId: "xc-1" });
     const pending = remote.execute(lease, {
       executionId: "xc-1",
@@ -111,24 +137,24 @@ describe("cross-seam cancellation (orchestrator → HTTP worker, K8.5)", () => {
       input: { n: 1 },
     });
 
-    // The effect is in flight on the worker once STEP_STARTED is durable.
-    await waitFor(async () => {
-      const events = await eventStore.read("xc-1");
-      return events.some((e: EventEnvelope) => e.eventType === "STEP_STARTED");
-    });
+    // The effect is in flight on the worker.
+    await enteredFor("xc-1");
+    expect(severed.has("xc-1")).toBe(false);
 
-    const started = Date.now();
     await expect(remote.cancel("xc-1", "operator kill")).resolves.toBe(true);
 
     // The pending dispatch settles as a normal terminal result — a cancelled
-    // execution is an outcome, not a transport failure to redispatch.
+    // execution is an outcome, not a transport failure to redispatch. The tool
+    // never settles on its own, so this settling at all is the cancel severing it
+    // (and the abort is observed INSIDE the effect, not merely on the durable log).
     const result: ExecutionResult = await pending;
-    expect(Date.now() - started).toBeLessThan(1000);
+    expect(severed.has("xc-1")).toBe(true);
     expect(result.status).toBe("failed");
     expect(result.state.status).toBe("cancelled");
 
-    // Durable-fact settlement on the shared store.
-    await waitFor(async () => (await runtime.loadState("xc-1"))?.status === "cancelled");
+    // Durable-fact settlement on the shared store. A live cancel rejects the caller
+    // at once and drains EXECUTION_CANCELLED behind it, so this is eventual.
+    await until(async () => (await runtime.loadState("xc-1"))?.status === "cancelled");
     const events = await eventStore.read("xc-1");
     expect(events.some((e: EventEnvelope) => e.eventType === "EXECUTION_CANCELLED")).toBe(true);
     expect(events.some((e: EventEnvelope) => e.eventType === "STEP_CANCELLED")).toBe(true);
@@ -143,16 +169,14 @@ describe("cross-seam cancellation (orchestrator → HTTP worker, K8.5)", () => {
       input: { n: 2 },
     });
 
-    await waitFor(async () => {
-      const events = await eventStore.read("xc-2");
-      return events.some((e: EventEnvelope) => e.eventType === "STEP_STARTED");
-    });
+    await enteredFor("xc-2");
 
     await dispatcher.cancel("xc-2");
 
     const result = await pending;
+    expect(severed.has("xc-2")).toBe(true);
     expect(result.state.status).toBe("cancelled");
-    expect((await runtime.loadState("xc-2"))?.status).toBe("cancelled");
+    await until(async () => (await runtime.loadState("xc-2"))?.status === "cancelled");
   });
 
   it("cancel of an execution unknown to the worker returns false (best-effort contract)", async () => {
