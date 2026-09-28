@@ -106,60 +106,79 @@ describe("K12.5 — tenant-scoped paged enumeration (L1: listExecutionsPage is n
     expect(seen).toEqual(["r1", "r2", "r3", "r4", "r5"]);
   });
 
-  it("finds every id even when the store's order interleaves other ids into its range", async () => {
-    // Postgres pages in the database collation, not code-unit order: on an en_US cluster
-    // "a~" sorts before "ab". A scan that stopped at the first id past `acme:` would miss
-    // whatever the collation puts after it. This inner store returns a deliberately
-    // non-code-unit order to prove the decorator never relies on one.
-    const ids = ["acme:r1", "acmex", "acme:r2", "zeta:1", "acme:r3"];
+  it("hands out its OWN ids as cursors, so a caller can resume it from any id (L10)", async () => {
+    // What `ShardedEventStore` does: resume from the last id of a merged page, which it
+    // only ever sees unprefixed. The prefixed inner cursor used to leak out instead.
+    const acme = new TenantScopedEventStore(await seeded(), "acme");
+    const first = await acme.listExecutionsPage!({ limit: 2 });
+    expect(first).toEqual({ executionIds: ["r1", "r2"], nextCursor: "r2" });
+    expect(await acme.listExecutionsPage!({ cursor: "r3", limit: 100 })).toEqual({
+      executionIds: ["r4", "r5"],
+    });
+    // A cursor this tenant never handed out resumes strictly after it, too.
+    expect(await acme.listExecutionsPage!({ cursor: "r25", limit: 100 })).toEqual({
+      executionIds: ["r3", "r4", "r5"],
+    });
+  });
+
+  it("stops at the end of its own range instead of walking the rest of the store", async () => {
+    // SPI 1.6.0 guarantees code point order, where a tenant's ids are contiguous. Counting
+    // inner pages proves the walk ends at the first id past `acme:`, not at the store's end.
     const events = new InMemoryAsyncEventStore();
-    for (const id of ids) await events.append(ev(id, 0));
-    const shuffled = new Proxy(events, {
+    for (const id of ["acme:r1", "acme:r2", ...Array.from({ length: 50 }, (_, i) => `zeta:${i}`)]) {
+      await events.append(ev(id, 0));
+    }
+    let innerPages = 0;
+    const counted = new Proxy(events, {
       get(target, prop, receiver) {
         if (prop === "listExecutionsPage") {
-          return async (opts?: { cursor?: string; limit?: number }) => {
-            const start = opts?.cursor === undefined ? 0 : Number(opts.cursor);
-            const limit = opts?.limit ?? 1000;
-            const executionIds = ids.slice(start, start + limit);
-            const next = start + limit;
-            return next < ids.length
-              ? { executionIds, nextCursor: String(next) }
-              : { executionIds };
+          return (opts?: { cursor?: string; limit?: number }) => {
+            innerPages++;
+            return target.listExecutionsPage(opts);
           };
         }
         return Reflect.get(target, prop, receiver);
       },
     });
-    const acme = new TenantScopedEventStore(shuffled, "acme");
-    const seen: string[] = [];
-    let cursor: string | undefined;
-    for (;;) {
-      const page = await acme.listExecutionsPage!({
-        ...(cursor !== undefined && { cursor }),
-        limit: 2,
-      });
-      seen.push(...page.executionIds);
-      if (page.nextCursor === undefined) break;
-      cursor = page.nextCursor;
-    }
-    expect(seen).toEqual(["r1", "r2", "r3"]);
+    const acme = new TenantScopedEventStore(counted, "acme");
+    expect(await acme.listExecutionsPage!({ limit: 5 })).toEqual({ executionIds: ["r1", "r2"] });
+    expect(innerPages).toBe(1);
+  });
+
+  it("finds its blank stream and skips a tenant whose name it prefixes", async () => {
+    // "acme-corp:…" sorts BETWEEN "acme" and "acme:" ('-' < ':'), and "acme:" itself is the
+    // tenant's blank stream (executionId ""), which repair must still be able to enumerate.
+    const events = new InMemoryAsyncEventStore();
+    for (const id of ["acme-corp:x", "acme:", "acme:r1", "acmex"]) await events.append(ev(id, 0));
+    const acme = new TenantScopedEventStore(events, "acme");
+    expect(await acme.listExecutionsPage!({ limit: 1 })).toEqual({
+      executionIds: [""],
+      nextCursor: "",
+    });
+    expect(await acme.listExecutionsPage!({ cursor: "", limit: 1 })).toEqual({
+      executionIds: ["r1"],
+      nextCursor: "r1",
+    });
+    expect(await acme.listExecutionsPage!({ cursor: "r1", limit: 1 })).toEqual({
+      executionIds: [],
+    });
   });
 
   it("refuses a non-advancing inner cursor instead of spinning", async () => {
     const events = new InMemoryAsyncEventStore();
-    await events.append(ev("other:1", 0));
+    await events.append(ev("acme-corp:1", 0));
     const stuck = new Proxy(events, {
       get(target, prop, receiver) {
         if (prop === "listExecutionsPage") {
-          return async () => ({ executionIds: ["other:1"], nextCursor: "same" });
+          // Another tenant's id (inside the walked gap, so not "past" acme) and a cursor that
+          // never moves off where this decorator started.
+          return async () => ({ executionIds: ["acme-corp:1"], nextCursor: "acme" });
         }
         return Reflect.get(target, prop, receiver);
       },
     });
     const acme = new TenantScopedEventStore(stuck, "acme");
-    await expect(acme.listExecutionsPage!({ cursor: "same", limit: 1 })).rejects.toThrow(
-      /non-advancing cursor/
-    );
+    await expect(acme.listExecutionsPage!({ limit: 1 })).rejects.toThrow(/non-advancing cursor/);
   });
 
   it("an empty tenant pages to an empty, final result", async () => {

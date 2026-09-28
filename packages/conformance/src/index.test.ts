@@ -125,6 +125,20 @@ runEventStoreConformance(
     ]),
   "Sharded(Coalescing(InMemory))"
 );
+// L10 — the composition `TenantScopedEventStore`'s docs name ("Sharded(TenantScoped(…))").
+// Sharding resumes every shard from the merged page's last id, so each tenant-scoped shard
+// must read its cursor as an OUTER (unprefixed) id; handing the inner, prefixed cursor back
+// out made this composition re-serve its first page forever.
+runEventStoreConformance(
+  () =>
+    new ShardedEventStore(
+      Array.from(
+        { length: 3 },
+        () => new TenantScopedEventStore(new InMemoryAsyncEventStore(), "acme")
+      )
+    ),
+  "Sharded(TenantScoped(InMemory))"
+);
 // ADR 0074 Amendment (L1) — every in-package decorator proves it carries the whole optional
 // SPI through, and passes the full suite THROUGH itself. The plugin decorators (encryption,
 // content, audit chain) and the tools (DST fault store, crash harness) register in their own

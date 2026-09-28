@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ShardedEventStore` over Postgres skipped execution ids when paging** (backlog L10;
+  EventStore SPI **1.6.0**). `listExecutionsPage` promised "lexicographic" order, which names no
+  one order: `PostgresEventStore` paged in the database collation (`en_US.UTF-8` puts `a_b`
+  before `A1`), while `ShardedEventStore` merged shard pages with JavaScript's sort and resumed
+  EVERY shard from the merged page's last id — so each shard skipped the ids that sort after
+  that cursor in one order and before it in the other, and re-served others (reproduced on a
+  PG 17 `en_US.UTF-8` cluster: 17 ids came back as 12 entries — 9 missing, 3 duplicated). Retention, the
+  read-model catch-up and every `iterateExecutionIds` pass over a sharded Postgres log were
+  silently partial. The SPI now pins the order to Unicode **code point** order (= UTF-8 byte
+  order, SQL `COLLATE "C"`, SQLite BINARY — the SQLite store already conformed), says a cursor
+  may be any string and `nextCursor` is the page's last id, and exports the reference
+  comparator `compareExecutionIds` from `@loom/event-runtime` (JavaScript's default sort
+  compares UTF-16 code units, which disagree with code points on astral characters; the
+  in-memory store and the sharded merge now use it). `@loom/plugin-postgres` declares
+  `events.execution_id` `COLLATE "C"` and converts an existing table in place on the next
+  migration (binary-coercible: no table rewrite, but the two `execution_id` indexes are rebuilt
+  under an ACCESS EXCLUSIVE lock once — ~4.5 s per 2M events measured; plan a window for a
+  large log), so paging stays index-only and appends get cheaper (memcmp instead of `strcoll`).
+  Also fixed on the same path: `Sharded(TenantScoped(…))`, the composition
+  `TenantScopedEventStore` documents, re-served its first page forever, because the tenant view
+  handed out its INNER (prefixed) cursor while the sharded merge handed back an outer id; it now
+  speaks outer ids and, with the order pinned, seeks to its tenant's contiguous range and stops
+  at its end instead of walking the whole shared store. The conformance kit gains a code point
+  order + arbitrary-cursor case, and `@loom/plugin-postgres` runs the EventStore kit through
+  `ShardedEventStore` over three real Postgres shards (raw and tenant-scoped).
 - **`@loom/workflow-runtime`: a fenced `TimerService` could pay for a schedule occurrence's
   first effect twice** (backlog L12, closing the "loser's fence" residual of
   [ADR 0103](docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md)). With `fenced: true`

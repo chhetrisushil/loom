@@ -492,17 +492,22 @@ export class PostgresEventStore implements EventStore {
     cursor?: string;
     limit?: number;
   }): Promise<{ executionIds: string[]; nextCursor?: string }> {
-    // SP-1 (SPI 1.2.0) — keyset over idx_events_exec: lexicographic, bounded memory.
+    // SP-1 (SPI 1.2.0) — keyset over idx_events_exec, bounded memory. SPI 1.6.0 (L10): in
+    // code point order, i.e. `COLLATE "C"`, NOT the database's collation — `ShardedEventStore`
+    // merges shard pages in code point order and resumes every shard from the merged page's
+    // last id, so a shard paging in `en_US.UTF-8` order skipped ids. The column is declared
+    // `COLLATE "C"` (schema.ts), so idx_events_exec serves this; the explicit clause keeps the
+    // ORDER correct even on a schema whose column predates that.
     await this.ready;
     const limit = opts?.limit ?? 1000;
     const { rows } =
       opts?.cursor === undefined
         ? await this.pool.query<{ execution_id: string }>(
-            "SELECT DISTINCT execution_id FROM events ORDER BY execution_id LIMIT $1",
+            'SELECT DISTINCT execution_id COLLATE "C" AS execution_id FROM events ORDER BY 1 LIMIT $1',
             [limit + 1]
           )
         : await this.pool.query<{ execution_id: string }>(
-            "SELECT DISTINCT execution_id FROM events WHERE execution_id > $1 ORDER BY execution_id LIMIT $2",
+            'SELECT DISTINCT execution_id COLLATE "C" AS execution_id FROM events WHERE execution_id COLLATE "C" > $1 ORDER BY 1 LIMIT $2',
             [opts.cursor, limit + 1]
           );
     const executionIds = rows.slice(0, limit).map((r) => r.execution_id);

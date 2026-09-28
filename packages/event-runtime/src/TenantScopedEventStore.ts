@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
+import { compareExecutionIds } from "./executionIdOrder";
 import { type DecoratorPlan, installOptional } from "./installOptional";
 import type { EventStore, ExecutionPage, OptionalEventStoreMethod } from "./types";
 
@@ -9,43 +10,49 @@ const SEP = ":"; // ":" is not in the ULID alphabet — an unambiguous, collisio
 /**
  * One tenant's page of a shared store's keyset-paged enumeration.
  *
- * The inner cursor is opaque, so there is no seek to the tenant's range: this pages the inner
- * store, keeps the ids under `prefix` (stripped), and loops until a page yields at least one
- * id or the inner store is exhausted. It passes the inner cursor through unchanged, so the
- * next call resumes exactly where this one stopped.
+ * The cursor is an OUTER id — this tenant's unprefixed executionId — because that is what a
+ * caller holds: `ShardedEventStore` (the ADR 0074 composition, sharding outermost) resumes
+ * every shard from the last id of its MERGED page, which it only ever sees unprefixed. Before
+ * L10 this passed the inner, prefixed cursor out, and got the unprefixed one back in, so
+ * `Sharded(TenantScoped(…))` compared `e-04` against `acme:e-…` and re-served its first page
+ * forever.
  *
- * It deliberately does NOT stop at the first id that sorts past the prefix. That shortcut is
- * sound only if ids sharing a prefix are contiguous, i.e. strict code-unit order — and the
- * Postgres backend pages in the database's collation, where `"a~"` sorts before `"ab"`
- * (measured on a PG 17 `en_US.UTF-8` cluster). A missed id here is a silent partial pass:
- * retention skips an execution, a read model under-indexes. So the cost is O(ids in the
- * store) per full pass — what the whole-list fallback cost before — in bounded memory (one
- * inner page), and correct under any order a store returns.
+ * Since EventStore SPI 1.6.0 every store pages in code point order, where the ids under
+ * `prefix` are CONTIGUOUS. So a page seeks to the tenant (the empty id `prefix` included —
+ * a blank stream is still this tenant's, and repair must be able to find it) and stops at
+ * the first id past the prefix, instead of walking the whole shared store. It seeks to the
+ * bare tenant name rather than `prefix` because the cursor is exclusive; ids between the two
+ * (another tenant named `acme-corp`, say: `-` sorts before `:`) are walked and dropped.
  *
- * Worst case for ONE call: a sparse tenant (few ids spread through a large shared store) can
- * make a single call walk many inner pages — up to the whole store — before it finds an id or
- * the store ends. It does not stop early with an empty page and a cursor, because a non-final
- * page with no ids is not something consumers are written for: `ShardedEventStore`'s
- * scatter-gather reads an empty merged page as the end, so `Sharded(TenantScoped(…))` — the
- * ADR 0074 composition — would silently truncate the enumeration. Memory stays one page.
+ * It does not stop early with an empty page and a cursor: a non-final page with no ids is not
+ * something consumers are written for (`ShardedEventStore` reads an empty merged page as the
+ * end). Memory stays one inner page.
  */
 async function pageWithinPrefix(
   inner: EventStore,
+  tenant: string,
   prefix: string,
   opts: { cursor?: string; limit?: number } | undefined
 ): Promise<ExecutionPage> {
-  let cursor = opts?.cursor;
+  let cursor = opts?.cursor === undefined ? tenant : `${prefix}${opts.cursor}`;
   for (;;) {
     const page = await inner.listExecutionsPage!({
-      ...(cursor !== undefined && { cursor }),
+      cursor,
       ...(opts?.limit !== undefined && { limit: opts.limit }),
     });
     const executionIds: string[] = [];
+    let pastPrefix = false;
     for (const id of page.executionIds) {
       if (id.startsWith(prefix)) executionIds.push(id.slice(prefix.length));
+      // Every id after the tenant's range sorts after `prefix` without starting with it.
+      else if (compareExecutionIds(id, prefix) > 0) {
+        pastPrefix = true;
+        break;
+      }
     }
-    if (page.nextCursor === undefined) return { executionIds };
-    if (executionIds.length > 0) return { executionIds, nextCursor: page.nextCursor };
+    const last = executionIds[executionIds.length - 1];
+    if (pastPrefix || page.nextCursor === undefined) return { executionIds };
+    if (last !== undefined) return { executionIds, nextCursor: last };
     if (page.nextCursor === cursor) {
       // The same guard `iterateExecutionIds` applies — except this loop is internal, so
       // without it a store bug would spin here where no caller could see it.
@@ -116,7 +123,7 @@ export class TenantScopedEventStore implements EventStore {
         (await inner.listExecutions!())
           .filter((id) => id.startsWith(prefix))
           .map((id) => id.slice(prefix.length)),
-      listExecutionsPage: (opts) => pageWithinPrefix(inner, prefix, opts),
+      listExecutionsPage: (opts) => pageWithinPrefix(inner, this.tenant, prefix, opts),
     } satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;
     installOptional<EventStore, OptionalEventStoreMethod>(this, inner, plan);
   }

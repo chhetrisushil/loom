@@ -23,6 +23,14 @@ export type { EventEnvelope };
  *   `LogLifecycle.compact` then can NEVER compact past the first pinned event (it stops just
  *   below it on every pass, and warns): a long-lived execution that records a finding early
  *   keeps an unbounded replay tail on such a store.
+ * 1.6.0: `listExecutionsPage()` ORDER pinned (L10). "Lexicographic" named no one order: a
+ *   Postgres store paged in the database collation (`en_US.UTF-8`: `a_b` < `A1`) while
+ *   `ShardedEventStore` merged in JavaScript's (`A1` < `a_b`), and resuming every shard from
+ *   the merged page's last id skipped executions. Ids now page in Unicode CODE POINT order
+ *   ({@link compareExecutionIds}; = UTF-8 byte order, SQL `COLLATE "C"`, SQLite BINARY), a
+ *   cursor may be any string (the page holds the ids strictly after it), and `nextCursor` is
+ *   the page's last id. No new method: a store that already paged in that order (SQLite, the
+ *   in-memory store on BMP ids) conforms unchanged; the conformance kit checks it.
  *
  * Every optional method is listed in {@link OPTIONAL_EVENT_STORE_METHODS}; adding one here
  * without listing it there is a compile error. `OptionalEventStoreMethod` is derived from this
@@ -32,7 +40,7 @@ export type { EventEnvelope };
  * no plan at all is caught by the decorator conformance kit instead (and the `packages/spec`
  * fitness test makes every in-repo decorator run it).
  */
-export const EVENT_STORE_SPI_VERSION = "1.5.0";
+export const EVENT_STORE_SPI_VERSION = "1.6.0";
 
 /**
  * Reserved-stream prefix. Control facts (retention `__loom_lifecycle__`, erasure
@@ -224,9 +232,12 @@ export interface EventStore {
    */
   listExecutions?(): Promise<string[]>;
   /**
-   * OPTIONAL keyset-paged enumeration (SP-1, SPI 1.2.0): distinct executionIds in
-   * LEXICOGRAPHIC order, `limit` per page, resumed via the opaque `cursor` from the prior
-   * page. Bounded-memory alternative to {@link listExecutions} for maintenance passes
+   * OPTIONAL keyset-paged enumeration (SP-1, SPI 1.2.0): distinct executionIds in Unicode
+   * CODE POINT order (SPI 1.6.0 — {@link compareExecutionIds}; SQL `COLLATE "C"`, never the
+   * database's collation), `limit` per page. `cursor` is an executionId — any string, not
+   * only one this store returned — and the page holds the ids strictly after it; `nextCursor`
+   * is the page's last id. `ShardedEventStore` depends on all three: it merges shard pages in
+   * this order and resumes EVERY shard from the merged page's last id. Bounded-memory alternative to {@link listExecutions} for maintenance passes
    * (retention, the K10.6 sweep, read-model catch-up) over year-scale stores. Executions
    * created DURING iteration whose ids sort before the cursor may be missed — acceptable
    * for periodic maintenance jobs (they are visited on the next pass); do not use this for
