@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { TimerService } from "./TimerService";
 import { WorkflowRuntime } from "./WorkflowRuntime";
+import { recoverAbandoned } from "./recoverAbandoned";
 import type { FlowRunner, RegisteredFlow } from "./types";
 
 // ── T1.2 — schedule$: cron occurrences with deterministic, idempotent starts ──
@@ -40,12 +41,15 @@ function makeFlow(): RegisteredFlow<In, Out> {
   return { definition, runner };
 }
 
-function boot(shared?: {
-  eventStore: InMemoryAsyncEventStore;
-  snapshotStore: InMemoryAsyncSnapshotStore;
-  timerStore: InMemoryTimerStore;
-}) {
-  const auditFn = vi.fn(async () => ({ done: true }));
+function boot(
+  shared?: {
+    eventStore: InMemoryAsyncEventStore;
+    snapshotStore: InMemoryAsyncSnapshotStore;
+    timerStore: InMemoryTimerStore;
+  },
+  audit: () => Promise<Out> = async () => ({ done: true })
+) {
+  const auditFn = vi.fn(audit);
   const effects = new EffectRuntime();
   effects.register("audit-tool", new ToolEffect(auditFn));
   // Share ONLY the stores — each boot gets its own runtime/effects/spies.
@@ -171,12 +175,10 @@ describe("T1.2 — schedule$ firing", () => {
     expect(events.at(-1)?.eventType).toBe("EXECUTION_COMPLETED");
   });
 
-  it("ADR 0103 — the same race in fenced mode: one execution, one effect; a loser can only lose on the fence", async () => {
-    // Each node acquires a fence before starting, so the loser may be refused as STALE at its
-    // bootstrap (the other node holds the newer token) rather than as a duplicate. Either
-    // way the refusal happens at sequence 0, before the body — no second effect. A stale
-    // fence is still reported to onError: it can also mean the newer holder died before
-    // writing, which the service cannot tell apart from a live winner.
+  it("ADR 0103 — the same race in fenced mode: one execution, one effect, no onError", async () => {
+    // Before L12 each node acquired a fence before starting, so the loser could be refused as
+    // STALE (reported to onError) instead of as a duplicate. A start no longer fences, so the
+    // loser is always refused at sequence 0 as a duplicate: "already started", not an error.
     const a = boot();
     const b = boot(a);
     const onErrorA = vi.fn();
@@ -195,11 +197,78 @@ describe("T1.2 — schedule$ firing", () => {
     await Promise.all([serviceA.tick(occurrence), serviceB.tick(occurrence)]);
 
     expect(a.auditFn.mock.calls.length + b.auditFn.mock.calls.length).toBe(1);
-    for (const [, err] of [...onErrorA.mock.calls, ...onErrorB.mock.calls]) {
-      expect((err as { cause?: { name?: string } }).cause?.name).toBe("StaleFenceError");
-    }
+    expect(onErrorA).not.toHaveBeenCalled();
+    expect(onErrorB).not.toHaveBeenCalled();
     const events = await a.eventStore.read(`audit-schedule@${occurrence}`);
     expect(events.filter((e) => e.eventType === "EXECUTION_STARTED")).toHaveLength(1);
+    expect(events.at(-1)?.eventType).toBe("EXECUTION_COMPLETED");
+  });
+
+  it("ADR 0103 L12 — fenced mode, the loser arrives AFTER the winner's bootstrap: exactly one effect, even after recovery", async () => {
+    // The ordering the stale-at-bootstrap test above cannot reach. B passes the `loadState`
+    // fast path before A has written anything, then stalls; A bootstraps and enters its first
+    // effect; only then does B carry on. Before L12, B's `acquireFence` superseded A's token
+    // at this point: B was refused as a duplicate, but A's next write was refused as STALE, so
+    // A's run died `running` with its effect already paid, and a recovery pass re-drove the
+    // step — a second effect. The start must not touch the fence of an execution it does not
+    // own.
+    let releaseB!: () => void;
+    const bMayProceed = new Promise<void>((r) => {
+      releaseB = r;
+    });
+    let bSettled!: () => void;
+    const bDone = new Promise<void>((r) => {
+      bSettled = r;
+    });
+    const a = boot(undefined, async () => {
+      releaseB(); // A's bootstrap is durable and its body is inside the effect
+      await bDone; // hold the effect open until B has finished its whole attempt
+      return { done: true };
+    });
+    const b = boot(a);
+    const realLoadState = b.runtime.loadState.bind(b.runtime);
+    vi.spyOn(b.runtime, "loadState").mockImplementation(async (id: string) => {
+      const state = await realLoadState(id); // read BEFORE A writes: B sees nothing
+      await bMayProceed;
+      return state;
+    });
+    const onErrorA = vi.fn();
+    const onErrorB = vi.fn();
+    const serviceA = new TimerService(a.runtime, a.timerStore, {
+      schedules: [everyMinute],
+      fenced: true,
+      onError: onErrorA,
+    });
+    const serviceB = new TimerService(b.runtime, b.timerStore, {
+      schedules: [everyMinute],
+      fenced: true,
+      onError: onErrorB,
+    });
+    const occurrence = nextMinute(Date.now());
+    const executionId = `audit-schedule@${occurrence}`;
+
+    const tickB = serviceB.tick(occurrence).finally(() => bSettled());
+    await Promise.all([serviceA.tick(occurrence), tickB]);
+
+    // Whatever the race left behind, a recovery pass must not pay for the step again.
+    const recovery = boot(a);
+    await recoverAbandoned(recovery.runtime, {
+      source: recovery.eventStore,
+      isAbandoned: () => true,
+      fenced: true,
+    });
+
+    const effects =
+      a.auditFn.mock.calls.length +
+      b.auditFn.mock.calls.length +
+      recovery.auditFn.mock.calls.length;
+    expect(effects).toBe(1);
+    expect(b.auditFn).not.toHaveBeenCalled();
+    expect(onErrorA).not.toHaveBeenCalled();
+    expect(onErrorB).not.toHaveBeenCalled(); // B lost as a duplicate: "already started"
+    const events = await a.eventStore.read(executionId);
+    expect(events.filter((e) => e.eventType === "EXECUTION_STARTED")).toHaveLength(1);
+    expect(events.filter((e) => e.eventType === "EXECUTION_RECOVERED")).toHaveLength(0);
     expect(events.at(-1)?.eventType).toBe("EXECUTION_COMPLETED");
   });
 
@@ -216,7 +285,7 @@ describe("T1.2 — schedule$ firing", () => {
     expect(await app.runtime.loadState(`audit-schedule@${nextMinute(past)}`)).toBeNull();
   });
 
-  it("fenced mode stamps schedule starts with a fencing token", async () => {
+  it("L12 — fenced mode does not fence a schedule START; the first later fence still fences its starter out", async () => {
     const app = boot();
     const service = new TimerService(app.runtime, app.timerStore, {
       schedules: [everyMinute],
@@ -224,10 +293,22 @@ describe("T1.2 — schedule$ firing", () => {
     });
 
     const occurrence = nextMinute(Date.now());
+    const executionId = `audit-schedule@${occurrence}`;
     await service.tick(occurrence);
 
-    const events = await app.eventStore.read(`audit-schedule@${occurrence}`);
+    const events = await app.eventStore.read(executionId);
     const started = events.find((e) => e.eventType === "EXECUTION_STARTED");
-    expect((started?.metadata as { fence?: number }).fence).toBe(1);
+    expect(started?.metadata?.fence).toBeUndefined();
+    // The zombie guarantee does not need a start token: once anyone acquires a fence, the
+    // unfenced starter's writes are refused (a fencing store refuses a MISSING token).
+    await app.eventStore.acquireFence(executionId);
+    const last = events.at(-1)!;
+    await expect(
+      app.eventStore.append({
+        ...last,
+        id: `${executionId}-${last.sequence + 1}`,
+        sequence: last.sequence + 1,
+      })
+    ).rejects.toMatchObject({ name: "StaleFenceError" });
   });
 });
