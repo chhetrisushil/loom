@@ -69,10 +69,12 @@ describe("createA2AClientEffect", () => {
       status: "completed",
       artifacts: [{ parts: [{ type: "text", text: "hi" }] }],
     };
-    // No `/tasks/:id` route: a peer that does not keep finished tasks. And an interval long
-    // enough that a client which still polled would fail this test on time, not by luck.
+    // No `/tasks/:id` route: a peer that does not keep finished tasks. `pollIntervalMs: 1`
+    // (not a long interval) so that on old code — which polls anyway — the missing route's
+    // 404 fails this test immediately with a clear assertion, rather than only after old
+    // code's full poll sleep runs out vitest's 5s test timeout.
     peer = await startPeer(done);
-    const effect = createA2AClientEffect(peer.url, { pollIntervalMs: 60_000 });
+    const effect = createA2AClientEffect(peer.url, { pollIntervalMs: 1 });
 
     await expect(effect.execute(task, ctx)).resolves.toEqual(done);
     expect(peer.requests).toEqual(["POST /tasks/send"]);
@@ -81,18 +83,65 @@ describe("createA2AClientEffect", () => {
   it("a failed task in the send answer is terminal too", async () => {
     const failed = { id: "t1", status: "failed", error: "boom" };
     peer = await startPeer(failed);
-    const effect = createA2AClientEffect(peer.url, { pollIntervalMs: 60_000 });
+    const effect = createA2AClientEffect(peer.url, { pollIntervalMs: 1 });
 
     await expect(effect.execute(task, ctx)).resolves.toEqual(failed);
     expect(peer.requests).toEqual(["POST /tasks/send"]);
   });
 
-  it("an id-only (or non-terminal) send answer is still polled", async () => {
+  it("an id-only (status: working) send answer is still polled", async () => {
     const done = { id: "t1", status: "completed", artifacts: [] };
     peer = await startPeer({ id: "t1", status: "working" }, done);
     const effect = createA2AClientEffect(peer.url, { pollIntervalMs: 1 });
 
     await expect(effect.execute(task, ctx)).resolves.toEqual(done);
     expect(peer.requests).toEqual(["POST /tasks/send", "GET /tasks/t1"]);
+  });
+
+  it("a bare { id } send answer (loom's own server) is polled too", async () => {
+    const done = { id: "t1", status: "completed", artifacts: [] };
+    peer = await startPeer({ id: "t1" }, done);
+    const effect = createA2AClientEffect(peer.url, { pollIntervalMs: 1 });
+
+    await expect(effect.execute(task, ctx)).resolves.toEqual(done);
+    expect(peer.requests).toEqual(["POST /tasks/send", "GET /tasks/t1"]);
+  });
+
+  it("encodes a peer-supplied task id before polling for it", async () => {
+    // A peer's `id` goes straight into the poll URL. Unencoded, `../admin` would be collapsed
+    // by URL dot-segment normalization into a request for a completely different route.
+    const weirdId = "../admin";
+    const done = { id: weirdId, status: "completed", artifacts: [] };
+    peer = await startPeer({ id: weirdId }, done);
+    const effect = createA2AClientEffect(peer.url, { pollIntervalMs: 1 });
+
+    await expect(effect.execute(task, ctx)).resolves.toEqual(done);
+    expect(peer.requests).toEqual([
+      "POST /tasks/send",
+      `GET /tasks/${encodeURIComponent(weirdId)}`,
+    ]);
+  });
+
+  describe("a malformed send answer", () => {
+    it("a non-object (string) answer throws a clear error, not a bare TypeError", async () => {
+      peer = await startPeer("abc");
+      const effect = createA2AClientEffect(peer.url, { pollIntervalMs: 1 });
+
+      await expect(effect.execute(task, ctx)).rejects.toThrow("A2A send error: malformed answer");
+    });
+
+    it("a null answer throws a clear error", async () => {
+      peer = await startPeer(null);
+      const effect = createA2AClientEffect(peer.url, { pollIntervalMs: 1 });
+
+      await expect(effect.execute(task, ctx)).rejects.toThrow("A2A send error: malformed answer");
+    });
+
+    it("a terminal answer with no id throws a clear error", async () => {
+      peer = await startPeer({ status: "completed", artifacts: [] });
+      const effect = createA2AClientEffect(peer.url, { pollIntervalMs: 1 });
+
+      await expect(effect.execute(task, ctx)).rejects.toThrow("A2A send error: malformed answer");
+    });
   });
 });

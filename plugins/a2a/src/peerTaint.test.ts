@@ -28,27 +28,40 @@ const CARD = {
 
 interface Fake {
   url: string;
+  requests: string[];
   close: () => Promise<void>;
 }
 
-function startFakePeer(text: string): Promise<Fake> {
+/**
+ * `mode: "fast"` answers `/tasks/send` with the finished task directly (the L18 fast path).
+ * `mode: "polled"` answers send with `{ id: "t1" }` only (loom's own server's 202 shape) and
+ * serves the finished task from `GET /tasks/t1` instead — taint (ADR 0085) is applied in
+ * `A2APeerClient.buildEffect` AFTER the client call resolves, so it must hold on both paths.
+ */
+function startFakePeer(text: string, mode: "fast" | "polled" = "fast"): Promise<Fake> {
+  const requests: string[] = [];
+  const done = {
+    id: "t1",
+    status: "completed",
+    artifacts: [{ parts: [{ type: "text", text }] }],
+  };
   const server = http.createServer((req, res) => {
+    requests.push(`${req.method} ${req.url}`);
     if (req.url?.includes("agent.json") === true) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(CARD));
+      return;
+    }
+    if (req.method === "GET") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(done));
       return;
     }
     const chunks: Uint8Array[] = [];
     req.on("data", (c: Uint8Array) => chunks.push(c));
     req.on("end", () => {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(
-        JSON.stringify({
-          id: "t1",
-          status: "completed",
-          artifacts: [{ parts: [{ type: "text", text }] }],
-        })
-      );
+      res.end(JSON.stringify(mode === "fast" ? done : { id: "t1" }));
     });
   });
   // Loopback by address, not `localhost`: the name costs a resolver round trip per request,
@@ -59,6 +72,7 @@ function startFakePeer(text: string): Promise<Fake> {
       const port = addr !== null && typeof addr === "object" ? addr.port : 0;
       resolve({
         url: `http://127.0.0.1:${port}`,
+        requests,
         close: () => new Promise((r) => server.close(() => r())),
       });
     });
@@ -80,22 +94,32 @@ const ctx = (): EffectContext => ({
 });
 
 describe("A2A peer content on the path to a prompt", () => {
-  it("taints content with the peer's tool id, leaving raw plain", async () => {
-    fake = await startFakePeer(INJECTION);
-    const { effect } = await new A2APeerClient({
-      url: fake.url,
-      toolId: "research-peer",
-      taintResults: true,
-    }).map();
+  describe.each(["fast", "polled"] as const)(
+    "taints content with the peer's tool id (%s)",
+    (mode) => {
+      it("leaving raw plain", async () => {
+        const thisFake = await startFakePeer(INJECTION, mode);
+        fake = thisFake;
+        const { effect } = await new A2APeerClient({
+          url: thisFake.url,
+          toolId: "research-peer",
+          taintResults: true,
+          ...(mode === "polled" ? { pollIntervalMs: 1 } : {}),
+        }).map();
 
-    const out = await effect.execute({ prompt: "go" }, ctx());
-    expect(isTainted(out.content)).toBe(true);
-    expect(taintOf(out.content)?.origin).toBe("a2a:research-peer");
-    expect(unwrapTainted(out.content)).toBe(INJECTION);
-    // `raw` feeds control flow and stays untouched.
-    expect(isTainted(out.raw)).toBe(false);
-    expect(out.raw.status).toBe("completed");
-  });
+        const out = await effect.execute({ prompt: "go" }, ctx());
+        expect(isTainted(out.content)).toBe(true);
+        expect(taintOf(out.content)?.origin).toBe("a2a:research-peer");
+        expect(unwrapTainted(out.content)).toBe(INJECTION);
+        // `raw` feeds control flow and stays untouched.
+        expect(isTainted(out.raw)).toBe(false);
+        expect(out.raw.status).toBe("completed");
+        if (mode === "polled") {
+          expect(thisFake.requests.some((r) => r.startsWith("GET /tasks/"))).toBe(true);
+        }
+      });
+    }
+  );
 
   it("cannot become a system prompt", async () => {
     fake = await startFakePeer(INJECTION);

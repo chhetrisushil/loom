@@ -155,6 +155,44 @@ describe("createA2AServer", () => {
     expect(text).toContain("Echo: hello");
   });
 
+  it("round-trips a task id containing '/' via the encoded GET route", async () => {
+    server = createA2AServer(
+      makeRuntime(),
+      echoFlow,
+      { name: "Echo Agent", version: "1.0.0", capabilities: {}, skills: [] },
+      { port: 0 }
+    );
+    await server.start();
+
+    const weirdId = "weird/id";
+    const task: A2ATask = {
+      id: weirdId,
+      message: { role: "user", parts: [{ type: "text", text: "hello" }] },
+    };
+
+    const sendResp = await fetch(`${server.url}/tasks/send`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(task),
+    });
+    const { id } = (await sendResp.json()) as { id: string };
+    expect(id).toBe(weirdId);
+
+    let result: A2ATaskResult | undefined;
+    for (let i = 0; i < 20; i++) {
+      // A client must percent-encode the id before it becomes a path segment (see
+      // `createA2AClientEffect`); the server's GET route decodes it back to `weirdId` before
+      // looking the task up.
+      const statusResp = await fetch(`${server.url}/tasks/${encodeURIComponent(weirdId)}`);
+      result = (await statusResp.json()) as A2ATaskResult;
+      if (result.status === "completed" || result.status === "failed") break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+
+    expect(result?.status).toBe("completed");
+    expect(result?.id).toBe(weirdId);
+  });
+
   it("returns 404 for unknown tasks", async () => {
     server = createA2AServer(
       makeRuntime(),

@@ -67,6 +67,13 @@ describe("cross-seam cancellation (orchestrator → HTTP worker, K8.5)", () => {
   let entered: Map<string, Promise<void>>;
   let severed: Set<string>;
   let markEntered: Map<string, () => void>;
+  // `until` below polls the fixtures created per-test; if a test itself times out, vitest
+  // abandons that test's async function but the `until` call already in flight keeps running
+  // (it has no awaiter left to cancel it) and goes on calling `runtime.loadState` against a
+  // store `afterEach` is about to close — and, since `runtime`/`eventStore` are outer `let`s
+  // reassigned by the NEXT test's `beforeEach`, against whatever test happens to run after it.
+  // This signal lets an abandoned poll notice and stop.
+  let stopped: AbortController;
   const enteredFor = (executionId: string): Promise<void> => {
     let p = entered.get(executionId);
     if (p === undefined) {
@@ -81,6 +88,7 @@ describe("cross-seam cancellation (orchestrator → HTTP worker, K8.5)", () => {
     entered = new Map();
     severed = new Set();
     markEntered = new Map();
+    stopped = new AbortController();
     const effectRuntime = new EffectRuntime();
     effectRuntime.register(
       "hang-tool",
@@ -115,6 +123,7 @@ describe("cross-seam cancellation (orchestrator → HTTP worker, K8.5)", () => {
   });
 
   afterEach(async () => {
+    stopped.abort();
     await server.stop();
     rmSync(dbDir, { recursive: true, force: true });
   });
@@ -122,10 +131,14 @@ describe("cross-seam cancellation (orchestrator → HTTP worker, K8.5)", () => {
   /**
    * Poll until `pred` holds. Unbounded on purpose: the test's timeout is the hang detector, so a
    * condition that never holds FAILS rather than falling through to the assertions after it (the
-   * previous helper stopped after 400 tries and returned as if it had seen the condition).
+   * previous helper stopped after 400 tries and returned as if it had seen the condition). If the
+   * calling test itself times out, `afterEach` aborts `stopped` so this loop exits on its next
+   * check rather than polling a store `afterEach` just closed (see the comment on `stopped`).
    */
   async function until(pred: () => Promise<boolean>): Promise<void> {
-    while (!(await pred())) await new Promise((r) => setTimeout(r, 5));
+    while (!stopped.signal.aborted && !(await pred())) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
   }
 
   it("cancelling on the orchestrator severs the in-flight effect on the remote worker", async () => {
