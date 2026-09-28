@@ -416,9 +416,11 @@ export class ResumePayloadValidationError extends Error {
 /**
  * Why a resume was refused before anything was appended. Machine-readable so a
  * caller can tell a RETRIABLE refusal from a permanent one without matching on
- * message text — `not-suspended` is the only one worth retrying (a suspend that
- * has not become readable yet on an async store), and `@loom/orchestration`
- * does exactly that when a child outruns its parent's suspend.
+ * message text — `not-suspended` is the only one worth retrying WITH THE SAME EVENT
+ * (a suspend that has not become readable yet on an async store), and
+ * `@loom/orchestration` does exactly that when a child outruns its parent's suspend.
+ * `null-answer-after-parked-failure` is recoverable only with a DIFFERENT event: a
+ * non-null answer to the same gate.
  */
 export type ResumeRefusalReason =
   /** The event type names a kernel event, which only the kernel may write. */

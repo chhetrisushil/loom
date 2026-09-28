@@ -109,8 +109,12 @@ load-bearing, plus the global guardrails that gate every additive capability:
   status-only (fail-closed). A caller's `null` gate answer in that position MUST be refused at
   ingress (`ResumeRefusedError`, `null-answer-after-parked-failure`), nothing appended. A snapshot
   folded before 1.21.0 MUST be read through `normalizeSnapshotState`. For every log and every
-  sequence k, folding the snapshot at k plus the tail MUST equal folding the whole log (for a
-  1.20.0 snapshot: every kernel-written log — see ADR 0105 D4 for the one foreign shape).
+  sequence k, folding the snapshot at k plus the tail MUST equal folding the whole log. For a
+  snapshot written by a pre-1.21.0 fold this holds except for two shapes `normalizeSnapshotState`
+  cannot tell from a genuine failure (ADR 0105 D4): an `EXECUTION_FAILED` without `error` (never
+  kernel-written), and an execution that genuinely failed, was re-opened by `resumeAs` (which
+  keeps the stale `_error`) and then caught a step failure. The remedy for both is to delete that
+  execution's snapshots, which makes the log authoritative.
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
   the pinned type set MUST change together. The current version is **1.21.0** — after the
