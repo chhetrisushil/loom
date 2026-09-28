@@ -276,6 +276,40 @@ describe("snapshot + tail ≡ full log for an EXECUTION_FAILED without `error` (
   });
 });
 
+describe("KNOWN GAP (ADR 0105 D4): a failed, re-opened execution's 1.20.0 snapshot", () => {
+  it("keeps `failed` — normalizeSnapshotState cannot tell it from a genuine failure", () => {
+    // Kernel-written: a genuine EXECUTION_FAILED, a 1.20.0 `resumeAs` re-open (EXECUTION_RESUMED
+    // null keeps the stale `_error`), then a step failure the flow caught. A 1.20.0 cadence
+    // snapshot after it holds `failed` WITH `_error`, which is exactly a genuine failure's shape.
+    // Pinned so a future repair shows up here; the remedy is deleting that execution's snapshots.
+    const log = [
+      envelope(0, "EXECUTION_STARTED", { input: {} }),
+      envelope(1, "STEP_STARTED", { stepId: "a" }),
+      envelope(2, "STEP_FAILED", { stepId: "a", error: "x" }),
+      envelope(3, "EXECUTION_FAILED", { error: "Error: x" }),
+      envelope(4, "EXECUTION_MIGRATED", { toFlowId: "f", strategy: "operator-ack" }),
+      envelope(5, "Fix", {}),
+      envelope(6, "EXECUTION_RESUMED", null),
+      envelope(7, "STEP_STARTED", { stepId: "b" }),
+      envelope(8, "STEP_FAILED", { stepId: "b", error: "caught" }),
+      envelope(9, "STEP_STARTED", { stepId: "c" }),
+    ];
+    const full = foldEvents(log);
+    expect(full.status).toBe("running");
+    // The 1.20.0 fold at sequence 8: the current handlers, plus STEP_FAILED → "failed".
+    let legacy = foldEvents([]);
+    for (const e of log.slice(0, 9)) {
+      legacy = foldEvents([e], legacy);
+      if (e.eventType === "STEP_FAILED") legacy = { ...legacy, status: "failed" };
+    }
+    const viaSnapshot = foldEvents(log.slice(9), normalizeSnapshotState(legacy));
+    expect(viaSnapshot.status).toBe("failed");
+    expect(viaSnapshot).not.toEqual(full);
+    // Without the snapshot the log is authoritative.
+    expect(foldEvents(log)).toEqual(full);
+  });
+});
+
 describe("normalizeSnapshotState — a snapshot folded before 1.21.0 (ADR 0105)", () => {
   const legacy = {
     executionId: "x-1",

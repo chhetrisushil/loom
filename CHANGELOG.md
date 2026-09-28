@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Snapshots saved by an older fold are repaired on read: `normalizeSnapshotState`
     (`@loom/replay-vm`, new export) reads `failed` with no `_error` and a failed frame as
     `running` (`suspended` when parked) — on every stored-fold read, including `restoreFromState`.
+    Two shapes it cannot tell from a genuine failure, so an old snapshot keeps `failed`: an
+    `EXECUTION_FAILED` without `error` (never kernel-written), and an execution that genuinely
+    failed, was re-opened by `resumeAs` (stale `_error`) and then caught a step failure. Delete
+    that execution's snapshots (`snapshotStore.deleteExecution`) to make the log authoritative.
   - New `reconcileTimers(runtime, { source, timers })` (`@loom/workflow-runtime`) re-arms the
     timer row of every execution suspended on a `wakeAt` (idempotent). Needed once after
     upgrading: a timed park whose sibling failed under the old fold had its row retired by
