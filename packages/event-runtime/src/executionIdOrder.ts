@@ -1,5 +1,5 @@
 /**
- * The ONE order of executionIds that `listExecutionsPage` promises (EventStore SPI 1.6.0):
+ * The ONE order of executionIds that `listExecutionsPage` promises (EventStore SPI 2.0.0, ADR 0108):
  * Unicode code point order — the same as UTF-8 byte order, SQL `COLLATE "C"` and SQLite's
  * BINARY collation, so a SQL backend can serve it from a plain b-tree.
  *

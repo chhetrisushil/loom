@@ -17,7 +17,7 @@ const SEP = ":"; // ":" is not in the ULID alphabet — an unambiguous, collisio
  * `Sharded(TenantScoped(…))` compared `e-04` against `acme:e-…` and re-served its first page
  * forever.
  *
- * Since EventStore SPI 1.6.0 every store pages in code point order, where the ids under
+ * Since EventStore SPI 2.0.0 every store pages in code point order, where the ids under
  * `prefix` are CONTIGUOUS. So a page seeks to the tenant (the empty id `prefix` included —
  * a blank stream is still this tenant's, and repair must be able to find it) and stops at
  * the first id past the prefix, instead of walking the whole shared store. The cursor is

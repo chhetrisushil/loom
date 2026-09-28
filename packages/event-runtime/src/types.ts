@@ -23,14 +23,18 @@ export type { EventEnvelope };
  *   `LogLifecycle.compact` then can NEVER compact past the first pinned event (it stops just
  *   below it on every pass, and warns): a long-lived execution that records a finding early
  *   keeps an unbounded replay tail on such a store.
- * 1.6.0: `listExecutionsPage()` ORDER pinned (L10). "Lexicographic" named no one order: a
- *   Postgres store paged in the database collation (`en_US.UTF-8`: `a_b` < `A1`) while
- *   `ShardedEventStore` merged in JavaScript's (`A1` < `a_b`), and resuming every shard from
- *   the merged page's last id skipped executions. Ids now page in Unicode CODE POINT order
- *   ({@link compareExecutionIds}; = UTF-8 byte order, SQL `COLLATE "C"`, SQLite BINARY), a
- *   cursor may be any string (the page holds the ids strictly after it), and `nextCursor` is
- *   the page's last id. No new method: a store that already paged in that order (SQLite, the
- *   in-memory store on BMP ids) conforms unchanged; the conformance kit checks it.
+ * 2.0.0: `listExecutionsPage()` ORDER and CURSOR pinned (L10, ADR 0108). "Lexicographic"
+ *   named no one order: a Postgres store paged in the database collation (`en_US.UTF-8`:
+ *   `a_b` < `A1`) while `ShardedEventStore` merged in JavaScript's (`A1` < `a_b`), and
+ *   resuming every shard from the merged page's last id skipped executions. Ids now page in
+ *   Unicode CODE POINT order ({@link compareExecutionIds}; = UTF-8 byte order, SQL
+ *   `COLLATE "C"`, SQLite BINARY); the cursor, which was OPAQUE, is now an executionId — any
+ *   string, the page holding the ids strictly after it; and `nextCursor` MUST be the page's
+ *   last id. MAJOR because a conforming 1.x store (any order, any opaque cursor token) can
+ *   fail the kit, and `TenantScopedEventStore`/`ShardedEventStore` now depend on all three —
+ *   the same rule that made MemoryStore 2.0.0 (ADR 0091). No method was added or removed: a
+ *   store that already paged ids in that order with id cursors (SQLite; the in-memory store
+ *   on well-formed BMP ids) conforms unchanged.
  *
  * Every optional method is listed in {@link OPTIONAL_EVENT_STORE_METHODS}; adding one here
  * without listing it there is a compile error. `OptionalEventStoreMethod` is derived from this
@@ -40,7 +44,7 @@ export type { EventEnvelope };
  * no plan at all is caught by the decorator conformance kit instead (and the `packages/spec`
  * fitness test makes every in-repo decorator run it).
  */
-export const EVENT_STORE_SPI_VERSION = "1.6.0";
+export const EVENT_STORE_SPI_VERSION = "2.0.0";
 
 /**
  * Reserved-stream prefix. Control facts (retention `__loom_lifecycle__`, erasure
@@ -233,7 +237,7 @@ export interface EventStore {
   listExecutions?(): Promise<string[]>;
   /**
    * OPTIONAL keyset-paged enumeration (SP-1, SPI 1.2.0): distinct executionIds in Unicode
-   * CODE POINT order (SPI 1.6.0 — {@link compareExecutionIds}; SQL `COLLATE "C"`, never the
+   * CODE POINT order (SPI 2.0.0, ADR 0108 — {@link compareExecutionIds}; SQL `COLLATE "C"`, never the
    * database's collation), `limit` per page. `cursor` is an executionId — any string, not
    * only one this store returned — and the page holds the ids strictly after it; `nextCursor`
    * is the page's last id. `ShardedEventStore` depends on all three: it merges shard pages in

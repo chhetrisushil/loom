@@ -368,7 +368,7 @@ export class ShardedEventStore implements EventStore {
    * cursor; the results are merged and truncated to `limit`, so the caller sees one
    * globally ordered stream and the cursor stays a single id.
    *
-   * Correct ONLY because every shard pages in the SPI's one order (code point, SPI 1.6.0)
+   * Correct ONLY because every shard pages in the SPI's one order (code point, SPI 2.0.0)
    * and accepts any id as a cursor: the merged page's last id is handed back to EVERY shard,
    * including shards that never returned it. A shard paging in another order (a Postgres
    * database collation, before L10) skips the ids that sort after the cursor in one order

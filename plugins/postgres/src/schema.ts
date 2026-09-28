@@ -105,7 +105,7 @@ const DDL = `
       metadata JSONB,
       UNIQUE (execution_id, sequence)
     );
-    -- L10 (EventStore SPI 1.6.0): execution ids page in code point order, which is
+    -- L10 (EventStore SPI 2.0.0, ADR 0108): execution ids page in code point order, which is
     -- COLLATE "C", never the database's collation. A table created before L10 inherited the
     -- database collation (en_US.UTF-8 on most clusters), so ShardedEventStore's merge, which
     -- is in code point order, skipped ids. Converting the column in place is binary-coercible

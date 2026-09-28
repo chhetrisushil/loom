@@ -122,7 +122,7 @@ describe("K12.5 — tenant-scoped paged enumeration (L1: listExecutionsPage is n
   });
 
   it("stops at the end of its own range instead of walking the rest of the store", async () => {
-    // SPI 1.6.0 guarantees code point order, where a tenant's ids are contiguous. Counting
+    // SPI 2.0.0 guarantees code point order, where a tenant's ids are contiguous. Counting
     // inner pages proves the walk ends at the first id past `acme:`, not at the store's end.
     const events = new InMemoryAsyncEventStore();
     for (const id of ["acme:r1", "acme:r2", ...Array.from({ length: 50 }, (_, i) => `zeta:${i}`)]) {

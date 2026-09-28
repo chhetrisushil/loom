@@ -5,7 +5,7 @@ import { compareExecutionIds } from "./executionIdOrder";
 const utf8 = (a: string, b: string): number =>
   Math.sign(Buffer.compare(Buffer.from(a, "utf8"), Buffer.from(b, "utf8")));
 
-describe("compareExecutionIds — code point order (EventStore SPI 1.6.0)", () => {
+describe("compareExecutionIds — code point order (EventStore SPI 2.0.0)", () => {
   it("agrees with UTF-8 byte order where JavaScript's default order does not", () => {
     // U+FF01 vs U+1F600: code units say the astral char is SMALLER (0xD83D < 0xFF01).
     expect("\u{1f600}" < "！").toBe(true);

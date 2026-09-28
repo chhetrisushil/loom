@@ -267,7 +267,7 @@ export class InMemoryAsyncEventStore implements EventStore {
     await this.tick();
     const limit = opts?.limit ?? 1000;
     const cursor = opts?.cursor;
-    // SPI 1.6.0 — code point order, and the cursor may be any string: binary-search the
+    // SPI 2.0.0 — code point order, and the cursor may be any string: binary-search the
     // first id strictly after it.
     this.sortedIds ??= [...this.log.keys()].sort(compareExecutionIds);
     const sorted = this.sortedIds;

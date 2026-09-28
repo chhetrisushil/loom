@@ -502,7 +502,7 @@ export class PostgresEventStore implements EventStore {
     cursor?: string;
     limit?: number;
   }): Promise<{ executionIds: string[]; nextCursor?: string }> {
-    // SP-1 (SPI 1.2.0) — keyset over idx_events_exec, bounded memory. SPI 1.6.0 (L10): in
+    // SP-1 (SPI 1.2.0) — keyset over idx_events_exec, bounded memory. SPI 2.0.0 (L10, ADR 0108): in
     // code point order, i.e. `COLLATE "C"`, NOT the database's collation — `ShardedEventStore`
     // merges shard pages in code point order and resumes every shard from the merged page's
     // last id, so a shard paging in `en_US.UTF-8` order skipped ids. The column is declared
