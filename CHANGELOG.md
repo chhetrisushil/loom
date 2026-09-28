@@ -19,17 +19,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass re-drove the step. Occurrence starts are now never fenced. The durable bootstrap
   already refuses the duplicate at sequence 0, and the first later fence (a fenced wake or a
   recovery pass) still fences the unfenced starter out, because a fencing store refuses a
-  missing token once one exists. Fires (resumes) are still fenced. A deterministic test pins
-  exactly one effect across the race and a recovery pass. As a consequence, the other
-  ordering no longer reaches `onError` either: the loser is always refused as "already
-  started".
+  missing token once one exists (a new single-`append` conformance case pins that branch).
+  So under `fenced: true` a scheduled execution accepts unfenced writes until its first fence
+  (a fenced fire, a fenced recovery pass, a cancel). A deterministic test pins exactly one
+  effect across the race and a recovery pass. As a consequence, the other ordering no longer
+  reaches `onError` either: the loser is always refused as "already started". Fires
+  (resumes) are still fenced, which keeps a duplicate fire's writes safe but NOT its effects
+  exactly-once: without `leases` (#380) a later node's fire token fences out an earlier
+  node's resume mid-body, recorded as an open residual in ADR 0103. The dispatcher path
+  (`LocalWorkerRuntime`) fences before it checks existence, so a racing first dispatch never
+  supersedes a live winner; a test pins it.
 
   `start()` with a caller-chosen id now confirms a `StaleFenceError` at sequence 0 the same way
   it confirms a conflict. If sequence 0 reads back, the id belongs to an existing execution
   that has since been fenced, and the start throws `ExecutionAlreadyExistsError` (it used to
   throw `StorageWriteError`). If sequence 0 is absent, the start retries once alone, so a
   fresh start that shared a `CoalescingEventStore` batch with a zombie's stale write still
-  runs. Then it throws `StorageWriteError`. The `acquireFence` JSDoc no longer recommends
+  runs. Then it throws `StorageWriteError`. The retry is now truly alone: it goes out as a
+  one-envelope `appendBatch`, which a `CoalescingEventStore` flushes as its own batch. Before,
+  it re-entered the coalescing queue, so two same-id starts that shared a batch shared the
+  retry batch too, BOTH failed with `StorageWriteError`, nothing started, and a
+  `TimerService` occurrence was dropped. The `acquireFence` JSDoc no longer recommends
   fencing a start, and warns that a fence supersedes a live holder. No SPI, KERNEL_ABI or
   EVENT_SCHEMA change.
 

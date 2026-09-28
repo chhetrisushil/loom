@@ -10,9 +10,10 @@ import {
   InMemoryAsyncEventStore,
   TenantScopedEventStore,
 } from "@loom/event-runtime";
+import { PostgresEventStore, migratePostgresStores, postgresPool } from "@loom/plugin-postgres";
 import { SqliteEventStore } from "@loom/plugin-sqlite";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { ExecutionAlreadyExistsError } from "./types";
@@ -130,6 +131,60 @@ describe("ADR 0103 — a duplicate caller-chosen-id start is refused before any 
     });
   });
 
+  // L12 — the stale-fence-at-sequence-0 mapping on the real backend: Postgres checks the
+  // fence in SQL before the insert, so this is the path a fenced duplicate takes there.
+  // Skipped without LOOM_TEST_POSTGRES_URL (CI has no Postgres service).
+  describe.skipIf(process.env.LOOM_TEST_POSTGRES_URL === undefined)("Postgres", () => {
+    const schema = `loom_dupstart_${process.pid}`;
+    const url = process.env.LOOM_TEST_POSTGRES_URL as string;
+    const pool = postgresPool({ connectionString: url, options: `-c search_path=${schema}` });
+    // One schema for the block (`migrate` is memoized per pool); the cases use distinct ids.
+    beforeAll(async () => {
+      await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await pool.query(`CREATE SCHEMA ${schema}`);
+      await migratePostgresStores(pool);
+    });
+    afterAll(async () => {
+      await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await pool.end();
+    });
+
+    it("the store's unique-constraint conflict becomes the typed refusal", async () => {
+      const store = new PostgresEventStore(pool);
+      try {
+        await probe(store);
+      } finally {
+        await store.close();
+      }
+    });
+
+    it("a duplicate of a FENCED execution is refused on the fence and read back as 'already exists'", async () => {
+      const store = new PostgresEventStore(pool);
+      try {
+        const app = boot(store);
+        const first = await app.runtime.start(FLOW, {}, { executionId: "pg-fenced" });
+        await first.waitForCompletion();
+        await store.acquireFence("pg-fenced");
+        const logBefore = await store.read("pg-fenced");
+        const second = app.runtime.start(FLOW, {}, { executionId: "pg-fenced" });
+        await expect(second).rejects.toBeInstanceOf(ExecutionAlreadyExistsError);
+        await expect(second).rejects.toMatchObject({ cause: { name: "StaleFenceError" } });
+        expect(app.model).toHaveBeenCalledTimes(1);
+        expect(await store.read("pg-fenced")).toEqual(logBefore);
+
+        // And a token acquired for an id nobody wrote is a storage failure, not a duplicate.
+        await store.acquireFence("pg-pre-fenced");
+        await expect(
+          app.runtime.start(FLOW, {}, { executionId: "pg-pre-fenced" })
+        ).rejects.toBeInstanceOf(StorageWriteError);
+        expect(await store.read("pg-pre-fenced")).toHaveLength(0);
+        expect(app.model).toHaveBeenCalledTimes(1);
+      } finally {
+        await store.close();
+      }
+    });
+  });
+
   it("TenantScopedEventStore propagates the typed conflict through the decorator", async () => {
     await probe(new TenantScopedEventStore(new InMemoryAsyncEventStore(), "tenant-a"));
   });
@@ -189,6 +244,31 @@ describe("ADR 0103 — a duplicate caller-chosen-id start is refused before any 
     ]);
   });
 
+  it("L12 — two same-id starts sharing a coalesced batch: one runs, one is 'already exists', never both failing", async () => {
+    // Both bootstraps land in ONE batch, which the in-batch duplicate rejects for both; each
+    // reads sequence 0 back as absent and retries. A retry that went back into the queue
+    // would share a batch again and fail again — both starts StorageWriteError, nothing
+    // started, and a TimerService occurrence dropped. The retry flushes as its own batch.
+    const app = boot(new CoalescingEventStore(new InMemoryAsyncEventStore()));
+    const id = "coalesced-race";
+    const results = await Promise.allSettled([
+      app.runtime.start(FLOW, {}, { executionId: id }),
+      app.runtime.start(FLOW, {}, { executionId: id }),
+    ]);
+    const won = results.filter((r) => r.status === "fulfilled");
+    const lost = results.filter((r) => r.status === "rejected");
+    expect(won).toHaveLength(1);
+    expect(lost).toHaveLength(1);
+    expect((lost[0] as PromiseRejectedResult).reason).toBeInstanceOf(ExecutionAlreadyExistsError);
+    const handle = (won[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof app.runtime.start>>>)
+      .value;
+    expect((await handle.waitForCompletion()).status).toBe("completed");
+    expect(app.model).toHaveBeenCalledTimes(1);
+    expect(
+      (await app.store.read(id)).filter((e) => e.eventType === "EXECUTION_STARTED")
+    ).toHaveLength(1);
+  });
+
   it("an id conflict that is NOT this execution's sequence 0 is a storage failure, not 'already exists'", async () => {
     // Envelope ids are store-wide in some backends: another writer holding `<id>-0` under a
     // different execution is a minted-twice bug, not an existing execution. Confirmed by
@@ -196,8 +276,9 @@ describe("ADR 0103 — a duplicate caller-chosen-id start is refused before any 
     const inner = new InMemoryAsyncEventStore();
     const conflicting = new Proxy(inner, {
       get(target, prop, receiver) {
-        if (prop === "append") {
-          return async (e: EventEnvelope) =>
+        // Both write paths: the first attempt appends, the retry is its own batch.
+        if (prop === "append" || prop === "appendBatch") {
+          return async () =>
             Promise.reject(Object.assign(new Error("taken"), { name: "DuplicateEnvelopeIdError" }));
         }
         const v = Reflect.get(target, prop, receiver);
@@ -236,11 +317,13 @@ describe("ADR 0103 — a duplicate caller-chosen-id start is refused before any 
     // cannot write sequence 0 and it does not exist — not a duplicate.
     const store = new InMemoryAsyncEventStore();
     const appends = vi.spyOn(store, "append");
+    const batches = vi.spyOn(store, "appendBatch");
     const app = boot(store);
     await store.acquireFence("pre-fenced");
     const start = app.runtime.start(FLOW, {}, { executionId: "pre-fenced" });
     await expect(start).rejects.toBeInstanceOf(StorageWriteError);
-    expect(appends).toHaveBeenCalledTimes(2);
+    expect(appends).toHaveBeenCalledTimes(1); // the first attempt
+    expect(batches).toHaveBeenCalledTimes(1); // the retry, alone
     expect(app.model).not.toHaveBeenCalled();
     expect(app.seen).toHaveLength(0);
     expect(await store.read("pre-fenced")).toHaveLength(0);
@@ -254,6 +337,7 @@ describe("ADR 0103 — a duplicate caller-chosen-id start is refused before any 
     const zombie = await app.runtime.start(FLOW, {}, { executionId: "zombie" });
     await zombie.waitForCompletion();
     await inner.acquireFence("zombie");
+    const zombieLog = await inner.read("zombie");
     const stale: EventEnvelope = {
       ...(await inner.read("zombie")).at(-1)!,
       id: "zombie-99",
@@ -270,6 +354,11 @@ describe("ADR 0103 — a duplicate caller-chosen-id start is refused before any 
     const handle = (fresh as PromiseFulfilledResult<Awaited<ReturnType<typeof app.runtime.start>>>)
       .value;
     expect((await handle.waitForCompletion()).status).toBe("completed");
+    // The zombie's write landed nowhere, and the fresh start wrote its bootstrap exactly once.
+    expect(await inner.read("zombie")).toEqual(zombieLog);
+    expect(
+      (await inner.read("fresh-beside-zombie")).filter((e) => e.eventType === "EXECUTION_STARTED")
+    ).toHaveLength(1);
   });
 
   it("a non-conflict write failure at the bootstrap refuses the start with StorageWriteError, body unrun", async () => {

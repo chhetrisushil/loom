@@ -59,7 +59,9 @@ Only then does the runner start. The ordering is the whole fix, and only the ker
 
 If that append rejects with `DuplicateSequenceError` or `DuplicateEnvelopeIdError` — the two
 conflicts every backend normalizes to (SQLite and Postgres from their unique constraints, the
-in-memory store from an explicit check) — AND this execution's sequence 0 is then readable
+in-memory store from an explicit check) — or with `StaleFenceError` (amended by L12: a fencing
+store checks the token before the slot, so a duplicate of an execution that has since been
+fenced is refused on the fence) — AND this execution's sequence 0 is then readable
 through the same store, `start()` throws `ExecutionAlreadyExistsError(executionId)`, a new typed
 error exported from `@loom/workflow-runtime` beside `InputValidationError`. At that point no
 event has been folded, `onEvent` has seen nothing, and no effect has run. The existing execution
@@ -72,18 +74,23 @@ duplicate's `DuplicateSequenceError` while nothing of its own was written (the b
 all-or-nothing). Mapping that straight to "already exists" would drop a fresh start forever — a
 `TimerService` occurrence would never run. Nor can the error's own `executionId` decide it: a
 scoping decorator (`TenantScopedEventStore`) reports the id it wrote, tenant-prefixed, not the
-caller's. So on a conflict `start()` reads `[0..0]` back through the same decorated store:
+caller's. So on a conflict or a stale fence `start()` reads `[0..0]` back through the same decorated
+store:
 
 - present → `ExecutionAlreadyExistsError`;
-- absent → the conflict was someone else's; retry the append ONCE, alone;
-- a second conflict with sequence 0 still absent (for example `<id>-0` taken as an envelope id
-  by a different execution in a store-wide-id backend — a minted-twice bug, not an existing
-  execution), or a failed read-back → `StorageWriteError`.
+- absent → the rejection was someone else's (or, for a stale fence, a token acquired for an id
+  nobody has written); retry the append ONCE, alone — as a one-envelope `appendBatch`
+  (`appendBatchOf`), which a `CoalescingEventStore` flushes as its own batch, so two same-id
+  starts that failed together cannot share a batch, and fail together, again (L12 review);
+- a second conflict or stale fence with sequence 0 still absent (for example `<id>-0` taken as
+  an envelope id by a different execution in a store-wide-id backend — a minted-twice bug, not
+  an existing execution), or a failed read-back → `StorageWriteError`.
 
-The conflict is matched by class and, as a fallback, by `name`, so a bundle carrying a second
-copy of `@loom/event-runtime` cannot turn "already exists" into a generic storage failure.
+The conflict and the stale fence are matched by class and, as a fallback, by `name`, so a
+bundle carrying a second copy of `@loom/event-runtime` cannot turn "already exists" into a
+generic storage failure.
 
-Any OTHER failure of the bootstrap append (a dead store, a stale fence) refuses the start with
+Any OTHER failure of the bootstrap append (a dead store) refuses the start with
 `StorageWriteError` and is reported to `onStorageError`, the same pair a journal write failure
 produces. Before this change such a start returned a handle whose run then failed; now it fails
 before the body runs.
@@ -150,26 +157,46 @@ store, the read-model plugin's shape (ADR 0058).
   (at-least-once, not exactly-once).
 
   The fix: **a start does not acquire a fence.** `startOccurrence` no longer fences in either
-  mode, while fires (resumes) still do. A start's fence protected nothing that D1 and the
-  fencing SPI do not already cover. D1 refuses a duplicate at sequence 0 before its body
-  runs, and a fencing store MUST refuse a *missing* token once an execution has one, so the
-  first later `acquireFence` (a fenced wake, a recovery pass) fences out an unfenced starter
-  exactly as it would a fenced one. The alternatives were rejected. A `loadState` check
-  before the fence narrows the window without closing it, which is the race D4 already
-  describes. An acquire-if-absent fence SPI would have to be atomic with the append in every
-  store and decorator, which means SPI growth to protect a token the start does not need.
-  Both orderings now refuse the loser as `ExecutionAlreadyExistsError` without calling
-  `onError`, and a deterministic test (`t1-schedules.test.ts`) pins exactly one effect across
-  the race and a recovery pass.
+  mode (fires still do; see the open residual below). A start's fence protected nothing that
+  D1 and the fencing SPI do not already cover. D1 refuses a duplicate at sequence 0 before
+  its body runs, and a fencing store MUST refuse a *missing* token once an execution has one
+  (now a single-`append` conformance case), so the first later `acquireFence` (a fenced wake,
+  a recovery pass, a cancel) fences out an unfenced starter exactly as it would a fenced one.
+  Under `fenced: true` a scheduled execution therefore accepts unfenced writes until its
+  first fence — the default mode's exposure, for that window only.
 
-  D2 also treats a `StaleFenceError` at sequence 0 like a conflict and confirms it by read-back.
-  If sequence 0 is present, the execution exists and has been fenced since, so the start
-  throws `ExecutionAlreadyExistsError`. If it is absent, the start retries once alone (for
-  example, a coalesced batch rejected because of a zombie's write) and then throws
-  `StorageWriteError`. The `acquireFence` JSDoc no longer suggests fencing a start. The
-  dispatcher path (`LocalWorkerRuntime.allocate`) still fences every dispatch, including a
-  first one. That is deliberate: a dispatch of an id that already exists is a takeover by
-  design (ADR 0004 redispatch), and that path's contract is at-least-once.
+  The alternatives were rejected. A `loadState` check before the fence narrows the window
+  without closing it, which is the race D4 already describes. An acquire-if-absent fence SPI
+  would have to be atomic with the append in every store and decorator, which means SPI
+  growth to protect a token the start does not need. Both orderings now refuse the loser as
+  `ExecutionAlreadyExistsError` without calling `onError`, and deterministic tests
+  (`t1-schedules.test.ts`) pin both orderings, the second with exactly one effect across the
+  race and a recovery pass.
+
+  D2 is amended to confirm a `StaleFenceError` at sequence 0 by read-back like a conflict, and
+  to send its single retry out as its own batch. The `acquireFence` JSDoc no longer suggests
+  fencing a start.
+
+  **The dispatcher path does not have this hole.** `LocalWorkerRuntime.allocate` also fences
+  every dispatch, including a first one, but it fences BEFORE `execute` checks whether the
+  execution exists — the opposite order to the old `startOccurrence` (check, then fence). A
+  loser that read "no such execution" took its token before the winner's bootstrap, and that
+  bootstrap lands only if the winner's token is newer, so the loser is refused at sequence 0
+  (stale fence, confirmed as `ExecutionAlreadyExistsError`) and has superseded nobody. A loser
+  that allocates after the bootstrap reads it back and takes the execution over by ADR 0004's
+  redispatch rule. A loser that allocates between the winner's fence and its bootstrap makes
+  the winner's bootstrap stale, so the winner never starts and the loser does. In no ordering
+  is a live runner fenced out while nobody drives the execution; `worker-runtime-local`'s
+  `fencing.test.ts` pins the racing-first-dispatch case.
+- **Open: duplicate cross-node timer FIRES without `leases` supersede each other.** A fire is
+  still fenced (`TimerService.fire` acquires a token before resuming), and a token acquired
+  after another node's resume is durable fences that node out mid-body, after its effect —
+  the L12 shape. The execution is left `running` for a recovery pass, which pays for the step
+  again. Fencing a fire makes a duplicate fire's WRITES safe, not its effects exactly-once.
+  The fix is ownership before the fire, which `TimerService({ leases })` already provides
+  (#380, [durable leases](../requirements/2026-09-15-durable-lease.md) L5a): a node that
+  cannot claim the lease skips the fire. Without `leases`, a multi-node fenced deployment is
+  at-least-once per wake.
 - **A duplicate bootstrap in a coalesced batch aborts innocent writers in that batch.** The
   batch rejection that D2 guards the fresh START against also reaches any live execution whose
   envelope shared the batch: its journal records the write error and the run aborts. That is

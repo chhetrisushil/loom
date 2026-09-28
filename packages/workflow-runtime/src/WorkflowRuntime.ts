@@ -14,7 +14,7 @@ import {
   RESERVED_STREAM_PREFIX,
   isReservedStream,
 } from "@loom/event-runtime";
-import { headOf, readRangeOf } from "@loom/event-runtime";
+import { appendBatchOf, headOf, readRangeOf } from "@loom/event-runtime";
 // Import the pure sequence helper from the browser-safe subpath, not the barrel:
 // the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
 // would otherwise leak into every browser app that builds on the WorkflowRuntime.
@@ -926,7 +926,8 @@ export class WorkflowRuntime {
    * K9.4 — acquire the next monotonic fencing token for an execution, when the
    * event store supports fencing. Returns `undefined` on a non-fencing store
    * (e.g. single-node SQLite), so callers can thread it opportunistically:
-   * `resume(id, event, { fence: await runtime.acquireFence(id) })`.
+   * `const fence = await runtime.acquireFence(id);`
+   * `resume(id, event, { ...(fence !== undefined && { fence }) })`.
    *
    * Acquiring a fence SUPERSEDES whoever holds the current one — that is its purpose on a
    * re-dispatch. So do not acquire one to START a caller-chosen id that another node may have
@@ -1222,7 +1223,12 @@ export class WorkflowRuntime {
     };
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        await this.eventStore.append(envelope);
+        // The retry goes out ALONE: `appendBatch` is a batch of its own on a coalescing store
+        // (it skips the queue and flushes by itself). A retry through `append` would rejoin the
+        // queue, where two same-id starts share a batch again, both fail again, and neither
+        // starts (L12 review).
+        if (attempt === 0) await this.eventStore.append(envelope);
+        else await appendBatchOf(this.eventStore, [envelope]);
         return envelope;
       } catch (err: unknown) {
         // L12 — a stale fence at sequence 0 is confirmed exactly like a conflict: the

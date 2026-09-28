@@ -9,7 +9,8 @@
   (minimal dependency-free UTC cron matcher) firing occurrences with **deterministic
   `scheduleId@occurrenceMs` executionIds** (A2 — durable-state dedup + store uniqueness
   backstop; no catch-up of pre-service occurrences, documented), `fenced` mode acquiring
-  K9.4 tokens per fire/start for multi-node deployments,
+  K9.4 tokens per fire for multi-node deployments (occurrence starts are no longer fenced —
+  [ADR 0103](0103-durable-bootstrap-for-caller-chosen-ids.md), L12),
   `defineConfig({ timers: { store, schedules, fenced } })`. Amendments below applied.)
 - Date: 2026-07-10
 - Requirements: [T1 in the kernel-hardening requirements](../requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md#t1--durable-timers--scheduled-executions-kernel-service) — priority **P1**
@@ -53,8 +54,9 @@ execution is bit-identical regardless of when it is replayed.
 - New durable fact `TIMER_FIRED` enters the K5-governed schema (additive → MINOR); the fold
   reference must be updated. `ctx.sleep`/`ctx.sleepUntil` are new syscalls → K1 MINOR ABI
   bump with the conformance test extended.
-- Depends on K9's keys and fencing for exactly-once *starts* across node loss — sequence T1
-  after K9.
+- Depends on K9's keys and fencing for exactly-once *fires* across node loss — sequence T1
+  after K9. (Occurrence *starts* are deduplicated by the durable bootstrap instead and are
+  never fenced: [ADR 0103](0103-durable-bootstrap-for-caller-chosen-ids.md), L12.)
 - Unwired (no sleeps, no schedules), behavior is byte-identical (G2).
 
 ## Amendments (code-grounded evaluation, 2026-07-10)

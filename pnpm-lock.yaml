@@ -1324,6 +1324,9 @@ importers:
       '@loom/plugin-crypto':
         specifier: workspace:*
         version: link:../../plugins/crypto
+      '@loom/plugin-postgres':
+        specifier: workspace:*
+        version: link:../../plugins/postgres
       '@loom/plugin-sqlite':
         specifier: workspace:*
         version: link:../../plugins/sqlite

@@ -184,11 +184,13 @@ is a dry run unless `apply: true`. It is exposed as
 - **Applying.** Per execution, **one batch** (`appendBatchOf`) carries every slot its segments
   lack, so a crash never leaves a snapshot above a half-re-homed tip. Before it, the
   execution's tip is re-read and must equal what the census saw, and its sequence 0 must exist.
-  **Fencing:** an execution that was ever fenced (a worker, a fenced `TimerService`,
-  `recoverAbandoned({ fenced })`, `cancel`) refuses an unfenced append. The repair then takes a
+  **Fencing:** an execution that was ever fenced (a worker, a fenced `TimerService`
+  fire, `recoverAbandoned({ fenced })`, `cancel`) refuses an unfenced append. The repair then takes a
   new fence and writes under it, which also fences out a runner still holding the old one. An
   execution that was never fenced is not given a fence, because every later unfenced write to
-  it (the default `TimerService`, say) would then be refused. One failing execution is reported
+  it (the default `TimerService`, say) would then be refused. That includes a schedule
+  occurrence started under `fenced: true` that never slept: since ADR 0103's L12 fix a start
+  takes no fence, so only a fenced fire, recovery or cancel fences it. One failing execution is reported
   in `failed` and does not stop the others.
 - **Journaling.** Each re-homed segment is journaled as `EVENTS_REHOMED { executionId,
   fromSequence, throughSequence, proof, count }` on `__loom_lifecycle__` (EVENT_SCHEMA 1.22.0,

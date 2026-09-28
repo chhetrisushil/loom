@@ -6,7 +6,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import type { ExecutionPackage } from "@loom/worker-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { LocalWorkerRuntime } from "./LocalWorkerRuntime";
 
@@ -70,6 +70,19 @@ function bootNode(
   });
   runtime.registerFlow(flowDef().definition, runner);
   return new LocalWorkerRuntime(runtime);
+}
+
+function bootNodeWithRuntime(
+  eventStore: InMemoryAsyncEventStore,
+  snapshotStore: InMemoryAsyncSnapshotStore,
+  slowFn: () => Promise<{ done: boolean }>
+) {
+  const effects = new EffectRuntime();
+  const effect = vi.fn(slowFn);
+  effects.register("slow-tool", new ToolEffect(effect));
+  const runtime = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime: effects });
+  runtime.registerFlow(flowDef().definition, runner);
+  return { worker: new LocalWorkerRuntime(runtime), runtime, effect };
 }
 
 async function waitFor(pred: () => Promise<boolean>, tries = 200): Promise<void> {
@@ -141,6 +154,60 @@ describe("worker fencing (K9.4)", () => {
     expect(events.filter((e: EventEnvelope) => e.eventType === "EXECUTION_COMPLETED").length).toBe(
       1
     );
+  });
+
+  it("L12 — two racing FIRST dispatches: the loser never supersedes the winner, nothing is orphaned", async () => {
+    // The shape that bit TimerService (check existence, THEN fence) cannot happen here:
+    // `allocate` takes the fence BEFORE `execute` checks existence. So a loser that read
+    // "no such execution" took its token before the winner's bootstrap, and the winner's
+    // bootstrap only lands if the winner's token is NEWER. The loser is then refused at
+    // sequence 0 (stale fence, confirmed as "already exists") and has superseded nobody.
+    // (A loser that allocates AFTER the bootstrap reads it back and takes over by design,
+    // ADR 0004; one that allocates between the winner's fence and its bootstrap makes the
+    // winner's bootstrap stale, so the winner never starts and the loser does.)
+    const eventStore = new InMemoryAsyncEventStore();
+    const snapshots = new InMemoryAsyncSnapshotStore();
+    let releaseB!: () => void;
+    const bMayStart = new Promise<void>((r) => {
+      releaseB = r;
+    });
+    let bSettled!: () => void;
+    const bDone = new Promise<void>((r) => {
+      bSettled = r;
+    });
+    const a = bootNodeWithRuntime(eventStore, snapshots, async () => {
+      releaseB(); // A's bootstrap is durable and its body is inside the effect
+      await bDone; // hold the step open across B's whole attempt
+      return { done: true };
+    });
+    const b = bootNodeWithRuntime(eventStore, snapshots, async () => ({ done: true }));
+    const realLoadState = b.runtime.loadState.bind(b.runtime);
+    let firstRead = true;
+    vi.spyOn(b.runtime, "loadState").mockImplementation(async (id: string) => {
+      const state = await realLoadState(id);
+      if (firstRead) {
+        firstRead = false;
+        await bMayStart; // B saw nothing; A allocates and writes before B tries to start
+      }
+      return state;
+    });
+
+    const leaseB = await b.worker.allocate({ executionId: pkg.executionId });
+    const resultB = b.worker.execute(leaseB, pkg).finally(() => bSettled());
+    const leaseA = await a.worker.allocate({ executionId: pkg.executionId });
+    expect([leaseB.fence, leaseA.fence]).toEqual([1, 2]);
+    const resultA = a.worker.execute(leaseA, pkg);
+
+    await expect(resultB).rejects.toMatchObject({ name: "ExecutionAlreadyExistsError" });
+    await expect(resultA).resolves.toMatchObject({ status: "completed", output: { done: true } });
+
+    expect((await b.runtime.loadState(pkg.executionId))?.status).toBe("completed");
+    const events = await eventStore.read(pkg.executionId);
+    expect(events.filter((e) => e.eventType === "EXECUTION_STARTED")).toHaveLength(1);
+    expect(events.filter((e) => e.eventType === "EXECUTION_RECOVERED")).toHaveLength(0);
+    expect(events.every((e) => (e.metadata as { fence?: number }).fence === 2)).toBe(true);
+    expect(a.effect).toHaveBeenCalledTimes(1);
+    expect(b.effect).not.toHaveBeenCalled();
   });
 
   it("keeps working with no fencing involved on a non-fencing store (G2)", async () => {
