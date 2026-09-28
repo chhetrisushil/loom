@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
 import { SubscriberRegistry } from "./SubscriberRegistry";
+import { compareExecutionIds } from "./executionIdOrder";
 import { StaleFenceError, fenceOf } from "./fencing";
 import { lowerBoundBySequence, sliceBySequence } from "./sequenceRange";
 import type { EventStore } from "./types";
@@ -255,11 +256,17 @@ export class InMemoryAsyncEventStore implements EventStore {
     await this.tick();
     const limit = opts?.limit ?? 1000;
     const cursor = opts?.cursor;
-    const sorted = [...this.log.keys()].sort();
+    // SPI 1.6.0 — code point order, and the cursor may be any string: binary-search the
+    // first id strictly after it.
+    const sorted = [...this.log.keys()].sort(compareExecutionIds);
     let start = 0;
     if (cursor !== undefined) {
-      const idx = sorted.findIndex((id) => id > cursor);
-      start = idx === -1 ? sorted.length : idx;
+      let hi = sorted.length;
+      while (start < hi) {
+        const mid = (start + hi) >>> 1;
+        if (compareExecutionIds(sorted[mid] as string, cursor) > 0) hi = mid;
+        else start = mid + 1;
+      }
     }
     const executionIds = sorted.slice(start, start + limit);
     const last = executionIds[executionIds.length - 1];

@@ -76,7 +76,7 @@ const DDL = `
     CREATE TABLE IF NOT EXISTS events (
       id TEXT NOT NULL PRIMARY KEY,
       workflow_id TEXT NOT NULL,
-      execution_id TEXT NOT NULL,
+      execution_id TEXT COLLATE "C" NOT NULL,
       event_type TEXT NOT NULL,
       sequence BIGINT NOT NULL,
       timestamp BIGINT NOT NULL,
@@ -84,6 +84,25 @@ const DDL = `
       metadata JSONB,
       UNIQUE (execution_id, sequence)
     );
+    -- L10 (EventStore SPI 1.6.0): execution ids page in code point order, which is
+    -- COLLATE "C", never the database's collation. A table created before L10 inherited the
+    -- database collation (en_US.UTF-8 on most clusters), so ShardedEventStore's merge, which
+    -- is in code point order, skipped ids. Converting the column in place is binary-coercible
+    -- (text -> text): no table rewrite, but idx_events_exec and the UNIQUE index are rebuilt
+    -- under an ACCESS EXCLUSIVE lock, ONCE (~4.5 s per 2M events measured; see the L10 PR).
+    -- Guarded by the catalog, so every later boot is a no-op. Equality lookups are unchanged
+    -- by the collation, and "C" comparisons are plain memcmp, so appends get cheaper.
+    DO $l10$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_attribute
+        WHERE attrelid = 'events'::regclass AND attname = 'execution_id'
+          AND attcollation <> 'pg_catalog."C"'::regcollation
+      ) THEN
+        ALTER TABLE events ALTER COLUMN execution_id TYPE TEXT COLLATE "C";
+      END IF;
+    END
+    $l10$;
     CREATE INDEX IF NOT EXISTS idx_events_exec ON events (execution_id, sequence ASC);
 
     CREATE TABLE IF NOT EXISTS snapshots (

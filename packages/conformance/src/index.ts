@@ -381,6 +381,67 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       await store.close();
     });
 
+    // SPI 1.6.0 (L10). "Lexicographic" is not one order: a Postgres database with an
+    // `en_US.UTF-8` collation sorts `a_b` before `A1`, JavaScript's default sort puts `A1`
+    // first, and the two disagree again on astral characters (UTF-16 code units vs code
+    // points). `ShardedEventStore` merges shard pages in JS and hands the merged page's last
+    // id back to EVERY shard as the cursor, so a shard whose order differs silently skips the
+    // ids that sort after the cursor in one order and before it in the other. The contract is
+    // therefore pinned: ids in Unicode CODE POINT order (= UTF-8 byte order, SQL `COLLATE "C"`,
+    // SQLite BINARY), and a cursor may be ANY string, not just an id the store returned.
+    it("listExecutionsPage orders ids by Unicode code point, and accepts any string as a cursor (when supported, SPI 1.6.0)", async () => {
+      const store = factory();
+      if (store.listExecutionsPage === undefined) {
+        await store.close();
+        return;
+      }
+      // Hand-written in code point order — NOT computed with a comparator, so the kit does
+      // not share a bug with the implementation it checks. Case, punctuation, digits, a
+      // Latin-1 letter, a BMP char above the surrogate range, and an astral char.
+      const ordered = [
+        "-z",
+        "0z",
+        "A1",
+        "Ab",
+        "Z",
+        "_z",
+        "a-b",
+        "a.c",
+        "a1",
+        "aB",
+        "a_b",
+        "ab",
+        "a~",
+        "b",
+        "é",
+        "！x",
+        "\u{1f600}x",
+      ];
+      // Appended out of order, so an insertion-ordered store cannot pass by accident.
+      for (const id of [...ordered].reverse()) await store.append(evt(id, 0));
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      // Bounded: a store (or decorator) that hands back a cursor it does not honour must fail
+      // this case, not hang it.
+      for (let pages = 0; pages <= ordered.length; pages++) {
+        const page = await store.listExecutionsPage({
+          ...(cursor !== undefined && { cursor }),
+          limit: 3,
+        });
+        seen.push(...page.executionIds);
+        if (page.nextCursor === undefined) break;
+        expect(page.nextCursor).not.toBe(cursor);
+        cursor = page.nextCursor;
+      }
+      expect(seen).toEqual(ordered);
+      // A cursor the store never returned (and holds no id for) resumes strictly after it —
+      // which is how `ShardedEventStore` resumes every shard from a merged page's last id.
+      const after = await store.listExecutionsPage({ cursor: "a0", limit: 100 });
+      expect(after.executionIds).toEqual(ordered.slice(ordered.indexOf("a1")));
+      expect(after.nextCursor).toBeUndefined();
+      await store.close();
+    });
+
     // ── appendBatch (OPTIONAL, SPI 1.3.0 / ADR 0074 D1) ──────────────────────
     //
     // These are what make "a bring-your-own backend benefits from the scaling work too" a

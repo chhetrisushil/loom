@@ -1,6 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import type { ShardPlan } from "./ShardPlan";
 import { bucketOf } from "./SubscriberRegistry";
+import { compareExecutionIds } from "./executionIdOrder";
 import { type DecoratorPlan, installOptional } from "./installOptional";
 import {
   type EventStore,
@@ -365,7 +366,13 @@ export class ShardedEventStore implements EventStore {
   /**
    * Keyset pagination across shards. Each shard is asked for its next page beyond the
    * cursor; the results are merged and truncated to `limit`, so the caller sees one
-   * globally lexicographic stream and the cursor stays a single opaque id.
+   * globally ordered stream and the cursor stays a single id.
+   *
+   * Correct ONLY because every shard pages in the SPI's one order (code point, SPI 1.6.0)
+   * and accepts any id as a cursor: the merged page's last id is handed back to EVERY shard,
+   * including shards that never returned it. A shard paging in another order (a Postgres
+   * database collation, before L10) skips the ids that sort after the cursor in one order
+   * and before it in the other — silently, since every page still looks well-formed.
    *
    * Deduplicated for the same reason as `listExecutions`: mid-migration an execution can
    * briefly exist on two shards.
@@ -381,7 +388,7 @@ export class ShardedEventStore implements EventStore {
       )
     );
     const union = new Set(pages.flatMap((p) => p.executionIds));
-    const merged = [...union].sort().slice(0, limit);
+    const merged = [...union].sort(compareExecutionIds).slice(0, limit);
     const last = merged[merged.length - 1];
     // More remains if any shard reported a further page, or if the merge itself truncated.
     const truncated = pages.some((p) => p.nextCursor !== undefined) || union.size > merged.length;

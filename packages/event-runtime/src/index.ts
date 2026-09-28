@@ -9,6 +9,7 @@ export { SubscriberRegistry, bucketOf } from "./SubscriberRegistry";
 export { ProfilingEventStore } from "./ProfilingEventStore";
 export type { WriteProfile } from "./ProfilingEventStore";
 export { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";
+export { compareExecutionIds } from "./executionIdOrder";
 export type { InMemoryAsyncEventStoreOptions } from "./InMemoryAsyncEventStore";
 export type {
   EventStore,
