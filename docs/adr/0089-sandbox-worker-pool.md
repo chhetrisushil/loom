@@ -103,16 +103,26 @@ from worker mode for a trivial script in-process mode completed.
 
 #### The uncharged phases are bounded by startup liveness
 
-Excluding a phase from the script's budget does not leave it unbounded. Every
-phase from dispatch until the in-VM clock is armed — a cold worker's spawn and
-WASM compile, the worker being scheduled, parsing the input, creating the
-runtime, seeding the input — is bounded by ONE startup-liveness window, counted
-from dispatch: a run that has not *started* within
-`wallClockMs + hardKillGraceMs + startupLivenessMs` (default 10 s past the
-budget, configurable as `workers.startupLivenessMs`) has its worker terminated
-and replaced, and fails with `SandboxWorkerStartupError`. The compile is under
-it too: a cold worker that never acknowledges `ready` is reclaimed the same
-way, rather than stranding its run. That failure is deliberately **not** a typed
+Excluding a phase from the script's budget does not leave it unbounded. Two
+allowances cover the phases before the in-VM clock is armed, and either one
+running out terminates and replaces the worker and fails with
+`SandboxWorkerStartupError` (its `phase` says which):
+
+- **The cold compile** (`phase: "compile"`) — a worker's spawn and WASM compile
+  — has its OWN allowance, `coldStartMs` (default 10 s), measured from when that
+  worker starts warming and shared by everything waiting on it (`warm()`, queued
+  runs). It is deliberately independent of any run's limits. A hard kill leaves
+  a cold worker behind, so a compile judged against the next run's
+  `wallClockMs + hardKillGraceMs` would fail that run whenever the window is
+  shorter than the host's cold start, replace the worker cold, and repeat — the
+  very loop this decision exists to prevent, multiplied by retry middleware.
+- **Starting the script on a ready worker** (`phase: "start"`) — being
+  scheduled, parsing the input, creating the runtime, seeding it — is bounded by
+  the run's window, which opens once the worker is ready: a run that has not
+  *started* within `wallClockMs + hardKillGraceMs + startupLivenessMs` (default
+  10 s past the budget) of the eval being posted.
+
+That failure is deliberately **not** a typed
 channel. `limitExceeded` is recorded as the script's outcome and routes to
 drift-repair, and nothing the script did explains a worker that never started
 it. It is a named error class instead, so retry middleware can tell it apart

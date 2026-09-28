@@ -74,6 +74,7 @@ export class SandboxEvalEffect implements Effect {
             ...(workers.startupLivenessMs !== undefined && {
               startupLivenessMs: workers.startupLivenessMs,
             }),
+            ...(workers.coldStartMs !== undefined && { coldStartMs: workers.coldStartMs }),
           });
   }
 

@@ -63,20 +63,31 @@ export interface SandboxWorkers {
    * the worker marks the run finished, so the grace need only cover the in-VM
    * `dump` of the result and disposing the runtime.
    *
-   * Not charged to it: a cold worker's spawn and WASM compile, and input
-   * parse/seeding — those are bounded by `startupLivenessMs` instead. Nor is
-   * encoding and posting the result once the run is marked finished; that runs
-   * no script code and is bounded only by the worker replying.
+   * Not charged to it: a cold worker's spawn and WASM compile (bounded by
+   * `coldStartMs`), and input parse/seeding (bounded by `startupLivenessMs`).
+   * Nor is encoding and posting the result once the run is marked finished;
+   * that runs no script code and is bounded only by the worker replying.
    */
   hardKillGraceMs?: number;
   /**
-   * How long past `wallClockMs + hardKillGraceMs` a run may go without STARTING
-   * — counted from dispatch, so it covers a cold worker's spawn and WASM
-   * compile, input parse, runtime creation and seeding — before its worker is
-   * terminated and the run fails with `SandboxWorkerStartupError` (untyped, so
-   * retryable by default). Default 10 000 ms. Must be a finite number >= 0.
+   * How long past `wallClockMs + hardKillGraceMs` a run on a READY worker may
+   * go without STARTING — input parse, runtime creation and seeding — before
+   * its worker is terminated and the run fails with `SandboxWorkerStartupError`
+   * (untyped, so retryable by default). Counted from when the eval is posted;
+   * the cold compile has its own allowance, `coldStartMs`. Default 10 000 ms.
+   * Must be a finite number >= 0.
    */
   startupLivenessMs?: number;
+  /**
+   * How long a cold worker may take to spawn and compile its WASM module,
+   * measured from when it starts warming, before it is terminated and whatever
+   * waits on it (a run, `warm()`) fails with `SandboxWorkerStartupError`
+   * (`phase: "compile"`). Independent of any run's limits on purpose: a hard
+   * kill leaves a cold worker behind, and a compile judged against a tight
+   * `wallClockMs` would fail the next run, replace the worker cold, and loop.
+   * Default 10 000 ms. Must be a finite number >= 0.
+   */
+  coldStartMs?: number;
 }
 
 /** Static description of a sandbox executor (P5 — wiring is static). */
