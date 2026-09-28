@@ -2,8 +2,10 @@ import { TypedFailure } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
 import { InMemoryContentStore } from "@loom/plugin-content";
+import { getQuickJS } from "quickjs-emscripten";
 import { afterEach, describe, expect, it } from "vitest";
-import { SandboxWorkerPool } from "./SandboxWorkerPool";
+import { SandboxWorkerPool, SandboxWorkerStartupError } from "./SandboxWorkerPool";
+import { type EvalLimits, evalInFreshRuntime } from "./evalCore";
 import { SANDBOX_TOOL_ID, registerSandboxEval } from "./sandboxEval$";
 import type { SandboxSpec } from "./types";
 
@@ -50,6 +52,21 @@ async function boot(spec: SandboxSpec) {
  */
 const NON_YIELDING = '"x".repeat(120000000).length';
 /**
+ * The same property — ONE interrupt callback, measured — for SECONDS rather than ~245 ms:
+ * catastrophic backtracking, which runs inside the regex engine and never reaches the
+ * interrupt handler. ~7 s unloaded at 25 characters (it doubles per character) and slower
+ * under load, in a few KB of memory.
+ *
+ * The kill tests use this, not `NON_YIELDING`: against a 50 + 50 ms deadline a 245 ms script
+ * leaves a starved parent ~150 ms to notice, after which the script simply FINISHES and the
+ * test fails for a kill that was merely late (L13). Here the pool's kill is the only way the
+ * run can end inside the test window. Tests that must tell a pool kill from the in-VM clock
+ * (which can still fire on that one callback, at the very end) check the kill's own message.
+ */
+const RUNS_FOR_SECONDS = `/(a+)+$/.test("${"a".repeat(25)}b")`;
+/** The pool's hard kill — not the in-VM clock's `InternalError: interrupted`. */
+const POOL_KILL = /without yielding to the interrupt handler/;
+/**
  * Long enough to observe, short enough for a shared runner. CI measured ~10x
  * slower than a dev machine on this suite, so this is deliberately modest —
  * these tests assert WHICH THREAD is blocked, never how fast the script is.
@@ -66,36 +83,28 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       // interrupt handler, so a script that never reaches one is bounded by
       // nothing in-engine. `terminate()` does not need the script's cooperation.
       //
-      // "Killed on the deadline, not on the script finishing" used to be a fixed 200 ms
-      // bound against a 50 + 50 ms deadline — 100 ms of slack for spawning a worker,
-      // reaching the interrupt and terminating it. That travels badly: this suite passed
-      // alone and failed under a full-repo run with 128 vitest processes sharing every
-      // core (#383). So measure what it is actually being compared against, here, under
-      // whatever load this run happens to have.
-      const inProcess = await boot({
-        limits: { memoryBytes: 512 * 1024 * 1024, wallClockMs: 50 },
-      });
-      const baselineRef = await inProcess.put(NON_YIELDING);
-      const baselineStart = Date.now();
-      await expect(inProcess.run(baselineRef)).resolves.toBe(120000000);
-      const unkilledMs = Math.max(Date.now() - baselineStart, 1);
+      // This used to be asserted as timing — first a fixed 200 ms bound (#383), then a
+      // ratio against the same script run to completion in-process. Both compared a
+      // ~100 ms deadline with a ~245 ms script, so a parent starved for ~150 ms saw the
+      // script finish instead (L13). Now the script runs for seconds and the assertion is
+      // WHO ended it: completion is `ok: true`, the in-VM clock says `interrupted`, and only
+      // the pool's kill carries this message. No clock is compared, so load cannot move it.
+      const pool = new SandboxWorkerPool({ size: 1, hardKillGraceMs: 50 });
+      opened.push(pool);
+      await pool.warm();
 
-      const { put, run } = await boot({
-        limits: { memoryBytes: 512 * 1024 * 1024, wallClockMs: 50 },
-        workers: { count: 1, hardKillGraceMs: 50 },
-      });
-      const ref = await put(NON_YIELDING);
-
-      const started = Date.now();
-      await expect(run(ref)).rejects.toMatchObject({ channel: "limitExceeded" });
-      const killedMs = Date.now() - started;
-
-      // Killed on the pool's deadline (50 + 50), not on the script finishing — asserted
-      // as a RATIO, because both measurements absorb the same load. The gap is ~100 ms
-      // against ~245 ms unloaded, and it only WIDENS under contention: the baseline is
-      // CPU-bound and inflates, while the deadline is wall-clock and fires on time. Half
-      // is therefore a conservative line, and one a script merely running fast cannot reach.
-      expect(killedMs).toBeLessThan(unkilledMs / 2);
+      const killed = await pool.run(
+        RUNS_FOR_SECONDS,
+        null,
+        {
+          memoryBytes: 512 * 1024 * 1024,
+          interruptBudget: Number.MAX_SAFE_INTEGER,
+          wallClockMs: 50,
+        },
+        undefined
+      );
+      expect(killed).toMatchObject({ ok: false, tripped: "wallClock" });
+      expect(killed.ok === false && killed.message).toMatch(POOL_KILL);
     },
     SLOW
   );
@@ -107,7 +116,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         limits: { memoryBytes: 512 * 1024 * 1024, wallClockMs: 50 },
         workers: { count: 1, hardKillGraceMs: 50 },
       });
-      const ref = await put(NON_YIELDING);
+      const ref = await put(RUNS_FOR_SECONDS);
       const err = await run(ref).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(TypedFailure);
       expect((err as TypedFailure).payload).toEqual({ kind: "wallClock" });
@@ -116,7 +125,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
   );
 
   it(
-    "in-process, that same script runs to completion past its wall clock",
+    "in-process, a non-yielding script runs to completion past its wall clock",
     async () => {
       // Not an aspiration — the documented soft-bound. Asserted so the gap the
       // pool closes is a fact in the suite rather than a claim in a comment.
@@ -145,14 +154,15 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       const memoryBytes = 512 * 1024 * 1024;
       const interruptBudget = Number.MAX_SAFE_INTEGER;
 
-      const killed = await pool.run(NON_YIELDING, null, {
-        memoryBytes,
-        interruptBudget,
-        wallClockMs: 50,
-      });
+      const killed = await pool.run(
+        RUNS_FOR_SECONDS,
+        null,
+        { memoryBytes, interruptBudget, wallClockMs: 50 },
+        undefined
+      );
       expect(killed).toMatchObject({ ok: false, tripped: "wallClock" });
       // The pool's own kill, not the in-VM clock — or this proves nothing about replacement.
-      expect(killed.ok === false && killed.message).toMatch(/without yielding/);
+      expect(killed.ok === false && killed.message).toMatch(POOL_KILL);
 
       // The only worker was terminated; the next run must get a fresh one.
       //
@@ -162,7 +172,12 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       // fixed at the source (#399), so tolerating it here would now hide a regression
       // rather than absorb a known artifact.
       await expect(
-        pool.run("(() => 1 + 1)()", null, { memoryBytes, interruptBudget, wallClockMs: 60_000 })
+        pool.run(
+          "(() => 1 + 1)()",
+          null,
+          { memoryBytes, interruptBudget, wallClockMs: 60_000 },
+          undefined
+        )
       ).resolves.toEqual({ ok: true, value: 2 });
     },
     SLOW
@@ -243,29 +258,94 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       // `limitExceeded { wallClock }` — a resource kill, routed to drift-repair, for a script
       // that never ran long. It also showed up as a full-suite flake, where a loaded host
       // makes even an empty runtime slow to create.
-      //
-      // Self-calibrating, like the cold-start guard above: time THIS host seeding the input
-      // in-process, then give the worker a budget of half that. A pool that charges the
-      // seeding must kill; one that measures the script alone has a trivial script to time.
-      const input = "x".repeat(16 * 1024 * 1024);
+      const input = "x".repeat(32 * 1024 * 1024);
       const memoryBytes = 512 * 1024 * 1024;
-      const inProcess = await boot({ limits: { memoryBytes, wallClockMs: 60_000 } });
-      const baselineRef = await inProcess.put("input.length");
-      const seededAt = Date.now();
-      await expect(
-        inProcess.effects.execute(SANDBOX_TOOL_ID, { scriptRef: baselineRef, input }, baseCtx)
-      ).resolves.toBe(input.length);
-      const seedMs = Date.now() - seededAt;
 
-      const wallClockMs = 10;
-      const { effects, put } = await boot({
-        limits: { memoryBytes, wallClockMs },
-        workers: { count: 1, hardKillGraceMs: Math.max(0, Math.floor(seedMs / 2) - wallClockMs) },
-      });
-      const ref = await put("input.length");
+      // Calibrate on EXACTLY the phase in question — call to `onScriptStart` — rather than
+      // on a whole run. The MINIMUM of three, because load can only lengthen this work: a
+      // spike during calibration would otherwise inflate the budget past what the worker
+      // needs and pass vacuously, while the minimum is a floor the worker's identical work
+      // cannot come in under.
+      const quickjs = await getQuickJS();
+      const probeLimits: EvalLimits = {
+        memoryBytes,
+        interruptBudget: Number.MAX_SAFE_INTEGER,
+        wallClockMs: 60_000,
+      };
+      let preScriptMs = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < 3; i++) {
+        const calledAt = Date.now();
+        let startedAt = Number.NaN;
+        const probe = evalInFreshRuntime(
+          quickjs,
+          "input.length",
+          input,
+          probeLimits,
+          undefined,
+          (at) => {
+            startedAt = at;
+          }
+        );
+        expect(probe).toEqual({ ok: true, value: input.length });
+        preScriptMs = Math.min(preScriptMs, startedAt - calledAt);
+      }
+
+      // The whole hard-kill budget (grace 0) is HALF the pre-script phase. Under the old
+      // stamp the run is EVALUATING for that whole phase, so a check lands inside it with
+      // the budget already spent — a certain kill, not a probable one.
+      const wallClockMs = Math.floor(preScriptMs / 2);
+      // …and positively non-vacuous: the premise is asserted, not assumed. Too fast a host
+      // fails HERE, naming why, rather than passing a test that could not have failed. The
+      // floor also keeps the trivial script's own in-VM clock clear of scheduling jitter.
+      expect(
+        wallClockMs,
+        `pre-script phase ${preScriptMs} ms is too short to test`
+      ).toBeGreaterThanOrEqual(50);
+
+      const pool = new SandboxWorkerPool({ size: 1, hardKillGraceMs: 0 });
+      opened.push(pool);
+      await pool.warm();
       await expect(
-        effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref, input }, baseCtx)
-      ).resolves.toBe(input.length);
+        pool.run(
+          "input.length",
+          input,
+          { memoryBytes, interruptBudget: Number.MAX_SAFE_INTEGER, wallClockMs },
+          undefined
+        )
+      ).resolves.toEqual({ ok: true, value: input.length });
+    },
+    SLOW
+  );
+
+  it(
+    "bounds the uncharged startup phases, and names that failure (SandboxWorkerStartupError)",
+    async () => {
+      // What L13 excluded from the script's budget still needs a bound, or a wedged worker
+      // holds its slot forever. Made deterministic with a zero window: a 32 MiB input takes
+      // far longer to parse and seed than the first 20 ms re-check, so the run has not
+      // STARTED when the window closes — and load only makes that more certain.
+      const input = "x".repeat(32 * 1024 * 1024);
+      const pool = new SandboxWorkerPool({ size: 1, hardKillGraceMs: 0, startupLivenessMs: 0 });
+      opened.push(pool);
+      await pool.warm();
+
+      const limits: EvalLimits = {
+        memoryBytes: 512 * 1024 * 1024,
+        interruptBudget: Number.MAX_SAFE_INTEGER,
+        wallClockMs: 1,
+      };
+      const err = await pool.run("input.length", input, limits, undefined).catch((e: unknown) => e);
+      // A named class, NOT a TypedFailure: the environment failed, not the script, so it
+      // must not land on `limitExceeded` (drift-repair) — and retry middleware's default,
+      // which retries anything that is not a TypedFailure, retries it.
+      expect(err).toBeInstanceOf(SandboxWorkerStartupError);
+      expect(err).not.toBeInstanceOf(TypedFailure);
+      expect(err).toMatchObject({ name: "SandboxWorkerStartupError", limitMs: 1 });
+
+      // The wedged worker was replaced, not reused.
+      await expect(
+        pool.run("(() => 3)()", null, { ...limits, wallClockMs: 60_000 }, undefined)
+      ).resolves.toEqual({ ok: true, value: 3 });
     },
     SLOW
   );
@@ -278,7 +358,8 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         workers: { count: 1 },
       });
       const controller = new AbortController();
-      const pending = run(await put(NON_YIELDING), { ...baseCtx, signal: controller.signal });
+      // Seconds long, so the abort is the only thing that can end it inside the window.
+      const pending = run(await put(RUNS_FOR_SECONDS), { ...baseCtx, signal: controller.signal });
       setTimeout(() => controller.abort(new Error("caller went away")), 20);
 
       await expect(pending).rejects.toThrow(/caller went away/);

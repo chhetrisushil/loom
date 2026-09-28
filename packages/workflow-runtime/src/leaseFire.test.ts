@@ -301,8 +301,14 @@ describe("#380 L5a — the claim is renewed while the wake is in flight", () => 
         leases: { store: leaseStore, owner: "node-a", ttlMs: 40, renewEveryMs: 5 },
       });
       const firing = service.tick((parked.suspendedOn?.wakeAt ?? 0) + 1);
-      // The fire has claimed the execution and the resumed run is now in flight.
-      await running;
+      // The fire has claimed the execution and the resumed run is now in flight. Raced
+      // against the fire itself, so a fire that settles without ever reaching the step
+      // (skipped the claim, did not resume) fails here, by name — not as a 20 s timeout.
+      const first = await Promise.race([
+        running.then(() => "run in flight" as const),
+        firing.then(() => "fire settled first" as const),
+      ]);
+      expect(first).toBe("run in flight");
 
       // Five TTLs later, with the run still in flight. Unrenewed, this lapses the lease.
       await vi.advanceTimersByTimeAsync(200);

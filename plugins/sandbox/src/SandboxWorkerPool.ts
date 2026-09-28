@@ -33,10 +33,37 @@ import type { FromWorker, ToWorker } from "./workerProtocol";
 const RECHECK_MS = 20;
 /**
  * How long past its budget the parent waits for a worker that has not started the run at
- * all before treating the WORKER as broken. Generous: this covers engine boot and input
- * marshalling on a contended host, neither of which is the script's fault.
+ * all before treating the WORKER as broken. Generous: this covers everything before the
+ * in-VM wall clock is armed — the worker being scheduled, parsing the input, creating the
+ * runtime and seeding it — on a contended host, none of which is the script's fault.
  */
-const STARTUP_LIVENESS_MS = 10_000;
+const DEFAULT_STARTUP_LIVENESS_MS = 10_000;
+
+/**
+ * A worker never started a run within `wallClockMs + hardKillGraceMs + startupLivenessMs`.
+ *
+ * The phases the script's wall clock deliberately does NOT charge (worker scheduling, input
+ * parse, runtime creation, input seeding — L13) still need a bound, or a wedged worker holds
+ * its slot forever. This is that bound. It is the ENVIRONMENT failing, not the script, so it
+ * is not a typed `limitExceeded`: that channel is recorded as the script's outcome and routed
+ * to drift-repair, where an LLM would rewrite a script that never ran. It is a named class
+ * instead, so retry middleware can tell it apart from a script's own failure — it is not a
+ * `TypedFailure`, so `retryMiddleware`'s default already treats it as retryable. The worker
+ * is terminated and replaced before this is thrown.
+ */
+export class SandboxWorkerStartupError extends Error {
+  override readonly name = "SandboxWorkerStartupError";
+  constructor(
+    /** How long the parent waited for the run to start, in ms. */
+    readonly waitedMs: number,
+    /** The window it allowed: `wallClockMs + hardKillGraceMs + startupLivenessMs`. */
+    readonly limitMs: number
+  ) {
+    super(
+      `sandbox: worker never started the run (waited ${waitedMs} ms, allowed ${limitMs} ms) — the worker was replaced`
+    );
+  }
+}
 
 /** Milliseconds past `wallClockMs` before the pool stops asking and terminates. */
 const DEFAULT_HARD_KILL_GRACE_MS = 2_000;
@@ -45,13 +72,22 @@ export interface SandboxWorkerPoolOptions {
   /** Threads to run. */
   size: number;
   /**
-   * Grace past `wallClockMs` before a worker is terminated outright. Covers the
-   * legitimate work the in-VM clock does not: marshalling a large output
-   * (~25 ms at the 4 MiB ceiling) and, on the first run, compiling the WASM
-   * module. Too tight and a big-but-valid reshape is killed as a runaway.
+   * Grace past `wallClockMs` before a worker is terminated outright. The hard-kill clock
+   * starts when the in-VM wall clock does and stops when the worker marks the run finished,
+   * so the grace covers only what sits between the script's last op and that mark: the
+   * in-VM `dump` of the result (which can run the script's own `toJSON`) and disposing the
+   * runtime. The WASM compile (`ensureReady`) and everything before the script starts
+   * (input parse, runtime creation, seeding) are outside it; so is encoding the result on
+   * the worker afterwards. Too tight and a big-but-valid reshape is killed as a runaway.
    * Default 2000 ms.
    */
   hardKillGraceMs?: number;
+  /**
+   * How long past `wallClockMs + hardKillGraceMs` to wait for a worker that has not STARTED
+   * the run before terminating it with {@link SandboxWorkerStartupError}. Bounds the phases
+   * the script is not charged for. Default 10 000 ms.
+   */
+  startupLivenessMs?: number;
 }
 
 interface PendingRun {
@@ -92,6 +128,7 @@ export class SandboxWorkerPool {
   private readonly slots: Slot[] = [];
   private readonly queue: PendingRun[] = [];
   private readonly hardKillGraceMs: number;
+  private readonly startupLivenessMs: number;
   private nextRunId = 1;
   private closed = false;
 
@@ -100,6 +137,7 @@ export class SandboxWorkerPool {
       throw new Error(`sandbox: workers must be a positive integer (got ${String(options.size)})`);
     }
     this.hardKillGraceMs = options.hardKillGraceMs ?? DEFAULT_HARD_KILL_GRACE_MS;
+    this.startupLivenessMs = options.startupLivenessMs ?? DEFAULT_STARTUP_LIVENESS_MS;
   }
 
   /**
@@ -365,8 +403,9 @@ export class SandboxWorkerPool {
         // That is the engine, not the script (the distinction `ensureReady` already draws),
         // so it does not come out of the script's budget — but it cannot be waited on
         // forever either, or a wedged worker would never be reclaimed.
-        if (Date.now() - armedAt >= budget + STARTUP_LIVENESS_MS) {
-          kill(new Error("sandbox: worker never started the run"));
+        const waitedMs = Date.now() - armedAt;
+        if (waitedMs >= budget + this.startupLivenessMs) {
+          kill(new SandboxWorkerStartupError(waitedMs, budget + this.startupLivenessMs));
           return;
         }
         timer = setTimeout(check, RECHECK_MS);

@@ -87,7 +87,10 @@ async function handle(msg: ToWorker): Promise<void> {
     send({ type: "result", runId, outputJson: bytes }, [bytes.buffer as ArrayBuffer]);
   } catch (err) {
     // Finished either way: the parent must not kill a worker for a script that has
-    // already stopped running, whatever the outcome was.
+    // already stopped running, whatever the outcome was. The run id goes FIRST, as it does
+    // when the run starts: a throw before `onScriptStart` (input parse, seeding) has not
+    // stamped it yet, and the parent only honours a FINISHED that names its own run.
+    Atomics.store(state, STATUS_RUN_ID_INDEX, runId);
     Atomics.store(state, STATUS_STATE_INDEX, RUN_FINISHED);
     // A throw here is the WORKER failing, not the script: the module would not
     // compile, or a value would not marshal. Untyped by design — same reasoning
