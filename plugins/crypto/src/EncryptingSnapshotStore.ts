@@ -47,8 +47,17 @@ export class EncryptingSnapshotStore implements SnapshotStore {
       // Deleting ciphertext only reduces data — and without it a retention sweep over an
       // encrypted snapshot store orphaned every snapshot it should have removed.
       deleteExecution: "forward",
-    } satisfies DecoratorPlan<SnapshotStore, OptionalSnapshotStoreMethod>;
-    installOptional<SnapshotStore, OptionalSnapshotStoreMethod>(this, inner, plan);
+    } satisfies DecoratorPlan<
+      SnapshotStore,
+      Exclude<OptionalSnapshotStoreMethod, "loadLatestSealed">
+    >;
+    // `loadLatestSealed` is this class's own method (below), offered whatever the inner has:
+    // sealing at rest is exactly what this decorator adds.
+    installOptional<SnapshotStore, Exclude<OptionalSnapshotStoreMethod, "loadLatestSealed">>(
+      this,
+      inner,
+      plan
+    );
   }
 
   async save(snapshot: Snapshot): Promise<void> {
@@ -72,12 +81,15 @@ export class EncryptingSnapshotStore implements SnapshotStore {
   }
 
   /**
-   * ADR 0106 — the latest snapshot's SEQUENCE, read without decrypting. A sequence is not a
-   * sensitive field, and `shredSubject` needs it after the subject's key is gone: a retried
-   * shred must still place a missing tombstone after the folded tip.
+   * ADR 0106 (SnapshotStore SPI 1.1.0) — the latest snapshot as stored at rest: sensitive
+   * fields stay ciphertext envelopes, nothing is decrypted, so it answers after the subject's
+   * key is destroyed. `shredSubject`'s retry reads the sequence and `variables._shredded`
+   * (never a sensitive path) from it.
    */
-  async latestSequence(executionId: string): Promise<number | null> {
-    return (await this.inner.loadLatest(executionId))?.sequence ?? null;
+  async loadLatestSealed(executionId: string): Promise<Snapshot | null> {
+    return this.inner.loadLatestSealed !== undefined
+      ? this.inner.loadLatestSealed(executionId)
+      : this.inner.loadLatest(executionId);
   }
 
   async loadAt(executionId: string, sequence: number): Promise<Snapshot | null> {

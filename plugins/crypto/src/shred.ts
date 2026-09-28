@@ -1,5 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import { type EventStore, headOf } from "@loom/event-runtime";
+import type { SnapshotStore } from "@loom/snapshot-runtime";
+import { PayloadShreddedError } from "./errors";
 import type { KeyStore } from "./keystore";
 
 export interface ShredOptions {
@@ -27,44 +29,69 @@ export interface ShredOptions {
    * A3 evidence, and a gap-free `[0, 1]` reads as never compacted. REQUIRED (or
    * `tombstoneSequenceOf`) when `rawEventStore` can `truncatePrefix`.
    *
-   * The raw store or the app's `EncryptingSnapshotStore` both work: sequences are resolved
-   * BEFORE the key is destroyed, and a retry after it is gone reads only the sequence
-   * (`latestSequence`, never a decrypt).
+   * The raw store or the app's `EncryptingSnapshotStore` (tenant-scoped or not) both work:
+   * the latest snapshot is read with `loadLatestSealed` (SnapshotStore SPI 1.1.0), which
+   * never decrypts, so a retry after the key is gone still resolves. A store without it is
+   * read with `loadLatest`; if THAT refuses because the key is gone, the call fails naming the
+   * fix rather than guessing a sequence.
    */
-  snapshotStore?: {
-    loadLatest(executionId: string): Promise<{ sequence: number } | null>;
-    latestSequence?(executionId: string): Promise<number | null>;
-  };
+  snapshotStore?: Pick<SnapshotStore, "loadLatest" | "loadLatestSealed">;
 }
 
-/** The next sequence after the folded tip — or the log head, on a store that never compacts. */
-async function nextSequence(
+/** What step 1 learns about one execution: already tombstoned, or where its tombstone goes. */
+type Resolution = { done: true } | { done: false; sequence: number };
+
+/** Whether a folded state records this subject's shred (a compacted-away tombstone). */
+function recordsShred(state: unknown, subjectId: string): boolean {
+  const shredded = (state as { variables?: { _shredded?: { subjectId?: unknown } } } | undefined)
+    ?.variables?._shredded;
+  return shredded?.subjectId === subjectId;
+}
+
+/**
+ * ADR 0106 — is `executionId` already tombstoned for `subjectId`, and if not, where does its
+ * tombstone go? Done means the latest snapshot's state records the shred (compaction folded
+ * the tombstone into it) OR the log ABOVE that snapshot carries it; only that tail is read.
+ * The sequence is the folded tip + 1.
+ */
+async function resolve(
   store: EventStore,
   executionId: string,
-  snapshots: ShredOptions["snapshotStore"]
-): Promise<number> {
-  const head = (await headOf(store, executionId)) ?? -1;
-  let checkpoint = -1;
+  subjectId: string,
+  options: ShredOptions
+): Promise<Resolution> {
+  const snapshots = options.snapshotStore;
+  let latest: { sequence: number; state: unknown } | null = null;
   if (snapshots !== undefined) {
-    checkpoint =
-      snapshots.latestSequence !== undefined
-        ? ((await snapshots.latestSequence(executionId)) ?? -1)
-        : ((await snapshots.loadLatest(executionId))?.sequence ?? -1);
+    try {
+      latest =
+        snapshots.loadLatestSealed !== undefined
+          ? await snapshots.loadLatestSealed(executionId)
+          : await snapshots.loadLatest(executionId);
+    } catch (err) {
+      if (!(err instanceof PayloadShreddedError)) throw err;
+      throw new TypeError(
+        `shredSubject("${subjectId}"): the snapshot store refused to read "${executionId}" because the key is already destroyed (a retry), and it does not offer loadLatestSealed (SnapshotStore SPI 1.1.0). Pass a store that does — EncryptingSnapshotStore does, and TenantScopedSnapshotStore forwards it — or the raw snapshot store, or tombstoneSequenceOf. No sequence was guessed; nothing was written.`
+      );
+    }
   }
-  return Math.max(head, checkpoint) + 1;
-}
-
-/** Whether `executionId`'s log already carries this subject's tombstone (idempotency). */
-async function hasTombstone(
-  store: EventStore,
-  executionId: string,
-  subjectId: string
-): Promise<boolean> {
-  return (await store.read(executionId)).some(
-    (e) =>
-      e.eventType === "PAYLOAD_SHREDDED" &&
-      (e.payload as { subjectId?: unknown } | null)?.subjectId === subjectId
-  );
+  if (latest !== null && recordsShred(latest.state, subjectId)) return { done: true };
+  const tail = await store.readFrom(executionId, (latest?.sequence ?? -1) + 1);
+  if (
+    tail.some(
+      (e) =>
+        e.eventType === "PAYLOAD_SHREDDED" &&
+        (e.payload as { subjectId?: unknown } | null)?.subjectId === subjectId
+    )
+  ) {
+    return { done: true };
+  }
+  if (options.tombstoneSequenceOf !== undefined) {
+    return { done: false, sequence: await options.tombstoneSequenceOf(executionId) };
+  }
+  const head =
+    tail.length > 0 ? tail[tail.length - 1]!.sequence : ((await headOf(store, executionId)) ?? -1);
+  return { done: false, sequence: Math.max(head, latest?.sequence ?? -1) + 1 };
 }
 
 /** Thrown when some tombstones could not be written. Re-running `shredSubject` completes them. */
@@ -123,16 +150,15 @@ export async function shredSubject(
   }
 
   // 1. Resolve every missing tombstone BEFORE the key is destroyed: an encrypting snapshot
-  //    store can still decrypt now, and a failure here leaves nothing irreversible done. A
-  //    log that already carries this subject's tombstone is skipped — that is what makes a
-  //    re-run (key already gone) write exactly the missing ones (ADR 0106).
+  //    store can still decrypt now, and a failure here leaves nothing irreversible done. An
+  //    execution already tombstoned — in its log tail, or folded into its latest snapshot by
+  //    compaction — is skipped: that is what makes a re-run (key already gone) write exactly
+  //    the missing ones (ADR 0106).
   const pending: EventEnvelope[] = [];
   for (const exId of executionIds) {
-    if (await hasTombstone(rawEventStore, exId, subjectId)) continue;
-    const sequence =
-      options.tombstoneSequenceOf !== undefined
-        ? await options.tombstoneSequenceOf(exId)
-        : await nextSequence(rawEventStore, exId, options.snapshotStore);
+    const resolution = await resolve(rawEventStore, exId, subjectId, options);
+    if (resolution.done) continue;
+    const sequence = resolution.sequence;
     pending.push({
       id: `${exId}-shred-${sequence}`,
       workflowId: "",

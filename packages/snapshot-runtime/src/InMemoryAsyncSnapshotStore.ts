@@ -70,6 +70,11 @@ export class InMemoryAsyncSnapshotStore implements SnapshotStore {
     return list[list.length - 1] as Snapshot; // greatest sequence, last-inserted on ties
   }
 
+  /** Nothing here is sealed: at rest IS what `loadLatest` returns (SPI 1.1.0). */
+  async loadLatestSealed(executionId: string): Promise<Snapshot | null> {
+    return this.loadLatest(executionId);
+  }
+
   async loadAt(executionId: string, sequence: number): Promise<Snapshot | null> {
     await this.tick();
     const list = this.snapshots.get(executionId);

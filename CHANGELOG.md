@@ -47,10 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     destroyed. Sequences for every execution are resolved BEFORE the key is destroyed, so the
     app's encrypting snapshot store works. A partial append failure throws
     `ShredIncompleteError` after attempting every execution. A re-run with the key already gone
-    writes only the missing tombstones. The documented shredder no longer guards on key
-    existence, which would never have retried. `EraseCoordinator` also refuses a snapshot whose
-    non-blank identity names another execution (`SnapshotIdentityMismatchError`, now exported
-    from `@loom/core`).
+    writes only the missing tombstones. An execution already counts as done when compaction
+    folded its tombstone into the checkpoint. The documented shredder no longer guards on key
+    existence, which would never have retried. **SnapshotStore SPI 1.1.0:** optional
+    `loadLatestSealed`, the latest snapshot at rest, never decrypted. `EncryptingSnapshotStore`
+    implements it and `TenantScopedSnapshotStore` forwards it, so a retry works through a
+    tenant-scoped encrypting store. `EraseCoordinator` also refuses a snapshot whose
+    non-blank identity names another execution (`SnapshotIdentityMismatchError` and
+    `assertSnapshotIdentity`, exported from `@loom/snapshot-runtime`).
   - **Erasure waited forever on a compacted terminal execution.** `EraseCoordinator` folded
     the log alone. It now takes `snapshotStore` (`defineConfig` wires it).
   - **The tip rule.** When compaction keeps events, it never removes the log's tip. A

@@ -683,4 +683,20 @@ describe("L11 — the shred tombstone lands after the FOLDED tip (ADR 0106, A3)"
     await expect(shredSubject(keys, app.eventStore, "e")).rejects.toThrow(/FOLDED tip/);
     expect(await keys.get("e")).not.toBeNull();
   });
+
+  it("a tombstone compaction folded into the checkpoint still counts: a re-run writes nothing", async () => {
+    const app = boot();
+    const keys = new InMemoryKeyStore();
+    await keys.getOrCreate("e");
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore);
+    await toFirstGate(app, "e");
+    await shredSubject(keys, app.eventStore, "e", { snapshotStore: app.snapshotStore });
+    await life.compact("e"); // the tombstone is folded into the checkpoint and removed
+    expect((await app.eventStore.read("e")).some((e) => e.eventType === "PAYLOAD_SHREDDED")).toBe(
+      false
+    );
+    const before = await app.eventStore.read("e");
+    await shredSubject(keys, app.eventStore, "e", { snapshotStore: app.snapshotStore });
+    expect(await app.eventStore.read("e")).toEqual(before);
+  });
 });

@@ -13,7 +13,8 @@
 - Placement: **kernel (`@loom/workflow-runtime`, `@loom/event-runtime`)** for the defects,
   plus one additive SPI method. **KERNEL_ABI unchanged (1.1.0)**: no syscall changes.
   **EVENT_SCHEMA unchanged**: no event kind, payload or fold changes. **EventStore SPI
-  1.4.0 → 1.5.0** (additive MINOR): optional `truncatePrefixKeeping`.
+  1.4.0 → 1.5.0** (additive MINOR): optional `truncatePrefixKeeping`. **SnapshotStore SPI
+  1.0.0 → 1.1.0** (additive MINOR): optional `loadLatestSealed` (D2, the shred retry).
 
 ## Context — three defects in `LogLifecycle.compact`
 
@@ -60,7 +61,9 @@ finding's evidence (ADR 0055 D6 recorded this as the L11 known gap).
   `fork`). A **blank** field is filled: the id the caller read, the workflowId sequence 0
   records, and the registered flow's version. The version is what the un-snapshotted path seeds,
   so both paths fold to the same state. A **non-blank field that disagrees** is refused with
-  `SnapshotIdentityMismatchError`: only a store or tenant-scoping defect produces one, and
+  `SnapshotIdentityMismatchError` (`@loom/snapshot-runtime`, with the shared
+  `assertSnapshotIdentity` rule; kept out of `@loom/core`): only a store or tenant-scoping
+  defect produces one, and
   filling it over would hide that defect. `fork` passes an explicit retarget flag, because a
   parent's snapshot seeds a child and its executionId is replaced, never compared.
 
@@ -114,8 +117,17 @@ checkpoint.
     is then attempted, and failures are collected into `ShredIncompleteError` instead of
     stopping at the first one. A re-run with the key already gone writes exactly the
     missing tombstones. Idempotency is keyed on each log already carrying the subject's
-    `PAYLOAD_SHREDDED`, not on the key. After the key is gone, only the snapshot's sequence
-    is needed (`EncryptingSnapshotStore.latestSequence`, no decrypt).
+    `PAYLOAD_SHREDDED`, not on the key. An execution counts as done when the log tail
+    above its latest snapshot carries the tombstone, OR that snapshot's state records the
+    shred (`variables._shredded`), because compaction folds a tombstone into its
+    checkpoint and removes it. Only that tail is read.
+  - **SnapshotStore SPI 1.1.0:** optional `loadLatestSealed`, the latest snapshot as stored
+    at rest. An encrypting store leaves sensitive fields as ciphertext envelopes and never
+    decrypts, so it answers after the key is gone. A plain store returns `loadLatest`.
+    `EncryptingSnapshotStore` always offers it. `TenantScopedSnapshotStore` forwards it,
+    and the `DecoratorPlan` type makes every snapshot decorator decide it. A store without
+    it is read with `loadLatest`, and if that refuses (`PayloadShreddedError`) the shred
+    fails with an error naming the fix. It never guesses a sequence.
   - The documented shredder no longer guards on `keys.get(subjectId) !== null`. That guard
     never retried a failed tombstone once the key was gone. `KeyStore.destroy` is now
     documented as idempotent.

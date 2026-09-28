@@ -1,9 +1,4 @@
-import {
-  StorageWriteError,
-  SuspendError,
-  assertSnapshotIdentity,
-  flowContentHash,
-} from "@loom/core";
+import { StorageWriteError, SuspendError, flowContentHash } from "@loom/core";
 import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loom/core";
 import { LazyEffect } from "@loom/effect-runtime";
 import type {
@@ -31,7 +26,7 @@ import {
   knownEventTypes,
   normalizeSnapshotState,
 } from "@loom/replay-vm";
-import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
+import { type Snapshot, type SnapshotStore, assertSnapshotIdentity } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { WorkflowContextImpl } from "./WorkflowContext";

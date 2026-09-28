@@ -1,4 +1,4 @@
-import { type EventEnvelope, type ExecutionState, assertSnapshotIdentity } from "@loom/core";
+import type { EventEnvelope, ExecutionState } from "@loom/core";
 import {
   type BranchRegistry,
   type EventStore,
@@ -7,7 +7,7 @@ import {
 } from "@loom/event-runtime";
 import { appendBatchOf } from "@loom/event-runtime";
 import { ReplayVM, knownEventTypes, normalizeSnapshotState } from "@loom/replay-vm";
-import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
+import { type Snapshot, type SnapshotStore, assertSnapshotIdentity } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 import { EFFECT_INDOUBT_RESOLVED, EXECUTION_RECOVERED } from "./types";
 
