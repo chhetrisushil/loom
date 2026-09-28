@@ -322,6 +322,22 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       await store.close();
     });
 
+    it("a fenced execution refuses a single append with a MISSING or LOWER token (when supported)", async () => {
+      // K9.4's zombie guarantee rests on the missing-token branch too: a schedule start is
+      // never fenced (ADR 0103, L12), so an unfenced starter is fenced out ONLY because the
+      // store refuses a missing token once the execution has one. Checked on the single-append
+      // path, not just incidentally through appendBatch.
+      const store = factory();
+      if (store.acquireFence === undefined) return void (await store.close());
+      await store.acquireFence("f");
+      await expect(store.append(evt("f", 0))).rejects.toMatchObject({ name: "StaleFenceError" });
+      await expect(store.append({ ...evt("f", 0), metadata: { fence: 0 } })).rejects.toMatchObject({
+        name: "StaleFenceError",
+      });
+      expect(await store.read("f")).toEqual([]);
+      await store.close();
+    });
+
     it("listExecutions enumerates distinct executionIds (when supported)", async () => {
       const store = factory();
       if (store.listExecutions === undefined) return; // OPTIONAL (1.1.0)

@@ -32,6 +32,7 @@
     "@loom/middleware": "workspace:*",
     "@loom/plugin-content": "workspace:*",
     "@loom/plugin-crypto": "workspace:*",
+    "@loom/plugin-postgres": "workspace:*",
     "@loom/plugin-sqlite": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",

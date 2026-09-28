@@ -45,6 +45,12 @@ export interface TimerServiceOptions {
    * and inviting a recovery pass to pay for that effect again. The durable
    * bootstrap already refuses the duplicate at sequence 0, and the first later
    * fence (a fenced wake, a recovery pass) still fences out the unfenced starter.
+   * So a scheduled execution accepts unfenced writes until its first fence.
+   *
+   * Fencing a fire makes a duplicate cross-node fire's WRITES safe, not its effects
+   * exactly-once: a node that fires later fences out an earlier node's resume
+   * mid-body, after its effect, and a recovery pass pays for that step again. Wire
+   * `leases` so only the claimant fires (#380; ADR 0103's open residual).
    */
   fenced?: boolean;
   /**

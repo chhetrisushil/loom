@@ -175,14 +175,30 @@ describe("T1.2 — schedule$ firing", () => {
     expect(events.at(-1)?.eventType).toBe("EXECUTION_COMPLETED");
   });
 
-  it("ADR 0103 — the same race in fenced mode: one execution, one effect, no onError", async () => {
-    // Before L12 each node acquired a fence before starting, so the loser could be refused as
-    // STALE (reported to onError) instead of as a duplicate. A start no longer fences, so the
-    // loser is always refused at sequence 0 as a duplicate: "already started", not an error.
+  it("ADR 0103 — fenced mode, the loser's start is overtaken before its bootstrap: 'already started', no onError", async () => {
+    // The ordering that used to be refused as STALE: A passes the fast path and heads into
+    // start(); B then runs its whole attempt first and completes the occurrence. Before L12, A
+    // held fence 1 while B's start had taken fence 2, so A's sequence 0 was refused on the
+    // fence and reported to onError as a StorageWriteError. Now neither start fences: A is
+    // refused at sequence 0 as a duplicate, which the service treats as "already started".
     const a = boot();
     const b = boot(a);
     const onErrorA = vi.fn();
     const onErrorB = vi.fn();
+    let bSettled!: () => void;
+    const bDone = new Promise<void>((r) => {
+      bSettled = r;
+    });
+    let aReachedStart!: () => void;
+    const aAtStart = new Promise<void>((r) => {
+      aReachedStart = r;
+    });
+    const realStart = a.runtime.start.bind(a.runtime);
+    vi.spyOn(a.runtime, "start").mockImplementation(async (...args) => {
+      aReachedStart();
+      await bDone;
+      return realStart(...(args as Parameters<typeof realStart>));
+    });
     const serviceA = new TimerService(a.runtime, a.timerStore, {
       schedules: [everyMinute],
       fenced: true,
@@ -194,13 +210,18 @@ describe("T1.2 — schedule$ firing", () => {
       onError: onErrorB,
     });
     const occurrence = nextMinute(Date.now());
-    await Promise.all([serviceA.tick(occurrence), serviceB.tick(occurrence)]);
+    const tickA = serviceA.tick(occurrence);
+    await aAtStart;
+    await serviceB.tick(occurrence).finally(() => bSettled());
+    await tickA;
 
-    expect(a.auditFn.mock.calls.length + b.auditFn.mock.calls.length).toBe(1);
+    expect(a.auditFn).not.toHaveBeenCalled();
+    expect(b.auditFn).toHaveBeenCalledTimes(1);
     expect(onErrorA).not.toHaveBeenCalled();
     expect(onErrorB).not.toHaveBeenCalled();
     const events = await a.eventStore.read(`audit-schedule@${occurrence}`);
     expect(events.filter((e) => e.eventType === "EXECUTION_STARTED")).toHaveLength(1);
+    expect(events.every((e) => e.metadata?.fence === undefined)).toBe(true);
     expect(events.at(-1)?.eventType).toBe("EXECUTION_COMPLETED");
   });
 
