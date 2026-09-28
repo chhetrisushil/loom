@@ -470,6 +470,28 @@ export function runSnapshotStoreConformance(
       await store.close();
     });
 
+    it("loadLatestSealed (if implemented) returns the latest snapshot as stored (SPI 1.1.0)", async () => {
+      const store = factory();
+      if (store.loadLatestSealed === undefined) return void (await store.close());
+      expect(await store.loadLatestSealed("none")).toBeNull();
+      await store.save(snap("sealed", 1));
+      await store.save(snap("sealed", 3));
+      // The SAME snapshot as loadLatest — its fields may differ only by being sealed (an
+      // encrypting store leaves sensitive paths as ciphertext; a plain store returns it as is).
+      const sealed = await store.loadLatestSealed("sealed");
+      const latest = await store.loadLatest("sealed");
+      expect({
+        id: sealed?.id,
+        sequence: sealed?.sequence,
+        executionId: sealed?.executionId,
+      }).toEqual({
+        id: latest?.id,
+        sequence: latest?.sequence,
+        executionId: latest?.executionId,
+      });
+      await store.close();
+    });
+
     it("deleteExecution removes an execution's snapshots (when supported)", async () => {
       const store = factory();
       if (store.deleteExecution === undefined) return; // OPTIONAL (K10.1)

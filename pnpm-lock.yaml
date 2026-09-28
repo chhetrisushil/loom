@@ -337,6 +337,9 @@ importers:
       '@loom/replay-vm':
         specifier: workspace:*
         version: link:../replay-vm
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../snapshot-runtime
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

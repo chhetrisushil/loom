@@ -23,10 +23,8 @@ export { canonicalJson, fnv1a64, jsonSchemaHash } from "./schemaHash";
 export { schedule$ } from "./builders/schedule";
 export type { ScheduleConfig } from "./builders/schedule";
 export {
-  assertSnapshotIdentity,
   fail,
   ReplayError,
-  SnapshotIdentityMismatchError,
   StepError,
   StorageWriteError,
   SuspendError,

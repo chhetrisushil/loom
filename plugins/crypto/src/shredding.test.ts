@@ -2,7 +2,7 @@ import type { EventEnvelope, ExecutionState } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import type { Snapshot } from "@loom/snapshot-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { InMemoryAsyncSnapshotStore, TenantScopedSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { EncryptingEventStore, isShredded } from "./EncryptingEventStore";
 import { EncryptingSnapshotStore } from "./EncryptingSnapshotStore";
@@ -338,5 +338,62 @@ describe("ADR 0106 — shredSubject is retry-safe and takes the app's ENCRYPTING
     });
     for (const id of ids) expect(await tombstones(inner, id)).toHaveLength(1);
     expect((await tombstones(inner, "b"))[0]?.sequence).toBe(6);
+  });
+
+  it("tenant-scoped over encrypting: the retry after ShredIncompleteError still completes (loadLatestSealed is forwarded)", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const keys = new InMemoryKeyStore();
+    const snaps = new TenantScopedSnapshotStore(
+      new EncryptingSnapshotStore(new InMemoryAsyncSnapshotStore(), keys, {
+        sensitive: ["variables._input.ssn"],
+        subjectOf: () => "subj",
+      }),
+      "acme"
+    );
+    expect(snaps.loadLatestSealed).toBeDefined();
+    for (const id of ["a", "b"]) {
+      await inner.append(ev(id, 0, "EXECUTION_STARTED", { input: {} }));
+      await snaps.save({
+        id: `cp-${id}`,
+        executionId: id,
+        workflowId: "wf",
+        sequence: 5,
+        state: snapState(id, 5),
+        createdAt: 0,
+      });
+    }
+    await keys.getOrCreate("subj");
+    let failB = true;
+    const flaky = Object.assign(Object.create(inner) as InMemoryAsyncEventStore, {
+      append: async (e: Parameters<InMemoryAsyncEventStore["append"]>[0]) => {
+        if (e.executionId === "b" && failB) {
+          failB = false;
+          throw new Error("write conflict");
+        }
+        return inner.append(e);
+      },
+    });
+    const opts = { subjectId: "subj", executionIds: ["a", "b"], snapshotStore: snaps };
+    await expect(shredSubject(keys, flaky, "a", opts)).rejects.toBeInstanceOf(ShredIncompleteError);
+    await expect(snaps.loadLatest("b")).rejects.toBeInstanceOf(PayloadShreddedError); // key gone
+    await shredSubject(keys, flaky, "a", opts);
+    for (const id of ["a", "b"]) {
+      const t = await tombstones(inner, id);
+      expect(t.map((e) => e.sequence)).toEqual([6]);
+    }
+  });
+
+  it("a snapshot store that can only decrypt fails the retry with a clear error — no guessed sequence", async () => {
+    const { inner, snaps, keys, ids } = await compactedSubject();
+    await keys.destroy("subj"); // a previous run got this far
+    const decryptOnly = { loadLatest: (id: string) => snaps.loadLatest(id) };
+    await expect(
+      shredSubject(keys, inner, "a", {
+        subjectId: "subj",
+        executionIds: ids,
+        snapshotStore: decryptOnly,
+      })
+    ).rejects.toThrow(/loadLatestSealed/);
+    for (const id of ids) expect(await tombstones(inner, id)).toHaveLength(0);
   });
 });

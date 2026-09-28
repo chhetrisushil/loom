@@ -3,8 +3,11 @@ import type { ExecutionState } from "@loom/core";
 /**
  * SPI version for the {@link SnapshotStore} contract (ADR 0033). Pinned by
  * `runSnapshotStoreConformance` in `@loom/testing`.
+ *
+ * 1.1.0: added optional `loadLatestSealed()` (ADR 0106 — the latest snapshot as stored at
+ *   rest, readable after a crypto-shred destroyed the subject's key).
  */
-export const SNAPSHOT_STORE_SPI_VERSION = "1.0.0";
+export const SNAPSHOT_STORE_SPI_VERSION = "1.1.0";
 
 export interface Snapshot {
   id: string;
@@ -35,6 +38,15 @@ export interface SnapshotStore {
    * snapshot half of a retention sweep, alongside `EventStore.deleteExecution`.
    */
   deleteExecution?(executionId: string): Promise<void>;
+  /**
+   * OPTIONAL (SPI 1.1.0, ADR 0106). The latest snapshot AS STORED AT REST: an encrypting
+   * store returns its sensitive fields as unopened ciphertext envelopes instead of
+   * decrypting them (so it never throws for a destroyed key); a plain store returns exactly
+   * `loadLatest`. For callers that need only non-sensitive facts — the sequence, a plain
+   * variable like `_shredded` — after a subject's key is gone (`shredSubject`'s retry). It
+   * never yields plaintext a decrypting read would refuse. Decorators MUST forward it.
+   */
+  loadLatestSealed?(executionId: string): Promise<Snapshot | null>;
   close(): Promise<void>;
 }
 
@@ -51,6 +63,7 @@ export type OptionalSnapshotStoreMethod = {
 /** The runtime list of {@link OptionalSnapshotStoreMethod}, for the decorator conformance kit. */
 export const OPTIONAL_SNAPSHOT_STORE_METHODS = [
   "deleteExecution",
+  "loadLatestSealed",
 ] as const satisfies readonly OptionalSnapshotStoreMethod[];
 
 type _MissingOptionalSnapshotMethod = Exclude<

@@ -1,6 +1,7 @@
-import { type EventEnvelope, type ExecutionState, assertSnapshotIdentity } from "@loom/core";
+import type { EventEnvelope, ExecutionState } from "@loom/core";
 import type { EventStore } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
+import { assertSnapshotIdentity } from "@loom/snapshot-runtime";
 import { DEFAULT_TENANT, type SubjectIndex } from "./SubjectIndex";
 
 // ── T3-R3/R4.5 — subject erasure (GDPR Art. 17, right to be forgotten) ─────────

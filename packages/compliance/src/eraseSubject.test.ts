@@ -1,6 +1,7 @@
-import { type EventEnvelope, SnapshotIdentityMismatchError } from "@loom/core";
+import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
+import { SnapshotIdentityMismatchError } from "@loom/snapshot-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { SubjectIndex } from "./SubjectIndex";
 import { EraseCoordinator } from "./eraseSubject";

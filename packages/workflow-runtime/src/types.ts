@@ -392,7 +392,7 @@ export class ExecutionAlreadyExistsError extends Error {
   }
 }
 
-export { SnapshotIdentityMismatchError } from "@loom/core";
+export { SnapshotIdentityMismatchError } from "@loom/snapshot-runtime";
 
 /**
  * TR (ADR 0077) — `resume()`/`resumeAs()` refused a payload that does not satisfy

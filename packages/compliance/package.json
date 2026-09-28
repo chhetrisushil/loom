@@ -1,7 +1,7 @@
 {
   "name": "@loom/compliance",
   "version": "0.0.1",
-  "description": "Data-subject rights for Loom (T3, GDPR/CCPA-enabling) — a subject index (subjectId → executions) fed by the event stream, and exportSubject for Art. 15/20 access + portability. Event-sourcing makes these a fold; this productizes that. Not legal advice.",
+  "description": "Data-subject rights for Loom (T3, GDPR/CCPA-enabling) \u2014 a subject index (subjectId \u2192 executions) fed by the event stream, and exportSubject for Art. 15/20 access + portability. Event-sourcing makes these a fold; this productizes that. Not legal advice.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -20,7 +20,8 @@
   "dependencies": {
     "@loom/core": "workspace:*",
     "@loom/event-runtime": "workspace:*",
-    "@loom/replay-vm": "workspace:*"
+    "@loom/replay-vm": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
