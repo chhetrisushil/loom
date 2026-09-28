@@ -5,9 +5,11 @@
 
 Every kernel/SPI contract version. **Compatibility rule:** two versions are compatible iff
 they share a **major** version (an additive MINOR never breaks a stored log or wire client).
-Loom is a lockstep monorepo today — every contract is `1.x` and mutually compatible, so the
-**current supported set is the single row below**; the mechanism (`checkCompatibility`) exists
-for the day a MAJOR diverges (e.g. an external adapter pinned to an older SPI).
+A major is compared per contract, never across contracts (MemoryStore SPI is `2.x` while
+most are `1.x`). Loom is a lockstep monorepo today — every contract below ships together and
+is mutually compatible, so the **current supported set is the single row below**; the
+mechanism (`checkCompatibility`) exists for the day a deployment's MAJOR diverges from it
+(e.g. an external adapter pinned to an older SPI).
 
 | Contract | Version | Source of truth |
 |---|---|---|

@@ -47,3 +47,40 @@ describe("iterateExecutionIds (SP-2)", () => {
     await expect(iterator.next()).rejects.toThrow(/cannot be enumerated/);
   });
 });
+
+describe("InMemoryAsyncEventStore paging keeps its sorted index current (L10)", () => {
+  it("sees executions created and deleted between pages, and sorts once per change", async () => {
+    const store = new InMemoryAsyncEventStore();
+    for (const id of ["b", "d"]) await store.append(evt(id));
+    expect(await store.listExecutionsPage({ limit: 1 })).toEqual({
+      executionIds: ["b"],
+      nextCursor: "b",
+    });
+    await store.append(evt("c")); // a new execution after the cursor
+    await store.deleteExecution("d");
+    expect(await store.listExecutionsPage({ cursor: "b", limit: 10 })).toEqual({
+      executionIds: ["c"],
+    });
+    // A full walk with no new executions does not re-sort per page.
+    for (let i = 0; i < 50; i++) await store.append(evt(`x${String(i).padStart(2, "0")}`));
+    const sort = Array.prototype.sort;
+    let sorts = 0;
+    Array.prototype.sort = function (this: unknown[], ...args) {
+      sorts++;
+      return sort.apply(this, args as [((a: unknown, b: unknown) => number)?]);
+    };
+    try {
+      let cursor: string | undefined;
+      do {
+        const page = await store.listExecutionsPage({
+          ...(cursor !== undefined && { cursor }),
+          limit: 5,
+        });
+        cursor = page.nextCursor;
+      } while (cursor !== undefined);
+    } finally {
+      Array.prototype.sort = sort;
+    }
+    expect(sorts).toBe(1);
+  });
+});
