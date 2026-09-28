@@ -128,8 +128,11 @@ describe("loom repair blank-stream", () => {
       (await events.read("__loom_lifecycle__")).map((f) => (f.payload as { proof: string }).proof)
     ).toEqual(["snapshot", "operator"]);
     events.close();
-    // Nothing left to do.
+    // Nothing left to do — and a plain census does not ask for the assignment again.
     expect(await cmdRepairBlankStream({ db, snap, apply: true })).toContain("re-homed now: 0");
+    const census = await cmdRepairBlankStream({ db, snap, apply: false });
+    expect(census).not.toContain("UNATTRIBUTED");
+    expect(census).toContain("rehomed (operator-assigned)");
   });
 
   it('after --apply it names what the repair cannot do: read models, and the key of subject ""', async () => {

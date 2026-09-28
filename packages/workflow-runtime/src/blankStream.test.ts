@@ -206,6 +206,7 @@ describe("ADR 0107 (B) — census of the blank stream", () => {
       segments: [],
       unattributed: [],
       ciphertext: false,
+      shredded: false,
     });
   });
 });
@@ -750,5 +751,124 @@ describe("ADR 0107 (B) — review round 1", () => {
     const atRest = (await app.raw.read("e1")).find((e) => e.eventType === "go1")!;
     expect((atRest.payload as { n: unknown }).n).toMatchObject({ __loomEnc: "loom/aes-256-gcm" });
     expect(await keys.get("e1")).not.toBeNull();
+  });
+});
+
+describe("ADR 0107 (B) — review round 2", () => {
+  /**
+   * e1 compacted at gate 1, with its gate-2 snapshot re-parked by `park` and the stray tail
+   * above it built by `tail` — the shapes the other resume paths record.
+   */
+  async function tailed(
+    app: App,
+    h: History,
+    park: (s: ExecutionState) => ExecutionState,
+    tail: (events: EventEnvelope[]) => Array<Omit<EventEnvelope, "sequence" | "id">>
+  ): Promise<number> {
+    await image(app, "e1", h, { checkpoint: h.gate1, blanks: [], through: h.gate2 });
+    await app.snapshotStore.save({
+      id: "seed",
+      executionId: "e1",
+      workflowId: FLOW,
+      sequence: h.gate2,
+      state: park(blank(h.at(h.gate2))),
+      createdAt: 0,
+    });
+    const events = tail(h.log.filter((e) => e.sequence > h.gate2));
+    let q = h.gate2;
+    for (const e of events) {
+      q++;
+      await app.raw.append({ ...e, sequence: q, id: `-${q}`, executionId: "", workflowId: "" });
+    }
+    return q;
+  }
+  const timed = (s: ExecutionState): ExecutionState => ({
+    ...s,
+    suspendedOn: { ...s.suspendedOn!, wakeAt: 5_000 },
+  });
+
+  it("assigns a tail a TimerService resume wrote (TIMER_FIRED at the park's wakeAt) — and refuses another wakeAt (P3-A)", async () => {
+    const h = await history(1);
+    for (const [wakeAt, want] of [
+      [5_000, "rehomed"],
+      [6_000, "invalid"],
+    ] as const) {
+      const app = boot();
+      const through = await tailed(app, h, timed, (events) =>
+        events.map((e, i) =>
+          i === 0 ? { ...e, eventType: "TIMER_FIRED", payload: { wakeAt } } : e
+        )
+      );
+      const repair = await app.life.rehomeBlankStream({
+        apply: true,
+        assign: [{ executionId: "e1", fromSequence: h.gate2 + 1, throughSequence: through }],
+      });
+      const seg = repair.segments.find((s) => s.proof === "operator")!;
+      expect(seg.status).toBe(want);
+      if (want === "invalid") expect(seg.detail).toContain("TIMER_FIRED at 5000");
+    }
+  });
+
+  it("assigns a tail a resumeAs wrote (EXECUTION_MIGRATED before the answer) (P3-A)", async () => {
+    const h = await history(1);
+    const app = boot();
+    const through = await tailed(
+      app,
+      h,
+      (s) => s,
+      (events) => [
+        {
+          ...events[0]!,
+          eventType: "EXECUTION_MIGRATED",
+          payload: { toFlowId: FLOW, strategy: "operator-ack" },
+        },
+        ...events,
+      ]
+    );
+    const census = await app.life.blankStreamCensus({
+      assign: [{ executionId: "e1", fromSequence: h.gate2 + 1, throughSequence: through }],
+    });
+    expect(census.segments.find((s) => s.proof === "operator")?.status).toBe("rehomable");
+  });
+
+  it("after an operator repair, the census reports the range re-homed, not unattributed (P3-B)", async () => {
+    const h = await history(1);
+    const app = boot();
+    await pre0106(app, "e1", h, "completed");
+    const assign = [{ executionId: "e1", fromSequence: h.gate2 + 1, throughSequence: h.done }];
+    await app.life.rehomeBlankStream({ apply: true, assign });
+    const census = await app.life.blankStreamCensus();
+    expect(census.unattributed).toEqual([]);
+    expect(spans(census)).toEqual([
+      `e1:${h.gate1 + 1}-${h.gate2}:rehomed`,
+      `e1:${h.gate2 + 1}-${h.done}:rehomed`,
+    ]);
+    expect(census.segments.map((s) => s.proof)).toEqual(["snapshot", "operator"]);
+    // Its fact is not written twice.
+    await app.life.rehomeBlankStream({ apply: true });
+    expect(await app.raw.read(LIFECYCLE_STREAM)).toHaveLength(2);
+  });
+
+  it("refuses to copy { $shredded } placeholders a tolerant store reads for a destroyed key (P2-4 minor)", async () => {
+    const h = await history(1);
+    const keys = new InMemoryKeyStore();
+    const sensitive = { go1: ["n"], EXECUTION_RESUMED: ["n"] };
+    const app = boot(
+      (raw) => new EncryptingEventStore(raw, keys, { sensitive, onShredded: "tolerate" })
+    );
+    await image(app, "e1", h, { checkpoint: h.gate1, blanks: [h.gate2], through: h.gate1 });
+    for (const e of h.log.filter((e) => e.sequence > h.gate1 && e.sequence <= h.gate2)) {
+      await app.eventStore.append({ ...e, id: `-${e.sequence}`, executionId: "", workflowId: "" });
+    }
+    await keys.destroy("");
+    const census = await app.life.blankStreamCensus();
+    expect(census.shredded).toBe(true);
+    await expect(
+      app.life.rehomeBlankStream({
+        apply: true,
+        assign: [{ executionId: "e1", fromSequence: h.gate1 + 1, throughSequence: h.gate2 }],
+      })
+    ).rejects.toThrow(/\$shredded/);
+    expect(seqs(await app.raw.read("e1"))).toEqual([0]);
   });
 });
