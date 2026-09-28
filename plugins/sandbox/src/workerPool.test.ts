@@ -102,7 +102,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
 
       const killed = await pool.run(
         RUNS_FOR_SECONDS,
-        null,
+        "null",
         {
           memoryBytes: 512 * 1024 * 1024,
           interruptBudget: Number.MAX_SAFE_INTEGER,
@@ -163,7 +163,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
 
       const killed = await pool.run(
         RUNS_FOR_SECONDS,
-        null,
+        "null",
         { memoryBytes, interruptBudget, wallClockMs: 50 },
         undefined
       );
@@ -181,7 +181,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       await expect(
         pool.run(
           "(() => 1 + 1)()",
-          null,
+          "null",
           { memoryBytes, interruptBudget, wallClockMs: 60_000 },
           undefined
         )
@@ -279,6 +279,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         interruptBudget: Number.MAX_SAFE_INTEGER,
         wallClockMs: 60_000,
       };
+      const inputJson = JSON.stringify(input);
       let preScriptMs = Number.POSITIVE_INFINITY;
       for (let i = 0; i < 2; i++) {
         const calledAt = Date.now();
@@ -286,7 +287,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         const probe = evalInFreshRuntime(
           quickjs,
           "input.length",
-          input,
+          inputJson,
           probeLimits,
           undefined,
           (at) => {
@@ -315,7 +316,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       await expect(
         pool.run(
           "input.length",
-          input,
+          inputJson,
           { memoryBytes, interruptBudget: Number.MAX_SAFE_INTEGER, wallClockMs },
           undefined
         )
@@ -342,7 +343,9 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         interruptBudget: Number.MAX_SAFE_INTEGER,
         wallClockMs: 1,
       };
-      const err = await pool.run("input.length", input, limits, undefined).catch((e: unknown) => e);
+      const err = await pool
+        .run("input.length", JSON.stringify(input), limits, undefined)
+        .catch((e: unknown) => e);
       // A named class, NOT a TypedFailure: the environment failed, not the script, so it
       // must not land on `limitExceeded` (drift-repair) — and retry middleware's default,
       // which retries anything that is not a TypedFailure, retries it.
@@ -352,7 +355,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
 
       // The wedged worker was replaced, not reused.
       await expect(
-        pool.run("(() => 3)()", null, { ...limits, wallClockMs: 60_000 }, undefined)
+        pool.run("(() => 3)()", "null", { ...limits, wallClockMs: 60_000 }, undefined)
       ).resolves.toEqual({ ok: true, value: 3 });
     },
     SLOW
@@ -442,7 +445,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         interruptBudget: Number.MAX_SAFE_INTEGER,
         wallClockMs: 0,
       };
-      const pending = pool.run("(() => 1)()", null, limits, undefined);
+      const pending = pool.run("(() => 1)()", "null", limits, undefined);
       // biome-ignore lint/suspicious/noExplicitAny: reaching the private slot to wedge it
       const [slot] = (pool as any).slots as { worker: import("node:worker_threads").Worker }[];
       slot!.worker.removeAllListeners("message");
@@ -490,7 +493,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       // A run posted now must be served by a FRESH worker, not hang on the corpse.
       const result = await pool.run(
         "(() => 1)()",
-        null,
+        "null",
         { memoryBytes: 32 * 1024 * 1024, interruptBudget: 1_000, wallClockMs: 1_000 },
         undefined
       );
@@ -519,7 +522,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       const interruptBudget = Number.MAX_SAFE_INTEGER;
       const killed = await pool.run(
         RUNS_FOR_SECONDS,
-        null,
+        "null",
         { memoryBytes, interruptBudget, wallClockMs: 1_000 },
         undefined
       );
@@ -528,7 +531,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       // The only worker was terminated: this run pays a cold spawn + compile.
       const next = pool.run(
         "(() => 1 + 1)()",
-        null,
+        "null",
         { memoryBytes, interruptBudget, wallClockMs: 1_000 },
         undefined
       );
@@ -567,7 +570,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       };
       const warmPromise = reclaimed.warm().catch((e: unknown) => e);
       const runPromise = reclaimed
-        .run("(() => 1)()", null, limits, undefined)
+        .run("(() => 1)()", "null", limits, undefined)
         .catch((e: unknown) => e);
       // biome-ignore lint/suspicious/noExplicitAny: reaching the private slot to wedge it
       const [slot] = (reclaimed as any).slots as { worker: import("node:worker_threads").Worker }[];
@@ -622,7 +625,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         wallClockMs: 1_000,
       };
       const controller = new AbortController();
-      const pending = pool.run("(() => 1)()", null, limits, controller.signal);
+      const pending = pool.run("(() => 1)()", "null", limits, controller.signal);
       // biome-ignore lint/suspicious/noExplicitAny: observing the private slot
       const [slot] = (pool as any).slots as { busy: boolean; ready: boolean }[];
       expect(slot!.ready).toBe(false); // still warming: this is the window under test
@@ -633,7 +636,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       expect(slot!.ready).toBe(false);
       expect(slot!.busy).toBe(false);
       // The warm-up ran on; the same worker serves the next run.
-      await expect(pool.run("(() => 2)()", null, limits, undefined)).resolves.toEqual({
+      await expect(pool.run("(() => 2)()", "null", limits, undefined)).resolves.toEqual({
         ok: true,
         value: 2,
       });
@@ -649,7 +652,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
     const pool = new SandboxWorkerPool({ size: 1 });
     const pending = pool.run(
       "(() => 1)()",
-      null,
+      "null",
       { memoryBytes: 32 * 1024 * 1024, interruptBudget: 1_000, wallClockMs: 1_000 },
       undefined
     );
@@ -682,11 +685,15 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       });
 
       // `startupLivenessMs: 0` on a WARM worker with a 32 MiB input: seeding cannot finish
-      // inside a 1 ms window; the default would let this succeed.
+      // inside a 1 ms window; the default would let this succeed. `maxInputBytes` raised
+      // past the input's size on purpose — this test targets the POOL's startup-liveness
+      // bound (backlog L13), which sits downstream of `maxInputBytes` (backlog L19); a
+      // 32 MiB input would otherwise be refused by the default 1 MiB ceiling before ever
+      // reaching a worker, which is a different (and now also-tested) failure mode.
       const scripts = new InMemoryContentStore();
       const effects = new EffectRuntime();
       const effect = registerSandboxEval(effects, scripts, {
-        limits: { memoryBytes: 512 * 1024 * 1024, wallClockMs: 1 },
+        limits: { memoryBytes: 512 * 1024 * 1024, wallClockMs: 1, maxInputBytes: 64 * 1024 * 1024 },
         workers: { count: 1, hardKillGraceMs: 0, startupLivenessMs: 0 },
       });
       opened.push(effect);

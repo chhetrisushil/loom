@@ -36,6 +36,27 @@ export interface SandboxLimits {
    * VM heap ceiling.
    */
   maxOutputBytes?: number;
+  /**
+   * Ceiling on the JSON size of the CALLER-supplied `input`. Default 1 MiB — the same
+   * order as `maxOutputBytes`, which leaves headroom under the 32 MiB `memoryBytes`
+   * default for the runtime and the script's own work once the input is parsed.
+   *
+   * `input` is unmarshaled `z.unknown()` — nothing here bounds it — and every other
+   * limit is charged to the SCRIPT's execution, which does not start until the input has
+   * already been JSON-stringified by the caller, posted (worker mode) or parsed into the
+   * VM (either mode). None of that work runs inside the guarded window, so an oversized
+   * input is bounded only by the worker pool's startup-liveness window (ADR 0089 D4) —
+   * generous on purpose, since it also has to cover a slow cold host — and on a timeout
+   * fails with the untyped `SandboxWorkerStartupError`, which default retry middleware
+   * then retries: a 200 MB input can hold a worker for ~10 s per attempt, repeatedly.
+   *
+   * This is checked ONCE, on the caller's side, before either engine is touched: measured
+   * in UTF-8 bytes of the same JSON the caller already produces to seed the VM or post to
+   * a worker (never serialized twice), and refused with the typed, non-retryable
+   * `limitExceeded { kind: "input" }` — deterministic, so retrying cannot help, and no
+   * worker is ever spawned or occupied for a rejected call.
+   */
+  maxInputBytes?: number;
 }
 
 /**
@@ -137,7 +158,7 @@ export type SandboxEvalInputValue = z.infer<typeof SandboxEvalInput>;
  */
 export const SANDBOX_ERRORS = {
   scriptMissing: z.object({ ref: z.string() }),
-  limitExceeded: z.object({ kind: z.enum(["cpu", "memory", "wallClock", "output"]) }),
+  limitExceeded: z.object({ kind: z.enum(["cpu", "memory", "wallClock", "output", "input"]) }),
   shapeMismatch: z.object({ expected: z.string(), observed: z.string() }),
   scriptError: z.object({
     name: z.string().max(128).optional(),

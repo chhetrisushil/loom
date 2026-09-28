@@ -1971,12 +1971,13 @@ interface SandboxWorkers { count?: number;
 // step input: { scriptRef: ContentRef; input?: unknown; expectedOutputShapeHash?: string }
 const SANDBOX_ERRORS: {             // typed failure channels (ADR 0060) — zod schemas
   scriptMissing: { ref: string };
-  limitExceeded: { kind: "cpu" | "memory" | "wallClock" | "output" };
+  limitExceeded: { kind: "cpu" | "memory" | "wallClock" | "output" | "input" };
   shapeMismatch: { expected: string; observed: string };
   scriptError: { name?: string; message: string };   // the script's own throw; ≤128 / ≤2048 chars, no stack
 }
 interface SandboxLimits { memoryBytes?: number; interruptBudget?: number; wallClockMs?: number;
-                          maxOutputBytes?: number }   // EMISSION is capped too — output lands in the log
+                          maxOutputBytes?: number;    // EMISSION is capped too — output lands in the log; default 1 MiB
+                          maxInputBytes?: number }    // CONSUMPTION cap, checked once before either engine runs; default 1 MiB (ADR 0089 D4)
 function shapeOf(value: unknown): string; function shapeHash(value: unknown): string
 class SandboxWorkerPool {}    // opt-in (ADR 0089): a hard kill for a script that never yields
 class SandboxWorkerStartupError extends Error { waitedMs: number; limitMs: number; phase: "compile" | "start" }  // not a TypedFailure; retryable by default

@@ -286,22 +286,31 @@ export class SandboxWorkerPool {
    * in-process path produces, so the effect maps outcomes to channels in ONE
    * place regardless of where the script ran.
    *
+   * `inputJson` is already JSON text — the caller (`SandboxEvalEffect`) needs that
+   * string anyway to measure `maxInputBytes` before dispatch, so this encodes it for
+   * transfer rather than re-serializing the input from scratch.
+   *
    * Throws (untyped) when the worker itself fails — a module that will not load,
    * a value that will not marshal, a thread that dies mid-run. Those are
    * environment faults, not script outcomes.
    */
   run(
     script: string,
-    input: unknown,
+    inputJson: string,
     limits: EvalLimits,
     signal: AbortSignal | undefined
   ): Promise<EvalOutcome> {
     if (this.closed) return Promise.reject(new Error("sandbox: worker pool closed"));
-    // Marshal on this thread either way: the VM is seeded from a JSON string, so
-    // this is the sandbox's own work, not a tax the pool adds.
-    const inputJson = new TextEncoder().encode(JSON.stringify(input ?? null));
+    const inputJsonBytes = new TextEncoder().encode(inputJson);
     return new Promise<EvalOutcome>((resolve, reject) => {
-      const run: PendingRun = { script, inputJson, limits, signal, resolve, reject };
+      const run: PendingRun = {
+        script,
+        inputJson: inputJsonBytes,
+        limits,
+        signal,
+        resolve,
+        reject,
+      };
       const slot = this.slots.find((s) => !s.busy) ?? this.spawnIfRoom();
       if (slot === undefined) {
         this.queue.push(run);

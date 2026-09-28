@@ -168,6 +168,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   starting now stamps the run id with `RUN_FINISHED`, so the parent recognises the finish as
   its own.
 
+- **`@loom/plugin-sandbox`: the script's INPUT was unbounded** (backlog L19, closing
+  [ADR 0089](docs/adr/0089-sandbox-worker-pool.md) D4's "a separate question" residual).
+  `maxOutputBytes` capped what a script may EMIT; `input` stayed `z.unknown()`, JSON-stringified
+  by the caller, posted to a worker and parsed back (or seeded straight into the VM in-process)
+  — none of that work runs inside the guarded window, since every limit is charged to the
+  script's own execution, which had not started. So an oversized input was bounded only by the
+  worker pool's startup-liveness window (L13): a 200 MB input could hold a worker busy for
+  ~10 s and then fail with the untyped `SandboxWorkerStartupError`, which default retry
+  middleware then retries — repeatedly, on a call that could never succeed. `SandboxLimits`
+  gains `maxInputBytes` (default 1 MiB, the same order as `maxOutputBytes`), checked once in
+  `SandboxEvalEffect` — the shared caller of both engines — BEFORE either is touched: an
+  oversized input fails typed and non-retryable (`limitExceeded { kind: "input" }`, a
+  `TypedFailure`, unlike the startup-liveness bound it closes the gap next to) and never
+  spawns or occupies a worker. Validated the same way `SandboxWorkerPoolOptions`' durations
+  are (refuses `NaN`/negative/non-numeric at construction; `0` is accepted — "refuse every
+  input" is a caller's deliberate choice, and a call that omits `input` entirely still costs
+  0 bytes, matching how an `undefined` OUTPUT already costs 0). Measured once, not twice:
+  `evalInFreshRuntime` and `SandboxWorkerPool.run` now take the already-`JSON.stringify`d
+  input text directly rather than the raw value, so the effect's one measurement is reused to
+  seed the VM or post to a worker — and worker mode no longer parses that JSON back out only
+  to re-stringify it for the VM, one JSON round trip removed rather than added. `SANDBOX_ERRORS.
+  limitExceeded`'s `kind` enum gains `"input"`. No SPI, KERNEL_ABI or EVENT_SCHEMA change.
+
 - **`@loom/plugin-postgres`: `appendBatch` refused a `null` payload** (backlog L16). The bulk
   insert decoded its batch with `jsonb_to_recordset`, which maps a JSON `null` field to SQL
   NULL, so `payload JSONB NOT NULL` rejected the kernel's status-only `EXECUTION_RESUMED`

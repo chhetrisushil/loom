@@ -62,12 +62,22 @@ async function handle(msg: ToWorker): Promise<void> {
   const startedAt = new Float64Array(msg.status, STATUS_STARTED_AT_OFFSET, 1);
   try {
     quickjs ??= await getQuickJS();
-    const input = JSON.parse(decoder.decode(msg.inputJson)) as unknown;
-    const outcome = evalInFreshRuntime(quickjs, msg.script, input, msg.limits, undefined, (at) => {
-      startedAt[0] = at;
-      Atomics.store(state, STATUS_RUN_ID_INDEX, runId);
-      Atomics.store(state, STATUS_STATE_INDEX, RUN_EVALUATING);
-    });
+    // Already JSON text (the parent measured/posted it as such — evalCore.ts) — decoded,
+    // not parsed-then-restringified, so the input is serialized exactly once, on the
+    // parent thread, for the whole round trip.
+    const inputJson = decoder.decode(msg.inputJson);
+    const outcome = evalInFreshRuntime(
+      quickjs,
+      msg.script,
+      inputJson,
+      msg.limits,
+      undefined,
+      (at) => {
+        startedAt[0] = at;
+        Atomics.store(state, STATUS_RUN_ID_INDEX, runId);
+        Atomics.store(state, STATUS_STATE_INDEX, RUN_EVALUATING);
+      }
+    );
     Atomics.store(state, STATUS_STATE_INDEX, RUN_FINISHED);
     if (!outcome.ok) {
       send({

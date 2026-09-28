@@ -24,6 +24,23 @@ const DEFAULT_MEMORY_BYTES = 32 * 1024 * 1024;
 const DEFAULT_INTERRUPT_BUDGET = 10_000;
 const DEFAULT_WALL_CLOCK_MS = 1_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
+/** Same order as `DEFAULT_MAX_OUTPUT_BYTES` — see `SandboxLimits.maxInputBytes`. */
+const DEFAULT_MAX_INPUT_BYTES = 1024 * 1024;
+
+/**
+ * A byte-size option must be a finite number >= 0 (mirrors `nonNegativeMs` in
+ * `SandboxWorkerPool.ts`): `NaN` makes every `>` comparison false — a bound that
+ * never fires — and a negative value is not a size, so both silently disable the
+ * limit instead of refusing it at construction, as `SandboxWorkerPoolOptions`
+ * already refuses a bad duration.
+ */
+function nonNegativeBytes(name: string, value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`sandbox: ${name} must be a finite number >= 0 (got ${String(value)})`);
+  }
+  return value;
+}
 
 /** Throw unless `bytes` hash to `address` (`sha256:<hex>`, the ContentRef format). */
 function assertContentAddress(bytes: Uint8Array, address: string): void {
@@ -62,6 +79,11 @@ export class SandboxEvalEffect implements Effect {
       interruptBudget: limits.interruptBudget ?? DEFAULT_INTERRUPT_BUDGET,
       wallClockMs: limits.wallClockMs ?? DEFAULT_WALL_CLOCK_MS,
       maxOutputBytes: limits.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
+      maxInputBytes: nonNegativeBytes(
+        "maxInputBytes",
+        limits.maxInputBytes,
+        DEFAULT_MAX_INPUT_BYTES
+      ),
     };
     this.pool =
       workers.count === undefined || workers.count === 0
@@ -103,6 +125,31 @@ export class SandboxEvalEffect implements Effect {
   async execute(rawInput: unknown, ctx: EffectContext): Promise<unknown> {
     const call: SandboxEvalInputValue = SandboxEvalInput.parse(rawInput);
 
+    // Bound what the CALLER supplies, not just what the script emits — measured ONCE,
+    // here, before the script is even fetched, so an oversized input never occupies a
+    // worker or creates a VM. `input` is `z.unknown()`: nothing upstream bounds it, and
+    // every other limit is charged to the script's own execution, which has not started
+    // yet — JSON-stringifying a huge `input`, posting it to a worker and parsing it back,
+    // or seeding it into a fresh VM, all run OUTSIDE the guarded window. Unbounded, that
+    // is bounded only by the worker pool's startup-liveness window (ADR 0089 D4): a 200 MB
+    // input can hold a worker busy for ~10 s and then fail with the untyped
+    // `SandboxWorkerStartupError`, which default retry middleware retries.
+    //
+    // `inputJson` is reused verbatim below to seed the VM (in-process) or post to a
+    // worker — never re-stringified — so this is the only full serialization of `input`
+    // on this call, in either mode. `call.input === undefined` (no input at all) costs
+    // nothing, mirroring how an `undefined` OUTPUT is 0 bytes, not the 4 bytes of the
+    // `"null"` it seeds either way.
+    const inputJson = call.input === undefined ? "null" : JSON.stringify(call.input);
+    const inputBytes = call.input === undefined ? 0 : Buffer.byteLength(inputJson, "utf8");
+    if (inputBytes > this.limits.maxInputBytes) {
+      // Deterministic — retrying the same oversized input cannot help — so this MUST be a
+      // typed failure: `retryMiddleware`'s default treats anything that is not a
+      // `TypedFailure` as retryable, which is exactly the untyped `SandboxWorkerStartupError`
+      // problem above, just for a call that never even needs a worker.
+      fail("limitExceeded", { kind: "input" });
+    }
+
     const bytes = await this.scripts.get(call.scriptRef);
     if (bytes === null) {
       fail("scriptMissing", { ref: call.scriptRef.__loomContent });
@@ -122,7 +169,7 @@ export class SandboxEvalEffect implements Effect {
     assertContentAddress(bytes, call.scriptRef.__loomContent);
     const script = new TextDecoder().decode(bytes);
 
-    const outcome = await this.evaluate(script, call.input, ctx);
+    const outcome = await this.evaluate(script, inputJson, ctx);
     if (!outcome.ok) this.mapFailure(outcome, ctx);
     const output = outcome.value;
 
@@ -150,21 +197,28 @@ export class SandboxEvalEffect implements Effect {
    * Run the script on whichever engine is wired, and return the SAME outcome
    * type either way. The engines share `evalInFreshRuntime`, so a guard cannot
    * mean one thing in-process and another on a worker; only the thread differs.
+   *
+   * `inputJson` is already JSON text — measured against `maxInputBytes` by the caller —
+   * so neither path re-serializes `input` from scratch.
    */
-  private async evaluate(script: string, input: unknown, ctx: EffectContext): Promise<EvalOutcome> {
+  private async evaluate(
+    script: string,
+    inputJson: string,
+    ctx: EffectContext
+  ): Promise<EvalOutcome> {
     const limits: EvalLimits = {
       memoryBytes: this.limits.memoryBytes,
       interruptBudget: this.limits.interruptBudget,
       wallClockMs: this.limits.wallClockMs,
     };
     if (this.pool !== undefined) {
-      return this.pool.run(script, input, limits, ctx.signal);
+      return this.pool.run(script, inputJson, limits, ctx.signal);
     }
     this.module ??= await getQuickJS();
     return evalInFreshRuntime(
       this.module,
       script,
-      input,
+      inputJson,
       limits,
       () => ctx.signal?.aborted === true
     );

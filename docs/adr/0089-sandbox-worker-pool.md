@@ -131,8 +131,27 @@ channel. `limitExceeded` is recorded as the script's outcome and routes to
 drift-repair, and nothing the script did explains a worker that never started
 it. It is a named error class instead, so retry middleware can tell it apart
 from a script failure — and because it is not a `TypedFailure`,
-`retryMiddleware`'s default already retries it. How large an input may be is a
-separate question (an input-size ceiling), not this backstop's job.
+`retryMiddleware`'s default already retries it.
+
+**How large an input may be is answered by `maxInputBytes`** (backlog L19), a
+ceiling on the CALLER-supplied `input`, mirroring `maxOutputBytes` exactly —
+default 1 MiB, the same order of magnitude, which leaves headroom under the
+32 MiB `memoryBytes` default for the runtime and the script's own work once
+the input is parsed. Without it, an oversized input was bounded only by the
+startup-liveness window above: a 200 MB input could hold a worker busy for
+~10 s and then fail with the untyped `SandboxWorkerStartupError`, which
+default retry middleware then retries — repeatedly, on a call that was never
+going to succeed. `maxInputBytes` is checked in `SandboxEvalEffect`, the
+caller of both engines, ONCE and BEFORE either is touched: measured in UTF-8
+bytes of the same JSON text the caller already produces to seed the VM
+in-process or post to a worker (never serialized twice — `evalInFreshRuntime`
+and `SandboxWorkerPool.run` both now take that JSON text directly rather than
+the raw value, so seeding a worker no longer parses it back out only to
+re-stringify it for the VM). An oversized input fails typed —
+`limitExceeded { kind: "input" }` — and, unlike the startup-liveness bound
+above, deterministically: the same input will never fit, so this one MUST be
+a `TypedFailure`, or `retryMiddleware`'s default would retry a call no retry
+can fix. No worker is ever spawned or occupied for a refused call.
 
 One phase is bounded by neither clock: after the worker marks the run finished,
 it encodes the result and posts it. That runs no script code — the script's own
