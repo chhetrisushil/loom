@@ -351,6 +351,20 @@ describe("L11 (c) — the edges of keeping pinned kinds", () => {
     expect(await app.eventStore.read("e")).toEqual(before);
   });
 
+  it("compactionExempt keeps a whole log uncompacted — a legal hold no event kind expresses", async () => {
+    const app = boot();
+    await toFirstGate(app, "held");
+    await toFirstGate(app, "free");
+    const heldBefore = await app.eventStore.read("held");
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      pinnedEventTypes: [FINDING],
+      compactionExempt: (id) => id === "held",
+    });
+    expect(await life.compact("held")).toBeNull();
+    expect(await app.eventStore.read("held")).toEqual(heldBefore);
+    expect(await life.compact("free")).not.toBeNull(); // everyone else still compacts
+  });
+
   it("refuses to compact a reserved control stream", async () => {
     const app = boot();
     const life = new LogLifecycle(app.eventStore, app.snapshotStore);

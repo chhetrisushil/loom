@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import { type EventEnvelope, SnapshotIdentityMismatchError } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import { describe, expect, it, vi } from "vitest";
@@ -152,6 +152,21 @@ describe("EraseCoordinator — compacted executions (ADR 0106)", () => {
     const result = await coord.eraseSubject("dan");
     expect(result.outcome).toBe("erased");
     expect(shred).toHaveBeenCalledWith("dan", ["x1"]);
+  });
+});
+
+describe("EraseCoordinator — snapshot identity (ADR 0106)", () => {
+  it("refuses a checkpoint whose NON-blank identity names another execution", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await seedStarted(store, "x1", "eve");
+    await store.append(ev("x1", 1, "EXECUTION_COMPLETED", {}));
+    const index = SubjectIndex.fromEvents(await store.read("x1"), subjectOf);
+    const foreign = { ...foldEvents(await store.read("x1")), executionId: "someone-else" };
+    const snapshotStore = { loadLatest: async () => ({ sequence: 1, state: foreign }) };
+    const shred = vi.fn(async () => {});
+    const coord = new EraseCoordinator({ index, eventStore: store, snapshotStore, shred });
+    await expect(coord.eraseSubject("eve")).rejects.toThrow(SnapshotIdentityMismatchError);
+    expect(shred).not.toHaveBeenCalled();
   });
 });
 

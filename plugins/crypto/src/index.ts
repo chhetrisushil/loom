@@ -10,6 +10,6 @@ export {
   EncryptingSnapshotStore,
   type EncryptingSnapshotStoreOptions,
 } from "./EncryptingSnapshotStore";
-export { shredSubject, type ShredOptions } from "./shred";
+export { ShredIncompleteError, shredSubject, type ShredOptions } from "./shred";
 export { encryptValue, decryptValue, hasEnvelope, mapPaths } from "./crypto";
 export { sensitivePathsFromSteps } from "./derive";

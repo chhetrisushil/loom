@@ -202,8 +202,9 @@ export interface SecurityOptions {
     tenantOf?: TenantResolver;
     /**
      * T3 Phase B — enable `app.eraseSubject` (Art. 17). Wire `shred` to the crypto plugin's
-     * `shredSubject` (bound to the KeyStore + raw store); it MUST be idempotent (no-op when a
-     * subject is already erased). Erasure is liveness-gated: shredded now if the subject's
+     * `shredSubject` (bound to the KeyStore + raw store + snapshot store); it MUST be
+     * idempotent, which `shredSubject` is per execution (ADR 0106) — call it again rather than
+     * guarding on the key. Erasure is liveness-gated: shredded now if the subject's
      * executions are all terminal, else parked (durable `ERASURE_PENDING`) and auto-completed
      * when the last live execution terminates — never shredding a fold in flight.
      */
@@ -283,6 +284,11 @@ export interface DurabilityOptions {
      * execution compacts around them. Validated at boot: non-empty strings, no kernel kinds.
      */
     pinnedEventTypes?: readonly string[];
+    /**
+     * ADR 0106 — executions whose whole log `lifecycle.compact` must leave uncompacted (a
+     * legal hold by tag). Consulted always, unlike `pinned`.
+     */
+    compactionExempt?: PinPredicate;
   };
 }
 
@@ -1001,6 +1007,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     ...(config.retention?.pinned !== undefined && { pinned: config.retention.pinned }),
     ...(config.retention?.pinnedEventTypes !== undefined && {
       pinnedEventTypes: config.retention.pinnedEventTypes,
+    }),
+    ...(config.retention?.compactionExempt !== undefined && {
+      compactionExempt: config.retention.compactionExempt,
     }),
     ...(config.onWarn !== undefined && { onWarn: config.onWarn }),
     ...(stores.branchRegistry !== undefined && { branchRegistry: stores.branchRegistry }),

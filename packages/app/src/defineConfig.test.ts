@@ -315,6 +315,29 @@ describe("defineConfig — retention.pinnedEventTypes (ADR 0106)", () => {
     expect((await log.read("p")).map((e) => e.sequence)).toEqual([0, 1, 3]);
   });
 
+  it("wires retention.compactionExempt: an exempt execution keeps its whole log", async () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      durability: {
+        retention: { pinnedEventTypes: ["FINDING_RECORDED"], compactionExempt: () => true },
+      },
+    });
+    const log = app.stores.eventStore;
+    for (let i = 0; i < 3; i++) {
+      await log.append({
+        id: `h-${i}`,
+        workflowId: "wf",
+        executionId: "h",
+        eventType: i === 0 ? "EXECUTION_STARTED" : "STEP_STARTED",
+        sequence: i,
+        timestamp: i,
+        payload: { input: {} },
+      });
+    }
+    expect(await app.lifecycle.compact("h")).toBeNull();
+    expect(await log.read("h")).toHaveLength(3);
+  });
+
   it("refuses a kernel kind at config time, before any compaction pass", () => {
     expect(() =>
       defineConfig({

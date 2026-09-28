@@ -1,4 +1,4 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
+import { type EventEnvelope, type ExecutionState, assertSnapshotIdentity } from "@loom/core";
 import {
   type BranchRegistry,
   type EventStore,
@@ -9,11 +9,7 @@ import { appendBatchOf } from "@loom/event-runtime";
 import { ReplayVM, knownEventTypes, normalizeSnapshotState } from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
-import {
-  EFFECT_INDOUBT_RESOLVED,
-  EXECUTION_RECOVERED,
-  SnapshotIdentityMismatchError,
-} from "./types";
+import { EFFECT_INDOUBT_RESOLVED, EXECUTION_RECOVERED } from "./types";
 
 /** Reserved control stream carrying retention facts (EXECUTION_ARCHIVED/_DELETED). */
 export const LIFECYCLE_STREAM = "__loom_lifecycle__";
@@ -180,6 +176,12 @@ export class LogLifecycle {
        * and kernel log readers assume none survive below a checkpoint.
        */
       pinnedEventTypes?: readonly string[];
+      /**
+       * ADR 0106 — executions whose WHOLE log must stay uncompacted (a legal hold by tag, an
+       * audit freeze): `compact` returns `null` for them, always. Distinct from `pinned`, which
+       * governs retention and consults compaction only when no `pinnedEventTypes` are declared.
+       */
+      compactionExempt?: PinPredicate;
       /**
        * Where compaction reports a degraded pass — today, a store without
        * `truncatePrefixKeeping` that therefore cannot compact past a kept event (ADR 0106 D3).
@@ -424,6 +426,8 @@ export class LogLifecycle {
    *    by the very kinds it keeps (`pinByEventKinds(FINDING_RECORDED)` beside
    *    `pinnedEventTypes: [FINDING_RECORDED]`), and honouring the predicate there would stop
    *    it compacting after its first finding.
+   *  - **`compactionExempt`** is consulted always: an execution it names keeps its whole log
+   *    (a legal hold by tag, which no event kind expresses).
    *  - **Reserved control streams** (`__loom_*`) are refused: their writers allocate sequences
    *    from `read().length`, which only holds for a log that is never compacted.
    *
@@ -447,6 +451,12 @@ export class LogLifecycle {
     }
     const events = await store.read(executionId);
     if (events.length <= 1) return null; // nothing beyond the bootstrap to reclaim
+    if (
+      this.options.compactionExempt !== undefined &&
+      (await this.options.compactionExempt(executionId)) === true
+    ) {
+      return null;
+    }
     const keep = this.keep;
     if (
       keep.size === 0 &&
@@ -503,27 +513,9 @@ export class LogLifecycle {
         (await this.snapshotStore.loadLatest(executionId))?.state.workflowVersion ?? "";
     }
     const identity = { executionId, workflowId: events[0]!.workflowId, workflowVersion };
-    if (base !== null) {
-      // Fill blanks (a pre-0106 checkpoint), refuse a non-blank mismatch — the same rule the
-      // runtime applies when it seeds a fold from a snapshot.
-      const found = base.state;
-      if (found.executionId !== "" && found.executionId !== executionId) {
-        throw new SnapshotIdentityMismatchError(
-          executionId,
-          "executionId",
-          executionId,
-          found.executionId
-        );
-      }
-      if (found.workflowId !== "" && found.workflowId !== identity.workflowId) {
-        throw new SnapshotIdentityMismatchError(
-          executionId,
-          "workflowId",
-          identity.workflowId,
-          found.workflowId
-        );
-      }
-    }
+    // Fill blanks (a pre-0106 checkpoint), refuse a non-blank mismatch — the same rule the
+    // runtime applies when it seeds a fold from a snapshot.
+    if (base !== null) assertSnapshotIdentity(base.state, executionId, identity.workflowId);
     const state =
       base !== null
         ? new ReplayVM(

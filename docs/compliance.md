@@ -93,15 +93,16 @@ const app = defineConfig({
     compliance: {
       subjectOf,
       erase: {
-        // MUST be idempotent (no-op if already erased).
+        // MUST be idempotent. shredSubject is: a re-run (key already gone) writes only the
+        // tombstones still missing, so do NOT skip it just because the key is gone — that is
+        // "done" only once every log also carries PAYLOAD_SHREDDED, and shredSubject checks
+        // exactly that per execution (ADR 0106).
         shred: async (subjectId, executionIds) => {
-          if ((await keys.get(subjectId)) !== null) {
-            await shredSubject(keys, rawEventStore, executionIds[0], {
-              subjectId,
-              executionIds,
-              snapshotStore: rawSnapshotStore, // the tombstone follows the folded tip (ADR 0106)
-            });
-          }
+          await shredSubject(keys, rawEventStore, executionIds[0], {
+            subjectId,
+            executionIds,
+            snapshotStore, // raw or encrypting: the tombstone follows the folded tip
+          });
         },
       },
     },

@@ -20,7 +20,11 @@ export interface KeyStore {
   getOrCreate(subjectId: string): Promise<Buffer>;
   /** Get the subject's key, or null if it never existed OR was destroyed (shredded). */
   get(subjectId: string): Promise<Buffer | null>;
-  /** Destroy a subject's key — irreversible erasure of everything encrypted under it. */
+  /**
+   * Destroy a subject's key — irreversible erasure of everything encrypted under it. MUST be
+   * idempotent: destroying an absent or already-destroyed key is a no-op (a retried
+   * `shredSubject` destroys again before writing its missing tombstones).
+   */
   destroy(subjectId: string): Promise<void>;
   /**
    * Does this store survive a restart? **Declare it.**
