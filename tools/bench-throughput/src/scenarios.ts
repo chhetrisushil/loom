@@ -126,7 +126,9 @@ export async function coalescedAppend(
 // apples-to-apples with the shipped statement: same fence guard (one check per batch —
 // every envelope in a journal flush belongs to ONE execution, so a single guard is
 // correct) and one pg_notify for the batch tip instead of one per event. `jsonb_to_recordset`
-// keeps it a single bind parameter and a single round-trip.
+// keeps it a single bind parameter and a single round-trip. (The shipped statement now decodes
+// with `jsonb_array_elements` + `LATERAL jsonb_to_record` so a JSON `null` payload survives —
+// backlog L16; the measured decode-cost difference is within noise at the coalescer's batch 16.)
 //
 // This is NOT a shipped code path. It exists to size the win before anyone commits to
 // the SPI change.
