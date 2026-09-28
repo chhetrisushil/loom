@@ -96,7 +96,11 @@ const app = defineConfig({
         // MUST be idempotent (no-op if already erased).
         shred: async (subjectId, executionIds) => {
           if ((await keys.get(subjectId)) !== null) {
-            await shredSubject(keys, rawEventStore, executionIds[0], { subjectId, executionIds });
+            await shredSubject(keys, rawEventStore, executionIds[0], {
+              subjectId,
+              executionIds,
+              snapshotStore: rawSnapshotStore, // the tombstone follows the folded tip (ADR 0106)
+            });
           }
         },
       },

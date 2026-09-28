@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { foldEvents } from "@loom/replay-vm";
 import { describe, expect, it, vi } from "vitest";
 import { SubjectIndex } from "./SubjectIndex";
 import { EraseCoordinator } from "./eraseSubject";
@@ -127,6 +128,30 @@ describe("EraseCoordinator (T3 Phase B — erasure)", () => {
     expect(restarted.pendingSubjects()).toEqual([]);
     await restarted.loadParked();
     expect(restarted.pendingSubjects()).toEqual(["dan"]);
+  });
+});
+
+describe("EraseCoordinator — compacted executions (ADR 0106)", () => {
+  it("a compacted TERMINAL execution is not live: erasure completes instead of waiting forever", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await seedStarted(store, "x1", "dan");
+    await store.append(ev("x1", 1, "STEP_STARTED", { stepId: "s" }));
+    await store.append(ev("x1", 2, "EXECUTION_COMPLETED", {}));
+    const index = SubjectIndex.fromEvents(await store.read("x1"), subjectOf);
+    // Compacted through its tip: the log is [0], the completion lives in the checkpoint —
+    // written blank by a pre-0106 compaction, to prove identity is filled, not required.
+    const checkpoint = foldEvents(await store.read("x1"));
+    await store.truncatePrefix("x1", 2);
+    const snapshotStore = {
+      loadLatest: async (id: string) => (id === "x1" ? { sequence: 2, state: checkpoint } : null),
+    };
+    const shred = vi.fn(async () => {});
+    const withoutSnapshots = new EraseCoordinator({ index, eventStore: store, shred });
+    expect((await withoutSnapshots.eraseSubject("dan")).outcome).toBe("parked"); // the bug
+    const coord = new EraseCoordinator({ index, eventStore: store, snapshotStore, shred });
+    const result = await coord.eraseSubject("dan");
+    expect(result.outcome).toBe("erased");
+    expect(shred).toHaveBeenCalledWith("dan", ["x1"]);
   });
 });
 

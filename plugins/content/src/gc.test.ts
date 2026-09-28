@@ -1152,5 +1152,63 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       expect(result.orphansReclaimed).toEqual([]);
       expect(await content.get(seeded)).not.toBeNull();
     });
+
+    it("a forked child's seed is read directly from metadata.forkSequence â€” no walk down the snapshots", async () => {
+      const { clock, content } = clockedStore(OLD);
+      const seeded = await content.put(bytes("in the fork seed, found by one exact read"));
+      const live = new InMemoryAsyncEventStore();
+      const inner = new InMemoryAsyncSnapshotStore();
+      const forked = (e: EventEnvelope): EventEnvelope => ({
+        ...e,
+        metadata: { forkedFrom: "parent", forkSequence: 4 },
+      });
+      await live.append(forked(evt("kid", 0, "EXECUTION_STARTED", { input: {} }, OLD)));
+      await live.append(forked(evt("kid", 3, "STEP_STARTED", { stepId: "s" }, OLD)));
+      await live.append(forked(evt("kid", 4, "STEP_COMPLETED", { stepId: "s", output: 1 }, OLD)));
+      await inner.save({
+        id: "seed",
+        executionId: "kid",
+        workflowId: "wf",
+        sequence: 4,
+        state: { frames: { s: { output: envelopeFor(seeded.__loomContent) } } } as never,
+        createdAt: 0,
+      });
+      for (let i = 5; i <= 9; i++) {
+        await live.append(evt("kid", i, "STEP_COMPLETED", { stepId: `t${i}`, output: i }, OLD));
+        await inner.save({
+          id: `s${i}`,
+          executionId: "kid",
+          workflowId: "wf",
+          sequence: i,
+          state: { frames: {} } as never,
+          createdAt: 0,
+        });
+      }
+      const reads = { before: 0, at: 0 };
+      const counting = {
+        loadLatest: (id: string) => inner.loadLatest(id),
+        loadAt: (id: string, at: number) => {
+          reads.at++;
+          return inner.loadAt(id, at);
+        },
+        loadLatestBefore: (id: string, at: number) => {
+          reads.before++;
+          return inner.loadLatestBefore(id, at);
+        },
+      };
+      clock.now = NOW;
+      const result = await sweepUnpinnedContent({
+        eventStores: [live],
+        snapshotStores: [counting],
+        contentStore: content,
+        pinnedEventTypes: [],
+        olderThanMs: TTL,
+        now: NOW,
+        reclaimOrphans: true,
+      });
+      expect(result.orphansReclaimed).toEqual([]);
+      expect(await content.get(seeded)).not.toBeNull();
+      expect(reads).toEqual({ before: 1, at: 1 }); // the gap probe + the seed; no walk
+    });
   });
 });

@@ -1,10 +1,19 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { type BranchRegistry, type EventStore, headOf } from "@loom/event-runtime";
+import {
+  type BranchRegistry,
+  type EventStore,
+  headOf,
+  isReservedStream,
+} from "@loom/event-runtime";
 import { appendBatchOf } from "@loom/event-runtime";
 import { ReplayVM, knownEventTypes, normalizeSnapshotState } from "@loom/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
-import { EFFECT_INDOUBT_RESOLVED, EXECUTION_RECOVERED } from "./types";
+import {
+  EFFECT_INDOUBT_RESOLVED,
+  EXECUTION_RECOVERED,
+  SnapshotIdentityMismatchError,
+} from "./types";
 
 /** Reserved control stream carrying retention facts (EXECUTION_ARCHIVED/_DELETED). */
 export const LIFECYCLE_STREAM = "__loom_lifecycle__";
@@ -121,6 +130,9 @@ function highestMissing(events: readonly EventEnvelope[]): number {
   return events.length > 0 && events[0]!.sequence !== 0 ? events[0]!.sequence - 1 : -1;
 }
 
+/** How many executions a {@link LogLifecycle} remembers having warned about. */
+const WARNED_MEMORY = 10_000;
+
 /**
  * Every event kind the kernel writes: the fold's own kinds plus the resume signals the
  * runtime records itself (crash re-drive, in-doubt verdict). None may be kept below a
@@ -147,7 +159,7 @@ export function assertPinnedEventTypes(types: readonly unknown[]): asserts types
   const kernel = (types as string[]).filter((t) => KERNEL_EVENT_TYPES.has(t));
   if (kernel.length > 0) {
     throw new TypeError(
-      `pinnedEventTypes names kernel event kind(s) ${kernel.join(", ")} — compaction keeps app evidence events, not kernel facts (the checkpoint already carries their fold). To keep an execution's whole log, pin the execution (\`pinned\`): a pinned execution is never compacted.`
+      `pinnedEventTypes names kernel event kind(s) ${kernel.join(", ")} — compaction keeps app evidence events, not kernel facts (the checkpoint already carries their fold). To keep an execution's whole log uncompacted, leave pinnedEventTypes empty and pin the execution (\`pinned\`): the predicate is consulted only when no kinds are declared.`
     );
   }
 }
@@ -171,7 +183,7 @@ export class LogLifecycle {
       /**
        * Where compaction reports a degraded pass — today, a store without
        * `truncatePrefixKeeping` that therefore cannot compact past a kept event (ADR 0106 D3).
-       * Default: `console.warn`.
+       * Once per execution per `LogLifecycle` instance. Default: `console.warn`.
        */
       onWarn?: (message: string) => void;
     } = {}
@@ -182,6 +194,19 @@ export class LogLifecycle {
 
   /** {@link LogLifecycle} options' `pinnedEventTypes`, as a set. */
   private readonly keep: ReadonlySet<string>;
+
+  /** Executions already warned about (bounded, FIFO) — a sweep warns once per execution. */
+  private readonly warned = new Set<string>();
+
+  private warnOnce(executionId: string, message: string): void {
+    if (this.warned.has(executionId)) return;
+    if (this.warned.size >= WARNED_MEMORY) {
+      const oldest = this.warned.values().next().value;
+      if (oldest !== undefined) this.warned.delete(oldest);
+    }
+    this.warned.add(executionId);
+    (this.options.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`)))(message);
+  }
 
   /**
    * The archive retention copies into, if one is configured. Read-only. Operator passes that
@@ -209,7 +234,11 @@ export class LogLifecycle {
     return false;
   }
 
-  /** Journal a retention control fact to the dedicated lifecycle stream (P9: audit its own pruning). */
+  /**
+   * Journal a retention control fact to the dedicated lifecycle stream (P9: audit its own
+   * pruning). `read().length` is the next sequence only because a reserved stream is never
+   * compacted — {@link compact} refuses one (ADR 0106).
+   */
   private async emitLifecycleFact(
     eventType: "EXECUTION_ARCHIVED" | "EXECUTION_DELETED",
     executionId: string,
@@ -387,16 +416,28 @@ export class LogLifecycle {
    *    sequence — a gap-free log was never compacted. With nothing kept, `c` is the tip (the
    *    log becomes `[0]`, checkpoint above it), as before. On a store without
    *    `truncatePrefixKeeping`, `c` stops below the FIRST kept event, forever: such a log is
-   *    never compacted past its first finding, and `onWarn` says so on every pass.
-   *  - **Pinned executions.** One the `pinned` predicate pins is not compacted at all
-   *    (ADR 0055 D1: "leave it exactly where it is"), `pinnedEventTypes` or not.
+   *    never compacted past its first finding, and `onWarn` says so (once per execution).
+   *  - **The `pinned` predicate** is consulted ONLY when `pinnedEventTypes` is empty: then the
+   *    kernel cannot tell which of a pinned execution's events carry the pin, so it leaves
+   *    that execution uncompacted. With `pinnedEventTypes` declared, the kept kinds ARE the
+   *    pin, and a pinned execution compacts around them — the documented sentinel setup pins
+   *    by the very kinds it keeps (`pinByEventKinds(FINDING_RECORDED)` beside
+   *    `pinnedEventTypes: [FINDING_RECORDED]`), and honouring the predicate there would stop
+   *    it compacting after its first finding.
+   *  - **Reserved control streams** (`__loom_*`) are refused: their writers allocate sequences
+   *    from `read().length`, which only holds for a log that is never compacted.
    *
    * Returns the sequence compacted through, or `null` when the store can't truncate (no
-   * `truncatePrefix`), there is nothing to compact, or the execution is pinned. Throws
+   * `truncatePrefix`), there is nothing to compact, or the execution is pinned (as above). Throws
    * {@link UnsafeCompactionError} when the event store encrypts at rest and the snapshot
    * store does not share its KeyStore.
    */
   async compact(executionId: string): Promise<number | null> {
+    if (isReservedStream(executionId)) {
+      throw new TypeError(
+        `refusing to compact "${executionId}": a reserved control stream is an append-only audit trail whose writers take their next sequence from read().length — compacting it would make them overwrite its own freed slots.`
+      );
+    }
     const store = this.eventStore;
     if (store.truncatePrefix === undefined) return null;
     // ADR 0022 Amendment — checked before anything is read, saved or truncated.
@@ -406,12 +447,16 @@ export class LogLifecycle {
     }
     const events = await store.read(executionId);
     if (events.length <= 1) return null; // nothing beyond the bootstrap to reclaim
-    if (this.options.pinned !== undefined && (await this.options.pinned(executionId)) === true) {
+    const keep = this.keep;
+    if (
+      keep.size === 0 &&
+      this.options.pinned !== undefined &&
+      (await this.options.pinned(executionId)) === true
+    ) {
       return null;
     }
 
     // Choose the checkpoint slot `at` (an index into `events`) under the tip rule.
-    const keep = this.keep;
     const tipIndex = events.length - 1;
     let firstKept = -1;
     for (let i = 1; i <= tipIndex; i++) {
@@ -431,7 +476,8 @@ export class LogLifecycle {
       // non-kept event (removed now) or the bootstrap (nothing to do).
       at = firstKept - 1;
       keptBelow = false;
-      (this.options.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`)))(
+      this.warnOnce(
+        executionId,
         `compact("${executionId}"): the event store has no truncatePrefixKeeping (EventStore SPI 1.5.0), so compaction cannot pass the pinned ${events[firstKept]!.eventType} event at sequence ${events[firstKept]!.sequence} — this log will never be compacted past it and its replay tail grows without bound. Use a store that implements truncatePrefixKeeping.`
       );
     }
@@ -457,6 +503,27 @@ export class LogLifecycle {
         (await this.snapshotStore.loadLatest(executionId))?.state.workflowVersion ?? "";
     }
     const identity = { executionId, workflowId: events[0]!.workflowId, workflowVersion };
+    if (base !== null) {
+      // Fill blanks (a pre-0106 checkpoint), refuse a non-blank mismatch — the same rule the
+      // runtime applies when it seeds a fold from a snapshot.
+      const found = base.state;
+      if (found.executionId !== "" && found.executionId !== executionId) {
+        throw new SnapshotIdentityMismatchError(
+          executionId,
+          "executionId",
+          executionId,
+          found.executionId
+        );
+      }
+      if (found.workflowId !== "" && found.workflowId !== identity.workflowId) {
+        throw new SnapshotIdentityMismatchError(
+          executionId,
+          "workflowId",
+          identity.workflowId,
+          found.workflowId
+        );
+      }
+    }
     const state =
       base !== null
         ? new ReplayVM(

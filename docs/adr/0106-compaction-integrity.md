@@ -97,8 +97,23 @@ record `EXECUTION_DENIED` at the log's last event + 1. On a log compacted throug
 (`[0]`, checkpoint `c ≥ 1`), that is sequence 1, at or below the checkpoint. The log then
 looked never-compacted (`[0, 1]`), and the next compaction folded it from scratch and lost the
 suspension.
-The denial is now recorded after the **folded** tip (`max` of the log tip and the snapshot's
-sequence).
+The denial is now recorded after **the folded tip**: the sequence of the state the resume
+folded (snapshot plus tail), which is at or above both the log's last event and the latest
+checkpoint.
+
+**The same rule governs every writer that allocates "the next sequence" itself.**
+- `shredSubject`'s `PAYLOAD_SHREDDED` tombstone (A3) used `read().length`. On `[0, 2F, 4]`
+  (checkpoint 3) that is 3, the checkpoint's slot, and the next compaction deleted the
+  evidence. On `[0]` it is 1, which gives a gap-free `[0, 1]` that retention's cheap path
+  misreads and the next compaction folds from scratch. It now defaults to the folded tip:
+  `max(head, latest snapshot) + 1` from a `snapshotStore` option, which is the RAW snapshot
+  store, because it is read after the key is gone. A store that can `truncatePrefix` REQUIRES
+  either `snapshotStore` or `tombstoneSequenceOf`. The refusal comes before the key is
+  destroyed.
+- The reserved control streams (`__loom_lifecycle__`, `__loom_erasure__`) take their next
+  sequence from `read().length` too (`LogLifecycle.emitLifecycleFact`,
+  `EraseCoordinator.appendPending`). That is correct only for a log that is never compacted,
+  so `compact` refuses a reserved stream.
 
 ### D3 — Pinned event kinds survive compaction in place
 
@@ -110,10 +125,15 @@ sequence).
   the runtime records itself (`EXECUTION_RECOVERED`, `EffectInDoubtResolved`). The checkpoint
   already carries their fold, and kernel log readers assume no kernel fact survives below a
   checkpoint.
-- **A pinned execution is never compacted.** When the `pinned` predicate pins an execution,
-  `compact` returns `null`, with or without `pinnedEventTypes`. This is ADR 0055 D1: "leave it
-  exactly where it is". `pinnedEventTypes` governs the executions that are *not* pinned
-  wholesale, and the error message and docs say the same.
+- **The `pinned` predicate is consulted only when `pinnedEventTypes` is empty.** Then the
+  kernel cannot tell which of a pinned execution's events carry the pin, so `compact` leaves
+  that execution uncompacted. With kinds declared, the kept kinds *are* the pin, and a pinned
+  execution compacts around them. The documented setup (`docs/data-protection-patterns.md`,
+  `sentinelPreset`) pins by the very kinds it keeps: `pinned: pinByEventKinds(FINDING_RECORDED)`
+  beside `pinnedEventTypes: [FINDING_RECORDED]`. Honouring the predicate there would stop a
+  sentinel compacting after its first finding. (ADR 0055 D1 governs `applyRetention`, not
+  compaction; retention still honours the predicate unconditionally.) No separate
+  "compaction-exempt" predicate is added, because nothing needs one.
 - New optional SPI method `truncatePrefixKeeping(executionId, through, keepEventTypes)`. It
   deletes the `truncatePrefix` range minus the kept types as ONE atomic operation (Postgres: one
   `DELETE … AND event_type <> ALL($3)`; SQLite: `… AND event_type NOT IN (SELECT value FROM
@@ -124,8 +144,8 @@ sequence).
 - **A store without it (SPI 1.4.0) cannot compact past the first kept event, ever.** `c` stops
   just below it on every pass. For a long-lived execution that records a finding early (a
   sentinel), that means the replay tail grows without bound. `compact` reports it through
-  `onWarn` (default `console.warn`; `defineConfig` passes the app's) on every pass where it
-  applies. The SPI docstring and CHANGELOG say so too. Use a store that implements the method.
+  `onWarn` (default `console.warn`; `defineConfig` passes the app's), once per execution per
+  `LogLifecycle` (bounded memory), not on every pass. The SPI docstring and CHANGELOG say so too. Use a store that implements the method.
 - The hash-chained store refuses `truncatePrefixKeeping` for the same reason it refuses
   `truncatePrefix` (ADR 0037). Every in-repo decorator forwards it. The `DecoratorPlan` type
   made each one a compile error until it did.
@@ -137,9 +157,13 @@ sequence).
   went unpinned and the orphan pass could erase them. A kept finding below the checkpoint
   pointed the lookup at the wrong sequence, and the sweep refused. It now uses D2's shapes:
   - A gap-free log with more than the bootstrap is skipped (no snapshot read).
-  - A gapped log is covered by the **lowest snapshot in `[gap, tip]`**. That is one read in
-    the common case, where it sits exactly at `gap`. For a forked child it is a walk down to
-    the fork seed.
+  - A gapped log is covered by the **lowest snapshot in `[gap, tip]`**. Any snapshot at or
+    above `gap` covers a lost checkpoint, just as `compact` accepts a base at or above the gap.
+    The common case is one read, exactly at `gap`. For a forked child it is one exact read
+    (`loadAt`) of the fork seed that `metadata.forkSequence` names. Only a log with neither
+    walks the snapshots down from the tip.
+  - A base snapshot whose non-blank identity names another execution is refused by `compact`
+    too (`SnapshotIdentityMismatchError`), not overwritten.
   - A bootstrap-only log is covered by its latest snapshot.
 
   The sweep's own `pinnedEventTypes` no longer affects this decision. A sweep that pins fewer
@@ -151,7 +175,12 @@ sequence).
   the checkpoint, or anywhere in compacted history, it returned a plausible wrong state. A
   position at or above a gap is now re-anchored on its own nearest snapshot. If no snapshot at
   or above the gap anchors it, the position is refused with `CompactedHistoryError`. A gap that
-  ends the read segment is found by probing the first event past it.
+  ends the read segment is found with one `head` read. Only a store without `head` falls back
+  to reading the tail.
+- **Erasure (`EraseCoordinator`).** Liveness folded the log alone, so a compacted terminal
+  execution (`[0]`) read as running and a parked erasure waited for it forever. It now takes
+  a `snapshotStore` (`defineConfig` passes the app's) and folds on the latest snapshot,
+  filling a blank legacy identity.
 
 ## Consequences
 

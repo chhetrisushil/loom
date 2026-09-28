@@ -10,6 +10,9 @@ import { PayloadShreddedError } from "./errors";
 import { InMemoryKeyStore } from "./keystore";
 import { shredSubject } from "./shred";
 
+/** No snapshots: these logs are never compacted, so the folded tip is the log head (ADR 0106). */
+const NO_SNAPSHOTS = { loadLatest: async () => null };
+
 const SENSITIVE = { STEP_COMPLETED: ["output.ssn"] };
 
 function ev(
@@ -62,7 +65,7 @@ describe("K10.2 — field-level crypto-shredding (events)", () => {
     await store.append(ev("e1", 0, "EXECUTION_STARTED", { input: {} }));
     await store.append(ev("e1", 1, "STEP_COMPLETED", { stepId: "s", output: { ssn: "secret" } }));
 
-    await shredSubject(keys, inner, "e1", { reason: "gdpr-erasure" });
+    await shredSubject(keys, inner, "e1", { reason: "gdpr-erasure", snapshotStore: NO_SNAPSHOTS });
 
     // A3 — the tombstone is durably in the log at shred time.
     const raw = await inner.read("e1");
@@ -81,7 +84,7 @@ describe("K10.2 — field-level crypto-shredding (events)", () => {
   it("the folded state records the erasure (variables._shredded)", async () => {
     const { inner, keys, store } = setup();
     await store.append(ev("e1", 0, "EXECUTION_STARTED", { input: {} }));
-    await shredSubject(keys, inner, "e1");
+    await shredSubject(keys, inner, "e1", { snapshotStore: NO_SNAPSHOTS });
     // Fold the RAW log (tombstone included); the fact of shredding is recorded.
     const state = foldEvents(await inner.read("e1"));
     expect((state.variables._shredded as { subjectId?: string }).subjectId).toBe("e1");
@@ -100,7 +103,7 @@ describe("K10.2 — field-level crypto-shredding (events)", () => {
       ev("e1", 1, "STEP_COMPLETED", { stepId: "s", output: { ssn: "secret", ok: true } })
     );
 
-    await shredSubject(keys, inner, "e1");
+    await shredSubject(keys, inner, "e1", { snapshotStore: NO_SNAPSHOTS });
 
     // Does NOT throw — the erased field is a marked placeholder; unmarked fields survive.
     const events = await store.read("e1");
@@ -158,7 +161,7 @@ describe("K10.2 / A1 — shredding covers snapshots (no erasure theater)", () =>
 
     // …after shredding the SAME subject, BOTH the event log and the snapshot
     // fail loudly. The A1 hole (snapshot retains plaintext) is closed.
-    await shredSubject(keys, innerEvents, "e1");
+    await shredSubject(keys, innerEvents, "e1", { snapshotStore: innerSnaps });
     await expect(events.read("e1")).rejects.toBeInstanceOf(PayloadShreddedError);
     await expect(snaps.loadLatest("e1")).rejects.toBeInstanceOf(PayloadShreddedError);
   });
@@ -187,6 +190,7 @@ describe("K10.2 / A2 — fork key lineage", () => {
     // Shredding the shared subject erases parent AND child together (A2) — no
     // undocumented coupling, no orphaned readable copy.
     await shredSubject(keys, inner, "p", {
+      snapshotStore: NO_SNAPSHOTS,
       subjectId: "p",
       executionIds: ["p", "p@fork"],
     });

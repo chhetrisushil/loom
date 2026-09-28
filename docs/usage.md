@@ -479,7 +479,8 @@ import { EncryptingEventStore } from "@loom/plugin-crypto";
 const events = new EncryptingEventStore(inner, keys, {
   sensitive: { STEP_COMPLETED: ["output.ssn", "output.email"] },
 });
-// later, on erasure request: await shredSubject(keys, inner, executionId);
+// later, on erasure request (innerSnaps: the RAW snapshot store — the tombstone follows the
+// folded tip, ADR 0106): await shredSubject(keys, inner, executionId, { snapshotStore: innerSnaps });
 ```
 
 `keys` must be a `KeyStore` that **survives a restart** — the key is the erasure boundary, so

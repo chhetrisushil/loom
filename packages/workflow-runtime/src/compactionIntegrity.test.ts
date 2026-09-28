@@ -2,6 +2,8 @@ import { step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { pinByEventKinds } from "@loom/plugin-content";
+import { InMemoryKeyStore, shredSubject } from "@loom/plugin-crypto";
 import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
@@ -256,9 +258,10 @@ describe("L11 (c) — the edges of keeping pinned kinds", () => {
     expect(after.map((e) => e.sequence)).toEqual(
       before.filter((e) => e.sequence === 0 || e.sequence > through!).map((e) => e.sequence)
     );
-    // Every later pass is stuck below the finding, and warns again.
+    // Every later pass is stuck below the finding — and it is said once per execution, not
+    // once per pass (a sweep over many executions would otherwise repeat itself forever).
     expect(await life.compact("e")).toBeNull();
-    expect(warned).toHaveLength(2);
+    expect(warned).toHaveLength(1);
     await resume(app, "e", "go2");
     expect((await app.runtime.loadState("e"))?.status).toBe("completed");
   });
@@ -321,15 +324,59 @@ describe("L11 (c) — the edges of keeping pinned kinds", () => {
     expect((await app.snapshotStore.loadLatestBefore("e", through!))?.sequence).toBe(through);
   });
 
-  it("a pinned execution is never compacted, even with pinnedEventTypes declared (ADR 0055 D1)", async () => {
+  it("the documented sentinel setup — pinned = pinByEventKinds(K), pinnedEventTypes = K — still compacts, keeping K", async () => {
+    const app = boot();
+    await toFirstGate(app, "e");
+    await resume(app, "e", "go1");
+    const finding = (await app.eventStore.read("e")).find((e) => e.eventType === FINDING)!;
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      pinned: pinByEventKinds(app.eventStore, [FINDING]),
+      pinnedEventTypes: [FINDING],
+    });
+    // The execution IS pinned (it carries a finding) — and compacts anyway, around the finding.
+    expect(await pinByEventKinds(app.eventStore, [FINDING])("e")).toBe(true);
+    expect(await life.compact("e")).not.toBeNull();
+    expect((await app.eventStore.read("e")).filter((e) => e.eventType === FINDING)).toEqual([
+      finding,
+    ]);
+    expect(await pinByEventKinds(app.eventStore, [FINDING])("e")).toBe(true); // still pinned
+  });
+
+  it("with NO pinnedEventTypes, the pinned predicate leaves a pinned execution uncompacted", async () => {
     const app = boot();
     await toFirstGate(app, "e");
     const before = await app.eventStore.read("e");
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
-      pinned: () => true,
-      pinnedEventTypes: [FINDING],
-    });
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, { pinned: () => true });
     expect(await life.compact("e")).toBeNull();
+    expect(await app.eventStore.read("e")).toEqual(before);
+  });
+
+  it("refuses to compact a reserved control stream", async () => {
+    const app = boot();
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore);
+    for (const id of ["__loom_lifecycle__", "__loom_erasure__"]) {
+      await expect(life.compact(id)).rejects.toThrow(/reserved control stream/);
+    }
+  });
+
+  it("refuses a base snapshot whose NON-blank identity names another execution", async () => {
+    const app = boot();
+    await toFirstGate(app, "e");
+    await resume(app, "e", "go1");
+    const tip = (await app.eventStore.head("e"))!;
+    const state = (await app.runtime.loadState("e"))!;
+    await app.snapshotStore.save({
+      id: "foreign",
+      executionId: "e",
+      workflowId: FLOW,
+      sequence: tip,
+      state: { ...state, workflowId: "some-other-flow" },
+      createdAt: 0,
+    });
+    const before = await app.eventStore.read("e");
+    await expect(new LogLifecycle(app.eventStore, app.snapshotStore).compact("e")).rejects.toThrow(
+      SnapshotIdentityMismatchError
+    );
     expect(await app.eventStore.read("e")).toEqual(before);
   });
 
@@ -582,5 +629,44 @@ describe("L11 P3 — identity at every snapshot-seeded path", () => {
     const checkpoint = await app.snapshotStore.loadLatestBefore("e", through!);
     expect(checkpoint?.sequence).toBe(through);
     expect(checkpoint?.state.workflowVersion).toBe("2.3.0");
+  });
+});
+
+describe("L11 — the shred tombstone lands after the FOLDED tip (ADR 0106, A3)", () => {
+  async function shredAndCompact(pinnedEventTypes: string[]) {
+    const app = boot();
+    const keys = new InMemoryKeyStore();
+    await keys.getOrCreate("e");
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, { pinnedEventTypes });
+    await toFirstGate(app, "e");
+    await life.compact("e");
+    const checkpoint = (await app.snapshotStore.loadLatest("e"))!.sequence;
+    await shredSubject(keys, app.eventStore, "e", { snapshotStore: app.snapshotStore });
+    const tombstone = (await app.eventStore.read("e")).find(
+      (e) => e.eventType === "PAYLOAD_SHREDDED"
+    )!;
+    expect(tombstone.sequence).toBeGreaterThan(checkpoint); // never in or below the checkpoint
+    await life.compact("e");
+    const state = await app.runtime.loadState("e");
+    expect(state?.variables._shredded).toBeDefined(); // the A3 evidence survived compaction
+    expect(state?.status).toBe("suspended");
+    return app;
+  }
+
+  it("nothing kept: the log is [0] with the checkpoint above it", async () => {
+    await shredAndCompact([]);
+  });
+
+  it("a finding kept: the log is [0, finding, tip] with the checkpoint below the tip", async () => {
+    await shredAndCompact([FINDING]);
+  });
+
+  it("refuses — before destroying the key — when a compactable store gets no snapshot store", async () => {
+    const app = boot();
+    const keys = new InMemoryKeyStore();
+    await keys.getOrCreate("e");
+    await toFirstGate(app, "e");
+    await expect(shredSubject(keys, app.eventStore, "e")).rejects.toThrow(/FOLDED tip/);
+    expect(await keys.get("e")).not.toBeNull();
   });
 });
