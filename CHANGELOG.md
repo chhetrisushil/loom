@@ -12,8 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`@loom/plugin-postgres`: `appendBatch` refused a `null` payload** (backlog L16). The bulk
   insert decoded its batch with `jsonb_to_recordset`, which maps a JSON `null` field to SQL
   NULL, so `payload JSONB NOT NULL` rejected the kernel's status-only `EXECUTION_RESUMED`
-  (payload `null`, [ADR 0104](docs/adr/0104-recovery-never-answers-a-gate.md)) whenever it went
-  through `CoalescingEventStore` — while `append` stored it fine. `payload` is now read as
+  (payload `null`, [ADR 0104](docs/adr/0104-recovery-never-answers-a-gate.md)) on every
+  `appendBatch` caller — the `CoalescingEventStore` flush, and `LogLifecycle` retention's archive
+  copy (so an execution that had ever resumed could not be archived to a Postgres store, and was
+  never reclaimed) — while `append` stored it fine. `payload` is now read as
   `e->'payload'` over `jsonb_array_elements`, which keeps JSON `null` as jsonb `null` and
   still yields SQL NULL only for an absent (`undefined`) payload, failing exactly as
   `append` does. The conformance kit gains a direct `appendBatch` null-payload case, so an
