@@ -127,6 +127,22 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       await store.close();
     });
 
+    it("appendBatch (if implemented) round-trips a null payload as null (ADR 0104)", async () => {
+      // The batch path is its own write path: a backend that bulk-inserts through a JSON
+      // recordset (Postgres' `jsonb_to_recordset`) turns a JSON `null` field into SQL NULL,
+      // so `append` can pass this while `appendBatch` fails the write. Checked directly,
+      // not only through `CoalescingEventStore`, so an undecorated store catches it too.
+      const store = factory();
+      if (store.appendBatch === undefined) return void (await store.close());
+      await store.appendBatch([
+        evt("nb", 0, "EXECUTION_STARTED"),
+        { ...evt("nb", 1, "EXECUTION_RESUMED"), payload: null },
+      ]);
+      const [, resumed] = await store.read("nb");
+      expect(resumed?.payload).toBeNull();
+      await store.close();
+    });
+
     it("read isolates executions", async () => {
       const store = factory();
       await store.append(evt("x", 0));
