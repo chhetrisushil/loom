@@ -853,6 +853,35 @@ export function runBranchRegistryConformance(
       await reg.close();
     });
 
+    // Review round 1 (P3, InMemoryBranchRegistry): the store that caches a sorted name index
+    // (rather than re-deriving it every call) must keep membership and order right across
+    // BOTH ways that index can change — a name entering via `promote` creating a fresh ref,
+    // and one leaving via `deleteRef` — not just via `putRef`, which the case above already
+    // exercises.
+    it("listRefs stays correct across promote (new name) then deleteRef, in either order", async () => {
+      const reg = factory();
+      await reg.putRef(ref("a", "execA", 1));
+      await reg.putRef(ref("c", "execC", 1));
+      expect((await reg.listRefs()).map((r) => r.name)).toEqual(["a", "c"]);
+
+      // promote onto a name that does not exist yet: a fresh entry, sorted alongside the
+      // existing ones rather than only ever appended.
+      await reg.promote("a", "b");
+      expect((await reg.listRefs()).map((r) => r.name)).toEqual(["a", "b", "c"]);
+      expect((await reg.getRef("b"))?.executionId).toBe("execA");
+
+      await reg.deleteRef("a");
+      expect((await reg.listRefs()).map((r) => r.name)).toEqual(["b", "c"]);
+      expect(await reg.getRef("a")).toBeNull();
+
+      // Re-creating a name under the same string it had before it was deleted must not
+      // duplicate it in listRefs order (a tombstone-then-reinsert hazard).
+      await reg.putRef(ref("a", "execA2", 1));
+      expect((await reg.listRefs()).map((r) => r.name)).toEqual(["a", "b", "c"]);
+      expect((await reg.getRef("a"))?.executionId).toBe("execA2");
+      await reg.close();
+    });
+
     it("deleteRef removes a ref", async () => {
       const reg = factory();
       await reg.putRef(ref("tmp", "execA", 1));

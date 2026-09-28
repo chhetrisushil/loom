@@ -9,8 +9,9 @@
   `Sharded(TenantScoped(…))` composition), [ADR 0091](0091-corpus-lifecycle-and-the-knowledge-package.md)
   (the precedent for a MAJOR SPI bump when a conforming store can fail a new kit case).
 - Placement: **SPI + first-party backends** (`@loom/event-runtime`, `@loom/plugin-postgres`,
-  `@loom/conformance`). **`EVENT_STORE_SPI_VERSION` 1.5.0 → 2.0.0.** KERNEL_ABI and
-  EVENT_SCHEMA unchanged. No method added or removed.
+  `@loom/conformance`). **`EVENT_STORE_SPI_VERSION` 1.5.0 → 2.0.0**; per the addendum below,
+  **`BRANCH_REGISTRY_SPI_VERSION` 1.2.0 → 2.0.0**. KERNEL_ABI and EVENT_SCHEMA unchanged. No
+  method added or removed.
 
 ## Context
 
@@ -126,29 +127,59 @@ string, not only a name the store returned. MAJOR for the same reason as D1: a s
 conforming to 1.x (any order, an opaque-or-store-returned cursor) can fail the new
 conformance case.
 
-- **In-memory**: `InMemoryBranchRegistry` now sorts with `compareExecutionIds` and caches
-  the sorted name list across calls (invalidated only when a name is added or removed),
-  mirroring `InMemoryAsyncEventStore.sortedIds` — a page costs a binary search plus the page
-  size, not a full re-sort per call.
+- **In-memory**: `InMemoryBranchRegistry` now sorts with `compareExecutionIds` and keeps the
+  sorted name list across calls, mirroring `InMemoryAsyncEventStore.sortedIds` — a page
+  costs a binary search plus the page size, not a full re-sort per call. **Review round 1
+  (P3):** an added name is binary-inserted in place; a deleted one is left as a tombstone
+  (skipped while paging, swept out once tombstones reach half the array) rather than
+  triggering a full re-sort — see the `pruneBranchRefs` bullet below for why that mattered.
 - **SQLite**: already conformed (BINARY collation on an unqualified `TEXT` column is
   memcmp order, which is UTF-8 byte order).
 - **Postgres**: same D2/D3 treatment as `events.execution_id`. `refs.name` is declared
   `COLLATE "C"`; `PostgresBranchRegistry.listRefs` states `COLLATE "C"` explicitly in its
   `WHERE`/`ORDER BY` so the order is right even on a table whose column predates this. An
   existing table is converted in place by a new `L21_COLLATION` migration block
-  (`plugins/postgres/src/schema.ts`), sharing `runMigration`'s transaction, its
-  `loom.migration_lock_timeout` budget (renamed from `loom.l10_lock_timeout` — one setting
-  for both conversions now) and its `statement_timeout` exemption for the rebuild, and
-  failing soft with a `WARNING` naming the two manual statements under the same conditions
-  as D3 (lock-wait timeout, cancelled statement, or a dependent view/rule). It runs after
-  `DDL_REST`, which is what creates `refs` on a fresh database — `events` already exists by
-  the time `L10_COLLATION` runs, but `refs` does not. Only one index depends on `name` (the
-  table's own primary key), so the ALTER rebuilds it, once, rather than the two
+  (`plugins/postgres/src/schema.ts`), sharing `runMigration`'s transaction and its
+  `statement_timeout` exemption for the rebuild with `L10_COLLATION`, and failing soft with
+  a `WARNING` naming the two manual statements under the same conditions as D3 (lock-wait
+  timeout, cancelled statement, or a dependent view/rule) — **plus, since review round 1,
+  `deadlock_detected`** (below). Both blocks run after `DDL_REST`, which is what creates
+  `refs` on a fresh database — `events` already exists earlier, but `refs` does not — with
+  **`L21_COLLATION` running FIRST**, then `L10_COLLATION`. Only one index depends on `name`
+  (the table's own primary key), so its ALTER rebuilds it once, rather than the two
   `events.execution_id` needed.
+  - Both blocks read `loom.migration_lock_timeout` (renamed from `loom.l10_lock_timeout` —
+    the name generalized, not the semantics), but **not as one shared budget**: each applies
+    it to its OWN lock wait independently. A boot where both `refs` and `events` are
+    contended can stall up to **2× `lockTimeoutMs`** (4000 ms by default) before COMMIT, one
+    wait after the other — not once, and the append/putRef stall each wait causes is bounded
+    to the ONE table it is waiting on.
+  - **Review round 1 (P2):** the original order (`L10` first, locking `events`, then `L21`,
+    locking `refs`) deadlocks (`40P01`) against a concurrent transaction that reads `refs`
+    then `events` in one transaction — each transaction ends up waiting on a lock the other
+    already holds, reproduced in `branchRegistryMigration.test.ts`. Neither DO block's
+    `EXCEPTION` list caught `deadlock_detected`, so the whole migration transaction rolled
+    back — L10's already-successful conversion included — and every store's `ready` stayed
+    rejected until the process restarted, breaking D3's "boot continues" guarantee on its
+    own migration. Fixed two ways: **(a)** `deadlock_detected` was added to both `EXCEPTION`
+    lists, so either block fails soft with a `WARNING` instead of aborting the transaction;
+    **(b)** `L21_COLLATION` now runs before `L10_COLLATION`, locking the smaller, less-hot
+    `refs` table first and releasing it soonest, and holding the hot `events` table for the
+    shortest remaining stretch before COMMIT. No shipped code acquires these two locks in
+    the reverse order — `append()` only ever touches `events`; every `BranchRegistry` method
+    only ever touches `refs`/`lineage` — so (b) removes the reproduced deadlock outright, and
+    (a) is the defense-in-depth for any transaction (application code, a future migration)
+    that spans both tables in either order.
 - The conformance kit gains a code-point-order + arbitrary-cursor case for `listRefs`
-  (mixed case, `-`/`_`, digits, NFC vs. NFD "é", an astral name), and
-  `plugins/postgres/src/branchRegistryMigration.test.ts` runs the L21 migration against a
-  real pre-L21 `refs` table the same way `sharded.test.ts` does for L10's `events` table.
+  (mixed case, `-`/`_`, digits, NFC vs. NFD "é", an astral name) and a promote/delete
+  cache-invalidation case, and `plugins/postgres/src/branchRegistryMigration.test.ts` runs
+  the L21 migration — including the deadlock above — against a real pre-L21 `refs` table the
+  same way `sharded.test.ts` does for L10's `events` table.
 - `pruneBranchRefs` needed no code change: it was already contract-driven (page with
   `listRefs({ after })`, resume from the last name returned), so fixing the three backends'
-  order fixes its paging too.
+  order fixes its paging too. It DID expose a second bug: `InMemoryBranchRegistry`'s sorted
+  name cache invalidated on every `deleteRef`, and `pruneBranchRefs` deletes one ref at a
+  time inside its own paging loop, so a full sweep forced a full re-sort on every page (100k
+  refs, 179s measured). Deletes now tombstone the cached array instead of invalidating it —
+  `listRefs` skips a tombstone while paging and compacts the array lazily once tombstones
+  reach half of it — and a new addition binary-inserts rather than invalidating.

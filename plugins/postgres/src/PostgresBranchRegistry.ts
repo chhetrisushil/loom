@@ -52,6 +52,20 @@ function rowToLineage(row: LineageRow): LineageRecord {
 // injected so tests stay deterministic and library code avoids a bare Date.now().
 type Now = () => number;
 
+export interface PostgresBranchRegistryOptions {
+  /** Injectable clock for createdAt/updatedAt (defaults to Date.now). */
+  now?: Now;
+  /**
+   * L21 — the lock wait bound for the one-time `refs.name` collation conversion (see
+   * `MigrateOptions.lockTimeoutMs`), for symmetry with
+   * `PostgresEventStoreOptions.migrationLockTimeoutMs`. Only takes effect if THIS store is
+   * the first to migrate its pool; `await migratePostgresStores(pool, { lockTimeoutMs })`
+   * before constructing any store is the reliable way to set it regardless of which store
+   * migrates first. Default 2000 ms.
+   */
+  migrationLockTimeoutMs?: number;
+}
+
 /** Postgres-backed {@link BranchRegistry}. Same contract as the SQLite store. */
 export class PostgresBranchRegistry implements BranchRegistry {
   private readonly pool: PoolLike;
@@ -59,12 +73,16 @@ export class PostgresBranchRegistry implements BranchRegistry {
   private readonly ready: Promise<void>;
   private readonly now: Now;
 
-  constructor(config: PgConfig, opts?: { now?: Now }) {
+  constructor(config: PgConfig, opts: PostgresBranchRegistryOptions = {}) {
     const { pool, owned } = toPool(config);
     this.pool = pool;
     this.ownsPool = owned;
-    this.ready = migrate(this.pool);
-    this.now = opts?.now ?? (() => Date.now());
+    this.ready = migrate(this.pool, {
+      ...(opts.migrationLockTimeoutMs !== undefined && {
+        lockTimeoutMs: opts.migrationLockTimeoutMs,
+      }),
+    });
+    this.now = opts.now ?? (() => Date.now());
   }
 
   async putRef(ref: BranchRef): Promise<void> {
@@ -101,8 +119,9 @@ export class PostgresBranchRegistry implements BranchRegistry {
     // database's collation — the same rule `PostgresEventStore.listExecutionsPage` follows
     // for execution ids (ADR 0108/L10), for the same reason: a cursor produced in one order
     // and consumed in another skips or repeats rows at a page boundary. `name` is declared
-    // `COLLATE "C"` (schema.ts), so the primary key serves this index-only; the explicit
-    // clause keeps the ORDER correct even on a table whose column predates that (fail-soft,
+    // `COLLATE "C"` (schema.ts), so this is served in order from the primary-key index
+    // (the query selects every column, so the plan is an Index Scan, not Index Only); the
+    // explicit clause keeps the ORDER correct even on a table whose column predates that (fail-soft,
     // ADR 0108 D3 — see schema.ts's `L21_COLLATION`).
     assertListRefsLimit(options?.limit);
     await this.ready;

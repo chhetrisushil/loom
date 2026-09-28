@@ -38,11 +38,17 @@ const migrations = new WeakMap<PoolLike, Promise<void>>();
  */
 export interface MigrateOptions {
   /**
-   * L10/L21 — how long a one-time collation conversion (`events.execution_id`, then
-   * `refs.name`) may WAIT for its table lock before giving up (with a WARNING; boot
-   * continues). Short on purpose: while the ALTER waits, every append/putRef queues behind
-   * it. Default 2000 ms. Governs BOTH conversions — they share one migration transaction and
-   * one `loom.migration_lock_timeout` setting.
+   * L10/L21 — how long a one-time collation conversion (`refs.name`, then
+   * `events.execution_id`) may WAIT for its table lock before giving up (with a WARNING;
+   * boot continues). Short on purpose: while an ALTER waits, every append/putRef against
+   * ITS table queues behind it. Default 2000 ms.
+   *
+   * Governs BOTH conversions, but NOT as one shared budget — each reads
+   * `loom.migration_lock_timeout` and applies it to its OWN wait independently. If both
+   * tables are contended, the two waits are sequential (L21's ALTER, then L10's), so a boot
+   * can stall up to **2× lockTimeoutMs** (4000 ms by default) before COMMIT, not once. Each
+   * wait still only blocks writers to the ONE table it is waiting on; the two tables are
+   * never both stalled by the same wait.
    *
    * The migration runs ONCE per pool and the first migrator's value wins, so the reliable way
    * to set it is `await migratePostgresStores(pool, { lockTimeoutMs })` BEFORE constructing any
@@ -102,23 +108,38 @@ async function runMigration(pool: PoolLike, lockTimeoutMs: number): Promise<void
       "SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true)",
       [callerStatementTimeout, callerLockTimeout]
     );
-    // Read by the L10/L21 DO blocks below (ADR 0108 D3's shared lock-wait budget).
+    // Read by the L10/L21 DO blocks below (each applies it to its OWN wait independently —
+    // see `MigrateOptions.lockTimeoutMs`).
     await client.query("SELECT set_config('loom.migration_lock_timeout', $1, true)", [
       `${lockTimeoutMs}ms`,
     ]);
     await client.query(DDL_EVENTS);
+    await client.query(DDL_REST);
+    // Review round 1 (P2) — L21 (`refs`) runs BEFORE L10 (`events`), both after DDL_REST,
+    // which is what creates `refs` on a fresh database. Ordering matters for more than
+    // "lock the hot table last": this transaction acquires ACCESS EXCLUSIVE on `refs` and
+    // `events` in whatever order these two blocks run in, and holds each until COMMIT. The
+    // ORIGINAL order (events, then refs) deadlocked (40P01, reproduced in
+    // `branchRegistryMigration.test.ts`) against a concurrent transaction that reads `refs`
+    // then `events` in one transaction — each transaction ends up waiting on a lock the
+    // other already holds. No SHIPPED code does that (or the reverse): `append()` only ever
+    // touches `events`, and every `BranchRegistry` method only ever touches `refs`/`lineage`
+    // — so this order is not "correct" in a way the reverse isn't, only demonstrated safe
+    // against the reproduced case, with `refs` (this migration's smaller, less-referenced
+    // table) locked first and released soonest, and the hot `events` table locked last and
+    // held for the shortest remaining stretch of the transaction. The EXCEPTION list in BOTH
+    // DO blocks also now catches `deadlock_detected`, so if a future caller's transaction
+    // (in either order) deadlocks against this one, whichever block loses fails soft with a
+    // WARNING instead of rolling back the whole migration — L10 included.
+    await client.query("SELECT set_config('statement_timeout', '0', true)");
+    await client.query(L21_COLLATION);
+    await client.query("SELECT set_config('statement_timeout', $1, true)", [
+      callerStatementTimeout,
+    ]);
     // L10 — the collation conversion may rebuild two indexes on a large log: exempt THAT
     // statement (only) from the caller's statement_timeout, then restore it.
     await client.query("SELECT set_config('statement_timeout', '0', true)");
     await client.query(L10_COLLATION);
-    await client.query("SELECT set_config('statement_timeout', $1, true)", [
-      callerStatementTimeout,
-    ]);
-    await client.query(DDL_REST);
-    // L21 (ADR 0108 addendum) — same policy, for `refs.name`. Runs AFTER DDL_REST, which is
-    // what creates `refs` on a fresh database.
-    await client.query("SELECT set_config('statement_timeout', '0', true)");
-    await client.query(L21_COLLATION);
     await client.query("SELECT set_config('statement_timeout', $1, true)", [
       callerStatementTimeout,
     ]);
@@ -156,11 +177,18 @@ const DDL_EVENTS = `
  * every later boot is a no-op. Equality lookups are unchanged by the collation, and "C"
  * comparisons are plain memcmp, so appends get cheaper.
  *
+ * Runs SECOND in `runMigration`, after `L21_COLLATION` — see the ordering/deadlock note there
+ * (review round 1, P2): `events` is the hot table, so it is locked last and held for the
+ * shortest remaining stretch of the transaction.
+ *
  * The boot-migration policy of ADR 0108 D3:
- *  - The LOCK WAIT is bounded (`loom.migration_lock_timeout`, set by runMigration): an ALTER queued
- *    behind a long transaction would otherwise queue every append behind ITSELF. The caller's
- *    `lock_timeout` is captured and RESTORED after the ALTER, so the rest of the migration runs
- *    under the operator's setting, not an unbounded one.
+ *  - The LOCK WAIT is bounded (`loom.migration_lock_timeout`, set by runMigration): an ALTER
+ *    queued behind a long transaction would otherwise queue every append behind ITSELF. Applied
+ *    to THIS statement's wait only, independently of L21's — the two are not a shared budget,
+ *    so a boot where both `refs` and `events` are contended can stall up to 2x this value
+ *    before COMMIT (L21's wait, then this one). The caller's `lock_timeout` is captured and
+ *    RESTORED after the ALTER, so the rest of the migration runs under the operator's setting,
+ *    not an unbounded one.
  *  - The REBUILD is not bounded: runMigration runs this block with `statement_timeout = 0`
  *    (and restores the caller's value after it), because a pool-level statement timeout
  *    shorter than the rebuild would abort it on every boot, which is a crash loop that also
@@ -201,7 +229,7 @@ const L10_COLLATION = `
           ANALYZE events (execution_id);
         EXCEPTION
           WHEN lock_not_available OR query_canceled OR feature_not_supported
-            OR dependent_objects_still_exist THEN
+            OR dependent_objects_still_exist OR deadlock_detected THEN
             RAISE WARNING 'loom: events.execution_id is not COLLATE "C" (%: %). Execution-id paging stays correct but cannot use idx_events_exec until you run: ALTER TABLE events ALTER COLUMN execution_id TYPE TEXT COLLATE "C"; ANALYZE events;',
               SQLSTATE, SQLERRM;
         END;
@@ -335,10 +363,22 @@ const DDL_REST = `
  * — see its doc comment for the full rationale (ALTER ... TYPE TEXT COLLATE "C" here is
  * binary-coercible, no table rewrite, but rebuilds the ONE index that depends on `name`:
  * `refs`'s own primary key, under an ACCESS EXCLUSIVE lock). Differences from L10:
- *  - Runs AFTER `DDL_REST`, which is what creates `refs` on a fresh database (L10 runs
- *    between `DDL_EVENTS` and `DDL_REST` because `events` already exists by then).
- *  - Shares `loom.migration_lock_timeout` and the caller-timeout dance with L10 — one
- *    migration transaction, one budget, set once in `runMigration`.
+ *  - Runs FIRST in `runMigration`, immediately after `DDL_REST` (which is what creates `refs`
+ *    on a fresh database — it does not exist yet when `DDL_EVENTS` runs). Review round 1 (P2):
+ *    this transaction acquires ACCESS EXCLUSIVE on `refs` and `events`, in whatever order
+ *    these two DO blocks run, and holds each until COMMIT — running L10 (`events`, the hot
+ *    table) first deadlocked (40P01) against a concurrent transaction that reads `refs` then
+ *    `events` in one transaction (reproduced in `branchRegistryMigration.test.ts`). Running
+ *    L21 first locks the smaller, less-referenced table first and releases it soonest, and
+ *    leaves `events` locked for the shortest remaining stretch of the transaction. No SHIPPED
+ *    code acquires both locks in the OTHER order (`append()` only touches `events`; every
+ *    `BranchRegistry` method only touches `refs`/`lineage`), so this order trades a
+ *    demonstrated deadlock for one that would need an application transaction spanning both
+ *    tables in the reverse order — which the shared `deadlock_detected` EXCEPTION arm (in
+ *    BOTH blocks) now fails soft on regardless, rather than rolling back the whole migration.
+ *  - Reads `loom.migration_lock_timeout` independently of L10's read of the same setting — see
+ *    `MigrateOptions.lockTimeoutMs`: each conversion's lock wait is its own budget, not a
+ *    shared one, so a boot where both tables are contended can stall up to 2x this value.
  *  - `ANALYZE refs (name)` re-establishes the column's statistics; a table this small rarely
  *    needs it for a plan to stay index-only, but a large registry (forking is cheap) can.
  */
@@ -366,7 +406,7 @@ const L21_COLLATION = `
           ANALYZE refs (name);
         EXCEPTION
           WHEN lock_not_available OR query_canceled OR feature_not_supported
-            OR dependent_objects_still_exist THEN
+            OR dependent_objects_still_exist OR deadlock_detected THEN
             RAISE WARNING 'loom: refs.name is not COLLATE "C" (%: %). Branch-ref paging stays correct but cannot serve ORDER BY from the primary-key index until you run: ALTER TABLE refs ALTER COLUMN name TYPE TEXT COLLATE "C"; ANALYZE refs;',
               SQLSTATE, SQLERRM;
         END;

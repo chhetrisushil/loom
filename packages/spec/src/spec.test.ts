@@ -351,3 +351,53 @@ describe("checkCompatibility", () => {
     expect(checkCompatibility({}).ok).toBe(true);
   });
 });
+
+// ── The cheatsheet's version banner can't quietly go stale ────────────────────
+//
+// `docs/cheatsheet-features.md` opens with a banner stating every SPI/ABI version by hand
+// (it is prose around a table, not a generated file, so it cannot go through the
+// `renderCompatibilityMatrix()` check above). It already drifted once: BranchRegistry SPI
+// stayed "1.2.0" in the banner for a full review round after the constant moved to 2.0.0
+// (review round 1 of loom PR #469). Only the names the manifest actually tracks are
+// checked — `LeaseStore SPI` in the banner has no manifest entry to compare against yet.
+describe("cheatsheet-features.md's version banner matches the manifest", () => {
+  const BANNER_TO_MANIFEST: Record<string, () => string> = {
+    "KERNEL ABI": () => kernelManifest().kernelAbi.version,
+    "EVENT SCHEMA": () => kernelManifest().eventSchema.version,
+    "EventStore SPI": () => kernelManifest().spis.eventStore,
+    "BranchRegistry SPI": () => kernelManifest().spis.branchRegistry,
+    "MemoryStore SPI": () => kernelManifest().spis.memoryStore,
+  };
+
+  const doc = readFileSync(resolve(REPO_ROOT, "docs/cheatsheet-features.md"), "utf8");
+  // The banner is the blockquote right after the title — read line by line, not with a
+  // multiline regex, so a version stated ANYWHERE later in the doc cannot masquerade as
+  // the banner's own claim.
+  const banner = doc
+    .split("\n")
+    .filter((line) => line.startsWith(">"))
+    .join(" ");
+  const stated = new Map(
+    [...banner.matchAll(/([A-Z][A-Za-z ]*?) \*\*(\d+\.\d+\.\d+)\*\*/g)].map((m) => [
+      m[1] as string,
+      m[2] as string,
+    ])
+  );
+
+  it("finds the banner and at least the names this test knows how to check", () => {
+    expect(banner.length).toBeGreaterThan(20);
+    const known = [...stated.keys()].filter((name) => name in BANNER_TO_MANIFEST);
+    expect(known.length).toBe(Object.keys(BANNER_TO_MANIFEST).length);
+  });
+
+  it("every version this test can check matches the live manifest", () => {
+    const mismatches: string[] = [];
+    for (const [name, expected] of Object.entries(BANNER_TO_MANIFEST)) {
+      const inBanner = stated.get(name);
+      if (inBanner !== undefined && inBanner !== expected()) {
+        mismatches.push(`${name}: banner says ${inBanner}, manifest says ${expected()}`);
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+});
