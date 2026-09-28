@@ -42,7 +42,7 @@ An A2A agent is any HTTP endpoint answering three routes:
 
 ```
 GET  /.well-known/agent.json   # discovery — the AgentCard (name, skills, …)
-POST /tasks/send               # submit a task → { id }
+POST /tasks/send               # submit a task → { id }, or the finished task for a synchronous peer
 GET  /tasks/:id                # poll → { status, artifacts }
 ```
 

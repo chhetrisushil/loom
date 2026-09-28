@@ -61,7 +61,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or `failed` task in the send answer is now returned as-is; an `{ id }` answer (loom's own
   `createA2AServer`, which submits asynchronously) and a non-terminal one are polled exactly as
   before. Found as a full-suite load flake: `peerTaint.test.ts` spent ~500 ms of each test in
-  that sleep.
+  that sleep. Review follow-ups: a non-object or otherwise malformed send answer (a bare string,
+  `null`, or a terminal task with no `id`) now throws a clear `A2A send error: malformed answer`
+  instead of a bare `TypeError`; and a peer-supplied task id is percent-encoded before it is
+  used to build the poll URL (and decoded again by `A2AServer`'s `GET /tasks/:id` route), so an
+  id containing `/` can no longer be collapsed by URL normalization into a request for a
+  different route.
 
 - **`ShardedEventStore` over Postgres skipped execution ids when paging** (backlog L10,
   [ADR 0108](docs/adr/0108-execution-id-order-and-fail-soft-migrations.md); EventStore SPI

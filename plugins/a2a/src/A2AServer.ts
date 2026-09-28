@@ -128,9 +128,21 @@ export function createA2AServer(
 
         const taskMatch = /^\/tasks\/([^/]+)$/.exec(url);
         if (method === "GET" && taskMatch !== null) {
-          const taskId = taskMatch[1];
-          if (taskId === undefined) {
+          const rawTaskId = taskMatch[1];
+          if (rawTaskId === undefined) {
             json(res, 400, { error: "missing task id" });
+            return;
+          }
+          // The path segment is percent-encoded on the wire (a client MUST encode an id
+          // containing `/` or other reserved characters, or URL normalization upstream of this
+          // server — e.g. `fetch`'s own dot-segment collapsing — could otherwise turn an id like
+          // `../admin` into a request for a different route entirely). Decode it back to the
+          // real task id before it reaches the executor.
+          let taskId: string;
+          try {
+            taskId = decodeURIComponent(rawTaskId);
+          } catch {
+            json(res, 400, { error: "task id is not validly percent-encoded" });
             return;
           }
           const result = await executor.get(taskId);
