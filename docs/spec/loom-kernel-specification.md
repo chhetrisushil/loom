@@ -103,11 +103,14 @@ load-bearing, plus the global guardrails that gate every additive capability:
   `_SUSPENDED`, `_RESUMED`, `_COMPLETED`, `_FAILED`, `_CANCELLED`); a `STEP_*` event folds into
   its frame only. In particular `STEP_FAILED` MUST NOT fail the execution — the flow may catch it
   — and only `EXECUTION_FAILED` does (ADR 0105, EVENT_SCHEMA 1.21.0). A `STEP_FAILED` that lands
-  while the execution is `suspended` MUST set `variables._failedWhileParked` (removed by the next
-  park or resume), and a `null` `EXECUTION_RESUMED` while it is set MUST be status-only
-  (fail-closed). A snapshot folded before 1.21.0 MUST be read through `normalizeSnapshotState`.
-  For every log and every sequence k, folding the snapshot at k plus the tail MUST equal folding
-  the whole log.
+  while the execution is `suspended` MUST set `variables._failedWhileParked`; whatever ends the
+  park (`EXECUTION_SUSPENDED`, `EXECUTION_RESUMED`, `EXECUTION_COMPLETED` / `_FAILED` /
+  `_CANCELLED`) MUST remove it; and a `null` `EXECUTION_RESUMED` while it is set MUST be
+  status-only (fail-closed). A caller's `null` gate answer in that position MUST be refused at
+  ingress (`ResumeRefusedError`, `null-answer-after-parked-failure`), nothing appended. A snapshot
+  folded before 1.21.0 MUST be read through `normalizeSnapshotState`. For every log and every
+  sequence k, folding the snapshot at k plus the tail MUST equal folding the whole log (for a
+  1.20.0 snapshot: every kernel-written log — see ADR 0105 D4 for the one foreign shape).
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
   the pinned type set MUST change together. The current version is **1.21.0** — after the

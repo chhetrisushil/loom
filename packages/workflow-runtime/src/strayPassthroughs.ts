@@ -161,12 +161,15 @@ export function inspectStrayPassthroughs(
       }
       case "EXECUTION_FAILED":
         status = "failed";
+        failedWhileParked = false;
         break;
       case "EXECUTION_COMPLETED":
         status = "completed";
+        failedWhileParked = false;
         break;
       case "EXECUTION_CANCELLED":
         status = "cancelled";
+        failedWhileParked = false;
         break;
     }
     previous = e;

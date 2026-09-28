@@ -105,7 +105,8 @@ export interface RecoverAbandonedOptions {
    * reported again by the next pass. Must be ≥ 1. Default: unbounded, as before.
    *
    * Cost: a backward read of the log's tail in pages, stopping at the first progress event or
-   * the bound — O(tail since progress), not O(log). Compaction (`truncatePrefix`) can only
+   * the bound — O(tail since progress), not O(log). A store without `readRange` gets one bounded
+   * `readFrom` of the last `maxRecoveries × 256` events instead (it can only undercount). Compaction (`truncatePrefix`) can only
    * shorten the tail it sees, so it can undercount (re-drive once more), never overcount.
    */
   maxRecoveries?: number;
@@ -349,8 +350,11 @@ const TAIL_PAGE = 256;
 
 /**
  * `EXECUTION_RECOVERED` events since the log's last progress event, counted up to `cap` (enough
- * to decide). Reads the tail backwards in pages from `head`, so the cost is the events since
- * progress, not the log.
+ * to decide). With `readRange` it reads the tail backwards in pages from `head`, so the cost is
+ * the events since progress, not the log. A store without `readRange` would turn each page into
+ * a `readFrom` to the END of the log (quadratic in the tail), so it gets ONE bounded read
+ * instead: the last `cap × TAIL_PAGE` events. A re-drive that writes more than `TAIL_PAGE`
+ * events between recoveries can then be undercounted — one more re-drive, never a false skip.
  */
 async function unproductiveRecoveries(
   runtime: WorkflowRuntime,
@@ -358,20 +362,26 @@ async function unproductiveRecoveries(
   head: number,
   cap: number
 ): Promise<number> {
+  const store = runtime.events;
   let n = 0;
-  for (let hi = head; hi >= 0; hi -= TAIL_PAGE) {
-    const page = await readRangeOf(
-      runtime.events,
-      executionId,
-      Math.max(0, hi - TAIL_PAGE + 1),
-      hi
-    );
-    if (page.length === 0) break; // below a truncated prefix
+  // Returns the count once decided, or undefined to keep reading.
+  const scan = (page: readonly EventEnvelope[]): number | undefined => {
     for (let i = page.length - 1; i >= 0; i--) {
       const type = (page[i] as EventEnvelope).eventType;
       if (PROGRESS.has(type)) return n;
       if (type === EXECUTION_RECOVERED && ++n >= cap) return n;
     }
+    return undefined;
+  };
+  if (store.readRange === undefined) {
+    const window = await store.readFrom(executionId, Math.max(0, head - cap * TAIL_PAGE + 1));
+    return scan(window) ?? n;
+  }
+  for (let hi = head; hi >= 0; hi -= TAIL_PAGE) {
+    const page = await readRangeOf(store, executionId, Math.max(0, hi - TAIL_PAGE + 1), hi);
+    if (page.length === 0) break; // below a truncated prefix
+    const decided = scan(page);
+    if (decided !== undefined) return decided;
   }
   return n;
 }

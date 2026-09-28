@@ -70,7 +70,7 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._cancelReason` | `EXECUTION_CANCELLED` | cancel reason |
 | `variables._resumePayload` | `EXECUTION_RESUMED` | LATEST resume payload (legacy key, kept for pre-1.16 snapshots) |
 | `variables._resumePayloads` | `EXECUTION_RESUMED` | ORDERED list of every resume payload — gate *i* passes through with payload *i* on replay (1.16.0, ADR 0057) |
-| `variables._failedWhileParked` | `STEP_FAILED` while `suspended` (removed by `EXECUTION_SUSPENDED` / `EXECUTION_RESUMED`) | `true` — a `null` resume in this position is status-only (1.21.0, ADR 0105) |
+| `variables._failedWhileParked` | `STEP_FAILED` while `suspended` (removed by `EXECUTION_SUSPENDED` / `EXECUTION_RESUMED` / a terminal event) | `true` — a `null` resume in this position is status-only (1.21.0, ADR 0105) |
 | `variables._decisions` | `DECISION_RECORDED` | `Record<decisionId, { choice, rationale?, source?, alternatives?, estimatedCostUsd?, estimatedLatencyMs?, confidence?, context?, policy? }>` — only `choice` is ever read back (P9) |
 | `variables._denials` | `EFFECT_DENIED` | `Array<{ toolId, stepId?, reason? }>` |
 | `variables._executionDenials` | `EXECUTION_DENIED` | `Array<{ op, reason?, actor? }>` — refused lifecycle ops (C.1) |
@@ -189,10 +189,10 @@ generalization.
   escapes the runner is recorded by the `EXECUTION_FAILED` that follows it. (Before ADR 0105 it
   also set `status → "failed"`, so a caught failure read as terminal and a crash after it was
   never recovered.) When it lands while the execution is `suspended` it also sets
-  `variables._failedWhileParked = true` (removed by the next `EXECUTION_SUSPENDED` /
-  `EXECUTION_RESUMED`); a `null` `EXECUTION_RESUMED` while it is set is status-only
-  (fail-closed — a gate never passes on it, and a caller's explicit `null` answer there re-parks
-  the gate).
+  `variables._failedWhileParked = true` (removed by whatever ends the park: the next
+  `EXECUTION_SUSPENDED` / `EXECUTION_RESUMED` or a terminal event); a `null` `EXECUTION_RESUMED`
+  while it is set is status-only (fail-closed — a gate never passes on it; `resume` refuses a
+  caller's `null` answer there, `null-answer-after-parked-failure`).
 - Handler: `eventHandlers.ts`.
 
 #### `STEP_CANCELLED`

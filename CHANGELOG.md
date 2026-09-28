@@ -26,8 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     parked execution a `STEP_FAILED` landed on. A `null` `EXECUTION_RESUMED` in that position stays
     status-only, as 1.20.0 folded it (a 1.20.0 `resumeAs` wrote exactly that entry), so every gate
     passthrough folds as under 1.20.0 and the result no longer depends on which snapshot seeds the
-    fold. **Cost (fail-closed):** a caller's explicit `null` answer to such a gate is not recorded
-    as its answer; the gate re-parks and the next non-null resume answers it.
+    fold. The key is removed by whatever ends the park (a park, a resume, or a terminal event).
+    **Cost (fail-closed), refused at ingress:** a caller's `null` answer to such a gate cannot be
+    its answer, so `resume` / `resumeAs` refuse it with `ResumeRefusedError`
+    (`null-answer-after-parked-failure`, new reason) and append nothing; resume with a non-null
+    answer.
   - Snapshots saved by an older fold are repaired on read: `normalizeSnapshotState`
     (`@loom/replay-vm`, new export) reads `failed` with no `_error` and a failed frame as
     `running` (`suspended` when parked) — on every stored-fold read, including `restoreFromState`.
