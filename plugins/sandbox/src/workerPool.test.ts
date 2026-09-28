@@ -462,6 +462,44 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
   );
 
   it(
+    "a warm()-only waiter killed by the cold-start allowance frees its slot for the next run",
+    async () => {
+      // R3: the case the test above does NOT cover. There, a `run()` is also waiting on
+      // `ensureReady`, and `dispatch`'s own rejection handler calls `replace` regardless of
+      // what the worker's `exit` does. With nothing but `warm()` waiting, the ONLY thing that
+      // used to reclaim the slot was `exit` reaching `ensureSlot`'s death handler — and that
+      // handler ignored a `code !== 0` exit, which a worker `terminate()`d this soon after
+      // spawn can be (Node 24). So the dead slot sat in `this.slots`, not busy and not ready,
+      // and the next `run()` picked it, posted `warm` to a corpse, and waited the full
+      // allowance again before anything served it.
+      const pool = new SandboxWorkerPool({ size: 1, coldStartMs: 200 });
+      opened.push(pool);
+      const warming = pool.warm().catch((e: unknown) => e);
+      // biome-ignore lint/suspicious/noExplicitAny: reaching the private slot to wedge it
+      const [dead] = (pool as any).slots as { worker: import("node:worker_threads").Worker }[];
+      dead!.worker.removeAllListeners("message");
+
+      const err = await warming;
+      expect(err).toBeInstanceOf(SandboxWorkerStartupError);
+      expect(err).toMatchObject({ limitMs: 200, phase: "compile" });
+      // The dead slot is gone the instant the allowance fires — not merely destined to be
+      // removed once its `exit` event happens to reach the death handler.
+      // biome-ignore lint/suspicious/noExplicitAny: asserting the slot was replaced synchronously
+      expect((pool as any).slots).not.toContain(dead);
+
+      // A run posted now must be served by a FRESH worker, not hang on the corpse.
+      const result = await pool.run(
+        "(() => 1)()",
+        null,
+        { memoryBytes: 32 * 1024 * 1024, interruptBudget: 1_000, wallClockMs: 1_000 },
+        undefined
+      );
+      expect(result).toEqual({ ok: true, value: 1 });
+    },
+    SLOW
+  );
+
+  it(
     "after a hard kill, the next run succeeds on the fresh cold worker however tight its limits",
     async () => {
       // ADR 0089 D4's failure loop. A hard kill leaves a COLD worker; if its spawn + compile
@@ -515,26 +553,58 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
     async () => {
       // `ensureReady` listened for `ready` and `error` only. A worker terminated while warming
       // — by the compile allowance, or by `close()` — emits neither, so `warm()` hung.
-      const reclaimed = new SandboxWorkerPool({ size: 1, coldStartMs: 0 });
+      //
+      // `coldStartMs` must be a positive number now (R4 — 0 would be refused at construction,
+      // since it is the only clock a cold compile is judged against), so the wedge is
+      // deterministic — detach the worker's `message` listener before `ready` can arrive —
+      // rather than relying on a real compile losing a race against a near-zero window.
+      const reclaimed = new SandboxWorkerPool({ size: 1, coldStartMs: 200 });
       opened.push(reclaimed);
       const limits: EvalLimits = {
         memoryBytes: 32 * 1024 * 1024,
         interruptBudget: 1_000,
         wallClockMs: 1_000,
       };
-      const [warmErr, runErr] = await Promise.all([
-        reclaimed.warm().catch((e: unknown) => e),
-        reclaimed.run("(() => 1)()", null, limits, undefined).catch((e: unknown) => e),
-      ]);
+      const warmPromise = reclaimed.warm().catch((e: unknown) => e);
+      const runPromise = reclaimed
+        .run("(() => 1)()", null, limits, undefined)
+        .catch((e: unknown) => e);
+      // biome-ignore lint/suspicious/noExplicitAny: reaching the private slot to wedge it
+      const [slot] = (reclaimed as any).slots as { worker: import("node:worker_threads").Worker }[];
+      slot!.worker.removeAllListeners("message");
+      const [warmErr, runErr] = await Promise.all([warmPromise, runPromise]);
       // ONE warm-up, shared: both waiters get the same verdict.
       expect(warmErr).toBeInstanceOf(SandboxWorkerStartupError);
-      expect(warmErr).toMatchObject({ phase: "compile", limitMs: 0 });
+      expect(warmErr).toMatchObject({ phase: "compile", limitMs: 200 });
       expect(runErr).toBe(warmErr);
 
       const closing = new SandboxWorkerPool({ size: 1 });
       const warming = closing.warm().catch((e: unknown) => e);
       await closing.close();
       expect(await warming).toMatchObject({ message: "sandbox: worker pool closed" });
+    },
+    SLOW
+  );
+
+  it(
+    "an unexpected exit while warming fails typed, not with a plain Error (R5)",
+    async () => {
+      // The cold-start allowance and `close()` both already reject typed/plainly BEFORE they
+      // terminate the worker, so `onExit` firing after either of them is a no-op (the promise
+      // already settled). This test's exit is neither: the worker is killed directly, as a
+      // crash mid-compile would, so `onExit` itself is what settles the promise — and it used
+      // to do that with a plain `Error`, indistinguishable from any other failure, instead of
+      // the same `SandboxWorkerStartupError` a wedged compile produces.
+      const pool = new SandboxWorkerPool({ size: 1, coldStartMs: 5_000 });
+      opened.push(pool);
+      const warming = pool.warm().catch((e: unknown) => e);
+      // biome-ignore lint/suspicious/noExplicitAny: reaching the private slot to kill it mid-compile
+      const [slot] = (pool as any).slots as { worker: import("node:worker_threads").Worker }[];
+      void slot!.worker.terminate();
+
+      const err = await warming;
+      expect(err).toBeInstanceOf(SandboxWorkerStartupError);
+      expect(err).toMatchObject({ phase: "compile", limitMs: 5_000 });
     },
     SLOW
   );
@@ -591,17 +661,25 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
   it(
     "the timing options reach the pool through the effect",
     async () => {
-      // `coldStartMs: 0` — no worker spawns and compiles inside 0 ms; the 10 s default would
-      // let this succeed.
+      // `coldStartMs: 200` reaching the pool the effect builds — 0 is refused at construction
+      // now (R4), so the compile is wedged deterministically instead of raced against a
+      // near-zero window: detach the worker's `message` listener before `ready` can arrive.
       const coldScripts = new InMemoryContentStore();
       const coldEffects = new EffectRuntime();
-      opened.push(
-        registerSandboxEval(coldEffects, coldScripts, { workers: { count: 1, coldStartMs: 0 } })
-      );
-      const coldRef = await coldScripts.put(encoder.encode("(() => 1)()"));
-      await expect(
-        coldEffects.execute(SANDBOX_TOOL_ID, { scriptRef: coldRef }, baseCtx)
-      ).rejects.toMatchObject({ name: "SandboxWorkerStartupError", phase: "compile" });
+      const coldEffect = registerSandboxEval(coldEffects, coldScripts, {
+        workers: { count: 1, coldStartMs: 200 },
+      });
+      opened.push(coldEffect);
+      const warming = coldEffect.warm();
+      // biome-ignore lint/suspicious/noExplicitAny: reaching the private pool to wedge its worker
+      const [coldSlot] = (coldEffect as any).pool.slots as {
+        worker: import("node:worker_threads").Worker;
+      }[];
+      coldSlot!.worker.removeAllListeners("message");
+      await expect(warming).rejects.toMatchObject({
+        name: "SandboxWorkerStartupError",
+        phase: "compile",
+      });
 
       // `startupLivenessMs: 0` on a WARM worker with a 32 MiB input: seeding cannot finish
       // inside a 1 ms window; the default would let this succeed.
@@ -628,14 +706,24 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
   it("refuses a duration option that would silently disable its bound", () => {
     // `NaN` makes every deadline comparison false and `Infinity` never comes due: both turn
     // a bound off without saying so. Refused at construction, as a bad `size` is.
-    const names = ["hardKillGraceMs", "startupLivenessMs", "coldStartMs"] as const;
+    const nonNegative = ["hardKillGraceMs", "startupLivenessMs"] as const;
     for (const bad of [Number.NaN, -1, Number.POSITIVE_INFINITY, "5" as unknown as number]) {
-      for (const name of names) {
+      for (const name of nonNegative) {
         expect(
           () => new SandboxWorkerPool({ size: 1, [name]: bad }),
           `${name}=${String(bad)}`
         ).toThrow(new RegExp(`${name} must be a finite number >= 0`));
       }
+    }
+    // `coldStartMs` additionally refuses 0 (R4): it is the only clock a cold compile is ever
+    // judged against, so 0 does not mean "no allowance, caller's choice" the way it does for
+    // the other two — it means every cold worker fails forever, chained through a hard kill
+    // into the very loop ADR 0089 D4 exists to prevent.
+    for (const bad of [Number.NaN, 0, -1, Number.POSITIVE_INFINITY, "5" as unknown as number]) {
+      expect(
+        () => new SandboxWorkerPool({ size: 1, coldStartMs: bad }),
+        `coldStartMs=${String(bad)}`
+      ).toThrow(/coldStartMs must be a finite number > 0/);
     }
     // …through the effect too, which builds its pool from `SandboxSpec.workers`.
     expect(() =>
@@ -643,13 +731,18 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         workers: { count: 1, startupLivenessMs: Number.NaN },
       })
     ).toThrow(/startupLivenessMs must be a finite number >= 0/);
-    // Zero is accepted: it means "no allowance at all", which a caller may choose on purpose —
-    // e.g. a pool that is always warmed before use. It does NOT set off the cold-worker loop,
-    // because a run's window never judges the compile; only `coldStartMs` does, and 0 there
-    // fails every cold start by the caller's own choice.
+    expect(() =>
+      registerSandboxEval(new EffectRuntime(), new InMemoryContentStore(), {
+        workers: { count: 1, coldStartMs: 0 },
+      })
+    ).toThrow(/coldStartMs must be a finite number > 0/);
+    // Zero IS accepted for the other two: it means "no allowance at all", which a caller may
+    // choose on purpose — e.g. a pool that is always warmed before use, so `startupLivenessMs`
+    // never has anything to judge. `coldStartMs` cannot share that reading (above), so a valid
+    // pool needs a positive one even when the other two are zero.
     expect(
       () =>
-        new SandboxWorkerPool({ size: 1, hardKillGraceMs: 0, startupLivenessMs: 0, coldStartMs: 0 })
+        new SandboxWorkerPool({ size: 1, hardKillGraceMs: 0, startupLivenessMs: 0, coldStartMs: 1 })
     ).not.toThrow();
   });
 

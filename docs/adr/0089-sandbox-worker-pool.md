@@ -116,6 +116,10 @@ running out terminates and replaces the worker and fails with
   `wallClockMs + hardKillGraceMs` would fail that run whenever the window is
   shorter than the host's cold start, replace the worker cold, and repeat — the
   very loop this decision exists to prevent, multiplied by retry middleware.
+  `coldStartMs` must be strictly greater than 0 and set above this host's real
+  cold spawn + compile time — unlike `hardKillGraceMs`/`startupLivenessMs`, 0
+  does not mean "always warmed before use" here (a run's window never judges
+  the compile), it means every cold start fails, forever.
 - **Starting the script on a ready worker** (`phase: "start"`) — being
   scheduled, parsing the input, creating the runtime, seeding it — is bounded by
   the run's window, which opens once the worker is ready: a run that has not
