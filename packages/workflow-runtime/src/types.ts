@@ -395,6 +395,43 @@ export class ExecutionAlreadyExistsError extends Error {
 export { SnapshotIdentityMismatchError } from "@loom/snapshot-runtime";
 
 /**
+ * ADR 0107 — `fork()` refused a fork point it cannot serve exactly, because compaction removed
+ * history below it. Nothing was written: no child events, no seed snapshot, no lineage.
+ *
+ * - `"compacted"`: events between the nearest snapshot and `atSequence` were compacted away, so
+ *   neither the copied prefix nor the folded state would be the parent's state at that point.
+ * - `"checkpoint-above-prefix"`: a snapshot sits exactly at `atSequence`, but that event was
+ *   compacted away and pinned events survive below it. The child's log would carry its
+ *   checkpoint above a non-bootstrap tip, the one shape ADR 0106's tip rule forbids and every
+ *   log reader assumes it never sees.
+ *
+ * Sequence 0 is always forkable. `forkableFrom` is the lowest sequence from which every
+ * position through the parent's tip can be forked (its latest compaction checkpoint, or the
+ * event just above it), or `null` when no snapshot anchors the history above the compacted
+ * prefix.
+ */
+export class CompactedForkPointError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly atSequence: number,
+    readonly reason: "compacted" | "checkpoint-above-prefix",
+    readonly forkableFrom: number | null
+  ) {
+    const where =
+      forkableFrom === null
+        ? "Only sequence 0 can be forked: no snapshot anchors the history above the compacted prefix."
+        : `Fork at 0, or at ${forkableFrom} or above.`;
+    super(
+      reason === "compacted"
+        ? `fork("${executionId}", ${atSequence}) refused: ${atSequence} is inside compacted history — events below it were compacted away and no snapshot between them and ${atSequence} anchors the fold, so the copied prefix and the forked state would both be wrong. ${where}`
+        : `fork("${executionId}", ${atSequence}) refused: a snapshot holds the state at ${atSequence}, but event ${atSequence} was compacted away and pinned events survive below it — the child's log would carry its checkpoint above a non-bootstrap tip, a shape the tip rule (ADR 0106) forbids. ${where}`
+    );
+    this.name = "CompactedForkPointError";
+    Object.setPrototypeOf(this, CompactedForkPointError.prototype);
+  }
+}
+
+/**
  * TR (ADR 0077) — `resume()`/`resumeAs()` refused a payload that does not satisfy
  * the flow's declared `resumeSchemas` entry for that gate. Nothing was appended;
  * the execution is untouched and still suspended, so a corrected payload can be

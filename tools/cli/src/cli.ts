@@ -23,6 +23,7 @@ import { cmdPluginCheck, cmdPluginNew, cmdPluginSeams } from "./plugin";
 import { cmdPluginSearch } from "./pluginSearch";
 import { cmdPluginTry } from "./pluginTry";
 import { cmdProfile } from "./profile";
+import { cmdRepairBlankStream } from "./repair";
 import { cmdRetentionRun } from "./retention";
 import { STORE_FLAG_HELP, hasStoreFlags, resolveStores, storeFlagsOf } from "./stores";
 import { cmdSweepContent } from "./sweepContent";
@@ -126,6 +127,11 @@ export const USAGE = `loom — project-local commands for a Loom app
                                                   (they keep the parent uncollectable)
   loom branches prune <store> [--protect main,rel] [--limit N] [--apply]
                                                   delete refs that name nothing (main protected)
+  loom repair blank-stream <store> [--assign <id>:<from>-<through>,…] [--apply]
+                                                  re-home what the pre-0106 compaction bug
+                                                  wrote to execution "" (ADR 0107): proven
+                                                  segments only; the rest is listed with its
+                                                  candidates, never guessed
   loom retention run <store> [--ttl ms] [--apply]  reclaim aged terminal executions
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
@@ -230,6 +236,21 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
+    case "repair": {
+      const sub = requirePositional(positionals, "blank-stream"); // `loom repair blank-stream`
+      if (sub !== "blank-stream") {
+        throw new Error(`unknown repair subcommand "${sub}" (expected blank-stream)`);
+      }
+      if (!hasStoreFlags(flags)) return storeFlagError("repair blank-stream");
+      console.log(
+        await cmdRepairBlankStream({
+          ...storeFlagsOf(flags),
+          ...(flags.assign !== undefined && { assign: flags.assign }),
+          apply: flags.apply === "true",
+        })
+      );
+      return 0;
+    }
     case "retention": {
       requirePositional(positionals, "run"); // `loom retention run`
       if (!hasStoreFlags(flags)) return storeFlagError("retention");

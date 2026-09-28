@@ -29,6 +29,7 @@ import {
 import { type Snapshot, type SnapshotStore, assertSnapshotIdentity } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 import { ExecutionJournal } from "./ExecutionJournal";
+import { highestMissing } from "./LogLifecycle";
 import { WorkflowContextImpl } from "./WorkflowContext";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import { COMPUTE_TARGET_KEY } from "./placement";
@@ -39,6 +40,7 @@ import {
 } from "./strayPassthroughs";
 import {
   ApprovalRejectedError,
+  CompactedForkPointError,
   EFFECT_INDOUBT_RESOLVED,
   EXECUTION_RECOVERED,
   ExecutionAlreadyExistsError,
@@ -212,6 +214,11 @@ export interface WorkflowRuntimeDeps {
  * The kernel's own control writes go through `eventStore.append` directly and are unaffected.
  */
 function assertNotReserved(executionId: string): void {
+  if (executionId === "") {
+    // ADR 0107 — a blank identity names no execution. It is also where the pre-0106 compaction
+    // bug wrote resumed events; nothing may add to that stream.
+    throw new Error(`executionId "" is reserved: a blank identity names no execution (ADR 0107)`);
+  }
   if (isReservedStream(executionId)) {
     throw new Error(
       `executionId "${executionId}" is reserved: "${RESERVED_STREAM_PREFIX}" prefixes the kernel's control streams`
@@ -945,6 +952,7 @@ export class WorkflowRuntime {
     reason?: unknown,
     options?: { principal?: PrincipalChain }
   ): Promise<boolean> {
+    assertNotReserved(executionId);
     const live = this.liveHandles.get(executionId);
 
     // C.1 — gate the cancel (only when configured AND a principal is present). Use the
@@ -1006,6 +1014,9 @@ export class WorkflowRuntime {
     resumeEvent?: ResumeEvent,
     options?: RunOptions
   ): Promise<ExecutionHandle> {
+    // ADR 0107 — the same ids `start` refuses: a blank identity (the journal refuses it too)
+    // and the control streams.
+    assertNotReserved(preloadedState.executionId);
     // K11 — the preloaded state carries the recorded flow-code fingerprint;
     // restore resolves the same way a resume does: current code, a pinned
     // version matching the recorded hash, or a loud refusal.
@@ -1373,6 +1384,7 @@ export class WorkflowRuntime {
       transformState?: (input: unknown) => unknown;
     } & Omit<RunOptions, "executionId" | "allowFlowCodeMismatch">
   ): Promise<ExecutionHandle> {
+    assertNotReserved(executionId);
     const allEvents = await this.eventStore.read(executionId);
     if (allEvents.length === 0) {
       throw new Error(`No execution found for id: ${executionId}`);
@@ -1590,6 +1602,8 @@ export class WorkflowRuntime {
    * indexed point-read. It doubles as the identity anchor the un-snapshotted path needs.
    */
   private async foldState(executionId: string): Promise<ExecutionState | null> {
+    // ADR 0107 — `""` is no execution, whatever a pre-0106 bug left in its stream.
+    if (executionId === "") return null;
     const snapshot = await this.snapshotStore.loadLatest(executionId);
     if (snapshot !== null) {
       // Confirm the execution still exists before trusting the snapshot (orphan case
@@ -1632,6 +1646,12 @@ export class WorkflowRuntime {
    *
    * Drive the branch down a new path via `restoreFromState(result.state, …)`,
    * or `resume(result.executionId, …)` if the fork point is a suspend.
+   *
+   * A compacted parent (ADR 0107): a fork point is served exactly or refused, never folded
+   * across compacted history. It is exact when every event between the nearest snapshot and
+   * the fork point survives, or when a snapshot sits exactly at it (the checkpoint of a `[0]`
+   * log, so the range is the FOLDED tip, not the log's). Anything else throws
+   * {@link CompactedForkPointError} with nothing written.
    */
   async fork(
     parentExecutionId: string,
@@ -1641,14 +1661,30 @@ export class WorkflowRuntime {
     // The tip, without materializing the log to find it. `fork()` used to `read()` the whole
     // parent just to learn how long it was — on a long-lived parent that is the dominant cost
     // of a fork, and it was paid even when the store could copy the prefix natively.
+    assertNotReserved(parentExecutionId);
+    if (opts?.executionId !== undefined) assertNotReserved(opts.executionId);
     const tip = await headOf(this.eventStore, parentExecutionId);
     if (tip === null) {
       throw new Error(`No execution found for id: ${parentExecutionId}`);
     }
-    if (atSequence < 0 || atSequence > tip) {
+    if (!Number.isSafeInteger(atSequence) || atSequence < 0) {
       throw new Error(
         `Invalid fork point ${atSequence} for execution ${parentExecutionId} (valid range 0..${tip})`
       );
+    }
+    const base = await this.snapshotStore.loadLatestBefore(parentExecutionId, atSequence);
+    if (atSequence > tip && base?.sequence !== atSequence) {
+      // ADR 0107 — the range is the FOLDED tip: a log compacted through its tip is `[0]` with
+      // its checkpoint above it, and that checkpoint is a fork point like any other. Only a
+      // point past every event AND every snapshot is out of range; anything else above the
+      // log's tip is compacted history, refused below.
+      const latest = await this.snapshotStore.loadLatest(parentExecutionId);
+      const foldedTip = Math.max(tip, latest?.sequence ?? tip);
+      if (atSequence > foldedTip) {
+        throw new Error(
+          `Invalid fork point ${atSequence} for execution ${parentExecutionId} (valid range 0..${foldedTip})`
+        );
+      }
     }
 
     const childId = opts?.executionId ?? ulid();
@@ -1659,10 +1695,12 @@ export class WorkflowRuntime {
     // copied prefix. Read the WIDER of those windows once, never the whole log, and never
     // anything above the fork point.
     const needsPrefix = this.eventStore.copyPrefix === undefined || this.onEvent !== undefined;
-    const base = await this.snapshotStore.loadLatestBefore(parentExecutionId, atSequence);
     const from = needsPrefix || base === null ? 0 : base.sequence + 1;
     const window = await readRangeOf(this.eventStore, parentExecutionId, from, atSequence);
     const parentEvents = window;
+    // ADR 0107 — before anything is written: is the state at the fork point exactly
+    // recoverable, and does the child's copied prefix have a shape every log reader accepts?
+    await this.assertForkable(parentExecutionId, atSequence, tip, base, window, from);
 
     // `||`, not `??`: a checkpoint written before ADR 0106 carries a BLANK workflowId.
     const workflowId =
@@ -1793,6 +1831,91 @@ export class WorkflowRuntime {
       branchName,
       state: forkState,
     };
+  }
+
+  /**
+   * ADR 0107 — refuse a fork point compaction made unservable, before anything is written.
+   *
+   * The state at `atSequence` is exact iff every event in `(base, atSequence]` survives, where
+   * `base` is the nearest snapshot at or below it (or `-1` with none: the whole prefix must
+   * survive). That is the replay inspector's rule for a compacted position (ADR 0106 D4), and
+   * it is what `fork()` never checked: it folded the survivors across the hole and copied a
+   * prefix missing the history the state claims. `window` holds every event in
+   * `[from, atSequence]`, and `from ≤ base + 1`, so the count needs no further read.
+   *
+   * A fork point AT a snapshot whose own event was compacted away (the checkpoint of a log
+   * compacted through its tip, or an older suspend snapshot below a later checkpoint) is
+   * exact too, and the child is seeded from that snapshot. Its copied prefix is then the
+   * parent's survivors at or below the fork point, with the seed above them. That is the
+   * `[0]`-plus-checkpoint shape when only the bootstrap survives, and it is refused when
+   * pinned events survive below the fork point: the child would carry its checkpoint above a
+   * non-bootstrap tip, which ADR 0106's tip rule forbids and no reader handles.
+   */
+  private async assertForkable(
+    parentExecutionId: string,
+    atSequence: number,
+    tip: number,
+    base: Snapshot | null,
+    window: readonly EventEnvelope[],
+    from: number
+  ): Promise<void> {
+    const floor = base?.sequence ?? -1;
+    let present = 0;
+    for (let i = window.length - 1; i >= 0 && window[i]!.sequence > floor; i--) present++;
+    if (present !== atSequence - floor) {
+      throw await this.compactedForkPoint(parentExecutionId, atSequence, "compacted");
+    }
+    // The log's tip is an event that survives by definition (the common fork: a durable gate
+    // at the tip of a long-lived parent), so only a fork point below it pays a read here.
+    if (floor !== atSequence || atSequence === 0 || atSequence === tip) return;
+    // The state is the snapshot's. Does the fork point's own event survive, and if not, does
+    // anything but the bootstrap survive below it?
+    let survivors: readonly EventEnvelope[];
+    if (from === 0) {
+      survivors = window;
+    } else {
+      const own = await readRangeOf(this.eventStore, parentExecutionId, atSequence, atSequence);
+      if (own.length > 0) return;
+      // Below a compacted fork point only kept (pinned-kind) events survive: a short read.
+      survivors = await readRangeOf(this.eventStore, parentExecutionId, 0, atSequence - 1);
+    }
+    const top = survivors[survivors.length - 1]?.sequence ?? 0;
+    if (top !== atSequence && top !== 0) {
+      throw await this.compactedForkPoint(parentExecutionId, atSequence, "checkpoint-above-prefix");
+    }
+  }
+
+  /**
+   * The refusal, naming the lowest sequence from which the parent is forkable through its tip.
+   * Only reached for a compacted parent (or one whose checkpoint is gone), whose log is its
+   * kept events plus the tail above its latest checkpoint, so reading it whole is cheap here.
+   */
+  private async compactedForkPoint(
+    parentExecutionId: string,
+    atSequence: number,
+    reason: "compacted" | "checkpoint-above-prefix"
+  ): Promise<CompactedForkPointError> {
+    const events = await this.eventStore.read(parentExecutionId);
+    let forkableFrom: number | null = null;
+    if (events.length <= 1) {
+      // `[0]`: compacted through its tip; its latest snapshot is its checkpoint.
+      const latest = await this.snapshotStore.loadLatest(parentExecutionId);
+      forkableFrom = latest !== null && latest.sequence > 0 ? latest.sequence : null;
+    } else {
+      const gap = highestMissing(events);
+      if (gap < 0) {
+        forkableFrom = 0; // gap-free: every position through the tip survives
+      } else {
+        // Under the tip rule `gap + 1 ≤ tip` survives, so the snapshot at or below it that
+        // anchors the tail is at `gap` (the checkpoint) or `gap + 1`.
+        const anchor = await this.snapshotStore.loadLatestBefore(parentExecutionId, gap + 1);
+        if (anchor !== null && anchor.sequence >= gap) {
+          const keptBelow = events.some((e) => e.sequence > 0 && e.sequence < gap);
+          forkableFrom = anchor.sequence === gap && !keptBelow ? gap : gap + 1;
+        }
+      }
+    }
+    return new CompactedForkPointError(parentExecutionId, atSequence, reason, forkableFrom);
   }
 
   /**

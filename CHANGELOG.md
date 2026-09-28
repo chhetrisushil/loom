@@ -24,6 +24,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `JSON.stringify(...)::jsonb` or copies jsonb server-side and was already correct; the
   SQLite batch path stringifies per row and was unaffected.
 
+- **`@loom/workflow-runtime`: fork points in compacted history, and the blank-stream repair**
+  ([ADR 0107](docs/adr/0107-compacted-fork-points-and-the-blank-stream.md), closing ADR 0106's
+  residuals).
+
+  - **`fork()` of a compacted parent returned a wrong state.** A fork point inside the
+    compacted prefix folded the nearest snapshot across the hole and copied a prefix missing the
+    history it claimed. `fork()` now serves a fork point exactly (every event between the
+    nearest snapshot and it survives, or a snapshot sits exactly at it) or throws
+    `CompactedForkPointError` (`reason`, `forkableFrom`) with nothing written. A snapshot-seeded
+    child whose copied prefix would carry pinned events below its seed is refused
+    (`checkpoint-above-prefix`): that shape reads as never compacted. The range is now the
+    folded tip, so the checkpoint of a log compacted through its tip (`[0]`) is forkable. Before,
+    it was refused as outside `0..0`.
+  - **Events the pre-0106 bug wrote to execution `""` can be repaired.** `LogLifecycle.
+    blankStreamCensus()` / `rehomeBlankStream({ apply, assign })` and
+    `loom repair blank-stream <store> [--assign <id>:<from>-<through>,…] [--apply]` (dry run by
+    default). A segment is proven when the snapshot its run saved under the real id, at a drain
+    barrier, is exactly the fold of the stray events onto that execution's previous snapshot.
+    Proven segments are re-homed at their own sequences (`metadata.rehomedFrom`) and journaled
+    as **`EVENTS_REHOMED`** on the lifecycle stream (**EVENT_SCHEMA 1.22.0**, pure audit into
+    `_lifecycle`). Unprovable runs (a completion with no checkpoint) are listed with their
+    candidate executions, never attributed. An operator who knows the owner asserts it with
+    `--assign`, which is still checked against that execution's snapshot. `occupied`,
+    `superseded` and `conflict` segments are refused. Re-runs are idempotent, and the `""` stream
+    is left as evidence.
+  - **`""` is reserved.** `isReservedStream("")` is `true`, so enumerators skip it. `start`,
+    `resume`, `resumeAs`, `cancel`, `fork` and `restoreFromState` refuse it, `loadState("")`
+    returns `null` and `compact("")` throws. `cancel("")` used to append `EXECUTION_CANCELLED`
+    into the stray stream.
+
 - **`@loom/workflow-runtime`: compaction integrity**
   ([ADR 0106](docs/adr/0106-compaction-integrity.md), backlog L11). Defects in
   `LogLifecycle.compact` and the code that reads what it leaves:

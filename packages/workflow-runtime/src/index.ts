@@ -3,6 +3,7 @@
 export { WorkflowRuntime, WorkflowRuntime as ExecutionRuntime } from "./WorkflowRuntime";
 export {
   ApprovalRejectedError,
+  CompactedForkPointError,
   EFFECT_INDOUBT_RESOLVED,
   EXECUTION_RECOVERED,
   ExecutionAlreadyExistsError,
@@ -63,6 +64,15 @@ export {
   type RetentionOutcome,
   type PinPredicate,
 } from "./LogLifecycle";
+export {
+  REHOMED_FROM_KEY,
+  type BlankSegmentStatus,
+  type BlankStreamCensus,
+  type BlankStreamSegment,
+  type RehomeAssignment,
+  type RehomeProof,
+  type UnattributedRun,
+} from "./blankStream";
 export { parseCron, nextOccurrence, type CronSpec } from "./cron";
 export type {
   DecideOptions,

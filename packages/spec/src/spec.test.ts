@@ -267,6 +267,10 @@ const NOT_A_CAPABILITY = new Set([
   // earlier checkpoint, pinned kinds kept in place); one additive optional SPI method on an
   // existing capability. No new subsystem to grade.
   "0106",
+  // 0107 — closes 0106's residuals: fork() of a compacted parent is exact or refused, and an
+  // operator repair re-homes what the pre-0106 bug wrote to execution "". A correction plus one
+  // audit event kind (EVENT_SCHEMA 1.22.0) on existing capabilities; no new subsystem to grade.
+  "0107",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

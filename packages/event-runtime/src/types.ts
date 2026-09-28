@@ -42,9 +42,16 @@ export const EVENT_STORE_SPI_VERSION = "1.5.0";
  */
 export const RESERVED_STREAM_PREFIX = "__loom_";
 
-/** Whether an executionId names a reserved control stream rather than a real execution. */
+/**
+ * Whether an executionId names a reserved control stream rather than a real execution.
+ *
+ * The blank id `""` is reserved too (ADR 0107). It names no execution, and it is where the
+ * pre-ADR-0106 compaction bug wrote the events of every resume that followed a compaction.
+ * Reserving it keeps enumerators from treating that stream as an execution to recover, retain
+ * or report, and keeps every runtime entry point from writing to it again.
+ */
 export function isReservedStream(executionId: string): boolean {
-  return executionId.startsWith(RESERVED_STREAM_PREFIX);
+  return executionId === "" || executionId.startsWith(RESERVED_STREAM_PREFIX);
 }
 
 /**
