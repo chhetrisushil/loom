@@ -87,6 +87,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fencing a start, and warns that a fence supersedes a live holder. No SPI, KERNEL_ABI or
   EVENT_SCHEMA change.
 
+- **`@loom/plugin-sandbox`: the worker pool's hard kill charged runtime creation and input
+  seeding to the script** (backlog L13). The worker stamped the run's start before
+  `evalInFreshRuntime` created the QuickJS runtime and seeded `input`, while the in-VM wall
+  clock is armed only after both. So the parent's hard-kill budget (`wallClockMs` +
+  `hardKillGraceMs`) was spent before the script ran: a large input — or a loaded host, where
+  even an empty runtime is slow to create — made worker mode return `limitExceeded
+  { wallClock }` for a script in-process mode completed, routing a resource kill to
+  drift-repair for a script that never ran long (reproduced deterministically: a trivial
+  script over a 16 MiB input). `evalInFreshRuntime` now takes an `onScriptStart` hook fired
+  at the instant it arms its own wall clock, and the worker publishes that instant, so both
+  clocks share one origin. The end of the charged window is unchanged: output marshalling
+  still counts, because `dump` can run script code (`toJSON`) that only the hard kill can
+  stop. One of the two causes of the full-suite "survives a hard kill" flake; the other was
+  the test asserting a 100 ms wall budget for its follow-up run, and is fixed in the test.
+
 - **`@loom/plugin-postgres`: `appendBatch` refused a `null` payload** (backlog L16). The bulk
   insert decoded its batch with `jsonb_to_recordset`, which maps a JSON `null` field to SQL
   NULL, so `payload JSONB NOT NULL` rejected the kernel's status-only `EXECUTION_RESUMED`

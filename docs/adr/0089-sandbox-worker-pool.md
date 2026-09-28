@@ -91,6 +91,13 @@ a shared runner to eat a 100 ms budget); the guard is now self-calibrating
 against the machine it runs on rather than a fixed number that passes anywhere
 fast.
 
+**Nor are runtime creation and input seeding** (backlog L13). The budget is
+measured from the instant the in-VM wall clock is armed, which the engine reports
+itself (`evalInFreshRuntime`'s `onScriptStart`), so the two clocks share one
+origin. The worker used to stamp its own start before creating the runtime and
+seeding the input, and a 16 MiB input then came back `limitExceeded { wallClock }`
+from worker mode for a trivial script in-process mode completed.
+
 ### D5 — Payloads cross as transferred JSON bytes, not structured clones
 
 Both directions carry a transferable `Uint8Array`. Measured round trip on a

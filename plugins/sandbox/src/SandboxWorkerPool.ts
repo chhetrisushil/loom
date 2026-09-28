@@ -360,7 +360,8 @@ export class SandboxWorkerPool {
         return;
       }
       if (!(state === RUN_EVALUATING && mine)) {
-        // Not started yet: the worker is booting, marshalling, or simply not scheduled.
+        // Not started yet: the worker is booting, creating the runtime, seeding the input, or
+        // simply not scheduled.
         // That is the engine, not the script (the distinction `ensureReady` already draws),
         // so it does not come out of the script's budget — but it cannot be waited on
         // forever either, or a wedged worker would never be reclaimed.

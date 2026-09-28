@@ -125,6 +125,9 @@ function renderThrown(thrown: unknown): string {
  * exists — not because the guards are weaker here, but because the caller's
  * event loop should not be the thing that waits.
  *
+ * `onScriptStart` is called with the instant the wall clock starts — after the runtime
+ * exists and the input is seeded — so an outside observer can measure the SAME budget.
+ *
  * `isAborted` is polled from the interrupt handler so a cooperative caller can
  * stop a script between bytecode ops. It is a courtesy, not a guarantee: a
  * script that allocates heavily between interrupt callbacks reaches neither this
@@ -136,7 +139,8 @@ export function evalInFreshRuntime(
   script: string,
   input: unknown,
   limits: EvalLimits,
-  isAborted: () => boolean = () => false
+  isAborted: () => boolean = () => false,
+  onScriptStart?: (startedAt: number) => void
 ): EvalOutcome {
   const runtime = module.newRuntime();
   // Which guard tripped — the interrupt handler is the ONLY thing that can
@@ -168,7 +172,14 @@ export function evalInFreshRuntime(
 
     // Install the guards AFTER seeding, so the user script alone pays the
     // interrupt budget and wall clock.
-    const deadline = Date.now() + limits.wallClockMs;
+    const startedAt = Date.now();
+    const deadline = startedAt + limits.wallClockMs;
+    // The wall clock starts HERE, and so must anything outside the VM that measures it.
+    // The worker pool's hard kill used to stamp its own start before the runtime was
+    // created and the input seeded (L13), so a big input — or a loaded host — spent the
+    // script's budget before the script ran, and worker mode killed on `wallClock` what
+    // in-process mode completed. One origin, handed out, so the two clocks cannot drift.
+    onScriptStart?.(startedAt);
     runtime.setInterruptHandler(() => {
       if (isAborted()) return true;
       if (Date.now() > deadline) {
