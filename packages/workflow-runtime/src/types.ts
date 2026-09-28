@@ -392,6 +392,30 @@ export class ExecutionAlreadyExistsError extends Error {
   }
 }
 
+/**
+ * L20 — `start()`'s sequence 0 was refused on the fence twice, and sequence 0 is still absent:
+ * someone acquired a newer token for this id but has written nothing under it (it may have died
+ * between `acquireFence` and its bootstrap). Surfaced as the `cause` of a `StorageWriteError`.
+ *
+ * Deliberately NOT a `StaleFenceError`: a stale fence means "another holder owns this
+ * execution", which a dispatcher settles instead of retrying — and here nobody may own it, so
+ * settling would lose the start with nothing in the log for a recovery pass to find. Nothing
+ * ran; retrying (a fresh `allocate` takes a newer fence) is cheap and correct. `cause` is the
+ * store's `StaleFenceError`.
+ */
+export class StartFencedOutError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly cause?: unknown
+  ) {
+    super(
+      `start of execution "${executionId}" was fenced out by a newer token whose holder has not written sequence 0; nothing ran — retry the start`
+    );
+    this.name = "StartFencedOutError";
+    Object.setPrototypeOf(this, StartFencedOutError.prototype);
+  }
+}
+
 export { SnapshotIdentityMismatchError } from "@loom/snapshot-runtime";
 
 /**

@@ -1,13 +1,24 @@
 /**
  * L20 (ADR 0004) — `execute` was refused because ANOTHER holder owns the execution. This is the
- * portable form of that refusal: the HTTP worker answers it with `409 { code: "superseded" }`
- * and `RemoteWorkerRuntime` rethrows it as this error, so a caller on the far side of a wire can
- * tell it apart from a transport or storage failure exactly as an in-process caller can.
+ * portable form of that refusal: the HTTP worker answers it with
+ * `409 { code: "superseded", executionId }` and `RemoteWorkerRuntime` rethrows it as this error,
+ * so a caller on the far side of a wire can tell it apart from a transport or storage failure
+ * exactly as an in-process caller can.
  *
  * It is NOT a failed attempt. Every dispatch acquires a newer fence, so retrying it supersedes
  * the holder that just won, which is then fenced out and retries in turn — the two ping-pong and
- * each bounce re-runs the in-flight step. Settle it, don't redispatch it: the execution is being
- * driven, and `loadState` / `subscribe` by the same id observe it.
+ * each bounce re-runs the in-flight step. So a dispatcher settles it instead of retrying.
+ *
+ * What settling means: the refusal TRANSFERS ownership to the newer fence holder, and nothing
+ * here checks that holder is alive. Its liveness is covered only by its own dispatcher's policy
+ * (retries, `executeTimeoutMs`) and, past that, by `recoverAbandoned` — which a deployment MUST
+ * run to cover holders that die (a duplicate dispatcher that crashed mid-run, or one that timed
+ * out while its wedged instance kept the fence). Until then the execution may sit in `running`.
+ *
+ * The newer holder can even be this caller's own earlier attempt (an HTTP attempt that timed out
+ * but kept running): the execution then completes while `dispatch()` rejects with this error.
+ * So a caller that needs the OUTCOME should treat this error as "await by id" —
+ * `loadState` / `subscribe` on the same executionId — not as a failure of the execution.
  */
 export class ExecutionSupersededError extends Error {
   constructor(
@@ -16,7 +27,7 @@ export class ExecutionSupersededError extends Error {
     readonly cause?: unknown
   ) {
     super(
-      `execution "${executionId}" is owned by another holder (a lost start race or a newer fence); this dispatch was superseded, not failed. Do not redispatch it.`
+      `execution "${executionId}" is owned by another holder (a lost start race or a newer fence); this dispatch was superseded, not failed — redispatching would fence that holder out. Await the execution by id (loadState/subscribe); if its holder has died, recoverAbandoned re-drives it.`
     );
     this.name = "ExecutionSupersededError";
     Object.setPrototypeOf(this, ExecutionSupersededError.prototype);
@@ -42,6 +53,17 @@ function field(value: unknown, key: string): unknown {
  *    writer's error (ADR 0074 L1), so a stale fence naming a different execution is that
  *    writer's refusal and, for this one, a genuine storage failure — retryable;
  *  - `ExecutionSupersededError` — the wire form of either.
+ *
+ * Not included: `StartFencedOutError` (`@loom/workflow-runtime`) — a start refused on the fence
+ * with sequence 0 still absent. Its newer token's holder has written nothing and may be dead, so
+ * settling would lose the start outright; it stays retryable.
+ *
+ * Accepted imprecision: a coalesced batch holding writes for TWO fenced-out executions rejects
+ * both with the first one's error, so the second sees a stale fence naming another execution and
+ * retries. That retry takes a newer fence, so it can supersede the second execution's live holder
+ * and re-run its in-flight step once more; the holder it fences out then gets a refusal naming
+ * its own execution and settles. One bounded extra bounce per such batch — not a ping-pong —
+ * accepted rather than guessing which execution a batch error "really" meant.
  *
  * Every other error, including any other `StorageWriteError`, is `false`: a genuine failure is
  * never swallowed. Matched by `name`, not class, because `@loom/worker-runtime` sits below the

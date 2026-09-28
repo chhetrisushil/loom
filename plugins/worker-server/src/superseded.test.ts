@@ -36,7 +36,11 @@ describe("worker server — superseded refusals (L20)", () => {
     const worker = refusingWorker(() =>
       named("ExecutionAlreadyExistsError", { executionId: "e1" })
     );
-    server = createWorkerServer(worker as never, { onError: (_id, e) => internal.push(e) });
+    const superseded: string[] = [];
+    server = createWorkerServer(worker as never, {
+      onError: (_id, e) => internal.push(e),
+      onSuperseded: (id) => superseded.push(id),
+    });
     await server.start();
 
     const raw = await fetch(`${server.url}/execute`, {
@@ -57,7 +61,8 @@ describe("worker server — superseded refusals (L20)", () => {
     expect(err).toMatchObject({ name: "ExecutionSupersededError", executionId: "e1" });
     expect(isSupersededRefusal(err, "e1")).toBe(true);
     expect(worker.executes - before).toBe(1); // no redispatch
-    expect(internal).toEqual([]); // not an internal error
+    expect(internal).toEqual([]); // not an internal error…
+    expect(superseded).toEqual(["e1", "e1"]); // …but operators still see it
   });
 
   it("a genuine failure stays an opaque 500 and IS retried", async () => {

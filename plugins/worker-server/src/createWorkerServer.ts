@@ -24,6 +24,12 @@ export interface WorkerServerOptions {
    * The response carries no internal detail, so this is the only place it surfaces.
    */
   onError?: (errorId: string, err: unknown) => void;
+  /**
+   * L20 — called when `/execute` answered `409 superseded`: the worker was refused because
+   * another holder owns the execution (a lost start race or a newer fence). Not an error, so
+   * it never reaches `onError`; wire this to see how often duplicate dispatches collide.
+   */
+  onSuperseded?: (executionId: string, err: unknown) => void;
 }
 
 export interface WorkerServer {
@@ -136,6 +142,7 @@ export function createWorkerServer(
             // to `ExecutionSupersededError`. Nothing internal is exposed: the id is the
             // caller's own.
             if (!isSupersededRefusal(err, pkg.executionId)) throw err;
+            options.onSuperseded?.(pkg.executionId, err);
             json(res, 409, {
               error: "execution superseded",
               code: "superseded",

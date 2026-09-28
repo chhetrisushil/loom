@@ -88,8 +88,13 @@ export class SupervisingDispatcher implements ExecutionDispatcher {
         this.recordSuccess(key);
         return result;
       } catch (err) {
-        // L20 — superseded, not failed: not restartable, and not the target's fault.
-        if (isSupersededRefusal(err, pkg.executionId)) throw err;
+        // L20 — superseded, not failed: not restartable, and not the target's fault. But an
+        // EARLIER restart of this dispatch that failed genuinely still counts against the
+        // circuit — the refusal ends the dispatch, it does not erase what preceded it.
+        if (isSupersededRefusal(err, pkg.executionId)) {
+          if (attempt > 0) this.recordFailure(key);
+          throw err;
+        }
         lastErr = err;
         if (attempt < maxRestarts) await this.sleep(base * factor ** attempt);
       }

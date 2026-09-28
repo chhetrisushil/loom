@@ -3,12 +3,16 @@ import type { EventEnvelope } from "@loom/core";
 import { LocalDispatcher, SupervisingDispatcher } from "@loom/dispatcher";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import {
+  type EventStore,
+  InMemoryAsyncEventStore,
+  TenantScopedEventStore,
+} from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { type ExecutionPackage, isSupersededRefusal } from "@loom/worker-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner } from "@loom/workflow-runtime";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LocalWorkerRuntime } from "./LocalWorkerRuntime";
 
@@ -43,7 +47,7 @@ const pkg: ExecutionPackage = {
 };
 
 interface Harness {
-  eventStore: InMemoryAsyncEventStore;
+  eventStore: EventStore;
   effects: () => number;
   fences: number[];
   node: (
@@ -56,8 +60,20 @@ interface Harness {
   invoked: (n: number) => Promise<void>;
 }
 
+// Every scenario runs over a plain store AND a tenant-scoped one: the decorator used to forward
+// the store's refusal naming the PREFIXED id (`acme:x`), which the predicate — rightly comparing
+// against the caller's `x` — read as a genuine failure, and the ping-pong came back in full.
+const STORES: Array<[string, () => EventStore]> = [
+  ["plain store", () => new InMemoryAsyncEventStore()],
+  [
+    "TenantScopedEventStore",
+    () => new TenantScopedEventStore(new InMemoryAsyncEventStore(), "acme"),
+  ],
+];
+let makeStore: () => EventStore = STORES[0]![1];
+
 function harness(): Harness {
-  const eventStore = new InMemoryAsyncEventStore();
+  const eventStore = makeStore();
   const snapshots = new InMemoryAsyncSnapshotStore();
   const fences: number[] = [];
   let calls = 0;
@@ -151,75 +167,172 @@ function expectOneWinnerOneSuperseded(
   expect(isSupersededRefusal((lost[0] as { err: unknown }).err, pkg.executionId)).toBe(true);
 }
 
-describe("L20 — a superseded dispatch is not a failed attempt", () => {
-  it("duplicate FIRST dispatch (sequence-0 race), maxAttempts=3 on both: at most one extra run", async () => {
-    const h = harness();
-    const a = h.node();
-    const b = h.node();
-    const results = await Promise.all([settle(h, a.dispatch(pkg)), settle(h, b.dispatch(pkg))]);
+describe.each(STORES)(
+  "L20 — a superseded dispatch is not a failed attempt (%s)",
+  (_label, store) => {
+    beforeEach(() => {
+      makeStore = store;
+    });
 
-    expectOneWinnerOneSuperseded(results);
-    // ADR 0004: the single interrupted step runs at most twice.
-    expect(h.effects()).toBeLessThanOrEqual(2);
-    expect(h.fences.length).toBeLessThanOrEqual(2);
-    await assertOneHistory(h);
-  });
+    it("duplicate FIRST dispatch (sequence-0 race), maxAttempts=3 on both: at most one extra run", async () => {
+      const h = harness();
+      const a = h.node();
+      const b = h.node();
+      const results = await Promise.all([settle(h, a.dispatch(pkg)), settle(h, b.dispatch(pkg))]);
 
-  it("duplicate dispatch AFTER the bootstrap (no sequence-0 race), maxAttempts=3: at most one extra run", async () => {
-    const h = harness();
-    const a = h.node();
-    const b = h.node();
-    const pa = settle(h, a.dispatch(pkg));
-    await h.invoked(1); // A's bootstrap is durable and its step is in flight
-    const pb = settle(h, b.dispatch(pkg)); // B takes over by ADR 0004's redispatch rule
-    const results = await Promise.all([pa, pb]);
+      expectOneWinnerOneSuperseded(results);
+      // ADR 0004: the single interrupted step runs at most twice.
+      expect(h.effects()).toBeLessThanOrEqual(2);
+      expect(h.fences.length).toBeLessThanOrEqual(2);
+      await assertOneHistory(h);
+    });
 
-    expectOneWinnerOneSuperseded(results);
-    expect(h.effects()).toBeLessThanOrEqual(2);
-    expect(h.fences).toEqual([1, 2]);
-    await assertOneHistory(h);
-  });
+    it("duplicate dispatch AFTER the bootstrap (no sequence-0 race), maxAttempts=3: at most one extra run", async () => {
+      const h = harness();
+      const a = h.node();
+      const b = h.node();
+      const pa = settle(h, a.dispatch(pkg));
+      await h.invoked(1); // A's bootstrap is durable and its step is in flight
+      const pb = settle(h, b.dispatch(pkg)); // B takes over by ADR 0004's redispatch rule
+      const results = await Promise.all([pa, pb]);
 
-  it("SupervisingDispatcher(maxRestarts=2) over LocalDispatcher(maxAttempts=3): no restart of a superseded dispatch", async () => {
-    const h = harness();
-    const supervised = (d: LocalDispatcher) =>
-      new SupervisingDispatcher(d, {
-        policy: { maxRestarts: 2, circuit: { threshold: 1, cooldownMs: 60_000 } },
+      expectOneWinnerOneSuperseded(results);
+      expect(h.effects()).toBeLessThanOrEqual(2);
+      expect(h.fences).toEqual([1, 2]);
+      await assertOneHistory(h);
+    });
+
+    it("SupervisingDispatcher(maxRestarts=2) over LocalDispatcher(maxAttempts=3): no restart of a superseded dispatch", async () => {
+      const h = harness();
+      const supervised = (d: LocalDispatcher) =>
+        new SupervisingDispatcher(d, {
+          policy: { maxRestarts: 2, circuit: { threshold: 1, cooldownMs: 60_000 } },
+        });
+      const a = h.node(supervised);
+      const b = h.node(supervised);
+      const pa = settle(h, a.dispatch(pkg));
+      await h.invoked(1);
+      const pb = settle(h, b.dispatch(pkg));
+      const results = await Promise.all([pa, pb]);
+
+      expectOneWinnerOneSuperseded(results);
+      expect(h.effects()).toBeLessThanOrEqual(2);
+      await assertOneHistory(h);
+      // Losing to another holder is not a fault of the target: the circuit stays closed.
+      expect((await a.health()).healthy).toBe(true);
+      expect((await b.health()).healthy).toBe(true);
+    });
+
+    it("takeover still works: a retrying dispatcher recovers an execution whose holder is dead", async () => {
+      const h = harness();
+      // A "crashes": its dispatch is abandoned mid-step and never settles on its own. It has
+      // retries of its own, so the test also proves the zombie does not use them to take back
+      // the execution it lost (with the old behaviour it did, and B was fenced out in turn).
+      const a = h.node(undefined, 3);
+      const abandoned = a.dispatch(pkg).catch((err: unknown) => err);
+      await h.invoked(1);
+
+      const b = h.node(undefined, 3);
+      const pb = b.dispatch(pkg);
+      await h.invoked(2); // B resumed the crashed execution and re-runs the interrupted step
+      h.settled(); // the dead holder never comes back; let B's run finish
+      await expect(pb).resolves.toMatchObject({ status: "completed", output: { n: 2 } });
+      expect(h.effects()).toBe(2); // the original interrupted run + exactly one re-run
+      await assertOneHistory(h);
+
+      // The zombie wakes: its write is fenced out, and it does NOT redispatch.
+      const zombie = await abandoned;
+      expect(isSupersededRefusal(zombie, pkg.executionId)).toBe(true);
+      expect(h.effects()).toBe(2);
+      expect(h.fences).toEqual([1, 2]);
+    });
+  }
+);
+
+describe.each(STORES)(
+  "L20 — a start fenced out by a holder that never wrote (%s)",
+  (_label, store) => {
+    it("is retried, not settled as superseded: the start completes", async () => {
+      // D1 fences 1; "D2" fences 2 and dies before writing sequence 0. D1's bootstrap is refused
+      // on the fence twice with sequence 0 absent. Settling that as "superseded" lost the start
+      // outright — an empty log no recovery pass can see. It must stay retryable.
+      const eventStore = store();
+      let effects = 0;
+      const fx = new EffectRuntime();
+      fx.register(
+        "slow-tool",
+        new ToolEffect(async (i: { n: number }) => {
+          effects += 1;
+          return { n: i.n + 1 };
+        })
+      );
+      const runtime = new WorkflowRuntime({
+        eventStore,
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        effectRuntime: fx,
       });
-    const a = h.node(supervised);
-    const b = h.node(supervised);
-    const pa = settle(h, a.dispatch(pkg));
-    await h.invoked(1);
-    const pb = settle(h, b.dispatch(pkg));
-    const results = await Promise.all([pa, pb]);
+      runtime.registerFlow(
+        {
+          _tag: "FlowDefinition",
+          id: FLOW,
+          name: FLOW,
+          version: "1.0.0",
+          inputSchema: io,
+          outputSchema: io,
+          steps: [slow],
+        } as never,
+        runner as never
+      );
+      const worker = new LocalWorkerRuntime(runtime);
+      const allocate = worker.allocate.bind(worker);
+      let first = true;
+      worker.allocate = async (req) => {
+        const lease = await allocate(req);
+        if (first) {
+          first = false;
+          await runtime.acquireFence(req.executionId); // D2 allocates, then dies
+        }
+        return lease;
+      };
 
-    expectOneWinnerOneSuperseded(results);
-    expect(h.effects()).toBeLessThanOrEqual(2);
-    await assertOneHistory(h);
-    // Losing to another holder is not a fault of the target: the circuit stays closed.
-    expect((await a.health()).healthy).toBe(true);
-    expect((await b.health()).healthy).toBe(true);
-  });
+      const result = await new LocalDispatcher(worker, { maxAttempts: 3 }).dispatch(pkg);
+      expect(result).toMatchObject({ status: "completed", output: { n: 2 } });
+      expect(effects).toBe(1);
+      const events = await eventStore.read(pkg.executionId);
+      expect(events.filter((e: EventEnvelope) => e.eventType === "EXECUTION_STARTED")).toHaveLength(
+        1
+      );
+    });
 
-  it("takeover still works: a retrying dispatcher recovers an execution whose holder is dead", async () => {
-    const h = harness();
-    // A "crashes": its dispatch is abandoned mid-step and never settles on its own.
-    const a = h.node(undefined, 1);
-    const abandoned = a.dispatch(pkg).catch((err: unknown) => err);
-    await h.invoked(1);
-
-    const b = h.node(undefined, 3);
-    const pb = b.dispatch(pkg);
-    await h.invoked(2); // B resumed the crashed execution and re-runs the interrupted step
-    h.settled(); // the dead holder never comes back; let B's run finish
-    await expect(pb).resolves.toMatchObject({ status: "completed", output: { n: 2 } });
-    expect(h.effects()).toBe(2); // the original interrupted run + exactly one re-run
-    await assertOneHistory(h);
-
-    // The zombie wakes: its write is fenced out, and it does NOT redispatch.
-    const zombie = await abandoned;
-    expect(isSupersededRefusal(zombie, pkg.executionId)).toBe(true);
-    expect(h.effects()).toBe(2);
-    expect(h.fences).toEqual([1, 2]);
-  });
-});
+    it("surfaces StartFencedOutError (retryable), never a bare stale fence, when it cannot retry", async () => {
+      const eventStore = store();
+      const runtime = new WorkflowRuntime({
+        eventStore,
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        effectRuntime: new EffectRuntime(),
+      });
+      runtime.registerFlow(
+        {
+          _tag: "FlowDefinition",
+          id: FLOW,
+          name: FLOW,
+          version: "1.0.0",
+          inputSchema: io,
+          outputSchema: io,
+          steps: [slow],
+        } as never,
+        runner as never
+      );
+      const worker = new LocalWorkerRuntime(runtime);
+      const lease = await worker.allocate({ executionId: pkg.executionId });
+      await runtime.acquireFence(pkg.executionId); // a newer holder that never writes
+      const err = await worker.execute(lease, pkg).catch((e: unknown) => e);
+      expect(err).toMatchObject({
+        name: "StorageWriteError",
+        cause: { name: "StartFencedOutError" },
+      });
+      expect(isSupersededRefusal(err, pkg.executionId)).toBe(false);
+      expect(await eventStore.read(pkg.executionId)).toHaveLength(0);
+    });
+  }
+);

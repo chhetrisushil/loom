@@ -72,8 +72,9 @@ export class RemoteWorkerRuntime implements WorkerRuntime {
       const detail = await res.text().catch(() => "");
       // L20 — the worker's "another holder owns this execution" (409, code "superseded")
       // becomes the typed refusal a dispatcher declines to retry. Keyed on the code, not the
-      // status alone, so an unrelated 409 from a proxy stays an ordinary failure.
-      if (res.status === 409 && supersededCode(detail)) {
+      // status alone, so an unrelated 409 from a proxy stays an ordinary failure — and on the
+      // execution it names, so a reply about some other execution can never settle this one.
+      if (res.status === 409 && isSupersededBody(detail, pkg.executionId)) {
         throw new ExecutionSupersededError(pkg.executionId);
       }
       throw new Error(`worker POST /execute failed: ${res.status} ${detail}`);
@@ -108,9 +109,10 @@ export class RemoteWorkerRuntime implements WorkerRuntime {
   }
 }
 
-function supersededCode(detail: string): boolean {
+function isSupersededBody(detail: string, executionId: string): boolean {
   try {
-    return (JSON.parse(detail) as { code?: unknown } | null)?.code === "superseded";
+    const body = JSON.parse(detail) as { code?: unknown; executionId?: unknown } | null;
+    return body?.code === "superseded" && body.executionId === executionId;
   } catch {
     return false;
   }

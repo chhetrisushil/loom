@@ -1,5 +1,5 @@
 import type { ExecutionState } from "@loom/core";
-import { DISPATCHER_SPI_VERSION, LocalDispatcher } from "@loom/dispatcher";
+import { DISPATCHER_SPI_VERSION, LocalDispatcher, SupervisingDispatcher } from "@loom/dispatcher";
 import { GrantTable } from "@loom/effect-runtime";
 import {
   BRANCH_REGISTRY_SPI_VERSION,
@@ -212,7 +212,19 @@ describe("the decorator kit rejects a decorator that drops an optional method", 
 runSnapshotStoreConformance(() => new InMemoryAsyncSnapshotStore(), "InMemoryAsyncSnapshotStore");
 runBranchRegistryConformance(() => new InMemoryBranchRegistry(), "InMemoryBranchRegistry");
 runLeaseStoreConformance(() => new InMemoryLeaseStore(), "InMemoryLeaseStore");
-runExecutionDispatcherConformance(() => new LocalDispatcher(new FakeWorker()), "LocalDispatcher");
+runExecutionDispatcherConformance(() => new LocalDispatcher(new FakeWorker()), "LocalDispatcher", {
+  overWorker: (worker) => new LocalDispatcher(worker, { maxAttempts: 3 }),
+});
+runExecutionDispatcherConformance(
+  () => new SupervisingDispatcher(new LocalDispatcher(new FakeWorker())),
+  "SupervisingDispatcher",
+  {
+    overWorker: (worker) =>
+      new SupervisingDispatcher(new LocalDispatcher(worker, { maxAttempts: 2 }), {
+        policy: { maxRestarts: 2 },
+      }),
+  }
+);
 runTimerStoreConformance(() => new InMemoryTimerStore(), "InMemoryTimerStore");
 runProjectionRuntimeConformance(() => new InMemoryProjectionRuntime(), "InMemoryProjectionRuntime");
 
