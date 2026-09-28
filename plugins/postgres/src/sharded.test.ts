@@ -3,6 +3,7 @@ import { ShardedEventStore, TenantScopedEventStore } from "@loom/event-runtime";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PostgresEventStore } from "./PostgresEventStore";
+import { migrate } from "./schema";
 
 // L10 — `ShardedEventStore` over REAL Postgres shards. The scatter-gather pager merges shard
 // pages in JavaScript and resumes every shard from the merged page's last id, so it is only
@@ -95,7 +96,7 @@ if (PG_URL === undefined) {
     });
 
     /** A fresh schema holding the pre-L10 `events` table, analyzed as a live one would be. */
-    async function legacyTable(admin: Pool): Promise<void> {
+    async function legacyTable(admin: Pool, executions = LEGACY_EXECUTIONS): Promise<void> {
       await admin.query(`DROP SCHEMA IF EXISTS ${legacy} CASCADE`);
       await admin.query(`CREATE SCHEMA ${legacy}`);
       // The pre-L10 DDL, verbatim for the columns that matter.
@@ -114,7 +115,7 @@ if (PG_URL === undefined) {
       await admin.query(
         `INSERT INTO events SELECT 'z' || g || '-0', 'wf', 'z' || g, 'STEP_COMPLETED', 0, 0, '{}'::jsonb, NULL
          FROM generate_series(1, $1) g`,
-        [LEGACY_EXECUTIONS]
+        [executions]
       );
       await admin.query("ANALYZE events");
     }
@@ -128,10 +129,10 @@ if (PG_URL === undefined) {
       ).rows[0]!.c;
 
     /** A pool whose connections report every server WARNING into `warnings`. */
-    function noticingPool(warnings: string[]): Pool {
+    function noticingPool(warnings: string[], session = ""): Pool {
       const pool = new Pool({
         connectionString: PG_URL,
-        options: `-c search_path=${legacy}`,
+        options: `-c search_path=${legacy} ${session}`,
         max: 2,
       });
       pool.on("connect", (client) => {
@@ -234,6 +235,79 @@ if (PG_URL === undefined) {
         await retry.close();
         expect(await collation(admin)).toBe("C");
       } finally {
+        await holder.query("ROLLBACK").catch(() => {});
+        holder.release();
+        await admin.end();
+      }
+    }, 60_000);
+
+    it("completes the conversion under a session statement_timeout shorter than the rebuild", async () => {
+      // A pool-level statement_timeout shorter than the index rebuild used to abort the
+      // conversion (57014) on EVERY boot — taking the exclusive lock each time — so the column
+      // never converted. The rebuild is exempted from it; the rest of the migration is not.
+      const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
+      try {
+        await legacyTable(admin, 600_000);
+        const warnings: string[] = [];
+        const pool = noticingPool(warnings, "-c statement_timeout=200");
+        try {
+          // Proves the premise: the bare ALTER alone does not fit in this session's budget.
+          const probe = await pool.connect();
+          try {
+            await probe.query("BEGIN");
+            await expect(
+              probe.query('ALTER TABLE events ALTER COLUMN execution_id TYPE TEXT COLLATE "C"')
+            ).rejects.toMatchObject({ code: "57014" });
+          } finally {
+            await probe.query("ROLLBACK").catch(() => {});
+            probe.release();
+          }
+          await migrate(pool);
+        } finally {
+          await pool.end();
+        }
+        expect(await collation(admin)).toBe("C");
+        expect(warnings).toEqual([]);
+      } finally {
+        await admin.end();
+      }
+    }, 120_000);
+
+    it("restores the caller's lock_timeout after the conversion, so later DDL stays bounded", async () => {
+      const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
+      const holder = await admin.connect();
+      let release: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await admin.query(`DROP SCHEMA IF EXISTS ${legacy} CASCADE`);
+        await admin.query(`CREATE SCHEMA ${legacy}`);
+        // A full current schema, then `events` put back to the pre-L10 collation so the
+        // conversion (and its lock_timeout juggling) runs on this boot.
+        const setup = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
+        await migrate(setup).finally(() => setup.end());
+        await admin.query(
+          'ALTER TABLE events ALTER COLUMN execution_id TYPE TEXT COLLATE "default"'
+        );
+        expect(await collation(admin)).not.toBe("C");
+        // Hold a table the migration touches AFTER the conversion (its CREATE INDEX IF NOT
+        // EXISTS takes a SHARE lock). Released after 10 s, so an unbounded wait would succeed.
+        await holder.query("BEGIN");
+        await holder.query("LOCK TABLE snapshots IN ACCESS EXCLUSIVE MODE");
+        release = setTimeout(() => void holder.query("ROLLBACK").catch(() => {}), 10_000);
+
+        const warnings: string[] = [];
+        const pool = noticingPool(warnings, "-c lock_timeout=300");
+        const started = Date.now();
+        try {
+          await expect(migrate(pool, { lockTimeoutMs: 5_000 })).rejects.toMatchObject({
+            code: "55P03",
+          });
+        } finally {
+          await pool.end();
+        }
+        expect(Date.now() - started).toBeLessThan(8_000);
+        expect(warnings).toEqual([]);
+      } finally {
+        if (release !== undefined) clearTimeout(release);
         await holder.query("ROLLBACK").catch(() => {});
         holder.release();
         await admin.end();

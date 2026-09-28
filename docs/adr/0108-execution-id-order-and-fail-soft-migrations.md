@@ -61,17 +61,27 @@ conversion of existing tables: the change is binary-coercible (no table rewrite)
 `migrate()` runs at boot, so a migration that locks a hot table can stall or crash-loop a
 deployment. Every future migration of that kind follows the same policy as this one:
 
-1. **Bound the lock wait.** Set `lock_timeout` locally around the statement (here
-   `MigrateOptions.lockTimeoutMs`, default 2000 ms). While an `ALTER` waits for its lock, every
-   append queues behind it.
-2. **Re-`ANALYZE` after a type change.** `ALTER … TYPE` drops the column's statistics, and the
+1. **Bound the lock wait, and restore it.** Set `lock_timeout` locally around the statement
+   (here `MigrateOptions.lockTimeoutMs`, default 2000 ms; set it with
+   `migratePostgresStores(pool, { lockTimeoutMs })` before constructing stores, since the first
+   migrator of a pool wins). While an `ALTER` waits for its lock, every append queues behind it.
+   Afterwards, restore the caller's own `lock_timeout` (captured first), never a constant, so
+   the rest of the migration stays as bounded as the operator configured it.
+2. **Do not bound the work.** Exempt that one statement from `statement_timeout` (set it to 0
+   transaction-locally, then restore the caller's value). A pool-level timeout shorter than the
+   rebuild would otherwise abort it on every boot, taking the exclusive lock each time: a crash
+   loop in which the migration never completes. A one-time, bounded stall at boot is the
+   accepted cost of D2.
+3. **Re-`ANALYZE` after a type change.** `ALTER … TYPE` drops the column's statistics, and the
    planner then chooses a seq scan + sort until autovacuum happens to run.
-3. **Fail soft when correctness does not depend on it.** If the lock times out, a user view or
-   rule depends on the column, or the role does not own the table, boot continues and a
-   `WARNING` carries the exact statements to run by hand. Here only paging *speed* depends on the
-   conversion, because the query states its own collation. A migration that correctness *does*
-   depend on must keep failing loudly.
-4. Guard it with a catalog check so later boots are no-ops, and look catalog objects up in a way
+4. **Fail soft when correctness does not depend on it.** If the lock wait times out, an operator
+   cancels the statement (`query_canceled`), or a user view or rule depends on the column, boot
+   continues and a `WARNING` carries the exact statements to run by hand. Here only paging
+   *speed* depends on the conversion, because the query states its own collation. A migration
+   that correctness *does* depend on must keep failing loudly. Only catch what boot can
+   actually survive: a role that does not own the table is not caught, because the migration's
+   next DDL fails for it anyway, and a WARNING would only precede a fatal error.
+5. Guard it with a catalog check so later boots are no-ops, and look catalog objects up in a way
    supported by every Postgres the plugin supports (no `::regcollation`, which needs PG 13+).
 
 ## Consequences
@@ -83,5 +93,7 @@ deployment. Every future migration of that kind follows the same policy as this 
 - `TenantScopedEventStore` reads its tenant's range only, rather than the whole shared store.
 - Operators of large Postgres logs should plan the one-time conversion (D2), or run the two
   statements from the D3 warning themselves in a maintenance window.
-- Out of scope: `BranchRegistry.listRefs` orders refs three different ways across backends
-  (tracked separately), and other Postgres keyset pagers were not audited for the same mismatch.
+- The other keyset pagers were audited for the same mismatch: ContentStore, ReadModelStore,
+  MemoryStore and the snapshot stores have no JavaScript-side merge and no cursor that crosses
+  stores, so their backends' own orders are self-consistent. Only `BranchRegistry.listRefs`
+  diverges (three orders across backends), tracked as backlog L21.

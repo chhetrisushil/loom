@@ -83,4 +83,14 @@ describe("InMemoryAsyncEventStore paging keeps its sorted index current (L10)", 
     }
     expect(sorts).toBe(1);
   });
+
+  it("close() drops the sorted index with the log, so a reused store never pages ghosts", async () => {
+    const store = new InMemoryAsyncEventStore();
+    for (const id of ["a", "b"]) await store.append(evt(id));
+    expect((await store.listExecutionsPage({ limit: 10 })).executionIds).toEqual(["a", "b"]);
+    await store.close();
+    expect(await store.listExecutionsPage({ limit: 10 })).toEqual({ executionIds: [] });
+    await store.append(evt("c"));
+    expect(await store.listExecutionsPage({ limit: 10 })).toEqual({ executionIds: ["c"] });
+  });
 });

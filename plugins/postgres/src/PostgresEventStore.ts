@@ -30,7 +30,8 @@ export interface PostgresEventStoreOptions {
   /**
    * L10 — the lock wait bound for the one-time `events.execution_id` collation conversion
    * (see `MigrateOptions.lockTimeoutMs`). Only takes effect if this store is the first to
-   * migrate its pool. Default 2000 ms.
+   * migrate its pool; `await migratePostgresStores(pool, { lockTimeoutMs })` before
+   * constructing any store is the reliable way to set it. Default 2000 ms.
    */
   migrationLockTimeoutMs?: number;
 }
