@@ -33,23 +33,24 @@ import type { FromWorker, ToWorker } from "./workerProtocol";
 const RECHECK_MS = 20;
 /**
  * How long past its budget the parent waits for a worker that has not started the run at
- * all before treating the WORKER as broken. Generous: this covers everything before the
- * in-VM wall clock is armed — the worker being scheduled, parsing the input, creating the
- * runtime and seeding it — on a contended host, none of which is the script's fault.
+ * all before treating the WORKER as broken. Generous: this covers everything from dispatch
+ * until the in-VM wall clock is armed — a cold worker's spawn and WASM compile, the worker
+ * being scheduled, parsing the input, creating the runtime and seeding it — on a contended
+ * host, none of which is the script's fault.
  */
 const DEFAULT_STARTUP_LIVENESS_MS = 10_000;
 
 /**
  * A worker never started a run within `wallClockMs + hardKillGraceMs + startupLivenessMs`.
  *
- * The phases the script's wall clock deliberately does NOT charge (worker scheduling, input
- * parse, runtime creation, input seeding — L13) still need a bound, or a wedged worker holds
- * its slot forever. This is that bound. It is the ENVIRONMENT failing, not the script, so it
+ * The phases the script's wall clock deliberately does NOT charge (a cold worker's spawn and
+ * WASM compile, worker scheduling, input parse, runtime creation, input seeding — L13) still
+ * need a bound, or a wedged worker holds its slot forever. This is that bound. It is the ENVIRONMENT failing, not the script, so it
  * is not a typed `limitExceeded`: that channel is recorded as the script's outcome and routed
  * to drift-repair, where an LLM would rewrite a script that never ran. It is a named class
  * instead, so retry middleware can tell it apart from a script's own failure — it is not a
  * `TypedFailure`, so `retryMiddleware`'s default already treats it as retryable. The worker
- * is terminated and replaced before this is thrown.
+ * is terminated and replaced before this is thrown. Measured from dispatch.
  */
 export class SandboxWorkerStartupError extends Error {
   override readonly name = "SandboxWorkerStartupError";
@@ -76,16 +77,18 @@ export interface SandboxWorkerPoolOptions {
    * starts when the in-VM wall clock does and stops when the worker marks the run finished,
    * so the grace covers only what sits between the script's last op and that mark: the
    * in-VM `dump` of the result (which can run the script's own `toJSON`) and disposing the
-   * runtime. The WASM compile (`ensureReady`) and everything before the script starts
-   * (input parse, runtime creation, seeding) are outside it; so is encoding the result on
-   * the worker afterwards. Too tight and a big-but-valid reshape is killed as a runaway.
-   * Default 2000 ms.
+   * runtime. The cold WASM compile (`ensureReady`) and everything before the script starts
+   * (input parse, runtime creation, seeding) are outside it and bounded by
+   * `startupLivenessMs`. Encoding and posting the result after the run is marked finished
+   * runs no script code and is bounded only by the worker replying. Too tight and a
+   * big-but-valid reshape is killed as a runaway. Default 2000 ms; must be finite and >= 0.
    */
   hardKillGraceMs?: number;
   /**
    * How long past `wallClockMs + hardKillGraceMs` to wait for a worker that has not STARTED
-   * the run before terminating it with {@link SandboxWorkerStartupError}. Bounds the phases
-   * the script is not charged for. Default 10 000 ms.
+   * the run before terminating it with {@link SandboxWorkerStartupError}. Counted from
+   * dispatch, so one window covers a cold worker's spawn and WASM compile as well as input
+   * parse, runtime creation and seeding. Default 10 000 ms; must be finite and >= 0.
    */
   startupLivenessMs?: number;
 }
@@ -136,8 +139,16 @@ export class SandboxWorkerPool {
     if (!Number.isInteger(options.size) || options.size < 1) {
       throw new Error(`sandbox: workers must be a positive integer (got ${String(options.size)})`);
     }
-    this.hardKillGraceMs = options.hardKillGraceMs ?? DEFAULT_HARD_KILL_GRACE_MS;
-    this.startupLivenessMs = options.startupLivenessMs ?? DEFAULT_STARTUP_LIVENESS_MS;
+    this.hardKillGraceMs = nonNegativeMs(
+      "hardKillGraceMs",
+      options.hardKillGraceMs,
+      DEFAULT_HARD_KILL_GRACE_MS
+    );
+    this.startupLivenessMs = nonNegativeMs(
+      "startupLivenessMs",
+      options.startupLivenessMs,
+      DEFAULT_STARTUP_LIVENESS_MS
+    );
   }
 
   /**
@@ -277,22 +288,53 @@ export class SandboxWorkerPool {
     // Claim the slot BEFORE any await, or a second run can be handed the same
     // worker while this one is still waiting for it to warm.
     slot.busy = true;
+    // The run's startup-liveness window opens HERE, not when the eval is posted: a cold
+    // worker's spawn and WASM compile are the first phase the script is not charged for,
+    // and a compile that hangs must be reclaimed like any other worker that never starts.
+    const dispatchedAt = Date.now();
     if (!slot.ready) {
+      const limitMs = run.limits.wallClockMs + this.hardKillGraceMs + this.startupLivenessMs;
+      let done = false;
+      const abandon = (err: Error): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(liveness);
+        slot.settle = undefined;
+        slot.busy = false;
+        run.reject(err);
+      };
+      const liveness = setTimeout(() => {
+        abandon(new SandboxWorkerStartupError(Date.now() - dispatchedAt, limitMs));
+        void slot.worker.terminate();
+        this.replace(slot);
+      }, limitMs);
+      // While it warms, the run is this slot's to settle: `close()` and a worker that dies
+      // mid-compile must not strand it until the liveness window runs out.
+      slot.settle = (outcome) =>
+        abandon(
+          outcome instanceof Error ? outcome : new Error("sandbox: worker never started the run")
+        );
       this.ensureReady(slot).then(
-        () => this.begin(slot, run),
+        () => {
+          if (done) return;
+          done = true;
+          clearTimeout(liveness);
+          slot.settle = undefined;
+          this.begin(slot, run, dispatchedAt);
+        },
         (err: Error) => {
-          slot.busy = false;
-          run.reject(err);
+          if (done) return;
+          abandon(err);
           this.replace(slot);
         }
       );
       return;
     }
-    this.begin(slot, run);
+    this.begin(slot, run, dispatchedAt);
   }
 
   /** Send the eval and arm the deadline. The worker is ready; the clock is the script's. */
-  private begin(slot: Slot, run: PendingRun): void {
+  private begin(slot: Slot, run: PendingRun, dispatchedAt: number): void {
     if (run.signal?.aborted === true) {
       slot.busy = false;
       run.reject(abortReason(run.signal));
@@ -385,7 +427,9 @@ export class SandboxWorkerPool {
     const status = new Int32Array(statusBuffer, 0, 2);
     const startedAt = new Float64Array(statusBuffer, STATUS_STARTED_AT_OFFSET, 1);
     const budget = run.limits.wallClockMs + this.hardKillGraceMs;
-    const armedAt = Date.now();
+    // Liveness is measured from dispatch, so a cold compile and the pre-script phases share
+    // ONE window rather than each getting a fresh one.
+    const armedAt = dispatchedAt;
     let timer: NodeJS.Timeout;
 
     const check = (): void => {
@@ -394,13 +438,14 @@ export class SandboxWorkerPool {
 
       if (state === RUN_FINISHED && mine) {
         // The script stopped; its reply is queued behind this very callback. Let the
-        // message path settle it — killing here is the misattribution itself.
+        // message path settle it — killing here is the misattribution itself. No further
+        // bound applies from here: what remains is the worker encoding the result and
+        // posting it, which runs no script code, so it is bounded by the worker replying.
         return;
       }
       if (!(state === RUN_EVALUATING && mine)) {
-        // Not started yet: the worker is booting, creating the runtime, seeding the input, or
-        // simply not scheduled.
-        // That is the engine, not the script (the distinction `ensureReady` already draws),
+        // Not started yet: the worker is parsing the input, creating the runtime, seeding it,
+        // or simply not scheduled. That is the engine, not the script (the distinction `ensureReady` already draws),
         // so it does not come out of the script's budget — but it cannot be waited on
         // forever either, or a wedged worker would never be reclaimed.
         const waitedMs = Date.now() - armedAt;
@@ -446,6 +491,19 @@ export class SandboxWorkerPool {
     const next = this.queue.shift();
     if (next !== undefined) this.dispatch(slot, next);
   }
+}
+
+/**
+ * A duration option must be a finite number ≥ 0. Anything else silently disables the bound it
+ * sets: `NaN` makes every `>=` comparison false (a kill that never fires) and `Infinity`
+ * never comes due — so refuse it at construction, as `size` is refused.
+ */
+function nonNegativeMs(name: string, value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`sandbox: ${name} must be a finite number >= 0 (got ${String(value)})`);
+  }
+  return value;
 }
 
 function abortReason(signal: AbortSignal | undefined): Error {

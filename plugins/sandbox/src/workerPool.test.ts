@@ -54,8 +54,15 @@ const NON_YIELDING = '"x".repeat(120000000).length';
 /**
  * The same property — ONE interrupt callback, measured — for SECONDS rather than ~245 ms:
  * catastrophic backtracking, which runs inside the regex engine and never reaches the
- * interrupt handler. ~7 s unloaded at 25 characters (it doubles per character) and slower
- * under load, in a few KB of memory.
+ * interrupt handler. Measured 3–4.5 s unloaded on an M2 at 25 characters (it doubles per
+ * character), slower under load, in a few KB of memory.
+ *
+ * ENGINE ASSUMPTION: this holds for the QuickJS that quickjs-emscripten 0.31 ships. Upstream
+ * QuickJS 2025-04+ and quickjs-ng check interrupts during regex backtracking, so after a
+ * quickjs-emscripten bump the in-VM clock ends this script at ~50 ms instead — and every
+ * test that asserts `POOL_KILL` fails LOUDLY, naming `interrupted`. That is the signal to
+ * swap in another non-yielding op (the measured shape: one interrupt callback, seconds long),
+ * not to relax the assertion.
  *
  * The kill tests use this, not `NON_YIELDING`: against a 50 + 50 ms deadline a 245 ms script
  * leaves a starved parent ~150 ms to notice, after which the script simply FINISHES and the
@@ -413,6 +420,96 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
     },
     SLOW
   );
+
+  it(
+    "puts a cold worker's compile under the same window: a hung compile is reclaimed",
+    async () => {
+      // `ensureReady` runs before any eval is posted, so before `begin` arms a timer. A
+      // compile that never acknowledged used to strand its run forever. Simulated
+      // deterministically: detach the pool's listener for the worker's `ready`, which is
+      // exactly what a compile that never finishes looks like from the parent.
+      const pool = new SandboxWorkerPool({ size: 1, hardKillGraceMs: 0, startupLivenessMs: 200 });
+      opened.push(pool);
+      const limits: EvalLimits = {
+        memoryBytes: 32 * 1024 * 1024,
+        interruptBudget: Number.MAX_SAFE_INTEGER,
+        wallClockMs: 0,
+      };
+      const pending = pool.run("(() => 1)()", null, limits, undefined);
+      // biome-ignore lint/suspicious/noExplicitAny: reaching the private slot to wedge it
+      const [slot] = (pool as any).slots as { worker: import("node:worker_threads").Worker }[];
+      slot!.worker.removeAllListeners("message");
+
+      const err = await pending.catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(SandboxWorkerStartupError);
+      expect(err).toMatchObject({ limitMs: 200 });
+      // The wedged worker is gone and a fresh one serves the next run.
+      // biome-ignore lint/suspicious/noExplicitAny: asserting the slot was replaced
+      expect((pool as any).slots).not.toContain(slot);
+      await expect(
+        pool.run("(() => 2)()", null, { ...limits, wallClockMs: 60_000 }, undefined)
+      ).resolves.toEqual({ ok: true, value: 2 });
+    },
+    SLOW
+  );
+
+  it("close() settles a run still waiting on a cold worker's compile", async () => {
+    // During the compile no eval is in flight, so `close()` had nothing to settle and the
+    // run hung until (at best) the liveness window. It is the slot's to settle now.
+    const pool = new SandboxWorkerPool({ size: 1 });
+    const pending = pool.run(
+      "(() => 1)()",
+      null,
+      { memoryBytes: 32 * 1024 * 1024, interruptBudget: 1_000, wallClockMs: 1_000 },
+      undefined
+    );
+    const settled = expect(pending).rejects.toThrow(/worker pool closed/);
+    await pool.close();
+    await settled;
+  });
+
+  it(
+    "SandboxWorkers.startupLivenessMs reaches the pool through the effect",
+    async () => {
+      // A cold worker cannot spawn and compile WASM inside a 1 ms window; the 10 s default
+      // would let this run succeed. So a startup failure here proves the option arrived.
+      const scripts = new InMemoryContentStore();
+      const effects = new EffectRuntime();
+      const effect = registerSandboxEval(effects, scripts, {
+        limits: { wallClockMs: 1 },
+        workers: { count: 1, hardKillGraceMs: 0, startupLivenessMs: 0 },
+      });
+      opened.push(effect);
+      const ref = await scripts.put(encoder.encode("(() => 1)()"));
+      await expect(
+        effects.execute(SANDBOX_TOOL_ID, { scriptRef: ref }, baseCtx)
+      ).rejects.toBeInstanceOf(SandboxWorkerStartupError);
+    },
+    SLOW
+  );
+
+  it("refuses a duration option that would silently disable its bound", () => {
+    // `NaN` makes every deadline comparison false and `Infinity` never comes due: both turn
+    // a bound off without saying so. Refused at construction, as a bad `size` is.
+    for (const bad of [Number.NaN, -1, Number.POSITIVE_INFINITY, "5" as unknown as number]) {
+      expect(() => new SandboxWorkerPool({ size: 1, hardKillGraceMs: bad }), String(bad)).toThrow(
+        /hardKillGraceMs must be a finite number >= 0/
+      );
+      expect(() => new SandboxWorkerPool({ size: 1, startupLivenessMs: bad }), String(bad)).toThrow(
+        /startupLivenessMs must be a finite number >= 0/
+      );
+    }
+    // …through the effect too, which builds its pool from `SandboxSpec.workers`.
+    expect(() =>
+      registerSandboxEval(new EffectRuntime(), new InMemoryContentStore(), {
+        workers: { count: 1, startupLivenessMs: Number.NaN },
+      })
+    ).toThrow(/startupLivenessMs must be a finite number >= 0/);
+    // Zero is a legitimate (if strict) value, not a refusal.
+    expect(
+      () => new SandboxWorkerPool({ size: 1, hardKillGraceMs: 0, startupLivenessMs: 0 })
+    ).not.toThrow();
+  });
 
   it("refuses runs after close", async () => {
     const { put, run, effects: _effects } = await boot({ workers: { count: 1 } });

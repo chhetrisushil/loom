@@ -109,9 +109,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from any other. It is now `SandboxWorkerStartupError` (`waitedMs`, `limitMs`), exported,
   and deliberately not a `TypedFailure`: it is the environment failing, not the script, so
   it must not reach `limitExceeded`/drift-repair, and `retryMiddleware`'s default retries it.
-  The window is configurable as `SandboxWorkerPoolOptions.startupLivenessMs` (default
-  10 000 ms, unchanged). Also: a worker whose run threw before starting now stamps the run id
-  with `RUN_FINISHED`, so the parent recognises the finish as its own.
+  The window is configurable as `SandboxWorkerPoolOptions.startupLivenessMs` and
+  `SandboxSpec.workers.startupLivenessMs` (default 10 000 ms, unchanged), and is now counted
+  from DISPATCH, so it also covers a cold worker's spawn and WASM compile: a compile that
+  never acknowledged used to strand its run forever, since no timer was armed until the
+  worker was ready. `close()` now also settles a run still waiting on a cold compile (it
+  used to hang). `hardKillGraceMs` and `startupLivenessMs` must be finite and `>= 0`; the
+  pool refuses anything else at construction, since `NaN` silently disabled the bound. Also:
+  a worker whose run threw before starting now stamps the run id with `RUN_FINISHED`, so the
+  parent recognises the finish as its own.
 
 - **`@loom/plugin-postgres`: `appendBatch` refused a `null` payload** (backlog L16). The bulk
   insert decoded its batch with `jsonb_to_recordset`, which maps a JSON `null` field to SQL
