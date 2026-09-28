@@ -86,6 +86,7 @@ async function handle(msg: ToWorker): Promise<void> {
         message: outcome.message,
         ...(outcome.tripped !== undefined && { tripped: outcome.tripped }),
         ...(outcome.thrown !== undefined && { thrown: outcome.thrown }),
+        ...(outcome.duringSeed !== undefined && { duringSeed: outcome.duringSeed }),
       });
       return;
     }

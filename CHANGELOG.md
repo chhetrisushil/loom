@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`@loom/plugin-sandbox`: `SandboxWorkerPool.run` renamed to `runJson`** (backlog L19
+  round-1 review). It is public API (exported from the package), and its second parameter
+  used to be the raw `input` value, `JSON.stringify`d internally. It now takes that JSON
+  TEXT directly instead (see the L19 entry under **Fixed**) — had the method kept its old
+  name, an external caller still passing a raw value under the new semantics would get no
+  compile error and a silently wrong VM input: `run(script, "42", …)`, meant as the STRING
+  `"42"`, is `JSON.parse`d as pre-serialized JSON and seeds the NUMBER `42` instead. The
+  rename makes that a compile error for any caller outside this package. `@loom/sdk/sandbox`
+  does not re-export this class, so nothing else in this repo was affected.
+
 ### Fixed
 
 - **Two retrying dispatchers ping-ponged one execution, re-running its step on every bounce**
@@ -177,19 +189,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   worker pool's startup-liveness window (L13): a 200 MB input could hold a worker busy for
   ~10 s and then fail with the untyped `SandboxWorkerStartupError`, which default retry
   middleware then retries — repeatedly, on a call that could never succeed. `SandboxLimits`
-  gains `maxInputBytes` (default 1 MiB, the same order as `maxOutputBytes`), checked once in
-  `SandboxEvalEffect` — the shared caller of both engines — BEFORE either is touched: an
-  oversized input fails typed and non-retryable (`limitExceeded { kind: "input" }`, a
-  `TypedFailure`, unlike the startup-liveness bound it closes the gap next to) and never
-  spawns or occupies a worker. Validated the same way `SandboxWorkerPoolOptions`' durations
-  are (refuses `NaN`/negative/non-numeric at construction; `0` is accepted — "refuse every
-  input" is a caller's deliberate choice, and a call that omits `input` entirely still costs
-  0 bytes, matching how an `undefined` OUTPUT already costs 0). Measured once, not twice:
-  `evalInFreshRuntime` and `SandboxWorkerPool.run` now take the already-`JSON.stringify`d
-  input text directly rather than the raw value, so the effect's one measurement is reused to
-  seed the VM or post to a worker — and worker mode no longer parses that JSON back out only
-  to re-stringify it for the VM, one JSON round trip removed rather than added. `SANDBOX_ERRORS.
-  limitExceeded`'s `kind` enum gains `"input"`. No SPI, KERNEL_ABI or EVENT_SCHEMA change.
+  gains `maxInputBytes`, checked once in `SandboxEvalEffect` — the shared caller of both
+  engines — BEFORE either is touched (and before the script is fetched): an oversized input
+  fails typed and non-retryable on a **new**, dedicated channel, `inputTooLarge { bytes,
+  limit }` — deliberately NOT `limitExceeded`, which is recorded as the SCRIPT's own outcome
+  and routes to drift-repair (re-author the script), a fix that cannot shrink a caller's
+  input. **Default is 32 MiB, matching `memoryBytes`'s own default (derived from the same
+  constant), not `maxOutputBytes`'s** — round-1 review measured real reshaping inputs at
+  1.47–30.9 MB, all succeeding today under the default heap, so the initially-shipped 1 MiB
+  default (mirroring `maxOutputBytes`) would have refused every one of them; there is no
+  general "headroom under the heap" relationship to size a tighter default against, since how
+  far a JSON text expands once parsed depends on its shape. This default therefore refuses
+  nothing that succeeds today, and is validated the same way `SandboxWorkerPoolOptions`'
+  durations are (refuses `NaN`/negative/non-numeric at construction — now also applied
+  retroactively to `maxOutputBytes`, closing the same pre-existing gap there; `0` is accepted
+  for either — "refuse every input/output" is a caller's deliberate choice, and a call that
+  omits `input` entirely, or whose script returns `undefined`, still costs 0 bytes).
+
+  Two more caller-input failure modes, found in the same review, get the same typed,
+  non-retryable treatment, reported before either engine runs: `input` that cannot become
+  JSON at all — a BigInt or a circular reference (`JSON.stringify` throws) or a bare
+  function/Symbol/`toJSON` returning `undefined` (`JSON.stringify` returns the JS value
+  `undefined`, not a string, which used to reach `Buffer.byteLength` and throw an unrelated,
+  confusing `TypeError`) — now fails typed as `inputNotSerializable { reason }`, a second new
+  channel; and an input UNDER `maxInputBytes` that still overflows the VM heap while being
+  PARSED (parsing can expand a JSON text well past its own byte length) now fails typed as
+  `inputTooLarge { bytes, limit: memoryBytes }` in BOTH engines, rather than the untyped
+  "input marshalling failed: out of memory" it used to throw — `evalInFreshRuntime` reports
+  this as an ordinary outcome (`duringSeed: true`) instead of throwing, so `SandboxEvalEffect`
+  keeps deciding channel semantics in one place (ADR 0089 D3) regardless of which engine ran.
+
+  Measured once, not twice: `evalInFreshRuntime` and `SandboxWorkerPool.runJson` (see
+  **Changed**, below) now take the already-`JSON.stringify`d input text directly rather than
+  the raw value, so the effect's one measurement is reused to seed the VM or post to a
+  worker — and worker mode no longer parses that JSON back out only to re-stringify it for
+  the VM, one JSON round trip removed rather than added. No SPI, KERNEL_ABI or EVENT_SCHEMA
+  change.
 
 - **`@loom/plugin-postgres`: `appendBatch` refused a `null` payload** (backlog L16). The bulk
   insert decoded its batch with `jsonb_to_recordset`, which maps a JSON `null` field to SQL

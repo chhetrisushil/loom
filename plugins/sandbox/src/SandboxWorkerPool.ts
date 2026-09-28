@@ -286,15 +286,23 @@ export class SandboxWorkerPool {
    * in-process path produces, so the effect maps outcomes to channels in ONE
    * place regardless of where the script ran.
    *
-   * `inputJson` is already JSON text — the caller (`SandboxEvalEffect`) needs that
-   * string anyway to measure `maxInputBytes` before dispatch, so this encodes it for
-   * transfer rather than re-serializing the input from scratch.
+   * Named `runJson`, not `run`: this is PUBLIC API (exported from the package), and its
+   * second parameter used to be the raw `input` value (`JSON.stringify`d here, internally).
+   * `SandboxEvalEffect` now needs that JSON text itself — to measure `maxInputBytes` once,
+   * before dispatch — so it produces it and hands it down; silently accepting a STRING where
+   * a caller of the old `run` passed a raw value would seed the wrong thing with no error
+   * (`run(script, "42", …)` used to seed the number 42, seeding the 2-character string "42"
+   * instead). The rename makes that a compile error for any external caller, rather than a
+   * silently wrong VM input.
+   *
+   * `inputJson` is already the caller's `input ?? null`, `JSON.stringify`d exactly once —
+   * this only encodes it to bytes for the transfer, never re-serializing.
    *
    * Throws (untyped) when the worker itself fails — a module that will not load,
    * a value that will not marshal, a thread that dies mid-run. Those are
    * environment faults, not script outcomes.
    */
-  run(
+  runJson(
     script: string,
     inputJson: string,
     limits: EvalLimits,
@@ -489,6 +497,7 @@ export class SandboxWorkerPool {
           message: msg.message,
           ...(msg.tripped !== undefined && { tripped: msg.tripped }),
           ...(msg.thrown !== undefined && { thrown: msg.thrown }),
+          ...(msg.duringSeed !== undefined && { duringSeed: msg.duringSeed }),
         });
         return;
       }
