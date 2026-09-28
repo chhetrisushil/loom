@@ -156,6 +156,25 @@ describe("EraseCoordinator — compacted executions (ADR 0106)", () => {
   });
 });
 
+describe("EraseCoordinator — pre-1.21.0 snapshots (ADR 0105)", () => {
+  it("a legacy snapshot that read `failed` for a CAUGHT step failure is still live: erasure parks", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await seedStarted(store, "x1", "fay");
+    await store.append(ev("x1", 1, "STEP_STARTED", { stepId: "s" }));
+    await store.append(ev("x1", 2, "STEP_FAILED", { stepId: "s", error: "boom" }));
+    const index = SubjectIndex.fromEvents(await store.read("x1"), subjectOf);
+    // What a pre-1.21.0 fold wrote after a caught failure: execution `failed`, no `_error`.
+    const current = foldEvents(await store.read("x1"));
+    const legacy = { ...current, status: "failed" as const };
+    expect(legacy.variables._error).toBeUndefined();
+    const snapshotStore = { loadLatest: async () => ({ sequence: 2, state: legacy }) };
+    const shred = vi.fn(async () => {});
+    const coord = new EraseCoordinator({ index, eventStore: store, snapshotStore, shred });
+    expect((await coord.eraseSubject("fay")).outcome).toBe("parked");
+    expect(shred).not.toHaveBeenCalled();
+  });
+});
+
 describe("EraseCoordinator — snapshot identity (ADR 0106)", () => {
   it("refuses a checkpoint whose NON-blank identity names another execution", async () => {
     const store = new InMemoryAsyncEventStore();
