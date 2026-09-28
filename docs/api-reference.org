@@ -593,7 +593,7 @@ class SqliteEventStore       { constructor(dbPath: string) }
 interface BranchRef      { name: string; executionId: string; tip: number; parentExecutionId?: string; forkSequence?: number; createdAt: number; updatedAt: number; }
 interface LineageRecord  { executionId: string; parentExecutionId: string; forkSequence: number; createdAt: number; }
 
-interface ListRefsOptions { limit?: number; after?: string; }             // keyset paging; limit MUST be a positive int
+interface ListRefsOptions { limit?: number; after?: string; }             // keyset paging; limit MUST be a positive int; order is Unicode CODE POINT (SPI 2.0.0); `after` may be ANY string, not only a name returned before
 interface PromoteOptions  { expect?: string | null; }                    // CAS: the executionId `toName` must name now (null = must not exist)
 
 interface BranchRegistry {

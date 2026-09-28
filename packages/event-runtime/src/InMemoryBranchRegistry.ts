@@ -24,10 +24,9 @@ export class InMemoryBranchRegistry implements BranchRegistry {
   private readonly lineage = new Map<string, LineageRecord>();
   private readonly now: () => number;
   // SPI 2.0.0 (L21, ADR 0108 addendum) — ref names in Unicode CODE POINT order
-  // (`compareExecutionIds`), cached across calls and invalidated only when a name is
-  // ADDED or REMOVED (a tip/executionId mutation never changes name order). Mirrors
-  // `InMemoryAsyncEventStore`'s `sortedIds` cache, so a page costs a binary search plus
-  // the page size, not an O(n log n) re-sort of the whole registry on every call.
+  // (`compareExecutionIds`), kept sorted incrementally rather than re-sorted per call.
+  // Mirrors `InMemoryAsyncEventStore`'s `sortedIds` cache, so a page costs a binary search
+  // plus the page size, not an O(n log n) re-sort of the whole registry on every call.
   //
   // NOT `String.prototype.localeCompare`: it is locale- and normalization-aware, so two
   // DISTINCT, canonically-equivalent names (an NFC "é", U+00E9, and its NFD decomposition
@@ -35,14 +34,39 @@ export class InMemoryBranchRegistry implements BranchRegistry {
   // `name.localeCompare(after) > 0`, so a name tied with the cursor by that comparator was
   // silently excluded — an L10-style skip at exactly the page boundary `pruneBranchRefs`
   // resumes from.
+  //
+  // Review round 1 (P3) — `deleteRef` does NOT remove the name from this array; it becomes
+  // a TOMBSTONE (absent from `refs`, still present here) that `listRefs` skips while paging,
+  // and that gets swept out the next time this array is rebuilt. Deleting never reorders the
+  // survivors, so there is nothing to re-sort — `pruneBranchRefs` interleaves one `listRefs`
+  // page with N `deleteRef` calls, and invalidating per delete forced a full re-sort on
+  // every single page (measured: 100k refs, 179s). New names are binary-INSERTed in place
+  // instead, which also keeps a revived name (deleted, then `putRef`-created again under the
+  // same string) from producing a duplicate entry — see `insertSorted`. Compacted lazily in
+  // `listRefs`, once tombstones make up at least half the array, rather than never (an
+  // unbounded array over a long-lived registry) or on every delete (the cost above).
   private sortedNames: string[] | undefined;
 
   constructor(options: InMemoryBranchRegistryOptions = {}) {
     this.now = options.now ?? (() => Date.now());
   }
 
+  /** Binary-insert `name` into `sortedNames`, no-op if it is already there (live or a tombstone). */
+  private insertSorted(name: string): void {
+    if (this.sortedNames === undefined) return; // computed fresh, lazily, on the next listRefs
+    const arr = this.sortedNames;
+    let lo = 0;
+    let hi = arr.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (compareExecutionIds(arr[mid] as string, name) < 0) lo = mid + 1;
+      else hi = mid;
+    }
+    if (arr[lo] !== name) arr.splice(lo, 0, name);
+  }
+
   async putRef(ref: BranchRef): Promise<void> {
-    if (!this.refs.has(ref.name)) this.sortedNames = undefined;
+    if (!this.refs.has(ref.name)) this.insertSorted(ref.name);
     this.refs.set(ref.name, { ...ref });
   }
 
@@ -53,12 +77,20 @@ export class InMemoryBranchRegistry implements BranchRegistry {
 
   async listRefs(options?: ListRefsOptions): Promise<BranchRef[]> {
     assertListRefsLimit(options?.limit);
+    // Lazy compaction: `deleteRef` never removes a name from `sortedNames` (see its doc
+    // comment), so once tombstones make up at least half the array, drop them by rebuilding
+    // from the live map — bounding how long a dead name can inflate every later scan, without
+    // paying for a rebuild on every delete.
+    if (this.sortedNames !== undefined && this.sortedNames.length >= this.refs.size * 2) {
+      this.sortedNames = undefined;
+    }
     this.sortedNames ??= [...this.refs.keys()].sort(compareExecutionIds);
     const sorted = this.sortedNames;
     const after = options?.after;
     // Binary-search the first name strictly after the cursor (any string, not only one
     // this store returned) — the same seek `InMemoryAsyncEventStore.listExecutionsPage`
-    // does for execution ids.
+    // does for execution ids. Tombstones do not disturb this: removing a name from `refs`
+    // never changes the relative order of the names that remain in `sortedNames`.
     let start = 0;
     if (after !== undefined) {
       let hi = sorted.length;
@@ -68,8 +100,15 @@ export class InMemoryBranchRegistry implements BranchRegistry {
         else start = mid + 1;
       }
     }
-    const end = options?.limit === undefined ? sorted.length : start + options.limit;
-    return sorted.slice(start, end).map((name) => ({ ...(this.refs.get(name) as BranchRef) }));
+    const limit = options?.limit;
+    const page: BranchRef[] = [];
+    for (let i = start; i < sorted.length; i++) {
+      const ref = this.refs.get(sorted[i] as string);
+      if (ref === undefined) continue; // a tombstone — deleted since this name was indexed
+      page.push({ ...ref });
+      if (limit !== undefined && page.length >= limit) break;
+    }
+    return page;
   }
 
   async moveTip(name: string, tip: number): Promise<void> {
@@ -95,7 +134,7 @@ export class InMemoryBranchRegistry implements BranchRegistry {
       }
     }
     if (to === undefined) {
-      this.sortedNames = undefined; // a new name enters the order
+      this.insertSorted(toName); // a new name enters the order
       this.refs.set(toName, {
         name: toName,
         executionId: from.executionId,
@@ -111,7 +150,9 @@ export class InMemoryBranchRegistry implements BranchRegistry {
   }
 
   async deleteRef(name: string): Promise<void> {
-    if (this.refs.delete(name)) this.sortedNames = undefined;
+    // Deliberately does NOT touch `sortedNames` — see its doc comment. The name becomes a
+    // tombstone, skipped by `listRefs` and compacted away lazily.
+    this.refs.delete(name);
   }
 
   async recordLineage(rec: Omit<LineageRecord, "createdAt">): Promise<void> {

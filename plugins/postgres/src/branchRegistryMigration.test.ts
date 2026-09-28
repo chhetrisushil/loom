@@ -27,6 +27,11 @@ if (PG_URL === undefined) {
   async function legacyTable(admin: Pool, refs = LEGACY_REFS): Promise<void> {
     await admin.query(`DROP SCHEMA IF EXISTS ${legacy} CASCADE`);
     await admin.query(`CREATE SCHEMA ${legacy}`);
+    await legacyRefs(admin, refs);
+  }
+
+  /** Just the pre-L21 `refs` DDL + rows, assuming the schema already exists. */
+  async function legacyRefs(admin: Pool, refs = LEGACY_REFS): Promise<void> {
     // The pre-L21 DDL, verbatim for the columns that matter.
     await admin.query(`CREATE TABLE refs (
       name TEXT NOT NULL, execution_id TEXT NOT NULL, tip BIGINT NOT NULL,
@@ -47,13 +52,46 @@ if (PG_URL === undefined) {
     await admin.query("ANALYZE refs");
   }
 
-  const collation = async (admin: Pool): Promise<string> =>
+  /**
+   * Just the pre-L10 `events` DDL + rows (verbatim from `sharded.test.ts`'s `legacyTable`),
+   * assuming the schema already exists — for the combined pre-L10 + pre-L21 boot below.
+   */
+  async function legacyEvents(admin: Pool, rows: number): Promise<void> {
+    await admin.query(`CREATE TABLE events (
+      id TEXT NOT NULL, workflow_id TEXT NOT NULL, execution_id TEXT NOT NULL,
+      event_type TEXT NOT NULL, sequence BIGINT NOT NULL, timestamp BIGINT NOT NULL,
+      payload JSONB NOT NULL, metadata JSONB)`);
+    await admin.query(
+      `INSERT INTO events SELECT 'z' || g || '-0', 'wf', 'z' || g, 'STEP_COMPLETED', 0, 0, '{}'::jsonb, NULL
+       FROM generate_series(1, $1) g`,
+      [rows]
+    );
+    await admin.query("ALTER TABLE events ADD PRIMARY KEY (id)");
+    await admin.query("ALTER TABLE events ADD UNIQUE (execution_id, sequence)");
+    await admin.query("CREATE INDEX idx_events_exec ON events (execution_id, sequence ASC)");
+    await admin.query("ANALYZE events");
+  }
+
+  /** Both tables pre-migration, in one schema — the L10+L21 boot the reordering (P2) covers. */
+  async function legacyBoth(admin: Pool, refsRows = LEGACY_REFS, eventsRows = 1000): Promise<void> {
+    await admin.query(`DROP SCHEMA IF EXISTS ${legacy} CASCADE`);
+    await admin.query(`CREATE SCHEMA ${legacy}`);
+    await legacyRefs(admin, refsRows);
+    await legacyEvents(admin, eventsRows);
+  }
+
+  const collationOf = async (admin: Pool, table: string, column: string): Promise<string> =>
     (
       await admin.query<{ c: string }>(
         `SELECT c.collname AS c FROM pg_attribute a JOIN pg_collation c ON c.oid = a.attcollation
-         WHERE a.attrelid = 'refs'::regclass AND a.attname = 'name'`
+         WHERE a.attrelid = $1::regclass AND a.attname = $2`,
+        [table, column]
       )
     ).rows[0]!.c;
+
+  const collation = (admin: Pool): Promise<string> => collationOf(admin, "refs", "name");
+  const eventsCollation = (admin: Pool): Promise<string> =>
+    collationOf(admin, "events", "execution_id");
 
   /** A pool whose connections report every server WARNING into `warnings`. */
   function noticingPool(warnings: string[], session = ""): Pool {
@@ -175,7 +213,7 @@ if (PG_URL === undefined) {
       }
     }, 180_000);
 
-    it("issued once per pool and idempotent when the pool re-migrates (name already COLLATE C)", async () => {
+    it("memoizes per pool, and a later call after conversion is a no-op", async () => {
       const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
       try {
         await legacyTable(admin, 100);
@@ -195,5 +233,138 @@ if (PG_URL === undefined) {
         await admin.end();
       }
     }, 60_000);
+
+    it("completes the conversion under a session statement_timeout shorter than the rebuild", async () => {
+      // Same premise as `sharded.test.ts`'s equivalent L10 case: a pool-level statement_timeout
+      // shorter than the index rebuild used to abort the conversion (57014) on EVERY boot —
+      // taking the exclusive lock each time — so the column never converted. `refs` is a
+      // narrower table than `events`, so it needs more rows to make the rebuild reliably
+      // exceed a 200ms budget (measured: ~1s at 3M rows vs. ~75ms at 300k).
+      const REBUILD_ROWS = 3_000_000;
+      const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
+      try {
+        await legacyTable(admin, REBUILD_ROWS);
+        const warnings: string[] = [];
+        const pool = noticingPool(warnings, "-c statement_timeout=200");
+        try {
+          // Proves the premise: the bare ALTER alone does not fit in this session's budget.
+          const probe = await pool.connect();
+          try {
+            await probe.query("BEGIN");
+            await expect(
+              probe.query('ALTER TABLE refs ALTER COLUMN name TYPE TEXT COLLATE "C"')
+            ).rejects.toMatchObject({ code: "57014" });
+          } finally {
+            await probe.query("ROLLBACK").catch(() => {});
+            probe.release();
+          }
+          await migrate(pool);
+        } finally {
+          await pool.end();
+        }
+        expect(await collation(admin)).toBe("C");
+        expect(warnings).toEqual([]);
+      } finally {
+        await admin.end();
+      }
+    }, 300_000);
+
+    // Review round 1 (P2/1c) — both tables need converting in the SAME migration transaction,
+    // and each table's own lock contention is independent of the other's.
+    describe("a combined pre-L10 + pre-L21 boot (both tables need converting)", () => {
+      it("holding `refs` only: L21 fails soft, L10 (events) still converts", async () => {
+        const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
+        const holder = await admin.connect();
+        try {
+          await legacyBoth(admin);
+          await holder.query("BEGIN");
+          await holder.query("SELECT 1 FROM refs LIMIT 1");
+          const warnings: string[] = [];
+          const pool = noticingPool(warnings);
+          await migrate(pool, { lockTimeoutMs: 200 });
+          await pool.end();
+          expect(await collation(admin)).not.toBe("C");
+          expect(await eventsCollation(admin)).toBe("C");
+          expect(warnings).toHaveLength(1);
+          expect(warnings[0]).toMatch(/55P03/);
+          expect(warnings[0]).toContain("refs.name");
+        } finally {
+          await holder.query("ROLLBACK").catch(() => {});
+          holder.release();
+          await admin.end();
+        }
+      }, 180_000);
+
+      it("holding `events` only: L10 fails soft, L21 (refs) still converts", async () => {
+        const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
+        const holder = await admin.connect();
+        try {
+          await legacyBoth(admin);
+          await holder.query("BEGIN");
+          await holder.query("SELECT 1 FROM events LIMIT 1");
+          const warnings: string[] = [];
+          const pool = noticingPool(warnings);
+          await migrate(pool, { lockTimeoutMs: 200 });
+          await pool.end();
+          expect(await collation(admin)).toBe("C");
+          expect(await eventsCollation(admin)).not.toBe("C");
+          expect(warnings).toHaveLength(1);
+          expect(warnings[0]).toMatch(/55P03/);
+          expect(warnings[0]).toContain("events.execution_id");
+        } finally {
+          await holder.query("ROLLBACK").catch(() => {});
+          holder.release();
+          await admin.end();
+        }
+      }, 180_000);
+    });
+
+    // Review round 1 (P2) — the deadlock this migration's ordering (and the `deadlock_detected`
+    // EXCEPTION arm) exists to survive.
+    it("a concurrent transaction reading refs then events deadlocks the migration; it fails soft and keeps L21's conversion (40P01)", async () => {
+      const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
+      const holder = await admin.connect();
+      try {
+        await legacyBoth(admin);
+        // Step 1: hold AccessShare(events) for the whole test, acquired BEFORE migration
+        // starts, so migration is guaranteed to block on `events` once it gets there.
+        await holder.query("BEGIN");
+        await holder.query("SELECT 1 FROM events LIMIT 1");
+
+        const warnings: string[] = [];
+        const pool = noticingPool(warnings);
+        // Step 2: migration runs L21 (refs, uncontended — succeeds immediately, and now HOLDS
+        // ACCESS EXCLUSIVE on refs until COMMIT), then blocks on L10 (events, held by `holder`).
+        const migration = migrate(pool);
+
+        // Step 3: once migration is blocked on `events` (comfortably longer than L21's own
+        // conversion of a 50k-row table takes), `holder` asks for `refs` too — which migration
+        // now holds exclusively. Two transactions, each waiting on a lock the OTHER holds: a
+        // real deadlock. `holder` started waiting on `events` BEFORE migration ever attempted
+        // it, so migration's own wait is the OLDER one and (per Postgres's deadlock detector)
+        // migration is the side whose statement receives the 40P01 — not `holder`'s.
+        await new Promise((r) => setTimeout(r, 300));
+        const holderBlocked = holder.query("SELECT 1 FROM refs LIMIT 1");
+
+        // Migration must fail soft (D3), not throw — the deadlock resolves once its own
+        // EXCEPTION arm catches 40P01 and it proceeds to COMMIT, which releases `refs` and
+        // unblocks `holder`'s query.
+        await expect(migration).resolves.toBeUndefined();
+        await expect(holderBlocked).resolves.toBeDefined();
+        await pool.end();
+
+        // L21 (refs) committed successfully BEFORE the deadlock; L10 (events) is the one that
+        // lost it and was skipped.
+        expect(await collation(admin)).toBe("C");
+        expect(await eventsCollation(admin)).not.toBe("C");
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toMatch(/40P01/);
+        expect(warnings[0]).toContain("events.execution_id");
+      } finally {
+        await holder.query("ROLLBACK").catch(() => {});
+        holder.release();
+        await admin.end();
+      }
+    }, 180_000);
   });
 }
