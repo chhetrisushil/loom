@@ -23,6 +23,23 @@ const run = async (script: string, limits = {}) => {
 };
 
 describe("SandboxEvalEffect — output size limit", () => {
+  it("refuses a maxOutputBytes option that would silently disable the bound (backlog L19)", () => {
+    // `maxInputBytes` (inputLimit.test.ts) refuses `NaN`/negative/non-numeric at
+    // construction, mirroring `SandboxWorkerPoolOptions`' own duration validation —
+    // `maxOutputBytes` gets the SAME validation now, closing a pre-existing gap where it
+    // silently accepted a value that could never fire (`NaN`) or a nonsensical one
+    // (negative).
+    for (const bad of [Number.NaN, -1, "5" as unknown as number]) {
+      expect(
+        () => new SandboxEvalEffect(scripts, { maxOutputBytes: bad }),
+        `maxOutputBytes=${String(bad)}`
+      ).toThrow(/maxOutputBytes must be a finite number >= 0/);
+    }
+    // 0 IS accepted — "refuse every output", a caller's deliberate choice (a script
+    // returning `undefined` still costs 0 bytes, so it is not "refuse every call").
+    expect(() => new SandboxEvalEffect(scripts, { maxOutputBytes: 0 })).not.toThrow();
+  });
+
   it("kills a script that returns more than the ceiling", async () => {
     // A script's return value becomes a durable STEP_COMPLETED payload, so an unbounded one
     // lets an adversarial script bloat an append-only log — the same threat the 2 KB cap on

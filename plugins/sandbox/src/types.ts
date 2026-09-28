@@ -37,9 +37,16 @@ export interface SandboxLimits {
    */
   maxOutputBytes?: number;
   /**
-   * Ceiling on the JSON size of the CALLER-supplied `input`. Default 1 MiB — the same
-   * order as `maxOutputBytes`, which leaves headroom under the 32 MiB `memoryBytes`
-   * default for the runtime and the script's own work once the input is parsed.
+   * Ceiling on the JSON size of the CALLER-supplied `input`. Default 32 MiB — matching
+   * `memoryBytes`'s default, NOT `maxOutputBytes`'s: an input this large already succeeds
+   * today under the default `memoryBytes` (real reshaping inputs measured 1.47–30.9 MB all
+   * complete fine), so a tighter default would refuse calls that work now. There is no
+   * general "headroom under the heap" rule to appeal to instead — how much a given JSON
+   * text expands once `JSON.parse`d depends on its shape (e.g. a numeric array parses far
+   * larger than an equally-long string), so the honest default is simply the existing
+   * `memoryBytes` ceiling: nothing that fits in the heap today is newly refused, and
+   * anything that would not have fit either way still fails, just earlier and typed (see
+   * below) instead of via a VM allocation failure.
    *
    * `input` is unmarshaled `z.unknown()` — nothing here bounds it — and every other
    * limit is charged to the SCRIPT's execution, which does not start until the input has
@@ -53,8 +60,13 @@ export interface SandboxLimits {
    * This is checked ONCE, on the caller's side, before either engine is touched: measured
    * in UTF-8 bytes of the same JSON the caller already produces to seed the VM or post to
    * a worker (never serialized twice), and refused with the typed, non-retryable
-   * `limitExceeded { kind: "input" }` — deterministic, so retrying cannot help, and no
-   * worker is ever spawned or occupied for a rejected call.
+   * `inputTooLarge` channel (`SANDBOX_ERRORS.inputTooLarge`) — deterministic, so retrying
+   * cannot help, and no worker is ever spawned or occupied for a rejected call. Deliberately
+   * NOT `limitExceeded`: that channel is recorded as the SCRIPT's outcome and routes to
+   * drift-repair, where a planner re-authors the script — which cannot shrink a caller's
+   * input. `inputTooLarge` also covers a heap overflow while PARSING an input that passed
+   * this check (an input under `maxInputBytes` can still expand past `memoryBytes` once
+   * parsed) — the same class of caller problem, against the other ceiling.
    */
   maxInputBytes?: number;
 }
@@ -149,7 +161,13 @@ export type SandboxEvalInputValue = z.infer<typeof SandboxEvalInput>;
  * only the thrown value's `name` (when it has a string one) and a text `message`,
  * both bounded; never a stack. A guard kill is `limitExceeded` even when the
  * script catches it and rethrows. Infrastructure failures — the worker pool, the
- * content address check, input marshalling, cancellation — stay untyped.
+ * content address check, cancellation — stay untyped.
+ *
+ * `inputTooLarge` and `inputNotSerializable` are about the CALLER's `input`, checked
+ * before the script or either engine is touched — never `limitExceeded`, which is
+ * recorded as the SCRIPT's own outcome and routes to drift-repair (re-author the
+ * script), a fix that cannot shrink or reshape a caller's input. Both are deterministic
+ * given the same input, so both are non-retryable.
  *
  * UNTRUSTED TEXT: `name` and `message` are authored by the script, which is often
  * model-written. They are bounded and well-formed (no lone surrogates, no NUL) but
@@ -158,10 +176,25 @@ export type SandboxEvalInputValue = z.infer<typeof SandboxEvalInput>;
  */
 export const SANDBOX_ERRORS = {
   scriptMissing: z.object({ ref: z.string() }),
-  limitExceeded: z.object({ kind: z.enum(["cpu", "memory", "wallClock", "output", "input"]) }),
+  limitExceeded: z.object({ kind: z.enum(["cpu", "memory", "wallClock", "output"]) }),
   shapeMismatch: z.object({ expected: z.string(), observed: z.string() }),
   scriptError: z.object({
     name: z.string().max(128).optional(),
     message: z.string().max(2048),
   }),
+  /**
+   * The caller-supplied `input`, once JSON-encoded, is bigger than `maxInputBytes`
+   * (`bytes` over `limit`) — OR an input under that ceiling still overflowed the VM heap
+   * while being PARSED (`limit` is then `memoryBytes`, the ceiling that actually overflowed).
+   * Both are the same class of problem — this input does not fit at this configuration —
+   * against one of two ceilings; `limit` says which.
+   */
+  inputTooLarge: z.object({ bytes: z.number(), limit: z.number() }),
+  /**
+   * `input` cannot be turned into JSON at all: `JSON.stringify` threw (a BigInt, a
+   * circular reference, or a string past V8's length ceiling), or it returned the JS
+   * value `undefined` instead of text (a function, a Symbol, or an explicit `toJSON`
+   * returning `undefined` at the top level). `reason` is loom-authored, short, and bounded.
+   */
+  inputNotSerializable: z.object({ reason: z.string().max(2048) }),
 };

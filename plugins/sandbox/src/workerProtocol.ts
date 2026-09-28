@@ -73,6 +73,8 @@ export type FromWorker =
       tripped?: TrippedGuard;
       /** The script's own exception, already reduced to name + bounded message. */
       thrown?: ScriptThrow;
+      /** Set when the failure happened SEEDING `input`, before the script ran (see EvalOutcome). */
+      duringSeed?: true;
     }
   /** The worker itself broke (module load, marshalling) — not a script outcome. */
   | { type: "fatal"; runId: number; message: string };

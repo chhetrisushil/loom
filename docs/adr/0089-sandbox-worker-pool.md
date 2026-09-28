@@ -134,24 +134,86 @@ from a script failure — and because it is not a `TypedFailure`,
 `retryMiddleware`'s default already retries it.
 
 **How large an input may be is answered by `maxInputBytes`** (backlog L19), a
-ceiling on the CALLER-supplied `input`, mirroring `maxOutputBytes` exactly —
-default 1 MiB, the same order of magnitude, which leaves headroom under the
-32 MiB `memoryBytes` default for the runtime and the script's own work once
-the input is parsed. Without it, an oversized input was bounded only by the
+ceiling on the CALLER-supplied `input`. Its default is **32 MiB — matching
+`memoryBytes`'s default, not `maxOutputBytes`'s**. An earlier draft of this
+decision defaulted it to 1 MiB (`maxOutputBytes`'s own default) on the theory
+that it would "leave headroom under the 32 MiB heap ceiling" — reviewed and
+rejected: there is no such headroom rule, because how much a JSON text
+expands once `JSON.parse`d depends on its *shape* (a numeric array parses far
+larger than an equally-long string), and real reshaping inputs measured
+1.47–30.9 MB all succeed TODAY under the default heap. A 1 MiB default would
+have refused every one of them — the fix must not break what already works,
+so the default is simply `memoryBytes`'s own default, derived from the same
+constant so the two cannot drift apart into a number that (mis)implies a
+relationship that does not hold.
+
+Without any such ceiling, an oversized input was bounded only by the
 startup-liveness window above: a 200 MB input could hold a worker busy for
 ~10 s and then fail with the untyped `SandboxWorkerStartupError`, which
 default retry middleware then retries — repeatedly, on a call that was never
 going to succeed. `maxInputBytes` is checked in `SandboxEvalEffect`, the
-caller of both engines, ONCE and BEFORE either is touched: measured in UTF-8
-bytes of the same JSON text the caller already produces to seed the VM
-in-process or post to a worker (never serialized twice — `evalInFreshRuntime`
-and `SandboxWorkerPool.run` both now take that JSON text directly rather than
+caller of both engines, ONCE and BEFORE either is touched (and before the
+script is even fetched — a deliberate precedence change: a call with both an
+oversized input AND a bad `scriptRef` now reports the input problem, not
+`scriptMissing`, since the check needs no store round trip and refusing a
+plainly-oversized call should not wait on one): measured in UTF-8 bytes of
+the same JSON text the caller already produces to seed the VM in-process or
+post to a worker (never serialized twice — `evalInFreshRuntime` and
+`SandboxWorkerPool.runJson` both now take that JSON text directly rather than
 the raw value, so seeding a worker no longer parses it back out only to
-re-stringify it for the VM). An oversized input fails typed —
-`limitExceeded { kind: "input" }` — and, unlike the startup-liveness bound
-above, deterministically: the same input will never fit, so this one MUST be
-a `TypedFailure`, or `retryMiddleware`'s default would retry a call no retry
-can fix. No worker is ever spawned or occupied for a refused call.
+re-stringify it for the VM). That one `JSON.stringify` unavoidably happens on
+the CALLER's thread before the size is known — there is no way to measure
+"the JSON size" without producing the JSON — so a very large input is fully
+serialized before it can be refused; there is no way to check a byte count
+that does not yet exist.
+
+An oversized input fails typed, on a **new** channel: `inputTooLarge { bytes,
+limit }`. Deliberately **not** `limitExceeded` — reviewed and corrected from
+an earlier draft that reused it with `kind: "input"`. `limitExceeded` is
+recorded as the SCRIPT's own outcome (D3) and routes to drift-repair, where a
+planner re-authors the *script* — the exact backstop this section just
+described for the startup-liveness case above. A caller's oversized `input`
+is not a script problem, and no script rewrite can shrink it, so folding it
+into the script's channel would send drift-repair somewhere it cannot help.
+`inputTooLarge` is still, like `limitExceeded`, a `TypedFailure` — and
+therefore still non-retryable by `retryMiddleware`'s default — but it says
+what actually needs to change: the input, not the script.
+
+Two more caller-input failure modes surfaced in review, both handled the same
+way — typed, non-retryable, and reported before either engine runs:
+
+- **`input` cannot become JSON at all.** `JSON.stringify` throws on a BigInt
+  or a circular reference, and — less obviously — RETURNS the JS value
+  `undefined` (not a string) for a bare function, a bare Symbol, or an object
+  whose `toJSON` returns `undefined`, at the top level. Before this was
+  handled, the first class threw an untyped `TypeError` straight out of the
+  effect (retried three times for nothing by default middleware) and the
+  second fed `undefined` into `Buffer.byteLength`, which itself throws an
+  unrelated, confusing `TypeError`. Both are now caught and reported as
+  `inputNotSerializable { reason }` — a new channel, distinct from
+  `inputTooLarge` because the input was never sized at all.
+- **An input under `maxInputBytes` can still overflow the VM heap while being
+  PARSED.** Parsing a JSON text can expand it well past its own byte length
+  (measured: a 64 KiB heap cannot hold a 500 KB string once parsed), so
+  passing the pre-flight check does not guarantee the seed succeeds. Before
+  this was handled, a seed failure threw an untyped `Error` ("input
+  marshalling failed: out of memory") straight out of `evalInFreshRuntime` —
+  in EITHER engine, since both share it — and default retry middleware
+  retried a call that could never succeed. `evalInFreshRuntime` now returns
+  this as an ordinary `EvalOutcome` (`duringSeed: true`) instead of throwing,
+  the same "report what happened, let the effect decide what it means" split
+  D3 draws for every other outcome; the effect recognises the VM's own
+  out-of-memory wording and completes it typed as `inputTooLarge { bytes,
+  limit: memoryBytes }` — `limit` names `memoryBytes` here, not
+  `maxInputBytes`, because that is the ceiling that actually overflowed, but
+  it is the same class of problem (this input does not fit at this
+  configuration) against the other ceiling `SandboxLimits` exposes. Any OTHER
+  seed failure (none is currently reachable — the caller always hands the VM
+  well-formed JSON) stays untyped rather than guess a channel for a shape
+  nothing has actually observed.
+
+No worker is ever spawned or occupied for a call refused by any of these
+three checks.
 
 One phase is bounded by neither clock: after the worker marks the run finished,
 it encodes the result and posts it. That runs no script code — the script's own

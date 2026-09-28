@@ -45,6 +45,15 @@ export type EvalOutcome =
       tripped?: TrippedGuard;
       /** The exception the script's own evaluation raised (incl. a SyntaxError). */
       thrown?: ScriptThrow;
+      /**
+       * Set when the failure happened SEEDING `input` — `JSON.parse`ing it inside the VM,
+       * before the script ran at all. Never the script's fault (no script code has run yet),
+       * so the caller must not attribute it to one the way `thrown`/`tripped` are. The only
+       * realistic cause is the VM's heap ceiling: `input` passed the caller-side
+       * `maxInputBytes` check but still overflows `memoryBytes` once parsed (parsing can
+       * expand a JSON text well past its own byte length).
+       */
+      duringSeed?: true;
     };
 
 /**
@@ -173,7 +182,17 @@ export function evalInFreshRuntime(
     if (seed.error !== undefined) {
       const err = vm.dump(seed.error) as { message?: string };
       seed.error.dispose();
-      throw new Error(`sandbox: input marshalling failed: ${err.message ?? "unknown"}`);
+      // Returned as an outcome, not thrown: this is the sandbox reporting what happened
+      // (ADR 0089 D3), and deciding what a seed failure MEANS (a resource limit? a caller
+      // mistake? untyped?) is the effect's job — same division as `tripped`/`thrown` below.
+      return {
+        ok: false,
+        message: boundText(
+          `sandbox: input marshalling failed: ${err.message ?? "unknown"}`,
+          MESSAGE_LIMIT
+        ),
+        duringSeed: true,
+      };
     }
     seed.value.dispose();
 

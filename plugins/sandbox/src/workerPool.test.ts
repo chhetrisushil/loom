@@ -100,7 +100,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       opened.push(pool);
       await pool.warm();
 
-      const killed = await pool.run(
+      const killed = await pool.runJson(
         RUNS_FOR_SECONDS,
         "null",
         {
@@ -161,7 +161,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       const memoryBytes = 512 * 1024 * 1024;
       const interruptBudget = Number.MAX_SAFE_INTEGER;
 
-      const killed = await pool.run(
+      const killed = await pool.runJson(
         RUNS_FOR_SECONDS,
         "null",
         { memoryBytes, interruptBudget, wallClockMs: 50 },
@@ -179,7 +179,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       // fixed at the source (#399), so tolerating it here would now hide a regression
       // rather than absorb a known artifact.
       await expect(
-        pool.run(
+        pool.runJson(
           "(() => 1 + 1)()",
           "null",
           { memoryBytes, interruptBudget, wallClockMs: 60_000 },
@@ -314,7 +314,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       opened.push(pool);
       await pool.warm();
       await expect(
-        pool.run(
+        pool.runJson(
           "input.length",
           inputJson,
           { memoryBytes, interruptBudget: Number.MAX_SAFE_INTEGER, wallClockMs },
@@ -344,7 +344,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         wallClockMs: 1,
       };
       const err = await pool
-        .run("input.length", JSON.stringify(input), limits, undefined)
+        .runJson("input.length", JSON.stringify(input), limits, undefined)
         .catch((e: unknown) => e);
       // A named class, NOT a TypedFailure: the environment failed, not the script, so it
       // must not land on `limitExceeded` (drift-repair) — and retry middleware's default,
@@ -355,7 +355,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
 
       // The wedged worker was replaced, not reused.
       await expect(
-        pool.run("(() => 3)()", "null", { ...limits, wallClockMs: 60_000 }, undefined)
+        pool.runJson("(() => 3)()", "null", { ...limits, wallClockMs: 60_000 }, undefined)
       ).resolves.toEqual({ ok: true, value: 3 });
     },
     SLOW
@@ -445,7 +445,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         interruptBudget: Number.MAX_SAFE_INTEGER,
         wallClockMs: 0,
       };
-      const pending = pool.run("(() => 1)()", "null", limits, undefined);
+      const pending = pool.runJson("(() => 1)()", "null", limits, undefined);
       // biome-ignore lint/suspicious/noExplicitAny: reaching the private slot to wedge it
       const [slot] = (pool as any).slots as { worker: import("node:worker_threads").Worker }[];
       slot!.worker.removeAllListeners("message");
@@ -491,7 +491,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       expect((pool as any).slots).not.toContain(dead);
 
       // A run posted now must be served by a FRESH worker, not hang on the corpse.
-      const result = await pool.run(
+      const result = await pool.runJson(
         "(() => 1)()",
         "null",
         { memoryBytes: 32 * 1024 * 1024, interruptBudget: 1_000, wallClockMs: 1_000 },
@@ -520,7 +520,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       await pool.warm();
       const memoryBytes = 512 * 1024 * 1024;
       const interruptBudget = Number.MAX_SAFE_INTEGER;
-      const killed = await pool.run(
+      const killed = await pool.runJson(
         RUNS_FOR_SECONDS,
         "null",
         { memoryBytes, interruptBudget, wallClockMs: 1_000 },
@@ -529,7 +529,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       expect(killed.ok === false && killed.message).toMatch(POOL_KILL);
 
       // The only worker was terminated: this run pays a cold spawn + compile.
-      const next = pool.run(
+      const next = pool.runJson(
         "(() => 1 + 1)()",
         "null",
         { memoryBytes, interruptBudget, wallClockMs: 1_000 },
@@ -570,7 +570,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       };
       const warmPromise = reclaimed.warm().catch((e: unknown) => e);
       const runPromise = reclaimed
-        .run("(() => 1)()", "null", limits, undefined)
+        .runJson("(() => 1)()", "null", limits, undefined)
         .catch((e: unknown) => e);
       // biome-ignore lint/suspicious/noExplicitAny: reaching the private slot to wedge it
       const [slot] = (reclaimed as any).slots as { worker: import("node:worker_threads").Worker }[];
@@ -625,7 +625,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
         wallClockMs: 1_000,
       };
       const controller = new AbortController();
-      const pending = pool.run("(() => 1)()", "null", limits, controller.signal);
+      const pending = pool.runJson("(() => 1)()", "null", limits, controller.signal);
       // biome-ignore lint/suspicious/noExplicitAny: observing the private slot
       const [slot] = (pool as any).slots as { busy: boolean; ready: boolean }[];
       expect(slot!.ready).toBe(false); // still warming: this is the window under test
@@ -636,7 +636,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
       expect(slot!.ready).toBe(false);
       expect(slot!.busy).toBe(false);
       // The warm-up ran on; the same worker serves the next run.
-      await expect(pool.run("(() => 2)()", "null", limits, undefined)).resolves.toEqual({
+      await expect(pool.runJson("(() => 2)()", "null", limits, undefined)).resolves.toEqual({
         ok: true,
         value: 2,
       });
@@ -650,7 +650,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
     // During the compile no eval is in flight, so `close()` had nothing to settle and the
     // run hung until (at best) the compile allowance. It is the slot's to settle now.
     const pool = new SandboxWorkerPool({ size: 1 });
-    const pending = pool.run(
+    const pending = pool.runJson(
       "(() => 1)()",
       "null",
       { memoryBytes: 32 * 1024 * 1024, interruptBudget: 1_000, wallClockMs: 1_000 },

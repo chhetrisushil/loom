@@ -3,7 +3,7 @@ import { fail } from "@loom/core";
 import type { Effect, EffectContext, ErrorChannelSchema } from "@loom/effect-runtime";
 import { type QuickJSWASMModule, getQuickJS } from "quickjs-emscripten";
 import { SandboxWorkerPool } from "./SandboxWorkerPool";
-import { type EvalLimits, type EvalOutcome, evalInFreshRuntime } from "./evalCore";
+import { type EvalLimits, type EvalOutcome, boundText, evalInFreshRuntime } from "./evalCore";
 import { shapeHash } from "./shape";
 import { SANDBOX_ERRORS, SandboxEvalInput, type SandboxEvalInputValue } from "./types";
 import type { SandboxLimits, SandboxWorkers, ScriptReader } from "./types";
@@ -24,8 +24,20 @@ const DEFAULT_MEMORY_BYTES = 32 * 1024 * 1024;
 const DEFAULT_INTERRUPT_BUDGET = 10_000;
 const DEFAULT_WALL_CLOCK_MS = 1_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
-/** Same order as `DEFAULT_MAX_OUTPUT_BYTES` — see `SandboxLimits.maxInputBytes`. */
-const DEFAULT_MAX_INPUT_BYTES = 1024 * 1024;
+/**
+ * Matches `DEFAULT_MEMORY_BYTES`, not `DEFAULT_MAX_OUTPUT_BYTES` — see
+ * `SandboxLimits.maxInputBytes` for why: real reshaping inputs measured 1.47–30.9 MB all
+ * succeed today under the default heap, so a 1 MiB default would refuse calls that
+ * currently work. Derived from the SAME constant on purpose, so the two can never drift
+ * apart into a default that (mis)implies a headroom relationship that does not hold.
+ */
+const DEFAULT_MAX_INPUT_BYTES = DEFAULT_MEMORY_BYTES;
+
+/** Bound on `inputNotSerializable`'s `reason` and the seed-failure message text. */
+const REASON_LIMIT = 2048;
+
+/** An `InternalError` message naming the VM's heap ceiling — QuickJS has no other wording for it. */
+const OUT_OF_MEMORY = /out of memory|memory limit/i;
 
 /**
  * A byte-size option must be a finite number >= 0 (mirrors `nonNegativeMs` in
@@ -78,7 +90,11 @@ export class SandboxEvalEffect implements Effect {
       memoryBytes: limits.memoryBytes ?? DEFAULT_MEMORY_BYTES,
       interruptBudget: limits.interruptBudget ?? DEFAULT_INTERRUPT_BUDGET,
       wallClockMs: limits.wallClockMs ?? DEFAULT_WALL_CLOCK_MS,
-      maxOutputBytes: limits.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
+      maxOutputBytes: nonNegativeBytes(
+        "maxOutputBytes",
+        limits.maxOutputBytes,
+        DEFAULT_MAX_OUTPUT_BYTES
+      ),
       maxInputBytes: nonNegativeBytes(
         "maxInputBytes",
         limits.maxInputBytes,
@@ -126,28 +142,55 @@ export class SandboxEvalEffect implements Effect {
     const call: SandboxEvalInputValue = SandboxEvalInput.parse(rawInput);
 
     // Bound what the CALLER supplies, not just what the script emits — measured ONCE,
-    // here, before the script is even fetched, so an oversized input never occupies a
-    // worker or creates a VM. `input` is `z.unknown()`: nothing upstream bounds it, and
-    // every other limit is charged to the script's own execution, which has not started
-    // yet — JSON-stringifying a huge `input`, posting it to a worker and parsing it back,
-    // or seeding it into a fresh VM, all run OUTSIDE the guarded window. Unbounded, that
-    // is bounded only by the worker pool's startup-liveness window (ADR 0089 D4): a 200 MB
-    // input can hold a worker busy for ~10 s and then fail with the untyped
-    // `SandboxWorkerStartupError`, which default retry middleware retries.
+    // here, BEFORE the script is even fetched (so a refused call never pays a content-store
+    // round trip, and the ordering means an oversized/unserializable input is reported even
+    // when the scriptRef is also bad — a deliberate precedence change from before this
+    // limit existed, when `scriptMissing` would have fired first). `input` is `z.unknown()`:
+    // nothing upstream bounds it, and every other limit is charged to the script's own
+    // execution, which has not started yet — JSON-stringifying a huge `input`, posting it to
+    // a worker and parsing it back, or seeding it into a fresh VM, all run OUTSIDE the
+    // guarded window. Unbounded, that is bounded only by the worker pool's startup-liveness
+    // window (ADR 0089 D4): a 200 MB input can hold a worker busy for ~10 s and then fail
+    // with the untyped `SandboxWorkerStartupError`, which default retry middleware retries.
     //
-    // `inputJson` is reused verbatim below to seed the VM (in-process) or post to a
-    // worker — never re-stringified — so this is the only full serialization of `input`
-    // on this call, in either mode. `call.input === undefined` (no input at all) costs
-    // nothing, mirroring how an `undefined` OUTPUT is 0 bytes, not the 4 bytes of the
-    // `"null"` it seeds either way.
-    const inputJson = call.input === undefined ? "null" : JSON.stringify(call.input);
+    // `inputJson` is reused verbatim below to seed the VM (in-process) or post to a worker —
+    // never re-stringified — so this `JSON.stringify` is the only full serialization of
+    // `input` on this call, in either mode, and it necessarily happens on THIS thread before
+    // its size is known (there is no way to measure "the JSON size" without producing the
+    // JSON). `call.input === undefined` (no input at all) costs nothing, mirroring how an
+    // `undefined` OUTPUT is 0 bytes, not the 4 bytes of the `"null"` it seeds either way.
+    let inputJson: string | undefined;
+    try {
+      // `JSON.stringify`'s lib type claims it always returns `string`; at runtime it can
+      // return the JS value `undefined` for a top-level function/Symbol/`toJSON`, which the
+      // check below catches — the cast only corrects the (inaccurate) declared type.
+      inputJson =
+        call.input === undefined ? "null" : (JSON.stringify(call.input) as string | undefined);
+    } catch (err) {
+      // A BigInt (`TypeError: Do not know how to serialize a BigInt`), a circular reference
+      // (`TypeError: Converting circular structure to JSON`), or a string past V8's length
+      // ceiling (`RangeError: Invalid string length`) all throw HERE, synchronously, before
+      // either engine is touched. Deterministic — retrying the same input cannot help — so
+      // this is typed and non-retryable, not the untyped throw (and three wasted retries)
+      // a caller would otherwise see.
+      fail("inputNotSerializable", {
+        reason: boundText(err instanceof Error ? err.message : String(err), REASON_LIMIT),
+      });
+    }
+    if (inputJson === undefined) {
+      // A function, a Symbol, or an explicit `toJSON` returning `undefined` all serialize
+      // the TOP-LEVEL value to the JS value `undefined` rather than throwing (nested
+      // occurrences are instead dropped or nulled, which is fine). `input` would be
+      // unusable to the script — a caller mistake, not "no input" (which seeds a literal
+      // `null` and is unaffected).
+      fail("inputNotSerializable", {
+        reason:
+          "input serializes to `undefined` (a function, a Symbol, or a toJSON returning undefined)",
+      });
+    }
     const inputBytes = call.input === undefined ? 0 : Buffer.byteLength(inputJson, "utf8");
     if (inputBytes > this.limits.maxInputBytes) {
-      // Deterministic — retrying the same oversized input cannot help — so this MUST be a
-      // typed failure: `retryMiddleware`'s default treats anything that is not a
-      // `TypedFailure` as retryable, which is exactly the untyped `SandboxWorkerStartupError`
-      // problem above, just for a call that never even needs a worker.
-      fail("limitExceeded", { kind: "input" });
+      fail("inputTooLarge", { bytes: inputBytes, limit: this.limits.maxInputBytes });
     }
 
     const bytes = await this.scripts.get(call.scriptRef);
@@ -170,7 +213,7 @@ export class SandboxEvalEffect implements Effect {
     const script = new TextDecoder().decode(bytes);
 
     const outcome = await this.evaluate(script, inputJson, ctx);
-    if (!outcome.ok) this.mapFailure(outcome, ctx);
+    if (!outcome.ok) this.mapFailure(outcome, ctx, inputBytes);
     const output = outcome.value;
 
     // Bound what the script EMITS, not just what it consumes. The return value becomes a
@@ -212,7 +255,7 @@ export class SandboxEvalEffect implements Effect {
       wallClockMs: this.limits.wallClockMs,
     };
     if (this.pool !== undefined) {
-      return this.pool.run(script, inputJson, limits, ctx.signal);
+      return this.pool.runJson(script, inputJson, limits, ctx.signal);
     }
     this.module ??= await getQuickJS();
     return evalInFreshRuntime(
@@ -228,12 +271,35 @@ export class SandboxEvalEffect implements Effect {
    * Outcome → channel. The one place the vocabulary lives: worker mode reports
    * what happened and this decides what it MEANS, so the boundary carries no
    * policy (K7.5 — the kernel side keeps authorize/meter/validate).
+   *
+   * `inputBytes` is the byte length already computed in `execute()` — reused rather than
+   * recomputed, for the one channel here that needs to report it (`inputTooLarge`, when a
+   * seed OOMs).
    */
-  private mapFailure(outcome: Extract<EvalOutcome, { ok: false }>, ctx: EffectContext): never {
+  private mapFailure(
+    outcome: Extract<EvalOutcome, { ok: false }>,
+    ctx: EffectContext,
+    inputBytes: number
+  ): never {
     const message = outcome.message;
     if (ctx.signal?.aborted === true) {
       // Cancellation is the kernel's outcome (STEP_CANCELLED), not a channel.
       throw ctx.signal.reason instanceof Error ? ctx.signal.reason : new Error(message);
+    }
+    if (outcome.duringSeed === true) {
+      // No script code has run yet — never `limitExceeded` (the script outcome channel that
+      // routes to drift-repair, where a re-authored SCRIPT cannot shrink the caller's input).
+      // The only realistic cause is the VM heap ceiling: `input` passed the caller-side
+      // `maxInputBytes` check (or the caller raised it) but still overflows `memoryBytes`
+      // once parsed. Deterministic given the same input and limits, so typed and
+      // non-retryable either way.
+      if (OUT_OF_MEMORY.test(message)) {
+        fail("inputTooLarge", { bytes: inputBytes, limit: this.limits.memoryBytes });
+      }
+      // `input` is always well-formed JSON (the caller produced it via `JSON.stringify`), so
+      // nothing else should be able to fail a bare `JSON.parse` of it — stay untyped rather
+      // than guess a channel for a shape nothing here has actually observed.
+      throw new Error(`sandbox: input marshalling failed: ${message}`);
     }
     if (outcome.tripped !== undefined) {
       fail("limitExceeded", { kind: outcome.tripped });
@@ -245,7 +311,7 @@ export class SandboxEvalEffect implements Effect {
     // deliberate forgery is reported as the kill it claims to be — still typed, still bounded.
     const thrown = outcome.thrown;
     if (thrown?.name === "InternalError") {
-      if (/out of memory|memory limit/i.test(thrown.message)) {
+      if (OUT_OF_MEMORY.test(thrown.message)) {
         fail("limitExceeded", { kind: "memory" });
       }
       if (/^interrupted$/i.test(thrown.message)) {
