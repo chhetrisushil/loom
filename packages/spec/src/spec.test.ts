@@ -271,6 +271,10 @@ const NOT_A_CAPABILITY = new Set([
   // operator repair re-homes what the pre-0106 bug wrote to execution "". A correction plus one
   // audit event kind (EVENT_SCHEMA 1.22.0) on existing capabilities; no new subsystem to grade.
   "0107",
+  // 0108 — a correction to an existing capability's contract: execution ids page in code point
+  // order with id cursors (EventStore SPI 2.0.0), Postgres pages via a COLLATE "C" column, and
+  // a policy for boot migrations that take an exclusive lock. No new subsystem to grade.
+  "0108",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {
@@ -319,6 +323,18 @@ describe("checkCompatibility", () => {
     const report = checkCompatibility({ contentStoreSpi: "2.0.0" });
     expect(report.ok).toBe(false);
     expect(report.issues[0]?.component).toBe("contentStoreSpi");
+  });
+
+  it("refuses a 1.x EventStore (SPI 2.0.0, ADR 0108: pinned id order + id cursors)", () => {
+    // A 1.5.0 store may page in any order with an opaque cursor, which ShardedEventStore and
+    // TenantScopedEventStore can no longer tolerate — the reason the bump is MAJOR.
+    expect(kernelManifest().spis.eventStore).toBe("2.0.0");
+    const report = checkCompatibility({ eventStoreSpi: "1.5.0" });
+    expect(report.ok).toBe(false);
+    expect(report.issues).toEqual([
+      expect.objectContaining({ component: "eventStoreSpi", expected: "2.0.0", actual: "1.5.0" }),
+    ]);
+    expect(checkCompatibility({ eventStoreSpi: "2.0.0" }).ok).toBe(true);
   });
 
   it("accepts a same-major (MINOR-bumped) deployment", () => {

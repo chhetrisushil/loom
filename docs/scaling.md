@@ -379,7 +379,7 @@ ADR 0065 rejected those on invariants, not on cost — no benchmark reopens them
 **Status: implemented as `ShardedEventStore`.** Routes by `hash(executionId)` over N inner
 stores, needs **zero backend cooperation**, and shards may be heterogeneous. Enumeration is
 scatter-gather preserving the paging order — Unicode code point order, pinned in EventStore
-SPI 1.6.0 because a Postgres shard used to page in its database collation and the merge
+SPI 2.0.0 ([ADR 0108](adr/0108-execution-id-order-and-fail-soft-migrations.md)) because a Postgres shard used to page in its database collation and the merge
 skipped ids (L10); cross-shard fork degrades to the
 per-event fallback; an optional capability is advertised only if every shard has it.
 

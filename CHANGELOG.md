@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`ShardedEventStore` over Postgres skipped execution ids when paging** (backlog L10;
-  EventStore SPI **1.6.0**). `listExecutionsPage` promised "lexicographic" order, which names no
+- **`ShardedEventStore` over Postgres skipped execution ids when paging** (backlog L10,
+  [ADR 0108](docs/adr/0108-execution-id-order-and-fail-soft-migrations.md); EventStore SPI
+  **1.5.0 → 2.0.0, MAJOR**: `checkCompatibility` refuses a `1.x` store). `listExecutionsPage` promised "lexicographic" order, which names no
   one order: `PostgresEventStore` paged in the database collation (`en_US.UTF-8` puts `a_b`
   before `A1`), while `ShardedEventStore` merged shard pages with JavaScript's sort and resumed
   EVERY shard from the merged page's last id — so each shard skipped the ids that sort after
@@ -18,8 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PG 17 `en_US.UTF-8` cluster: 17 ids came back as 12 entries — 9 missing, 3 duplicated). Retention, the
   read-model catch-up and every `iterateExecutionIds` pass over a sharded Postgres log were
   silently partial. The SPI now pins the order to Unicode **code point** order (= UTF-8 byte
-  order, SQL `COLLATE "C"`, SQLite BINARY — the SQLite store already conformed), says a cursor
-  may be any string and `nextCursor` is the page's last id, and exports the reference
+  order, SQL `COLLATE "C"`, SQLite BINARY — the SQLite store already conformed), and the cursor,
+  which was opaque, is an executionId (any string) with `nextCursor` the page's last id. That is
+  MAJOR because a store conforming to 1.x can fail the new kit case (the ADR 0091 rule); no
+  method was added or removed. It also exports the reference
   comparator `compareExecutionIds` from `@loom/event-runtime` (JavaScript's default sort
   compares UTF-16 code units, which disagree with code points on astral characters; the
   in-memory store and the sharded merge now use it). `@loom/plugin-postgres` declares

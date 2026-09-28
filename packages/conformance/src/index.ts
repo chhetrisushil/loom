@@ -381,7 +381,7 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       await store.close();
     });
 
-    // SPI 1.6.0 (L10). "Lexicographic" is not one order: a Postgres database with an
+    // SPI 2.0.0 (L10, ADR 0108). "Lexicographic" is not one order: a Postgres database with an
     // `en_US.UTF-8` collation sorts `a_b` before `A1`, JavaScript's default sort puts `A1`
     // first, and the two disagree again on astral characters (UTF-16 code units vs code
     // points). `ShardedEventStore` merges shard pages in JS and hands the merged page's last
@@ -389,7 +389,7 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
     // ids that sort after the cursor in one order and before it in the other. The contract is
     // therefore pinned: ids in Unicode CODE POINT order (= UTF-8 byte order, SQL `COLLATE "C"`,
     // SQLite BINARY), and a cursor may be ANY string, not just an id the store returned.
-    it("listExecutionsPage orders ids by Unicode code point, and accepts any string as a cursor (when supported, SPI 1.6.0)", async () => {
+    it("listExecutionsPage orders ids by Unicode code point, and accepts any string as a cursor (when supported, SPI 2.0.0)", async () => {
       const store = factory();
       if (store.listExecutionsPage === undefined) {
         await store.close();

@@ -826,13 +826,13 @@ npx loom kernel-manifest
 ```text
 Loom kernel manifest
   kernel ABI      1.1.0   (10 syscalls)
-  event schema    1.19.0  (29 event types)
+  event schema    1.22.0  (30 event types)
   wire ABI        1.0.0
-  event store SPI 1.3.0
-  snapshot SPI    1.0.0
-  branch SPI      1.0.0
+  event store SPI 2.0.0
+  snapshot SPI    1.1.0
+  branch SPI      1.2.0
   dispatcher SPI  1.0.0
-  memory SPI      2.0.0
+  memory SPI      2.1.0
   compiler manif. 1
   capabilities    42 (see loom kernel-manifest --json)
 ```
@@ -865,7 +865,7 @@ Validate a deployment's declared contract versions against this kernel's manifes
 | `--compiler-manifest` | compiler-manifest version |
 
 ```bash
-npx loom compat --abi 1.1.0 --event-schema 1.18.0 --event-store-spi 1.3.0
+npx loom compat --abi 1.1.0 --event-schema 1.18.0 --event-store-spi 2.0.0
 ```
 
 ```text
