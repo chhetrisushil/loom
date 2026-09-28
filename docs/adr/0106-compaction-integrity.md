@@ -62,7 +62,7 @@ finding's evidence (ADR 0055 D6 recorded this as the L11 known gap).
   records, and the registered flow's version. The version is what the un-snapshotted path seeds,
   so both paths fold to the same state. A **non-blank field that disagrees** is refused with
   `SnapshotIdentityMismatchError` (`@loom/snapshot-runtime`, with the shared
-  `assertSnapshotIdentity` rule; kept out of `@loom/core`): only a store or tenant-scoping
+  `assertSnapshotIdentity` rule, beside the `Snapshot` type it checks): only a store or tenant-scoping
   defect produces one, and
   filling it over would hide that defect. `fork` passes an explicit retarget flag, because a
   parent's snapshot seeds a child and its executionId is replaced, never compared.
@@ -128,6 +128,23 @@ checkpoint.
     and the `DecoratorPlan` type makes every snapshot decorator decide it. A store without
     it is read with `loadLatest`, and if that refuses (`PayloadShreddedError`) the shred
     fails with an error naming the fix. It never guesses a sequence.
+  - **ADR 0083 disposition: accepted as an EXCEPTION.** There is one consumer today: the
+    `shredSubject` retry. The seam is driven by layering, not by a workload. The alternative
+    is for a kernel package (`@loom/snapshot-runtime`'s `TenantScopedSnapshotStore`) to know
+    and forward a plugin's private method (`EncryptingSnapshotStore`'s), which inverts the
+    dependency direction. The generic "at rest, never decrypted" read keeps the plugin
+    boundary intact. The anticipated second consumer is retention/`evaluate` reading a
+    shredded AND compacted run, whose decrypting snapshot load throws. It does not use this
+    method yet, and this ADR does not claim it does.
+  - **Accepted residuals (each costs at most one duplicate audit fact).**
+    - `variables._shredded` holds only the LAST shred. An execution shared by two subjects,
+      compacted after both tombstones and then retried for the first, no longer shows that
+      subject in its checkpoint. The retry appends a second tombstone for it.
+    - An app that lists `variables._shredded` among its encrypted snapshot paths hides it
+      from the sealed read, so the same retry appends a duplicate.
+
+    The duplicate is a second audit fact of a shred that did happen, and it folds to a
+    `_shredded` record for its own subject. Neither case loses evidence.
   - The documented shredder no longer guards on `keys.get(subjectId) !== null`. That guard
     never retried a failed tombstone once the key was gone. `KeyStore.destroy` is now
     documented as idempotent.

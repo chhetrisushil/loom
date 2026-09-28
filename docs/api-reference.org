@@ -632,7 +632,7 @@ const OPTIONAL_EVENT_STORE_METHODS: readonly OptionalEventStoreMethod[]         
 type DecoratorPlan<S, M extends keyof S> = { readonly [K in M]-?: "forward" | NonNullable<S[K]> | { readonly refuse: string } };
 function installOptional<S extends object, M extends keyof S>(target: S, inner: S, plan: DecoratorPlan<S, M>, bindTo?: object): void
 function refusalsOf(store: object): ReadonlyMap<string, string>                    // what installOptional recorded as refused
-// @loom/snapshot-runtime: OptionalSnapshotStoreMethod ("deleteExecution"), OPTIONAL_SNAPSHOT_STORE_METHODS
+// @loom/snapshot-runtime: OptionalSnapshotStoreMethod ("deleteExecution" | "loadLatestSealed"), OPTIONAL_SNAPSHOT_STORE_METHODS
 
 class Tenant implements EventStore {
   readonly appendBatch?: NonNullable<EventStore["appendBatch"]>;   // …one field per optional method
@@ -654,6 +654,8 @@ interface SnapshotStore {
   loadLatest(executionId: string): Promise<Snapshot | null>;
   loadAt(executionId: string, sequence: number): Promise<Snapshot | null>;
   loadLatestBefore(executionId: string, sequence: number): Promise<Snapshot | null>;   // used by fork()
+  deleteExecution?(executionId: string): Promise<void>;           // optional (K10.1 retention)
+  loadLatestSealed?(executionId: string): Promise<Snapshot | null>;  // optional (SPI 1.1.0, ADR 0106): at rest, never decrypted
   close(): Promise<void>;
 }
 class InMemoryAsyncSnapshotStore { constructor(options?: { latencyMs?: number }) }

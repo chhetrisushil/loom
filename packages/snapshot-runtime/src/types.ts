@@ -44,7 +44,8 @@ export interface SnapshotStore {
    * decrypting them (so it never throws for a destroyed key); a plain store returns exactly
    * `loadLatest`. For callers that need only non-sensitive facts — the sequence, a plain
    * variable like `_shredded` — after a subject's key is gone (`shredSubject`'s retry). It
-   * never yields plaintext a decrypting read would refuse. Decorators MUST forward it.
+   * never yields plaintext a decrypting read would refuse. Every decorator must decide it
+   * (forward it, or refuse it with a reason) — its `DecoratorPlan` does not compile otherwise.
    */
   loadLatestSealed?(executionId: string): Promise<Snapshot | null>;
   close(): Promise<void>;
