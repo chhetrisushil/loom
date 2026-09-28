@@ -117,7 +117,7 @@ load-bearing, plus the global guardrails that gate every additive capability:
   execution's snapshots, which makes the log authoritative.
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
-  the pinned type set MUST change together. The current version is **1.21.0** — after the
+  the pinned type set MUST change together. The current version is **1.22.0** — after the
   K10.1/T3 audit facts (1.13.0/1.14.0), the perpetual-agents series added two additive MINORs
   with **no new event kinds**: 1.15.0 extends `EXECUTION_MIGRATED` with an optional
   `migratedInput` payload field (K11.5 contract-versioned state migration — the fold replaces
@@ -144,6 +144,9 @@ load-bearing, plus the global guardrails that gate every additive capability:
   with the new reserved key `_failedWhileParked`, under which a `null` resume stays status-only
   exactly as 1.20.0 folded it. Every gate passthrough is therefore unchanged from 1.20.0; the
   status and the new key are what differ.
+  ADR 0107 added 1.22.0, one new event kind: `EVENTS_REHOMED`, the lifecycle-stream fact the
+  operator repair of the pre-0106 blank stream journals per segment it re-homes. Pure audit into
+  `_lifecycle`; no existing fold changes.
   Logs that never migrate state, resume twice, fail typed, record a policy, stamp a flow emit, or
   resume `null` into an unparked or in-doubt execution, or hold a `STEP_FAILED`
   that no status-setting event follows, replay byte-identically.

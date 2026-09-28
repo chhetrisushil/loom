@@ -9,6 +9,13 @@ import { appendBatchOf } from "@loom/event-runtime";
 import { ReplayVM, knownEventTypes, normalizeSnapshotState } from "@loom/replay-vm";
 import { type Snapshot, type SnapshotStore, assertSnapshotIdentity } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
+import {
+  type BlankStreamCensus,
+  type BlankStreamSegment,
+  type RehomeAssignment,
+  planBlankStreamRepair,
+  rehomedEnvelope,
+} from "./blankStream";
 import { EFFECT_INDOUBT_RESOLVED, EXECUTION_RECOVERED } from "./types";
 
 /** Reserved control stream carrying retention facts (EXECUTION_ARCHIVED/_DELETED). */
@@ -118,7 +125,7 @@ export class CompactionCheckpointMissingError extends Error {
  * the latest checkpoint's sequence — or, for a log compacted down to `[0]`, -1 with the
  * checkpoint above the tip. One backward pass; stops at the first gap from the top.
  */
-function highestMissing(events: readonly EventEnvelope[]): number {
+export function highestMissing(events: readonly EventEnvelope[]): number {
   for (let i = events.length - 1; i > 0; i--) {
     const at = events[i]!.sequence;
     if (at - events[i - 1]!.sequence > 1) return at - 1;
@@ -242,9 +249,10 @@ export class LogLifecycle {
    * compacted — {@link compact} refuses one (ADR 0106).
    */
   private async emitLifecycleFact(
-    eventType: "EXECUTION_ARCHIVED" | "EXECUTION_DELETED",
+    eventType: "EXECUTION_ARCHIVED" | "EXECUTION_DELETED" | "EVENTS_REHOMED",
     executionId: string,
-    now: number
+    now: number,
+    detail: Record<string, unknown> = {}
   ): Promise<void> {
     const prior = await this.eventStore.read(LIFECYCLE_STREAM);
     const fact: EventEnvelope = {
@@ -254,7 +262,7 @@ export class LogLifecycle {
       eventType,
       sequence: prior.length,
       timestamp: now,
-      payload: { executionId },
+      payload: { executionId, ...detail },
     };
     await this.eventStore.append(fact);
   }
@@ -396,6 +404,57 @@ export class LogLifecycle {
   }
 
   /**
+   * ADR 0107 — what the pre-0106 compaction bug left in the blank execution `""`: which of
+   * its events are provably whose (a snapshot the same run saved under the real id folds
+   * them), which an operator assignment covers, which are already re-homed, and which nobody
+   * can attribute. Reads only. See `planBlankStreamRepair` for the proof.
+   */
+  async blankStreamCensus(
+    opts: { assign?: readonly RehomeAssignment[] } = {}
+  ): Promise<BlankStreamCensus> {
+    return (await planBlankStreamRepair(this.eventStore, this.snapshotStore, opts.assign)).census;
+  }
+
+  /**
+   * ADR 0107 — re-home the blank stream's provable events (and any `assign`ed range that folds
+   * onto its execution) into the execution they belong to, at the sequences they were written
+   * at. A DRY RUN unless `apply: true`: without it this is {@link blankStreamCensus}. Each
+   * re-homed segment is one batch (`appendBatchOf`), re-stamped with its execution's identity,
+   * `id` `<executionId>-<sequence>` and `metadata.rehomedFrom` (its blank-stream id), then
+   * journaled as an `EVENTS_REHOMED` fact on the lifecycle stream. The blank stream itself is
+   * left as it is: append-only evidence, and what makes a re-run idempotent (a slot holding
+   * its `rehomedFrom` twin is done; only still-empty slots are written).
+   *
+   * Run it with the affected executions quiesced: an operator-assigned range lands where a
+   * concurrent resume of the same execution would write.
+   */
+  async rehomeBlankStream(
+    opts: { assign?: readonly RehomeAssignment[]; apply?: boolean; now?: number } = {}
+  ): Promise<BlankStreamCensus & { rehomed: BlankStreamSegment[] }> {
+    const plan = await planBlankStreamRepair(this.eventStore, this.snapshotStore, opts.assign);
+    const rehomed: BlankStreamSegment[] = [];
+    if (opts.apply === true) {
+      const now = opts.now ?? Date.now();
+      for (const [seg, sequences] of plan.missing) {
+        const workflowId = plan.workflowIdOf.get(seg.executionId)!;
+        const envelopes = sequences.map((q) =>
+          rehomedEnvelope(plan.stray.get(q)!, seg.executionId, workflowId)
+        );
+        await appendBatchOf(this.eventStore, envelopes);
+        await this.emitLifecycleFact("EVENTS_REHOMED", seg.executionId, now, {
+          fromSequence: seg.fromSequence,
+          throughSequence: seg.throughSequence,
+          proof: seg.proof,
+          count: envelopes.length,
+        });
+        seg.status = "rehomed";
+        rehomed.push(seg);
+      }
+    }
+    return { ...plan.census, rehomed };
+  }
+
+  /**
    * K10.4 — compact an execution: checkpoint the folded state as a snapshot at sequence `c`,
    * then truncate the prefix `(0..c]` (sequence 0 stays as the bootstrap anchor). Afterward
    * the replay tail is bounded to events after the checkpoint, while
@@ -437,6 +496,11 @@ export class LogLifecycle {
    * store does not share its KeyStore.
    */
   async compact(executionId: string): Promise<number | null> {
+    if (executionId === "") {
+      throw new TypeError(
+        `refusing to compact "": a blank id names no execution. Its stream holds what the pre-0106 compaction bug misfiled — census and repair it with LogLifecycle.blankStreamCensus / rehomeBlankStream (ADR 0107); compacting it would fold unrelated executions together and delete the evidence.`
+      );
+    }
     if (isReservedStream(executionId)) {
       throw new TypeError(
         `refusing to compact "${executionId}": a reserved control stream is an append-only audit trail whose writers take their next sequence from read().length — compacting it would make them overwrite its own freed slots.`

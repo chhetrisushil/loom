@@ -383,6 +383,18 @@ execution `status` (a denial / quota / safety breach fails the STEP via the ordi
   `variables._lifecycle` (of the lifecycle stream). **Pure audit.** A log that never prunes
   replays byte-identically.
 
+#### `EVENTS_REHOMED`
+- **Introduced:** 1.22.0 — the operator repair of the pre-0106 blank stream ([ADR 0107](../adr/0107-compacted-fork-points-and-the-blank-stream.md)).
+  Written by `LogLifecycle.rehomeBlankStream` (`loom repair blank-stream --apply`) to the
+  lifecycle stream (`__loom_lifecycle__`) once per segment it re-homes: events the pre-0106
+  compaction bug had written to execution `""`, moved into the execution a snapshot proves (or
+  an operator asserts) they belong to. The log records its own repair (P9).
+- **Payload:** `{ executionId: string, fromSequence: number, throughSequence: number, proof: "snapshot" | "operator", count: number }`
+- **Folds into:** appends `{ op: "rehomed", executionId, fromSequence, throughSequence, proof, at }`
+  to `variables._lifecycle` (of the lifecycle stream). **Pure audit.** A log that is never
+  repaired replays byte-identically. The re-homed events keep their own kinds and payloads; they
+  carry `metadata.rehomedFrom` (their blank-stream id).
+
 #### `ERASURE_PENDING`
 - **Introduced:** 1.14.0 — T3-R4.5 deferred-erasure protocol ([ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md)).
   Written by the `EraseCoordinator` (`@loom/compliance`) to a reserved control stream
@@ -521,7 +533,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.21.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079); 1.19.0 _flowEmits: per-content-digest counts from the envelope stamp metadata.flowEmit — flow-level emits append once per execution (ADR 0102); 1.20.0 a null EXECUTION_RESUMED answering no suspend point adds no gate passthrough, and a human park names its step (EXECUTION_SUSPENDED.condition.stepId) (ADR 0104); 1.21.0 STEP_FAILED folds the step's frame only — the execution fails only on EXECUTION_FAILED — and _failedWhileParked keeps a null resume after a while-parked failure status-only (ADR 0105) — all NO new event kinds
+export const EVENT_SCHEMA_VERSION = "1.22.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079); 1.19.0 _flowEmits: per-content-digest counts from the envelope stamp metadata.flowEmit — flow-level emits append once per execution (ADR 0102); 1.20.0 a null EXECUTION_RESUMED answering no suspend point adds no gate passthrough, and a human park names its step (EXECUTION_SUSPENDED.condition.stepId) (ADR 0104); 1.21.0 STEP_FAILED folds the step's frame only — the execution fails only on EXECUTION_FAILED — and _failedWhileParked keeps a null resume after a while-parked failure status-only (ADR 0105) — all NO new event kinds; 1.22.0 EVENTS_REHOMED — the blank-stream repair's lifecycle fact (ADR 0107)
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
@@ -537,11 +549,12 @@ export function knownEventTypes(): string[] {
   that must be deliberate. A conformance test pins `knownEventTypes()` so the set cannot drift
   silently.
 
-The complete pinned set (the 29 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
+The complete pinned set (the 30 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
 returns them):
 
 `APPROVAL_GRANTED`, `DECISION_RECORDED`, `EFFECT_DENIED`, `EFFECT_INDOUBT`, `EGRESS_DENIED`,
-`ERASURE_PENDING`, `EXECUTION_ARCHIVED`, `EXECUTION_CANCELLED`, `EXECUTION_COMPLETED`,
+`ERASURE_PENDING`, `EVENTS_REHOMED`, `EXECUTION_ARCHIVED`, `EXECUTION_CANCELLED`,
+`EXECUTION_COMPLETED`,
 `EXECUTION_DELETED`, `EXECUTION_DENIED`, `EXECUTION_FAILED`, `EXECUTION_MIGRATED`,
 `EXECUTION_RESUMED`, `EXECUTION_STARTED`, `EXECUTION_SUSPENDED`, `OUTCOME_RECORDED`,
 `PARALLEL_COMPLETED`, `PARALLEL_STARTED`, `PAYLOAD_SHREDDED`, `QUOTA_EXCEEDED`,

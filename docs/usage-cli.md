@@ -85,6 +85,11 @@ loom — project-local commands for a Loom app
                                                   (they keep the parent uncollectable)
   loom branches prune <store> [--protect main,rel] [--limit N] [--apply]
                                                   delete refs that name nothing (main protected)
+  loom repair blank-stream <store> [--assign <id>:<from>-<through>,…] [--apply]
+                                                  re-home what the pre-0106 compaction bug
+                                                  wrote to execution "" (ADR 0107): proven
+                                                  segments only; the rest is listed with its
+                                                  candidates, never guessed
   loom retention run <store> [--ttl ms] [--apply]  reclaim aged terminal executions
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
@@ -114,7 +119,7 @@ New project?  →  npm create loom-app
 
 There are no global flags — each command declares its own. The recurring ones are `--db <path>` (a SQLite event-store file), `--dir <path>` (a directory, defaulting to `app` for `gen`/`new` and `.` elsewhere), and `--at <N>` (a sequence number). An unknown command prints the usage to stderr and exits `1`.
 
-Several commands are **two words** — the first positional selects the subcommand: `deploy check`, `lint claim-check`, `retention run`, `sweep content`, `compliance report`, `learn report|eval`, and `plugin new|check|try|search|seams`.
+Several commands are **two words** — the first positional selects the subcommand: `deploy check`, `lint claim-check`, `repair blank-stream`, `retention run`, `sweep content`, `compliance report`, `learn report|eval`, and `plugin new|check|try|search|seams`.
 
 > **The `--db` commands need SQLite storage.** `logs`, `debug`, and `inspect` read a durable log, so your app must persist one. Wire `storage: { kind: "sqlite", dir: ".loom" }` in [`defineConfig`](usage.md#step-3--wire-the-app-with-defineconfig) — the event store is then at `.loom/events.db`. In-memory apps leave nothing to inspect.
 
@@ -672,6 +677,38 @@ is kept ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D5). The SQLite conte
 supports this. An app with blobs cited from its own tables sweeps through the API instead, with
 `sweepUnpinnedContent({ roots })` (D7). Pins are recomputed from the log on **every** sweep, so a run that becomes pinned between sweeps is protected without any bookkeeping.
 
+### `loom repair blank-stream --db <events.db> --snap <snap.db> [--assign <id>:<from>-<through>,…] [--apply]`
+
+Before [ADR 0106](adr/0106-compaction-integrity.md), a compaction checkpoint named execution
+`""`, and every resume that followed a compaction wrote its events to execution `""` instead of
+its own log. This censuses that stream and repairs what can be proven ([ADR 0107](adr/0107-compacted-fork-points-and-the-blank-stream.md)).
+**Dry run by default.** It needs the snapshot store: the proof lives there.
+
+- **Proven segments are re-homed.** A resumed run saved its suspend snapshot under its REAL id
+  (only the state inside was blank). When that snapshot, taken at a drain barrier, is exactly
+  the fold of the stray events above the execution's previous snapshot, those events are that
+  execution's. `--apply` writes them into its log at the same sequences (`metadata.rehomedFrom`
+  names the stray id) and journals `EVENTS_REHOMED` on the lifecycle stream. A re-run is a
+  no-op. The `""` stream is left in place as evidence.
+- **Everything else is listed, never guessed.** A run that completed without a checkpoint left
+  nothing that names its writer. Such a range is printed as `UNATTRIBUTED`, with the executions
+  parked at the sequence just below it. If your own records say whose it is, assert it with
+  `--assign <executionId>:<from>-<through>`. The repair still checks that the range folds onto
+  that execution's snapshot at `<from − 1>`, and that the execution has not moved past it.
+- **Refused, with a reason:** a segment the execution's own log already has an event in
+  (`occupied`, e.g. a pre-0106 denial in the checkpoint's slot), one below a later compaction
+  (`superseded`, whose checkpoint already folds it), and two executions proving one slot
+  (`conflict`).
+
+Run it with the affected executions quiesced. An assigned range lands where a concurrent resume
+of the same execution would write.
+
+```bash
+npx loom repair blank-stream --db .loom/events.db --snap .loom/snapshots.db            # census
+npx loom repair blank-stream --db .loom/events.db --snap .loom/snapshots.db --apply    # re-home proven
+npx loom repair blank-stream --db .loom/events.db --snap .loom/snapshots.db --assign e1:13-15 --apply
+```
+
 ### `loom compliance report --db <path> --subject-path <dotpath> [--tenant-path <dotpath>]`
 
 A data-subject inventory (T3): folds every execution's `EXECUTION_STARTED`, attributing it to a
@@ -928,6 +965,7 @@ npx loom plugin search postgres
 | `loom learn eval` | shadow-evaluate a candidate policy | `--db` *(req)*, `--policy` *(req)*, `--min-steps N` | promotion gate refuses |
 | `loom eval` | replay golden logs vs expectations | `--dir` *(req)* | any golden fails |
 | `loom deploy check` | replay logs vs new flow defs | `--logs` *(req)*, `--config` *(req)* | resume-breaking change |
+| `loom repair blank-stream` | re-home events the pre-0106 compaction bug wrote to `""` (ADR 0107) | `--db` *(req)*, `--snap` *(req)*, `--assign`, `--apply` | error |
 | `loom retention run` | reclaim aged terminal executions | `--db` *(req)*, `--snap` *(req)*, `--ttl`, `--apply` | error |
 | `loom sweep content` | K10.6 pinned blob sweep | `--db` *(req)*, `--content` *(req)*, `--snap`, `--archive-db`, `--archive-snap`, `--pin`, `--ttl`, `--orphans`, `--no-archive`, `--apply` | error |
 | `loom compliance report` | data-subject inventory | `--db` *(req)*, `--subject-path` *(req)*, `--tenant-path` | error |

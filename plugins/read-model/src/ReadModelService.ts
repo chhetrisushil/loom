@@ -14,9 +14,12 @@ import type {
 } from "./types";
 import { PurgeUnsupportedError, assertPurgeFilter } from "./types";
 
-/** Reserved control streams (`__loom_*`) are kernel bookkeeping — never indexed. */
+/**
+ * Reserved control streams (`__loom_*`) are kernel bookkeeping — never indexed. Nor is the
+ * blank id, which names no execution (ADR 0107).
+ */
 function isReservedStream(executionId: string): boolean {
-  return executionId.startsWith("__loom_");
+  return executionId === "" || executionId.startsWith("__loom_");
 }
 
 function toRows(model: ReadModelDefinition, event: EventEnvelope): ReadModelRow[] {

@@ -271,7 +271,7 @@ The governance rule mirrors K1 ([`eventHandlers.ts`](../../packages/replay-vm/sr
 
 ### The governance test pinning the event types
 
-[`eventSchema.test.ts`](../../packages/replay-vm/src/eventSchema.test.ts) pins the exact set of **29** event types the fold understands and fails CI if `knownEventTypes()` differs ([`eventSchema.test.ts`](../../packages/replay-vm/src/eventSchema.test.ts)). The pinned set is the union of the durable core's events, the Loom 2.0/2.1 kernel-ring events, and the data-lifecycle and multi-tenant facts added since:
+[`eventSchema.test.ts`](../../packages/replay-vm/src/eventSchema.test.ts) pins the exact set of **30** event types the fold understands and fails CI if `knownEventTypes()` differs ([`eventSchema.test.ts`](../../packages/replay-vm/src/eventSchema.test.ts)). The pinned set is the union of the durable core's events, the Loom 2.0/2.1 kernel-ring events, and the data-lifecycle and multi-tenant facts added since:
 
 | Category | Event types |
 |---|---|
@@ -281,7 +281,7 @@ The governance rule mirrors K1 ([`eventHandlers.ts`](../../packages/replay-vm/sr
 | Advisory plane (P9) | `DECISION_RECORDED`, `OUTCOME_RECORDED` |
 | **Kernel rings (K2/K3/K6)** | `EFFECT_DENIED` (K2), `RESOURCE_METERED` (K3), `QUOTA_EXCEEDED` (K3), `SAFETY_BLOCKED` (K6) |
 | **Second hardening series (K7–K12, T1)** | `EGRESS_DENIED` (K7), `EFFECT_INDOUBT` (K9), `PAYLOAD_SHREDDED` (K10), `EXECUTION_MIGRATED` (K11), `APPROVAL_GRANTED` (K12), `TIMER_FIRED` (T1) |
-| **Log lifecycle (K10.1) & erasure (T3)** | `EXECUTION_ARCHIVED`, `EXECUTION_DELETED`, `ERASURE_PENDING` |
+| **Log lifecycle (K10.1) & erasure (T3)** | `EXECUTION_ARCHIVED`, `EXECUTION_DELETED`, `ERASURE_PENDING`, `EVENTS_REHOMED` (the blank-stream repair, [ADR 0107](../adr/0107-compacted-fork-points-and-the-blank-stream.md)) |
 | **Multi-tenant isolation (three-direction arc)** | `EXECUTION_DENIED` — execution-lifecycle authorization ([ADR 0039](../adr/0039-execution-lifecycle-authz.md)) |
 
 The ring events — `EFFECT_DENIED`, `RESOURCE_METERED`, `QUOTA_EXCEEDED`, `SAFETY_BLOCKED`, and the second-series facts above — are governed exactly like every other event: they have pinned fold handlers, so a stored log carrying a denial, a metered cost, a safety block, an in-doubt effect, or a shredded payload replays identically forever. That is what makes the enforcement in K2–K12 durable rather than incidental. Every schema addition so far has been additive (MINOR): `SAFETY_BLOCKED` shipped in 1.1.0, `OUTCOME_RECORDED` in 1.2.0, the K7–K12/T1 facts landed across 1.3.0–1.9.0, and the later series added the log-lifecycle, erasure, isolation and typed-failure changes without a single MAJOR break — see the [changelog in chapter 10](10-event-schema-reference.md).

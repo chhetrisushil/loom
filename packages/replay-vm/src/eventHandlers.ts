@@ -510,6 +510,33 @@ const handlers: Record<string, Handler> = {
       updatedAt: event.timestamp,
     };
   },
+  // ADR 0107 — an operator repair re-homed events the pre-0106 compaction bug had written to
+  // the blank execution `""` into the execution they belong to. Journaled on the lifecycle
+  // stream beside the retention facts (P9): the log records its own repair. Pure audit into
+  // `_lifecycle`; a log that is never repaired replays byte-identically.
+  EVENTS_REHOMED: (state, event) => {
+    const p = event.payload as {
+      executionId: string;
+      fromSequence: number;
+      throughSequence: number;
+      proof: string;
+    };
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _lifecycle: appendAudit(state.variables._lifecycle as unknown[] | undefined, {
+          op: "rehomed",
+          executionId: p.executionId,
+          fromSequence: p.fromSequence,
+          throughSequence: p.throughSequence,
+          proof: p.proof,
+          at: event.timestamp,
+        }),
+      },
+      updatedAt: event.timestamp,
+    };
+  },
   // T3-R4.5 — an erasure was requested but deferred because an execution of the subject was
   // still live (never shred a fold in flight). Folding the erasure control stream recovers the
   // set of subjects awaiting completion, so a parked erasure survives a restart.
@@ -935,7 +962,10 @@ export function getHandler(eventType: string): Handler | undefined {
 //   derived `status` after a STEP_FAILED no lifecycle event has followed (`running`/`suspended`,
 //   not `failed`), and the new key while such a park is open. Snapshots saved by an older fold
 //   are read through `normalizeSnapshotState`.
-export const EVENT_SCHEMA_VERSION = "1.21.0";
+// 1.22.0: added EVENTS_REHOMED (ADR 0107 — the operator repair of the pre-0106 blank-stream
+//   events). Pure audit into `_lifecycle` on the lifecycle stream; a log that is never repaired
+//   replays byte-identically. The re-homed events themselves are the kinds they always were.
+export const EVENT_SCHEMA_VERSION = "1.22.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

@@ -239,11 +239,16 @@ checkpoint.
 - Checkpoints written before this fix may carry a blank identity. They resume correctly now
   (D1). A later compaction folds on such a checkpoint and fills the blank `workflowVersion`
   from the latest snapshot. It stays `""` only if no snapshot ever recorded a version. Events
-  already appended to execution `""` by the old bug are not recovered; `read("")` finds them.
-- `compact` through a log's tip still leaves `[0]`. `fork()` cannot fork at a sequence above
-  the surviving events (its range check is `0..head`). This was already the case before 0106.
+  already appended to execution `""` by the old bug were left in place here. **Closed by
+  [ADR 0107](0107-compacted-fork-points-and-the-blank-stream.md)** D5–D6: the segments a
+  snapshot proves are re-homed (`LogLifecycle.rehomeBlankStream`, `loom repair
+  blank-stream`), the rest is listed with its candidates, and `""` is reserved (D4).
+- `compact` through a log's tip still leaves `[0]`. `fork()` could not fork at a sequence above
+  the surviving events (its range check was `0..head`). **Closed by ADR 0107** D2: the range is
+  the folded tip, and the checkpoint is a fork point.
 
-### Not changed
+### Not changed here
 
-- `fork()` at a sequence inside a compacted prefix is still wrong: the events it would copy
-  and fold are gone. It predates this ADR and is recorded as a residual.
+- `fork()` at a sequence inside a compacted prefix was wrong: the events it would copy and fold
+  are gone. It predated this ADR. **Closed by ADR 0107** D1/D3: such a fork point is served
+  exactly from a snapshot sitting at it, or refused with `CompactedForkPointError`.

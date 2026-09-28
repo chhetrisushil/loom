@@ -36,8 +36,8 @@ function ev(
 }
 
 describe("_flowEmits fold (EVENT_SCHEMA 1.19.0, ADR 0102)", () => {
-  it("declares 1.19.0 or later (1.20.0 is ADR 0104, 1.21.0 is ADR 0105)", () => {
-    expect(EVENT_SCHEMA_VERSION).toBe("1.21.0");
+  it("declares 1.19.0 or later (1.20.0 is ADR 0104, 1.21.0 is ADR 0105, 1.22.0 is ADR 0107)", () => {
+    expect(EVENT_SCHEMA_VERSION).toBe("1.22.0");
   });
 
   it("counts stamped emits per digest, for ANY event type, in a trie over the last hex digits", () => {
