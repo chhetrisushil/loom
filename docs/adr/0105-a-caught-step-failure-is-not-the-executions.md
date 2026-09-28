@@ -134,21 +134,30 @@ the `null` and the gate passed with no approval. That breaks snapshot + tail ≡
 invariant.
 
 **Rule.** A `STEP_FAILED` that lands while the execution is `suspended` sets the reserved fold
-key `variables._failedWhileParked = true` (exported as `FAILED_WHILE_PARKED`). The next
-`EXECUTION_SUSPENDED` or `EXECUTION_RESUMED` removes it; it is absent otherwise, so a log without
-such a failure never gains it. An `EXECUTION_RESUMED` whose payload is `null` is status-only when
+key `variables._failedWhileParked = true` (exported as `FAILED_WHILE_PARKED`). Whatever ends the
+park removes it — the next `EXECUTION_SUSPENDED` or `EXECUTION_RESUMED`, or a terminal
+`EXECUTION_COMPLETED` / `EXECUTION_FAILED` / `EXECUTION_CANCELLED` — so it never survives into a
+terminal state (where a repaired 1.20.0 snapshot would not carry it); it is absent otherwise, so
+a log without such a failure never gains it. An `EXECUTION_RESUMED` whose payload is `null` is status-only when
 the execution is not `suspended`, is parked in doubt (1.20.0), **or carries
 `_failedWhileParked`** (1.21.0). `inspectStrayPassthroughs` mirrors exactly this condition (its
 own `failedWhileParked`, set on a `STEP_FAILED` while its mirrored status is `suspended`, cleared
-at every park and resume), so its entry count still lines up with `_resumePayloads`.
+at every park, resume and terminal event), so its entry count still lines up with `_resumePayloads`.
 `normalizeSnapshotState` sets the key when it repairs a parked 1.20.0 artifact: `failed` with
 `suspendedOn` can only mean the failure landed after the park, because a resume removes
 `suspendedOn` and a park overwrites an earlier `failed`.
 
-**Cost (fail-closed).** A 1.21.0 caller that answers such a gate with an explicit `null` does not
-have it recorded as the gate's answer: the gate re-parks, and the next non-null resume answers
-it. Re-parking is recoverable and visible; a gate passing with no approval is neither. A `null`
-answer to a gate with no failure since it parked is unaffected.
+**Cost (fail-closed), made loud at ingress.** A `null` answer to such a gate cannot be recorded
+as its answer — the fold would read it as status-only, and the gate would re-park. Rather than
+append it and re-park silently, `resume` and `resumeAs` refuse it before anything is appended:
+`ResumeRefusedError`, new reason `null-answer-after-parked-failure`; the caller resumes with a
+non-null answer. The fold rule is unchanged, so a log that already holds such an entry (the
+1.20.0 `resumeAs` null) still folds it as status-only. The refusal covers only caller-supplied
+gate answers onto a gate-parked execution: crash recovery is refused at a park anyway,
+`TimerService` resumes with `{ wakeAt }`, an in-doubt verdict is never `null` and parks on
+`EffectInDoubtResolved` (excluded), and the kernel's own status-only `null` (`answerEvents`) is
+written only for an unparked execution. A `null` answer to a gate with no failure since it parked
+is unaffected.
 
 **Re-derived: what now differs between a 1.20.0 and a 1.21.0 reader.** Every gate passthrough is
 identical: `_resumePayloads` folds the same for every log (a `null` after a while-parked failure
@@ -156,7 +165,8 @@ is status-only in both; every other resume is unchanged). What differs:
 
 - the derived `status` after a `STEP_FAILED` that no lifecycle event has yet followed —
   `running` or `suspended` where 1.20.0 said `failed` — and everything that reads it (D2);
-- the new reserved fold key `_failedWhileParked`, present while such a park is open.
+- the new reserved fold key `_failedWhileParked`, present while such a park is open (never in a
+  terminal state).
 
 That is a change in how existing logs fold plus a new fold key, which K5 versions (1.16.0 bumped
 for an additive fold key alone). So the bump stays: **EVENT_SCHEMA 1.21.0**, no new event kind,
@@ -216,8 +226,11 @@ is parked (`suspendedOn` survives only while parked), `running` otherwise. Every
 read path uses it: `resume`, `resumeAs`, `loadState`/`foldState`, `fork`, `restoreFromState`
 (a preloaded state), `LogLifecycle` and the replay inspector. It cannot repair one case: an execution that genuinely failed, was re-opened
 by `resumeAs` (which keeps `_error`), and then caught a step failure under an older fold — its
-snapshot carries `_error`. Deleting that execution's snapshots (`snapshotStore.deleteExecution`)
-makes the log authoritative.
+snapshot carries `_error`. And one it cannot tell apart: a log whose `EXECUTION_FAILED` has no
+`error` (never kernel-written — the kernel's only writer always records one) leaves a 1.20.0
+snapshot byte-identical to the caught-failure artifact, and is read as not failed. Deleting that
+execution's snapshots (`snapshotStore.deleteExecution`) makes the log authoritative. Snapshots
+the current fold writes are exact for every log.
 
 **Upgrade blast radius.** On the first deploy of 1.21.0, every stored execution whose log ends
 after a caught step failure changes from `failed` to `running`, all at once:
@@ -276,17 +289,20 @@ the interrupted step, forever. It now takes an optional `maxRecoveries`:
 - A gate never passes on a `null` resume recorded after a sibling failed while it was parked,
   whichever snapshot the fold starts from.
 - Tests: `replay-vm/src/stepFailureStatus.test.ts` (the fold; the status property over every
-  `STEP_*` kind × pending/running/suspended; the fail-closed `null` and its negatives; the
-  property snapshot + tail ≡ full log from EVERY sequence, for snapshots written by the current
+  `STEP_*` kind × pending/running/suspended; the fail-closed `null` and its negatives; the mark
+  cleared by every terminal event; the property snapshot + tail ≡ full log from EVERY sequence (incl.
+  park → late failure → cancel / complete / fail), for snapshots written by the current
   fold and by a 1.20.0 replica read through `normalizeSnapshotState`, with the gate passthroughs
   equal to 1.20.0's; `normalizeSnapshotState`), `wire-abi` fold vectors for a caught failure and
   for the fail-closed `null`, `workflow-runtime/src/caughtStepFailure.test.ts` (two-process crash
   → recovery for untyped and typed failures — the typed one never re-invokes the effect —,
   through a mid-run snapshot and a hand-built pre-1.21.0 snapshot; cancel; the late sibling
-  failure stays resumable; an explicit `null` answer in that position re-parks and the next
-  answer lands (the D3 cost); the undurable `EXECUTION_FAILED` rejects with `StorageWriteError`
+  failure stays resumable; a `null` answer in that position is refused by `resume` and by
+  `resumeAs` with nothing appended, and the next non-null answer lands, while a `null` answer
+  with no failure since the park is still taken (the D3 cost); the undurable `EXECUTION_FAILED` rejects with `StorageWriteError`
   while the handle keeps the in-memory view; `restoreFromState` repairs a preloaded pre-1.21.0
-  state; `maxRecoveries` — consecutive, only for claimed candidates, two REAL passes over a
+  state; `maxRecoveries` — consecutive, only for claimed candidates, one bounded read on a store
+  without `readRange`, two REAL passes over a
   poison flow, `0` refused; the negative: an escaped failure is `failed`, never a recovery
   candidate, not cancellable), `strayPassthroughs.test.ts` (the mirror reads the 1.20.0 shape
   as clean at a gate and at a human park; a `null` answer with no failure while parked is still

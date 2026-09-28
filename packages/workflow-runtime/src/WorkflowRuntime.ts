@@ -21,6 +21,7 @@ import { headOf, readRangeOf } from "@loom/event-runtime";
 import { sliceBySequence } from "@loom/event-runtime/sequence";
 import {
   EVENT_SCHEMA_VERSION,
+  FAILED_WHILE_PARKED,
   ReplayVM,
   knownEventTypes,
   normalizeSnapshotState,
@@ -268,6 +269,37 @@ function answerEvents(
   }
   if (before.status === "running" || before.status === "pending") return [];
   return [{ eventType: "EXECUTION_RESUMED", payload: null }];
+}
+
+/**
+ * ADR 0105 — a caller's `null` answer to a gate a parallel step failed on while it was parked.
+ * The fold records that `null` as status-only (`_failedWhileParked`, fail-closed), so appending
+ * it would re-park the gate without telling the caller its answer was not taken. Refused before
+ * anything is appended. Scoped to caller-supplied GATE answers: only `resume` and `resumeAs`
+ * onto a gate-parked execution reach it. Recovery (refused at a park anyway), `TimerService`
+ * (a `{ wakeAt }` payload), in-doubt verdicts (never `null`, and not gate answers) and the
+ * kernel's own status-only `null` (`answerEvents`, written only for unparked executions) do not.
+ */
+function assertNullAnswerTakes(
+  executionId: string,
+  eventType: string,
+  before: ExecutionState,
+  payload: unknown
+): void {
+  if (
+    payload !== null ||
+    before.status !== "suspended" ||
+    before.suspendedOn?.on === EFFECT_INDOUBT_RESOLVED ||
+    before.variables[FAILED_WHILE_PARKED] !== true
+  ) {
+    return;
+  }
+  throw new ResumeRefusedError(
+    executionId,
+    eventType,
+    "null-answer-after-parked-failure",
+    `a parallel step failed while the execution was parked on "${before.suspendedOn?.on}", and a null answer in that position is recorded as a status-only re-open (ADR 0105), so it would not answer the gate. Nothing was appended. Resume with a non-null answer.`
+  );
 }
 
 /**
@@ -1274,6 +1306,7 @@ export class WorkflowRuntime {
     // `execute`, so neither appends.
     const resumePayload = this.parseResumePayload(executionId, resolved.definition, resumeEvent);
     assertInDoubtVerdict(executionId, vm.getState(), resumePayload);
+    assertNullAnswerTakes(executionId, resumeEvent.eventType, vm.getState(), resumePayload);
 
     const discardEvents = this.checkStrayPassthroughs(
       executionId,
@@ -1433,6 +1466,7 @@ export class WorkflowRuntime {
     // before the EXECUTION_MIGRATED append, so a rejected payload leaves no migration behind.
     const resumePayload = this.parseResumePayload(executionId, target.definition, resumeEvent);
     assertInDoubtVerdict(executionId, state, resumePayload);
+    assertNullAnswerTakes(executionId, resumeEvent.eventType, state, resumePayload);
     const discardEvents = this.checkStrayPassthroughs(
       executionId,
       allEvents,

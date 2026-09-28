@@ -433,7 +433,14 @@ export type ResumeRefusalReason =
    * precedes it). Guessing would hand a later gate an approval nobody gave it, so the kernel
    * refuses; nothing is appended. Not retriable: cancel the execution and start it again.
    */
-  | "ambiguous-legacy-answers";
+  | "ambiguous-legacy-answers"
+  /**
+   * ADR 0105 — a `null` answer to a gate a parallel step failed on while it was parked. The
+   * fold records such a `null` as status-only (fail-closed: `_failedWhileParked`), so it would
+   * not answer the gate; rather than silently re-parking, the kernel refuses it and appends
+   * nothing. Retriable: resume with a non-null answer.
+   */
+  | "null-answer-after-parked-failure";
 
 /**
  * The resume ingress gate refused. Nothing was appended: the execution is

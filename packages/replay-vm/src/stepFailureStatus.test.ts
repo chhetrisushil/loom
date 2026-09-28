@@ -147,6 +147,17 @@ describe("a parallel sibling that fails after the flow parked (1.21.0)", () => {
     expect(state.variables._resumePayloads).toEqual([null]);
   });
 
+  for (const [terminal, payload] of [
+    ["EXECUTION_CANCELLED", { reason: "operator" }],
+    ["EXECUTION_COMPLETED", {}],
+    ["EXECUTION_FAILED", {}],
+  ] as const) {
+    it(`${terminal} ends the park, so the mark does not outlive it`, () => {
+      const state = foldEvents([...parkedThenFailed, envelope(4, terminal, payload)]);
+      expect(Object.hasOwn(state.variables, FAILED_WHILE_PARKED)).toBe(false);
+    });
+  }
+
   it("a log with no late failure never gains the key", () => {
     const state = foldEvents([
       ...prefix,
@@ -190,6 +201,25 @@ describe("snapshot + tail ≡ full log, for every shape ADR 0105 touches, from a
       e("EXECUTION_RESUMED", { ok: true }),
       e("EXECUTION_COMPLETED", { output: { ok: true } }),
     ],
+    ...Object.fromEntries(
+      (
+        [
+          ["EXECUTION_CANCELLED", { reason: "operator" }],
+          ["EXECUTION_COMPLETED", { output: {} }],
+          // As the kernel writes it: its only EXECUTION_FAILED writer always records `error`.
+          ["EXECUTION_FAILED", { error: "Error: x" }],
+        ] as const
+      ).map(([terminal, payload]) => [
+        `park, late sibling failure, then ${terminal}`,
+        () => [
+          e("EXECUTION_STARTED", { input: {} }),
+          e("STEP_STARTED", { stepId: "slow" }),
+          e("EXECUTION_SUSPENDED", { condition: { on: "Approval" } }),
+          e("STEP_FAILED", { stepId: "slow", error: "late boom" }),
+          e(terminal, payload),
+        ],
+      ])
+    ),
     "caught failure, then a crash": () => [
       e("EXECUTION_STARTED", { input: {} }),
       e("STEP_STARTED", { stepId: "a" }),
@@ -212,6 +242,10 @@ describe("snapshot + tail ≡ full log, for every shape ADR 0105 touches, from a
       // Every gate passthrough is the one 1.20.0 folded (D3): the bump changes status, not answers.
       expect(full.variables._resumePayloads).toEqual(legacyFold(log).variables._resumePayloads);
       for (let k = 0; k < log.length; k++) {
+        // (An EXECUTION_FAILED WITHOUT `error` — never kernel-written — is the one exception for a
+        // 1.20.0 snapshot: after it, that snapshot is byte-for-byte the old fold's caught-failure
+        // artifact, so normalizeSnapshotState cannot tell them apart. Current snapshots hold for it
+        // too; see the next test.)
         const head = log.slice(0, k + 1);
         const tail = log.slice(k + 1);
         // A snapshot the current fold wrote…
@@ -224,6 +258,22 @@ describe("snapshot + tail ≡ full log, for every shape ADR 0105 touches, from a
       }
     });
   }
+});
+
+describe("snapshot + tail ≡ full log for an EXECUTION_FAILED without `error` (current snapshots)", () => {
+  it("holds from every sequence", () => {
+    const log = [
+      ...prefix,
+      envelope(2, "EXECUTION_SUSPENDED", { condition: { on: "Approval" } }),
+      envelope(3, "STEP_FAILED", { stepId: "s1", error: "late boom" }),
+      envelope(4, "EXECUTION_FAILED", {}),
+    ];
+    const full = foldEvents(log);
+    expect(full.status).toBe("failed");
+    for (let k = 0; k < log.length; k++) {
+      expect(foldEvents(log.slice(k + 1), foldEvents(log.slice(0, k + 1))), `@${k}`).toEqual(full);
+    }
+  });
 });
 
 describe("normalizeSnapshotState — a snapshot folded before 1.21.0 (ADR 0105)", () => {

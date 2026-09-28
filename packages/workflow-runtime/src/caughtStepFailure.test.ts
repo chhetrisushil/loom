@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { recoverAbandoned } from "./recoverAbandoned";
+import { ResumeRefusedError } from "./types";
 import type { FlowRunner, RegisteredFlow } from "./types";
 
 // ── ADR 0105 — a step failure the flow catches is not the execution's failure ──
@@ -303,7 +304,8 @@ describe("a caught step failure is not the execution's failure (ADR 0105)", () =
 });
 
 /** A flow whose parallel sibling fails AFTER the flow parks on `Approval`. */
-function parkedBoot() {
+/** `failFirst`: the step fails and is caught BEFORE the flow parks (sequential, not a sibling). */
+function parkedBoot(opts: { failFirst?: boolean } = {}) {
   const effects = new EffectRuntime();
   effects.register(
     "tool-slow",
@@ -329,6 +331,11 @@ function parkedBoot() {
     steps: [slow],
   };
   const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) => {
+    if (opts.failFirst) {
+      await ctx.run(slow, {}).catch(() => "caught");
+      const answer = await ctx.suspend<{ ok: boolean } | null>({ on: "Approval" });
+      return { ok: answer === null };
+    }
     const [, answer] = await Promise.all([
       ctx.run(slow, {}).catch(() => "caught"),
       ctx.suspend<{ ok: boolean }>({ on: "Approval" }),
@@ -357,25 +364,56 @@ describe("a parallel sibling that fails after the flow parked (ADR 0105)", () =>
   });
 });
 
-describe("the documented cost of the fail-closed rule (ADR 0105 D3)", () => {
-  it("an explicit null answer to a gate whose sibling failed while parked re-parks the gate; the next answer lands", async () => {
-    const { runtime, flow } = parkedBoot();
+describe("a null answer after a parked failure is refused, not silently re-parked (ADR 0105 D3)", () => {
+  it("resume with a null answer is refused and appends nothing; a non-null answer then lands", async () => {
+    const { runtime, eventStore, flow } = parkedBoot();
     const handle = await runtime.start(flow, {}, { executionId: "null-answer" });
     await handle.waitForSuspend();
     await settle(80); // the sibling fails after the park
+    const before = await eventStore.read("null-answer");
 
-    const nulled = await runtime.resume("null-answer", { eventType: "Approval", payload: null });
-    const reparked = await nulled.waitForSuspend();
-    expect(reparked.status).toBe("suspended");
-    expect(reparked.suspendedOn?.on).toBe("Approval");
-    // The null was status-only: it is not recorded as any gate's answer.
-    expect(reparked.variables._resumePayloads).toBeUndefined();
+    const err = await runtime.resume("null-answer", { eventType: "Approval", payload: null }).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(ResumeRefusedError);
+    expect((err as ResumeRefusedError).reason).toBe("null-answer-after-parked-failure");
+    expect(await eventStore.read("null-answer")).toEqual(before);
 
     const answered = await runtime.resume("null-answer", {
       eventType: "Approval",
       payload: { ok: true },
     });
     await expect(answered.waitForCompletion()).resolves.toMatchObject({
+      status: "completed",
+      variables: { _output: { ok: true } },
+    });
+  });
+
+  it("resumeAs with a null answer onto such a park is refused the same way (it is a gate answer too)", async () => {
+    const { runtime, eventStore, flow } = parkedBoot();
+    const handle = await runtime.start(flow, {}, { executionId: "null-as" });
+    await handle.waitForSuspend();
+    await settle(80);
+    const before = await eventStore.read("null-as");
+    await expect(
+      runtime.resumeAs(
+        "null-as",
+        "par",
+        { eventType: "Approval", payload: null },
+        { strategy: "operator-ack" }
+      )
+    ).rejects.toMatchObject({ reason: "null-answer-after-parked-failure" });
+    expect(await eventStore.read("null-as")).toEqual(before);
+  });
+
+  it("negative: a null answer to a park with NO failure since it parked is still accepted", async () => {
+    const { runtime, flow } = parkedBoot({ failFirst: true });
+    const handle = await runtime.start(flow, {}, { executionId: "null-ok" });
+    await handle.waitForSuspend(); // the step failed (and was caught) BEFORE the park
+    const resumed = await runtime.resume("null-ok", { eventType: "Approval", payload: null });
+    // The null IS the gate's answer here.
+    await expect(resumed.waitForCompletion()).resolves.toMatchObject({
       status: "completed",
       variables: { _output: { ok: true } },
     });
@@ -508,6 +546,27 @@ describe("recoverAbandoned `maxRecoveries` (ADR 0105)", () => {
       (e) => e.eventType === "EXECUTION_RECOVERED"
     );
     expect(recovered).toHaveLength(2);
+  });
+
+  it("a store without readRange gets one bounded read, and counts the same", async () => {
+    const a = await strandedWithRecoveries(2);
+    // What the kernel sees of a store that does not implement the optional `readRange`.
+    Object.defineProperty(a.stores.eventStore, "readRange", { value: undefined });
+    let reads = 0;
+    const readFrom = a.stores.eventStore.readFrom.bind(a.stores.eventStore);
+    a.stores.eventStore.readFrom = async (id: string, from: number) => {
+      if (id === "poison") reads++;
+      return readFrom(id, from);
+    };
+    const b = boot({ shared: a.stores, catches: true });
+    const readsBefore = reads;
+    const summary = await recoverAbandoned(b.runtime, {
+      source: b.stores.eventStore,
+      isAbandoned: () => true,
+      maxRecoveries: 2,
+    });
+    expect(summary).toMatchObject({ exhausted: 1, recovered: 0 });
+    expect(reads - readsBefore).toBeLessThanOrEqual(2); // the fold's tail read + ONE count read
   });
 
   it("refuses a malformed bound, including 0 (it would skip everything)", async () => {
