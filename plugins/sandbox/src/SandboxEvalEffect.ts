@@ -71,6 +71,9 @@ export class SandboxEvalEffect implements Effect {
             ...(workers.hardKillGraceMs !== undefined && {
               hardKillGraceMs: workers.hardKillGraceMs,
             }),
+            ...(workers.startupLivenessMs !== undefined && {
+              startupLivenessMs: workers.startupLivenessMs,
+            }),
           });
   }
 

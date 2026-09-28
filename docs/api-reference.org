@@ -1961,7 +1961,11 @@ Reached through ~app.knowledge(scope)~, over the same ~memoryStore~ that backs ~
 #+begin_src typescript
 function sandboxEval$(id: string, toolId?: string /* default SANDBOX_TOOL_ID */): StepDefinition<SandboxEvalInputValue, unknown>
 function registerSandboxEval(effectRuntime: EffectRuntime, scripts: ScriptReader, spec?: SandboxSpec): SandboxEvalEffect
-interface SandboxSpec { id?: string; limits?: SandboxLimits; workers?: { count?: number; hardKillGraceMs?: number } }
+interface SandboxSpec { id?: string; limits?: SandboxLimits; workers?: SandboxWorkers }
+interface SandboxWorkers { count?: number;
+                           hardKillGraceMs?: number;    // past wallClockMs before a hard kill; default 2000
+                           startupLivenessMs?: number } // run not STARTED (from dispatch) within wallClockMs + grace + this → error; default 10000
+                                                        // both must be finite and >= 0
 // step input: { scriptRef: ContentRef; input?: unknown; expectedOutputShapeHash?: string }
 const SANDBOX_ERRORS: {             // typed failure channels (ADR 0060) — zod schemas
   scriptMissing: { ref: string };
@@ -1973,6 +1977,7 @@ interface SandboxLimits { memoryBytes?: number; interruptBudget?: number; wallCl
                           maxOutputBytes?: number }   // EMISSION is capped too — output lands in the log
 function shapeOf(value: unknown): string; function shapeHash(value: unknown): string
 class SandboxWorkerPool {}    // opt-in (ADR 0089): a hard kill for a script that never yields
+class SandboxWorkerStartupError extends Error { waitedMs: number; limitMs: number }  // not a TypedFailure; retryable by default
 // a `scriptRef` is re-hashed before eval — ContentStore.get carries no verify-on-read obligation
 #+end_src
 

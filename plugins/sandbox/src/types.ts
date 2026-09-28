@@ -61,12 +61,22 @@ export interface SandboxWorkers {
    * between callbacks runs past it. This is the backstop that ends that class.
    * It is measured from the same instant as the in-VM clock, and it stops when
    * the worker marks the run finished, so the grace need only cover the in-VM
-   * `dump` of the result and disposing the runtime. The WASM compile on a cold
-   * worker, input parse/seeding, and encoding the result afterwards are not
-   * charged to it; they are bounded by the pool's startup-liveness window
-   * instead (`SandboxWorkerStartupError`).
+   * `dump` of the result and disposing the runtime.
+   *
+   * Not charged to it: a cold worker's spawn and WASM compile, and input
+   * parse/seeding — those are bounded by `startupLivenessMs` instead. Nor is
+   * encoding and posting the result once the run is marked finished; that runs
+   * no script code and is bounded only by the worker replying.
    */
   hardKillGraceMs?: number;
+  /**
+   * How long past `wallClockMs + hardKillGraceMs` a run may go without STARTING
+   * — counted from dispatch, so it covers a cold worker's spawn and WASM
+   * compile, input parse, runtime creation and seeding — before its worker is
+   * terminated and the run fails with `SandboxWorkerStartupError` (untyped, so
+   * retryable by default). Default 10 000 ms. Must be a finite number >= 0.
+   */
+  startupLivenessMs?: number;
 }
 
 /** Static description of a sandbox executor (P5 — wiring is static). */

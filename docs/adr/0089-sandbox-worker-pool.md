@@ -104,18 +104,27 @@ from worker mode for a trivial script in-process mode completed.
 #### The uncharged phases are bounded by startup liveness
 
 Excluding a phase from the script's budget does not leave it unbounded. Every
-phase before the in-VM clock is armed — the worker being scheduled, parsing the
-input, creating the runtime, seeding the input — is bounded by the pool's
-startup-liveness window: a run that has not *started* within
+phase from dispatch until the in-VM clock is armed — a cold worker's spawn and
+WASM compile, the worker being scheduled, parsing the input, creating the
+runtime, seeding the input — is bounded by ONE startup-liveness window, counted
+from dispatch: a run that has not *started* within
 `wallClockMs + hardKillGraceMs + startupLivenessMs` (default 10 s past the
-budget) has its worker terminated and replaced, and fails with
-`SandboxWorkerStartupError`. That failure is deliberately **not** a typed
+budget, configurable as `workers.startupLivenessMs`) has its worker terminated
+and replaced, and fails with `SandboxWorkerStartupError`. The compile is under
+it too: a cold worker that never acknowledges `ready` is reclaimed the same
+way, rather than stranding its run. That failure is deliberately **not** a typed
 channel. `limitExceeded` is recorded as the script's outcome and routes to
 drift-repair, and nothing the script did explains a worker that never started
 it. It is a named error class instead, so retry middleware can tell it apart
 from a script failure — and because it is not a `TypedFailure`,
 `retryMiddleware`'s default already retries it. How large an input may be is a
 separate question (an input-size ceiling), not this backstop's job.
+
+One phase is bounded by neither clock: after the worker marks the run finished,
+it encodes the result and posts it. That runs no script code — the script's own
+`toJSON` ran inside `dump`, before the mark, where the hard kill still covers
+it — so it is bounded only by the worker replying, and a worker that dies there
+settles the run through the pool's death handling.
 
 ### D5 — Payloads cross as transferred JSON bytes, not structured clones
 
