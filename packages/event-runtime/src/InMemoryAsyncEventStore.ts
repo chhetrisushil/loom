@@ -325,6 +325,7 @@ export class InMemoryAsyncEventStore implements EventStore {
   async close(): Promise<void> {
     this.ids.clear();
     this.log.clear();
+    this.sortedIds = undefined;
     this.subscribers.clear();
   }
 }

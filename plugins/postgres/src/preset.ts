@@ -15,6 +15,12 @@ export interface PostgresStorageOptions {
    * {@link PostgresEventStore}'s options. Every node on the database must agree. Default 16.
    */
   notifyBuckets?: number;
+  /**
+   * L10 / ADR 0108 D3 — how long the one-time `events.execution_id` collation conversion may
+   * wait for its table lock at boot (default 2000 ms; it gives up with a WARNING). The preset
+   * builds the event store first on its shared pool, so this value is the one that migrates.
+   */
+  migrationLockTimeoutMs?: number;
 }
 
 /**
@@ -37,6 +43,9 @@ export function postgresStorage(options: PostgresStorageOptions): CustomStorage 
   const { pool, owned } = toPool(options.url);
   const eventStore = new PostgresEventStore(pool, {
     ...(options.notifyBuckets !== undefined && { notifyBuckets: options.notifyBuckets }),
+    ...(options.migrationLockTimeoutMs !== undefined && {
+      migrationLockTimeoutMs: options.migrationLockTimeoutMs,
+    }),
   });
   const snapshotStore = new PostgresSnapshotStore(pool);
   const branchRegistry = options.branching === true ? new PostgresBranchRegistry(pool) : undefined;

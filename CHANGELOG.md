@@ -31,12 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under an ACCESS EXCLUSIVE lock once — ~4.5 s per 2M events measured; plan a window for a
   large log), then re-`ANALYZE`s the column (the ALTER drops its statistics, and the planner
   then pages with a seq scan + sort), so paging stays index-only and appends get cheaper
-  (memcmp instead of `strcoll`). The conversion waits at most `lockTimeoutMs` (default 2000;
-  `migratePostgresStores(pool, { lockTimeoutMs })` or
-  `PostgresEventStoreOptions.migrationLockTimeoutMs`) for its lock, so it cannot queue every
-  append behind itself; if the lock times out, a user view or rule depends on the column, or
-  the role does not own the table, boot continues with a WARNING naming the two statements to
-  run by hand — paging stays correct (the query says `COLLATE "C"` itself), only slower.
+  (memcmp instead of `strcoll`). The conversion waits at most `lockTimeoutMs` for its lock
+  (default 2000; set it reliably with `migratePostgresStores(pool, { lockTimeoutMs })` before
+  constructing stores, or via `PostgresEventStoreOptions.migrationLockTimeoutMs` /
+  `postgresStorage({ migrationLockTimeoutMs })`, which apply when that store migrates the pool
+  first), so it cannot queue every append behind itself, then restores the caller's
+  `lock_timeout`. The rebuild itself is exempt from `statement_timeout` (restored afterwards),
+  so a pool-level timeout cannot abort it on every boot. If the lock wait times out, the
+  statement is cancelled, or a user view or rule depends on the column, boot continues with a
+  WARNING naming the two statements to run by hand — paging stays correct (the query says
+  `COLLATE "C"` itself), only slower. ADR 0108 D3 makes this the policy for future boot
+  migrations that take an exclusive lock.
   Also fixed on the same path: `Sharded(TenantScoped(…))`, the composition
   `TenantScopedEventStore` documents, re-served its first page forever, because the tenant view
   handed out its INNER (prefixed) cursor while the sharded merge handed back an outer id; it now

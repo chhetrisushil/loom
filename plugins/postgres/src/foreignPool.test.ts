@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PostgresEventStore } from "./PostgresEventStore";
 import { PostgresSnapshotStore } from "./PostgresSnapshotStore";
+import { postgresStorage } from "./preset";
 
 // The claim these tests exist to check: the stores speak only the PUBLIC pool surface, so
 // a pool built by a different copy of `pg` (or by something that is not `pg`) is usable,
@@ -74,6 +75,14 @@ describe("a pool from another copy of pg (or no pg at all)", () => {
     expect(sql.some((s) => s.includes("CREATE TABLE IF NOT EXISTS events"))).toBe(true);
     expect(sql.at(-1)).toBe("COMMIT");
     expect(releases()).toBe(1); // checked back in, exactly once
+  });
+
+  it("postgresStorage passes migrationLockTimeoutMs to the migration (L10, ADR 0108 D3)", async () => {
+    const { pool, clientCalls } = recordingPool();
+    const storage = postgresStorage({ url: pool as never, migrationLockTimeoutMs: 750 });
+    await storage.eventStore.read("x1");
+    const set = clientCalls.find((c) => c.sql.includes("loom.l10_lock_timeout"));
+    expect(set?.values).toEqual(["750ms"]);
   });
 
   it("appends through it, fence check and NOTIFY intact", async () => {

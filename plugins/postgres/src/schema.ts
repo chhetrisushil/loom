@@ -40,9 +40,13 @@ export interface MigrateOptions {
   /**
    * L10 — how long the one-time `events.execution_id` collation conversion may WAIT for its
    * table lock before giving up (with a WARNING; boot continues). Short on purpose: while
-   * the ALTER waits, every append queues behind it. Default 2000 ms. The migration runs once
-   * per pool, so the first caller's value wins — pass it to `migratePostgresStores` before
-   * constructing stores, or via `PostgresEventStoreOptions.migrationLockTimeoutMs`.
+   * the ALTER waits, every append queues behind it. Default 2000 ms.
+   *
+   * The migration runs ONCE per pool and the first migrator's value wins, so the reliable way
+   * to set it is `await migratePostgresStores(pool, { lockTimeoutMs })` BEFORE constructing any
+   * store on that pool. `PostgresEventStoreOptions.migrationLockTimeoutMs` and
+   * `postgresStorage({ migrationLockTimeoutMs })` pass it too, but only take effect if that
+   * store is the first to migrate its pool (the preset builds the event store first).
    */
   lockTimeoutMs?: number;
 }
@@ -82,7 +86,16 @@ async function runMigration(pool: PoolLike, lockTimeoutMs: number): Promise<void
     await client.query("SELECT set_config('loom.l10_lock_timeout', $1, true)", [
       `${lockTimeoutMs}ms`,
     ]);
-    await client.query(DDL);
+    await client.query(DDL_EVENTS);
+    // L10 — the collation conversion may rebuild two indexes on a large log: exempt THAT
+    // statement (only) from the caller's statement_timeout, then restore it. Transaction-local.
+    const { rows } = await client.query<{ st: string }>(
+      "SELECT current_setting('statement_timeout') AS st"
+    );
+    await client.query("SELECT set_config('statement_timeout', '0', true)");
+    await client.query(L10_COLLATION);
+    await client.query("SELECT set_config('statement_timeout', $1, true)", [rows[0]?.st ?? "0"]);
+    await client.query(DDL_REST);
     await client.query("COMMIT");
   } catch (err) {
     // Best-effort rollback; the original error is what the caller needs to see.
@@ -93,7 +106,7 @@ async function runMigration(pool: PoolLike, lockTimeoutMs: number): Promise<void
   }
 }
 
-const DDL = `
+const DDL_EVENTS = `
     CREATE TABLE IF NOT EXISTS events (
       id TEXT NOT NULL PRIMARY KEY,
       workflow_id TEXT NOT NULL,
@@ -105,26 +118,41 @@ const DDL = `
       metadata JSONB,
       UNIQUE (execution_id, sequence)
     );
-    -- L10 (EventStore SPI 2.0.0, ADR 0108): execution ids page in code point order, which is
-    -- COLLATE "C", never the database's collation. A table created before L10 inherited the
-    -- database collation (en_US.UTF-8 on most clusters), so ShardedEventStore's merge, which
-    -- is in code point order, skipped ids. Converting the column in place is binary-coercible
-    -- (text -> text): no table rewrite, but idx_events_exec and the UNIQUE index are rebuilt
-    -- under an ACCESS EXCLUSIVE lock, ONCE (~4.5 s per 2M events measured; see the L10 PR).
-    -- Guarded by the catalog, so every later boot is a no-op. Equality lookups are unchanged
-    -- by the collation, and "C" comparisons are plain memcmp, so appends get cheaper.
-    --
-    -- * ALTER ... TYPE drops the column's statistics, and the planner then pages with a seq
-    --   scan + sort, so the column is re-ANALYZEd in the same step.
-    -- * The lock wait is bounded (loom.l10_lock_timeout, set by runMigration): an ALTER queued
-    --   behind a long transaction would otherwise queue every append behind ITSELF.
-    -- * If the conversion cannot run — the lock timed out, a user view/rule depends on the
-    --   column, or the role does not own the table — boot continues with a WARNING naming the
-    --   statements to run by hand. Correctness does not depend on it (the paging query says
-    --   COLLATE "C" explicitly); only paging speed does, and loudly. The subtransaction's
-    --   rollback also restores lock_timeout.
-    -- The collation is looked up in pg_collation rather than cast via ::regcollation (PG 13+).
+`;
+
+/**
+ * L10 (EventStore SPI 2.0.0, ADR 0108): execution ids page in code point order, which is
+ * COLLATE "C", never the database's collation. A table created before L10 inherited the
+ * database collation (en_US.UTF-8 on most clusters), so ShardedEventStore's merge, which is in
+ * code point order, skipped ids. Converting the column in place is binary-coercible
+ * (text -> text): no table rewrite, but idx_events_exec and the UNIQUE index are rebuilt under
+ * an ACCESS EXCLUSIVE lock, ONCE (~4.5 s per 2M events measured). Guarded by the catalog, so
+ * every later boot is a no-op. Equality lookups are unchanged by the collation, and "C"
+ * comparisons are plain memcmp, so appends get cheaper.
+ *
+ * The boot-migration policy of ADR 0108 D3:
+ *  - The LOCK WAIT is bounded (`loom.l10_lock_timeout`, set by runMigration): an ALTER queued
+ *    behind a long transaction would otherwise queue every append behind ITSELF. The caller's
+ *    `lock_timeout` is captured and RESTORED after the ALTER, so the rest of the migration runs
+ *    under the operator's setting, not an unbounded one.
+ *  - The REBUILD is not bounded: runMigration runs this block with `statement_timeout = 0`
+ *    (and restores the caller's value after it), because a pool-level statement timeout
+ *    shorter than the rebuild would abort it on every boot, which is a crash loop that also
+ *    takes the exclusive lock each time. A one-time bounded stall is the accepted cost.
+ *  - ALTER ... TYPE drops the column's statistics, and the planner then pages with a seq scan
+ *    + sort, so the column is re-ANALYZEd in the same step.
+ *  - If the conversion cannot run (the lock wait timed out, an operator cancelled it, or a
+ *    user view/rule depends on the column), boot continues with a WARNING naming the
+ *    statements to run by hand. Correctness does not depend on it (the paging query says
+ *    COLLATE "C" itself); only paging speed does, and loudly. The subtransaction's rollback
+ *    restores lock_timeout. A role that does not own `events` is NOT caught: the migration's
+ *    next CREATE INDEX fails for it anyway, so a WARNING would only precede a fatal error.
+ *  - The collation is looked up in pg_collation rather than cast via ::regcollation (PG 13+).
+ */
+const L10_COLLATION = `
     DO $l10$
+    DECLARE
+      caller_lock_timeout text := current_setting('lock_timeout');
     BEGIN
       IF EXISTS (
         SELECT 1 FROM pg_attribute
@@ -141,10 +169,10 @@ const DDL = `
             true
           );
           ALTER TABLE events ALTER COLUMN execution_id TYPE TEXT COLLATE "C";
-          PERFORM set_config('lock_timeout', '0', true);
+          PERFORM set_config('lock_timeout', caller_lock_timeout, true);
           ANALYZE events (execution_id);
         EXCEPTION
-          WHEN lock_not_available OR feature_not_supported OR insufficient_privilege
+          WHEN lock_not_available OR query_canceled OR feature_not_supported
             OR dependent_objects_still_exist THEN
             RAISE WARNING 'loom: events.execution_id is not COLLATE "C" (%: %). Execution-id paging stays correct but cannot use idx_events_exec until you run: ALTER TABLE events ALTER COLUMN execution_id TYPE TEXT COLLATE "C"; ANALYZE events;',
               SQLSTATE, SQLERRM;
@@ -152,6 +180,9 @@ const DDL = `
       END IF;
     END
     $l10$;
+`;
+
+const DDL_REST = `
     CREATE INDEX IF NOT EXISTS idx_events_exec ON events (execution_id, sequence ASC);
 
     CREATE TABLE IF NOT EXISTS snapshots (
