@@ -27,7 +27,15 @@ export function createA2AClientEffect(
       throw new Error(`A2A send error ${sendResp.status}: ${await sendResp.text()}`);
     }
 
-    const sent = (await sendResp.json()) as { id: string };
+    const sent = (await sendResp.json()) as { id: string } | A2ATaskResult;
+    // A peer that answers `/tasks/send` with the finished task (a synchronous agent — e.g. a
+    // thin shim whose send handler runs the graph and returns its artifact) has already given
+    // the result. Polling for it again cost every such call a full `pollIntervalMs` sleep plus
+    // a second request, and failed outright against a peer that does not keep the task (L18).
+    // A send that returns only `{ id }` (loom's own server: 202) is polled as before.
+    if ("status" in sent && terminalStatuses.has(sent.status)) {
+      return sent;
+    }
     const taskId = sent.id;
     const deadline = Date.now() + timeoutMs;
 

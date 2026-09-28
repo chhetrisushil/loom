@@ -51,12 +51,14 @@ function startFakePeer(text: string): Promise<Fake> {
       );
     });
   });
+  // Loopback by address, not `localhost`: the name costs a resolver round trip per request,
+  // which measured up to ~300 ms on a loaded host and is not what these tests are about (L18).
   return new Promise((resolve) => {
-    server.listen(0, () => {
+    server.listen(0, "127.0.0.1", () => {
       const addr = server.address();
       const port = addr !== null && typeof addr === "object" ? addr.port : 0;
       resolve({
-        url: `http://localhost:${port}`,
+        url: `http://127.0.0.1:${port}`,
         close: () => new Promise((r) => server.close(() => r())),
       });
     });

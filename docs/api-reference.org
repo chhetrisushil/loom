@@ -1834,6 +1834,7 @@ class A2APeerClient {
   registerInto(effectRuntime: EffectRuntime, registry?: PeerAgentRegistrar): Promise<ToolDefinition<A2APeerInput, A2APeerOutput>>
 }
 function createA2AClientEffect(agentUrl: string, options?: { timeoutMs?; headers?; pollIntervalMs? }): A2AEffect<A2ATask, A2ATaskResult>
+// ^ a terminal task (completed/failed) in the /tasks/send answer is returned as-is; an { id } answer is polled at /tasks/:id
 
 // Inbound: expose a Loom flow as an A2A agent
 function createA2AServer(workflowRuntime: WorkflowRuntime, flow: RegisteredFlow, agentCard: Omit<AgentCard, "url">, options?: { port?: number }): A2AServer
