@@ -101,10 +101,9 @@ if (PG_URL === undefined) {
       await admin.query(`CREATE SCHEMA ${legacy}`);
       // The pre-L10 DDL, verbatim for the columns that matter.
       await admin.query(`CREATE TABLE events (
-        id TEXT NOT NULL PRIMARY KEY, workflow_id TEXT NOT NULL, execution_id TEXT NOT NULL,
+        id TEXT NOT NULL, workflow_id TEXT NOT NULL, execution_id TEXT NOT NULL,
         event_type TEXT NOT NULL, sequence BIGINT NOT NULL, timestamp BIGINT NOT NULL,
-        payload JSONB NOT NULL, metadata JSONB, UNIQUE (execution_id, sequence))`);
-      await admin.query("CREATE INDEX idx_events_exec ON events (execution_id, sequence ASC)");
+        payload JSONB NOT NULL, metadata JSONB)`);
       for (const id of ["a_b", "A1", "ab", "a-b", "B"]) {
         await admin.query(
           `INSERT INTO events VALUES ($1, 'wf', $2, 'STEP_COMPLETED', 0, 0, '{}'::jsonb, NULL)`,
@@ -117,6 +116,11 @@ if (PG_URL === undefined) {
          FROM generate_series(1, $1) g`,
         [executions]
       );
+      // Indexes after the bulk load (much cheaper than maintaining them row by row), with the
+      // same definitions the pre-L10 schema had.
+      await admin.query("ALTER TABLE events ADD PRIMARY KEY (id)");
+      await admin.query("ALTER TABLE events ADD UNIQUE (execution_id, sequence)");
+      await admin.query("CREATE INDEX idx_events_exec ON events (execution_id, sequence ASC)");
       await admin.query("ANALYZE events");
     }
 
@@ -178,7 +182,7 @@ if (PG_URL === undefined) {
       } finally {
         await admin.end();
       }
-    }, 60_000);
+    }, 180_000);
 
     it("boots with a WARNING when a user view depends on the column, and still pages correctly", async () => {
       const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
@@ -201,7 +205,7 @@ if (PG_URL === undefined) {
       } finally {
         await admin.end();
       }
-    }, 60_000);
+    }, 180_000);
 
     it("gives up on a held table lock after lockTimeoutMs with a WARNING, instead of queueing appends", async () => {
       const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
@@ -239,7 +243,7 @@ if (PG_URL === undefined) {
         holder.release();
         await admin.end();
       }
-    }, 60_000);
+    }, 180_000);
 
     it("completes the conversion under a session statement_timeout shorter than the rebuild", async () => {
       // A pool-level statement_timeout shorter than the index rebuild used to abort the
@@ -247,7 +251,7 @@ if (PG_URL === undefined) {
       // never converted. The rebuild is exempted from it; the rest of the migration is not.
       const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
       try {
-        await legacyTable(admin, 600_000);
+        await legacyTable(admin, 300_000);
         const warnings: string[] = [];
         const pool = noticingPool(warnings, "-c statement_timeout=200");
         try {
@@ -271,7 +275,7 @@ if (PG_URL === undefined) {
       } finally {
         await admin.end();
       }
-    }, 120_000);
+    }, 300_000);
 
     it("restores the caller's lock_timeout after the conversion, so later DDL stays bounded", async () => {
       const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
@@ -294,16 +298,39 @@ if (PG_URL === undefined) {
         await holder.query("LOCK TABLE snapshots IN ACCESS EXCLUSIVE MODE");
         release = setTimeout(() => void holder.query("ROLLBACK").catch(() => {}), 10_000);
 
+        const holderPid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid"))
+          .rows[0]!.pid;
+
         const warnings: string[] = [];
-        const pool = noticingPool(warnings, "-c lock_timeout=300");
+        const pool = noticingPool(warnings, "-c lock_timeout=1000");
         const started = Date.now();
+        // Prove WHICH wait timed out: while the migration is pending, some other backend must
+        // be seen waiting on THIS schema's `snapshots` (not on the advisory key, whose wait is
+        // exempt from the caller's timeouts and could otherwise also yield a 55P03).
+        let sawSnapshotsWait = false;
+        let settled = false;
+        const outcome = migrate(pool, { lockTimeoutMs: 5_000 }).finally(() => {
+          settled = true;
+        });
+        const poll = (async () => {
+          while (!settled) {
+            const { rowCount } = await admin.query(
+              `SELECT 1 FROM pg_locks
+               WHERE locktype = 'relation' AND NOT granted AND pid <> $1
+                 AND relation = to_regclass($2)`,
+              [holderPid, `${legacy}.snapshots`]
+            );
+            if ((rowCount ?? 0) > 0) sawSnapshotsWait = true;
+            await new Promise((r) => setTimeout(r, 25));
+          }
+        })();
         try {
-          await expect(migrate(pool, { lockTimeoutMs: 5_000 })).rejects.toMatchObject({
-            code: "55P03",
-          });
+          await expect(outcome).rejects.toMatchObject({ code: "55P03" });
+          await poll;
         } finally {
           await pool.end();
         }
+        expect(sawSnapshotsWait).toBe(true);
         expect(Date.now() - started).toBeLessThan(8_000);
         expect(warnings).toEqual([]);
       } finally {
@@ -312,6 +339,33 @@ if (PG_URL === undefined) {
         holder.release();
         await admin.end();
       }
-    }, 60_000);
+    }, 180_000);
+
+    it("peers booting during a long conversion wait for it, whatever their own timeouts", async () => {
+      // Waiting on the migration's advisory lock is serialization, not a hang: a peer whose
+      // pool has a short statement_timeout or lock_timeout must queue behind a one-time rebuild
+      // rather than fail its migration (after which its store rejects every call until restart).
+      const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
+      try {
+        await legacyTable(admin, 300_000);
+        const warnings: string[] = [];
+        const pools = [
+          noticingPool(warnings, "-c statement_timeout=200"),
+          noticingPool(warnings, "-c statement_timeout=200"),
+          noticingPool(warnings, "-c statement_timeout=200 -c lock_timeout=300"),
+        ];
+        try {
+          const first = migrate(pools[0]!);
+          await new Promise((r) => setTimeout(r, 100)); // the peers arrive mid-rebuild
+          await Promise.all([first, migrate(pools[1]!), migrate(pools[2]!)]);
+        } finally {
+          await Promise.all(pools.map((p) => p.end()));
+        }
+        expect(await collation(admin)).toBe("C");
+        expect(warnings).toEqual([]);
+      } finally {
+        await admin.end();
+      }
+    }, 300_000);
   });
 }

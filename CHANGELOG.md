@@ -37,7 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `postgresStorage({ migrationLockTimeoutMs })`, which apply when that store migrates the pool
   first), so it cannot queue every append behind itself, then restores the caller's
   `lock_timeout`. The rebuild itself is exempt from `statement_timeout` (restored afterwards),
-  so a pool-level timeout cannot abort it on every boot. If the lock wait times out, the
+  so a pool-level timeout cannot abort it on every boot, and so is waiting on the migration's
+  advisory lock, so a peer booting mid-rebuild queues behind it instead of failing its
+  migration (which left its store refusing every call until restart). If the lock wait times out, the
   statement is cancelled, or a user view or rule depends on the column, boot continues with a
   WARNING naming the two statements to run by hand — paging stays correct (the query says
   `COLLATE "C"` itself), only slower. ADR 0108 D3 makes this the policy for future boot
