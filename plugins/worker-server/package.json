@@ -19,10 +19,10 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@loom/core": "workspace:*",
     "@loom/worker-runtime": "workspace:*"
   },
   "devDependencies": {
-    "@loom/core": "workspace:*",
     "@loom/dispatcher": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
     "@loom/event-runtime": "workspace:*",
