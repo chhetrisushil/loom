@@ -12,12 +12,19 @@
 // deployment should additionally be confined at the OS layer (netns/seccomp/
 // container egress rules) — see the ADR's non-goals.
 
-import type {
-  ChildToParent,
-  IsolatedFetchResponse,
-  IsolatedToolContext,
-  ParentToChild,
+import {
+  type ChildToParent,
+  type IsolatedFetchResponse,
+  type IsolatedToolContext,
+  type ParentToChild,
+  RUNNER_DISCONNECT_EXIT_CODE,
 } from "./types";
+
+// A parent that dies (kill -9) or exits without close() severs the IPC channel; without this the
+// child — which may be a tool holding the loop open — would run on, orphaned to init. Registered
+// FIRST, before the module hook or any tool code. Hardening only: hostile tool code can
+// `process.removeAllListeners("disconnect")` and defeat it; OS-level confinement is out of scope.
+process.on("disconnect", () => process.exit(RUNNER_DISCONNECT_EXIT_CODE));
 
 // Block ambient network BEFORE untrusted code can load it. `ctx.fetch` is the
 // sanctioned path; everything else is denied at require time.

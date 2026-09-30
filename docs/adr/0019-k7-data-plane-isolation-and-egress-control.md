@@ -100,4 +100,10 @@ Adopted per the [K7 evaluation](../requirements/2026-07-10-kernel-hardening-eval
 - The child is untrusted, so its IPC channel is too: a disconnect is death (kill, discard, fail
   the run with `IsolatedToolDisconnectedError`), and the parent never sends without a callback
   or leaves the child's `error` event unhandled.
-
+- Review round 2. The runner exits on `disconnect` (registered before tool code loads) and the
+  parent SIGKILLs live children from one module-level `exit` hook, so an untrusted child holding
+  the event loop open no longer outlives its parent. This is hardening, not confinement: a
+  hostile tool can override the runner's handler (`process.removeAllListeners("disconnect")`),
+  and OS-level confinement remains a non-goal of this ADR. A fetch aborted during DNS answers the
+  tool at once but keeps its concurrency slot until `getaddrinfo` returns (it cannot be
+  cancelled), so pending lookups are bounded by `maxConcurrentFetches`.

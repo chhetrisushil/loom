@@ -46,6 +46,18 @@ function abortable<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T
   });
 }
 
+/** Hooks a caller can attach to observe the parts of a brokered fetch it cannot cancel. */
+export interface BrokeredFetchHooks {
+  /**
+   * Called when a DNS lookup starts, with a promise that resolves (never rejects) when that
+   * lookup ACTUALLY settles — which, after an abort, is later than `brokeredFetch` returning.
+   * getaddrinfo cannot be cancelled, so a caller bounding concurrency holds its slot on this.
+   */
+  lookupStarted?: (settled: Promise<void>) => void;
+}
+
+const noop = (): void => undefined;
+
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
 /**
@@ -63,7 +75,8 @@ export async function brokeredFetch(
   allowlist: ReadonlySet<string>,
   url: string,
   init: IsolatedFetchInit = {},
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  hooks?: BrokeredFetchHooks
 ): Promise<BrokeredResponse> {
   let parsed: URL;
   try {
@@ -83,13 +96,14 @@ export async function brokeredFetch(
   // Resolve-and-pin: connect to the address resolved NOW, not whatever the
   // name resolves to at connect time.
   signal?.throwIfAborted();
-  const pinnedHost =
-    isIP(parsed.hostname) !== 0
-      ? parsed.hostname
-      : await abortable(
-          lookup(parsed.hostname).then((r) => r.address),
-          signal
-        );
+  let pinnedHost: string;
+  if (isIP(parsed.hostname) !== 0) {
+    pinnedHost = parsed.hostname;
+  } else {
+    const looked = lookup(parsed.hostname).then((r) => r.address);
+    hooks?.lookupStarted?.(looked.then(noop, noop));
+    pinnedHost = await abortable(looked, signal);
+  }
   // The lookup itself cannot be cancelled (getaddrinfo), but we stop WAITING for it on abort;
   // check again so an abort that landed as it settled never opens a connection.
   signal?.throwIfAborted();

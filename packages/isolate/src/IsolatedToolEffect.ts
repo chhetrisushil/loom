@@ -4,7 +4,12 @@ import * as path from "node:path";
 import type { Effect, EffectContext } from "@loom/effect-runtime";
 import { knownEventTypes } from "@loom/replay-vm";
 import { EgressDeniedError, brokeredFetch } from "./broker";
-import type { ChildToParent, IsolatedToolSpec, ParentToChild } from "./types";
+import {
+  type ChildToParent,
+  type IsolatedToolSpec,
+  type ParentToChild,
+  RUNNER_DISCONNECT_EXIT_CODE,
+} from "./types";
 
 const KERNEL_EVENT_TYPES: ReadonlySet<string> = new Set(knownEventTypes());
 
@@ -84,6 +89,52 @@ export class IsolatedToolDisconnectedError extends Error {
     );
   }
 }
+
+/**
+ * The run input cannot be sent to the child: it is not JSON-serializable (circular, BigInt, a
+ * throwing `toJSON`, …). Nothing was started; the warm child is untouched and stays usable.
+ */
+export class IsolatedToolInputError extends Error {
+  override readonly name = "IsolatedToolInputError";
+  constructor(
+    readonly toolId: string,
+    cause: unknown
+  ) {
+    super(
+      `isolated tool "${toolId}": input cannot be serialized for the child process: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`
+    );
+  }
+}
+
+/**
+ * Best-effort orphan reaping. Every live child is registered here and ONE module-level `exit`
+ * listener SIGKILLs the survivors when the parent exits without `close()` (not registered per
+ * child or per effect, so many effects add no listeners). `kill -9` on the parent never runs it;
+ * the runner's own `disconnect` handler covers that case. Both are hardening only — hostile tool
+ * code can remove the runner's handler — and OS-level confinement remains out of scope (ADR 0019).
+ */
+const liveChildren = new Set<ChildProcess>();
+let reaperInstalled = false;
+function trackChild(proc: ChildProcess): void {
+  liveChildren.add(proc);
+  proc.once("exit", () => liveChildren.delete(proc));
+  if (reaperInstalled) return;
+  reaperInstalled = true;
+  process.once("exit", () => {
+    for (const p of liveChildren) {
+      try {
+        p.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+  });
+}
+
+/** How long a disconnect waits for the child's `exit` to arrive, so a crash keeps its attribution. */
+const EXIT_GRACE_MS = 100;
 
 /** A brokered fetch exceeded `fetchTimeoutMs` (L24); surfaces in the isolate as `code: "FETCH_TIMEOUT"`. */
 class FetchTimeoutError extends Error {
@@ -193,6 +244,7 @@ export class IsolatedToolEffect implements Effect {
       env: { ...this.spec.env, PATH: process.env.PATH ?? "" },
       stdio: ["ignore", "inherit", "inherit", "ipc"],
     });
+    trackChild(proc);
     const entry: ChildEntry = {
       proc,
       ready: Promise.resolve(),
@@ -208,7 +260,15 @@ export class IsolatedToolEffect implements Effect {
       proc.kill("SIGKILL");
     };
     proc.on("error", bury);
-    proc.on("disconnect", bury);
+    // On a disconnect the entry is discarded at once (no reuse) but the SIGKILL waits out the
+    // grace, so a child that exits by itself (crash, or the runner's own disconnect handler)
+    // keeps its exit code for attribution instead of being pre-empted by our signal.
+    proc.on("disconnect", () => {
+      if (this.entry === entry) this.entry = undefined;
+      const t = setTimeout(() => proc.kill("SIGKILL"), EXIT_GRACE_MS);
+      t.unref();
+      proc.once("exit", () => clearTimeout(t));
+    });
     entry.ready = this.awaitReady(entry);
     // Callers that need the outcome await `ready`; this only keeps an unobserved failure
     // (a pre-warm nobody waited on, a close() mid-warm) from being an unhandled rejection.
@@ -321,18 +381,43 @@ export class IsolatedToolEffect implements Effect {
   ): Promise<unknown> {
     const runId = this.nextRunId++;
 
+    const runMsg: ParentToChild = {
+      type: "run",
+      runId,
+      modulePath: this.spec.modulePath,
+      ...(this.spec.exportName !== undefined && { exportName: this.spec.exportName }),
+      input,
+      ctx: {
+        executionId: ctx.executionId,
+        stepId: ctx.stepId,
+        workflowId: ctx.workflowId,
+        attempt: ctx.attempt,
+        ...(ctx.idempotencyKey !== undefined && { idempotencyKey: ctx.idempotencyKey }),
+      },
+    };
+    // The channel serializes as JSON and `send` throws synchronously on a value it cannot
+    // serialize. Prove it serializes BEFORE any timer/listener exists, so a bad input is a typed
+    // rejection that touches nothing (the healthy child is not killed, nothing leaks).
+    try {
+      JSON.stringify(runMsg);
+    } catch (err) {
+      return Promise.reject(new IsolatedToolInputError(this.spec.id, err));
+    }
+
     return new Promise<unknown>((resolve, reject) => {
       // L24 — aborted the moment the run settles (result, error, kill, crash), so no brokered
       // fetch outlives the run that issued it.
       const runAbort = new AbortController();
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let graceTimer: ReturnType<typeof setTimeout> | undefined;
 
       const settle = (fn: () => void): void => {
         if (settled) return;
         settled = true;
         runAbort.abort(new Error("run ended"));
         if (timer !== undefined) clearTimeout(timer);
+        if (graceTimer !== undefined) clearTimeout(graceTimer);
         child.removeListener("message", onMessage);
         child.removeListener("exit", onExit);
         child.removeListener("disconnect", onDisconnect);
@@ -348,20 +433,45 @@ export class IsolatedToolEffect implements Effect {
         settle(() => reject(reason));
       };
 
+      // A fault raised by a fetch handler fails THIS run only: after it settled the warm child may
+      // be serving the next run, which must not be killed for it.
+      const fault = (err: Error): void => {
+        if (!settled) kill(err);
+      };
+
       const onAbort = (): void => {
         const reason = ctx.signal?.reason;
         kill(reason instanceof Error ? reason : new Error("isolated tool aborted"));
       };
 
-      const onExit = (): void => {
+      const onExit = (code: number | null): void => {
         if (this.entry?.proc === child) this.entry = undefined;
-        settle(() => reject(new Error(`isolated tool "${this.spec.id}" crashed mid-run`)));
+        // The runner's own disconnect handler exits with a dedicated code: the channel closed
+        // (the tool severed it), which is not a crash.
+        settle(() =>
+          reject(
+            code === RUNNER_DISCONNECT_EXIT_CODE
+              ? new IsolatedToolDisconnectedError(this.spec.id)
+              : this.crashed()
+          )
+        );
       };
 
+      // A dying child closes its channel before `exit` fires. Give `exit` a short grace so a real
+      // crash keeps its "crashed mid-run" attribution; a child still alive after it severed the
+      // channel (or a close()) is reported as disconnected and killed. The entry is discarded at
+      // once, so nothing can reuse the child in the gap.
       const onDisconnect = (): void => {
         if (this.entry?.proc === child) this.entry = undefined;
-        child.kill("SIGKILL");
-        settle(() => reject(new IsolatedToolDisconnectedError(this.spec.id)));
+        if (settled || graceTimer !== undefined) return;
+        if (child.exitCode !== null || child.signalCode !== null) {
+          onExit(child.exitCode);
+          return;
+        }
+        graceTimer = setTimeout(() => {
+          child.kill("SIGKILL");
+          settle(() => reject(new IsolatedToolDisconnectedError(this.spec.id)));
+        }, EXIT_GRACE_MS);
       };
 
       const onMessage = (raw: unknown): void => {
@@ -386,7 +496,15 @@ export class IsolatedToolEffect implements Effect {
           return;
         }
         if (msg.type === "fetch" && msg.runId === runId) {
-          void this.handleFetch(child, msg.fetchId, msg.url, msg.init, ctx, runAbort.signal);
+          this.handleFetch(
+            child,
+            msg.fetchId,
+            msg.url,
+            msg.init,
+            ctx,
+            runAbort.signal,
+            fault
+          ).catch((err: unknown) => fault(err instanceof Error ? err : new Error(String(err))));
           return;
         }
         if (msg.type === "result" && msg.runId === runId) {
@@ -420,26 +538,20 @@ export class IsolatedToolEffect implements Effect {
         );
       }
 
-      const runMsg: ParentToChild = {
-        type: "run",
-        runId,
-        modulePath: this.spec.modulePath,
-        ...(this.spec.exportName !== undefined && { exportName: this.spec.exportName }),
-        input,
-        ctx: {
-          executionId: ctx.executionId,
-          stepId: ctx.stepId,
-          workflowId: ctx.workflowId,
-          attempt: ctx.attempt,
-          ...(ctx.idempotencyKey !== undefined && { idempotencyKey: ctx.idempotencyKey }),
-        },
-      };
       // A send that cannot be delivered reports through the callback; without one it would be an
       // 'error' event on the child.
-      child.send(runMsg, (err) => {
-        if (err !== null) onDisconnect();
-      });
+      try {
+        child.send(runMsg, (err) => {
+          if (err !== null) onDisconnect();
+        });
+      } catch {
+        onDisconnect();
+      }
     });
+  }
+
+  private crashed(): Error {
+    return new Error(`isolated tool "${this.spec.id}" crashed mid-run`);
   }
 
   private async handleFetch(
@@ -448,8 +560,19 @@ export class IsolatedToolEffect implements Effect {
     url: string,
     init: Parameters<typeof brokeredFetch>[3],
     ctx: EffectContext,
-    runSignal?: AbortSignal
+    runSignal?: AbortSignal,
+    onFault?: (err: Error) => void
   ): Promise<void> {
+    // `ctx.emit` can throw (e.g. after the run settled). A tool reaches these emits at will, so
+    // one that throws must never escape as an unhandled rejection: fail the run, as the message
+    // relay does, and keep going so the tool is still answered.
+    const emit = (eventType: string, payload: Record<string, unknown>): void => {
+      try {
+        ctx.emit(eventType, payload);
+      } catch (err) {
+        onFault?.(err instanceof Error ? err : new Error(String(err)));
+      }
+    };
     // The child may already be gone (run killed / timed out) by the time a reply is ready.
     const reply = (m: ParentToChild): void => {
       if (child.connected === false) return;
@@ -467,7 +590,7 @@ export class IsolatedToolEffect implements Effect {
     const limit = this.spec.maxConcurrentFetches ?? DEFAULT_MAX_CONCURRENT_FETCHES;
     if (this.inFlightFetches >= limit) {
       const reason = `exceeded ${limit} concurrent brokered fetches`;
-      ctx.emit("EGRESS_DENIED", {
+      emit("EGRESS_DENIED", {
         toolId: this.spec.id,
         stepId: ctx.stepId,
         target: url,
@@ -477,6 +600,17 @@ export class IsolatedToolEffect implements Effect {
       return;
     }
     this.inFlightFetches += 1;
+    // The slot outlives the request when a DNS lookup does: getaddrinfo cannot be cancelled and
+    // holds a libuv threadpool thread, so releasing on abort would let pending lookups pile up
+    // without bound. Released once the fetch is finished AND its lookup (if any) has settled.
+    let lookupPending = false;
+    let finished = false;
+    let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      this.inFlightFetches -= 1;
+    };
     // L24 — one deadline for the whole fetch, plus the run's own end. Both abort the underlying
     // request; the slot is released in `finally` either way.
     const fetchAbort = new AbortController();
@@ -488,7 +622,15 @@ export class IsolatedToolEffect implements Effect {
     if (runSignal?.aborted === true) onRunEnd();
     else runSignal?.addEventListener("abort", onRunEnd, { once: true });
     try {
-      const res = await brokeredFetch(this.spec.id, this.allowlist, url, init, fetchAbort.signal);
+      const res = await brokeredFetch(this.spec.id, this.allowlist, url, init, fetchAbort.signal, {
+        lookupStarted: (settled) => {
+          lookupPending = true;
+          void settled.then(() => {
+            lookupPending = false;
+            if (finished) release();
+          });
+        },
+      });
       const ok: ParentToChild = {
         type: "fetch-result",
         fetchId,
@@ -502,7 +644,7 @@ export class IsolatedToolEffect implements Effect {
       if (err instanceof EgressDeniedError) {
         // K7.3 — the violation is a durable, auditable fact (folded like
         // EFFECT_DENIED), refused before any connection was opened.
-        ctx.emit("EGRESS_DENIED", {
+        emit("EGRESS_DENIED", {
           toolId: this.spec.id,
           stepId: ctx.stepId,
           target: err.target,
@@ -521,7 +663,8 @@ export class IsolatedToolEffect implements Effect {
     } finally {
       clearTimeout(timer);
       runSignal?.removeEventListener("abort", onRunEnd);
-      this.inFlightFetches -= 1;
+      finished = true;
+      if (!lookupPending) release();
     }
   }
 }

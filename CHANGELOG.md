@@ -69,6 +69,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `disconnect` as death (SIGKILL, entry discarded, in-flight run fails with the new exported
   `IsolatedToolDisconnectedError`), checks `proc.connected` before reuse, and sends with
   callbacks.
+  **Review fix round 2:** (1) the runner child no longer outlives its parent: it exits on
+  `disconnect` (exit code 70) registered before any tool code loads, and the parent SIGKILLs live
+  children from ONE module-level `process.exit` hook (a `kill -9` of the parent relies on the
+  runner handler alone). Hardening only: a hostile tool can remove the runner's handler, and
+  OS-level confinement remains out of scope. (2) A DNS abort still answers the tool with
+  `FETCH_TIMEOUT` immediately, but the `maxConcurrentFetches` slot is now held until the
+  uncancellable `getaddrinfo` actually settles, so pending lookups stay bounded by the cap.
+  (3) Every `EGRESS_DENIED` emit in the fetch handler is guarded (a throwing `ctx.emit` fails the
+  run instead of an unhandled rejection in the parent). (4) A child crash or `close()` mid-run
+  keeps its `crashed mid-run` error (the disconnect waits up to 100 ms for `exit`); a child that
+  stays alive after severing its channel, or that exits through the runner's own disconnect
+  handler, is `IsolatedToolDisconnectedError`. (5) A non-JSON-serializable input (circular,
+  BigInt) now rejects with the new exported `IsolatedToolInputError` before any timer or
+  listener is registered, leaving the healthy child alone. `StartupPhase` is now exported.
 
 - **Two retrying dispatchers ping-ponged one execution, re-running its step on every bounce**
   (backlog L20, [ADR 0004 amendment](docs/adr/0004-failure-recovery.md); from the L12 review of
