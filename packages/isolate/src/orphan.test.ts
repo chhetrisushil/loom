@@ -54,17 +54,22 @@ describe("the runner child dies with its parent", () => {
       ? "parent kill -9: the runner exits (no orphan with ppid 1)"
       : "parent process.exit(0) without close(): the runner exits", async () => {
       const { parent, runnerPid } = await runParent(mode);
+      let exited = false;
       try {
         if (mode === "wait") {
           expect(alive(runnerPid)).toBe(true);
           parent.kill("SIGKILL");
         }
-        expect(await gone(runnerPid, 5000)).toBe(true);
+        exited = await gone(runnerPid, 5000);
+        expect(exited).toBe(true);
       } finally {
-        // never leave an orphan, whatever happened above
-        try {
-          process.kill(runnerPid, "SIGKILL");
-        } catch {}
+        // never leave an orphan, whatever happened above — but never signal a pid we already
+        // saw exit, which the OS may have reused
+        if (!exited) {
+          try {
+            process.kill(runnerPid, "SIGKILL");
+          } catch {}
+        }
         parent.kill("SIGKILL");
       }
     }, 30_000);

@@ -120,6 +120,12 @@ let reaperInstalled = false;
 function trackChild(proc: ChildProcess): void {
   liveChildren.add(proc);
   proc.once("exit", () => liveChildren.delete(proc));
+  // a failed spawn (ENOENT/EAGAIN) emits `error` and may never emit `exit`
+  proc.once("error", () => {
+    if (proc.exitCode !== null || proc.signalCode !== null || proc.pid === undefined) {
+      liveChildren.delete(proc);
+    }
+  });
   if (reaperInstalled) return;
   reaperInstalled = true;
   process.once("exit", () => {
@@ -434,7 +440,8 @@ export class IsolatedToolEffect implements Effect {
       };
 
       // A fault raised by a fetch handler fails THIS run only: after it settled the warm child may
-      // be serving the next run, which must not be killed for it.
+      // be serving the next run, which must not be killed for it. A late fault is dropped on
+      // purpose — the run it belonged to has already been answered, so there is no one to tell.
       const fault = (err: Error): void => {
         if (!settled) kill(err);
       };

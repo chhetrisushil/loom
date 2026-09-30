@@ -75,7 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runner handler alone). Hardening only: a hostile tool can remove the runner's handler, and
   OS-level confinement remains out of scope. (2) A DNS abort still answers the tool with
   `FETCH_TIMEOUT` immediately, but the `maxConcurrentFetches` slot is now held until the
-  uncancellable `getaddrinfo` actually settles, so pending lookups stay bounded by the cap.
+  uncancellable `getaddrinfo` actually settles, so pending lookups stay bounded by the cap
+  (`brokeredFetch` takes a new optional `hooks` argument, `BrokeredFetchHooks.lookupStarted`,
+  through which the effect learns when the lookup settles).
   (3) Every `EGRESS_DENIED` emit in the fetch handler is guarded (a throwing `ctx.emit` fails the
   run instead of an unhandled rejection in the parent). (4) A child crash or `close()` mid-run
   keeps its `crashed mid-run` error (the disconnect waits up to 100 ms for `exit`); a child that
