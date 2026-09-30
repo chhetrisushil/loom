@@ -1053,6 +1053,8 @@ export class WorkflowRuntime {
     // ADR 0107 — the same ids `start` refuses: a blank identity (the journal refuses it too)
     // and the control streams.
     assertNotReserved(preloadedState.executionId);
+    // Before any read or append (see `start`): an invalid budget must leave the log untouched.
+    assertValidBudget("deadlineMs", options?.deadlineMs, "restoreFromState options");
     // K11 — the preloaded state carries the recorded flow-code fingerprint;
     // restore resolves the same way a resume does: current code, a pinned
     // version matching the recorded hash, or a loud refusal.
@@ -2066,8 +2068,8 @@ export class WorkflowRuntime {
     deadlineMs?: number,
     principal?: PrincipalChain
   ): ExecutionHandle {
-    // Backstop: `start`/`resume`/`resumeAs` already validated the per-call `options.deadlineMs`
-    // before appending anything; this covers the flow definition's own budget.
+    // Backstop: `start`/`resume`/`resumeAs`/`restoreFromState` already validated the per-call
+    // `options.deadlineMs` before appending anything; this covers the flow definition's own budget.
     assertValidBudget("deadlineMs", deadlineMs, `execution "${executionId}"`);
     let resolveCompletion!: (state: ReturnType<typeof vm.getState>) => void;
     let rejectCompletion!: (err: unknown) => void;
