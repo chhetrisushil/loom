@@ -64,7 +64,7 @@ function startFakeMcpServer(): Promise<FakeServer> {
       const addr = server.address();
       const port = addr !== null && typeof addr === "object" ? addr.port : 0;
       resolve({
-        url: `http://localhost:${port}`,
+        url: `http://127.0.0.1:${port}`,
         close: () => new Promise((r) => server.close(() => r())),
         requests,
         setSchema: (s) => {

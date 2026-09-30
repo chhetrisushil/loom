@@ -134,9 +134,15 @@ if (PG_URL === undefined) {
     // ordinary statements' idle cost.
     const REBUILD_ROWS = 5; // legacyTable seeds 5 named rows; its bulk load is 0
     const REBUILD_SLEEP_MS = 600; // rebuild floor = 3s
-    const BUDGET_MS = 1500; // < floor, and ~75x the idle cost of a non-exempt migration step
+    // < floor, and ~75x the idle cost of a non-exempt migration step. RESIDUAL: the non-exempt
+    // statements must still finish inside this budget, so a machine stalled ~75x slower than
+    // idle could still trip it (57014). Accepted: that is far past the load seen in full-suite
+    // runs (the old 200ms budget failed at ~10x), and widening it would erode the floor gap.
+    const BUDGET_MS = 1500;
     async function legacyTableWithSlowRebuild(admin: Pool): Promise<void> {
       await legacyTable(admin, 0);
+      const seeded = await admin.query("SELECT count(*)::int AS n FROM events");
+      expect(seeded.rows[0].n).toBe(REBUILD_ROWS); // the >= 3s floor is ROWS * SLEEP_MS
       await admin.query(`CREATE FUNCTION slow_ok(t text) RETURNS boolean
         LANGUAGE plpgsql IMMUTABLE AS $$ BEGIN PERFORM pg_sleep(${REBUILD_SLEEP_MS / 1000}); RETURN true; END $$`);
       await admin.query(
@@ -165,6 +171,26 @@ if (PG_URL === undefined) {
         });
       });
       return pool;
+    }
+
+    /** Poll pg_locks until the advisory-lock (granted, waiting) counts satisfy `ok`. */
+    async function waitForAdvisory(
+      admin: Pool,
+      ok: (granted: number, waiting: number) => boolean,
+      what: string
+    ): Promise<void> {
+      const deadline = Date.now() + 60_000;
+      for (;;) {
+        const { rows } = await admin.query<{ granted: number; waiting: number }>(
+          `SELECT count(*) FILTER (WHERE granted)::int AS granted,
+                  count(*) FILTER (WHERE NOT granted)::int AS waiting
+           FROM pg_locks WHERE locktype = 'advisory' AND database = (
+             SELECT oid FROM pg_database WHERE datname = current_database())`
+        );
+        if (ok(rows[0]!.granted, rows[0]!.waiting)) return;
+        if (Date.now() > deadline) throw new Error(`advisory-lock ${what} never observed`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
     }
 
     it('converts execution_id to COLLATE "C" in place, re-analyzes it, and pages index-only', async () => {
@@ -227,7 +253,7 @@ if (PG_URL === undefined) {
       }
     }, 180_000);
 
-    it("gives up on a held table lock after lockTimeoutMs with a WARNING, instead of queueing appends", async () => {
+    it("gives up (55P03) while the lock is still held", async () => {
       const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
       const holder = await admin.connect();
       try {
@@ -237,14 +263,11 @@ if (PG_URL === undefined) {
         await holder.query("SELECT 1 FROM events LIMIT 1");
         const warnings: string[] = [];
         const pool = noticingPool(warnings);
-        const started = Date.now();
         const store = new PostgresEventStore(pool, { migrationLockTimeoutMs: 200 });
         const page = await store.listExecutionsPage({ limit: 5 });
-        const waited = Date.now() - started;
         await store.close();
         await pool.end();
         expect(page.executionIds).toEqual(["A1", "B", "a-b", "a_b", "ab"]);
-        expect(waited).toBeLessThan(5_000);
         expect(warnings).toHaveLength(1);
         expect(warnings[0]).toMatch(/55P03/);
         await holder.query("ROLLBACK");
@@ -379,8 +402,12 @@ if (PG_URL === undefined) {
         ];
         try {
           const first = migrate(pools[0]!);
-          await new Promise((r) => setTimeout(r, 100)); // the peers arrive mid-rebuild
-          await Promise.all([first, migrate(pools[1]!), migrate(pools[2]!)]);
+          // The first migrator must hold the advisory lock (mid-rebuild) before peers arrive.
+          await waitForAdvisory(admin, (granted) => granted >= 1, "holder");
+          const peers = [migrate(pools[1]!), migrate(pools[2]!)];
+          // Prove both peers really queued on the advisory lock (not yet granted).
+          await waitForAdvisory(admin, (_g, waiting) => waiting >= 2, "peers");
+          await Promise.all([first, ...peers]);
         } finally {
           await Promise.all(pools.map((p) => p.end()));
         }

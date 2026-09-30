@@ -92,6 +92,14 @@ function makeRuntime(): WorkflowRuntime {
   return runtime;
 }
 
+// The server advertises a hostname URL ("localhost"), which can resolve to ::1 first under
+// load while the server listens on IPv4; requests go to the literal loopback instead.
+const loopback = (u: string): string => {
+  const url = new URL(u);
+  url.hostname = "127.0.0.1";
+  return url.origin;
+};
+
 let server: A2AServer | undefined;
 
 afterEach(async () => {
@@ -116,7 +124,7 @@ describe("createA2AServer", () => {
     );
     await server.start();
 
-    const resp = await fetch(`${server.url}/.well-known/agent.json`);
+    const resp = await fetch(`${loopback(server.url)}/.well-known/agent.json`);
     const card = (await resp.json()) as { name: string; url: string };
     expect(card.name).toBe("Echo Agent");
     expect(card.url).toBe(server.url);
@@ -136,7 +144,7 @@ describe("createA2AServer", () => {
       message: { role: "user", parts: [{ type: "text", text: "hello" }] },
     };
 
-    const sendResp = await fetch(`${server.url}/tasks/send`, {
+    const sendResp = await fetch(`${loopback(server.url)}/tasks/send`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(task),
@@ -146,7 +154,7 @@ describe("createA2AServer", () => {
 
     let result: A2ATaskResult | undefined;
     for (let i = 0; i < 20; i++) {
-      const statusResp = await fetch(`${server.url}/tasks/${id}`);
+      const statusResp = await fetch(`${loopback(server.url)}/tasks/${id}`);
       result = (await statusResp.json()) as A2ATaskResult;
       if (result.status === "completed" || result.status === "failed") break;
       await new Promise((r) => setTimeout(r, 25));
@@ -172,7 +180,7 @@ describe("createA2AServer", () => {
       message: { role: "user", parts: [{ type: "text", text: "hello" }] },
     };
 
-    const sendResp = await fetch(`${server.url}/tasks/send`, {
+    const sendResp = await fetch(`${loopback(server.url)}/tasks/send`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(task),
@@ -185,7 +193,9 @@ describe("createA2AServer", () => {
       // A client must percent-encode the id before it becomes a path segment (see
       // `createA2AClientEffect`); the server's GET route decodes it back to `weirdId` before
       // looking the task up.
-      const statusResp = await fetch(`${server.url}/tasks/${encodeURIComponent(weirdId)}`);
+      const statusResp = await fetch(
+        `${loopback(server.url)}/tasks/${encodeURIComponent(weirdId)}`
+      );
       result = (await statusResp.json()) as A2ATaskResult;
       if (result.status === "completed" || result.status === "failed") break;
       await new Promise((r) => setTimeout(r, 25));
@@ -221,7 +231,7 @@ describe("createA2AServer", () => {
       emit: () => {},
     };
 
-    const effect = createA2AClientEffect(server.url, { pollIntervalMs: 10 });
+    const effect = createA2AClientEffect(loopback(server.url), { pollIntervalMs: 10 });
     const result = await effect.execute(task, ctx);
 
     expect(result.status).toBe("completed");
@@ -237,7 +247,7 @@ describe("createA2AServer", () => {
     );
     await server.start();
 
-    const resp = await fetch(`${server.url}/tasks/does-not-exist`);
+    const resp = await fetch(`${loopback(server.url)}/tasks/does-not-exist`);
     expect(resp.status).toBe(404);
   });
 });
