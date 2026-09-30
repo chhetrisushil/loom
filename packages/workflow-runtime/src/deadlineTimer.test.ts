@@ -249,6 +249,37 @@ describe("invalid budgets are rejected, never armed as a 1ms timer", () => {
         runtime.start(flow, { n: 1 }, { executionId: "pc", deadlineMs: v })
       ).rejects.toThrow(/deadlineMs must be a finite number > 0/);
       expect(await has(eventStore, "pc", "EXECUTION_CANCELLED")).toBe(false);
+      // Nothing was journalled: the caller-chosen id is not burned and a retry succeeds.
+      expect(await eventStore.read("pc")).toEqual([]);
+      const retry = await runtime.start(flow, { n: 1 }, { executionId: "pc", deadlineMs: 60_000 });
+      expect(retry.executionId).toBe("pc");
+      expect(await has(eventStore, "pc", "EXECUTION_STARTED")).toBe(true);
+    });
+
+    it(`resume / resumeAs with a per-call deadlineMs = ${v} append nothing`, async () => {
+      const { runtime, eventStore } = boot(Date.now, {});
+      await eventStore.append({
+        id: "ex-0",
+        workflowId: "dt",
+        executionId: "ex",
+        eventType: "EXECUTION_STARTED",
+        sequence: 0,
+        timestamp: Date.now(),
+        payload: { input: { n: 1 } },
+      });
+      const before = (await eventStore.read("ex")).length;
+      await expect(
+        runtime.resume("ex", { eventType: "EXECUTION_RECOVERED", payload: {} }, { deadlineMs: v })
+      ).rejects.toThrow(/deadlineMs must be a finite number > 0/);
+      await expect(
+        runtime.resumeAs(
+          "ex",
+          "dt",
+          { eventType: "EXECUTION_RECOVERED", payload: {} },
+          { strategy: "operator-ack", deadlineMs: v }
+        )
+      ).rejects.toThrow(/deadlineMs must be a finite number > 0/);
+      expect((await eventStore.read("ex")).length).toBe(before);
     });
   }
 });
