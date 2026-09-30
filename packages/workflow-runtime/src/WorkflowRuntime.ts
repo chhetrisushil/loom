@@ -197,8 +197,9 @@ export interface WorkflowRuntimeDeps {
    * Injectable clock for event-envelope timestamps (DST/simulation). Timers
    * (`TimerStore.due(now)`, `tick(now)`) take their own `now`; envelope timestamps
    * were the gap — retention windows and content-GC citation ages read them.
-   * `ctx.sleep` / `suspend({ timeout })` wake times and lease expiry checks are NOT
-   * covered: they are always wall-clock (known limitation, tracked as L27/L28).
+   * `ctx.sleep` / `suspend({ timeout })` wake times are NOT covered (L27). Lease expiry
+   * is never judged on this clock: `recoverAbandoned` asks the lease store, which judges on
+   * the same clock that stamped the lease (its own injected `now`).
    * Default: `Date.now` (unchanged, G2).
    *
    * Deadline-relevant: step `timeoutMs` and execution `deadlineMs` are anchored to

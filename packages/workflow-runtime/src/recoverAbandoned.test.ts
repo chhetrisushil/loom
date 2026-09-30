@@ -258,3 +258,30 @@ describe("recoverAbandoned", () => {
     expect(summary.recovered).toBe(2);
   });
 });
+
+// ── L28: lease expiry is judged on the clock that stamped it ─────────────────
+describe("recoverAbandoned lease clock (L28)", () => {
+  it("does not re-drive a live lease under a simulated clock, and does once sim passes expiry", async () => {
+    let sim = 1000;
+    const leases = new InMemoryLeaseStore({ now: () => sim });
+    const { stores, executionId } = await abandonOne();
+    // A healthy holder somewhere else: expiry = 1000 + 60000 on the SIM clock.
+    expect(await leases.acquire(executionId, "holder", 60_000)).not.toBeNull();
+
+    const b = boot({ shared: stores });
+    const pass = () =>
+      recoverAbandoned(b.runtime, {
+        leases: { store: leases, owner: "rec", ttlMs: 60_000 },
+      });
+
+    const live = await pass();
+    expect(live.candidates).toBe(0);
+    expect(live.recovered).toBe(0);
+    expect(b.ran).toEqual([]);
+
+    sim = 62_000;
+    const after = await pass();
+    expect(after.candidates).toBe(1);
+    expect(after.recovered).toBe(1);
+  });
+});

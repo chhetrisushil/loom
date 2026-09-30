@@ -319,8 +319,8 @@ export interface ExecutionOptions {
    * silently disables crash-surviving deadlines (every resume re-grants the full budget);
    * a budget above 2^31-1 ms (~24.8 days) then never fires within a single run either;
    * an OFFSET is safe only if every runtime touching the log uses the same offset.
-   * `ctx.sleep`/`suspend({timeout})` wake times and lease expiry are NOT covered: always
-   * wall-clock (known limitation, L27/L28).
+   * `ctx.sleep`/`suspend({timeout})` wake times are NOT covered (L27). Lease expiry is not
+   * read from this clock either: the lease store judges it on the clock that stamped it.
    */
   now?: () => number;
   /**

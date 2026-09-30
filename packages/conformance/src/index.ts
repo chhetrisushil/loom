@@ -665,6 +665,16 @@ export function runLeaseStoreConformance(factory: () => LeaseStore, label = "Lea
       await store.close();
     });
 
+    it("expired() with no argument judges on the store's own clock (SPI 1.2.0)", async () => {
+      const store = factory();
+      await store.acquire("live", "node-a", 60_000);
+      await store.acquire("dead", "node-a", 1);
+      await new Promise((r) => setTimeout(r, 25));
+      expect((await store.expired()).map((l) => l.executionId)).toEqual(["dead"]);
+      expect((await store.expired(undefined, 1)).map((l) => l.executionId)).toEqual(["dead"]);
+      await store.close();
+    });
+
     it("release frees it for the holder and is a no-op for anyone else", async () => {
       const store = factory();
       await store.acquire("x", "node-a", 1000, 0);
