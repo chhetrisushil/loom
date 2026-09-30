@@ -59,6 +59,8 @@ export interface TimerServiceOptions {
    * clock (`runtime.clock`, i.e. `WorkflowRuntimeDeps.now`), because `ctx.sleep` and
    * `suspend({ timeout })` compute their `wakeAt` with that clock and this service
    * judges it due. One simulated clock therefore needs to be given to the runtime only.
+   * `sleepUntil(absolute)` targets and cron occurrences are measured on this timeline
+   * (the runtime's `now`), not wall time.
    * An explicit override that disagrees with the runtime's clock is honoured, but then
    * `wakeAt` (runtime clock) is compared with a different timeline: timers fire early
    * when this clock runs ahead of the runtime's, and never when it runs behind.

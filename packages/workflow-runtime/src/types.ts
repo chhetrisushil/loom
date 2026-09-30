@@ -149,7 +149,8 @@ export interface ExecutionContext {
   // wake time recorded in the log; a wired TimerService fires the wake as a
   // durable TIMER_FIRED resume, surviving restarts and replaying
   // deterministically (the scheduled time is in the log — wall-clock drift
-  // never enters the fold). Without a timer service the suspension is still
+  // never enters the fold). `ms` and `sleepUntil`'s absolute `wakeAt` are measured on the
+  // runtime clock (`WorkflowRuntimeDeps.now`), not wall time. Without a timer service the suspension is still
   // durable and can be resumed manually (or by any node's service).
   sleep(ms: number): Promise<void>;
   sleepUntil(wakeAt: number): Promise<void>;

@@ -100,7 +100,15 @@ Adopted per the [K8 evaluation](../requirements/2026-07-10-kernel-hardening-eval
   compute `wakeAt` with the runtime's `now`, and `TimerService` defaults its `now` to
   `runtime.clock`, so an offset or simulated clock given to the runtime alone wakes timers
   correctly. An explicit `TimerService` `now` that disagrees with the runtime's fires timers
-  early (ahead) or never (behind). Lease expiry remains wall-clock, tracked as L28.)*
+  early (ahead) or never (behind). Caveat (3): under a FIXED clock, sleeps,
+  `suspend({timeout})` and cron schedules never fire (`wakeAt = FIXED + ms` is judged at FIXED;
+  they used to fire on wall time, including via `defineConfig`): advance the clock or drive
+  `tick(now)` yourself. The OFFSET caveat covers wake times and cron too and applies across an
+  upgrade: timers parked before it carry wall-clock `wakeAt`, so an offset runtime fires them
+  |offset| early or late (never under a fixed clock), and old (wall) and new (offset) nodes
+  disagree during a rolling upgrade; the default wall clock is unaffected. `sleepUntil(absolute)`
+  targets and cron occurrences are measured on the runtime clock, not wall time. Lease expiry
+  remains wall-clock, tracked as L28.)*
 - **A5 — K8.4 is conditional**: no streaming effects exist today; mid-stream budget
   enforcement binds when they land and cannot be middleware (middleware can't observe
   stream progress) — it needs a usage-reporter hook on `EffectContext` or the provider

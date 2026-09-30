@@ -207,8 +207,8 @@ export interface WorkflowRuntimeDeps {
    * journal timestamps written with this clock, and the remaining budget is measured
    * with it too (`now() - anchor`), so the two never mix clocks. The `setTimeout` that
    * enforces a deadline still waits REAL milliseconds, so for a deadline to fire on
-   * time this clock must advance in real time (a fixed or offset clock is fine; a
-   * clock that runs faster or slower than the wall clock skews when deadlines fire).
+   * time this clock must advance in real time (for DEADLINES only, a fixed or offset clock is
+   * fine; a clock that runs faster or slower than the wall clock skews when deadlines fire).
    * A fully simulated clock should not be combined with `timeoutMs`/`deadlineMs`
    * unless the test advances it and drives the timers itself. Not fold-relevant.
    *
@@ -218,7 +218,17 @@ export interface WorkflowRuntimeDeps {
    * single run: elapsed stays 0, so each timer chunk re-arms.
    * (2) An OFFSET is safe only if EVERY runtime touching the log uses the same offset;
    * a recovering node with a different offset eats into the budget, or steps the clock
-   * backwards (the remaining budget is capped at the full budget in that case).
+   * backwards (the remaining budget is capped at the full budget in that case). This
+   * covers timer wake times and cron too (L27), and it applies ACROSS AN UPGRADE: timers
+   * parked in a store before it carry wall-clock `wakeAt`, so a runtime with an offset
+   * clock fires them |offset| early or late (never, under a fixed clock), and during a
+   * rolling upgrade old (wall) and new (offset) nodes disagree. With the default wall
+   * clock nothing changes.
+   * (3) Under a FIXED clock, `ctx.sleep`, `suspend({ timeout })` and cron schedules NEVER
+   * fire (`wakeAt = FIXED + ms` is judged at FIXED; cron cursors are anchored at FIXED);
+   * they used to fire on wall time. Advance the clock, or drive `TimerService.tick(now)`
+   * yourself. `sleepUntil(absolute)` targets and cron occurrences are measured on this
+   * clock's timeline, not wall time.
    */
   now?: () => number;
 }

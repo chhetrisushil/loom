@@ -318,7 +318,15 @@ export interface ExecutionOptions {
    * enforces them waits real milliseconds, so it must advance in real time. A FIXED clock
    * silently disables crash-surviving deadlines (every resume re-grants the full budget);
    * a budget above 2^31-1 ms (~24.8 days) then never fires within a single run either;
-   * an OFFSET is safe only if every runtime touching the log uses the same offset.
+   * an OFFSET is safe only if every runtime touching the log uses the same offset (this
+   * covers timer wake times and cron too, and applies across an upgrade: timers parked
+   * before it carry wall-clock `wakeAt`, so an offset clock fires them |offset| early or
+   * late, never under a fixed clock, and old and new nodes disagree during a rolling
+   * upgrade; the default wall clock is unaffected). Caveat (3): under a FIXED clock,
+   * sleeps, `suspend({ timeout })` and cron schedules NEVER fire (they used to fire on
+   * wall time); advance the clock or drive `tick(now)` yourself. "A fixed or offset clock
+   * is fine" applies to deadlines only. `sleepUntil(absolute)` targets and cron
+   * occurrences are measured on this clock, not wall time.
    * `ctx.sleep`/`suspend({timeout})` wake times use it too, and the `TimerService` that
    * `timers` wires defaults to it, so wake times and the clock that judges them agree
    * (an offset clock still wakes correctly). Lease expiry is not read from this clock: the
