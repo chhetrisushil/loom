@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Step `timeoutMs` and execution `deadlineMs` mixed two clocks** (backlog L26, latent, P3 in
+  production). The deadline anchor is a journal timestamp written with the runtime's injectable
+  `now` (`WorkflowRuntimeDeps.now`), but the remaining budget was computed from raw
+  `Date.now()`. With any `now` that is not the wall clock the remaining time was either hugely
+  negative (every `timeoutMs` step failed with `StepTimeoutError`, every `deadlineMs` execution
+  was cancelled at start) or above 2^31 ms (Node clamps the timer to 1ms). Both are now measured
+  with `now`; `EXECUTION_DENIED` and cancel-of-a-suspended-execution envelopes are stamped with
+  it too. The `setTimeout` still waits real milliseconds, so `now` must advance in real time for
+  a deadline to fire on time; the option's TSDoc said "never fold-relevant" and now says
+  deadline-relevant. The default clock is unchanged. `ctx.sleep`/`suspend({timeout})` wake times
+  and lease expiry stay on their own clocks (the TimerService and lease-store `now`).
 - **Six packages value-imported a package they declared only in `devDependencies`** (backlog L22).
   The workspace links every package everywhere, so nothing in the suite noticed; a consumer
   installing the PUBLISHED package would get "Cannot find module" at load. Moved to

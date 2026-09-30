@@ -81,7 +81,11 @@ Adopted per the [K8 evaluation](../requirements/2026-07-10-kernel-hardening-eval
   `isRetryable` makes cancel a no-op.
 - **A4 — deadline base time**: remaining time after recovery is computed from the *logged*
   `STEP_STARTED` timestamp, never wall clock at re-run (else every crash resets the
-  deadline).
+  deadline). *(Amended L26: the remaining time is measured with the runtime's own clock, the
+  injectable `now` that stamped the anchor, not raw `Date.now()`. Mixing the two made any
+  non-wall clock fail every `timeoutMs` step and cancel every `deadlineMs` execution at once,
+  or arm a clamped 1ms timer. The `setTimeout` still waits real milliseconds, so `now` must
+  advance in real time for a deadline to fire on time.)*
 - **A5 — K8.4 is conditional**: no streaming effects exist today; mid-stream budget
   enforcement binds when they land and cannot be middleware (middleware can't observe
   stream progress) — it needs a usage-reporter hook on `EffectContext` or the provider

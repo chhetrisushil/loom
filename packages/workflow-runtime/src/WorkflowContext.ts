@@ -146,7 +146,11 @@ export class WorkflowContextImpl implements WorkflowContext {
     private readonly signal: AbortSignal | undefined = undefined,
     // K12.1 — the execution's authenticated principal chain, threaded opaquely
     // into every effect's authorization. Undefined = no principal.
-    private readonly principal: PrincipalChain | undefined = undefined
+    private readonly principal: PrincipalChain | undefined = undefined,
+    // The runtime's injectable clock (`WorkflowRuntimeDeps.now`). Step deadlines are
+    // anchored to journal timestamps written with THIS clock, so the remaining budget
+    // must be measured with it too — never with a raw `Date.now()`.
+    private readonly now: () => number = Date.now
   ) {
     this.executionId = executionId;
     this.workflowId = workflowId;
@@ -358,8 +362,11 @@ export class WorkflowContextImpl implements WorkflowContext {
     let deadline: { promise: Promise<never>; cleanup: () => void } | undefined;
     if (timeoutMs !== undefined) {
       const frame = this.vm.getState().frames[id];
-      const anchor = frame?.firstStartedAt ?? frame?.startedAt ?? Date.now();
-      const remaining = timeoutMs - (Date.now() - anchor);
+      const anchor = frame?.firstStartedAt ?? frame?.startedAt ?? this.now();
+      // Same clock as the anchor (journal timestamps). Only the DIFFERENCE is used, and
+      // the setTimeout below arms with real milliseconds, so `now` must advance in real
+      // time for a deadline to fire (see `WorkflowRuntimeDeps.now`).
+      const remaining = timeoutMs - (this.now() - anchor);
       if (remaining <= 0) {
         const timeoutErr = new StepTimeoutError(id, timeoutMs);
         this.commit("STEP_FAILED", { stepId: id, error: String(timeoutErr) });

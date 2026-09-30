@@ -827,10 +827,10 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
     }
   });
 
-  // L25a — the load-dependent [0, 1, 2], reproduced deterministically. The journal's clock
-  // running `timeoutMs`+ behind the wall clock is exactly a process stalled between the
+  // L25a — the load-dependent [0, 1, 2], reproduced deterministically. An injected clock
+  // that jumps forward 10ms on every read is exactly a process stalled between the
   // STEP_STARTED commit (which stamps the anchor) and the deadline arming (which reads
-  // `Date.now()`). The deadline is already breached, so the effect is never invoked: there
+  // the same clock again). The deadline is already breached, so the effect is never invoked: there
   // is no zombie and no zombie emit to count. Every emit the flow DID make — the live tick
   // after go1, on each re-run — is in the log. No emit is lost; ADR 0102's guarantee holds.
   it("a step whose deadline is breached before its effect is invoked runs no effect and loses no emit", async () => {
@@ -843,6 +843,7 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
       outputSchema: io,
       timeoutMs: 5,
     });
+    let tick = Date.now();
     const h = boot(
       async (ctx) => {
         try {
@@ -856,7 +857,11 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
         return { done: true };
       },
       {
-        now: () => Date.now() - 10, // a 10ms stall after every commit, before the deadline read
+        // every read is 10ms after the last: a stall between anchor and deadline read
+        now: () => {
+          tick += 10;
+          return tick;
+        },
         effects: (e) =>
           e.register(
             "tool-slow",
