@@ -21,6 +21,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`PostgresLeaseStore` stamps and judges leases on DATABASE time (backlog L29, closes the
+  L28 known limitation).** It used each caller NODE's `Date.now()`, so the `acquire` takeover
+  clause compared node A's stamp against node B's clock: skew beyond the ~40s slack (60s TTL,
+  renewal every ttl/3) let a fast node steal a live lease or made a slow node's healthy lease
+  look expired every cycle (fencing rejected the loser's writes, but effects ran twice). When
+  `now` is omitted, `acquire`/`renew` now stamp `expires_at` and the takeover condition and
+  `expired()` compare against `(extract(epoch from clock_timestamp()) * 1000)::bigint` in the
+  same statement, one clock for every node. `clock_timestamp()` rather than `now()`: `now()` is
+  frozen at transaction start, so a lease written through a caller-supplied client inside a long
+  transaction would be stamped and judged on a stale reading. An explicit `now` is honoured
+  verbatim (tests, simulated clocks); mixing explicit and DB time on one lease table is
+  unsupported. `Lease.expiresAt` is now DB time, so `orphanCensus` (which compares it to its
+  own `Date.now()`) inherits that node's skew in its advisory classification; pass `now`
+  accordingly. `SqliteLeaseStore` is unchanged: single host, the process clock is its one
+  clock. **No SPI bump**: LeaseStore 2.0.0 already requires `expired()` to default to the
+  clock that stamps leases, and DB time now is that clock.
+
 - **`recoverAbandoned` judged lease expiry on the wall clock, not the store's** (backlog L28,
   double-execution hazard under an injected clock). It called `leases.store.expired(Date.now())`
   while `acquire`/`renew` stamped `expiresAt` with the store's own `now`. With
@@ -35,12 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recovers nothing. Callers passing an explicit `now` are unaffected. `LEASE_STORE_SPI_VERSION`
   is now in `kernelManifest().spis` and the compatibility matrix, and the cheatsheet banner is
   checked against it (the banner test used to exempt LeaseStore). The in-repo SQLite and
-  Postgres stores already default to `Date.now()`, which is what they stamp with. KNOWN
-  LIMITATION, tracked as **L29**: for the SQL stores that clock is each caller NODE's
-  `Date.now()`, coherent on one node only. Across nodes, skew beyond about 40s lets a fast node
-  steal a live lease or makes a slow node's healthy lease look expired; fencing backstops the
-  writes but effects run twice. L29 would use database time (`clock_timestamp()`) when `now` is
-  omitted. The conformance case for `expired()` with no argument now takes an optional
+  Postgres stores already default to `Date.now()`, which is what they stamp with (Postgres
+  now stamps and judges on database time instead: see L29 below). The conformance case for `expired()` with no argument now takes an optional
   `clocked` factory (`LeaseStoreConformanceOptions`) and drives the store's injected clock
   instead of sleeping, so it discriminates the L28 bug (the check is exported as
   `leaseExpiredDefaultProblem` for third-party kits); `checkCompatibility` accepts a

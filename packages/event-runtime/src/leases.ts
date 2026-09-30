@@ -61,12 +61,9 @@ export interface LeaseStore {
    * `expired(now: number)` compiles, but given `undefined` its comparison is false (`<=
    * undefined`, SQL `<= NULL`) and it returns `[]`: recovery silently recovers nothing.
    *
-   * KNOWN LIMITATION (L29): for the SQL stores this "own clock" is each CALLER NODE's
-   * `Date.now()`, not the database's. Stamping and judging on the same node's clock is
-   * coherent on ONE node; across nodes, skew beyond about the lease TTL's slack (~40s at the
-   * default TTL) lets a fast node steal a live lease, or makes a slow node's healthy lease look
-   * expired. Fencing backstops the writes, but the effects run twice. L29 tracks using database
-   * time (`clock_timestamp()`) for stamping and expiry when `now` is omitted.
+   * The SQL stores' "own clock" is one clock for every node: SQLite is single-host, so the
+   * process clock is its one clock; Postgres stamps and judges on DATABASE time (L29), so node
+   * skew cannot make a live lease look expired or let a fast node steal one.
    */
   expired(now?: number, limit?: number): Promise<Lease[]>;
   /**

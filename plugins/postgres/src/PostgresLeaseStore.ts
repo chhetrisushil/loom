@@ -15,6 +15,18 @@ const rowToLease = (r: LeaseRow): Lease => ({
 });
 
 /**
+ * The database's wall clock in epoch ms, evaluated where the row is written or judged.
+ *
+ * `clock_timestamp()`, deliberately: `now()`/`transaction_timestamp()` is frozen at transaction
+ * start, so a caller-supplied pool client sitting inside a long transaction would stamp (and
+ * judge) on a stale reading, and `statement_timestamp()` is fixed at statement start. A lease
+ * is a liveness claim about the moment it is written, so the actual reading is the honest one.
+ * It is evaluated per use inside a statement, which is fine: every comparison is against a
+ * stamp written by this same clock.
+ */
+const DB_NOW_MS = "(extract(epoch from clock_timestamp()) * 1000)::bigint";
+
+/**
  * Postgres-backed {@link LeaseStore} (#380) — the multi-node backend, and the one that
  * matters: a lease answers "which node owns this execution", which is only a question when
  * there is more than one.
@@ -23,6 +35,15 @@ const rowToLease = (r: LeaseRow): Lease => ({
  * lease and both take it, which is precisely the race this exists to lose loudly: the
  * conflict clause takes an existing row only when it is already ours or has expired, and a
  * zero rowcount is the other node winning.
+ *
+ * **One clock for every node (L29).** When `now` is omitted, expiry is stamped
+ * (`acquire`/`renew`: DB now + ttl) and judged (`expired`, and the `acquire` takeover
+ * condition) on the DATABASE's clock, so node skew cannot make a live lease look expired or
+ * let a fast node steal one. An explicit `now` is still honoured verbatim (tests, simulated
+ * clocks), on the caller's timeline: mixing explicit-`now` and default calls against one lease
+ * table is unsupported, since the stamps come from two unrelated clocks. The returned
+ * `Lease.expiresAt` is in DB time; a caller comparing it to its own `Date.now()` (e.g.
+ * `orphanCensus`) inherits that node's skew, which only affects that advisory read.
  */
 export class PostgresLeaseStore implements LeaseStore {
   private readonly pool: PoolLike;
@@ -40,40 +61,40 @@ export class PostgresLeaseStore implements LeaseStore {
     executionId: string,
     owner: string,
     ttlMs: number,
-    now = Date.now()
+    now?: number
   ): Promise<Lease | null> {
     assertTtl(ttlMs);
     await this.ready;
-    const expiresAt = now + ttlMs;
-    const { rowCount } = await this.pool.query(
-      `INSERT INTO leases (execution_id, owner, expires_at) VALUES ($1, $2, $3)
+    // `now` undefined => both the stamp and the takeover test use the DB clock (NULL params
+    // fall through the coalesce); explicit => the caller's number, exactly as before.
+    const { rows } = await this.pool.query<LeaseRow>(
+      `INSERT INTO leases (execution_id, owner, expires_at)
+       VALUES ($1, $2, COALESCE($4::bigint, ${DB_NOW_MS}) + $3::bigint)
        ON CONFLICT (execution_id) DO UPDATE SET owner = EXCLUDED.owner, expires_at = EXCLUDED.expires_at
-       WHERE leases.owner = $2 OR leases.expires_at <= $4`,
-      [executionId, owner, expiresAt, now]
+       WHERE leases.owner = $2 OR leases.expires_at <= COALESCE($4::bigint, ${DB_NOW_MS})
+       RETURNING execution_id, owner, expires_at`,
+      [executionId, owner, ttlMs, now ?? null]
     );
-    return rowCount === 0 ? null : { executionId, owner, expiresAt };
+    return rows[0] ? rowToLease(rows[0]) : null;
   }
 
-  async renew(
-    executionId: string,
-    owner: string,
-    ttlMs: number,
-    now = Date.now()
-  ): Promise<boolean> {
+  async renew(executionId: string, owner: string, ttlMs: number, now?: number): Promise<boolean> {
     assertTtl(ttlMs);
     await this.ready;
     const { rowCount } = await this.pool.query(
-      "UPDATE leases SET expires_at = $1 WHERE execution_id = $2 AND owner = $3",
-      [now + ttlMs, executionId, owner]
+      `UPDATE leases SET expires_at = COALESCE($1::bigint, ${DB_NOW_MS}) + $4::bigint
+       WHERE execution_id = $2 AND owner = $3`,
+      [now ?? null, executionId, owner, ttlMs]
     );
     return (rowCount ?? 0) > 0;
   }
 
-  async expired(now = Date.now(), limit = 100): Promise<Lease[]> {
+  async expired(now?: number, limit = 100): Promise<Lease[]> {
     await this.ready;
     const { rows } = await this.pool.query<LeaseRow>(
-      "SELECT * FROM leases WHERE expires_at <= $1 ORDER BY expires_at ASC LIMIT $2",
-      [now, limit]
+      `SELECT * FROM leases WHERE expires_at <= COALESCE($1::bigint, ${DB_NOW_MS})
+       ORDER BY expires_at ASC LIMIT $2`,
+      [now ?? null, limit]
     );
     return rows.map(rowToLease);
   }
