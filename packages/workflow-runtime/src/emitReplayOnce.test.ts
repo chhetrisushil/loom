@@ -717,9 +717,12 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
               "tool-slow",
               new ToolEffect(async () => {
                 invoked++;
-                await zombieReleased; // outlives the 5ms deadline, whatever the load
-                flowCtx!.emit("tick", {});
-                zombieEmitted();
+                try {
+                  await zombieReleased; // outlives the 5ms deadline, whatever the load
+                  flowCtx!.emit("tick", {});
+                } finally {
+                  zombieEmitted(); // a throw must fail the assertions, not hang until the vitest timeout
+                }
                 return { ok: true };
               })
             ),
@@ -742,6 +745,83 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
       // re-run never serves — so the live tick after go1 is never provable and is appended
       // on every re-run. What matters: it is never absorbed by the zombie's tick.
       expect(logs.map((log) => count(log, "tick"))).toEqual([1, 2, 3]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  // Review P3 (L25a fix round 1) — the OTHER ordering: the zombie is an effect that starts
+  // (or is released) LATE, so its emit lands after the run has already suspended.
+  // `journal.commit` after suspend still folds and enqueues, but races the resume's log
+  // read; ADR 0102's guarantee is only that the emit is not LOST (a duplicate is fine).
+  // Handshakes, not sleeps: the zombie is held until the run has suspended, then the test
+  // waits for the emit to land in the LOG before resuming, and asserts on the log.
+  it("a zombie effect emitting AFTER the run suspended is never lost, and never costs the live emit", async () => {
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => 1_000_000);
+    try {
+      let flowCtx: WorkflowContext | undefined;
+      let releaseZombie!: () => void;
+      const zombieReleased = new Promise<void>((r) => {
+        releaseZombie = r;
+      });
+      let zombieEmitted!: () => void;
+      const zombieDone = new Promise<void>((r) => {
+        zombieEmitted = r;
+      });
+      const slow = step$({
+        id: "slow",
+        name: "slow",
+        toolId: "tool-slow",
+        inputSchema: io,
+        outputSchema: io,
+        timeoutMs: 5,
+      });
+      const h = boot(
+        async (ctx) => {
+          flowCtx = ctx;
+          try {
+            await ctx.run(slow, {});
+          } catch {
+            /* StepTimeoutError — the effect is still parked */
+          }
+          await ctx.suspend({ on: "go1" }); // suspends with the zombie NOT yet emitted
+          ctx.emit("tick", {}); // same content as the late zombie's emit
+          await ctx.suspend({ on: "go2" });
+          return { done: true };
+        },
+        {
+          effects: (e) =>
+            e.register(
+              "tool-slow",
+              new ToolEffect(async () => {
+                try {
+                  await zombieReleased; // released only once the run is suspended
+                  flowCtx!.emit("tick", {});
+                } finally {
+                  zombieEmitted();
+                }
+                return { ok: true };
+              })
+            ),
+        }
+      );
+      const started = await h.runtime.start(h.flow, {}, { executionId: "e-late" });
+      await started.waitForSuspend();
+      expect(count(await h.eventStore.read("e-late"), "tick")).toBe(0); // nothing emitted yet
+      releaseZombie(); // the run is suspended: now the zombie emits
+      await zombieDone;
+      // The commit is enqueued; wait for it to reach the LOG (condition, not a fixed sleep).
+      let landed = false;
+      for (let i = 0; i < 200 && !landed; i++) {
+        landed = count(await h.eventStore.read("e-late"), "tick") === 1;
+        if (!landed) await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(landed).toBe(true); // the late emit is in the log, not lost
+      const r1 = await h.runtime.resume("e-late", { eventType: "go1", payload: {} });
+      await r1.waitForSuspend();
+      // The zombie's tick plus the flow's live tick: the live one is not absorbed by the
+      // late zombie's stamp. (>= not ===: a duplicate is acceptable, a loss is not.)
+      expect(count(await h.eventStore.read("e-late"), "tick")).toBeGreaterThanOrEqual(2);
     } finally {
       clock.mockRestore();
     }

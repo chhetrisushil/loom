@@ -75,18 +75,27 @@ describe("WorkflowRuntime.warmFlow — advisory pre-warm of a flow's first step"
 describe("TimerService warmLeadMs — pre-warm a scheduled flow before it fires", () => {
   const MINUTE = 60_000;
   const nextMinute = (t: number) => (Math.floor(t / MINUTE) + 1) * MINUTE;
+  // Pinned half-way through a minute (L25a): a service's cron cursor starts at its
+  // construction time, so a wall-clock minute boundary between the constructor and
+  // `nextMinute(...)` would shift the occurrence under test.
+  const NOW = 28_333_334 * MINUTE + MINUTE / 2;
+  const clock = () => NOW;
 
   function svc(warmLeadMs: number) {
     const app = boot();
     const timerStore = new InMemoryTimerStore();
     const sched = schedule$({ id: "audit-schedule", cron: "* * * * *", flowId: FLOW });
-    const service = new TimerService(app.runtime, timerStore, { schedules: [sched], warmLeadMs });
+    const service = new TimerService(app.runtime, timerStore, {
+      schedules: [sched],
+      warmLeadMs,
+      now: clock,
+    });
     return { ...app, service };
   }
 
   it("warms the flow when the next occurrence is within the lead window — once per occurrence", async () => {
     const s = svc(10_000); // 10s lead
-    const occurrence = nextMinute(Date.now());
+    const occurrence = nextMinute(NOW);
     // Poll 5s before the occurrence → within the 10s window → warm once.
     await s.service.tick(occurrence - 5_000);
     expect(s.first.warmCalls).toBe(1);
@@ -97,7 +106,7 @@ describe("TimerService warmLeadMs — pre-warm a scheduled flow before it fires"
 
   it("does not warm when the occurrence is beyond the lead window", async () => {
     const s = svc(1_000); // 1s lead
-    const occurrence = nextMinute(Date.now());
+    const occurrence = nextMinute(NOW);
     await s.service.tick(occurrence - 30_000); // 30s out, lead is 1s
     expect(s.first.warmCalls).toBe(0);
   });
@@ -106,8 +115,9 @@ describe("TimerService warmLeadMs — pre-warm a scheduled flow before it fires"
     const app = boot();
     const service = new TimerService(app.runtime, new InMemoryTimerStore(), {
       schedules: [schedule$({ id: "s", cron: "* * * * *", flowId: FLOW })],
+      now: clock,
     });
-    await service.tick(nextMinute(Date.now()) - 1_000);
+    await service.tick(nextMinute(NOW) - 1_000);
     expect(app.first.warmCalls).toBe(0);
   });
 });
