@@ -1120,6 +1120,10 @@ export class WorkflowRuntime {
     input: TIn,
     options?: RunOptions
   ): Promise<ExecutionHandle> {
+    // Validate the per-call budget BEFORE anything is appended: a caller-chosen id is
+    // bootstrapped durably below (ADR 0103), so a late rejection would burn the id and leave
+    // an abandoned EXECUTION_STARTED behind.
+    assertValidBudget("deadlineMs", options?.deadlineMs, "start options");
     const executionId = options?.executionId ?? ulid();
     assertNotReserved(executionId);
     const { definition, runner } = this.resolveFlow(flow);
@@ -1296,6 +1300,8 @@ export class WorkflowRuntime {
     resumeEvent: ResumeEvent,
     options?: RunOptions
   ): Promise<ExecutionHandle> {
+    // Before any read or append (see `start`): an invalid budget must leave the log untouched.
+    assertValidBudget("deadlineMs", options?.deadlineMs, "resume options");
     // Guarded as well as `start`: a control stream is non-empty by construction, so without
     // this a caller could inject a resume event straight into the retention/erasure audit
     // trail even though creating one is now refused.
@@ -1450,6 +1456,8 @@ export class WorkflowRuntime {
       transformState?: (input: unknown) => unknown;
     } & Omit<RunOptions, "executionId" | "allowFlowCodeMismatch">
   ): Promise<ExecutionHandle> {
+    // Before any read or append (see `start`): an invalid budget must leave the log untouched.
+    assertValidBudget("deadlineMs", options.deadlineMs, "resumeAs options");
     assertNotReserved(executionId);
     const allEvents = await this.eventStore.read(executionId);
     if (allEvents.length === 0) {
@@ -2058,7 +2066,8 @@ export class WorkflowRuntime {
     deadlineMs?: number,
     principal?: PrincipalChain
   ): ExecutionHandle {
-    // Also covers a per-call `options.deadlineMs`; nothing is journalled before this.
+    // Backstop: `start`/`resume`/`resumeAs` already validated the per-call `options.deadlineMs`
+    // before appending anything; this covers the flow definition's own budget.
     assertValidBudget("deadlineMs", deadlineMs, `execution "${executionId}"`);
     let resolveCompletion!: (state: ReturnType<typeof vm.getState>) => void;
     let rejectCompletion!: (err: unknown) => void;

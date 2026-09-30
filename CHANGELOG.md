@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   negatives breached at once, Infinity never fired; omit the field for no deadline). The same
   check runs again in the runtime (`registerFlow`, `start` of an inline definition, `ctx.run`
   before `STEP_STARTED`) for specs that bypass the builders, so an invalid budget can no longer
-  fire at 1ms. No in-repo or loom-examples caller passed such a value. Also documented: under a
+  fire at 1ms. A per-call `options.deadlineMs` is validated at the top of `start`, `resume` and
+  `resumeAs`, before any read or append, so a rejected call leaves the log untouched (a
+  caller-chosen `executionId` is not burned and can be retried). No in-repo or loom-examples caller passed such a value. Also documented: under a
   FIXED `now`, a budget above 2^31-1 ms (~24.8 days) never fires within a single run (each
   chunk re-arms; test added), and the deadline timers are deliberately not `unref`'d.
 
