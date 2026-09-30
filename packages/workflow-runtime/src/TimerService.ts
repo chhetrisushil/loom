@@ -55,7 +55,13 @@ export interface TimerServiceOptions {
   fenced?: boolean;
   /**
    * Injectable clock (DST/simulation): anchors the cron cursors at construction
-   * and is the default `now` for interval-driven ticks. Default: `Date.now`.
+   * and is the default `now` for interval-driven ticks. Default: the runtime's own
+   * clock (`runtime.clock`, i.e. `WorkflowRuntimeDeps.now`), because `ctx.sleep` and
+   * `suspend({ timeout })` compute their `wakeAt` with that clock and this service
+   * judges it due. One simulated clock therefore needs to be given to the runtime only.
+   * An explicit override that disagrees with the runtime's clock is honoured, but then
+   * `wakeAt` (runtime clock) is compared with a different timeline: timers fire early
+   * when this clock runs ahead of the runtime's, and never when it runs behind.
    */
   now?: () => number;
   /**
@@ -178,7 +184,7 @@ export class TimerService {
     this.onError = options.onError;
     this.fenced = options.fenced ?? false;
     this.warmLeadMs = options.warmLeadMs ?? 0;
-    this.now = options.now ?? Date.now;
+    this.now = options.now ?? runtime.clock;
     // Cron cursors start at construction time: no catch-up of occurrences that
     // passed while nothing was running (documented; a durable catch-up policy
     // can layer on later without changing the firing contract).

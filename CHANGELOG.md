@@ -48,6 +48,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the wall-clock form. `orphanCensus` keeps its own explicit `now` option (it also ages
   executions by it; documented to be given the lease store's clock when that is not the wall).
 
+- **L27: timer wake times use the runtime's clock** (kernel; behavioural for hand-wired setups).
+  `ctx.sleep` and `suspend({ timeout })` computed `wakeAt` with raw `Date.now()` while
+  `TimerService` judged it with its own `now`, so one simulated clock given to both made
+  sleeps never fire (clock behind the wall) or fire at once (clock ahead). `wakeAt` is now
+  `runtime.now() + ms`, and `TimerService`'s `now` defaults to the runtime's clock (new
+  read-only `WorkflowRuntime.clock`, the same way it already reads `runtime.events`), so a
+  simulated or offset `WorkflowRuntimeDeps.now` (`defineConfig` `execution.now`) alone drives
+  sleeps, suspend timeouts and cron cursors. An explicit `TimerService` `now` still wins; if it
+  disagrees with the runtime's clock, timers fire early (it runs ahead) or never (it runs
+  behind). Default wall-clock setups are unchanged. `tools/dst` is unaffected (its runtimes
+  keep the wall clock; drivers still jump to `wakeAt` themselves); to virtualise sleeps pass
+  `now: world.clock.now` to the runtime.
+
 - **L26 round 2: invalid `timeoutMs`/`deadlineMs` are rejected** (behavioural tightening).
   `step$`/`flow$` now throw on NaN, 0, negative and Infinity (NaN armed a 1ms timer, 0 and
   negatives breached at once, Infinity never fired; omit the field for no deadline). The same
@@ -76,7 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Caveats: a FIXED `now` silently disables the crash-surviving deadline (elapsed is always 0,
   so every resume re-grants the full budget), and an offset `now` is safe only if every
   runtime touching the log uses the same offset. (`ctx.sleep`/`suspend({timeout})` wake times
-  are tracked separately as L27; lease expiry was fixed in L28, above.)
+  were fixed in L27 and lease expiry in L28, both above.)
 - **Six packages value-imported a package they declared only in `devDependencies`** (backlog L22).
   The workspace links every package everywhere, so nothing in the suite noticed; a consumer
   installing the PUBLISHED package would get "Cannot find module" at load. Moved to

@@ -681,8 +681,10 @@ export class WorkflowContextImpl implements WorkflowContext {
   // call and recorded in the EXECUTION_SUSPENDED condition (P9 — wall clock
   // enters the log exactly once); on resume replay the suspend passthrough
   // returns before this recomputes anything, so the fold never sees drift.
+  // The runtime's injectable clock, not raw `Date.now()`: the TimerService compares this
+  // wakeAt with the same clock (it defaults to `runtime.clock`), so both must agree.
   async sleep(ms: number): Promise<void> {
-    await this.sleepUntil(Date.now() + ms);
+    await this.sleepUntil(this.now() + ms);
   }
 
   async sleepUntil(wakeAt: number): Promise<void> {

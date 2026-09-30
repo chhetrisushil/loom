@@ -194,12 +194,13 @@ export interface WorkflowRuntimeDeps {
    */
   validateInput?: boolean;
   /**
-   * Injectable clock for event-envelope timestamps (DST/simulation). Timers
-   * (`TimerStore.due(now)`, `tick(now)`) take their own `now`; envelope timestamps
-   * were the gap — retention windows and content-GC citation ages read them.
-   * `ctx.sleep` / `suspend({ timeout })` wake times are NOT covered (L27). Lease expiry
-   * is never judged on this clock: `recoverAbandoned` asks the lease store, which judges on
-   * the same clock that stamped the lease (its own injected `now`).
+   * Injectable clock for event-envelope timestamps (DST/simulation) and timer wake
+   * times — retention windows and content-GC citation ages read the former.
+   * `ctx.sleep` / `suspend({ timeout })` compute their `wakeAt` with it, and
+   * `TimerService` defaults its own `now` to it (`runtime.clock`), so a simulated
+   * clock given here alone drives sleeps: they fire exactly when it passes `wakeAt`.
+   * Lease expiry is never judged on this clock: `recoverAbandoned` asks the lease store, which
+   * judges on the same clock that stamped the lease (its own injected `now`).
    * Default: `Date.now` (unchanged, G2).
    *
    * Deadline-relevant: step `timeoutMs` and execution `deadlineMs` are anchored to
@@ -639,6 +640,15 @@ export class WorkflowRuntime {
    */
   get events(): EventStore {
     return this.eventStore;
+  }
+
+  /**
+   * The runtime's injectable clock (`WorkflowRuntimeDeps.now`). `ctx.sleep` and
+   * `suspend({ timeout })` compute their `wakeAt` with it, and `TimerService` defaults its
+   * own `now` to it, so a wake time and the clock that judges it can never disagree.
+   */
+  get clock(): () => number {
+    return this.now;
   }
 
   hasTimerStore(): boolean {
@@ -2272,7 +2282,7 @@ export class WorkflowRuntime {
           const wakeAt =
             this.timerStore !== undefined
               ? (condition.wakeAt ??
-                (condition.timeout !== undefined ? Date.now() + condition.timeout : undefined))
+                (condition.timeout !== undefined ? this.now() + condition.timeout : undefined))
               : condition.wakeAt;
           // The flow declared a deadline this runtime cannot keep. Unwired, the condition is
           // committed WITHOUT a wakeAt — byte-identically, silently — so nothing downstream

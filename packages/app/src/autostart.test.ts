@@ -186,3 +186,35 @@ describe("S2 — stores the composition exposes", () => {
     await app.close();
   });
 });
+
+// ── L27 — an offset `execution.now` still wakes sleeps ────────────────────────
+//
+// defineConfig hands `now` to the runtime only; the TimerService it builds inherits the
+// runtime's clock, so `wakeAt` (computed from that clock) and the comparison agree.
+
+describe("L27 — offset execution.now", () => {
+  for (const offset of [-3_600_000, 3_600_000]) {
+    it(`wakes a sleeper with the clock offset by ${offset}ms and records wakeAt on it`, async () => {
+      const now = () => Date.now() + offset;
+      const app = defineConfig({
+        storage: { kind: "memory" },
+        flows: [sleeper()],
+        timers: { store: new InMemoryTimerStore(), pollMs: 2 },
+        execution: { now },
+      });
+      app.effectRuntime.register("wake-tool", new ToolEffect(async () => ({})));
+
+      const before = now();
+      const handle = await app.runtime.start(sleeper(), {});
+      await handle.waitForSuspend();
+      const wakeAt = (await app.runtime.loadState(handle.executionId))?.suspendedOn?.wakeAt;
+      // Computed on the configured clock, not the wall.
+      expect(wakeAt).toBeGreaterThanOrEqual(before + 5);
+      expect(wakeAt).toBeLessThan(before + 5 + 1_000);
+
+      await settle(60);
+      expect((await app.runtime.loadState(handle.executionId))?.status).toBe("completed");
+      await app.close();
+    });
+  }
+});

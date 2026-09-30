@@ -96,6 +96,11 @@ Adopted per the [K8 evaluation](../requirements/2026-07-10-kernel-hardening-eval
   process alive for up to the budget, as it always did. `timeoutMs`/`deadlineMs` must be
   finite numbers > 0: NaN, 0, negatives and Infinity are rejected at `step$`/`flow$` and again
   at `registerFlow`/`start`/`ctx.run`; omit the field for no deadline.)*
+  *(Amended L27: the same holds for timer wake times. `ctx.sleep`/`suspend({timeout})`
+  compute `wakeAt` with the runtime's `now`, and `TimerService` defaults its `now` to
+  `runtime.clock`, so an offset or simulated clock given to the runtime alone wakes timers
+  correctly. An explicit `TimerService` `now` that disagrees with the runtime's fires timers
+  early (ahead) or never (behind). Lease expiry remains wall-clock, tracked as L28.)*
 - **A5 — K8.4 is conditional**: no streaming effects exist today; mid-stream budget
   enforcement binds when they land and cannot be middleware (middleware can't observe
   stream progress) — it needs a usage-reporter hook on `EffectContext` or the provider
