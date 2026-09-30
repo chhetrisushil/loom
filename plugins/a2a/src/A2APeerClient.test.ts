@@ -122,7 +122,19 @@ async function startEchoServer(): Promise<A2AServer> {
     { port: 0 }
   );
   await s.start();
-  return s;
+  return loopbackServer(s);
+}
+
+/**
+ * Point `server.url` at the loopback ADDRESS instead of the name `localhost`. The name costs a
+ * resolver round trip (getaddrinfo on libuv's 4-thread pool) for every new connection, and under
+ * a loaded full-suite run that lookup stalls for seconds, which is what timed these tests out at
+ * vitest's 5s. The server listens dual-stack, so 127.0.0.1 always reaches it. These tests
+ * exercise the peer client, not name resolution.
+ */
+function loopbackServer(s: A2AServer): A2AServer {
+  const url = s.url.replace("://localhost:", "://127.0.0.1:");
+  return Object.defineProperty(s, "url", { value: url, configurable: true });
 }
 
 describe("A2APeerClient", () => {

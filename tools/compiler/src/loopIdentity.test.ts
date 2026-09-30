@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { analyzeLoopIdentity } from "./loopIdentity";
+import { buildManifest } from "./manifest";
+import { transformFile } from "./transform";
 
 // ── ADR 0061 — the step-identity lint ────────────────────────────────────────
 //
@@ -116,9 +118,7 @@ describe("loop-identity wiring: transform → manifest (ADR 0061 DX)", () => {
     };
   }
 
-  it("a flow-bearing module with a bad loop surfaces findings in the manifest (warning + structured field)", async () => {
-    const { transformFile } = await import("./transform");
-    const { buildManifest } = await import("./manifest");
+  it("a flow-bearing module with a bad loop surfaces findings in the manifest (warning + structured field)", () => {
     const src = [
       'import { flow$, step$ } from "@loom/core";',
       'import { z } from "zod";',
@@ -148,9 +148,7 @@ describe("loop-identity wiring: transform → manifest (ADR 0061 DX)", () => {
     expect(flow?.warnings.some((w) => w.includes("ADR 0061"))).toBe(true);
   });
 
-  it("a clean interpreter module carries no loopIdentity field", async () => {
-    const { transformFile } = await import("./transform");
-    const { buildManifest } = await import("./manifest");
+  it("a clean interpreter module carries no loopIdentity field", () => {
     const src = [
       'import { flow$, step$ } from "@loom/core";',
       'import { z } from "zod";',

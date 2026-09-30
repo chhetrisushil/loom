@@ -124,6 +124,26 @@ if (PG_URL === undefined) {
       await admin.query("ANALYZE events");
     }
 
+    // A rebuild whose duration is a schema-set LOWER BOUND, independent of machine load: a CHECK
+    // constraint whose function sleeps SLEEP_MS per row is re-validated by the ALTER, so the
+    // collation rebuild takes >= ROWS * SLEEP_MS however fast the machine is. The tests that
+    // need "a rebuild longer than a session statement_timeout" used to get that from 300k rows
+    // against a 200ms budget, but the rebuild's duration and every NON-exempt migration
+    // statement's duration both scale with load, so on a loaded machine the migration tripped
+    // its own 200ms budget (57014). Now the budget sits far below the floor and far above the
+    // ordinary statements' idle cost.
+    const REBUILD_ROWS = 5; // legacyTable seeds 5 named rows; its bulk load is 0
+    const REBUILD_SLEEP_MS = 600; // rebuild floor = 3s
+    const BUDGET_MS = 1500; // < floor, and ~75x the idle cost of a non-exempt migration step
+    async function legacyTableWithSlowRebuild(admin: Pool): Promise<void> {
+      await legacyTable(admin, 0);
+      await admin.query(`CREATE FUNCTION slow_ok(t text) RETURNS boolean
+        LANGUAGE plpgsql IMMUTABLE AS $$ BEGIN PERFORM pg_sleep(${REBUILD_SLEEP_MS / 1000}); RETURN true; END $$`);
+      await admin.query(
+        "ALTER TABLE events ADD CONSTRAINT slow_check CHECK (slow_ok(execution_id))"
+      );
+    }
+
     const collation = async (admin: Pool): Promise<string> =>
       (
         await admin.query<{ c: string }>(
@@ -251,9 +271,9 @@ if (PG_URL === undefined) {
       // never converted. The rebuild is exempted from it; the rest of the migration is not.
       const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
       try {
-        await legacyTable(admin, 300_000);
+        await legacyTableWithSlowRebuild(admin);
         const warnings: string[] = [];
-        const pool = noticingPool(warnings, "-c statement_timeout=200");
+        const pool = noticingPool(warnings, `-c statement_timeout=${BUDGET_MS}`);
         try {
           // Proves the premise: the bare ALTER alone does not fit in this session's budget.
           const probe = await pool.connect();
@@ -266,7 +286,10 @@ if (PG_URL === undefined) {
             await probe.query("ROLLBACK").catch(() => {});
             probe.release();
           }
+          const started = Date.now();
           await migrate(pool);
+          // The conversion really did run past the budget rather than being skipped.
+          expect(Date.now() - started).toBeGreaterThan(REBUILD_ROWS * REBUILD_SLEEP_MS - 500);
         } finally {
           await pool.end();
         }
@@ -275,7 +298,7 @@ if (PG_URL === undefined) {
       } finally {
         await admin.end();
       }
-    }, 300_000);
+    }, 120_000);
 
     it("restores the caller's lock_timeout after the conversion, so later DDL stays bounded", async () => {
       const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
@@ -347,12 +370,12 @@ if (PG_URL === undefined) {
       // rather than fail its migration (after which its store rejects every call until restart).
       const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
       try {
-        await legacyTable(admin, 300_000);
+        await legacyTableWithSlowRebuild(admin);
         const warnings: string[] = [];
         const pools = [
-          noticingPool(warnings, "-c statement_timeout=200"),
-          noticingPool(warnings, "-c statement_timeout=200"),
-          noticingPool(warnings, "-c statement_timeout=200 -c lock_timeout=300"),
+          noticingPool(warnings, `-c statement_timeout=${BUDGET_MS}`),
+          noticingPool(warnings, `-c statement_timeout=${BUDGET_MS}`),
+          noticingPool(warnings, `-c statement_timeout=${BUDGET_MS} -c lock_timeout=300`),
         ];
         try {
           const first = migrate(pools[0]!);
