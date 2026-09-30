@@ -37,8 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `@loom/worker-runtime-local`'s `spiShapeProof.ts` (type-imports the dev-only `@loom/conformance`),
   is an exact, justified exemption because the file is emitted but unreachable (not exported, and
   the `exports` map exposes only the entry). It additionally scans the hand-written subpath shims
-  a package ships outside `dist/` (`event-runtime`/`snapshot-runtime` `memory.js`, `sequence.js`,
-  a2a `cards.js`) and requires the JSX import source (`react`) to be declared for any package
+  a package ships outside `dist/` (`event-runtime` `memory.js`/`sequence.js`, `snapshot-runtime`
+  `memory.js`) and requires the JSX import source (`react`) to be declared for any package
   whose tsconfig uses the automatic JSX runtime. Known limit, documented in the test: non-literal
   `import(spec)`/`require(x)` (tools/cli, packages/isolate runner) are invisible to a static scan.
 
