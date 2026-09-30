@@ -26,6 +26,26 @@ export interface BrokeredResponse {
   body: string;
 }
 
+/** Settle with `p`, or reject with the signal's reason as soon as it aborts (whichever is first). */
+function abortable<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return p;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason);
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      }
+    );
+  });
+}
+
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
 /**
@@ -64,9 +84,14 @@ export async function brokeredFetch(
   // name resolves to at connect time.
   signal?.throwIfAborted();
   const pinnedHost =
-    isIP(parsed.hostname) !== 0 ? parsed.hostname : (await lookup(parsed.hostname)).address;
-  // The lookup cannot itself be cancelled; check again so an abort that landed during it never
-  // opens a connection.
+    isIP(parsed.hostname) !== 0
+      ? parsed.hostname
+      : await abortable(
+          lookup(parsed.hostname).then((r) => r.address),
+          signal
+        );
+  // The lookup itself cannot be cancelled (getaddrinfo), but we stop WAITING for it on abort;
+  // check again so an abort that landed as it settled never opens a connection.
   signal?.throwIfAborted();
 
   const client = parsed.protocol === "https:" ? https : http;

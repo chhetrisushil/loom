@@ -45,16 +45,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   out** (backlog L23 + L24; same class as the L13 sandbox clock). (L23) The run clock started
   at spawn, so under load a 150 ms tool was killed before its module finished loading, and
   since a kill discards the child the next call cold-started and died again, forever. The
-  parent now warms the child first (`warm` -> `ready`); `timeoutMs` opens only when the child
-  is ready. Startup has its own allowance, new `coldStartMs` (default 10 000, finite and > 0,
-  else `RangeError`); a child that exceeds it, or exits while loading (any exit code), fails
-  with the typed `IsolatedToolStartupError` (exported) instead of hanging, and is replaced on
-  the next call. An abort during warm-up kills the child and rejects with the abort reason.
+  parent now warms the child first (`booted` -> `warm` -> `ready`); `timeoutMs` opens only when
+  the child is ready. Startup has its own allowance, new `coldStartMs` (default 10 000, finite
+  and > 0, else `RangeError`); a child that exceeds it, or exits or disconnects while warming
+  (any exit code), fails with the typed `IsolatedToolStartupError` (exported) instead of
+  hanging, and is replaced on the next call. Its `phase` is `"spawn"` (the runner never booted:
+  the environment) or `"load"` (the tool module's top-level code hung or exited: a TOOL fault);
+  a module that throws at load fails the load phase with a plain tool `Error`, once, instead of
+  being re-executed by the run. **`coldStartMs` also bounds untrusted top-level code** (unlike
+  the sandbox's trusted compile), so a tool that forces a cold start on every call costs up to
+  `coldStartMs + timeoutMs` per call; size it accordingly ([ADR 0019](docs/adr/0019-k7-data-plane-isolation-and-egress-control.md)
+  addendum). An abort during warm-up kills the child and rejects with the abort reason.
   (L24) A host that accepted and never answered held a `maxConcurrentFetches` slot forever.
-  New `fetchTimeoutMs` (default 30 000, finite and > 0) bounds each fetch end to end: on expiry
+  New `fetchTimeoutMs` (default 30 000, finite and > 0) bounds each fetch end to end, DNS
+  lookup included (a stalled `getaddrinfo` is no longer waited on past the deadline): on expiry
   the request is destroyed, the slot released, and the tool's `ctx.fetch` rejects with
-  `code: "FETCH_TIMEOUT"` (`IsolatedFetchTimeoutError`). Fetches are also aborted when the run
-  that issued them ends or is killed.
+  `code: "FETCH_TIMEOUT"` (error `name` `IsolatedFetchTimeoutError`; not an exported class).
+  Fetches are also aborted when the run that issued them ends or is killed.
+  **Review fix (security):** an untrusted tool could crash the PARENT: a callback-less `send()`
+  to a closed IPC channel emits an uncaught `'error'` (`ERR_IPC_CHANNEL_CLOSED`), reachable by
+  `process.disconnect()` while a fetch is in flight, and a disconnected-but-alive child was
+  reused by the next call. The parent now holds a permanent `error` listener, treats
+  `disconnect` as death (SIGKILL, entry discarded, in-flight run fails with the new exported
+  `IsolatedToolDisconnectedError`), checks `proc.connected` before reuse, and sends with
+  callbacks.
 
 - **Two retrying dispatchers ping-ponged one execution, re-running its step on every bounce**
   (backlog L20, [ADR 0004 amendment](docs/adr/0004-failure-recovery.md); from the L12 review of

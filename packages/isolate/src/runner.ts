@@ -92,12 +92,14 @@ async function run(msg: Extract<ParentToChild, { type: "run" }>): Promise<void> 
 process.on("message", (msg: ParentToChild) => {
   if (msg.type === "warm") {
     // Cold-start work the parent must not charge to a run: load the tool module now so the run
-    // finds it cached. A load failure is NOT reported here — the run re-requires and surfaces it
-    // as the run's own error, exactly as before.
+    // finds it cached. This is where the tool's UNTRUSTED top-level code runs. A throw is a tool
+    // fault reported here (the parent fails the load phase and discards this child), so the
+    // module's top-level side effects are never executed a second time by a run.
     try {
       require(msg.modulePath);
-    } catch {
-      // deferred to the run
+    } catch (err) {
+      send({ type: "load-error", message: String(err) });
+      return;
     }
     send({ type: "ready" });
     return;
@@ -135,3 +137,6 @@ process.on("message", (msg: ParentToChild) => {
     });
   }
 });
+
+// Trusted boot is done: everything after this point the parent asks for is tool code.
+send({ type: "booted" });

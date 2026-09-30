@@ -38,14 +38,20 @@ const DEFAULT_COLD_START_MS = 10_000;
 /** Per-fetch deadline when a tool does not set `fetchTimeoutMs` (L24). */
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 
+/** Which half of the cold start never finished. */
+export type StartupPhase = "spawn" | "load";
+
 /**
- * A child never became ready: it did not finish spawning and loading the tool module within
- * `coldStartMs`, or it exited while warming (L23; mirrors `SandboxWorkerStartupError`).
+ * A child never became ready within `coldStartMs`, or it exited/disconnected while warming (L23;
+ * mirrors `SandboxWorkerStartupError`). The child is killed and replaced on the next call.
  *
- * The phases a run's `timeoutMs` deliberately does NOT charge still need a bound, or a wedged
- * child holds the tool forever. This is that bound. It is the ENVIRONMENT failing, not the tool,
- * so it is a named class rather than a generic `Error` (retry middleware can tell it apart from
- * a tool's own failure). The child is killed and replaced on the next call.
+ * `phase` says WHO failed, and it matters for how you treat it:
+ *  - `"spawn"` — the runner never booted (trusted code only): the ENVIRONMENT failing, so a retry
+ *    is reasonable.
+ *  - `"load"` — the runner booted but the tool module's UNTRUSTED top-level code hung, exited or
+ *    was killed: a TOOL fault. `coldStartMs` bounds that code, and a tool that forces a cold
+ *    start on every call costs each call up to `coldStartMs + timeoutMs`.
+ * (A module whose top-level code THROWS fails the load phase with a plain tool `Error`.)
  */
 export class IsolatedToolStartupError extends Error {
   override readonly name = "IsolatedToolStartupError";
@@ -55,11 +61,26 @@ export class IsolatedToolStartupError extends Error {
     readonly waitedMs: number,
     /** The allowance: `coldStartMs`. */
     readonly limitMs: number,
-    /** Which phase never finished (only the cold spawn + module load exists here). */
-    readonly phase = "spawn"
+    /** Which phase never finished: the runner booting, or the tool module loading. */
+    readonly phase: StartupPhase = "spawn"
   ) {
     super(
-      `isolated tool "${toolId}": child never became ready (waited ${waitedMs} ms, allowed coldStartMs=${limitMs}) — the child was discarded`
+      `isolated tool "${toolId}": child never became ready in the ${phase} phase (waited ${waitedMs} ms, allowed coldStartMs=${limitMs})${
+        phase === "load" ? " — the tool module's top-level code hung or exited" : ""
+      } — the child was discarded`
+    );
+  }
+}
+
+/**
+ * The child's IPC channel closed under a run: the child exited or the tool severed it
+ * (`process.disconnect()`) and stayed alive. Either way nothing can reach it; it was killed.
+ */
+export class IsolatedToolDisconnectedError extends Error {
+  override readonly name = "IsolatedToolDisconnectedError";
+  constructor(readonly toolId: string) {
+    super(
+      `isolated tool "${toolId}" lost its IPC channel mid-run (the child exited or disconnected) — the child was killed`
     );
   }
 }
@@ -85,6 +106,8 @@ interface ChildEntry {
   ready: Promise<void>;
   isReady: boolean;
   closed: boolean;
+  /** Which half of the cold start is pending (for the typed error). */
+  phase: StartupPhase;
 }
 
 export class IsolatedToolEffect implements Effect {
@@ -154,7 +177,7 @@ export class IsolatedToolEffect implements Effect {
 
   private ensureChild(): ChildEntry {
     const cur = this.entry;
-    if (cur !== undefined && cur.proc.exitCode === null && !cur.proc.killed) {
+    if (cur !== undefined && cur.proc.exitCode === null && !cur.proc.killed && cur.proc.connected) {
       return cur;
     }
     // The runner is compiled output. From dist it sits alongside this file;
@@ -170,7 +193,22 @@ export class IsolatedToolEffect implements Effect {
       env: { ...this.spec.env, PATH: process.env.PATH ?? "" },
       stdio: ["ignore", "inherit", "inherit", "ipc"],
     });
-    const entry: ChildEntry = { proc, ready: Promise.resolve(), isReady: false, closed: false };
+    const entry: ChildEntry = {
+      proc,
+      ready: Promise.resolve(),
+      isReady: false,
+      closed: false,
+      phase: "spawn",
+    };
+    // The child is untrusted: it can sever its channel or make a send fail. Neither may reach
+    // the parent as an uncaught 'error' event, and a disconnected child — alive or not — is dead
+    // to us (nothing can reach it any more), so kill it and never reuse it.
+    const bury = (): void => {
+      if (this.entry === entry) this.entry = undefined;
+      proc.kill("SIGKILL");
+    };
+    proc.on("error", bury);
+    proc.on("disconnect", bury);
     entry.ready = this.awaitReady(entry);
     // Callers that need the outcome await `ready`; this only keeps an unobserved failure
     // (a pre-warm nobody waited on, a close() mid-warm) from being an unhandled rejection.
@@ -180,10 +218,11 @@ export class IsolatedToolEffect implements Effect {
   }
 
   /**
-   * L23 — resolve once the child has booted AND loaded the tool module. Its allowance is its own
-   * (`coldStartMs`), measured from spawn, never a run's `timeoutMs`. Any exit while warming is
-   * death (typed error), whatever the code: a child killed this soon can exit 0. On failure the
-   * child is discarded so the next call starts fresh.
+   * L23 — resolve once the child has booted the runner (trusted; phase "spawn") AND loaded the
+   * tool module (untrusted top-level code; phase "load"). One allowance covers both (`coldStartMs`,
+   * from spawn), never a run's `timeoutMs`. Any exit or disconnect while warming is death (typed
+   * error, whatever the code: a child killed this soon can exit 0); a module that throws at load
+   * is a tool error. On failure the child is discarded so the next call starts fresh.
    */
   private awaitReady(entry: ChildEntry): Promise<void> {
     const { proc } = entry;
@@ -193,45 +232,53 @@ export class IsolatedToolEffect implements Effect {
         clearTimeout(allowance);
         proc.off("message", onMessage);
         proc.off("exit", onExit);
+        proc.off("disconnect", onDisconnect);
         proc.off("error", onError);
       };
-      const discard = (): void => {
+      const startup = (): Error =>
+        entry.closed
+          ? new Error(`isolated tool "${this.spec.id}" closed`)
+          : new IsolatedToolStartupError(
+              this.spec.id,
+              Date.now() - startedAt,
+              this.coldStartMs,
+              entry.phase
+            );
+      // Discard synchronously: no caller may observe the doomed child in the gap before `exit`.
+      const fail = (err: Error): void => {
+        cleanup();
         if (this.entry === entry) this.entry = undefined;
-      };
-      const onMessage = (msg: unknown): void => {
-        if ((msg as ChildToParent).type !== "ready") return;
-        cleanup();
-        entry.isReady = true;
-        resolve();
-      };
-      const onExit = (): void => {
-        cleanup();
-        discard();
-        reject(
-          entry.closed
-            ? new Error(`isolated tool "${this.spec.id}" closed`)
-            : new IsolatedToolStartupError(this.spec.id, Date.now() - startedAt, this.coldStartMs)
-        );
-      };
-      const onError = (err: Error): void => {
-        cleanup();
-        discard();
         proc.kill("SIGKILL");
         reject(err);
       };
-      const allowance = setTimeout(() => {
-        cleanup();
-        // Discard synchronously: no caller may observe the doomed child in the gap before `exit`.
-        discard();
-        proc.kill("SIGKILL");
-        reject(
-          new IsolatedToolStartupError(this.spec.id, Date.now() - startedAt, this.coldStartMs)
-        );
-      }, this.coldStartMs);
+      const onMessage = (msg: unknown): void => {
+        const m = msg as ChildToParent;
+        if (m.type === "booted") {
+          // Trusted boot done; from here the clock is running on the tool's own top-level code.
+          entry.phase = "load";
+          proc.send(
+            { type: "warm", modulePath: this.spec.modulePath } satisfies ParentToChild,
+            (err) => {
+              if (err !== null) fail(startup());
+            }
+          );
+        } else if (m.type === "load-error") {
+          fail(new Error(`isolated tool "${this.spec.id}" failed to load: ${m.message}`));
+        } else if (m.type === "ready") {
+          cleanup();
+          entry.isReady = true;
+          resolve();
+        }
+      };
+      const onExit = (): void => fail(startup());
+      // A dying process closes its channel before 'exit' fires, so this is startup death too.
+      const onDisconnect = (): void => fail(startup());
+      const onError = (err: Error): void => fail(err);
+      const allowance = setTimeout(() => fail(startup()), this.coldStartMs);
       proc.on("message", onMessage);
       proc.once("exit", onExit);
+      proc.once("disconnect", onDisconnect);
       proc.once("error", onError);
-      proc.send({ type: "warm", modulePath: this.spec.modulePath } satisfies ParentToChild);
     });
   }
 
@@ -288,6 +335,7 @@ export class IsolatedToolEffect implements Effect {
         if (timer !== undefined) clearTimeout(timer);
         child.removeListener("message", onMessage);
         child.removeListener("exit", onExit);
+        child.removeListener("disconnect", onDisconnect);
         ctx.signal?.removeEventListener("abort", onAbort);
         fn();
       };
@@ -308,6 +356,12 @@ export class IsolatedToolEffect implements Effect {
       const onExit = (): void => {
         if (this.entry?.proc === child) this.entry = undefined;
         settle(() => reject(new Error(`isolated tool "${this.spec.id}" crashed mid-run`)));
+      };
+
+      const onDisconnect = (): void => {
+        if (this.entry?.proc === child) this.entry = undefined;
+        child.kill("SIGKILL");
+        settle(() => reject(new IsolatedToolDisconnectedError(this.spec.id)));
       };
 
       const onMessage = (raw: unknown): void => {
@@ -351,6 +405,11 @@ export class IsolatedToolEffect implements Effect {
       ctx.signal?.addEventListener("abort", onAbort, { once: true });
       child.on("message", onMessage);
       child.once("exit", onExit);
+      child.once("disconnect", onDisconnect);
+      if (!child.connected) {
+        onDisconnect();
+        return;
+      }
       if (this.spec.timeoutMs !== undefined) {
         timer = setTimeout(
           () =>
@@ -375,7 +434,11 @@ export class IsolatedToolEffect implements Effect {
           ...(ctx.idempotencyKey !== undefined && { idempotencyKey: ctx.idempotencyKey }),
         },
       };
-      child.send(runMsg);
+      // A send that cannot be delivered reports through the callback; without one it would be an
+      // 'error' event on the child.
+      child.send(runMsg, (err) => {
+        if (err !== null) onDisconnect();
+      });
     });
   }
 
@@ -389,8 +452,11 @@ export class IsolatedToolEffect implements Effect {
   ): Promise<void> {
     // The child may already be gone (run killed / timed out) by the time a reply is ready.
     const reply = (m: ParentToChild): void => {
+      if (child.connected === false) return;
       try {
-        child.send(m);
+        // With a callback a failed send is reported to it — without one it is emitted as an
+        // 'error' event, which nothing listens for once the run is over.
+        child.send(m, () => undefined);
       } catch {
         // channel closed — nobody left to tell
       }
