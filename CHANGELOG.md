@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package's non-test `src/` (AST, so multi-line, `export ... from`, `require` and literal
   `import()` count; `import type` / all-`type` specifiers do not) and fails naming the package
   and import when it is not in dependencies, peerDependencies or optionalDependencies.
+  The same test also requires TYPE-only imports in shipped `src/` to be declared (the emitted
+  `.d.ts` names the package): `@loom/capability` type-imported `zod` from its public types while
+  declaring it only in `devDependencies`, so it moved to `dependencies`; the one other hit,
+  `@loom/worker-runtime-local`'s `spiShapeProof.ts` (type-imports the dev-only `@loom/conformance`),
+  is an exact, justified exemption because the file is emitted but unreachable (not exported, and
+  the `exports` map exposes only the entry). It additionally scans the hand-written subpath shims
+  a package ships outside `dist/` (`event-runtime`/`snapshot-runtime` `memory.js`, `sequence.js`,
+  a2a `cards.js`) and requires the JSX import source (`react`) to be declared for any package
+  whose tsconfig uses the automatic JSX runtime. Known limit, documented in the test: non-literal
+  `import(spec)`/`require(x)` (tools/cli, packages/isolate runner) are invisible to a static scan.
 
 - **Two retrying dispatchers ping-ponged one execution, re-running its step on every bounce**
   (backlog L20, [ADR 0004 amendment](docs/adr/0004-failure-recovery.md); from the L12 review of
