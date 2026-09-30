@@ -311,10 +311,15 @@ export interface ExecutionOptions {
    */
   registerEffects?: (effects: EffectRuntime) => void;
   /**
-   * Injectable clock for event-envelope timestamps (DST/simulation). Loom's
-   * time-injection principle already covered timers and suspend wake times; envelope
-   * timestamps were the gap, and they are what retention windows and content-GC citation
-   * ages read. Default `Date.now`. Never fold-relevant.
+   * Injectable clock for event-envelope timestamps (DST/simulation); retention windows
+   * and content-GC citation ages read them. Default `Date.now`. Not fold-relevant, but
+   * DEADLINE-relevant: step `timeoutMs` and execution `deadlineMs` are anchored to
+   * timestamps written with it and measure remaining time with it, while the timer that
+   * enforces them waits real milliseconds, so it must advance in real time. A FIXED clock
+   * silently disables crash-surviving deadlines (every resume re-grants the full budget);
+   * an OFFSET is safe only if every runtime touching the log uses the same offset.
+   * `ctx.sleep`/`suspend({timeout})` wake times and lease expiry are NOT covered: always
+   * wall-clock (known limitation, L27/L28).
    */
   now?: () => number;
   /**

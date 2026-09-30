@@ -31,6 +31,7 @@ import { ulid } from "ulid";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { highestMissing } from "./LogLifecycle";
 import { WorkflowContextImpl } from "./WorkflowContext";
+import { armDeadline, remainingBudget } from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import { COMPUTE_TARGET_KEY } from "./placement";
 import {
@@ -188,10 +189,11 @@ export interface WorkflowRuntimeDeps {
    */
   validateInput?: boolean;
   /**
-   * Injectable clock for event-envelope timestamps (DST/simulation). Loom's
-   * time-injection principle already covers timers (`TimerStore.due(now)`,
-   * `tick(now)`) and suspend wake times (recorded once); envelope timestamps
+   * Injectable clock for event-envelope timestamps (DST/simulation). Timers
+   * (`TimerStore.due(now)`, `tick(now)`) take their own `now`; envelope timestamps
    * were the gap — retention windows and content-GC citation ages read them.
+   * `ctx.sleep` / `suspend({ timeout })` wake times and lease expiry checks are NOT
+   * covered: they are always wall-clock (known limitation, tracked as L27/L28).
    * Default: `Date.now` (unchanged, G2).
    *
    * Deadline-relevant: step `timeoutMs` and execution `deadlineMs` are anchored to
@@ -202,6 +204,12 @@ export interface WorkflowRuntimeDeps {
    * clock that runs faster or slower than the wall clock skews when deadlines fire).
    * A fully simulated clock should not be combined with `timeoutMs`/`deadlineMs`
    * unless the test advances it and drives the timers itself. Not fold-relevant.
+   *
+   * Caveats: (1) a FIXED clock silently disables the crash-surviving deadline (A4):
+   * elapsed time is always 0, so every crash or resume re-grants the full budget.
+   * (2) An OFFSET is safe only if EVERY runtime touching the log uses the same offset;
+   * a recovering node with a different offset eats into the budget, or steps the clock
+   * backwards (the remaining budget is capped at the full budget in that case).
    */
   now?: () => number;
 }
@@ -2207,15 +2215,14 @@ export class WorkflowRuntime {
     // from the original log on resume) — a crash/resume never resets the clock,
     // and resuming past the deadline cancels immediately. Breach is a
     // kernel-driven cancel: durable EXECUTION_CANCELLED, in-flight effect aborted.
-    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    let clearDeadline: (() => void) | undefined;
     if (deadlineMs !== undefined) {
       const startedAt = vm.getState().startedAt || this.now();
       // `startedAt` is a journal timestamp (`this.now`), so measure against the same clock.
-      const remaining = deadlineMs - (this.now() - startedAt);
-      const breach = () =>
-        cancel(new Error(`execution deadline exceeded (deadlineMs=${deadlineMs})`));
-      if (remaining <= 0) breach();
-      else deadlineTimer = setTimeout(breach, remaining);
+      clearDeadline = armDeadline(
+        () => remainingBudget(deadlineMs, startedAt, this.now),
+        () => cancel(new Error(`execution deadline exceeded (deadlineMs=${deadlineMs})`))
+      );
     }
 
     const run = async () => {
@@ -2358,7 +2365,7 @@ export class WorkflowRuntime {
     // K8.2 — reachable by id while live; released when the run settles (any path).
     this.liveHandles.set(executionId, handle);
     void run().finally(() => {
-      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+      clearDeadline?.();
       this.liveHandles.delete(executionId);
     });
 

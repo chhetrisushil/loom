@@ -85,7 +85,12 @@ Adopted per the [K8 evaluation](../requirements/2026-07-10-kernel-hardening-eval
   injectable `now` that stamped the anchor, not raw `Date.now()`. Mixing the two made any
   non-wall clock fail every `timeoutMs` step and cancel every `deadlineMs` execution at once,
   or arm a clamped 1ms timer. The `setTimeout` still waits real milliseconds, so `now` must
-  advance in real time for a deadline to fire on time.)*
+  advance in real time for a deadline to fire on time. Caveats: a FIXED clock silently
+  disables A4 (elapsed is always 0, so every crash or resume re-grants the full budget); an
+  OFFSET is safe only if every runtime touching the log uses the same offset, else a recovering
+  node eats into the budget or steps the clock backwards. The remaining time is capped at the
+  declared budget, and waits above 2^31-1 ms are armed in chunks, since Node clamps a longer
+  `setTimeout` to 1ms.)*
 - **A5 — K8.4 is conditional**: no streaming effects exist today; mid-stream budget
   enforcement binds when they land and cannot be middleware (middleware can't observe
   stream progress) — it needs a usage-reporter hook on `EffectContext` or the provider

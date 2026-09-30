@@ -6,6 +6,7 @@ import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
 import { parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
+import { armDeadline, remainingBudget } from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import { discardDecisionId } from "./strayPassthroughs";
 import { EFFECT_INDOUBT_RESOLVED, StepTimeoutError, TIMER_FIRED } from "./types";
@@ -366,7 +367,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       // Same clock as the anchor (journal timestamps). Only the DIFFERENCE is used, and
       // the setTimeout below arms with real milliseconds, so `now` must advance in real
       // time for a deadline to fire (see `WorkflowRuntimeDeps.now`).
-      const remaining = timeoutMs - (this.now() - anchor);
+      const remaining = remainingBudget(timeoutMs, anchor, this.now);
       if (remaining <= 0) {
         const timeoutErr = new StepTimeoutError(id, timeoutMs);
         this.commit("STEP_FAILED", { stepId: id, error: String(timeoutErr) });
@@ -378,19 +379,22 @@ export class WorkflowContextImpl implements WorkflowContext {
         if (this.signal.aborted) controller.abort(this.signal.reason);
         else this.signal.addEventListener("abort", onParentAbort, { once: true });
       }
-      let timer!: ReturnType<typeof setTimeout>;
+      let clearTimer: () => void = () => {};
       const promise = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          const timeoutErr = new StepTimeoutError(id, timeoutMs);
-          controller.abort(timeoutErr);
-          reject(timeoutErr);
-        }, remaining);
+        clearTimer = armDeadline(
+          () => remainingBudget(timeoutMs, anchor, this.now),
+          () => {
+            const timeoutErr = new StepTimeoutError(id, timeoutMs);
+            controller.abort(timeoutErr);
+            reject(timeoutErr);
+          }
+        );
       });
       promise.catch(() => {}); // un-awaited when the effect settles first
       deadline = {
         promise,
         cleanup: () => {
-          clearTimeout(timer);
+          clearTimer();
           this.signal?.removeEventListener("abort", onParentAbort);
         },
       };
