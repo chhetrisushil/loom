@@ -12,8 +12,14 @@
 // coordination protocol, and nothing required of a deployment that does not want it. Unwired,
 // every path behaves byte-identically (G2).
 
-/** SPI version for the {@link LeaseStore} contract. Pinned by `runLeaseStoreConformance`. */
-export const LEASE_STORE_SPI_VERSION = "1.1.0";
+/**
+ * SPI version for the {@link LeaseStore} contract. Pinned by `runLeaseStoreConformance`.
+ *
+ * 2.0.0 (L28): `expired`'s `now` became optional and MUST default to the store's stamping clock.
+ * MAJOR, not additive: a 1.x store written `expired(now: number)` still type-checks against the
+ * new signature but, handed `undefined`, returns `[]` — recovery silently recovers nothing.
+ */
+export const LEASE_STORE_SPI_VERSION = "2.0.0";
 
 export interface Lease {
   executionId: string;
@@ -46,11 +52,21 @@ export interface LeaseStore {
   /**
    * Leases past their expiry, soonest-expired first. The evidence an execution was orphaned.
    *
-   * `now` is OPTIONAL (SPI 1.2.0) and MUST default to the store's OWN clock — the same one
-   * `acquire`/`renew` stamp `expiresAt` with. Expiry is only meaningful judged on the clock
-   * that stamped it: a caller passing wall-clock `Date.now()` to a store running on an
-   * injected/simulated clock sees every live lease as expired (a double-execution hazard).
-   * Callers that have no reason to override the clock (`recoverAbandoned`) pass `undefined`.
+   * `now` is OPTIONAL (SPI 2.0.0) and an implementation MUST default it to the store's OWN
+   * clock — the same one `acquire`/`renew` stamp `expiresAt` with. Expiry is only meaningful
+   * judged on the clock that stamped it: a caller passing wall-clock `Date.now()` to a store
+   * running on an injected/simulated clock sees every live lease as expired (a
+   * double-execution hazard). Callers with no reason to override the clock
+   * (`recoverAbandoned`) pass `undefined`. An implementation that still declares
+   * `expired(now: number)` compiles, but given `undefined` its comparison is false (`<=
+   * undefined`, SQL `<= NULL`) and it returns `[]`: recovery silently recovers nothing.
+   *
+   * KNOWN LIMITATION (L29): for the SQL stores this "own clock" is each CALLER NODE's
+   * `Date.now()`, not the database's. Stamping and judging on the same node's clock is
+   * coherent on ONE node; across nodes, skew beyond about the lease TTL's slack (~40s at the
+   * default TTL) lets a fast node steal a live lease, or makes a slow node's healthy lease look
+   * expired. Fencing backstops the writes, but the effects run twice. L29 tracks using database
+   * time (`clock_timestamp()`) for stamping and expiry when `now` is omitted.
    */
   expired(now?: number, limit?: number): Promise<Lease[]>;
   /**

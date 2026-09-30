@@ -26,12 +26,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while `acquire`/`renew` stamped `expiresAt` with the store's own `now`. With
   `InMemoryLeaseStore({ now: sim })` at sim ~ 1000, every live lease (expiry ~ 61000) read as
   expired, so recovery re-drove executions healthy holders were still running. Now
-  `LeaseStore.expired`'s `now` is OPTIONAL and defaults to the store's own clock (**LeaseStore SPI
-  1.2.0**, additive: existing callers passing a `now` are unchanged; a third-party store MUST
-  default it to the clock that stamps its leases), and `recoverAbandoned` passes none. The SQLite
-  and Postgres stores already defaulted to `Date.now()`, which is their stamping clock. A new
-  conformance case asserts `expired()` with no argument. `orphanCensus` keeps its own explicit
-  `now` option (caller-supplied; it also ages executions by it).
+  `LeaseStore.expired`'s `now` is OPTIONAL and defaults to the store's own clock, and
+  `recoverAbandoned` passes none. **LeaseStore SPI 2.0.0 (MAJOR, BREAKING for implementers,
+  following the MemoryStore 2.0.0 precedent):** an implementation MUST default `now` to the
+  clock that stamps its leases. A 1.x store declared `expired(now: number)` still type-checks
+  against `expired(now?: number)`, but given `undefined` it returns `[]` (`expiresAt <=
+  undefined` is false, SQL `<= NULL` is false), so an UNCHANGED third-party store silently
+  recovers nothing. Callers passing an explicit `now` are unaffected. `LEASE_STORE_SPI_VERSION`
+  is now in `kernelManifest().spis` and the compatibility matrix, and the cheatsheet banner is
+  checked against it (the banner test used to exempt LeaseStore). The in-repo SQLite and
+  Postgres stores already default to `Date.now()`, which is what they stamp with. KNOWN
+  LIMITATION, tracked as **L29**: for the SQL stores that clock is each caller NODE's
+  `Date.now()`, coherent on one node only. Across nodes, skew beyond about 40s lets a fast node
+  steal a live lease or makes a slow node's healthy lease look expired; fencing backstops the
+  writes but effects run twice. L29 would use database time (`clock_timestamp()`) when `now` is
+  omitted. The conformance case for `expired()` with no argument now takes an optional
+  `clocked` factory (`LeaseStoreConformanceOptions`) and drives the store's injected clock
+  instead of sleeping, so it discriminates the L28 bug; backends with no injectable clock keep
+  the wall-clock form. `orphanCensus` keeps its own explicit `now` option (it also ages
+  executions by it; documented to be given the lease store's clock when that is not the wall).
 
 - **L26 round 2: invalid `timeoutMs`/`deadlineMs` are rejected** (behavioural tightening).
   `step$`/`flow$` now throw on NaN, 0, negative and Infinity (NaN armed a 1ms timer, 0 and
@@ -61,7 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Caveats: a FIXED `now` silently disables the crash-surviving deadline (elapsed is always 0,
   so every resume re-grants the full budget), and an offset `now` is safe only if every
   runtime touching the log uses the same offset. (`ctx.sleep`/`suspend({timeout})` wake times
-  are tracked separately as L27; lease expiry was fixed in L28, below.)
+  are tracked separately as L27; lease expiry was fixed in L28, above.)
 - **Six packages value-imported a package they declared only in `devDependencies`** (backlog L22).
   The workspace links every package everywhere, so nothing in the suite noticed; a consumer
   installing the PUBLISHED package would get "Cannot find module" at load. Moved to

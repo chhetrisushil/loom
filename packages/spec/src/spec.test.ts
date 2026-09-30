@@ -78,6 +78,7 @@ describe("capability maturity — evidence is real (badges can't rot)", () => {
       "EVENT_STORE_SPI_VERSION",
       "SNAPSHOT_STORE_SPI_VERSION",
       "BRANCH_REGISTRY_SPI_VERSION",
+      "LEASE_STORE_SPI_VERSION",
       "DISPATCHER_SPI_VERSION",
       "MEMORY_STORE_SPI_VERSION",
       "CONTENT_STORE_SPI_VERSION",
@@ -359,13 +360,15 @@ describe("checkCompatibility", () => {
 // `renderCompatibilityMatrix()` check above). It already drifted once: BranchRegistry SPI
 // stayed "1.2.0" in the banner for a full review round after the constant moved to 2.0.0
 // (review round 1 of loom PR #469). Only the names the manifest actually tracks are
-// checked — `LeaseStore SPI` in the banner has no manifest entry to compare against yet.
+// checked, so a banner name with no BANNER_TO_MANIFEST entry is invisible to this test: add one
+// whenever the manifest gains an SPI (LeaseStore was exempt until L28 review round 1).
 describe("cheatsheet-features.md's version banner matches the manifest", () => {
   const BANNER_TO_MANIFEST: Record<string, () => string> = {
     "KERNEL ABI": () => kernelManifest().kernelAbi.version,
     "EVENT SCHEMA": () => kernelManifest().eventSchema.version,
     "EventStore SPI": () => kernelManifest().spis.eventStore,
     "BranchRegistry SPI": () => kernelManifest().spis.branchRegistry,
+    "LeaseStore SPI": () => kernelManifest().spis.leaseStore,
     "MemoryStore SPI": () => kernelManifest().spis.memoryStore,
   };
 

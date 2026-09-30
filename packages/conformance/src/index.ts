@@ -600,13 +600,58 @@ function ref(name: string, executionId: string, tip: number): BranchRef {
   return { name, executionId, tip, createdAt: 1, updatedAt: 1 };
 }
 
-/** The BranchRegistry contract (`@loom/event-runtime`): refs, tip moves, promote, lineage DAG. */
+/** Options for {@link runLeaseStoreConformance}. */
+export interface LeaseStoreConformanceOptions {
+  /**
+   * Build a store whose OWN clock (the one `acquire`/`renew` stamp `expiresAt` with, and the one
+   * `expired()` must default to) is `now`. Supply it if the backend can inject a clock: the
+   * "expired() with no argument" case then drives that clock instead of sleeping, and it is the
+   * only form that discriminates (a store stamping with its own clock but defaulting `expired()`
+   * to `Date.now()` is caught). Backends with no injectable clock (SQL stores stamping with the process clock) omit it and
+   * get the wall-clock fallback (a real `setTimeout`).
+   */
+  clocked?: (now: () => number) => LeaseStore;
+}
+
+/**
+ * The "expired() with no `now`" check, as a function so the kit's own tests can prove it
+ * discriminates (a store stamping with its own clock but defaulting `expired` to `Date.now()`
+ * must yield a problem). Returns `undefined` when the store conforms. Closes the store.
+ */
+export async function leaseExpiredDefaultProblem(
+  factory: () => LeaseStore,
+  clocked?: (now: () => number) => LeaseStore
+): Promise<string | undefined> {
+  // Far from Date.now(): a store that judges on the wall clock sees EVERYTHING expired.
+  let sim = 1_000;
+  const store = clocked !== undefined ? clocked(() => sim) : factory();
+  try {
+    await store.acquire("live", "node-a", 60_000);
+    await store.acquire("dead", "node-a", 1);
+    if (clocked !== undefined) sim += 25;
+    else await new Promise((r) => setTimeout(r, 25));
+    const ids = (await store.expired()).map((l) => l.executionId);
+    if (ids.join() !== "dead") {
+      return `expired() defaulted to a clock other than the stamping clock: got [${ids.join()}], want [dead]`;
+    }
+    const one = (await store.expired(undefined, 1)).map((l) => l.executionId);
+    if (one.join() !== "dead") return `expired(undefined, 1) got [${one.join()}], want [dead]`;
+    return undefined;
+  } finally {
+    await store.close();
+  }
+}
+
 /**
  * The portable {@link LeaseStore} contract (#380). Ownership with an expiry is the fact the log
  * cannot hold — so the cases below are about the two answers that matter to a caller: *who has
  * it* and *have I lost it*, at a clock the test controls.
  */
-export function runLeaseStoreConformance(factory: () => LeaseStore, label = "LeaseStore"): void {
+export function runLeaseStoreConformance(
+  factory: () => LeaseStore,
+  label = "LeaseStore",
+  options: LeaseStoreConformanceOptions = {}
+): void {
   describe(`${label} conformance (LeaseStore SPI)`, () => {
     it("grants a free lease and refuses one another owner already holds", async () => {
       const store = factory();
@@ -665,14 +710,9 @@ export function runLeaseStoreConformance(factory: () => LeaseStore, label = "Lea
       await store.close();
     });
 
-    it("expired() with no argument judges on the store's own clock (SPI 1.2.0)", async () => {
-      const store = factory();
-      await store.acquire("live", "node-a", 60_000);
-      await store.acquire("dead", "node-a", 1);
-      await new Promise((r) => setTimeout(r, 25));
-      expect((await store.expired()).map((l) => l.executionId)).toEqual(["dead"]);
-      expect((await store.expired(undefined, 1)).map((l) => l.executionId)).toEqual(["dead"]);
-      await store.close();
+    it("expired() with no argument judges on the store's own clock (SPI 2.0.0)", async () => {
+      const problem = await leaseExpiredDefaultProblem(factory, options.clocked);
+      expect(problem).toBeUndefined();
     });
 
     it("release frees it for the holder and is a no-op for anyone else", async () => {
