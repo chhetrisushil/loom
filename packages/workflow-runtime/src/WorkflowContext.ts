@@ -6,7 +6,7 @@ import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
 import { parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
-import { armDeadline, remainingBudget } from "./deadlineTimer";
+import { armDeadline, assertValidBudget, remainingBudget } from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import { discardDecisionId } from "./strayPassthroughs";
 import { EFFECT_INDOUBT_RESOLVED, StepTimeoutError, TIMER_FIRED } from "./types";
@@ -351,6 +351,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       }
     }
 
+    assertValidBudget("timeoutMs", task.timeoutMs, `step "${id}"`); // before anything is logged
     this.commit("STEP_STARTED", { stepId: id, input });
 
     // K8.3 — declared step deadline (`timeoutMs`), anchored to the step's FIRST

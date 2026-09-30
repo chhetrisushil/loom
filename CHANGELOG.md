@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **L26 round 2: invalid `timeoutMs`/`deadlineMs` are rejected** (behavioural tightening).
+  `step$`/`flow$` now throw on NaN, 0, negative and Infinity (NaN armed a 1ms timer, 0 and
+  negatives breached at once, Infinity never fired; omit the field for no deadline). The same
+  check runs again in the runtime (`registerFlow`, `start` of an inline definition, `ctx.run`
+  before `STEP_STARTED`) for specs that bypass the builders, so an invalid budget can no longer
+  fire at 1ms. No in-repo or loom-examples caller passed such a value. Also documented: under a
+  FIXED `now`, a budget above 2^31-1 ms (~24.8 days) never fires within a single run (each
+  chunk re-arms; test added), and the deadline timers are deliberately not `unref`'d.
+
 - **Step `timeoutMs` and execution `deadlineMs` mixed two clocks** (backlog L26, latent, P3 in
   production). The deadline anchor is a journal timestamp written with the runtime's injectable
   `now` (`WorkflowRuntimeDeps.now`), but the remaining budget was computed from raw

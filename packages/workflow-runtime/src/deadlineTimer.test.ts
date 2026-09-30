@@ -186,3 +186,97 @@ describe("L26 follow-up — long and inflated deadlines", () => {
     expect(String(done.error)).toMatch(/deadline exceeded/);
   });
 });
+
+describe("invalid budgets are rejected, never armed as a 1ms timer", () => {
+  const bad = [Number.NaN, 0, -5, Number.POSITIVE_INFINITY];
+  for (const v of bad) {
+    it(`a step with timeoutMs = ${v} (built without step$) fails before STEP_STARTED`, async () => {
+      const step = { ...hang(), timeoutMs: v };
+      const effectRuntime = new EffectRuntime();
+      effectRuntime.register("hang-tool", new ToolEffect(() => new Promise<never>(() => {})));
+      const eventStore = new InMemoryAsyncEventStore();
+      const runtime = new WorkflowRuntime({
+        eventStore,
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        effectRuntime,
+      });
+      // steps: [] so registerFlow does not catch it; the ctx.run guard must.
+      const definition: FlowDefinition<Io, Io> = {
+        _tag: "FlowDefinition",
+        id: "bad",
+        name: "bad",
+        version: "1.0.0",
+        inputSchema: io,
+        outputSchema: io,
+        steps: [],
+      };
+      runtime.registerFlow(definition, async (ctx, input) => ctx.run(step, input));
+      const handle = await runtime.start(definition, { n: 1 }, { executionId: "bs" });
+      const done = track(handle.waitForCompletion());
+      await vi.advanceTimersByTimeAsync(10);
+      expect(done.settled).toBe(true);
+      expect(String(done.error)).toMatch(/timeoutMs must be a finite number > 0/);
+      expect(await has(eventStore, "bs", "STEP_STARTED")).toBe(false);
+    });
+
+    it(`registerFlow rejects deadlineMs = ${v} and a step timeoutMs = ${v}`, () => {
+      const { runtime } = boot(Date.now, {});
+      const base = {
+        _tag: "FlowDefinition" as const,
+        name: "x",
+        version: "1.0.0",
+        inputSchema: io,
+        outputSchema: io,
+      };
+      expect(() =>
+        runtime.registerFlow({ ...base, id: "x1", steps: [], deadlineMs: v }, async () => ({
+          n: 1,
+        }))
+      ).toThrow(/deadlineMs must be a finite number > 0/);
+      expect(() =>
+        runtime.registerFlow(
+          { ...base, id: "x2", steps: [{ ...hang(), timeoutMs: v }] },
+          async () => ({
+            n: 1,
+          })
+        )
+      ).toThrow(/timeoutMs must be a finite number > 0/);
+    });
+
+    it(`a per-call deadlineMs = ${v} is rejected and cancels nothing at 1ms`, async () => {
+      const { runtime, flow, eventStore } = boot(Date.now, {});
+      await expect(
+        runtime.start(flow, { n: 1 }, { executionId: "pc", deadlineMs: v })
+      ).rejects.toThrow(/deadlineMs must be a finite number > 0/);
+      expect(await has(eventStore, "pc", "EXECUTION_CANCELLED")).toBe(false);
+    });
+  }
+});
+
+describe("fixed clock with a budget over 2^31 ms", () => {
+  it("never fires within a single run and does not busy-loop", async () => {
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    const fixed = () => 1_000_000;
+    const { runtime, flow, eventStore } = boot(fixed, { deadlineMs: 30 * DAY });
+    const handle = await runtime.start(flow, { n: 1 }, { executionId: "fx" });
+    const done = track(handle.waitForCompletion());
+    const before = spy.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(6 * MAX_TIMER_MS); // ~149 days, several chunks
+    expect(done.settled).toBe(false);
+    expect(await has(eventStore, "fx", "EXECUTION_CANCELLED")).toBe(false);
+    // one re-arm per elapsed chunk, not a spin
+    expect(spy.mock.calls.length - before).toBeLessThanOrEqual(8);
+    spy.mockRestore();
+  });
+
+  it("armDeadline: a fixed clock re-arms once per chunk, never breaches", () => {
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    const onBreach = vi.fn();
+    const clear = armDeadline(() => 30 * DAY, onBreach);
+    vi.advanceTimersByTime(5 * MAX_TIMER_MS);
+    expect(onBreach).not.toHaveBeenCalled();
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(6);
+    clear();
+    spy.mockRestore();
+  });
+});

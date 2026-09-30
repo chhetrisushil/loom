@@ -16,7 +16,10 @@ export function remainingBudget(budget: number, anchor: number, now: () => numbe
  * `MAX_TIMER_MS` is armed in chunks: at the cap, the remaining time is recomputed from
  * the injected clock and re-armed as needed, so a 30-day budget is neither clamped to
  * 1ms nor fired early. A wait within the cap fires directly (no recheck). Returns a
- * `clear` that cancels any pending timer (call on settle/cancel).
+ * `clear` that cancels any pending timer (call on settle/cancel). Timers are NOT `unref`'d
+ * (unlike TimerService's background poll): a deadline is not background work, and a hung
+ * step's timer keeping the process alive until the budget is the pre-existing behaviour.
+ * Under a fixed clock a budget above `MAX_TIMER_MS` never fires: each chunk re-arms.
  */
 export function armDeadline(remaining: () => number, onBreach: () => void): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -48,4 +51,35 @@ export function armDeadline(remaining: () => number, onBreach: () => void): () =
     if (timer !== undefined) clearTimeout(timer);
     timer = undefined;
   };
+}
+
+/**
+ * Reject a declared budget that cannot mean a deadline: NaN (`setTimeout(NaN)` fires at
+ * 1ms), zero or negative (breach immediately), and Infinity (never fires; omit the field
+ * for "no deadline"). Defense in depth behind the `step$`/`flow$` builders, for specs that
+ * arrive without going through them (deserialized, hand-built).
+ */
+export function assertValidBudget(
+  field: "timeoutMs" | "deadlineMs",
+  value: unknown,
+  owner: string
+): void {
+  if (value === undefined) return;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error(
+      `${owner}: ${field} must be a finite number > 0 (got ${String(value)}); omit it for no deadline`
+    );
+  }
+}
+
+/** Validate a flow definition's `deadlineMs` and every declared step's `timeoutMs`. */
+export function assertFlowBudgets(definition: {
+  id: string;
+  deadlineMs?: unknown;
+  steps?: ReadonlyArray<{ id: string; timeoutMs?: unknown }>;
+}): void {
+  assertValidBudget("deadlineMs", definition.deadlineMs, `flow "${definition.id}"`);
+  for (const step of definition.steps ?? []) {
+    assertValidBudget("timeoutMs", step.timeoutMs, `step "${step.id}"`);
+  }
 }

@@ -317,6 +317,7 @@ export interface ExecutionOptions {
    * timestamps written with it and measure remaining time with it, while the timer that
    * enforces them waits real milliseconds, so it must advance in real time. A FIXED clock
    * silently disables crash-surviving deadlines (every resume re-grants the full budget);
+   * a budget above 2^31-1 ms (~24.8 days) then never fires within a single run either;
    * an OFFSET is safe only if every runtime touching the log uses the same offset.
    * `ctx.sleep`/`suspend({timeout})` wake times and lease expiry are NOT covered: always
    * wall-clock (known limitation, L27/L28).

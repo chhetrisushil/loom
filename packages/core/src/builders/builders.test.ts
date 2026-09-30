@@ -138,3 +138,33 @@ describe("policy$", () => {
     expect(def.rules).toEqual({ rps: 10 });
   });
 });
+
+describe("timeoutMs / deadlineMs validation", () => {
+  const bad = [Number.NaN, 0, -1, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY];
+  for (const v of bad) {
+    it(`step$ rejects timeoutMs = ${v}`, () => {
+      expect(() => step$({ id: "s", name: "s", inputSchema, outputSchema, timeoutMs: v })).toThrow(
+        /timeoutMs must be a finite number > 0/
+      );
+    });
+    it(`flow$ rejects deadlineMs = ${v}`, () => {
+      expect(() =>
+        flow$({
+          id: "f",
+          name: "f",
+          version: "1.0.0",
+          inputSchema,
+          outputSchema,
+          steps: [],
+          deadlineMs: v,
+        })
+      ).toThrow(/deadlineMs must be a finite number > 0/);
+    });
+  }
+  it("accepts a positive finite budget and an omitted one", () => {
+    expect(step$({ id: "s", name: "s", inputSchema, outputSchema, timeoutMs: 1 }).timeoutMs).toBe(
+      1
+    );
+    expect(step$({ id: "s", name: "s", inputSchema, outputSchema }).timeoutMs).toBeUndefined();
+  });
+});
