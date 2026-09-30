@@ -41,6 +41,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `memory.js`) and requires the JSX import source (`react`) to be declared for any package
   whose tsconfig uses the automatic JSX runtime. Known limit, documented in the test: non-literal
   `import(spec)`/`require(x)` (tools/cli, packages/isolate runner) are invisible to a static scan.
+- **`@loom/isolate`: `timeoutMs` charged child-process startup, and a brokered fetch never timed
+  out** (backlog L23 + L24; same class as the L13 sandbox clock). (L23) The run clock started
+  at spawn, so under load a 150 ms tool was killed before its module finished loading, and
+  since a kill discards the child the next call cold-started and died again, forever. The
+  parent now warms the child first (`warm` -> `ready`); `timeoutMs` opens only when the child
+  is ready. Startup has its own allowance, new `coldStartMs` (default 10 000, finite and > 0,
+  else `RangeError`); a child that exceeds it, or exits while loading (any exit code), fails
+  with the typed `IsolatedToolStartupError` (exported) instead of hanging, and is replaced on
+  the next call. An abort during warm-up kills the child and rejects with the abort reason.
+  (L24) A host that accepted and never answered held a `maxConcurrentFetches` slot forever.
+  New `fetchTimeoutMs` (default 30 000, finite and > 0) bounds each fetch end to end: on expiry
+  the request is destroyed, the slot released, and the tool's `ctx.fetch` rejects with
+  `code: "FETCH_TIMEOUT"` (`IsolatedFetchTimeoutError`). Fetches are also aborted when the run
+  that issued them ends or is killed.
 
 - **Two retrying dispatchers ping-ponged one execution, re-running its step on every bounce**
   (backlog L20, [ADR 0004 amendment](docs/adr/0004-failure-recovery.md); from the L12 review of

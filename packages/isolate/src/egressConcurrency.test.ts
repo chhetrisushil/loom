@@ -1,5 +1,6 @@
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
+import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IsolatedToolEffect } from "./IsolatedToolEffect";
 
@@ -32,6 +33,8 @@ interface HoldingServer {
   /** Resolves once `n` requests have arrived (and are being held). */
   arrived(n: number): Promise<void>;
   hits(): number;
+  /** Resolves once `n` client connections have been closed by the client. */
+  closed(n: number): Promise<void>;
   release(): void;
   close(): Promise<void>;
 }
@@ -41,8 +44,17 @@ async function holdingServer(): Promise<HoldingServer> {
   const waiters: { n: number; resolve: () => void }[] = [];
   let released = false;
   let hits = 0;
+  let closedCount = 0;
+  const closeWaiters: { n: number; resolve: () => void }[] = [];
   const server = http.createServer((_req, res) => {
     hits += 1;
+    res.on("close", () => {
+      closedCount += 1;
+      for (const w of closeWaiters.splice(0)) {
+        if (closedCount >= w.n) w.resolve();
+        else closeWaiters.push(w);
+      }
+    });
     if (released) {
       res.end("ok");
       return;
@@ -61,6 +73,10 @@ async function holdingServer(): Promise<HoldingServer> {
     arrived: (n) =>
       held.length >= n ? Promise.resolve() : new Promise((resolve) => waiters.push({ n, resolve })),
     hits: () => hits,
+    closed: (n) =>
+      closedCount >= n
+        ? Promise.resolve()
+        : new Promise((resolve) => closeWaiters.push({ n, resolve })),
     release: () => {
       released = true;
       for (const res of held.splice(0)) res.end("ok");
@@ -146,5 +162,93 @@ describe("brokered egress is bounded (K7.3)", () => {
       "EGRESS_DENIED",
       expect.objectContaining({ toolId: "flooder" })
     );
+  });
+});
+
+// ── L24 — a brokered fetch is bounded in TIME as well as in count ────────────
+//
+// A host that accepts the connection and never answers used to hold a `maxConcurrentFetches`
+// slot forever; enough of them and every fetch the tool made was refused.
+describe("a brokered fetch has a deadline (L24)", () => {
+  const mkCtx = () => ({
+    executionId: "e",
+    stepId: "s",
+    workflowId: "w",
+    attempt: 1,
+    emit: vi.fn(),
+  });
+
+  it("times out a hung host, replies with a typed failure and releases the slot", async () => {
+    server = await holdingServer(); // never released: the host hangs
+    const effect = new IsolatedToolEffect({
+      id: "hung",
+      modulePath: "/nonexistent.js",
+      egress: [server.target],
+      maxConcurrentFetches: 1,
+      fetchTimeoutMs: 100,
+    });
+    const { sent, child } = fakeChild();
+    const handle = (i: number) =>
+      // biome-ignore lint/suspicious/noExplicitAny: reaching the private broker path under test
+      (effect as any).handleFetch(child, i, server?.url, undefined, mkCtx());
+
+    await handle(0);
+    const first = sent[0] as { ok: boolean; code?: string; error?: string };
+    expect(first.ok).toBe(false);
+    expect(first.code).toBe("FETCH_TIMEOUT");
+    expect(first.error).toMatch(/fetchTimeoutMs=100/);
+    // biome-ignore lint/suspicious/noExplicitAny: slot counter under test
+    expect((effect as any).inFlightFetches).toBe(0);
+
+    // The slot is free: a second fetch is ADMITTED (reaches the host) rather than refused.
+    await handle(1);
+    expect(server.hits()).toBe(2);
+    expect((sent[1] as { code?: string }).code).toBe("FETCH_TIMEOUT");
+  });
+
+  it("aborts the underlying request when the run ends", async () => {
+    server = await holdingServer();
+    const effect = new IsolatedToolEffect({
+      id: "killed",
+      modulePath: "/nonexistent.js",
+      egress: [server.target],
+      fetchTimeoutMs: 60_000,
+    });
+    const { sent, child } = fakeChild();
+    const run = new AbortController();
+    // biome-ignore lint/suspicious/noExplicitAny: reaching the private broker path under test
+    const p = (effect as any).handleFetch(child, 0, server.url, undefined, mkCtx(), run.signal);
+    await server.arrived(1);
+    run.abort(new Error("run ended"));
+    await p;
+    expect((sent[0] as { ok: boolean }).ok).toBe(false);
+    // biome-ignore lint/suspicious/noExplicitAny: slot counter under test
+    expect((effect as any).inFlightFetches).toBe(0);
+    await server.closed(1); // the host saw the connection torn down
+  });
+
+  it("end to end: a tool awaiting a hung host gets the typed failure and the run completes", async () => {
+    server = await holdingServer();
+    const effect = new IsolatedToolEffect({
+      id: "e2e",
+      modulePath: path.join(__dirname, "__fixtures__", "fetcher.cjs"),
+      egress: [server.target],
+      fetchTimeoutMs: 200,
+    });
+    try {
+      await expect(effect.execute({ url: server.url }, mkCtx())).rejects.toThrow(
+        /fetchTimeoutMs=200/
+      );
+    } finally {
+      effect.close();
+    }
+  });
+
+  it("fetchTimeoutMs must be a finite number > 0", () => {
+    for (const bad of [0, -5, Number.NaN]) {
+      expect(
+        () => new IsolatedToolEffect({ id: "x", modulePath: "/x", fetchTimeoutMs: bad })
+      ).toThrow(/fetchTimeoutMs must be a finite number > 0/);
+    }
   });
 });

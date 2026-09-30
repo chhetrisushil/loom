@@ -90,6 +90,18 @@ async function run(msg: Extract<ParentToChild, { type: "run" }>): Promise<void> 
 }
 
 process.on("message", (msg: ParentToChild) => {
+  if (msg.type === "warm") {
+    // Cold-start work the parent must not charge to a run: load the tool module now so the run
+    // finds it cached. A load failure is NOT reported here — the run re-requires and surfaces it
+    // as the run's own error, exactly as before.
+    try {
+      require(msg.modulePath);
+    } catch {
+      // deferred to the run
+    }
+    send({ type: "ready" });
+    return;
+  }
   if (msg.type === "run") {
     void run(msg);
     return;
@@ -103,7 +115,12 @@ process.on("message", (msg: ParentToChild) => {
     if (!pending) return;
     pendingFetches.delete(msg.fetchId);
     if (!msg.ok) {
-      pending.reject(new Error(msg.error ?? "brokered fetch failed"));
+      const failure = new Error(msg.error ?? "brokered fetch failed");
+      if (msg.code !== undefined) {
+        failure.name = msg.code === "FETCH_TIMEOUT" ? "IsolatedFetchTimeoutError" : failure.name;
+        (failure as Error & { code?: string }).code = msg.code;
+      }
+      pending.reject(failure);
       return;
     }
     const body = msg.body ?? "";

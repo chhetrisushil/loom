@@ -42,7 +42,8 @@ export async function brokeredFetch(
   toolId: string,
   allowlist: ReadonlySet<string>,
   url: string,
-  init: IsolatedFetchInit = {}
+  init: IsolatedFetchInit = {},
+  signal?: AbortSignal
 ): Promise<BrokeredResponse> {
   let parsed: URL;
   try {
@@ -61,8 +62,12 @@ export async function brokeredFetch(
 
   // Resolve-and-pin: connect to the address resolved NOW, not whatever the
   // name resolves to at connect time.
+  signal?.throwIfAborted();
   const pinnedHost =
     isIP(parsed.hostname) !== 0 ? parsed.hostname : (await lookup(parsed.hostname)).address;
+  // The lookup cannot itself be cancelled; check again so an abort that landed during it never
+  // opens a connection.
+  signal?.throwIfAborted();
 
   const client = parsed.protocol === "https:" ? https : http;
   return new Promise<BrokeredResponse>((resolve, reject) => {
@@ -102,6 +107,16 @@ export async function brokeredFetch(
       }
     );
     req.on("error", reject);
+    // L24 — the caller's deadline / run-end abort tears the request down (socket included), so a
+    // hung host holds nothing once the caller gives up.
+    if (signal !== undefined) {
+      const onAbort = (): void => {
+        req.destroy(signal.reason instanceof Error ? signal.reason : new Error("aborted"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      req.on("close", () => signal.removeEventListener("abort", onAbort));
+      if (signal.aborted) onAbort();
+    }
     if (init.body !== undefined) req.write(init.body);
     req.end();
   });
