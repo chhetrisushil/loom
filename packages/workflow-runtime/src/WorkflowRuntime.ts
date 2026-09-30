@@ -192,7 +192,16 @@ export interface WorkflowRuntimeDeps {
    * time-injection principle already covers timers (`TimerStore.due(now)`,
    * `tick(now)`) and suspend wake times (recorded once); envelope timestamps
    * were the gap — retention windows and content-GC citation ages read them.
-   * Default: `Date.now` (unchanged, G2). Never fold-relevant.
+   * Default: `Date.now` (unchanged, G2).
+   *
+   * Deadline-relevant: step `timeoutMs` and execution `deadlineMs` are anchored to
+   * journal timestamps written with this clock, and the remaining budget is measured
+   * with it too (`now() - anchor`), so the two never mix clocks. The `setTimeout` that
+   * enforces a deadline still waits REAL milliseconds, so for a deadline to fire on
+   * time this clock must advance in real time (a fixed or offset clock is fine; a
+   * clock that runs faster or slower than the wall clock skews when deadlines fire).
+   * A fully simulated clock should not be combined with `timeoutMs`/`deadlineMs`
+   * unless the test advances it and drives the timers itself. Not fold-relevant.
    */
   now?: () => number;
 }
@@ -494,7 +503,7 @@ export class WorkflowRuntime {
       executionId,
       eventType: "EXECUTION_DENIED",
       sequence,
-      timestamp: Date.now(),
+      timestamp: this.now(),
       payload: {
         op,
         ...(reason !== undefined && { reason }),
@@ -1011,7 +1020,7 @@ export class WorkflowRuntime {
       executionId,
       eventType: "EXECUTION_CANCELLED",
       sequence,
-      timestamp: Date.now(),
+      timestamp: this.now(),
       payload: { ...(reason !== undefined && { reason: String(reason) }) },
       ...(fence !== undefined && { metadata: { fence } }),
     };
@@ -2177,7 +2186,8 @@ export class WorkflowRuntime {
       journal,
       this.effectRuntime,
       controller.signal,
-      principal
+      principal,
+      this.now
     );
 
     const cancel = (reason?: unknown): void => {
@@ -2199,8 +2209,9 @@ export class WorkflowRuntime {
     // kernel-driven cancel: durable EXECUTION_CANCELLED, in-flight effect aborted.
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     if (deadlineMs !== undefined) {
-      const startedAt = vm.getState().startedAt || Date.now();
-      const remaining = deadlineMs - (Date.now() - startedAt);
+      const startedAt = vm.getState().startedAt || this.now();
+      // `startedAt` is a journal timestamp (`this.now`), so measure against the same clock.
+      const remaining = deadlineMs - (this.now() - startedAt);
       const breach = () =>
         cancel(new Error(`execution deadline exceeded (deadlineMs=${deadlineMs})`));
       if (remaining <= 0) breach();
