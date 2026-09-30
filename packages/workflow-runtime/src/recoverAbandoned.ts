@@ -335,7 +335,11 @@ export async function recoverAbandoned(
  */
 async function* candidateIds(options: RecoverAbandonedOptions): AsyncGenerator<string> {
   if (options.leases !== undefined) {
-    for (const lease of await options.leases.store.expired(Date.now(), options.pageSize ?? 1000)) {
+    for (const lease of await options.leases.store.expired(
+      // The store's OWN clock (L28): it stamped `expiresAt` in acquire/renew, so it must judge it.
+      undefined,
+      options.pageSize ?? 1000
+    )) {
       yield lease.executionId;
     }
     return;

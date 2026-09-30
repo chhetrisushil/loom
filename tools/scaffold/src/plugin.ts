@@ -436,7 +436,7 @@ const SEAMS: Record<string, SeamDef> = {
         "  renew(_executionId: string, _owner: string, _ttlMs: number, _now?: number): Promise<boolean> {",
         '    throw new Error("not implemented");',
         "  }",
-        "  expired(_now: number, _limit?: number): Promise<Lease[]> {",
+        "  expired(_now?: number, _limit?: number): Promise<Lease[]> {",
         '    throw new Error("not implemented");',
         "  }",
         "  release(_executionId: string, _owner: string): Promise<void> {",

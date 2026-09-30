@@ -43,8 +43,16 @@ export interface LeaseStore {
    * since taken fails rather than stealing it back.
    */
   renew(executionId: string, owner: string, ttlMs: number, now?: number): Promise<boolean>;
-  /** Leases past their expiry, soonest-expired first. The evidence an execution was orphaned. */
-  expired(now: number, limit?: number): Promise<Lease[]>;
+  /**
+   * Leases past their expiry, soonest-expired first. The evidence an execution was orphaned.
+   *
+   * `now` is OPTIONAL (SPI 1.2.0) and MUST default to the store's OWN clock — the same one
+   * `acquire`/`renew` stamp `expiresAt` with. Expiry is only meaningful judged on the clock
+   * that stamped it: a caller passing wall-clock `Date.now()` to a store running on an
+   * injected/simulated clock sees every live lease as expired (a double-execution hazard).
+   * Callers that have no reason to override the clock (`recoverAbandoned`) pass `undefined`.
+   */
+  expired(now?: number, limit?: number): Promise<Lease[]>;
   /**
    * OPTIONAL read: the lease on an execution, or `null` if nothing holds one.
    *

@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`recoverAbandoned` judged lease expiry on the wall clock, not the store's** (backlog L28,
+  double-execution hazard under an injected clock). It called `leases.store.expired(Date.now())`
+  while `acquire`/`renew` stamped `expiresAt` with the store's own `now`. With
+  `InMemoryLeaseStore({ now: sim })` at sim ~ 1000, every live lease (expiry ~ 61000) read as
+  expired, so recovery re-drove executions healthy holders were still running. Now
+  `LeaseStore.expired`'s `now` is OPTIONAL and defaults to the store's own clock (**LeaseStore SPI
+  1.2.0**, additive: existing callers passing a `now` are unchanged; a third-party store MUST
+  default it to the clock that stamps its leases), and `recoverAbandoned` passes none. The SQLite
+  and Postgres stores already defaulted to `Date.now()`, which is their stamping clock. A new
+  conformance case asserts `expired()` with no argument. `orphanCensus` keeps its own explicit
+  `now` option (caller-supplied; it also ages executions by it).
+
 - **L26 round 2: invalid `timeoutMs`/`deadlineMs` are rejected** (behavioural tightening).
   `step$`/`flow$` now throw on NaN, 0, negative and Infinity (NaN armed a 1ms timer, 0 and
   negatives breached at once, Infinity never fired; omit the field for no deadline). The same
@@ -48,11 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer wait is armed in chunks of at most 2^31-1 ms, recomputing from `now` at each chunk.
   Caveats: a FIXED `now` silently disables the crash-surviving deadline (elapsed is always 0,
   so every resume re-grants the full budget), and an offset `now` is safe only if every
-  runtime touching the log uses the same offset. KNOWN LIMITATION, NOT fixed here (tracked as
-  L27/L28): `ctx.sleep`/`suspend({timeout})` wake times are computed with raw `Date.now()` in
-  the kernel yet compared with the TimerService's own `now`, and `recoverAbandoned` passes
-  `Date.now()` to the lease store's `expired()` while acquire/renew use the store's clock. Those
-  still mix clocks under a non-wall `now`.
+  runtime touching the log uses the same offset. (`ctx.sleep`/`suspend({timeout})` wake times
+  are tracked separately as L27; lease expiry was fixed in L28, below.)
 - **Six packages value-imported a package they declared only in `devDependencies`** (backlog L22).
   The workspace links every package everywhere, so nothing in the suite noticed; a consumer
   installing the PUBLISHED package would get "Cannot find module" at load. Moved to
