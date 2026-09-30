@@ -38,6 +38,7 @@ import {
 } from "./decorators";
 import {
   type ContentStoreLike,
+  leaseExpiredDefaultProblem,
   runBranchRegistryConformance,
   runCapabilityAuthorizerConformance,
   runEventStoreConformance,
@@ -211,7 +212,52 @@ describe("the decorator kit rejects a decorator that drops an optional method", 
 
 runSnapshotStoreConformance(() => new InMemoryAsyncSnapshotStore(), "InMemoryAsyncSnapshotStore");
 runBranchRegistryConformance(() => new InMemoryBranchRegistry(), "InMemoryBranchRegistry");
-runLeaseStoreConformance(() => new InMemoryLeaseStore(), "InMemoryLeaseStore");
+runLeaseStoreConformance(() => new InMemoryLeaseStore(), "InMemoryLeaseStore", {
+  clocked: (now) => new InMemoryLeaseStore({ now }),
+});
+
+// The kit's expired()-default case must DISCRIMINATE, not merely pass on the reference store
+// (L28 review: with wall-clock factories it passed the exact bug and failed a correct sim store).
+describe("leaseExpiredDefaultProblem discriminates", () => {
+  // The L28 bug: stamps with its own (injected) clock, but `expired()` defaults to Date.now().
+  class WallDefaultExpired extends InMemoryLeaseStore {
+    override expired(now = Date.now(), limit = 100) {
+      return super.expired(now, limit);
+    }
+  }
+  // 1.x-shaped: required `now`, so `undefined` compares false and nothing is ever expired.
+  class RequiredNow extends InMemoryLeaseStore {
+    override expired(now?: number, limit = 100) {
+      return now === undefined ? Promise.resolve([]) : super.expired(now, limit);
+    }
+  }
+
+  it("fails a store that stamps on its own clock but defaults expired() to Date.now()", async () => {
+    const problem = await leaseExpiredDefaultProblem(
+      () => new WallDefaultExpired(),
+      (now) => new WallDefaultExpired({ now })
+    );
+    expect(problem).toMatch(/other than the stamping clock/);
+  });
+
+  it("fails a store whose expired() returns [] when handed undefined", async () => {
+    const problem = await leaseExpiredDefaultProblem(
+      () => new RequiredNow(),
+      (now) => new RequiredNow({ now })
+    );
+    expect(problem).toBeDefined();
+  });
+
+  it("passes a correct store on a simulated clock, and on the wall clock", async () => {
+    expect(
+      await leaseExpiredDefaultProblem(
+        () => new InMemoryLeaseStore(),
+        (now) => new InMemoryLeaseStore({ now })
+      )
+    ).toBeUndefined();
+    expect(await leaseExpiredDefaultProblem(() => new InMemoryLeaseStore())).toBeUndefined();
+  });
+});
 runExecutionDispatcherConformance(() => new LocalDispatcher(new FakeWorker()), "LocalDispatcher", {
   overWorker: (worker) => new LocalDispatcher(worker, { maxAttempts: 3 }),
 });

@@ -1,6 +1,10 @@
 import { COMPILER_MANIFEST_VERSION } from "@loom/compiler";
 import { DISPATCHER_SPI_VERSION } from "@loom/dispatcher";
-import { BRANCH_REGISTRY_SPI_VERSION, EVENT_STORE_SPI_VERSION } from "@loom/event-runtime";
+import {
+  BRANCH_REGISTRY_SPI_VERSION,
+  EVENT_STORE_SPI_VERSION,
+  LEASE_STORE_SPI_VERSION,
+} from "@loom/event-runtime";
 import { MEMORY_STORE_SPI_VERSION } from "@loom/memory";
 import { CONTENT_STORE_SPI_VERSION } from "@loom/plugin-content";
 import { EVENT_SCHEMA_VERSION, knownEventTypes } from "@loom/replay-vm";
@@ -27,6 +31,7 @@ export interface KernelManifest {
     eventStore: string;
     snapshotStore: string;
     branchRegistry: string;
+    leaseStore: string;
     dispatcher: string;
     memoryStore: string;
     /** `@loom/plugin-content` — the blob seam 3P backends implement (ADR 0046/0062/0055). */
@@ -52,6 +57,7 @@ export function kernelManifest(): KernelManifest {
       eventStore: EVENT_STORE_SPI_VERSION,
       snapshotStore: SNAPSHOT_STORE_SPI_VERSION,
       branchRegistry: BRANCH_REGISTRY_SPI_VERSION,
+      leaseStore: LEASE_STORE_SPI_VERSION,
       dispatcher: DISPATCHER_SPI_VERSION,
       memoryStore: MEMORY_STORE_SPI_VERSION,
       contentStore: CONTENT_STORE_SPI_VERSION,

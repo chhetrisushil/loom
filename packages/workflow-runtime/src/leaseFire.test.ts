@@ -312,7 +312,7 @@ describe("#380 L5a — the claim is renewed while the wake is in flight", () => 
 
       // Five TTLs later, with the run still in flight. Unrenewed, this lapses the lease.
       await vi.advanceTimersByTimeAsync(200);
-      expect(await leaseStore.expired(Date.now())).toEqual([]);
+      expect(await leaseStore.expired()).toEqual([]);
       // And still exclusively ours: a recovery pass would find nothing to take.
       expect(await leaseStore.acquire("long-run", "rescuer", 1000)).toBeNull();
 

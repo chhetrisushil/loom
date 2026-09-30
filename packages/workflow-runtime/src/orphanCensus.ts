@@ -70,7 +70,14 @@ export interface OrphanCensusOptions {
   leases?: LeaseStore;
   /** Age thresholds in ms, cumulative. Default 5m / 1h / 6h / 24h. */
   buckets?: number[];
-  /** Injectable clock, as everywhere else. */
+  /**
+   * Injectable clock, as everywhere else. Default: `Date.now()`. It ages executions
+   * (`updatedAt`, wall-clock event timestamps) AND is compared to `lease.expiresAt`, which the
+   * lease store stamped with ITS clock: if `leases` runs on a non-wall clock (e.g.
+   * `InMemoryLeaseStore({ now: sim })`), pass that clock's reading here or every lease is
+   * misclassified. Unlike `recoverAbandoned`, there is no store-default because the same value
+   * also ages executions.
+   */
   now?: number;
   pageSize?: number;
   /** Ids kept per band. Default 5 — a pointer, not a dump. */

@@ -25,6 +25,7 @@ export function renderCompatibilityMatrix(m: KernelManifest = kernelManifest()):
       m.spis.branchRegistry,
       "`BRANCH_REGISTRY_SPI_VERSION` · conformance kit",
     ],
+    ["LeaseStore SPI", m.spis.leaseStore, "`LEASE_STORE_SPI_VERSION` · conformance kit"],
     ["Dispatcher SPI", m.spis.dispatcher, "`DISPATCHER_SPI_VERSION` · conformance kit"],
     ["MemoryStore SPI", m.spis.memoryStore, "`MEMORY_STORE_SPI_VERSION` · conformance kit"],
     ["ContentStore SPI", m.spis.contentStore, "`CONTENT_STORE_SPI_VERSION` · conformance kit"],
