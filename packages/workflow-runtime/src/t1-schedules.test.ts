@@ -85,13 +85,27 @@ const everyMinute = schedule$<In>({
 const MINUTE = 60_000;
 /** The next whole minute strictly after `t` — a cron occurrence boundary. */
 const nextMinute = (t: number) => (Math.floor(t / MINUTE) + 1) * MINUTE;
+/**
+ * One pinned instant, half-way through a minute, for every service's construction floor
+ * and every occurrence the tests compute (L25a). A service's cron cursor starts at its
+ * construction time, and a tick fires EVERY occurrence in (cursor, now]. Read from the wall
+ * clock, a minute boundary falling between the constructor and `nextMinute(Date.now())`
+ * made that window hold two occurrences — two executions, two effects — which only a
+ * slow (loaded) run is likely to hit. The service's behaviour is right; the test's
+ * assumption of one occurrence per window was the race.
+ */
+const NOW = 28_333_334 * MINUTE + MINUTE / 2;
+const clock = () => NOW;
 
 describe("T1.2 — schedule$ firing", () => {
   it("fires a due occurrence with the deterministic scheduleId@occurrence executionId", async () => {
     const app = boot();
-    const service = new TimerService(app.runtime, app.timerStore, { schedules: [everyMinute] });
+    const service = new TimerService(app.runtime, app.timerStore, {
+      schedules: [everyMinute],
+      now: clock,
+    });
 
-    const occurrence = nextMinute(Date.now());
+    const occurrence = nextMinute(NOW);
     await service.tick(occurrence); // poll lands exactly on the occurrence
 
     const executionId = `audit-schedule@${occurrence}`;
@@ -103,9 +117,12 @@ describe("T1.2 — schedule$ firing", () => {
 
   it("never double-starts an occurrence: repeated polls are idempotent", async () => {
     const app = boot();
-    const service = new TimerService(app.runtime, app.timerStore, { schedules: [everyMinute] });
+    const service = new TimerService(app.runtime, app.timerStore, {
+      schedules: [everyMinute],
+      now: clock,
+    });
 
-    const occurrence = nextMinute(Date.now());
+    const occurrence = nextMinute(NOW);
     await service.tick(occurrence);
     await service.tick(occurrence + 5_000);
     await service.tick(occurrence + 10_000);
@@ -117,9 +134,12 @@ describe("T1.2 — schedule$ firing", () => {
 
   it("fires each occurrence once as time advances", async () => {
     const app = boot();
-    const service = new TimerService(app.runtime, app.timerStore, { schedules: [everyMinute] });
+    const service = new TimerService(app.runtime, app.timerStore, {
+      schedules: [everyMinute],
+      now: clock,
+    });
 
-    const first = nextMinute(Date.now());
+    const first = nextMinute(NOW);
     await service.tick(first);
     await service.tick(first + MINUTE);
     await service.tick(first + 2 * MINUTE);
@@ -132,14 +152,20 @@ describe("T1.2 — schedule$ firing", () => {
 
   it("a node crash does not duplicate starts: a second service skips fired occurrences", async () => {
     const a = boot();
-    const serviceA = new TimerService(a.runtime, a.timerStore, { schedules: [everyMinute] });
-    const occurrence = nextMinute(Date.now());
+    const serviceA = new TimerService(a.runtime, a.timerStore, {
+      schedules: [everyMinute],
+      now: clock,
+    });
+    const occurrence = nextMinute(NOW);
     await serviceA.tick(occurrence);
     expect(a.auditFn).toHaveBeenCalledTimes(1);
     // Node A "dies"; node B (fresh runtime + service over the SAME stores)
     // computes the same deterministic occurrence id and finds it already started.
     const b = boot(a);
-    const serviceB = new TimerService(b.runtime, b.timerStore, { schedules: [everyMinute] });
+    const serviceB = new TimerService(b.runtime, b.timerStore, {
+      schedules: [everyMinute],
+      now: clock,
+    });
     await serviceB.tick(occurrence + 1_000);
 
     expect(b.auditFn).not.toHaveBeenCalled();
@@ -158,13 +184,15 @@ describe("T1.2 — schedule$ firing", () => {
     const onErrorB = vi.fn();
     const serviceA = new TimerService(a.runtime, a.timerStore, {
       schedules: [everyMinute],
+      now: clock,
       onError: onErrorA,
     });
     const serviceB = new TimerService(b.runtime, b.timerStore, {
       schedules: [everyMinute],
+      now: clock,
       onError: onErrorB,
     });
-    const occurrence = nextMinute(Date.now());
+    const occurrence = nextMinute(NOW);
     await Promise.all([serviceA.tick(occurrence), serviceB.tick(occurrence)]);
 
     expect(a.auditFn.mock.calls.length + b.auditFn.mock.calls.length).toBe(1);
@@ -201,15 +229,17 @@ describe("T1.2 — schedule$ firing", () => {
     });
     const serviceA = new TimerService(a.runtime, a.timerStore, {
       schedules: [everyMinute],
+      now: clock,
       fenced: true,
       onError: onErrorA,
     });
     const serviceB = new TimerService(b.runtime, b.timerStore, {
       schedules: [everyMinute],
+      now: clock,
       fenced: true,
       onError: onErrorB,
     });
-    const occurrence = nextMinute(Date.now());
+    const occurrence = nextMinute(NOW);
     const tickA = serviceA.tick(occurrence);
     await aAtStart;
     await serviceB.tick(occurrence).finally(() => bSettled());
@@ -257,15 +287,17 @@ describe("T1.2 — schedule$ firing", () => {
     const onErrorB = vi.fn();
     const serviceA = new TimerService(a.runtime, a.timerStore, {
       schedules: [everyMinute],
+      now: clock,
       fenced: true,
       onError: onErrorA,
     });
     const serviceB = new TimerService(b.runtime, b.timerStore, {
       schedules: [everyMinute],
+      now: clock,
       fenced: true,
       onError: onErrorB,
     });
-    const occurrence = nextMinute(Date.now());
+    const occurrence = nextMinute(NOW);
     const executionId = `audit-schedule@${occurrence}`;
 
     const tickB = serviceB.tick(occurrence).finally(() => bSettled());
@@ -295,11 +327,14 @@ describe("T1.2 — schedule$ firing", () => {
 
   it("no catch-up: occurrences before the service existed are skipped", async () => {
     const app = boot();
-    const service = new TimerService(app.runtime, app.timerStore, { schedules: [everyMinute] });
+    const service = new TimerService(app.runtime, app.timerStore, {
+      schedules: [everyMinute],
+      now: clock,
+    });
 
     // Tick far in the future: only occurrences AFTER construction fire, and the
     // batch cap bounds the sweep — but none of the pre-construction minutes do.
-    const constructionFloor = Date.now();
+    const constructionFloor = NOW;
     const past = constructionFloor - 10 * MINUTE;
     await service.tick(constructionFloor - 1); // "now" before any new occurrence
     expect(app.auditFn).not.toHaveBeenCalled();
@@ -310,10 +345,11 @@ describe("T1.2 — schedule$ firing", () => {
     const app = boot();
     const service = new TimerService(app.runtime, app.timerStore, {
       schedules: [everyMinute],
+      now: clock,
       fenced: true,
     });
 
-    const occurrence = nextMinute(Date.now());
+    const occurrence = nextMinute(NOW);
     const executionId = `audit-schedule@${occurrence}`;
     await service.tick(occurrence);
 

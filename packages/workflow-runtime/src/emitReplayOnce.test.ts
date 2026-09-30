@@ -6,7 +6,7 @@ import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryBranchRegistry } from "@loom/event-runtime";
 import { flowEmitCount, foldEvents } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { LogLifecycle } from "./LogLifecycle";
 import { flowEmitDigest } from "./WorkflowContext";
@@ -52,6 +52,7 @@ function boot(
     stores?: Stores;
     effects?: (effects: EffectRuntime) => void;
     snapshotEvery?: number;
+    now?: () => number;
   } = {}
 ) {
   const stores = opts.stores ?? freshStores();
@@ -63,6 +64,7 @@ function boot(
     effectRuntime: effects,
     branchRegistry: stores.branchRegistry,
     ...(opts.snapshotEvery !== undefined && { snapshotEvery: opts.snapshotEvery }),
+    ...(opts.now !== undefined && { now: opts.now }),
   });
   const definition: FlowDefinition<Io, Io> = {
     _tag: "FlowDefinition",
@@ -666,8 +668,93 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
     expect(foldSurface(await second.eventStore.read("e-moved"))).toEqual({ n: 1 });
   });
 
+  // L25a — this test used to read the wall clock twice without meaning to: the step's
+  // deadline is anchored to the LOGGED STEP_STARTED timestamp, so a process descheduled for
+  // more than `timeoutMs` between that commit and the deadline arming (a loaded full-suite
+  // run) found the deadline already breached and never invoked the effect — no zombie, so
+  // [0, 1, 2]. That is the kernel behaving correctly (pinned by the next test); the ordering
+  // this test is about is now fixed by a pinned clock and explicit handshakes, not timers.
   it("a timed-out step's zombie effect emitting through the flow ctx never costs a live emit", async () => {
-    let flowCtx: WorkflowContext | undefined;
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      let flowCtx: WorkflowContext | undefined;
+      let invoked = 0;
+      let releaseZombie!: () => void;
+      const zombieReleased = new Promise<void>((r) => {
+        releaseZombie = r;
+      });
+      let zombieEmitted!: () => void;
+      const zombieDone = new Promise<void>((r) => {
+        zombieEmitted = r;
+      });
+      const slow = step$({
+        id: "slow",
+        name: "slow",
+        toolId: "tool-slow",
+        inputSchema: io,
+        outputSchema: io,
+        timeoutMs: 5,
+      });
+      const h = boot(
+        async (ctx) => {
+          flowCtx = ctx;
+          try {
+            await ctx.run(slow, {});
+          } catch {
+            /* StepTimeoutError — the effect keeps running (it ignores its signal) */
+          }
+          releaseZombie(); // the deadline has won: now let the zombie emit…
+          await zombieDone; // …while this run is still live, before the gate
+          await ctx.suspend({ on: "go1" });
+          ctx.emit("tick", {}); // same content as the zombie's emit
+          await ctx.suspend({ on: "go2" });
+          return { done: true };
+        },
+        {
+          effects: (e) =>
+            e.register(
+              "tool-slow",
+              new ToolEffect(async () => {
+                invoked++;
+                await zombieReleased; // outlives the 5ms deadline, whatever the load
+                flowCtx!.emit("tick", {});
+                zombieEmitted();
+                return { ok: true };
+              })
+            ),
+        }
+      );
+      const started = await h.runtime.start(h.flow, {}, { executionId: "e-zombie" });
+      await started.waitForSuspend();
+      const logs = [await h.eventStore.read("e-zombie")];
+      now += 60_000; // every re-run is far past the step's anchored deadline
+      const r1 = await h.runtime.resume("e-zombie", { eventType: "go1", payload: {} });
+      await r1.waitForSuspend();
+      logs.push(await h.eventStore.read("e-zombie"));
+      const r2 = await h.runtime.resume("e-zombie", { eventType: "go2", payload: {} });
+      await r2.waitForCompletion();
+      logs.push(await h.eventStore.read("e-zombie"));
+
+      expect(invoked).toBe(1); // the original run's zombie; re-runs fail the step at once
+      // Original run: the zombie's tick (unstamped: its effect had not settled). On each
+      // re-run the anchored deadline fails the step at once — an untyped timeout, which a
+      // re-run never serves — so the live tick after go1 is never provable and is appended
+      // on every re-run. What matters: it is never absorbed by the zombie's tick.
+      expect(logs.map((log) => count(log, "tick"))).toEqual([1, 2, 3]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  // L25a — the load-dependent [0, 1, 2], reproduced deterministically. The journal's clock
+  // running `timeoutMs`+ behind the wall clock is exactly a process stalled between the
+  // STEP_STARTED commit (which stamps the anchor) and the deadline arming (which reads
+  // `Date.now()`). The deadline is already breached, so the effect is never invoked: there
+  // is no zombie and no zombie emit to count. Every emit the flow DID make — the live tick
+  // after go1, on each re-run — is in the log. No emit is lost; ADR 0102's guarantee holds.
+  it("a step whose deadline is breached before its effect is invoked runs no effect and loses no emit", async () => {
+    let invoked = 0;
     const slow = step$({
       id: "slow",
       name: "slow",
@@ -678,36 +765,35 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
     });
     const h = boot(
       async (ctx) => {
-        flowCtx = ctx;
         try {
           await ctx.run(slow, {});
         } catch {
-          /* StepTimeoutError — the effect keeps running (it ignores its signal) */
+          /* StepTimeoutError, raised before the effect was invoked */
         }
-        await new Promise((r) => setTimeout(r, 60)); // the zombie emits meanwhile
         await ctx.suspend({ on: "go1" });
-        ctx.emit("tick", {}); // same content as the zombie's emit
+        ctx.emit("tick", {});
         await ctx.suspend({ on: "go2" });
         return { done: true };
       },
       {
+        now: () => Date.now() - 10, // a 10ms stall after every commit, before the deadline read
         effects: (e) =>
           e.register(
             "tool-slow",
             new ToolEffect(async () => {
-              await new Promise((r) => setTimeout(r, 25));
-              flowCtx!.emit("tick", {});
+              invoked++;
               return { ok: true };
             })
           ),
       }
     );
-    const logs = await driveGates(h, "e-zombie", ["go1", "go2"]);
-    // Original run: the zombie's tick (unstamped: its effect had not settled). On each
-    // re-run the anchored deadline fails the step at once — an untyped timeout, which a
-    // re-run never serves — so the live tick after go1 is never provable and is appended
-    // on every re-run. What matters: it is never absorbed by the zombie's tick.
-    expect(logs.map((log) => count(log, "tick"))).toEqual([1, 2, 3]);
+    const logs = await driveGates(h, "e-stalled", ["go1", "go2"]);
+    expect(invoked).toBe(0);
+    const failures = logs.at(-1)!.filter((e) => e.eventType === "STEP_FAILED");
+    expect(failures).toHaveLength(3); // one per run, each a timeout
+    for (const f of failures)
+      expect(String((f.payload as { error?: unknown }).error)).toMatch(/StepTimeoutError/);
+    expect(logs.map((log) => count(log, "tick"))).toEqual([0, 1, 2]);
   });
 
   it("a code change that adds an emit before a gate appends it; an edited emit is new content", async () => {
