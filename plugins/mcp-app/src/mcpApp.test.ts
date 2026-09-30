@@ -414,6 +414,15 @@ describe("MCP server — audience and seam boundaries", () => {
   async function serve(overrides: Parameters<typeof createMcpServer>[0] = {}) {
     const s = createMcpServer({ port: 0, ...overrides });
     await s.start();
+    // Loopback ADDRESS, not the name `localhost`: the name costs a resolver round trip
+    // (getaddrinfo on libuv's 4-thread pool) per new connection, and under a loaded
+    // full-suite run that lookup stalls for seconds and trips vitest's 5s test timeout. The
+    // server listens dual-stack, so 127.0.0.1 always reaches it; these tests exercise the
+    // MCP server, not name resolution.
+    Object.defineProperty(s, "url", {
+      value: s.url.replace("://localhost:", "://127.0.0.1:"),
+      configurable: true,
+    });
     server = s;
     return s;
   }

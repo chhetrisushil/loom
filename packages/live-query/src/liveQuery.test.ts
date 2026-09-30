@@ -159,8 +159,22 @@ async function rowsOverNEvents(n: number): Promise<number> {
   const reader = noSnapshotReader(store);
   const lq = liveQuery({ eventStore: store, reader });
 
-  const unsub = await lq.subscribe("x1", () => {});
+  // Settle on the SUBSCRIBER'S OWN delivery of sequence i, not on a timer: a
+  // `setTimeout(0)` per event costs >=1ms of wall clock (n=200 -> ~0.4s idle) and under
+  // load each timer slips to tens of ms, which blew the default 5s test timeout. Awaiting
+  // the delivery is both instant and exact: the pump for event i has fully finished.
+  let delivered = -1;
+  let wake: (() => void) | undefined;
+  const unsub = await lq.subscribe("x1", (s) => {
+    delivered = s.sequence;
+    wake?.();
+  });
   for (let i = 0; i < n; i++) {
+    const seen = new Promise<void>((resolve) => {
+      wake = () => {
+        if (delivered >= i) resolve();
+      };
+    });
     await store.append({
       id: `e${i}`,
       executionId: "x1",
@@ -170,7 +184,7 @@ async function rowsOverNEvents(n: number): Promise<number> {
       timestamp: i,
       payload: { stepId: `s${i}` },
     });
-    await tick();
+    await seen;
   }
   unsub();
   return rows();
