@@ -39,8 +39,31 @@ export interface IsolatedToolSpec {
    * kind of event: the boundary said no.
    */
   maxConcurrentFetches?: number;
-  /** Kill the child (non-cooperatively) if a run exceeds this. */
+  /**
+   * Kill the child (non-cooperatively) if a run exceeds this. The window opens when the child
+   * is READY to begin the run — process spawn and tool-module load are NOT charged to it (L23;
+   * they have their own allowance, `coldStartMs`). Otherwise a host whose cold start is slower
+   * than `timeoutMs` would kill every run, and since a kill discards the child, the next call
+   * would cold-start again: a permanent failure loop.
+   */
   timeoutMs?: number;
+  /**
+   * How long a cold child may take to spawn and load the tool module, measured from when it
+   * starts warming, before it is killed and whatever waits on it (a run, `warm()`) fails with
+   * `IsolatedToolStartupError` (`phase: "spawn"`). Independent of `timeoutMs` on purpose (same
+   * shape as `@loom/plugin-sandbox`'s `coldStartMs`, ADR 0089 D4). Default 10 000 ms; must be
+   * finite and STRICTLY greater than 0 — it is the only clock a cold start is judged against,
+   * so 0 would fail every cold start, forever. Set it above this host's real cold start.
+   */
+  coldStartMs?: number;
+  /**
+   * L24 — the longest a single brokered fetch may take, start to finish (DNS, connect, response),
+   * before the host aborts the request, frees its `maxConcurrentFetches` slot and fails the
+   * fetch inside the isolate with `code: "FETCH_TIMEOUT"`. Without it a host that never answers
+   * held a slot forever and enough of them starved every later fetch. Default 30 000 ms; must be
+   * finite and > 0. Fetches are also aborted when the run that issued them ends or is killed.
+   */
+  fetchTimeoutMs?: number;
   /** K9.3 delivery semantic, same as ToolEffect's. */
   idempotent?: boolean;
   /**
@@ -118,9 +141,17 @@ export interface FetchResultMessage {
   headers?: Record<string, string>;
   body?: string;
   error?: string;
+  /** Typed failure kind, so the tool can tell a deadline from a refusal or a network error. */
+  code?: "FETCH_TIMEOUT" | "FETCH_ABORTED";
 }
 
-export type ParentToChild = RunMessage | AbortMessage | FetchResultMessage;
+/** Parent asks a fresh child to load the tool module ahead of the first run (cold-start phase). */
+export interface WarmMessage {
+  type: "warm";
+  modulePath: string;
+}
+
+export type ParentToChild = RunMessage | AbortMessage | FetchResultMessage | WarmMessage;
 
 export interface EmitMessage {
   type: "emit";
@@ -149,4 +180,14 @@ export interface ErrorMessage {
   message: string;
 }
 
-export type ChildToParent = EmitMessage | FetchMessage | ResultMessage | ErrorMessage;
+/** Child finished booting and loading the tool module: a run may now start its clock. */
+export interface ReadyMessage {
+  type: "ready";
+}
+
+export type ChildToParent =
+  | ReadyMessage
+  | EmitMessage
+  | FetchMessage
+  | ResultMessage
+  | ErrorMessage;
