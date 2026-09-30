@@ -6,6 +6,11 @@
 // feeds the timer poll — no core change. Wall-clock never leaks into a fold, so a
 // virtual run replays identically to a real one.
 //
+// Sleeps: `wakeAt` is computed with the RUNTIME's `now` and TimerService defaults to
+// that same clock (L27). `SimWorld` runtimes keep the wall clock, so a driver reading
+// `wakeAt` off the log and jumping to it works; to make sleeps fully virtual give the
+// runtime `now: clock.now` instead.
+//
 // This is a discrete-event clock: it holds the current virtual time plus a set of
 // registered future wake times, and `nextWake()` lets a driver jump straight to the
 // next scheduled event instead of busy-waiting real milliseconds.
