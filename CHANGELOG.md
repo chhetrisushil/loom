@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Six packages value-imported a package they declared only in `devDependencies`** (backlog L22).
+  The workspace links every package everywhere, so nothing in the suite noticed; a consumer
+  installing the PUBLISHED package would get "Cannot find module" at load. Moved to
+  `dependencies` (the repo's convention, no peers): `@loom/plugin-worker-server` -> `@loom/core`;
+  `@loom/app` -> `@loom/classify`; `@loom/orchestration` -> `@loom/effect-runtime`; `@loom/cli`
+  -> `@loom/effect-runtime`, `@loom/snapshot-runtime`; `@loom/agent` and `@loom/plugin-a2a` ->
+  `zod`. New fitness test `packages/spec/src/runtimeDeps.test.ts` scans every workspace
+  package's non-test `src/` (AST, so multi-line, `export ... from`, `require` and literal
+  `import()` count; `import type` / all-`type` specifiers do not) and fails naming the package
+  and import when it is not in dependencies, peerDependencies or optionalDependencies.
+
 - **Two retrying dispatchers ping-ponged one execution, re-running its step on every bounce**
   (backlog L20, [ADR 0004 amendment](docs/adr/0004-failure-recovery.md); from the L12 review of
   [ADR 0103](docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md)). With `maxAttempts > 1`,

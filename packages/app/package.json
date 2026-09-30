@@ -21,6 +21,7 @@
   "dependencies": {
     "@loom/agent": "workspace:*",
     "@loom/agent-surface": "workspace:*",
+    "@loom/classify": "workspace:*",
     "@loom/compliance": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/dispatcher": "workspace:*",
@@ -39,7 +40,6 @@
     "@loom/workflow-runtime": "workspace:*"
   },
   "devDependencies": {
-    "@loom/classify": "workspace:*",
     "@loom/compiler": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",

@@ -123,6 +123,9 @@ importers:
       '@loom/workflow-runtime':
         specifier: workspace:*
         version: link:../workflow-runtime
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@loom/event-runtime':
         specifier: workspace:*
@@ -142,9 +145,6 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
 
   packages/agent-surface:
     dependencies:
@@ -192,6 +192,9 @@ importers:
       '@loom/agent-surface':
         specifier: workspace:*
         version: link:../agent-surface
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../classify
       '@loom/compliance':
         specifier: workspace:*
         version: link:../compliance
@@ -241,9 +244,6 @@ importers:
         specifier: workspace:*
         version: link:../workflow-runtime
     devDependencies:
-      '@loom/classify':
-        specifier: workspace:*
-        version: link:../classify
       '@loom/compiler':
         specifier: workspace:*
         version: link:../../tools/compiler
@@ -776,6 +776,9 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../effect-runtime
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
@@ -783,9 +786,6 @@ importers:
         specifier: workspace:*
         version: link:../workflow-runtime
     devDependencies:
-      '@loom/effect-runtime':
-        specifier: workspace:*
-        version: link:../effect-runtime
       '@loom/replay-vm':
         specifier: workspace:*
         version: link:../replay-vm
@@ -1360,6 +1360,9 @@ importers:
       '@loom/workflow-runtime':
         specifier: workspace:*
         version: link:../../packages/workflow-runtime
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@loom/event-runtime':
         specifier: workspace:*
@@ -1379,9 +1382,6 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
 
   plugins/a2ui:
     dependencies:
@@ -1965,13 +1965,13 @@ importers:
 
   plugins/worker-server:
     dependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@loom/worker-runtime':
         specifier: workspace:*
         version: link:../../packages/worker-runtime
     devDependencies:
-      '@loom/core':
-        specifier: workspace:*
-        version: link:../../packages/core
       '@loom/dispatcher':
         specifier: workspace:*
         version: link:../../packages/dispatcher
@@ -2117,6 +2117,9 @@ importers:
       '@loom/deploy-sim':
         specifier: workspace:*
         version: link:../deploy-sim
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
       '@loom/eval':
         specifier: workspace:*
         version: link:../eval
@@ -2147,6 +2150,9 @@ importers:
       '@loom/scaffold':
         specifier: workspace:*
         version: link:../scaffold
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
       '@loom/spec':
         specifier: workspace:*
         version: link:../../packages/spec
@@ -2160,15 +2166,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
-      '@loom/effect-runtime':
-        specifier: workspace:*
-        version: link:../../packages/effect-runtime
       '@loom/memory':
         specifier: workspace:*
         version: link:../../packages/memory
-      '@loom/snapshot-runtime':
-        specifier: workspace:*
-        version: link:../../packages/snapshot-runtime
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

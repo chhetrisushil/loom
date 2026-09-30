@@ -20,11 +20,11 @@
   },
   "dependencies": {
     "@loom/core": "workspace:*",
+    "@loom/effect-runtime": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/workflow-runtime": "workspace:*"
   },
   "devDependencies": {
-    "@loom/effect-runtime": "workspace:*",
     "@loom/replay-vm": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
