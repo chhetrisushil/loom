@@ -39,6 +39,7 @@ import {
 import {
   type ContentStoreLike,
   leaseExpiredDefaultProblem,
+  leaseStoreNowProblem,
   runBranchRegistryConformance,
   runCapabilityAuthorizerConformance,
   runEventStoreConformance,
@@ -256,6 +257,27 @@ describe("leaseExpiredDefaultProblem discriminates", () => {
       )
     ).toBeUndefined();
     expect(await leaseExpiredDefaultProblem(() => new InMemoryLeaseStore())).toBeUndefined();
+  });
+});
+// storeNow() must agree with the stamping clock; a probe an hour off must FAIL, a correct one PASS.
+describe("leaseStoreNowProblem discriminates", () => {
+  const HOUR = 3_600_000;
+  class SkewedStoreNow extends InMemoryLeaseStore {
+    storeNow(): Promise<number> {
+      return Promise.resolve(Date.now() + HOUR);
+    }
+  }
+  class HonestStoreNow extends InMemoryLeaseStore {
+    storeNow(): Promise<number> {
+      return Promise.resolve(Date.now());
+    }
+  }
+  it("fails a store whose storeNow() is an hour off its stamping clock", async () => {
+    expect(await leaseStoreNowProblem(() => new SkewedStoreNow())).toMatch(/disagrees/);
+  });
+  it("passes a correct store, and skips one without storeNow", async () => {
+    expect(await leaseStoreNowProblem(() => new HonestStoreNow())).toBeUndefined();
+    expect(await leaseStoreNowProblem(() => new InMemoryLeaseStore())).toBeUndefined();
   });
 });
 runExecutionDispatcherConformance(() => new LocalDispatcher(new FakeWorker()), "LocalDispatcher", {

@@ -643,6 +643,31 @@ export async function leaseExpiredDefaultProblem(
 }
 
 /**
+ * The optional `storeNow()` check (LeaseStore SPI 2.1.0), as a function so the kit's own tests can
+ * prove it discriminates. `storeNow` must read the SAME clock that stamps `expiresAt`: read it,
+ * acquire (no explicit `now`), read it again; `expiresAt` must land inside
+ * `[before + ttl, after + ttl]` (+1ms slack for a store that rounds a fractional TTL up).
+ * Returns `undefined` when the store conforms or does not implement `storeNow`. Closes the store.
+ */
+export async function leaseStoreNowProblem(factory: () => LeaseStore): Promise<string | undefined> {
+  const store = factory();
+  try {
+    if (store.storeNow === undefined) return undefined;
+    const ttl = 60_000;
+    const before = await store.storeNow();
+    const lease = await store.acquire("store-now", "node-a", ttl);
+    const after = await store.storeNow();
+    if (lease === null) return "acquire on a free lease returned null";
+    if (lease.expiresAt < before + ttl || lease.expiresAt > after + ttl + 1) {
+      return `storeNow() disagrees with the stamping clock: expiresAt ${lease.expiresAt} not in [${before + ttl}, ${after + ttl + 1}]`;
+    }
+    return undefined;
+  } finally {
+    await store.close();
+  }
+}
+
+/**
  * The portable {@link LeaseStore} contract (#380). Ownership with an expiry is the fact the log
  * cannot hold — so the cases below are about the two answers that matter to a caller: *who has
  * it* and *have I lost it*, at a clock the test controls.
@@ -713,6 +738,10 @@ export function runLeaseStoreConformance(
     it("expired() with no argument judges on the store's own clock (SPI 2.0.0)", async () => {
       const problem = await leaseExpiredDefaultProblem(factory, options.clocked);
       expect(problem).toBeUndefined();
+    });
+
+    it("storeNow() (optional, SPI 2.1.0) reads the clock that stamps leases; skipped if absent", async () => {
+      expect(await leaseStoreNowProblem(factory)).toBeUndefined();
     });
 
     it("release frees it for the holder and is a no-op for anyone else", async () => {

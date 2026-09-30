@@ -43,7 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   implements it (DB time) and `orphanCensus` (hence `loom census`) judges lease expiry on it
   when present instead of the CLI host's `Date.now()` (executions are still aged by wall
   clock; an explicit `now` overrides both). `Lease.expiresAt` is documented as on the store's
-  clock. Stores without `now()` behave exactly as before.
+  clock. Stores without `now()` behave exactly as before. `runLeaseStoreConformance` gains a
+  `storeNow()` case (skipped when absent; `leaseStoreNowProblem` is exported and negative-proved:
+  a store whose `storeNow()` is an hour off its stamping clock fails).
 
 - **`recoverAbandoned` judged lease expiry on the wall clock, not the store's** (backlog L28,
   double-execution hazard under an injected clock). It called `leases.store.expired(Date.now())`
