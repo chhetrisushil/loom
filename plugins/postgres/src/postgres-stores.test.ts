@@ -501,5 +501,91 @@ suite("@loom/plugin-postgres", () => {
       expect(results.filter((r) => r !== null)).toHaveLength(1);
       await store.close();
     });
+
+    // L29: skew between NODES must not matter, because stamping and judging use DB time.
+    describe("one clock for every node (L29)", () => {
+      const HOUR = 3_600_000;
+      const ttl = 60_000;
+      // Run `fn` with this node's process clock skewed by `offset` ms.
+      const onNode = async <T>(offset: number, fn: () => Promise<T>): Promise<T> => {
+        const real = Date.now();
+        const spy = vi.spyOn(Date, "now").mockImplementation(() => real + offset);
+        try {
+          return await fn();
+        } finally {
+          spy.mockRestore();
+        }
+      };
+
+      it("a fast-clocked node cannot steal a live lease held by a slow-clocked node", async () => {
+        const slow = new PostgresLeaseStore(admin);
+        const fast = new PostgresLeaseStore(admin);
+        const id = `skew-steal-${Date.now()}`;
+        try {
+          const held = await onNode(-HOUR, () => slow.acquire(id, "slow", ttl));
+          expect(held).not.toBeNull();
+          const stolen = await onNode(+HOUR, () => fast.acquire(id, "fast", ttl));
+          expect(stolen).toBeNull();
+          expect((await slow.get(id))?.owner).toBe("slow");
+        } finally {
+          await slow.release(id, "slow");
+          await slow.close();
+          await fast.close();
+        }
+      });
+
+      it("a slow node's healthy lease is not seen as expired, and expiry is DB time", async () => {
+        const slow = new PostgresLeaseStore(admin);
+        const fast = new PostgresLeaseStore(admin);
+        const id = `skew-expired-${Date.now()}`;
+        try {
+          const before = Date.now();
+          const held = await onNode(-HOUR, () => slow.acquire(id, "slow", ttl));
+          // Stamped on the DB clock (~ real now + ttl), not the skewed process clock.
+          expect(held?.expiresAt).toBeGreaterThanOrEqual(before + ttl - 5_000);
+          expect(held?.expiresAt).toBeLessThanOrEqual(Date.now() + ttl + 5_000);
+          expect(await slow.renew(id, "slow", ttl)).toBe(true);
+          const seen = await onNode(+HOUR, () => fast.expired());
+          expect(seen.map((l) => l.executionId)).not.toContain(id);
+          expect(await onNode(-HOUR, () => slow.renew(id, "slow", ttl))).toBe(true);
+          const seenAfterRenew = await onNode(+HOUR, () => fast.expired());
+          expect(seenAfterRenew.map((l) => l.executionId)).not.toContain(id);
+        } finally {
+          await slow.release(id, "slow");
+          await slow.close();
+          await fast.close();
+        }
+      });
+
+      it("a genuinely expired lease is still taken over on DB time", async () => {
+        const store = new PostgresLeaseStore(admin);
+        const id = `skew-takeover-${Date.now()}`;
+        try {
+          await store.acquire(id, "old", 1, Date.now() - HOUR); // explicit now: long gone
+          expect((await store.expired()).map((l) => l.executionId)).toContain(id);
+          expect(await store.acquire(id, "new", ttl)).toMatchObject({ owner: "new" });
+        } finally {
+          await store.release(id, "new");
+          await store.close();
+        }
+      });
+
+      it("an explicit `now` is still honoured for stamping, renewing and judging", async () => {
+        const store = new PostgresLeaseStore(admin);
+        const id = `explicit-now-${Date.now()}`;
+        try {
+          expect(await store.acquire(id, "a", 500, 1_000)).toMatchObject({ expiresAt: 1_500 });
+          expect(await store.acquire(id, "b", 500, 1_499)).toBeNull();
+          expect(await store.acquire(id, "b", 500, 1_500)).toMatchObject({ owner: "b" });
+          expect(await store.renew(id, "b", 500, 2_000)).toBe(true);
+          expect(await store.get(id)).toMatchObject({ expiresAt: 2_500 });
+          expect((await store.expired(2_499)).map((l) => l.executionId)).not.toContain(id);
+          expect((await store.expired(2_500)).map((l) => l.executionId)).toContain(id);
+        } finally {
+          await store.release(id, "b");
+          await store.close();
+        }
+      });
+    });
   });
 });
