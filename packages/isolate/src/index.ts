@@ -1,4 +1,8 @@
-export { IsolatedToolEffect, IsolatedToolStartupError } from "./IsolatedToolEffect";
+export {
+  IsolatedToolDisconnectedError,
+  IsolatedToolEffect,
+  IsolatedToolStartupError,
+} from "./IsolatedToolEffect";
 export { EgressDeniedError, brokeredFetch } from "./broker";
 export type { BrokeredResponse } from "./broker";
 export type {

@@ -48,18 +48,25 @@ export interface IsolatedToolSpec {
    */
   timeoutMs?: number;
   /**
-   * How long a cold child may take to spawn and load the tool module, measured from when it
-   * starts warming, before it is killed and whatever waits on it (a run, `warm()`) fails with
-   * `IsolatedToolStartupError` (`phase: "spawn"`). Independent of `timeoutMs` on purpose (same
-   * shape as `@loom/plugin-sandbox`'s `coldStartMs`, ADR 0089 D4). Default 10 000 ms; must be
-   * finite and STRICTLY greater than 0 — it is the only clock a cold start is judged against,
-   * so 0 would fail every cold start, forever. Set it above this host's real cold start.
+   * How long a cold child may take to boot the runner AND load the tool module, measured from
+   * spawn, before it is killed and whatever waits on it (a run, `warm()`) fails with
+   * `IsolatedToolStartupError`. Independent of `timeoutMs` on purpose (same shape as
+   * `@loom/plugin-sandbox`'s `coldStartMs`, ADR 0089 D4). Default 10 000 ms; must be finite and
+   * STRICTLY greater than 0 — it is the only clock a cold start is judged against, so 0 would
+   * fail every cold start, forever. Set it above this host's real cold start.
+   *
+   * CAUTION — unlike the sandbox's trusted compile, this window also covers UNTRUSTED code: the
+   * tool module's top-level statements run during the load phase. A tool can therefore spend up
+   * to `coldStartMs` there, and if it forces a cold start on every call (exiting or being killed)
+   * the per-call worst case is `coldStartMs + timeoutMs`. The error's `phase` says which half
+   * failed: `"spawn"` (runner never booted: the environment) or `"load"` (the tool's own
+   * top-level code hung, exited, or threw: a tool fault).
    */
   coldStartMs?: number;
   /**
    * L24 — the longest a single brokered fetch may take, start to finish (DNS, connect, response),
    * before the host aborts the request, frees its `maxConcurrentFetches` slot and fails the
-   * fetch inside the isolate with `code: "FETCH_TIMEOUT"`. Without it a host that never answers
+   * fetch inside the isolate with `code: "FETCH_TIMEOUT"` (and `name: "IsolatedFetchTimeoutError"`). Without it a host that never answers
    * held a slot forever and enough of them starved every later fetch. Default 30 000 ms; must be
    * finite and > 0. Fetches are also aborted when the run that issued them ends or is killed.
    */
@@ -180,12 +187,25 @@ export interface ErrorMessage {
   message: string;
 }
 
+/** The runner itself is up (trusted code only; no tool code has run yet). */
+export interface BootedMessage {
+  type: "booted";
+}
+
+/** The tool module's top-level code threw while loading (a tool fault, phase "load"). */
+export interface LoadErrorMessage {
+  type: "load-error";
+  message: string;
+}
+
 /** Child finished booting and loading the tool module: a run may now start its clock. */
 export interface ReadyMessage {
   type: "ready";
 }
 
 export type ChildToParent =
+  | BootedMessage
+  | LoadErrorMessage
   | ReadyMessage
   | EmitMessage
   | FetchMessage

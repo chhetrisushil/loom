@@ -85,3 +85,19 @@ Adopted per the [K7 evaluation](../requirements/2026-07-10-kernel-hardening-eval
 - **A5 — cross-reference**: K7 provides K8's only *non-cooperative* kill path
   ([ADR 0020](0020-k8-cancellation-deadlines-bounded-effects.md)); in-process AbortSignal is
   cooperative and ignorable.
+
+## Addendum (L23/L24, 2026-09): cold-start and fetch clocks
+
+- `timeoutMs` opens when the child is READY, not at spawn. The warm phase is two steps: the
+  runner boots (`booted`, trusted code) and then loads the tool module (`ready`, the tool's
+  UNTRUSTED top-level code). One `coldStartMs` (default 10 000) bounds both, reported as
+  `IsolatedToolStartupError.phase` `"spawn"` (environment) or `"load"` (tool fault). Unlike the
+  sandbox's trusted compile, this allowance covers untrusted code, so a tool that forces a cold
+  start on every call costs each call up to `coldStartMs + timeoutMs`. A module that throws at
+  load fails as a tool error in the load phase and is not re-executed by the run.
+- Each brokered fetch has a `fetchTimeoutMs` deadline covering DNS, connect and response; the
+  slot is released on expiry or when the run ends.
+- The child is untrusted, so its IPC channel is too: a disconnect is death (kill, discard, fail
+  the run with `IsolatedToolDisconnectedError`), and the parent never sends without a callback
+  or leaves the child's `error` event unhandled.
+

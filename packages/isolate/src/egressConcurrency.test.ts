@@ -202,7 +202,7 @@ describe("a brokered fetch has a deadline (L24)", () => {
 
     // The slot is free: a second fetch is ADMITTED (reaches the host) rather than refused.
     await handle(1);
-    expect(server.hits()).toBe(2);
+    await server.arrived(2); // the request reached the host (not merely destroyed client-side)
     expect((sent[1] as { code?: string }).code).toBe("FETCH_TIMEOUT");
   });
 
