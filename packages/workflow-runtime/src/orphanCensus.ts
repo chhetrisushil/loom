@@ -75,8 +75,9 @@ export interface OrphanCensusOptions {
    * (`updatedAt`, wall-clock event timestamps) AND is compared to `lease.expiresAt`, which the
    * lease store stamped with ITS clock: if `leases` runs on a non-wall clock (e.g.
    * `InMemoryLeaseStore({ now: sim })`), pass that clock's reading here or every lease is
-   * misclassified. Unlike `recoverAbandoned`, there is no store-default because the same value
-   * also ages executions.
+   * misclassified. When omitted, executions age by `Date.now()` but leases are judged on the
+   * store's own `LeaseStore.storeNow()` if it has one (SPI 2.1.0; Postgres = DB time), else
+   * `Date.now()`. An explicit `now` overrides both.
    */
   now?: number;
   pageSize?: number;
@@ -98,6 +99,10 @@ export async function orphanCensus(
   options: OrphanCensusOptions
 ): Promise<OrphanCensus> {
   const now = options.now ?? Date.now();
+  // Leases are judged on the STORE's clock when it exposes one (SPI 2.1.0 `storeNow()`: Postgres
+  // stamps on DB time, which is not this host's clock); executions are still aged by `now`
+  // (event timestamps are wall clock). An explicit `options.now` wins for both.
+  const leaseNow = options.now ?? (await options.leases?.storeNow?.()) ?? now;
   const sampleSize = options.sampleSize ?? 5;
   // Oldest first: a report is read from the worrying end.
   const thresholds = [...(options.buckets ?? DEFAULT_BUCKETS)].sort((a, b) => b - a);
@@ -121,7 +126,7 @@ export async function orphanCensus(
     if (state.status !== "running" && state.status !== "pending") continue;
     census.inFlight++;
 
-    const bucket = classify(options.leases, await leaseOf(options.leases, executionId), now);
+    const bucket = classify(options.leases, await leaseOf(options.leases, executionId), leaseNow);
     if (census.leases !== undefined && bucket !== undefined) census.leases[bucket]++;
 
     const age = now - state.updatedAt;

@@ -607,7 +607,7 @@ export interface LeaseStoreConformanceOptions {
    * `expired()` must default to) is `now`. Supply it if the backend can inject a clock: the
    * "expired() with no argument" case then drives that clock instead of sleeping, and it is the
    * only form that discriminates (a store stamping with its own clock but defaulting `expired()`
-   * to `Date.now()` is caught). Backends with no injectable clock (SQL stores stamping with the process clock) omit it and
+   * to `Date.now()` is caught). Backends with no injectable clock (SQLite stamps with the process clock, Postgres with DB time) omit it and
    * get the wall-clock fallback (a real `setTimeout`).
    */
   clocked?: (now: () => number) => LeaseStore;
