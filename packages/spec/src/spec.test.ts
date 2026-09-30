@@ -326,6 +326,16 @@ describe("checkCompatibility", () => {
     expect(report.issues[0]?.component).toBe("contentStoreSpi");
   });
 
+  it("refuses a 1.x LeaseStore (SPI 2.0.0, L28: expired() must default to the stamping clock)", () => {
+    // A 1.x store may require `now`; handed `undefined` it matches nothing, so recovery would
+    // silently never recover — the reason the bump is MAJOR.
+    expect(kernelManifest().spis.leaseStore).toBe("2.0.0");
+    expect(checkCompatibility({ leaseStoreSpi: "2.0.0" }).ok).toBe(true);
+    const report = checkCompatibility({ leaseStoreSpi: "1.1.0" });
+    expect(report.ok).toBe(false);
+    expect(report.issues[0]?.component).toBe("leaseStoreSpi");
+  });
+
   it("refuses a 1.x EventStore (SPI 2.0.0, ADR 0108: pinned id order + id cursors)", () => {
     // A 1.5.0 store may page in any order with an opaque cursor, which ShardedEventStore and
     // TenantScopedEventStore can no longer tolerate — the reason the bump is MAJOR.

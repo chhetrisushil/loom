@@ -82,6 +82,7 @@ export interface DeploymentVersions {
   dispatcherSpi?: string;
   memoryStoreSpi?: string;
   contentStoreSpi?: string;
+  leaseStoreSpi?: string;
   compilerManifest?: string;
 }
 
@@ -116,6 +117,7 @@ export function checkCompatibility(actual: DeploymentVersions): CompatReport {
     ["dispatcherSpi", actual.dispatcherSpi, m.spis.dispatcher],
     ["memoryStoreSpi", actual.memoryStoreSpi, m.spis.memoryStore],
     ["contentStoreSpi", actual.contentStoreSpi, m.spis.contentStore],
+    ["leaseStoreSpi", actual.leaseStoreSpi, m.spis.leaseStore],
     ["compilerManifest", actual.compilerManifest, m.compilerManifest.version],
   ];
   const issues: CompatIssue[] = [];

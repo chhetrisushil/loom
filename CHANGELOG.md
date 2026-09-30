@@ -42,7 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writes but effects run twice. L29 would use database time (`clock_timestamp()`) when `now` is
   omitted. The conformance case for `expired()` with no argument now takes an optional
   `clocked` factory (`LeaseStoreConformanceOptions`) and drives the store's injected clock
-  instead of sleeping, so it discriminates the L28 bug; backends with no injectable clock keep
+  instead of sleeping, so it discriminates the L28 bug (the check is exported as
+  `leaseExpiredDefaultProblem` for third-party kits); `checkCompatibility` accepts a
+  `leaseStoreSpi` deployment version; backends with no injectable clock keep
   the wall-clock form. `orphanCensus` keeps its own explicit `now` option (it also ages
   executions by it; documented to be given the lease store's clock when that is not the wall).
 
