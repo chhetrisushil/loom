@@ -157,7 +157,13 @@ async function rowsOverNEvents(n: number): Promise<number> {
   const inner = new InMemoryAsyncEventStore();
   const { store, rows } = countingStore(inner);
   const reader = noSnapshotReader(store);
-  const lq = liveQuery({ eventStore: store, reader });
+  // A pump error or lost delivery fails fast instead of hanging to the 5s test timeout.
+  let fail!: (e: unknown) => void;
+  const failed = new Promise<never>((_, reject) => {
+    fail = reject;
+  });
+  failed.catch(() => {});
+  const lq = liveQuery({ eventStore: store, reader, onError: fail });
 
   // Settle on the SUBSCRIBER'S OWN delivery of sequence i, not on a timer: a
   // `setTimeout(0)` per event costs >=1ms of wall clock (n=200 -> ~0.4s idle) and under
@@ -184,7 +190,7 @@ async function rowsOverNEvents(n: number): Promise<number> {
       timestamp: i,
       payload: { stepId: `s${i}` },
     });
-    await seen;
+    await Promise.race([seen, failed]);
   }
   unsub();
   return rows();
