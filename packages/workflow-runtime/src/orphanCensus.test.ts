@@ -106,6 +106,33 @@ describe("orphanCensus — what is stuck, and is anything watching it", () => {
     expect(band?.leases).toEqual({ held: 1, expired: 1, none: 1 });
   });
 
+  it("judges leases on the store's own clock (storeNow), not the host's, unless `now` is given", async () => {
+    const app = boot();
+    await startStuck(app, "leased");
+    await app.leaseStore.acquire("leased", "node-a", 30 * 60_000); // expires ~30m from host now
+
+    const hostClock = await orphanCensus(app.runtime, {
+      source: app.eventStore,
+      leases: app.leaseStore,
+    });
+    expect(hostClock.leases).toEqual({ held: 1, expired: 0, none: 0 });
+
+    // A store whose clock (think: Postgres DB time) is an hour ahead of this host's.
+    const ahead = Object.assign(app.leaseStore, {
+      storeNow: async () => Date.now() + 60 * 60_000,
+    });
+    const onStoreClock = await orphanCensus(app.runtime, { source: app.eventStore, leases: ahead });
+    expect(onStoreClock.leases).toEqual({ held: 0, expired: 1, none: 0 });
+
+    // An explicit `now` still wins.
+    const explicit = await orphanCensus(app.runtime, {
+      source: app.eventStore,
+      leases: ahead,
+      now: Date.now(),
+    });
+    expect(explicit.leases).toEqual({ held: 1, expired: 0, none: 0 });
+  });
+
   it("ignores executions that are not in flight", async () => {
     const app = boot();
     await startStuck(app, "running-one");

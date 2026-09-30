@@ -11,7 +11,7 @@ import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PostgresBranchRegistry } from "./PostgresBranchRegistry";
 import { PostgresEventStore } from "./PostgresEventStore";
-import { PostgresLeaseStore } from "./PostgresLeaseStore";
+import { EXPIRED_SQL, PostgresLeaseStore } from "./PostgresLeaseStore";
 import { PostgresSnapshotStore } from "./PostgresSnapshotStore";
 import { migrate } from "./schema";
 
@@ -539,11 +539,13 @@ suite("@loom/plugin-postgres", () => {
         const fast = new PostgresLeaseStore(admin);
         const id = `skew-expired-${Date.now()}`;
         try {
-          const before = Date.now();
+          const before = await slow.storeNow();
           const held = await onNode(-HOUR, () => slow.acquire(id, "slow", ttl));
-          // Stamped on the DB clock (~ real now + ttl), not the skewed process clock.
-          expect(held?.expiresAt).toBeGreaterThanOrEqual(before + ttl - 5_000);
-          expect(held?.expiresAt).toBeLessThanOrEqual(Date.now() + ttl + 5_000);
+          const after = await slow.storeNow();
+          // Stamped on the DB clock (bracketed by two DB readings), not the skewed process
+          // clock. No assumption that the test host and the DB share a clock.
+          expect(held?.expiresAt).toBeGreaterThanOrEqual(before + ttl);
+          expect(held?.expiresAt).toBeLessThanOrEqual(after + ttl);
           expect(await slow.renew(id, "slow", ttl)).toBe(true);
           const seen = await onNode(+HOUR, () => fast.expired());
           expect(seen.map((l) => l.executionId)).not.toContain(id);
@@ -566,6 +568,62 @@ suite("@loom/plugin-postgres", () => {
           expect(await store.acquire(id, "new", ttl)).toMatchObject({ owner: "new" });
         } finally {
           await store.release(id, "new");
+          await store.close();
+        }
+      });
+
+      it("storeNow() reads the DB clock, not the process clock", async () => {
+        const store = new PostgresLeaseStore(admin);
+        try {
+          const a = await store.storeNow();
+          const skewed = await onNode(+HOUR, () => store.storeNow());
+          const b = await store.storeNow();
+          expect(skewed).toBeGreaterThanOrEqual(a);
+          expect(skewed).toBeLessThanOrEqual(b);
+        } finally {
+          await store.close();
+        }
+      });
+
+      it("a fractional ttl is rounded up rather than rejected by bigint", async () => {
+        const store = new PostgresLeaseStore(admin);
+        const id = `frac-ttl-${Date.now()}`;
+        try {
+          expect(await store.acquire(id, "a", 1_000.4, 1_000)).toMatchObject({ expiresAt: 2_001 });
+          expect(await store.renew(id, "a", 2_500.2, 1_000)).toBe(true);
+          expect(await store.get(id)).toMatchObject({ expiresAt: 3_501 });
+        } finally {
+          await store.release(id, "a");
+          await store.close();
+        }
+      });
+
+      it("expired() with no `now` uses idx_leases_expiry (an Index Cond, no per-row Filter)", async () => {
+        const store = new PostgresLeaseStore(admin);
+        await store.expired(); // ensure migrated
+        const pool = admin;
+        try {
+          // Enough rows, and index-only preference forced, so the planner choice is about the
+          // expression's volatility rather than a tiny-table seq scan.
+          await pool.query(
+            `INSERT INTO leases (execution_id, owner, expires_at)
+             SELECT 'idx-' || g, 'o', 9000000000000 + g FROM generate_series(1, 20000) g
+             ON CONFLICT DO NOTHING`
+          );
+          await pool.query("ANALYZE leases");
+          const c = await pool.connect();
+          try {
+            await c.query("SET enable_seqscan = off");
+            const { rows } = await c.query(`EXPLAIN (FORMAT JSON) ${EXPIRED_SQL}`, [null, 100]);
+            const plan = JSON.stringify(rows[0]["QUERY PLAN"]);
+            expect(plan).toContain("Index Cond");
+            expect(plan).not.toContain('"Filter"');
+          } finally {
+            await c.query("RESET enable_seqscan");
+            c.release();
+          }
+        } finally {
+          await pool.query("DELETE FROM leases WHERE execution_id LIKE 'idx-%'");
           await store.close();
         }
       });

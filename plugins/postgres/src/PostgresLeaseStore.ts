@@ -15,16 +15,34 @@ const rowToLease = (r: LeaseRow): Lease => ({
 });
 
 /**
- * The database's wall clock in epoch ms, evaluated where the row is written or judged.
+ * The database's wall clock in epoch ms, as a scalar subquery: ONE reading per statement, and
+ * index-usable.
  *
  * `clock_timestamp()`, deliberately: `now()`/`transaction_timestamp()` is frozen at transaction
  * start, so a caller-supplied pool client sitting inside a long transaction would stamp (and
- * judge) on a stale reading, and `statement_timestamp()` is fixed at statement start. A lease
- * is a liveness claim about the moment it is written, so the actual reading is the honest one.
- * It is evaluated per use inside a statement, which is fine: every comparison is against a
- * stamp written by this same clock.
+ * judge) on a stale reading. But `clock_timestamp()` is VOLATILE, and a volatile call inside a
+ * WHERE is re-evaluated per row, which turns `expires_at <= <expr>` into a Filter and makes the
+ * `expired()` walk over `idx_leases_expiry` cover the whole index (143 ms at 200k live leases).
+ * Wrapping it in `(SELECT ...)` makes it an uncorrelated InitPlan: evaluated once, then a plain
+ * Index Cond. The single reading also means `acquire`'s stamp and takeover test agree.
  */
-const DB_NOW_MS = "(extract(epoch from clock_timestamp()) * 1000)::bigint";
+const DB_NOW_MS = "(SELECT (extract(epoch from clock_timestamp()) * 1000)::bigint)";
+
+/** `now` if given, else DB time. `$n` must be passed `now ?? null`. */
+const nowOrDb = (param: number): string => `COALESCE($${param}::bigint, ${DB_NOW_MS})`;
+
+/**
+ * The exact SQL `expired()` runs (`$1` = explicit now or NULL, `$2` = limit). Exported so the
+ * index-usage test EXPLAINs the real query rather than a copy.
+ */
+export const EXPIRED_SQL = `SELECT * FROM leases WHERE expires_at <= ${nowOrDb(1)}
+       ORDER BY expires_at ASC LIMIT $2`;
+
+/*
+ * TTL: `assertTtl` accepts any positive finite number, but the column arithmetic is `$n::bigint`
+ * and Postgres rejects a fractional bigint. Round UP (a lease is never shorter than asked) in
+ * acquire/renew rather than tightening the cross-backend SPI check.
+ */
 
 /**
  * Postgres-backed {@link LeaseStore} (#380) — the multi-node backend, and the one that
@@ -42,8 +60,8 @@ const DB_NOW_MS = "(extract(epoch from clock_timestamp()) * 1000)::bigint";
  * let a fast node steal one. An explicit `now` is still honoured verbatim (tests, simulated
  * clocks), on the caller's timeline: mixing explicit-`now` and default calls against one lease
  * table is unsupported, since the stamps come from two unrelated clocks. The returned
- * `Lease.expiresAt` is in DB time; a caller comparing it to its own `Date.now()` (e.g.
- * `orphanCensus`) inherits that node's skew, which only affects that advisory read.
+ * `Lease.expiresAt` is in DB time, and {@link PostgresLeaseStore.storeNow} reads that clock, so a
+ * caller that must compare against it (`orphanCensus`) can.
  */
 export class PostgresLeaseStore implements LeaseStore {
   private readonly pool: PoolLike;
@@ -64,39 +82,45 @@ export class PostgresLeaseStore implements LeaseStore {
     now?: number
   ): Promise<Lease | null> {
     assertTtl(ttlMs);
+    const ttl = Math.ceil(ttlMs);
     await this.ready;
     // `now` undefined => both the stamp and the takeover test use the DB clock (NULL params
-    // fall through the coalesce); explicit => the caller's number, exactly as before.
+    // fall through the coalesce), read ONCE via the `t` CTE; explicit => the caller's number.
     const { rows } = await this.pool.query<LeaseRow>(
-      `INSERT INTO leases (execution_id, owner, expires_at)
-       VALUES ($1, $2, COALESCE($4::bigint, ${DB_NOW_MS}) + $3::bigint)
+      `WITH t(n) AS (SELECT ${nowOrDb(4)})
+       INSERT INTO leases (execution_id, owner, expires_at)
+       VALUES ($1, $2, (SELECT n FROM t) + $3::bigint)
        ON CONFLICT (execution_id) DO UPDATE SET owner = EXCLUDED.owner, expires_at = EXCLUDED.expires_at
-       WHERE leases.owner = $2 OR leases.expires_at <= COALESCE($4::bigint, ${DB_NOW_MS})
+       WHERE leases.owner = $2 OR leases.expires_at <= (SELECT n FROM t)
        RETURNING execution_id, owner, expires_at`,
-      [executionId, owner, ttlMs, now ?? null]
+      [executionId, owner, ttl, now ?? null]
     );
     return rows[0] ? rowToLease(rows[0]) : null;
   }
 
   async renew(executionId: string, owner: string, ttlMs: number, now?: number): Promise<boolean> {
     assertTtl(ttlMs);
+    const ttl = Math.ceil(ttlMs);
     await this.ready;
     const { rowCount } = await this.pool.query(
-      `UPDATE leases SET expires_at = COALESCE($1::bigint, ${DB_NOW_MS}) + $4::bigint
+      `UPDATE leases SET expires_at = ${nowOrDb(1)} + $4::bigint
        WHERE execution_id = $2 AND owner = $3`,
-      [now ?? null, executionId, owner, ttlMs]
+      [now ?? null, executionId, owner, ttl]
     );
     return (rowCount ?? 0) > 0;
   }
 
   async expired(now?: number, limit = 100): Promise<Lease[]> {
     await this.ready;
-    const { rows } = await this.pool.query<LeaseRow>(
-      `SELECT * FROM leases WHERE expires_at <= COALESCE($1::bigint, ${DB_NOW_MS})
-       ORDER BY expires_at ASC LIMIT $2`,
-      [now ?? null, limit]
-    );
+    const { rows } = await this.pool.query<LeaseRow>(EXPIRED_SQL, [now ?? null, limit]);
     return rows.map(rowToLease);
+  }
+
+  /** The database's clock (epoch ms): the one `expiresAt` is stamped and judged on. */
+  async storeNow(): Promise<number> {
+    await this.ready;
+    const { rows } = await this.pool.query<{ now: string }>(`SELECT ${DB_NOW_MS} AS now`);
+    return Number(rows[0]?.now);
   }
 
   async get(executionId: string): Promise<Lease | null> {

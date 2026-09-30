@@ -28,15 +28,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   look expired every cycle (fencing rejected the loser's writes, but effects ran twice). When
   `now` is omitted, `acquire`/`renew` now stamp `expires_at` and the takeover condition and
   `expired()` compare against `(extract(epoch from clock_timestamp()) * 1000)::bigint` in the
-  same statement, one clock for every node. `clock_timestamp()` rather than `now()`: `now()` is
-  frozen at transaction start, so a lease written through a caller-supplied client inside a long
-  transaction would be stamped and judged on a stale reading. An explicit `now` is honoured
-  verbatim (tests, simulated clocks); mixing explicit and DB time on one lease table is
-  unsupported. `Lease.expiresAt` is now DB time, so `orphanCensus` (which compares it to its
-  own `Date.now()`) inherits that node's skew in its advisory classification; pass `now`
-  accordingly. `SqliteLeaseStore` is unchanged: single host, the process clock is its one
-  clock. **No SPI bump**: LeaseStore 2.0.0 already requires `expired()` to default to the
-  clock that stamps leases, and DB time now is that clock.
+  same statement, one clock for every node. The reading is a scalar subquery
+  (`(SELECT ...)`, one reading per statement, and `acquire` takes it once via a CTE): a bare
+  volatile `clock_timestamp()` in `expired()`'s WHERE is re-evaluated per row and turned
+  `idx_leases_expiry` into a full-index Filter (143 ms at 200k live leases vs 0.026 ms as an
+  InitPlan with a real Index Cond); a test EXPLAINs the real query (`LEASE_EXPIRED_SQL`).
+  `clock_timestamp()` rather than `now()`: `now()` is frozen at transaction start, so a lease
+  written through a caller-supplied client inside a long transaction would be stamped and
+  judged on a stale reading. An explicit `now` is honoured verbatim (tests, simulated clocks);
+  mixing explicit and DB time on one lease table is unsupported. A fractional `ttlMs` is now
+  rounded up (Postgres rejected it as `bigint`). `SqliteLeaseStore` is unchanged: single host,
+  the process clock is its one clock. **LeaseStore SPI 2.1.0 (MINOR, additive):** optional
+  `LeaseStore.storeNow?(): Promise<number>` returns the store's own clock; `PostgresLeaseStore`
+  implements it (DB time) and `orphanCensus` (hence `loom census`) judges lease expiry on it
+  when present instead of the CLI host's `Date.now()` (executions are still aged by wall
+  clock; an explicit `now` overrides both). `Lease.expiresAt` is documented as on the store's
+  clock. Stores without `now()` behave exactly as before.
 
 - **`recoverAbandoned` judged lease expiry on the wall clock, not the store's** (backlog L28,
   double-execution hazard under an injected clock). It called `leases.store.expired(Date.now())`

@@ -18,14 +18,20 @@
  * 2.0.0 (L28): `expired`'s `now` became optional and MUST default to the store's stamping clock.
  * MAJOR, not additive: a 1.x store written `expired(now: number)` still type-checks against the
  * new signature but, handed `undefined`, returns `[]` — recovery silently recovers nothing.
+ *
+ * 2.1.0 (L29): optional `storeNow()` — the store's own clock. Additive: a store without it behaves
+ * exactly as before, and a caller with no `storeNow()` falls back to `Date.now()`.
  */
-export const LEASE_STORE_SPI_VERSION = "2.0.0";
+export const LEASE_STORE_SPI_VERSION = "2.1.0";
 
 export interface Lease {
   executionId: string;
   /** Who holds it. A node id, a pod name, a process uuid — the deployment's vocabulary. */
   owner: string;
-  /** Absolute expiry (epoch ms). Past this, the lease is collectable by anyone. */
+  /**
+   * Absolute expiry (epoch ms), on the store's clock (the one `expired()` defaults to), not
+   * necessarily the caller's. Past this, the lease is collectable by anyone.
+   */
   expiresAt: number;
 }
 
@@ -76,6 +82,14 @@ export interface LeaseStore {
    * every run" stops being a guess.
    */
   get?(executionId: string): Promise<Lease | null>;
+  /**
+   * OPTIONAL (SPI 2.1.0): the store's OWN clock, in epoch ms, the one `expiresAt` is stamped and
+   * `expired()` judged on. A reader that must compare `expiresAt` to "now" outside the store
+   * (`orphanCensus`) asks this rather than assuming its host's `Date.now()`, which for a shared
+   * database (Postgres stamps on DB time) is a different clock. Absent means the store uses the
+   * caller-visible process clock.
+   */
+  storeNow?(): Promise<number>;
   /** Give it up. Releasing a lease held by someone else is a no-op, never a steal. */
   release(executionId: string, owner: string): Promise<void>;
   close(): Promise<void>;
