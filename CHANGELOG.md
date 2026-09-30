@@ -30,8 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `now`; `EXECUTION_DENIED` and cancel-of-a-suspended-execution envelopes are stamped with
   it too. The `setTimeout` still waits real milliseconds, so `now` must advance in real time for
   a deadline to fire on time; the option's TSDoc said "never fold-relevant" and now says
-  deadline-relevant. The default clock is unchanged. `ctx.sleep`/`suspend({timeout})` wake times
-  and lease expiry stay on their own clocks (the TimerService and lease-store `now`).
+  deadline-relevant. The default clock is unchanged. Also fixed on the same lines: a
+  `timeoutMs`/`deadlineMs` above 2^31-1 ms (~24.8 days) made Node clamp the timer to 1ms, so
+  `deadlineMs: 30 days` durably cancelled the execution ~1ms after start. The remaining budget
+  is now capped at the declared budget (a clock stepping backwards cannot grant more) and a
+  longer wait is armed in chunks of at most 2^31-1 ms, recomputing from `now` at each chunk.
+  Caveats: a FIXED `now` silently disables the crash-surviving deadline (elapsed is always 0,
+  so every resume re-grants the full budget), and an offset `now` is safe only if every
+  runtime touching the log uses the same offset. KNOWN LIMITATION, NOT fixed here (tracked as
+  L27/L28): `ctx.sleep`/`suspend({timeout})` wake times are computed with raw `Date.now()` in
+  the kernel yet compared with the TimerService's own `now`, and `recoverAbandoned` passes
+  `Date.now()` to the lease store's `expired()` while acquire/renew use the store's clock. Those
+  still mix clocks under a non-wall `now`.
 - **Six packages value-imported a package they declared only in `devDependencies`** (backlog L22).
   The workspace links every package everywhere, so nothing in the suite noticed; a consumer
   installing the PUBLISHED package would get "Cannot find module" at load. Moved to
