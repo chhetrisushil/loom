@@ -22,7 +22,12 @@ afterEach(async () => {
 });
 
 describe("DNS lookup is bound by the fetch deadline", () => {
-  it("releases the slot and replies FETCH_TIMEOUT when the lookup stalls", async () => {
+  it("replies FETCH_TIMEOUT at once but holds the slot until the stalled lookup settles", async () => {
+    let finishLookup: (() => void) | undefined;
+    lookupImpl.fn = () =>
+      new Promise((resolve) => {
+        finishLookup = () => resolve({ address: "127.0.0.1", family: 4 });
+      });
     const effect = new IsolatedToolEffect({
       id: "dns",
       modulePath: "/nonexistent.js",
@@ -37,6 +42,46 @@ describe("DNS lookup is bound by the fetch deadline", () => {
     await (effect as any).handleFetch(child, 0, "http://stalled.test/", undefined, ctx);
     expect(Date.now() - t0).toBeLessThan(2000);
     expect((sent[0] as { code?: string }).code).toBe("FETCH_TIMEOUT");
+    // The tool was answered, but getaddrinfo is still occupying a thread: the slot stays held.
+    // biome-ignore lint/suspicious/noExplicitAny: slot counter under test
+    expect((effect as any).inFlightFetches).toBe(1);
+    finishLookup?.();
+    await new Promise((r) => setTimeout(r, 20));
+    // biome-ignore lint/suspicious/noExplicitAny: slot counter under test
+    expect((effect as any).inFlightFetches).toBe(0);
+  });
+
+  it("pending lookups never exceed maxConcurrentFetches, even after every fetch timed out", async () => {
+    const finish: (() => void)[] = [];
+    let lookups = 0;
+    lookupImpl.fn = () =>
+      new Promise((resolve) => {
+        lookups += 1;
+        finish.push(() => resolve({ address: "127.0.0.1", family: 4 }));
+      });
+    const effect = new IsolatedToolEffect({
+      id: "dns2",
+      modulePath: "/nonexistent.js",
+      egress: ["stalled.test:80"],
+      fetchTimeoutMs: 30,
+      maxConcurrentFetches: 2,
+    });
+    const sent: { code?: string; error?: string }[] = [];
+    const child = { send: (m: unknown) => sent.push(m as { code?: string }) };
+    const emit = vi.fn();
+    const ctx = { executionId: "e", stepId: "s", workflowId: "w", attempt: 1, emit };
+    const fetchOnce = (id: number) =>
+      // biome-ignore lint/suspicious/noExplicitAny: reaching the private broker path under test
+      (effect as any).handleFetch(child, id, "http://stalled.test/", undefined, ctx);
+    await Promise.all([fetchOnce(0), fetchOnce(1)]);
+    expect(sent.map((m) => m.code)).toEqual(["FETCH_TIMEOUT", "FETCH_TIMEOUT"]);
+    // Both lookups are still pending, so a third fetch is refused instead of starting lookup #3.
+    await fetchOnce(2);
+    expect(lookups).toBe(2);
+    expect(sent[2]?.error).toContain("concurrent");
+    expect(emit).toHaveBeenCalledWith("EGRESS_DENIED", expect.anything());
+    for (const f of finish) f();
+    await new Promise((r) => setTimeout(r, 20));
     // biome-ignore lint/suspicious/noExplicitAny: slot counter under test
     expect((effect as any).inFlightFetches).toBe(0);
   });

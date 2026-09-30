@@ -37,6 +37,11 @@ export interface IsolatedToolSpec {
    * a parent-side promise behind it. Excess is refused with `EGRESS_DENIED`,
    * the same durable fact an allowlist miss produces, because it is the same
    * kind of event: the boundary said no.
+   *
+   * A slot is held from admission until the request is finished AND any DNS lookup it started has
+   * settled: on `fetchTimeoutMs` / abort the tool is answered at once, but a still-pending
+   * (uncancellable) lookup keeps its slot, so pending lookups in the libuv threadpool are bounded
+   * by this cap.
    */
   maxConcurrentFetches?: number;
   /**
@@ -65,8 +70,12 @@ export interface IsolatedToolSpec {
   coldStartMs?: number;
   /**
    * L24 — the longest a single brokered fetch may take, start to finish (DNS, connect, response),
-   * before the host aborts the request, frees its `maxConcurrentFetches` slot and fails the
-   * fetch inside the isolate with `code: "FETCH_TIMEOUT"` (and `name: "IsolatedFetchTimeoutError"`). Without it a host that never answers
+   * before the host aborts the request and fails the fetch inside the isolate with
+   * `code: "FETCH_TIMEOUT"` (and `name: "IsolatedFetchTimeoutError"`) IMMEDIATELY. The
+   * `maxConcurrentFetches` slot is freed with the request — except that a DNS lookup cannot be
+   * cancelled (getaddrinfo occupies a libuv threadpool thread until it returns), so if the
+   * deadline fires while the lookup is still pending the slot stays held until that lookup
+   * settles. Pending lookups therefore never exceed `maxConcurrentFetches`. Without it a host that never answers
    * held a slot forever and enough of them starved every later fetch. Default 30 000 ms; must be
    * finite and > 0. Fetches are also aborted when the run that issued them ends or is killed.
    */
@@ -211,3 +220,9 @@ export type ChildToParent =
   | FetchMessage
   | ResultMessage
   | ErrorMessage;
+
+/**
+ * Exit code the runner uses when its IPC channel closes (parent gone, or the tool severed it).
+ * The parent reads it to tell "the channel closed" from a real crash.
+ */
+export const RUNNER_DISCONNECT_EXIT_CODE = 70;
