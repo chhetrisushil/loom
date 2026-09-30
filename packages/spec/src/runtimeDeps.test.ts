@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { builtinModules } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
@@ -39,7 +39,7 @@ import { describe, expect, it } from "vitest";
 //    user-/config-named modules by design; they are not a fixed dependency.
 //  - Files under `src/` are scanned, plus any hand-written file a package ships outside
 //    `dist/` (named by `main`/`types`/`bin`/`exports`/`files`; today the root `memory.js` /
-//    `sequence.js` subpath shims), which a dedicated test scans.
+//    event-runtime's `sequence.js` subpath shims), which a dedicated test scans.
 //  - The JSX automatic runtime emits `import ... from "<jsxImportSource>/jsx-runtime"`, which
 //    is not in the source text; a test below requires that package to be declared for every
 //    package whose tsconfig sets `jsx: react-jsx`/`react-jsxdev`.
@@ -164,12 +164,11 @@ const UNREACHABLE_FROM_ENTRY = new Map<string, string>([
 function jsxImportOf(pkgDir: string): string | null {
   const cfg = join(REPO_ROOT, pkgDir, "tsconfig.json");
   if (!existsSync(cfg)) return null;
-  const parsed = ts.parseConfigFileTextToJson(cfg, readFileSync(cfg, "utf8")).config as
-    | { compilerOptions?: { jsx?: string; jsxImportSource?: string } }
-    | undefined;
-  const o = parsed?.compilerOptions ?? {};
-  const jsx = (o.jsx ?? "").toLowerCase();
-  if (jsx !== "react-jsx" && jsx !== "react-jsxdev") return null;
+  // resolve through `extends` the way tsc does: a jsx setting inherited from a base config
+  // emits the same runtime import as one set locally
+  const read = ts.readConfigFile(cfg, ts.sys.readFile);
+  const o = ts.parseJsonConfigFileContent(read.config, ts.sys, join(REPO_ROOT, pkgDir)).options;
+  if (o.jsx !== ts.JsxEmit.ReactJSX && o.jsx !== ts.JsxEmit.ReactJSXDev) return null;
   return o.jsxImportSource ?? "react";
 }
 
@@ -309,14 +308,29 @@ import {
     for (const [file, why] of UNREACHABLE_FROM_ENTRY) {
       expect(existsSync(join(REPO_ROOT, file)), file).toBe(true);
       expect(why.length, `${file} needs a justification`).toBeGreaterThan(10);
+      // "unreachable" holds only while the owning package exposes nothing but its entry: an
+      // `exports` subpath/pattern or `typesVersions` would let a consumer resolve the file.
+      const owner = packages.find((p) => file.startsWith(`${p.dir}/`));
+      expect(owner, `${file} belongs to a scanned package`).toBeDefined();
+      const exportsField = owner?.manifest.exports;
+      const exportKeys =
+        typeof exportsField === "object" && exportsField !== null ? Object.keys(exportsField) : [];
+      expect(exportKeys, `${owner?.dir} must expose only "." for ${file} to stay exempt`).toEqual([
+        ".",
+      ]);
+      expect(
+        owner?.manifest.typesVersions,
+        `${owner?.dir} must not set typesVersions`
+      ).toBeUndefined();
       const pkgSrc = join(REPO_ROOT, file.split("/").slice(0, 3).join("/"));
       const stem = (file.split("/").pop() as string).replace(/\.[cm]?tsx?$/, "");
       const importers = sourceFiles(pkgSrc)
         .filter((f) => f !== join(REPO_ROOT, file))
         .filter((f) =>
-          new RegExp(`from\\s+["']\\.{1,2}/(?:[^"']*/)?${stem}(?:\\.js)?["']`).test(
-            readFileSync(f, "utf8")
-          )
+          // `from "…"`, a side-effect `import "…"`, `import("…")` and `require("…")` alike
+          new RegExp(
+            `(?:from|import|require)\\s*\\(?\\s*["']\\.{1,2}/(?:[^"']*/)?${stem}(?:\\.js)?["']`
+          ).test(readFileSync(f, "utf8"))
         );
       expect(importers, `${file} must stay unreachable from the entry`).toEqual([]);
     }
@@ -326,11 +340,10 @@ import {
 
   it("hand-written files shipped outside dist/ (root subpath shims) import only relatively or declared packages", () => {
     // Some packages ship tiny hand-written `memory.js`/`memory.d.ts` subpath shims beside
-    // package.json (event-runtime, snapshot-runtime, a2a). They are named by `exports`/`main`/
+    // package.json (event-runtime, snapshot-runtime). They are named by `exports`/`main`/
     // `bin`/`files` and are never compiled from src/, so the src/ scan cannot see them.
     const shipped = new Set<string>();
     const bad: string[] = [];
-    let scanned = 0;
     for (const p of packages) {
       const entries = new Set<string>();
       for (const field of ["main", "module", "types", "typings", "bin", "exports", "files"]) {
@@ -355,7 +368,6 @@ import {
           if (!SOURCE_FILE.test(f) && !f.endsWith(".d.ts")) continue;
           if (shipped.has(f)) continue;
           shipped.add(f);
-          scanned++;
           const imports = scanImports(f, readFileSync(f, "utf8"));
           for (const spec of [...imports.value, ...imports.type]) {
             if (spec !== p.name && !p.declared.has(spec)) {
@@ -365,7 +377,15 @@ import {
         }
       }
     }
-    expect(scanned, "the shim scan must see the known shims").toBeGreaterThan(0);
+    // the scan must actually reach the known shims, not merely something
+    const seen = [...shipped].map((f) => relative(REPO_ROOT, f));
+    for (const known of [
+      "packages/event-runtime/memory.js",
+      "packages/event-runtime/sequence.js",
+      "packages/snapshot-runtime/memory.js",
+    ]) {
+      expect(seen, `the shim scan must see ${known}`).toContain(known);
+    }
     expect(bad).toEqual([]);
   });
 
