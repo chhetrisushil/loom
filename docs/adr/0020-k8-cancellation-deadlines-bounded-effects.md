@@ -107,8 +107,8 @@ Adopted per the [K8 evaluation](../requirements/2026-07-10-kernel-hardening-eval
   upgrade: timers parked before it carry wall-clock `wakeAt`, so an offset runtime fires them
   |offset| early or late (never under a fixed clock), and old (wall) and new (offset) nodes
   disagree during a rolling upgrade; the default wall clock is unaffected. `sleepUntil(absolute)`
-  targets and cron occurrences are measured on the runtime clock, not wall time. Lease expiry
-  remains wall-clock, tracked as L28.)*
+  targets and cron occurrences are measured on the runtime clock, not wall time. Lease expiry is
+  judged by the lease store on the clock that stamped it (L28, LeaseStore SPI 2.0.0).)*
 - **A5 — K8.4 is conditional**: no streaming effects exist today; mid-stream budget
   enforcement binds when they land and cannot be middleware (middleware can't observe
   stream progress) — it needs a usage-reporter hook on `EffectContext` or the provider
