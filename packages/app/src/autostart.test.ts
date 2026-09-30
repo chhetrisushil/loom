@@ -54,6 +54,14 @@ class CountingTimerStore extends InMemoryTimerStore {
   }
 }
 
+async function waitUntil(cond: () => Promise<boolean> | boolean, ceilingMs = 10_000) {
+  const deadline = Date.now() + ceilingMs;
+  while (!(await cond())) {
+    if (Date.now() > deadline) throw new Error("waitUntil: ceiling exceeded");
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("S1 — autostart", () => {
@@ -212,9 +220,40 @@ describe("L27 — offset execution.now", () => {
       expect(wakeAt).toBeGreaterThanOrEqual(before + 5);
       expect(wakeAt).toBeLessThan(before + 5 + 1_000);
 
-      await settle(60);
+      // Poll (generous ceiling) rather than a fixed wall wait, which is load-sensitive.
+      // NOTE: this `completed` assertion also passes pre-fix; the recorded-wakeAt
+      // assertion above is the regression proof.
+      await waitUntil(
+        async () => (await app.runtime.loadState(handle.executionId))?.status === "completed"
+      );
       expect((await app.runtime.loadState(handle.executionId))?.status).toBe("completed");
       await app.close();
     });
   }
+
+  it("a FIXED execution.now under defineConfig never fires a sleep until the clock advances", async () => {
+    const FIXED = 1_000_000;
+    let clock = FIXED;
+    const store = new CountingTimerStore();
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [sleeper()],
+      timers: { store, pollMs: 2 },
+      execution: { now: () => clock },
+    });
+    app.effectRuntime.register("wake-tool", new ToolEffect(async () => ({})));
+
+    const handle = await app.runtime.start(sleeper(), {});
+    await handle.waitForSuspend();
+    // Let the poller run several times (counted, not timed) with the clock still fixed.
+    const seen = store.polls;
+    await waitUntil(async () => store.polls >= seen + 5);
+    expect((await app.runtime.loadState(handle.executionId))?.status).toBe("suspended");
+
+    clock = FIXED + 1_000; // past wakeAt = FIXED + 5
+    await waitUntil(
+      async () => (await app.runtime.loadState(handle.executionId))?.status === "completed"
+    );
+    await app.close();
+  });
 });

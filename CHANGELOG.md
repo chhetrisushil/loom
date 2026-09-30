@@ -48,7 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the wall-clock form. `orphanCensus` keeps its own explicit `now` option (it also ages
   executions by it; documented to be given the lease store's clock when that is not the wall).
 
-- **L27: timer wake times use the runtime's clock** (kernel; behavioural for hand-wired setups).
+- **L27: timer wake times use the runtime's clock** (kernel; behavioural for hand-wired setups,
+  and for `defineConfig` with a non-default `execution.now` plus `timers`).
   `ctx.sleep` and `suspend({ timeout })` computed `wakeAt` with raw `Date.now()` while
   `TimerService` judged it with its own `now`, so one simulated clock given to both made
   sleeps never fire (clock behind the wall) or fire at once (clock ahead). `wakeAt` is now
@@ -57,7 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   simulated or offset `WorkflowRuntimeDeps.now` (`defineConfig` `execution.now`) alone drives
   sleeps, suspend timeouts and cron cursors. An explicit `TimerService` `now` still wins; if it
   disagrees with the runtime's clock, timers fire early (it runs ahead) or never (it runs
-  behind). Default wall-clock setups are unchanged. `tools/dst` is unaffected (its runtimes
+  behind). Default wall-clock setups are unchanged. **Fixed clock:** under a FIXED clock
+  (including `defineConfig` `execution.now` plus `timers`) sleeps, `suspend({ timeout })` and cron
+  schedules now never fire, where they used to fire on wall time; advance the clock or drive
+  `tick(now)` yourself. **Offset clock:** an offset is safe only if every runtime touching the log
+  uses the same one; this covers wake times and cron, and applies across an upgrade (timers parked
+  before it carry wall-clock `wakeAt`, so an offset runtime fires them |offset| early or late,
+  never under a fixed clock; old and new nodes disagree during a rolling upgrade).
+  `sleepUntil(absolute)` targets and cron occurrences are measured on the runtime clock. `tools/dst` is unaffected (its runtimes
   keep the wall clock; drivers still jump to `wakeAt` themselves); to virtualise sleeps pass
   `now: world.clock.now` to the runtime.
 
