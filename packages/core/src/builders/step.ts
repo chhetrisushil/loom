@@ -7,6 +7,7 @@ import type {
   RetryPolicy,
   StepDefinition,
 } from "../types/definitions";
+import { assertBudget } from "./budget";
 
 export interface StepConfig<TIn, TOut> {
   id: string;
@@ -38,6 +39,7 @@ export interface StepConfig<TIn, TOut> {
 export function step$<TIn = unknown, TOut = unknown>(
   config: StepConfig<TIn, TOut>
 ): StepDefinition<TIn, TOut> {
+  assertBudget("step$", config.id, "timeoutMs", config.timeoutMs);
   return {
     _tag: "StepDefinition",
     id: config.id,

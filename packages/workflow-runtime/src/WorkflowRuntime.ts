@@ -31,7 +31,12 @@ import { ulid } from "ulid";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { highestMissing } from "./LogLifecycle";
 import { WorkflowContextImpl } from "./WorkflowContext";
-import { armDeadline, remainingBudget } from "./deadlineTimer";
+import {
+  armDeadline,
+  assertFlowBudgets,
+  assertValidBudget,
+  remainingBudget,
+} from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import { COMPUTE_TARGET_KEY } from "./placement";
 import {
@@ -207,6 +212,8 @@ export interface WorkflowRuntimeDeps {
    *
    * Caveats: (1) a FIXED clock silently disables the crash-surviving deadline (A4):
    * elapsed time is always 0, so every crash or resume re-grants the full budget.
+   * Under a fixed clock a budget above 2^31-1 ms (~24.8 days) also never fires within a
+   * single run: elapsed stays 0, so each timer chunk re-arms.
    * (2) An OFFSET is safe only if EVERY runtime touching the log uses the same offset;
    * a recovering node with a different offset eats into the budget, or steps the clock
    * backwards (the remaining budget is capped at the full budget in that case).
@@ -559,6 +566,7 @@ export class WorkflowRuntime {
     // recorded hash to the version it started under). Re-registering the SAME
     // id+version+hash is idempotent (dev watch-mode must not error); the same
     // id+version with DIFFERENT content is a hard error — bump the version.
+    assertFlowBudgets(definition);
     const hash = flowContentHash(definition);
     const versions = this.flowVersions.get(definition.id) ?? new Map();
     const existing = versions.get(definition.version);
@@ -1090,6 +1098,7 @@ export class WorkflowRuntime {
       }
       return registered as RegisteredFlow<TIn, TOut>;
     }
+    assertFlowBudgets((flow as RegisteredFlow<TIn, TOut>).definition);
     return flow as RegisteredFlow<TIn, TOut>;
   }
 
@@ -2049,6 +2058,8 @@ export class WorkflowRuntime {
     deadlineMs?: number,
     principal?: PrincipalChain
   ): ExecutionHandle {
+    // Also covers a per-call `options.deadlineMs`; nothing is journalled before this.
+    assertValidBudget("deadlineMs", deadlineMs, `execution "${executionId}"`);
     let resolveCompletion!: (state: ReturnType<typeof vm.getState>) => void;
     let rejectCompletion!: (err: unknown) => void;
     let resolveSuspend!: (state: ReturnType<typeof vm.getState>) => void;

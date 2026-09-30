@@ -90,7 +90,12 @@ Adopted per the [K8 evaluation](../requirements/2026-07-10-kernel-hardening-eval
   OFFSET is safe only if every runtime touching the log uses the same offset, else a recovering
   node eats into the budget or steps the clock backwards. The remaining time is capped at the
   declared budget, and waits above 2^31-1 ms are armed in chunks, since Node clamps a longer
-  `setTimeout` to 1ms.)*
+  `setTimeout` to 1ms. Under a FIXED clock a budget above 2^31-1 ms never fires within a single
+  run (elapsed stays 0, so each chunk re-arms). The re-arm timers are deliberately NOT
+  `unref`'d: a deadline is not a background task, and the timer of a hung step keeps the
+  process alive for up to the budget, as it always did. `timeoutMs`/`deadlineMs` must be
+  finite numbers > 0: NaN, 0, negatives and Infinity are rejected at `step$`/`flow$` and again
+  at `registerFlow`/`start`/`ctx.run`; omit the field for no deadline.)*
 - **A5 — K8.4 is conditional**: no streaming effects exist today; mid-stream budget
   enforcement binds when they land and cannot be middleware (middleware can't observe
   stream progress) — it needs a usage-reporter hook on `EffectContext` or the provider

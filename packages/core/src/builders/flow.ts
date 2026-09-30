@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { FlowDefinition, PolicyDefinition, StepDefinition } from "../types/definitions";
+import { assertBudget } from "./budget";
 
 export interface FlowConfig<TIn, TOut> {
   id: string;
@@ -52,6 +53,7 @@ export interface FlowConfig<TIn, TOut> {
 export function flow$<TIn = unknown, TOut = unknown>(
   config: FlowConfig<TIn, TOut>
 ): FlowDefinition<TIn, TOut> {
+  assertBudget("flow$", config.id, "deadlineMs", config.deadlineMs);
   return {
     _tag: "FlowDefinition",
     id: config.id,
