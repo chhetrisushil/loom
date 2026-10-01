@@ -78,7 +78,8 @@ The HTTP and SSE transport and the `/api/hydrate` wire; message-catalogue loadin
 ### 3.1 Compose
 
 - `generate-dashboard` runs `GenuiPlanner`, a loom-ui `Planner` built from genUI's current generate prompt, catalogue and plan validation, passing `checkPlannerConformance`.
-- The model call is one `ctx.decide`: a replayed generation does not call the model. **Inside the decider the model adapter invokes genUI's existing llm effect through `effectRuntime.invokeTransient`**, so the llm middleware (retry, quota, circuit breaker) still applies; a test asserts quota accounting sees the call.
+- The model call is one `ctx.decide`: a replayed generation does not call the model. **Inside the decider the model adapter invokes genUI's existing llm effect through `effectRuntime.invokeTransient`**, so the llm middleware (retry, quota, circuit breaker) still applies; a test asserts quota accounting sees the call. *(Scope corrected, review ruling on Task C2, 2026-09: genUI wires no quota or metering middleware today, so this test can only prove that planner calls traverse genUI's real middleware chain — retry re-drives, and the probe sees `toolId` / signal / label — and that usage maps into `PlanReport.usage` and per-dashboard token usage. It cannot prove quota enforcement, because none exists.)*
+- A thrown model call (transient outage, timeout) rejects `GenuiPlanner`'s decision and NOTHING is recorded (review ruling on Task C3, 2026-09): a transient outage is never journaled as a failed plan, so a replay or retry calls the model again. A model that answers with an unusable plan is different: that plan IS recorded, as a failed plan with findings.
 - genUI's planner samples its tools inside `compose` (it cannot know arguments before the plan exists); loom-ui's contract permits this because genUI owns the planner. The sample calls are no longer separately recorded steps — they are inside the decision.
 - The semantic catalogue is built per owner per call (genUI's per-owner user components); a new user component therefore re-keys compose decisions, which is correct.
 - A genUI node that depends on another handle's node becomes a provider whose `executionGraph` inlines the upstream step; B3's in-pass memo keeps the shared upstream call single.
@@ -93,12 +94,15 @@ loom-ui's compiled title is `intent.objective`, which is inside the hash and imm
 
 `GET` a dashboard returns the compiled Blueprint for the viewer's locale, the public handle inventory (handle, priority, overridable params) and the dashboard fields (title, time range, filter catalogue). Providers — tool names, arguments, scripts — never leave the server; a test fails if `executionGraph`, `toolName` or `scriptRef` appear in any browser response or bundle.
 
+**Scope (user ruling, 2026-09-23).** "Any browser response" means every VIEWER-FACING response: the dashboard `GET` (head and checkpoint previews), `/api/hydrate`, share links, public and embed pages, published pages and experiment serves. The dashboard owner's developer view — genUI's `GET /api/dashboards/:id/authoring`, which feeds the execution-plan panel and the remap / A-B tools — is an explicit exemption visible to the dashboard's owner and its editors (anyone with edit rights). A viewer gets 403 with no provider bytes, and public, embed and published pages never carry providers. The privacy test asserts both the exemption (owner 200, editor 200) and its gate (viewer 403, no session 401). The bundle check greps provider content (tool ids, reshaper keys, script source), not field names, because loom-ui's own schemas spell `executionGraph` / `toolName` / `scriptRef`.
+
 ### 3.4 Hydration
 
 - Client: B3's split controller with a genUI `HandleLoader` over today's `POST /api/hydrate` body (the `filters` and `controls` journeys assert that body). P2 promotion stays IntersectionObserver-driven through `markVisible`.
 - Server: `executeProvider` per requested handle through genUI's `TransientInvoker` wrapper, which injects `__user` and the locale arguments, and applies genUI's granularity rule through B3's argument hook.
 - Read-only viewers use `inputDrift: "report-and-proceed"`; only the head triggers repair, through `GenuiPlanner.revise`, which authors a QuickJS script.
 - genUI treats any reshape-script throw as drift today; loom-ui reports it as an error. genUI's drift handler keeps the old behaviour by treating `reshape-*` findings on the head as a repair trigger.
+- Drift is recorded only for output-caused reshape failures (a script that crashed or hit a limit on the tool's output, loom-ui gap G11), never for infrastructure or transient failures (review ruling, G11, 2026-09).
 - SSE stays, for app notifications only (e.g. `drift_repaired`).
 
 ### 3.5 Web
@@ -128,6 +132,8 @@ A versioned, idempotent script, in one transaction per batch:
 5. Checkpoints re-pointed to the new `versionHash`es.
 6. Every converted row must pass `validateExperience` and `compile`; unresolved template references are reported as findings.
 7. A dry run against a copy of production data precedes the live run; the old columns are dropped by a separate, later migration, only after the verify step reports every row converted.
+
+**Part G2 not applicable (user ruling, 2026-09-30).** The dry run on a production copy and the live run were not applicable, because there is no deployment. The E/F merge gate (`version_hash IS NULL` = 0) was met trivially.
 
 ### 3.9 Tests
 
