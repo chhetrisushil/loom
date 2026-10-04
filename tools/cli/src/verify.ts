@@ -38,7 +38,7 @@ interface NonDeterministicFinding {
 }
 
 interface RunnerReachEntry {
-  steps: Array<{ stepId?: string; toolId: string }>;
+  steps: Array<{ stepId?: string; toolId: string; viaDecider?: boolean }>;
   unresolved: Array<{ expr: string; kind: "step" | "suspend"; location?: string }>;
   suspends: Array<{ id?: string; correlationKey?: string; timed?: boolean; wakeAt?: boolean }>;
 }

@@ -90,6 +90,8 @@ export interface DeciderEffectRef {
   readonly toolId: string;
   /** The effect's declared determinism-boundary mode, read from the real registry. */
   readonly mode?: "journaled" | "ambient";
+  /** The effect is not registered at verify time, so its mode could not be checked. */
+  readonly unregistered?: boolean;
 }
 
 export interface BudgetSpec {

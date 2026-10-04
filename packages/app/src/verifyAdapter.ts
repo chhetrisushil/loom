@@ -240,7 +240,11 @@ export function resolveVerifyInput(
       if (step.viaDecider === true && !deciderSeen.has(step.toolId)) {
         deciderSeen.add(step.toolId);
         const mode = runtime.effectModeOf(step.toolId);
-        deciderEffects.push({ toolId: step.toolId, ...(mode !== undefined && { mode }) });
+        deciderEffects.push({
+          toolId: step.toolId,
+          ...(mode !== undefined && { mode }),
+          ...(!runtime.hasEffect(step.toolId) && { unregistered: true }),
+        });
       }
       if (declaredToolIds.has(step.toolId)) continue; // already covered by the declaration
       declaredToolIds.add(step.toolId);
