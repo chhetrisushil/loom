@@ -13,16 +13,30 @@ import type { ZodTypeAny } from "zod";
  * the model; enforcement is `safeParse` in {@link validateToolInput}).
  *
  * LIMITS (by design, all degrade to the permissive `{}`): refinements and
- * transforms (`ZodEffects` is described by its inner schema), `ZodLazy` past
- * depth {@link MAX_DEPTH}, `ZodMap`/`ZodSet`/`ZodFunction`/`ZodPromise`, and
- * regex flags. A description that is looser than the validator is safe — the
- * validator still refuses; a description tighter than the validator is not, and
- * none of these mappings is.
+ * transforms (`ZodEffects` is described by its inner schema), `ZodLazy` (a lazy
+ * already being expanded, or past depth {@link MAX_DEPTH}), `ZodMap`/`ZodSet`/
+ * `ZodFunction`/`ZodPromise`, a regex WITH flags (no `pattern` is emitted, since
+ * a bare `pattern` would be case-sensitive etc.), a non-coercing `z.date()`
+ * (it rejects every JSON string, so no string is described), non-JSON literals
+ * (`bigint`), and `default` values (never evaluated: a thunk may be impure).
+ * `ZodCatch`/`ZodEffects`/preprocess are described by their inner schema, which
+ * accepts MORE than the outer schema can — the harmless direction. A description
+ * looser than the validator is safe — the validator still refuses; one tighter
+ * is not, and none of these mappings is. A converter fault in any node degrades
+ * that node to `{}`; it never throws. A non-object ROOT (`z.string()`) is
+ * described as a bare `{ type: "object" }`: providers require an object root,
+ * so non-object tool inputs are not described (they are still validated).
  */
 
 const MAX_DEPTH = 16;
 const MAX_ISSUES = 5;
 const MAX_ISSUE_CHARS = 200;
+const MAX_ECHO_CHARS = 200;
+/** Input pre-check bounds: deeper / larger than this is refused before Zod recurses. */
+const MAX_INPUT_DEPTH = 64;
+const MAX_INPUT_NODES = 100_000;
+
+const cap = (s: string, n = MAX_ECHO_CHARS): string => (s.length > n ? `${s.slice(0, n)}…` : s);
 
 type Json = Record<string, unknown>;
 // biome-ignore lint/suspicious/noExplicitAny: reading Zod 3 internals (`_def`) that have no public type
@@ -33,10 +47,36 @@ function describe(schema: ZodTypeAny, out: Json): Json {
   return d !== undefined ? { ...out, description: d } : out;
 }
 
-function convert(schema: ZodTypeAny, depth: number): Json {
+interface ConvState {
+  /** Lazy schemas currently being expanded: re-entry returns `{}` (bounds recursive schemas). */
+  lazies: Set<unknown>;
+}
+
+function convert(schema: ZodTypeAny, depth: number, st: ConvState): Json {
+  try {
+    return convertNode(schema, depth, st);
+  } catch {
+    return {}; // a converter fault degrades this node, never the run
+  }
+}
+
+function isOptionalSafe(v: ZodTypeAny): boolean {
+  try {
+    // Structural first: `isOptional()` is `safeParse(undefined)`, which would run a
+    // `.default()` thunk and any refinement on `undefined`.
+    const d = (v as { _def: Def })._def;
+    if (d?.typeName === "ZodOptional" || d?.typeName === "ZodDefault") return true;
+    if (d?.typeName === "ZodEffects") return isOptionalSafe(d.schema);
+    return v.isOptional();
+  } catch {
+    return true; // looser is safe
+  }
+}
+
+function convertNode(schema: ZodTypeAny, depth: number, st: ConvState): Json {
   if (depth > MAX_DEPTH) return {};
   const def = (schema as { _def: Def })._def;
-  const next = (s: ZodTypeAny): Json => convert(s, depth + 1);
+  const next = (s: ZodTypeAny): Json => convert(s, depth + 1, st);
   switch (def?.typeName) {
     case "ZodString": {
       const out: Json = { type: "string" };
@@ -50,7 +90,8 @@ function convert(schema: ZodTypeAny, depth: number): Json {
         else if (c.kind === "url") out.format = "uri";
         else if (c.kind === "uuid") out.format = "uuid";
         else if (c.kind === "datetime") out.format = "date-time";
-        else if (c.kind === "regex") out.pattern = (c.regex as RegExp).source;
+        else if (c.kind === "regex" && (c.regex as RegExp).flags === "")
+          out.pattern = (c.regex as RegExp).source;
       }
       return describe(schema, out);
     }
@@ -70,9 +111,15 @@ function convert(schema: ZodTypeAny, depth: number): Json {
     case "ZodNull":
       return describe(schema, { type: "null" });
     case "ZodDate":
-      return describe(schema, { type: "string", format: "date-time" });
-    case "ZodLiteral":
+      // Only `z.coerce.date()` accepts the JSON string a model can send.
+      return def.coerce === true
+        ? describe(schema, { type: "string", format: "date-time" })
+        : describe(schema, {});
+    case "ZodLiteral": {
+      const t = typeof def.value;
+      if (def.value !== null && t !== "string" && t !== "number" && t !== "boolean") return {};
       return describe(schema, { const: def.value });
+    }
     case "ZodEnum":
       return describe(schema, { type: "string", enum: [...def.values] });
     case "ZodNativeEnum": {
@@ -101,7 +148,7 @@ function convert(schema: ZodTypeAny, depth: number): Json {
       const required: string[] = [];
       for (const [k, v] of Object.entries(shape)) {
         properties[k] = next(v);
-        if (!v.isOptional()) required.push(k);
+        if (!isOptionalSafe(v)) required.push(k);
       }
       const out: Json = { type: "object", properties };
       if (required.length > 0) out.required = required;
@@ -126,16 +173,22 @@ function convert(schema: ZodTypeAny, depth: number): Json {
     case "ZodNullable":
       return describe(schema, { anyOf: [next(def.innerType), { type: "null" }] });
     case "ZodDefault":
-      return withDescription(schema, {
-        ...next(def.innerType),
-        default: def.defaultValue(),
-      });
+      // The default is deliberately NOT described: `defaultValue()` is a thunk
+      // (impure, or a non-JSON value like a bigint) and the field is optional anyway.
+      return withDescription(schema, next(def.innerType));
     case "ZodEffects":
       return withDescription(schema, next(def.schema));
     case "ZodPipeline":
       return withDescription(schema, next(def.in));
-    case "ZodLazy":
-      return next(def.getter());
+    case "ZodLazy": {
+      if (st.lazies.has(schema)) return {};
+      st.lazies.add(schema);
+      try {
+        return next(def.getter());
+      } finally {
+        st.lazies.delete(schema);
+      }
+    }
     default:
       // ZodAny / ZodUnknown / anything not modelled: permissive on purpose.
       return {};
@@ -153,7 +206,11 @@ function withDescription(schema: ZodTypeAny, inner: Json): Json {
  */
 export function toolInputJsonSchema(schema: ZodTypeAny | undefined): Record<string, unknown> {
   if (schema === undefined) return { type: "object" };
-  return convert(schema, 0);
+  const j = convert(schema, 0, { lazies: new Set() });
+  // Providers require an object root. A non-object root is not describable.
+  if (j.type !== undefined && j.type !== "object") return { type: "object" };
+  if ("const" in j || "enum" in j) return { type: "object" };
+  return j;
 }
 
 export interface ToolInputIssue {
@@ -174,17 +231,48 @@ export type ToolInputCheck =
  */
 export function validateToolInput(schema: ZodTypeAny | undefined, input: unknown): ToolInputCheck {
   if (schema === undefined) return { ok: true };
-  const r = schema.safeParse(input);
+  if (!withinInputBounds(input)) {
+    return {
+      ok: false,
+      truncated: false,
+      issues: [{ path: "", message: "input exceeds the depth or size limit" }],
+    };
+  }
+  let r: ReturnType<ZodTypeAny["safeParse"]>;
+  try {
+    r = schema.safeParse(input);
+  } catch {
+    // Async / throwing refinements, recursion: a schema fault is a refusal, with
+    // a FIXED message (a thrown message could echo anything), never a throw.
+    return {
+      ok: false,
+      truncated: false,
+      issues: [{ path: "", message: "schema check failed" }],
+    };
+  }
   if (r.success) return { ok: true };
   const all = r.error.issues;
   return {
     ok: false,
     truncated: all.length > MAX_ISSUES,
     issues: all.slice(0, MAX_ISSUES).map((i) => ({
-      path: i.path.join("."),
+      path: cap(i.path.join(".")),
       message: i.message.slice(0, MAX_ISSUE_CHARS),
     })),
   };
+}
+
+/** Iterative (no recursion) depth/node bound so Zod is never driven deeper than {@link MAX_INPUT_DEPTH}. */
+function withinInputBounds(input: unknown): boolean {
+  const stack: Array<[unknown, number]> = [[input, 0]];
+  let nodes = 0;
+  while (stack.length > 0) {
+    const [v, d] = stack.pop() as [unknown, number];
+    if (v === null || typeof v !== "object") continue;
+    if (d > MAX_INPUT_DEPTH || ++nodes > MAX_INPUT_NODES) return false;
+    for (const c of Array.isArray(v) ? v : Object.values(v)) stack.push([c, d + 1]);
+  }
+  return true;
 }
 
 /**
@@ -199,21 +287,19 @@ export function validateToolInput(schema: ZodTypeAny | undefined, input: unknown
  * information about the model, not a fault in the run.
  */
 export function buildToolMenu(tools: ReadonlyArray<{ id: string; inputSchema?: ZodTypeAny }>): {
-  allowed: ReadonlySet<string>;
-  schemaOf: (id: string) => Record<string, unknown>;
+  has: (name: string) => boolean;
   check: (name: string, input: unknown) => { error: Record<string, unknown> } | undefined;
 } {
   const byId = new Map(tools.map((t) => [t.id, t]));
   return {
-    allowed: new Set(byId.keys()),
-    schemaOf: (id) => toolInputJsonSchema(byId.get(id)?.inputSchema),
+    has: (name) => byId.has(name),
     check(name, input) {
       const tool = byId.get(name);
       if (tool === undefined) {
         return {
           error: {
             code: "tool_not_on_menu",
-            message: `Tool "${name}" is not available. Call one of: ${[...byId.keys()].join(", ")}.`,
+            message: `Tool "${cap(name)}" is not available. Call one of: ${[...byId.keys()].join(", ")}.`,
           },
         };
       }
@@ -222,7 +308,7 @@ export function buildToolMenu(tools: ReadonlyArray<{ id: string; inputSchema?: Z
       return {
         error: {
           code: "invalid_tool_input",
-          message: `Input for tool "${name}" does not match its schema; it was not run.`,
+          message: `Input for tool "${cap(name)}" does not match its schema; it was not run.`,
           issues: v.issues,
           ...(v.truncated && { truncated: true }),
         },

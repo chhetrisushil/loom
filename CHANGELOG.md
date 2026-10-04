@@ -18,7 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inputSchema`; otherwise nothing is executed and the model gets a structured
   `{ error: { code: "tool_not_on_menu" | "invalid_tool_input", ... } }` result (issues bounded)
   so it can recover. The refusal is deterministic from the recorded model output and appends
-  nothing, so replay is unchanged. Each tool's Zod schema is sent as JSON Schema
+  nothing. Schema faults (async or throwing refinements, pathologically deep input) are
+  refusals too (`invalid_tool_input`, fixed message), never throws; input deeper than 64
+  levels or 100k nodes is refused before Zod runs; echoed names/paths are capped at 200
+  chars. `requireApproval` now receives `onMenu` as a third argument.
+  **Replay caveat:** an in-flight `agentLoop$` execution whose log recorded an off-menu or
+  invalid-input call (written before this change) replays a refusal in its place, so its
+  `toolCallLog` / later transcript diverge from the recorded run; drain in-flight `agentLoop$`
+  executions before upgrading. `agentStep$` / `AgentRunner` (one step) are unaffected. Each tool's Zod schema is sent as JSON Schema
   (`toolInputJsonSchema`, a minimal in-package converter; no new dependency). **Behavioural
   tightening:** code that relied on calling an off-menu effect, or on sending input its tool's
   schema rejects, now gets the refusal result instead of an execution. Tools whose schema is
