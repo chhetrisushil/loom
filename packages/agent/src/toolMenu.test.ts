@@ -251,7 +251,8 @@ describe("toolInputJsonSchema", () => {
     });
   });
   it("degrades to the permissive schema rather than throwing", () => {
-    expect(toolInputJsonSchema(z.unknown())).toEqual({});
+    // An unconstrained root is still given an object root (providers require one).
+    expect(toolInputJsonSchema(z.unknown())).toEqual({ type: "object" });
     expect(toolInputJsonSchema(undefined)).toEqual({ type: "object" });
   });
 });
@@ -287,6 +288,37 @@ describe("validator never throws (refusal is a result)", () => {
     const m = menuOf(deepNode);
     expect(code(m.check("t", deep(20000)))).toBe("invalid_tool_input");
     expect(m.check("t", deep(5))).toBeUndefined(); // sane depth still passes
+  });
+  it("the precheck refuses past the bounds with its own fixed message (depth, nodes, cycles)", () => {
+    const nest = (n: number): unknown => {
+      let v: unknown = {};
+      for (let i = 0; i < n; i++) v = { c: v };
+      return v;
+    };
+    const msg = (r: ReturnType<typeof validateToolInput>) => (r.ok ? "ok" : r.issues[0]?.message);
+    const anyObj = z.any();
+    expect(msg(validateToolInput(anyObj, nest(64)))).toBe("ok");
+    expect(msg(validateToolInput(anyObj, nest(66)))).toBe("input exceeds the depth or size limit");
+    const wide = Array.from({ length: 100_001 }, () => ({}));
+    expect(msg(validateToolInput(anyObj, wide))).toBe("input exceeds the depth or size limit");
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(msg(validateToolInput(anyObj, cyclic))).toBe("input exceeds the depth or size limit");
+  });
+  it("an input whose walk throws (getter/proxy) is a fixed refusal, never a throw", () => {
+    const hostile = Object.defineProperty({}, "x", {
+      enumerable: true,
+      get() {
+        throw new Error("secret");
+      },
+    });
+    const r = validateToolInput(z.any(), hostile);
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).not.toContain("secret");
+  });
+  it("an unconstrained root (z.any / z.unknown) is still described as an object", () => {
+    expect(toolInputJsonSchema(z.any())).toEqual({ type: "object" });
+    expect(toolInputJsonSchema(z.unknown())).toEqual({ type: "object" });
   });
   it("validateToolInput itself does not throw", () => {
     expect(

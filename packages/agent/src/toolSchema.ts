@@ -210,6 +210,9 @@ export function toolInputJsonSchema(schema: ZodTypeAny | undefined): Record<stri
   // Providers require an object root. A non-object root is not describable.
   if (j.type !== undefined && j.type !== "object") return { type: "object" };
   if ("const" in j || "enum" in j) return { type: "object" };
+  // An unconstrained root (`z.any()`, `z.unknown()`, a degraded node) still needs an object root.
+  if (j.type === undefined && !("anyOf" in j) && !("allOf" in j) && !("oneOf" in j))
+    return { ...j, type: "object" };
   return j;
 }
 
@@ -231,7 +234,14 @@ export type ToolInputCheck =
  */
 export function validateToolInput(schema: ZodTypeAny | undefined, input: unknown): ToolInputCheck {
   if (schema === undefined) return { ok: true };
-  if (!withinInputBounds(input)) {
+  let bounded: boolean;
+  try {
+    bounded = withinInputBounds(input);
+  } catch {
+    // A throwing getter/proxy in the input: same fixed refusal as a schema fault.
+    bounded = false;
+  }
+  if (!bounded) {
     return {
       ok: false,
       truncated: false,
