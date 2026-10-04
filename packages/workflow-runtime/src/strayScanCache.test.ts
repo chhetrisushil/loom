@@ -120,6 +120,20 @@ describe("stray-scan memory under a mixed-version writer (R1a)", () => {
     expect(stores.eventStore.fullReads).toBe(reads);
   });
 
+  it("a log re-created SHORTER under the same id (ends before what was scanned) re-scans", async () => {
+    const { stores, warm } = await warmedUp();
+    // advance what the warm runtime has scanned past the re-created log's eventual end
+    await (await warm.runtime.resume("e", { eventType: "go1", payload: {} })).waitForSuspend();
+    // erase the execution and start it again under the same id from a different process
+    await stores.eventStore.deleteExecution("e");
+    await stores.snapshotStore.deleteExecution("e");
+    const other = boot(stores);
+    await (await other.runtime.start("f", {}, { executionId: "e" })).waitForSuspend();
+    const reads = stores.eventStore.fullReads;
+    await (await warm.runtime.resume("e", { eventType: "go0", payload: {} })).waitForSuspend();
+    expect(stores.eventStore.fullReads).toBeGreaterThan(reads);
+  });
+
   it("a refused discardLegacyAnswers drops the clean memory (next resume re-scans)", async () => {
     const { stores, warm } = await warmedUp();
     await expect(

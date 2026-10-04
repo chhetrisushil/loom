@@ -348,4 +348,23 @@ describe("StrayScanner is resumable (R1a)", () => {
       }
     }
   });
+
+  it("re-feeding events it has already seen changes nothing (concurrent resumes share a scanner)", () => {
+    seq = 0;
+    const log = [
+      ev("EXECUTION_STARTED"),
+      park("go0"),
+      ev("EXECUTION_RESUMED", { ok: 1 }),
+      ev("EXECUTION_RECOVERED"),
+      ev("EXECUTION_RESUMED", {}),
+    ];
+    const kindOfStep = () => "human";
+    const state = foldEvents(log, INITIAL);
+    const whole = inspectStrayPassthroughs(log, state, { kindOfStep });
+    const scanner = new StrayScanner(kindOfStep);
+    scanner.feed(log.slice(0, 3));
+    scanner.feed(log.slice(2)); // overlaps: event 3 again
+    scanner.feed(log.slice(2)); // and again
+    expect(scanner.report(state)).toEqual(whole);
+  });
 });
