@@ -422,7 +422,7 @@ plan-proposed kernel changes (a `CHILD_COMPLETED` event and a `ctx.compensate` s
 
 ```mermaid
 flowchart TB
-  Sys["Stable syscall surface — KERNEL_ABI 1.1.0 (unchanged)<br/>execute · run · decide · parallel · suspend<br/>sleep · sleepUntil · emit · stream · ui"]
+  Sys["Stable syscall surface — KERNEL_ABI 1.2.0<br/>execute · run · decide · parallel · suspend<br/>sleep · sleepUntil · emit · stream · ui"]
 
   subgraph Iso["Multi-tenant isolation (Direction C)"]
     AZ["execution-lifecycle authz → EXECUTION_DENIED (only schema touch: 1.12.0)"]

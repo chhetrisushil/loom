@@ -32,12 +32,25 @@ export const EXECUTION_RECOVERED = "EXECUTION_RECOVERED";
 /**
  * L30 — what `ctx.decide` hands its decider: a transient invoker STAMPED with the
  * deciding execution. `invokeTransient` is `EffectRuntime.invokeTransient` (R1-R5:
- * nothing journalled, no-op `emit`, the same middleware chain, `ambient` effects
- * only) except that the call carries the execution's `workflowId`/`executionId`
- * (stepId `decide:<decisionId>`), its FULL principal chain (actor, delegation
- * token) and, unless overridden, its cancellation signal. The principal is NOT a
- * parameter: a decider cannot act as anyone but the execution it decides for.
- * The scope is valid only while the decider runs; a call after it settles throws.
+ * nothing journalled, no-op `emit`, the same middleware chain, and the
+ * journaled/ambient effect-mode check — a `journaled` effect is refused; undeclared
+ * effects are allowed) except that the call carries the execution's
+ * `workflowId`/`executionId`, its FULL principal chain (actor, delegation token)
+ * and its cancellation signal (a `signal` you pass ADDS to it, never replaces it).
+ * `stepId` stays the toolId, as for a bare call, so stepId-keyed config (redaction,
+ * pricing) matches; the decision and a per-call ordinal ride in `EffectContext.callKey`
+ * (`decide:<decisionId>:<n>`). The principal is NOT a parameter: the scope is the
+ * only identity-bearing handle flow code receives, and it is pre-stamped.
+ *
+ * Limits, by design (the call is transient):
+ *  - Budget ADMISSION applies (the scope passes the execution's running totals), but
+ *    the CHARGE is dropped by the no-op `emit`: a decider's spend is invisible to the
+ *    budget, so loop-bound it yourself.
+ *  - A denial (`CapabilityDeniedError`, `EFFECT_DENIED`) is NOT durable: the denial
+ *    event goes to the no-op sink, so a decider that catches it leaves no trace in
+ *    the log. Let it propagate to fail the execution (nothing is recorded either way).
+ *  - The scope is valid only while the decider runs; a call after it settles throws,
+ *    and a call still in flight when it settles is aborted.
  */
 export interface DecideScope {
   invokeTransient<TIn = unknown, TOut = unknown>(

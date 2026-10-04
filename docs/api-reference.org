@@ -475,7 +475,7 @@ interface ExecutionContext {
 *The kernel ABI (2.0, K1).* The syscall surface is named and versioned; a conformance test pins it.
 
 #+begin_src typescript
-const KERNEL_ABI_VERSION: string;   // semver, e.g. "1.1.0" — MINOR bump added sleep/sleepUntil (T1)
+const KERNEL_ABI_VERSION: string;   // semver, e.g. "1.2.0" — MINOR bumps: 1.1.0 added sleep/sleepUntil (T1), 1.2.0 gave decide's decider a DecideScope (L30)
 const KERNEL_SYSCALLS: readonly { name: string; kind: "call" | "accessor"; since: string; summary: string }[];
 const KERNEL_ABI: { version: string; syscalls: typeof KERNEL_SYSCALLS };
 // syscalls: execute · run · decide · parallel · suspend · sleep · sleepUntil · emit · stream · ui
@@ -823,6 +823,7 @@ interface EffectContext {
   readonly signal?: AbortSignal;      // cancellation
   readonly resources?: ResourceSnapshot;  // (2.0, K3) running totals BEFORE this effect
   readonly priority?: number;             // (2.0, M6) @loom/scheduler Priority when scheduled
+  readonly callKey?: string;              // (L30) set only on execution-stamped TRANSIENT calls; id-minting sites append it to (executionId, stepId)
 }
 interface ResourceSnapshot { tokens: number; costUsd: number; ms: number; count: number; exceeded?: boolean; }
 interface Effect<TIn, TOut> { kind: EffectKind; execute(input: TIn, ctx: EffectContext): Promise<TOut>; }
@@ -837,7 +838,9 @@ class EffectRuntime {
   invokeTransient<TIn, TOut>(toolId: string, input: TIn, opts?: TransientInvokeOptions): Promise<TOut>  // (ADR 0066) non-durable invoke: authorize/meter/middleware still run, but NO events emitted; opts.as (L30) stamps an execution's workflowId/executionId/stepId
   has(toolId: string): boolean
 }
-interface TransientInvokeOptions { signal?: AbortSignal; principal?: PrincipalChain; label?: string; }  // (ADR 0066) — signal (deadline), principal (K2 still enforced), label (trace tag only)
+interface TransientInvokeOptions { signal?: AbortSignal; principal?: PrincipalChain; label?: string; as?: TransientIdentity; resources?: ResourceSnapshot; }  // (ADR 0066) — signal (deadline), principal (K2 still enforced), label (trace tag only); (L30) as = stamp an execution's identity (an AUTHZ INPUT: any memo/dedup wrapper MUST key on it too), resources = running totals for budget admission (the charge is still dropped)
+interface TransientIdentity { workflowId: string; executionId: string; stepId?: string /* default toolId */; callKey?: string /* -> EffectContext.callKey */ }
+interface DecideScope { invokeTransient<TIn, TOut>(toolId: string, input: TIn, opts?: { signal?: AbortSignal }): Promise<TOut> }  // (L30) ctx.decide's decider argument; closed once the decider settles
 #+end_src
 
 *The protection ring, accounting context & scheduling (2.0, K2/K3/M6).*

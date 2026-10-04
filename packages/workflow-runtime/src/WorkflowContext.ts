@@ -2,9 +2,9 @@ import { createSurfaceEmitter } from "@loom/agent-surface";
 import type { SurfaceEmitter } from "@loom/agent-surface";
 import { SuspendError, TypedFailure, fnv1a64 } from "@loom/core";
 import type { ExecutableTask, StepDefinition } from "@loom/core";
-import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
+import type { EffectRuntime, PrincipalChain, ResourceSnapshot } from "@loom/effect-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
-import { parallelLimit } from "@loom/scheduler";
+import { linkSignals, parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
 import { armDeadline, assertValidBudget, remainingBudget } from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
@@ -428,9 +428,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       idempotencyKey: this.idempotencyKeyFor(id),
       // K3 — running resource totals (from the durable fold) so accounting/quota
       // middleware can meter and enforce budgets deterministically.
-      resources: (this.vm.getState().variables._resources as
-        | { tokens: number; costUsd: number; ms: number; count: number; exceeded?: boolean }
-        | undefined) ?? { tokens: 0, costUsd: 0, ms: 0, count: 0 },
+      resources: this.resourceSnapshot(),
     };
 
     let output: TOut;
@@ -547,8 +545,12 @@ export class WorkflowContextImpl implements WorkflowContext {
     this.segmentLive = true;
     this.inFlight++;
     let choice: T;
-    // L30 — the decider's transient invoker, stamped with THIS execution.
+    // L30 — the decider's transient invoker, stamped with THIS execution. The scope owns
+    // an AbortController composed into every call's signal and aborted when the decider
+    // settles, so a call started and never awaited cannot outlive the decision.
     let scopeOpen = true;
+    let callOrdinal = 0;
+    const scopeCtl = new AbortController();
     const scope: DecideScope = {
       invokeTransient: (toolId, input, o) => {
         if (!scopeOpen) {
@@ -556,13 +558,21 @@ export class WorkflowContextImpl implements WorkflowContext {
             new Error(`decide("${decisionId}"): the decider's scope is closed (decider settled)`)
           );
         }
-        const signal = o?.signal ?? this.signal;
+        // Execution cancellation + the decider's own signal + the scope's lifetime: all
+        // three abort the call (the decider's signal ADDS to the execution's, never replaces).
+        const signal = linkSignals(this.signal, o?.signal, scopeCtl.signal);
+        // stepId stays the toolId (as a bare call) so every stepId-keyed consumer —
+        // redaction, pricing, per-tool middleware config — matches; `callKey` carries the
+        // decision attribution + a per-call ordinal for sites that mint ids.
         return this.effectRuntime.invokeTransient(toolId, input, {
           as: {
             workflowId: this.workflowId,
             executionId: this.executionId,
-            stepId: `decide:${decisionId}`,
+            callKey: `decide:${decisionId}:${callOrdinal++}`,
           },
+          // Admission control sees the execution's running spend (the charge is dropped
+          // by the no-op emit, so spend made here is invisible to the budget).
+          resources: this.resourceSnapshot(),
           ...(signal !== undefined && { signal }),
           ...(this.principal !== undefined && { principal: this.principal }),
         });
@@ -575,6 +585,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       throw err;
     } finally {
       scopeOpen = false;
+      scopeCtl.abort(new Error(`decide("${decisionId}"): decider settled`));
       this.inFlight--;
     }
 
@@ -618,6 +629,18 @@ export class WorkflowContextImpl implements WorkflowContext {
       {
         source: "negotiate",
         ...(opts?.rationale !== undefined && { rationale: opts.rationale }),
+      }
+    );
+  }
+
+  /** The running resource totals from the durable fold (K3), zeroed when nothing metered. */
+  private resourceSnapshot(): ResourceSnapshot {
+    return (
+      (this.vm.getState().variables._resources as ResourceSnapshot | undefined) ?? {
+        tokens: 0,
+        costUsd: 0,
+        ms: 0,
+        count: 0,
       }
     );
   }

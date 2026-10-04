@@ -12,7 +12,10 @@
 // kernel's own concern; everything above builds only against these calls.
 
 // 1.1.0: added `sleep` / `sleepUntil` (T1 — durable timers). Additive = MINOR.
-export const KERNEL_ABI_VERSION = "1.1.0";
+// 1.2.0: `decide`'s decider now receives a `DecideScope` argument (L30). Additive = MINOR:
+//        a `() => T` decider is unchanged, but a flow that USES the scope throws on an
+//        older kernel, so it must be able to require >= 1.2.0.
+export const KERNEL_ABI_VERSION = "1.2.0";
 
 export type SyscallKind = "call" | "accessor";
 
@@ -44,6 +47,9 @@ export const KERNEL_SYSCALLS: readonly KernelSyscall[] = [
     name: "decide",
     kind: "call",
     since: "1.0.0",
+    // 1.2.0 (L30): the decider receives a DecideScope (a transient invoker stamped as
+    // this execution). The syscall's name/kind/replay meaning are unchanged, so `since`
+    // stays 1.0.0; the argument is what 1.2.0 added.
     summary: "record an advisory/optimizer choice durably; served on replay (P9)",
   },
   {

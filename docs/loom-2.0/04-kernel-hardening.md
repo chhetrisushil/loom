@@ -52,7 +52,7 @@ A framework becomes a kernel when userspace can depend on a **narrow, versioned 
 
 ### The syscall table
 
-`KERNEL_ABI_VERSION` is a semver string (`"1.1.0"` — 1.1.0 added the T1 timer syscalls, an additive MINOR bump exactly as the compatibility rule prescribes), and `KERNEL_SYSCALLS` is the pinned table of calls the kernel exposes ([`abi.ts`](../../packages/workflow-runtime/src/abi.ts), [`abi.ts`](../../packages/workflow-runtime/src/abi.ts)):
+`KERNEL_ABI_VERSION` is a semver string (`"1.2.0"` — 1.1.0 added the T1 timer syscalls and 1.2.0 the `DecideScope` argument to `decide`'s decider (L30), each an additive MINOR bump exactly as the compatibility rule prescribes), and `KERNEL_SYSCALLS` is the pinned table of calls the kernel exposes ([`abi.ts`](../../packages/workflow-runtime/src/abi.ts), [`abi.ts`](../../packages/workflow-runtime/src/abi.ts)):
 
 | Syscall | Kind | Since | Summary |
 |---|---|---|---|

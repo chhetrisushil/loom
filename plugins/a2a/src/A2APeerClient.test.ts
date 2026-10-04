@@ -205,4 +205,21 @@ describe("A2APeerClient", () => {
     expect(tool.id).toBe("remote-echo");
     expect(effectRuntime.has("remote-echo")).toBe(true);
   });
+
+  it("L30: two transient calls stamped as ONE execution mint distinct task ids (callKey), so neither collides", async () => {
+    server = await startEchoServer();
+    const effectRuntime = new EffectRuntime();
+    const peer = new A2APeerClient({ url: server.url, pollIntervalMs: 25 });
+    const tool = await peer.registerInto(effectRuntime);
+    const as = { workflowId: "wf", executionId: "exec-collide" };
+    const call = (prompt: string, callKey: string) =>
+      effectRuntime.invokeTransient<{ prompt: string }, { content: string }>(
+        tool.id,
+        { prompt },
+        { as: { ...as, callKey } }
+      );
+    const [a, b] = await Promise.all([call("first", "decide:p:0"), call("second", "decide:p:1")]);
+    expect(a.content).toContain("Echo: first");
+    expect(b.content).toContain("Echo: second");
+  });
 });

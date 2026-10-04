@@ -10,18 +10,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`ctx.decide` hands its decider a transient invoker stamped with the deciding execution
-  (backlog L30).** `decide(id, (scope) => scope.invokeTransient(...))`: the decider's effect
-  calls (an LLM/MCP planner) previously ran under the synthesized `workflowId: "transient"`
-  with only the caller's principal, so flow-scoped K2 grants never applied, the execution's
-  delegation token and actor were dropped, and middleware could not correlate the call to the
-  deciding execution. The scope now carries the execution's `workflowId`/`executionId`
-  (stepId `decide:<decisionId>`), its full principal chain and its cancellation signal. Still
-  transient (R1-R5: nothing journalled, no-op `emit`, same middleware chain, `ambient` effects
-  only); replay serves the recorded decision and never runs the decider; the scope throws after
-  the decider settles. New public types `DecideScope` (`@loom/workflow-runtime`) and
-  `TransientIdentity` / `TransientInvokeOptions.as` (`@loom/effect-runtime`); existing
-  `() => T` deciders and `invokeTransient` callers are unchanged. No EVENT_SCHEMA or KERNEL_ABI
-  change.
+  (backlog L30; KERNEL_ABI 1.2.0).** `decide(id, (scope) => scope.invokeTransient(...))`: the
+  decider's effect calls (an LLM/MCP planner) previously ran under the synthesized
+  `workflowId: "transient"` with only the caller's principal, so flow-scoped K2 grants never
+  applied, the execution's delegation token and actor were dropped, and middleware could not
+  correlate the call to the deciding execution. The scope now carries the execution's
+  `workflowId`/`executionId`, its full principal chain, and its cancellation signal (a
+  decider-supplied signal is composed with it, never replaces it; a call still in flight when
+  the decider settles is aborted). `stepId` stays the toolId, as for a bare call, so every
+  stepId-keyed consumer (secret-output redaction, pricing, per-tool middleware config) matches
+  on both paths; calls are told apart by the new `EffectContext.callKey`
+  (`decide:<decisionId>:<n>`), which the A2A peer client (task id) and redaction (secret-ref id)
+  append so two calls in one execution do not collide. Budget ADMISSION applies (the scope
+  passes the execution's running totals); the call's CHARGE is dropped by the no-op `emit`.
+  A denial inside a decider is not durable (a decider that catches it leaves no trace in the
+  log). Still transient (R1-R5: nothing journalled, no-op `emit`, same middleware chain, the
+  journaled/ambient mode check: `journaled` effects are refused, undeclared effects allowed);
+  replay serves the recorded decision and never runs the decider; the scope throws after the
+  decider settles. New public types `DecideScope` (`@loom/workflow-runtime`) and
+  `TransientIdentity` / `TransientInvokeOptions.as` / `.resources` (`@loom/effect-runtime`).
+  `TransientInvokeOptions.as` is an authorization input: any wrapper that memoises or dedupes
+  transient calls must key on it. `KERNEL_ABI_VERSION` 1.1.0 -> **1.2.0** (additive MINOR: a
+  flow that uses the scope throws on an older kernel and can now require >= 1.2.0);
+  existing `() => T` deciders and `invokeTransient` callers are unchanged. No EVENT_SCHEMA
+  change. ADR 0083 (second-consumer rule) for the new exported types: consumers are the loom-ui
+  Planner and genUI's planner decisions.
 
 ### Changed
 

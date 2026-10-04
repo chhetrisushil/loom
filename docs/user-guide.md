@@ -98,7 +98,7 @@ interface ExecutionContext {
   run<TIn, TOut>(step: StepDefinition<TIn, TOut>, input: TIn): Promise<TOut>;
 
   // Loom 2.0 (P9): record an advisory/optimizer choice durably; served on replay.
-  decide<T>(id: string, decider: () => T | Promise<T>, opts?: { rationale?: unknown; source?: string }): Promise<T>;
+  decide<T>(id: string, decider: (scope: DecideScope) => T | Promise<T>, opts?: { rationale?: unknown; source?: string }): Promise<T>;
 
   parallel<T extends unknown[]>(
     pairs: { [K in keyof T]: [StepDefinition<unknown, T[K]>, unknown] },
