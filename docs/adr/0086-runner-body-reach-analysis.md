@@ -117,7 +117,15 @@ added information.
   (`const { decide } = ctx`, a `({ decide }) =>` parameter), element-access `ctx["decide"]` calls and a
   spread-argument `decide(...args)` are reported unresolved, receiver-agnostic like the
   rest of the walk. Likewise a scope pattern element that could bind `invokeTransient`
-  through a computed key or nested pattern. **Known gap, not fixed here:** `ctx.run` has the
+  through a computed key or nested pattern. This deliberately includes handing `ctx.decide`
+  to a library (`kb.retrieve(q, { decide: ctx.decide })`, the documented binding idiom): the
+  library then decides with a decider in ITS code, whose reach is not followed, so the flow is
+  reported unresolved (`decide alias ctx.decide`) rather than passing as if it reached nothing.
+  The check is receiver-agnostic AND module-wide (the region is the flow module), so a
+  `.decide` reference on any object in a flow module (`policy.decide` passed as a value)
+  reports on every flow in it; that over-reports, which is the safe direction. Likewise the
+  unambiguous-name rule over-refuses a decider whose short name (`d`, `fn`) is reused by an
+  unrelated parameter or binding in the module. **Known gap, not fixed here:** `ctx.run` has the
   analogous pre-existing hole (`const r = ctx.run; r(step)` is not seen).
 - **Journaled effects.** The transient seam refuses a `journaled` effect
   (`EffectModeViolationError`). `FlowSpec.deciderEffects` carries each scope-reached tool
@@ -128,7 +136,7 @@ added information.
 
 ## Evidence
 
-`tools/compiler/src/runnerReach.test.ts` (29) covers resolution, non-resolution, the generic
+`tools/compiler/src/runnerReach.test.ts` (30) covers resolution, non-resolution, the generic
 `ctx.suspend<T>` form, nesting inside loops/branches/closures, and the deliberate `sleep`
 exclusion. `packages/verify/src/verify.test.ts` covers the corrected rules — including the two
 tests asserting the *absence* of the removed correlationKey finding and the TimerStore-wired

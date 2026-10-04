@@ -88,7 +88,8 @@ accepts directly. That puts `determinism`, `capability-compat`, `effect-class` a
 **Remaining feed gaps (documented, not silent):** per-flow `computeTarget` and resource budgets
 are not in the `FlowDefinition` today, so `placement-compat` and `resource-compat` only see what a
 caller supplies structurally. A `ctx.run` target imported from another module resolves only as
-*unresolved* — reported as a `warn`, never dropped.
+*unresolved* — reported as a `warn`, never dropped. So is a `ctx.decide` handed to a library
+(`{ decide: ctx.decide }`): the library's decider is not followed (ADR 0086, L31).
 
 ## Guarantees
 
