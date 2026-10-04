@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the signal with the runtime's `AbortError` `DOMException`; the reason is now an
   `ExecutionCancelledError`. A persisted `STEP_FAILED`/`EXECUTION_FAILED` `error` string
   (`String(err)`) for these now reads `ExecutionCancelledError: …` / `DecideScopeClosedError: …`
-  rather than `Error: …`; the fold treats it as an opaque string. No EVENT_SCHEMA or
+  rather than `Error: …`, and a deadline breach's `EXECUTION_CANCELLED` `reason` reads `ExecutionCancelledError: execution deadline exceeded (…)`; the fold treats these as opaque strings. No EVENT_SCHEMA or
   KERNEL_ABI change.
 - **`@loom/verify` reach analysis counts `ctx.decide` scope calls (backlog L31).** A flow
   whose effects all ran through `scope.invokeTransient("tool.id", …)` inside deciders
