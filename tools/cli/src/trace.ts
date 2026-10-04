@@ -41,13 +41,13 @@ export function buildTrace(events: EventEnvelope[]): Trace {
       eventType: e.eventType,
       suspend: e.eventType === "EXECUTION_SUSPENDED",
     });
-    frames.push({ sequence: e.sequence, status: vm.getState().status });
+    frames.push({ sequence: e.sequence, status: vm.peekState().status });
   }
   return {
     executionId: first?.executionId ?? "",
     workflowId: first?.workflowId ?? "",
     timeline,
     frames,
-    finalStatus: events.length > 0 ? vm.getState().status : "unknown",
+    finalStatus: events.length > 0 ? vm.peekState().status : "unknown",
   };
 }

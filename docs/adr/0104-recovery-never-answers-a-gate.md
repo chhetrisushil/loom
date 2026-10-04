@@ -346,6 +346,22 @@ as `null`, which is exactly the stray this ADR removes.
   overwrite the verdict with `{}`. Keying the verdict by attempt makes that re-park a rule rather
   than an accident.
 
+### Amendment (R1a) — the scan is incremental, not skipped
+
+A resume with a snapshot no longer re-reads the whole log for the D2 scan. The runtime keeps,
+per execution and in a bounded process-local map, the `StrayScanner` as it stood after the last
+scan that came back clean, together with the sequence it consumed and the flow definition whose
+step kinds attributed its parks. The next resume feeds it only the events after that sequence.
+This is the same single pass cut in two: every piece of cross-event state lives in the scanner,
+so the verdict equals a full scan of the whole log (pinned by a test that cuts logs at every
+position). It deliberately does NOT assume a clean log stays clean: a pre-0104 kernel in a
+mixed-version fleet can still append strays after the scan, and the warm runtime now sees them
+and refuses (`ambiguous-legacy-answers`) exactly as a fresh process does. Anything flagged, a
+non-contiguous tail, a different definition object, `discardLegacyAnswers`, or a refusal drops
+the entry and re-scans the whole log. The one thing a warm runtime cannot see is a
+`truncatePrefix` after the clean scan, which can only change the advisory `unverifiable`
+warning, never a refusal.
+
 ## Consequences
 
 - A gate passes only when a resume addresses it while it is parked. A crash upstream of it, an
