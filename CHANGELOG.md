@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Named cancellation errors (backlog L33).** `@loom/workflow-runtime` exports
+  `ExecutionCancelledError` and `DecideScopeClosedError`, each with its `name` set
+  explicitly. They replace the plain `Error`s that `throwIfCancelled`, the closed-scope
+  rejection, the decider-settled abort and `cancel()` used, so a consumer can classify a
+  control-plane refusal by `err.name` instead of matching message text (the motivating
+  case: loom-ui's planner must propagate, not retry and record, a cancellation). Messages
+  are unchanged. A caller-supplied `Error` cancel reason is still the abort reason and the
+  thrown error, as-is. One observable difference: `cancel()` with no reason used to abort
+  the signal with the runtime's `AbortError` `DOMException`; the reason is now an
+  `ExecutionCancelledError`. A persisted `STEP_FAILED`/`EXECUTION_FAILED` `error` string
+  (`String(err)`) for these now reads `ExecutionCancelledError: …` / `DecideScopeClosedError: …`
+  rather than `Error: …`; the fold treats it as an opaque string. No EVENT_SCHEMA or
+  KERNEL_ABI change.
 - **`@loom/verify` reach analysis counts `ctx.decide` scope calls (backlog L31).** A flow
   whose effects all ran through `scope.invokeTransient("tool.id", …)` inside deciders
   reached nothing, so capability-compat, effect-class and suspension-safety passed
