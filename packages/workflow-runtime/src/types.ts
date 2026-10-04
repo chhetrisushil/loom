@@ -306,12 +306,16 @@ export interface ExecutionAuthorizer {
  * that cannot import this package, can classify a cancellation as
  * `err.name === "ExecutionCancelledError"` without matching message text. A caller that
  * passes its OWN `Error` as the cancel reason keeps it: it is thrown as-is, never wrapped.
- * `reason` carries the caller's non-Error reason (a string, say), if any.
+ * `reason` carries the caller's non-Error reason (a string, say), if any. `kind` tells an
+ * operator/API cancel (`"cancel"`) from a kernel-driven execution-deadline breach
+ * (`"deadline"`) without matching message text; the `name` is the same for both, so a
+ * consumer classifying by name treats them alike.
  */
 export class ExecutionCancelledError extends Error {
   constructor(
     message = "execution cancelled",
-    readonly reason?: unknown
+    readonly reason?: unknown,
+    readonly kind: "cancel" | "deadline" = "cancel"
   ) {
     super(message);
     this.name = "ExecutionCancelledError";

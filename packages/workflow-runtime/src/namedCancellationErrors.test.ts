@@ -85,6 +85,9 @@ describe("ExecutionCancelledError", () => {
     expect(seen.signal?.reason).toBeInstanceOf(ExecutionCancelledError);
     if (reason !== undefined)
       expect((seen.signal?.reason as ExecutionCancelledError).reason).toBe(reason);
+    // ONE object: the signal's reason IS the completion rejection, and it is an operator cancel.
+    expect(seen.signal?.reason).toBe(err);
+    expect((err as ExecutionCancelledError).kind).toBe("cancel");
   });
 
   it("a deadline breach aborts with the named error (message unchanged)", async () => {
@@ -121,6 +124,8 @@ describe("ExecutionCancelledError", () => {
     const err = await h.waitForCompletion().catch((e) => e);
     expect(err).toBeInstanceOf(ExecutionCancelledError);
     expect((err as Error).message).toMatch(/^execution deadline exceeded \(deadlineMs=30\)$/);
+    // Same name as an operator cancel (classified alike), told apart by `kind`.
+    expect((err as ExecutionCancelledError).kind).toBe("deadline");
   });
 
   it("a caller-supplied Error reason is kept as-is, never wrapped", async () => {
@@ -136,7 +141,7 @@ describe("ExecutionCancelledError", () => {
     expect(seen.signal?.reason).toBe(own);
   });
 
-  it("throwIfCancelled defaults to the named error for a non-Error signal reason", async () => {
+  it('a ctx call after cancel(id, "stop") throws the named error', async () => {
     // Cancelled while the flow is between operations: the next ctx call throws.
     let gate!: () => void;
     const wait = new Promise<void>((r) => {

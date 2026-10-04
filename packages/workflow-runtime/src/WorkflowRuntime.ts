@@ -2260,22 +2260,19 @@ export class WorkflowRuntime {
       if (cancelled) return;
       cancelled = true;
       // A caller-supplied Error is the abort reason as-is; otherwise a named
-      // ExecutionCancelledError, so every consumer of the signal can classify it.
-      controller.abort(
+      // ExecutionCancelledError, so every consumer of the signal can classify it. ONE
+      // object: the signal's reason and the completion rejection are the same error.
+      const err =
         reason instanceof Error
           ? reason
-          : new ExecutionCancelledError("Execution cancelled", reason)
-      );
+          : new ExecutionCancelledError("Execution cancelled", reason);
+      controller.abort(err);
       // Synchronous: enqueue the durable CANCELLED write (drained by run()'s
       // cancelled branch) and reject the caller immediately.
       journal.commit("EXECUTION_CANCELLED", {
         ...(reason !== undefined && { reason: String(reason) }),
       });
-      rejectCompletion(
-        reason instanceof Error
-          ? reason
-          : new ExecutionCancelledError("Execution cancelled", reason)
-      );
+      rejectCompletion(err);
     };
 
     // K8.3 — execution deadline, anchored to the LOGGED EXECUTION_STARTED
@@ -2291,7 +2288,11 @@ export class WorkflowRuntime {
         () => remainingBudget(deadlineMs, startedAt, this.now),
         () =>
           cancel(
-            new ExecutionCancelledError(`execution deadline exceeded (deadlineMs=${deadlineMs})`)
+            new ExecutionCancelledError(
+              `execution deadline exceeded (deadlineMs=${deadlineMs})`,
+              undefined,
+              "deadline"
+            )
           )
       );
     }

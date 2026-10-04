@@ -755,8 +755,10 @@ export class WorkflowContextImpl implements WorkflowContext {
   private throwIfCancelled(): void {
     const signal = this.signal;
     if (signal?.aborted) {
-      // A caller-supplied Error reason is thrown as-is (never wrapped); anything else
-      // becomes the named ExecutionCancelledError.
+      // A caller-supplied Error reason is thrown as-is (never wrapped). `cancel()` always
+      // aborts with an Error, so the fallback below is DEFENSIVE: it is reached only if
+      // something else aborts this controller with a non-Error (the journal's storage-error
+      // abort, should a store ever reject with one), which it then reports as a cancel.
       throw signal.reason instanceof Error
         ? signal.reason
         : new ExecutionCancelledError("execution cancelled", signal.reason);
