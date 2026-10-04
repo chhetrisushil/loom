@@ -240,7 +240,7 @@ describe("AgentRunner", () => {
     const responses: LlmResponse[] = [
       {
         content: "",
-        toolCalls: [{ id: "c1", name: "get-weather", input: {} }],
+        toolCalls: [{ id: "c1", name: "get-weather", input: { city: "Oslo" } }],
         stopReason: "tool_use",
       },
       { content: "handled", stopReason: "end_turn" },

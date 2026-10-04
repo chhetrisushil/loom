@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Agent loops executed any effect id the model named, with unvalidated input, and showed the model no argument schemas (R4).**
+  `agentLoop$` ran `ctx.execute({ toolId: toolCall.name })` and `AgentRunner` (hence `agentStep$`)
+  ran `effectRuntime.execute(toolCall.name, ...)` for WHATEVER name the model returned, so under
+  the default permissive config a hallucination or a prompt injection could reach any registered
+  effect; and every `LlmToolSpec.inputSchema` was `{}`. Now a call runs only if its name is on
+  the loop's tool menu (agent tools + selected skills' tools) and its input passes the tool's Zod
+  `inputSchema`; otherwise nothing is executed and the model gets a structured
+  `{ error: { code: "tool_not_on_menu" | "invalid_tool_input", ... } }` result (issues bounded)
+  so it can recover. The refusal is deterministic from the recorded model output and appends
+  nothing, so replay is unchanged. Each tool's Zod schema is sent as JSON Schema
+  (`toolInputJsonSchema`, a minimal in-package converter; no new dependency). **Behavioural
+  tightening:** code that relied on calling an off-menu effect, or on sending input its tool's
+  schema rejects, now gets the refusal result instead of an execution. Tools whose schema is
+  `z.unknown()` (MCP-mapped tools) are unaffected for validation but are still described as `{}`.
 - **A flow whose only reach is a ctx hand-off lost its runner-body analysis (backlog L36).**
   `@loom/compiler` kept a flow's `runnerReach` in the manifest only when it had steps,
   unresolved targets or suspends, ignoring L32 `escapes`. A flow that only hands `ctx` to a
