@@ -8,6 +8,7 @@ export { analyzeLoopIdentity, analyzeLoopIdentityNode } from "./loopIdentity";
 export type { LoopStepIdentityFinding } from "./loopIdentity";
 export { analyzeReachNode, analyzeRunnerReach } from "./runnerReach";
 export type {
+  ReachEscape,
   RunnerReach,
   RunnerStepRef,
   RunnerSuspend,

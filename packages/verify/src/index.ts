@@ -1,4 +1,10 @@
 export { verify, runVerification, formatReport, VerificationError } from "./verify";
+export {
+  REACH_DECLARATION,
+  declareReach,
+  readReachDeclaration,
+  type ReachDeclaration,
+} from "./reach";
 export { RULES, RULE_ORDER, type Rule } from "./rules";
 export type {
   Severity,

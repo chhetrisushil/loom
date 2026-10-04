@@ -278,11 +278,12 @@ describe("runner-body reach analysis", () => {
       expect(param.unresolved.length).toBeGreaterThan(0);
     });
 
-    it("P3-2: handing ctx.decide to a library is reported unresolved, by design (its decider is not followed)", () => {
+    it("P3-2: handing ctx.decide to a library is recorded as an escape (L32); the verifier reports it unresolved unless the callee declares reach", () => {
       const reach = analyzeRunnerReach(
         "const r = async (ctx, q) => { await kb.retrieve(q, { decide: ctx.decide }); };"
       );
-      expect(reach.unresolved.map((u) => u.expr)).toEqual(["decide alias ctx.decide"]);
+      expect(reach.unresolved).toEqual([]);
+      expect(reach.escapes).toEqual([{ callee: "kb.retrieve", root: "kb", via: "decide" }]);
       expect(reach.steps).toEqual([]);
     });
 
@@ -321,6 +322,76 @@ describe("runner-body reach analysis", () => {
       `);
       expect(reach.steps).toEqual([via("t.q1"), via("t.q2"), via("t.q3")]);
       expect(reach.unresolved).toEqual([]);
+    });
+  });
+
+  // ── L32: ctx handed to code outside the region ────────────────────────────
+
+  describe("ctx escapes (L32)", () => {
+    const escapes = (src: string) => analyzeRunnerReach(src).escapes ?? [];
+
+    it("records ctx passed as an argument, with callee and root", () => {
+      const r = analyzeRunnerReach(`
+        const runner = async (ctx, input) => { await planner.compose(input, ctx); };
+      `);
+      expect(r.escapes).toEqual([{ callee: "planner.compose", root: "planner", via: "ctx" }]);
+      expect(r.unresolved).toEqual([]);
+    });
+
+    it("records ctx inside an object/array argument and `new`", () => {
+      expect(escapes("const r = async (ctx) => { await lib.go({ ctx, n: 1 }); };")).toHaveLength(1);
+      expect(
+        escapes("const r = async (ctx) => { lib.go([ctx]); new Agent(ctx); };").map((e) => e.callee)
+      ).toEqual(["lib.go", "Agent"]);
+    });
+
+    it("records `{ decide: ctx.decide }` as a decide escape instead of an unresolved alias", () => {
+      const r = analyzeRunnerReach(
+        "const r = async (ctx) => { await kb.retrieve(q, { decide: ctx.decide }); };"
+      );
+      expect(r.escapes).toEqual([{ callee: "kb.retrieve", root: "kb", via: "decide" }]);
+      expect(r.unresolved).toEqual([]);
+    });
+
+    it("a decide alias with no receiving call stays unresolved", () => {
+      const r = analyzeRunnerReach("const r = async (ctx) => { const f = ctx.decide; };");
+      expect(r.escapes).toBeUndefined();
+      expect(r.unresolved[0]?.expr).toContain("decide alias");
+    });
+
+    it("ctx stored, aliased or returned is unresolved", () => {
+      for (const body of ["const c = ctx;", "holder.ctx = ctx;", "return ctx;"]) {
+        const r = analyzeRunnerReach(`const r = async (ctx) => { ${body} };`);
+        expect(r.unresolved.some((u) => u.expr.startsWith("ctx stored"))).toBe(true);
+      }
+    });
+
+    it("passing ctx to a same-module function is NOT an escape (its body is analysed in-region)", () => {
+      const r = analyzeRunnerReach(`
+        async function helper(ctx) { await ctx.run({ id: "a", toolId: "t.a" }, {}); }
+        const r = async (ctx) => { await helper(ctx); };
+      `);
+      expect(r.escapes).toBeUndefined();
+      expect(r.steps).toEqual([{ toolId: "t.a", stepId: "a" }]);
+    });
+
+    it("ordinary ctx use is not an escape", () => {
+      expect(
+        escapes(`
+          const r = async (ctx, input) => {
+            if (typeof ctx === "undefined" || ctx === null) return;
+            const { decide } = ctx;
+            await ctx.run({ id: "a", toolId: "t.a" }, input);
+            await ctx.suspend({ on: "X" });
+          };
+        `)
+      ).toEqual([]);
+    });
+
+    it("deduplicates by callee and via, and recognises a non-ctx name via ctx methods", () => {
+      expect(
+        escapes("const r = async (c) => { await c.decide('x', d); lib.a(c); lib.a(c); };")
+      ).toHaveLength(1);
     });
   });
 });

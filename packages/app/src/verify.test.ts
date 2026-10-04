@@ -1,7 +1,7 @@
 import { analyzeRunnerReach } from "@loom/compiler";
 import { step$ } from "@loom/core";
 import { GrantTable, ToolEffect } from "@loom/effect-runtime";
-import { verify } from "@loom/verify";
+import { declareReach, verify } from "@loom/verify";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -653,5 +653,155 @@ describe("decider-scope reach reaches the rules (L31)", () => {
       })
     );
     expect(report.findings.filter((f) => f.rule === "replay-safety")).toEqual([]);
+  });
+});
+
+// ── L32: effects whose ONLY reach is a library handed the flow's ctx ──────────
+
+const PLANNER_SOURCE = `
+  import { planner } from "./planner";
+  const runner = async (ctx, input) => { await planner.compose(input, ctx); };
+`;
+
+describe("declared reach for code handed ctx (L32)", () => {
+  const build = (authorizer: GrantTable) =>
+    defineConfig({
+      storage: { kind: "memory" },
+      flows: [undeclaredFlow()],
+      security: { authorizer },
+    });
+  const reach = () => ({ gated: analyzeRunnerReach(PLANNER_SOURCE, "gated") });
+  const planner = declareReach({ compose: () => undefined }, { transient: ["remediation-tool"] });
+
+  it("CONTROL: the ctx-handed planner's tool is invisible without a declaration (and, before L32, unreported)", () => {
+    const { runtime } = build(partialGrants);
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: partialGrants,
+        runnerReachByFlow: { gated: { ...reach().gated, escapes: undefined } },
+      })
+    );
+    expect(report.findings.filter((f) => f.severity !== "info")).toEqual([]);
+  });
+
+  it("undeclared escape is an unresolved warn naming the key to add", () => {
+    const { runtime } = build(fullGrants);
+    const report = verify(
+      resolveVerifyInput(runtime, { authorizer: fullGrants, runnerReachByFlow: reach() })
+    );
+    const warns = report.findings.filter(
+      (f) => f.rule === "capability-compat" && f.severity === "warn"
+    );
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.message).toContain("ctx handed to planner.compose");
+    expect(warns[0]?.message).toContain('verify.reach["planner"]');
+  });
+
+  it("a mapped object with NO declaration is still unresolved", () => {
+    const { runtime } = build(fullGrants);
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: fullGrants,
+        runnerReachByFlow: reach(),
+        reachDeclarations: { planner: { compose: () => undefined } },
+      })
+    );
+    expect(
+      report.findings.filter((f) => f.rule === "capability-compat" && f.severity === "warn")
+    ).toHaveLength(1);
+  });
+
+  it("a declared tool the principal is not granted fails capability-compat", () => {
+    const { runtime } = build(partialGrants);
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: partialGrants,
+        runnerReachByFlow: reach(),
+        reachDeclarations: { planner },
+      })
+    );
+    const errs = report.findings.filter(
+      (f) => f.rule === "capability-compat" && f.severity === "error"
+    );
+    expect(errs).toHaveLength(1);
+    expect(errs[0]?.message).toContain("remediation-tool");
+    expect(report.ok).toBe(false);
+  });
+
+  it("a declared transient tool that is journaled fails replay-safety, naming the declarer", () => {
+    const { runtime } = build(fullGrants);
+    runtime.register("remediation-tool", new ToolEffect(async () => "ok", { mode: "journaled" }));
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: fullGrants,
+        runnerReachByFlow: reach(),
+        reachDeclarations: { "planner.compose": planner },
+      })
+    );
+    const errs = report.findings.filter(
+      (f) => f.rule === "replay-safety" && f.severity === "error"
+    );
+    expect(errs).toHaveLength(1);
+    expect(errs[0]?.message).toContain("declared by planner.compose");
+  });
+
+  it("a declared tool that is not registered yields info; a plain literal declaration works", () => {
+    const { runtime } = build(fullGrants);
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: fullGrants,
+        runnerReachByFlow: reach(),
+        reachDeclarations: { planner: { transient: ["not.registered"] } },
+      })
+    );
+    expect(
+      report.findings.filter((f) => f.rule === "replay-safety" && f.severity === "info")
+    ).toHaveLength(1);
+  });
+
+  it("a declared `run` tool joins effects without the transient (journaled) check", () => {
+    const { runtime } = build(partialGrants);
+    runtime.register("remediation-tool", new ToolEffect(async () => "ok", { mode: "journaled" }));
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: partialGrants,
+        runnerReachByFlow: reach(),
+        reachDeclarations: { planner: { run: ["remediation-tool"] } },
+      })
+    );
+    expect(report.findings.filter((f) => f.rule === "replay-safety")).toEqual([]);
+    expect(
+      report.findings.filter((f) => f.rule === "capability-compat" && f.severity === "error")
+    ).toHaveLength(1);
+  });
+
+  it("a callee named like an Object.prototype member does not resolve to it", () => {
+    const { runtime } = build(fullGrants);
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: fullGrants,
+        runnerReachByFlow: {
+          gated: analyzeRunnerReach("const r = async (ctx) => { constructor.go(ctx); };", "gated"),
+        },
+        reachDeclarations: {},
+      })
+    );
+    expect(
+      report.findings.filter((f) => f.rule === "capability-compat" && f.severity === "warn")
+    ).toHaveLength(1);
+  });
+
+  it("verify.reach routes through defineConfig end to end", () => {
+    const grants = new GrantTable({ gated: ["metrics-tool"] });
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [undeclaredFlow()],
+      security: { authorizer: grants },
+      checks: { verify: { mode: "off", reach: { planner } } },
+    });
+    const report = app.verify({ lint: { runnerReachByFlow: reach() } });
+    expect(
+      report.findings.filter((f) => f.rule === "capability-compat" && f.severity === "error")
+    ).toHaveLength(1);
   });
 });

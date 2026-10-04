@@ -255,6 +255,16 @@ than under-reports. ~replay-safety~ additionally errors on a scope call to an ef
 declared ~journaled~ (read from the real registry by ~resolveVerifyInput~), which the
 transient seam refuses at runtime.
 
+*Code handed ~ctx~ (L32).* ~ctx~ (or ~ctx.decide~) passed to a callee outside the module
+(~planner.compose(input, ctx)~, ~kb.retrieve(q, { decide: ctx.decide })~) is recorded in
+~escapes~ as ~{ callee, root, via }~. The callee's code is out of sight, so the library
+declares its reach (~Symbol.for("loom.verify.reach")~ -> ~{ run?, transient? }~, or
+~declareReach~ from ~@loom/verify~) and the app maps the callee to the real object with
+~checks.verify.reach: { planner }~. Declared tools are counted like any reached effect
+(~viaDeclared~); an escape with no declaration is *reported as unresolved*. Passing ~ctx~ to a
+same-module function is not an escape (its body is analysed in-region); ~ctx~ stored,
+aliased or returned is unresolved.
+
 Because the transform feeds whole *modules*, ~analyzeNonDeterminism~ is called with
 ~{ skipMemoized: true }~ there: a module holds runner bodies *and* ~handler$~ bodies, and
 a ~Math.random()~ inside a handler is safe by construction — the handler's result is

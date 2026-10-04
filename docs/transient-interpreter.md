@@ -103,6 +103,8 @@ peer client (task id) and the redaction middleware (secret-ref id) do. The
 literal-toolId `scope.invokeTransient` as a reached effect and reports a non-literal
 toolId, an escaping scope, or an unseen decider as unresolved; a scope call to a
 `journaled` effect is a `replay-safety` error (ADR 0086 amendment).
+A decider that lives in a library handed `ctx` (a planner) is covered by the library's
+declared reach (`verify.reach`, L32); without a declaration the hand-off is reported unresolved.
 
 **Cancellation and lifetime.** The call's signal is the composition of the
 execution's cancellation, the signal the decider passes (it adds to, never
