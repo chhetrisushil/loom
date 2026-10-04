@@ -143,6 +143,7 @@ function collectBindings(root: ts.Node): Map<string, RunnerStepRef> {
 
 /** Short, stable source text for an unresolved expression (bounded for log safety). */
 function exprText(node: ts.Node): string {
+  if (ts.isTaggedTemplateExpression(node)) return `${exprText(node.tag)}\`…\``;
   const text = node.getText().replace(/\s+/g, " ").trim();
   return text.length > 80 ? `${text.slice(0, 77)}…` : text;
 }
@@ -167,7 +168,20 @@ function isFn(node: ts.Node): node is FnNode {
  * binding to whichever declaration came last.
  */
 function collectFunctions(root: ts.Node): Map<string, FnNode> {
+  return scanDeclarations(root).fns;
+}
+
+/** Same unambiguity rule as {@link collectFunctions}, for any `const NAME = <initializer>`. */
+function collectConstInits(root: ts.Node): Map<string, ts.Expression> {
+  return scanDeclarations(root).inits;
+}
+
+function scanDeclarations(root: ts.Node): {
+  fns: Map<string, FnNode>;
+  inits: Map<string, ts.Expression>;
+} {
   const fns = new Map<string, FnNode>();
+  const inits = new Map<string, ts.Expression>();
   const declared = new Map<string, number>();
   const ambiguous = new Set<string>();
   const declare = (name: string): void => {
@@ -187,6 +201,7 @@ function collectFunctions(root: ts.Node): Map<string, FnNode> {
       ) {
         fns.set(node.name.text, node.initializer);
       }
+      if (node.initializer !== undefined) inits.set(node.name.text, node.initializer);
     } else if (ts.isParameter(node) && ts.isIdentifier(node.name)) {
       declare(node.name.text);
     } else if (ts.isBindingElement(node) && ts.isIdentifier(node.name)) {
@@ -205,7 +220,10 @@ function collectFunctions(root: ts.Node): Map<string, FnNode> {
   for (const name of [...fns.keys()]) {
     if (ambiguous.has(name) || (declared.get(name) ?? 0) > 1) fns.delete(name);
   }
-  return fns;
+  for (const name of [...inits.keys()]) {
+    if (ambiguous.has(name) || (declared.get(name) ?? 0) > 1) inits.delete(name);
+  }
+  return { fns, inits };
 }
 
 /** A string-literal-like toolId (`"x"` or an expression-free template), else undefined. */
@@ -226,9 +244,10 @@ function unwrap(e: ts.Expression): ts.Expression {
     ts.isAsExpression(cur) ||
     ts.isNonNullExpression(cur) ||
     ts.isSatisfiesExpression(cur) ||
-    ts.isTypeAssertionExpression(cur)
+    ts.isTypeAssertionExpression(cur) ||
+    (ts.isBinaryExpression(cur) && cur.operatorToken.kind === ts.SyntaxKind.CommaToken)
   ) {
-    cur = cur.expression;
+    cur = ts.isBinaryExpression(cur) ? cur.right : cur.expression;
   }
   return cur;
 }
@@ -236,32 +255,116 @@ function unwrap(e: ts.Expression): ts.Expression {
 /** Something with a parameter list: a function, or an object-literal method. */
 type ParamOwner = FnNode | ts.MethodDeclaration;
 
-/** The function a runner expression denotes in this region (inline, or a followable local). */
-function fnOf(e: ts.Expression | undefined, functions: Map<string, FnNode>): FnNode | undefined {
-  if (e === undefined) return undefined;
-  const u = unwrap(e);
-  if (isFn(u)) return u;
-  if (ts.isIdentifier(u)) return functions.get(u.text);
-  return undefined;
+/** A runner expression that is plainly not a function value (no refusal needed). */
+function isInertValue(e: ts.Expression): boolean {
+  return (
+    e.kind === ts.SyntaxKind.NullKeyword ||
+    e.kind === ts.SyntaxKind.TrueKeyword ||
+    e.kind === ts.SyntaxKind.FalseKeyword ||
+    ts.isStringLiteralLike(e) ||
+    ts.isNumericLiteral(e) ||
+    (ts.isIdentifier(e) && e.text === "undefined")
+  );
 }
 
 /**
- * Runner functions declared in this region: a `runner:` property (inline or a local
- * identifier / shorthand), a `runner(ctx, …) {}` method, the second argument of
- * `registerFlow(def, runner)`, or a function bound to a `…FlowRunner`-typed variable. Their
+ * Runner functions declared in this region: a `runner:` property or `runner = …` class field
+ * (inline or a local identifier / shorthand), a `runner(ctx, …) {}` method, the second argument
+ * of `registerFlow(def, runner)`, or a function bound to a `…FlowRunner`-typed variable. Their
  * FIRST parameter is the flow's ctx whatever it is called.
+ *
+ * A runner VALUE that is not a followable function is never silently skipped (round 2):
+ *  - a call (`withRetry(async (c) => …)`, `makeRunner(lib)`): every function-literal argument
+ *    (or local function passed by name) is treated as a runner, because a wrapper hands its ctx
+ *    to the callback; and the call itself is reported `runner not analysable` since the wrapper
+ *    may do anything else with ctx;
+ *  - an identifier is followed to a local function or a `const` initializer, else refused
+ *    (imported, ambiguous);
+ *  - anything else (member access, conditional branches that are not functions) is refused.
  */
-function collectRunners(root: ts.Node, functions: Map<string, FnNode>): ParamOwner[] {
+function collectRunners(
+  root: ts.Node,
+  functions: Map<string, FnNode>
+): { runners: ParamOwner[]; unresolved: string[] } {
   const out: ParamOwner[] = [];
+  const unresolved: string[] = [];
+  const inits = collectConstInits(root);
+  const seenValues = new Set<ts.Node>();
+  const refuse = (e: ts.Expression): void => {
+    const text = `runner not analysable: ${exprText(e)}`;
+    if (!unresolved.includes(text)) unresolved.push(text);
+  };
+  const argFn = (a: ts.Expression): FnNode | undefined => {
+    const u = unwrap(a);
+    if (isFn(u)) return u;
+    return ts.isIdentifier(u) ? functions.get(u.text) : undefined;
+  };
+  /** The functions a factory returns, or undefined unless EVERY return is a followable function. */
+  function returnedFns(factory: FnNode): FnNode[] | undefined {
+    const body = factory.body;
+    if (body === undefined) return undefined;
+    const found: FnNode[] = [];
+    let ok = true;
+    const take = (e: ts.Expression | undefined): void => {
+      const f = e === undefined ? undefined : argFn(e);
+      if (f === undefined) ok = false;
+      else found.push(f);
+    };
+    if (!ts.isBlock(body)) take(body);
+    else {
+      const scan = (n: ts.Node): void => {
+        if (isFn(n) || ts.isMethodDeclaration(n) || ts.isClassLike(n)) return;
+        if (ts.isReturnStatement(n)) take(n.expression);
+        ts.forEachChild(n, scan);
+      };
+      ts.forEachChild(body, scan);
+    }
+    return ok && found.length > 0 ? found : undefined;
+  }
+  function runnerValue(e: ts.Expression | undefined): void {
+    if (e === undefined) return;
+    const u = unwrap(e);
+    if (seenValues.has(u)) return;
+    seenValues.add(u);
+    if (isFn(u)) {
+      out.push(u);
+    } else if (isInertValue(u)) {
+      return;
+    } else if (ts.isIdentifier(u)) {
+      const f = functions.get(u.text);
+      const init = inits.get(u.text);
+      if (f !== undefined) out.push(f);
+      else if (init !== undefined) runnerValue(init);
+      else refuse(u);
+    } else if (ts.isCallExpression(u) || ts.isNewExpression(u)) {
+      for (const a of u.arguments ?? []) {
+        const f = argFn(a);
+        if (f !== undefined) out.push(f);
+      }
+      // A LOCAL factory (`makeRunner(lib)` where `function makeRunner` is in this region) whose
+      // every return is a function: those returned functions are the runners, nothing hidden.
+      const callee = ts.isCallExpression(u) ? unwrap(u.expression) : undefined;
+      const factory =
+        callee !== undefined && ts.isIdentifier(callee) ? functions.get(callee.text) : undefined;
+      const returned = factory === undefined ? undefined : returnedFns(factory);
+      if (returned !== undefined) out.push(...returned);
+      else refuse(u);
+    } else if (ts.isConditionalExpression(u)) {
+      runnerValue(u.whenTrue);
+      runnerValue(u.whenFalse);
+    } else {
+      refuse(u);
+    }
+  }
   function visit(node: ts.Node): void {
     if (ts.isPropertyAssignment(node) && propName(node.name) === "runner") {
-      const f = fnOf(node.initializer, functions);
-      if (f !== undefined) out.push(f);
+      runnerValue(node.initializer);
     } else if (ts.isShorthandPropertyAssignment(node) && node.name.text === "runner") {
-      const f = functions.get("runner");
-      if (f !== undefined) out.push(f);
+      runnerValue(node.name);
     } else if (ts.isMethodDeclaration(node) && propName(node.name) === "runner") {
       out.push(node);
+    } else if (ts.isPropertyDeclaration(node) && propName(node.name) === "runner") {
+      runnerValue(node.initializer);
     } else if (
       ts.isCallExpression(node) &&
       (ts.isIdentifier(node.expression)
@@ -270,20 +373,18 @@ function collectRunners(root: ts.Node, functions: Map<string, FnNode>): ParamOwn
           ? node.expression.name.text
           : "") === "registerFlow"
     ) {
-      const f = fnOf(node.arguments[1], functions);
-      if (f !== undefined) out.push(f);
+      runnerValue(node.arguments[1]);
     } else if (
       ts.isVariableDeclaration(node) &&
       node.type !== undefined &&
       /FlowRunner\b/.test(node.type.getText())
     ) {
-      const f = fnOf(node.initializer, functions);
-      if (f !== undefined) out.push(f);
+      runnerValue(node.initializer);
     }
     ts.forEachChild(node, visit);
   }
   visit(root);
-  return out;
+  return { runners: out, unresolved };
 }
 
 function propName(n: ts.PropertyName): string | undefined {
@@ -334,10 +435,24 @@ function collectCtx(root: ts.Node, functions: Map<string, FnNode>): CtxModel {
     scanTypes(root);
   }
 
+  // Worklist: every name is processed once per set it joins, against indexes built by ONE walk.
+  const queue: string[] = [];
+  const addName = (n: string): void => {
+    if (!names.has(n)) {
+      names.add(n);
+      queue.push(n);
+    }
+  };
+  const addMember = (n: string, m: string): void => {
+    if (!members.has(n)) {
+      members.set(n, m);
+      queue.push(n);
+    }
+  };
   const bindPattern = (pattern: ts.ObjectBindingPattern): void => {
     for (const el of pattern.elements) {
       if (el.dotDotDotToken !== undefined) {
-        if (ts.isIdentifier(el.name)) names.add(el.name.text);
+        if (ts.isIdentifier(el.name)) addName(el.name.text);
         else unresolved.add(`ctx pattern ${exprText(el)}`);
         continue;
       }
@@ -348,36 +463,43 @@ function collectCtx(root: ts.Node, functions: Map<string, FnNode>): CtxModel {
         unresolved.add(`ctx pattern ${exprText(el)}`);
         continue;
       }
-      members.set(el.name.text, keyText);
+      addMember(el.name.text, keyText);
     }
   };
   const bindParam = (p: ts.ParameterDeclaration): void => {
-    if (ts.isIdentifier(p.name)) names.add(p.name.text);
+    if (ts.isIdentifier(p.name)) addName(p.name.text);
     else if (ts.isObjectBindingPattern(p.name)) bindPattern(p.name);
     else unresolved.add(`ctx parameter ${exprText(p.name)}`);
   };
 
-  for (const r of collectRunners(root, functions)) {
+  const found = collectRunners(root, functions);
+  for (const u of found.unresolved) unresolved.add(u);
+  for (const r of found.runners) {
     const first = r.parameters[0];
     if (first !== undefined) bindParam(first);
   }
 
-  function seed(node: ts.Node): void {
+  // One walk: seed names, and index the places a name can flow onward from.
+  /** identifier argument -> the same-module parameter it is handed to. */
+  const argUses = new Map<string, ts.ParameterDeclaration[]>();
+  /** identifier -> declarations initialised from it (`const { … } = n`, `const k = n`). */
+  const declUses = new Map<string, ts.VariableDeclaration[]>();
+  const push = <V>(m: Map<string, V[]>, k: string, v: V): void => {
+    const list = m.get(k);
+    if (list === undefined) m.set(k, [v]);
+    else list.push(v);
+  };
+  function index(node: ts.Node): void {
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
       methods.has(node.expression.name.text) &&
       ts.isIdentifier(node.expression.expression)
     ) {
-      names.add(node.expression.expression.text);
+      addName(node.expression.expression.text);
     } else if (ts.isParameter(node) && ts.isIdentifier(node.name) && isCtxType(node.type)) {
-      names.add(node.name.text);
+      addName(node.name.text);
     }
-    ts.forEachChild(node, seed);
-  }
-  seed(root);
-
-  function propagate(node: ts.Node): void {
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
       const callee = unwrap(node.expression);
       const fn = ts.isIdentifier(callee) ? functions.get(callee.text) : undefined;
@@ -386,31 +508,48 @@ function collectCtx(root: ts.Node, functions: Map<string, FnNode>): CtxModel {
           const a = unwrap(arg);
           const param = fn.parameters[i];
           if (
-            !ts.isIdentifier(a) ||
-            param === undefined ||
-            param.dotDotDotToken !== undefined ||
-            !ts.isIdentifier(param.name)
+            ts.isIdentifier(a) &&
+            param !== undefined &&
+            param.dotDotDotToken === undefined &&
+            ts.isIdentifier(param.name)
           ) {
-            return;
+            push(argUses, a.text, param);
           }
-          if (names.has(a.text)) names.add(param.name.text);
-          const m = members.get(a.text);
-          if (m !== undefined) members.set(param.name.text, m);
         });
       }
-    } else if (
-      ts.isVariableDeclaration(node) &&
-      node.initializer !== undefined &&
-      ts.isObjectBindingPattern(node.name)
-    ) {
+    } else if (ts.isVariableDeclaration(node) && node.initializer !== undefined) {
       const init = unwrap(node.initializer);
-      if (ts.isIdentifier(init) && names.has(init.text)) bindPattern(node.name);
+      const isConst = (ts.getCombinedNodeFlags(node) & ts.NodeFlags.Const) !== 0;
+      if (
+        ts.isIdentifier(init) &&
+        (ts.isObjectBindingPattern(node.name) || (isConst && ts.isIdentifier(node.name)))
+      ) {
+        push(declUses, init.text, node);
+      }
     }
-    ts.forEachChild(node, propagate);
+    ts.forEachChild(node, index);
   }
-  for (let size = -1; size !== names.size + members.size; ) {
-    size = names.size + members.size;
-    propagate(root);
+  index(root);
+  for (const n of [...names]) queue.push(n);
+  for (const n of members.keys()) queue.push(n);
+
+  while (queue.length > 0) {
+    const n = queue.pop() as string;
+    const asName = names.has(n);
+    const m = members.get(n);
+    for (const param of argUses.get(n) ?? []) {
+      const pn = (param.name as ts.Identifier).text;
+      if (asName) addName(pn);
+      if (m !== undefined) addMember(pn, m);
+    }
+    for (const decl of declUses.get(n) ?? []) {
+      if (ts.isObjectBindingPattern(decl.name)) {
+        if (asName) bindPattern(decl.name);
+      } else if (ts.isIdentifier(decl.name)) {
+        if (asName) addName(decl.name.text);
+        if (m !== undefined) addMember(decl.name.text, m);
+      }
+    }
   }
   return { names, members, unresolved };
 }
@@ -557,10 +696,25 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
       return;
     }
     const text = exprText(callee);
+    const rootName = chainRoot(callee);
+    // The receiving callee is itself the ctx (`ctx.emit("x", ctx)`, `setTimeout(ctx.run, 0)`,
+    // `Reflect.apply(ctx.run, ctx, [step])`): there is no outside code to look up a declaration
+    // for, and `verify.reach["ctx"]` would be nonsense. The call is a ctx-method call whose
+    // argument this walk does not resolve, so refuse it (once per callee).
+    if (rootName !== undefined && (ctxNames.has(rootName) || ctx.members.has(rootName))) {
+      const key = `ctx-rooted:${text}`;
+      if (escapeSeen.has(key)) return;
+      escapeSeen.add(key);
+      unresolved.push({
+        expr: `ctx value handed to ctx-rooted ${text} (not resolved)`,
+        kind: "step",
+        ...at,
+      });
+      return;
+    }
     const key = `${via}:${member ?? ""}:${text}`;
     if (escapeSeen.has(key)) return;
     escapeSeen.add(key);
-    const rootName = chainRoot(callee);
     escapes.push({
       callee: text,
       ...(rootName !== undefined && { root: rootName }),
@@ -575,7 +729,16 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
     const recv = receivingCall(node);
     if (recv === undefined) {
       const what = member !== undefined ? `ctx.${member}` : "ctx";
-      unresolved.push({ expr: `${what} stored as ${exprText(node.parent)}`, kind: "step", ...at });
+      // A value interpolated into a tagged template reads as the whole tagged expression.
+      let where: ts.Node = node.parent;
+      for (let p: ts.Node | undefined = node.parent; p !== undefined; p = p.parent) {
+        if (ts.isTaggedTemplateExpression(p)) {
+          where = p;
+          break;
+        }
+        if (!ts.isTemplateSpan(p) && !ts.isTemplateExpression(p)) break;
+      }
+      unresolved.push({ expr: `${what} stored as ${exprText(where)}`, kind: "step", ...at });
       return;
     }
     // Direct hand-off to a same-module function: its i-th parameter was added to the ctx
@@ -684,6 +847,17 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
           ts.SyntaxKind.ExclamationEqualsToken,
           ts.SyntaxKind.ExclamationEqualsEqualsToken,
         ].includes(parent.operatorToken.kind))
+    ) {
+      return;
+    }
+    // `const k = ctx` — a const alias is itself a ctx name (collectCtx), so it is followed
+    // rather than reported stored. `let`/reassigned stays stored-unresolved.
+    if (
+      ts.isVariableDeclaration(parent) &&
+      parent.initializer !== undefined &&
+      unwrap(parent.initializer) === node &&
+      ts.isIdentifier(parent.name) &&
+      (ts.getCombinedNodeFlags(parent) & ts.NodeFlags.Const) !== 0
     ) {
       return;
     }

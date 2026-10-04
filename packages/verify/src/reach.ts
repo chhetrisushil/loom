@@ -86,7 +86,9 @@ export interface ReachRecorder {
 function toolIdOf(v: unknown): string | undefined {
   if (typeof v !== "object" || v === null) return undefined;
   const o = v as { toolId?: unknown; id?: unknown };
+  // The runtime resolves a task's effect as `task.toolId ?? task.id` (WorkflowContext.execute).
   if (typeof o.toolId === "string") return o.toolId;
+  if (o.toolId === undefined && typeof o.id === "string") return o.id;
   return undefined;
 }
 

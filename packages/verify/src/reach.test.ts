@@ -96,4 +96,24 @@ describe("recordReach / assertReachMatches (claim vs reality)", () => {
       assertReachMatches({ run: [], transient: [] }, recordReach().recorded)
     ).not.toThrow();
   });
+  it("records ctx.execute of a task with no toolId — the runtime defaults it to `id`", async () => {
+    const rec = recordReach();
+    const ctx = rec.ctx({
+      execute: async (_t: unknown) => 1,
+      run: async (_t: unknown) => 1,
+      parallel: async (_p: unknown) => [],
+    });
+    await ctx.execute({ _tag: "TaskDefinition", kind: "llm", id: "x" });
+    await ctx.run({ id: "plain" });
+    await ctx.execute({ kind: "llm", id: "ignored", toolId: "explicit" });
+    expect(rec.recorded.run).toEqual(["explicit", "plain", "x"]);
+  });
+
+  it("records ctx.parallel pair tasks (toolId or defaulted id), and ignores malformed pairs", async () => {
+    const rec = recordReach();
+    const ctx = rec.ctx({ parallel: async (_p: unknown) => [] });
+    await ctx.parallel([[{ toolId: "p.a" }, {}], [{ id: "p.b" }, {}], "not-a-pair", [42, {}]]);
+    await ctx.parallel("not-an-array");
+    expect(rec.recorded.run).toEqual(["p.a", "p.b"]);
+  });
 });

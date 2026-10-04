@@ -25,7 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`runner:`, `registerFlow`, `FlowRunner`-typed) whatever it is named and is followed into
   same-module helpers; `ctx.run`/`ctx.suspend` handed out as values are escapes
   (`member`); a declared tool that is not registered is a `warn`; `{ run: [], transient: [] }`
-  declares "reaches nothing". `recordReach()` / `assertReachMatches()` let a library test its
+  declares "reaches nothing" (round 2: a runner that is a wrapper call, factory, import or member is
+  reported `runner not analysable` instead of skipped; ctx-rooted callees are unresolved; `recordReach` reads a task's `toolId ?? id`). `recordReach()` / `assertReachMatches()` let a library test its
   declaration against what it actually runs. ADR 0083 second consumers: loom-ui planner, genUI
   planner flows, loom-examples `planner-decide-scope`, `@loom/knowledge` `kb.retrieve`. Known
   follow-up L34: 1P libraries (`fanout$`, `awaitChild`, `decideWithPolicy`, `recordOutcome`,
