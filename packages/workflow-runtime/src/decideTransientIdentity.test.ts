@@ -326,7 +326,33 @@ describe("P1 — stepId-keyed middleware matches the scope path; calls get disti
     );
     await (await runtime.start(definition, {}, { executionId: "k1" })).waitForCompletion();
     expect(ctxs.map((c) => c.stepId)).toEqual(["plan", "plan", "plan"]);
-    expect(ctxs.map((c) => c.callKey)).toEqual(["decide:a:0", "decide:a:1", "decide:b:0"]);
+    expect(ctxs.map((c) => c.callKey)).toEqual(["decide:a:0", "decide:a:1", "decide:b:2"]);
+  });
+
+  it("two LIVE decide() calls sharing an id still mint distinct callKeys", async () => {
+    const ctxs: EffectContext[] = [];
+    const { runtime, definition } = setup(
+      "f",
+      async (ctx) => {
+        await Promise.all([
+          ctx.decide("same", (s) => s.invokeTransient("plan", {})),
+          ctx.decide("same", (s) => s.invokeTransient("plan", {})),
+        ]).catch(() => undefined);
+        return {};
+      },
+      {
+        middleware: [
+          (c, i, next) => {
+            ctxs.push(c);
+            return next(i);
+          },
+        ],
+      }
+    );
+    await (await runtime.start(definition, {}, { executionId: "k2" })).waitForCompletion();
+    const keys = ctxs.map((c) => c.callKey);
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys).size).toBe(2);
   });
 
   it("two scope calls to a2a-style id minting do not collide (executionId:stepId:callKey unique)", async () => {

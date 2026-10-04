@@ -90,7 +90,7 @@ function sleep(ms: number): Promise<void> {
  * format.
  *
  * `:` matters because every loom task id contains one (`A2APeerClient` sets
- * `task.id = `${executionId}:${stepId}``, and `TenantScoped` uses `:` as its own separator). A
+ * `task.id = `${executionId}:${stepId}``, plus `:${callKey}` for a decider-scope call, and `TenantScoped` uses `:` as its own separator). A
  * full `encodeURIComponent` here would send `exec%3Astep` — a NEW client talking to an OLD
  * `A2AServer` (or any third-party peer) that does not `decodeURIComponent` the path segment
  * would then 404 every poll during a rolling upgrade. `A2AServer`'s `GET /tasks/:id` route still
