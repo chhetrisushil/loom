@@ -304,7 +304,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     // `idempotent: false`, refuse the silent re-run: record EFFECT_INDOUBT and
     // suspend for an operator verdict. Undeclared tools keep the legacy
     // at-least-once re-run byte-identically (G2).
-    const priorFrame = this.vm.getState().frames[id];
+    const priorFrame = this.vm.peekState().frames[id];
     if (
       priorFrame?.status === "running" &&
       this.effectRuntime.declaredIdempotence(toolId) === false
@@ -372,7 +372,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     let stepSignal = this.signal;
     let deadline: { promise: Promise<never>; cleanup: () => void } | undefined;
     if (timeoutMs !== undefined) {
-      const frame = this.vm.getState().frames[id];
+      const frame = this.vm.peekState().frames[id];
       const anchor = frame?.firstStartedAt ?? frame?.startedAt ?? this.now();
       // Same clock as the anchor (journal timestamps). Only the DIFFERENCE is used, and
       // the setTimeout below arms with real milliseconds, so `now` must advance in real
@@ -415,14 +415,14 @@ export class WorkflowContextImpl implements WorkflowContext {
       executionId: this.executionId,
       stepId: id,
       workflowId: this.workflowId,
-      attempt: this.vm.getState().frames[id]?.attempts ?? 1,
+      attempt: this.vm.peekState().frames[id]?.attempts ?? 1,
       emit: (eventType: string, payload: unknown) =>
         this.commit(
           eventType,
           guardUserspaceEmit(eventType, payload, {
             kind: "effect",
             stepId: id,
-            attempt: this.vm.getState().frames[id]?.attempts ?? 1,
+            attempt: this.vm.peekState().frames[id]?.attempts ?? 1,
             conflicts: this.decisionConflict,
           })
         ), // ADR 0104
@@ -648,7 +648,7 @@ export class WorkflowContextImpl implements WorkflowContext {
   /** The running resource totals from the durable fold (K3), zeroed when nothing metered. */
   private resourceSnapshot(): ResourceSnapshot {
     return (
-      (this.vm.getState().variables._resources as ResourceSnapshot | undefined) ?? {
+      (this.vm.peekState().variables._resources as ResourceSnapshot | undefined) ?? {
         tokens: 0,
         costUsd: 0,
         ms: 0,
@@ -659,7 +659,7 @@ export class WorkflowContextImpl implements WorkflowContext {
 
   /** Current spend for a dimension, read from the deterministic `_resources` fold (0 if unset). */
   private currentResource(dimension: ResourceDimension): number {
-    const r = this.vm.getState().variables._resources as Record<string, number> | undefined;
+    const r = this.vm.peekState().variables._resources as Record<string, number> | undefined;
     return r?.[dimension] ?? 0;
   }
 
@@ -709,7 +709,7 @@ export class WorkflowContextImpl implements WorkflowContext {
   }
 
   private recordedPassthroughs(): unknown[] {
-    const variables = this.vm.getState().variables;
+    const variables = this.vm.peekState().variables;
     return (
       (variables._resumePayloads as unknown[] | undefined) ??
       ("_resumePayload" in variables ? [variables._resumePayload] : [])
@@ -774,7 +774,9 @@ export class WorkflowContextImpl implements WorkflowContext {
    * fold, so recovery replays of the same logical attempt compute the same key.
    */
   private idempotencyKeyFor(stepId: string): string {
-    const indoubt = this.vm.getState().variables._indoubt as Array<{ stepId?: string }> | undefined;
+    const indoubt = this.vm.peekState().variables._indoubt as
+      | Array<{ stepId?: string }>
+      | undefined;
     if (indoubt === undefined) {
       return `${this.executionId}:${stepId}`;
     }
@@ -789,7 +791,7 @@ export class WorkflowContextImpl implements WorkflowContext {
 
   /** The most recent EFFECT_INDOUBT audit entry for a step, if any. */
   private lastInDoubtFor(stepId: string): { stepId?: string; attempts?: number } | undefined {
-    const indoubt = this.vm.getState().variables._indoubt as
+    const indoubt = this.vm.peekState().variables._indoubt as
       | Array<{ stepId?: string; attempts?: number }>
       | undefined;
     if (indoubt === undefined) return undefined;
@@ -823,7 +825,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (this.vm.hasDecision(decisionId)) {
       return asInDoubtVerdict(this.vm.getDecision(decisionId), stepId);
     }
-    const vars = this.vm.getState().variables;
+    const vars = this.vm.peekState().variables;
     if (!("_resumePayload" in vars)) return undefined;
     return asInDoubtVerdict(vars._resumePayload, stepId);
   }

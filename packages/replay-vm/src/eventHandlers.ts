@@ -59,6 +59,19 @@ export function resetFoldOwnership(): void {
   foldOwned = new WeakSet<object>();
 }
 
+/**
+ * R1a — install the ownership set a fold pass writes against. A one-shot fold (`foldEvents`
+ * with no set) starts empty every call. A LIVE fold (`ReplayVM.applyEvent`) hands in the set
+ * its VM keeps between commits, so containers the VM itself created stay writable in place
+ * across commits (O(1) per event) instead of being re-copied by every single-event fold
+ * (O(size) per event — quadratic over a run). The VM must drop the set the moment it lets a
+ * state escape to a caller (`ReplayVM.getState`), so an escaped state is never written to.
+ * Folding is synchronous and non-reentrant, so swapping the module-level reference is safe.
+ */
+export function useFoldOwnership(owned: WeakSet<object>): void {
+  foldOwned = owned;
+}
+
 function appendAudit<T>(existing: T[] | undefined, item: T): T[] {
   if (existing !== undefined && foldOwned.has(existing)) {
     existing.push(item);
@@ -406,30 +419,37 @@ const handlers: Record<string, Handler> = {
       policy?: { id: string; version: string; propensity?: number };
     };
     assertSafeKey(payload.decisionId);
-    const existing = (state.variables._decisions as Record<string, unknown> | undefined) ?? {};
+    // R1a — the decision map is a per-fold-owned container, written in place (the same rule
+    // as `setFrame`/`appendAudit`): spreading it per event made a fold of D decisions O(D²)
+    // (20k decisions = 42 s). The caller's map (snapshot / prior state / an escaped state) is
+    // copied once, then owned. Insertion order is unchanged: a new id appends, a repeated id
+    // keeps its slot — exactly what `{ ...existing, [id]: v }` did.
+    const prior = state.variables._decisions as Record<string, unknown> | undefined;
+    let decisions: Record<string, unknown>;
+    if (prior !== undefined && foldOwned.has(prior)) {
+      decisions = prior;
+    } else {
+      decisions = prior === undefined ? {} : { ...prior };
+      foldOwned.add(decisions);
+    }
+    decisions[payload.decisionId] = {
+      choice: payload.choice,
+      ...(payload.rationale !== undefined && { rationale: payload.rationale }),
+      ...(payload.source !== undefined && { source: payload.source }),
+      ...(payload.alternatives !== undefined && { alternatives: payload.alternatives }),
+      ...(payload.estimatedCostUsd !== undefined && {
+        estimatedCostUsd: payload.estimatedCostUsd,
+      }),
+      ...(payload.estimatedLatencyMs !== undefined && {
+        estimatedLatencyMs: payload.estimatedLatencyMs,
+      }),
+      ...(payload.confidence !== undefined && { confidence: payload.confidence }),
+      ...(payload.context !== undefined && { context: payload.context }),
+      ...(payload.policy !== undefined && { policy: payload.policy }),
+    };
     return {
       ...state,
-      variables: {
-        ...state.variables,
-        _decisions: {
-          ...existing,
-          [payload.decisionId]: {
-            choice: payload.choice,
-            ...(payload.rationale !== undefined && { rationale: payload.rationale }),
-            ...(payload.source !== undefined && { source: payload.source }),
-            ...(payload.alternatives !== undefined && { alternatives: payload.alternatives }),
-            ...(payload.estimatedCostUsd !== undefined && {
-              estimatedCostUsd: payload.estimatedCostUsd,
-            }),
-            ...(payload.estimatedLatencyMs !== undefined && {
-              estimatedLatencyMs: payload.estimatedLatencyMs,
-            }),
-            ...(payload.confidence !== undefined && { confidence: payload.confidence }),
-            ...(payload.context !== undefined && { context: payload.context }),
-            ...(payload.policy !== undefined && { policy: payload.policy }),
-          },
-        },
-      },
+      variables: { ...state.variables, _decisions: decisions },
       updatedAt: event.timestamp,
     };
   },

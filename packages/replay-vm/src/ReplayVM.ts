@@ -4,9 +4,13 @@ import { foldEvents } from "./foldEvents";
 
 export class ReplayVM {
   private state: ExecutionState;
+  // R1a — the containers (frames, decision map, audit lists, emit trie) THIS VM created and
+  // may therefore write in place on the next commit. Dropped whenever the state escapes
+  // (`getState`), so a state a caller holds is never mutated afterwards.
+  private owned = new WeakSet<object>();
 
   constructor(events: EventEnvelope[], initial?: Partial<ExecutionState>) {
-    this.state = foldEvents(events, initial);
+    this.state = foldEvents(events, initial, this.owned);
   }
 
   hasCompleted(stepId: string): boolean {
@@ -62,11 +66,27 @@ export class ReplayVM {
     return flowEmitCount(this.state.variables, digest);
   }
 
+  /**
+   * The folded state, for a caller that may KEEP it (a snapshot save, a returned handle, a
+   * test). It is stable: later `applyEvent`s never write to it, at the price of one container
+   * copy on the next commit (ownership is dropped). Callers that only read and drop the value
+   * within the same synchronous turn should use {@link peekState}.
+   */
   getState(): ExecutionState {
+    this.owned = new WeakSet<object>();
+    return this.state;
+  }
+
+  /**
+   * A BORROWED view of the live state: read it and let go before the next `applyEvent`. It
+   * does not retire fold ownership, so the commit path stays O(1) per event. Do not retain it,
+   * hand it to a caller, or mutate it.
+   */
+  peekState(): ExecutionState {
     return this.state;
   }
 
   applyEvent(event: EventEnvelope): void {
-    this.state = foldEvents([event], this.state);
+    this.state = foldEvents([event], this.state, this.owned);
   }
 }

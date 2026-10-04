@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Fold, live-commit and resume cost were super-linear (R1a; no ABI change).** Folded state is
+  byte-identical, `KERNEL_ABI` and `EVENT_SCHEMA` are unchanged.
+  - `DECISION_RECORDED` spread the whole `_decisions` map per event: folding 5k / 10k / 20k
+    decisions took 2.3 s / 10 s / 42 s (20k steps: 5 ms). The map is now a fold-owned container
+    written in place, like `frames` and the audit lists.
+  - A live commit was its own fold pass, so fold ownership was reset on every event and every
+    commit re-copied the whole frames map (5k commits 2.6 s, 20k 45 s, 40k 192 s). `ReplayVM`
+    now keeps its own ownership set across `applyEvent`s and retires it when a state escapes
+    through `getState()`, so a state a caller holds is still never written to. New
+    `ReplayVM.peekState()` is the borrowed read for the runtime's hot path (`WorkflowContext`,
+    `ExecutionJournal`); `getState()` keeps its meaning.
+  - `WorkflowRuntime.resume` read the whole log on every call. With a snapshot it now takes the
+    execution's identity from sequence 0 and folds snapshot + tail. The one consumer of the full
+    log, the ADR 0104 legacy stray-passthrough scan, still runs on the first resume of an
+    execution in a process and on every resume of a log it flags; only a scan that came back
+    clean is remembered (a current kernel writes no gate-less passthrough), and
+    `discardLegacyAnswers` always forces it.
+  - The snapshot written at every suspend is kept: with `snapshotEvery` unset it is the only
+    thing that bounds a resume's tail. It hands the state to the store by reference (no copy).
+
 - **Agent loops executed any effect id the model named, with unvalidated input, and showed the model no argument schemas (R4).**
   `agentLoop$` ran `ctx.execute({ toolId: toolCall.name })` and `AgentRunner` (hence `agentStep$`)
   ran `effectRuntime.execute(toolCall.name, ...)` for WHATEVER name the model returned, so under

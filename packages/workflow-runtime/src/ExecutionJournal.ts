@@ -56,7 +56,7 @@ export class ExecutionJournal {
     }
     // Seed from the folded VM tip: -1 for a fresh start (first commit → seq 0),
     // or the last applied sequence on resume/restore (next commit continues).
-    this.seq = vm.getState().sequence;
+    this.seq = vm.peekState().sequence;
   }
 
   /**
