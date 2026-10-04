@@ -49,7 +49,17 @@ export interface AgentModelCall {
 }
 
 /** What a tool call must clear before it runs. Returning `false` parks the loop on a gate. */
-export type ApprovalPolicy = (toolCall: LlmToolCall, turn: number) => boolean;
+export type ApprovalPolicy = (
+  toolCall: LlmToolCall,
+  turn: number,
+  /**
+   * Whether the tool name is on this loop's menu (agent tools + selected skills'
+   * tools). `false` means the call WILL be refused whatever the answer; the hook
+   * is still consulted (it sits before the menu gate) so a host can return `true`
+   * to skip prompting a human about a call that cannot run.
+   */
+  onMenu?: boolean
+) => boolean;
 
 export interface AgentLoopConfig {
   definition: AgentDefinition;
@@ -352,7 +362,7 @@ export async function agentLoop$(
 
       // Mid-loop HITL. The gate is BEFORE the effect, so a declined call never
       // runs — the point of asking.
-      if (config.requireApproval?.(toolCall, turn) === false) {
+      if (config.requireApproval?.(toolCall, turn, menu.has(toolCall.name)) === false) {
         const verdict = await ctx.suspend<{ approved?: boolean; reason?: string }>({
           on: gate,
           correlationKey: `${ctx.executionId}#turn:${turn}:tool:${j}`,
@@ -367,7 +377,10 @@ export async function agentLoop$(
         }
       }
 
-      // R4 — menu + input gate. A refusal is a RESULT fed back to the model (it can
+      // R4 — menu + input gate. It sits AFTER the approval gate on purpose: moving it
+      // before would change which calls reach `ctx.suspend`, so a resume's
+      // passthrough ordering (gate keyed by turn/index) would no longer line up
+      // with logs recorded earlier. A refusal is a RESULT fed back to the model (it can
       // recover), computed purely from the recorded model output and the static
       // menu, so replay reproduces it with nothing appended to the log.
       if (output === undefined) {

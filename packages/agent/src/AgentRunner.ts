@@ -217,9 +217,9 @@ export class AgentRunner {
         // sequential and parallel modes).
         const runToolCall = async (toolCall: (typeof toolCalls)[number]): Promise<unknown> => {
           // R4 — refusal is a result fed back to the model, never an execution.
-          const refusal = menu.check(toolCall.name, toolCall.input);
-          if (refusal !== undefined) return refusal;
           try {
+            const refusal = menu.check(toolCall.name, toolCall.input);
+            if (refusal !== undefined) return refusal;
             return await effectRuntime.execute(toolCall.name, toolCall.input, ctx);
           } catch (err) {
             // R4 — an AUTHORITY error is not a tool error. Swallowing it into a
