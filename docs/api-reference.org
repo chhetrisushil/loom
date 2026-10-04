@@ -2469,7 +2469,7 @@ class ExecutionAlreadyExistsError extends Error  { readonly executionId: string;
 class StartFencedOutError extends Error          { readonly executionId: string; readonly cause?: unknown; }   // L20 — (as a StorageWriteError's cause) a start fenced out by a newer token whose holder wrote nothing; nothing ran, RETRYABLE
 class ApprovalRejectedError extends Error        { readonly executionId: string; readonly reason: string; }   // a resume carried a rejection
 class ExecutionDeniedError extends Error         { readonly op: ExecutionOp; readonly executionId: string; readonly reason?: string; }  // ADR 0039 lifecycle authz
-class ExecutionCancelledError extends Error     { readonly reason?: unknown; }  // L33 name "ExecutionCancelledError": abort reason of cancel() / deadline when the canceller gave no Error; a caller-supplied Error is kept as-is
+class ExecutionCancelledError extends Error     { readonly reason?: unknown; readonly kind: "cancel" | "deadline"; }  // L33 name "ExecutionCancelledError": abort reason of a deadline breach (kind "deadline"), and of cancel() when the canceller gave no Error (kind "cancel"); a caller-supplied Error is kept as-is
 class DecideScopeClosedError extends Error      { readonly decisionId: string; }  // L33 name "DecideScopeClosedError": a call on a settled ctx.decide scope, and the abort reason of its unawaited calls
 class ResumePayloadValidationError extends Error { readonly executionId: string; readonly eventType: string; readonly detail: string; }  // ADR 0077 resumeSchemas
 class StateMigrationError extends Error          { readonly executionId: string; readonly toFlowId: string; readonly detail: string; }   // K11.5 state migration on resume

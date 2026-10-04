@@ -16,12 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   control-plane refusal by `err.name` instead of matching message text (the motivating
   case: loom-ui's planner must propagate, not retry and record, a cancellation). Messages
   are unchanged. A caller-supplied `Error` cancel reason is still the abort reason and the
-  thrown error, as-is. One observable difference: `cancel()` with no reason used to abort
-  the signal with the runtime's `AbortError` `DOMException`; the reason is now an
-  `ExecutionCancelledError`. A persisted `STEP_FAILED`/`EXECUTION_FAILED` `error` string
-  (`String(err)`) for these now reads `ExecutionCancelledError: …` / `DecideScopeClosedError: …`
-  rather than `Error: …`, and a deadline breach's `EXECUTION_CANCELLED` `reason` reads `ExecutionCancelledError: execution deadline exceeded (…)`; the fold treats these as opaque strings. No EVENT_SCHEMA or
-  KERNEL_ABI change.
+  thrown error, as-is. `ExecutionCancelledError.kind` is `"cancel"` for an operator/API
+  cancel and `"deadline"` for a kernel-driven deadline breach (same name, so classified
+  alike). The signal's reason and the completion rejection are one object.
+  **Changed (observable):**
+  - `cancel()` with no reason used to abort the signal with the runtime's `AbortError`
+    `DOMException`; the reason is now an `ExecutionCancelledError`.
+  - `cancel(id, "stop")` (a non-Error reason) used to abort with the raw string, so
+    `ctx.signal.reason === "stop"`; the reason is now an `ExecutionCancelledError` whose
+    `.reason` is `"stop"`.
+  - A persisted `EXECUTION_FAILED` `error` string (`String(err)`) for these now reads
+    `ExecutionCancelledError: …` rather than `Error: …` (a step in a cancelled execution
+    records `STEP_CANCELLED`, not `STEP_FAILED`; only a leaked decide scope called from a
+    step can put `DecideScopeClosedError: …` in a `STEP_FAILED`), and a deadline breach's
+    `EXECUTION_CANCELLED` `reason` reads `ExecutionCancelledError: execution deadline
+    exceeded (…)`. The fold treats these as opaque strings.
+  No EVENT_SCHEMA or KERNEL_ABI change.
 - **`@loom/verify` reach analysis counts `ctx.decide` scope calls (backlog L31).** A flow
   whose effects all ran through `scope.invokeTransient("tool.id", …)` inside deciders
   reached nothing, so capability-compat, effect-class and suspension-safety passed

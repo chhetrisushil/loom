@@ -112,13 +112,15 @@ throws.
 
 These refusals carry stable names, so a consumer that cannot import
 `@loom/workflow-runtime` classifies them by `err.name` rather than by message:
-`ExecutionCancelledError` (the abort reason of `cancel()`, and `throwIfCancelled`'s
-default, when the canceller supplied no `Error`) and `DecideScopeClosedError` (a call
-on a settled scope, and the abort reason of an unawaited call). A caller that passes
-its own `Error` as the cancel reason keeps it (a deadline breach is an
-`ExecutionCancelledError` with the message `execution deadline exceeded (deadlineMs=…)`): it is the abort reason and the thrown error as-is, never wrapped. A decider that
-retries or records on failure should let these, and the other control-plane refusals
-(`CapabilityDeniedError`, `QuotaExceededError`, `AbortError`), propagate.
+`ExecutionCancelledError` (the abort reason of `cancel()` when the canceller supplied
+no `Error`, and of a deadline breach; `kind` is `"cancel"` or `"deadline"`) and
+`DecideScopeClosedError` (a call on a settled scope, and the abort reason of an
+unawaited call). A caller that passes its own `Error` as the cancel reason keeps it: it
+is the abort reason and the thrown error as-is, never wrapped. A decider that retries or
+records on failure should let these, and the other control-plane refusals, propagate:
+e.g. `CapabilityDeniedError`, `CapabilityInvokeDeniedError`, `ExecutionDeniedError`,
+`EffectModeViolationError`, `QuotaExceededError`, `EgressDeniedError`,
+`SafetyViolationError`, `UntrustedContentError` and `AbortError`.
 
 **Budget and denial: what a scope call does NOT do.**
 
