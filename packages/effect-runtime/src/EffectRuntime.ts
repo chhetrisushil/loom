@@ -164,6 +164,9 @@ export class EffectRuntime {
    * NOT rely on provider-side dedup across transient calls (they carry no stable
    * key — a transient read path is expected to be retry-on-client).
    *
+   * L30: `opts.as` stamps the call with an existing execution's identity (used by
+   * `ctx.decide`'s scope); it changes the claimed identity only, not R1-R5.
+   *
    * @param opts optional {@link TransientInvokeOptions} — `signal` (cancellation,
    * R5), `principal` (authz still enforced if wired), `label` (trace tag only).
    */
@@ -177,9 +180,9 @@ export class EffectRuntime {
     // the trace label for middleware correlation, `stepId` the toolId. `emit` is
     // the drop sink (R4) — including the authz-denial emit, which still throws.
     const ctx: EffectContext = {
-      executionId: `transient:${opts.label ?? toolId}`,
-      stepId: toolId,
-      workflowId: "transient",
+      executionId: opts.as?.executionId ?? `transient:${opts.label ?? toolId}`,
+      stepId: opts.as?.stepId ?? toolId,
+      workflowId: opts.as?.workflowId ?? "transient",
       attempt: 1,
       emit: () => {},
       ...(opts.signal !== undefined && { signal: opts.signal }),

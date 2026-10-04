@@ -157,3 +157,28 @@ describe("EffectRuntime.invokeTransient", () => {
     expect(executionId).toBe("transient:nolabel");
   });
 });
+
+describe("EffectRuntime.invokeTransient `as` (L30)", () => {
+  it("stamps the supplied identity; absent, the synthesized identity is unchanged", async () => {
+    const seen: EffectContext[] = [];
+    const runtime = new EffectRuntime([
+      (ctx, input, next) => {
+        seen.push(ctx);
+        return next(input);
+      },
+    ]);
+    runtime.register("t", new ToolEffect(async () => 1));
+    await runtime.invokeTransient("t", {}, { label: "x" });
+    await runtime.invokeTransient(
+      "t",
+      {},
+      { as: { workflowId: "wf", executionId: "ex", stepId: "s" } }
+    );
+    expect(seen[0]).toMatchObject({
+      workflowId: "transient",
+      executionId: "transient:x",
+      stepId: "t",
+    });
+    expect(seen[1]).toMatchObject({ workflowId: "wf", executionId: "ex", stepId: "s" });
+  });
+});

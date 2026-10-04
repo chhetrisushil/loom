@@ -12,6 +12,7 @@ import { discardDecisionId } from "./strayPassthroughs";
 import { EFFECT_INDOUBT_RESOLVED, StepTimeoutError, TIMER_FIRED } from "./types";
 import type {
   DecideOptions,
+  DecideScope,
   EffectInDoubtResolution,
   ResourceDimension,
   SuspendConfig,
@@ -531,7 +532,7 @@ export class WorkflowContextImpl implements WorkflowContext {
   // outcomes across runs, but a given run always replays the same choice.
   async decide<T = unknown>(
     decisionId: string,
-    decider: () => T | Promise<T>,
+    decider: (scope: DecideScope) => T | Promise<T>,
     opts?: DecideOptions
   ): Promise<T> {
     // Checked before the replay lookup too: a reserved id is never a flow's to read either.
@@ -546,12 +547,34 @@ export class WorkflowContextImpl implements WorkflowContext {
     this.segmentLive = true;
     this.inFlight++;
     let choice: T;
+    // L30 — the decider's transient invoker, stamped with THIS execution.
+    let scopeOpen = true;
+    const scope: DecideScope = {
+      invokeTransient: (toolId, input, o) => {
+        if (!scopeOpen) {
+          return Promise.reject(
+            new Error(`decide("${decisionId}"): the decider's scope is closed (decider settled)`)
+          );
+        }
+        const signal = o?.signal ?? this.signal;
+        return this.effectRuntime.invokeTransient(toolId, input, {
+          as: {
+            workflowId: this.workflowId,
+            executionId: this.executionId,
+            stepId: `decide:${decisionId}`,
+          },
+          ...(signal !== undefined && { signal }),
+          ...(this.principal !== undefined && { principal: this.principal }),
+        });
+      },
+    };
     try {
-      choice = await decider();
+      choice = await decider(scope);
     } catch (err) {
       this.unsettled = true;
       throw err;
     } finally {
+      scopeOpen = false;
       this.inFlight--;
     }
 
