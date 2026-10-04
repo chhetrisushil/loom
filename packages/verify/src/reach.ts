@@ -59,3 +59,133 @@ export function readReachDeclaration(value: unknown): ReachDeclaration | undefin
   if (attached !== undefined) return isDeclaration(attached) ? attached : undefined;
   return typeof value === "object" && isDeclaration(value) ? value : undefined;
 }
+
+// ── Claim vs reality ─────────────────────────────────────────────────────────
+// A declaration is a CLAIM about code the verifier cannot see. This is the test-side half: run the
+// library against a recording wrapper of a ctx (or scope) and compare what it ACTUALLY ran with
+// what it declared. A library author (the loom-ui planner conformance suite, a retriever) calls
+// this in their own tests so the declaration cannot drift from the code unnoticed.
+
+/** What a recording wrapper saw. */
+export interface RecordedReach {
+  /** toolIds passed to `ctx.run` / `ctx.execute` / `ctx.parallel` pairs. */
+  readonly run: readonly string[];
+  /** toolIds passed to `scope.invokeTransient` (directly, or inside a `ctx.decide` decider). */
+  readonly transient: readonly string[];
+}
+
+export interface ReachRecorder {
+  /** Wrap a ctx (real or fake); the wrapper records and forwards. */
+  ctx<T extends object>(ctx: T): T;
+  /** Wrap a decide scope directly (for code that is handed only a scope). */
+  scope<T extends object>(scope: T): T;
+  /** Everything seen so far, sorted, de-duplicated. */
+  readonly recorded: RecordedReach;
+}
+
+function toolIdOf(v: unknown): string | undefined {
+  if (typeof v !== "object" || v === null) return undefined;
+  const o = v as { toolId?: unknown; id?: unknown };
+  if (typeof o.toolId === "string") return o.toolId;
+  return undefined;
+}
+
+/** Create a recorder. See {@link assertReachMatches}. */
+export function recordReach(): ReachRecorder {
+  const run = new Set<string>();
+  const transient = new Set<string>();
+  const method = (
+    target: object,
+    key: string | symbol,
+    wrap: (f: (...a: unknown[]) => unknown) => unknown
+  ): unknown => {
+    const v = Reflect.get(target, key, target);
+    return typeof v === "function" ? wrap(v.bind(target)) : v;
+  };
+  const wrapScope = <T extends object>(scope: T): T =>
+    new Proxy(scope, {
+      get: (t, k) =>
+        method(t, k, (f) =>
+          k === "invokeTransient"
+            ? (toolId: unknown, ...rest: unknown[]) => {
+                if (typeof toolId === "string") transient.add(toolId);
+                return f(toolId, ...rest);
+              }
+            : f
+        ),
+    });
+  const wrapCtx = <T extends object>(ctx: T): T =>
+    new Proxy(ctx, {
+      get: (t, k) =>
+        method(t, k, (f) => {
+          if (k === "run" || k === "execute") {
+            return (task: unknown, ...rest: unknown[]) => {
+              const id = toolIdOf(task);
+              if (id !== undefined) run.add(id);
+              return f(task, ...rest);
+            };
+          }
+          if (k === "parallel") {
+            return (pairs: unknown, ...rest: unknown[]) => {
+              if (Array.isArray(pairs)) {
+                for (const pair of pairs) {
+                  const id = Array.isArray(pair) ? toolIdOf(pair[0]) : undefined;
+                  if (id !== undefined) run.add(id);
+                }
+              }
+              return f(pairs, ...rest);
+            };
+          }
+          if (k === "decide") {
+            return (id: unknown, decider: unknown, ...rest: unknown[]) =>
+              f(
+                id,
+                typeof decider === "function"
+                  ? (scope: unknown) =>
+                      (decider as (s: unknown) => unknown)(
+                        typeof scope === "object" && scope !== null ? wrapScope(scope) : scope
+                      )
+                  : decider,
+                ...rest
+              );
+          }
+          return f;
+        }),
+    });
+  return {
+    ctx: wrapCtx,
+    scope: wrapScope,
+    get recorded(): RecordedReach {
+      return { run: [...run].sort(), transient: [...transient].sort() };
+    },
+  };
+}
+
+/**
+ * Throw unless everything `recorded` is covered by `declaration` (per kind: a `run` tool recorded
+ * under `transient` or the reverse is a mismatch). Declared-but-unexercised tools are allowed
+ * unless `exact` is set: a declaration is an upper bound, and a test that does not hit every
+ * branch must not fail for it. Under-declaring is the dangerous direction and is always an error.
+ */
+export function assertReachMatches(
+  declaration: ReachDeclaration,
+  recorded: RecordedReach,
+  opts: { exact?: boolean } = {}
+): void {
+  const problems: string[] = [];
+  const diff = (kind: "run" | "transient"): void => {
+    const declared = new Set(declaration[kind] ?? []);
+    const seen = new Set(recorded[kind]);
+    for (const t of seen)
+      if (!declared.has(t)) problems.push(`${kind} tool "${t}" ran but is not declared`);
+    if (opts.exact === true) {
+      for (const t of declared)
+        if (!seen.has(t)) problems.push(`${kind} tool "${t}" is declared but never ran`);
+    }
+  };
+  diff("run");
+  diff("transient");
+  if (problems.length > 0) {
+    throw new Error(`reach declaration does not match what ran: ${problems.join("; ")}`);
+  }
+}

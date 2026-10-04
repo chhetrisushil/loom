@@ -3,7 +3,11 @@ export {
   REACH_DECLARATION,
   declareReach,
   readReachDeclaration,
+  recordReach,
+  assertReachMatches,
   type ReachDeclaration,
+  type RecordedReach,
+  type ReachRecorder,
 } from "./reach";
 export { RULES, RULE_ORDER, type Rule } from "./rules";
 export type {

@@ -21,7 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `transient`, `deciderEffects`, so `replay-safety` errors on a journaled one) with
   `viaDeclared` provenance; an escape with no declaration is an unresolved `warn` naming the key
   to add. `{ decide: ctx.decide }` handed to a library now resolves the same way instead of
-  being a bare `decide alias` warn. ADR 0086 amendment; no kernel, syscall or ABI change.
+  being a bare `decide alias` warn. `ctx` is recognised as the first parameter of every runner
+  (`runner:`, `registerFlow`, `FlowRunner`-typed) whatever it is named and is followed into
+  same-module helpers; `ctx.run`/`ctx.suspend` handed out as values are escapes
+  (`member`); a declared tool that is not registered is a `warn`; `{ run: [], transient: [] }`
+  declares "reaches nothing". `recordReach()` / `assertReachMatches()` let a library test its
+  declaration against what it actually runs. ADR 0083 second consumers: loom-ui planner, genUI
+  planner flows, loom-examples `planner-decide-scope`, `@loom/knowledge` `kb.retrieve`. Known
+  follow-up L34: 1P libraries (`fanout$`, `awaitChild`, `decideWithPolicy`, `recordOutcome`,
+  `runAgentLoop`, `kb.retrieve`) declare their reach. ADR 0086 amendment; no kernel, syscall or
+  ABI change.
 - **Named cancellation errors (backlog L33).** `@loom/workflow-runtime` exports
   `ExecutionCancelledError` and `DecideScopeClosedError`, each with its `name` set
   explicitly. They replace the plain `Error`s that `throwIfCancelled`, the closed-scope

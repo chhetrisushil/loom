@@ -67,6 +67,8 @@ export interface ReachEscape {
   root?: string;
   /** What was handed over: the whole `ctx`, or just `ctx.decide`. */
   via: "ctx" | "decide";
+  /** When `via` is "ctx": the ctx METHOD handed over (`run` for `lib(ctx.run)`), absent for the whole ctx. */
+  member?: string;
   location?: string;
 }
 
@@ -213,15 +215,154 @@ function literalToolId(node: ts.Node | undefined): string | undefined {
   return undefined;
 }
 
+/** ExecutionContext members whose VALUE, handed out, lets the receiver run or suspend the flow. */
+const CTX_METHODS = new Set(["run", "execute", "parallel", "suspend", "sleep", "sleepUntil"]);
+
+/** Strip parentheses and type-only wrappers. */
+function unwrap(e: ts.Expression): ts.Expression {
+  let cur = e;
+  while (
+    ts.isParenthesizedExpression(cur) ||
+    ts.isAsExpression(cur) ||
+    ts.isNonNullExpression(cur) ||
+    ts.isSatisfiesExpression(cur) ||
+    ts.isTypeAssertionExpression(cur)
+  ) {
+    cur = cur.expression;
+  }
+  return cur;
+}
+
+/** Something with a parameter list: a function, or an object-literal method. */
+type ParamOwner = FnNode | ts.MethodDeclaration;
+
+/** The function a runner expression denotes in this region (inline, or a followable local). */
+function fnOf(e: ts.Expression | undefined, functions: Map<string, FnNode>): FnNode | undefined {
+  if (e === undefined) return undefined;
+  const u = unwrap(e);
+  if (isFn(u)) return u;
+  if (ts.isIdentifier(u)) return functions.get(u.text);
+  return undefined;
+}
+
 /**
- * L32 — names that denote a flow's execution context in this region: `ctx`, the receiver of a
- * `.decide/.suspend/.sleepUntil` call, and a parameter typed `…ExecutionContext`. Textual, so a
- * helper's parameter named otherwise (`c`) is only recognised if it calls one of those methods.
+ * Runner functions declared in this region: a `runner:` property (inline or a local
+ * identifier / shorthand), a `runner(ctx, …) {}` method, the second argument of
+ * `registerFlow(def, runner)`, or a function bound to a `…FlowRunner`-typed variable. Their
+ * FIRST parameter is the flow's ctx whatever it is called.
  */
-function collectCtxNames(root: ts.Node): Set<string> {
-  const names = new Set<string>(["ctx"]);
-  const methods = new Set(["decide", "suspend", "sleepUntil"]);
+function collectRunners(root: ts.Node, functions: Map<string, FnNode>): ParamOwner[] {
+  const out: ParamOwner[] = [];
   function visit(node: ts.Node): void {
+    if (ts.isPropertyAssignment(node) && propName(node.name) === "runner") {
+      const f = fnOf(node.initializer, functions);
+      if (f !== undefined) out.push(f);
+    } else if (ts.isShorthandPropertyAssignment(node) && node.name.text === "runner") {
+      const f = functions.get("runner");
+      if (f !== undefined) out.push(f);
+    } else if (ts.isMethodDeclaration(node) && propName(node.name) === "runner") {
+      out.push(node);
+    } else if (
+      ts.isCallExpression(node) &&
+      (ts.isIdentifier(node.expression)
+        ? node.expression.text
+        : ts.isPropertyAccessExpression(node.expression)
+          ? node.expression.name.text
+          : "") === "registerFlow"
+    ) {
+      const f = fnOf(node.arguments[1], functions);
+      if (f !== undefined) out.push(f);
+    } else if (
+      ts.isVariableDeclaration(node) &&
+      node.type !== undefined &&
+      /FlowRunner\b/.test(node.type.getText())
+    ) {
+      const f = fnOf(node.initializer, functions);
+      if (f !== undefined) out.push(f);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(root);
+  return out;
+}
+
+function propName(n: ts.PropertyName): string | undefined {
+  return ts.isIdentifier(n) || ts.isStringLiteralLike(n) ? n.text : undefined;
+}
+
+/** What the analysis knows denotes the flow's context (or a method taken off it) in this region. */
+interface CtxModel {
+  /** Identifiers that denote the ctx object itself. */
+  names: Set<string>;
+  /** Local name -> the ctx member it was destructured from (`const { run: r } = ctx` -> r:run). */
+  members: Map<string, string>;
+  /** Shapes that bind ctx where it cannot be followed (nested/computed patterns, array patterns). */
+  unresolved: Set<string>;
+}
+
+/**
+ * L32 — names that denote a flow's execution context in this region. Textual and module-wide:
+ *  - `ctx`, a parameter typed `…ExecutionContext` (or a local alias of that type), and the
+ *    receiver of a `.decide/.suspend/.sleepUntil` call;
+ *  - the FIRST parameter of every runner (`collectRunners`), whatever it is called, with an
+ *    object pattern splitting into method values and a rest name (which IS the ctx);
+ *  - propagation to a fixpoint: a ctx name handed as argument i to a same-module function adds
+ *    that function's i-th parameter, and `const { …rest } = <ctx name>` adds the rest name.
+ * Over-reports by design (a textual name shadowed elsewhere is still treated as ctx).
+ */
+function collectCtx(root: ts.Node, functions: Map<string, FnNode>): CtxModel {
+  const names = new Set<string>(["ctx"]);
+  const members = new Map<string, string>();
+  const unresolved = new Set<string>();
+  const methods = new Set(["decide", "suspend", "sleepUntil"]);
+
+  // Local type aliases that resolve to an ExecutionContext.
+  const ctxTypes = new Set<string>();
+  const isCtxType = (t: ts.TypeNode | undefined): boolean =>
+    t !== undefined &&
+    ts.isTypeReferenceNode(t) &&
+    (/ExecutionContext$/.test(t.typeName.getText()) || ctxTypes.has(t.typeName.getText()));
+  for (let grew = true; grew; ) {
+    grew = false;
+    const scanTypes = (n: ts.Node): void => {
+      if (ts.isTypeAliasDeclaration(n) && !ctxTypes.has(n.name.text) && isCtxType(n.type)) {
+        ctxTypes.add(n.name.text);
+        grew = true;
+      }
+      ts.forEachChild(n, scanTypes);
+    };
+    scanTypes(root);
+  }
+
+  const bindPattern = (pattern: ts.ObjectBindingPattern): void => {
+    for (const el of pattern.elements) {
+      if (el.dotDotDotToken !== undefined) {
+        if (ts.isIdentifier(el.name)) names.add(el.name.text);
+        else unresolved.add(`ctx pattern ${exprText(el)}`);
+        continue;
+      }
+      const key = el.propertyName ?? el.name;
+      const keyText = ts.isIdentifier(key) || ts.isStringLiteralLike(key) ? key.text : undefined;
+      if (keyText === "decide") continue; // L31 reports every decide alias
+      if (keyText === undefined || !ts.isIdentifier(el.name)) {
+        unresolved.add(`ctx pattern ${exprText(el)}`);
+        continue;
+      }
+      members.set(el.name.text, keyText);
+    }
+  };
+  const bindParam = (p: ts.ParameterDeclaration): void => {
+    if (ts.isIdentifier(p.name)) names.add(p.name.text);
+    else if (ts.isObjectBindingPattern(p.name)) bindPattern(p.name);
+    else unresolved.add(`ctx parameter ${exprText(p.name)}`);
+  };
+
+  for (const r of collectRunners(root, functions)) {
+    const first = r.parameters[0];
+    if (first !== undefined) bindParam(first);
+  }
+
+  function seed(node: ts.Node): void {
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
@@ -229,19 +370,49 @@ function collectCtxNames(root: ts.Node): Set<string> {
       ts.isIdentifier(node.expression.expression)
     ) {
       names.add(node.expression.expression.text);
-    } else if (
-      ts.isParameter(node) &&
-      ts.isIdentifier(node.name) &&
-      node.type !== undefined &&
-      ts.isTypeReferenceNode(node.type) &&
-      /ExecutionContext$/.test(node.type.typeName.getText())
-    ) {
+    } else if (ts.isParameter(node) && ts.isIdentifier(node.name) && isCtxType(node.type)) {
       names.add(node.name.text);
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, seed);
   }
-  visit(root);
-  return names;
+  seed(root);
+
+  function propagate(node: ts.Node): void {
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      const callee = unwrap(node.expression);
+      const fn = ts.isIdentifier(callee) ? functions.get(callee.text) : undefined;
+      if (fn !== undefined) {
+        (node.arguments ?? []).forEach((arg, i) => {
+          const a = unwrap(arg);
+          const param = fn.parameters[i];
+          if (
+            !ts.isIdentifier(a) ||
+            param === undefined ||
+            param.dotDotDotToken !== undefined ||
+            !ts.isIdentifier(param.name)
+          ) {
+            return;
+          }
+          if (names.has(a.text)) names.add(param.name.text);
+          const m = members.get(a.text);
+          if (m !== undefined) members.set(param.name.text, m);
+        });
+      }
+    } else if (
+      ts.isVariableDeclaration(node) &&
+      node.initializer !== undefined &&
+      ts.isObjectBindingPattern(node.name)
+    ) {
+      const init = unwrap(node.initializer);
+      if (ts.isIdentifier(init) && names.has(init.text)) bindPattern(node.name);
+    }
+    ts.forEachChild(node, propagate);
+  }
+  for (let size = -1; size !== names.size + members.size; ) {
+    size = names.size + members.size;
+    propagate(root);
+  }
+  return { names, members, unresolved };
 }
 
 /** The leftmost identifier of a member/call chain (`planner` for `planner.a.b(c).d`). */
@@ -259,40 +430,63 @@ function chainRoot(e: ts.Expression): string | undefined {
 
 /**
  * Where does a value go? Climb through literals/spreads/wrappers to the call or `new` that
- * receives it as an argument and return that callee; `undefined` when the value is stored,
- * returned or otherwise leaves through something other than an argument.
+ * receives it as an argument; `undefined` when the value is stored, returned or otherwise
+ * leaves through something other than an argument. `direct` is true when the value IS the
+ * argument (not wrapped in a literal/spread), with its index.
  */
-function receivingCallee(node: ts.Node): ts.Expression | undefined {
+function receivingCall(node: ts.Node):
+  | {
+      call: ts.CallExpression | ts.NewExpression;
+      direct: boolean;
+      index: number;
+    }
+  | undefined {
   let child: ts.Node = node;
+  let direct = true;
   let p: ts.Node | undefined = node.parent;
   while (p !== undefined) {
     if (
-      ts.isObjectLiteralExpression(p) ||
-      ts.isArrayLiteralExpression(p) ||
-      ts.isSpreadAssignment(p) ||
-      ts.isSpreadElement(p) ||
-      ts.isShorthandPropertyAssignment(p) ||
       ts.isParenthesizedExpression(p) ||
       ts.isAsExpression(p) ||
       ts.isNonNullExpression(p) ||
       ts.isSatisfiesExpression(p) ||
-      ts.isTypeAssertionExpression(p) ||
-      (ts.isPropertyAssignment(p) && p.initializer === child)
+      ts.isTypeAssertionExpression(p)
     ) {
       child = p;
       p = p.parent;
       continue;
     }
     if (
-      (ts.isCallExpression(p) || ts.isNewExpression(p)) &&
-      p.arguments?.includes(child as ts.Expression)
+      ts.isObjectLiteralExpression(p) ||
+      ts.isArrayLiteralExpression(p) ||
+      ts.isSpreadAssignment(p) ||
+      ts.isSpreadElement(p) ||
+      ts.isShorthandPropertyAssignment(p) ||
+      (ts.isPropertyAssignment(p) && p.initializer === child)
     ) {
-      return p.expression;
+      direct = false;
+      child = p;
+      p = p.parent;
+      continue;
+    }
+    if (ts.isCallExpression(p) || ts.isNewExpression(p)) {
+      const index = p.arguments?.indexOf(child as ts.Expression) ?? -1;
+      if (index >= 0) return { call: p, direct, index };
     }
     return undefined;
   }
   return undefined;
 }
+
+/** Callees that run their first argument (or forward the rest) rather than being the real target. */
+const PASS_THROUGH = new Set([
+  "Reflect.apply",
+  "setTimeout",
+  "setInterval",
+  "setImmediate",
+  "queueMicrotask",
+  "process.nextTick",
+]);
 
 /** Analyze a parsed node (a flow runner body) for reachable steps and suspend points. */
 export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach {
@@ -303,14 +497,67 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
   const suspends: RunnerSuspend[] = [];
   const escapes: ReachEscape[] = [];
   const escapeSeen = new Set<string>();
-  const ctxNames = collectCtxNames(root);
+  const ctx = collectCtx(root, functions);
+  const ctxNames = ctx.names;
   const at = location !== undefined ? { location } : {};
+  for (const expr of ctx.unresolved) unresolved.push({ expr, kind: "step", ...at });
 
-  /** Record a hand-off to `callee`; a same-region function is already analysed, so skipped. */
-  function recordEscape(callee: ts.Expression, via: "ctx" | "decide"): void {
-    if (ts.isIdentifier(callee) && functions.has(callee.text)) return;
+  const stripCallish = (c: ts.Expression): ts.Expression => {
+    let cur = unwrap(c);
+    while (
+      ts.isPropertyAccessExpression(cur) &&
+      ["call", "apply", "bind"].includes(cur.name.text)
+    ) {
+      cur = unwrap(cur.expression);
+    }
+    return cur;
+  };
+  const isPlainChain = (e: ts.Expression): boolean =>
+    ts.isIdentifier(e) || (ts.isPropertyAccessExpression(e) && isPlainChain(e.expression));
+
+  /**
+   * Record a hand-off to whatever `site` calls. `.call/.apply/.bind` on the callee is stripped
+   * and a pass-through (`Reflect.apply(lib, …)`, `setTimeout(lib, …)`) is unwrapped to its real
+   * target when that is a plain name; otherwise the hand-off is reported unresolved. A
+   * same-module callee is already analysed for a `decide` alias; for ctx or a ctx method it is
+   * reported (the value is wrapped or the parameter cannot be followed).
+   */
+  function recordEscape(
+    site: ts.CallExpression | ts.NewExpression,
+    via: "ctx" | "decide",
+    member?: string
+  ): void {
+    const handed = via === "decide" ? "ctx.decide" : member !== undefined ? `ctx.${member}` : "ctx";
+    let callee = unwrap(site.expression);
+    const direct = exprText(callee);
+    if (!PASS_THROUGH.has(direct)) callee = stripCallish(callee);
+    if (PASS_THROUGH.has(direct)) {
+      const target =
+        site.arguments?.[0] === undefined ? undefined : stripCallish(site.arguments[0]);
+      if (target === undefined || !isPlainChain(target)) {
+        unresolved.push({
+          expr: `${handed} handed through ${direct} (target not static)`,
+          kind: "step",
+          ...at,
+        });
+        return;
+      }
+      callee = target;
+    } else if (/^Promise\./.test(direct)) {
+      unresolved.push({ expr: `${handed} handed to ${direct}`, kind: "step", ...at });
+      return;
+    }
+    if (ts.isIdentifier(callee) && functions.has(callee.text)) {
+      if (via === "decide") return;
+      unresolved.push({
+        expr: `${handed} handed to same-module ${callee.text} in a shape that is not followed`,
+        kind: "step",
+        ...at,
+      });
+      return;
+    }
     const text = exprText(callee);
-    const key = `${via}:${text}`;
+    const key = `${via}:${member ?? ""}:${text}`;
     if (escapeSeen.has(key)) return;
     escapeSeen.add(key);
     const rootName = chainRoot(callee);
@@ -318,21 +565,113 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
       callee: text,
       ...(rootName !== undefined && { root: rootName }),
       via,
+      ...(member !== undefined && { member }),
       ...at,
     });
   }
 
+  /** Route a ctx (or ctx-member) VALUE at `node` to its receiving callee, or report it stored. */
+  function routeValue(node: ts.Node, member?: string): void {
+    const recv = receivingCall(node);
+    if (recv === undefined) {
+      const what = member !== undefined ? `ctx.${member}` : "ctx";
+      unresolved.push({ expr: `${what} stored as ${exprText(node.parent)}`, kind: "step", ...at });
+      return;
+    }
+    // Direct hand-off to a same-module function: its i-th parameter was added to the ctx
+    // names (propagation) and its body is walked here, so it is followed — but only for the
+    // ctx itself, and only when the parameter is a plain identifier.
+    const callee = unwrap(recv.call.expression);
+    if (member === undefined && ts.isIdentifier(callee) && functions.has(callee.text)) {
+      const fn = functions.get(callee.text);
+      const param = fn?.parameters[recv.index];
+      if (
+        recv.direct &&
+        param !== undefined &&
+        param.dotDotDotToken === undefined &&
+        ts.isIdentifier(param.name)
+      ) {
+        return;
+      }
+      unresolved.push({
+        expr: `ctx handed to same-module ${callee.text} where the parameter cannot be followed`,
+        kind: "step",
+        ...at,
+      });
+      return;
+    }
+    recordEscape(recv.call, "ctx", member);
+  }
+
   /**
-   * L32 — a reference to the execution context that is not `ctx.<method>`. A call argument (or
-   * inside an object/array argument) is an ESCAPE to that callee; any other leak (stored,
-   * aliased, returned) has no callee to look up and is reported unresolved.
+   * `ctx.<m>` / `ctx["m"]`. A direct call is the normal path (the walk analyses it). A method
+   * taken as a VALUE (`lib(ctx.run)`, `ctx.run.bind(ctx)`, `ctx.run.call(ctx, step)`) hands the
+   * receiver the ability to run or suspend the flow: an escape like `ctx.decide`.
    */
-  function flagCtxEscape(node: ts.Identifier): void {
+  function flagCtxMember(access: ts.PropertyAccessExpression | ts.ElementAccessExpression): void {
+    let member: string | undefined;
+    if (ts.isPropertyAccessExpression(access)) member = access.name.text;
+    else if (ts.isStringLiteralLike(access.argumentExpression))
+      member = access.argumentExpression.text;
+    else {
+      unresolved.push({ expr: `ctx dynamic member ${exprText(access)}`, kind: "step", ...at });
+      return;
+    }
+    if (member === "decide" || !CTX_METHODS.has(member)) return; // L31 / data properties
+    // The expression the member value flows out of, skipping wrappers.
+    let top: ts.Node = access;
+    while (
+      top.parent !== undefined &&
+      (ts.isParenthesizedExpression(top.parent) ||
+        ts.isNonNullExpression(top.parent) ||
+        ts.isAsExpression(top.parent))
+    ) {
+      top = top.parent;
+    }
+    const parent = top.parent;
+    if (parent !== undefined && ts.isCallExpression(parent) && parent.expression === top) {
+      // Direct call. Property form is analysed by the receiver-agnostic walk; the
+      // element-access form is not, so do it here.
+      if (ts.isElementAccessExpression(access)) {
+        if (member === "run") visitRun(parent);
+        else if (member === "suspend") visitSuspend(parent);
+      }
+      return;
+    }
+    if (
+      parent !== undefined &&
+      ts.isPropertyAccessExpression(parent) &&
+      parent.expression === top
+    ) {
+      const op = parent.name.text;
+      const gp = parent.parent;
+      const called = gp !== undefined && ts.isCallExpression(gp) && gp.expression === parent;
+      if (called && (op === "call" || op === "apply")) {
+        if (op === "call" && member === "run") visitRun(gp, 1);
+        else if (op === "call" && member === "suspend") visitSuspend(gp, 1);
+        else if (op === "apply" && (member === "run" || member === "suspend")) {
+          unresolved.push({
+            expr: `ctx.${member}.apply(…)`,
+            kind: member === "run" ? "step" : "suspend",
+            ...at,
+          });
+        }
+        return;
+      }
+      if (called && op === "bind") {
+        routeValue(gp, member);
+        return;
+      }
+      return; // `ctx.run.length` and the like
+    }
+    routeValue(top, member);
+  }
+
+  /** A reference to the execution context (or a method taken off it) in a value position. */
+  function flagCtxReference(node: ts.Identifier, kind: "ctx" | "method"): void {
     const parent = node.parent;
     if (
-      (ts.isPropertyAccessExpression(parent) &&
-        (parent.expression === node || parent.name === node)) ||
-      (ts.isElementAccessExpression(parent) && parent.expression === node) ||
+      (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
       (ts.isPropertyAssignment(parent) && parent.name === node) ||
       (ts.isParameter(parent) && parent.name === node) ||
       (ts.isVariableDeclaration(parent) && parent.name === node) ||
@@ -344,21 +683,59 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
           ts.SyntaxKind.EqualsEqualsEqualsToken,
           ts.SyntaxKind.ExclamationEqualsToken,
           ts.SyntaxKind.ExclamationEqualsEqualsToken,
-        ].includes(parent.operatorToken.kind)) ||
-      // `const { decide } = ctx` — the `decide` binding is L31's to report.
-      (ts.isVariableDeclaration(parent) &&
-        parent.initializer === node &&
-        ts.isObjectBindingPattern(parent.name))
+        ].includes(parent.operatorToken.kind))
     ) {
       return;
     }
-    const callee = receivingCallee(node);
-    if (callee !== undefined) recordEscape(callee, "ctx");
-    else unresolved.push({ expr: `ctx stored as ${exprText(parent)}`, kind: "step", ...at });
+    if (kind === "method") {
+      const member = ctx.members.get(node.text) as string;
+      if (ts.isCallExpression(parent) && parent.expression === node) {
+        if (member === "run") visitRun(parent);
+        else if (member === "suspend") visitSuspend(parent);
+        return;
+      }
+      routeValue(node, member);
+      return;
+    }
+    if (
+      (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+      parent.expression === node
+    ) {
+      flagCtxMember(parent);
+      return;
+    }
+    // `const { decide, …rest } = ctx` — `decide` is L31's, the rest names were bound as ctx.
+    if (
+      ts.isVariableDeclaration(parent) &&
+      parent.initializer === node &&
+      ts.isObjectBindingPattern(parent.name)
+    ) {
+      return;
+    }
+    // `ctx.run.bind(ctx)` / `.call(ctx, …)`: the ctx argument belongs to the member call,
+    // which flagCtxMember already routes.
+    const recv = receivingCall(node);
+    if (recv !== undefined) {
+      const e = unwrap(recv.call.expression);
+      if (ts.isPropertyAccessExpression(e) && ["bind", "call", "apply"].includes(e.name.text)) {
+        const m = unwrap(e.expression);
+        const mm =
+          ts.isPropertyAccessExpression(m) && ts.isIdentifier(unwrap(m.expression))
+            ? (unwrap(m.expression) as ts.Identifier).text
+            : undefined;
+        if (
+          mm !== undefined &&
+          ctxNames.has(mm) &&
+          CTX_METHODS.has((m as ts.PropertyAccessExpression).name.text)
+        )
+          return;
+      }
+    }
+    routeValue(node);
   }
 
-  function visitRun(call: ts.CallExpression): void {
-    const target = call.arguments[0];
+  function visitRun(call: ts.CallExpression, argOffset = 0): void {
+    const target = call.arguments[argOffset];
     if (target === undefined) return;
     if (ts.isIdentifier(target)) {
       const bound = bindings.get(target.text);
@@ -379,8 +756,8 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
     unresolved.push({ expr: exprText(target), kind: "step", ...at });
   }
 
-  function visitSuspend(call: ts.CallExpression): void {
-    const condition = call.arguments[0];
+  function visitSuspend(call: ts.CallExpression, argOffset = 0): void {
+    const condition = call.arguments[argOffset];
     if (condition === undefined || !ts.isObjectLiteralExpression(condition)) {
       // A condition built elsewhere. Recording it as unresolved keeps a flow that
       // suspends from looking like a flow that does not.
@@ -546,9 +923,9 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
     // L32 — `lib({ decide: ctx.decide })` hands the decider seam to a callee a declaration may
     // cover; every other alias shape has no callee to look up.
     if (ts.isPropertyAccessExpression(node)) {
-      const callee = receivingCallee(node);
-      if (callee !== undefined) {
-        recordEscape(callee, "decide");
+      const recv = receivingCall(node);
+      if (recv !== undefined) {
+        recordEscape(recv.call, "decide");
         return;
       }
     }
@@ -561,7 +938,10 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
     const decide = methodCall(node, "decide");
     if (decide !== undefined) visitDecide(decide);
     else flagIndirectDecide(node);
-    if (ts.isIdentifier(node) && ctxNames.has(node.text)) flagCtxEscape(node);
+    if (ts.isIdentifier(node)) {
+      if (ctxNames.has(node.text)) flagCtxReference(node, "ctx");
+      else if (ctx.members.has(node.text)) flagCtxReference(node, "method");
+    }
     const suspend = methodCall(node, "suspend");
     if (suspend !== undefined) visitSuspend(suspend);
     // `ctx.sleep`/`sleepUntil` are deliberately NOT recorded. The kernel authors

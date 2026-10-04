@@ -161,18 +161,57 @@ rules passed vacuously, silently. No new ADR (extends D1/D2; a new ADR trips fou
   existing ADR 0086 D2 `warn`. `ctx.decide` handed out (`{ decide: ctx.decide }`) is the same
   mechanism and replaces L31's bare `decide alias` for that shape; other alias shapes
   (`const f = ctx.decide`, destructuring) remain unresolved.
-- **What counts as an escape.** `ctx` (a name `ctx`, a `…ExecutionContext`-typed parameter, or the
-  receiver of `.decide/.suspend/.sleepUntil`) as a call/`new` argument, directly or inside an
-  object/array literal argument, to a callee that is not a same-module function (those bodies
-  are already walked). `ctx` stored, aliased or returned has no callee: unresolved
-  (`ctx stored as ...`). `ctx.<method>(...)`, comparisons, `typeof` and `const { x } = ctx`
-  are not escapes.
+- **What counts as an escape.** `ctx` as a call/`new` argument, directly or inside an
+  object/array literal argument, to a callee that is not a same-module function. `ctx` stored,
+  aliased or returned has no callee: unresolved (`ctx stored as ...`). `ctx.<method>(...)`,
+  comparisons, `typeof` and `const { x } = ctx` are not escapes.
+- **Which names are `ctx` (round 1: not just the text `ctx`).** The FIRST parameter of every
+  runner is ctx whatever it is called: a `runner:` property or method, the second argument of
+  `registerFlow(def, runner)`, a `…FlowRunner`-typed binding. Also `ctx`, a parameter typed
+  `…ExecutionContext` (or a local alias of it), and the receiver of `.decide/.suspend/.sleepUntil`.
+  Names propagate to a fixpoint into same-module helpers (ctx as argument i adds that function's
+  i-th parameter, so `h(ctx)` with `const h = (x) => lib(x)` is followed) and through
+  `const { ...rest } = ctx`. A ctx that reaches a same-module callee whose parameter is not a
+  plain identifier (pattern, rest, missing), or that is wrapped in a literal passed to one, is
+  unresolved rather than skipped. Names are textual and module-wide, so an unrelated function in a
+  flow module with a `ctx` parameter (an HTTP context) can over-report; measured on this repo,
+  loom-examples and genUI, that never happened, and dropping the bare `ctx` name would risk a
+  silent miss for any runner the identification does not see, so it stays.
+- **ctx methods as values.** `ctx.run`, `ctx.execute`, `ctx.parallel`, `ctx.suspend`, `ctx.sleep`,
+  `ctx.sleepUntil` handed out (`lib(ctx.run)`, `lib(ctx["run"])`, `const { run } = ctx; lib(run)`,
+  `lib({ run: ctx.run.bind(ctx) })`) are escapes with `member` set, resolved through the same
+  `verify.reach` key (warn text `ctx.run handed to lib`). `.call/.apply/.bind` on the callee is
+  stripped, and `Reflect.apply(lib, …)` / `setTimeout(lib, …)` unwrap to `lib`; a pass-through
+  whose target is not a plain name, `Promise.*`, a stored method, `ctx[k]` and `ctx.run.apply`
+  are unresolved. A destructured or element-access `run`/`suspend` call is analysed like
+  `ctx.run`. `ctx.parallel`'s pair list itself is still not read.
+- **Empty and unregistered declarations.** `{ run: [], transient: [] }` is a valid declaration of
+  "reaches nothing" (a pure helper, an emit-only fold); `{}` carries nothing and is undeclared.
+  A declared tool (either kind) that is not registered is a `warn` (a declaration is explicit; a
+  typo should not be quiet), joining the unresolved list; L31's scope-reached unregistered effect
+  stays an `info` (different provenance: the flow's own source, not a claim). Declared tools carry
+  no `effectClass`, so effect-class reports them under its existing "N reachable effects carry no
+  class" warn, which is intended (partially verified, not clean).
+- **Join keys are module-blind.** One `planner` key covers every module's `planner`; two modules
+  with different `planner` objects cannot be told apart. Use the full callee text key
+  (`"planner.compose"`) to separate methods, not modules.
 - **What it cannot see.** A declaration is a claim: the named tools are checked against grants
   and the registry, not that the library calls only those. One declaration covers all methods
   of the mapped object/key; call-chain roots (`planner("x").compose`) map via the factory.
   Aliasing the library (`const p = planner`) maps under the alias name only. A library's own
-  `ctx.suspend` is not expressible. Context names are textual (a `c` parameter is recognised
-  only if it calls `.decide/.suspend/.sleepUntil`).
+  `ctx.suspend` is not expressible. Claim vs reality is tested library-side:
+  `recordReach()` / `assertReachMatches()` in `@loom/verify` run the library against a recording
+  ctx and fail when it ran a tool it did not declare (library authors, e.g. the loom-ui planner
+  conformance suite, should call it).
+- **ADR 0083 second consumers** (the declaration seam is not for one workload): the loom-ui
+  planner, the genUI planner flows (`composeDashboard`, `reviseDashboard`), loom-examples
+  `planner-decide-scope`, and in-repo `@loom/knowledge` `kb.retrieve` (`{ decide: ctx.decide }`).
+- **Known follow-up, L34: 1P libraries declare their reach.** The real hand-offs in the corpus
+  that ship from this repo declare nothing yet and so warn: `fanout$` and `awaitChild`
+  (`@loom/orchestration`), `decideWithPolicy` and `recordOutcome` (`@loom/learning`),
+  `runAgentLoop` (agent), `kb.retrieve` (`@loom/knowledge`). Open question: `fanout$`'s reach is
+  its CALLER's step, so a fixed list is wrong; it may need a different shape (for example
+  "reaches what its argument reaches"). Deliberately not in this change.
 - KERNEL_ABI and EVENT_SCHEMA unchanged; no syscall.
 
 ## Evidence

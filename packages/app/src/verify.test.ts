@@ -757,6 +757,28 @@ describe("declared reach for code handed ctx (L32)", () => {
     expect(
       report.findings.filter((f) => f.rule === "replay-safety" && f.severity === "info")
     ).toHaveLength(1);
+    // round 1: a declaration is explicit, so naming an unregistered tool is also a warn.
+    const warns = report.findings.filter(
+      (f) => f.rule === "capability-compat" && f.severity === "warn"
+    );
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.message).toContain('declared transient tool "not.registered"');
+  });
+
+  it("a declared `run` tool that is not registered is a warn too", () => {
+    const { runtime } = build(fullGrants);
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: fullGrants,
+        runnerReachByFlow: reach(),
+        reachDeclarations: { planner: { run: ["typo.tool"] } },
+      })
+    );
+    const warns = report.findings.filter(
+      (f) => f.rule === "capability-compat" && f.severity === "warn"
+    );
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.message).toContain('declared tool "typo.tool"');
   });
 
   it("a declared `run` tool joins effects without the transient (journaled) check", () => {
@@ -803,5 +825,74 @@ describe("declared reach for code handed ctx (L32)", () => {
     expect(
       report.findings.filter((f) => f.rule === "capability-compat" && f.severity === "error")
     ).toHaveLength(1);
+  });
+});
+
+describe("declared reach for ctx.decide handed to a library, and empty declarations (L32 round 1)", () => {
+  const DECIDE_SOURCE =
+    "const runner = async (ctx, q) => { await kb.retrieve(q, { decide: ctx.decide }); };";
+  const METHOD_SOURCE = "const runner = async (ctx) => { await lib.go(ctx.run); };";
+  const build = (authorizer: GrantTable) =>
+    defineConfig({
+      storage: { kind: "memory" },
+      flows: [undeclaredFlow()],
+      security: { authorizer },
+    });
+  const warnsOf = (report: ReturnType<typeof verify>) =>
+    report.findings.filter((f) => f.rule === "capability-compat" && f.severity === "warn");
+
+  it("via: decide, undeclared -> warn with the ctx.decide text and the key to add", () => {
+    const { runtime } = build(fullGrants);
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: fullGrants,
+        runnerReachByFlow: { gated: analyzeRunnerReach(DECIDE_SOURCE, "gated") },
+      })
+    );
+    const warns = warnsOf(report);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.message).toContain("ctx.decide handed to kb.retrieve");
+    expect(warns[0]?.message).toContain('verify.reach["kb"]');
+  });
+
+  it("via: decide, declared -> tools counted against the grants", () => {
+    const { runtime } = build(partialGrants);
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: partialGrants,
+        runnerReachByFlow: { gated: analyzeRunnerReach(DECIDE_SOURCE, "gated") },
+        reachDeclarations: { kb: { transient: ["remediation-tool"] } },
+      })
+    );
+    const errs = report.findings.filter(
+      (f) => f.rule === "capability-compat" && f.severity === "error"
+    );
+    expect(errs).toHaveLength(1);
+    expect(errs[0]?.message).toContain("remediation-tool");
+  });
+
+  it("a ctx method handed out names the member in the warn", () => {
+    const { runtime } = build(fullGrants);
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: fullGrants,
+        runnerReachByFlow: { gated: analyzeRunnerReach(METHOD_SOURCE, "gated") },
+      })
+    );
+    expect(warnsOf(report)[0]?.message).toContain("ctx.run handed to lib.go");
+  });
+
+  it("{ run: [], transient: [] } declares 'reaches nothing' and resolves the escape; {} is undeclared", () => {
+    const { runtime } = build(fullGrants);
+    const input = (decl: unknown) =>
+      verify(
+        resolveVerifyInput(runtime, {
+          authorizer: fullGrants,
+          runnerReachByFlow: { gated: analyzeRunnerReach(DECIDE_SOURCE, "gated") },
+          reachDeclarations: { kb: decl },
+        })
+      );
+    expect(warnsOf(input({ run: [], transient: [] }))).toEqual([]);
+    expect(warnsOf(input({}))).toHaveLength(1);
   });
 });
