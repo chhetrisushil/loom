@@ -437,8 +437,8 @@ interface ExecutionContext {
   readonly workflowId: string;
   execute<TIn, TOut>(task: ExecutableTask<TIn, TOut>, input: TIn): Promise<TOut>;      // (2.0) generalized primitive
   run<TIn, TOut>(step: StepDefinition<TIn, TOut>, input: TIn): Promise<TOut>;          // thin alias; memoized on replay
-  decide<T>(id: string, decider: () => T | Promise<T>,
-            opts?: { rationale?: unknown; source?: string }): Promise<T>;              // (2.0, P9) log an optimizer choice
+  decide<T>(id: string, decider: (scope: DecideScope) => T | Promise<T>,
+            opts?: { rationale?: unknown; source?: string }): Promise<T>;              // (2.0, P9) log an optimizer choice; scope.invokeTransient runs AS this execution (L30)
   parallel<T extends unknown[]>(
     pairs: { [K in keyof T]: [StepDefinition<unknown, T[K]>, unknown] },
     options?: { limit?: number }
@@ -834,7 +834,7 @@ class EffectRuntime {
   constructor(middleware?: readonly EffectMiddleware[], options?: EffectRuntimeOptions)  // (2.0) options
   register(toolId: string, effect: Effect): void
   execute<TIn, TOut>(toolId: string, input: TIn, ctx: EffectContext): Promise<TOut>       // authorize → warm → schedule → middleware → effect
-  invokeTransient<TIn, TOut>(toolId: string, input: TIn, opts?: TransientInvokeOptions): Promise<TOut>  // (ADR 0066) non-durable invoke: authorize/meter/middleware still run, but NO events emitted
+  invokeTransient<TIn, TOut>(toolId: string, input: TIn, opts?: TransientInvokeOptions): Promise<TOut>  // (ADR 0066) non-durable invoke: authorize/meter/middleware still run, but NO events emitted; opts.as (L30) stamps an execution's workflowId/executionId/stepId
   has(toolId: string): boolean
 }
 interface TransientInvokeOptions { signal?: AbortSignal; principal?: PrincipalChain; label?: string; }  // (ADR 0066) — signal (deadline), principal (K2 still enforced), label (trace tag only)

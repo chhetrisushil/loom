@@ -30,6 +30,24 @@ export const TIMER_FIRED = "TIMER_FIRED";
 export const EXECUTION_RECOVERED = "EXECUTION_RECOVERED";
 
 /**
+ * L30 — what `ctx.decide` hands its decider: a transient invoker STAMPED with the
+ * deciding execution. `invokeTransient` is `EffectRuntime.invokeTransient` (R1-R5:
+ * nothing journalled, no-op `emit`, the same middleware chain, `ambient` effects
+ * only) except that the call carries the execution's `workflowId`/`executionId`
+ * (stepId `decide:<decisionId>`), its FULL principal chain (actor, delegation
+ * token) and, unless overridden, its cancellation signal. The principal is NOT a
+ * parameter: a decider cannot act as anyone but the execution it decides for.
+ * The scope is valid only while the decider runs; a call after it settles throws.
+ */
+export interface DecideScope {
+  invokeTransient<TIn = unknown, TOut = unknown>(
+    toolId: string,
+    input: TIn,
+    opts?: { readonly signal?: AbortSignal }
+  ): Promise<TOut>;
+}
+
+/**
  * Options for {@link ExecutionContext.decide}. Shared by the interface and the impl so
  * the two cannot drift. `rationale`/`source` are provenance; the rest are the ADR 0030
  * D1 materialization fields — DESCRIPTIVE metadata recorded alongside the choice but
@@ -101,7 +119,7 @@ export interface ExecutionContext {
   // JSON-serializable (same constraint as a step output).
   decide<T = unknown>(
     decisionId: string,
-    decider: () => T | Promise<T>,
+    decider: (scope: DecideScope) => T | Promise<T>,
     opts?: DecideOptions
   ): Promise<T>;
 

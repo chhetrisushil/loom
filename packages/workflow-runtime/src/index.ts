@@ -77,6 +77,7 @@ export {
 export { parseCron, nextOccurrence, type CronSpec } from "./cron";
 export type {
   DecideOptions,
+  DecideScope,
   EffectInDoubtResolution,
   ExecutionAuthorizer,
   ExecutionAuthzRequest,

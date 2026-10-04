@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ctx.decide` hands its decider a transient invoker stamped with the deciding execution
+  (backlog L30).** `decide(id, (scope) => scope.invokeTransient(...))`: the decider's effect
+  calls (an LLM/MCP planner) previously ran under the synthesized `workflowId: "transient"`
+  with only the caller's principal, so flow-scoped K2 grants never applied, the execution's
+  delegation token and actor were dropped, and middleware could not correlate the call to the
+  deciding execution. The scope now carries the execution's `workflowId`/`executionId`
+  (stepId `decide:<decisionId>`), its full principal chain and its cancellation signal. Still
+  transient (R1-R5: nothing journalled, no-op `emit`, same middleware chain, `ambient` effects
+  only); replay serves the recorded decision and never runs the decider; the scope throws after
+  the decider settles. New public types `DecideScope` (`@loom/workflow-runtime`) and
+  `TransientIdentity` / `TransientInvokeOptions.as` (`@loom/effect-runtime`); existing
+  `() => T` deciders and `invokeTransient` callers are unchanged. No EVENT_SCHEMA or KERNEL_ABI
+  change.
+
 ### Changed
 
 - **`@loom/plugin-sandbox`: `SandboxWorkerPool.run` renamed to `runJson`** (backlog L19

@@ -128,6 +128,24 @@ export interface TransientInvokeOptions {
    * persist to). Defaults to the `toolId`.
    */
   readonly label?: string;
+  /**
+   * L30 — run AS an existing execution instead of the throwaway `transient`
+   * identity: the synthesized {@link EffectContext} carries this `workflowId`/
+   * `executionId` (and `stepId`, defaulting to the toolId), so the K2 authorizer's
+   * flow-scoped grants, delegation checks and trace/middleware correlation see the
+   * deciding execution. It changes only WHAT IS CLAIMED, never what is written: the
+   * call is still transient (R1-R5 unchanged — no journal, no-op `emit`, same
+   * middleware chain, `ambient` effect-mode check). Set by `ctx.decide`'s scope,
+   * never by flow code; absent => byte-identical to before.
+   */
+  readonly as?: TransientIdentity;
+}
+
+/** The execution identity a transient invocation is stamped with (L30). */
+export interface TransientIdentity {
+  readonly workflowId: string;
+  readonly executionId: string;
+  readonly stepId?: string;
 }
 
 /**

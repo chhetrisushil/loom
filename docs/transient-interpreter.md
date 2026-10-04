@@ -74,6 +74,21 @@ are the forensic, replay-substitutable, branchable record.
 | Cancellation | `opts.signal` → `ctx.signal` | execution-scoped |
 | `idempotencyKey` | unset — no cross-call provider dedup | `executionId:stepId` |
 
+### Transient calls from a `ctx.decide` decider (L30)
+
+A decider that needs an effect (an LLM/MCP planner) receives a **scope**:
+`ctx.decide("plan", (scope) => scope.invokeTransient("llm.plan", req))`. The
+scope's calls are still transient (everything in the table above holds), but they
+run **as the deciding execution**: the K2 authorizer and the middleware chain see
+its real `workflowId` / `executionId` (stepId `decide:<decisionId>`) and its full
+principal chain, delegation token and actor included, and the execution's
+cancellation signal is the default `signal`. So flow-scoped grants apply to a
+decider's reach and a delegation that does not cover the effect denies it, with no
+custom principal attribute. The principal cannot be overridden by the decider, and
+the scope throws once the decider settles. On replay the recorded decision is
+served and the decider (hence the scope) is never invoked. A bare `invokeTransient`
+outside a decider keeps the throwaway `transient` identity.
+
 ## Guardrails
 
 - **Do not** author a transient effect that relies on emitting durable state —
