@@ -163,6 +163,16 @@ pnpm --filter @loom/db-observability start
   reports `compared: 0` with an `unpinned` finding per binding, and an off-catalogue
   component reaches neither the content store nor the log — checked on the emitted event
   stream, because "validated" and "recorded" look identical from a return value. Headless.
+- **`planner-decide-scope`** — a `@loom-ui/planner` `ReferencePlanner` deciding THROUGH loom's
+  decide scope (`ctx.decide(id, scope => …)`, see
+  [`transient-interpreter.md`](./transient-interpreter.md)): its model factory reaches the LLM
+  effect via `scopeInvoker(scope)` (with a per-decider `limitInvoker`), so the call is authorized
+  as the deciding execution — workflowId, executionId and the delegated principal reach the
+  `GrantTable`/`DelegationAuthorizer`. A flow without the grant FAILS with
+  `CapabilityDeniedError` and records nothing (a fresh start after the grant is widened decides
+  afresh); replay serves the recorded plan with no model call, also on a fresh runtime;
+  cancelling mid-call rejects with `ExecutionCancelledError` and records nothing;
+  `checkPlannerConformance` with a `scopeProbe` passes. Headless, offline.
 - **`appgen-brownfield`**, **`appgen-models`** — AI-driven app generation
   (`@loom/appgen`).
 
