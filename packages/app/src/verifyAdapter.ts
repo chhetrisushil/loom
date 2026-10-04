@@ -66,6 +66,8 @@ export interface RunnerReachInput {
     readonly callee: string;
     readonly root?: string;
     readonly via: "ctx" | "decide";
+    /** The ctx method handed over (`run` for `lib(ctx.run)`); absent for the whole ctx. */
+    readonly member?: string;
     readonly location?: string;
   }[];
 }
@@ -308,7 +310,12 @@ export function resolveVerifyInput(
         k !== undefined && decls !== undefined && Object.hasOwn(decls, k) ? decls[k] : undefined;
       const decl = readReachDeclaration(pick(esc.callee) ?? pick(esc.root));
       if (decl === undefined) {
-        const handed = esc.via === "decide" ? "ctx.decide" : "ctx";
+        const handed =
+          esc.via === "decide"
+            ? "ctx.decide"
+            : esc.member !== undefined
+              ? `ctx.${esc.member}`
+              : "ctx";
         unresolvedReach.push({
           expr: `${handed} handed to ${esc.callee} (no declared reach; add verify.reach["${esc.root ?? esc.callee}"])`,
           kind: "step",
@@ -317,6 +324,18 @@ export function resolveVerifyInput(
         continue;
       }
       const add = (toolId: string, transient: boolean): void => {
+        // A declaration is explicit: a tool it names that is not registered is a typo or a
+        // stale declaration, so it is reported (warn), not quietly counted.
+        if (!runtime.hasEffect(toolId)) {
+          const expr = `declared ${transient ? "transient " : ""}tool "${toolId}" (declared for ${esc.callee}) is not registered`;
+          if (!unresolvedReach.some((u) => u.expr === expr)) {
+            unresolvedReach.push({
+              expr,
+              kind: "step",
+              ...(esc.location !== undefined && { location: esc.location }),
+            });
+          }
+        }
         if (transient && !deciderSeen.has(toolId)) {
           deciderSeen.add(toolId);
           const mode = runtime.effectModeOf(toolId);

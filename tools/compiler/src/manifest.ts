@@ -39,7 +39,13 @@ export interface ManifestFlow {
       wakeAt?: boolean;
     }>;
     /** L32 — `ctx` (or `ctx.decide`) handed to out-of-module callees; resolved against `verify.reach`. */
-    escapes?: Array<{ callee: string; root?: string; via: "ctx" | "decide"; location?: string }>;
+    escapes?: Array<{
+      callee: string;
+      root?: string;
+      via: "ctx" | "decide";
+      member?: string;
+      location?: string;
+    }>;
   };
   /**
    * The source module that declared this flow (relative to the project root).

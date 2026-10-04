@@ -111,6 +111,21 @@ effects (capability-compat, effect-class, and replay-safety for `transient`), wi
 `viaDeclared` provenance. An escape with no declaration is an unresolved `warn` naming the key to
 add. A declaration is a claim about the library; the tools it names are checked, not the library.
 
+- `{ run: [], transient: [] }` is a valid declaration of **"reaches nothing"** (a pure helper, an
+  emit-only fold). An empty `{}` carries nothing and is undeclared.
+- A declared tool that is not registered is a `warn` (a typo should not be quiet).
+- Declared tools have no effect class: `effect-class` reports them under "N reachable effects
+  carry no class" (partially verified), by design.
+- Keys are module-blind: one `planner` key covers every module's `planner`.
+- `ctx` is recognised as the runner's first parameter whatever it is called, and followed into
+  same-module helpers; `ctx.run`/`ctx.suspend` handed out as values are escapes too. Anything not
+  followable is reported unresolved, never skipped.
+- **Test the claim.** Library authors should run the library against `recordReach()` and
+  `assertReachMatches(declaration, recorder.recorded)` (both from `@loom/verify`): the recorder
+  wraps a ctx, records the toolIds passed to `run`/`execute`/`parallel` and to
+  `scope.invokeTransient` inside `decide`, and the assertion throws if anything ran that the
+  declaration does not name.
+
 ## Guarantees
 
 - **G1 — determinism untouched.** No event type; nothing on the durable path. `verify` reads

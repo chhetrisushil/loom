@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { REACH_DECLARATION, declareReach, readReachDeclaration } from "./reach";
+import {
+  REACH_DECLARATION,
+  assertReachMatches,
+  declareReach,
+  readReachDeclaration,
+  recordReach,
+} from "./reach";
 
 describe("reach declarations (L32)", () => {
   it("uses the well-known Symbol.for key so a 3P library needs no import", () => {
@@ -25,5 +31,69 @@ describe("reach declarations (L32)", () => {
     expect(readReachDeclaration(declareReach({}, { run: 5 as never }))).toBeUndefined();
     expect(readReachDeclaration(null)).toBeUndefined();
     expect(readReachDeclaration("planner")).toBeUndefined();
+  });
+});
+
+describe("empty declarations", () => {
+  it("{ run: [], transient: [] } is a valid 'reaches nothing' declaration; {} is undeclared", () => {
+    expect(readReachDeclaration({ run: [], transient: [] })).toEqual({ run: [], transient: [] });
+    expect(readReachDeclaration(declareReach({}, { run: [] }))).toEqual({ run: [] });
+    expect(readReachDeclaration({})).toBeUndefined();
+  });
+});
+
+describe("recordReach / assertReachMatches (claim vs reality)", () => {
+  const fakeCtx = () => ({
+    executionId: "e1",
+    run: async (step: { toolId: string }) => step.toolId,
+    execute: async (task: { toolId: string }) => task.toolId,
+    decide: async (_id: string, decider: (s: unknown) => unknown) =>
+      decider({ invokeTransient: async (t: string) => t }),
+  });
+  // A library that runs one step and one transient call.
+  const lib = async (ctx: ReturnType<typeof fakeCtx>) => {
+    await ctx.run({ toolId: "a.step" });
+    await ctx.decide("d", (s) =>
+      (s as { invokeTransient(t: string): unknown }).invokeTransient("b.read")
+    );
+  };
+
+  it("records what a library actually ran through a wrapped ctx, forwarding results and data", async () => {
+    const rec = recordReach();
+    const ctx = rec.ctx(fakeCtx());
+    expect(ctx.executionId).toBe("e1");
+    await lib(ctx);
+    expect(rec.recorded).toEqual({ run: ["a.step"], transient: ["b.read"] });
+  });
+
+  it("passes when the declaration covers it, and fails when it under-declares (either kind)", async () => {
+    const rec = recordReach();
+    await lib(rec.ctx(fakeCtx()));
+    expect(() =>
+      assertReachMatches({ run: ["a.step"], transient: ["b.read"] }, rec.recorded)
+    ).not.toThrow();
+    expect(() => assertReachMatches({ run: ["a.step"] }, rec.recorded)).toThrow(
+      /transient tool "b.read" ran but is not declared/
+    );
+    // right id, wrong kind
+    expect(() =>
+      assertReachMatches({ run: ["a.step", "b.read"], transient: [] }, rec.recorded)
+    ).toThrow(/transient tool "b.read"/);
+  });
+
+  it("over-declaring is allowed unless exact", async () => {
+    const rec = recordReach();
+    await lib(rec.ctx(fakeCtx()));
+    const wide = { run: ["a.step", "z"], transient: ["b.read"] };
+    expect(() => assertReachMatches(wide, rec.recorded)).not.toThrow();
+    expect(() => assertReachMatches(wide, rec.recorded, { exact: true })).toThrow(
+      /"z" is declared but never ran/
+    );
+  });
+
+  it("a library that reaches nothing matches the empty declaration", () => {
+    expect(() =>
+      assertReachMatches({ run: [], transient: [] }, recordReach().recorded)
+    ).not.toThrow();
   });
 });

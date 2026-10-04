@@ -394,4 +394,160 @@ describe("runner-body reach analysis", () => {
       ).toHaveLength(1);
     });
   });
+
+  // ── L32 review round 1: silent misses from textual ctx-name detection ──────
+
+  describe("ctx escapes — name-independent detection (round 1 P1)", () => {
+    const wrap = (runner: string, extra = "") =>
+      `${extra}\nconst f = { definition: flow$({ id: "f", version: "1" }), runner: ${runner} };`;
+    const reachOf = (src: string) => analyzeRunnerReach(src);
+    const lib = (r: { escapes?: { callee: string }[] }) => (r.escapes ?? []).map((e) => e.callee);
+
+    it("a runner's first parameter is ctx whatever it is called", () => {
+      expect(lib(reachOf(wrap("async (c) => lib(c)")))).toEqual(["lib"]);
+      expect(lib(reachOf(wrap("async (context) => planner.compose(x, context)")))).toEqual([
+        "planner.compose",
+      ]);
+      expect(lib(reachOf(wrap("async function (c) { await lib(c); }")))).toEqual(["lib"]);
+    });
+
+    it("registerFlow(def, runner) and a FlowRunner-typed binding identify the runner", () => {
+      expect(lib(reachOf("registerFlow(def, async (c) => { await lib(c); });"))).toEqual(["lib"]);
+      expect(lib(reachOf("const run: FlowRunner<A, B> = async (c) => { await lib(c); };"))).toEqual(
+        ["lib"]
+      );
+      expect(
+        lib(reachOf("const run = async (k) => { await lib(k); };\nregisterFlow(def, run);"))
+      ).toEqual(["lib"]);
+      expect(lib(reachOf("const o = { runner(c) { return lib(c); } };"))).toEqual(["lib"]);
+    });
+
+    it("rest of a destructured ctx IS the ctx; the method values are tracked", () => {
+      expect(lib(reachOf(wrap("async ({ run, ...rest }) => lib(rest)")))).toEqual(["lib"]);
+      expect(lib(reachOf(wrap("async (ctx) => { const { ...r } = ctx; lib(r); }")))).toEqual([
+        "lib",
+      ]);
+      const r = reachOf(wrap("async ({ decide, ...rest }) => lib(rest)"));
+      expect(lib(r)).toEqual(["lib"]);
+      expect(r.unresolved.some((u) => u.expr.includes("decide alias"))).toBe(true);
+    });
+
+    it("a type alias of ExecutionContext is recognised", () => {
+      expect(
+        lib(reachOf("type Ctx = ExecutionContext;\nconst x = async (c: Ctx) => lib(c);"))
+      ).toEqual(["lib"]);
+    });
+
+    it("a same-module helper with ANOTHER param name is followed (fixpoint, transitive)", () => {
+      expect(lib(reachOf(wrap("async (ctx) => h(ctx)", "const h = (x) => lib(x);")))).toEqual([
+        "lib",
+      ]);
+      expect(
+        lib(reachOf(wrap("async (ctx) => h(ctx)", "function h(c) { return lib(c); }")))
+      ).toEqual(["lib"]);
+      expect(
+        lib(
+          reachOf(
+            wrap("async (k) => g(k)", "const g = (a) => h(a);\nfunction h(b) { return lib(b); }")
+          )
+        )
+      ).toEqual(["lib"]);
+    });
+
+    it("ctx.run inside a helper with another param name resolves its step", () => {
+      const r = reachOf(
+        wrap(
+          "async (ctx) => h(ctx)",
+          'const h = async (x) => { await x.run({ id: "a", toolId: "t.a" }, {}); };'
+        )
+      );
+      expect(r.steps).toEqual([{ toolId: "t.a", stepId: "a" }]);
+    });
+
+    it("ctx reaching a same-module callee whose parameter cannot be followed is unresolved", () => {
+      for (const helper of [
+        "const h = ({ a }) => a;",
+        "const h = (...args) => lib(args[0]);",
+        "const h = () => lib(arguments);",
+        "const h = ([a]) => a;",
+      ]) {
+        const r = reachOf(wrap("async (ctx) => h(ctx)", helper));
+        expect(
+          r.unresolved.some((u) => u.expr.includes("same-module h")),
+          helper
+        ).toBe(true);
+      }
+    });
+
+    it("ctx wrapped in a literal passed to a same-module function is unresolved", () => {
+      const r = reachOf(wrap("async (ctx) => h({ c: ctx })", "const h = (o) => lib(o.c);"));
+      expect(r.unresolved.some((u) => u.expr.includes("same-module h"))).toBe(true);
+    });
+  });
+
+  describe("ctx methods handed out (round 1 P2-1)", () => {
+    const reachOf = (src: string) => analyzeRunnerReach(src);
+    const body = (b: string) => `const r = async (ctx) => { ${b} };`;
+
+    it("lib(ctx.run) / lib(ctx['run']) / const { run } = ctx; lib(run) are escapes naming the member", () => {
+      for (const b of [
+        "lib(ctx.run);",
+        'lib(ctx["run"]);',
+        "const { run } = ctx; lib(run);",
+        "const { run: go } = ctx; lib({ go });",
+      ]) {
+        const r = reachOf(body(b));
+        expect(r.escapes, b).toEqual([{ callee: "lib", root: "lib", via: "ctx", member: "run" }]);
+        expect(r.unresolved, b).toEqual([]);
+      }
+    });
+
+    it("lib({ run: ctx.run.bind(ctx) }) names lib, not ctx.run.bind", () => {
+      const r = reachOf(body("lib({ run: ctx.run.bind(ctx) });"));
+      expect(r.escapes).toEqual([{ callee: "lib", root: "lib", via: "ctx", member: "run" }]);
+    });
+
+    it("a ctx method stored is unresolved", () => {
+      const r = reachOf(body("const g = ctx.run; holder.f = ctx.suspend;"));
+      expect(r.unresolved.filter((u) => u.expr.startsWith("ctx.")).length).toBe(2);
+    });
+
+    it("ctx handed through Reflect.apply / setTimeout is unwrapped to the real target", () => {
+      expect(reachOf(body("Reflect.apply(lib.go, null, [ctx]);")).escapes).toEqual([
+        { callee: "lib.go", root: "lib", via: "ctx" },
+      ]);
+      expect(reachOf(body("setTimeout(lib, 0, ctx);")).escapes?.[0]?.callee).toBe("lib");
+      expect(reachOf(body("lib.go.call(null, ctx);")).escapes?.[0]?.callee).toBe("lib.go");
+    });
+
+    it("a pass-through whose target is not static is unresolved", () => {
+      for (const b of [
+        "Reflect.apply(fns[0], null, [ctx]);",
+        "Promise.resolve(ctx);",
+        "setTimeout(() => 1, 0, ctx);",
+      ]) {
+        const r = reachOf(body(b));
+        expect(r.escapes, b).toBeUndefined();
+        expect(r.unresolved.length, b).toBeGreaterThan(0);
+      }
+    });
+
+    it("a destructured or element-access run is still analysed as ctx.run", () => {
+      const r = reachOf(
+        `const s = step$({ id: "a", toolId: "t.a" });\n${body(
+          'const { run } = ctx; await run(s, {}); await ctx["run"](s, {}); await ctx.run.call(ctx, s, {});'
+        )}`
+      );
+      expect(r.steps.map((x) => x.toolId)).toEqual(["t.a", "t.a", "t.a"]);
+      expect(r.unresolved).toEqual([]);
+    });
+
+    it("ctx.run.apply and a dynamic ctx[k] are unresolved; data properties are not escapes", () => {
+      expect(reachOf(body("await ctx.run.apply(ctx, [s, {}]);")).unresolved.length).toBe(1);
+      expect(reachOf(body("await ctx[k](1);")).unresolved.length).toBe(1);
+      const r = reachOf(body("lib(ctx.executionId, ctx.workflowId);"));
+      expect(r.escapes).toBeUndefined();
+      expect(r.unresolved).toEqual([]);
+    });
+  });
 });

@@ -408,6 +408,11 @@ effect it performs with `step$({ effectClass })`. Omit the vocabulary and the ru
 A flow that declares a ceiling but reaches unclassified steps is reported as **only partially
 verified** rather than passing clean.
 
+`checks.verify` also takes **`reach`** (L32): a map from the callee a flow hands its `ctx` to
+(`"planner"` or `"planner.compose"`, as written in the flow source) to the real object carrying
+its reach declaration, e.g. `checks: { verify: { reach: { planner } } }`. A hand-off with no entry
+is reported unresolved, naming the key to add (ADR 0086, L32).
+
 > If the config's own `defineConfig` sets `checks: { verify: "error" }`, requiring the module throws at boot; the CLI catches that and prints it. This command exists for on-demand verification **independent** of the config's own mode.
 
 ### `loom lint claim-check [--dir .]`
