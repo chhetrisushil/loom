@@ -387,10 +387,13 @@ function collectFlows(
         const findings = lintLoopIdentity();
         const nonDet = lintNonDeterminism();
         const flowReach = analyzeReach();
+        // Any reach fact keeps the analysis — including a ctx hand-off alone (L32 `escapes`); a
+        // flow whose only reach is `planner.compose(x, ctx)` must not read as "not analysed".
         const hasReach =
           flowReach.steps.length > 0 ||
           flowReach.unresolved.length > 0 ||
-          flowReach.suspends.length > 0;
+          flowReach.suspends.length > 0 ||
+          (flowReach.escapes?.length ?? 0) > 0;
         pluginState.flows.set(flowId, {
           id: flowId,
           version: version ?? "0.0.0",

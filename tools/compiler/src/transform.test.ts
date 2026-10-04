@@ -167,6 +167,26 @@ describe("compiler — flow detection", () => {
   });
 });
 
+describe("compiler — runner reach in the manifest (L36)", () => {
+  it("keeps runnerReach for a flow whose ONLY reach is a ctx hand-off (escapes)", () => {
+    // Regression: `hasReach` counted steps/unresolved/suspends but not escapes, so a flow that
+    // only hands ctx to a library (`planner.compose(x, ctx)`) lost its runnerReach and verify
+    // reported it as "no runner-body analysis" instead of the undeclared hand-off.
+    const src = [
+      'import { flow$ } from "@loom/core";',
+      'import { planner } from "./planner";',
+      "const runner = async (ctx, input) => planner.compose(input, ctx);",
+      'export const f = { definition: flow$({ id: "wf", version: "1.0.0", steps: [] }), runner } as RegisteredFlow;',
+    ].join("\n");
+    const state = emptyState();
+    transformFile(src, "/abs/flow.ts", state);
+    const manifest = buildManifest(state, "dist");
+    expect(manifest.flows.wf?.runnerReach?.escapes?.map((e) => e.callee)).toEqual([
+      "planner.compose",
+    ]);
+  });
+});
+
 describe("compiler — builder detection robustness (inline / nested)", () => {
   it("detects inline step$(...) inside a flow's steps array (with handler extraction)", () => {
     const src = [
