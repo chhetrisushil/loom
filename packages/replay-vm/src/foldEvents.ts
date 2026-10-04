@@ -5,6 +5,7 @@ import {
   countFlowEmit,
   getHandler,
   resetFoldOwnership,
+  useFoldOwnership,
 } from "./eventHandlers";
 
 const DEFAULT_STATE: Omit<ExecutionState, "executionId" | "workflowId" | "workflowVersion"> = {
@@ -18,7 +19,12 @@ const DEFAULT_STATE: Omit<ExecutionState, "executionId" | "workflowId" | "workfl
 
 export function foldEvents(
   events: EventEnvelope[],
-  initial?: Partial<ExecutionState>
+  initial?: Partial<ExecutionState>,
+  /**
+   * R1a — the ownership set of a LIVE fold (see {@link useFoldOwnership}). Omit it for a
+   * one-shot fold: ownership then starts empty, so nothing the caller passed in is written to.
+   */
+  owned?: WeakSet<object>
 ): ExecutionState {
   // `state` is always an object this function created (the seed below, or a fresh
   // handler result) — never the caller's `initial` — so setting `sequence` in
@@ -33,7 +39,8 @@ export function foldEvents(
 
   // Fresh audit-list ownership for THIS fold pass, so in-place appends never touch the
   // caller's `initial`/snapshot arrays (which we treat as immutable). See appendAudit.
-  resetFoldOwnership();
+  if (owned === undefined) resetFoldOwnership();
+  else useFoldOwnership(owned);
 
   for (const event of events) {
     const handler = getHandler(event.eventType);

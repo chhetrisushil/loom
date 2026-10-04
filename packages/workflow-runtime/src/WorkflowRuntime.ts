@@ -406,6 +406,12 @@ export class WorkflowRuntime {
   /** One warning per (flow, gate) — a hot loop must not narrate the same dropped deadline. */
   private readonly warnedDroppedDeadlines = new Set<string>();
   private readonly warnedStrayPassthroughs = new Set<string>();
+  /**
+   * R1a — executions whose last legacy stray-passthrough scan (ADR 0104) came back CLEAN.
+   * See {@link WorkflowRuntime.resume}: it lets every later resume of the same execution skip
+   * the whole-log read that scan needs. Bounded (FIFO) like the warning memory.
+   */
+  private readonly strayScanClean = new Set<string>();
   private readonly snapshotEvery: number | undefined;
   private readonly timerStore: TimerStore | undefined;
   private readonly resumeAuthenticator: ResumeAuthenticator | undefined;
@@ -815,6 +821,26 @@ export class WorkflowRuntime {
     this.onWarn(message());
   }
 
+  /** Remember (or forget) that this execution's whole-log stray scan came back clean. */
+  private noteStrayScan(
+    executionId: string,
+    reopening: boolean,
+    report: { verdict?: unknown; ambiguousHumanStep?: unknown }
+  ): void {
+    const clean =
+      !reopening && report.verdict === undefined && report.ambiguousHumanStep === undefined;
+    if (!clean) {
+      this.strayScanClean.delete(executionId);
+      return;
+    }
+    if (this.strayScanClean.has(executionId)) return;
+    if (this.strayScanClean.size >= STRAY_WARNING_MEMORY) {
+      const oldest = this.strayScanClean.values().next().value;
+      if (oldest !== undefined) this.strayScanClean.delete(oldest);
+    }
+    this.strayScanClean.add(executionId);
+  }
+
   private checkStrayPassthroughs(
     executionId: string,
     events: readonly EventEnvelope[],
@@ -853,6 +879,7 @@ export class WorkflowRuntime {
       );
     }
     const verdict = report.verdict;
+    this.noteStrayScan(executionId, reopening, report);
     if (verdict !== undefined) {
       this.warnStrayOnce(`${verdict.kind}:${executionId}`, () =>
         strayPassthroughMessage(executionId, verdict)
@@ -1344,12 +1371,34 @@ export class WorkflowRuntime {
     // this a caller could inject a resume event straight into the retention/erasure audit
     // trail even though creating one is now refused.
     assertNotReserved(executionId);
-    const allEvents = await this.eventStore.read(executionId);
-    if (allEvents.length === 0) {
+    // R1a — resume used to read the WHOLE log on every call, only to (a) take the first event's
+    // identity/input and (b) feed the ADR 0104 legacy stray-passthrough scan. Neither needs the
+    // log once a snapshot exists: the anchor is one indexed point-read of sequence 0 (the
+    // `EXECUTION_STARTED` that `truncatePrefix` keeps; the same existence test `foldState`
+    // uses), and the VM folds snapshot + tail. The stray scan is the one consumer of the full
+    // log, and it can only ever find something in a log a PRE-ADR-0104 kernel wrote — a current
+    // kernel records no gate-less non-null passthrough. So the first resume of an execution in
+    // this process still scans the whole log, and only a scan that came back CLEAN is
+    // remembered; from then on the log is read from the snapshot forward. An unclean log is
+    // never remembered (it re-scans every time, as before), and `discardLegacyAnswers` always
+    // forces the scan. Without a snapshot the log is the bounded read, so nothing changes.
+    const snapshot = await this.snapshotStore.loadLatest(executionId);
+    let allEvents: EventEnvelope[] | undefined;
+    let firstEvent: EventEnvelope | undefined;
+    if (
+      snapshot !== null &&
+      resumeEvent.discardLegacyAnswers === undefined &&
+      this.strayScanClean.has(executionId)
+    ) {
+      firstEvent = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    }
+    if (firstEvent === undefined) {
+      allEvents = await this.eventStore.read(executionId);
+      firstEvent = allEvents[0];
+    }
+    if (firstEvent === undefined) {
       throw new Error(`No execution found for id: ${executionId}`);
     }
-
-    const firstEvent = allEvents[0]!;
     const startPayload = firstEvent.payload as { input?: unknown };
     const originalInput = startPayload.input;
 
@@ -1361,7 +1410,6 @@ export class WorkflowRuntime {
     // flow id is no longer registered.
     const flow = this.flows.get(workflowId);
 
-    const snapshot = await this.snapshotStore.loadLatest(executionId);
     let vm: ReplayVM;
 
     if (snapshot) {
@@ -1371,7 +1419,7 @@ export class WorkflowRuntime {
       );
       vm = new ReplayVM(eventsAfterSnapshot, this.seedOf(snapshot, executionId, workflowId));
     } else {
-      vm = new ReplayVM(allEvents, {
+      vm = new ReplayVM(allEvents as EventEnvelope[], {
         executionId,
         workflowId,
         workflowVersion: flow?.definition.version ?? "",
@@ -1432,15 +1480,18 @@ export class WorkflowRuntime {
     assertInDoubtVerdict(executionId, vm.getState(), resumePayload);
     assertNullAnswerTakes(executionId, resumeEvent.eventType, vm.getState(), resumePayload);
 
-    const discardEvents = this.checkStrayPassthroughs(
-      executionId,
-      allEvents,
-      vm.getState(),
-      resolved.definition,
-      false,
-      resumeEvent.discardLegacyAnswers,
-      approval
-    );
+    const discardEvents =
+      allEvents === undefined
+        ? [] // a previous scan of this execution was clean (see above)
+        : this.checkStrayPassthroughs(
+            executionId,
+            allEvents,
+            vm.getState(),
+            resolved.definition,
+            false,
+            resumeEvent.discardLegacyAnswers,
+            approval
+          );
 
     return this.execute(
       executionId,
