@@ -131,9 +131,11 @@ export interface TransientInvokeOptions {
    */
   readonly principal?: PrincipalChain;
   /**
-   * A trace/metric tag ONLY — surfaced to middleware via the synthetic context's
-   * `executionId` for correlation, and never persisted (there is nothing to
-   * persist to). Defaults to the `toolId`.
+   * A trace/metric tag, never persisted (there is nothing to persist to).
+   * Defaults to the `toolId`. Without `as` it is NOT only a tag: it becomes the
+   * synthetic context's `executionId` (`transient:<label>`), which the authorizer
+   * and middleware see — a `GrantTable`/`PolicyAuthorizer` configured to grant
+   * per execution decides on it. Wrappers that memoise must key on it.
    */
   readonly label?: string;
   /**
@@ -154,8 +156,10 @@ export interface TransientInvokeOptions {
    *
    * Because the identity is an AUTHORIZATION INPUT (`GrantTable` keys on
    * `workflowId`), any wrapper that memoises, dedupes or caches transient calls
-   * MUST key on the identity (`as`) as well as `[principal, input]` — otherwise a
-   * result produced under one execution's grants can be served to another's.
+   * MUST key on the identity (`as`) as well as `[principal, input]` — and on
+   * `label` too, which names the transient execution when `as` is absent (the
+   * simplest safe key is every option except `signal`) — otherwise a result
+   * produced under one execution's grants can be served to another's.
    */
   readonly as?: TransientIdentity;
   /**
