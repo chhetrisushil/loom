@@ -183,7 +183,12 @@ rules passed vacuously, silently. No new ADR (extends D1/D2; a new ADR trips fou
   function. A call (`withRetry(async (c) => …)`, `makeRunner(lib)`) treats the first parameter of
   every function-literal argument as ctx and is itself reported `runner not analysable`, because the
   wrapper may do anything else with ctx; an imported or member runner (`flow.runner`) is the same
-  refusal. A `const` alias of a ctx name is a ctx name; a `let` alias stays `ctx stored`. A callee
+  refusal; so is a `get runner()` accessor unless every return is a function. A `const` alias of
+  a ctx name is a ctx name; a `let` alias stays `ctx stored`. Two accepted over-reports: an escape
+  inside a factory-built runner names the factory's PARAMETER (`function mk(lib) { return async (c)
+  => lib(c) }` reports `lib`, whatever was passed to `mk`), so a `verify.reach` key of that name
+  would match; and a wrapper call treats EVERY function-literal argument as a runner
+  (`compose(async (a) => a, …)` adds a `ctx stored` entry for the first). A callee
   that is itself rooted at ctx (`ctx.emit("x", ctx)`, `setTimeout(ctx.run, 0)`,
   `Reflect.apply(ctx.run, ctx, [step])`) is unresolved, never an escape (there is no outside code to
   declare). `(0, lib)(ctx)` names `lib`. Propagation is a worklist over indexes built in one walk

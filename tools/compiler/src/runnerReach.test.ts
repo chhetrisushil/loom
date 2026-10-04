@@ -565,6 +565,14 @@ describe("runner-body reach analysis", () => {
       expect(notAnalysable(r)).toHaveLength(1);
     });
 
+    it("a `get runner()` accessor: its returned function is the runner; anything else is refused", () => {
+      const ok = reachOf("class F { get runner() { return async (c) => lib(c); } }");
+      expect(callees(ok)).toEqual(["lib"]);
+      expect(notAnalysable(ok)).toHaveLength(0);
+      const opaque = reachOf("class F { get runner() { return pick(); } }");
+      expect(notAnalysable(opaque)).toHaveLength(1);
+    });
+
     it("a wrapped runner bound to a const and referenced by name is followed", () => {
       const r = reachOf(
         "const r = withRetry(async (c) => lib(c));\nconst f = flow$({ runner: r });"
