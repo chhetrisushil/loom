@@ -50,6 +50,7 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
 | `mcp-app-release-approval` | Serve an agent surface as an **MCP App** (SEP-1865), real server + real template | `@loom/plugin-mcp-app`, `createMcpServer` · ADR 0072 |
 | `child-orchestration` | Cross-execution orchestration — fan-out, all-or-nothing gate, single child | `awaitChildren` / `awaitAll` / `awaitChild` · `@loom/orchestration` · `@loom/live-query` |
 | `saved-views` | A composed surface as a logged artifact — promote, re-open, and catch a binding whose meaning moved | `validateBlueprint`, `checkBlueprintPins`, `sweepUnpinnedContent` · ADR 0088/0095 |
+| `planner-decide-scope` | A loom-ui planner deciding THROUGH loom's decide scope: the model call is authorized as the deciding execution (identity + delegation), a denial propagates (nothing recorded), replay makes no model call | `ctx.decide` `DecideScope`, `@loom-ui/planner` `scopeInvoker`/`checkPlannerConformance`, `GrantTable`/`DelegationAuthorizer` · L30/L31/L33 |
 | `learning-router` | The continuous-learning loop end to end (online → offline → gate) | `@loom/learning` `decideWithPolicy`/`trajectories`/`evaluatePolicy`/`promotionGate`, 3P `loom-plugin-linucb` |
 | `appgen-brownfield`, `appgen-models` | AI-driven app generation | `@loom/appgen` |
 
