@@ -591,6 +591,15 @@ describe("L31 - effects reached through a ctx.decide scope", () => {
     expect(f[0]?.location).toBe("f:approve");
   });
 
+  it("reports (info, not error) a scope-reached effect that is not registered at verify time", () => {
+    const r = verify(flow([{ toolId: "ghost", unregistered: true }]));
+    const f = r.findings.filter((x) => x.rule === "replay-safety");
+    expect(f).toHaveLength(1);
+    expect(f[0]?.severity).toBe("info");
+    expect(f[0]?.message).toContain("ghost");
+    expect(r.ok).toBe(true);
+  });
+
   it("accepts ambient and undeclared-mode effects from a scope", () => {
     const r = verify(
       flow([{ toolId: "page", mode: "ambient" }, { toolId: "plan" }])

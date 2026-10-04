@@ -236,5 +236,83 @@ describe("runner-body reach analysis", () => {
       `);
       expect(reach).toEqual({ steps: [], unresolved: [], suspends: [] });
     });
+
+    // ── fix round 1 ──────────────────────────────────────────────────────────
+    it("P3-1: a name declared twice in the region is unresolved, not last-wins", () => {
+      const reach = analyzeRunnerReach(`
+        const d = (s) => s.invokeTransient("t.a");
+        { const d = (s) => 1; }
+        const r = async (ctx) => { await ctx.decide("x", d); };
+      `);
+      expect(reach.unresolved.map((u) => u.expr)).toEqual(["decide(d)"]);
+    });
+
+    it("P3-1: a let/var or reassigned decider name is unresolved", () => {
+      const letCase = analyzeRunnerReach(`
+        let d = (s) => s.invokeTransient("t.a");
+        const r = async (ctx) => { await ctx.decide("x", d); };
+      `);
+      expect(letCase.unresolved.map((u) => u.expr)).toEqual(["decide(d)"]);
+      const reassigned = analyzeRunnerReach(`
+        const d = (s) => s.invokeTransient("t.a");
+        d = (s) => 1;
+        const r = async (ctx) => { await ctx.decide("x", d); };
+      `);
+      expect(reassigned.unresolved.map((u) => u.expr)).toEqual(["decide(d)"]);
+    });
+
+    it("P3-2: an aliased or indirect ctx.decide is unresolved, never silent", () => {
+      for (const body of [
+        "const d = ctx.decide.bind(ctx); await d('x', (s) => s.invokeTransient('t.a'));",
+        "const { decide } = ctx; await decide('x', (s) => s.invokeTransient('t.a'));",
+        "await ctx['decide']('x', (s) => s.invokeTransient('t.a'));",
+        "await ctx.decide(...args);",
+        "const f = ctx.decide; await f('x', g);",
+      ]) {
+        const reach = analyzeRunnerReach(`const r = async (ctx, args) => { ${body} };`);
+        expect(reach.unresolved.length, body).toBeGreaterThan(0);
+      }
+      const param = analyzeRunnerReach(
+        "const r = async ({ decide }) => { await decide('x', (s) => s.invokeTransient('t.a')); };"
+      );
+      expect(param.unresolved.length).toBeGreaterThan(0);
+    });
+
+    it("P3-2: a plain ctx.decide call is not flagged by the alias check", () => {
+      const reach = analyzeRunnerReach(
+        "const r = async (ctx) => { await ctx.decide('x', (s) => s.invokeTransient('t.a')); await ctx.decide?.('y', (s) => 1); };"
+      );
+      expect(reach.unresolved).toEqual([]);
+      expect(reach.steps).toEqual([via("t.a")]);
+    });
+
+    it("destructure edge cases that could bind invokeTransient are unresolved", () => {
+      for (const param of ["{ invokeTransient: { x } }", "{ [k]: c }"]) {
+        const reach = analyzeRunnerReach(
+          `const r = async (ctx, k) => { await ctx.decide("x", (${param}) => 1); };`
+        );
+        expect(reach.unresolved.length, param).toBeGreaterThan(0);
+      }
+    });
+
+    it("string-keyed destructure of invokeTransient to a plain name is followed", () => {
+      const reach = analyzeRunnerReach(
+        'const r = async (ctx) => { await ctx.decide("x", ({ "invokeTransient": c }) => c("t.s")); };'
+      );
+      expect(reach.steps).toEqual([via("t.s")]);
+      expect(reach.unresolved).toEqual([]);
+    });
+
+    it("locks in optional-chain and generic call shapes", () => {
+      const reach = analyzeRunnerReach(`
+        const r = async (ctx) => {
+          await ctx.decide("a", (s) => s?.invokeTransient("t.q1"));
+          await ctx.decide("b", (s) => s.invokeTransient?.("t.q2"));
+          await ctx.decide("c", (s) => s.invokeTransient<X, Y>("t.q3"));
+        };
+      `);
+      expect(reach.steps).toEqual([via("t.q1"), via("t.q2"), via("t.q3")]);
+      expect(reach.unresolved).toEqual([]);
+    });
   });
 });

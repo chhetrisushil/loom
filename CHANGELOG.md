@@ -19,7 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reported as unresolved (the existing ADR 0086 `warn`), never dropped. `replay-safety`
   also errors on a scope call to a `journaled` effect, which the transient seam refuses at
   runtime; the mode is read from the real registry via the new read-only
-  `WorkflowRuntime.effectModeOf` / `EffectRuntime.modeOf`. Verify-only plus an ADR 0086
+  `WorkflowRuntime.effectModeOf` / `EffectRuntime.modeOf`; a scope-reached effect that is not
+  registered gets an `info` finding. An ambiguous named decider (redeclared, `let`, reassigned)
+  and an aliased `decide` (`.bind`, destructured, `ctx["decide"]`, spread args) are unresolved.
+  Verify-only plus an ADR 0086
   amendment; no kernel change.
 - **`ctx.decide` hands its decider a transient invoker stamped with the deciding execution
   (backlog L30; KERNEL_ABI 1.2.0).** `decide(id, (scope) => scope.invokeTransient(...))`: the

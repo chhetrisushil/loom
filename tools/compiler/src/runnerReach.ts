@@ -139,22 +139,52 @@ function isFn(node: ts.Node): node is FnNode {
 /**
  * Collect functions declared in this region by name (`function f(){}`,
  * `const f = (s) => …`), so `ctx.decide("x", f)` can be followed when `f` is local.
+ *
+ * Resolution is by TEXTUAL name in one flat map, so a name is only followed when it is
+ * unambiguous: declared exactly once in the region (as a function, a variable, a
+ * parameter or a binding), with `const`/`function`, and never reassigned. Anything else
+ * is left out, which makes `ctx.decide("x", name)` unresolved rather than silently
+ * binding to whichever declaration came last.
  */
 function collectFunctions(root: ts.Node): Map<string, FnNode> {
   const fns = new Map<string, FnNode>();
+  const declared = new Map<string, number>();
+  const ambiguous = new Set<string>();
+  const declare = (name: string): void => {
+    declared.set(name, (declared.get(name) ?? 0) + 1);
+  };
   function visit(node: ts.Node): void {
-    if (ts.isFunctionDeclaration(node) && node.name !== undefined) fns.set(node.name.text, node);
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer !== undefined &&
-      (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+    if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
+      declare(node.name.text);
+      fns.set(node.name.text, node);
+    } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      declare(node.name.text);
+      const isConst = (ts.getCombinedNodeFlags(node) & ts.NodeFlags.Const) !== 0;
+      if (!isConst) ambiguous.add(node.name.text);
+      if (
+        node.initializer !== undefined &&
+        (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+      ) {
+        fns.set(node.name.text, node.initializer);
+      }
+    } else if (ts.isParameter(node) && ts.isIdentifier(node.name)) {
+      declare(node.name.text);
+    } else if (ts.isBindingElement(node) && ts.isIdentifier(node.name)) {
+      declare(node.name.text);
+    } else if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+      ts.isIdentifier(node.left)
     ) {
-      fns.set(node.name.text, node.initializer);
+      ambiguous.add(node.left.text);
     }
     ts.forEachChild(node, visit);
   }
   visit(root);
+  for (const name of [...fns.keys()]) {
+    if (ambiguous.has(name) || (declared.get(name) ?? 0) > 1) fns.delete(name);
+  }
   return fns;
 }
 
@@ -234,6 +264,14 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
    * under-reports).
    */
   function visitDecide(call: ts.CallExpression): void {
+    if (call.arguments.some((a) => ts.isSpreadElement(a))) {
+      unresolved.push({
+        expr: `decide(${exprText(call.arguments[0] ?? call)})`,
+        kind: "step",
+        ...at,
+      });
+      return;
+    }
     const decider = call.arguments[1];
     if (decider === undefined) return;
     let fn: FnNode | undefined;
@@ -259,8 +297,18 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
           continue;
         }
         const key = el.propertyName ?? el.name;
-        if (ts.isIdentifier(key) && key.text === "invokeTransient" && ts.isIdentifier(el.name)) {
+        const keyText =
+          ts.isIdentifier(key) || ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)
+            ? key.text
+            : undefined;
+        // A computed key could be anything; a nested pattern or non-identifier name
+        // could bind `invokeTransient` where the call cannot be followed.
+        const couldBind = keyText === "invokeTransient" || ts.isComputedPropertyName(key);
+        if (!couldBind) continue;
+        if (keyText === "invokeTransient" && ts.isIdentifier(el.name)) {
           callNames.add(el.name.text);
+        } else {
+          unresolved.push({ expr: `decide scope ${exprText(el)}`, kind: "step", ...at });
         }
       }
     } else {
@@ -319,11 +367,37 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
     scan(fn.body);
   }
 
+  /**
+   * `ctx.decide` reached by any route other than a direct `<x>.decide(…)` call hides a
+   * decider this walk would have followed: `ctx.decide.bind(ctx)`, `const f = ctx.decide`,
+   * `const { decide } = ctx`, a `({ decide }) =>` runner parameter, `ctx["decide"](…)`.
+   * Receiver-agnostic like `methodCall`; reported as unresolved so the shape cannot pass
+   * vacuously.
+   */
+  function flagIndirectDecide(node: ts.Node): void {
+    let hit = false;
+    if (ts.isPropertyAccessExpression(node) && node.name.text === "decide") {
+      const p = node.parent;
+      hit = !(ts.isCallExpression(p) && p.expression === node);
+    } else if (
+      ts.isElementAccessExpression(node) &&
+      ts.isStringLiteralLike(node.argumentExpression) &&
+      node.argumentExpression.text === "decide"
+    ) {
+      hit = true;
+    } else if (ts.isBindingElement(node) && node.dotDotDotToken === undefined) {
+      const key = node.propertyName ?? node.name;
+      hit = (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) && key.text === "decide";
+    }
+    if (hit) unresolved.push({ expr: `decide alias ${exprText(node)}`, kind: "step", ...at });
+  }
+
   function visit(node: ts.Node): void {
     const run = methodCall(node, "run");
     if (run !== undefined) visitRun(run);
     const decide = methodCall(node, "decide");
     if (decide !== undefined) visitDecide(decide);
+    else flagIndirectDecide(node);
     const suspend = methodCall(node, "suspend");
     if (suspend !== undefined) visitSuspend(suspend);
     // `ctx.sleep`/`sleepUntil` are deliberately NOT recorded. The kernel authors

@@ -622,4 +622,36 @@ describe("decider-scope reach reaches the rules (L31)", () => {
     );
     expect(report.findings.filter((f) => f.rule === "replay-safety")).toEqual([]);
   });
+
+  it("a scope-reached effect that is not registered yields an info finding (no vacuous pass)", () => {
+    const { runtime } = build(fullGrants);
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: fullGrants,
+        runnerReachByFlow: {
+          gated: analyzeRunnerReach(
+            "const r = async (ctx) => { await ctx.decide('p', (s) => s.invokeTransient('not.registered', {})); };",
+            "gated"
+          ),
+        },
+      })
+    );
+    const infos = report.findings.filter(
+      (f) => f.rule === "replay-safety" && f.severity === "info"
+    );
+    expect(infos).toHaveLength(1);
+    expect(infos[0]?.message).toContain("not.registered");
+  });
+
+  it("a registered ambient scope effect yields no replay-safety finding", () => {
+    const { runtime } = build(fullGrants);
+    runtime.register("remediation-tool", new ToolEffect(async () => "ok", { mode: "ambient" }));
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: fullGrants,
+        runnerReachByFlow: { gated: analyzeRunnerReach(DECIDER_SOURCE, "gated") },
+      })
+    );
+    expect(report.findings.filter((f) => f.rule === "replay-safety")).toEqual([]);
+  });
 });

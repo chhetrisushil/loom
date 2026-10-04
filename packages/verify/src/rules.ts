@@ -57,7 +57,15 @@ const replaySafety: Rule = (input) => {
   // it statically is the only early signal.
   for (const flow of input.flows) {
     for (const e of flow.deciderEffects ?? []) {
-      if (e.mode === "journaled") {
+      if (e.unregistered === true) {
+        // No mode to check: say so rather than pass as if the effect had been verified.
+        findings.push({
+          rule: "replay-safety",
+          severity: "info",
+          message: `Flow "${flow.id}" calls "${e.toolId}" through a ctx.decide scope, but that effect is not registered at verify time, so its determinism-boundary mode could not be checked.`,
+          location: `${flow.id}:${e.toolId}`,
+        });
+      } else if (e.mode === "journaled") {
         findings.push({
           rule: "replay-safety",
           severity: "error",

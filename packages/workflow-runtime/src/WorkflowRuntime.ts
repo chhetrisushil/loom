@@ -674,6 +674,11 @@ export class WorkflowRuntime {
     return this.effectRuntime.modeOf(toolId);
   }
 
+  /** Whether an effect is registered under `toolId` (read-only; lets tooling tell "no mode" from "no effect"). */
+  hasEffect(toolId: string): boolean {
+    return this.effectRuntime.has(toolId);
+  }
+
   /**
    * Advisory pre-warm (latency-only, off the durable path): spin up the cold
    * resources a flow's FIRST step will need — a K7 isolated child process, an

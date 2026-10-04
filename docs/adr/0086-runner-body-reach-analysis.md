@@ -108,8 +108,17 @@ added information.
   Any other use (passed on, aliased, `scope["invokeTransient"]`, rest pattern), a
   non-literal toolId, and a decider passed by reference whose body is outside the region
   are **unresolved** — reported through the existing `unresolvedReach` path and its `warn`,
-  not a new rule id (D2). A same-region named function is followed. Shadowing is matched
-  textually, which over-reports.
+  not a new rule id (D2). A same-region named function is followed only when its name is
+  unambiguous: declared once in the region, `const`/`function`, never reassigned; otherwise
+  it is unresolved (names are matched textually, so a flat map would silently bind the last
+  declaration). Shadowing of the scope's own name is also textual, which over-reports.
+- **Aliased `decide` is unresolved.** A non-call reference to a `.decide` member
+  (`ctx.decide.bind(ctx)`, `const f = ctx.decide`), a destructured `decide` binding
+  (`const { decide } = ctx`, a `({ decide }) =>` parameter), element-access `ctx["decide"]` calls and a
+  spread-argument `decide(...args)` are reported unresolved, receiver-agnostic like the
+  rest of the walk. Likewise a scope pattern element that could bind `invokeTransient`
+  through a computed key or nested pattern. **Known gap, not fixed here:** `ctx.run` has the
+  analogous pre-existing hole (`const r = ctx.run; r(step)` is not seen).
 - **Journaled effects.** The transient seam refuses a `journaled` effect
   (`EffectModeViolationError`). `FlowSpec.deciderEffects` carries each scope-reached tool
   with its mode, read by the adapter from the real registry (`WorkflowRuntime.effectModeOf`,
@@ -119,7 +128,7 @@ added information.
 
 ## Evidence
 
-`tools/compiler/src/runnerReach.test.ts` (12) covers resolution, non-resolution, the generic
+`tools/compiler/src/runnerReach.test.ts` (29) covers resolution, non-resolution, the generic
 `ctx.suspend<T>` form, nesting inside loops/branches/closures, and the deliberate `sleep`
 exclusion. `packages/verify/src/verify.test.ts` covers the corrected rules — including the two
 tests asserting the *absence* of the removed correlationKey finding and the TimerStore-wired
