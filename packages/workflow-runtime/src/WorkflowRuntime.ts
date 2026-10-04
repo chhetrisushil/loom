@@ -2289,7 +2289,10 @@ export class WorkflowRuntime {
       // `startedAt` is a journal timestamp (`this.now`), so measure against the same clock.
       clearDeadline = armDeadline(
         () => remainingBudget(deadlineMs, startedAt, this.now),
-        () => cancel(new Error(`execution deadline exceeded (deadlineMs=${deadlineMs})`))
+        () =>
+          cancel(
+            new ExecutionCancelledError(`execution deadline exceeded (deadlineMs=${deadlineMs})`)
+          )
       );
     }
 

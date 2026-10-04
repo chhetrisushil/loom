@@ -115,8 +115,8 @@ These refusals carry stable names, so a consumer that cannot import
 `ExecutionCancelledError` (the abort reason of `cancel()`, and `throwIfCancelled`'s
 default, when the canceller supplied no `Error`) and `DecideScopeClosedError` (a call
 on a settled scope, and the abort reason of an unawaited call). A caller that passes
-its own `Error` as the cancel reason (including the deadline breach's own error) keeps
-it: it is the abort reason and the thrown error as-is, never wrapped. A decider that
+its own `Error` as the cancel reason keeps it (a deadline breach is an
+`ExecutionCancelledError` with the message `execution deadline exceeded (deadlineMs=…)`): it is the abort reason and the thrown error as-is, never wrapped. A decider that
 retries or records on failure should let these, and the other control-plane refusals
 (`CapabilityDeniedError`, `QuotaExceededError`, `AbortError`), propagate.
 

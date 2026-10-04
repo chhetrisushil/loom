@@ -87,6 +87,42 @@ describe("ExecutionCancelledError", () => {
       expect((seen.signal?.reason as ExecutionCancelledError).reason).toBe(reason);
   });
 
+  it("a deadline breach aborts with the named error (message unchanged)", async () => {
+    const effects = new EffectRuntime();
+    effects.register(
+      "hang",
+      new ToolEffect(
+        (_i: unknown, ctx: EffectContext) =>
+          new Promise((_res, rej) => {
+            ctx.signal?.addEventListener("abort", () => rej(ctx.signal?.reason), { once: true });
+          })
+      )
+    );
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: effects,
+      onWarn: () => {},
+    });
+    const definition: FlowDefinition<Record<string, unknown>, Record<string, unknown>> = {
+      _tag: "FlowDefinition",
+      id: "dl",
+      name: "dl",
+      version: "1.0.0",
+      inputSchema: io,
+      outputSchema: io,
+      steps: [],
+      deadlineMs: 30,
+    };
+    runtime.registerFlow(definition, async (ctx) => ({
+      r: await ctx.decide("d", (s) => s.invokeTransient("hang", {})),
+    }));
+    const h = await runtime.start(definition, {}, { executionId: "dl1" });
+    const err = await h.waitForCompletion().catch((e) => e);
+    expect(err).toBeInstanceOf(ExecutionCancelledError);
+    expect((err as Error).message).toMatch(/^execution deadline exceeded \(deadlineMs=30\)$/);
+  });
+
   it("a caller-supplied Error reason is kept as-is, never wrapped", async () => {
     const own = new Error("operator pulled the plug");
     const { runtime, definition, seen } = boot(async (ctx) => ({
