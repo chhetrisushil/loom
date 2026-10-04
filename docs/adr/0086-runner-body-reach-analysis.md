@@ -134,6 +134,47 @@ added information.
   effect not registered at verify time has no mode and is not flagged.
 - KERNEL_ABI and EVENT_SCHEMA unchanged.
 
+## Amendment (2026-10-04, L32) - declared reach for code handed `ctx`
+
+L31 counts deciders written in the flow module. A flow that hands its whole `ctx` to a
+library (`planner.compose(input, ctx)`, a retriever, an agent loop) reaches whatever that
+library's deciders/steps reach, and the flow module shows none of it: all three reach-bounded
+rules passed vacuously, silently. No new ADR (extends D1/D2; a new ADR trips four guards).
+
+- **The library declares; the verifier reads the real object.** A declaration is
+  `{ run?: string[]; transient?: string[] }` under `Symbol.for("loom.verify.reach")` on the
+  library object or function. It is structural, so a 3P library attaches it with no loom
+  import (`declareReach` in `@loom/verify` is a convenience). `run` tools are reached through
+  `ctx.run`/`ctx.execute`; `transient` through `scope.invokeTransient` in a decider.
+- **The join is name-based and explicit.** Static analysis sees the identifier, not the value.
+  The compiler records `RunnerReach.escapes: { callee, root?, via }`; the app maps the callee
+  text (`"planner.compose"`) or its leftmost identifier (`"planner"`) to the real object in
+  `checks.verify.reach`. A plain `{ run, transient }` literal is also accepted as the value (an
+  app-level declaration for a library that has not adopted the symbol). Lookup uses own keys
+  only.
+- **Declared** tools join `FlowSpec.effects` with `viaDeclared: "<callee>"`, so
+  capability-compat and effect-class consume them unchanged; `transient` ones also join
+  `deciderEffects`, so `replay-safety` errors on a `journaled` one and gives an `info` for an
+  unregistered one (mode read from the real registry, as in L31).
+- **Undeclared** (no key, or a mapped value carrying no declaration) is `unresolvedReach`:
+  `ctx handed to planner.compose (no declared reach; add verify.reach["planner"])`, the
+  existing ADR 0086 D2 `warn`. `ctx.decide` handed out (`{ decide: ctx.decide }`) is the same
+  mechanism and replaces L31's bare `decide alias` for that shape; other alias shapes
+  (`const f = ctx.decide`, destructuring) remain unresolved.
+- **What counts as an escape.** `ctx` (a name `ctx`, a `…ExecutionContext`-typed parameter, or the
+  receiver of `.decide/.suspend/.sleepUntil`) as a call/`new` argument, directly or inside an
+  object/array literal argument, to a callee that is not a same-module function (those bodies
+  are already walked). `ctx` stored, aliased or returned has no callee: unresolved
+  (`ctx stored as ...`). `ctx.<method>(...)`, comparisons, `typeof` and `const { x } = ctx`
+  are not escapes.
+- **What it cannot see.** A declaration is a claim: the named tools are checked against grants
+  and the registry, not that the library calls only those. One declaration covers all methods
+  of the mapped object/key; call-chain roots (`planner("x").compose`) map via the factory.
+  Aliasing the library (`const p = planner`) maps under the alias name only. A library's own
+  `ctx.suspend` is not expressible. Context names are textual (a `c` parameter is recognised
+  only if it calls `.decide/.suspend/.sleepUntil`).
+- KERNEL_ABI and EVENT_SCHEMA unchanged; no syscall.
+
 ## Evidence
 
 `tools/compiler/src/runnerReach.test.ts` (30) covers resolution, non-resolution, the generic

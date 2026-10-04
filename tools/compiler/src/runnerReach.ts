@@ -54,10 +54,28 @@ export interface RunnerSuspend {
   wakeAt?: boolean;
 }
 
+/**
+ * L32 — the flow's `ctx` (or its `ctx.decide`) is handed to code outside this region. The
+ * compiler cannot see that code, so it records WHERE it went; `@loom/verify`'s adapter
+ * resolves `callee`/`root` against the app's declared reach (`verify.reach`) and either
+ * counts the declared tools or reports the escape unresolved.
+ */
+export interface ReachEscape {
+  /** Source text of the callee the value was handed to, e.g. `planner.compose`. */
+  callee: string;
+  /** The leftmost identifier of `callee` (`planner`), absent for `this.x` / call results. */
+  root?: string;
+  /** What was handed over: the whole `ctx`, or just `ctx.decide`. */
+  via: "ctx" | "decide";
+  location?: string;
+}
+
 export interface RunnerReach {
   steps: RunnerStepRef[];
   unresolved: UnresolvedReach[];
   suspends: RunnerSuspend[];
+  /** L32 — `ctx` handed to out-of-region callees. Absent when there are none. */
+  escapes?: ReachEscape[];
 }
 
 /** The string value of a property on an object literal, when it is a literal. */
@@ -195,6 +213,87 @@ function literalToolId(node: ts.Node | undefined): string | undefined {
   return undefined;
 }
 
+/**
+ * L32 — names that denote a flow's execution context in this region: `ctx`, the receiver of a
+ * `.decide/.suspend/.sleepUntil` call, and a parameter typed `…ExecutionContext`. Textual, so a
+ * helper's parameter named otherwise (`c`) is only recognised if it calls one of those methods.
+ */
+function collectCtxNames(root: ts.Node): Set<string> {
+  const names = new Set<string>(["ctx"]);
+  const methods = new Set(["decide", "suspend", "sleepUntil"]);
+  function visit(node: ts.Node): void {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      methods.has(node.expression.name.text) &&
+      ts.isIdentifier(node.expression.expression)
+    ) {
+      names.add(node.expression.expression.text);
+    } else if (
+      ts.isParameter(node) &&
+      ts.isIdentifier(node.name) &&
+      node.type !== undefined &&
+      ts.isTypeReferenceNode(node.type) &&
+      /ExecutionContext$/.test(node.type.typeName.getText())
+    ) {
+      names.add(node.name.text);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(root);
+  return names;
+}
+
+/** The leftmost identifier of a member/call chain (`planner` for `planner.a.b(c).d`). */
+function chainRoot(e: ts.Expression): string | undefined {
+  let cur: ts.Expression = e;
+  for (;;) {
+    if (ts.isIdentifier(cur)) return cur.text;
+    if (ts.isPropertyAccessExpression(cur) || ts.isElementAccessExpression(cur))
+      cur = cur.expression;
+    else if (ts.isCallExpression(cur) || ts.isNonNullExpression(cur)) cur = cur.expression;
+    else if (ts.isParenthesizedExpression(cur)) cur = cur.expression;
+    else return undefined;
+  }
+}
+
+/**
+ * Where does a value go? Climb through literals/spreads/wrappers to the call or `new` that
+ * receives it as an argument and return that callee; `undefined` when the value is stored,
+ * returned or otherwise leaves through something other than an argument.
+ */
+function receivingCallee(node: ts.Node): ts.Expression | undefined {
+  let child: ts.Node = node;
+  let p: ts.Node | undefined = node.parent;
+  while (p !== undefined) {
+    if (
+      ts.isObjectLiteralExpression(p) ||
+      ts.isArrayLiteralExpression(p) ||
+      ts.isSpreadAssignment(p) ||
+      ts.isSpreadElement(p) ||
+      ts.isShorthandPropertyAssignment(p) ||
+      ts.isParenthesizedExpression(p) ||
+      ts.isAsExpression(p) ||
+      ts.isNonNullExpression(p) ||
+      ts.isSatisfiesExpression(p) ||
+      ts.isTypeAssertionExpression(p) ||
+      (ts.isPropertyAssignment(p) && p.initializer === child)
+    ) {
+      child = p;
+      p = p.parent;
+      continue;
+    }
+    if (
+      (ts.isCallExpression(p) || ts.isNewExpression(p)) &&
+      p.arguments?.includes(child as ts.Expression)
+    ) {
+      return p.expression;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
 /** Analyze a parsed node (a flow runner body) for reachable steps and suspend points. */
 export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach {
   const bindings = collectBindings(root);
@@ -202,7 +301,61 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
   const steps: RunnerStepRef[] = [];
   const unresolved: UnresolvedReach[] = [];
   const suspends: RunnerSuspend[] = [];
+  const escapes: ReachEscape[] = [];
+  const escapeSeen = new Set<string>();
+  const ctxNames = collectCtxNames(root);
   const at = location !== undefined ? { location } : {};
+
+  /** Record a hand-off to `callee`; a same-region function is already analysed, so skipped. */
+  function recordEscape(callee: ts.Expression, via: "ctx" | "decide"): void {
+    if (ts.isIdentifier(callee) && functions.has(callee.text)) return;
+    const text = exprText(callee);
+    const key = `${via}:${text}`;
+    if (escapeSeen.has(key)) return;
+    escapeSeen.add(key);
+    const rootName = chainRoot(callee);
+    escapes.push({
+      callee: text,
+      ...(rootName !== undefined && { root: rootName }),
+      via,
+      ...at,
+    });
+  }
+
+  /**
+   * L32 — a reference to the execution context that is not `ctx.<method>`. A call argument (or
+   * inside an object/array argument) is an ESCAPE to that callee; any other leak (stored,
+   * aliased, returned) has no callee to look up and is reported unresolved.
+   */
+  function flagCtxEscape(node: ts.Identifier): void {
+    const parent = node.parent;
+    if (
+      (ts.isPropertyAccessExpression(parent) &&
+        (parent.expression === node || parent.name === node)) ||
+      (ts.isElementAccessExpression(parent) && parent.expression === node) ||
+      (ts.isPropertyAssignment(parent) && parent.name === node) ||
+      (ts.isParameter(parent) && parent.name === node) ||
+      (ts.isVariableDeclaration(parent) && parent.name === node) ||
+      (ts.isBindingElement(parent) && (parent.name === node || parent.propertyName === node)) ||
+      ts.isTypeOfExpression(parent) ||
+      (ts.isBinaryExpression(parent) &&
+        [
+          ts.SyntaxKind.EqualsEqualsToken,
+          ts.SyntaxKind.EqualsEqualsEqualsToken,
+          ts.SyntaxKind.ExclamationEqualsToken,
+          ts.SyntaxKind.ExclamationEqualsEqualsToken,
+        ].includes(parent.operatorToken.kind)) ||
+      // `const { decide } = ctx` — the `decide` binding is L31's to report.
+      (ts.isVariableDeclaration(parent) &&
+        parent.initializer === node &&
+        ts.isObjectBindingPattern(parent.name))
+    ) {
+      return;
+    }
+    const callee = receivingCallee(node);
+    if (callee !== undefined) recordEscape(callee, "ctx");
+    else unresolved.push({ expr: `ctx stored as ${exprText(parent)}`, kind: "step", ...at });
+  }
 
   function visitRun(call: ts.CallExpression): void {
     const target = call.arguments[0];
@@ -389,7 +542,17 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
       const key = node.propertyName ?? node.name;
       hit = (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) && key.text === "decide";
     }
-    if (hit) unresolved.push({ expr: `decide alias ${exprText(node)}`, kind: "step", ...at });
+    if (!hit) return;
+    // L32 — `lib({ decide: ctx.decide })` hands the decider seam to a callee a declaration may
+    // cover; every other alias shape has no callee to look up.
+    if (ts.isPropertyAccessExpression(node)) {
+      const callee = receivingCallee(node);
+      if (callee !== undefined) {
+        recordEscape(callee, "decide");
+        return;
+      }
+    }
+    unresolved.push({ expr: `decide alias ${exprText(node)}`, kind: "step", ...at });
   }
 
   function visit(node: ts.Node): void {
@@ -398,6 +561,7 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
     const decide = methodCall(node, "decide");
     if (decide !== undefined) visitDecide(decide);
     else flagIndirectDecide(node);
+    if (ts.isIdentifier(node) && ctxNames.has(node.text)) flagCtxEscape(node);
     const suspend = methodCall(node, "suspend");
     if (suspend !== undefined) visitSuspend(suspend);
     // `ctx.sleep`/`sleepUntil` are deliberately NOT recorded. The kernel authors
@@ -408,7 +572,7 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
   }
 
   visit(root);
-  return { steps, unresolved, suspends };
+  return { steps, unresolved, suspends, ...(escapes.length > 0 && { escapes }) };
 }
 
 /**

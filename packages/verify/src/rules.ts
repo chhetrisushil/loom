@@ -69,7 +69,7 @@ const replaySafety: Rule = (input) => {
         findings.push({
           rule: "replay-safety",
           severity: "error",
-          message: `Flow "${flow.id}" calls "${e.toolId}" through a ctx.decide scope, but that effect is declared journaled; the transient seam refuses it at runtime (EffectModeViolationError). Run it with ctx.run/ctx.execute instead.`,
+          message: `Flow "${flow.id}" calls "${e.toolId}" through a ctx.decide scope${e.viaDeclared !== undefined ? ` (declared by ${e.viaDeclared})` : ""}, but that effect is declared journaled; the transient seam refuses it at runtime (EffectModeViolationError). Run it with ctx.run/ctx.execute instead.`,
           location: `${flow.id}:${e.toolId}`,
         });
       }

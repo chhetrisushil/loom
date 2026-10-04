@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`@loom/verify` declared reach for code a flow hands its `ctx` to (backlog L32).** A flow
+  that calls `planner.compose(input, ctx)` reached nothing as far as capability-compat,
+  effect-class and suspension-safety could tell, and was not reported either. The compiler now
+  records each hand-off of `ctx` (or `ctx.decide`) to a callee outside the module
+  (`RunnerReach.escapes`); the library declares what it reaches under
+  `Symbol.for("loom.verify.reach")` (`{ run?, transient? }`; `declareReach` /
+  `readReachDeclaration` / `ReachDeclaration` exported from `@loom/verify`, zero dependency
+  needed for a 3P library); the app maps the callee to the real object with
+  `checks.verify.reach: { planner }`. Declared tools join `FlowSpec.effects` (and, for
+  `transient`, `deciderEffects`, so `replay-safety` errors on a journaled one) with
+  `viaDeclared` provenance; an escape with no declaration is an unresolved `warn` naming the key
+  to add. `{ decide: ctx.decide }` handed to a library now resolves the same way instead of
+  being a bare `decide alias` warn. ADR 0086 amendment; no kernel, syscall or ABI change.
 - **Named cancellation errors (backlog L33).** `@loom/workflow-runtime` exports
   `ExecutionCancelledError` and `DecideScopeClosedError`, each with its `name` set
   explicitly. They replace the plain `Error`s that `throwIfCancelled`, the closed-scope

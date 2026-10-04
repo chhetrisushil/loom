@@ -1193,6 +1193,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       ...(Object.keys(nonDeterministicByFlow).length > 0 && { nonDeterministicByFlow }),
       ...(Object.keys(loopIdentityByFlow).length > 0 && { loopIdentityByFlow }),
       ...(Object.keys(runnerReachByFlow).length > 0 && { runnerReachByFlow }),
+      ...(verifyCfg?.reach !== undefined && { reachDeclarations: verifyCfg.reach }),
     });
   };
   const verifyOptions = verifyCfg?.rules !== undefined ? { rules: verifyCfg.rules } : undefined;

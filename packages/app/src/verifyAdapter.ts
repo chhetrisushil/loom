@@ -5,6 +5,7 @@ import { PlacementDispatcher } from "@loom/dispatcher";
 import type { CapabilityAuthorizer } from "@loom/effect-runtime";
 import { GrantTable } from "@loom/effect-runtime";
 import { EVENT_SCHEMA_VERSION } from "@loom/replay-vm";
+import { readReachDeclaration } from "@loom/verify";
 import type {
   DeciderEffectRef,
   FlowSpec,
@@ -60,6 +61,13 @@ export interface RunnerReachInput {
   }[];
   readonly unresolved?: readonly UnresolvedReachRef[];
   readonly suspends?: readonly SuspendPoint[];
+  /** L32 — `ctx` / `ctx.decide` handed to callees outside the analysed module. */
+  readonly escapes?: readonly {
+    readonly callee: string;
+    readonly root?: string;
+    readonly via: "ctx" | "decide";
+    readonly location?: string;
+  }[];
 }
 
 export type VerifyConfig =
@@ -80,6 +88,14 @@ export type VerifyConfig =
       readonly effectClasses?: readonly string[];
       /** Compiler lint findings (nondeterminism issue #82, loop identity ADR 0061). */
       readonly lint?: VerifyLintInputs;
+      /**
+       * L32 — declared reach for code a flow hands its `ctx` to. Keys are the callee text
+       * (`"planner.compose"`) or its leftmost identifier (`"planner"`) as written in the flow
+       * source; values are the REAL objects (carrying a reach declaration, see `declareReach`
+       * in `@loom/verify`) or a plain `{ run?, transient? }` literal. A `ctx` handed to a callee
+       * with no entry is reported unresolved.
+       */
+      readonly reach?: Readonly<Record<string, unknown>>;
     };
 
 export interface NormalizedVerify {
@@ -88,6 +104,7 @@ export interface NormalizedVerify {
   readonly effectClasses?: readonly string[];
   readonly rules?: readonly RuleName[];
   readonly lint?: VerifyLintInputs;
+  readonly reach?: Readonly<Record<string, unknown>>;
 }
 
 /** Normalize the `verify` key. Object form without an explicit mode defaults to `"warn"`. */
@@ -100,6 +117,7 @@ export function normalizeVerify(v: VerifyConfig | undefined): NormalizedVerify |
     ...(v.rules !== undefined && { rules: v.rules }),
     ...(v.effectClasses !== undefined && { effectClasses: v.effectClasses }),
     ...(v.lint !== undefined && { lint: v.lint }),
+    ...(v.reach !== undefined && { reach: v.reach }),
   };
 }
 
@@ -128,6 +146,8 @@ export interface VerifyAdapterInputs {
    * rules state their own limit instead of reporting clean.
    */
   readonly runnerReachByFlow?: Readonly<Record<string, RunnerReachInput>>;
+  /** L32 — see `VerifyConfig.reach`: callee text / root identifier -> declared-reach carrier. */
+  readonly reachDeclarations?: Readonly<Record<string, unknown>>;
   /**
    * ADR 0061 — per-flow loop step-identity findings, feeding the determinism rule's
    * loop-identity warnings. Produce from `@loom/compiler`'s `analyzeLoopIdentity` (or read
@@ -173,6 +193,7 @@ export function resolveVerifyInput(
   inputs: VerifyAdapterInputs = {}
 ): VerifyInput {
   const flows: FlowSpec[] = [];
+  const decls = inputs.reachDeclarations;
   for (const id of runtime.getFlowIds()) {
     const def = runtime.getFlow(id)?.definition;
     if (def === undefined) continue;
@@ -181,6 +202,7 @@ export function resolveVerifyInput(
       capability: string;
       kind: "step";
       effectClass?: string;
+      viaDeclared?: string;
     }[] = def.steps
       .filter((s): s is typeof s & { toolId: string } => s.toolId !== undefined)
       .map((s) => ({
@@ -277,7 +299,46 @@ export function resolveVerifyInput(
         });
       }
     }
-    const unresolvedReach = reach?.unresolved ?? [];
+    // L32 — `ctx` handed to code outside the module. The compiler recorded WHERE; the app's
+    // `verify.reach` maps that callee to the real object, whose declaration is read here. Own
+    // keys only (a callee named `constructor` must not resolve to Object's).
+    const unresolvedReach: UnresolvedReachRef[] = [...(reach?.unresolved ?? [])];
+    for (const esc of reach?.escapes ?? []) {
+      const pick = (k: string | undefined): unknown =>
+        k !== undefined && decls !== undefined && Object.hasOwn(decls, k) ? decls[k] : undefined;
+      const decl = readReachDeclaration(pick(esc.callee) ?? pick(esc.root));
+      if (decl === undefined) {
+        const handed = esc.via === "decide" ? "ctx.decide" : "ctx";
+        unresolvedReach.push({
+          expr: `${handed} handed to ${esc.callee} (no declared reach; add verify.reach["${esc.root ?? esc.callee}"])`,
+          kind: "step",
+          ...(esc.location !== undefined && { location: esc.location }),
+        });
+        continue;
+      }
+      const add = (toolId: string, transient: boolean): void => {
+        if (transient && !deciderSeen.has(toolId)) {
+          deciderSeen.add(toolId);
+          const mode = runtime.effectModeOf(toolId);
+          deciderEffects.push({
+            toolId,
+            ...(mode !== undefined && { mode }),
+            ...(!runtime.hasEffect(toolId) && { unregistered: true }),
+            viaDeclared: esc.callee,
+          });
+        }
+        if (declaredToolIds.has(toolId)) return;
+        declaredToolIds.add(toolId);
+        effects.push({
+          toolId,
+          capability: toolId,
+          kind: "step" as const,
+          viaDeclared: esc.callee,
+        });
+      };
+      for (const t of decl.run ?? []) add(t, false);
+      for (const t of decl.transient ?? []) add(t, true);
+    }
     const suspends = reach?.suspends ?? [];
 
     flows.push({

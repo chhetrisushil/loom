@@ -88,8 +88,28 @@ accepts directly. That puts `determinism`, `capability-compat`, `effect-class` a
 **Remaining feed gaps (documented, not silent):** per-flow `computeTarget` and resource budgets
 are not in the `FlowDefinition` today, so `placement-compat` and `resource-compat` only see what a
 caller supplies structurally. A `ctx.run` target imported from another module resolves only as
-*unresolved* — reported as a `warn`, never dropped. So is a `ctx.decide` handed to a library
-(`{ decide: ctx.decide }`): the library's decider is not followed (ADR 0086, L31).
+*unresolved* — reported as a `warn`, never dropped. So is a `ctx` (or `ctx.decide`) handed to a library
+that declares no reach: reported unresolved unless `verify.reach` maps it to a declaration
+(ADR 0086, L31/L32).
+
+### Code a flow hands its `ctx` to (declared reach, L32)
+
+A library that runs steps or deciders with a flow's `ctx` (a planner, a retriever, an agent
+loop) declares what it reaches; the app maps the callee used in the flow source to the real
+object:
+
+```ts
+// library (no loom import needed): Symbol.for("loom.verify.reach") -> { run?, transient? }
+declareReach(planner, { transient: ["llm.complete"] }); // from @loom/verify
+
+// app
+defineConfig({ checks: { verify: { mode: "warn", reach: { planner } } } });
+```
+
+The compiler records `planner.compose(input, ctx)` as an escape; declared tools join the flow's
+effects (capability-compat, effect-class, and replay-safety for `transient`), with
+`viaDeclared` provenance. An escape with no declaration is an unresolved `warn` naming the key to
+add. A declaration is a claim about the library; the tools it names are checked, not the library.
 
 ## Guarantees
 

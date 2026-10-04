@@ -30,7 +30,7 @@ export interface ManifestFlow {
    * DECLARED steps — and state their own coverage when they cannot.
    */
   runnerReach?: {
-    steps: Array<{ stepId?: string; toolId: string }>;
+    steps: Array<{ stepId?: string; toolId: string; viaDecider?: boolean }>;
     unresolved: Array<{ expr: string; kind: "step" | "suspend"; location?: string }>;
     suspends: Array<{
       id?: string;
@@ -38,6 +38,8 @@ export interface ManifestFlow {
       timed?: boolean;
       wakeAt?: boolean;
     }>;
+    /** L32 — `ctx` (or `ctx.decide`) handed to out-of-module callees; resolved against `verify.reach`. */
+    escapes?: Array<{ callee: string; root?: string; via: "ctx" | "decide"; location?: string }>;
   };
   /**
    * The source module that declared this flow (relative to the project root).

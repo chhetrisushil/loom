@@ -78,6 +78,8 @@ export interface EffectRef {
   readonly kind?: string;
   /** EF — the effect's declared class, from the app's `effectClasses` ordering. */
   readonly effectClass?: string;
+  /** L32 — reached through a library's declared reach; names the callee the flow hands `ctx` to. */
+  readonly viaDeclared?: string;
 }
 
 /**
@@ -92,6 +94,8 @@ export interface DeciderEffectRef {
   readonly mode?: "journaled" | "ambient";
   /** The effect is not registered at verify time, so its mode could not be checked. */
   readonly unregistered?: boolean;
+  /** L32 — reached through a library's declared reach (the callee), not a decider in the flow module. */
+  readonly viaDeclared?: string;
 }
 
 export interface BudgetSpec {
