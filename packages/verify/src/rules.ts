@@ -51,6 +51,22 @@ const replaySafety: Rule = (input) => {
       });
     }
   }
+  // L31 — a `ctx.decide` scope call is TRANSIENT, and the transient seam refuses a
+  // `journaled` effect (EffectModeViolationError): it would leave no durable fact. The
+  // refusal happens at runtime, inside a decider whose result is recorded, so catching
+  // it statically is the only early signal.
+  for (const flow of input.flows) {
+    for (const e of flow.deciderEffects ?? []) {
+      if (e.mode === "journaled") {
+        findings.push({
+          rule: "replay-safety",
+          severity: "error",
+          message: `Flow "${flow.id}" calls "${e.toolId}" through a ctx.decide scope, but that effect is declared journaled; the transient seam refuses it at runtime (EffectModeViolationError). Run it with ctx.run/ctx.execute instead.`,
+          location: `${flow.id}:${e.toolId}`,
+        });
+      }
+    }
+  }
   const app = input.eventSchemaVersion;
   const log = input.resumeLogSchemaVersion;
   if (app && log && !majorCompatible(app, log)) {

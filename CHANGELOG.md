@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`@loom/verify` reach analysis counts `ctx.decide` scope calls (backlog L31).** A flow
+  whose effects all ran through `scope.invokeTransient("tool.id", …)` inside deciders
+  reached nothing, so capability-compat, effect-class and suspension-safety passed
+  vacuously. `analyzeRunnerReach` now records a literal-toolId scope call as a reached step
+  (`viaDecider`), tracking the scope by binding (`(scope) =>`, `async (s) =>`, destructured
+  `({ invokeTransient })`, same-region named deciders). A non-literal toolId, a scope that
+  escapes the call site, and a decider passed by reference with no visible body are
+  reported as unresolved (the existing ADR 0086 `warn`), never dropped. `replay-safety`
+  also errors on a scope call to a `journaled` effect, which the transient seam refuses at
+  runtime; the mode is read from the real registry via the new read-only
+  `WorkflowRuntime.effectModeOf` / `EffectRuntime.modeOf`. Verify-only plus an ADR 0086
+  amendment; no kernel change.
 - **`ctx.decide` hands its decider a transient invoker stamped with the deciding execution
   (backlog L30; KERNEL_ABI 1.2.0).** `decide(id, (scope) => scope.invokeTransient(...))`: the
   decider's effect calls (an LLM/MCP planner) previously ran under the synthesized

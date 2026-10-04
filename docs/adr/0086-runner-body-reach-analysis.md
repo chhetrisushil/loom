@@ -92,6 +92,31 @@ toolId. A step both declared and reached yields one effect, not two.
   *unresolved*. Closing that needs cross-module binding resolution, which is a type-checker job,
   not a single-region syntactic one. The warn says so rather than implying otherwise.
 
+## Amendment (2026-10-04, L31) — decider scopes are reach
+
+`ctx.decide(id, (scope) => scope.invokeTransient(toolId, …))` (L30) runs effects the
+`ctx.run` walk never sees, so a flow whose effects all ran inside deciders reached nothing
+and passed every reach-bounded rule vacuously. No new ADR: this extends D1's analysis and
+D2's reporting convention without a new decision, and a new ADR trips four guards for no
+added information.
+
+- **Counted.** A literal-toolId `scope.invokeTransient` inside a decider is a reached step
+  (`RunnerStepRef.viaDecider`), merged into `FlowSpec.effects` so capability-compat,
+  effect-class and `reaches` consistency consume it unchanged.
+- **Tracked by binding.** The scope parameter may only be the receiver of a called
+  `.invokeTransient`; a destructured `invokeTransient` (renamed or not) may only be called.
+  Any other use (passed on, aliased, `scope["invokeTransient"]`, rest pattern), a
+  non-literal toolId, and a decider passed by reference whose body is outside the region
+  are **unresolved** — reported through the existing `unresolvedReach` path and its `warn`,
+  not a new rule id (D2). A same-region named function is followed. Shadowing is matched
+  textually, which over-reports.
+- **Journaled effects.** The transient seam refuses a `journaled` effect
+  (`EffectModeViolationError`). `FlowSpec.deciderEffects` carries each scope-reached tool
+  with its mode, read by the adapter from the real registry (`WorkflowRuntime.effectModeOf`,
+  a read-only accessor, not a syscall), and `replay-safety` errors on a journaled one. An
+  effect not registered at verify time has no mode and is not flagged.
+- KERNEL_ABI and EVENT_SCHEMA unchanged.
+
 ## Evidence
 
 `tools/compiler/src/runnerReach.test.ts` (12) covers resolution, non-resolution, the generic

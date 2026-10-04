@@ -10,6 +10,7 @@ export type {
   LoopIdentityCall,
   SuspendPoint,
   EffectRef,
+  DeciderEffectRef,
   BudgetSpec,
   FlowSpec,
   UnreachableMarkRef,

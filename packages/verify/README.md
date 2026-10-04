@@ -15,7 +15,7 @@ lives (K2 authority, K9 delivery, K11 versioning). This package shifts those fai
 | Rule | Catches |
 |---|---|
 | `determinism` | non-deterministic calls (`Date.now`, `Math.random`, bare `fetch`) reachable outside `ctx.decide`/`ctx.execute` → replay diverges (P2) |
-| `replay-safety` | missing flow content hash (K11); event-schema major mismatch vs. a prior log (K5) |
+| `replay-safety` | missing flow content hash (K11); event-schema major mismatch vs. a prior log (K5); a `journaled` effect called through a `ctx.decide` scope (the transient seam refuses it, L31) |
 | `suspension-safety` | a timed suspend with no `wakeAt` **when a `TimerStore` is wired** (T1); approval flows with no `ResumeAuthenticator` (K12). The blanket `correlationKey` error was removed in [ADR 0086](../../docs/adr/0086-runner-body-reach-analysis.md) — `resume()` routes by `executionId` |
 | `capability-compat` | an effect requiring a capability not in the `GrantTable` (K2) |
 | `placement-compat` | a `computeTarget` that resolves to no registered dispatcher target; an effect kind a target doesn't support |

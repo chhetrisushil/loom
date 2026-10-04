@@ -240,6 +240,21 @@ turn each into a ~warn~ so a partial analysis never reads as a complete one.
 authors their condition, so treating them as user-authored would manufacture findings
 about code nobody wrote.
 
+*Decider scopes (L31).* ~scope.invokeTransient("tool.id", …)~ inside a ~ctx.decide~
+decider counts as a reached effect (~viaDecider: true~ on the step ref), so the same
+three rules and ~reaches~ consistency see it. The scope is tracked by binding: a
+parameter (~(scope) =>~, ~async (s) =>~) whose only permitted use is as the receiver of a
+called ~.invokeTransient~, or a destructured ~({ invokeTransient })~ / ~({ invokeTransient: call })~
+that is only called. Everything else is *reported as unresolved*, never dropped: a
+non-literal toolId (variable, template with expressions, member access), a scope passed
+to another function, aliased, read as ~scope["invokeTransient"]~, or captured by a
+rest pattern, and a decider passed by reference whose body is not in the analysed region
+(imported, or returned from a factory; a same-region ~function~ / ~const f = (s) => …~ is
+followed). Name matching is textual, so a shadowing nested parameter over-reports rather
+than under-reports. ~replay-safety~ additionally errors on a scope call to an effect
+declared ~journaled~ (read from the real registry by ~resolveVerifyInput~), which the
+transient seam refuses at runtime.
+
 Because the transform feeds whole *modules*, ~analyzeNonDeterminism~ is called with
 ~{ skipMemoized: true }~ there: a module holds runner bodies *and* ~handler$~ bodies, and
 a ~Math.random()~ inside a handler is safe by construction — the handler's result is
