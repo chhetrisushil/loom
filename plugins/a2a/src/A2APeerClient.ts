@@ -208,7 +208,9 @@ export class A2APeerClient<TTaint extends boolean = false> {
       async (input: A2APeerInput, ctx: EffectContext): Promise<A2APeerOutputFor<TTaint>> => {
         const task: A2ATask = {
           // Deterministic id derived from the execution so replays stay stable.
-          id: `${ctx.executionId}:${ctx.stepId}`,
+          // A transient call stamped as an execution (ctx.decide's scope) shares
+          // (executionId, stepId) with its siblings; callKey keeps their ids distinct.
+          id: `${ctx.executionId}:${ctx.stepId}${ctx.callKey !== undefined ? `:${ctx.callKey}` : ""}`,
           message: { role: "user", parts: [{ type: "text", text: input.prompt }] },
           ...(input.context !== undefined && { metadata: { context: input.context } }),
         };

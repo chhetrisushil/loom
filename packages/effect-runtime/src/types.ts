@@ -61,6 +61,14 @@ export interface EffectContext {
    * — e.g. claim-check digest declarations — without a lookup side channel.
    */
   readonly toolId?: string;
+  /**
+   * L30 — set only on a transient call stamped as an execution (`ctx.decide`'s
+   * scope). Several such calls share `(executionId, stepId = toolId)`, so a site
+   * that mints an id from those two (A2A task id, redaction secret-ref id) MUST
+   * append this when present, or two calls collide. Undefined on durable steps
+   * (their stepId is unique) and on bare transient calls.
+   */
+  readonly callKey?: string;
   emit(eventType: string, payload: unknown): void;
   /**
    * Cooperative cancellation for this effect. Aborts when the owning execution is
@@ -131,21 +139,45 @@ export interface TransientInvokeOptions {
   /**
    * L30 — run AS an existing execution instead of the throwaway `transient`
    * identity: the synthesized {@link EffectContext} carries this `workflowId`/
-   * `executionId` (and `stepId`, defaulting to the toolId), so the K2 authorizer's
-   * flow-scoped grants, delegation checks and trace/middleware correlation see the
-   * deciding execution. It changes only WHAT IS CLAIMED, never what is written: the
-   * call is still transient (R1-R5 unchanged — no journal, no-op `emit`, same
-   * middleware chain, `ambient` effect-mode check). Set by `ctx.decide`'s scope,
-   * never by flow code; absent => byte-identical to before.
+   * `executionId`, so the K2 authorizer's flow-scoped grants, delegation checks and
+   * trace/middleware correlation see the deciding execution. It changes only WHAT
+   * IS CLAIMED, never what is written: the call is still transient (R1-R5
+   * unchanged — no journal, no-op `emit`, same middleware chain, `ambient`
+   * effect-mode check). `stepId` defaults to the toolId, exactly as a bare call, so
+   * stepId-keyed per-tool configuration (redaction, pricing, retry) matches.
+   *
+   * Trust model: this is the transient analogue of the EffectContext a holder of
+   * the runtime can already hand-build via `execute`; it is NOT a capability check.
+   * `ctx.decide`'s scope is the only thing flow code is handed, and it pre-stamps
+   * the identity, so flow code cannot choose one. Do not forward untrusted input
+   * into `as`.
+   *
+   * Because the identity is an AUTHORIZATION INPUT (`GrantTable` keys on
+   * `workflowId`), any wrapper that memoises, dedupes or caches transient calls
+   * MUST key on the identity (`as`) as well as `[principal, input]` — otherwise a
+   * result produced under one execution's grants can be served to another's.
    */
   readonly as?: TransientIdentity;
+  /**
+   * Running resource totals of the execution the call is stamped as, so metering /
+   * `nestedBudget` ADMISSION control can refuse an over-budget execution. The
+   * CHARGE is not recorded: `emit` is the no-op sink, so a transient call's spend
+   * never reaches the fold (a decider's LLM spend is invisible to the budget).
+   */
+  readonly resources?: ResourceSnapshot;
 }
 
 /** The execution identity a transient invocation is stamped with (L30). */
 export interface TransientIdentity {
   readonly workflowId: string;
   readonly executionId: string;
+  /** Defaults to the toolId. Keep it that way if per-tool config is keyed by stepId. */
   readonly stepId?: string;
+  /**
+   * Disambiguates calls that share `(executionId, stepId)` (several calls to one
+   * tool within an execution): surfaces as {@link EffectContext.callKey}.
+   */
+  readonly callKey?: string;
 }
 
 /**

@@ -122,7 +122,11 @@ export function redactionMiddleware(options: RedactionOptions): EffectMiddleware
     for (const path of paths) {
       const hit = getPath(redacted, path);
       if (hit === undefined) continue;
-      const refId = `${ctx.executionId}:${ctx.stepId}:${path}`;
+      // A transient call stamped as an execution shares (executionId, stepId) with its
+      // siblings; callKey keeps their secret refs distinct (undefined for durable steps).
+      const refId = `${ctx.executionId}:${ctx.stepId}${
+        ctx.callKey !== undefined ? `:${ctx.callKey}` : ""
+      }:${path}`;
       await options.resolver.store(refId, hit.parent[hit.leaf]);
       hit.parent[hit.leaf] = secretRef(refId); // the LOG gets the reference
     }

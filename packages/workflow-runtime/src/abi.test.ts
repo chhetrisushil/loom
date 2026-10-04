@@ -61,6 +61,18 @@ describe("Kernel ABI (K1)", () => {
     expect(KERNEL_ABI.syscalls).toBe(KERNEL_SYSCALLS);
   });
 
+  it("1.2.0 (L30): decide's decider receives a scope, so a flow using it can require >= 1.2.0", async () => {
+    const [maj, min] = KERNEL_ABI_VERSION.split(".").map(Number);
+    expect(maj === 1 && (min ?? 0) >= 2).toBe(true);
+    const ctx = await captureContext();
+    let arg: unknown;
+    await ctx.decide("abi-probe", (scope) => {
+      arg = scope;
+      return 1;
+    });
+    expect(typeof (arg as { invokeTransient?: unknown }).invokeTransient).toBe("function");
+  });
+
   it("the live ExecutionContext exposes every declared syscall with the right kind", async () => {
     const ctx = await captureContext();
     for (const sc of KERNEL_SYSCALLS) {

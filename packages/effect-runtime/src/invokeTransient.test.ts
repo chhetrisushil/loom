@@ -181,4 +181,25 @@ describe("EffectRuntime.invokeTransient `as` (L30)", () => {
     });
     expect(seen[1]).toMatchObject({ workflowId: "wf", executionId: "ex", stepId: "s" });
   });
+
+  it("callKey and resources reach the context; stepId defaults to the toolId even when stamped", async () => {
+    const seen: EffectContext[] = [];
+    const runtime = new EffectRuntime([
+      (c, i, next) => {
+        seen.push(c);
+        return next(i);
+      },
+    ]);
+    runtime.register("t", new ToolEffect(async () => 1));
+    const resources = { tokens: 1, costUsd: 2, ms: 3, count: 4 };
+    await runtime.invokeTransient(
+      "t",
+      {},
+      { as: { workflowId: "wf", executionId: "ex", callKey: "k0" }, resources }
+    );
+    expect(seen[0]).toMatchObject({ stepId: "t", callKey: "k0", resources });
+    await runtime.invokeTransient("t", {});
+    expect(seen[1]?.callKey).toBeUndefined();
+    expect(seen[1]?.resources).toBeUndefined();
+  });
 });

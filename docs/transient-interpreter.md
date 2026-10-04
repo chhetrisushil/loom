@@ -78,16 +78,50 @@ are the forensic, replay-substitutable, branchable record.
 
 A decider that needs an effect (an LLM/MCP planner) receives a **scope**:
 `ctx.decide("plan", (scope) => scope.invokeTransient("llm.plan", req))`. The
-scope's calls are still transient (everything in the table above holds), but they
-run **as the deciding execution**: the K2 authorizer and the middleware chain see
-its real `workflowId` / `executionId` (stepId `decide:<decisionId>`) and its full
-principal chain, delegation token and actor included, and the execution's
-cancellation signal is the default `signal`. So flow-scoped grants apply to a
+scope's calls are still transient (everything in the table above holds, including
+the effect-mode check: a `journaled` effect is refused, undeclared effects are
+allowed), but they run **as the deciding execution**: the K2 authorizer and the
+middleware chain see its real `workflowId` / `executionId` and its full principal
+chain, delegation token and actor included. So flow-scoped grants apply to a
 decider's reach and a delegation that does not cover the effect denies it, with no
-custom principal attribute. The principal cannot be overridden by the decider, and
-the scope throws once the decider settles. On replay the recorded decision is
-served and the decider (hence the scope) is never invoked. A bare `invokeTransient`
-outside a decider keeps the throwaway `transient` identity.
+custom principal attribute. The principal cannot be overridden by the decider. On
+replay the recorded decision is served and the decider (hence the scope) is never
+invoked. A bare `invokeTransient` outside a decider keeps the throwaway
+`transient` identity.
+
+**Identity of a scope call.** `stepId` is the **toolId**, exactly as for a bare
+call, so everything keyed by step id (secret-output redaction, per-tool pricing,
+per-tool middleware config) matches the same way on both paths. Two calls in one
+execution (same decider or different ones, same tool) therefore share
+`(executionId, stepId)`; they are told apart by `EffectContext.callKey`
+(`decide:<decisionId>:<n>`, `n` a per-decider call ordinal). Any site that mints
+an id from `(executionId, stepId)` must append `callKey` when present: the A2A
+peer client (task id) and the redaction middleware (secret-ref id) do. The
+`a2ui` `callFunction` effect is `journaled`, so it can never run in a scope.
+
+**Cancellation and lifetime.** The call's signal is the composition of the
+execution's cancellation, the signal the decider passes (it adds to, never
+replaces, the execution's), and the scope's own lifetime: a call started but not
+awaited is aborted when the decider settles, and a call made after it settles
+throws.
+
+**Budget and denial: what a scope call does NOT do.**
+
+- *Admission applies, the charge does not.* The scope passes the execution's
+  running `_resources` totals, so metering / `nestedBudget` refuse an over-budget
+  execution's scope call. The call's own spend is dropped by the no-op `emit`
+  (R4), so a decider's LLM calls never reach the budget; bound a decider's loop
+  yourself.
+- *A denial inside a decider is not durable.* `EFFECT_DENIED` goes to the no-op
+  sink; a decider that catches `CapabilityDeniedError` leaves no trace in the log.
+  Let the error propagate (the execution fails and nothing is recorded) rather
+  than swallowing it.
+
+**Wrappers must key on the identity.** `TransientInvokeOptions.as` makes the
+identity an authorization input (`GrantTable` keys on `workflowId`). Any wrapper
+that memoises or dedupes transient calls MUST key on `as` as well as
+`[principal, input]`, or a result produced under one execution's grants can be
+served to another's.
 
 ## Guardrails
 

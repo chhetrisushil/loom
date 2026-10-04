@@ -185,6 +185,8 @@ export class EffectRuntime {
       workflowId: opts.as?.workflowId ?? "transient",
       attempt: 1,
       emit: () => {},
+      ...(opts.as?.callKey !== undefined && { callKey: opts.as.callKey }),
+      ...(opts.resources !== undefined && { resources: opts.resources }),
       ...(opts.signal !== undefined && { signal: opts.signal }),
       ...(opts.principal !== undefined && { principal: opts.principal }),
     };

@@ -445,13 +445,13 @@ on replay**, exactly as completed effects are.
 ```ts
 async decide<T>(
   decisionId: string,
-  decider: () => T | Promise<T>,
+  decider: (scope: DecideScope) => T | Promise<T>,
   opts?: { rationale?: unknown; source?: string }
 ): Promise<T> {
   if (this.vm.hasDecision(decisionId)) {
     return this.vm.getDecision(decisionId) as T;   // replay: serve recorded choice
   }
-  const choice = await decider();                  // first run: consult the optimizer once
+  const choice = await decider(scope);             // first run: consult the optimizer once
   this.emit("DECISION_RECORDED", {
     decisionId,
     choice,
@@ -533,7 +533,7 @@ guaranteed boundary between userspace (flows, agents) and the durable kernel. `p
 
 ```ts
 // packages/workflow-runtime/src/abi.ts:15
-export const KERNEL_ABI_VERSION = "1.1.0";
+export const KERNEL_ABI_VERSION = "1.2.0";
 ```
 
 ### 5.1 Compatibility guarantee
@@ -580,7 +580,10 @@ generalization `run` now aliases) and `decide` (the Decision seam). Because `run
 and the wire events stay `STEP_*`, no existing flow or log is affected — the ABI is a superset.
 
 The durable-timer seam (T1) then added `sleep` and `sleepUntil` as a clean **MINOR** bump to
-`1.1.0` — additive syscalls, so every 1.0.0 flow keeps working unchanged.
+`1.1.0` — additive syscalls, so every 1.0.0 flow keeps working unchanged. `1.2.0` (L30) is the
+second MINOR: `ctx.decide`'s decider now receives a `DecideScope` argument (a transient invoker
+stamped as the deciding execution). A `() => T` decider is unchanged; a flow that uses the scope
+requires a kernel >= 1.2.0 (on an older one the scope is `undefined`).
 
 ---
 
