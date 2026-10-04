@@ -359,8 +359,8 @@ describe("runner-body reach analysis", () => {
       expect(r.unresolved[0]?.expr).toContain("decide alias");
     });
 
-    it("ctx stored, aliased or returned is unresolved", () => {
-      for (const body of ["const c = ctx;", "holder.ctx = ctx;", "return ctx;"]) {
+    it("ctx stored, let-aliased or returned (a const alias is followed instead) is unresolved", () => {
+      for (const body of ["let c = ctx;", "holder.ctx = ctx;", "return ctx;"]) {
         const r = analyzeRunnerReach(`const r = async (ctx) => { ${body} };`);
         expect(r.unresolved.some((u) => u.expr.startsWith("ctx stored"))).toBe(true);
       }
@@ -548,6 +548,129 @@ describe("runner-body reach analysis", () => {
       const r = reachOf(body("lib(ctx.executionId, ctx.workflowId);"));
       expect(r.escapes).toBeUndefined();
       expect(r.unresolved).toEqual([]);
+    });
+  });
+  describe("round 2 — runners that are not a followable function (P2)", () => {
+    const reachOf = (src: string) => analyzeRunnerReach(src);
+    const callees = (r: { escapes?: { callee: string }[] }) =>
+      (r.escapes ?? []).map((e) => e.callee);
+    const notAnalysable = (r: { unresolved: { expr: string }[] }) =>
+      r.unresolved.filter((u) => u.expr.startsWith("runner not analysable"));
+
+    it("a wrapper call around an inline runner: the literal's first param is ctx, the wrapper is unresolved", () => {
+      const r = reachOf(
+        'const f = flow$({ id: "f", version: "1", runner: withRetry(async (c) => lib(c)) });'
+      );
+      expect(callees(r)).toEqual(["lib"]);
+      expect(notAnalysable(r)).toHaveLength(1);
+    });
+
+    it("a wrapped runner bound to a const and referenced by name is followed", () => {
+      const r = reachOf(
+        "const r = withRetry(async (c) => lib(c));\nconst f = flow$({ runner: r });"
+      );
+      expect(callees(r)).toEqual(["lib"]);
+      expect(notAnalysable(r)).toHaveLength(1);
+    });
+
+    it("a factory call with no function literal is refused, not skipped", () => {
+      const r = reachOf("const f = flow$({ runner: makeRunner(lib) });");
+      expect(notAnalysable(r)).toHaveLength(1);
+      expect(notAnalysable(r)[0]?.expr).toContain("makeRunner(lib)");
+    });
+
+    it("a local factory whose every return is a function: the returned function is the runner, no refusal", () => {
+      const r = reachOf(
+        "function make(l) { return async (c) => l(c); }\nconst f = flow$({ runner: make(lib) });"
+      );
+      expect(callees(r)).toEqual(["l"]);
+      expect(notAnalysable(r)).toHaveLength(0);
+      const mixed = reachOf(
+        "function make(l) { if (l) return async (c) => l(c); return other(); }\nconst f = flow$({ runner: make(lib) });"
+      );
+      expect(notAnalysable(mixed)).toHaveLength(1);
+    });
+
+    it("a class property runner with a function initializer is identified", () => {
+      const r = reachOf("class F { runner = async (c) => lib(c); }");
+      expect(callees(r)).toEqual(["lib"]);
+    });
+
+    it("an imported runner is refused", () => {
+      const r = reachOf(
+        'import { importedRunner } from "./r";\nconst f = flow$({ runner: importedRunner });'
+      );
+      expect(notAnalysable(r)).toHaveLength(1);
+      expect(notAnalysable(r)[0]?.expr).toContain("importedRunner");
+    });
+
+    it("registerFlow arg 2 and a FlowRunner-typed initializer get the same refusal", () => {
+      expect(notAnalysable(reachOf("registerFlow(def, imported);"))).toHaveLength(1);
+      expect(
+        notAnalysable(reachOf("const run: FlowRunner<A, B> = wrap(async (c) => lib(c));"))
+      ).toHaveLength(1);
+      expect(callees(reachOf("registerFlow(def, wrap(async (c) => lib(c)));"))).toEqual(["lib"]);
+    });
+
+    it("a followable runner (inline, local function, local const) raises no refusal", () => {
+      for (const src of [
+        "const f = flow$({ runner: async (c) => { await c.run(s, {}); } });",
+        "async function go(c) { await c.run(s, {}); }\nconst f = flow$({ runner: go });",
+        "const go = async (c) => { await c.run(s, {}); };\nconst f = flow$({ runner: go });",
+      ]) {
+        expect(notAnalysable(reachOf(src)), src).toHaveLength(0);
+      }
+    });
+  });
+
+  describe("round 2 — ctx-rooted callees and call shapes (P3)", () => {
+    const body = (b: string) => `const runner = async (ctx) => { ${b} };`;
+    const reachOf = (src: string) => analyzeRunnerReach(src);
+
+    it("setTimeout(ctx.run, 0) / Reflect.apply(ctx.run, ctx, [s]) / ctx.emit('x', ctx) never produce a ctx-rooted escape", () => {
+      for (const b of [
+        "setTimeout(ctx.run, 0);",
+        "Reflect.apply(ctx.run, ctx, [s]);",
+        'ctx.emit("x", ctx);',
+      ]) {
+        const r = reachOf(body(b));
+        expect(
+          (r.escapes ?? []).filter((e) => e.root === "ctx"),
+          b
+        ).toEqual([]);
+        expect(r.escapes, b).toBeUndefined();
+        expect(r.unresolved.length, b).toBeGreaterThan(0);
+      }
+    });
+
+    it("a comma-operator callee (0, lib)(ctx) names lib", () => {
+      const r = reachOf(body("(0, lib)(ctx); (0, lib.go)(ctx);"));
+      expect(r.escapes?.map((e) => e.callee)).toEqual(["lib", "lib.go"]);
+      expect(r.escapes?.map((e) => e.root)).toEqual(["lib", "lib"]);
+    });
+
+    it("a const alias of ctx is followed; a let alias stays stored-unresolved", () => {
+      const ok = reachOf(body("const k = ctx; lib(k);"));
+      expect(ok.escapes?.map((e) => e.callee)).toEqual(["lib"]);
+      expect(ok.unresolved).toEqual([]);
+      const bad = reachOf(body("let k = ctx; lib(k);"));
+      expect(bad.unresolved.some((u) => u.expr.includes("stored"))).toBe(true);
+    });
+
+    it("a tagged template hands-off is rendered readably", () => {
+      const r = reachOf(body("tag`x ${ctx} y`;"));
+      expect(r.unresolved.map((u) => u.expr).join("|")).toContain("tag`…`");
+    });
+
+    it("a 1000-deep reverse-declared helper chain still resolves the leaf escape", () => {
+      let src = "const runner = async (ctx) => { h0(ctx); };\n";
+      for (let i = 999; i >= 0; i--)
+        src +=
+          i === 999
+            ? `function h${i}(c${i}) { lib(c${i}); }\n`
+            : `function h${i}(c${i}) { h${i + 1}(c${i}); }\n`;
+      const r = reachOf(src);
+      expect(r.escapes?.map((e) => e.callee)).toEqual(["lib"]);
     });
   });
 });

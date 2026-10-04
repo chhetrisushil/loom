@@ -177,6 +177,17 @@ rules passed vacuously, silently. No new ADR (extends D1/D2; a new ADR trips fou
   flow module with a `ctx` parameter (an HTTP context) can over-report; measured on this repo,
   loom-examples and genUI, that never happened, and dropping the bare `ctx` name would risk a
   silent miss for any runner the identification does not see, so it stays.
+- **A runner that is not a followable function (round 2).** A `runner:` value (also a class
+  `runner = …` field, `registerFlow` argument 2, a `FlowRunner`-typed initializer) is followed when
+  it is an inline function, a local function/`const`, or a LOCAL factory whose every return is a
+  function. A call (`withRetry(async (c) => …)`, `makeRunner(lib)`) treats the first parameter of
+  every function-literal argument as ctx and is itself reported `runner not analysable`, because the
+  wrapper may do anything else with ctx; an imported or member runner (`flow.runner`) is the same
+  refusal. A `const` alias of a ctx name is a ctx name; a `let` alias stays `ctx stored`. A callee
+  that is itself rooted at ctx (`ctx.emit("x", ctx)`, `setTimeout(ctx.run, 0)`,
+  `Reflect.apply(ctx.run, ctx, [step])`) is unresolved, never an escape (there is no outside code to
+  declare). `(0, lib)(ctx)` names `lib`. Propagation is a worklist over indexes built in one walk
+  (linear), not a re-walk per hop. `ctx.parallel`'s pair list is not read for steps: backlog L35.
 - **ctx methods as values.** `ctx.run`, `ctx.execute`, `ctx.parallel`, `ctx.suspend`, `ctx.sleep`,
   `ctx.sleepUntil` handed out (`lib(ctx.run)`, `lib(ctx["run"])`, `const { run } = ctx; lib(run)`,
   `lib({ run: ctx.run.bind(ctx) })`) are escapes with `member` set, resolved through the same
