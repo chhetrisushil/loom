@@ -25,6 +25,13 @@ export interface RunnerStepRef {
   /** The step's declared id, when the binding carried one. */
   stepId?: string;
   toolId: string;
+  /**
+   * The target was reached through `scope.invokeTransient(…)` inside a `ctx.decide`
+   * decider (L31), not through `ctx.run`. Such a call is transient: it is refused at
+   * runtime for a `journaled` effect, which the verifier can only check if it knows
+   * the call came from a scope.
+   */
+  viaDecider?: true;
 }
 
 /** A `ctx.run`/`ctx.suspend` whose target could not be resolved statically. */
@@ -120,9 +127,48 @@ function exprText(node: ts.Node): string {
   return text.length > 80 ? `${text.slice(0, 77)}…` : text;
 }
 
+/** Function-like nodes a decider can be written as. */
+type FnNode = ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration;
+
+function isFn(node: ts.Node): node is FnNode {
+  return (
+    ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node)
+  );
+}
+
+/**
+ * Collect functions declared in this region by name (`function f(){}`,
+ * `const f = (s) => …`), so `ctx.decide("x", f)` can be followed when `f` is local.
+ */
+function collectFunctions(root: ts.Node): Map<string, FnNode> {
+  const fns = new Map<string, FnNode>();
+  function visit(node: ts.Node): void {
+    if (ts.isFunctionDeclaration(node) && node.name !== undefined) fns.set(node.name.text, node);
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined &&
+      (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+    ) {
+      fns.set(node.name.text, node.initializer);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(root);
+  return fns;
+}
+
+/** A string-literal-like toolId (`"x"` or an expression-free template), else undefined. */
+function literalToolId(node: ts.Node | undefined): string | undefined {
+  if (node === undefined) return undefined;
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+  return undefined;
+}
+
 /** Analyze a parsed node (a flow runner body) for reachable steps and suspend points. */
 export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach {
   const bindings = collectBindings(root);
+  const functions = collectFunctions(root);
   const steps: RunnerStepRef[] = [];
   const unresolved: UnresolvedReach[] = [];
   const suspends: RunnerSuspend[] = [];
@@ -172,9 +218,112 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
     });
   }
 
+  /**
+   * L31 — a `ctx.decide(id, decider)` decider receives a scope whose
+   * `invokeTransient(toolId, …)` runs an effect as the deciding execution. Those calls
+   * are reached effects exactly like `ctx.run` targets, but live in a callback the
+   * `ctx.run` walk never classified.
+   *
+   * The scope is tracked by BINDING: the first parameter, either an identifier
+   * (`(scope) =>`) whose only permitted use is as the receiver of a called
+   * `.invokeTransient`, or an object pattern (`({ invokeTransient })`, with or without a
+   * rename) whose bound name may only be called. ANY other use — passing the scope on,
+   * aliasing it, `scope["invokeTransient"]`, a rest element — is reported as unresolved,
+   * because the call it hides cannot be seen. Name matching is textual: a nested
+   * function that shadows the scope's name is treated as the scope (over-reports, never
+   * under-reports).
+   */
+  function visitDecide(call: ts.CallExpression): void {
+    const decider = call.arguments[1];
+    if (decider === undefined) return;
+    let fn: FnNode | undefined;
+    if (isFn(decider)) fn = decider;
+    else if (ts.isIdentifier(decider)) fn = functions.get(decider.text);
+    if (fn === undefined) {
+      // A decider whose body is not in this region (imported, returned from a factory,
+      // a member). It may take a scope and call anything; same treatment as an
+      // unresolvable `ctx.run` target.
+      unresolved.push({ expr: `decide(${exprText(decider)})`, kind: "step", ...at });
+      return;
+    }
+    const param = fn.parameters[0];
+    if (param === undefined || fn.body === undefined) return; // never receives a scope
+    const scopeNames = new Set<string>();
+    const callNames = new Set<string>();
+    if (ts.isIdentifier(param.name)) {
+      scopeNames.add(param.name.text);
+    } else if (ts.isObjectBindingPattern(param.name)) {
+      for (const el of param.name.elements) {
+        if (el.dotDotDotToken !== undefined) {
+          unresolved.push({ expr: `decide scope rest ${exprText(el)}`, kind: "step", ...at });
+          continue;
+        }
+        const key = el.propertyName ?? el.name;
+        if (ts.isIdentifier(key) && key.text === "invokeTransient" && ts.isIdentifier(el.name)) {
+          callNames.add(el.name.text);
+        }
+      }
+    } else {
+      unresolved.push({ expr: `decide(${exprText(param)})`, kind: "step", ...at });
+      return;
+    }
+    if (scopeNames.size === 0 && callNames.size === 0) return;
+
+    const record = (c: ts.CallExpression): void => {
+      const id = literalToolId(c.arguments[0]);
+      if (id !== undefined) steps.push({ toolId: id, viaDecider: true });
+      else {
+        const arg = c.arguments[0];
+        unresolved.push({
+          expr: `invokeTransient(${arg === undefined ? "" : exprText(arg)})`,
+          kind: "step",
+          ...at,
+        });
+      }
+    };
+    const escaped = (n: ts.Node): void => {
+      unresolved.push({ expr: `decide scope used as ${exprText(n.parent)}`, kind: "step", ...at });
+    };
+
+    function scan(node: ts.Node): void {
+      if (ts.isIdentifier(node)) {
+        const parent = node.parent;
+        // Property names and declaration names are not references.
+        const isName =
+          (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+          (ts.isPropertyAssignment(parent) && parent.name === node) ||
+          (ts.isBindingElement(parent) && parent.propertyName === node);
+        if (!isName) {
+          if (scopeNames.has(node.text)) {
+            const grand = parent.parent;
+            if (
+              ts.isPropertyAccessExpression(parent) &&
+              parent.expression === node &&
+              parent.name.text === "invokeTransient" &&
+              grand !== undefined &&
+              ts.isCallExpression(grand) &&
+              grand.expression === parent
+            ) {
+              record(grand);
+            } else {
+              escaped(node);
+            }
+          } else if (callNames.has(node.text)) {
+            if (ts.isCallExpression(parent) && parent.expression === node) record(parent);
+            else escaped(node);
+          }
+        }
+      }
+      ts.forEachChild(node, scan);
+    }
+    scan(fn.body);
+  }
+
   function visit(node: ts.Node): void {
     const run = methodCall(node, "run");
     if (run !== undefined) visitRun(run);
+    const decide = methodCall(node, "decide");
+    if (decide !== undefined) visitDecide(decide);
     const suspend = methodCall(node, "suspend");
     if (suspend !== undefined) visitSuspend(suspend);
     // `ctx.sleep`/`sleepUntil` are deliberately NOT recorded. The kernel authors

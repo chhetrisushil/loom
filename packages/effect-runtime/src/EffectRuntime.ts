@@ -240,6 +240,15 @@ export class EffectRuntime {
     return this.registry.get(toolId)?.errors;
   }
 
+  /**
+   * A registered effect's declared determinism-boundary mode (ADR 0073), for tooling —
+   * `@loom/verify` reads it to flag a `journaled` effect reached from a `ctx.decide`
+   * scope, which the transient seam refuses. `undefined` when undeclared or unregistered.
+   */
+  modeOf(toolId: string): Effect["mode"] | undefined {
+    return this.registry.get(toolId)?.mode;
+  }
+
   /** The registered effect's kind (`tool` / `llm` / `human` / `a2a`), for tooling. */
   kindOf(toolId: string): Effect["kind"] | undefined {
     return this.registry.get(toolId)?.kind;

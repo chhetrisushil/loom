@@ -80,6 +80,18 @@ export interface EffectRef {
   readonly effectClass?: string;
 }
 
+/**
+ * An effect a flow reaches through `scope.invokeTransient(…)` inside a `ctx.decide`
+ * decider (L31). Carried separately from `effects` (which these are also merged into, so
+ * capability-compat / effect-class see them) because the decider seam adds a constraint
+ * `ctx.run` does not: a `journaled` effect is refused on a transient call.
+ */
+export interface DeciderEffectRef {
+  readonly toolId: string;
+  /** The effect's declared determinism-boundary mode, read from the real registry. */
+  readonly mode?: "journaled" | "ambient";
+}
+
 export interface BudgetSpec {
   readonly dimensions: readonly string[];
   readonly ceilings?: Readonly<Record<string, number>>;
@@ -127,6 +139,8 @@ export interface FlowSpec {
   readonly loopIdentityCalls?: readonly LoopIdentityCall[];
   readonly suspends?: readonly SuspendPoint[];
   readonly effects?: readonly EffectRef[];
+  /** L31 — effects reached via a `ctx.decide` scope (a subset of `effects`, with their mode). */
+  readonly deciderEffects?: readonly DeciderEffectRef[];
   /**
    * EF-1 — the flow's declared effect-class CEILING. A value from the app's
    * `effectClasses` ordering; absent ⇒ the effect-class rule skips this flow (G2).

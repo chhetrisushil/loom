@@ -115,4 +115,126 @@ describe("runner-body reach analysis", () => {
     const reach = analyzeRunnerReach("const runner = async () => ({ ok: true });");
     expect(reach).toEqual({ steps: [], unresolved: [], suspends: [] });
   });
+  // ── L31: scope.invokeTransient inside a ctx.decide decider ────────────────
+
+  describe("decider scope reach (L31)", () => {
+    const via = (toolId: string) => ({ toolId, viaDecider: true });
+
+    it("counts scope.invokeTransient with a literal toolId as reached", () => {
+      const reach = analyzeRunnerReach(`
+        const r = async (ctx) => {
+          await ctx.decide("plan", (scope) => scope.invokeTransient("llm.plan", { q: 1 }));
+        };
+      `);
+      expect(reach.steps).toEqual([via("llm.plan")]);
+      expect(reach.unresolved).toEqual([]);
+    });
+
+    it("handles async function bodies, function expressions and template literals", () => {
+      const reach = analyzeRunnerReach(`
+        const r = async (ctx) => {
+          await ctx.decide("a", async (s) => { const x = await s.invokeTransient(\`t.a\`, {}); return x; });
+          await ctx.decide("b", function (s) { return s.invokeTransient("t.b", {}); });
+        };
+      `);
+      expect(reach.steps).toEqual([via("t.a"), via("t.b")]);
+      expect(reach.unresolved).toEqual([]);
+    });
+
+    it("handles a destructured invokeTransient, including a rename", () => {
+      const reach = analyzeRunnerReach(`
+        const r = async (ctx) => {
+          await ctx.decide("a", ({ invokeTransient }) => invokeTransient("t.a", {}));
+          await ctx.decide("b", ({ invokeTransient: call }) => call("t.b", {}));
+        };
+      `);
+      expect(reach.steps).toEqual([via("t.a"), via("t.b")]);
+      expect(reach.unresolved).toEqual([]);
+    });
+
+    it("finds calls nested in closures inside the decider", () => {
+      const reach = analyzeRunnerReach(`
+        const r = async (ctx) => {
+          await ctx.decide("a", (s) => Promise.all(["x"].map(() => s.invokeTransient("t.a", {}))));
+        };
+      `);
+      expect(reach.steps).toEqual([via("t.a")]);
+    });
+
+    it("refuses a non-literal toolId: reported as unresolved, never dropped", () => {
+      const reach = analyzeRunnerReach(`
+        const r = async (ctx, tool) => {
+          await ctx.decide("a", (s) => s.invokeTransient(tool, {}));
+          await ctx.decide("b", (s) => s.invokeTransient(\`llm.\${tool}\`, {}));
+          await ctx.decide("c", (s) => s.invokeTransient(TOOLS.plan, {}));
+        };
+      `);
+      expect(reach.steps).toEqual([]);
+      expect(reach.unresolved.map((u) => u.expr)).toEqual([
+        "invokeTransient(tool)",
+        "invokeTransient(`llm.${tool}`)",
+        "invokeTransient(TOOLS.plan)",
+      ]);
+      expect(reach.unresolved.every((u) => u.kind === "step")).toBe(true);
+    });
+
+    it("refuses a scope that escapes the decider (passed on, aliased, element access)", () => {
+      const reach = analyzeRunnerReach(`
+        const r = async (ctx) => {
+          await ctx.decide("a", (s) => plan(s));
+          await ctx.decide("b", (s) => { const t = s; return t.invokeTransient("t.b", {}); });
+          await ctx.decide("c", (s) => s["invokeTransient"]("t.c", {}));
+          await ctx.decide("d", ({ invokeTransient }) => invokeTransient.call(null, "t.d", {}));
+          await ctx.decide("e", ({ ...rest }) => rest.invokeTransient("t.e", {}));
+        };
+      `);
+      expect(reach.steps).toEqual([]);
+      expect(reach.unresolved).toHaveLength(5);
+    });
+
+    it("a decider that never touches a scope (zero params, or ignored) reaches nothing and is not flagged", () => {
+      const reach = analyzeRunnerReach(`
+        const r = async (ctx) => {
+          await ctx.decide("a", () => pick());
+          await ctx.decide("b", (_scope) => pick());
+        };
+      `);
+      expect(reach).toEqual({ steps: [], unresolved: [], suspends: [] });
+    });
+
+    it("follows a decider passed by reference when it is declared in the same region", () => {
+      const reach = analyzeRunnerReach(`
+        const planner = (s) => s.invokeTransient("llm.plan", {});
+        function other(s) { return s.invokeTransient("llm.other", {}); }
+        const r = async (ctx) => {
+          await ctx.decide("a", planner);
+          await ctx.decide("b", other);
+        };
+      `);
+      expect(reach.steps).toEqual([via("llm.plan"), via("llm.other")]);
+      expect(reach.unresolved).toEqual([]);
+    });
+
+    it("refuses a decider passed by reference whose body it cannot see", () => {
+      const reach = analyzeRunnerReach(`
+        import { planner } from "./planner";
+        const r = async (ctx) => {
+          await ctx.decide("a", planner);
+          await ctx.decide("b", makeDecider());
+        };
+      `);
+      expect(reach.steps).toEqual([]);
+      expect(reach.unresolved.map((u) => u.expr)).toEqual([
+        "decide(planner)",
+        "decide(makeDecider())",
+      ]);
+    });
+
+    it("does not confuse other invokeTransient receivers outside a decider", () => {
+      const reach = analyzeRunnerReach(`
+        const r = async (ctx, runtime) => { await runtime.invokeTransient("t.x", {}); };
+      `);
+      expect(reach).toEqual({ steps: [], unresolved: [], suspends: [] });
+    });
+  });
 });

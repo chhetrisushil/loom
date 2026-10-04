@@ -666,6 +666,15 @@ export class WorkflowRuntime {
   }
 
   /**
+   * A registered effect's declared determinism-boundary mode (ADR 0073), read-only and
+   * not a syscall. The verify adapter derives it from the real registry so the
+   * `ctx.decide`-scope check cannot be satisfied by a caller who merely claims a mode.
+   */
+  effectModeOf(toolId: string): "journaled" | "ambient" | undefined {
+    return this.effectRuntime.modeOf(toolId);
+  }
+
+  /**
    * Advisory pre-warm (latency-only, off the durable path): spin up the cold
    * resources a flow's FIRST step will need — a K7 isolated child process, an
    * LLM provider connection — ahead of the run, so the initial latency the

@@ -574,3 +574,27 @@ describe("effect-class rule", () => {
     ).toEqual([]);
   });
 });
+
+describe("L31 - effects reached through a ctx.decide scope", () => {
+  const flow = (deciderEffects: VerifyInput["flows"][number]["deciderEffects"]): VerifyInput =>
+    ({
+      flows: [{ id: "f", flowHash: "h", reachAnalyzed: true, deciderEffects }],
+    }) as VerifyInput;
+
+  it("errors (replay-safety) on a journaled effect called from a decider scope", () => {
+    const f = verify(flow([{ toolId: "approve", mode: "journaled" }])).findings.filter(
+      (x) => x.rule === "replay-safety"
+    );
+    expect(f).toHaveLength(1);
+    expect(f[0]?.severity).toBe("error");
+    expect(f[0]?.message).toContain("journaled");
+    expect(f[0]?.location).toBe("f:approve");
+  });
+
+  it("accepts ambient and undeclared-mode effects from a scope", () => {
+    const r = verify(
+      flow([{ toolId: "page", mode: "ambient" }, { toolId: "plan" }])
+    ).findings.filter((x) => x.rule === "replay-safety");
+    expect(r).toEqual([]);
+  });
+});

@@ -6,6 +6,7 @@ import type { CapabilityAuthorizer } from "@loom/effect-runtime";
 import { GrantTable } from "@loom/effect-runtime";
 import { EVENT_SCHEMA_VERSION } from "@loom/replay-vm";
 import type {
+  DeciderEffectRef,
   FlowSpec,
   GrantSpec,
   LoopIdentityCall,
@@ -51,7 +52,12 @@ export interface VerifyLintInputs {
  * same way `NonDeterministicCall` already arrives.
  */
 export interface RunnerReachInput {
-  readonly steps?: readonly { readonly stepId?: string; readonly toolId: string }[];
+  readonly steps?: readonly {
+    readonly stepId?: string;
+    readonly toolId: string;
+    /** L31 — reached through `scope.invokeTransient` in a `ctx.decide` decider. */
+    readonly viaDecider?: boolean;
+  }[];
   readonly unresolved?: readonly UnresolvedReachRef[];
   readonly suspends?: readonly SuspendPoint[];
 }
@@ -228,7 +234,14 @@ export function resolveVerifyInput(
     // NOT resolve so the rules can bound their own claim.
     const reach = inputs.runnerReachByFlow?.[def.id];
     const declaredToolIds = new Set(effects.map((e) => e.toolId));
+    const deciderEffects: DeciderEffectRef[] = [];
+    const deciderSeen = new Set<string>();
     for (const step of reach?.steps ?? []) {
+      if (step.viaDecider === true && !deciderSeen.has(step.toolId)) {
+        deciderSeen.add(step.toolId);
+        const mode = runtime.effectModeOf(step.toolId);
+        deciderEffects.push({ toolId: step.toolId, ...(mode !== undefined && { mode }) });
+      }
       if (declaredToolIds.has(step.toolId)) continue; // already covered by the declaration
       declaredToolIds.add(step.toolId);
       effects.push({
@@ -270,6 +283,7 @@ export function resolveVerifyInput(
       ...(reach !== undefined && { reachAnalyzed: true }),
       ...(unresolvedReach.length > 0 && { unresolvedReach }),
       ...(suspends.length > 0 && { suspends }),
+      ...(deciderEffects.length > 0 && { deciderEffects }),
       ...(def.effectClass !== undefined && { effectClass: def.effectClass }),
       ...(nonDet !== undefined && nonDet.length > 0 && { nonDeterministicCalls: nonDet }),
       ...(loopIdent !== undefined && loopIdent.length > 0 && { loopIdentityCalls: loopIdent }),

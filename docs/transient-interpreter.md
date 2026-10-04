@@ -99,6 +99,11 @@ an id from `(executionId, stepId)` must append `callKey` when present: the A2A
 peer client (task id) and the redaction middleware (secret-ref id) do. The
 `a2ui` `callFunction` effect is `journaled`, so it can never run in a scope.
 
+**Verification (L31).** `@loom/verify`'s runner-body reach analysis counts a
+literal-toolId `scope.invokeTransient` as a reached effect and reports a non-literal
+toolId, an escaping scope, or an unseen decider as unresolved; a scope call to a
+`journaled` effect is a `replay-safety` error (ADR 0086 amendment).
+
 **Cancellation and lifetime.** The call's signal is the composition of the
 execution's cancellation, the signal the decider passes (it adds to, never
 replaces, the execution's), and the scope's own lifetime: a call started but not

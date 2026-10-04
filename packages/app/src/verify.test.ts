@@ -1,6 +1,6 @@
 import { analyzeRunnerReach } from "@loom/compiler";
 import { step$ } from "@loom/core";
-import { GrantTable } from "@loom/effect-runtime";
+import { GrantTable, ToolEffect } from "@loom/effect-runtime";
 import { verify } from "@loom/verify";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
@@ -519,5 +519,107 @@ describe("the wiring an app actually uses", () => {
     expect(
       injected.findings.filter((f) => f.rule === "capability-compat" && f.severity === "error")
     ).toHaveLength(1);
+  });
+});
+
+// ── L31: effects whose ONLY reach is a ctx.decide scope ───────────────────────
+
+const DECIDER_SOURCE = `
+  const runner = async (ctx, input) => {
+    await ctx.decide("plan", (scope) => scope.invokeTransient("remediation-tool", input));
+  };
+`;
+
+describe("decider-scope reach reaches the rules (L31)", () => {
+  const build = (authorizer: GrantTable) =>
+    defineConfig({
+      storage: { kind: "memory" },
+      flows: [undeclaredFlow()],
+      security: { authorizer },
+    });
+
+  it("CONTROL: without the analysis a flow whose only effect is in a decider reaches nothing and passes", () => {
+    const { runtime } = build(partialGrants);
+    const report = verify(resolveVerifyInput(runtime, { authorizer: partialGrants }));
+    expect(
+      report.findings.filter((f) => f.rule === "capability-compat" && f.severity === "error")
+    ).toHaveLength(0);
+    expect(report.ok).toBe(true);
+  });
+
+  it("a decider-only effect the principal is not granted now fails capability-compat", () => {
+    const { runtime } = build(partialGrants);
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: partialGrants,
+        runnerReachByFlow: { gated: analyzeRunnerReach(DECIDER_SOURCE, "gated") },
+      })
+    );
+    const errs = report.findings.filter(
+      (f) => f.rule === "capability-compat" && f.severity === "error"
+    );
+    expect(errs).toHaveLength(1);
+    expect(errs[0]?.message).toContain("remediation-tool");
+    expect(report.ok).toBe(false);
+  });
+
+  it("is consistent when the capability is granted", () => {
+    const grants = new GrantTable({ gated: ["remediation-tool"] });
+    const { runtime } = build(grants);
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: grants,
+        runnerReachByFlow: { gated: analyzeRunnerReach(DECIDER_SOURCE, "gated") },
+      })
+    );
+    expect(report.findings.filter((f) => f.severity === "error")).toEqual([]);
+  });
+
+  it("a non-literal toolId is a finding, not a silent pass", () => {
+    const { runtime } = build(fullGrants);
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: fullGrants,
+        runnerReachByFlow: {
+          gated: analyzeRunnerReach(
+            "const r = async (ctx, t) => { await ctx.decide('p', (s) => s.invokeTransient(t, {})); };",
+            "gated"
+          ),
+        },
+      })
+    );
+    const warns = report.findings.filter(
+      (f) => f.rule === "capability-compat" && f.severity === "warn"
+    );
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.message).toContain("invokeTransient(t)");
+  });
+
+  it("a scope call to a journaled effect is flagged statically (mode read from the registry)", () => {
+    const { runtime } = build(fullGrants);
+    runtime.register("remediation-tool", new ToolEffect(async () => "ok", { mode: "journaled" }));
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: fullGrants,
+        runnerReachByFlow: { gated: analyzeRunnerReach(DECIDER_SOURCE, "gated") },
+      })
+    );
+    const errs = report.findings.filter(
+      (f) => f.rule === "replay-safety" && f.severity === "error"
+    );
+    expect(errs).toHaveLength(1);
+    expect(errs[0]?.message).toContain("remediation-tool");
+  });
+
+  it("the same journaled effect via ctx.run is NOT flagged (only the scope seam refuses it)", () => {
+    const { runtime } = build(fullGrants);
+    runtime.register("remediation-tool", new ToolEffect(async () => "ok", { mode: "journaled" }));
+    const report = verify(
+      resolveVerifyInput(runtime, {
+        authorizer: fullGrants,
+        runnerReachByFlow: { gated: analyzeRunnerReach(RUNNER_SOURCE, "gated") },
+      })
+    );
+    expect(report.findings.filter((f) => f.rule === "replay-safety")).toEqual([]);
   });
 });
