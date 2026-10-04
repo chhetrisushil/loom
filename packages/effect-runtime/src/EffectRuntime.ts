@@ -168,7 +168,7 @@ export class EffectRuntime {
    * `ctx.decide`'s scope); it changes the claimed identity only, not R1-R5.
    *
    * @param opts optional {@link TransientInvokeOptions} — `signal` (cancellation,
-   * R5), `principal` (authz still enforced if wired), `label` (trace tag only).
+   * R5), `principal` (authz still enforced if wired), `label` (trace tag; without `as` also the synthetic executionId an authorizer may grant by).
    */
   async invokeTransient<TIn = unknown, TOut = unknown>(
     toolId: string,
