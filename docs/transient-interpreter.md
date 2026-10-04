@@ -94,7 +94,7 @@ call, so everything keyed by step id (secret-output redaction, per-tool pricing,
 per-tool middleware config) matches the same way on both paths. Two calls in one
 execution (same decider or different ones, same tool) therefore share
 `(executionId, stepId)`; they are told apart by `EffectContext.callKey`
-(`decide:<decisionId>:<n>`, `n` a per-decider call ordinal). Any site that mints
+(`decide:<decisionId>:<n>`, `n` an ordinal unique across every decide() of the execution context, so even two live same-id decisions mint distinct keys). Any site that mints
 an id from `(executionId, stepId)` must append `callKey` when present: the A2A
 peer client (task id) and the redaction middleware (secret-ref id) do. The
 `a2ui` `callFunction` effect is `journaled`, so it can never run in a scope.

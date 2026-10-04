@@ -114,6 +114,8 @@ export class WorkflowContextImpl implements WorkflowContext {
   // right now (an emit appended meanwhile is left unstamped; see `emit`).
   private readonly flowEmitsSeen = new Map<string, number>();
   private inFlight = 0;
+  // L30 — ordinal for a decider scope call's `callKey` (unique across every decide() in this context).
+  private scopeCallSeq = 0;
   // ADR 0102 D4 — `segmentLive`: some syscall of THIS segment was executed live in this
   // run (a step not served from the log, a decider actually invoked), so nothing later in
   // the segment can be proven a replay; reset at the next gate passthrough.
@@ -549,7 +551,6 @@ export class WorkflowContextImpl implements WorkflowContext {
     // an AbortController composed into every call's signal and aborted when the decider
     // settles, so a call started and never awaited cannot outlive the decision.
     let scopeOpen = true;
-    let callOrdinal = 0;
     const scopeCtl = new AbortController();
     const scope: DecideScope = {
       invokeTransient: (toolId, input, o) => {
@@ -563,12 +564,14 @@ export class WorkflowContextImpl implements WorkflowContext {
         const signal = linkSignals(this.signal, o?.signal, scopeCtl.signal);
         // stepId stays the toolId (as a bare call) so every stepId-keyed consumer —
         // redaction, pricing, per-tool middleware config — matches; `callKey` carries the
-        // decision attribution + a per-call ordinal for sites that mint ids.
+        // decision attribution + an ordinal for sites that mint ids. The ordinal is per
+        // CONTEXT, not per decide(), so two live decide() calls sharing an id (e.g. under
+        // Promise.all) still mint distinct keys.
         return this.effectRuntime.invokeTransient(toolId, input, {
           as: {
             workflowId: this.workflowId,
             executionId: this.executionId,
-            callKey: `decide:${decisionId}:${callOrdinal++}`,
+            callKey: `decide:${decisionId}:${this.scopeCallSeq++}`,
           },
           // Admission control sees the execution's running spend (the charge is dropped
           // by the no-op emit, so spend made here is invisible to the budget).
