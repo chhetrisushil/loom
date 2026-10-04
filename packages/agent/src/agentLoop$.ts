@@ -13,6 +13,7 @@ import type { ExecutionContext } from "@loom/workflow-runtime";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { toolResultContent } from "./toolResultContent";
+import { buildToolMenu, toolInputJsonSchema } from "./toolSchema";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
 // ── R1 — the agent loop as a RUNNER BODY, not a step handler ─────────────────
@@ -179,7 +180,7 @@ function toolSpecsFor(tools: readonly ToolDefinition[]): LlmToolSpecInput[] {
   return tools.map((t) => ({
     name: t.id,
     description: t.description as LlmContent,
-    inputSchema: {},
+    inputSchema: toolInputJsonSchema(t.inputSchema),
   }));
 }
 
@@ -299,6 +300,8 @@ export async function agentLoop$(
     }
   }
   const tools = toolSpecsFor(toolDefs);
+  // R4 — the same definitions the model was shown are the only ones that may run.
+  const menu = buildToolMenu(toolDefs);
 
   const messages: LlmMessageInput[] = [];
   // The running byte counter behind `compaction.afterBytes`: updated at every
@@ -362,6 +365,14 @@ export async function agentLoop$(
             ...(verdict?.reason !== undefined && { reason: verdict.reason }),
           };
         }
+      }
+
+      // R4 — menu + input gate. A refusal is a RESULT fed back to the model (it can
+      // recover), computed purely from the recorded model output and the static
+      // menu, so replay reproduces it with nothing appended to the log.
+      if (output === undefined) {
+        const refusal = menu.check(toolCall.name, toolCall.input);
+        if (refusal !== undefined) output = refusal;
       }
 
       if (output === undefined) {

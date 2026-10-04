@@ -18,6 +18,7 @@ import { parallelLimit, throwIfAborted } from "@loom/scheduler";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { toolResultContent } from "./toolResultContent";
+import { buildToolMenu, toolInputJsonSchema } from "./toolSchema";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
 export interface AgentConfig {
@@ -136,8 +137,10 @@ export class AgentRunner {
     const toolSpecs: LlmToolSpecInput[] = toolDefs.map((t) => ({
       name: t.id,
       description: t.description as LlmContent,
-      inputSchema: {},
+      inputSchema: toolInputJsonSchema(t.inputSchema),
     }));
+    // R4 — only the menu the model was shown may run; see `buildToolMenu`.
+    const menu = buildToolMenu(toolDefs);
 
     const memoryId = definition.memoryId;
     const memoryScope = input.memoryScope ?? ctx.executionId;
@@ -213,6 +216,9 @@ export class AgentRunner {
         // failing tool never rejects the batch (keeps behaviour identical between
         // sequential and parallel modes).
         const runToolCall = async (toolCall: (typeof toolCalls)[number]): Promise<unknown> => {
+          // R4 — refusal is a result fed back to the model, never an execution.
+          const refusal = menu.check(toolCall.name, toolCall.input);
+          if (refusal !== undefined) return refusal;
           try {
             return await effectRuntime.execute(toolCall.name, toolCall.input, ctx);
           } catch (err) {

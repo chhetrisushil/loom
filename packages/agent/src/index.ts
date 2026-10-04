@@ -12,3 +12,5 @@ export { createAgentModelEffect } from "./createAgentModelEffect";
 export { agentStep$ } from "./agentStep$";
 export type { AgentStepConfig } from "./agentStep$";
 export type { AgentInput, AgentOutput, AgentStep } from "./types";
+export { buildToolMenu, toolInputJsonSchema, validateToolInput } from "./toolSchema";
+export type { ToolInputCheck, ToolInputIssue } from "./toolSchema";
