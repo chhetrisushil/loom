@@ -110,6 +110,16 @@ replaces, the execution's), and the scope's own lifetime: a call started but not
 awaited is aborted when the decider settles, and a call made after it settles
 throws.
 
+These refusals carry stable names, so a consumer that cannot import
+`@loom/workflow-runtime` classifies them by `err.name` rather than by message:
+`ExecutionCancelledError` (the abort reason of `cancel()`, and `throwIfCancelled`'s
+default, when the canceller supplied no `Error`) and `DecideScopeClosedError` (a call
+on a settled scope, and the abort reason of an unawaited call). A caller that passes
+its own `Error` as the cancel reason (including the deadline breach's own error) keeps
+it: it is the abort reason and the thrown error as-is, never wrapped. A decider that
+retries or records on failure should let these, and the other control-plane refusals
+(`CapabilityDeniedError`, `QuotaExceededError`, `AbortError`), propagate.
+
 **Budget and denial: what a scope call does NOT do.**
 
 - *Admission applies, the charge does not.* The scope passes the execution's

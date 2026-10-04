@@ -50,6 +50,7 @@ import {
   EFFECT_INDOUBT_RESOLVED,
   EXECUTION_RECOVERED,
   ExecutionAlreadyExistsError,
+  ExecutionCancelledError,
   ExecutionDeniedError,
   FlowCodeMismatchError,
   FlowMigrationCheckError,
@@ -2258,13 +2259,23 @@ export class WorkflowRuntime {
     const cancel = (reason?: unknown): void => {
       if (cancelled) return;
       cancelled = true;
-      controller.abort(reason);
+      // A caller-supplied Error is the abort reason as-is; otherwise a named
+      // ExecutionCancelledError, so every consumer of the signal can classify it.
+      controller.abort(
+        reason instanceof Error
+          ? reason
+          : new ExecutionCancelledError("Execution cancelled", reason)
+      );
       // Synchronous: enqueue the durable CANCELLED write (drained by run()'s
       // cancelled branch) and reject the caller immediately.
       journal.commit("EXECUTION_CANCELLED", {
         ...(reason !== undefined && { reason: String(reason) }),
       });
-      rejectCompletion(reason instanceof Error ? reason : new Error("Execution cancelled"));
+      rejectCompletion(
+        reason instanceof Error
+          ? reason
+          : new ExecutionCancelledError("Execution cancelled", reason)
+      );
     };
 
     // K8.3 — execution deadline, anchored to the LOGGED EXECUTION_STARTED

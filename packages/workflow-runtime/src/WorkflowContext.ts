@@ -9,7 +9,13 @@ import type { ExecutionJournal } from "./ExecutionJournal";
 import { armDeadline, assertValidBudget, remainingBudget } from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import { discardDecisionId } from "./strayPassthroughs";
-import { EFFECT_INDOUBT_RESOLVED, StepTimeoutError, TIMER_FIRED } from "./types";
+import {
+  DecideScopeClosedError,
+  EFFECT_INDOUBT_RESOLVED,
+  ExecutionCancelledError,
+  StepTimeoutError,
+  TIMER_FIRED,
+} from "./types";
 import type {
   DecideOptions,
   DecideScope,
@@ -556,7 +562,10 @@ export class WorkflowContextImpl implements WorkflowContext {
       invokeTransient: (toolId, input, o) => {
         if (!scopeOpen) {
           return Promise.reject(
-            new Error(`decide("${decisionId}"): the decider's scope is closed (decider settled)`)
+            new DecideScopeClosedError(
+              decisionId,
+              `decide("${decisionId}"): the decider's scope is closed (decider settled)`
+            )
           );
         }
         // Execution cancellation + the decider's own signal + the scope's lifetime: all
@@ -588,7 +597,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       throw err;
     } finally {
       scopeOpen = false;
-      scopeCtl.abort(new Error(`decide("${decisionId}"): decider settled`));
+      scopeCtl.abort(new DecideScopeClosedError(decisionId));
       this.inFlight--;
     }
 
@@ -746,7 +755,11 @@ export class WorkflowContextImpl implements WorkflowContext {
   private throwIfCancelled(): void {
     const signal = this.signal;
     if (signal?.aborted) {
-      throw signal.reason instanceof Error ? signal.reason : new Error("execution cancelled");
+      // A caller-supplied Error reason is thrown as-is (never wrapped); anything else
+      // becomes the named ExecutionCancelledError.
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new ExecutionCancelledError("execution cancelled", signal.reason);
     }
   }
 

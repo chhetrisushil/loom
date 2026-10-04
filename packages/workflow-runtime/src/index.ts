@@ -4,9 +4,11 @@ export { WorkflowRuntime, WorkflowRuntime as ExecutionRuntime } from "./Workflow
 export {
   ApprovalRejectedError,
   CompactedForkPointError,
+  DecideScopeClosedError,
   EFFECT_INDOUBT_RESOLVED,
   EXECUTION_RECOVERED,
   ExecutionAlreadyExistsError,
+  ExecutionCancelledError,
   SnapshotIdentityMismatchError,
   ExecutionDeniedError,
   FlowCodeMismatchError,

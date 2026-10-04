@@ -300,6 +300,41 @@ export interface ExecutionAuthorizer {
   authorize(request: ExecutionAuthzRequest): ExecutionAuthzVerdict;
 }
 
+/**
+ * The abort reason of a cancelled execution when the canceller supplied no `Error` of
+ * its own. `name` is set explicitly (minifier-proof) so any consumer, including one
+ * that cannot import this package, can classify a cancellation as
+ * `err.name === "ExecutionCancelledError"` without matching message text. A caller that
+ * passes its OWN `Error` as the cancel reason keeps it: it is thrown as-is, never wrapped.
+ * `reason` carries the caller's non-Error reason (a string, say), if any.
+ */
+export class ExecutionCancelledError extends Error {
+  constructor(
+    message = "execution cancelled",
+    readonly reason?: unknown
+  ) {
+    super(message);
+    this.name = "ExecutionCancelledError";
+    Object.setPrototypeOf(this, ExecutionCancelledError.prototype);
+  }
+}
+
+/**
+ * Raised by a `ctx.decide` decider's scope after the decider has settled: it is both the
+ * rejection of a late `invokeTransient` and the abort reason of any call the decider
+ * started and never awaited. Named for the same reason as {@link ExecutionCancelledError}.
+ */
+export class DecideScopeClosedError extends Error {
+  constructor(
+    readonly decisionId: string,
+    message?: string
+  ) {
+    super(message ?? `decide("${decisionId}"): decider settled`);
+    this.name = "DecideScopeClosedError";
+    Object.setPrototypeOf(this, DecideScopeClosedError.prototype);
+  }
+}
+
 /** Thrown when an {@link ExecutionAuthorizer} refuses a lifecycle operation. */
 export class ExecutionDeniedError extends Error {
   constructor(
