@@ -93,7 +93,38 @@ describe("resume reads (R1a)", () => {
   });
 
   it("a missing execution still refuses, and an orphaned snapshot does not resurrect it", async () => {
-    const { rt } = build();
+    const es = new SpyEventStore();
+    const snaps = new InMemoryAsyncSnapshotStore();
+    const effects = new EffectRuntime();
+    const rt = new WorkflowRuntime({
+      eventStore: es,
+      snapshotStore: snaps,
+      effectRuntime: effects,
+      onWarn: () => {},
+    });
+    // a snapshot whose log is gone (e.g. erased): the snapshot alone must not start a resume
+    await snaps.save({
+      id: "orphan-1",
+      executionId: "orphan",
+      workflowId: "loop",
+      sequence: 3,
+      createdAt: 1,
+      state: {
+        executionId: "orphan",
+        workflowId: "loop",
+        workflowVersion: "1",
+        status: "suspended",
+        frames: {},
+        variables: {},
+        sequence: 3,
+        startedAt: 1,
+        updatedAt: 1,
+      },
+    });
+    expect(await snaps.loadLatest("orphan")).not.toBeNull();
+    await expect(rt.resume("orphan", { eventType: "msg", payload: {} })).rejects.toThrow(
+      /No execution found/
+    );
     await expect(rt.resume("nope", { eventType: "msg", payload: {} })).rejects.toThrow(
       /No execution found/
     );

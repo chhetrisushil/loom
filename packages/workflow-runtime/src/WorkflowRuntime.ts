@@ -40,8 +40,9 @@ import {
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import { COMPUTE_TARGET_KEY } from "./placement";
 import {
+  type StrayPassthroughReport,
+  StrayScanner,
   discardDecisionId,
-  inspectStrayPassthroughs,
   strayPassthroughMessage,
 } from "./strayPassthroughs";
 import {
@@ -407,11 +408,17 @@ export class WorkflowRuntime {
   private readonly warnedDroppedDeadlines = new Set<string>();
   private readonly warnedStrayPassthroughs = new Set<string>();
   /**
-   * R1a — executions whose last legacy stray-passthrough scan (ADR 0104) came back CLEAN.
-   * See {@link WorkflowRuntime.resume}: it lets every later resume of the same execution skip
-   * the whole-log read that scan needs. Bounded (FIFO) like the warning memory.
+   * R1a — per execution, the legacy stray-passthrough scanner (ADR 0104) as it stood after the
+   * last scan that came back CLEAN, with the event sequence it has consumed and the flow
+   * definition whose step kinds it attributed parks with. See {@link WorkflowRuntime.resume}:
+   * a later resume feeds it only the events appended since, instead of re-reading the whole
+   * log, so a pre-0104 writer appending to the same log (a mixed-version fleet) is still seen.
+   * Bounded (FIFO) like the warning memory.
    */
-  private readonly strayScanClean = new Set<string>();
+  private readonly strayScans = new Map<
+    string,
+    { scanner: StrayScanner; definition: FlowDefinition<unknown, unknown> }
+  >();
   private readonly snapshotEvery: number | undefined;
   private readonly timerStore: TimerStore | undefined;
   private readonly resumeAuthenticator: ResumeAuthenticator | undefined;
@@ -821,40 +828,53 @@ export class WorkflowRuntime {
     this.onWarn(message());
   }
 
-  /** Remember (or forget) that this execution's whole-log stray scan came back clean. */
+  /** Remember (or forget) the scanner of a whole-log scan, only when it came back clean. */
   private noteStrayScan(
     executionId: string,
+    scanner: StrayScanner,
+    definition: FlowDefinition<unknown, unknown>,
     reopening: boolean,
     report: { verdict?: unknown; ambiguousHumanStep?: unknown }
   ): void {
+    this.strayScans.delete(executionId);
     const clean =
       !reopening && report.verdict === undefined && report.ambiguousHumanStep === undefined;
-    if (!clean) {
-      this.strayScanClean.delete(executionId);
-      return;
+    if (!clean) return;
+    if (this.strayScans.size >= STRAY_WARNING_MEMORY) {
+      // FIFO eviction: a Map iterates in insertion order.
+      const oldest = this.strayScans.keys().next().value;
+      if (oldest !== undefined) this.strayScans.delete(oldest);
     }
-    if (this.strayScanClean.has(executionId)) return;
-    if (this.strayScanClean.size >= STRAY_WARNING_MEMORY) {
-      const oldest = this.strayScanClean.values().next().value;
-      if (oldest !== undefined) this.strayScanClean.delete(oldest);
-    }
-    this.strayScanClean.add(executionId);
+    this.strayScans.set(executionId, { scanner, definition });
   }
 
-  private checkStrayPassthroughs(
+  /** Scan a whole retained log and remember the result if clean. */
+  private scanWholeLog(
     executionId: string,
     events: readonly EventEnvelope[],
     state: ExecutionState,
     definition: FlowDefinition<unknown, unknown>,
-    reopening: boolean,
+    reopening: boolean
+  ): StrayPassthroughReport {
+    const scanner = new StrayScanner(this.stepKindResolver(definition));
+    scanner.feed(events);
+    const report = scanner.report(state, { reopening });
+    this.noteStrayScan(executionId, scanner, definition, reopening, report);
+    return report;
+  }
+
+  private checkStrayPassthroughs(
+    executionId: string,
+    report: StrayPassthroughReport,
+    state: ExecutionState,
     discard: ResumeEvent["discardLegacyAnswers"],
     approval: { eventType: string; payload: unknown } | undefined
   ): Array<{ eventType: string; payload: unknown }> {
-    const report = inspectStrayPassthroughs(events, state, {
-      kindOfStep: this.stepKindResolver(definition),
-      reopening,
-    });
     const ambiguous = report.ambiguousHumanStep;
+    if (ambiguous !== undefined || discard !== undefined) {
+      // A refused (or discarding) resume must never leave a "clean" entry behind.
+      this.strayScans.delete(executionId);
+    }
     if (discard !== undefined) {
       if (
         ambiguous === undefined ||
@@ -879,7 +899,6 @@ export class WorkflowRuntime {
       );
     }
     const verdict = report.verdict;
-    this.noteStrayScan(executionId, reopening, report);
     if (verdict !== undefined) {
       this.warnStrayOnce(`${verdict.kind}:${executionId}`, () =>
         strayPassthroughMessage(executionId, verdict)
@@ -1385,12 +1404,34 @@ export class WorkflowRuntime {
     const snapshot = await this.snapshotStore.loadLatest(executionId);
     let allEvents: EventEnvelope[] | undefined;
     let firstEvent: EventEnvelope | undefined;
-    if (
-      snapshot !== null &&
-      resumeEvent.discardLegacyAnswers === undefined &&
-      this.strayScanClean.has(executionId)
-    ) {
-      firstEvent = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    // Events the carried scanner has not seen yet (fast path only).
+    let scanTail: EventEnvelope[] | undefined;
+    let tailEvents: EventEnvelope[] | undefined;
+    const carried =
+      snapshot !== null && resumeEvent.discardLegacyAnswers === undefined
+        ? this.strayScans.get(executionId)
+        : undefined;
+    if (snapshot !== null && carried !== undefined) {
+      const through = carried.scanner.through;
+      const from = Math.min(snapshot.sequence, through) + 1;
+      const tail = await this.eventStore.readFrom(executionId, from);
+      const fresh = tail.filter((e) => e.sequence > through);
+      // The scanner may only continue a gap-free log; anything else re-scans from scratch.
+      let contiguous = true;
+      for (let i = 0; i < fresh.length; i++) {
+        if (fresh[i]?.sequence !== through + 1 + i) {
+          contiguous = false;
+          break;
+        }
+      }
+      if (contiguous) {
+        firstEvent = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+        if (firstEvent !== undefined) {
+          scanTail = fresh;
+          tailEvents = tail.filter((e) => e.sequence > snapshot.sequence);
+        }
+      }
+      if (firstEvent === undefined) this.strayScans.delete(executionId);
     }
     if (firstEvent === undefined) {
       allEvents = await this.eventStore.read(executionId);
@@ -1413,10 +1454,8 @@ export class WorkflowRuntime {
     let vm: ReplayVM;
 
     if (snapshot) {
-      const eventsAfterSnapshot = await this.eventStore.readFrom(
-        executionId,
-        snapshot.sequence + 1
-      );
+      const eventsAfterSnapshot =
+        tailEvents ?? (await this.eventStore.readFrom(executionId, snapshot.sequence + 1));
       vm = new ReplayVM(eventsAfterSnapshot, this.seedOf(snapshot, executionId, workflowId));
     } else {
       vm = new ReplayVM(allEvents as EventEnvelope[], {
@@ -1480,18 +1519,34 @@ export class WorkflowRuntime {
     assertInDoubtVerdict(executionId, vm.getState(), resumePayload);
     assertNullAnswerTakes(executionId, resumeEvent.eventType, vm.getState(), resumePayload);
 
-    const discardEvents =
-      allEvents === undefined
-        ? [] // a previous scan of this execution was clean (see above)
-        : this.checkStrayPassthroughs(
-            executionId,
-            allEvents,
-            vm.getState(),
-            resolved.definition,
-            false,
-            resumeEvent.discardLegacyAnswers,
-            approval
-          );
+    let report: StrayPassthroughReport | undefined;
+    if (scanTail !== undefined && carried !== undefined) {
+      // R1a — continue the carried scan over the tail. Only a result that is still clean is
+      // trusted; anything else (or code whose step kinds differ) re-scans the whole log.
+      if (carried.definition === resolved.definition) {
+        carried.scanner.feed(scanTail);
+        const r = carried.scanner.report(vm.getState());
+        if (r.verdict === undefined && r.ambiguousHumanStep === undefined) report = r;
+      }
+      if (report === undefined) {
+        this.strayScans.delete(executionId);
+        allEvents = await this.eventStore.read(executionId);
+      }
+    }
+    report ??= this.scanWholeLog(
+      executionId,
+      allEvents as EventEnvelope[],
+      vm.getState(),
+      resolved.definition,
+      false
+    );
+    const discardEvents = this.checkStrayPassthroughs(
+      executionId,
+      report,
+      vm.getState(),
+      resumeEvent.discardLegacyAnswers,
+      approval
+    );
 
     return this.execute(
       executionId,
@@ -1647,10 +1702,14 @@ export class WorkflowRuntime {
     assertNullAnswerTakes(executionId, resumeEvent.eventType, state, resumePayload);
     const discardEvents = this.checkStrayPassthroughs(
       executionId,
-      allEvents,
+      this.scanWholeLog(
+        executionId,
+        allEvents,
+        state,
+        target.definition,
+        state.status !== "suspended" && state.status !== "running" && state.status !== "pending"
+      ),
       state,
-      target.definition,
-      state.status !== "suspended" && state.status !== "running" && state.status !== "pending",
       resumeEvent.discardLegacyAnswers,
       approval
     );

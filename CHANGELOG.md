@@ -22,10 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `ExecutionJournal`); `getState()` keeps its meaning.
   - `WorkflowRuntime.resume` read the whole log on every call. With a snapshot it now takes the
     execution's identity from sequence 0 and folds snapshot + tail. The one consumer of the full
-    log, the ADR 0104 legacy stray-passthrough scan, still runs on the first resume of an
-    execution in a process and on every resume of a log it flags; only a scan that came back
-    clean is remembered (a current kernel writes no gate-less passthrough), and
-    `discardLegacyAnswers` always forces it.
+    log, the ADR 0104 legacy stray-passthrough scan, still runs over the whole log on the first
+    resume of an execution in a process and on every resume of a log it flags; `discardLegacyAnswers`
+    always forces it. After a CLEAN scan the runtime keeps the scanner itself (not a "clean" flag)
+    and feeds it only the events appended since, so a PRE-0104 kernel appending to the same log
+    afterwards (a mixed-version fleet during a rolling upgrade, an old node running
+    `recoverAbandoned`) is detected by the warm runtime exactly as a fresh one detects it; a
+    flagged result, a gap in the tail, or a different flow definition falls back to the full
+    read. A refused scan never leaves a remembered entry. Residual: a `truncatePrefix` that
+    runs after a clean scan is not seen by a warm runtime, which may therefore omit the
+    advisory "unverifiable" warning a fresh one would print (it is a warning, never a refusal).
   - The snapshot written at every suspend is kept: with `snapshotEvery` unset it is the only
     thing that bounds a resume's tail. It hands the state to the store by reference (no copy).
 

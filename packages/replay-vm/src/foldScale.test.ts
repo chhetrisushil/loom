@@ -342,6 +342,104 @@ describe("fold equality: bulk, event-at-a-time and live all agree (R1a)", () => 
   }
 });
 
+// ── every handled event type, in random order ────────────────────────────────
+// `randomStream` is the one the independent reference fold understands. This generator covers
+// EVERY type the fold handles (denials, in-doubt, migration, approval, rehoming, shredding,
+// typed failures, retries, cancellations, terminals, unknown types) in an order that makes no
+// sense on purpose: the fold must be a pure function of the event sequence, so the in-place
+// fast paths must agree byte-for-byte with the copying path whatever arrives.
+function allTypesStream(seed: number, n: number): EventEnvelope[] {
+  const r = rng(seed);
+  const step = (): string => `s${Math.floor(r() * 8)}`;
+  const payloads: Record<string, () => unknown> = {
+    STEP_STARTED: () => ({ stepId: step(), input: { a: 1 } }),
+    STEP_COMPLETED: () => ({ stepId: step(), output: 1 }),
+    STEP_FAILED: () => ({
+      stepId: step(),
+      error: "e",
+      ...(r() < 0.5 && { channel: "c", payload: { x: 1 } }),
+    }),
+    STEP_CANCELLED: () => ({ stepId: step() }),
+    STEP_RETRYING: () => ({ stepId: step(), attempt: 2 }),
+    PARALLEL_STARTED: () => ({ stepIds: ["pa", step()] }),
+    PARALLEL_COMPLETED: () => ({}),
+    EXECUTION_SUSPENDED: () => ({
+      condition: { on: r() < 0.3 ? "EffectInDoubtResolved" : "g" },
+    }),
+    EXECUTION_RESUMED: () => (r() < 0.3 ? null : { a: r() }),
+    DECISION_RECORDED: () => ({ decisionId: `d${Math.floor(r() * 10)}`, choice: r() }),
+    EFFECT_DENIED: () => ({ stepId: "s1", toolId: "t", reason: "x" }),
+    EXECUTION_DENIED: () => ({ op: "resume", reason: "x" }),
+    EXECUTION_ARCHIVED: () => ({ executionId: "x" }),
+    EXECUTION_DELETED: () => ({ executionId: "x" }),
+    EVENTS_REHOMED: () => ({ executionId: "x", fromSequence: 1, throughSequence: 2, proof: "p" }),
+    ERASURE_PENDING: () => ({ subjectId: "u" }),
+    OUTCOME_RECORDED: () => ({ key: "k", success: true }),
+    SAFETY_BLOCKED: () => ({ validatorId: "v" }),
+    EFFECT_INDOUBT: () => ({ stepId: "s1", attempts: 1 }),
+    EXECUTION_MIGRATED: () => ({ toFlowId: "f2", toHash: "h" }),
+    APPROVAL_GRANTED: () => ({ actor: "a" }),
+    PAYLOAD_SHREDDED: () => ({ subjectId: "u" }),
+    EGRESS_DENIED: () => ({ target: "t" }),
+    TIMER_FIRED: () => ({ wakeAt: 1 }),
+    RESOURCE_METERED: () => ({ tokens: 3, costUsd: 0.1 }),
+    QUOTA_EXCEEDED: () => ({ reason: "q" }),
+    EXECUTION_COMPLETED: () => ({ output: 1 }),
+    EXECUTION_FAILED: () => ({ error: "e" }),
+    EXECUTION_CANCELLED: () => ({ reason: "c" }),
+    "domain.x": () => ({ i: 1 }),
+  };
+  const types = Object.keys(payloads);
+  const out: EventEnvelope[] = [ev(0, "EXECUTION_STARTED", { input: {}, flowHash: "h" })];
+  for (let i = 1; i < n; i++) {
+    const t = types[Math.floor(r() * types.length)] as string;
+    const stamp =
+      r() < 0.2
+        ? {
+            flowEmit: Array.from(
+              { length: 16 },
+              () => "0123456789abcdef"[Math.floor(r() * 3)]
+            ).join(""),
+          }
+        : undefined;
+    out.push(ev(i, t, (payloads[t] as () => unknown)(), stamp));
+  }
+  return out;
+}
+
+describe("fold equality over EVERY handled event type (R1a)", () => {
+  for (const seed of [1, 2, 3, 5, 8, 13, 21, 34, 55, 89]) {
+    it(`seed ${seed}: bulk, per-event, live, snapshot+tail and escaped states are byte-identical`, () => {
+      const events = allTypesStream(seed, 500);
+      const bulk = bytes(foldEvents(events, ID));
+
+      let stepwise = foldEvents([], ID);
+      for (const e of events) stepwise = foldEvents([e], stepwise);
+      expect(bytes(stepwise)).toBe(bulk);
+
+      const r = rng(seed + 7);
+      const cut = Math.floor(r() * events.length);
+      const vm = new ReplayVM([], ID);
+      const held: Array<[ExecutionState, string]> = [];
+      let tailVm: ReplayVM | undefined;
+      events.forEach((e, i) => {
+        vm.applyEvent(e);
+        if (r() < 0.1) {
+          const st = vm.getState();
+          held.push([st, bytes(st)]);
+        }
+        if (i === cut) {
+          tailVm = new ReplayVM(events.slice(cut + 1), JSON.parse(bytes(vm.getState())));
+        }
+      });
+      expect(bytes(vm.getState())).toBe(bulk);
+      expect(bytes((tailVm as ReplayVM).getState())).toBe(bulk);
+      // a state handed out earlier was never mutated by a later event
+      for (const [st, snapshotBytes] of held) expect(bytes(st)).toBe(snapshotBytes);
+    });
+  }
+});
+
 describe("no caller-visible mutation (R1a)", () => {
   it("a state handed out by getState() is frozen in time while the VM keeps folding", () => {
     const events = randomStream(5, 600);

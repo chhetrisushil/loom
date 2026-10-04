@@ -6,7 +6,11 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
-import { classifyStrayPassthroughs, inspectStrayPassthroughs } from "./strayPassthroughs";
+import {
+  StrayScanner,
+  classifyStrayPassthroughs,
+  inspectStrayPassthroughs,
+} from "./strayPassthroughs";
 
 // ADR 0104 D2 — which pre-0104 logs carry a passthrough that answered no gate, and whether
 // it is already spent. Pure over (retained log, folded state).
@@ -305,5 +309,43 @@ describe("inspectStrayPassthroughs — the fail-closed null after a late sibling
     ];
     expect(foldEvents(log, INITIAL).variables._resumePayloads).toEqual([null]);
     expect(inspect(log)).toEqual({});
+  });
+});
+
+describe("StrayScanner is resumable (R1a)", () => {
+  it("feeding a log in two pieces reports exactly what one whole pass reports, at every cut", () => {
+    seq = 0;
+    const logs: EventEnvelope[][] = [
+      [
+        ev("EXECUTION_STARTED"),
+        ev("STEP_STARTED", { stepId: "h" }),
+        park("Approve"),
+        ev("EXECUTION_RESUMED", { by: "a" }),
+        ev("STEP_STARTED", { stepId: "h" }),
+        park("Approve"),
+      ],
+      [
+        ev("EXECUTION_STARTED"),
+        park("go0"),
+        ev("EXECUTION_RESUMED", { ok: 1 }),
+        ev("EXECUTION_RECOVERED"),
+        ev("EXECUTION_RESUMED", {}),
+        ev("STEP_STARTED", { stepId: "h" }),
+        park("Approve"),
+      ],
+      [ev("EXECUTION_STARTED"), park("go1"), ev("EXECUTION_RESUMED", { ok: 1 })],
+    ];
+    const kindOfStep = () => "human";
+    for (const log of logs) {
+      const state = foldEvents(log, INITIAL);
+      const whole = inspectStrayPassthroughs(log, state, { kindOfStep });
+      for (let cut = 0; cut <= log.length; cut++) {
+        const scanner = new StrayScanner(kindOfStep);
+        scanner.feed(log.slice(0, cut));
+        scanner.feed(log.slice(cut));
+        expect(scanner.report(state)).toEqual(whole);
+        expect(scanner.through).toBe(log.at(-1)?.sequence);
+      }
+    }
   });
 });

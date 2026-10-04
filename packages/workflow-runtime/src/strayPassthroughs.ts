@@ -68,30 +68,66 @@ export function inspectStrayPassthroughs(
   state: ExecutionState,
   options: StrayPassthroughOptions = {}
 ): StrayPassthroughReport {
-  // No resolver = no human steps known (the human-blind classification); the runtime always
-  // passes one, and treats an unresolvable step as possibly human.
-  const kindOf = options.kindOfStep ?? (() => "tool");
-  let status = "pending";
-  let parkedOn: string | undefined;
-  let parkedHuman: string | undefined; // the human step this park belongs to
-  let previous: EventEnvelope | undefined;
-  const unspentAtStart = new Map<string, number>(); // first STEP_STARTED of each step
-  const humans = new Map<string, { answers: number; reparked: boolean; open: boolean }>();
-  let appended = 0;
-  let strays = 0;
-  let unspent = 0; // strays not yet followed by a gate park
-  let parkAfterHidden = false; // a gate park anywhere in the retained log
-  let failedWhileParked = false; // mirrors the fold's `_failedWhileParked` (ADR 0105)
+  const scanner = new StrayScanner(options.kindOfStep);
+  scanner.feed(events);
+  return scanner.report(state, options);
+}
 
-  for (const e of events) {
+/**
+ * R1a — the scan of {@link inspectStrayPassthroughs} as a resumable object: `feed` events in
+ * sequence order (any number of calls), `report` against the folded state. Feeding a log in
+ * pieces is, by construction, the same single pass as feeding it whole — every piece of
+ * cross-event state lives in a field — so the runtime can keep a scanner per execution and feed
+ * it only the events appended since, instead of re-reading the whole log on every resume.
+ * `report` does not mutate the scanner.
+ */
+export class StrayScanner {
+  /** Sequence of the last event fed (`-1` = none). */
+  through = -1;
+  private readonly kindOf: (stepId: string) => string | undefined;
+  private status = "pending";
+  private parkedOn: string | undefined;
+  private parkedHuman: string | undefined; // the human step this park belongs to
+  private previousType: string | undefined;
+  private previousStepId: string | undefined;
+  private readonly unspentAtStart = new Map<string, number>(); // first STEP_STARTED of each step
+  private readonly humans = new Map<
+    string,
+    { answers: number; reparked: boolean; open: boolean }
+  >();
+  private appended = 0;
+  private strays = 0;
+  private unspent = 0; // strays not yet followed by a gate park
+  private parkAfterHidden = false; // a gate park anywhere in the retained log
+  private failedWhileParked = false; // mirrors the fold's `_failedWhileParked` (ADR 0105)
+
+  constructor(kindOfStep?: (stepId: string) => string | undefined) {
+    // No resolver = no human steps known (the human-blind classification); the runtime always
+    // passes one, and treats an unresolvable step as possibly human.
+    this.kindOf = kindOfStep ?? (() => "tool");
+  }
+
+  feed(events: readonly EventEnvelope[]): void {
+    for (const e of events) {
+      this.step(e);
+      this.previousType = e.eventType;
+      this.previousStepId =
+        e.eventType === "STEP_STARTED"
+          ? (e.payload as { stepId?: string } | null)?.stepId
+          : undefined;
+      this.through = e.sequence;
+    }
+  }
+
+  private step(e: EventEnvelope): void {
     switch (e.eventType) {
       case "EXECUTION_STARTED":
-        status = "running";
+        this.status = "running";
         break;
       case "STEP_STARTED": {
         const stepId = (e.payload as { stepId?: string } | null)?.stepId;
-        if (stepId !== undefined && !unspentAtStart.has(stepId)) {
-          unspentAtStart.set(stepId, unspent);
+        if (stepId !== undefined && !this.unspentAtStart.has(stepId)) {
+          this.unspentAtStart.set(stepId, this.unspent);
         }
         break;
       }
@@ -99,115 +135,126 @@ export function inspectStrayPassthroughs(
       case "STEP_FAILED":
       case "STEP_CANCELLED": {
         const stepId = (e.payload as { stepId?: string } | null)?.stepId;
-        const h = stepId !== undefined ? humans.get(stepId) : undefined;
+        const h = stepId !== undefined ? this.humans.get(stepId) : undefined;
         if (h !== undefined) h.open = false;
         // A step event never moves execution status (ADR 0105): EXECUTION_FAILED does. A
         // failure that lands while parked (a parallel sibling's) makes a following `null`
         // resume status-only — the fold's `_failedWhileParked` rule.
-        if (e.eventType === "STEP_FAILED" && status === "suspended") failedWhileParked = true;
+        if (e.eventType === "STEP_FAILED" && this.status === "suspended") {
+          this.failedWhileParked = true;
+        }
         break;
       }
       case "EXECUTION_SUSPENDED": {
         const condition = (e.payload as { condition?: { on?: string; stepId?: string } } | null)
           ?.condition;
         const on = condition?.on;
-        status = "suspended";
-        parkedOn = on;
-        parkedHuman = undefined;
-        failedWhileParked = false;
+        this.status = "suspended";
+        this.parkedOn = on;
+        this.parkedHuman = undefined;
+        this.failedWhileParked = false;
         if (on === EFFECT_INDOUBT_RESOLVED) break;
         let legacy = false;
         if (typeof condition?.stepId === "string") {
-          parkedHuman = condition.stepId;
-        } else if (previous?.eventType === "STEP_STARTED") {
-          const stepId = (previous.payload as { stepId?: string } | null)?.stepId;
-          const kind = stepId !== undefined ? kindOf(stepId) : "tool";
+          this.parkedHuman = condition.stepId;
+        } else if (this.previousType === "STEP_STARTED") {
+          const stepId = this.previousStepId;
+          const kind = stepId !== undefined ? this.kindOf(stepId) : "tool";
           if (stepId !== undefined && (kind === undefined || kind === "human")) {
-            parkedHuman = stepId;
+            this.parkedHuman = stepId;
             legacy = true;
           }
         }
-        if (parkedHuman !== undefined) {
-          const h = humans.get(parkedHuman) ?? { answers: 0, reparked: false, open: true };
+        if (this.parkedHuman !== undefined) {
+          const h = this.humans.get(this.parkedHuman) ?? {
+            answers: 0,
+            reparked: false,
+            open: true,
+          };
           if (legacy && h.answers > 0) h.reparked = true;
           h.open = true;
-          humans.set(parkedHuman, h);
+          this.humans.set(this.parkedHuman, h);
         } else {
-          unspent = 0;
-          parkAfterHidden = true;
+          this.unspent = 0;
+          this.parkAfterHidden = true;
         }
         break;
       }
       case "EXECUTION_RESUMED": {
-        const answersGate = status === "suspended" && parkedOn !== EFFECT_INDOUBT_RESOLVED;
+        const answersGate =
+          this.status === "suspended" && this.parkedOn !== EFFECT_INDOUBT_RESOLVED;
         // Mirrors the fold's `isStatusOnlyResume` (1.20.0 + 1.21.0), so the entry count lines
         // up with `_resumePayloads`.
-        const statusOnly = e.payload === null && (!answersGate || failedWhileParked);
-        failedWhileParked = false;
+        const statusOnly = e.payload === null && (!answersGate || this.failedWhileParked);
+        this.failedWhileParked = false;
         if (e.payload !== undefined && !statusOnly) {
-          appended++;
+          this.appended++;
           if (!answersGate) {
-            strays++;
-            unspent++;
-          } else if (parkedHuman !== undefined) {
-            const h = humans.get(parkedHuman);
+            this.strays++;
+            this.unspent++;
+          } else if (this.parkedHuman !== undefined) {
+            const h = this.humans.get(this.parkedHuman);
             if (h !== undefined) h.answers++;
           }
         }
-        status = "running";
-        parkedOn = undefined;
-        parkedHuman = undefined;
+        this.status = "running";
+        this.parkedOn = undefined;
+        this.parkedHuman = undefined;
         break;
       }
       case "EXECUTION_FAILED":
-        status = "failed";
-        failedWhileParked = false;
+        this.status = "failed";
+        this.failedWhileParked = false;
         break;
       case "EXECUTION_COMPLETED":
-        status = "completed";
-        failedWhileParked = false;
+        this.status = "completed";
+        this.failedWhileParked = false;
         break;
       case "EXECUTION_CANCELLED":
-        status = "cancelled";
-        failedWhileParked = false;
+        this.status = "cancelled";
+        this.failedWhileParked = false;
         break;
     }
-    previous = e;
   }
 
-  const decisions = (state.variables._decisions as Record<string, unknown> | undefined) ?? {};
-  let ambiguousHumanStep: string | undefined;
-  let humanAtRisk = 0;
-  for (const [stepId, h] of humans) {
-    if (!h.open) continue;
-    const strayBefore = (unspentAtStart.get(stepId) ?? 0) > 0;
-    if (!strayBefore && !h.reparked) continue;
-    // A re-parked step's answers are not its own to take one-by-one: on the 0104 kernel the
-    // first would complete it and the rest would reach later gates.
-    if (h.reparked) humanAtRisk += h.answers;
-    if (!Object.hasOwn(decisions, discardDecisionId(stepId))) ambiguousHumanStep ??= stepId;
-  }
+  report(
+    state: ExecutionState,
+    options: Pick<StrayPassthroughOptions, "reopening"> = {}
+  ): StrayPassthroughReport {
+    const decisions = (state.variables._decisions as Record<string, unknown> | undefined) ?? {};
+    let ambiguousHumanStep: string | undefined;
+    let humanAtRisk = 0;
+    for (const [stepId, h] of this.humans) {
+      if (!h.open) continue;
+      const strayBefore = (this.unspentAtStart.get(stepId) ?? 0) > 0;
+      if (!strayBefore && !h.reparked) continue;
+      // A re-parked step's answers are not its own to take one-by-one: on the 0104 kernel the
+      // first would complete it and the rest would reach later gates.
+      if (h.reparked) humanAtRisk += h.answers;
+      if (!Object.hasOwn(decisions, discardDecisionId(stepId))) ambiguousHumanStep ??= stepId;
+    }
 
-  const terminal = TERMINAL.has(state.status) && options.reopening !== true;
-  const report = (verdict?: StrayPassthroughVerdict): StrayPassthroughReport => ({
-    ...(verdict !== undefined && { verdict }),
-    ...(ambiguousHumanStep !== undefined && !terminal && { ambiguousHumanStep }),
-  });
-  const atRisk = unspent + humanAtRisk;
-  if (atRisk > 0 && !terminal) return report({ kind: "at-risk", count: atRisk });
-  if (strays > 0 && !terminal) return report({ kind: "passed", count: strays });
+    const terminal = TERMINAL.has(state.status) && options.reopening !== true;
+    const make = (verdict?: StrayPassthroughVerdict): StrayPassthroughReport => ({
+      ...(verdict !== undefined && { verdict }),
+      ...(ambiguousHumanStep !== undefined && !terminal && { ambiguousHumanStep }),
+    });
+    const atRisk = this.unspent + humanAtRisk;
+    if (atRisk > 0 && !terminal) return make({ kind: "at-risk", count: atRisk });
+    if (this.strays > 0 && !terminal) return make({ kind: "passed", count: this.strays });
 
-  // Entries the retained log does not explain: the prefix was retained away and the snapshot
-  // still holds them. A park in the retained tail proves them spent; otherwise flag the ones
-  // shaped like the pre-0104 recovery payload.
-  const recorded = (state.variables._resumePayloads as unknown[] | undefined) ?? [];
-  const hidden = recorded.length - appended;
-  if (hidden > 0 && !terminal && !parkAfterHidden) {
-    let empties = 0;
-    for (let i = 0; i < hidden; i++) if (isEmptyObject(recorded[i])) empties++;
-    if (empties > 0) return report({ kind: "unverifiable", count: empties });
+    // Entries the retained log does not explain: the prefix was retained away and the snapshot
+    // still holds them. A park in the retained tail proves them spent; otherwise flag the ones
+    // shaped like the pre-0104 recovery payload.
+    const recorded = (state.variables._resumePayloads as unknown[] | undefined) ?? [];
+    const hidden = recorded.length - this.appended;
+    if (hidden > 0 && !terminal && !this.parkAfterHidden) {
+      let empties = 0;
+      for (let i = 0; i < hidden; i++) if (isEmptyObject(recorded[i])) empties++;
+      if (empties > 0) return make({ kind: "unverifiable", count: empties });
+    }
+    return make();
   }
-  return report();
 }
 
 /** The verdict alone (see {@link inspectStrayPassthroughs}). */
