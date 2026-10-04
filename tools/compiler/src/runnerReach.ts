@@ -300,7 +300,7 @@ function collectRunners(
     return ts.isIdentifier(u) ? functions.get(u.text) : undefined;
   };
   /** The functions a factory returns, or undefined unless EVERY return is a followable function. */
-  function returnedFns(factory: FnNode): FnNode[] | undefined {
+  function returnedFns(factory: FnNode | ts.GetAccessorDeclaration): FnNode[] | undefined {
     const body = factory.body;
     if (body === undefined) return undefined;
     const found: FnNode[] = [];
@@ -365,6 +365,15 @@ function collectRunners(
       out.push(node);
     } else if (ts.isPropertyDeclaration(node) && propName(node.name) === "runner") {
       runnerValue(node.initializer);
+    } else if (ts.isGetAccessorDeclaration(node) && propName(node.name) === "runner") {
+      // `get runner() { return async (c) => … }`: the returned function(s) are the runner, like a
+      // local factory; a getter returning anything else is refused, never silently skipped.
+      const returned = returnedFns(node);
+      if (returned !== undefined) out.push(...returned);
+      else {
+        const text = "runner not analysable: get runner()";
+        if (!unresolved.includes(text)) unresolved.push(text);
+      }
     } else if (
       ts.isCallExpression(node) &&
       (ts.isIdentifier(node.expression)
