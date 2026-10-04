@@ -278,6 +278,14 @@ describe("runner-body reach analysis", () => {
       expect(param.unresolved.length).toBeGreaterThan(0);
     });
 
+    it("P3-2: handing ctx.decide to a library is reported unresolved, by design (its decider is not followed)", () => {
+      const reach = analyzeRunnerReach(
+        "const r = async (ctx, q) => { await kb.retrieve(q, { decide: ctx.decide }); };"
+      );
+      expect(reach.unresolved.map((u) => u.expr)).toEqual(["decide alias ctx.decide"]);
+      expect(reach.steps).toEqual([]);
+    });
+
     it("P3-2: a plain ctx.decide call is not flagged by the alias check", () => {
       const reach = analyzeRunnerReach(
         "const r = async (ctx) => { await ctx.decide('x', (s) => s.invokeTransient('t.a')); await ctx.decide?.('y', (s) => 1); };"
