@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A flow whose only reach is a ctx hand-off lost its runner-body analysis (backlog L36).**
+  `@loom/compiler` kept a flow's `runnerReach` in the manifest only when it had steps,
+  unresolved targets or suspends, ignoring L32 `escapes`. A flow that only hands `ctx` to a
+  library (`planner.compose(input, ctx)`) therefore read as "no runner-body analysis" instead
+  of the undeclared-hand-off warn, so declaring the library's reach had no effect on it. Found
+  by a genUI review: its `generate-dashboard` flow was silently unanalysed.
+
 ### Added
 
 - **`@loom/verify` declared reach for code a flow hands its `ctx` to (backlog L32).** A flow
