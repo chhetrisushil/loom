@@ -27,11 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     always forces it. After a CLEAN scan the runtime keeps the scanner itself (not a "clean" flag)
     and feeds it only the events appended since, so a PRE-0104 kernel appending to the same log
     afterwards (a mixed-version fleet during a rolling upgrade, an old node running
-    `recoverAbandoned`) is detected by the warm runtime exactly as a fresh one detects it; a
-    flagged result, a gap in the tail, or a different flow definition falls back to the full
-    read. A refused scan never leaves a remembered entry. Residual: a `truncatePrefix` that
-    runs after a clean scan is not seen by a warm runtime, which may therefore omit the
-    advisory "unverifiable" warning a fresh one would print (it is a warning, never a refusal).
+    `recoverAbandoned`) is detected by the warm runtime as a fresh one detects it; a flagged
+    result, a gap in the tail, a log that no longer reaches the scanned sequence, or a different
+    flow definition falls back to the full read, and `feed` is idempotent across concurrent
+    resumes. A refused scan never leaves a remembered entry. Residuals (ADR 0104 amendment): a
+    `truncatePrefix` after a clean scan (can only drop the advisory "unverifiable" warning), a
+    log erased and re-created under the same id to at least the scanned length, and step kinds
+    resolved per fed event.
   - The snapshot written at every suspend is kept: with `snapshotEvery` unset it is the only
     thing that bounds a resume's tail. It hands the state to the store by reference (no copy).
 

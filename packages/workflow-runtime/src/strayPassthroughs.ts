@@ -84,6 +84,8 @@ export function inspectStrayPassthroughs(
 export class StrayScanner {
   /** Sequence of the last event fed (`-1` = none). */
   through = -1;
+  /** Envelope id of the event at `through` — proves a later read continues the SAME log. */
+  throughId: string | undefined = undefined;
   private readonly kindOf: (stepId: string) => string | undefined;
   private status = "pending";
   private parkedOn: string | undefined;
@@ -109,6 +111,9 @@ export class StrayScanner {
 
   feed(events: readonly EventEnvelope[]): void {
     for (const e of events) {
+      // Idempotent: an event at or before `through` was already consumed (two resumes of one
+      // execution can share a scanner and read overlapping tails).
+      if (e.sequence <= this.through) continue;
       this.step(e);
       this.previousType = e.eventType;
       this.previousStepId =
@@ -116,6 +121,7 @@ export class StrayScanner {
           ? (e.payload as { stepId?: string } | null)?.stepId
           : undefined;
       this.through = e.sequence;
+      this.throughId = e.id;
     }
   }
 

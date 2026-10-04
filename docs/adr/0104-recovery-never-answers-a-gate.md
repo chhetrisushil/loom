@@ -356,11 +356,17 @@ This is the same single pass cut in two: every piece of cross-event state lives 
 so the verdict equals a full scan of the whole log (pinned by a test that cuts logs at every
 position). It deliberately does NOT assume a clean log stays clean: a pre-0104 kernel in a
 mixed-version fleet can still append strays after the scan, and the warm runtime now sees them
-and refuses (`ambiguous-legacy-answers`) exactly as a fresh process does. Anything flagged, a
-non-contiguous tail, a different definition object, `discardLegacyAnswers`, or a refusal drops
-the entry and re-scans the whole log. The one thing a warm runtime cannot see is a
+and refuses (`ambiguous-legacy-answers`) as a fresh process does. Anything flagged, a
+non-contiguous tail, a log that no longer reaches the scanned sequence (rewound, or erased and
+re-created shorter under the same id), a different definition object, `discardLegacyAnswers`, or
+a refusal drops the entry and re-scans the whole log; `feed` is idempotent, so two concurrent
+resumes sharing the scanner cannot double-count. Residuals a warm runtime cannot see: (1) a
 `truncatePrefix` after the clean scan, which can only change the advisory `unverifiable`
-warning, never a refusal.
+warning, never a refusal; (2) a log erased and re-created under the same id to at least the
+scanned length (envelope ids are deterministic, so it is indistinguishable) — it matters only if
+a pre-0104 writer then writes the re-created log; (3) step kinds are resolved against the effect
+registry when each event is fed, so a tool registered between resumes can classify a pre-0104
+park differently from a fresh scan.
 
 ## Consequences
 

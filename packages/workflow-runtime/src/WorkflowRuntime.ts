@@ -1416,8 +1416,18 @@ export class WorkflowRuntime {
       const from = Math.min(snapshot.sequence, through) + 1;
       const tail = await this.eventStore.readFrom(executionId, from);
       const fresh = tail.filter((e) => e.sequence > through);
-      // The scanner may only continue a gap-free log; anything else re-scans from scratch.
-      let contiguous = true;
+      // The scanner may only continue a gap-free log that still holds the event it consumed at
+      // `through`: a log that now ends before `through` (rewound, or erased and re-created
+      // shorter under the same id) re-scans from scratch, as does a gap. Envelope ids are
+      // deterministic (`<exec>-<seq>`), so a log re-created to the SAME length is
+      // indistinguishable here — a documented residual (ADR 0104 amendment); it matters only if
+      // a pre-0104 writer then writes that re-created log.
+      const atThrough =
+        tail.find((e) => e.sequence === through) ??
+        (through >= 0
+          ? (await readRangeOf(this.eventStore, executionId, through, through))[0]
+          : undefined);
+      let contiguous = atThrough !== undefined && atThrough.id === carried.scanner.throughId;
       for (let i = 0; i < fresh.length; i++) {
         if (fresh[i]?.sequence !== through + 1 + i) {
           contiguous = false;
