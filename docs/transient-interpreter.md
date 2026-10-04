@@ -125,8 +125,11 @@ throws.
 **Wrappers must key on the identity.** `TransientInvokeOptions.as` makes the
 identity an authorization input (`GrantTable` keys on `workflowId`). Any wrapper
 that memoises or dedupes transient calls MUST key on `as` as well as
-`[principal, input]`, or a result produced under one execution's grants can be
-served to another's.
+`[principal, input]`, and on `label` too: without `as` the synthetic
+`executionId` is `transient:<label>`, and an authorizer configured to grant per
+execution decides on it. The simplest safe key is every option except `signal`.
+Otherwise a result produced under one execution's grants can be served to
+another's.
 
 ## Guardrails
 

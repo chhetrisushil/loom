@@ -838,7 +838,7 @@ class EffectRuntime {
   invokeTransient<TIn, TOut>(toolId: string, input: TIn, opts?: TransientInvokeOptions): Promise<TOut>  // (ADR 0066) non-durable invoke: authorize/meter/middleware still run, but NO events emitted; opts.as (L30) stamps an execution's workflowId/executionId/stepId
   has(toolId: string): boolean
 }
-interface TransientInvokeOptions { signal?: AbortSignal; principal?: PrincipalChain; label?: string; as?: TransientIdentity; resources?: ResourceSnapshot; }  // (ADR 0066) — signal (deadline), principal (K2 still enforced), label (trace tag only); (L30) as = stamp an execution's identity (an AUTHZ INPUT: any memo/dedup wrapper MUST key on it too), resources = running totals for budget admission (the charge is still dropped)
+interface TransientInvokeOptions { signal?: AbortSignal; principal?: PrincipalChain; label?: string; as?: TransientIdentity; resources?: ResourceSnapshot; }  // (ADR 0066) — signal (deadline), principal (K2 still enforced), label (trace tag; without `as` it is the synthetic executionId `transient:<label>`, so also an authz input); (L30) as = stamp an execution's identity (an AUTHZ INPUT: any memo/dedup wrapper MUST key on it, and on label — key on every option except signal), resources = running totals for budget admission (the charge is still dropped)
 interface TransientIdentity { workflowId: string; executionId: string; stepId?: string /* default toolId */; callKey?: string /* -> EffectContext.callKey */ }
 interface DecideScope { invokeTransient<TIn, TOut>(toolId: string, input: TIn, opts?: { signal?: AbortSignal }): Promise<TOut> }  // (L30) ctx.decide's decider argument; closed once the decider settles
 #+end_src
