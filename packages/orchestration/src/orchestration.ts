@@ -469,6 +469,30 @@ export interface SupervisorDeps {
    * failed entries) — it never leaves the parent suspended forever. Unset ⇒ no bound (G2).
    */
   limits?: SpawnLimits;
+  /** @internal Timing knobs (milliseconds / counts). Defaults are production values; tests shrink them. */
+  tuning?: Partial<SupervisorTuning>;
+}
+
+/** @internal */
+export interface SupervisorTuning {
+  /** How long a live child start waits for the parent's park to become durable before backing off to `adopt`. */
+  durableWaitMs: number;
+  /** First delay of the exponential `adopt` backoff after that wait ran out. */
+  retryBaseMs: number;
+  /** Cap of one backoff delay. */
+  retryMaxMs: number;
+  /** After this long without the park becoming durable, report a give-up through `onError`. */
+  giveUpMs: number;
+  /** A park that stays durably on a DIFFERENT key this long is a losing resume's phantom: stop quietly. */
+  phantomMs: number;
+  /** Period of the sweep that drops state held for parks answered elsewhere. */
+  sweepMs: number;
+  /** An observed resume with no durable evidence after this long is "unknown" (retried via adopt). */
+  observeMs: number;
+  /** One state read taking longer than this counts as "unknown". */
+  loadTimeoutMs: number;
+  /** Bound on the retention-deletion facts held in memory (a miss past an eviction rescans the stream). */
+  maxReclaimed: number;
 }
 
 /** What one {@link ChildSupervisor.recover} pass found and did. */
@@ -506,7 +530,7 @@ export interface ChildSupervisor {
    */
   recover(options?: { source?: ExecutionEnumerable; pageSize?: number }): Promise<RecoverSummary>;
   /** @internal Sizes of the supervisor's in-memory maps (a leak check; not a stable API). */
-  size(): { specs: number; started: number; groups: number; memberOf: number };
+  size(): { specs: number; started: number; groups: number; memberOf: number; reclaimed: number };
 }
 
 /**
@@ -591,7 +615,13 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   // DECISION_RECORDED. Wait-all: every member (success OR failure) fills its slot.
   const groups = new Map<
     string,
-    { parentId: string; members: GroupMember[]; results: ChildResult[]; remaining: number }
+    {
+      parentId: string;
+      members: GroupMember[];
+      results: ChildResult[];
+      remaining: number;
+      spawnedAt: number;
+    }
   >();
   // member childId → (groupId, index), so a member's terminal event lands in the right slot.
   const memberOf = new Map<string, { groupId: string; index: number }>();
@@ -629,7 +659,35 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     st.suspendedOn?.on === CHILD_DONE &&
     st.suspendedOn.correlationKey === key;
 
+  const tune: SupervisorTuning = {
+    durableWaitMs: 1000,
+    retryBaseMs: 250,
+    retryMaxMs: 5000,
+    giveUpMs: 600_000,
+    phantomMs: 30_000,
+    sweepMs: 30_000,
+    observeMs: 60_000,
+    loadTimeoutMs: 5000,
+    maxReclaimed: 50_000,
+    ...deps.tuning,
+  };
   const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  // A background timer must never keep the process alive.
+  const sleepUnref = (ms: number): Promise<void> =>
+    new Promise((r) => {
+      (setTimeout(r, ms) as { unref?: () => void }).unref?.();
+    });
+  // A store read that hangs reads as "unknown" (undefined), never as an answer.
+  const loadParent = (id: string) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<undefined>((r) => {
+      timer = setTimeout(() => r(undefined), tune.loadTimeoutMs);
+    });
+    return Promise.race([
+      deps.runtime.loadState(id, deps.runtime.systemOptions()).catch(() => undefined),
+      limit,
+    ]).finally(() => clearTimeout(timer));
+  };
 
   // Drop everything the supervisor holds for one park: the parent moved on (resumed here or by
   // another supervisor), so nothing about this key is live any more. Bounds the in-memory maps.
@@ -659,18 +717,103 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   // (~1s) ran out — `recover()` re-derives the park from the log if it is genuinely still
   // there. `loadState` and `resume` read the SAME event store, so a true result guarantees a later
   // resume finds the parent.
-  const waitParentDurable = async (parentId: string | undefined, key: string): Promise<boolean> => {
-    if (parentId === undefined) return true;
-    for (let i = 0; i < 200; i++) {
-      const s = await deps.runtime
-        .loadState(parentId, deps.runtime.systemOptions())
-        .catch(() => undefined);
-      if (parkedOn(s, key)) return true;
+  // Three outcomes — and only one of them is a give-up:
+  //   "parked"  the parent is durably parked on `key`: go ahead.
+  //   "gone"    the parent terminated: nothing will ever park on `key`.
+  //   "timeout" the bound ran out with the park still not visible. That is NOT "never parked": a slow
+  //             store (or a long tail on the append queue) shows the park late. The caller backs off
+  //             and `adopt`s (see `scheduleAdopt`) rather than abandoning a parent that hangs forever.
+  const waitParentDurable = async (
+    parentId: string | undefined,
+    key: string
+  ): Promise<"parked" | "gone" | "timeout"> => {
+    if (parentId === undefined) return "parked";
+    const deadline = Date.now() + tune.durableWaitMs;
+    for (;;) {
+      const s = await loadParent(parentId);
+      if (parkedOn(s, key)) return "parked";
       if (s?.status === "completed" || s?.status === "failed" || s?.status === "cancelled") {
-        return false;
+        return "gone";
       }
+      if (Date.now() >= deadline) return "timeout";
       await sleep(5);
     }
+  };
+
+  // Has the parent's DURABLE log both parked on `key` and moved past it? (A parent that is already
+  // running its next step reads `running`, which says nothing about WHICH park was answered.)
+  const answeredDurably = async (parentId: string, key: string): Promise<boolean> => {
+    let parked = false;
+    try {
+      for (const e of await deps.runtime.events.read(parentId)) {
+        if (e.eventType === "EXECUTION_SUSPENDED") {
+          const c = (e.payload as { condition?: { correlationKey?: string } }).condition;
+          parked = c?.correlationKey === key;
+        } else if (e.eventType === "EXECUTION_RESUMED" && parked) {
+          return true;
+        }
+      }
+    } catch {
+      return false;
+    }
+    return false;
+  };
+
+  // The live path gave up waiting for a durable park (slow store). Retry via `adopt` — idempotent,
+  // re-derived from the log — with exponential backoff while the parent is non-terminal; only after
+  // `giveUpMs` is the abandonment REPORTED (never silent). One loop per (parent, key).
+  const retrying = new Set<string>();
+  const scheduleAdopt = (parentId: string, key: string): void => {
+    const id = `${parentId}\u0000${key}`;
+    if (retrying.has(id)) return;
+    retrying.add(id);
+    const t0 = Date.now();
+    let phantomSince: number | undefined;
+    void (async () => {
+      try {
+        for (let n = 0; ; n++) {
+          await sleepUnref(Math.min(tune.retryBaseMs * 2 ** n, tune.retryMaxMs));
+          const s = await loadParent(parentId);
+          if (s?.status === "completed" || s?.status === "failed" || s?.status === "cancelled") {
+            return;
+          }
+          if (parkedOn(s, key)) {
+            await adopt(parentId);
+            return;
+          }
+          if (s !== null && s !== undefined && (await answeredDurably(parentId, key))) return;
+          if (s?.status === "suspended") {
+            // durably parked somewhere else: either a losing resume's phantom key (never durable) or
+            // a later park not yet visible. A phantom stays like this forever, so stop quietly.
+            phantomSince ??= Date.now();
+            if (Date.now() - phantomSince >= tune.phantomMs) return;
+          } else {
+            phantomSince = undefined;
+          }
+          if (Date.now() - t0 >= tune.giveUpMs) {
+            fail(
+              new Error(
+                `orchestration: gave up supervising "${key}" of execution "${parentId}": its park never became readable within ${tune.giveUpMs}ms; run recover() to retry`
+              )
+            );
+            return;
+          }
+        }
+      } catch (err) {
+        fail(err);
+      } finally {
+        retrying.delete(id);
+      }
+    })();
+  };
+
+  // Gate a live child start / refusal on the parent's durable park. false ⇒ do nothing now (the
+  // park is dropped; a slow store is retried through `adopt` instead of being abandoned).
+  const gate = async (parentId: string | undefined, key: string): Promise<boolean> => {
+    const outcome = await waitParentDurable(parentId, key);
+    if (outcome === "parked") return true;
+    forget(key);
+    if (outcome === "timeout" && parentId !== undefined) scheduleAdopt(parentId, key);
     return false;
   };
 
@@ -682,23 +825,33 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   ): Promise<{
     single: ReturnType<typeof asSpawnChoice>;
     grp: ReturnType<typeof asGroupChoice>;
+    /** When the recorded spawn decision was made (a deletion older than this is a prior incarnation's). */
+    spawnedAt: number;
   }> => {
     let single: ReturnType<typeof asSpawnChoice>;
     let grp: ReturnType<typeof asGroupChoice>;
+    let spawnedAt = 0;
     for (const e of await deps.runtime.events.read(parentId)) {
       if (e.eventType !== "DECISION_RECORDED") continue;
       const choice = (e.payload as { choice?: unknown }).choice;
       const one = asSpawnChoice(choice);
-      if (one !== undefined && one.childId === key) single = one;
+      if (one !== undefined && one.childId === key) {
+        single = one;
+        spawnedAt = e.timestamp;
+      }
       const many = asGroupChoice(choice);
-      if (many !== undefined && many.groupId === key) grp = many;
+      if (many !== undefined && many.groupId === key) {
+        grp = many;
+        spawnedAt = e.timestamp;
+      }
     }
-    return { single, grp };
+    return { single, grp, spawnedAt };
   };
 
   // `resume()` resolves with a handle BEFORE its append is durable, so a failed append surfaces
   // only through the handle (and a flow that then fails is a settled parent, not a failed resume).
   // Resolves null once the resume took effect, or the write failure that says it did not.
+  const UNKNOWN = Symbol("resume outcome unknown");
   const observeResume = async (
     handle: Awaited<ReturnType<WorkflowRuntime["resume"]>>,
     parentId: string,
@@ -715,13 +868,15 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     let done = false;
     // Durable evidence the park was answered, without waiting for the parent's whole next run
     // (which may be long). A rejected append races this, so give a failure a moment to surface.
+    // BOUNDED: with no evidence within `observeMs` (a hung / unreadable store) the outcome is
+    // UNKNOWN — the caller must not count it, and re-derives through `adopt` instead.
+    const deadline = Date.now() + tune.observeMs;
     const changed = (async (): Promise<unknown> => {
       while (!done) {
         await sleep(5);
-        const s = await deps.runtime
-          .loadState(parentId, deps.runtime.systemOptions())
-          .catch(() => null);
-        if (s !== null && !parkedOn(s, key)) {
+        if (Date.now() >= deadline) return UNKNOWN;
+        const s = await loadParent(parentId);
+        if (s !== null && s !== undefined && !parkedOn(s, key)) {
           return Promise.race([settled, sleep(100).then(() => null)]);
         }
       }
@@ -759,8 +914,16 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   //
   // FENCES — a parent that was ever fenced (TimerService, recoverAbandoned, LocalWorkerRuntime)
   // refuses an unfenced write forever with `StaleFenceError`. That is NOT a lost race: the
-  // supervisor then acquires its own token and retries, exactly as TimerService does. It does not
-  // fence up front — a fence supersedes a live holder, and a parked parent usually has none.
+  // supervisor then acquires its own token and retries. (TimerService fences UP FRONT; this does
+  // not — a fence supersedes a live holder, and a parked parent usually has none.) RESIDUAL, which
+  // needs a kernel SPI to close: `acquireFence` is not conditional on the parent still being
+  // parked. If a second supervisor acquires F+1 between this one's acquire and its append, this
+  // resume fails stale; if it lands between this one's durable EXECUTION_RESUMED and the read-back,
+  // the new fence supersedes the holder of the ALREADY RUNNING parent body. So acquisitions are
+  // bounded to TWO per resume (an unbounded retry would ping-pong two supervisors, killing the
+  // parent body each round), the park is re-read right before each acquire, and a resume still
+  // stale after the bound is reported through `onError` — recover() picks it up. Follow-up: an
+  // "acquire-if-parked" (or readable-fence) SPI for the Wave 2 kernel design.
   const resumeParent = async (
     parentId: string,
     payload: unknown,
@@ -770,6 +933,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     const sys = deps.runtime.systemOptions();
     const body = key !== undefined ? { ...(payload as object), viewDigest: key } : payload;
     let fence: number | undefined;
+    let fences = 0;
     try {
       for (let attempt = 0; ; attempt++) {
         if (key !== undefined) {
@@ -788,12 +952,24 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
             resumedTotal++;
             return;
           }
+          if (err === UNKNOWN) {
+            // Neither evidence of the resume nor of its failure: do not count it, do not call it
+            // an error — re-derive from the log with backoff (idempotent; the viewDigest guards).
+            if (key !== undefined) scheduleAdopt(parentId, key);
+            return;
+          }
         } catch (e) {
           err = e;
         }
         if (err instanceof ResumeRefusedError) {
           if (err.reason === "gate-mismatch" || err.reason === "view-digest-mismatch") return;
-          if (err.reason === "not-suspended" && opts.adopted === true) return;
+          if (err.reason === "not-suspended") {
+            // The parent was not (yet) readable as suspended. Adopted: someone else already answered
+            // it. Live: quiet too when the DURABLE log shows this very park answered; otherwise it
+            // is the visibility gap, retried below.
+            if (opts.adopted === true) return;
+            if (key !== undefined && (await answeredDurably(parentId, key))) return;
+          }
         }
         const writeFailure =
           isLostRace(err) || isStaleFence(err) || errName(err) === "StorageWriteError";
@@ -801,8 +977,13 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           const s = await deps.runtime.loadState(parentId, sys).catch(() => null);
           if (s !== null && !parkedOn(s, key)) return; // answered (by us or another): done.
         }
-        if (isStaleFence(err) && attempt < 10) {
+        if (isStaleFence(err) && fences < 2) {
           try {
+            if (key !== undefined) {
+              const now = await deps.runtime.loadState(parentId, sys).catch(() => null);
+              if (now !== null && !parkedOn(now, key)) return; // answered meanwhile: don't fence it.
+            }
+            fences++;
             fence = await deps.runtime.acquireFence(parentId, sys);
           } catch (fenceErr) {
             fail(fenceErr);
@@ -878,7 +1059,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         };
         track(
           (async () => {
-            if (!(await waitParentDurable(group.parentId, correlationKey))) return;
+            if (!(await gate(group.parentId, correlationKey))) return;
             await resumeParent(
               group.parentId,
               { settled: group.members.map(() => refused) },
@@ -902,10 +1083,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
       // suspend — then start each member (idempotently) exactly as a single child.
       track(
         (async () => {
-          if (!(await waitParentDurable(group.parentId, correlationKey))) {
-            forget(correlationKey); // the parent never durably parked on this group: start nothing.
-            return;
-          }
+          if (!(await gate(group.parentId, correlationKey))) return; // start nothing (yet).
           // The durable group is the authority for what to start (see `durableSpawn`).
           const durable = (await durableSpawn(group.parentId, correlationKey)).grp;
           if (durable === undefined) {
@@ -944,7 +1122,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
       if (parentOfRefused !== undefined) {
         track(
           (async () => {
-            if (!(await waitParentDurable(parentOfRefused, childId))) return;
+            if (!(await gate(parentOfRefused, childId))) return;
             await resumeParent(
               parentOfRefused,
               { __childFailed: { status: "failed", error: `${breach.name}: ${breach.message}` } },
@@ -960,10 +1138,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     const parentId = parentOf(childId);
     track(
       (async () => {
-        if (!(await waitParentDurable(parentId, childId))) {
-          forget(childId); // the parent never durably parked on this child: start nothing.
-          return;
-        }
+        if (!(await gate(parentId, childId))) return; // start nothing (yet).
         const durable =
           parentId === undefined ? undefined : (await durableSpawn(parentId, childId)).single;
         const durableFlow = durable === undefined ? undefined : deps.flows[durable.flowId];
@@ -981,22 +1156,53 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   // Executions retention has reclaimed, from the lifecycle stream's `EXECUTION_DELETED` facts
   // (journalled BEFORE the values go — P9 — so "deleted" is distinguishable from "never started").
   // Read incrementally: the stream is reserved and never compacted, so a cursor is sound.
-  const deleted = new Set<string>();
+  //
+  // The fact is (id → time of the latest deletion), judged against WHEN the spawn was decided: an id
+  // can be REUSED (a parent re-started under the same id spawns the same `P::g#0` again), and a
+  // deletion older than the spawn belongs to the previous incarnation — it must not fail the new
+  // member. BOUNDED (`maxReclaimed`, oldest dropped first): after an eviction a cache miss rescans
+  // the stream from the start, so eviction costs time, never correctness (a deleted child must
+  // never be mistaken for "never started" and re-run).
+  const deleted = new Map<string, number>();
+  let evicted = false;
   let lifecycleCursor = 0;
-  const wasReclaimed = async (childId: string): Promise<boolean> => {
-    if (deleted.has(childId)) return true;
+  const noteDeleted = (id: string, at: number): void => {
+    deleted.delete(id); // re-insert at the young end
+    deleted.set(id, Math.max(at, 0));
+    if (deleted.size > tune.maxReclaimed) {
+      const oldest = deleted.keys().next().value as string;
+      deleted.delete(oldest);
+      evicted = true;
+    }
+  };
+  const wasReclaimed = async (childId: string, spawnedAt: number): Promise<boolean> => {
+    const hit = deleted.get(childId);
+    if (hit !== undefined && hit >= spawnedAt) return true;
     try {
       for (const e of await deps.runtime.events.readFrom(LIFECYCLE_STREAM, lifecycleCursor)) {
         lifecycleCursor = Math.max(lifecycleCursor, e.sequence + 1);
         if (e.eventType === "EXECUTION_DELETED") {
           const id = (e.payload as { executionId?: unknown }).executionId;
-          if (typeof id === "string") deleted.add(id);
+          if (typeof id === "string") noteDeleted(id, e.timestamp);
         }
+      }
+      const now = deleted.get(childId);
+      if (now !== undefined) return now >= spawnedAt;
+      if (evicted) {
+        // may have been evicted: look at the whole stream for this one id.
+        let latest = -1;
+        for (const e of await deps.runtime.events.readFrom(LIFECYCLE_STREAM, 0)) {
+          const id = (e.payload as { executionId?: unknown }).executionId;
+          if (e.eventType === "EXECUTION_DELETED" && id === childId) {
+            latest = Math.max(latest, e.timestamp);
+          }
+        }
+        return latest >= spawnedAt && latest >= 0;
       }
     } catch {
       // No lifecycle stream / unreadable: nothing is known to be reclaimed.
     }
-    return deleted.has(childId);
+    return false;
   };
 
   // The settled outcome of a child as the DURABLE LOG has it: a settled result, "running" (it
@@ -1010,6 +1216,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   // / cancel reason is lost (a failed child reads "terminal event compacted").
   const settledOf = async (
     childId: string,
+    spawnedAt: number,
     hint?: EventEnvelope
   ): Promise<ChildResult | "running" | "absent"> => {
     if (hint !== undefined && hint.executionId === childId && TERMINAL.has(hint.eventType)) {
@@ -1017,7 +1224,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     }
     const st = await deps.runtime.loadState(childId, deps.runtime.systemOptions());
     if (st === null) {
-      return (await wasReclaimed(childId))
+      return (await wasReclaimed(childId, spawnedAt))
         ? {
             status: "failed",
             error: `child execution "${childId}" was reclaimed by retention before its result was collected`,
@@ -1038,6 +1245,62 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     return { status: "failed", error: "execution failed (terminal event compacted)" };
   };
 
+  // What the supervisor currently holds, as key → the parent whose park it belongs to.
+  const heldParks = (): Map<string, string> => {
+    const held = new Map<string, string>();
+    for (const [key, g] of groups) held.set(key, g.parentId);
+    for (const key of specs.keys()) {
+      const pid = parentOf(key);
+      if (pid !== undefined) held.set(key, pid);
+    }
+    for (const id of started) {
+      if (memberOf.has(id) || held.has(id)) continue;
+      const pid = parentOf(id);
+      if (pid !== undefined) held.set(id, pid);
+    }
+    return held;
+  };
+  // The parent's DURABLE log shows `key` answered (or the parent over). Unknown / unreadable ⇒ false.
+  const parkGone = async (parentId: string, key: string): Promise<boolean> => {
+    const st = await loadParent(parentId);
+    if (st === undefined || st === null) return false;
+    if (st.status === "completed" || st.status === "failed" || st.status === "cancelled") {
+      return true;
+    }
+    if (parkedOn(st, key)) return false;
+    return answeredDurably(parentId, key);
+  };
+  const dropGone = async (parentId: string): Promise<void> => {
+    for (const [key, pid] of heldParks()) {
+      if (pid === parentId && (await parkGone(pid, key))) forget(key);
+    }
+  };
+  // A park can be answered ELSEWHERE (another node resumed the parent): this process then never sees
+  // the child's terminal event, so nothing here would ever release what an adoption (or a start)
+  // recorded. The sweep re-checks the log for every held park; it runs while anything is held.
+  const sweep = async (): Promise<void> => {
+    for (const [key, pid] of heldParks()) {
+      if (await parkGone(pid, key)) forget(key);
+    }
+  };
+  let sweeping = false;
+  const ensureSweeper = (): void => {
+    if (sweeping) return;
+    sweeping = true;
+    void (async () => {
+      try {
+        while (heldParks().size > 0) {
+          await sleepUnref(tune.sweepMs);
+          await sweep();
+        }
+      } catch (err) {
+        fail(err);
+      } finally {
+        sweeping = false;
+      }
+    })();
+  };
+
   // R8 — rebuild the supervisor's state for ONE parked parent from the durable log, then act:
   // resume it if everything it awaits already settled, start what was recorded but never
   // started, or hand running children back to the live path. Per-parent serialized.
@@ -1052,10 +1315,11 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   const adoptOnce = async (parentId: string, hint?: EventEnvelope): Promise<void> => {
     const sys = deps.runtime.systemOptions();
     const st = await deps.runtime.loadState(parentId, sys).catch(() => null);
+    await dropGone(parentId); // whatever is held for a park the log shows answered goes now.
     if (st?.status !== "suspended" || st.suspendedOn?.on !== CHILD_DONE) return;
     const key = st.suspendedOn.correlationKey;
     if (key === undefined) return;
-    const { single, grp } = await durableSpawn(parentId, key);
+    const { single, grp, spawnedAt } = await durableSpawn(parentId, key);
     if (single === undefined && grp === undefined) {
       fail(
         new Error(
@@ -1073,13 +1337,14 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           members: grp.members,
           results: new Array<ChildResult>(grp.members.length),
           remaining: grp.members.length,
+          spawnedAt,
         };
         groups.set(key, g);
       }
       let unstarted = false;
       for (const [index, m] of grp.members.entries()) {
         if (g.results[index] !== undefined) continue;
-        const r = await settledOf(m.childId, hint);
+        const r = await settledOf(m.childId, g.spawnedAt, hint);
         if (g.results[index] !== undefined) continue; // settled live while we read.
         if (r === "absent") {
           unstarted = true;
@@ -1107,7 +1372,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     }
 
     const one = single as NonNullable<typeof single>;
-    const r = await settledOf(key, hint);
+    const r = await settledOf(key, spawnedAt, hint);
     if (r === "absent") {
       specs.set(key, {
         flowId: one.flowId,
@@ -1138,7 +1403,13 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     return next;
   };
   const adopt = (parentId: string, hint?: EventEnvelope): Promise<void> =>
-    serial(parentId, () => adoptOnce(parentId, hint));
+    serial(parentId, async () => {
+      try {
+        await adoptOnce(parentId, hint);
+      } finally {
+        ensureSweeper(); // adoption may have recorded state for a park another node will answer.
+      }
+    });
 
   // A group member settled here with siblings still outstanding. Those siblings may have settled
   // on ANOTHER node (their terminal events never reach this supervisor's `onEvent`, and vice
@@ -1152,14 +1423,18 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     const group = groups.get(groupId);
     if (group === undefined) return Promise.resolve();
     return serial(group.parentId, async () => {
-      for (let i = 0; i < 200 && (await settledOf(member.executionId)) === "running"; i++) {
+      for (
+        let i = 0;
+        i < 200 && (await settledOf(member.executionId, group.spawnedAt)) === "running";
+        i++
+      ) {
         await sleep(5);
       }
       const g = groups.get(groupId);
       if (g === undefined) return;
       for (const [index, m] of g.members.entries()) {
         if (g.results[index] !== undefined) continue;
-        const r = await settledOf(m.childId);
+        const r = await settledOf(m.childId, g.spawnedAt);
         if (r === "absent" || r === "running" || g.results[index] !== undefined) continue;
         g.results[index] = r;
         g.remaining -= 1;
@@ -1246,6 +1521,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     }
     // Child starts / refusals are fire-and-forget (gated on `waitParentDurable`); wait for them.
     await Promise.allSettled([...inflight]);
+    await sweep().catch(fail);
     summary.resumed = resumedTotal - resumed0;
     summary.started = startedTotal - started0;
     return summary;
@@ -1263,6 +1539,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
             ...(single.grants !== undefined && { grants: single.grants }),
             ...(single.expiresAt !== undefined && { expiresAt: single.expiresAt }),
           });
+          ensureSweeper();
           return;
         }
         const group = asGroupChoice(choice);
@@ -1273,10 +1550,12 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
             members: group.members,
             results: new Array<ChildResult>(group.members.length),
             remaining: group.members.length,
+            spawnedAt: event.timestamp,
           });
           group.members.forEach((m, index) =>
             memberOf.set(m.childId, { groupId: group.groupId, index })
           );
+          ensureSweeper();
         }
         return;
       }
@@ -1326,6 +1605,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
       started: started.size,
       groups: groups.size,
       memberOf: memberOf.size,
+      reclaimed: deleted.size,
     }),
   };
 }
