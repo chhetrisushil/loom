@@ -365,6 +365,48 @@ await decideApproval(
 );
 ```
 
+### Bind the approval to what the approver saw
+
+An approval must mean *this* proposal, not whatever is parked when it arrives. Have the gate
+declare a digest of the proposal, and make the approver echo it ([ADR 0117](adr/0117-approvals-bound-to-what-the-approver-saw.md)):
+
+```ts
+import { answerApproval, signResume, signedResumeAuthenticator, viewDigest } from "@loom/workflow-runtime";
+
+// in the flow
+await ctx.suspend({ on: "ApprovalGranted", viewDigest: viewDigest({ target: input.target }) });
+
+// at the edge: show the approver `state`, keep it, and answer FROM it
+const state = await runtime.loadState(executionId);
+await runtime.resume(executionId, answerApproval(state!, { approved: true }));
+```
+
+A resume whose digest is missing or stale is refused with `ResumeRefusedError`
+(`view-digest-mismatch`) before anything is appended. `agentLoop$({ requireApproval })` does this
+for you (tool + input + position); `bindApproval: false` opts out.
+
+To record *who* approved, wire the first-party authenticator (`security.strict` requires one) and
+have approvers sign:
+
+```ts
+defineConfig({
+  security: {
+    resumeAuthenticator: signedResumeAuthenticator({
+      gates: ["ApprovalGranted"],
+      keys: (actor) => secrets.approverKey(actor),   // your key store
+      authorize: (actor) => approvers.has(actor),    // optional role check
+    }),
+  },
+});
+
+await runtime.resume(id, signResume(answerApproval(state, { approved: true }), { actor: "alice", secret, exp: Date.now() + 60_000 }));
+```
+
+An unsigned, actor-less, forged or expired approval is refused (`ApprovalRejectedError`); a
+verified one records `APPROVAL_GRANTED { actor, verifiedBy }`. `InProcessA2ABus` no longer
+approves for you: without `onApproval` the gate stays parked (`resolveApproval` answers it);
+`onApproval: unsafeAutoApprove` is the demo-only opt-in.
+
 ---
 
 ## Step 10 — Branch: fork / simulate / promote

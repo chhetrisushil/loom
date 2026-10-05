@@ -947,6 +947,27 @@ export class WorkflowRuntime {
         }. A resume must name the gate it answers — the flow's declared resumeSchemas entry is looked up by this name, so a mismatched one would also skip the shape check (ADR 0077).`
       );
     }
+
+    // R13 (ADR 0117) — an approval is bound to what the approver SAW. A gate that declared a
+    // `viewDigest` is answered only by a payload echoing it. Not applied to a timer wake (the
+    // kernel's own event, no approver). Last, so the digest is learned only by a caller who
+    // already named the right gate.
+    const expected = condition?.viewDigest;
+    if (expected !== undefined && !timedWake) {
+      const echoed = (event.payload as { viewDigest?: unknown } | null | undefined)?.viewDigest;
+      if (echoed !== expected) {
+        throw new ResumeRefusedError(
+          executionId,
+          eventType,
+          "view-digest-mismatch",
+          `the gate "${eventType}" was parked on a specific proposal and the resume does not carry its digest (${
+            typeof echoed === "string"
+              ? "it carries a different one — a stale view"
+              : "none supplied"
+          }). Re-read the parked state, show the approver the CURRENT proposal, and resume with payload.viewDigest = state.suspendedOn.viewDigest. Nothing was appended.`
+        );
+      }
+    }
   }
 
   /**

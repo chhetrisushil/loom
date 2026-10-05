@@ -4,7 +4,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime, executionAccessPolicy } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { InProcessA2ABus } from "./InProcessA2ABus";
+import { InProcessA2ABus, unsafeAutoApprove } from "./InProcessA2ABus";
 
 // R3 round 1 (P1-1) — the bus's default dispatcher must not turn every caller into the system.
 
@@ -58,13 +58,14 @@ describe("InProcessA2ABus under strict execution authz", () => {
 
   it("works with a per-dispatch principal, and with a bus-level default", async () => {
     const a = make();
-    const r = await a.bus.dispatch("cap", {}, "go", { principal: alice });
+    const auto = { onApproval: unsafeAutoApprove };
+    const r = await a.bus.dispatch("cap", {}, "go", { principal: alice, ...auto });
     expect(r.status).toBe("completed");
     const b = make(alice);
-    expect((await b.bus.dispatch("cap", {}, "go")).status).toBe("completed");
+    expect((await b.bus.dispatch("cap", {}, "go", auto)).status).toBe("completed");
     // a per-dispatch principal overrides the bus default
     await expect(
-      b.bus.dispatch("cap", {}, "go", { principal: mallory, executionId: "x" })
+      b.bus.dispatch("cap", {}, "go", { principal: mallory, executionId: "x", ...auto })
     ).resolves.toMatchObject({ status: "completed" });
   });
 

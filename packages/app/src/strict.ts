@@ -74,6 +74,15 @@ export interface StrictOptions {
    * `false` restores the permissive principal-less bypass (visible in the config). Default true.
    */
   requirePrincipal?: false;
+  /**
+   * R13 — a resume authenticator is required. With none wired, ANY caller of `resume()` approves
+   * a parked gate and no `APPROVAL_GRANTED { actor, verifiedBy }` evidence is ever recorded, so
+   * strict refuses to compose without `security.resumeAuthenticator`
+   * (`signedResumeAuthenticator()` from `@loom/workflow-runtime` is the first-party one; strict
+   * cannot default it — it needs your approver keys). `false` acknowledges an app with no
+   * approval gates at all, visibly in the config. Default: required.
+   */
+  requireResumeAuthenticator?: false;
 }
 
 /**
@@ -231,6 +240,10 @@ const rateLimitConfigured = (e: AutonomyEnvelopeOptions | undefined): boolean =>
 export interface PostureInputs {
   authorizer: unknown;
   executionAuthorizer: unknown;
+  /** R13 — `security.resumeAuthenticator`. */
+  resumeAuthenticator?: unknown;
+  /** R13 — `strict.requireResumeAuthenticator === false`. */
+  resumeAuthenticatorOptional?: boolean;
   verify: VerifyConfig | undefined;
   envelope: AutonomyEnvelopeOptions | undefined;
   killSwitch: KillSwitchRegistry | undefined;
@@ -256,6 +269,11 @@ export function strictProblems(p: PostureInputs): string[] {
       "`security.executionAuthorizer` is required — with none, anyone holding the runtime may start, resume or cancel any execution."
     );
   }
+  if (p.resumeAuthenticator === undefined && p.resumeAuthenticatorOptional !== true) {
+    problems.push(
+      "`security.resumeAuthenticator` is required — with none, ANY caller of `resume()` approves a parked gate and nobody is on record as having approved it. Supply one (`signedResumeAuthenticator()` from `@loom/workflow-runtime`), or acknowledge an app with no approval gates with `strict: { requireResumeAuthenticator: false }`."
+    );
+  }
   if (verifyMode(p.verify) === "off") {
     problems.push(
       '`checks.verify` is "off" — strict runs pre-flight verification ("error" by default, "warn" allowed).'
@@ -279,6 +297,9 @@ export function permissiveNotice(p: PostureInputs): string | undefined {
   if (p.authorizer === undefined) gaps.push("no `security.authorizer` (every effect is allowed)");
   if (p.executionAuthorizer === undefined) {
     gaps.push("no `security.executionAuthorizer` (any caller may start/resume/cancel)");
+  }
+  if (p.resumeAuthenticator === undefined) {
+    gaps.push("no `security.resumeAuthenticator` (any caller of resume() approves a gate)");
   }
   gaps.push("no default execution deadline");
   if (p.envelope?.spawn?.maxDepth === undefined || p.envelope.spawn.maxFanOut === undefined) {

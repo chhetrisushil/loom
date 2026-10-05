@@ -863,6 +863,8 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   const posture = {
     authorizer: config.authorizer,
     executionAuthorizer: config.executionAuthorizer,
+    resumeAuthenticator: config.resumeAuthenticator,
+    resumeAuthenticatorOptional: strictOpts?.requireResumeAuthenticator === false,
     verify: config.verify,
     envelope: config.envelope,
     killSwitch: config.killSwitch,
