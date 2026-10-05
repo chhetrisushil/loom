@@ -1,0 +1,118 @@
+# ADR 0113 — A body-aware code fingerprint, replay-divergence detection, and migration of dynamic step ids
+
+- Status: **Proposed** (2026-10-05)
+- Date: 2026-10-05
+- Closes: R7 (agentic-readiness audit, kernel appendix O2/O3/R7, §2a "Versioning a RUNNING agent")
+- Builds on: K11 ([ADR 0023](0023-k11-flow-code-versioning-in-flight-executions.md)), K11.5
+  ([ADR 0056](0056-k11-5-state-migration-on-resume.md)), [ADR 0061](0061-step-identity-interpreter-guardrails.md)
+  (the step-identity rule that mints `id#n` steps at runtime),
+  [ADR 0084](0084-effect-classes-static-ceiling-k2-floor.md) and [ADR 0086](0086-runner-body-reach-analysis.md)
+  (the compiler's runner-body analysis), [ADR 0109](0109-bounded-history-and-continue-as-new.md)
+  (continuation is the clean re-versioning point).
+- Placement: **kernel** for the hash, the recorded field and the divergence check;
+  **1P** for the code-by-hash registry and bundler support (`@loom/compiler`,
+  `@loom/workflow-runtime` `FlowRegistry` packaging). Shares the Wave 2 bump (EVENT_SCHEMA 1.23.0:
+  one optional payload field; no ABI change).
+
+## Context
+
+`flowContentHash` (core/src/flowHash.ts) is FNV-1a **32-bit** over the flow id, version, deadline and
+the *declared* step list. Three separate defects follow from that.
+
+1. **It is body-blind.** The file's own comment says a body-only edit "folds an existing log
+   identically (completed steps are served from the log)". That holds only when the edit does not
+   change which step ids the re-run asks for, in what order, or whether it asks at all. A flow is a
+   JavaScript function re-run from the top on every resume; an edit that changes a branch condition,
+   inserts a step, or reorders two, produces a different id sequence over the same log. The kernel
+   serves recorded frames by id, so the divergence is silent: new ids execute live, old frames are
+   orphaned, and an effect that already ran under an old id runs again under a new one. Exactly the
+   long-lived agents that survive deploys are exposed.
+2. **It is 32 bits.** A collision strands nothing and detects nothing; it is a deploy-time accident
+   waiting for the right pair of flows (and it is the same class of weakness R13 fixed in
+   `viewDigest`, which also began as FNV).
+3. **`replay-check` rejects dynamic ids.** `resumeAs(..., { strategy: "replay-check" })` demands that
+   every recorded frame id exist in `definition.steps`, while the step-identity rule tells dynamic
+   agents to mint `id#n`. So the one safety check that should gate a migration of a dynamic agent
+   refuses every such agent.
+
+The kernel also holds flow runners as in-process closures keyed by hash, so serving an old pinned
+execution requires its old closure to remain registered in the same binary forever. That is a
+packaging problem (1P), made much smaller by ADR 0109: a continuation re-versions cleanly.
+
+## Decision
+
+### D1 — The structural hash becomes SHA-256 (`sha256:`), legacy values still accepted
+
+`flowContentHash` computes SHA-256 over the same canonical structure (no new inputs), prefixed
+`sha256:`. A recorded `fnv1a:` value remains valid: the comparison recomputes the legacy hash for a
+legacy recording, so no in-flight execution is stranded. New starts record the new form.
+
+### D2 — An opt-in body fingerprint, `codeHash`
+
+`FlowDefinition.codeFingerprint?: string` — a content hash of the flow *body* as built, supplied by
+the toolchain (`@loom/compiler`'s `loomPlugin()` already extracts and hashes handler chunks) or by the
+author. It is recorded on `EXECUTION_STARTED.payload.codeHash` (additive; the fold key
+`_codeHash`) and compared on resume/recovery beside `flowHash`:
+
+- equal, or absent on either side: as today;
+- different: `FlowCodeMismatchError` **unless** the registered definition lists the recorded value in
+  `compatibleWith: string[]` — the author's explicit assertion that the edit is replay-compatible
+  (the analogue of Temporal's `patched()`), reviewed in the diff that adds it.
+
+The kernel does not compute the body hash itself: `Function.prototype.toString` is not stable across
+bundlers, minification and closures, and the structural hash exists precisely because "a rebuild
+with identical structure yields an identical hash". A fingerprint the toolchain produces is stable
+by construction or visibly absent. Absent never fails (G2), so nothing changes for a flow without it.
+
+### D3 — Replay-divergence detection
+
+A re-run knows what the log says it did. When a re-run first goes **live** (the first step with no
+completed frame) or reaches `EXECUTION_COMPLETED`, the runtime checks that every recorded *completed*
+frame outside an open parallel scope was visited by this re-run, in an order consistent with the
+recorded first-start order. A recorded step the new body never asked for means the new body skipped
+durable work the log shows was done: the code changed shape. The runtime raises
+`FlowDivergenceError` naming the steps, **before** the live step starts, so no effect runs under a
+diverged body. Modes: `divergence: "off" | "warn" | "fail"`, default `warn` (a logged warning and a
+counter), `fail` under `security.strict`. Steps inside an open `parallel` scope (ADR 0112) are
+compared as a set. The check is runtime-only: no event, no fold change.
+
+### D4 — `replay-check` understands step families
+
+A frame id `base#suffix` belongs to the family `base`. `replay-check` passes a recorded frame when its
+id exists in the new definition *or* its family does (the `agentLoop$` ids
+`<loop>#turn:<n>:tool:<j>` and every ADR 0061 `id#n` mint are covered by the rule already in force),
+and `FlowDefinition.stepFamilies?: (string | RegExp)[]` extends it for ids that do not follow the
+`#` convention. Orphans are reported per family with a count, not one name per dynamic frame.
+
+### D5 — What stays 1P
+
+The **code-by-hash registry** — shipping an older runner next to the current one so a pinned
+in-flight execution can finish — is a packaging concern: `@loom/compiler` emits per-version chunks
+keyed by `codeHash`, and the workflow-runtime registry already accepts several definitions per flow
+id and pins by hash. This ADR adds the key (`codeHash`), not the store. ADR 0109 is the strategic
+answer: a long-lived agent re-versions at every continuation instead of pinning an old closure.
+
+## Replay and migration
+
+`flowHash` values already in logs keep working (D1). `codeHash` and `_codeHash` are absent in every
+existing log, which compares as "no fingerprint". Divergence detection is new behaviour on existing
+logs, which is why the default is `warn`: it can only *report* a fault that is already silently
+there. Turning it to `fail` is an operator decision after a clean-run period.
+
+## Tests
+
+SHA-256 recorded for new starts and a `fnv1a:` recording still resumes; collision-resistance is not
+tested, the prefix handling is; a body edit that changes the id sequence over a real log →
+`FlowDivergenceError` before the first live effect (assert the effect was NOT invoked: the negative
+test), and the same edit under `compatibleWith` is refused as a *mismatch* not silently allowed unless
+listed; a dynamic-id agent passes `replay-check` and an agent whose family disappeared does not;
+parallel-scope steps compared as a set; `warn` mode logs and proceeds; a flow with no
+`codeFingerprint` behaves exactly as today (fold byte-equality, hash unchanged apart from prefix).
+
+## Rejected
+
+- **Hashing `runner.toString()`**: unstable, see D2.
+- **Recording the id sequence in the log and comparing exactly**: duplicates what the frames already
+  say, and makes every benign reorder inside a parallel scope a failure.
+- **Failing by default**: detection of a fault that has been silent for 22 minor versions should
+  arrive as a warning first.
