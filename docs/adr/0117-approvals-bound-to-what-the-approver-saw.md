@@ -137,6 +137,17 @@ manual wake is still possible but is a timeout, never an approval.
 - `agentLoop$` gate correlation keys gain the loop id: `<executionId>#<loop id>#turn:<n>:tool:<j>`.
   Executions already parked keep the key (and digest) they recorded.
 
+- **Round 2 — locating the park.** The park is not the folded tip (denials and parallel siblings
+  trail it), and no state field records it (adding one would change the fold, out of scope). The
+  runtime finds it exactly: the newest `EXECUTION_SUSPENDED` among the events in hand, else a
+  walk back from the snapshot in 64-event indexed range reads, with no whole-log read and no bound
+  on how many events trail it. If it is gone from the log (compacted away) the approval is refused
+  as `park-not-located`; the tip is never bound. `restoreFromState` and the bus use the same lookup.
+  Remote approvers obtain `parkedAtSequence` from `runtime.parkedAtSequence(id)` or the bus
+  `ApprovalRequest` (not `state.sequence`) to sign.
+- `agentLoop$`'s deep-input refusal could change replay of a main-era execution whose approved
+  tool call had input nested more than 1024 levels deep; negligible, noted for completeness.
+
 ## Rejected
 
 - **A new event field or type for the digest.** The suspend condition already carries it.

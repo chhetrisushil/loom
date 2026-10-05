@@ -1140,39 +1140,50 @@ export class WorkflowRuntime {
   /**
    * R13 — the sequence of the `EXECUTION_SUSPENDED` that parked this execution: the identity of
    * THIS park, which a signed approval is bound to (single use — a later park of the same gate
-   * has a later sequence, and a fork has a different execution id). Read from the events in
-   * hand, newest first; `state.sequence` when none is there (compacted away) — which is the
-   * park's own sequence unless an audit event (`EXECUTION_DENIED`) was appended after it.
-   * `undefined` when not parked.
+   * has a later sequence, and a fork has a different execution id). The park is NOT the folded
+   * tip: audit events (`EXECUTION_DENIED`) and parallel siblings' completions are appended after
+   * it, any number of them.
+   *
+   * Found exactly, never guessed: the newest `EXECUTION_SUSPENDED` in the events in hand; else a
+   * walk BACK from `searchFrom` (the newest sequence the events in hand do not cover) in
+   * fixed-size indexed range reads, until it is found. No whole-log read, and no bound: the cost
+   * is the number of events between the park and `searchFrom`, paid only when the park is not in
+   * hand. `undefined` when it is not parked, or when the park is gone from the log (compacted
+   * away) — the caller refuses; it never substitutes the tip.
    */
-  private parkSequenceOf(
+  private async locatePark(
+    executionId: string,
     state: ExecutionState,
-    events: readonly { eventType: string; sequence: number }[] | undefined
-  ): number | undefined {
+    held: {
+      events: readonly { eventType: string; sequence: number }[] | undefined;
+      complete: boolean;
+      searchFrom?: number;
+    }
+  ): Promise<number | undefined> {
     if (state.status !== "suspended") return undefined;
-    return lastSuspendSequence(events) ?? state.sequence;
-  }
-
-  /**
-   * R13 — find the park when the events in hand do not hold it (a snapshot covers it): walk back
-   * from the folded tip with indexed point reads, never a whole-log read (R1a keeps resume off
-   * the full log). The park is the tip unless audit events (`EXECUTION_DENIED`) were appended
-   * after it, so a handful of steps is enough; past that the caller falls back to the tip.
-   */
-  private async probeParkSequence(executionId: string, tip: number): Promise<number | undefined> {
-    for (let seq = tip; seq >= 0 && seq > tip - 16; seq--) {
-      const [e] = await readRangeOf(this.eventStore, executionId, seq, seq);
-      if (e === undefined) return undefined;
-      if (e.eventType === "EXECUTION_SUSPENDED") return e.sequence;
+    const inHand = lastSuspendSequence(held.events);
+    if (inHand !== undefined) return inHand;
+    if (held.complete) return undefined;
+    const CHUNK = 64;
+    let hi = held.searchFrom ?? state.sequence;
+    while (hi >= 0) {
+      const lo = Math.max(0, hi - CHUNK + 1);
+      const got = await readRangeOf(this.eventStore, executionId, lo, hi);
+      for (let i = got.length - 1; i >= 0; i--) {
+        const e = got[i];
+        if (e !== undefined && e.eventType === "EXECUTION_SUSPENDED") return e.sequence;
+      }
+      if (got.length < hi - lo + 1) return undefined; // a gap: compacted away
+      hi = lo - 1;
     }
     return undefined;
   }
 
   /**
-   * R13 — the park identity (see {@link WorkflowRuntime.parkSequenceOf}) of a parked execution,
+   * R13 — the park identity (see {@link WorkflowRuntime.locatePark}) of a parked execution,
    * for the approver's side: sign `{ executionId, parkedAtSequence }` into the approval with
-   * `signResume`. Gated like `loadState` (a query). `undefined` when the execution is unknown
-   * or not parked.
+   * `signResume`. Gated like `loadState` (a query). `undefined` when the execution is unknown,
+   * not parked, or its park was compacted out of the log.
    */
   async parkedAtSequence(
     executionId: string,
@@ -1180,7 +1191,7 @@ export class WorkflowRuntime {
   ): Promise<number | undefined> {
     const state = await this.loadState(executionId, options);
     if (state === null || state.status !== "suspended") return undefined;
-    return this.parkSequenceOf(state, await this.eventStore.read(executionId));
+    return this.locatePark(executionId, state, { events: undefined, complete: false });
   }
 
   // K12.2 — verify an approval-gating resume event. Returns an APPROVAL_GRANTED
@@ -1189,7 +1200,12 @@ export class WorkflowRuntime {
   private verifyApproval(
     executionId: string,
     resumeEvent: ResumeEvent,
-    park: { parkedAtSequence: number | undefined; principal: PrincipalChain | undefined }
+    park: {
+      parkedAtSequence: number | undefined;
+      principal: PrincipalChain | undefined;
+      /** The execution is parked but its park could not be located (compacted away). */
+      parkNotLocated?: boolean;
+    }
   ): { eventType: string; payload: unknown } | undefined {
     if (this.resumeAuthenticator === undefined) return undefined;
     const verdict = this.resumeAuthenticator.verify(resumeEvent, {
@@ -1199,6 +1215,12 @@ export class WorkflowRuntime {
     });
     if (verdict.status === "not-applicable") return undefined;
     if (verdict.status === "rejected") {
+      if (park.parkNotLocated === true) {
+        throw new ApprovalRejectedError(
+          executionId,
+          "park-not-located: the EXECUTION_SUSPENDED this approval would be bound to is no longer in the log (compacted away), so the approval cannot be tied to a park"
+        );
+      }
       throw new ApprovalRejectedError(executionId, verdict.reason);
     }
     return {
@@ -1446,12 +1468,23 @@ export class WorkflowRuntime {
         undefined
       );
     }
+    // R13 — the park is where the log says it is, not the caller-supplied state's tip: audit
+    // events (a denial) may trail it. Located only when an approval is to be verified.
+    const restorePark =
+      resumeEvent !== undefined &&
+      this.resumeAuthenticator !== undefined &&
+      preloadedState.status === "suspended"
+        ? await this.locatePark(preloadedState.executionId, preloadedState, {
+            events: undefined,
+            complete: false,
+          })
+        : undefined;
     const restoreApproval =
       resumeEvent !== undefined
         ? this.verifyApproval(preloadedState.executionId, resumeEvent, {
-            parkedAtSequence:
-              preloadedState.status === "suspended" ? preloadedState.sequence : undefined,
+            parkedAtSequence: restorePark,
             principal: options?.principal,
+            parkNotLocated: restorePark === undefined && preloadedState.status === "suspended",
           })
         : undefined;
     if (resumeEvent !== undefined) {
@@ -1861,17 +1894,18 @@ export class WorkflowRuntime {
     // APPROVAL_GRANTED fact so "who approved" is evidence, not a claim.
     let parkedAt: number | undefined;
     if (this.resumeAuthenticator !== undefined && vm.getState().status === "suspended") {
-      // The park may predate the snapshot: probe back from the tip, then fall back to the fold.
-      parkedAt =
-        lastSuspendSequence(allEvents ?? tailEvents) ??
-        (allEvents === undefined
-          ? await this.probeParkSequence(executionId, vm.getState().sequence)
-          : undefined) ??
-        vm.getState().sequence;
+      // The park may predate the snapshot (the carried fast path holds only the tail): then it
+      // is at or before the snapshot, and is walked back to from there.
+      parkedAt = await this.locatePark(executionId, vm.getState(), {
+        events: allEvents ?? tailEvents,
+        complete: allEvents !== undefined,
+        ...(snapshot !== null && { searchFrom: snapshot.sequence }),
+      });
     }
     const approval = this.verifyApproval(executionId, resumeEvent, {
       parkedAtSequence: parkedAt,
       principal: options?.principal,
+      parkNotLocated: parkedAt === undefined && vm.getState().status === "suspended",
     });
     assertAuthorizedOverride(executionId, resumeEvent, approval);
 
@@ -2057,9 +2091,14 @@ export class WorkflowRuntime {
         state.sequence
       );
     }
+    const migrationPark = await this.locatePark(executionId, state, {
+      events: allEvents,
+      complete: true,
+    });
     const approval = this.verifyApproval(executionId, resumeEvent, {
-      parkedAtSequence: this.parkSequenceOf(state, allEvents),
+      parkedAtSequence: migrationPark,
       principal: options.principal,
+      parkNotLocated: migrationPark === undefined && state.status === "suspended",
     });
     assertAuthorizedOverride(executionId, resumeEvent, approval);
 
