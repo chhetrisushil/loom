@@ -102,6 +102,10 @@ Therefore:
   and listed as a behaviour change; the implementation PRs grep `loom-examples`, `loom-plugins` and
   `loom-demo` for emits of the new names first (names an app could plausibly use are the reason for the
   stamp; renaming to `LOOM_…` was considered and rejected as inconsistent with the 30 existing kinds).
+  **No ingress accepts caller metadata for these kinds** (the kernel builds the envelope), so the stamp
+  cannot be forged; round 2 requires tests that it survives `eraseSubject` (which only appends tombstones),
+  `LogLifecycle` compaction/archive re-appends, `copyPrefix`, and the Encrypting/ContentResolving store
+  decorators (ADR 0110 "Marker").
 - The version has never been released (the monorepo is lockstep and unpublished), so a kind that no item
   ends up writing is never added. `PARALLEL_STARTED` and `STEP_RETRYING` remain reserved with handlers and
   no writer from before this wave (§7 question 12); the assertion lists them as the known exceptions.
@@ -149,8 +153,11 @@ is over and its successor is owed" must be one durable event).
   `continueAsNew` with the same carry, the start is a no-op, the commit lands. **No new sweep, no
   `continuedFrom.sequence`.** The first draft committed first and made the predecessor terminal, which
   nothing would ever revisit.
-- **Successor-id squatting is closed twice.** `~` is reserved in caller-chosen ids at creation (today
-  `assertNotReserved`, `WorkflowRuntime.ts:277`, refuses only `__loom_` and the blank id), and the
+- **Successor-id squatting is closed twice.** The successor **shape** (a root id segment, the text before the
+  first `::`, matching `<x>~<digits>`) is reserved in caller-chosen ids at creation (today
+  `assertNotReserved`, `WorkflowRuntime.ts:277`, refuses only `__loom_` and the blank id); the kernel's own
+  continuation start and the supervisor's child start bypass it, so a continued parent's children
+  (`chain~1::g#0`) still start (round 2: reserving the bare character broke them). And the
   continuation start verifies that an existing sequence 0 has `continuedFrom.executionId ===` the
   predecessor, else a typed `ContinuationConflictError` (ADR 0103 D2 alone would treat any existing seq 0
   as success).
@@ -159,6 +166,16 @@ is over and its successor is owed" must be one durable event).
   `TERMINAL` at line 35, analytics, learning `trajectories`, `eraseSubject`, `InProcessA2ABus`,
   `LocalWorkerRuntime`, `executeGraph`, `strayPassthroughs`, `blankStream`). ADR 0109 D2 lists them and each
   gets a test; the supervisor *follows* a continued child to its head rather than settling.
+- **Cancel vs the start-to-commit window (round 2).** `cancel` of a chain member probes for a started
+  successor (`<chainId>~<gen+1>` seq 0, `continuedFrom` matching) and cancels it; a successor also checks on
+  its first run that its predecessor is not cancelled (and cascades the cancel if so). No live generation
+  survives a cancelled chain. **Head resolution** probes the same successor when `_continuedTo` is not yet
+  set, so a send in the window reaches the successor; the residual is a wake, never a message (the inbox is
+  chain-keyed and the successor reads past the carried cursors).
+- **Fork of a chain member leaves the chain (round 2).** The fork stamps a fresh `chainId` (its own id),
+  generation 0 and ignores `continuedFrom` (via `forkMeta`, `copyPrefix` unchanged), so it is not a second
+  reader of the owner's inbox and cannot read its payloads; a fork point at or after
+  `EXECUTION_CONTINUED` is refused (`ForkPastContinuationError`).
 - The successor runs the code registered *now* (a clean re-versioning point). It inherits principal (R3k),
   tenant, tags and `chainId`; running `_resources` totals and the **absolute chain deadline** are carried,
   so a rotation cannot reset a quota or outlive a deadline.
@@ -171,7 +188,7 @@ is over and its successor is owed" must be one durable event).
   sender retry after rotation is still deduplicated.
 
 **Delta.** ABI `+continueAsNew`. Schema `+EXECUTION_CONTINUED`, `EXECUTION_STARTED.{continuedFrom, chainId,
-generation}`, `_continuedTo`, status `continued`. SPI none. Reserved `~`.
+generation}`, `_continuedTo`, status `continued`. SPI none. Reserved id shape `<x>~<digits>` on the root segment.
 
 **Replay and in-flight migration.** Existing logs have no such kind and replay byte-identically; nothing is
 rewritten. A pre-1.23.0 node would see a continued predecessor as still `running` and re-drive it, so the
@@ -184,7 +201,8 @@ R15 (resources carried), R8/R8k (the supervisor follows `_continuedTo`; `parent`
 **Verification.** The frozen DST criterion at **both** crash points (before the successor start, and between
 the start and the commit), message in flight; recover; assert one successor and one delivery; `exp.cjs`
 with `continueEvery(500)` flat to 20k turns and bounded snapshots; negatives (over-cap carry, open scope or
-wait, double continuation, pre-started `foo~1`, foreign seq 0); children cascade and detached carry;
+wait, double continuation, pre-started `foo~1`, foreign seq 0, continued parent spawning children, cancel in
+the start-to-commit window, send in the window, fork × chain); children cascade and detached carry;
 deadline and dedupe survive rotation; a test per status consumer; wire-abi vectors.
 
 ### 4.2 R3k — the durable principal (ADR 0111)
@@ -228,7 +246,12 @@ falls back to `options.principal`), and `defineConfig` registers `principal.iden
 crypto is composed. **A fork acts as the forker** (`forkedBy` stamped into `forkMeta`, the resolver prefers
 it; acting as the owner needs an explicit, separately authorized `{ actAs: "owner" }` / op `"actAsOwner"`),
 because a fork is authorized only as `query` + `start` (`WorkflowRuntime.ts:2329–2368`) while `copyPrefix`
-copies sequence 0 — the first draft would have given a reader the owner's authority. `ExecutionAuthzRequest.owner` is
+copies sequence 0 — the first draft would have given a reader the owner's authority. **Identity without crypto (round 2):** under `security.strict` or a composed compliance plugin the identity
+subset is never written verbatim — crypto, or `principalCodec` (`ref` mode), or `defineConfig` refuses; outside
+those the verbatim subset is the zero-config default and its non-redactability is a documented non-goal. The
+resolver reads sequence 0 of the **log**, never a caller-supplied `restoreFromState` state, and `_principal`
+survives `resumeAs` migration (the handler spreads `variables`, `eventHandlers.ts:672-692`).
+`ExecutionAuthzRequest.owner` is
 filled from the record so `executionAccessPolicy` drops its in-process table. `parent` is recorded beside the
 principal (lineage; used by R6's cascade sweep and R8k's pin predicate).
 
@@ -299,7 +322,9 @@ continuation — at-least-once send, exactly-once consume within the window; `ap
   and, if a message is there, satisfies the wait **live** (`MESSAGE_CONSUMED`) instead of parking. (2) After
   the park is durable it reads once more and, if something arrived in the gap, **self-resumes** using
   `acquireFenceIf(id, { fence: <park's fence> })` (R8k, so R8k lands before R2). (3) A cross-process send
-  finishes by scheduling a **due-now `TimerStore` row** for the chain's head (no SPI change); `TimerService`'s
+  finishes by scheduling a **due-now `TimerStore` row** for the chain's head (no SPI change; round 2:
+  **coalesced** — skipped when the owner is not parked on an inbox wait or a due-now row exists — and the R2
+  plan requires a 10,000-send burst load test); `TimerService`'s
   fire path, which today resumes only a park whose recorded wake matches, is widened to run the notify path
   for a park with an inbox wait.
 - **`send` is authorized.** `runtime.send(chainId, msg, { principal })` is judged as a new `ExecutionOp`
@@ -512,8 +537,11 @@ head check would strand parents and window 1 would not close. Now
 `acquireFenceIf(executionId, { fence }) → { fence } | { stale, fence }` is atomic on the **fence token**; the
 caller passes the token under which the park was written (`metadata.fence` of the park envelope, 0 if none),
 which moves only when someone acquires. `RunOptions.fenceIfParkedAt` (the park sequence) on `resume`/
-`resumeAs`: the runtime derives the token, and on `stale` **re-reads the park and retries (bounded, 3) if
-it is the same wait**, else `ResumeRefusedError` `not-suspended`; it also re-checks `assertResumable` under
+`resumeAs`: the runtime derives the token, and on `{ stale, fence: cur }` **re-reads the park and, if it is
+still unanswered on the same wait, retries with `expect: cur` (the token the store returned, never the
+envelope's: any dead acquirer bumps the token for good and would otherwise strand the parent forever)**,
+bounded (3); an answered/different park → `ResumeRefusedError` `not-suspended`; exhaustion → the distinct
+retryable `ResumeContendedError` (`contended`), which `recover()` and timer backoff re-drive. It also re-checks `assertResumable` under
 the acquired fence (closing a legacy unfenced answer path). The winner's acquire moves the token, so both
 windows close and the supervisor's bounded loop becomes one attempt. Stores without it keep today's
 behaviour. Retention: `@loom/orchestration` `pinParkedChildren` (a `PinPredicate`), auto-composed by
@@ -526,7 +554,9 @@ decorators forward it (ADR 0074 requires every decorator to decide).
 **Verification.** Conformance: token matches/moved/concurrent, and **an unfenced `EXECUTION_DENIED` after the
 park does not make the acquire stale**; DST: two supervisors with crashes between acquire and append and
 between append and read-back — the running parent is never fenced out, one resume is recorded;
-`not-suspended` on an answered park with the log untouched; decorator kit lists the method; retention pins a
+`not-suspended` on an answered park with the log untouched; **a dead acquirer (acquire, never append) then a
+legitimate resume succeeds via the `expect: cur` retry, and three dead acquirers surface `contended`, never
+`not-suspended`**; decorator kit lists the method; retention pins a
 child while its parent is parked on it and releases it after.
 
 ## 5. Interactions, in one table
@@ -561,7 +591,7 @@ R11); Sonnet on R14 and R15 and every re-review. Two lanes at most (machine load
 | 4 | **R14** `ctx.ui` out (0114) | B | W2-0 | independent; drops the dependency edge early |
 | 5 | **R2** inbox, receive, select, `runtime.send` + `@loom/inbox` (0110) | A | R3k, R6, R8k | the largest PR; split `@loom/inbox` into its own PR |
 | 6 | **R15** open vocabularies (0115) | B | W2-0 | independent |
-| 7 | **R11** `recordOutcome` (0116) | B | R3k (owner for authz) | retention-clock change rides along |
+| 7 | **R11** `recordOutcome` (0116) | B | R3k (owner for authz) | retention-clock change rides along; **the `continued` clause of its terminal set is gated on R1b (step 8)**: until then the terminal set is `completed`/`failed`/`cancelled` and the clause is added by R1b's PR |
 | 8 | **R1b** continue-as-new (0109) | A | R3k, R6 (barrier), R2 (inbox cursors) | measured acceptance on `exp.cjs` |
 | 9 | **R7** fingerprint + divergence (0113) | B | R6 (scope sets) | default `warn`, `fail` under strict |
 | 10 | wave close: wave-wide DST, docs pass (SPI map, compat matrix, `loom-plugins` notes), flags documented | — | all | |
@@ -621,7 +651,14 @@ recommendation, adopted so the work is not blocked; the user may override any of
   the citations green. The CHANGELOG gains a "Known issue" entry and `docs/usage.md` / `README.org` a
   security note (§4.2), which are prose, not new guarded claims.
 
-## 9. Notes carried from review round 1 (P3)
+## 9. Notes carried from review rounds (P3)
+
+- **Round 2.** `WorkflowRuntime.ts` citations in ADR 0109 D2 corrected (`start` 1560/id check 1570,
+  `cancel` 1377/1382, `restoreFromState` 1441/1448, `resume` 1755/1765, `resumeAs` 1992/2013, fork id 2324).
+  Before the successor's start commits, a stream trim uses the predecessor's (lower, conservative) cursors
+  (ADR 0110 D1). `_principal` is not reset by `restoreFromState` (the resolver reads the log) or by
+  `EXECUTION_MIGRATED` (it spreads `variables`). R8k D2 retries on `{stale, fence: cur}` with the returned
+  token, and exhaustion is the retryable `contended`, so a dead acquirer cannot strand a parked parent.
 
 - **SHA-256 in the platform-neutral core.** `flowContentHash` is used in `core`, `workflow-runtime` and
   `app/src/verifyAdapter.ts:365`; `core` may not import `node:crypto`. ADR 0113 D1 keeps it in `core` with a

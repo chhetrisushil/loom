@@ -11,7 +11,8 @@
 - Placement: **EventStore SPI (optional method) + a `RunOptions` field in workflow-runtime;**
   the retention half is **1P** (`@loom/orchestration`) over the existing pin seam. **EVENT_STORE_SPI
   2.0.0 → 2.1.0** (additive MINOR). KERNEL_ABI and EVENT_SCHEMA are not touched by this ADR.
-- Revision: round 1 (Opus review of PR #495). The first draft compared the **log head**, premised on "the
+- Revision: round 2 — D2's retry uses the store-returned current token (the envelope token is stranded by any
+  dead acquire) and exhaustion is a retryable `contended`, not `not-suspended`. Round 1 (Opus review of PR #495). The first draft compared the **log head**, premised on "the
   park is by construction the last event". That is false: the runtime appends an unfenced
   `EXECUTION_DENIED` after a park (`recordExecutionDenied`, `WorkflowRuntime.ts` ~664–700, "appends WITHOUT
   a fence"), `recordOutcome` (ADR 0116) and audit events do too, so a head comparison would strand parents
@@ -80,12 +81,19 @@ race, the re-check handles the legacy path.
 
 `RunOptions.fenceIfParkedAt?: number` (the park's sequence, as `locatePark` supplies) on `resume` /
 `resumeAs`: the runtime reads the park envelope at that sequence, takes its `metadata.fence` (or 0), and
-acquires with `acquireFenceIf(id, { fence })` instead of `acquireFence`. On `{ stale }` it **re-reads the
-park** (`locatePark`): if the execution is still parked on the **same wait** (a rival acquired for a
-non-resume reason and the park was not answered) it retries with the new park's token, bounded (3
-attempts); if the park is gone or is a different one it raises the existing `ResumeRefusedError` reason
-`not-suspended` and appends nothing. Window 1 becomes a clean refusal; window 2 disappears, because the
-winner's acquire moves the token and a later conditional acquire sees `stale`. `superviseChildren`,
+acquires with `acquireFenceIf(id, { fence })` instead of `acquireFence`. On `{ stale, fence: cur }` it
+**re-reads the park** (`locatePark`): if the execution is still parked on the **same wait** (the park
+is unanswered) the token moved only because someone acquired and never appended (a crashed supervisor,
+`TimerService.ts:323` `runtime.acquireFence`, `orchestration.ts:987`; an acquire is never undone, so the
+park envelope's `metadata.fence` is **stale forever**), so it retries with `expect: cur` — **the token the
+store just returned, not the envelope's**. Window 2 stays closed: a rival whose resume committed leaves
+the re-read showing the park **answered** (→ `not-suspended`, nothing appended), and one that is mid-flight
+moves the token again, so this attempt's conditional fails `stale` and re-reads. Bounded (3 attempts);
+**exhaustion is a distinct retryable outcome, `ResumeContendedError` reason `contended`** (never
+`not-suspended`: the park is still unanswered, so reporting "not suspended" would strand the parent), which
+R8 `recover()` and the timer backoff treat as "re-drive later". If the park is gone or is a different one
+it raises the existing `ResumeRefusedError` reason `not-suspended` and appends nothing. Window 1 becomes a
+clean refusal; window 2 disappears. `superviseChildren`,
 `TimerService` and ADR 0110's inbox notify-resume (which "fences up front") pass it; the R8 supervisor's
 bounded-acquisition loop collapses to one attempt.
 
@@ -108,6 +116,10 @@ runtime ignores the optional method. Mixed fleets are safe in both directions.
 
 ## Tests
 
+**Dead acquirer then a legitimate resume (conformance + DST)**: acquire fence on a parked execution and
+never append, then resume with `fenceIfParkedAt` — the resume succeeds via the `expect: cur` retry; with
+three consecutive dead acquirers racing it surfaces `contended` (retryable), never `not-suspended`, and a
+later `recover()` pass completes it.
 Conformance case (token matches → new token returned; token moved → `stale`, token unchanged; concurrent
 callers → exactly one wins; **an unfenced append after the park (an `EXECUTION_DENIED`) does NOT make the
 acquire stale — the negative for the head-based design**); DST: two supervisors race a park with crashes between acquire and append

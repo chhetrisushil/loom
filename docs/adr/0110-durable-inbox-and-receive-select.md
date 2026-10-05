@@ -16,7 +16,10 @@
   multi-wait park condition, the reader seam, and an **authorized `runtime.send`** (the only writer of the
   inbox stream). **1P** (new `@loom/inbox`): routing by logical name, pub/sub, fan-in, retry helpers, all
   built on `runtime.send`. Shares the Wave 2 bump (KERNEL_ABI 1.3.0, EVENT_SCHEMA 1.23.0).
-- Revision: round 1 (Opus review of PR #495) closed a lost-wakeup window (D5), moved `send` behind
+- Revision: round 2 — the due-now notify row is coalesced (D5.3), the stream trim before a continuation
+  commits is conservative (D1), the chain head is resolved with a successor probe (ADR 0109 D4), a fork
+  leaves the chain and never reads the owner's inbox (D1), the `metadata.kernel` stamp's guarantees are
+  stated and tested (Marker). Round 1 (Opus review of PR #495) closed a lost-wakeup window (D5), moved `send` behind
   authorization (D1; this also fixes the contradiction with ADR 0109 D4, which already called it
   `runtime.send`), bounded the inbox stream (D1), pinned timer `wakeAt` (D4), disambiguated `scopePath` and
   `waitId` (D3), defined quiescence (D2), and bound R13 signatures to the wait (D4). **Needs ADR 0118
@@ -73,6 +76,16 @@ exactly the argument ADR 0116 makes against a 1P append for outcomes. Now:
   `WorkflowRuntimeDeps.inbox`; the default implementation is the runtime's own stream reader over its
   `EventStore`. A function type, not a versioned SPI, until a second implementation exists.
 
+**The stream is addressed by chain, and a fork is not the chain.** `send` resolves its target to the head
+of the chain (ADR 0109 D4, including the start-to-commit probe) and the stream is keyed
+`__loom_inbox__:<chainId>`. A fork of a chain member stamps a **fresh `chainId` and generation 0 and ignores
+`continuedFrom`** (ADR 0109 D7), so a fork has its own, empty inbox: it is never a second reader of the
+owner's stream (no double consumption, no cursor interference), and a caller holding only `query` on the
+member plus `start` cannot read the owner's inbox payloads through it (the payloads live in the owner's
+`MESSAGE_CONSUMED` events and the owner's stream, neither of which the fork's chain addresses; the copied
+prefix up to the fork point is the ordinary `query`-level disclosure the fork authorization already
+accounts for).
+
 **The stream is bounded and cheap to write.** Reserved control streams are refused by compaction
 (`LogLifecycle.ts:607`: their writers "take their next sequence from `read().length`"), and a writer that
 allocates from `read().length` is O(stream) per send. Two changes: (a) the inbox allocates its sequence
@@ -83,7 +96,11 @@ cursor across the chain's topics**, which is safe because `MESSAGE_CONSUMED` cop
 owner's log (the log stays self-contained). A topic nobody consumes would pin the stream forever, so `send`
 refuses beyond `inboxMaxBacklog` unconsumed messages per chain (default 10,000) with a typed
 `InboxFullError` (the sender sees backpressure, the owner's log is untouched). Trimming runs on the owner's
-consume path and on `recover()`. The stream is **deleted with the chain**: when retention reclaims the head
+consume path and on `recover()`. **Across a continuation the trim is conservative:** until the successor's
+`EXECUTION_STARTED` is durable the trim uses the **predecessor's** cursors (they are the only ones that
+exist), which can only be *lower* than the successor's carried ones (the carry is a snapshot of them), so a
+trim never removes a message the successor has yet to consume; the successor's own cursors take over from
+its sequence 0. The stream is **deleted with the chain**: when retention reclaims the head
 of a chain (ADR 0109 D6), `LogLifecycle` deletes `__loom_inbox__:<chainId>` in the same sweep.
 
 ### D2 — `ctx.receive(topic)` and `ctx.select(arms)`
@@ -174,7 +191,14 @@ commit, the message sits in the stream with nobody resuming for it. Three closur
    gap it **self-resumes**: a fenced resume using `acquireFenceIf(id, { fence: <park's fence> })`
    (ADR 0118), so a rival notifier cannot both resume.
 3. **Cross-process senders get a durable wake.** `runtime.send` finishes by scheduling a **due-now row in
-   the existing `TimerStore`** for the chain's head (`TimerRecord { executionId, wakeAt: now }`; no SPI
+   the existing `TimerStore`** — **coalesced**: the row is skipped when the chain head is not parked on an
+   inbox wait (nothing to wake: the running owner's quiescence commit, closure 1, reads the stream) or when
+   a due-now row for that head already exists (one row wakes the notify path, which drains every message
+   past the cursors; N sends in a burst cost one row, not N). The check-then-insert race is benign (at worst
+   two rows; the second fire is a no-op under the fenced resume). The R2 implementation plan **must include
+   a load test** (a burst of 10,000 sends to one parked chain: timer rows written, TimerService fires,
+   wake latency) before the PR is merged, and records the measured row count in its ADR acceptance.
+   The row for the chain's head (`TimerRecord { executionId, wakeAt: now }`; no SPI
    change). `TimerService`'s fire path today resumes only a park whose recorded wake matches
    (`suspended-on-this-wake`); it is widened to "parked with an inbox wait → run the notify path (read past
    the cursors, consume, resume)", otherwise a no-op. A same-process `runtime.notifyInbox(chainId)` is the
@@ -201,6 +225,18 @@ sender-side retry and idempotency-key helpers, and the A2A / `@loom/orchestratio
 this over `resume`, all over `runtime.send`. `runtime.resume` keeps its meaning (answer a parked gate);
 the "message while busy" case becomes `send`.
 
+## Marker
+
+`MESSAGE_CONSUMED` (like every new kind) folds only when the envelope carries `metadata.kernel: true`
+(design document §3). **No ingress accepts caller-supplied metadata for these kinds**: `ctx.emit`,
+`runtime.send` and `recordOutcome` build the envelope in the kernel (the userspace guard also refuses the
+kind by name), so the stamp cannot be forged from outside. The stamp must survive every path that re-appends
+or rewrites an envelope, each with a test: `eraseSubject` (`compliance/src/eraseSubject.ts:156-158` only appends
+`PAYLOAD_SHREDDED` tombstones and rewrites no envelope; the test pins that it stays so), `LogLifecycle` compaction and archive re-appends, `copyPrefix` (fork), and the
+`EncryptingEventStore` / `ContentResolvingEventStore` decorators (they transform `payload`, never
+`metadata`). A stripped stamp makes the event fold as the no-op a pre-existing app event always was, which is
+loud in the conformance tests rather than silent in production.
+
 ## Replay and migration
 
 All new fold keys are absent in an existing log, so every existing log replays byte-identically. An
@@ -224,7 +260,10 @@ move the timer arm's `wakeAt`; **identity**: two sequential `parallel` scopes mi
 body edit that shifts an ordinal raises `FlowDivergenceError` rather than mis-delivering; **signatures**: a
 signature for arm A does not answer arm B; DST: crash between inbox append and `MESSAGE_CONSUMED`, between
 `MESSAGE_CONSUMED` and the next park, duplicate send (and across a continuation); ADR 0117 `viewDigest` still
-refuses a stale approval on a gate arm; per-topic FIFO under concurrent senders; topic with `__loom_` prefix
+refuses a stale approval on a gate arm; per-topic FIFO under concurrent senders; **fork × chain**: a fork of a chain member does not consume (or
+advance the cursors of) the owner's inbox and cannot read its payloads; **coalescing**: a send to a running
+(unparked) owner writes no timer row, a burst writes one; **trim before commit**: kill between the
+successor start and the commit, with unconsumed messages, and assert none is trimmed; **marker** (below); topic with `__loom_` prefix
 refused; payload over the inline cap refused at `send`.
 
 ## Rejected

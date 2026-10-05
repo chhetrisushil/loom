@@ -16,7 +16,11 @@
   **1P** (`@loom/orchestration`, `@loom/analytics`) for chain lineage queries and supervisor
   follow-through. Shares the single Wave 2 bump: **KERNEL_ABI 1.2.0 → 1.3.0**,
   **EVENT_SCHEMA 1.22.0 → 1.23.0** (design document §Version plan).
-- Revision: round 1 (Opus review of PR #495) reversed the commit order of D2 (successor first, then the
+- Revision: round 2 — the `~` reservation is now a reserved **successor shape** on the root id segment, so
+  supervised children of a continued parent (`chain~1::g#0`) still start (D2); cancel of a chain member
+  reaches a started-but-uncommitted successor and a successor checks its predecessor was not cancelled
+  (D2); the head is resolved with a successor probe in the start-to-commit window (D4); a fork of a chain
+  member leaves the chain (D7). Round 1 (Opus review of PR #495) reversed the commit order of D2 (successor first, then the
   commit), added the `continued` status (D2), reserved `~` in caller ids (D2), and added D5 (children and
   the park barrier). Needs [ADR 0112](0112-structured-concurrency.md) (park barrier) and
   [ADR 0111](0111-durable-principal.md) first.
@@ -99,14 +103,39 @@ commit lands. **No new sweep and no `recoverContinuations()`**: the repair is th
 exists. Exactly one live successor exists after a crash at any point (ADR 0052's frozen criterion).
 
 **Successor-id squatting.** ADR 0103 D2 treats any existing sequence 0 as a successful idempotent start, so
-a caller who started `foo~1` first would be adopted as the successor. Two guards: (a) the character `~` is **reserved in caller-chosen execution ids at creation**: `assertNotReserved`
-(`WorkflowRuntime.ts:277`, today refusing the `__loom_` prefix and the blank id) is also called on resume
-paths (lines 1448, 1570, …), so the `~` refusal is a creation-only variant applied where a caller names a
-NEW id (`start` at line 1382, the fork child id at line 2324), never on resume of an existing one (existing
-logs with a `~` in the id stay resumable); since `chainId` is itself a caller id, `<chainId>~<n>` is
-unambiguous. (b) The continuation start verifies that an *existing*
-sequence 0 carries `continuedFrom.executionId === predecessor`, and otherwise raises a typed
-`ContinuationConflictError` instead of treating it as success.
+a caller who started `foo~1` first would be adopted as the successor. Two guards:
+
+(a) **The successor SHAPE is reserved, not the character.** A caller-chosen id whose **root segment**
+(the text before the first `::`, `SEP` in `orchestration.ts:64-66`) matches `^.+~[0-9]+$` is refused at
+creation. Reserving `~` anywhere (the first draft) would have broken supervised children of a continued
+generation: the successor `chain~1` spawns `awaitChild` children whose ids are `<parentId>::<key>#i` =
+`chain~1::g#0`, and the supervisor starts them through `start()`, where `assertNotReserved` runs
+(`WorkflowRuntime.ts:1570`, the id at 1569). Those ids have root segment `chain~1`, which is the successor
+shape; so the check is applied to **caller-originated** starts only: the kernel-internal continuation start
+(D2 step 1) and the supervisor's child start bypass it (they pass an internal `creation: "kernel"` option
+that a caller cannot set), and a caller's own `start("chain~1", …)` or `start("chain~1::x", …)` with an
+`~`-digits root is refused. A `~` that is not `~<digits>` at the end of the root segment (`a~b`, `a~1x`,
+`a::b~1`) stays legal, so existing ids are not collateral. `assertNotReserved` (`WorkflowRuntime.ts:277`,
+today refusing the `__loom_` prefix and the blank id) is called on resume paths too (`restoreFromState`
+1448, `resume` 1765, `resumeAs` 2013), so the shape refusal is a creation-only variant applied where a
+caller names a NEW id (`start`, line 1570; the fork child id, line 2324), never on resume of an existing one
+(existing logs stay resumable; `cancel` at 1382 is unaffected). `chainId` is itself a caller id whose root
+segment may not match the shape, so `<chainId>~<n>` is unambiguous.
+(b) The continuation start verifies that an *existing* sequence 0 carries
+`continuedFrom.executionId === predecessor`, and otherwise raises a typed `ContinuationConflictError`
+instead of treating it as success.
+
+**Cancel races the start-to-commit window.** Between step 1 and step 2 a successor exists while the
+predecessor is still `running`. A cancel of the predecessor in that window would append
+`EXECUTION_CANCELLED` (terminal; `recoverAbandoned` skips it), `EXECUTION_CONTINUED` would never commit, and
+the successor would be an orphan that keeps running. Two closures, either sufficient and both required:
+(i) **`cancel` of a chain member checks for a started successor** (a point read of `<chainId>~<gen+1>`
+sequence 0, accepted only if its `continuedFrom.executionId` is this execution) and cancels it too, walking
+forward at most `maxChainHops`, under the same authorization (one chain, one owner, ADR 0111); (ii) **the
+successor checks its predecessor on its first run** (and on every recovery re-drive before its first
+effect): if `continuedFrom.executionId` is `cancelled` it appends its own `EXECUTION_CANCELLED` with
+`reason { kind: "cascade", parent: <predecessor> }` and stops. (ii) covers a cancel that lands after (i)'s
+probe. Together a cancelled chain has no live generation.
 
 **Status.** `EXECUTION_CONTINUED` folds to a **new** `ExecutionStatus` value, `"continued"`, with the
 reserved key `variables._continuedTo = successorId`. The first draft folded it to `completed`; that was
@@ -161,6 +190,17 @@ after a rotation is still deduplicated; it is bounded by the window size and is 
 (ADR 0052 D3 stands). A continuation is legal only when nothing is parked, so there is no suspension to
 transfer; the successor re-establishes its waits deterministically from the carry.
 
+**The head in the start-to-commit window.** `_continuedTo` is set only when `EXECUTION_CONTINUED` commits, so
+for the window between D2's step 1 and step 2 a walk of `_continuedTo` still ends at the *running*
+predecessor, and a `send` (or ADR 0110's due-now notify row) would target a body that is about to stop and
+will not consume it. Head resolution therefore does one more step at each hop whose target is `running` and
+has no `_continuedTo`: **probe `<chainId>~<gen+1>` sequence 0** (O(1)) and follow it if present and its
+`continuedFrom.executionId` matches. The residual is bounded: a message that still reaches the predecessor
+is never lost, because it is in the chain's inbox stream (keyed by `chainId`, ADR 0110), the carried cursors
+are snapshotted at the quiescence commit and the successor reads past them; and the successor's own
+park-time re-read (ADR 0110 D5.2) catches anything that arrived after its start. Resolving to the
+predecessor costs a wake, never a message.
+
 ### D5 — Outstanding children at the commit
 
 A parent that continues cannot leave a child parked-on: the `CHILD_DONE` park belongs to the predecessor.
@@ -181,7 +221,26 @@ children before calling `continueAsNew`.
   by the usual policy. `EXECUTION_CONTINUED` is a pinned kind (as ADR 0107's fork points), so a compacted
   predecessor still names its successor.
 
-### D7 — Replay contract, mixed fleets, tests
+### D7 — Fork of a chain member leaves the chain
+
+A fork copies the prefix `[0..atSequence]` verbatim (`copyPrefix`, `WorkflowRuntime.ts:2446`), sequence 0
+included, so a fork of a chain member would inherit `chainId`, `generation` and `continuedFrom`. That makes
+the fork a **second reader of the owner's chain inbox** (double consumption and cursor interference), lets a
+caller with only `query` on the member and `start` obtain the owner's inbox payloads (a confidentiality
+leak: ADR 0110 D5 copies payloads into the log), and, when the fork point is at or after
+`EXECUTION_CONTINUED`, folds the fork to `continued` pointing at the real successor. So:
+
+- A fork stamps `forkChain: { chainId: <the fork's own id>, generation: 0 }` into `forkMeta` (the channel
+  that already carries `forkedFrom`, and ADR 0111 D7's `forkedBy`). The fold prefers it over the copied
+  sequence-0 payload and **ignores `continuedFrom`** (so inherited `carried` cursors, dedupe window, chain
+  deadline are not applied: the fork starts a fresh chain with an empty inbox). Rewriting sequence 0's
+  payload is not needed and `copyPrefix` is unchanged.
+- A fork point **at or after `EXECUTION_CONTINUED`** is refused with a typed `ForkPastContinuationError`
+  naming the successor (the caller can fork the successor instead); before it, the fork is ordinary and,
+  when it re-runs to `continueAsNew`, starts `<fork-id>~1`.
+- The fork's inbox is not the owner's: `send` to the fork's chain id reaches the fork alone.
+
+### D8 — Replay contract, mixed fleets, tests
 
 Replay of the predecessor never re-runs the successor start: a predecessor whose log ends in
 `EXECUTION_CONTINUED` is `continued` (no body to re-run), and one that does not is re-driven by recovery
@@ -201,8 +260,16 @@ commit, and before the start, with a message in flight; recover; assert exactly 
 exactly one delivery; (2) `exp.cjs` with `continueEvery(500)`: per-resume latency flat from turn 500 to
 20,000, snapshot size bounded; (3) negatives: a carry over `maxCarryBytes` refuses before any append; a
 call inside an open scope, or with an outstanding wait, or with an in-flight step past `parkDrainMs`
-refuses; **a caller who pre-started `foo~1` is refused at start (`~` reserved) and a pre-existing seq 0
-whose `continuedFrom` names another execution raises `ContinuationConflictError`**; a second continuation
+refuses; **a caller who pre-started `foo~1` (or `foo~1::x`) is refused at start (successor shape reserved) while
+`a~b` and `a::b~1` still start, and a pre-existing seq 0 whose `continuedFrom` names another execution raises
+`ContinuationConflictError`; a continued parent (`chain~1`) spawning `awaitChild` children (`chain~1::g#0`)
+works**; **cancel of the predecessor after the successor started (kill between start and commit, then
+cancel) leaves no live successor (probe path), and a cancel that lands after the probe is caught by the
+successor's first-run predecessor check**; **a `send` in the start-to-commit window resolves to the
+successor and is delivered once**; **fork × chain: a fork of a chain member gets a fresh `chainId`,
+generation 0 and no `continuedFrom`, does not consume the owner's inbox (a message sent to the owner is
+delivered to the owner only, cursors unchanged), and cannot read the owner's inbox payloads; a fork point at
+or after `EXECUTION_CONTINUED` is refused**; a second continuation
 from a continued predecessor is a no-op; (4) children: non-detached cancelled on commit, detached
 survives and its id in the carry is awaitable; (5) a chain deadline survives rotation; the dedupe window
 survives rotation (a duplicate send after rotation is skipped); (6) every status consumer listed in D2
@@ -229,7 +296,7 @@ vectors for the new kind and status; (8) fold equality of every pre-existing vec
 - A perpetual or conversational agent has a bounded fold, a bounded snapshot and an O(carry) restart cost,
   at the price of an explicit carry the author must design.
 - The kernel gains one syscall, one event kind, one status value, one reserved fold key and a reserved id
-  character; no SPI change and no new sweep. Recovery is the existing `recoverAbandoned`.
+  shape; no SPI change and no new sweep. Recovery is the existing `recoverAbandoned`.
 - ADR 0052's frozen criterion becomes a standing DST test rather than a paragraph.
 - Ordering: R6 (barrier) and R3k (principal) land first; R2 (the inbox cursors) before the first
   inbox-using chain, though the syscall itself works without it.
