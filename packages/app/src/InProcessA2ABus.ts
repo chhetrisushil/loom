@@ -36,13 +36,38 @@ export interface ApprovalDecision {
   approvedBy: string;
 }
 
+/**
+ * What an approver is asked to decide: which execution, which gate, and the digest of the
+ * proposal the gate declared (`state.suspendedOn.viewDigest`, R13). The bus echoes that digest
+ * in the resume it sends, so the decision is bound to THIS proposal — an approval for an older
+ * one is refused by the runtime before anything is recorded.
+ */
+export interface ApprovalRequest {
+  executionId: string;
+  gate: string;
+  viewDigest?: string | undefined;
+}
+
+/**
+ * Approve every gate, unconditionally. For demos and tests ONLY: it is the behaviour the bus
+ * used to have when no `onApproval` was supplied (R13 removed that default — a gate the bus
+ * resumes itself is an approval nobody made). Named loudly so it is visible in review.
+ */
+export const unsafeAutoApprove = async (): Promise<ApprovalDecision> => ({
+  approved: true,
+  approvedBy: "unsafeAutoApprove",
+});
+
 export interface DispatchOptions {
   onProgress?: ((line: string) => void) | undefined;
   onStatus?: ((status: A2ATaskStatus) => void) | undefined;
   // Called when the agent's flow reaches a durable suspend checkpoint. The
-  // resolved decision is delivered as the resume payload — either the risk
-  // policy (auto) or a human operator (manual). Absent ⇒ auto-approve.
-  onApproval?: (() => Promise<ApprovalDecision>) | undefined;
+  // resolved decision is delivered as the resume payload — a risk policy or a
+  // human operator. ABSENT ⇒ the gate stays suspended and `dispatch` returns
+  // `status: "working"` with `suspended` set; resolve it later with
+  // `resolveApproval` (R13: the bus no longer approves on anyone's behalf —
+  // pass `onApproval: unsafeAutoApprove` for a demo).
+  onApproval?: ((request: ApprovalRequest) => Promise<ApprovalDecision>) | undefined;
   // Stable id for the underlying execution so progress can be correlated before
   // the flow starts running. Defaults to a derived id.
   executionId?: string | undefined;
@@ -60,6 +85,8 @@ export interface DispatchResult {
   taskId: string;
   status: A2ATaskStatus;
   artifact: unknown;
+  /** Set when the task is parked at a gate nobody answered (no `onApproval`). */
+  suspended?: ApprovalRequest;
 }
 
 function executionStatusToA2A(status: string): A2ATaskStatus {
@@ -103,6 +130,8 @@ export class InProcessA2ABus {
   private readonly dispatcher: ExecutionDispatcher;
   private readonly maxTasks: number;
   private readonly defaultPrincipal: Record<string, unknown> | undefined;
+  /** Tasks parked at an unanswered gate → the flow to resume. Bounded like `tasks`. */
+  private readonly parked = new Map<string, { flowId: string; request: ApprovalRequest }>();
   /**
    * Monotonic id counter. Deliberately NOT `tasks.size`, which this used to be: `size`
    * shrinks when the cap above evicts, so ids would start repeating and a new task would
@@ -201,54 +230,132 @@ export class InProcessA2ABus {
       setStatus("working");
 
       // Run the fiber to suspend-or-complete. A durable human-in-the-loop gate
-      // returns status:"suspended"; resolve the decision and resume with a fresh
-      // dispatch. The loop tolerates multiple gates.
-      let result = await this.dispatcher.dispatch({
+      // returns status:"suspended"; ask `onApproval` and resume with a fresh
+      // dispatch. With no `onApproval` the gate STAYS parked (R13).
+      const first = await this.dispatcher.dispatch({
         executionId,
         workflowId: flowId,
         flowId,
         input,
         ...(principal !== undefined && { principal }),
       });
-
-      while (result.status === "suspended") {
-        const decision: ApprovalDecision = options.onApproval
-          ? await options.onApproval()
-          : { approved: true, approvedBy: "auto" };
-        result = await this.dispatcher.dispatch({
-          executionId,
-          workflowId: flowId,
-          flowId,
-          resumeEvent: { eventType: "ApprovalGranted", payload: decision },
-          ...(principal !== undefined && { principal }),
-        });
-      }
-
-      const status = executionStatusToA2A(result.state.status);
-      const artifact = result.state.variables._output;
-
-      this.retainTask(executionId, {
-        id: executionId,
-        status,
-        ...(status === "completed"
-          ? {
-              artifacts: [
-                {
-                  parts: [
-                    {
-                      type: "text",
-                      text: typeof artifact === "string" ? artifact : JSON.stringify(artifact),
-                    },
-                  ],
-                },
-              ],
-            }
-          : { error: String(result.state.variables._error ?? "failed") }),
-      });
-      options.onStatus?.(status);
-      return { taskId: executionId, status, artifact };
+      return await this.settle(executionId, flowId, first, principal, options);
     } finally {
       unsub();
     }
+  }
+
+  /**
+   * Answer the gate a task is parked at (a `dispatch` that returned `suspended`). The decision
+   * is delivered as the gate's resume payload with the gate's `viewDigest` echoed — the digest
+   * recorded when the task parked, i.e. the proposal the approver was shown.
+   */
+  async resolveApproval(
+    taskId: string,
+    decision: ApprovalDecision,
+    options: Pick<DispatchOptions, "principal" | "onApproval" | "onStatus"> = {}
+  ): Promise<DispatchResult> {
+    const entry = this.parked.get(taskId);
+    if (entry === undefined) throw new Error(`task "${taskId}" is not parked at a gate`);
+    const principal = options.principal ?? this.defaultPrincipal;
+    const result = await this.resume(taskId, entry.flowId, entry.request, decision, principal);
+    // Only forget the park once the runtime accepted the answer (a refusal throws above).
+    this.parked.delete(taskId);
+    return this.settle(taskId, entry.flowId, result, principal, options);
+  }
+
+  private resume(
+    executionId: string,
+    flowId: string,
+    request: ApprovalRequest,
+    decision: ApprovalDecision,
+    principal: Record<string, unknown> | undefined
+  ) {
+    return this.dispatcher.dispatch({
+      executionId,
+      workflowId: flowId,
+      flowId,
+      resumeEvent: {
+        eventType: request.gate,
+        payload: {
+          ...decision,
+          ...(request.viewDigest !== undefined && { viewDigest: request.viewDigest }),
+        },
+      },
+      ...(principal !== undefined && { principal }),
+    });
+  }
+
+  private parkTask(executionId: string, flowId: string, request: ApprovalRequest): void {
+    this.parked.delete(executionId);
+    this.parked.set(executionId, { flowId, request });
+    while (this.parked.size > this.maxTasks) {
+      const oldest = this.parked.keys().next();
+      if (oldest.done) break;
+      this.parked.delete(oldest.value);
+    }
+  }
+
+  /** Drive a dispatch result to terminal, or leave it parked when nobody may answer the gate. */
+  private async settle(
+    executionId: string,
+    flowId: string,
+    first: Awaited<ReturnType<ExecutionDispatcher["dispatch"]>>,
+    principal: Record<string, unknown> | undefined,
+    options: Pick<DispatchOptions, "onApproval" | "onStatus">
+  ): Promise<DispatchResult> {
+    let result = first;
+    while (result.status === "suspended") {
+      const cond = result.state.suspendedOn;
+      const gate = cond?.on;
+      const request: ApprovalRequest | undefined =
+        gate === undefined
+          ? undefined
+          : {
+              executionId,
+              gate,
+              ...(cond?.viewDigest !== undefined && { viewDigest: cond.viewDigest }),
+            };
+      // No approver, an unreadable gate, or a timer wake (the kernel's, not an approver's):
+      // the gate stays parked and the caller is told so.
+      if (options.onApproval === undefined || request === undefined || gate === "TIMER_FIRED") {
+        const parkedRequest = request ?? { executionId, gate: "<unknown>" };
+        if (request !== undefined) this.parkTask(executionId, flowId, request);
+        this.retainTask(executionId, { id: executionId, status: "working" });
+        options.onStatus?.("working");
+        return {
+          taskId: executionId,
+          status: "working",
+          artifact: undefined,
+          suspended: parkedRequest,
+        };
+      }
+      const decision = await options.onApproval(request);
+      result = await this.resume(executionId, flowId, request, decision, principal);
+      this.parked.delete(executionId);
+    }
+
+    const status = executionStatusToA2A(result.state.status);
+    const artifact = result.state.variables._output;
+    this.retainTask(executionId, {
+      id: executionId,
+      status,
+      ...(status === "completed"
+        ? {
+            artifacts: [
+              {
+                parts: [
+                  {
+                    type: "text",
+                    text: typeof artifact === "string" ? artifact : JSON.stringify(artifact),
+                  },
+                ],
+              },
+            ],
+          }
+        : { error: String(result.state.variables._error ?? "failed") }),
+    });
+    options.onStatus?.(status);
+    return { taskId: executionId, status, artifact };
   }
 }

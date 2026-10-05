@@ -77,6 +77,13 @@ export {
   type UnattributedRun,
 } from "./blankStream";
 export { parseCron, nextOccurrence, type CronSpec } from "./cron";
+export { answerApproval, approvalViewDigest, viewDigest } from "./approvalBinding";
+export {
+  SIGNED_RESUME_VERIFIED_BY,
+  signResume,
+  signedResumeAuthenticator,
+  type SignedResumeOptions,
+} from "./signedResumeAuthenticator";
 export { executionAccessPolicy } from "./executionAccessPolicy";
 export type {
   ExecutionOwner,

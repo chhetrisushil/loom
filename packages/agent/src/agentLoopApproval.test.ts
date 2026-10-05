@@ -4,7 +4,12 @@ import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import type { LlmProvider, LlmResponse } from "@loom/llm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
+import {
+  ResumeRefusedError,
+  WorkflowRuntime,
+  answerApproval,
+  approvalViewDigest,
+} from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -100,12 +105,41 @@ describe("agentLoop$ can stop mid-loop for approval (R1)", () => {
     // destructive has happened while a human decides.
     expect(dropped).toEqual([]);
 
-    const resumed = await runtime.resume(handle.executionId, {
-      eventType: "AgentToolApproval",
-      payload: { approved: true },
-    });
+    const state = (await runtime.loadState(handle.executionId))!;
+    const resumed = await runtime.resume(
+      handle.executionId,
+      answerApproval(state, { approved: true })
+    );
     await resumed.waitForCompletion();
     expect(dropped).toEqual([{ t: "users" }]);
+  });
+
+  it("R13 — the approval is bound to the tool call the approver saw", async () => {
+    const { runtime, flowDef, dropped } = boot();
+    const handle = await runtime.start(flowDef, {});
+    await handle.waitForSuspend();
+    const state = (await runtime.loadState(handle.executionId))!;
+    // The digest names tool + args + this gate position (so it cannot be replayed elsewhere).
+    expect(state.suspendedOn?.viewDigest).toBe(
+      approvalViewDigest(`${handle.executionId}#turn:0:tool:0`, "drop-table", { t: "users" })
+    );
+
+    // A bare approval — or one for a DIFFERENT proposal — is refused and nothing is recorded.
+    const before = await runtime.loadState(handle.executionId);
+    for (const payload of [
+      { approved: true },
+      { approved: true, viewDigest: approvalViewDigest("x", "drop-table", { t: "other" }) },
+    ]) {
+      const err = await runtime
+        .resume(handle.executionId, { eventType: "AgentToolApproval", payload })
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect(err).toBeInstanceOf(ResumeRefusedError);
+    }
+    expect(await runtime.loadState(handle.executionId)).toEqual(before);
+    expect(dropped).toEqual([]);
   });
 
   it("feeds a refusal back to the model instead of running the tool", async () => {
@@ -113,10 +147,11 @@ describe("agentLoop$ can stop mid-loop for approval (R1)", () => {
     const handle = await runtime.start(flowDef, {});
     await handle.waitForSuspend();
 
-    const resumed = await runtime.resume(handle.executionId, {
-      eventType: "AgentToolApproval",
-      payload: { approved: false, reason: "not during business hours" },
-    });
+    const state0 = (await runtime.loadState(handle.executionId))!;
+    const resumed = await runtime.resume(
+      handle.executionId,
+      answerApproval(state0, { approved: false, reason: "not during business hours" })
+    );
     const state = await resumed.waitForCompletion();
 
     expect(state.status).toBe("completed");

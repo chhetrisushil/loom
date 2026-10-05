@@ -276,6 +276,10 @@ const NOT_A_CAPABILITY = new Set([
   // order with id cursors (EventStore SPI 2.0.0), Postgres pages via a COLLATE "C" column, and
   // a policy for boot migrations that take an exclusive lock. No new subsystem to grade.
   "0108",
+  // 0117 — approvals bound to what the approver saw (a digest in the existing suspend condition),
+  // a reference ResumeAuthenticator, and no bus auto-approve: hardening of existing capabilities
+  // (resume gate, K12.2 authenticator, A2A bus). No new subsystem to grade.
+  "0117",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

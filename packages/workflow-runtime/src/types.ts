@@ -12,6 +12,11 @@ export interface SuspendConfig {
    * P9); a wired TimerService fires the wake. Set by `ctx.sleep`/`sleepUntil`.
    */
   wakeAt?: number;
+  /**
+   * R13 (ADR 0117) — digest of what the approver is asked to approve; see
+   * `SuspendCondition.viewDigest`. Compute it with `viewDigest()` / `approvalViewDigest()`.
+   */
+  viewDigest?: string;
 }
 
 /** T1 — the resume eventType a durable timer fires with (a governed kernel fact). */
@@ -617,7 +622,15 @@ export type ResumeRefusalReason =
    * not answer the gate; rather than silently re-parking, the kernel refuses it and appends
    * nothing. Retriable: resume with a non-null answer.
    */
-  | "null-answer-after-parked-failure";
+  | "null-answer-after-parked-failure"
+  /**
+   * R13 (ADR 0117) — the gate declared a `viewDigest` (a digest of the proposal the approver is
+   * asked to approve) and the resume did not echo THAT digest: it echoed an older proposal's, or
+   * none. The approver was shown something other than what is now parked. Nothing was appended;
+   * re-read the parked state, show the approver the current proposal, and resume with
+   * `answerApproval(state, decision)`.
+   */
+  | "view-digest-mismatch";
 
 /**
  * The resume ingress gate refused. Nothing was appended: the execution is

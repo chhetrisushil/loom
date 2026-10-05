@@ -4,6 +4,7 @@ import type { EffectContext } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryKillSwitch } from "@loom/middleware";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { signedResumeAuthenticator } from "@loom/workflow-runtime";
 import type { ExecutionAuthorizer, FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -43,6 +44,7 @@ const twice: FlowRunner<unknown, unknown> = async (ctx) => {
   return {};
 };
 
+const approver = signedResumeAuthenticator({ gates: ["Approval"], keys: {} });
 const allowAll: ExecutionAuthorizer = { authorize: () => ({ allowed: true }) };
 const grants = (flowId: string) => new GrantTable({ [flowId]: ["t"] });
 
@@ -70,6 +72,26 @@ describe("security.strict — config", () => {
     expect(message).toMatch(/`security\.executionAuthorizer` is required/);
   });
 
+  it("R13 — strict refuses to compose without a resumeAuthenticator, unless acknowledged", () => {
+    const base = { authorizer: grants("f"), executionAuthorizer: allowAll };
+    expect(() =>
+      defineConfig({ storage: { kind: "memory" }, security: { strict: true, ...base } })
+    ).toThrow(/`security\.resumeAuthenticator` is required/);
+    // the explicit acknowledgement (an app with no approval gates) is visible in the config
+    expect(() =>
+      defineConfig({
+        storage: { kind: "memory" },
+        security: { strict: { requireResumeAuthenticator: false }, ...base },
+      })
+    ).not.toThrow();
+    expect(() =>
+      defineConfig({
+        storage: { kind: "memory" },
+        security: { strict: true, ...base, resumeAuthenticator: approver },
+      })
+    ).not.toThrow();
+  });
+
   it("a lone authorizer is not enough; policies alone are not an authorizer", () => {
     expect(() =>
       defineConfig({
@@ -80,7 +102,12 @@ describe("security.strict — config", () => {
     expect(() =>
       defineConfig({
         storage: { kind: "memory" },
-        security: { strict: true, executionAuthorizer: allowAll, policies: [] },
+        security: {
+          strict: true,
+          executionAuthorizer: allowAll,
+          resumeAuthenticator: approver,
+          policies: [],
+        },
       })
     ).toThrow(/authorizer/);
   });
@@ -89,7 +116,12 @@ describe("security.strict — config", () => {
     const warnings: string[] = [];
     const app = defineConfig({
       storage: { kind: "memory" },
-      security: { strict: true, authorizer: grants("f"), executionAuthorizer: allowAll },
+      security: {
+        strict: true,
+        authorizer: grants("f"),
+        executionAuthorizer: allowAll,
+        resumeAuthenticator: approver,
+      },
       observability: { onWarn: (m) => warnings.push(m) },
     });
     expect(app.strict).toBe(true);
@@ -106,7 +138,12 @@ describe("security.strict — config", () => {
     expect(() =>
       defineConfig({
         storage: { kind: "memory" },
-        security: { strict: true, authorizer: grants("f"), executionAuthorizer: allowAll },
+        security: {
+          strict: true,
+          authorizer: grants("f"),
+          executionAuthorizer: allowAll,
+          resumeAuthenticator: approver,
+        },
         checks: { verify: "off" },
       })
     ).toThrow(/checks\.verify/);
@@ -115,7 +152,12 @@ describe("security.strict — config", () => {
   it("the envelope's defaults are individually switchable off", async () => {
     const app = defineConfig({
       storage: { kind: "memory" },
-      security: { strict: true, authorizer: grants("f"), executionAuthorizer: allowAll },
+      security: {
+        strict: true,
+        authorizer: grants("f"),
+        executionAuthorizer: allowAll,
+        resumeAuthenticator: approver,
+      },
       execution: { envelope: { spawn: { maxDepth: false, maxFanOut: 8 } } },
     });
     expect(app.envelope?.spawn).toEqual({ maxFanOut: 8 });
@@ -126,7 +168,12 @@ describe("security.strict — config", () => {
     expect(() =>
       defineConfig({
         storage: { kind: "memory" },
-        security: { strict: true, authorizer: grants("f"), executionAuthorizer: allowAll },
+        security: {
+          strict: true,
+          authorizer: grants("f"),
+          executionAuthorizer: allowAll,
+          resumeAuthenticator: approver,
+        },
         execution: { envelope: { budget: false } },
       })
     ).toThrow(/no spend bound/);
@@ -200,6 +247,7 @@ describe("strict — default deadline", () => {
         strict: { defaultDeadlineMs },
         authorizer: grants(flow.definition.id),
         executionAuthorizer: allowAll,
+        resumeAuthenticator: approver,
       },
       execution: { registerEffects: (fx) => fx.register("t", hang()) },
     });
@@ -222,6 +270,7 @@ describe("strict — default deadline", () => {
         strict: { defaultDeadlineMs: 60 },
         authorizer: grants("long"),
         executionAuthorizer: allowAll,
+        resumeAuthenticator: approver,
       },
       execution: { registerEffects: (fx) => fx.register("t", hang()) },
     });
@@ -239,6 +288,7 @@ describe("strict — default deadline", () => {
         strict: { defaultDeadlineMs: 600_000 },
         authorizer: grants("short"),
         executionAuthorizer: allowAll,
+        resumeAuthenticator: approver,
       },
       execution: { registerEffects: (fx) => fx.register("t", hang()) },
     });
@@ -272,6 +322,7 @@ describe("strict — default deadline", () => {
           ...(strict !== false && {
             authorizer: grants("f"),
             executionAuthorizer: allowAll,
+            resumeAuthenticator: approver,
           }),
         },
         execution: { registerEffects: (fx) => fx.register("t", hang()) },
@@ -311,7 +362,12 @@ describe("the envelope — budget, rate limit, kill switch", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [flow],
-      security: { strict: true, authorizer: grants("f"), executionAuthorizer: allowAll },
+      security: {
+        strict: true,
+        authorizer: grants("f"),
+        executionAuthorizer: allowAll,
+        resumeAuthenticator: approver,
+      },
       execution: {
         envelope: { budget: { perExecution: { maxTokens: 10 } } },
         registerEffects: (fx) => fx.register("t", llmish(calls)),
@@ -329,7 +385,12 @@ describe("the envelope — budget, rate limit, kill switch", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [flow],
-      security: { strict: true, authorizer: grants("f"), executionAuthorizer: allowAll },
+      security: {
+        strict: true,
+        authorizer: grants("f"),
+        executionAuthorizer: allowAll,
+        resumeAuthenticator: approver,
+      },
       execution: { registerEffects: (fx) => fx.register("t", llmish(calls)) },
     });
     const handle = await app.runtime.start(flow, {}, { executionId: "e" });
@@ -365,7 +426,12 @@ describe("the envelope — budget, rate limit, kill switch", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [flow],
-      security: { strict: true, authorizer: grants("f"), executionAuthorizer: allowAll },
+      security: {
+        strict: true,
+        authorizer: grants("f"),
+        executionAuthorizer: allowAll,
+        resumeAuthenticator: approver,
+      },
       execution: { registerEffects: (fx) => fx.register("t", llmish(calls)) },
     });
     const ks = app.killSwitch as InMemoryKillSwitch;
@@ -437,6 +503,7 @@ describe("strict — resume never re-applies the default deadline (P1)", () => {
         strict: true,
         authorizer: grants(flow.definition.id),
         executionAuthorizer: allowAll,
+        resumeAuthenticator: approver,
       },
     });
 
@@ -480,7 +547,12 @@ describe("strict — spend must be bounded (P2)", () => {
     defineConfig({
       storage: { kind: "memory" },
       flows: [flowOf("f", twice)],
-      security: { strict: true, authorizer: grants("f"), executionAuthorizer: allowAll },
+      security: {
+        strict: true,
+        authorizer: grants("f"),
+        executionAuthorizer: allowAll,
+        resumeAuthenticator: approver,
+      },
       execution: { envelope: envelope as never },
     });
   it("refuses budget:false with rateLimit:false", () => {
@@ -508,6 +580,7 @@ describe("strict — fail-closed execution authz (R3)", () => {
         strict,
         ...(strict !== false && { authorizer: grants(flow.definition.id) }),
         executionAuthorizer: ownerOnly,
+        resumeAuthenticator: approver,
       },
       execution: { registerEffects: (fx) => fx.register("t", new ToolEffect(async () => ({}))) },
     });

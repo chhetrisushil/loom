@@ -10,6 +10,7 @@ import type {
 } from "@loom/llm";
 import type { TieredMemory } from "@loom/memory";
 import type { ModelInvoker, ReasoningRuntime } from "@loom/reasoning";
+import { approvalViewDigest } from "@loom/workflow-runtime";
 import type { ExecutionContext } from "@loom/workflow-runtime";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
@@ -134,6 +135,17 @@ export interface AgentLoopConfig {
   requireApproval?: ApprovalPolicy;
   /** Gate name for approvals. Pair with `flow$({ resumeSchemas })` to parse the payload (ADR 0077). */
   approvalGate?: string;
+  /**
+   * R13 (ADR 0117) — bind each approval to the tool call the approver was shown. The gate
+   * records a digest of `(position, tool, input)` in its suspend condition and the resume must
+   * echo it (`answerApproval(state, { approved })` builds that); a bare or stale approval is
+   * refused before anything is appended. Default `true`. `false` restores the unbound gate,
+   * where whatever is parked when the approval arrives is what it approves.
+   *
+   * A `flow$({ resumeSchemas })` entry for this gate must let `viewDigest` through (a strict
+   * `z.object` drops it from the recorded payload; a `.strict()` one rejects it).
+   */
+  bindApproval?: boolean;
   /**
    * Skills to select from. The selection is RECORDED through `ctx.decide`, so
    * replay serves the set that actually ran rather than re-selecting.
@@ -442,9 +454,14 @@ export async function agentLoop$(
       // Mid-loop HITL. The gate is BEFORE the effect, so a declined call never
       // runs — the point of asking.
       if (config.requireApproval?.(toolCall, turn, menu.has(toolCall.name)) === false) {
+        const gateKey = `${ctx.executionId}#turn:${turn}:tool:${j}`;
         const verdict = await ctx.suspend<{ approved?: boolean; reason?: string }>({
           on: gate,
-          correlationKey: `${ctx.executionId}#turn:${turn}:tool:${j}`,
+          correlationKey: gateKey,
+          // R13 — bind the approval to the exact call parked here (tool + args + position).
+          ...(config.bindApproval !== false && {
+            viewDigest: approvalViewDigest(gateKey, toolCall.name, toolCall.input),
+          }),
         });
         if (verdict?.approved !== true) {
           // A refusal is a fact the model should see and settle on, not an error:

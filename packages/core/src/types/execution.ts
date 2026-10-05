@@ -49,6 +49,14 @@ export interface SuspendCondition {
    */
   wakeAt?: number;
   /**
+   * R13 (ADR 0117) — a digest of WHAT the approver is being asked to approve (the proposed
+   * tool call, the plan, the diff), declared by the gate that parks. Recorded in the suspend
+   * condition, so it is durable and fold-visible with no new event type. When present, the
+   * resume that answers this gate MUST echo it as `payload.viewDigest`; a missing or different
+   * one is refused before the append (`ResumeRefusedError`, `view-digest-mismatch`).
+   */
+  viewDigest?: string;
+  /**
    * ADR 0104 — set by the KERNEL (never by `ctx.suspend`, which strips it) when a
    * `kind: "human"` step's effect parked the execution: the step whose answer the next resume
    * is. Absent on every `ctx.suspend` park and on every pre-0104 human park.

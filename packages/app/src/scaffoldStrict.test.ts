@@ -33,7 +33,7 @@ describe("scaffolded app", () => {
 
   it("config.ts requests strict mode and passes both authorizers from security.ts", () => {
     expect(files["app/config.ts"]).toMatch(
-      /security: \{ strict: true, authorizer, executionAuthorizer \}/
+      /security: \{ strict: true, authorizer, executionAuthorizer, resumeAuthenticator \}/
     );
     expect(files["app/security.ts"]).toContain("GrantTable");
     expect(files["README.md"]).toContain("security.ts");
@@ -43,6 +43,7 @@ describe("scaffolded app", () => {
     const security = load(files["app/security.ts"] as string) as {
       authorizer: import("@loom/effect-runtime").CapabilityAuthorizer;
       executionAuthorizer: import("@loom/workflow-runtime").ExecutionAuthorizer;
+      resumeAuthenticator: import("@loom/workflow-runtime").ResumeAuthenticator;
     };
     const greet = load(files["app/flows/greet/flow.ts"] as string).GreetFlow as RegisteredFlow;
 
