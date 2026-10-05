@@ -11,6 +11,13 @@ export interface WorkerServerOptions {
   /** Port to listen on. 0 (default) picks a free port — read `.port` after start. */
   port?: number;
   /**
+   * R12 — the interface to bind. Default `"127.0.0.1"` (loopback only). The worker server runs
+   * flows and accepts resume events, so it is reachable from this machine alone until you widen
+   * it deliberately (`"0.0.0.0"`, `"::"`, an interface address) — and then set `authorize`.
+   * Binding all interfaces was the old default.
+   */
+  host?: string;
+  /**
    * Authenticate the mutating routes (`/execute`, `/cancel`). Return `true` to allow.
    * The scheme is yours (shared secret, mTLS via `req.socket`, a signed dispatch token) —
    * the server supplies the gate, you supply the policy. **When unset the server is
@@ -102,6 +109,9 @@ export function createWorkerServer(
   worker: WorkerRuntime,
   options: WorkerServerOptions = {}
 ): WorkerServer {
+  const host = options.host ?? "127.0.0.1";
+  const urlHost =
+    host === "0.0.0.0" || host === "::" ? "localhost" : host.includes(":") ? `[${host}]` : host;
   if (worker.runsAsSystem === true && options.authorize === undefined) {
     throw new Error(
       "createWorkerServer: this worker runs packages as the kernel's SYSTEM identity (runsAsSystem), so an unauthenticated server would hand that identity to every caller on the network. Pass `authorize`, or build the worker without the `system` grant."
@@ -219,14 +229,14 @@ export function createWorkerServer(
 
   return {
     get url() {
-      return `http://localhost:${resolvedPort}`;
+      return `http://${urlHost}:${resolvedPort}`;
     },
     get port() {
       return resolvedPort;
     },
     start(): Promise<void> {
       return new Promise((resolve) => {
-        server.listen(requestedPort, () => {
+        server.listen(requestedPort, host, () => {
           const addr = server.address();
           if (addr !== null && typeof addr === "object") {
             resolvedPort = addr.port;

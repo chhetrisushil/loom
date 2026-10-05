@@ -3,7 +3,7 @@ import * as http from "node:http";
 import { BadRequestError, exposeError } from "@loom/core";
 import type { PrincipalChain } from "@loom/effect-runtime";
 import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
-import { LoomAgentExecutor } from "./AgentExecutor";
+import { LoomAgentExecutor, hasActor } from "./AgentExecutor";
 import type { A2ATask, AgentCard } from "./types";
 
 export interface A2AServerOptions {
@@ -15,10 +15,21 @@ export interface A2AServerOptions {
    */
   host?: string;
   /**
+   * R12 — the URL the agent card advertises, when it differs from the bind address (a server bound
+   * to `"0.0.0.0"` would otherwise advertise `localhost`, which no remote peer can reach). Set it
+   * to the externally reachable base URL (reverse proxy / load balancer). Default: derived from
+   * `host` and the bound port.
+   */
+  publicUrl?: string;
+  /**
    * R12 — authenticate AND identify the caller in one step: return the caller's
    * {@link PrincipalChain}, or `undefined` to refuse the request (401). Derive it from connection
    * facts only (verified bearer token, mTLS peer) — never from the task body. This is the
    * recommended gate: it also scopes task ownership to the principal (see below).
+   *
+   * The principal MUST carry a non-empty string `actor` (task ownership is keyed on it); any other
+   * principal is refused with 401 and a one-time warning. When both this and
+   * {@link resolvePrincipal} are set, THIS wins and `resolvePrincipal` is ignored.
    */
   authenticate?: (
     req: http.IncomingMessage
@@ -39,9 +50,11 @@ export interface A2AServerOptions {
    */
   insecure?: boolean;
   /**
-   * R12 — pass `app.strict` (`defineConfig`'s `security.strict`). Under strict the server is a
-   * config error unless it authenticates AND resolves a principal; `insecure: true` is refused.
-   * (The app does not construct this server, so it cannot enforce this for you.)
+   * R12 — `defineConfig`'s `security.strict`. Under strict the server is a config error unless it
+   * authenticates AND resolves a principal; `insecure: true` is refused; and a caller that
+   * resolves to no principal is refused (401). DEFAULTS from the runtime you pass
+   * (`workflowRuntime.requiresPrincipal`), so a strict runtime makes the server strict without
+   * this flag; set it explicitly to override.
    */
   strict?: boolean;
   /** Where the insecure-mode warning goes. Default `console.warn`. */
@@ -119,7 +132,8 @@ export function createA2AServer(
   const port = options.port ?? 3001;
   const host = options.host ?? "127.0.0.1";
   const authenticated = options.authenticate !== undefined || options.authorize !== undefined;
-  if (options.strict === true) {
+  const strict = options.strict ?? workflowRuntime.requiresPrincipal === true;
+  if (strict) {
     if (options.insecure === true) {
       throw new Error(
         "createA2AServer: `insecure: true` is refused under security.strict — authenticate callers."
@@ -144,6 +158,8 @@ export function createA2AServer(
   const urlHost =
     host === "0.0.0.0" || host === "::" ? "localhost" : host.includes(":") ? `[${host}]` : host;
   let resolvedUrl = `http://${urlHost}:${port}`;
+  const warn = options.warn ?? ((m: string) => console.warn(m));
+  let warnedNoActor = false;
 
   // The whole A2A layer is this one adapter; the server just moves bytes to it. Task ids are
   // namespaced by principal (R12): the client's id is only a label within its own namespace.
@@ -156,7 +172,7 @@ export function createA2AServer(
 
       try {
         if (method === "GET" && url === "/.well-known/agent.json") {
-          json(res, 200, { ...agentCard, url: resolvedUrl });
+          json(res, 200, { ...agentCard, url: options.publicUrl ?? resolvedUrl });
           return;
         }
 
@@ -179,6 +195,22 @@ export function createA2AServer(
         }
         // R3 — who is calling, resolved once per request, after `authorize`.
         principal ??= await options.resolvePrincipal?.(req);
+        // R12 — fail closed: a principal that cannot be given its own namespace (no actor) must
+        // not be pooled with other such callers; under strict an unidentified caller is refused.
+        if (principal !== undefined && !hasActor(principal)) {
+          if (!warnedNoActor) {
+            warnedNoActor = true;
+            warn(
+              "[loom] A2A server: refusing a caller whose principal has no non-empty string `actor` — `authenticate`/`resolvePrincipal` must return an `actor` (task ownership is keyed on it)."
+            );
+          }
+          json(res, 401, { error: "unauthorized" });
+          return;
+        }
+        if (principal === undefined && strict) {
+          json(res, 401, { error: "unauthorized" });
+          return;
+        }
         // The task namespace: the principal when known; one shared bucket for callers that were
         // authorized but not identified; "anonymous" under `insecure`.
         const call = {

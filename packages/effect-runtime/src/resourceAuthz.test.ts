@@ -95,3 +95,66 @@ describe("EffectRuntime passes the effect's resource to the authorizer (R12)", (
     });
   });
 });
+
+describe("PolicyAuthorizer: allow globs never widen onto a chosen resource name (R12 review P2)", () => {
+  const authz = (rules: Record<string, unknown>) =>
+    new PolicyAuthorizer({ f: [policy$({ id: "p", name: "p", rules })] });
+
+  it("allow list glob `*.search` does not allow mcp.invoke on srv/wipe.search", () => {
+    expect(authz({ allow: ["*.search"] }).authorize(req("srv/wipe.search")).allowed).toBe(false);
+    expect(authz({ allow: ["*"] }).authorize(req("srv/anything")).allowed).toBe(true);
+  });
+
+  it("match-rule allow `*-readonly` does not allow a resource named to end -readonly", () => {
+    const a = authz({ match: [{ effect: "*-readonly" }] });
+    expect(a.authorize(req("srv/x-readonly")).allowed).toBe(false);
+  });
+
+  it("a qualified allow pattern must name this effect exactly", () => {
+    expect(authz({ allow: ["mcp.invoke:srv/search"] }).authorize(req("srv/search")).allowed).toBe(
+      true
+    );
+    expect(authz({ allow: ["mcp.invoke:srv/search"] }).authorize(req("srv/wipe")).allowed).toBe(
+      false
+    );
+    expect(authz({ allow: ["mcp.invoke:srv/*"] }).authorize(req("srv/wipe")).allowed).toBe(true);
+    expect(authz({ allow: ["*:srv/search"] }).authorize(req("srv/search")).allowed).toBe(false);
+    expect(authz({ match: [{ effect: "mcp.invoke:srv/*" }] }).authorize(req("srv/a")).allowed).toBe(
+      true
+    );
+    expect(authz({ match: [{ effect: "x.invoke:srv/*" }] }).authorize(req("srv/a")).allowed).toBe(
+      false
+    );
+  });
+
+  it("bare allow still allows every resource", () => {
+    expect(authz({ allow: ["mcp.invoke"] }).authorize(req("srv/a")).allowed).toBe(true);
+  });
+
+  it("deny globs match the qualified id too (stricter)", () => {
+    expect(authz({ deny: ["*wipe*"] }).authorize(req("srv/wipe")).allowed).toBe(false);
+    expect(
+      authz({ match: [{ effect: "*wipe", deny: true }] }).authorize(req("srv/wipe")).allowed
+    ).toBe(false);
+  });
+});
+
+describe("denial reasons name the resource (R12 review)", () => {
+  it("PolicyAuthorizer / GrantTable / DelegationAuthorizer", () => {
+    const pol = new PolicyAuthorizer({
+      f: [policy$({ id: "p", name: "p", rules: { deny: ["mcp.invoke:srv/a"] } })],
+    });
+    expect(pol.authorize(req("srv/a")).reason).toContain("srv/a");
+    const pol2 = new PolicyAuthorizer({
+      f: [policy$({ id: "p", name: "p", rules: { allow: ["other"] } })],
+    });
+    expect(pol2.authorize(req("srv/b")).reason).toContain("srv/b");
+    expect(new GrantTable({ f: ["x"] }).authorize(req("srv/c")).reason).toContain("srv/c");
+    const d = new DelegationAuthorizer({
+      secret: "s",
+      base: new GrantTable({ f: ["mcp.invoke"] }),
+    });
+    const principal = { actor: "x", delegation: signDelegation("s", "x", ["other"]) };
+    expect(d.authorize({ ...req("srv/d"), principal }).reason).toContain("srv/d");
+  });
+});

@@ -9,7 +9,7 @@
 // every authorizer, so the decision is deterministic and replay-safe.
 
 import type { PolicyDefinition } from "@loom/core";
-import { capabilityIds } from "./authz";
+import { capabilityId } from "./authz";
 import type { CapabilityAuthorizer, CapabilityDecision, CapabilityRequest } from "./authz";
 
 /**
@@ -56,18 +56,54 @@ function globToRegExp(glob: string): RegExp {
 interface PatternSet {
   exact: Set<string>;
   globs: RegExp[];
+  /**
+   * R12 — entries of the form `<effect>:<resource…>`, keyed by the EXACT effect before the first
+   * `:`. Only these may match a request's qualified id when the pattern is an ALLOW: a bare glob
+   * (`*.search`) must never widen onto a model/MCP-chosen resource name.
+   */
+  qualified: Map<string, PatternSet>;
 }
 function compilePatterns(entries: readonly string[]): PatternSet {
   const exact = new Set<string>();
   const globs: RegExp[] = [];
+  const qualified = new Map<string, string[]>();
   for (const entry of entries) {
     if (entry.includes("*")) globs.push(globToRegExp(entry));
     else exact.add(entry);
+    const colon = entry.indexOf(":");
+    if (colon > 0) {
+      const prefix = entry.slice(0, colon);
+      const list = qualified.get(prefix) ?? [];
+      list.push(entry);
+      qualified.set(prefix, list);
+    }
   }
-  return { exact, globs };
+  const q = new Map<string, PatternSet>();
+  for (const [prefix, list] of qualified) {
+    const e = new Set<string>();
+    const g: RegExp[] = [];
+    for (const entry of list) {
+      if (entry.includes("*")) g.push(globToRegExp(entry));
+      else e.add(entry);
+    }
+    q.set(prefix, { exact: e, globs: g, qualified: new Map() });
+  }
+  return { exact, globs, qualified: q };
 }
 function patternSetMatches(set: PatternSet, value: string): boolean {
   return set.exact.has(value) || set.globs.some((g) => g.test(value));
+}
+/** DENY: stricter is safe — the bare effect id OR the qualified id may trigger it. */
+function denyMatches(set: PatternSet, req: CapabilityRequest): boolean {
+  if (patternSetMatches(set, req.toolId)) return true;
+  return req.resource !== undefined && patternSetMatches(set, capabilityId(req));
+}
+/** ALLOW: the bare effect id; the qualified id only through a pattern naming this effect exactly. */
+function allowMatches(set: PatternSet, req: CapabilityRequest): boolean {
+  if (patternSetMatches(set, req.toolId)) return true;
+  if (req.resource === undefined) return false;
+  const q = set.qualified.get(req.toolId);
+  return q !== undefined && patternSetMatches(q, capabilityId(req));
 }
 function patternSetEmpty(set: PatternSet): boolean {
   return set.exact.size === 0 && set.globs.length === 0;
@@ -75,6 +111,8 @@ function patternSetEmpty(set: PatternSet): boolean {
 
 interface CompiledMatch {
   effect?: RegExp;
+  /** The exact effect id a qualified (`<effect>:<resource>`) allow pattern names. */
+  effectQualifiedFor?: string[];
   tenant?: RegExp;
   step?: RegExp;
   deny: boolean;
@@ -105,16 +143,33 @@ function compile(policy: PolicyDefinition): CompiledPolicy {
     deny: compilePatterns(rules.deny ?? []),
     match: (rules.match ?? []).map((m) => ({
       deny: m.deny === true,
-      ...(m.effect !== undefined && { effect: globToRegExp(m.effect) }),
+      ...(m.effect !== undefined && {
+        effect: globToRegExp(m.effect),
+        ...(m.effect.indexOf(":") > 0 && {
+          effectQualifiedFor: [m.effect.slice(0, m.effect.indexOf(":"))],
+        }),
+      }),
       ...(m.tenant !== undefined && { tenant: globToRegExp(m.tenant) }),
       ...(m.step !== undefined && { step: globToRegExp(m.step) }),
     })),
   };
 }
 
+/**
+ * R12 — a DENY rule fires on the bare or qualified id; an ALLOW rule on the qualified id only
+ * when its own pattern names this effect exactly before the first `:`.
+ */
+function effectMatches(rule: CompiledMatch, req: CapabilityRequest): boolean {
+  if (rule.effect === undefined) return true;
+  if (rule.effect.test(req.toolId)) return true;
+  if (req.resource === undefined) return false;
+  if (!rule.deny && !rule.effectQualifiedFor?.includes(req.toolId)) return false;
+  return rule.effect.test(capabilityId(req));
+}
+
 /** A compiled match rule fires when every present field matches the request. */
 function matchFires(rule: CompiledMatch, req: CapabilityRequest): boolean {
-  if (rule.effect && !capabilityIds(req).some((id) => rule.effect?.test(id))) return false;
+  if (rule.effect && !effectMatches(rule, req)) return false;
   if (rule.tenant && !rule.tenant.test(req.principal?.tenant ?? "")) return false;
   if (rule.step && !rule.step.test(req.stepId)) return false;
   return true;
@@ -191,7 +246,7 @@ export class PolicyAuthorizer implements CapabilityAuthorizer {
     if (state.constrained && !state.allowed) {
       return {
         allowed: false,
-        reason: `effect "${req.toolId}" not permitted by policy allow-list`,
+        reason: `effect "${capabilityId(req)}" not permitted by policy allow-list`,
       };
     }
     return { allowed: true };
@@ -209,16 +264,15 @@ export class PolicyAuthorizer implements CapabilityAuthorizer {
     if (policies === undefined) return undefined;
     const deny: CapabilityDecision = {
       allowed: false,
-      reason: `effect "${req.toolId}" denied by policy`,
+      reason: `effect "${capabilityId(req)}" denied by policy`,
     };
-    const ids = capabilityIds(req);
     for (const policy of policies) {
       // (1) deny-wins — an explicit deny list entry.
-      if (ids.some((id) => patternSetMatches(policy.deny, id))) return deny;
+      if (denyMatches(policy.deny, req)) return deny;
       // (2) allow-list — its presence restricts to matching effects.
       if (!patternSetEmpty(policy.allow)) {
         state.constrained = true;
-        if (ids.some((id) => patternSetMatches(policy.allow, id))) state.allowed = true;
+        if (allowMatches(policy.allow, req)) state.allowed = true;
       }
       // (3) rich match rules — deny fires immediately; allow contributes.
       for (const rule of policy.match) {

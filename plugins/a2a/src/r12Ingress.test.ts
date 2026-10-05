@@ -218,11 +218,59 @@ describe("R12 — A2A server is secure by default", () => {
 
   it("principals differing only by a delegation token share a namespace; tenants do not", () => {
     expect(principalNamespace({ actor: "a", tenant: "t" })).toBe(
-      principalNamespace({ actor: "a", tenant: "t", extra: 1 })
+      principalNamespace({ actor: "a", tenant: "t", delegation: "tok" })
     );
     expect(principalNamespace({ actor: "a", tenant: "t1" })).not.toBe(
       principalNamespace({ actor: "a", tenant: "t2" })
     );
+  });
+
+  it("a principal without a string actor gets NO namespace (R12 review P1)", async () => {
+    expect(() => principalNamespace({ sub: "alice" } as never)).toThrow(/actor/);
+    expect(() => principalNamespace({ actor: "" })).toThrow(/actor/);
+    expect(() => principalNamespace({ tenant: "t" })).toThrow(/actor/);
+    expect(() => principalNamespace({ actor: 5 } as never)).toThrow(/actor/);
+    // Different `sub` callers must not collapse into one namespace: the server refuses them.
+    const warnings: string[] = [];
+    server = createA2AServer(runtime(), flow, card, {
+      port: 0,
+      warn: (m) => warnings.push(m),
+      authenticate: (req) =>
+        req.headers.authorization === undefined
+          ? undefined
+          : ({ sub: req.headers.authorization } as never),
+    });
+    await server.start();
+    expect((await send(server.url, "Bearer alice", task("x", "alice secret"))).status).toBe(401);
+    expect((await get(server.url, "Bearer bob", "x")).status).toBe(401);
+    expect((await send(server.url, "Bearer bob", task("x"))).status).toBe(401);
+    expect(warnings.filter((w) => /actor/.test(w))).toHaveLength(1);
+  });
+
+  it("strict: an authorize-only (no principal) caller is refused 401", async () => {
+    server = createA2AServer(runtime(), flow, card, {
+      port: 0,
+      strict: true,
+      authorize: () => true,
+      resolvePrincipal: () => undefined,
+    });
+    await server.start();
+    expect((await send(server.url, "Bearer x", task("s"))).status).toBe(401);
+    expect((await get(server.url, "Bearer x", "s")).status).toBe(401);
+  });
+
+  it("publicUrl is what the agent card advertises", async () => {
+    server = createA2AServer(runtime(), flow, card, {
+      port: 0,
+      authenticate,
+      host: "0.0.0.0",
+      publicUrl: "https://agents.example.com/a2a",
+    });
+    await server.start();
+    const c = (await (await fetch(`${server.url}/.well-known/agent.json`)).json()) as {
+      url: string;
+    };
+    expect(c.url).toBe("https://agents.example.com/a2a");
   });
 
   it("with only a boolean `authorize`, authorized callers share ONE namespace (documented)", async () => {

@@ -49,6 +49,10 @@ export interface CapabilityRequest {
  * of the effect — the legacy, coarse grant) and, when the call names a resource, the qualified
  * `<toolId>:<resource>` id (covers just that resource).
  */
+export function capabilityId(req: CapabilityRequest): string {
+  return req.resource === undefined ? req.toolId : `${req.toolId}:${req.resource}`;
+}
+
 export function capabilityIds(req: CapabilityRequest): readonly string[] {
   return req.resource === undefined ? [req.toolId] : [req.toolId, `${req.toolId}:${req.resource}`];
 }
@@ -108,8 +112,10 @@ export class GrantTable implements CapabilityAuthorizer {
     if (granted.has("*") || capabilityIds(req).some((id) => granted.has(id))) {
       return { allowed: true };
     }
-    const target = req.resource === undefined ? req.toolId : `${req.toolId}:${req.resource}`;
-    return { allowed: false, reason: `effect "${target}" not granted to "${principal}"` };
+    return {
+      allowed: false,
+      reason: `effect "${capabilityId(req)}" not granted to "${principal}"`,
+    };
   }
 
   /**
@@ -215,7 +221,10 @@ export class DelegationAuthorizer implements CapabilityAuthorizer {
     const delegated = new Set(token.grants);
     const inDelegated = delegated.has("*") || capabilityIds(req).some((id) => delegated.has(id));
     if (!inDelegated) {
-      return { allowed: false, reason: `effect "${req.toolId}" not in the delegated grant set` };
+      return {
+        allowed: false,
+        reason: `effect "${capabilityId(req)}" not in the delegated grant set`,
+      };
     }
     // Intersection: the callee must ALSO hold the authority (no ambient escalation).
     // This is what bounds a callee that could mint its own token — never the signature.

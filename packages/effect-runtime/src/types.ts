@@ -248,6 +248,11 @@ export interface Effect<TIn = unknown, TOut = unknown> {
    * Pure and cheap — it runs before the effect, on the raw (pre-redaction) input. Returning
    * `undefined` (or throwing) means "no resource": only an effect-wide grant then applies, so a
    * per-resource grant fails CLOSED rather than matching nothing-in-particular.
+   *
+   * It is evaluated on the input as the call site passed it, BEFORE any middleware runs: a
+   * middleware that rewrites the input (e.g. the tool name) after authorization is not seen by
+   * the authorizer, so never rely on a middleware to change what the authorization decision
+   * names.
    */
   resourceOf?(input: TIn): string | undefined;
   /**

@@ -507,6 +507,15 @@ export class WorkflowRuntime {
     return this.systemGrantToken !== undefined ? { system: this.systemGrantToken } : {};
   }
 
+  /**
+   * R12 — true when this runtime fails closed on a call with no principal
+   * (`executionAuthz.requirePrincipal` with an authorizer, i.e. `security.strict`). Read-only; the
+   * ingress servers default their own `strict` from it.
+   */
+  get requiresPrincipal(): boolean {
+    return this.requirePrincipal;
+  }
+
   /** R3 — a read-only `{ loadState }` view carrying the system grant, for census/live-query readers. */
   systemStateReader(): { loadState(executionId: string): Promise<ExecutionState | null> } {
     return { loadState: (executionId) => this.loadState(executionId, this.systemOptions()) };

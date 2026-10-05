@@ -94,3 +94,23 @@ describe("MCP per-tool authorization (R12)", () => {
     await expect(call("read_doc")).rejects.toMatchObject({ name: "CapabilityDeniedError" });
   });
 });
+
+describe("MCP server identity for grants (R12 review)", () => {
+  it('defaults `server` to the client URL\'s hostname (stable identity), not the literal "server"', async () => {
+    const url = await startFake();
+    const rt = new EffectRuntime([], {
+      authorizer: new GrantTable({ flow: ["mcp.invoke:127.0.0.1/read_doc"] }),
+    });
+    registerMcpInvoke(new McpClient({ transport: "http", url }), rt);
+    const call = (toolName: string) => rt.execute(MCP_INVOKE_TOOL_ID, { toolName, args: {} }, ctx);
+    await expect(call("read_doc")).resolves.toEqual({ ok: true });
+    await expect(call("delete_doc")).rejects.toMatchObject({ name: "CapabilityDeniedError" });
+  });
+
+  it("rejects a `server` label containing '/' or ':' (the <server>/<tool> id would be ambiguous)", () => {
+    const rt = new EffectRuntime();
+    const client = new McpClient({ transport: "http", url: "http://127.0.0.1:1" });
+    expect(() => registerMcpInvoke(client, rt, { server: "a/b" })).toThrow(/server/);
+    expect(() => registerMcpInvoke(client, rt, { server: "a:b" })).toThrow(/server/);
+  });
+});

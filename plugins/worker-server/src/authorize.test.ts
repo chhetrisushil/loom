@@ -113,3 +113,22 @@ describe("worker server and the system identity", () => {
     expect((await post(server.url, "alice")).status).toBe(400);
   });
 });
+
+describe("worker server bind (R12 review)", () => {
+  it("listens on loopback by default; `host` widens it", async () => {
+    const a = createWorkerServer(fakeWorker, { port: 0 });
+    await a.start();
+    try {
+      expect(a.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    } finally {
+      await a.stop();
+    }
+    const b = createWorkerServer(fakeWorker, { port: 0, host: "0.0.0.0" });
+    await b.start();
+    try {
+      expect(b.url).toMatch(/^http:\/\/localhost:\d+$/);
+    } finally {
+      await b.stop();
+    }
+  });
+});

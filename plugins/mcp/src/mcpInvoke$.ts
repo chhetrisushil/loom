@@ -25,7 +25,8 @@ export const MCP_INVOKE_TOOL_ID = "mcp.invoke";
  * R12 — the per-tool resource id `mcp.invoke` presents to the authorizer. Grant ONE tool with the
  * qualified capability `mcp.invoke:<server>/<tool>` (see {@link mcpToolCapability}); the bare
  * `mcp.invoke` grant keeps meaning "every tool on every server this effect fronts". `server`
- * is `McpInvokeOptions.server` (default `"server"`).
+ * is `McpInvokeOptions.server` (default: the client URL's hostname, a stable identity; it
+ * must contain neither "/" nor ":").
  */
 export function mcpToolResource(server: string | undefined, toolName: string): string {
   return `${server ?? "server"}/${toolName}`;
@@ -133,7 +134,12 @@ function isSecretRefShape(value: unknown): value is { __loomSecret: string } {
 export type McpInvokeInputValue = z.infer<typeof McpInvokeInput>;
 
 export interface McpInvokeOptions {
-  /** Server label recorded on MCP_DISPATCHED (defaults to the client's URL host if omitted). */
+  /**
+   * Server label: recorded on MCP_DISPATCHED when set, and the first segment of the
+   * `<server>/<tool>` id grants are written against (`mcp.invoke:<server>/<tool>`). Defaults to
+   * the client's URL hostname (R12: formerly the literal "server" — grants naming `server/...`
+   * must now name the host or set this explicitly). Must not contain "/" or ":".
+   */
   server?: string;
   /** listTools snapshot TTL for name/hash lookups. Default 60s. */
   toolsTtlMs?: number;
@@ -198,6 +204,12 @@ export function registerMcpInvoke(
   effectRuntime: EffectRuntime,
   options: McpInvokeOptions = {}
 ): ToolEffect {
+  if (options.server !== undefined && /[/:]/.test(options.server)) {
+    throw new Error(
+      `registerMcpInvoke: \`server\` ("${options.server}") must not contain "/" or ":" — it is the first segment of the <server>/<tool> authorization id and would make it ambiguous`
+    );
+  }
+  const serverId = options.server ?? client.serverHost;
   const ttlMs = options.toolsTtlMs ?? 60_000;
   const fidelity = options.resultFidelity ?? "value";
   const tokenToHeaders =
@@ -284,7 +296,7 @@ export function registerMcpInvoke(
       // wrapper IS the step output, so it is what STEP_COMPLETED records and
       // what a replay hands back; tainting anywhere later would be a guess.
       return options.taintResults === true
-        ? tainted(value, `mcp:${options.server ?? "server"}/${call.toolName}`)
+        ? tainted(value, `mcp:${serverId ?? "server"}/${call.toolName}`)
         : value;
     },
     {
@@ -293,7 +305,7 @@ export function registerMcpInvoke(
       resourceOf: (input: unknown) => {
         const toolName = (input as { toolName?: unknown } | null)?.toolName;
         return typeof toolName === "string" && toolName.length > 0
-          ? mcpToolResource(options.server, toolName)
+          ? mcpToolResource(serverId, toolName)
           : undefined;
       },
     }
