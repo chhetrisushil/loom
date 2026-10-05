@@ -436,7 +436,7 @@ Under `strict`, `defineConfig` **throws** (listing every problem at once) unless
 
 | Bound | Strict default | Why this value |
 |---|---|---|
-| default execution deadline (flows that declare none) | 24 h | The deadline counts *suspended* time, so a human-approval flow parked for a day must not be cancelled by a default meant to catch a stuck run. It is the "runs forever" backstop, not a latency target; tighten per flow with `flow$({ deadlineMs })`. A flow's own deadline and an explicit `start({ deadlineMs })` always win. It does not change the flow fingerprint, so enabling strict does not strand in-flight executions. |
+| default execution deadline (flows that declare none) | 24 h | The deadline counts *suspended* time, so a human-approval flow parked for a day must not be cancelled by a default meant to catch a stuck run. It is the "runs forever" backstop, not a latency target; tighten per flow with `flow$({ deadlineMs })`. A flow's own deadline and an explicit `start({ deadlineMs })` always win. It applies to executions *started* under strict and is applied at `start` only: it is **not durable per execution** — the kernel re-arms a resumed execution from the flow's own `deadlineMs`, so a strict-started flow with no `deadlineMs` of its own is unbounded again after its first resume (an explicit `start({ deadlineMs })` likewise does not survive a resume). Declare `flow$({ deadlineMs })` for a deadline that does; a durable per-execution deadline is a kernel change. It does not change the flow fingerprint, and a resume under strict never cancels an execution started before strict was on. |
 | child spawn depth (`envelope.spawn.maxDepth`) | 5 | Root = 0. Deeper than five levels is a recursion, not a plan. |
 | child fan-out (`envelope.spawn.maxFanOut`) | 32 | Children one `awaitChildren`/`awaitAll` group may start. |
 | per-execution token budget (`envelope.budget.perExecution`) | 1,000,000 tokens | Admission control before each effect, recorded as `RESOURCE_METERED`. Needs a provider that reports `usage`; set `envelope.budget.pricing` for another unit. |
@@ -447,6 +447,17 @@ Deliberately **not** defaulted: a rate limit (`envelope.rateLimit`, a token buck
 Two things the app still has to do, because it owns the objects: pass `app.envelope.spawn` to `superviseChildren({ runtime, flows, limits })` (the supervisor refuses a spawn over the cap — the child is never started and the parent resumes with a failed child instead of hanging), and give agents the effect ring: `agentLoop$` with `reasoning` calls its routes' providers directly unless you set `reasoningToolId` (see `registerReasoningRoutes`), and `llmSkillSelector(provider)` likewise — `requireEffectRing: true` makes `agentLoop$` refuse both.
 
 **Not strict** (the default) behaves exactly as before and logs **one** advisory through `observability.onWarn` naming what is left permissive. `strict: false` is the explicit opt-out: same behaviour, no advisory. `create-loom-app` scaffolds `strict: true` with a `GrantTable` + `executionAuthorizer` stub in `app/security.ts`.
+
+**Limits of strict and the envelope** (what they do not do, so you do not read them as coverage):
+
+- Strict also refuses a config with no effective spend bound (e.g. `budget: false` with `rateLimit: false`, or `perExecution: false` with no `perAgent`/`perTenant`).
+- A refusal (kill switch, rate limit, budget, spawn cap) is an ordinary untyped `STEP_FAILED`. A flow that catches it and continues will re-run that step live on replay (at-least-once for untyped failures), so do not catch-and-continue past one.
+- A rate-limit trip is terminal: `retryable: false`, `retryAfterMs` is informational. The middleware order is kill switch, redaction, rate limit, budget, then yours, so a `retryMiddleware` of yours sits inside the limiter and does not retry a trip.
+- `stopTenant` and `perTenant` read `ctx.principal.tenant`, which is not carried across timers, recovery, dispatchers or child spawn until R3. Until then only `stopAll` / `stopWorkflow` are reliable across those paths.
+- Spawn caps read depth from the child-id string and count fan-out per `awaitChildren`/`awaitAll` group. A `runtime.start` made from inside an effect, an A2A or remote dispatcher hop, or a freshly minted id is not counted.
+- Budget does not see spend made inside `ctx.decide` / `invokeTransient` (their emit is a no-op).
+- Strict cannot set `requireEffectRing` (it does not construct agents): pass it at each `agentLoop$`; without it `agentLoop$` warns once per process (`LOOM_AGENT_RING`) when `reasoning` runs without `reasoningToolId`. Skill selection through `llmSkillSelector({ toolId })` is journaled as a decision, so replay serves the selected ids.
+- Remote and Cloud Run workers: strict and the envelope apply only to the EffectRuntime of the process that configured them.
 
 What the kill switch cannot do: it refuses the *next* effect. It does not interrupt an effect already running or cancel a running execution's children (the kernel's cancel cascade is a separate, later change).
 

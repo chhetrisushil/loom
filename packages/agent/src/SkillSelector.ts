@@ -14,9 +14,9 @@ export interface SkillSelector {
   /**
    * R9 — `true` for a selector that calls a model THROUGH THE EFFECT RING (see
    * {@link llmSkillSelector}). Such a selector needs a {@link SkillSelectorContext}, which only
-   * `agentLoop$` can provide (it holds an `ExecutionContext`); `agentLoop$` also journals the
-   * call as a durable frame instead of wrapping the selection in `ctx.decide`, so the model's
-   * spend is charged to the execution and a replay serves the recorded response.
+   * `agentLoop$` can provide (it holds an `ExecutionContext`); `agentLoop$` runs the
+   * model call as a durable `ctx.execute` frame inside the selection's `ctx.decide`, so the
+   * model's spend is charged to the execution and a replay serves the RECORDED selection.
    */
   readonly effectBacked?: boolean;
 }

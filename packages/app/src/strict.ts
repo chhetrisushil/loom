@@ -56,9 +56,13 @@ export interface StrictOptions {
    * Deadline (ms) applied to every flow that declares none. `false` disables the default.
    * Default {@link STRICT_DEFAULTS.defaultDeadlineMs}. A flow's own `deadlineMs` always wins.
    *
-   * NOTE the flow fingerprint: the deadline is applied by wrapping `runtime.start`/`resume`
-   * (not by rewriting flow definitions), precisely so it does NOT change `flowHash` and does
-   * not strand in-flight executions when strict is switched on.
+   * Applies to executions STARTED under strict only (it wraps `runtime.start`, not flow
+   * definitions, so `flowHash` is unchanged and in-flight executions are not stranded). It is
+   * NOT durable per execution: the kernel re-arms a resumed execution from the flow's own
+   * `deadlineMs` (or the resume caller's option), never from the start-time default or an
+   * explicit start deadline — so a strict-started flow with no `deadlineMs` of its own is
+   * unbounded again after its first resume. Declare `flow$({ deadlineMs })` for a deadline
+   * that survives resume; a durable per-execution deadline is a kernel change (not in R9's 1P half).
    */
   defaultDeadlineMs?: number | false;
 }
@@ -212,6 +216,9 @@ export function budgetConfigured(
   );
 }
 
+const rateLimitConfigured = (e: AutonomyEnvelopeOptions | undefined): boolean =>
+  e?.rateLimit !== undefined && e.rateLimit !== false;
+
 export interface PostureInputs {
   authorizer: unknown;
   executionAuthorizer: unknown;
@@ -245,10 +252,10 @@ export function strictProblems(p: PostureInputs): string[] {
       '`checks.verify` is "off" — strict runs pre-flight verification ("error" by default, "warn" allowed).'
     );
   }
-  if (p.envelope?.budget === false && p.envelope.rateLimit === undefined) {
-    // An explicit opt-out of metering is allowed only if something else bounds spend.
+  if (!budgetConfigured(p.envelope, true) && !rateLimitConfigured(p.envelope)) {
+    // An opt-out of metering is allowed only if something else bounds spend.
     problems.push(
-      "`execution.envelope.budget: false` removes the only spend bound — set a budget, or a `rateLimit`, instead."
+      "no spend bound is in effect (`execution.envelope.budget`/`perExecution` switched off with no `perAgent`/`perTenant`, and no `rateLimit`) — set at least one budget or a `rateLimit`."
     );
   }
   return problems;
@@ -276,13 +283,18 @@ export function permissiveNotice(p: PostureInputs): string | undefined {
 }
 
 /**
- * Apply a default execution deadline to every flow that declares none — by wrapping the four
- * entry points that arm a deadline, NOT by rewriting definitions (the deadline is part of the
- * flow fingerprint, so rewriting would invalidate every in-flight execution the day strict is
- * turned on). An explicit `options.deadlineMs` and a flow's own `deadlineMs` both win.
+ * Apply a default execution deadline to every flow that declares none — by wrapping
+ * `runtime.start` ONLY, NOT by rewriting definitions (the deadline is part of the flow
+ * fingerprint, so rewriting would invalidate every in-flight execution the day strict is turned
+ * on). An explicit `options.deadlineMs` and a flow's own `deadlineMs` both win.
  *
- * `resume` does not receive the flow, so it is read from the execution's own state — one extra
- * read, paid only under strict, and only when no explicit deadline was given.
+ * `resume`, `resumeAs` and `restoreFromState` are deliberately NOT wrapped. The kernel anchors a
+ * deadline to the execution's logged start but never stores the deadline itself, so every
+ * resume (a human approval, a timer, `recoverAbandoned`, a worker, a parent resume) re-arms
+ * `options.deadlineMs ?? flow.deadlineMs`. Injecting the default there would cancel any
+ * execution parked longer than it — including one started WITHOUT strict, or started with a
+ * longer explicit deadline. So the default is a property of executions STARTED under strict in
+ * this process; it is not durable per execution (a durable deadline is a kernel change).
  */
 export function withDefaultDeadline(runtime: WorkflowRuntime, defaultMs: number): void {
   type Loose = (...a: unknown[]) => Promise<unknown>;
@@ -299,10 +311,6 @@ export function withDefaultDeadline(runtime: WorkflowRuntime, defaultMs: number)
     }
     return f.definition?.deadlineMs;
   };
-  const withDeadline = (options: unknown, ms: number): unknown => ({
-    ...(options as object | undefined),
-    deadlineMs: ms,
-  });
   const explicit = (options: unknown): boolean =>
     (options as { deadlineMs?: number } | undefined)?.deadlineMs !== undefined;
 
@@ -310,40 +318,8 @@ export function withDefaultDeadline(runtime: WorkflowRuntime, defaultMs: number)
   rt.start = (flow, input, options) =>
     explicit(options)
       ? start.call(runtime, flow, input, options)
-      : start.call(runtime, flow, input, withDeadline(options, declaredOf(flow) ?? defaultMs));
-
-  // `resume(executionId, event, options)`: the flow comes from the execution's own state.
-  const resume = rt.resume as Loose;
-  rt.resume = async (...args: unknown[]) => {
-    if (explicit(args[2])) return resume.apply(runtime, args);
-    const state = await runtime.loadState(args[0] as string);
-    const declared =
-      state === null ? undefined : runtime.getFlow(state.workflowId)?.definition.deadlineMs;
-    const next = [...args];
-    next[2] = withDeadline(args[2], declared ?? defaultMs);
-    return resume.apply(runtime, next);
-  };
-
-  // `resumeAs(executionId, newFlowId, event, options)`: the target flow is an argument.
-  const resumeAs = rt.resumeAs as Loose;
-  rt.resumeAs = (...args: unknown[]) => {
-    if (explicit(args[3])) return resumeAs.apply(runtime, args);
-    const next = [...args];
-    next[3] = withDeadline(
-      args[3],
-      runtime.getFlow(args[1] as string)?.definition.deadlineMs ?? defaultMs
-    );
-    return resumeAs.apply(runtime, next);
-  };
-
-  // `restoreFromState(state, event?, options?)`.
-  const restore = rt.restoreFromState as Loose;
-  rt.restoreFromState = (...args: unknown[]) => {
-    if (explicit(args[2])) return restore.apply(runtime, args);
-    const wf = (args[0] as { workflowId?: string }).workflowId;
-    const declared = wf === undefined ? undefined : runtime.getFlow(wf)?.definition.deadlineMs;
-    const next = [...args];
-    next[2] = withDeadline(args[2], declared ?? defaultMs);
-    return restore.apply(runtime, next);
-  };
+      : start.call(runtime, flow, input, {
+          ...(options as object | undefined),
+          deadlineMs: declaredOf(flow) ?? defaultMs,
+        });
 }
