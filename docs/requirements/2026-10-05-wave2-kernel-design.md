@@ -58,7 +58,7 @@ Current contracts: `KERNEL_ABI_VERSION` **1.2.0** (`workflow-runtime/src/abi.ts`
 | R11 | late reward | one runtime method `recordOutcome` (authz + sequence CAS, terminal-only, no fence), two guarded payload fields | reward pipeline (`attachOutcomes`) | side table rejected (new SPI) |
 | R14 | `ctx.ui` | removes a dependency and an import | `surface(ctx)` in agent-surface, injected factory | — |
 | R15 | open vocabularies | open string kinds, `RESOURCE_METERED.custom` | `a2a` effect to its plugin | no unit/price registry |
-| R8k | conditional fence | none beyond the runtime option | **EventStore SPI optional `acquireFenceIf` (CAS on the fence token)**, retention pin predicate (orchestration) | LeaseStore park-lease rejected |
+| R8k | conditional fence | none beyond the runtime option | **EventStore SPI optional `acquireFenceIf` (CAS on the fence token AND no answering event past the park)**, one optional `TimerRecord.redrive` field, retention pin predicate (orchestration) | LeaseStore park-lease rejected |
 
 ## 3. The single version plan
 
@@ -69,13 +69,35 @@ by one value; see the schema row).
 |---|---|---|---|---|
 | **KERNEL_ABI** | 1.2.0 | **1.3.0** | R1b `continueAsNew`; R2 `receive`, `select`; R14 `ui` marked `deprecated` and `negotiateBudget` added to the table | additive MINOR; **removal of `ctx.ui` is a later MAJOR** |
 | **EVENT_SCHEMA** | 1.22.0 | **1.23.0** | new kinds `EXECUTION_CONTINUED { successorId, chainId, generation }` (R1b), `MESSAGE_CONSUMED { waitId, topic, messageId, inboxSeq, sender, payload }` (R2); a **writer and payload for the existing `PARALLEL_COMPLETED { scopePath, failedBranch, error, cancelled[] }`** (R6); additive payload fields: `EXECUTION_STARTED.{principal (always `{ v: 1 }` at least), parent, continuedFrom { executionId, carried }, chainId, generation, codeHash}` (R3k, R1b, R7), `EXECUTION_SUSPENDED.condition.waits[]` and `EXECUTION_RESUMED.waitId` (R2), `RESOURCE_METERED.custom` (R15), `OUTCOME_RECORDED.{recordedBy, late}` (R11, guarded); new reserved fold keys `_principal`, `_continuedTo`, `_inbox`, `_waitAnswers`, `_waits`, `_scopes`, `_codeHash`, `_resources.custom`; **new `ExecutionStatus` value `"continued"`** (R1b) | additive MINOR; folded types 30 → 32. The widened status union is a source-level change for exhaustive switches (the consumer list is in ADR 0109 D2) and is listed in the CHANGELOG |
-| **EVENT_STORE_SPI** | 2.0.0 | **2.1.0** | R8k optional `acquireFenceIf(id, { fence })` (+ conformance case, decorators decide it) | additive MINOR |
+| **EVENT_STORE_SPI** | 2.0.0 | **2.1.0** | R8k optional `acquireFenceIf(id, { fence, parkSeq })` (+ conformance cases, decorators decide it; Postgres append guard reads the fence row `FOR SHARE`) | additive MINOR |
 | DISPATCHER_SPI | 1.2.0 | 1.2.0 | R3k deliberately adds nothing: the owner is read from the log | unchanged |
 | SNAPSHOT_STORE_SPI, BRANCH_REGISTRY_SPI, LEASE_STORE_SPI, MEMORY / CONTENT SPI | — | unchanged | | |
 | WIRE_ABI | 1.0.0 | 1.0.0 | gains fold test vectors only (fold vectors are not the wire protocol) | unchanged |
 | `ExecutionAuthorizer` / `ExecutionOp` | — | `owner?` on the request; new ops `"annotate"` (R11), `"send"` (R2), `"actAsOwner"` (R3k fork) | R3k, R2, R11 | additive type members (not a versioned SPI constant today; the conformance kit gains cases) |
 | Reserved ids | — | `~` refused in caller-chosen execution ids at creation | R1b | behavioural; existing ids stay resumable |
 | `InboxSource` | — | 1.0 (a function seam, not yet a versioned SPI) | R2 | new |
+
+**Metadata the fold now reads (replay note).** Today the fold reads exactly one metadata key, `flowEmit`
+(ADR 0102); the comment at `WorkflowRuntime.ts:94` says so and **must be updated in the implementation PRs**.
+Wave 2 adds three, each a fold INPUT (so a replay depends on it and a snapshot must carry what it produced):
+
+| Metadata key | Written by | Read by the fold | Notes |
+|---|---|---|---|
+| `forkChain: { chainId, generation }` | `fork` (`forkMeta`, `WorkflowRuntime.ts:2441`; lands on **every** copied envelope) | chain identity: preferred over sequence 0's `chainId`/`continuedFrom`; a fork has no `continuedFrom` | read from the fold, not from raw seq 0 (ADR 0109 D2, D7) |
+| `forkedBy: PrincipalRecord` | `fork` (ADR 0111 D7) | the principal resolver, in preference to the copied `principal` | |
+| `kernel: true` | the journal, for the new kinds | the new handlers ignore a new-kind envelope without it | survives `copyPrefix`, compaction, decorators (§3 "How one bump lands") |
+
+Replay is unchanged for any log that carries none of them (every pre-1.23.0 log), byte-identically.
+
+**Errors added by Wave 2.**
+
+| Error | Class / base | Retryable | Raised where |
+|---|---|---|---|
+| `ResumeContendedError` | own class, `retryable: true` (NOT a `ResumeRefusedError`) | yes: timer re-drive row (ADR 0118 D4) | `resume`/`resumeAs` with `fenceIfParkedAt`, after 3 `stale` attempts (ADR 0118 D2) |
+| `ContinuationConflictError` | typed `Error` | no | continuation start finds an existing sequence 0 whose `continuedFrom` is another execution (ADR 0109 D2) |
+| `ForkPastContinuationError` | typed `Error`, names the successor | no (fork the successor instead) | `fork` with a point at/after `EXECUTION_CONTINUED` (ADR 0109 D7) |
+| `PrincipalUnrestorableError` | typed `Error` | no (wire a `principalCodec`) | `start` of a delegated principal with no restorer, nothing appended (ADR 0111 D4) |
+| `InboxFullError` | typed `Error` | yes, by the sender after the owner consumes | `send` beyond `inboxMaxBacklog` (ADR 0110 D1) |
 
 ### How one bump lands across nine PRs
 
@@ -155,9 +177,10 @@ is over and its successor is owed" must be one durable event).
   nothing would ever revisit.
 - **Successor-id squatting is closed twice.** The successor **shape** (a root id segment, the text before the
   first `::`, matching `<x>~<digits>`) is reserved in caller-chosen ids at creation (today
-  `assertNotReserved`, `WorkflowRuntime.ts:277`, refuses only `__loom_` and the blank id); the kernel's own
-  continuation start and the supervisor's child start bypass it, so a continued parent's children
-  (`chain~1::g#0`) still start (round 2: reserving the bare character broke them). And the
+  `assertNotReserved`, `WorkflowRuntime.ts:277`, refuses only `__loom_` and the blank id); the check is **derived, not
+  flagged** (a `::`-derived id with a successor-shaped root is accepted only when its parent log exists;
+  the continuation start is a kernel-private method, with no `RunOptions` or wire field), so a continued
+  parent's children (`chain~1::g#0`) still start (round 2: reserving the bare character broke them). And the
   continuation start verifies that an existing sequence 0 has `continuedFrom.executionId ===` the
   predecessor, else a typed `ContinuationConflictError` (ADR 0103 D2 alone would treat any existing seq 0
   as success).
@@ -169,7 +192,9 @@ is over and its successor is owed" must be one durable event).
 - **Cancel vs the start-to-commit window (round 2).** `cancel` of a chain member probes for a started
   successor (`<chainId>~<gen+1>` seq 0, `continuedFrom` matching) and cancels it; a successor also checks on
   its first run that its predecessor is not cancelled (and cascades the cancel if so). No live generation
-  survives a cancelled chain. **Head resolution** probes the same successor when `_continuedTo` is not yet
+  survives a cancelled chain. Both checks read chain identity **through the fold**
+  (which prefers a fork's `forkChain`), never raw sequence 0: a fork copies it verbatim and `forkChain` rides
+  every copied envelope. **Head resolution** probes the same successor when `_continuedTo` is not yet
   set, so a send in the window reaches the successor; the residual is a wake, never a message (the inbox is
   chain-keyed and the successor reads past the carried cursors).
 - **Fork of a chain member leaves the chain (round 2).** The fork stamps a fresh `chainId` (its own id),
@@ -321,7 +346,7 @@ continuation — at-least-once send, exactly-once consume within the window; `ap
 - **No lost wakeup.** (1) At the quiescence commit the runtime reads each inbox wait's topic past its cursor
   and, if a message is there, satisfies the wait **live** (`MESSAGE_CONSUMED`) instead of parking. (2) After
   the park is durable it reads once more and, if something arrived in the gap, **self-resumes** using
-  `acquireFenceIf(id, { fence: <park's fence> })` (R8k, so R8k lands before R2). (3) A cross-process send
+  `acquireFenceIf(id, { fence: <park's fence>, parkSeq })` (R8k, so R8k lands before R2). (3) A cross-process send
   finishes by scheduling a **due-now `TimerStore` row** for the chain's head (no SPI change; round 2:
   **coalesced** — skipped when the owner is not parked on an inbox wait or a due-now row exists — and the R2
   plan requires a 10,000-send burst load test); `TimerService`'s
@@ -534,19 +559,29 @@ new lease primitive.
 head, premised on "the park is the last event". That is false: the runtime appends an **unfenced
 `EXECUTION_DENIED` after a park** (`WorkflowRuntime.ts:664–700`), and `recordOutcome`/audit append too, so a
 head check would strand parents and window 1 would not close. Now
-`acquireFenceIf(executionId, { fence }) → { fence } | { stale, fence }` is atomic on the **fence token**; the
-caller passes the token under which the park was written (`metadata.fence` of the park envelope, 0 if none),
-which moves only when someone acquires. `RunOptions.fenceIfParkedAt` (the park sequence) on `resume`/
-`resumeAs`: the runtime derives the token, and on `{ stale, fence: cur }` **re-reads the park and, if it is
-still unanswered on the same wait, retries with `expect: cur` (the token the store returned, never the
-envelope's: any dead acquirer bumps the token for good and would otherwise strand the parent forever)**,
-bounded (3); an answered/different park → `ResumeRefusedError` `not-suspended`; exhaustion → the distinct
-retryable `ResumeContendedError` (`contended`), which `recover()` and timer backoff re-drive. It also re-checks `assertResumable` under
-the acquired fence (closing a legacy unfenced answer path). The winner's acquire moves the token, so both
-windows close and the supervisor's bounded loop becomes one attempt. Stores without it keep today's
-behaviour. Retention: `@loom/orchestration` `pinParkedChildren` (a `PinPredicate`), auto-composed by
-`defineConfig` when `superviseChildren` is wired, using the child's recorded `parent` (R3k; before it, the
-supervisor's rebuilt state) and the parent's park. **R8k lands before R2** (inbox notify-resume uses it).
+`acquireFenceIf(executionId, { fence, parkSeq }) → { fence } | { stale, fence }` is atomic on the **fence token
+AND the park being unanswered**: it refuses `stale` if the token moved or if any *answering* event
+(`EXECUTION_RESUMED` of any payload, `EXECUTION_SUSPENDED`, the terminal kinds incl. `EXECUTION_CONTINUED`)
+exists past `parkSeq`; audit appends (`EXECUTION_DENIED`, `OUTCOME_RECORDED`, `STEP_FAILED`,
+`MESSAGE_CONSUMED`, …) are ignored (an allow-list in `@loom/event-runtime`, every kind classified by a
+fitness test). `parkSeq` is needed because a winner's resume append does not move the token, so a retry on
+a re-read token alone would fence out a live body. `RunOptions.fenceIfParkedAt` (the park sequence) on
+`resume`/`resumeAs`: the runtime derives the token, and on `{ stale, fence: cur }` **re-reads the park and,
+if it is still unanswered on the same wait, retries with `{ fence: cur, parkSeq }`** (the token the store
+returned, never the envelope's), bounded (3); an answered/different park → `ResumeRefusedError`
+`not-suspended`; exhaustion → **`ResumeContendedError`**, its own retryable class (not a
+`ResumeRefusedError`), with a **live re-driver**: a backed-off due-later `TimerStore` row (optional
+`TimerRecord.redrive`, exponential backoff with jitter, bounded attempts) that `TimerService` fires through
+registered re-drivers (the R8 supervisor and ADR 0110's park-time self-resume), so completion does not
+depend on an app calling `recover()`. Backends: memory CAS + bounded tail scan, SQLite one `BEGIN
+IMMEDIATE`, Postgres a transaction (`FOR UPDATE` on the fence row, then a fresh-snapshot scan, then the
+bump) with the append guard reading the row `FOR SHARE`. It also re-checks `assertResumable` under
+the acquired fence (defence in depth). The winner's acquire moves the token and its resume trips the
+`parkSeq` condition, so both windows close and the supervisor's bounded loop becomes one attempt. Stores
+without it keep today's behaviour. Retention: `@loom/orchestration` `pinParkedChildren` (a `PinPredicate`),
+auto-composed by `defineConfig` when `superviseChildren` is wired, using the child's recorded `parent` (R3k;
+before it, the supervisor's rebuilt state) and the parent's park. **R8k lands before R2** (inbox
+notify-resume uses it).
 
 **Delta.** EVENT_STORE_SPI 2.0.0 → 2.1.0; ABI and EVENT_SCHEMA untouched by this item. Sharded and tenant
 decorators forward it (ADR 0074 requires every decorator to decide).
@@ -555,8 +590,10 @@ decorators forward it (ADR 0074 requires every decorator to decide).
 park does not make the acquire stale**; DST: two supervisors with crashes between acquire and append and
 between append and read-back — the running parent is never fenced out, one resume is recorded;
 `not-suspended` on an answered park with the log untouched; **a dead acquirer (acquire, never append) then a
-legitimate resume succeeds via the `expect: cur` retry, and three dead acquirers surface `contended`, never
-`not-suspended`**; decorator kit lists the method; retention pins a
+legitimate resume succeeds via the `{ fence: cur, parkSeq }` retry, three dead acquirers surface
+`ResumeContendedError`, never `not-suspended`, and with no `recover()` call the timer re-drive row still
+completes it; DST: A's resume commits between B's re-read and B's acquire, and A's body is never fenced
+out**; decorator kit lists the method; retention pins a
 child while its parent is parked on it and releases it after.
 
 ## 5. Interactions, in one table
@@ -658,7 +695,12 @@ recommendation, adopted so the work is not blocked; the user may override any of
   Before the successor's start commits, a stream trim uses the predecessor's (lower, conservative) cursors
   (ADR 0110 D1). `_principal` is not reset by `restoreFromState` (the resolver reads the log) or by
   `EXECUTION_MIGRATED` (it spreads `variables`). R8k D2 retries on `{stale, fence: cur}` with the returned
-  token, and exhaustion is the retryable `contended`, so a dead acquirer cannot strand a parked parent.
+  token, and exhaustion is the retryable `ResumeContendedError`, so a dead acquirer cannot strand a parked
+  parent. **Round 3.** A retry on the returned token alone reopened window 2 (the winner's resume append does
+  not move the token), so the SPI is `acquireFenceIf(id, { fence, parkSeq })` and refuses when an answering
+  event exists past `parkSeq` (ADR 0118 D1); `contended` gets a timer-backed live re-driver (D4); the 0109
+  successor-shape bypass is derived (parent log exists), not a flag; chain identity is read through the fold
+  (a fork's `forkChain`), never raw sequence 0.
 
 - **SHA-256 in the platform-neutral core.** `flowContentHash` is used in `core`, `workflow-runtime` and
   `app/src/verifyAdapter.ts:365`; `core` may not import `node:crypto`. ADR 0113 D1 keeps it in `core` with a

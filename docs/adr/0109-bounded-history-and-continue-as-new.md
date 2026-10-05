@@ -16,7 +16,8 @@
   **1P** (`@loom/orchestration`, `@loom/analytics`) for chain lineage queries and supervisor
   follow-through. Shares the single Wave 2 bump: **KERNEL_ABI 1.2.0 → 1.3.0**,
   **EVENT_SCHEMA 1.22.0 → 1.23.0** (design document §Version plan).
-- Revision: round 2 — the `~` reservation is now a reserved **successor shape** on the root id segment, so
+- Revision: round 3 — the successor-shape bypass is derived (parent log exists) and the successor start is a
+  kernel-private method, not a `RunOptions` flag; chain identity is read through the fold. Round 2 — the `~` reservation is now a reserved **successor shape** on the root id segment, so
   supervised children of a continued parent (`chain~1::g#0`) still start (D2); cancel of a chain member
   reaches a started-but-uncommitted successor and a successor checks its predecessor was not cancelled
   (D2); the head is resolved with a successor probe in the start-to-commit window (D4); a fork of a chain
@@ -111,10 +112,16 @@ creation. Reserving `~` anywhere (the first draft) would have broken supervised 
 generation: the successor `chain~1` spawns `awaitChild` children whose ids are `<parentId>::<key>#i` =
 `chain~1::g#0`, and the supervisor starts them through `start()`, where `assertNotReserved` runs
 (`WorkflowRuntime.ts:1570`, the id at 1569). Those ids have root segment `chain~1`, which is the successor
-shape; so the check is applied to **caller-originated** starts only: the kernel-internal continuation start
-(D2 step 1) and the supervisor's child start bypass it (they pass an internal `creation: "kernel"` option
-that a caller cannot set), and a caller's own `start("chain~1", …)` or `start("chain~1::x", …)` with an
-`~`-digits root is refused. A `~` that is not `~<digits>` at the end of the root segment (`a~b`, `a~1x`,
+shape; so the check cannot be a blanket refusal. **It is derived, not flagged**: an id whose root segment has the
+successor shape is accepted by `start` only if it contains `::` **and its parent (the id up to the last
+`::`) already exists as a log** (a point read of the parent's sequence 0). A bare `foo~1` has no parent, so
+`start` always refuses it; `foo~1::x` is refused unless a `foo~1` log exists (which only the kernel can have
+created); `chain~1::g#0` starts because `chain~1` exists. The kernel's own continuation start goes through
+a **kernel-private method** (not `start`, not reachable from a `RunOptions`, the wire ABI, or a dispatcher
+payload; no option or flag exists that a caller could set, so there is nothing to forge). The children of a
+continued parent therefore need no bypass at all, and a caller's own `start("chain~1", …)` or
+`start("chain~1::x", …)` with no such log is refused. (If the parent log has since been retention-deleted
+the child start is refused, which fails closed.) A `~` that is not `~<digits>` at the end of the root segment (`a~b`, `a~1x`,
 `a::b~1`) stays legal, so existing ids are not collateral. `assertNotReserved` (`WorkflowRuntime.ts:277`,
 today refusing the `__loom_` prefix and the blank id) is called on resume paths too (`restoreFromState`
 1448, `resume` 1765, `resumeAs` 2013), so the shape refusal is a creation-only variant applied where a
@@ -133,9 +140,15 @@ the successor would be an orphan that keeps running. Two closures, either suffic
 sequence 0, accepted only if its `continuedFrom.executionId` is this execution) and cancels it too, walking
 forward at most `maxChainHops`, under the same authorization (one chain, one owner, ADR 0111); (ii) **the
 successor checks its predecessor on its first run** (and on every recovery re-drive before its first
-effect): if `continuedFrom.executionId` is `cancelled` it appends its own `EXECUTION_CANCELLED` with
+effect): if the fold's chain identity (`continuedFrom.executionId`, read **through the fold**, which
+prefers a fork's `forkChain` and so yields no `continuedFrom` for a fork) is `cancelled` it appends its own `EXECUTION_CANCELLED` with
 `reason { kind: "cascade", parent: <predecessor> }` and stops. (ii) covers a cancel that lands after (i)'s
-probe. Together a cancelled chain has no live generation.
+probe. Together a cancelled chain has no live generation. **Both checks and the head probe read chain identity
+through the fold, never raw sequence 0:** a fork copies sequence 0 verbatim, and `forkChain` rides every
+copied envelope's metadata (`forkMeta`, `WorkflowRuntime.ts:2441`), so a raw `continuedFrom` read would see
+the original's predecessor on a fork of a chain successor and cascade-cancel the fork when that
+predecessor is cancelled. Test: fork `chain~2`, cancel `chain~1`; the fork is not cancelled, and a head
+probe of the fork resolves to the fork.
 
 **Status.** `EXECUTION_CONTINUED` folds to a **new** `ExecutionStatus` value, `"continued"`, with the
 reserved key `variables._continuedTo = successorId`. The first draft folded it to `completed`; that was
@@ -260,7 +273,9 @@ commit, and before the start, with a message in flight; recover; assert exactly 
 exactly one delivery; (2) `exp.cjs` with `continueEvery(500)`: per-resume latency flat from turn 500 to
 20,000, snapshot size bounded; (3) negatives: a carry over `maxCarryBytes` refuses before any append; a
 call inside an open scope, or with an outstanding wait, or with an in-flight step past `parkDrainMs`
-refuses; **a caller who pre-started `foo~1` (or `foo~1::x`) is refused at start (successor shape reserved) while
+refuses; **a caller cannot create `foo~1` or `foo~1::x` when no `foo~1` log exists (and no `RunOptions` field,
+wire field or dispatcher payload field can change that), while a continued parent's children (`foo~1::x`
+with `foo~1` present) start, and
 `a~b` and `a::b~1` still start, and a pre-existing seq 0 whose `continuedFrom` names another execution raises
 `ContinuationConflictError`; a continued parent (`chain~1`) spawning `awaitChild` children (`chain~1::g#0`)
 works**; **cancel of the predecessor after the successor started (kill between start and commit, then
