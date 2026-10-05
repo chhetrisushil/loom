@@ -213,7 +213,7 @@ export async function recoverAbandoned(
     if ((options.dryRun === true ? summary.candidates : summary.recovered) >= limit) break;
     summary.scanned++;
 
-    const state = await runtime.loadState(executionId);
+    const state = await runtime.loadState(executionId, runtime.systemOptions());
     if (state === null) continue;
     if (state.status !== "running" && state.status !== "pending") continue;
     summary.candidates++;
@@ -277,7 +277,7 @@ export async function recoverAbandoned(
       // execution may have completed or suspended in the meantime. Re-driving a settled
       // execution is not corrupting (the worker's own recovery branch returns it as-is),
       // but it is pointless work and a misleading `recovered` count.
-      const fresh = await runtime.loadState(executionId);
+      const fresh = await runtime.loadState(executionId, runtime.systemOptions());
       if (fresh === null || (fresh.status !== "running" && fresh.status !== "pending")) continue;
 
       const fence = options.fenced ? await runtime.acquireFence(executionId) : undefined;
@@ -301,11 +301,10 @@ export async function recoverAbandoned(
           target !== undefined ? { target } : undefined
         );
       } else {
-        const handle = await runtime.resume(
-          executionId,
-          resumeEvent,
-          fence !== undefined ? { fence } : undefined
-        );
+        const handle = await runtime.resume(executionId, resumeEvent, {
+          ...(fence !== undefined && { fence }),
+          ...runtime.systemOptions(),
+        });
         // Settle before moving on, so the pass applies backpressure instead of stampeding
         // every orphan into the runtime at once.
         await Promise.race([

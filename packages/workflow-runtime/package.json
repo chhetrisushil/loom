@@ -29,6 +29,7 @@
     "ulid": "^2.3.0"
   },
   "devDependencies": {
+    "@loom/conformance": "workspace:*",
     "@loom/middleware": "workspace:*",
     "@loom/plugin-content": "workspace:*",
     "@loom/plugin-crypto": "workspace:*",

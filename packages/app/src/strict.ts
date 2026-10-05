@@ -65,6 +65,15 @@ export interface StrictOptions {
    * that survives resume; a durable per-execution deadline is a kernel change (not in R9's 1P half).
    */
   defaultDeadlineMs?: number | false;
+  /**
+   * R3 — fail-closed execution authorization. Under strict, a `start`/`resume`/`cancel`/`loadState`
+   * that carries NO principal is not waved through: it reaches `security.executionAuthorizer`
+   * with `principal: undefined`, and a policy that does not explicitly allow anonymous refuses
+   * it (`executionPolicy()` does by default). Kernel-internal callers (timers, recovery, child
+   * supervisor, local worker) present the runtime's system grant instead and are unaffected.
+   * `false` restores the permissive principal-less bypass (visible in the config). Default true.
+   */
+  requirePrincipal?: false;
 }
 
 /**

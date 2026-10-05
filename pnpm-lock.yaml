@@ -1324,6 +1324,9 @@ importers:
         specifier: ^2.3.0
         version: 2.4.0
     devDependencies:
+      '@loom/conformance':
+        specifier: workspace:*
+        version: link:../conformance
       '@loom/middleware':
         specifier: workspace:*
         version: link:../middleware

@@ -494,3 +494,54 @@ describe("strict — spend must be bounded (P2)", () => {
     return app.close();
   });
 });
+
+describe("strict — fail-closed execution authz (R3)", () => {
+  const ownerOnly: ExecutionAuthorizer = {
+    authorize: (r) =>
+      r.principal?.actor === "alice" ? { allowed: true } : { allowed: false, reason: "alice only" },
+  };
+  const make = (strict: boolean | { requirePrincipal: false }, flow: RegisteredFlow) =>
+    defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow],
+      security: {
+        strict,
+        ...(strict !== false && { authorizer: grants(flow.definition.id) }),
+        executionAuthorizer: ownerOnly,
+      },
+      execution: { registerEffects: (fx) => fx.register("t", new ToolEffect(async () => ({}))) },
+    });
+
+  it("a principal-less start/resume/cancel/loadState reaches the authorizer and is denied", async () => {
+    const flow = flowOf("f", twice);
+    const app = make(true, flow);
+    await expect(app.runtime.start(flow, {})).rejects.toMatchObject({
+      name: "ExecutionDeniedError",
+    });
+    const h = await app.runtime.start(
+      flow,
+      {},
+      { executionId: "e", principal: { actor: "alice" } }
+    );
+    await h.waitForCompletion();
+    await expect(app.runtime.loadState("e")).rejects.toMatchObject({
+      name: "ExecutionDeniedError",
+    });
+    await expect(app.runtime.cancel("e")).rejects.toMatchObject({ name: "ExecutionDeniedError" });
+    await expect(app.runtime.resume("e", { eventType: "X", payload: {} })).rejects.toMatchObject({
+      name: "ExecutionDeniedError",
+    });
+    await app.close();
+  });
+
+  it("`requirePrincipal: false` restores the bypass explicitly; non-strict is unchanged", async () => {
+    const flow = flowOf("f", twice);
+    for (const cfg of [{ requirePrincipal: false as const }, false]) {
+      const app = make(cfg, flow);
+      const h = await app.runtime.start(flow, {});
+      await h.waitForCompletion();
+      expect(app.runtime.systemOptions()).toEqual({});
+      await app.close();
+    }
+  });
+});

@@ -54,9 +54,28 @@ describe("scaffolded app", () => {
     });
     try {
       expect(app.strict).toBe(true);
-      const handle = await app.runtime.start(greet, { input: "world" });
+      // A principal-less call is refused by the generated policy (R3, fail-closed)...
+      await expect(app.runtime.start(greet, { input: "world" })).rejects.toMatchObject({
+        name: "ExecutionDeniedError",
+      });
+      // ...so the generated main/test attach one, exactly as app/main.ts does.
+      const principal = { actor: "demo-user", tenant: "demo" };
+      const handle = await app.runtime.start(greet, { input: "world" }, { principal });
       const state = await handle.waitForCompletion();
       expect((state.variables._output as { output: string }).output).toBe("world");
+
+      // Ownership: the starter reads its own execution; another actor / tenant is refused.
+      expect((await app.runtime.loadState(handle.executionId, { principal }))?.status).toBe(
+        "completed"
+      );
+      for (const intruder of [
+        { actor: "mallory", tenant: "demo" },
+        { actor: "demo-user", tenant: "elsewhere" },
+      ]) {
+        await expect(
+          app.runtime.loadState(handle.executionId, { principal: intruder })
+        ).rejects.toMatchObject({ name: "ExecutionDeniedError" });
+      }
 
       // The stub authorizer is real policy, not a wildcard: an unlisted effect is refused...
       expect(

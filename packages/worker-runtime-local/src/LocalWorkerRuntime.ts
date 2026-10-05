@@ -7,7 +7,7 @@ import type {
   WorkerRequest,
   WorkerRuntime,
 } from "@loom/worker-runtime";
-import type { WorkflowRuntime } from "@loom/workflow-runtime";
+import type { SystemGrant, WorkflowRuntime } from "@loom/workflow-runtime";
 
 /**
  * The in-process WorkerRuntime: the zero-cloud reference implementation of the
@@ -46,7 +46,7 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     // A recovery of an already-terminal/suspended execution short-circuits to the
     // folded state (no handle, no re-run) — see resolveHandle.
     if (handle === null) {
-      const state = await this.runtime.loadState(pkg.executionId);
+      const state = await this.runtime.loadState(pkg.executionId, this.runtime.systemOptions());
       return toResult(state!);
     }
 
@@ -87,11 +87,13 @@ export class LocalWorkerRuntime implements WorkerRuntime {
    *    response" must not re-run or restart).
    */
   private async resolveHandle(pkg: ExecutionPackage, fence?: number) {
-    const runOpts = fence !== undefined ? { fence } : undefined;
+    // R3 — a dispatched execution is the kernel's own re-drive, so it presents the system grant
+    // (a no-op unless the runtime fails closed on a missing principal).
+    const runOpts = { ...(fence !== undefined && { fence }), ...this.runtime.systemOptions() };
     if (pkg.resumeEvent) {
       return this.runtime.resume(pkg.executionId, pkg.resumeEvent, runOpts);
     }
-    const existing = await this.runtime.loadState(pkg.executionId);
+    const existing = await this.runtime.loadState(pkg.executionId, this.runtime.systemOptions());
     if (!existing) {
       return this.startFresh(pkg, runOpts);
     }
@@ -118,13 +120,16 @@ export class LocalWorkerRuntime implements WorkerRuntime {
    */
   async cancel(executionId: string, reason?: string): Promise<boolean> {
     try {
-      return await this.runtime.cancel(executionId, reason);
+      return await this.runtime.cancel(executionId, reason, this.runtime.systemOptions());
     } catch {
       return false;
     }
   }
 
-  private async startFresh(pkg: ExecutionPackage, runOpts?: { fence?: number }) {
+  private async startFresh(
+    pkg: ExecutionPackage,
+    runOpts?: { fence?: number; system?: SystemGrant }
+  ) {
     const flow = this.runtime.getFlow(pkg.flowId);
     if (!flow) {
       throw new Error(`No flow registered for flowId: "${pkg.flowId}"`);

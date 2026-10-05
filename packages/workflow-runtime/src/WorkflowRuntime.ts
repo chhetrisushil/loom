@@ -74,6 +74,7 @@ import type {
   ResumeAuthenticator,
   ResumeEvent,
   RunOptions,
+  SystemGrant,
 } from "./types";
 import { isStaleFence, isWriteConflict } from "./writeConflict";
 
@@ -179,6 +180,26 @@ export interface WorkflowRuntimeDeps {
    * edge-enforced policy, not a substitute for authenticating the caller.
    */
   executionAuthorizer?: ExecutionAuthorizer;
+  /**
+   * R3 (1P half) — fail-closed execution authorization. OFF (default) = byte-identical to
+   * before: principal-less calls bypass {@link executionAuthorizer}. With
+   * `requirePrincipal: true` the authorizer is ALSO consulted for a call that carries NO
+   * principal (the request arrives with `principal: undefined`, and the policy decides —
+   * `executionPolicy()` denies it unless `allowAnonymous`), so an edge that forgot to
+   * attach a principal is refused rather than waved through.
+   *
+   * Kernel-internal machinery that legitimately has no principal today (TimerService wakes
+   * and schedule starts, crash recovery, the child supervisor, `LocalWorkerRuntime`, census
+   * readers) presents this runtime's {@link WorkflowRuntime.systemOptions | system grant}
+   * instead. The grant is an unguessable per-instance object compared BY IDENTITY: a
+   * principal, a JSON body or a clone of the grant is not it. It is an in-process
+   * capability — never hand it to request-derived code. INTERIM: the kernel half of R3
+   * (ADR 0111) makes the principal durable so these paths can act as the principal that
+   * started the execution instead of a blanket system identity.
+   *
+   * Inert without an {@link executionAuthorizer}. `@loom/app` sets it under `security.strict`.
+   */
+  executionAuthz?: { requirePrincipal?: boolean };
   /**
    * C.1 — fired whenever an {@link ExecutionAuthorizer} refuses a lifecycle op, for
    * audit/telemetry. Independent of the durable EXECUTION_DENIED fact (which the
@@ -423,6 +444,9 @@ export class WorkflowRuntime {
   private readonly timerStore: TimerStore | undefined;
   private readonly resumeAuthenticator: ResumeAuthenticator | undefined;
   private readonly executionAuthorizer: ExecutionAuthorizer | undefined;
+  private readonly requirePrincipal: boolean;
+  // R3 — identity-compared grant for kernel-internal callers; undefined unless requirePrincipal.
+  private readonly systemGrantToken: SystemGrant | undefined;
   private readonly validateInput: boolean;
   private readonly now: () => number;
   private readonly onExecutionDenied:
@@ -453,6 +477,11 @@ export class WorkflowRuntime {
     this.resumeAuthenticator = deps.resumeAuthenticator;
     this.timerStore = deps.timerStore;
     this.executionAuthorizer = deps.executionAuthorizer;
+    this.requirePrincipal =
+      deps.executionAuthz?.requirePrincipal === true && deps.executionAuthorizer !== undefined;
+    this.systemGrantToken = this.requirePrincipal
+      ? (Object.freeze({ __loomSystemGrant: true }) as SystemGrant)
+      : undefined;
     this.onExecutionDenied = deps.onExecutionDenied;
     this.validateInput = deps.validateInput ?? false;
     this.now = deps.now ?? Date.now;
@@ -467,15 +496,49 @@ export class WorkflowRuntime {
   // fencing store with an active fence the append is rejected and silently skipped;
   // enforcement is the thrown error, which never depends on the record.
 
+  /**
+   * R3 — the options a KERNEL-INTERNAL caller (timer wake, recovery, supervisor, local worker)
+   * spreads into its `start`/`resume`/`cancel`/`loadState` call: `{ system }` when this runtime
+   * fails closed on a missing principal, else `{}` (so nothing changes when the mode is off).
+   * The grant bypasses the execution authorizer ONLY; it is not a principal, never reaches an
+   * effect's authorization, and is not recorded. See {@link WorkflowRuntimeDeps.executionAuthz}.
+   */
+  systemOptions(): { system?: SystemGrant } {
+    return this.systemGrantToken !== undefined ? { system: this.systemGrantToken } : {};
+  }
+
+  /** R3 — a read-only `{ loadState }` view carrying the system grant, for census/live-query readers. */
+  systemStateReader(): { loadState(executionId: string): Promise<ExecutionState | null> } {
+    return { loadState: (executionId) => this.loadState(executionId, this.systemOptions()) };
+  }
+
+  /** Is the authorizer consulted for this call? (principal present, or fail-closed and no valid system grant) */
+  private authzApplies(
+    principal: PrincipalChain | undefined,
+    system: SystemGrant | undefined
+  ): boolean {
+    if (this.executionAuthorizer === undefined) return false;
+    if (system !== undefined && system === this.systemGrantToken) return false;
+    return principal !== undefined || this.requirePrincipal;
+  }
+
   /** Returns a denial reason if the op is refused, else undefined (allowed / not gated). */
   private authzDenial(
     op: ExecutionOp,
     executionId: string,
     workflowId: string,
-    principal: PrincipalChain | undefined
+    principal: PrincipalChain | undefined,
+    system?: SystemGrant
   ): { reason?: string } | undefined {
-    if (this.executionAuthorizer === undefined || principal === undefined) return undefined;
-    const verdict = this.executionAuthorizer.authorize({ op, executionId, workflowId, principal });
+    if (this.executionAuthorizer === undefined || !this.authzApplies(principal, system)) {
+      return undefined;
+    }
+    const verdict = this.executionAuthorizer.authorize({
+      op,
+      executionId,
+      workflowId,
+      ...(principal !== undefined && { principal }),
+    });
     if (verdict.allowed) return undefined;
     return verdict.reason !== undefined ? { reason: verdict.reason } : {};
   }
@@ -1068,7 +1131,7 @@ export class WorkflowRuntime {
   async cancel(
     executionId: string,
     reason?: unknown,
-    options?: { principal?: PrincipalChain }
+    options?: { principal?: PrincipalChain; system?: SystemGrant }
   ): Promise<boolean> {
     assertNotReserved(executionId);
     const live = this.liveHandles.get(executionId);
@@ -1076,7 +1139,7 @@ export class WorkflowRuntime {
     // C.1 — gate the cancel (only when configured AND a principal is present). Use the
     // live handle's state when running here, else fold; a denial is best-effort
     // recorded WITHOUT a fence (never disrupts the still-running execution).
-    if (this.executionAuthorizer !== undefined && options?.principal !== undefined) {
+    if (this.authzApplies(options?.principal, options?.system)) {
       const gate = live?.getState() ?? (await this.foldState(executionId));
       if (gate === null || gate === undefined) {
         throw new Error(`No execution found for id: ${executionId}`);
@@ -1085,14 +1148,15 @@ export class WorkflowRuntime {
         "cancel",
         executionId,
         gate.workflowId,
-        options.principal
+        options?.principal,
+        options?.system
       );
       if (cancelDenial !== undefined) {
         await this.denyOp(
           "cancel",
           executionId,
           gate.workflowId,
-          options.principal,
+          options?.principal,
           cancelDenial.reason,
           gate.sequence
         );
@@ -1213,7 +1277,13 @@ export class WorkflowRuntime {
     const { definition, runner } = this.resolveFlow(flow);
 
     // C.1 — gate the start (no execution exists yet, so no durable record).
-    const startDenial = this.authzDenial("start", executionId, definition.id, options?.principal);
+    const startDenial = this.authzDenial(
+      "start",
+      executionId,
+      definition.id,
+      options?.principal,
+      options?.system
+    );
     if (startDenial !== undefined) {
       await this.denyOp(
         "start",
@@ -1480,7 +1550,13 @@ export class WorkflowRuntime {
     // `[0]` with the checkpoint above it, and a denial appended at `lastEvent + 1` landed in
     // the checkpoint's freed slot — the log then looked never-compacted and the next fold
     // started from scratch, losing the suspension (ADR 0106).
-    const resumeDenial = this.authzDenial("resume", executionId, workflowId, options?.principal);
+    const resumeDenial = this.authzDenial(
+      "resume",
+      executionId,
+      workflowId,
+      options?.principal,
+      options?.system
+    );
     if (resumeDenial !== undefined) {
       // recordExecutionDenied dedups consecutive identical denials internally.
       await this.denyOp(
@@ -1675,7 +1751,13 @@ export class WorkflowRuntime {
 
     // C.1 / K12.2 — the same identity gates as `resume`. A migration that answers a parked
     // gate IS an approval of that gate; before ADR 0104 it skipped both.
-    const resumeDenial = this.authzDenial("resume", executionId, workflowId, options.principal);
+    const resumeDenial = this.authzDenial(
+      "resume",
+      executionId,
+      workflowId,
+      options.principal,
+      options.system
+    );
     if (resumeDenial !== undefined) {
       await this.denyOp(
         "resume",
@@ -1763,14 +1845,20 @@ export class WorkflowRuntime {
    */
   async loadState(
     executionId: string,
-    options?: { principal?: PrincipalChain }
+    options?: { principal?: PrincipalChain; system?: SystemGrant }
   ): Promise<ExecutionState | null> {
     const state = await this.foldState(executionId);
     if (state === null) return null;
     // C.1 — gate the query. Folding is pure (no side effects), so authorizing AFTER
     // is safe: on a denial we simply withhold the data (no durable record — a read
     // must never write). Kernel-internal callers use `foldState` and bypass this.
-    const denial = this.authzDenial("query", executionId, state.workflowId, options?.principal);
+    const denial = this.authzDenial(
+      "query",
+      executionId,
+      state.workflowId,
+      options?.principal,
+      options?.system
+    );
     if (denial !== undefined) {
       throw new ExecutionDeniedError("query", executionId, denial.reason);
     }

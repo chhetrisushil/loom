@@ -266,7 +266,7 @@ export class TimerService {
     // is "already started", not an error.
     const executionId = `${def.id}@${occurrence}`;
     try {
-      const existing = await this.runtime.loadState(executionId);
+      const existing = await this.runtime.loadState(executionId, this.runtime.systemOptions());
       if (existing !== null) return; // already started (this node or another)
       const flow = this.runtime.getFlow(def.flowId);
       if (!flow) {
@@ -278,7 +278,10 @@ export class TimerService {
       // the execution was left `running`, and recovery paid for the effect again. Unfenced,
       // the loser can only be refused at its bootstrap (a duplicate at sequence 0, or a stale
       // fence if the winner has since been fenced), before any body runs.
-      const handle = await this.runtime.start(flow, def.input, { executionId });
+      const handle = await this.runtime.start(flow, def.input, {
+        executionId,
+        ...this.runtime.systemOptions(),
+      });
       await Promise.race([
         handle.waitForSuspend().catch(() => undefined),
         handle.waitForCompletion().catch(() => undefined),
@@ -310,7 +313,7 @@ export class TimerService {
       );
     }
     try {
-      const state = await this.runtime.loadState(executionId);
+      const state = await this.runtime.loadState(executionId, this.runtime.systemOptions());
       const stillWaiting =
         state !== null && state.status === "suspended" && state.suspendedOn?.wakeAt === wakeAt;
       if (stillWaiting) {
@@ -337,11 +340,10 @@ export class TimerService {
             target !== undefined ? { target } : undefined
           );
         } else {
-          const handle = await this.runtime.resume(
-            executionId,
-            resumeEvent,
-            fence !== undefined ? { fence } : undefined
-          );
+          const handle = await this.runtime.resume(executionId, resumeEvent, {
+            ...(fence !== undefined && { fence }),
+            ...this.runtime.systemOptions(),
+          });
           // Wait for the run to settle (suspend again, complete, or fail) so the
           // timer is only retired once the wake durably took effect.
           await Promise.race([

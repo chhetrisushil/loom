@@ -77,6 +77,13 @@ export {
   type UnattributedRun,
 } from "./blankStream";
 export { parseCron, nextOccurrence, type CronSpec } from "./cron";
+export { executionAccessPolicy } from "./executionAccessPolicy";
+export type {
+  ExecutionOwner,
+  ExecutionAccessPolicy,
+  ExecutionAccessOptions,
+  ExecutionScope,
+} from "./executionAccessPolicy";
 export type {
   DecideOptions,
   DecideScope,
@@ -87,6 +94,7 @@ export type {
   ExecutionContext,
   ExecutionHandle,
   ExecutionOp,
+  SystemGrant,
   ForkOptions,
   ForkResult,
   FlowRunner,

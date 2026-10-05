@@ -267,6 +267,16 @@ export interface RunOptions {
    * every effect's authorization (K2). Undefined ⇒ no principal.
    */
   principal?: PrincipalChain;
+  /**
+   * R3 — the kernel-internal system grant (see {@link WorkflowRuntime.systemOptions}). Compared
+   * by identity against the runtime's own; anything else is ignored. Not a principal.
+   */
+  system?: SystemGrant;
+}
+
+/** R3 — opaque, identity-compared capability held by kernel-internal callers. Not forgeable by copy. */
+export interface SystemGrant {
+  readonly __loomSystemGrant: true;
 }
 
 // ── C.1 — execution-lifecycle authorization ──────────────────────────────────

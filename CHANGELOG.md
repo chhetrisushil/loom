@@ -67,6 +67,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Fail-closed execution authorization and a first-party `ExecutionAuthorizer` (R3, 1P half; no
+  ABI or event-schema change).** The execution authorizer was consulted only when a call carried a
+  `principal`, and loom shipped no implementation, so every app hand-wrote one.
+  - `WorkflowRuntimeDeps.executionAuthz: { requirePrincipal: true }` makes a principal-less
+    `start`/`resume`/`resumeAs`/`cancel`/`loadState` reach the authorizer with `principal:
+    undefined`. `@loom/app` sets it under `security.strict` (`strict: { requirePrincipal: false }`
+    opts out). Off, the runtime is byte-identical.
+  - Kernel-internal principal-less callers (`TimerService` wakes and schedule starts,
+    `recoverAbandoned`, `retireAbandonedBranches`, the `superviseChildren` child start and parent
+    resume, `LocalWorkerRuntime`) present `runtime.systemOptions()`: an identity-compared,
+    per-instance `SystemGrant` that skips the execution authorizer only (it is not a principal and
+    never reaches an effect). `runtime.systemStateReader()` serves read-only observers.
+  - `executionAccessPolicy()` in `@loom/workflow-runtime`: per-op `owner`/`tenant`/`any`/`deny`
+    rules, workflow allow-list, `requireTenant`, `allowAnonymous` (default false), `resolveOwner`.
+    It passes the `ExecutionAuthorizer` conformance kit. The scaffold's `app/security.ts` now uses
+    it (owner-only, same tenant) and its `main.ts`/test attach a principal.
+  - Behavioural note: a strict app that starts executions without a principal now gets
+    `ExecutionDeniedError`; attach one, or opt out. An A2A server or wire carrier without
+    `resolvePrincipal` is refused under strict. Interim until R3's kernel half (ADR 0111): the
+    principal is not durable, so ownership is remembered in-process by the policy (lost on restart
+    unless `resolveOwner` answers) and internal paths act as the system.
+
 - **Strict mode and the autonomy envelope (R9, 1P half; no kernel change).** Every default was
   permissive: no authorizer allowed every effect, no deadline let a run go forever, spawn depth
   and breadth were unbounded, nothing metered spend, and the kill switch was a synchronous
