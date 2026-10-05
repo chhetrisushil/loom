@@ -6,6 +6,8 @@
 - Builds on: [ADR 0032](0032-resource-dimensions-bounded-negotiation.md) (the fixed dimensions),
   [ADR 0030](0030-decision-materialization.md), [ADR 0083](0083-second-consumer-rule.md) (relaxed for
   Part R).
+- Revision: round 1 (Opus review of PR #495): the `custom` map is validated at the userspace-emit guard
+  (D2), and the fold skips a bad key deterministically instead of throwing (D2).
 - Placement: **kernel/core types and the `RESOURCE_METERED` fold**; the `a2a` effect moves to its plugin.
   Shares the Wave 2 bump (EVENT_SCHEMA 1.23.0: one optional payload field; KERNEL_ABI is unchanged by
   this ADR, `ResourceDimension` is a type).
@@ -50,6 +52,17 @@ names, the class of hole the binding-pin audit found). Values are finite and in 
 default ceiling for an unknown name is `1e15`, and `WorkflowRuntimeDeps.meterCeilings` overrides per
 dimension. The six built-ins keep their top-level fields exactly (no migration).
 
+**Where the validation runs.** `RESOURCE_METERED` is one of the kernel kinds userspace may append
+(`USERSPACE_KERNEL_EVENTS` in `userspaceEmit.ts`: middleware metering emits it through `ctx.emit` /
+`EffectContext.emit`), so the pattern, the cardinality bound, the prototype-name refusal and the value
+range are enforced in **`guardUserspaceEmit`** (the single gate every userspace append passes, named in
+the same file), where a violation is refused with a typed error before anything is appended — not first
+in the fold. **The fold must never throw on a log it did not write the guard for** (a log from another
+node, a hand-edited fixture, a pre-guard writer): it **skips a bad key deterministically** — a name failing
+the pattern, a prototype name, a non-finite or out-of-range value, or the 33rd distinct name is ignored
+and the rest of the event folds — so every replica folds the same state and a poisoned event cannot make
+replay fail. The conformance vectors include an event with bad keys and the expected folded state.
+
 `ResourceDimension` becomes `BuiltinDimension | (string & {})`. Budgets, `QUOTA_EXCEEDED`,
 `negotiateBudget` and `ExecutionPolicy` resource ceilings accept any name; `currentResource(name)`
 reads `custom[name]` for a non-built-in. The kernel assigns no unit and no price: converting
@@ -73,7 +86,8 @@ A custom effect kind round-trips through register/`kindOf`; a `"human"`-kind cus
 (the one semantic value, pinned by a test); a kind failing the pattern is refused at registration;
 `RESOURCE_METERED { custom: { gpuSeconds: 3 } }` folds, accumulates, snapshots and replays equal; a
 budget on `gpuSeconds` fires `QUOTA_EXCEEDED`; `__proto__`/33rd name/negative/NaN/over-ceiling
-refused; fold equality on every existing vector; the wire-abi vector.
+refused **at `guardUserspaceEmit`** and **skipped without throwing by the fold** (a raw-appended event with
+bad keys folds to the same state on two replicas); fold equality on every existing vector; the wire-abi vector.
 
 ## Rejected
 

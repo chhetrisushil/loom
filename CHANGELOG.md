@@ -10,15 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation
 
 - **Wave 2 coordinated kernel design (agentic-readiness, Part R; design only, no runtime change).** One design document ([`docs/requirements/2026-10-05-wave2-kernel-design.md`](docs/requirements/2026-10-05-wave2-kernel-design.md)) and nine **Proposed** ADRs, planned together so the contract bumps happen once (KERNEL_ABI 1.2.0 → 1.3.0, EVENT_SCHEMA 1.22.0 → 1.23.0, EventStore SPI 2.0.0 → 2.1.0; nothing is bumped by this change). Each ADR is accepted at its own implementation PR.
-  - [ADR 0109](docs/adr/0109-bounded-history-and-continue-as-new.md) bounded history: `ctx.continueAsNew`, `EXECUTION_CONTINUED`, a deterministic successor (promotes ADR 0052's frozen draft).
-  - [ADR 0110](docs/adr/0110-durable-inbox-and-receive-select.md) a durable inbox (1P stream) with kernel `ctx.receive` / `ctx.select`, `MESSAGE_CONSUMED` and concurrent waits.
+  - [ADR 0109](docs/adr/0109-bounded-history-and-continue-as-new.md) bounded history: `ctx.continueAsNew`, a deterministic successor started first and then `EXECUTION_CONTINUED` (new `continued` status; existing recovery repairs a crash; promotes ADR 0052's frozen draft).
+  - [ADR 0110](docs/adr/0110-durable-inbox-and-receive-select.md) a durable inbox (1P stream) with kernel `ctx.receive` / `ctx.select`, `MESSAGE_CONSUMED`, concurrent waits, an authorized `runtime.send`, and a no-lost-wakeup protocol.
   - [ADR 0111](docs/adr/0111-durable-principal.md) the execution's principal recorded on `EXECUTION_STARTED` and rehydrated on every path (recovery, timers, supervisor, children); the effect principal becomes the owner, not the resumer.
   - [ADR 0112](docs/adr/0112-structured-concurrency.md) cancellation scopes, a park barrier, and the cancel cascade (1P, in `@loom/orchestration`).
   - [ADR 0113](docs/adr/0113-body-aware-code-fingerprint-and-dynamic-id-migration.md) SHA-256 structural hash, an opt-in body fingerprint, replay-divergence detection, dynamic-id `replay-check`.
   - [ADR 0114](docs/adr/0114-ctx-ui-leaves-the-kernel.md) `ctx.ui` leaves the kernel (drops the `workflow-runtime` → `agent-surface` dependency; layering guard extended).
   - [ADR 0115](docs/adr/0115-open-vocabularies.md) open `EffectKind` / `TaskKind` and custom metering dimensions.
-  - [ADR 0116](docs/adr/0116-late-outcome-attach.md) `runtime.recordOutcome` for a late reward on a finished execution (authorized, fenced, idempotent).
-  - [ADR 0118](docs/adr/0118-acquire-if-parked-fence.md) a conditional `acquireFenceIf` (EventStore SPI, optional) closing the R8 supervisor's residual TOCTOU, and a retention pin for children a parent is parked on.
+  - [ADR 0116](docs/adr/0116-late-outcome-attach.md) `runtime.recordOutcome` for a late reward on a finished execution (authorized, terminal-only, sequence-CAS, idempotent; no fence).
+  - [ADR 0118](docs/adr/0118-acquire-if-parked-fence.md) a conditional `acquireFenceIf` on the fence token (EventStore SPI, optional) closing the R8 supervisor's residual TOCTOU, and a retention pin for children a parent is parked on.
+
+### Known issues
+
+- **After a resume, a flow's effects run under the principal of whoever resumed it, not the one that started it (fixed by R3k, [ADR 0111](docs/adr/0111-durable-principal.md), first in the Wave 2 lane A; behaviour on `main` today).** `resume`, `restoreFromState` and `resumeAs` pass the caller's `options.principal` to the effect pipeline, and the principal is not recorded in the log. Consequences: (1) after an **approval** the remaining effects run with the **approver's** grants; (2) after a **timer wake or crash recovery** (`TimerService`, `recoverAbandoned`, `LocalWorkerRuntime` re-drives) they run with **no principal**, so `security.policies` / `PolicyAuthorizer` **tenant DENY rules do not fire** (a tenant-scoped ALLOW silently denies); (3) a **delegation-attenuated child regains `base` authority** once its token is gone (`DelegationAuthorizer` falls through to `base` when the token is absent, `effect-runtime/src/authz.ts`). Execution *lifecycle* authorization (`executionAuthorizer`) is unaffected. Until R3k: do not rely on tenant DENY rules or delegation attenuation across a park, timer or recovery; treat the approver's authority as part of what an approval grants; carry any authority a later effect needs as flow data. See the security note in `docs/usage.md`.
 
 ### Security
 

@@ -43,8 +43,11 @@ every composed app is unaffected. `workflow-runtime/package.json` drops `@loom/a
 A bare `new WorkflowRuntime(...)` with no `surface` dep gets an accessor that throws a message naming
 the dep. That is a behaviour break for direct-runtime users of a `1.x` accessor, which is why the
 ABI entry is marked `deprecated: true` in 1.3.0 rather than deleted, and why the injected-factory
-choice is an open question (design document, question 2): the alternative is to keep the dependency
-until 2.0.0.
+choice was an open question (design document §7 question 2). **Decided (default, pending user
+confirmation): accept the break now.** The monorepo is lockstep and unpublished, so nothing outside it
+holds a `1.x` bare runtime; the implementation PR runs the `loom-examples` / `loom-plugins` suites against
+the built dist to measure the blast radius. The alternative (keep the dependency until the 2.0.0 that
+removes `ctx.ui`) stays available if a consumer turns up.
 
 ### D2 — The sugar moves: `surface(ctx)`
 

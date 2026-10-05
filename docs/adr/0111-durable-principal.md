@@ -11,6 +11,11 @@
   delegation re-derivation for supervised children (`@loom/orchestration`), the DelegationAuthorizer
   fail-closed rule (`@loom/effect-runtime`). Shares the Wave 2 bump (EVENT_SCHEMA 1.23.0). **No
   KERNEL_ABI change. DISPATCHER_SPI stays 1.2.0.**
+- Revision: round 1 (Opus review of PR #495). A fork now acts as the forker (D7); `delegationUnresolved` is
+  enforced by the kernel before any authorizer, and a start that cannot be restored is refused (D4); a
+  shredded principal denies (D2); every 1.23 start writes an explicit record (D1); `defineConfig` registers
+  the identity paths as sensitive when crypto is composed (D1). **First in lane A**; a stop-gap
+  CHANGELOG/usage note records today's behaviour until it lands.
 
 ## Context
 
@@ -64,6 +69,16 @@ everyone who can read the log, and K10 forbids PII and bearer secrets in it. In 
 delegation token is never written**: it is a bearer capability (HMAC-signed, possibly long-lived)
 and an append-only log cannot revoke it.
 
+**Every start on 1.23.0 writes a record, even an anonymous one: `{ v: 1 }`.** "Absent" then means exactly
+one thing — a legacy log started before this ADR — and the fall-back to `options.principal` (D2) applies to
+legacy logs only. An anonymous 1.23.0 start can no longer be confused with a legacy one, and nothing can
+strip a record to regain the resumer's authority.
+
+**Crypto.** The identity subset is PII-adjacent. When a crypto plugin (K10) is composed, `defineConfig`
+registers `principal.identity.*` (tenant, actor, onBehalfOf) with the same sensitive-path seam the plugin
+uses for other payload fields (`@loom/classify` `sensitive()` markers feed `@loom/plugin-crypto`), so the
+subset is encrypted at rest and **shredded** with the subject (`PAYLOAD_SHREDDED`, D2 handles the result).
+
 `parent` (the supervisor's `parentExecutionId`, today descriptive and only reported on
 `committed`) is recorded beside it as `EXECUTION_STARTED.payload.parent`. It is lineage, not
 identity; ADR 0109's `continuedFrom` and R8k's pin predicate use it.
@@ -80,8 +95,14 @@ path — `start`, `resume`, `resumeAs`, `restoreFromState`, recovery, timer, sup
 job: the *lifecycle caller* for `ExecutionAuthorizer` and `ResumeAuthenticator`
 (`verify(event, { principal })`).
 
-An execution with no recorded principal (every pre-1.23.0 log, and an anonymous start) falls back to
-today's behaviour (`options.principal`), so legacy executions are unchanged. A start that carries a
+**A shredded principal denies; it never falls back.** If the recorded identity was crypto-shredded
+(`PAYLOAD_SHREDDED` covering `_principal`), the resolver result is the explicit `principalShredded` marker
+and every effect is denied (journaled `EFFECT_DENIED`, like D4), never evaluated under `options.principal`:
+an erased subject's executions must not silently run as whoever resumes them.
+
+An execution with **no `principal` field at all** (a pre-1.23.0 log only; every 1.23.0 start writes at
+least `{ v: 1 }`, D1) falls back to today's behaviour (`options.principal`), so legacy executions are
+unchanged. A start that carries a
 principal but ran on a node that predates this ADR leaves the log without a record; that is the same
 legacy case, and the 1P `executionAccessPolicy` still honours `resolveOwner`.
 
@@ -95,14 +116,27 @@ app's own grant table, which the supervisor in `@loom/orchestration` does from t
 already journals plus the delegation secret it holds (so a recovered child gets the *same*
 attenuation back, not a fresh one). The kernel never interprets `ref`.
 
-### D4 — Fail closed when a delegation cannot be restored
+### D4 — Fail closed when a delegation cannot be restored: in the kernel, and at start
 
-`DelegationAuthorizer` (1P, `@loom/effect-runtime`) gains one rule: a principal carrying
-`delegationUnresolved` is **denied** for every capability, never allowed through `base`. (A
-`delegationUnresolved` chain is the only way the kernel can say "this execution was attenuated and
-the attenuation is unrecoverable"; authorizing it as `base` is the escalation of consequence 2.)
-A missing/undefined resolver result for a record that has `delegation` is the same refusal. The
-failure is the ordinary journaled `EFFECT_DENIED`, so an operator sees it and can `resumeAs` with a
+The first draft put the rule only in `DelegationAuthorizer`, which is not the only authorizer (a
+`PolicyAuthorizer`, a `GrantTable`, or a 3P authorizer is asked about a `delegationUnresolved` chain and
+authorizes it on its own terms; and the default resolver cannot restore any delegation, so an attenuated
+child would be denied only by luck of composition after its first ordinary park/resume). Three rules:
+
+1. **The kernel enforces it.** A principal marked `delegationUnresolved` (or whose resolver result is
+   `undefined` for a record that has `delegation`) makes the effect call end in `EFFECT_DENIED` **before any
+   authorizer is consulted** (in the step pipeline, ahead of the K2 ring). `DelegationAuthorizer` keeps its
+   own deny as defence in depth, but correctness no longer depends on which authorizer is composed.
+2. **Refuse at `start`.** A start whose principal carries a delegation is refused
+   (`PrincipalUnrestorableError`, nothing appended) unless a `principalCodec` / resolver able to restore it
+   is wired. That moves the failure from "the child is mysteriously denied after its first park" to the one
+   call that can still report it.
+3. **`defineConfig` composes it.** When `superviseChildren` is wired, `defineConfig` auto-composes
+   `@loom/orchestration`'s principal codec (the one that re-issues the narrowed token from the journaled
+   spawn decision, D3), so the supported path needs no configuration and rule 2 only fires for apps that
+   hand-build a runtime.
+
+The failure is the ordinary journaled `EFFECT_DENIED`, so an operator sees it and can `resumeAs` with a
 restored principal.
 
 ### D5 — Execution authz reads the recorded owner
@@ -124,19 +158,30 @@ caller** for the dispatch. A remote worker needs nothing more to act as the owne
 the log it reads (D1), so no second principal field crosses the seam and the SPI does not change.
 `wire-abi` gains fold vectors for `_principal`.
 
-### D7 — Fork and continuation
+### D7 — Fork acts as the forker; continuation inherits
 
-A fork copies the prefix, hence the recorded principal: a counterfactual run keeps the authority of
-the run it forks. The forker's identity is the lifecycle caller and is already in the fork's metadata
-and authz request. (Open question 6 asks whether a fork may run as the forker.) A continuation
-(ADR 0109) copies the record into the successor's start; attenuation can narrow, never widen.
+The first draft let a fork keep the owner's authority, but a fork is authorized only as `query` on the
+parent and `start` on the child (`WorkflowRuntime.fork`, around line 2329) and `copyPrefix` copies sequence
+0, so a caller who may merely *read* a run and *start* a flow would obtain an execution that runs the
+owner's remaining effects under the owner's grants: a privilege escalation. Now:
+
+- **A fork acts as the forker by default.** `fork` stamps `forkedBy: PrincipalRecord` (the forker's
+  record, built exactly as D1 builds a start record) into `forkMeta`, which the copy merges into every
+  copied envelope's metadata, sequence 0 included (the same mechanism that carries `forkedFrom`). The
+  resolver prefers `forkedBy` over the copied `principal` when the log's sequence 0 carries it. Ownership
+  for authz (D5) of the fork is the forker too, which is what `executionAccessPolicy` documents today.
+- **Acting as the owner is an explicit, separately authorized option:** `fork(…, { actAs: "owner" })`,
+  authorized as a new `ExecutionOp` **`"actAsOwner"`** on the parent (default policy: `deny`), recorded as
+  `forkedBy` omitted and `forkActAs: "owner"` in the metadata, so the log shows who chose it.
+- A **continuation** (ADR 0109) copies the record into the successor's start; attenuation can narrow,
+  never widen.
 
 ## Replay and migration
 
 A new optional payload field and a reserved fold key: logs without them replay byte-identically.
 No re-write of existing executions. The behavioural change is D2's: after upgrade, effects after an
 approval run as the *owner*, not the approver, **for executions that recorded a principal** (i.e.
-started on 1.23.0). Apps that relied on "the approver's principal reaches the effects" must pass the
+started on 1.23.0 — now every 1.23.0 start, since an anonymous one records `{ v: 1 }`). Apps that relied on "the approver's principal reaches the effects" must pass the
 approver explicitly as data; the CHANGELOG states this as BREAKING for the new executions only.
 
 ## Tests
@@ -148,7 +193,13 @@ present) or **denied** (resolver absent / `delegationUnresolved`), never `base` 
 the same scenario on `main` passes `base`); `ref` mode writes no actor into the log (assert the
 payload); a delegation token string appears nowhere in any recorded event; `owner` supplied to the
 authorizer for an execution started before a process restart; wire-abi vectors; the ExecutionAuthorizer
-and PrincipalResolver conformance cases.
+and PrincipalResolver conformance cases. Round-1 additions: a delegated start with no restorer is refused
+with the log empty; a `delegationUnresolved` principal is denied under a `PolicyAuthorizer` and under a 3P
+authorizer that allows everything (the kernel rule fires first); a shredded principal denies and never runs
+as the resumer; the crypto composition encrypts `principal.identity.*`; an anonymous 1.23.0 start records
+`{ v: 1 }` and a log that strips it is not mistaken for a legacy one; a fork's remaining effects run as the
+forker, `actAs: "owner"` is refused without `"actAsOwner"`, and the fork does not inherit the owner's
+tenant ALLOW.
 
 ## Rejected
 
@@ -156,5 +207,7 @@ and PrincipalResolver conformance cases.
   log.
 - **Persisting only `ref` always**: forces every app to run a resolver to get tenant-scoped policy
   right; the verbatim identity subset is the zero-config path.
+- **Letting a fork inherit the owner's authority** (the first draft): an escalation; see D7.
+- **Enforcing `delegationUnresolved` only in `DelegationAuthorizer`**: other authorizers authorize it.
 - **A principal event after sequence 0** (`PRINCIPAL_BOUND`): not needed while the principal is
   immutable for an execution; it would also be a new forged-kernel-event surface.
