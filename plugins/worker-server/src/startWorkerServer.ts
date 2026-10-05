@@ -5,6 +5,13 @@ import type { WorkerServer } from "./createWorkerServer";
 export interface StartWorkerServerOptions {
   /** Overrides the port. Defaults to `process.env.PORT` (Cloud Run sets it), else 8080. */
   port?: number;
+  /**
+   * The interface to bind. Defaults to `process.env.HOST`, else `"0.0.0.0"` — this is the
+   * container entrypoint and Cloud Run reaches it over the network. Set `authorize` on the
+   * underlying worker server's trust boundary (or front it with IAM) when it is internet-reachable.
+   * (`createWorkerServer` itself defaults to loopback.)
+   */
+  host?: string;
 }
 
 /**
@@ -20,7 +27,8 @@ export async function startWorkerServer(
 ): Promise<WorkerServer> {
   const envPort = process.env.PORT;
   const port = options.port ?? (envPort ? Number.parseInt(envPort, 10) : 8080);
-  const server = createWorkerServer(worker, { port });
+  const host = options.host ?? process.env.HOST ?? "0.0.0.0";
+  const server = createWorkerServer(worker, { port, host });
   await server.start();
   return server;
 }

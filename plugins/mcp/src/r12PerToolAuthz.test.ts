@@ -98,13 +98,25 @@ describe("MCP per-tool authorization (R12)", () => {
 describe("MCP server identity for grants (R12 review)", () => {
   it('defaults `server` to the client URL\'s hostname (stable identity), not the literal "server"', async () => {
     const url = await startFake();
+    const hostId = new McpClient({ transport: "http", url }).serverHost;
+    expect(hostId).toMatch(/^127\.0\.0\.1_\d+$/);
     const rt = new EffectRuntime([], {
-      authorizer: new GrantTable({ flow: ["mcp.invoke:127.0.0.1/read_doc"] }),
+      authorizer: new GrantTable({ flow: [`mcp.invoke:${hostId}/read_doc`] }),
     });
     registerMcpInvoke(new McpClient({ transport: "http", url }), rt);
     const call = (toolName: string) => rt.execute(MCP_INVOKE_TOOL_ID, { toolName, args: {} }, ctx);
     await expect(call("read_doc")).resolves.toEqual({ ok: true });
     await expect(call("delete_doc")).rejects.toMatchObject({ name: "CapabilityDeniedError" });
+  });
+
+  it("serverHost keeps a non-default port so two ports on one host get distinct ids (round 2)", () => {
+    const id = (url: string) => new McpClient({ transport: "http", url }).serverHost;
+    expect(id("http://localhost:3001/mcp")).toBe("localhost_3001");
+    expect(id("http://localhost:3002/mcp")).toBe("localhost_3002");
+    expect(id("http://localhost/mcp")).toBe("localhost");
+    expect(id("http://example.com:80/mcp")).toBe("example.com");
+    expect(id("https://example.com:443/mcp")).toBe("example.com");
+    expect(id("http://[::1]:3001/mcp")).toBe("__1_3001");
   });
 
   it("rejects a `server` label containing '/' or ':' (the <server>/<tool> id would be ambiguous)", () => {

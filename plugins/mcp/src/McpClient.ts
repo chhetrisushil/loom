@@ -43,12 +43,16 @@ export class McpClient {
   constructor(private readonly config: McpServerConfig) {}
 
   /**
-   * The hostname of the server this client targets (no port, no brackets) — a stable identity
-   * for per-tool grants (`mcp.invoke:<host>/<tool>`).
+   * A stable identity for the server this client targets, for per-tool grants
+   * (`mcp.invoke:<id>/<tool>`): the hostname (no brackets), plus `_<port>` when the port is not
+   * the scheme's default (so `localhost:3001` and `localhost:3002` are distinct). `:` and `/` are
+   * never used as separators — they delimit the grant id.
    */
   get serverHost(): string | undefined {
     try {
-      return new URL(this.config.url).hostname.replace(/^\[|\]$/g, "").replace(/:/g, "_");
+      const u = new URL(this.config.url);
+      const host = u.hostname.replace(/^\[|\]$/g, "").replace(/:/g, "_");
+      return u.port === "" ? host : `${host}_${u.port}`;
     } catch {
       return undefined;
     }

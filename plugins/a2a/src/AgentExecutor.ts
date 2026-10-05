@@ -55,7 +55,7 @@ export interface LoomAgentExecutorOptions {
 
 /** R12 — does this principal carry the minimum identity a per-caller namespace needs? */
 export function hasActor(principal: PrincipalChain): boolean {
-  return typeof principal.actor === "string" && principal.actor.length > 0;
+  return typeof principal.actor === "string" && principal.actor.trim().length > 0;
 }
 
 /**
