@@ -11,7 +11,9 @@
   delegation re-derivation for supervised children (`@loom/orchestration`), the DelegationAuthorizer
   fail-closed rule (`@loom/effect-runtime`). Shares the Wave 2 bump (EVENT_SCHEMA 1.23.0). **No
   KERNEL_ABI change. DISPATCHER_SPI stays 1.2.0.**
-- Revision: round 1 (Opus review of PR #495). A fork now acts as the forker (D7); `delegationUnresolved` is
+- Revision: round 2 — identity is never written verbatim under strict/compliance without crypto or a codec
+  (D1); the resolver reads sequence 0 of the log, not a caller-supplied state, and `_principal` survives a
+  migration (D2). Round 1 (Opus review of PR #495). A fork now acts as the forker (D7); `delegationUnresolved` is
   enforced by the kernel before any authorizer, and a start that cannot be restored is refused (D4); a
   shredded principal denies (D2); every 1.23 start writes an explicit record (D1); `defineConfig` registers
   the identity paths as sensitive when crypto is composed (D1). **First in lane A**; a stop-gap
@@ -79,6 +81,22 @@ registers `principal.identity.*` (tenant, actor, onBehalfOf) with the same sensi
 uses for other payload fields (`@loom/classify` `sensitive()` markers feed `@loom/plugin-crypto`), so the
 subset is encrypted at rest and **shredded** with the subject (`PAYLOAD_SHREDDED`, D2 handles the result).
 
+**Plaintext identity without crypto — a decided policy, not an accident.** The `{ tenant, actor,
+onBehalfOf }` subset is PII-adjacent, a log is permanent, and `eraseSubject` cannot redact a plaintext
+field (it appends `PAYLOAD_SHREDDED` tombstones, which only mean something over encrypted fields). So:
+(1) **under `security.strict`, or when a compliance/erasure plugin is composed, a principal's identity is
+never written verbatim.** If crypto (K10) is composed the subset is encrypted and shreddable (above);
+otherwise `defineConfig` requires `principalCodec` (D3 `ref` mode: the log carries `{ v: 1, ref }` only) and
+**refuses to compose** with a typed error naming the three ways out (compose crypto, supply a codec, or
+turn strict/compliance off) rather than silently writing identity into a log it was told can be erased.
+(2) **Outside strict/compliance the verbatim subset remains the zero-config default**, and the trade-off is
+a documented non-goal: such a deployment has said it does not erase, K10's PII rule is satisfied by the
+operator's choice not to compose crypto, and nothing is promised about redaction of those three fields.
+Rationale for the split: refusing everywhere would force a resolver on every app (rejected below), while
+defaulting to plaintext under a stated erasure obligation is exactly the silent contradiction K10 exists to
+prevent. Test: strict with no crypto and no codec refuses at composition; strict + codec writes no actor in
+the log; non-strict default writes the subset and the docs state the limit.
+
 `parent` (the supervisor's `parentExecutionId`, today descriptive and only reported on
 `committed`) is recorded beside it as `EXECUTION_STARTED.payload.parent`. It is lineage, not
 identity; ADR 0109's `continuedFrom` and R8k's pin predicate use it.
@@ -88,7 +106,13 @@ identity; ADR 0109's `continuedFrom` and R8k's pin predicate use it.
 A kernel `PrincipalResolver` seam: `resolve(record, { executionId }) → PrincipalChain | undefined |
 Promise<…>`. The default (no configuration) rebuilds `{ tenant, actor, onBehalfOf }` from
 `identity` and, when `delegation` is recorded but unresolved, marks the chain
-`delegationUnresolved: <id>`. The app may supply its own resolver (D3). The runtime calls it once per
+`delegationUnresolved: <id>`. The app may supply its own resolver (D3). **The record is read from the log, never from a caller-supplied state.** `restoreFromState` takes a
+caller-supplied `ExecutionState` (`WorkflowRuntime.ts:1441`, whose comment already treats it as unverified),
+so the resolver reads `principal` from **sequence 0 of the execution's own log** (a point read; or the
+fold the runtime itself built), and ignores `preloadedState.variables._principal`: a caller cannot forge or
+strip the owner by restoring a doctored state. A `resumeAs` code migration appends `EXECUTION_MIGRATED`,
+whose handler spreads `...state.variables` (`replay-vm/src/eventHandlers.ts:672-692`) and so does not reset
+`_principal`; a test pins that `_principal` is identical before and after a migration. The runtime calls it once per
 `execute()` start-up and uses the result as the effect principal for the whole run, on **every** entry
 path — `start`, `resume`, `resumeAs`, `restoreFromState`, recovery, timer, supervisor — replacing the
 `options.principal` argument that `execute()` takes today. `options.principal` keeps exactly one
@@ -193,7 +217,10 @@ present) or **denied** (resolver absent / `delegationUnresolved`), never `base` 
 the same scenario on `main` passes `base`); `ref` mode writes no actor into the log (assert the
 payload); a delegation token string appears nowhere in any recorded event; `owner` supplied to the
 authorizer for an execution started before a process restart; wire-abi vectors; the ExecutionAuthorizer
-and PrincipalResolver conformance cases. Round-1 additions: a delegated start with no restorer is refused
+and PrincipalResolver conformance cases. Round-2 additions: strict without crypto or codec refuses at composition, strict with a codec writes no actor;
+`restoreFromState` with a doctored `_principal` in the supplied state runs as the log's recorded owner;
+`_principal` survives `resumeAs` + `transformState` migration; a fork of a chain member gets a fresh
+chain (ADR 0109 D7) while `forkedBy` still governs its authority. Round-1 additions: a delegated start with no restorer is refused
 with the log empty; a `delegationUnresolved` principal is denied under a `PolicyAuthorizer` and under a 3P
 authorizer that allows everything (the kernel rule fires first); a shredded principal denies and never runs
 as the resumer; the crypto composition encrypts `principal.identity.*`; an anonymous 1.23.0 start records
@@ -207,6 +234,8 @@ tenant ALLOW.
   log.
 - **Persisting only `ref` always**: forces every app to run a resolver to get tenant-scoped policy
   right; the verbatim identity subset is the zero-config path.
+- **Refusing the verbatim identity subset everywhere**: forces a resolver on every app; the split in D1
+  (refuse only under an erasure/strict obligation) keeps the zero-config path.
 - **Letting a fork inherit the owner's authority** (the first draft): an escalation; see D7.
 - **Enforcing `delegationUnresolved` only in `DelegationAuthorizer`**: other authorizers authorize it.
 - **A principal event after sequence 0** (`PRINCIPAL_BOUND`): not needed while the principal is
