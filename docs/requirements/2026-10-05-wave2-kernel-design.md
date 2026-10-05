@@ -1,6 +1,6 @@
 # Wave 2 — the coordinated kernel design (agentic-readiness, Part R)
 
-- Status: **Proposed** — design only; no runtime code in this change.
+- Status: **Proposed** — design approved after 4 review rounds; Accepted per item at implementation. Design only; no runtime code in this change.
 - Date: 2026-10-05, against `main` at e880d0e.
 - ADRs (all **Proposed**, accepted one by one at implementation): [0109](../adr/0109-bounded-history-and-continue-as-new.md)
   R1b · [0110](../adr/0110-durable-inbox-and-receive-select.md) R2 · [0111](../adr/0111-durable-principal.md) R3k ·
@@ -9,10 +9,14 @@
   [0116](../adr/0116-late-outcome-attach.md) R11 · [0118](../adr/0118-acquire-if-parked-fence.md) R8k.
   (0117 is R13, already implemented.)
 - **Revision: round 1** (Opus review of PR #495, NOT APPROVED, twelve P1s). Every P1/P2 is fixed in the
-  ADRs and in §§2–6 below; the §7 open questions now carry a **Decided (default, pending user
-  confirmation)** answer each (the user may override any of them); §9 lists the P3 notes. A stop-gap
+  ADRs and in §§2–6 below; the §7 open questions carry a decision each (round-1 defaults, since
+  confirmed or overridden by the user, 2026-10-05, see below); §9 lists the P3 notes. A stop-gap
   CHANGELOG "Known issue" and a `docs/usage.md` / README security note record today's principal behaviour
   until R3k lands (§4.2).
+- **Decisions recorded 2026-10-05** (user answered four §7 questions): full reservation PR up front (Q1, overrides
+  the round-1 default), R14 break now (Q2), plain identity subset (Q5), continue-as-new carry 1 MiB / 8 hops
+  (Q7b, overrides the 256 KiB default). §3, §6 and §7 are updated; every other §7 item is labelled
+  "Decided (default; not contested by the user, 2026-10-05)".
 - Evidence: the readiness evaluation and its kernel / capabilities / governance appendices in this directory
   (`2026-10-05-agentic-readiness-*.md`), and the probes in `2026-10-05-agentic-readiness-experiments/`.
   Paths below are relative to `packages/`; they are cited by symbol where a line number would rot.
@@ -62,7 +66,7 @@ Current contracts: `KERNEL_ABI_VERSION` **1.2.0** (`workflow-runtime/src/abi.ts`
 
 ## 3. The single version plan
 
-One bump per contract, shared by every item. Nothing here is a MAJOR (the `ExecutionStatus` union widens
+One bump per contract, shared by every item, **all reserved in W2-0** (§3 "How one bump lands"; decided by the user, 2026-10-05). Nothing here is a MAJOR (the `ExecutionStatus` union widens
 by one value; see the schema row).
 
 | Contract | Now | Target | Driven by | Nature |
@@ -102,33 +106,47 @@ Replay is unchanged for any log that carries none of them (every pre-1.23.0 log)
 
 ### How one bump lands across nine PRs
 
-**Round-1 change.** The first draft had W2-0 land every fold handler first, with writers following. That
-leaves reserved kinds that no writer uses and, worse, changes how **existing logs** fold: the guard's
-`KERNEL` set is `knownEventTypes()` (`userspaceEmit.ts`), derived from the handler table, so once
-`MESSAGE_CONSUMED` or `EXECUTION_CONTINUED` has a handler (a) an app that already emits an application
-event with that name is refused at runtime from then on, and (b) such an event *already in a log* would
-fold as a kernel fact (an app-emitted `EXECUTION_CONTINUED` would flip an execution to `continued`).
-Therefore:
+**Decided (user, 2026-10-05): full reservation PR up front.** This overrides the round-1 default
+("constants once, each handler with its writer"). **W2-0 lands, before any writer exists:**
 
-- **W2-0 moves only the constants and the compatibility matrix**, once (`KERNEL_ABI_VERSION` 1.3.0,
-  `EVENT_SCHEMA_VERSION` 1.23.0, `EVENT_STORE_SPI_VERSION` 2.1.0; `loom kernel-manifest --emit-docs`). It
-  adds no handler and no writer.
-- **Each fold handler lands in the same PR as its writer, its syscall/method entry, its wire-abi vectors,
-  its conformance cases and its ADR acceptance.** A handler without a writer is then impossible by
-  construction, and the fitness assertion ("every kind with a handler has a writer") is a one-line test in
-  W2-0 that every later PR keeps green.
+- the three constants (`KERNEL_ABI_VERSION` 1.3.0, `EVENT_SCHEMA_VERSION` 1.23.0, `EVENT_STORE_SPI_VERSION`
+  2.1.0) and the regenerated compatibility matrix (`loom kernel-manifest --emit-docs`);
+- **every new fold handler** (`EXECUTION_CONTINUED`, `MESSAGE_CONSUMED`, the `PARALLEL_COMPLETED` payload, the
+  additive `EXECUTION_STARTED` / `EXECUTION_SUSPENDED` / `EXECUTION_RESUMED` / `RESOURCE_METERED` /
+  `OUTCOME_RECORDED` fields and the reserved fold keys), written against the **FINAL (round-4) event shapes**;
+- the **wire-abi fold vectors** for those shapes;
+- the **answering / ignorable classification map** (ADR 0118 D3, fail-closed for a kind with no entry) for
+  every new kind.
+
+**Writers then land per item**, each behind its `kernel.features` flag (see "Rolling upgrade"), with its
+syscall/method entry, conformance cases and ADR acceptance. Until an item's writer lands, its handler is
+reserved and unreachable from kernel code; the W2-0 fitness test is therefore the inverse of the round-1
+draft: **every kind with a handler and no writer is listed in an explicit "reserved, writer in item X" table**
+(with `PARALLEL_STARTED` and `STEP_RETRYING` as the pre-existing exceptions), and an item PR that adds the
+writer removes its row.
+
+**Why reserving handlers early is safe for existing logs: the `metadata.kernel: true` marker rule is kept.**
+The guard's `KERNEL` set is `knownEventTypes()` (`userspaceEmit.ts`), derived from the handler table, so once
+`MESSAGE_CONSUMED` or `EXECUTION_CONTINUED` has a handler (a) an app that already emits an application event
+with that name is refused at runtime from then on, and (b) such an event *already in a log* could fold as a
+kernel fact. The marker closes (b):
+
 - **The new kinds fold only kernel-written instances.** The journal stamps every envelope it writes for a
   new kind with `metadata.kernel: true` (operational metadata, the channel `fence` and `flowEmit` already
   use; copied by `copyPrefix` and compaction), and the new handlers ignore an envelope without the stamp.
   A pre-existing app event named `MESSAGE_CONSUMED` therefore folds as the no-op it always was, byte-
-  identically. Emitting those names from userspace is refused from 1.23.0 (the guard does it automatically)
-  and listed as a behaviour change; the implementation PRs grep `loom-examples`, `loom-plugins` and
+  identically, even though the handler now exists and no kernel writer does yet. Emitting those names from
+  userspace is refused from 1.23.0 (the guard does it automatically, so (a) lands with W2-0) and listed as a
+  behaviour change; the implementation PRs grep `loom-examples`, `loom-plugins` and
   `loom-demo` for emits of the new names first (names an app could plausibly use are the reason for the
   stamp; renaming to `LOOM_…` was considered and rejected as inconsistent with the 30 existing kinds).
   **No ingress accepts caller metadata for these kinds** (the kernel builds the envelope), so the stamp
   cannot be forged; round 2 requires tests that it survives `eraseSubject` (which only appends tombstones),
   `LogLifecycle` compaction/archive re-appends, `copyPrefix`, and the Encrypting/ContentResolving store
   decorators (ADR 0110 "Marker").
+- **Residual (raised in review): the shapes are frozen at W2-0.** A later change to any reserved payload shape
+  needs an **additive schema change** (a further optional field and a MINOR bump), not an edit in place.
+  Reviews of every item PR must check the writer against the frozen W2-0 shapes and vectors.
 - The version has never been released (the monorepo is lockstep and unpublished), so a kind that no item
   ends up writing is never added. `PARALLEL_STARTED` and `STEP_RETRYING` remain reserved with handlers and
   no writer from before this wave (§7 question 12); the assertion lists them as the known exceptions.
@@ -616,13 +634,13 @@ Everything else can proceed in either order.
 ## 6. Implementation order
 
 Each item is one PR with its ADR moved to Accepted at implementation (status line, CHANGELOG, a
-`NOT_A_CAPABILITY` entry or a `CAPABILITIES` badge); **each fold handler lands with its writer** (§3).
+`NOT_A_CAPABILITY` entry or a `CAPABILITIES` badge); **W2-0 reserves every fold handler and the final shapes up front; each item PR lands its writer behind its `kernel.features` flag** (§3).
 **Opus first review** on every kernel/storage/concurrency/security diff (W2-0, R3k, R6, R2, R1b, R7, R8k,
 R11); Sonnet on R14 and R15 and every re-review. Two lanes at most (machine load rule).
 
 | Step | PR | Lane | Needs | Notes |
 |---|---|---|---|---|
-| 0 | **W2-0** version reservation: constants and compat matrix only, the handler-needs-writer fitness test | — | this design accepted | small, mechanical; **no handlers** |
+| 0 | **W2-0** full reservation: the three constants, the compat matrix, **every new fold handler**, wire-abi vectors and the answering/ignorable classification map for the FINAL (round-4) shapes, the reserved-kinds fitness table | — | this design accepted | no writer exists yet; handlers fold only `metadata.kernel` instances; shapes frozen (later change = additive schema change) |
 | 1 | **R3k** durable principal (0111) | A | W2-0 | everything inherits from it; BREAKING note; the stop-gap Known-issue note is already published |
 | 2 | **R8k** `acquireFenceIf` (token) + pin predicate (0118) | B | W2-0 | SPI MINOR, conformance + DST; the fence half has no other dependency |
 | 3 | **R6** scopes + park barrier + `PARALLEL_COMPLETED` + cascade sweep (0112) | A | W2-0 | mints scope paths; the barrier R2 and R1b need |
@@ -637,43 +655,48 @@ R11); Sonnet on R14 and R15 and every re-review. Two lanes at most (machine load
 Consumer suites (`loom-examples`, `loom-plugins`) are run against the built dist for the PRs that tighten
 behaviour (R3k, R14, R6, R7, and R2 for the new ops).
 
-## 7. Open questions for the user — each with the DEFAULT decision adopted in round 1
+## 7. Open questions for the user — answered
 
-Every item below is **Decided (default, pending user confirmation)**: the answer is the review's
-recommendation, adopted so the work is not blocked; the user may override any of them.
+The user answered questions 1, 2, 5 and 7(b) on 2026-10-05 (**Decided (user, 2026-10-05)**); the rest keep the
+review's recommendation, adopted in round 1 and not contested (**Decided (default; not contested by the user,
+2026-10-05)**).
 
-1. **One reservation PR, or one bump per item?** *Decided (default, pending user confirmation):* W2-0 moves
-   the three constants and regenerates the compat matrix once; **each fold handler lands with its writer**
-   (§3). Rationale: "planned once" is kept, and no kind ever exists without a writer or changes how an old
-   log folds.
-2. **`ctx.ui` and ABI 1.x (R14).** *Decided (default, pending user confirmation):* accept the break now.
+1. **One reservation PR, or one bump per item?** *Decided (user, 2026-10-05): "Full reservation PR up front".*
+   Overrides the round-1 default. W2-0 lands the three constants, the compat matrix, **every new fold handler**,
+   the wire-abi vectors and the answering/ignorable classification map for the final (round-4) shapes, before
+   any writer exists; writers land per item behind `kernel.features` flags. The `metadata.kernel: true` marker
+   keeps early handlers safe for existing logs with same-named app events. Residual: shapes are frozen at W2-0,
+   so a later change is an additive schema change and item-PR reviews check against the frozen shapes (§3).
+2. **`ctx.ui` and ABI 1.x (R14).** *Decided (user, 2026-10-05): "Break now"* (confirms the default).
    Rationale: the monorepo is lockstep and unpublished; the consumer suites are run to measure it.
-3. **R11 placement.** *Decided (default, pending user confirmation):* a runtime method, **terminal-only, no
+3. **R11 placement.** *Decided (default; not contested by the user, 2026-10-05):* a runtime method, **terminal-only, no
    fence** (sequence CAS). Rationale: both 1P shapes fail, and a fence would kill live runs.
-4. **Inbox exactly-once.** *Decided (default, pending user confirmation):* a bounded dedupe window, **carried
+4. **Inbox exactly-once.** *Decided (default; not contested by the user, 2026-10-05):* a bounded dedupe window, **carried
    across continuation** and configurable; `appendIfAbsent` deferred. Rationale: avoids an SPI MINOR without
    evidence of need.
-5. **R3k default.** *Decided (default, pending user confirmation):* persist the verbatim identity subset by
+5. **R3k default.** *Decided (user, 2026-10-05): "Plain identity subset"* (confirms the default, for the non-strict / non-compliance case): persist the verbatim identity subset by
    default, **auto-register it as sensitive when crypto is composed, and deny when it has been shredded**;
    `ref` mode for PII-bearing ids. Rationale: zero-config tenant policy that stays erasable.
-6. **Fork principal.** *Decided (default, pending user confirmation):* **a fork acts as the forker**
+6. **Fork principal.** *Decided (default; not contested by the user, 2026-10-05):* **a fork acts as the forker**
    (`forkedBy` in `forkMeta`); acting as the owner is an explicit, separately authorized option. Rationale:
    the first draft gave a reader the owner's authority.
-7. **Continuation details.** *Decided (default, pending user confirmation):* (a) an **absolute chain deadline
-   is carried**; (b) `maxCarryBytes` **256 KiB**, `maxChainHops` **8**; (c) the Part R waiver of ADR 0052's
-   evidence gate is confirmed and ADR 0052 is amended on 0109's acceptance. Rationale: a rotation must not be
-   a way to outlive a deadline, and 1 MiB per generation defeats the bound the feature exists for.
-8. **`propensity` validation.** *Decided (default, pending user confirmation):* its **own small PR, no ADR**.
+7. **Continuation details.** (a) an **absolute chain deadline is carried**; (b) *Decided (user, 2026-10-05):
+   "1 MiB carry, 8 hops"* — `maxCarryBytes` **1 MiB** (overrides the 256 KiB default), `maxChainHops` **8**;
+   trade-off: the carry rides sequence 0 of the successor and every snapshot, so a larger cap means a larger
+   fixed cost per generation; (c) the Part R waiver of ADR 0052's evidence gate is confirmed and ADR 0052 is
+   amended on 0109's acceptance. Rationale: a rotation must not be a way to outlive a deadline. (a) and (c)
+   are *Decided (default; not contested by the user, 2026-10-05)*.
+8. **`propensity` validation.** *Decided (default; not contested by the user, 2026-10-05):* its **own small PR, no ADR**.
    Rationale: a `ctx.decide` input tightening unrelated to attaching rewards.
-9. **R7 default.** *Decided (default, pending user confirmation):* `warn` by default; under strict it
+9. **R7 default.** *Decided (default; not contested by the user, 2026-10-05):* `warn` by default; under strict it
    **fails, on membership only** (no order check). Producing `codeFingerprint` in `@loom/compiler` is a
    **follow-up**, not in the R7 PR. Rationale: detection of a silent fault arrives as a warning first.
-10. **R9k placement.** *Decided (default, pending user confirmation):* **1P (`@loom/orchestration`)
+10. **R9k placement.** *Decided (default; not contested by the user, 2026-10-05):* **1P (`@loom/orchestration`)
     confirmed**; the kernel has no child relation.
-11. **`parallel` branch functions (R6).** *Decided (default, pending user confirmation):* branch functions on
+11. **`parallel` branch functions (R6).** *Decided (default; not contested by the user, 2026-10-05):* branch functions on
     `ctx.parallel` are fine, **with the parallel-call ordinal in `scopePath`** (`<k>.<branch>`). Rationale: no
     second scope API, and sequential scopes cannot collide.
-12. **Ghost kinds.** *Decided (default, pending user confirmation):* `PARALLEL_COMPLETED` **gets a writer**
+12. **Ghost kinds.** *Decided (default; not contested by the user, 2026-10-05):* `PARALLEL_COMPLETED` **gets a writer**
     (R6 fail-fast outcome); `STEP_RETRYING` and `PARALLEL_STARTED` **stay reserved** (an ABI removal is not
     allowed: the schema is additive-only) and are the listed exceptions to the handler-needs-writer test.
 

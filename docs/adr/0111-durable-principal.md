@@ -1,6 +1,6 @@
 # ADR 0111 — The execution's principal is durable
 
-- Status: **Proposed** (2026-10-05)
+- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
 - Date: 2026-10-05
 - Closes: R3 kernel half (agentic-readiness audit, governance appendix, principal-propagation rows)
 - Builds on: R3 1P half (fail-closed execution authz, `executionAccessPolicy`, `SystemGrant`,

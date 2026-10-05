@@ -1,6 +1,6 @@
 # ADR 0114 — `ctx.ui` leaves the kernel
 
-- Status: **Proposed** (2026-10-05)
+- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
 - Date: 2026-10-05
 - Closes: R14 (agentic-readiness audit, kernel appendix G1)
 - Builds on: [ADR 0043](0043-plugin-packaging-and-1p-3p-separation.md) (the layering guard),
@@ -43,8 +43,8 @@ every composed app is unaffected. `workflow-runtime/package.json` drops `@loom/a
 A bare `new WorkflowRuntime(...)` with no `surface` dep gets an accessor that throws a message naming
 the dep. That is a behaviour break for direct-runtime users of a `1.x` accessor, which is why the
 ABI entry is marked `deprecated: true` in 1.3.0 rather than deleted, and why the injected-factory
-choice was an open question (design document §7 question 2). **Decided (default, pending user
-confirmation): accept the break now.** The monorepo is lockstep and unpublished, so nothing outside it
+choice was an open question (design document §7 question 2). **Decided (user, 2026-10-05, "Break now"):
+accept the break now.** The monorepo is lockstep and unpublished, so nothing outside it
 holds a `1.x` bare runtime; the implementation PR runs the `loom-examples` / `loom-plugins` suites against
 the built dist to measure the blast radius. The alternative (keep the dependency until the 2.0.0 that
 removes `ctx.ui`) stays available if a consumer turns up.

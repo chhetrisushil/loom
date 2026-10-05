@@ -1,6 +1,6 @@
 # ADR 0112 — Structured concurrency: cancellation scopes, a park barrier, and the cancel cascade
 
-- Status: **Proposed** (2026-10-05)
+- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
 - Date: 2026-10-05
 - Closes: R6 (agentic-readiness audit, kernel appendix §2d, risk R6) and the R9 cancel-cascade item
 - Builds on: [ADR 0105](0105-a-caught-step-failure-is-not-the-executions.md) (`_failedWhileParked`,
