@@ -115,7 +115,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Validation:** an MCP tool now checks its own call's shape INSIDE its effect
   (object input, `required` keys present, declared top-level property types) and returns a
   recorded `{ error: { code: "invalid_tool_input", ... } }` RESULT; nested rules, enums and
-  bounds stay the server's job. It is in the effect, not in the agent loop before
+  bounds stay the server's job. The check reads the RAW schema, so its refusal echoes only
+  identifier names (`^[A-Za-z0-9_.-]{1,64}$`) and JSON Schema type names — any other name is
+  reported without it (the refusal is a model-visible tool result). It is in the effect, not in the agent loop before
   `ctx.execute`, so replay is deterministic: the schema comes from a LIVE `tools/list` at
   boot, and a gate outside the journaled step would refuse, after server schema drift, a call
   the log records as executed. Note a direct flow caller of an MCP tool now also receives that

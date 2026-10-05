@@ -38,7 +38,10 @@ const MAX_ERROR_TEXT = 2048;
 /** Provider-safe tool names (OpenAI/Anthropic/Gemini all accept this set). */
 const TOOL_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 function emitSkipWarning(name: unknown): void {
-  const shown = typeof name === "string" ? JSON.stringify(name.slice(0, 64)) : "(non-string)";
+  const shown =
+    typeof name === "string"
+      ? JSON.stringify(name.slice(0, 64).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "?"))
+      : "(non-string)";
   (
     globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } }
   ).process?.emitWarning?.(

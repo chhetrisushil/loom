@@ -12,8 +12,15 @@
  * It is NOT a JSON Schema validator (no nesting, `enum`, bounds, combinators):
  * the server stays the authority. Looser than the server by construction.
  */
-const MAX_ECHO = 64;
 const MAX_ISSUES = 5;
+/**
+ * The schema here is the RAW third-party one, so nothing from it is echoed into the refusal (a
+ * model-visible tool result) unless it is an identifier the sanitised menu could also show:
+ * names matching this, and the JSON Schema type names. Anything else is reported without it.
+ */
+const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+const TYPE_NAMES = new Set(["string", "number", "integer", "boolean", "null", "array", "object"]);
+const echo = (k: string): string => (NAME_RE.test(k) ? k : "");
 
 type Json = Record<string, unknown>;
 const isObj = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -49,7 +56,7 @@ export function refuseMalformedInput(schema: unknown, input: unknown): unknown {
     for (const k of required) {
       if (typeof k !== "string") continue;
       if (!Object.hasOwn(input, k) || input[k] === undefined)
-        issues.push({ path: k.slice(0, MAX_ECHO), message: "required" });
+        issues.push({ path: echo(k), message: "required" });
     }
     const props = isObj(schema.properties) ? schema.properties : {};
     for (const [k, sub] of Object.entries(props)) {
@@ -57,14 +64,16 @@ export function refuseMalformedInput(schema: unknown, input: unknown): unknown {
       const t = sub.type;
       const types =
         typeof t === "string"
-          ? [t]
+          ? TYPE_NAMES.has(t)
+            ? [t]
+            : []
           : Array.isArray(t)
-            ? t.filter((x): x is string => typeof x === "string")
+            ? t.filter((x): x is string => typeof x === "string" && TYPE_NAMES.has(x))
             : undefined;
       if (types !== undefined && types.length > 0 && !types.some((x) => typeOk(input[k], x)))
         issues.push({
-          path: k.slice(0, MAX_ECHO),
-          message: `expected ${types.join(" | ").slice(0, MAX_ECHO)}`,
+          path: echo(k),
+          message: `expected ${types.join(" | ")}`,
         });
     }
   }
