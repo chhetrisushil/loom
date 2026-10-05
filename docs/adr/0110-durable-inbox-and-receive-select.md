@@ -188,8 +188,10 @@ commit, the message sits in the stream with nobody resuming for it. Three closur
    If a message is there it **satisfies the wait live** — appends `MESSAGE_CONSUMED` and continues running —
    instead of parking.
 2. **After the park is durable** the runtime reads each inbox wait once more. If something arrived in the
-   gap it **self-resumes**: a fenced resume using `acquireFenceIf(id, { fence: <park's fence> })`
-   (ADR 0118), so a rival notifier cannot both resume.
+   gap it **self-resumes**: a fenced resume using `acquireFenceIf(id, { fence: <park's fence>, parkSeq })`
+   (ADR 0118), so a rival notifier cannot both resume. If it comes back `ResumeContendedError` it writes
+   a backed-off re-drive row (ADR 0118 D4) instead of waiting for `recover()`, so the park-time self-resume
+   has a live re-driver.
 3. **Cross-process senders get a durable wake.** `runtime.send` finishes by scheduling a **due-now row in
    the existing `TimerStore`** — **coalesced**: the row is skipped when the chain head is not parked on an
    inbox wait (nothing to wake: the running owner's quiescence commit, closure 1, reads the stream) or when

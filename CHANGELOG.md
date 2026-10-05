@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - [ADR 0114](docs/adr/0114-ctx-ui-leaves-the-kernel.md) `ctx.ui` leaves the kernel (drops the `workflow-runtime` → `agent-surface` dependency; layering guard extended).
   - [ADR 0115](docs/adr/0115-open-vocabularies.md) open `EffectKind` / `TaskKind` and custom metering dimensions.
   - [ADR 0116](docs/adr/0116-late-outcome-attach.md) `runtime.recordOutcome` for a late reward on a finished execution (authorized, terminal-only, sequence-CAS, idempotent; no fence).
-  - [ADR 0118](docs/adr/0118-acquire-if-parked-fence.md) a conditional `acquireFenceIf` on the fence token (EventStore SPI, optional) closing the R8 supervisor's residual TOCTOU, and a retention pin for children a parent is parked on.
+  - [ADR 0118](docs/adr/0118-acquire-if-parked-fence.md) a conditional `acquireFenceIf` on the fence token and an unanswered park (EventStore SPI, optional), a retryable `ResumeContendedError` with a timer-backed re-driver, closing the R8 supervisor's residual TOCTOU, and a retention pin for children a parent is parked on.
 
 ### Known issues
 
