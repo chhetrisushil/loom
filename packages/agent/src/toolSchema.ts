@@ -1,5 +1,5 @@
 import type { ZodTypeAny } from "zod";
-import { checkJsonSchemaShape, sanitizeJsonSchema } from "./thirdPartySchema";
+import { sanitizeJsonSchema } from "./thirdPartySchema";
 
 /**
  * A minimal Zod 3 → JSON Schema converter, enough to tell a model the argument
@@ -208,7 +208,7 @@ function withDescription(schema: ZodTypeAny, inner: Json): Json {
 export function toolInputJsonSchema(
   schema: ZodTypeAny | undefined,
   jsonInputSchema?: Readonly<Record<string, unknown>>,
-  opts: { trustText?: boolean } = {}
+  opts: { trustText?: boolean; toolId?: string } = {}
 ): Record<string, unknown> {
   // R4b — a declared JSON Schema (MCP) wins over the Zod schema, which for such
   // a tool is a placeholder `z.unknown()`. Third-party bytes: bounded, sanitised,
@@ -216,7 +216,7 @@ export function toolInputJsonSchema(
   if (jsonInputSchema !== undefined) {
     const clean = sanitizeJsonSchema(jsonInputSchema, { keepText: opts.trustText === true });
     if (clean !== undefined) return clean;
-    warnThirdPartySchema();
+    warnThirdPartySchema(opts.toolId);
     return { type: "object" };
   }
   if (schema === undefined) return { type: "object" };
@@ -230,28 +230,44 @@ export function toolInputJsonSchema(
   return j;
 }
 
-let warnedThirdPartySchema = false;
-function warnThirdPartySchema(): void {
-  if (warnedThirdPartySchema) return;
-  warnedThirdPartySchema = true;
+const MAX_WARNED = 1000;
+const warnedSchemas = new Set<string>();
+const warnedTrust = new Set<string>();
+const emit = (m: string, code: string): void => {
   const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
     .process;
-  proc?.emitWarning?.(
-    'A tool\'s JSON input schema was refused (cyclic, too deep/large, or not an object schema); the model is shown a bare `{ type: "object" }` for it. The tool still runs.',
-    { code: "LOOM_AGENT_TOOL_SCHEMA" }
+  proc?.emitWarning?.(m, { code });
+};
+/** Once per tool id (bounded set), so a second bad tool is not hidden by the first. */
+function warnOnce(seen: Set<string>, id: string, message: string, code: string): void {
+  if (seen.has(id) || seen.size >= MAX_WARNED) return;
+  seen.add(id);
+  emit(message, code);
+}
+function warnThirdPartySchema(id = "(unnamed tool)"): void {
+  warnOnce(
+    warnedSchemas,
+    id,
+    `The JSON input schema of tool "${id.slice(0, 64)}" was refused (cyclic, too deep/large, over the attacker-text budget, or not an object schema); the model is shown a bare \`{ type: "object" }\` for it. The tool still runs.`,
+    "LOOM_AGENT_TOOL_SCHEMA"
   );
 }
 
-/** Test seam: re-arm the one-time advisory. */
+/** Test seam: re-arm the one-time advisories. */
 export function resetToolSchemaWarning(): void {
-  warnedThirdPartySchema = false;
+  warnedSchemas.clear();
+  warnedTrust.clear();
 }
+
+/** What the model is told about a third-party tool whose description is withheld. */
+export const WITHHELD_DESCRIPTION = "Third-party tool; description withheld";
+const MAX_DESCRIPTION = 1000;
 
 /**
  * What the model may be told about a tool: its description and JSON Schema. A
  * tool carrying a `jsonInputSchema` is third-party (ADR 0085): unless it states
- * `trustJsonSchemaText`, its description is replaced by its id and the schema's
- * text is stripped.
+ * `trustJsonSchemaText`, its description is replaced by a fixed neutral string
+ * and the schema's text is stripped. A trusted description is still capped.
  */
 export function toolSpecFor(t: {
   id: string;
@@ -262,10 +278,24 @@ export function toolSpecFor(t: {
 }): { name: string; description: string; inputSchema: Record<string, unknown> } {
   const thirdParty = t.jsonInputSchema !== undefined;
   const trusted = !thirdParty || t.trustJsonSchemaText === true;
+  if (thirdParty && trusted)
+    warnOnce(
+      warnedTrust,
+      t.id,
+      `Tool "${t.id.slice(0, 64)}" has a third-party JSON schema whose description text is trusted (trustJsonSchemaText / trustDescriptions): it reaches the model as instructions, unguarded.`,
+      "LOOM_AGENT_TRUSTED_TOOL_TEXT"
+    );
   return {
     name: t.id,
-    description: trusted ? t.description : t.id,
-    inputSchema: toolInputJsonSchema(t.inputSchema, t.jsonInputSchema, { trustText: trusted }),
+    description: !thirdParty
+      ? t.description
+      : trusted
+        ? t.description.slice(0, MAX_DESCRIPTION)
+        : WITHHELD_DESCRIPTION,
+    inputSchema: toolInputJsonSchema(t.inputSchema, t.jsonInputSchema, {
+      trustText: trusted,
+      toolId: t.id,
+    }),
   };
 }
 
@@ -349,25 +379,11 @@ function withinInputBounds(input: unknown): boolean {
  * choosing a listed tool or fixing its arguments, and an off-menu name is
  * information about the model, not a fault in the run.
  */
-export function buildToolMenu(
-  tools: ReadonlyArray<{
-    id: string;
-    inputSchema?: ZodTypeAny;
-    jsonInputSchema?: Readonly<Record<string, unknown>>;
-  }>
-): {
+export function buildToolMenu(tools: ReadonlyArray<{ id: string; inputSchema?: ZodTypeAny }>): {
   has: (name: string) => boolean;
   check: (name: string, input: unknown) => { error: Record<string, unknown> } | undefined;
 } {
   const byId = new Map(tools.map((t) => [t.id, t]));
-  // R4b — the structural shape the model was shown, built once per tool.
-  const shapes = new Map(
-    tools.flatMap((t) =>
-      t.jsonInputSchema === undefined
-        ? []
-        : [[t.id, toolInputJsonSchema(undefined, t.jsonInputSchema)] as const]
-    )
-  );
   return {
     has: (name) => byId.has(name),
     check(name, input) {
@@ -380,9 +396,7 @@ export function buildToolMenu(
           },
         };
       }
-      let v = validateToolInput(tool.inputSchema, input);
-      const shape = shapes.get(name);
-      if (v.ok && shape !== undefined) v = checkJsonSchemaShape(shape, input);
+      const v = validateToolInput(tool.inputSchema, input);
       if (v.ok) return undefined;
       return {
         error: {
