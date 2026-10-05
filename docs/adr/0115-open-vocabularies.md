@@ -1,6 +1,6 @@
 # ADR 0115 — Open vocabularies: `EffectKind`, `TaskKind`, and metering dimensions
 
-- Status: **Proposed** (2026-10-05)
+- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
 - Date: 2026-10-05
 - Closes: R15 (agentic-readiness audit, kernel appendix G2/G3)
 - Builds on: [ADR 0032](0032-resource-dimensions-bounded-negotiation.md) (the fixed dimensions),

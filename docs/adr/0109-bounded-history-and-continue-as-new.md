@@ -1,6 +1,6 @@
 # ADR 0109 — Bounded history for a long-lived execution: `ctx.continueAsNew`
 
-- Status: **Proposed** (2026-10-05)
+- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
 - Date: 2026-10-05
 - Closes: R1b (agentic-readiness audit, kernel appendix §2a/§6 gap 1)
 - Builds on: [ADR 0052](0052-run-chaining-deferred-evidence-gate.md) (the frozen `rotate$` draft
@@ -65,7 +65,7 @@ return ctx.continueAsNew({ summary, turn: 0 });   // never returns normally
 ```
 
 `carry` is the successor's `input` (JSON, same bound and claim-check rules as any start input, plus a
-kernel cap `maxCarryBytes`, default **256 KiB**, refused with a typed error before anything is appended).
+kernel cap `maxCarryBytes`, default **1 MiB** (decided by the user, 2026-10-05; trade-off: the carry rides sequence 0 of the successor and every snapshot), refused with a typed error before anything is appended).
 The call unwinds the runner with a kernel-private sentinel (like `SuspendError`), so nothing after it
 runs. Preconditions, all refused with a typed error: the execution is running; no `ctx.parallel` scope is
 open (R6); **no registered wait is outstanding** (a pending `select` in another branch is a park, not a

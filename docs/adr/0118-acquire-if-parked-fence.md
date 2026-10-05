@@ -1,6 +1,6 @@
 # ADR 0118 — A conditional fence: acquire-if-parked
 
-- Status: **Proposed** (2026-10-05)
+- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
 - Date: 2026-10-05
 - Closes: R8k (the R8 review's residual TOCTOU, named in the `@loom/orchestration` README, "Restart safety (R8)")
 - Builds on: K9.4 ([ADR 0021](0021-k9-effect-delivery-contract-idempotency-fencing.md), `acquireFence`),

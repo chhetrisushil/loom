@@ -1,6 +1,6 @@
 # ADR 0113 — A body-aware code fingerprint, replay-divergence detection, and migration of dynamic step ids
 
-- Status: **Proposed** (2026-10-05)
+- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
 - Date: 2026-10-05
 - Closes: R7 (agentic-readiness audit, kernel appendix O2/O3/R7, §2a "Versioning a RUNNING agent")
 - Builds on: K11 ([ADR 0023](0023-k11-flow-code-versioning-in-flight-executions.md)), K11.5

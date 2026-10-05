@@ -1,6 +1,6 @@
 # ADR 0110 — A durable inbox, `ctx.receive` and `ctx.select`, and concurrent waits
 
-- Status: **Proposed** (2026-10-05)
+- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
 - Date: 2026-10-05
 - Closes: R2 (agentic-readiness audit, kernel appendix §2d/§2e, gap 2)
 - Builds on: [ADR 0057](0057-multi-gate-suspend-passthrough.md) (gate *i* receives the *i*-th

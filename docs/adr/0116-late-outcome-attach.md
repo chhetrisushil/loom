@@ -1,6 +1,6 @@
 # ADR 0116 — Attaching an outcome to a past decision of a finished execution
 
-- Status: **Proposed** (2026-10-05)
+- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
 - Date: 2026-10-05
 - Closes: R11 (agentic-readiness audit, kernel appendix §2i)
 - Builds on: [ADR 0030](0030-decision-materialization.md), [ADR 0078](0078-exploration-in-the-routing-seam.md)–[0080](0080-learning-substrate.md)
