@@ -119,6 +119,13 @@ over the SAME stores (a process restart, or a second node) picks up where the la
 Child ids, `maxDepth`/`limits`, and the system grant for starts and resumes behave exactly as live.
 Restart policies (retry a failed child) are NOT part of the supervisor: it starts and resumes only.
 
+**Clock assumption.** Telling a retention-reclaimed child from a reused id compares the
+deletion fact's envelope timestamp with the spawn decision's. Both are wall-clock stamps set by
+the appending node, so cross-node clock skew larger than the gap between a deletion and a
+re-spawn under the same id can misclassify that child (failed as reclaimed, or re-run). It
+matters only when the child's log is absent AND its id was deleted before; keep node clocks
+synchronised (NTP) where parent ids are reused.
+
 ## Scope
 
 One child (or one group) per suspend/resume cycle (`_resumePayload` is a single slot).

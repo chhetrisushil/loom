@@ -712,11 +712,11 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   // R8 round 1 — it must be parked on THIS key, not merely "suspended". A resume that LOST the
   // append race still ran the parent body in memory and emitted a non-durable spawn/suspend for a
   // (possibly non-deterministic) key the log never recorded; the winner's park made the parent
-  // read `suspended`, and a status-only check started an orphan child for it. Returns false
-  // (start nothing) when the parent never durably parks on `key`: it terminated, or the bound
-  // (~1s) ran out — `recover()` re-derives the park from the log if it is genuinely still
-  // there. `loadState` and `resume` read the SAME event store, so a true result guarantees a later
-  // resume finds the parent.
+  // read `suspended`, and a status-only check started an orphan child for it. Starts a child
+  // only on `parked`; `gone` (terminated) starts nothing, and `timeout` (the ~1s deadline ran
+  // out) hands the park to `scheduleAdopt`, which re-derives it from the log with backoff.
+  // `loadState` and `resume` read the SAME event store, so `parked` guarantees a later resume
+  // finds the parent.
   // Three outcomes — and only one of them is a give-up:
   //   "parked"  the parent is durably parked on `key`: go ahead.
   //   "gone"    the parent terminated: nothing will ever park on `key`.
