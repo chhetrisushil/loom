@@ -79,6 +79,7 @@ export {
 export { parseCron, nextOccurrence, type CronSpec } from "./cron";
 export { answerApproval, approvalViewDigest, viewDigest } from "./approvalBinding";
 export {
+  MIN_SECRET_BYTES,
   SIGNED_RESUME_VERIFIED_BY,
   signResume,
   signedResumeAuthenticator,
@@ -108,6 +109,7 @@ export type {
   RegisteredFlow,
   ResourceDimension,
   ResumeAuthenticator,
+  ResumeVerificationContext,
   ResumeEvent,
   ResumeRefusalReason,
   ResumeVerdict,

@@ -454,22 +454,41 @@ export async function agentLoop$(
       // Mid-loop HITL. The gate is BEFORE the effect, so a declined call never
       // runs — the point of asking.
       if (config.requireApproval?.(toolCall, turn, menu.has(toolCall.name)) === false) {
-        const gateKey = `${ctx.executionId}#turn:${turn}:tool:${j}`;
-        const verdict = await ctx.suspend<{ approved?: boolean; reason?: string }>({
-          on: gate,
-          correlationKey: gateKey,
-          // R13 — bind the approval to the exact call parked here (tool + args + position).
-          ...(config.bindApproval !== false && {
-            viewDigest: approvalViewDigest(gateKey, toolCall.name, toolCall.input),
-          }),
-        });
-        if (verdict?.approved !== true) {
-          // A refusal is a fact the model should see and settle on, not an error:
-          // it asked to do something a human declined, which is information.
+        // The key carries `idPrefix` (the loop's definition id), so two loops in one flow do not
+        // share `#turn:0:tool:0` — a shared key would let one loop's approval read as the other's.
+        const gateKey = `${ctx.executionId}#${idPrefix}#turn:${turn}:tool:${j}`;
+        // R13 — bind the approval to the exact call parked here (tool + args + position). Tool
+        // input is MODEL output: one nested past the canonicalizer's depth cap cannot be digested,
+        // and that is not a reason to fail the run — it is a call nobody can be shown, so it is
+        // refused and the refusal is fed back to the model like any other.
+        let viewDigest: string | undefined;
+        let undigestible = false;
+        if (config.bindApproval !== false) {
+          try {
+            viewDigest = approvalViewDigest(gateKey, toolCall.name, toolCall.input);
+          } catch {
+            undigestible = true;
+          }
+        }
+        if (undigestible) {
           output = {
             refused: true,
-            ...(verdict?.reason !== undefined && { reason: verdict.reason }),
+            reason: "the tool input could not be put in front of an approver (too deeply nested)",
           };
+        } else {
+          const verdict = await ctx.suspend<{ approved?: boolean; reason?: string }>({
+            on: gate,
+            correlationKey: gateKey,
+            ...(viewDigest !== undefined && { viewDigest }),
+          });
+          if (verdict?.approved !== true) {
+            // A refusal is a fact the model should see and settle on, not an error:
+            // it asked to do something a human declined, which is information.
+            output = {
+              refused: true,
+              ...(verdict?.reason !== undefined && { reason: verdict.reason }),
+            };
+          }
         }
       }
 

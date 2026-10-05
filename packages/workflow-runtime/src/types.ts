@@ -407,7 +407,31 @@ export class ExecutionDeniedError extends Error {
  * cover.
  */
 export interface ResumeAuthenticator {
-  verify(event: ResumeEvent): ResumeVerdict;
+  /**
+   * `context` (R13, additive and optional) tells a verifier WHICH park this event answers, so a
+   * signature can be single-use: the execution, the sequence of the parking
+   * `EXECUTION_SUSPENDED`, and the principal the call arrived with. An authenticator that
+   * predates it ignores the argument and behaves exactly as before.
+   */
+  verify(event: ResumeEvent, context?: ResumeVerificationContext): ResumeVerdict;
+}
+
+/**
+ * R13 (ADR 0117) — what the runtime knows about the park a resume answers, handed to
+ * {@link ResumeAuthenticator.verify}. A signature that covers `executionId` and
+ * `parkedAtSequence` cannot be replayed at another execution (including a FORK of this one,
+ * which has its own id), nor at a later park of the same gate in this one.
+ */
+export interface ResumeVerificationContext {
+  readonly executionId: string;
+  /**
+   * Sequence of the `EXECUTION_SUSPENDED` event that parked the execution on this gate; the
+   * parked state's own sequence when the log no longer holds it (compacted). `undefined` when
+   * the execution is not parked.
+   */
+  readonly parkedAtSequence: number | undefined;
+  /** The principal the resume call carried (`RunOptions.principal`), if any. */
+  readonly principal: PrincipalChain | undefined;
 }
 
 export type ResumeVerdict =
@@ -630,7 +654,14 @@ export type ResumeRefusalReason =
    * re-read the parked state, show the approver the current proposal, and resume with
    * `answerApproval(state, decision)`.
    */
-  | "view-digest-mismatch";
+  | "view-digest-mismatch"
+  /**
+   * R13 — `TIMER_FIRED` is the kernel's own wake, raised by the `TimerService` under the
+   * runtime's system grant. On a runtime that fails closed (`security.strict`) a caller without
+   * that grant is refused: a caller-supplied `TIMER_FIRED` would otherwise answer ANY timed
+   * gate, approval gates included, past the digest check and the authenticator.
+   */
+  | "timer-wake-not-system";
 
 /**
  * The resume ingress gate refused. Nothing was appended: the execution is

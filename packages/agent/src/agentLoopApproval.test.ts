@@ -60,10 +60,21 @@ const flowDef: FlowDefinition = {
   steps: [],
 };
 
-function boot() {
+function boot(opts: { toolInput?: unknown; second?: boolean } = {}) {
   const dropped: unknown[] = [];
+  const requests: string[] = [];
+  const prov: LlmProvider = {
+    async complete(request) {
+      requests.push(JSON.stringify(request.messages).slice(-2000));
+      const turn = request.messages.filter((m) => m.role === "assistant").length;
+      const r = responses[Math.min(turn, responses.length - 1)] as LlmResponse;
+      return opts.toolInput === undefined || r.toolCalls === undefined
+        ? r
+        : { ...r, toolCalls: [{ id: "c1", name: "drop-table", input: opts.toolInput }] };
+    },
+  };
   const effects = new EffectRuntime();
-  effects.register("model", createAgentModelEffect(provider));
+  effects.register("model", createAgentModelEffect(prov));
   effects.register(
     "drop-table",
     new ToolEffect(async (input) => {
@@ -87,11 +98,23 @@ function boot() {
       },
       { prompt: "clean up" }
     );
+    if (opts.second === true) {
+      // A second loop in the SAME flow: its first call sits at the same `#turn:0:tool:0`.
+      await agentLoop$(
+        ctx,
+        {
+          definition: agent$({ id: "dbb", name: "DBB", tools: [dropTable] }),
+          modelToolId: "model",
+          requireApproval: (call) => call.name !== "drop-table",
+        },
+        { prompt: "clean up again" }
+      );
+    }
     return { content: out.content };
   };
   runtime.registerFlow(flowDef, runner as FlowRunner<unknown, unknown>);
   const flow: RegisteredFlow = { definition: flowDef, runner: runner as FlowRunner };
-  return { runtime, flowDef, dropped };
+  return { runtime, flowDef, dropped, requests };
 }
 
 describe("agentLoop$ can stop mid-loop for approval (R1)", () => {
@@ -121,7 +144,7 @@ describe("agentLoop$ can stop mid-loop for approval (R1)", () => {
     const state = (await runtime.loadState(handle.executionId))!;
     // The digest names tool + args + this gate position (so it cannot be replayed elsewhere).
     expect(state.suspendedOn?.viewDigest).toBe(
-      approvalViewDigest(`${handle.executionId}#turn:0:tool:0`, "drop-table", { t: "users" })
+      approvalViewDigest(`${handle.executionId}#dba#turn:0:tool:0`, "drop-table", { t: "users" })
     );
 
     // A bare approval — or one for a DIFFERENT proposal — is refused and nothing is recorded.
@@ -158,5 +181,39 @@ describe("agentLoop$ can stop mid-loop for approval (R1)", () => {
     // Refused, not failed: the agent learns the call was declined and settles.
     // A human saying no is information, not an error.
     expect(dropped).toEqual([]);
+  });
+
+  it("R13 — two loops in one flow do not share a gate key (idPrefix is in it)", async () => {
+    const { runtime, flowDef } = boot({ second: true });
+    const handle = await runtime.start(flowDef, {});
+    await handle.waitForSuspend();
+    const first = (await runtime.loadState(handle.executionId))!;
+    await (
+      await runtime.resume(handle.executionId, answerApproval(first, { approved: true }))
+    ).waitForSuspend();
+    const second = (await runtime.loadState(handle.executionId))!;
+    expect(first.suspendedOn?.correlationKey).toBe(`${handle.executionId}#dba#turn:0:tool:0`);
+    expect(second.suspendedOn?.correlationKey).toBe(`${handle.executionId}#dbb#turn:0:tool:0`);
+    expect(second.suspendedOn?.viewDigest).not.toBe(first.suspendedOn?.viewDigest);
+    // The first loop's approval cannot answer the second loop's gate.
+    const err = await runtime
+      .resume(handle.executionId, answerApproval(first, { approved: true }))
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(err).toBeInstanceOf(ResumeRefusedError);
+  });
+
+  it("R13 — a tool input too deep to digest is refused to the model, not a run failure", async () => {
+    let deep: unknown = { leaf: 1 };
+    for (let i = 0; i < 1100; i++) deep = { n: deep };
+    const { runtime, flowDef, dropped, requests } = boot({ toolInput: deep });
+    const handle = await runtime.start(flowDef, {});
+    const state = await handle.waitForCompletion();
+    expect(state.status).toBe("completed");
+    expect(dropped).toEqual([]);
+    // The model was told, in the next turn's transcript — as it is for any refused call.
+    expect(requests.at(-1)).toContain("could not be put in front of an approver");
   });
 });

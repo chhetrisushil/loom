@@ -414,6 +414,18 @@ function assertAuthorizedOverride(
   }
 }
 
+/** R13 — the newest `EXECUTION_SUSPENDED`'s sequence in `events`, if any is there. */
+function lastSuspendSequence(
+  events: readonly { eventType: string; sequence: number }[] | undefined
+): number | undefined {
+  if (events === undefined) return undefined;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e !== undefined && e.eventType === "EXECUTION_SUSPENDED") return e.sequence;
+  }
+  return undefined;
+}
+
 /** How many (execution, verdict) stray-passthrough warnings a runtime remembers (ADR 0104). */
 const STRAY_WARNING_MEMORY = 4096;
 
@@ -888,7 +900,8 @@ export class WorkflowRuntime {
      * gate — which the operator can read, even if the target flow renamed it — and pass
      * that gate's declared shape, or any event name would answer it unchecked.
      */
-    checks: "all" | "kernel-namespace-only" = "all"
+    checks: "all" | "kernel-namespace-only" = "all",
+    system?: SystemGrant
   ): void {
     const { eventType } = event;
 
@@ -937,6 +950,21 @@ export class WorkflowRuntime {
     // derives `wakeAt` from `timeout` when a TimerStore is wired, T1/A3). Keyed on the
     // recorded `wakeAt`, so an UNTIMED gate is not wakeable by a synthetic timer event.
     const timedWake = eventType === TIMER_FIRED && condition?.wakeAt !== undefined;
+    // R13 — TIMER_FIRED is the kernel's own wake (the TimerService passes the system grant).
+    // On a runtime that fails closed, a caller without the grant may not raise it: it would
+    // answer any TIMED gate — an approval gate included — past the digest and the authenticator.
+    if (
+      eventType === TIMER_FIRED &&
+      this.systemGrantToken !== undefined &&
+      system !== this.systemGrantToken
+    ) {
+      throw new ResumeRefusedError(
+        executionId,
+        eventType,
+        "timer-wake-not-system",
+        `"${TIMER_FIRED}" is raised by the kernel's TimerService, not by a caller; this runtime fails closed, so a resume that does not carry the system grant is refused. Nothing was appended.`
+      );
+    }
     if (condition?.on !== eventType && !timedWake) {
       throw new ResumeRefusedError(
         executionId,
@@ -968,6 +996,17 @@ export class WorkflowRuntime {
         );
       }
     }
+  }
+
+  /**
+   * R13 — what a resume RECORDS. A `TIMER_FIRED` wake is the kernel's, so its payload is exactly
+   * `{ wakeAt }` from the recorded park: whatever a caller put in it (`{ approved: true }` on a
+   * timed approval gate) never reaches the flow. Every other event records its parsed payload.
+   */
+  private recordedPayload(event: ResumeEvent, state: ExecutionState, parsed: unknown): unknown {
+    if (event.eventType !== TIMER_FIRED) return parsed;
+    const wakeAt = state.suspendedOn?.wakeAt;
+    return wakeAt === undefined ? parsed : { wakeAt };
   }
 
   /**
@@ -1098,15 +1137,66 @@ export class WorkflowRuntime {
     return (stepId) => this.effectRuntime.kindOf(toolOf.get(stepId) ?? stepId);
   }
 
+  /**
+   * R13 — the sequence of the `EXECUTION_SUSPENDED` that parked this execution: the identity of
+   * THIS park, which a signed approval is bound to (single use — a later park of the same gate
+   * has a later sequence, and a fork has a different execution id). Read from the events in
+   * hand, newest first; `state.sequence` when none is there (compacted away) — which is the
+   * park's own sequence unless an audit event (`EXECUTION_DENIED`) was appended after it.
+   * `undefined` when not parked.
+   */
+  private parkSequenceOf(
+    state: ExecutionState,
+    events: readonly { eventType: string; sequence: number }[] | undefined
+  ): number | undefined {
+    if (state.status !== "suspended") return undefined;
+    return lastSuspendSequence(events) ?? state.sequence;
+  }
+
+  /**
+   * R13 — find the park when the events in hand do not hold it (a snapshot covers it): walk back
+   * from the folded tip with indexed point reads, never a whole-log read (R1a keeps resume off
+   * the full log). The park is the tip unless audit events (`EXECUTION_DENIED`) were appended
+   * after it, so a handful of steps is enough; past that the caller falls back to the tip.
+   */
+  private async probeParkSequence(executionId: string, tip: number): Promise<number | undefined> {
+    for (let seq = tip; seq >= 0 && seq > tip - 16; seq--) {
+      const [e] = await readRangeOf(this.eventStore, executionId, seq, seq);
+      if (e === undefined) return undefined;
+      if (e.eventType === "EXECUTION_SUSPENDED") return e.sequence;
+    }
+    return undefined;
+  }
+
+  /**
+   * R13 — the park identity (see {@link WorkflowRuntime.parkSequenceOf}) of a parked execution,
+   * for the approver's side: sign `{ executionId, parkedAtSequence }` into the approval with
+   * `signResume`. Gated like `loadState` (a query). `undefined` when the execution is unknown
+   * or not parked.
+   */
+  async parkedAtSequence(
+    executionId: string,
+    options?: { principal?: PrincipalChain; system?: SystemGrant }
+  ): Promise<number | undefined> {
+    const state = await this.loadState(executionId, options);
+    if (state === null || state.status !== "suspended") return undefined;
+    return this.parkSequenceOf(state, await this.eventStore.read(executionId));
+  }
+
   // K12.2 — verify an approval-gating resume event. Returns an APPROVAL_GRANTED
   // bootstrap event to record when verified; `undefined` for an ordinary resume;
   // throws ApprovalRejectedError when the authenticator rejects it (forged).
   private verifyApproval(
     executionId: string,
-    resumeEvent: ResumeEvent
+    resumeEvent: ResumeEvent,
+    park: { parkedAtSequence: number | undefined; principal: PrincipalChain | undefined }
   ): { eventType: string; payload: unknown } | undefined {
     if (this.resumeAuthenticator === undefined) return undefined;
-    const verdict = this.resumeAuthenticator.verify(resumeEvent);
+    const verdict = this.resumeAuthenticator.verify(resumeEvent, {
+      executionId,
+      parkedAtSequence: park.parkedAtSequence,
+      principal: park.principal,
+    });
     if (verdict.status === "not-applicable") return undefined;
     if (verdict.status === "rejected") {
       throw new ApprovalRejectedError(executionId, verdict.reason);
@@ -1358,7 +1448,11 @@ export class WorkflowRuntime {
     }
     const restoreApproval =
       resumeEvent !== undefined
-        ? this.verifyApproval(preloadedState.executionId, resumeEvent)
+        ? this.verifyApproval(preloadedState.executionId, resumeEvent, {
+            parkedAtSequence:
+              preloadedState.status === "suspended" ? preloadedState.sequence : undefined,
+            principal: options?.principal,
+          })
         : undefined;
     if (resumeEvent !== undefined) {
       assertAuthorizedOverride(preloadedState.executionId, resumeEvent, restoreApproval);
@@ -1765,20 +1859,37 @@ export class WorkflowRuntime {
     // K12.2 — verify an approval that gates authority. A rejected (forged/
     // unverified) approval REFUSES the resume; a verified one records a durable
     // APPROVAL_GRANTED fact so "who approved" is evidence, not a claim.
-    const approval = this.verifyApproval(executionId, resumeEvent);
+    let parkedAt: number | undefined;
+    if (this.resumeAuthenticator !== undefined && vm.getState().status === "suspended") {
+      // The park may predate the snapshot: probe back from the tip, then fall back to the fold.
+      parkedAt =
+        lastSuspendSequence(allEvents ?? tailEvents) ??
+        (allEvents === undefined
+          ? await this.probeParkSequence(executionId, vm.getState().sequence)
+          : undefined) ??
+        vm.getState().sequence;
+    }
+    const approval = this.verifyApproval(executionId, resumeEvent, {
+      parkedAtSequence: parkedAt,
+      principal: options?.principal,
+    });
     assertAuthorizedOverride(executionId, resumeEvent, approval);
 
     // #304/#305 — the ingress gate: WHICH event, to an execution in WHICH state. Placed
     // after the authenticator for the same reason the shape check is (below): the
     // gate-mismatch message names the gate the execution is parked on, which an
     // unauthenticated caller has no business learning.
-    this.assertResumable(executionId, vm.getState(), resumeEvent);
+    this.assertResumable(executionId, vm.getState(), resumeEvent, "all", options?.system);
 
     // TR (ADR 0077) — shape AFTER identity: the authenticator must see the exact event the
     // caller signed (a Zod transform could reshape it out from under a signature), and an
     // unauthenticated caller learns nothing about the gate's contract. Both refuse before
     // `execute`, so neither appends.
-    const resumePayload = this.parseResumePayload(executionId, resolved.definition, resumeEvent);
+    const resumePayload = this.recordedPayload(
+      resumeEvent,
+      vm.getState(),
+      this.parseResumePayload(executionId, resolved.definition, resumeEvent)
+    );
     assertInDoubtVerdict(executionId, vm.getState(), resumePayload);
     assertNullAnswerTakes(executionId, resumeEvent.eventType, vm.getState(), resumePayload);
 
@@ -1946,7 +2057,10 @@ export class WorkflowRuntime {
         state.sequence
       );
     }
-    const approval = this.verifyApproval(executionId, resumeEvent);
+    const approval = this.verifyApproval(executionId, resumeEvent, {
+      parkedAtSequence: this.parkSequenceOf(state, allEvents),
+      principal: options.principal,
+    });
     assertAuthorizedOverride(executionId, resumeEvent, approval);
 
     // #304 — the kernel namespace is closed here too: a migration is still a caller-supplied
@@ -1961,13 +2075,18 @@ export class WorkflowRuntime {
       executionId,
       state,
       resumeEvent,
-      state.status === "suspended" ? "all" : "kernel-namespace-only"
+      state.status === "suspended" ? "all" : "kernel-namespace-only",
+      options.system
     );
 
     // TR (ADR 0077) — validate against the TARGET flow's gate contract: the execution is being
     // resumed onto that code, so that code's declared shape is the one that must hold. Refuses
     // before the EXECUTION_MIGRATED append, so a rejected payload leaves no migration behind.
-    const resumePayload = this.parseResumePayload(executionId, target.definition, resumeEvent);
+    const resumePayload = this.recordedPayload(
+      resumeEvent,
+      state,
+      this.parseResumePayload(executionId, target.definition, resumeEvent)
+    );
     assertInDoubtVerdict(executionId, state, resumePayload);
     assertNullAnswerTakes(executionId, resumeEvent.eventType, state, resumePayload);
     const discardEvents = this.checkStrayPassthroughs(

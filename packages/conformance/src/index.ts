@@ -62,8 +62,15 @@ export type ResumeVerdictLike =
   | { status: "rejected"; reason: string }
   | { status: "not-applicable" };
 
+/** R13 — what the runtime hands `verify` about the park the event answers (optional, additive). */
+export interface ResumeVerificationContextLike {
+  readonly executionId: string;
+  readonly parkedAtSequence: number | undefined;
+  readonly principal: Record<string, unknown> | undefined;
+}
+
 export interface ResumeAuthenticatorLike {
-  verify(event: ResumeEventLike): ResumeVerdictLike;
+  verify(event: ResumeEventLike, context?: ResumeVerificationContextLike): ResumeVerdictLike;
 }
 
 export interface TimerDispatcherLike {
@@ -1488,6 +1495,18 @@ export function runResumeAuthenticatorConformance(
       const a = factory();
       for (const type of CASES) {
         expect(a.verify(event(type)).status).toBe(a.verify(event(type)).status);
+      }
+    });
+
+    it("tolerates the optional park context (R13) — still a verdict, still deterministic", () => {
+      // The runtime passes `{ executionId, parkedAtSequence, principal }`; an authenticator that
+      // predates it ignores the argument, one that binds to it may reject, neither may throw.
+      const a = factory();
+      const ctx = { executionId: "e", parkedAtSequence: 3, principal: undefined };
+      for (const type of CASES) {
+        const v = a.verify(event(type), ctx);
+        expect(["verified", "rejected", "not-applicable"]).toContain(v.status);
+        expect(a.verify(event(type), ctx).status).toBe(v.status);
       }
     });
 

@@ -1,22 +1,37 @@
 import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime, viewDigest } from "@loom/workflow-runtime";
-import { describe, expect, it } from "vitest";
+import {
+  WorkflowRuntime,
+  signResume,
+  signedResumeAuthenticator,
+  viewDigest,
+} from "@loom/workflow-runtime";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { InProcessA2ABus, unsafeAutoApprove } from "./InProcessA2ABus";
+import {
+  type ApprovalProof,
+  InProcessA2ABus,
+  approvalPayload,
+  unsafeAutoApprove,
+} from "./InProcessA2ABus";
 
 // R13 — the bus must not approve on a human's behalf. It used to resume every parked gate with
 // `{ approved: true, approvedBy: "auto" }` when no `onApproval` was supplied.
 
 const io = z.any();
 
-function make(gate = "Approval") {
+const KEY = "alice-secret-0123456789";
+
+function make(gate = "Approval", auth = false) {
   const eventStore = new InMemoryAsyncEventStore();
   const runtime = new WorkflowRuntime({
     eventStore,
     snapshotStore: new InMemoryAsyncSnapshotStore(),
     effectRuntime: new EffectRuntime(),
+    ...(auth && {
+      resumeAuthenticator: signedResumeAuthenticator({ gates: ["Approval"], keys: { alice: KEY } }),
+    }),
   });
   let ran = 0;
   const flow = {
@@ -99,6 +114,93 @@ describe("InProcessA2ABus approvals (R13)", () => {
     const r = await bus.dispatch("cap", {}, "go", {
       executionId: "x4",
       onApproval: unsafeAutoApprove,
+    });
+    expect(r.status).toBe("completed");
+    expect(ran()).toBe(1);
+  });
+
+  it("unsafeAutoApprove warns loudly, once per process", async () => {
+    vi.resetModules();
+    const fresh = await import("./InProcessA2ABus");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await fresh.unsafeAutoApprove();
+      await fresh.unsafeAutoApprove();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("unsafeAutoApprove");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("resolveApproval on an unknown/evicted task names the way out (runtime.resume + answerApproval)", async () => {
+    const { bus } = make();
+    const err = await bus.resolveApproval("nope", { approved: true, approvedBy: "ops" }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err?.message).toContain("runtime.resume");
+    expect(err?.message).toContain("answerApproval");
+  });
+
+  // A strict app wires a signedResumeAuthenticator, so a bare bus approval is refused. The bus
+  // echoes the viewDigest BEFORE the payload is signed (approvalPayload), and the request carries
+  // the park to bind to, so an approver can sign exactly what the bus will send.
+  it("a strict app approves through the bus with a signed proof (onApproval)", async () => {
+    const { bus, runtime, ran } = make("Approval", true);
+    const bare = await bus
+      .dispatch("cap", {}, "go", {
+        executionId: "s0",
+        onApproval: async () => ({ approved: true, approvedBy: "alice" }),
+      })
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+    expect(bare?.message).toContain("approval not verified");
+    expect(ran()).toBe(0);
+
+    const r = await bus.dispatch("cap", {}, "go", {
+      executionId: "s1",
+      onApproval: async (req) => {
+        const decision = { approved: true, approvedBy: "alice" };
+        const signed = signResume(
+          { eventType: req.gate, payload: approvalPayload(req, decision) },
+          {
+            actor: "alice",
+            secret: KEY,
+            exp: Date.now() + 60_000,
+            executionId: req.executionId,
+            parkedAtSequence: req.parkedAtSequence!,
+          }
+        );
+        return { ...decision, proof: (signed.payload as { proof: ApprovalProof }).proof };
+      },
+    });
+    expect(r.status).toBe("completed");
+    expect(ran()).toBe(1);
+    const log = await runtime.loadState("s1");
+    expect(log?.status).toBe("completed");
+  });
+
+  it("resolveApproval carries a pre-signed proof the same way", async () => {
+    const { bus, ran } = make("Approval", true);
+    const parked = await bus.dispatch("cap", {}, "go", { executionId: "s2" });
+    const req = parked.suspended!;
+    const decision = { approved: true, approvedBy: "alice" };
+    const signed = signResume(
+      { eventType: req.gate, payload: approvalPayload(req, decision) },
+      {
+        actor: "alice",
+        secret: KEY,
+        exp: Date.now() + 60_000,
+        executionId: req.executionId,
+        parkedAtSequence: req.parkedAtSequence!,
+      }
+    );
+    const r = await bus.resolveApproval("s2", {
+      ...decision,
+      proof: (signed.payload as { proof: ApprovalProof }).proof,
     });
     expect(r.status).toBe("completed");
     expect(ran()).toBe(1);

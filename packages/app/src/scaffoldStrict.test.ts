@@ -100,4 +100,44 @@ describe("scaffolded app", () => {
       await app.close();
     }
   });
+
+  it("the generated approver keys FAIL CLOSED: unset, empty, short, or odd-named approvers verify nothing", async () => {
+    const { signResume } = await import("@loom/workflow-runtime");
+    const security = load(files["app/security.ts"] as string) as {
+      resumeAuthenticator: import("@loom/workflow-runtime").ResumeAuthenticator;
+    };
+    const bind = { executionId: "e", parkedAtSequence: 3 };
+    const ctx = { ...bind, principal: undefined };
+    const ev = { eventType: "ApprovalGranted", payload: { approved: true } };
+    const verdictFor = (actor: string, secret: string) =>
+      security.resumeAuthenticator.verify(
+        signResume(ev, { actor, secret, exp: Date.now() + 60_000, ...bind }),
+        ctx
+      ).status;
+    const long = "approver-secret-0123456789";
+    const touched = new Set<string>();
+    const setEnv = (name: string, value: string | undefined) => {
+      touched.add(name);
+      if (value === undefined) Reflect.deleteProperty(process.env, name);
+      else process.env[name] = value;
+    };
+    const ALICE = "LOOM_APPROVER_KEY_ALICE";
+    try {
+      setEnv(ALICE, long);
+      expect(verdictFor("alice", long)).toBe("verified");
+      setEnv(ALICE, "");
+      expect(verdictFor("alice", long)).toBe("rejected"); // empty env var: not an approver
+      setEnv(ALICE, "short");
+      expect(verdictFor("alice", long)).toBe("rejected"); // weak secret: refused
+      setEnv(ALICE, undefined);
+      expect(verdictFor("alice", long)).toBe("rejected"); // unset
+      // an actor name that is not [A-Za-z0-9_]+ never reaches the env lookup
+      setEnv("LOOM_APPROVER_KEY_A-B", long);
+      setEnv("LOOM_APPROVER_KEY_", long);
+      expect(verdictFor("a-b", long)).toBe("rejected");
+      expect(verdictFor("", long)).toBe("rejected");
+    } finally {
+      for (const name of touched) Reflect.deleteProperty(process.env, name);
+    }
+  });
 });
