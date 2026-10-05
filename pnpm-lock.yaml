@@ -130,6 +130,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/middleware':
+        specifier: workspace:*
+        version: link:../middleware
       '@loom/replay-vm':
         specifier: workspace:*
         version: link:../replay-vm
@@ -247,6 +250,9 @@ importers:
       '@loom/compiler':
         specifier: workspace:*
         version: link:../../tools/compiler
+      '@loom/scaffold':
+        specifier: workspace:*
+        version: link:../../tools/scaffold
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

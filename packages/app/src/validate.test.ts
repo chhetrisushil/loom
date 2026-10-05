@@ -85,6 +85,9 @@ describe("defineConfig({ validate })", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [goodFlow],
+      // `strict: false` acknowledges the permissive defaults (R9), so the ONLY thing this
+      // asserts silent is the flow-graph validator.
+      security: { strict: false },
       observability: { onWarn: (m) => warnings.push(m) },
       checks: { validate: true },
     });

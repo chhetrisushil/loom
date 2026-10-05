@@ -31,6 +31,7 @@
   },
   "devDependencies": {
     "@loom/event-runtime": "workspace:*",
+    "@loom/middleware": "workspace:*",
     "@loom/replay-vm": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",

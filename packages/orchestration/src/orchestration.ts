@@ -85,6 +85,60 @@ export function depthOf(executionId: string): number {
 }
 
 /**
+ * R9 — the autonomy envelope for child spawning. Both bounds are OFF when unset (today's
+ * behaviour); `@loom/app`'s strict profile sets them. A spawn is the one place a runaway
+ * agent multiplies itself, so the caps are enforced at BOTH ends:
+ *   - parent side ({@link boundOrchestration}), before anything durable happens, so the
+ *     calling flow fails loudly at the call site; and
+ *   - supervisor side ({@link SupervisorDeps.limits}), the backstop for a parent that does not
+ *     use the bound helpers or passes its own larger `maxDepth`: the child is NEVER started
+ *     and the parent is resumed with a failed child, so it does not hang.
+ */
+export interface SpawnLimits {
+  /** Deepest allowed child (root = 0, its child = 1, …). A child deeper than this is refused. */
+  maxDepth?: number;
+  /** Most children one `awaitChildren`/`awaitAll` group may start. */
+  maxFanOut?: number;
+}
+
+/**
+ * A spawn was refused by the autonomy envelope. The control plane speaking, not a bad draft:
+ * non-retryable (`retryable = false`), and recognisable by `name` for classifiers that cannot
+ * import this package (loom-ui's `isControlPlaneError`).
+ */
+export class SpawnLimitExceededError extends Error {
+  readonly limit: "maxDepth" | "maxFanOut";
+  readonly max: number;
+  readonly actual: number;
+  readonly retryable = false;
+  constructor(limit: "maxDepth" | "maxFanOut", max: number, actual: number, where: string) {
+    super(
+      `Spawn limit exceeded: ${limit} ${max} (requested ${actual}) for "${where}" — the autonomy envelope refuses this spawn`
+    );
+    this.name = "SpawnLimitExceededError";
+    this.limit = limit;
+    this.max = max;
+    this.actual = actual;
+  }
+}
+
+/** The first limit a spawn of `fanOut` children at `childDepth` breaks, or undefined. */
+function limitBreach(
+  limits: SpawnLimits | undefined,
+  childDepth: number,
+  fanOut: number,
+  where: string
+): SpawnLimitExceededError | undefined {
+  if (limits?.maxDepth !== undefined && childDepth > limits.maxDepth) {
+    return new SpawnLimitExceededError("maxDepth", limits.maxDepth, childDepth, where);
+  }
+  if (limits?.maxFanOut !== undefined && fanOut > limits.maxFanOut) {
+    return new SpawnLimitExceededError("maxFanOut", limits.maxFanOut, fanOut, where);
+  }
+  return undefined;
+}
+
+/**
  * Marker + spec recorded by `awaitChild` and read by the supervisor.
  *
  * `grants` is the capability SUBSET the parent confers on this child (K12.4). It is
@@ -307,6 +361,64 @@ export async function awaitAll<TOut = unknown>(
   return settled.map((r) => (r as { status: "completed"; output: TOut }).output);
 }
 
+type SpawnCtx = Pick<ExecutionContext, "executionId" | "decide" | "suspend">;
+
+/**
+ * `awaitChild` / `awaitChildren` / `awaitAll` with the envelope applied as the DEFAULT:
+ * a spawn that breaks `limits` throws {@link SpawnLimitExceededError} before the spawn
+ * decision is recorded, so no child is started and nothing durable is appended. A call's own
+ * `maxDepth` still applies on top (its `depthExceeded` typed failure is unchanged); the
+ * envelope can only tighten, never loosen, because the supervisor re-checks the same limits.
+ */
+export function boundOrchestration(limits: SpawnLimits): {
+  awaitChild: typeof awaitChild;
+  awaitChildren: typeof awaitChildren;
+  awaitAll: typeof awaitAll;
+} {
+  return {
+    awaitChild: (ctx: SpawnCtx, spec) => {
+      const breach = limitBreach(
+        limits,
+        depthOf(childIdFor(ctx.executionId, spec.key)),
+        1,
+        spec.key
+      );
+      if (breach !== undefined) return Promise.reject(breach);
+      return awaitChild(ctx, spec);
+    },
+    awaitChildren: (ctx: SpawnCtx, group) => {
+      const breach =
+        group.children.length === 0
+          ? undefined
+          : limitBreach(
+              limits,
+              depthOf(childIdFor(ctx.executionId, `${group.key}#0`)),
+              group.children.length,
+              group.key
+            );
+      if (breach !== undefined) return Promise.reject(breach);
+      return awaitChildren(ctx, group);
+    },
+    awaitAll: (ctx: SpawnCtx, group) => {
+      const breach =
+        group.children.length === 0
+          ? undefined
+          : limitBreach(
+              limits,
+              depthOf(childIdFor(ctx.executionId, `${group.key}#0`)),
+              group.children.length,
+              group.key
+            );
+      if (breach !== undefined) return Promise.reject(breach);
+      return awaitAll(ctx, group);
+    },
+  } as {
+    awaitChild: typeof awaitChild;
+    awaitChildren: typeof awaitChildren;
+    awaitAll: typeof awaitAll;
+  };
+}
+
 export interface SupervisorDeps {
   runtime: WorkflowRuntime;
   /** Child flows by id, so the supervisor can start them by the recorded flowId. */
@@ -328,6 +440,14 @@ export interface SupervisorDeps {
    * Unset ⇒ no token is ever minted and every child starts exactly as before (G2).
    */
   delegation?: { secret: string };
+  /**
+   * R9 — the autonomy envelope's spawn bounds, enforced where a child is actually started so a
+   * parent cannot bypass them by not using {@link boundOrchestration}. A refused spawn starts
+   * NO child, reports a {@link SpawnLimitExceededError} through `onError`, and resumes the
+   * parent with a failed child (so `awaitChild` throws `childFailed`, `awaitChildren` returns
+   * failed entries) — it never leaves the parent suspended forever. Unset ⇒ no bound (G2).
+   */
+  limits?: SpawnLimits;
 }
 
 export interface ChildSupervisor {
@@ -484,6 +604,30 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         // Parallel spawn: one suspend, start every member of the group.
         const group = groups.get(correlationKey);
         if (group !== undefined) {
+          // R9 — the envelope, enforced where children actually start. Checked BEFORE the
+          // idempotency marker and before any member starts, so a refused group starts none.
+          const breach = limitBreach(
+            deps.limits,
+            depthOf(group.members[0]?.childId ?? correlationKey),
+            group.members.length,
+            correlationKey
+          );
+          if (breach !== undefined) {
+            for (const m of group.members) memberOf.delete(m.childId);
+            groups.delete(correlationKey);
+            fail(breach);
+            const refused: ChildResult = {
+              status: "failed",
+              error: `${breach.name}: ${breach.message}`,
+            };
+            void (async () => {
+              await waitParentDurable(group.parentId);
+              await resumeParent(group.parentId, {
+                settled: group.members.map(() => refused),
+              });
+            })();
+            return;
+          }
           started.add(correlationKey); // idempotency: a replayed suspend won't re-fan-out.
           const runnable = group.members.map((m) => ({ member: m, flow: deps.flows[m.flowId] }));
           for (const { member, flow } of runnable) {
@@ -523,6 +667,22 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           // event will ever arrive to clean it up (audit MEM-LOW, pre-existing).
           specs.delete(childId);
           fail(new Error(`orchestration: no flow registered for "${spec.flowId}"`));
+          return;
+        }
+        // R9 — the envelope, enforced where the child actually starts.
+        const breach = limitBreach(deps.limits, depthOf(childId), 1, childId);
+        if (breach !== undefined) {
+          specs.delete(childId);
+          fail(breach);
+          const parentOfRefused = parentOf(childId);
+          if (parentOfRefused !== undefined) {
+            void (async () => {
+              await waitParentDurable(parentOfRefused);
+              await resumeParent(parentOfRefused, {
+                __childFailed: { status: "failed", error: `${breach.name}: ${breach.message}` },
+              });
+            })();
+          }
           return;
         }
         started.add(childId);

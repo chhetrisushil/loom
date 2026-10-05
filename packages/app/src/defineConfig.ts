@@ -38,7 +38,11 @@ import type { KnowledgeBaseConfig } from "@loom/knowledge";
 import { InMemoryMemoryStore, MemoryRuntime } from "@loom/memory";
 import type { MemoryStore } from "@loom/memory";
 import {
+  BudgetLedger,
+  InMemoryKillSwitch,
+  type KillSwitchRegistry,
   type SecretResolver,
+  killSwitchMiddleware,
   redactOutputFrom,
   redactionMiddleware,
   secretOutputPathsByStep,
@@ -87,6 +91,18 @@ import {
   skillDefinitionsFrom,
   toolDefinitionsFrom,
 } from "./registerFlows";
+import {
+  type AutonomyEnvelopeOptions,
+  type ResolvedEnvelope,
+  STRICT_DEFAULTS,
+  type StrictOptions,
+  budgetConfigured,
+  envelopeMiddleware,
+  permissiveNotice,
+  resolveSpawn,
+  strictProblems,
+  withDefaultDeadline,
+} from "./strict";
 import { type FlowGraphFlow, validateFlowGraph } from "./validate";
 import {
   type VerifyConfig,
@@ -134,6 +150,32 @@ export interface SecurityOptions {
    * e.g. `new GrantTable({ "my-flow": ["metrics-tool", "logs-tool"] })`.
    */
   authorizer?: CapabilityAuthorizer;
+  /**
+   * R9 — the strict profile: flip the permissive defaults to a safe baseline. `true` (or an
+   * options object) makes `defineConfig` THROW, listing every problem at once, unless the
+   * app supplies what only it can write — {@link authorizer} and {@link executionAuthorizer} —
+   * and keeps pre-flight verification on (`checks.verify`, defaulting to `"error"`). It also
+   * turns on, with defaults you can override or set `false`:
+   *
+   *  - a default execution deadline for flows that declare none ({@link StrictOptions.defaultDeadlineMs});
+   *  - the autonomy envelope's spawn depth/breadth caps and a per-execution token budget
+   *    (`execution.envelope`, see {@link AutonomyEnvelopeOptions});
+   *  - a process-local kill switch, exposed as `app.killSwitch`.
+   *
+   * `undefined` (the default) changes nothing about behaviour but logs ONE advisory through
+   * `observability.onWarn` naming what is left permissive. `false` is the explicit, visible
+   * opt-out: same behaviour, no advisory. See `docs/usage.md` ("Strict mode").
+   */
+  strict?: boolean | StrictOptions;
+  /**
+   * R9 — a kill switch consulted BEFORE every effect: system-wide, per tenant (the principal's
+   * `tenant`) or per flow, with an admin handle (`InMemoryKillSwitch`) or your own
+   * {@link KillSwitchRegistry} over a shared store to stop across processes. A stopped effect
+   * is a typed refusal (`KillSwitchEngagedError`). It stops the NEXT effect; it does not cancel
+   * a running execution or its children (that is the kernel's cancel cascade). Under
+   * {@link strict} an in-memory one is created for you when this is omitted.
+   */
+  killSwitch?: KillSwitchRegistry;
   /**
    * App-global `policy$` definitions enforced on EVERY effect via a `PolicyAuthorizer`.
    * Per-flow policies are read automatically from each flow's `policies` (`flow$`); these
@@ -301,6 +343,13 @@ export interface ExecutionOptions {
   dispatcher?: ExecutionDispatcher;
   /** Static, ordered effect middleware (retries, logging, …). */
   effectMiddleware?: EffectMiddleware[];
+  /**
+   * R9 — the autonomy envelope: bounds on what a runaway agent can do (spawn depth/breadth,
+   * spend, effect rate). Off unless configured, except the defaults {@link SecurityOptions.strict}
+   * applies. Installs its middleware between redaction and your `effectMiddleware`. See
+   * {@link AutonomyEnvelopeOptions}.
+   */
+  envelope?: AutonomyEnvelopeOptions;
   /**
    * DX (ADR 0063/0064 follow-up) — composition-time effect registration hook,
    * called once with the constructed `EffectRuntime` before any execution
@@ -608,6 +657,19 @@ export interface LoomApp {
   effectRuntime: EffectRuntime;
   projectionRuntime: ProjectionRuntime;
   bus: InProcessA2ABus;
+  /** R9 — whether `security.strict` was enabled. */
+  strict: boolean;
+  /**
+   * R9 — the resolved autonomy envelope, present when any bound is in force. Hand
+   * `app.envelope.spawn` to `superviseChildren({ limits })` (the supervisor is app-owned, so
+   * `defineConfig` cannot start it for you) and to `boundOrchestration` in flows.
+   */
+  envelope?: ResolvedEnvelope;
+  /**
+   * R9 — the kill switch in force: the one you supplied, or the in-memory one strict created
+   * (an `InMemoryKillSwitch`, whose `stopAll`/`stopTenant`/`stopWorkflow` is the admin API).
+   */
+  killSwitch?: KillSwitchRegistry;
   stores: LoomStores;
   /** Tool definitions discovered from `toolModules` (metadata; register effects separately). */
   tools: ToolDefinition[];
@@ -728,11 +790,16 @@ export const GROUPED_OPTIONS = [
       "executionAuthorizer",
       "onExecutionDenied",
       "compliance",
+      "strict",
+      "killSwitch",
     ],
   ],
   ["observability", ["telemetry", "onEvent", "onWarn", "onStorageError"]],
   ["durability", ["snapshotEvery", "retention"]],
-  ["execution", ["dispatcher", "effectMiddleware", "registerEffects", "now", "validateInput"]],
+  [
+    "execution",
+    ["dispatcher", "effectMiddleware", "registerEffects", "now", "validateInput", "envelope"],
+  ],
   ["checks", ["validate", "verify", "manifest"]],
 ] as const;
 
@@ -782,6 +849,35 @@ export function normalizeConfig(config: LoomConfig): ResolvedConfig {
  */
 export function defineConfig(rawConfig: LoomConfig): LoomApp {
   const config = normalizeConfig(rawConfig);
+
+  // R9 — strict profile. Resolved FIRST so a refusal happens before anything is built.
+  const strictOpts: StrictOptions | undefined =
+    config.strict === true ? {} : config.strict === false ? undefined : config.strict;
+  const strict = strictOpts !== undefined;
+  const warnOut = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+  const posture = {
+    authorizer: config.authorizer,
+    executionAuthorizer: config.executionAuthorizer,
+    verify: config.verify,
+    envelope: config.envelope,
+    killSwitch: config.killSwitch,
+  };
+  if (strict) {
+    const problems = strictProblems(posture);
+    if (problems.length > 0) {
+      throw new Error(
+        `[loom] security.strict: cannot compose this app —\n${problems.map((p) => `  - ${p}`).join("\n")}\nSet \`security.strict: false\` to opt out explicitly.`
+      );
+    }
+  } else if (config.strict === undefined) {
+    const notice = permissiveNotice(posture);
+    if (notice !== undefined) warnOut(notice);
+  }
+  const killSwitch: KillSwitchRegistry | undefined =
+    config.killSwitch ?? (strict ? new InMemoryKillSwitch() : undefined);
+  const ledger = new BudgetLedger();
+  const spawn = resolveSpawn(config.envelope?.spawn, strict);
+  const envelopeActive = Object.keys(spawn).length > 0 || budgetConfigured(config.envelope, strict);
   const stores = buildStores(config.storage);
   // Present only when CONFIGURED — see LoomStores.memoryStore for why the distinction is
   // the useful part.
@@ -798,7 +894,13 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   // Map the redactOutput closure reads by reference, so the map is mutated in place — never
   // reassigned — to keep that reference live.
   const secretPathsByStep = new Map<string, readonly string[]>();
-  const effectMiddleware: EffectMiddleware[] = [...(config.effectMiddleware ?? [])];
+  // Order (outermost first): kill switch → redaction → envelope (rate limit, budget) → user.
+  // A stopped effect must never resolve a secret or spend budget, and the envelope's refusals
+  // must come before user middleware (a retry wrapper must not re-attempt a refused effect).
+  const effectMiddleware: EffectMiddleware[] = [
+    ...envelopeMiddleware(config.envelope, strict, ledger),
+    ...(config.effectMiddleware ?? []),
+  ];
   if (config.secrets !== undefined) {
     effectMiddleware.unshift(
       redactionMiddleware({
@@ -807,6 +909,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       })
     );
   }
+  if (killSwitch !== undefined) effectMiddleware.unshift(killSwitchMiddleware(killSwitch));
   // Policy enforcement (policy$ → K2 ring). Per-flow policies are read from each flow's
   // `policies` (config.flows + flowModules — read by shape, no runtime needed yet); `config.policies`
   // are global. A PolicyAuthorizer composes UNDER config.authorizer (both must allow). No policies
@@ -969,6 +1072,16 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     }),
     ...(config.now !== undefined && { now: config.now }),
   });
+
+  // R9 — default execution deadline (strict only). See `withDefaultDeadline` for why it wraps
+  // the entry points instead of rewriting flow definitions.
+  const defaultDeadline =
+    strictOpts?.defaultDeadlineMs === false
+      ? undefined
+      : strict
+        ? (strictOpts?.defaultDeadlineMs ?? STRICT_DEFAULTS.defaultDeadlineMs)
+        : undefined;
+  if (defaultDeadline !== undefined) withDefaultDeadline(runtime, defaultDeadline);
 
   // Schedules come from the explicit `timers.schedules` list AND from `scheduleModules` (loom gen
   // discovery, value-shape). Both feed the one TimerService. Exposed on `app.schedules`.
@@ -1161,7 +1274,13 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
 
   // Pre-flight verification (opt-in, G2). Built lazily so an unwired app pays nothing:
   // with no `verify` key and no `app.verify()` call, `resolveInput` never runs.
-  const verifyCfg = normalizeVerify(config.verify);
+  const verifyCfg = normalizeVerify(
+    config.verify ??
+      // Strict keeps pre-flight verification on; the envelope's metering reports these dimensions.
+      (strict
+        ? { mode: "error", meteredDimensions: ["tokens", "costUsd", "ms"] as const }
+        : undefined)
+  );
   // Compiler lint findings (issue #82 nondeterminism; ADR 0061 loop identity) flow
   // into the determinism rule. `extraLint` (from `app.verify({ lint })` — e.g. the
   // manifest's loopIdentity field injected by `loom verify`) merges per-flow OVER
@@ -1209,6 +1328,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     effectRuntime,
     projectionRuntime,
     bus,
+    strict,
+    ...(envelopeActive && { envelope: { spawn, ledger } }),
+    ...(killSwitch !== undefined && { killSwitch }),
     stores,
     tools,
     skills,

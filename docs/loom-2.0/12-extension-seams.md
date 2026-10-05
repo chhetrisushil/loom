@@ -21,8 +21,8 @@ loom plugin new lease my-redis-lease    # → ./loom-plugin-my-redis-lease
 ```
 
 That is an invariant, not a coincidence: a kit is Loom saying *third parties implement this*,
-so a fitness test fails the build if a kitted SPI has no scaffold. Two seams here have no kit
-(`Scheduler`, `Warmer`) and are correspondingly not scaffoldable.
+so a fitness test fails the build if a kitted SPI has no scaffold. Three seams here have no kit
+(`Scheduler`, `Warmer`, `KillSwitchRegistry`) and are correspondingly not scaffoldable.
 
 ## How to prove conformance
 
@@ -74,6 +74,7 @@ that is what pins the contracts.
 | **Authority** | `CapabilityAuthorizer` (`@loom/effect-runtime`) | K2 protection ring — allow/deny per effect. Conformance: `runCapabilityAuthorizerConformance` | `GrantTable`, `DelegationAuthorizer` (K12.4) |
 | **Lifecycle authority** | `ExecutionAuthorizer` (`@loom/workflow-runtime`) | C.1 — allow/deny an execution OPERATION (`start`/`resume`/`cancel`/`query`), where `CapabilityAuthorizer` gates effects. Synchronous: the verdict is read before anything is appended. Conformance: `runExecutionAuthorizerConformance` | wired as `security.executionAuthorizer` |
 | **Resume authority** | `ResumeAuthenticator` (`@loom/workflow-runtime`) | K12.2 — `verify(event)` decides whether an event may REOPEN a suspended execution. The narrowest of the three rings and the one an attacker reaches first: a resume arrives from outside, unlike an effect or a lifecycle call. Three statuses: `not-applicable` means *not mine to judge* and lets the resume proceed — it is not a soft denial. Conformance: `runResumeAuthenticatorConformance` | wired as `security.resumeAuthenticator` |
+| **Kill switch** | `KillSwitchRegistry` (`@loom/middleware`) | R9 — `check(ctx)` returns a verdict (or none) before EVERY effect: where the system / tenant / workflow stop flags live. May be async (a networked registry should cache with a short TTL); a throw fails CLOSED. `InMemoryKillSwitch` is the single-process reference and the admin API; back your own with a shared store to stop across processes. Refuses the NEXT effect only — it does not cancel running executions. No conformance kit yet | wired as `security.killSwitch` |
 | **Scheduler** | `Scheduler` (`@loom/scheduler`) | M6 bounded concurrency + priority (advisory; zero-overhead default) | `createScheduler` |
 | **Warmer** | `Warmer` (`@loom/effect-runtime`) | M6 advisory pre-warm (latency-only, off-log) | ADR 0027 |
 | **Policy** | `Policy<A>` (`@loom/learning`) | Choose an action from an observation — `select(context, actions)`. The **only seam consumed from flow code** rather than `defineConfig`: a learned choice reaches a run through `decideWithPolicy` → `ctx.decide`, so it stays recorded and replayable (ADR 0080). Conformance: `runPolicyConformance` | `loom-plugin-linucb` (3P) |

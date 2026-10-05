@@ -60,3 +60,17 @@ export {
 } from "./safety";
 export { estimateTokensByChars, streamTokenBudget } from "./streamTokenBudget";
 export type { StreamTokenBudgetOptions, TokenEstimator } from "./streamTokenBudget";
+export {
+  rateLimitMiddleware,
+  RateLimitExceededError,
+  type RateLimitOptions,
+  type RateLimitScope,
+} from "./rateLimit";
+export {
+  killSwitchMiddleware,
+  InMemoryKillSwitch,
+  KillSwitchEngagedError,
+  type KillScope,
+  type KillSwitchRegistry,
+  type KillVerdict,
+} from "./killSwitchRegistry";

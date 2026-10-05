@@ -13,6 +13,13 @@ export {
   type StorageConfig,
 } from "./defineConfig";
 export {
+  STRICT_DEFAULTS,
+  type AutonomyEnvelopeOptions,
+  type ResolvedEnvelope,
+  type SpawnLimits,
+  type StrictOptions,
+} from "./strict";
+export {
   InProcessA2ABus,
   type ApprovalDecision,
   type DispatchOptions,

@@ -11,6 +11,8 @@ export { stopReasonConfidence, validatorConfidence, constantConfidence } from ".
 export type {
   ConfidenceSignal,
   DecideFn,
+  ModelCallRequest,
+  ModelInvoker,
   ModelRoute,
   ReasonOptions,
   ReasoningCache,
