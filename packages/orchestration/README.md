@@ -67,12 +67,30 @@ over the SAME stores (a process restart, or a second node) picks up where the la
   memory); there is no index of parked parents to ask instead. The lazy path costs one parent fold
   per unrecognised child terminal event. Both need nothing from the store beyond what `EventStore`
   already has (`listExecutions*` is optional; without it use the lazy path or pass `source`).
-- **Concurrently.** Several supervisors may recover the same parent: the resume is a single append
-  (a lost race is a `DuplicateSequenceError` / `not-suspended` refusal, swallowed, not reported), a
-  child start whose id already exists is not an error, and a resume is dropped unless the parent is
-  parked on exactly that child/group key (so a late duplicate cannot answer the parent's NEXT
-  `awaitChild`). Residual: the sub-millisecond gap between that check and the resume's own fold;
-  closing it needs an expected-park argument on `resume` (a kernel change).
+- **Concurrently.** Several supervisors may recover the same parent, and none can answer the
+  wrong park: `awaitChild`/`awaitChildren` suspend with `viewDigest: <child/group key>` (R13) and the
+  supervisor's resume echoes it, so the runtime refuses a stale resume BEFORE the append
+  (`view-digest-mismatch`) and the journal's CAS on `(executionId, sequence)` rejects a duplicate;
+  both are swallowed, not reported. A child start whose id already exists is not an error. A
+  resume that loses the append race still runs the parent body in memory, so a child is started
+  only once the parent is DURABLY parked on that exact key, and what is started comes from the
+  durable spawn decision, never from the in-memory one. A parent that was ever fenced is resumed
+  under a fresh fence (as `TimerService` does). `resumed` counts a resume only once its append is
+  durable; a failed append goes to `onError`.
+- **Group members on different nodes.** The in-memory `remaining` count is never trusted: when a
+  member settles with siblings outstanding, the unsettled siblings are re-read from the log (after
+  this member's terminal is durable), so a group whose members settle on different nodes resumes
+  its parent from whichever node settles durably last (O(n^2) state reads over a group of n,
+  bounded by `limits.maxFanOut`).
+- **Retention.** A member whose execution retention already reclaimed (an `EXECUTION_DELETED`
+  fact in the lifecycle stream) settles as a typed failure (`reclaimed by retention before its
+  result was collected`); it is never re-run. Open follow-up (not in this package): `LogLifecycle`
+  should refuse to delete a child whose parent is still parked on it. When a terminal event was
+  compacted away the fold still gives the outcome, but a failed child's error text and a
+  cancelled child's reason are lost.
+- **Scope of `recover()`.** It scans whatever the store enumerates, ACROSS TENANTS unless the store
+  is tenant-scoped; use a tenant-scoped store or `source` to confine a pass. The supervisor drops
+  its per-park state (specs, started, groups, member index) when the park is answered.
 
 Child ids, `maxDepth`/`limits`, and the system grant for starts and resumes behave exactly as live.
 Restart policies (retry a failed child) are NOT part of the supervisor: it starts and resumes only.
