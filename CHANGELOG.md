@@ -126,8 +126,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Spawn caps are best-effort.** Depth is read from the child-id string and fan-out is per
     `awaitChildren`/`awaitAll` group. A `runtime.start` made from inside an effect, an A2A or
     remote dispatcher hop, or a freshly minted id is not counted.
-  - **Budget is blind to `ctx.decide` / `invokeTransient` spend** (their emit is a no-op), not
-    only skill selection: a model call made inside a decider is never charged.
+  - **Budget is blind to transient spend:** a call made through `scope.invokeTransient` (or the
+    runtime's `invokeTransient`) has a no-op emit, so it is never charged. A `ctx.execute` frame
+    inside a decider IS charged, which is how the effect-backed skill selector's model call is
+    metered.
+  - **`AgentRunner` is not covered by the `LOOM_AGENT_RING` warning:** its `reasoning` path still
+    calls providers directly; use `agentLoop$` with `reasoningToolId` (or `requireEffectRing`)
+    for ring-guarded reasoning.
   - **`requireEffectRing` cannot be forced by strict** (it does not construct agents). Set it per
     `agentLoop$` call site; without it `agentLoop$` warns once per process (`LOOM_AGENT_RING`)
     when `reasoning` is used without `reasoningToolId`.
