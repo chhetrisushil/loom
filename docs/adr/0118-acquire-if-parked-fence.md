@@ -11,6 +11,13 @@
 - Placement: **EventStore SPI (optional method) + a `RunOptions` field in workflow-runtime;**
   the retention half is **1P** (`@loom/orchestration`) over the existing pin seam. **EVENT_STORE_SPI
   2.0.0 → 2.1.0** (additive MINOR). KERNEL_ABI and EVENT_SCHEMA are not touched by this ADR.
+- Revision: round 1 (Opus review of PR #495). The first draft compared the **log head**, premised on "the
+  park is by construction the last event". That is false: the runtime appends an unfenced
+  `EXECUTION_DENIED` after a park (`recordExecutionDenied`, `WorkflowRuntime.ts` ~664–700, "appends WITHOUT
+  a fence"), `recordOutcome` (ADR 0116) and audit events do too, so a head comparison would strand parents
+  that merely had a denial recorded, and window 1 would not close. The condition is now the **fence
+  token** (D1). **This ADR no longer depends on R3k for the fence half and lands before R2** (ADR 0110's
+  notify-resume uses it).
 
 ## Context
 
@@ -36,40 +43,59 @@ create that failure.
 
 ## Decision
 
-### D1 — `acquireFenceIf`: a conditional acquire
+### D1 — `acquireFenceIf`: a conditional acquire on the fence token
 
 An optional `EventStore` method:
 
 ```ts
-acquireFenceIf?(executionId: string, expect: { sequence: number }):
-  Promise<{ fence: number } | { stale: true; head: number }>;
+acquireFenceIf?(executionId: string, expect: { fence: number }):
+  Promise<{ fence: number } | { stale: true; fence: number }>;
 ```
 
-Atomically: if the execution's log head sequence equals `expect.sequence`, bump and return the fence;
-otherwise return `{ stale: true, head }` and change nothing. The caller passes the sequence of the park
-it is answering (`locatePark` already yields it, and ADR 0117's park is by construction the last
-event until someone answers it). In SQL stores it is one statement guarded by the head (`UPDATE … WHERE
-head = $n`), or a short transaction; in memory it is a compare-and-set; the sharded and tenant
-decorators forward it. A store without it keeps today's behaviour (the caller falls back to
-`acquireFence` and the documented residual), so no conforming store breaks, and the conformance kit's
-case runs only when the method exists (as `copyPrefix` and `truncatePrefixKeeping` do).
+Atomically: if the execution's **current fence token** equals `expect.fence`, bump and return the new
+token; otherwise return `{ stale: true, fence: <current> }` and change nothing. The token is the right
+condition because it is what every legitimate writer's append is checked against (`StaleFenceError`,
+`event-runtime/src/fencing`), and it moves **only** when someone acquires, never when an unfenced audit
+event is appended. The caller passes the token under which the park it is answering was written: events
+carry it as `metadata.fence` (`ExecutionJournal`, `WorkflowRuntime` bootstrap), and `locatePark` already
+yields the park envelope. A park written with no fence expects `0` (the token a never-acquired execution
+has). In SQL stores it is one statement guarded by the token (`UPDATE … SET fence = fence + 1 WHERE
+fence = $n`), in memory a compare-and-set on the `fences` map; the sharded and tenant decorators forward
+it. A store without it keeps today's behaviour (the caller falls back to `acquireFence` and the documented
+residual), and the conformance kit's case runs only when the method exists (as `copyPrefix` and
+`truncatePrefixKeeping` do).
+
+**Why the token and not the head.** Winner and loser both read the same park at fence `F`. The winner's
+conditional acquire moves the token to `F+1`; the loser's sees `F+1 ≠ F` → stale, whatever else was
+appended to the log in the meantime (an `EXECUTION_DENIED` after the park does not move the token, so the
+legitimate resume is not refused for it).
+
+**Residual and its closure.** A park answered through a path that never acquired a fence leaves the token
+at `F`, so the token alone would let a second resume pass the conditional. The runtime therefore **re-checks
+`assertResumable` under the acquired fence** (the existing check that the newest park is still unanswered,
+`not-suspended` otherwise), which is the very check that makes the append safe; the token handles the
+race, the re-check handles the legacy path.
 
 ### D2 — The runtime uses it on an answering resume
 
-`RunOptions.fenceIfParkedAt?: number` on `resume` / `resumeAs`: the runtime acquires with
-`acquireFenceIf(id, { sequence })` instead of `acquireFence`, and a `{ stale }` result raises the
-existing `ResumeRefusedError` with reason `not-suspended` (the park was already answered) without
-appending. Window 1 becomes a clean refusal; window 2 disappears, because the winner's resume append
-moves the head, and any later conditional acquire sees `stale`. `superviseChildren` and `TimerService`
-(which "fences up front") pass it; the R8 supervisor's bounded-acquisition loop collapses to one
-attempt.
+`RunOptions.fenceIfParkedAt?: number` (the park's sequence, as `locatePark` supplies) on `resume` /
+`resumeAs`: the runtime reads the park envelope at that sequence, takes its `metadata.fence` (or 0), and
+acquires with `acquireFenceIf(id, { fence })` instead of `acquireFence`. On `{ stale }` it **re-reads the
+park** (`locatePark`): if the execution is still parked on the **same wait** (a rival acquired for a
+non-resume reason and the park was not answered) it retries with the new park's token, bounded (3
+attempts); if the park is gone or is a different one it raises the existing `ResumeRefusedError` reason
+`not-suspended` and appends nothing. Window 1 becomes a clean refusal; window 2 disappears, because the
+winner's acquire moves the token and a later conditional acquire sees `stale`. `superviseChildren`,
+`TimerService` and ADR 0110's inbox notify-resume (which "fences up front") pass it; the R8 supervisor's
+bounded-acquisition loop collapses to one attempt.
 
 ### D3 — Retention does not delete a child its parent is parked on
 
 `LogLifecycle` is unchanged. `@loom/orchestration` exports `pinParkedChildren(supervisor)`, a
 `PinPredicate` (ADR 0055 D1) for `retention.pinned` that answers `true` for a child id while its parent
 is non-terminal and parked on `CHILD_DONE` for it. The child → parent edge comes from the child's own
-`EXECUTION_STARTED.parent` (ADR 0111 D1; before 1.23.0 logs, from the supervisor's rebuilt state), and
+`EXECUTION_STARTED.parent` (ADR 0111 D1; for logs written before it, from the supervisor's rebuilt state,
+so **the pin half works before R3k lands and sharpens after it**), and
 the park from the parent's fold via `locatePark`. `defineConfig` composes it automatically when
 `superviseChildren` is wired, so an app does not hold the rule in its head. A pinned execution is
 "left exactly where it is" (ADR 0055), which is the required behaviour; the predicate reads two
@@ -82,8 +108,9 @@ runtime ignores the optional method. Mixed fleets are safe in both directions.
 
 ## Tests
 
-Conformance case (head matches → fence returned; head moved → `stale`, fence unchanged; concurrent
-callers → exactly one wins); DST: two supervisors race a park with crashes between acquire and append
+Conformance case (token matches → new token returned; token moved → `stale`, token unchanged; concurrent
+callers → exactly one wins; **an unfenced append after the park (an `EXECUTION_DENIED`) does NOT make the
+acquire stale — the negative for the head-based design**); DST: two supervisors race a park with crashes between acquire and append
 and between append and read-back, assert the running parent is never fenced out and exactly one
 resume is recorded; `fenceIfParkedAt` on an already-answered park → `ResumeRefusedError`
 `not-suspended`, log untouched; sharded/tenant decorator forward and the decorator conformance kit lists
@@ -94,6 +121,8 @@ archivable again once the parent is answered or terminal.
 
 - **Fixing it in `@loom/orchestration` with more retries**: the two windows are properties of an
   unconditional acquire, which only the store can make conditional.
+- **Comparing the log head** (the first draft): unfenced audit appends follow a park, so the head moves
+  without the park being answered.
 - **A new LeaseStore-based "park lease"**: a second coordination primitive for a question the log head
   already answers.
 - **Teaching `LogLifecycle` about children**: the kernel has no child relation; the pin seam exists

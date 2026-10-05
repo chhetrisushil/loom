@@ -8,11 +8,19 @@
   (every `_resumePayloads` entry answers exactly one suspend point),
   [ADR 0117](0117-approvals-bound-to-what-the-approver-saw.md) (`viewDigest`, `locatePark`),
   [ADR 0112](0112-structured-concurrency.md) (scope identity, which keys a wait),
-  [ADR 0109](0109-bounded-history-and-continue-as-new.md) (the chain the inbox is keyed by).
+  [ADR 0109](0109-bounded-history-and-continue-as-new.md) (the chain the inbox is keyed by),
+  [ADR 0111](0111-durable-principal.md) (the owner `send` is authorized against),
+  [ADR 0118](0118-acquire-if-parked-fence.md) (the conditional fence a notify-resume uses),
+  [ADR 0085](0085-untrusted-content-integrity-axis.md) (delivered payloads are tainted).
 - Placement: **split.** Kernel: `ctx.receive` / `ctx.select`, the `MESSAGE_CONSUMED` fact, the
-  multi-wait park condition, a reader seam. **1P** (new `@loom/inbox`): the inbox stream, `send`,
-  routing by logical name, pub/sub, fan-in. Shares the Wave 2 bump (KERNEL_ABI 1.3.0,
-  EVENT_SCHEMA 1.23.0).
+  multi-wait park condition, the reader seam, and an **authorized `runtime.send`** (the only writer of the
+  inbox stream). **1P** (new `@loom/inbox`): routing by logical name, pub/sub, fan-in, retry helpers, all
+  built on `runtime.send`. Shares the Wave 2 bump (KERNEL_ABI 1.3.0, EVENT_SCHEMA 1.23.0).
+- Revision: round 1 (Opus review of PR #495) closed a lost-wakeup window (D5), moved `send` behind
+  authorization (D1; this also fixes the contradiction with ADR 0109 D4, which already called it
+  `runtime.send`), bounded the inbox stream (D1), pinned timer `wakeAt` (D4), disambiguated `scopePath` and
+  `waitId` (D3), defined quiescence (D2), and bound R13 signatures to the wait (D4). **Needs ADR 0118
+  (`acquireFenceIf`), ADR 0112 and ADR 0111 first.**
 
 ## Context
 
@@ -38,123 +46,202 @@ the external append atomic with the fold.
 
 ## Decision
 
-### D1 — The inbox is a separate stream; the owner PULLS and journals
+### D1 — The inbox is a separate stream, written only by an authorized `runtime.send`; the owner PULLS
 
-Messages are appended to a reserved control stream `__loom_inbox__:<chainId>` (ADR 0109: keyed by
-chain, so it survives a continuation) by `send(chainId, { topic, payload, messageId })` in
-`@loom/inbox` (1P). A sender never touches the execution's own log, so there is no sequence race
-with the owner; two senders racing on the inbox stream retry on `DuplicateSequenceError` like any
-writer. The kernel defines the reader seam only:
+Messages live in a reserved control stream `__loom_inbox__:<chainId>` (ADR 0109: keyed by chain, so it
+survives a continuation). The owner never has its own log appended to by a sender, so there is no sequence
+race with it (the rejected design below); the owner **pulls** and journals consumption into its own log.
 
-```ts
-interface InboxSource {
-  read(chainId: string, topic: string, afterSeq: number, limit: number): Promise<InboxMessage[]>;
-}
-```
+**The only writer is `runtime.send(chainId, { topic, payload, messageId }, { principal, system? })`.** The
+first draft had `@loom/inbox` append to the stream directly, which is a 1P writer holding no authorization:
+exactly the argument ADR 0116 makes against a 1P append for outcomes. Now:
 
-passed as `WorkflowRuntimeDeps.inbox`. `@loom/inbox` implements it over any `EventStore`. The seam
-is a function type, not a versioned SPI, until a second implementation exists.
+- `send` is authorized as a new `ExecutionOp` **`"send"`** (additive union member; `executionAccessPolicy`
+  maps it with a default scope of `"tenant"`), judged against the **owner of the chain's head** read from the
+  log (ADR 0111 D5) — a continued id is resolved to the head first (ADR 0109 D4) — before "not found" is
+  revealed, in the runtime's existing existence-hiding order. Under `security.strict` a call with no
+  principal is refused.
+- The runtime records the **sender** on the message (`sender: { tenant?, actor?, onBehalfOf? }`, the same
+  bounded identity subset as ADR 0111 D1) and copies it into `MESSAGE_CONSUMED` (D5). The **payload is
+  delivered tainted** (ADR 0085): the flow receives `tainted(payload, "inbox:<topic>")`, so it is refused in
+  every prompt instruction position by `@loom/llm` unless a step explicitly unwraps it. A message is
+  untrusted content from another party by construction.
+- `@loom/inbox` (1P) keeps routing by logical name, pub/sub fan-out, dead-lettering, sender-side retry and
+  the A2A / orchestration adapters; each of them calls `runtime.send`. This also resolves the
+  contradiction between ADR 0109 D4 (`runtime.send`) and the first draft of this ADR (a 1P `send`).
+- The kernel defines the reader seam: `InboxSource.read(chainId, topic, afterSeq, limit)`, passed as
+  `WorkflowRuntimeDeps.inbox`; the default implementation is the runtime's own stream reader over its
+  `EventStore`. A function type, not a versioned SPI, until a second implementation exists.
+
+**The stream is bounded and cheap to write.** Reserved control streams are refused by compaction
+(`LogLifecycle.ts:607`: their writers "take their next sequence from `read().length`"), and a writer that
+allocates from `read().length` is O(stream) per send. Two changes: (a) the inbox allocates its sequence
+from the store's `head()` (optional method, `event-runtime/src/types.ts`; the `read().length` fallback only
+where a store lacks it), an O(1) point read; (b) the runtime **trims** the stream with
+`truncatePrefixKeeping` (the same optional method compaction uses, ADR 0106) below the **minimum consumed
+cursor across the chain's topics**, which is safe because `MESSAGE_CONSUMED` copies the payload into the
+owner's log (the log stays self-contained). A topic nobody consumes would pin the stream forever, so `send`
+refuses beyond `inboxMaxBacklog` unconsumed messages per chain (default 10,000) with a typed
+`InboxFullError` (the sender sees backpressure, the owner's log is untouched). Trimming runs on the owner's
+consume path and on `recover()`. The stream is **deleted with the chain**: when retention reclaims the head
+of a chain (ADR 0109 D6), `LogLifecycle` deletes `__loom_inbox__:<chainId>` in the same sweep.
 
 ### D2 — `ctx.receive(topic)` and `ctx.select(arms)`
 
-`ctx.receive(topic, opts?)` is `select([{ inbox: topic }])` returning the payload. `ctx.select`
-awaits the first of several arms:
+`ctx.receive(topic, opts?)` is `select([{ inbox: topic }])` returning the payload. `ctx.select` awaits the
+first of several arms:
 
 ```ts
 const r = await ctx.select([
   { gate: "Approval", viewDigest },        // a resume answers it (ADR 0117 binding preserved)
   { inbox: "user-message" },               // the next message on this topic
-  { timer: { afterMs: 3_600_000 } },       // or { at: epochMs }; the wake is recorded once (T1)
+  { timer: { afterMs: 3_600_000 } },       // or { at: epochMs }; the wake is recorded once (D4)
 ]);
 // r = { arm: 1, kind: "inbox", value: ... }
 ```
 
-Unlike `suspend`, these are *registering* waits: they return a pending promise and record the wait
-with the current scope. The runtime parks the execution when the flow is **quiescent** — no step
-in flight and every live branch blocked on a wait — which is what makes `Promise.all([receive(A),
-receive(B)])` and a `select` inside a `parallel` branch (ADR 0112) park once with every wait
-recorded. `ctx.suspend` is unchanged (throwing, single-wait, positional) and stays the legacy
-syscall; nothing about a flow that does not use the new calls changes.
+Unlike `suspend`, these are *registering* waits: they return a pending promise and record the wait with the
+current scope. `ctx.suspend` is unchanged (throwing, single-wait, positional) and stays the legacy syscall;
+a flow that does not use the new calls is unchanged.
 
-### D3 — A wait has an identity: `waitId = <scopePath>#<ordinal>`
+**Quiescence, defined.** The runtime parks when the flow is *quiescent*: the in-flight set of `ctx`
+operations (steps started through `execute`/`parallel`, which `WorkflowContext` tracks per ADR 0112 D3) is
+empty and every live branch is blocked on a registered wait, evaluated at a **macrotask boundary** after
+the last settlement (so continuations that run in microtasks after a settlement are given the chance to
+register their next wait or start their next step before the park is decided). The definition covers only
+`ctx` operations. A flow that awaits a **non-`ctx` promise** (a bare `fetch`, a timer of its own) is
+invisible to it and can appear quiescent while it is pending; that is not a new hazard (a `ctx.suspend` park
+also cannot know), it is the existing determinism rule (flow code does no I/O outside `ctx`, enforced by the
+verify rules), and the park barrier (ADR 0112) still drains any in-flight `ctx` step first. Stated here so
+the rule is a documented precondition and not an accident.
 
-ADR 0112 gives every `parallel` branch a deterministic `scopePath` (`"0/2"`: branch 2 of the scope
-at branch 0 of the root). A wait's id is its scope path plus its ordinal within that scope, a pure
-function of the flow's control flow and so stable across re-runs. Answers are keyed by `waitId`:
-`EXECUTION_RESUMED` gains an additive optional `waitId`, and the fold keeps a fold-owned map
-`_waitAnswers: { [waitId]: payload }`. The positional `_resumePayloads` list remains for
-`ctx.suspend`; the two mechanisms do not share entries (the ADR 0104 invariant holds per
-mechanism).
+### D3 — A wait has an identity: `waitId = <scopePath>#<ordinal>`, and the answer proves the wait
 
-### D4 — The park condition lists every wait
+ADR 0112 gives every `parallel` branch a deterministic `scopePath`. Two sequential `parallel` calls in the
+same scope would both mint `"0/2"` for their branch 2, so the path is now
+`<parent path>/<k>.<branch>` with `k` the ordinal of the `parallel` call within its parent scope (ADR 0112
+D1); a wait's id is that path plus its ordinal within the scope, a pure function of the flow's control flow,
+stable across re-runs. Answers are keyed by `waitId`: `EXECUTION_RESUMED` gains an additive optional
+`waitId`, and the fold keeps `_waitAnswers: { [waitId]: { kind, name, payload } }`.
 
-`EXECUTION_SUSPENDED.condition` gains `waits?: Wait[]`, each `{ waitId, kind: "gate" | "inbox" |
-"timer", on?, topic?, viewDigest?, correlationKey?, wakeAt? }`. The legacy fields (`on`, `wakeAt`,
-`viewDigest`, `correlationKey`) are still written for a single-gate park, byte-identically, so an
-older reader and `locatePark` are unaffected. `assertResumable` accepts a resume whose event name
-matches **some** gate wait; with `waitId` it checks that wait's `viewDigest` (R13 preserved
-per-wait); without one it refuses as `ambiguous-wait` when more than one gate wait matches the
-name. A `select` is settled by its FIRST answered arm: the answer is journaled with its `waitId`,
-and a later answer to a sibling arm of the same `select` is refused (`wait-settled`). Timer arms
-get one `TimerStore` row each; a stale fire for a settled arm is refused the same way.
+**Ordinals shift when a body is edited** (an inserted `receive` renumbers every later wait on the same
+scope). So the fold stores, with each answer, the wait's **kind and its topic / gate name**; when a re-run
+registers `waitId` X with a different kind or name than the recorded one, the runtime raises
+`FlowDivergenceError` (ADR 0113's error, raised here without the detector so it works with the detector
+off) instead of handing a message to the wrong wait. The positional `_resumePayloads` list remains for
+`ctx.suspend`; the two mechanisms do not share entries (the ADR 0104 invariant holds per mechanism).
 
-### D5 — Consumption is a journaled fact: `MESSAGE_CONSUMED`
+### D4 — The park condition lists every wait; timers are pinned; signatures bind to the wait
 
-When a `receive` / inbox arm is satisfied, the owner appends `MESSAGE_CONSUMED { waitId, topic,
-messageId, inboxSeq, payload }` to its OWN log (payload copied in: the execution's log must be
-self-contained for replay, independent of inbox retention). The fold keeps a per-topic cursor
-(`_inbox.cursors[topic] = inboxSeq`) and the delivered payload under `_waitAnswers[waitId]`. Replay
-serves the answer from the fold and never reads the inbox. Delivery is **FIFO per topic**;
-selection is by topic only (no content predicates: they would be non-deterministic to re-evaluate
-and unboundedly expensive to scan).
+`EXECUTION_SUSPENDED.condition` gains `waits?: Wait[]`, each `{ waitId, kind: "gate" | "inbox" | "timer",
+on?, topic?, viewDigest?, correlationKey?, wakeAt? }`. The legacy fields are still written for a
+single-gate park, byte-identically, so an older reader and `locatePark` are unaffected. `assertResumable`
+accepts a resume whose event name matches **some** gate wait; with `waitId` it checks that wait's
+`viewDigest` (R13 preserved per wait); without one it refuses as `ambiguous-wait` when more than one gate
+wait matches the name. A `select` is settled by its FIRST answered arm; a later answer to a sibling arm
+is refused (`wait-settled`). Timer arms get one `TimerStore` row each; a stale fire for a settled arm is
+refused the same way.
 
-A parked execution is woken by `runtime.notifyInbox(chainId)` (the `@loom/inbox` `send` calls it
-when the sender shares the process; otherwise a `TimerService`-style poller or any node's
-`recover` sweep does): it re-reads the park, reads the source past each cursor, and if an inbox arm
-can be satisfied performs an ordinary fenced resume carrying `MESSAGE_CONSUMED`. Exactly-once
-consumption is a property of the owner's log (CAS on sequence), not of the stream.
+**`wakeAt` is recorded at first registration.** A timer arm's `afterMs` is relative, and in a multi-wait
+park every sibling answer re-runs the flow, which would recompute `wakeAt = now + afterMs` each time and so
+push the deadline out indefinitely under steady traffic. The wake time is therefore stored in the fold:
+`_waits[waitId] = { kind, wakeAt }`, set from the first park whose condition lists the wait, and every later
+registration of the same `waitId` is served the recorded `wakeAt` (an `afterMs` is a request, the recorded
+instant is the fact). The entry is removed when the wait settles.
 
-### D6 — Bounded dedupe
+**R13 signatures bind to the wait.** In a multi-wait park the signature covering (`executionId`, park
+sequence) no longer identifies which wait it approves, and a stale signature for one arm could answer
+another. `signResume` / the authenticator context gains `waitId` and `waitRegisteredAtSequence` (the
+sequence of the park that first recorded the wait); a resume carrying a `waitId` whose signature does not
+bind both is refused. A single-gate park keeps today's binding byte-identically.
 
-Senders retry, so `messageId` is the idempotency key. The fold keeps the last
-`inboxDedupeWindow` (default 1024) consumed message ids; a duplicate inside the window is skipped
-(its cursor advances without a consumption). A duplicate beyond the window is delivered. This is the
-documented contract: *at-least-once send, exactly-once consumption within the window*. The
-alternative — an `EventStore.appendIfAbsent(id)` SPI method — is an open question (design document,
-question 4), because it would make duplicates impossible at the cost of an SPI MINOR and a
-conformance case.
+### D5 — Consumption is a journaled fact, and a send can never be lost
+
+When a `receive` / inbox arm is satisfied, the owner appends `MESSAGE_CONSUMED { waitId, topic, messageId,
+inboxSeq, sender, payload }` to its OWN log (payload copied in: the log is self-contained for replay,
+independent of inbox retention). The fold keeps a per-topic cursor (`_inbox.cursors[topic] = inboxSeq`) and
+the delivered payload under `_waitAnswers[waitId]`. Replay serves the answer from the fold and never reads
+the inbox. Delivery is **FIFO per topic**; selection is by topic only (no content predicates).
+
+**The lost-wakeup window.** A `send` while the owner is not parked appends to the stream and has nothing to
+wake; if that append lands after the owner's pre-park inbox check and before its `EXECUTION_SUSPENDED`
+commit, the message sits in the stream with nobody resuming for it. Three closures, in order:
+
+1. **At the quiescence commit** the runtime reads each inbox wait's topic past its cursor (`InboxSource`).
+   If a message is there it **satisfies the wait live** — appends `MESSAGE_CONSUMED` and continues running —
+   instead of parking.
+2. **After the park is durable** the runtime reads each inbox wait once more. If something arrived in the
+   gap it **self-resumes**: a fenced resume using `acquireFenceIf(id, { fence: <park's fence> })`
+   (ADR 0118), so a rival notifier cannot both resume.
+3. **Cross-process senders get a durable wake.** `runtime.send` finishes by scheduling a **due-now row in
+   the existing `TimerStore`** for the chain's head (`TimerRecord { executionId, wakeAt: now }`; no SPI
+   change). `TimerService`'s fire path today resumes only a park whose recorded wake matches
+   (`suspended-on-this-wake`); it is widened to "parked with an inbox wait → run the notify path (read past
+   the cursors, consume, resume)", otherwise a no-op. A same-process `runtime.notifyInbox(chainId)` is the
+   fast path to the same code; the row is the guarantee that survives a sender or owner crash, and any
+   node's `recover()` sweep runs it too.
+
+Exactly-once consumption is a property of the owner's log (CAS on sequence plus the fenced resume), not of
+the stream.
+
+### D6 — Bounded dedupe, carried across continuation
+
+Senders retry, so `messageId` is the idempotency key. The fold keeps the last `inboxDedupeWindow` (default
+1,024, configurable) consumed message ids; a duplicate inside the window is skipped (its cursor advances
+without a consumption); one beyond the window is delivered. The contract: *at-least-once send,
+exactly-once consumption within the window*. The window **travels across a continuation**
+(`EXECUTION_STARTED.continuedFrom.carried.inbox`, ADR 0109 D4), so a retry after a rotation is still
+deduplicated. An `EventStore.appendIfAbsent(id)` SPI method, which would make duplicates impossible at the
+stream, is **deferred** (design document §7 question 4: adopt the bounded window; revisit with evidence).
 
 ### D7 — What stays 1P (`@loom/inbox`)
 
-The stream, `send`, the sender-side idempotency helper, **routing by logical name** (name → chain),
-pub/sub topics fanned out to several chains, dead-lettering, and the A2A / `@loom/orchestration`
-adapters that today do this over `resume`. `runtime.resume` keeps its meaning (answer a parked
-gate); the "message while busy" case becomes `send`.
+Routing by logical name (name → chain), pub/sub topics fanned out to several chains, dead-lettering,
+sender-side retry and idempotency-key helpers, and the A2A / `@loom/orchestration` adapters that today do
+this over `resume`, all over `runtime.send`. `runtime.resume` keeps its meaning (answer a parked gate);
+the "message while busy" case becomes `send`.
 
 ## Replay and migration
 
 All new fold keys are absent in an existing log, so every existing log replays byte-identically. An
-in-flight execution that parks with `ctx.suspend` keeps today's single-wait condition. The new
-calls are available only on 1.23.0 nodes (feature flag `kernel.features.inbox`, off until the fleet
-is upgraded). An execution that has ever parked with `waits` cannot be driven by an older node (its
-fold ignores `waits` and `MESSAGE_CONSUMED`): that is the same one-way door as any additive-kind
-schema bump, and the flag is the guard.
+in-flight execution that parks with `ctx.suspend` keeps today's single-wait condition. The new calls are
+available only on 1.23.0 nodes (feature flag `kernel.features.inbox`, off until the fleet is upgraded). An
+execution that has ever parked with `waits` cannot be driven by an older node (its fold ignores `waits`
+and `MESSAGE_CONSUMED`): the same one-way door as any additive-kind schema bump, and the flag is the guard.
 
 ## Tests
 
-`exp2.cjs` inverted (message during a busy step is delivered; two parallel receives park once with
-two waits; answers consumed out of order land on the right wait); a `select` of gate+timer+inbox
-with each arm winning in turn, and a stale answer to a losing arm refused; DST: crash between inbox
-append and `MESSAGE_CONSUMED`, between `MESSAGE_CONSUMED` and the next park, duplicate send;
-ADR 0117 `viewDigest` still refuses a stale approval on a gate arm; per-topic FIFO under
-concurrent senders; negative: topic with `__loom_` prefix refused, payload over the inline cap
-refused at `send`.
+`exp2.cjs` inverted (message during a busy step is delivered; two parallel receives park once with two
+waits; answers consumed out of order land on the right wait); a `select` of gate+timer+inbox with each arm
+winning in turn, and a stale answer to a losing arm refused; **lost wakeup**: a deterministic interleaving
+(DST) where the send lands between the pre-park read and the park commit, and between the park commit and
+the second read, and from another process with the owner idle (the due-now row fires), each asserting
+exactly one `MESSAGE_CONSUMED`; **authz**: an unauthorized sender is refused with the stream untouched, the
+sender is recorded, and the delivered value carries a taint; **bounds**: send cost does not grow with
+stream length, trim below the minimum cursor keeps unconsumed messages, `InboxFullError` at the backlog, the
+stream is deleted with the chain; **timer pinning**: a three-arm park with traffic on a sibling does not
+move the timer arm's `wakeAt`; **identity**: two sequential `parallel` scopes mint distinct `waitId`s, and a
+body edit that shifts an ordinal raises `FlowDivergenceError` rather than mis-delivering; **signatures**: a
+signature for arm A does not answer arm B; DST: crash between inbox append and `MESSAGE_CONSUMED`, between
+`MESSAGE_CONSUMED` and the next park, duplicate send (and across a continuation); ADR 0117 `viewDigest` still
+refuses a stale approval on a gate arm; per-topic FIFO under concurrent senders; topic with `__loom_` prefix
+refused; payload over the inline cap refused at `send`.
 
 ## Rejected
 
-- **Making `resume` legal while running** (buffer it in the execution's own log): the external
-  append races the owner's sequence, and the positional passthrough would misalign.
-- **Content-predicate selective receive** (Erlang-style `receive` with patterns): non-deterministic
-  on re-evaluation and a scan per call.
-- **An inbox inside `@loom/orchestration`**: orchestration is parent/child; an inbox is the
-  addressing primitive for every pair of parties.
+- **Making `resume` legal while running** (buffer it in the execution's own log): the external append races
+  the owner's sequence, and the positional passthrough would misalign.
+- **A 1P-only `send`** (the first draft): bypasses `ExecutionAuthorizer`; a message steers an agent, so an
+  unauthorized writer is an injection channel.
+- **Content-predicate selective receive** (Erlang-style `receive` with patterns): non-deterministic on
+  re-evaluation and a scan per call.
+- **An inbox inside `@loom/orchestration`**: orchestration is parent/child; an inbox is the addressing
+  primitive for every pair of parties.
+
+## Consequences
+
+- An agent can be addressed while it is busy, wait on several sources, and never lose a message to the
+  park transition, at the cost of a second reserved stream per chain and one kernel runtime method.
+- `runtime.send` is a kernel entry point (authz op `"send"`), so the inbox's security boundary is the
+  kernel's; `@loom/inbox` is convenience, not trust.
+- Order: this PR requires R8k (ADR 0118: `acquireFenceIf`), R6 (scope paths, barrier) and R3k (owner).
