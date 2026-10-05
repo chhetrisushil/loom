@@ -142,7 +142,10 @@ and compute.
   survive, and therefore the only one in which a UI declaration is visible to a flow. Server:
   `createMcpServer` exposes Loom tools/resources to any MCP host (the
   `createA2AServer` analogue) with audience-scoped listing/dispatch, and `servedEffect` routes a
-  call by its declared seam. The transport answers OAuth-discovery probes under `/.well-known/`
+  call by its declared seam. **Secure by default (R12):** it refuses to be created without
+  `authenticate`/`authorize` (or an explicit `insecure: true`), binds loopback, and takes
+  `authorizeTool` for per-tool exposure; on the client side a grant can name ONE tool
+  (`mcp.invoke:<server>/<tool>`). The transport answers OAuth-discovery probes under `/.well-known/`
   with 404 above the authorize gate, and negotiates the protocol version on `initialize` rather
   than asserting it — the two things a hosted client settles before it will talk to a remote
   server at all. Also carries MCP Apps (`io.modelcontextprotocol/ui`) declarations and `ui://`
@@ -166,7 +169,10 @@ and compute.
 - `@loom/plugin-a2a` — Agent-to-Agent protocol, **client + server**. `A2APeerClient` discovers a
   remote agent's card and registers it as an ordinary Loom tool; `createA2AServer` publishes your
   flows as an A2A agent (`/.well-known/agent.json`, `/tasks/send`) with `LoomAgentExecutor`
-  mapping execution status onto A2A task state.
+  mapping execution status onto A2A task state. **Secure by default (R12):** it refuses to be
+  created without `authenticate`/`authorize` (or an explicit `insecure: true`), binds loopback,
+  and scopes every task id to the authenticated caller, so one caller cannot read or re-drive
+  another's task.
 
 **Surfaces**
 

@@ -9,12 +9,43 @@ import type { A2ATask, AgentCard } from "./types";
 export interface A2AServerOptions {
   port?: number;
   /**
-   * Authenticate the task routes (`POST /tasks/send`, `GET /tasks/:id`). Return `true` to
-   * allow. **When unset the server is UNAUTHENTICATED**: any caller can submit tasks and
-   * read any execution's folded state. The agent-card route stays open. Supply your own
-   * scheme (shared secret, mTLS, …); the server supplies the gate.
+   * R12 — the interface to bind. Default `"127.0.0.1"` (loopback only): a server is reachable
+   * from this machine and nothing else until you widen it deliberately (`"0.0.0.0"`, `"::"`, or
+   * a specific interface address). Binding all interfaces was the old default.
+   */
+  host?: string;
+  /**
+   * R12 — authenticate AND identify the caller in one step: return the caller's
+   * {@link PrincipalChain}, or `undefined` to refuse the request (401). Derive it from connection
+   * facts only (verified bearer token, mTLS peer) — never from the task body. This is the
+   * recommended gate: it also scopes task ownership to the principal (see below).
+   */
+  authenticate?: (
+    req: http.IncomingMessage
+  ) => PrincipalChain | undefined | Promise<PrincipalChain | undefined>;
+  /**
+   * Gate the task routes (`POST /tasks/send`, `GET /tasks/:id`). Return `true` to allow. The
+   * agent-card route stays open. A boolean carries no identity, so every caller that passes it
+   * shares ONE task namespace unless `resolvePrincipal`/`authenticate` says who they are.
+   *
+   * R12 — the server REFUSES TO BE CREATED with neither `authenticate` nor `authorize` unless
+   * {@link insecure} is `true`.
    */
   authorize?: (req: http.IncomingMessage) => boolean | Promise<boolean>;
+  /**
+   * R12 — explicit opt-out of authentication: any caller that can reach the socket can submit
+   * tasks. Logs a loud warning at creation. Intended for local demos and tests; combine with the
+   * loopback default. Refused when {@link strict} is set.
+   */
+  insecure?: boolean;
+  /**
+   * R12 — pass `app.strict` (`defineConfig`'s `security.strict`). Under strict the server is a
+   * config error unless it authenticates AND resolves a principal; `insecure: true` is refused.
+   * (The app does not construct this server, so it cannot enforce this for you.)
+   */
+  strict?: boolean;
+  /** Where the insecure-mode warning goes. Default `console.warn`. */
+  warn?: (message: string) => void;
   /**
    * R3 — the AUTHENTICATED principal behind a request, derived from the same connection facts
    * `authorize` checked (mTLS peer, verified bearer token, signed header) — NEVER from the task
@@ -86,10 +117,37 @@ export function createA2AServer(
   options: A2AServerOptions = {}
 ): A2AServer {
   const port = options.port ?? 3001;
-  let resolvedUrl = `http://localhost:${port}`;
+  const host = options.host ?? "127.0.0.1";
+  const authenticated = options.authenticate !== undefined || options.authorize !== undefined;
+  if (options.strict === true) {
+    if (options.insecure === true) {
+      throw new Error(
+        "createA2AServer: `insecure: true` is refused under security.strict — authenticate callers."
+      );
+    }
+    if (options.authenticate === undefined && options.resolvePrincipal === undefined) {
+      throw new Error(
+        "createA2AServer: security.strict requires `authenticate` (or `resolvePrincipal`) — every task must carry the caller's principal."
+      );
+    }
+  }
+  if (!authenticated && options.insecure !== true) {
+    throw new Error(
+      "createA2AServer: refusing to create an unauthenticated server. Supply `authenticate` (recommended) or `authorize`, or pass `insecure: true` to opt out explicitly."
+    );
+  }
+  if (!authenticated) {
+    (options.warn ?? ((m: string) => console.warn(m)))(
+      `[loom] WARNING: A2A server is running with insecure: true — NO authentication; any caller that can reach ${host}:${port} can submit and read tasks.`
+    );
+  }
+  const urlHost =
+    host === "0.0.0.0" || host === "::" ? "localhost" : host.includes(":") ? `[${host}]` : host;
+  let resolvedUrl = `http://${urlHost}:${port}`;
 
-  // The whole A2A layer is this one adapter; the server just moves bytes to it.
-  const executor = new LoomAgentExecutor(workflowRuntime, flow);
+  // The whole A2A layer is this one adapter; the server just moves bytes to it. Task ids are
+  // namespaced by principal (R12): the client's id is only a label within its own namespace.
+  const executor = new LoomAgentExecutor(workflowRuntime, flow, { namespaceByPrincipal: true });
 
   const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse): void => {
     void (async () => {
@@ -110,9 +168,23 @@ export function createA2AServer(
           }
         }
 
+        // R12 — authenticate: identity or refusal.
+        let principal: PrincipalChain | undefined;
+        if (options.authenticate !== undefined) {
+          principal = await options.authenticate(req);
+          if (principal === undefined) {
+            json(res, 401, { error: "unauthorized" });
+            return;
+          }
+        }
         // R3 — who is calling, resolved once per request, after `authorize`.
-        const principal = await options.resolvePrincipal?.(req);
-        const call = principal !== undefined ? { principal } : {};
+        principal ??= await options.resolvePrincipal?.(req);
+        // The task namespace: the principal when known; one shared bucket for callers that were
+        // authorized but not identified; "anonymous" under `insecure`.
+        const call = {
+          ...(principal !== undefined && { principal }),
+          ...(principal === undefined && authenticated && { namespace: "authorized" }),
+        };
 
         if (method === "POST" && url === "/tasks/send") {
           const task = (await parseBody(req)) as A2ATask;
@@ -187,10 +259,10 @@ export function createA2AServer(
     },
     start(): Promise<void> {
       return new Promise((resolve) => {
-        server.listen(port, () => {
+        server.listen(port, host, () => {
           const addr = server.address();
           if (addr !== null && typeof addr === "object") {
-            resolvedUrl = `http://localhost:${addr.port}`;
+            resolvedUrl = `http://${urlHost}:${addr.port}`;
           }
           resolve();
         });

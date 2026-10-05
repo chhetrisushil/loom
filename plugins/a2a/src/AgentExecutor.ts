@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import type { ExecutionState } from "@loom/core";
 import type { PrincipalChain } from "@loom/effect-runtime";
 import type { RegisteredFlow, ResumeEvent, WorkflowRuntime } from "@loom/workflow-runtime";
@@ -32,6 +33,56 @@ export interface AgentExecutor {
  */
 export interface ExecutorCall {
   principal?: PrincipalChain;
+  /**
+   * R12 — the task namespace when no principal identifies the caller (e.g. a boolean `authorize`
+   * gate). Ignored when `principal` is present (the principal's identity wins). Only meaningful
+   * on an executor created with `namespaceByPrincipal`.
+   */
+  namespace?: string;
+}
+
+export interface LoomAgentExecutorOptions {
+  /**
+   * R12 — scope task ids to the caller. The execution id the runtime sees is
+   * `a2a.<namespace of caller>.<client task id>`: a caller can only ever name executions in its
+   * OWN namespace, so it cannot read, resume or collide with another caller's task by guessing
+   * or choosing an id (the lookup simply lands on a different, nonexistent execution). The
+   * client-visible id stays the one it chose. Default `false` for direct (in-process) use of the
+   * executor, where the id is the embedder's own; the HTTP server turns it on.
+   */
+  namespaceByPrincipal?: boolean;
+}
+
+/**
+ * R12 — a stable, opaque key for a principal; the namespace its tasks live in. Two callers with
+ * different identity can never address each other's execution ids, because the id the runtime
+ * sees embeds this key. Tenant + actor + onBehalfOf are the identity; a delegation token is not
+ * (it is a credential, and rotating it must not orphan the caller's tasks).
+ */
+export function principalNamespace(principal: PrincipalChain | undefined): string {
+  if (principal === undefined) return "anonymous";
+  const identity = JSON.stringify([
+    principal.tenant ?? null,
+    principal.actor ?? null,
+    principal.onBehalfOf ?? null,
+  ]);
+  return createHash("sha256").update(identity).digest("hex").slice(0, 24);
+}
+
+function scopedId(
+  call: ExecutorCall,
+  clientId: string,
+  namespaceOf: (p: PrincipalChain | undefined) => string
+): string {
+  const ns =
+    call.principal !== undefined ? namespaceOf(call.principal) : (call.namespace ?? "anonymous");
+  return `a2a.${ns}.${clientId}`;
+}
+
+/** Strip the `a2a.<namespace>.` prefix back off an execution id. */
+function clientIdOf(executionId: string): string {
+  const m = /^a2a\.[^.]*\.(.*)$/s.exec(executionId);
+  return m?.[1] ?? executionId;
 }
 
 /** Map a Loom execution status onto an A2A task status. */
@@ -78,8 +129,15 @@ export function toTaskResult(taskId: string, state: ExecutionState): A2ATaskResu
 export class LoomAgentExecutor implements AgentExecutor {
   constructor(
     private readonly runtime: WorkflowRuntime,
-    private readonly flow: RegisteredFlow
+    private readonly flow: RegisteredFlow,
+    private readonly options: LoomAgentExecutorOptions = {}
   ) {}
+
+  private idFor(call: ExecutorCall, clientId: string): string {
+    return this.options.namespaceByPrincipal === true
+      ? scopedId(call, clientId, principalNamespace)
+      : clientId;
+  }
 
   async submit(task: A2ATask, call: ExecutorCall = {}): Promise<{ id: string }> {
     const prompt = task.message.parts.map((p) => p.text).join("\n");
@@ -88,16 +146,24 @@ export class LoomAgentExecutor implements AgentExecutor {
       this.flow,
       { prompt },
       {
-        ...(task.id && { executionId: task.id }),
+        ...((task.id || this.options.namespaceByPrincipal === true) && {
+          executionId: this.idFor(call, task.id || randomUUID()),
+        }),
         ...identity,
       }
     );
-    return { id: handle.executionId };
+    // Under namespacing the caller only ever sees the id it chose (or was minted).
+    return {
+      id:
+        this.options.namespaceByPrincipal === true
+          ? clientIdOf(handle.executionId)
+          : handle.executionId,
+    };
   }
 
   async get(taskId: string, call: ExecutorCall = {}): Promise<A2ATaskResult | null> {
     const identity = call.principal !== undefined ? { principal: call.principal } : {};
-    const state = await this.runtime.loadState(taskId, identity);
+    const state = await this.runtime.loadState(this.idFor(call, taskId), identity);
     return state ? toTaskResult(taskId, state) : null;
   }
 
@@ -107,7 +173,7 @@ export class LoomAgentExecutor implements AgentExecutor {
     call: ExecutorCall = {}
   ): Promise<{ id: string }> {
     const identity = call.principal !== undefined ? { principal: call.principal } : {};
-    const handle = await this.runtime.resume(taskId, event, identity);
-    return { id: handle.executionId };
+    const handle = await this.runtime.resume(this.idFor(call, taskId), event, identity);
+    return { id: taskId };
   }
 }

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as http from "node:http";
 import { BadRequestError, exposeError } from "@loom/core";
 import type { EffectMode } from "@loom/core";
-import type { EffectRuntime } from "@loom/effect-runtime";
+import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
 import {
   DEFAULT_MCP_PROTOCOL_VERSION,
   type McpCallToolResult,
@@ -36,6 +36,8 @@ export interface McpCallContext {
   audience: McpAudience;
   /** The raw request, for deployment-specific principal extraction. */
   request: http.IncomingMessage;
+  /** R12 — the caller `authenticate` identified, when it is configured. */
+  principal?: PrincipalChain;
 }
 
 export interface McpServedTool {
@@ -78,11 +80,49 @@ export interface McpServerOptions {
   serverInfo?: { name: string; version: string };
   protocolVersion?: string;
   /**
-   * Authenticate every request. Return `true` to allow. **When unset the server
-   * is UNAUTHENTICATED**: any caller can list and invoke every served tool.
-   * Supply your own scheme (shared secret, mTLS, …); the server supplies the gate.
+   * R12 — the interface to bind. Default `"127.0.0.1"` (loopback only); widen it explicitly
+   * (`"0.0.0.0"`, `"::"`, an interface address). Binding all interfaces was the old default.
+   */
+  host?: string;
+  /**
+   * Gate every request. Return `true` to allow. Supply your own scheme (shared secret, mTLS, …);
+   * the server supplies the gate.
+   *
+   * R12 — the server REFUSES TO BE CREATED with neither `authenticate` nor `authorize` unless
+   * {@link insecure} is `true`: an unauthenticated server lets any caller list and invoke every
+   * served tool.
    */
   authorize?: (req: http.IncomingMessage) => boolean | Promise<boolean>;
+  /**
+   * R12 — authenticate AND identify: return the caller's {@link PrincipalChain} (handed to tool
+   * handlers as `ctx.principal` and to {@link authorizeTool}), or `undefined` to refuse (401).
+   */
+  authenticate?: (
+    req: http.IncomingMessage
+  ) => PrincipalChain | undefined | Promise<PrincipalChain | undefined>;
+  /**
+   * R12 — per-tool EXPOSURE: decide whether this caller may see (`tools/list`) and call
+   * (`tools/call`) `tool`. A tool the caller may not use is reported as unknown — never as
+   * forbidden, which would confirm it exists. Default: every authenticated caller may use every
+   * served tool (so supply this whenever tools differ in sensitivity).
+   */
+  authorizeTool?: (
+    tool: McpServedTool,
+    caller: { request: http.IncomingMessage; principal?: PrincipalChain }
+  ) => boolean | Promise<boolean>;
+  /**
+   * R12 — explicit opt-out of authentication. Logs a loud warning at creation. For local demos
+   * and tests; combine with the loopback default. Refused when {@link strict} is set.
+   */
+  insecure?: boolean;
+  /**
+   * R12 — pass `app.strict` (`security.strict`). Under strict the server is a config error
+   * unless it authenticates, and `insecure: true` is refused. (The app does not construct this
+   * server, so it cannot enforce this for you.)
+   */
+  strict?: boolean;
+  /** Where the insecure-mode warning goes. Default `console.warn`. */
+  warn?: (message: string) => void;
   /**
    * Decide which audience a request speaks for. The UI extension gives the
    * SERVER no in-band signal — the host is the party that knows whether a
@@ -220,6 +260,25 @@ export function negotiateVersion(requested: unknown, configured: string): string
 
 export function createMcpServer(options: McpServerOptions = {}): McpServer {
   const port = options.port ?? 3002;
+  const host = options.host ?? "127.0.0.1";
+  const authenticated = options.authenticate !== undefined || options.authorize !== undefined;
+  if (options.strict === true && options.insecure === true) {
+    throw new Error(
+      "createMcpServer: `insecure: true` is refused under security.strict — authenticate callers."
+    );
+  }
+  if (!authenticated && options.insecure !== true) {
+    throw new Error(
+      "createMcpServer: refusing to create an unauthenticated server. Supply `authenticate` (recommended) or `authorize`, or pass `insecure: true` to opt out explicitly."
+    );
+  }
+  if (!authenticated) {
+    (options.warn ?? ((m: string) => console.warn(m)))(
+      `[loom] WARNING: MCP server is running with insecure: true — NO authentication; any caller that can reach ${host}:${port} can list and invoke every served tool.`
+    );
+  }
+  const urlHost =
+    host === "0.0.0.0" || host === "::" ? "localhost" : host.includes(":") ? `[${host}]` : host;
   const protocolVersion = options.protocolVersion ?? DEFAULT_MCP_PROTOCOL_VERSION;
   const serverInfo = options.serverInfo ?? { name: "@loom/plugin-mcp", version: "0.0.1" };
   const audienceOf = options.audienceOf ?? ((): McpAudience => "model");
@@ -229,7 +288,7 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
   const resources = new Map<string, McpServedResource>();
   for (const resource of options.resources ?? []) resources.set(resource.uri, resource);
 
-  let resolvedUrl = `http://localhost:${port}`;
+  let resolvedUrl = `http://${urlHost}:${port}`;
 
   function describeTool(tool: McpServedTool): Record<string, unknown> {
     const meta: Record<string, unknown> = {};
@@ -266,9 +325,13 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
   async function handleRpc(
     body: JsonRpcRequest,
     req: http.IncomingMessage,
-    res: http.ServerResponse
+    res: http.ServerResponse,
+    principal: PrincipalChain | undefined
   ): Promise<void> {
     const { id, method, params } = body;
+    const caller = { request: req, ...(principal !== undefined && { principal }) };
+    const mayUse = async (tool: McpServedTool): Promise<boolean> =>
+      options.authorizeTool === undefined || (await options.authorizeTool(tool, caller));
     if (typeof method !== "string") {
       rpcError(res, id, JSON_RPC_INVALID_REQUEST, "missing method");
       return;
@@ -305,9 +368,11 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       case "tools/list": {
         // Visibility is a LISTING boundary as well as a call boundary: a tool the
         // model must not see is one the model must not be told about.
-        const visible = [...tools.values()].filter((tool) =>
-          audience === "app" ? isAppVisible(tool.ui) : isModelVisible(tool.ui)
-        );
+        const visible: McpServedTool[] = [];
+        for (const tool of tools.values()) {
+          if (!(audience === "app" ? isAppVisible(tool.ui) : isModelVisible(tool.ui))) continue;
+          if (await mayUse(tool)) visible.push(tool);
+        }
         rpcResult(res, id, { tools: visible.map(describeTool) });
         return;
       }
@@ -350,7 +415,8 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
         // a "you may not call that" reply confirms the tool exists.
         if (
           tool === undefined ||
-          (audience === "app" ? !isAppVisible(tool.ui) : !isModelVisible(tool.ui))
+          (audience === "app" ? !isAppVisible(tool.ui) : !isModelVisible(tool.ui)) ||
+          !(await mayUse(tool))
         ) {
           rpcError(res, id, JSON_RPC_INVALID_PARAMS, `unknown tool: ${name}`);
           return;
@@ -377,7 +443,11 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
         }
 
         try {
-          const value = await tool.handler(params?.arguments, { audience, request: req });
+          const value = await tool.handler(params?.arguments, {
+            audience,
+            request: req,
+            ...(principal !== undefined && { principal }),
+          });
           rpcResult(res, id, toCallToolResult(value));
         } catch (err) {
           // A tool failure is an in-band result (isError), not a JSON-RPC error:
@@ -417,6 +487,14 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
           send(res, 401, { error: "unauthorized" });
           return;
         }
+        let principal: PrincipalChain | undefined;
+        if (options.authenticate !== undefined) {
+          principal = await options.authenticate(req);
+          if (principal === undefined) {
+            send(res, 401, { error: "unauthorized" });
+            return;
+          }
+        }
 
         let body: JsonRpcRequest;
         try {
@@ -429,7 +507,7 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
           rpcError(res, null, JSON_RPC_INVALID_REQUEST, "body must be a JSON-RPC object");
           return;
         }
-        await handleRpc(body, req, res);
+        await handleRpc(body, req, res, principal);
       } catch (err) {
         // Transport-level failure — distinct from a tool failure, which is reported in-band
         // with the tool's own message. Nothing internal goes on the wire; the detail reaches
@@ -456,10 +534,10 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
     },
     start(): Promise<void> {
       return new Promise((resolve) => {
-        server.listen(port, () => {
+        server.listen(port, host, () => {
           const addr = server.address();
           if (addr !== null && typeof addr === "object") {
-            resolvedUrl = `http://localhost:${addr.port}`;
+            resolvedUrl = `http://${urlHost}:${addr.port}`;
           }
           resolve();
         });

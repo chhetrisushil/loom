@@ -120,7 +120,7 @@ describe("createA2AServer", () => {
         capabilities: { streaming: false },
         skills: [{ id: "echo", name: "Echo" }],
       },
-      { port: 0 }
+      { port: 0, insecure: true, warn: () => {} }
     );
     await server.start();
 
@@ -135,7 +135,7 @@ describe("createA2AServer", () => {
       makeRuntime(),
       echoFlow,
       { name: "Echo Agent", version: "1.0.0", capabilities: {}, skills: [] },
-      { port: 0 }
+      { port: 0, insecure: true, warn: () => {} }
     );
     await server.start();
 
@@ -170,7 +170,7 @@ describe("createA2AServer", () => {
       makeRuntime(),
       echoFlow,
       { name: "Echo Agent", version: "1.0.0", capabilities: {}, skills: [] },
-      { port: 0 }
+      { port: 0, insecure: true, warn: () => {} }
     );
     await server.start();
 
@@ -214,7 +214,7 @@ describe("createA2AServer", () => {
       makeRuntime(),
       echoFlow,
       { name: "Echo Agent", version: "1.0.0", capabilities: {}, skills: [] },
-      { port: 0 }
+      { port: 0, insecure: true, warn: () => {} }
     );
     await server.start();
 
@@ -243,7 +243,7 @@ describe("createA2AServer", () => {
       makeRuntime(),
       echoFlow,
       { name: "Echo Agent", version: "1.0.0", capabilities: {}, skills: [] },
-      { port: 0 }
+      { port: 0, insecure: true, warn: () => {} }
     );
     await server.start();
 

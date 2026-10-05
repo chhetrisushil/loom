@@ -20,6 +20,7 @@ export type {
 } from "./types";
 export {
   CapabilityDeniedError,
+  capabilityIds,
   GrantTable,
   DelegationAuthorizer,
   signDelegation,

@@ -30,11 +30,27 @@ export interface PrincipalChain {
 
 export interface CapabilityRequest {
   toolId: string;
+  /**
+   * R12 — the sub-resource this call targets, when the effect declares one
+   * (`Effect.resourceOf`): e.g. `"<server>/<tool>"` for `mcp.invoke`. A grant naming
+   * {@link capabilityIds | `<toolId>:<resource>`} authorizes exactly that resource; a grant on
+   * the bare `toolId` still authorizes every resource of the effect (unchanged behaviour).
+   */
+  resource?: string;
   executionId: string;
   workflowId: string;
   stepId: string;
   /** K12.1 — the authenticated principal chain, if one was established. */
   principal?: PrincipalChain;
+}
+
+/**
+ * R12 — the capability ids a request is authorized under: the effect id (covers every resource
+ * of the effect — the legacy, coarse grant) and, when the call names a resource, the qualified
+ * `<toolId>:<resource>` id (covers just that resource).
+ */
+export function capabilityIds(req: CapabilityRequest): readonly string[] {
+  return req.resource === undefined ? [req.toolId] : [req.toolId, `${req.toolId}:${req.resource}`];
 }
 
 export interface CapabilityDecision {
@@ -89,10 +105,11 @@ export class GrantTable implements CapabilityAuthorizer {
     if (granted === undefined) {
       return { allowed: false, reason: `principal "${principal}" has no grants` };
     }
-    if (granted.has("*") || granted.has(req.toolId)) {
+    if (granted.has("*") || capabilityIds(req).some((id) => granted.has(id))) {
       return { allowed: true };
     }
-    return { allowed: false, reason: `effect "${req.toolId}" not granted to "${principal}"` };
+    const target = req.resource === undefined ? req.toolId : `${req.toolId}:${req.resource}`;
+    return { allowed: false, reason: `effect "${target}" not granted to "${principal}"` };
   }
 
   /**
@@ -196,7 +213,7 @@ export class DelegationAuthorizer implements CapabilityAuthorizer {
       };
     }
     const delegated = new Set(token.grants);
-    const inDelegated = delegated.has("*") || delegated.has(req.toolId);
+    const inDelegated = delegated.has("*") || capabilityIds(req).some((id) => delegated.has(id));
     if (!inDelegated) {
       return { allowed: false, reason: `effect "${req.toolId}" not in the delegated grant set` };
     }

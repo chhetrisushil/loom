@@ -20,6 +20,12 @@ export interface ToolEffectOptions {
    * Omit to keep today's behaviour on both seams.
    */
   mode?: EffectMode;
+  /**
+   * R12 — the sub-resource a call targets, for per-resource authorization (see
+   * {@link Effect.resourceOf}). Omit for effect-wide authorization only.
+   */
+  // biome-ignore lint/suspicious/noExplicitAny: the option is not generic; the effect's TIn types the call site
+  resourceOf?: (input: any) => string | undefined;
 }
 
 export class ToolEffect<TIn = unknown, TOut = unknown> implements Effect<TIn, TOut> {
@@ -27,6 +33,7 @@ export class ToolEffect<TIn = unknown, TOut = unknown> implements Effect<TIn, TO
   readonly idempotent?: boolean;
   readonly errors?: Record<string, ErrorChannelSchema>;
   readonly mode?: EffectMode;
+  readonly resourceOf?: (input: TIn) => string | undefined;
 
   constructor(
     private readonly fn: (input: TIn, ctx: EffectContext) => Promise<TOut>,
@@ -40,6 +47,9 @@ export class ToolEffect<TIn = unknown, TOut = unknown> implements Effect<TIn, TO
     }
     if (options.mode !== undefined) {
       this.mode = options.mode;
+    }
+    if (options.resourceOf !== undefined) {
+      this.resourceOf = options.resourceOf;
     }
   }
 

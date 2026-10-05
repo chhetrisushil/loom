@@ -22,6 +22,21 @@ import { toUiResource, uiFromResult } from "./ui";
 export const MCP_INVOKE_TOOL_ID = "mcp.invoke";
 
 /**
+ * R12 — the per-tool resource id `mcp.invoke` presents to the authorizer. Grant ONE tool with the
+ * qualified capability `mcp.invoke:<server>/<tool>` (see {@link mcpToolCapability}); the bare
+ * `mcp.invoke` grant keeps meaning "every tool on every server this effect fronts". `server`
+ * is `McpInvokeOptions.server` (default `"server"`).
+ */
+export function mcpToolResource(server: string | undefined, toolName: string): string {
+  return `${server ?? "server"}/${toolName}`;
+}
+
+/** R12 — the capability id that authorizes exactly one MCP tool: `mcp.invoke:<server>/<tool>`. */
+export function mcpToolCapability(server: string | undefined, toolName: string): string {
+  return `${MCP_INVOKE_TOOL_ID}:${mcpToolResource(server, toolName)}`;
+}
+
+/**
  * Userspace domain event recorded per successful dispatch (the fold skips
  * unknown types — no EVENT_SCHEMA change). Index it with a read-model/
  * projection ({@link mcpDispatchIndex}) — never by parsing argument blobs.
@@ -272,7 +287,16 @@ export function registerMcpInvoke(
         ? tainted(value, `mcp:${options.server ?? "server"}/${call.toolName}`)
         : value;
     },
-    { errors: MCP_INVOKE_ERRORS }
+    {
+      errors: MCP_INVOKE_ERRORS,
+      // R12 — expose `<server>/<tool>` to the authorizer so a grant can name ONE tool.
+      resourceOf: (input: unknown) => {
+        const toolName = (input as { toolName?: unknown } | null)?.toolName;
+        return typeof toolName === "string" && toolName.length > 0
+          ? mcpToolResource(options.server, toolName)
+          : undefined;
+      },
+    }
   );
 
   effectRuntime.register(MCP_INVOKE_TOOL_ID, effect);

@@ -14,9 +14,12 @@ export { createA2AServer } from "./A2AServer";
 export type { A2AServerOptions, A2AServer } from "./A2AServer";
 export {
   LoomAgentExecutor,
+  principalNamespace,
   executionStatusToA2A,
   toTaskResult,
   type AgentExecutor,
+  type ExecutorCall,
+  type LoomAgentExecutorOptions,
 } from "./AgentExecutor";
 export { toAgentCard } from "./toAgentCard";
 export type { ToAgentCardOptions } from "./toAgentCard";

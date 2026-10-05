@@ -702,6 +702,19 @@ the effect) or a `secretRef` in the input resolved by `redactionMiddleware` — 
 wired). Dispatches emit `MCP_DISPATCHED`, indexed by the shipped `mcpDispatchIndex`
 projection for the "which executions called tool X at schema H" repair query.
 
+**Per-tool authorization (R12).** `mcp.invoke` is ONE registered effect, but the authorizer is
+also shown the tool: the request carries `resource: "<server>/<tool>"`
+(`McpInvokeOptions.server`, default `"server"`), so a grant can name a single tool.
+
+```ts
+import { mcpToolCapability } from "@loom/plugin-mcp";
+new GrantTable({ triage: [mcpToolCapability("docs", "read_doc")] });   // "mcp.invoke:docs/read_doc"
+```
+
+A grant on the bare `mcp.invoke` still means every tool on every server (the old, coarse
+behaviour); qualified grants work in `GrantTable`, `PolicyAuthorizer` allow/deny lists and
+delegations. A denied tool never reaches the server (`EFFECT_DENIED`).
+
 ### Serving Loom over MCP, and MCP Apps UI (ADR 0072)
 
 Loom speaks MCP as a **server** too, so any MCP host (Claude, ChatGPT, an IDE) can consume Loom
@@ -719,6 +732,7 @@ import { createMcpServer } from "@loom/plugin-mcp";
 import { surfaceCursorTool, surfaceHostResource, isStale } from "@loom/plugin-mcp-app";
 
 const server = createMcpServer({
+  authenticate: (req) => verifyBearer(req.headers.authorization),   // principal, or undefined => 401
   resources: [surfaceHostResource({ pin: PINNED_TEMPLATE_HASH })],   // verified before serving
   tools: [
     surfaceCursorTool({ store: eventStore, components: view, redact: ["customer.email"] }),
@@ -731,8 +745,15 @@ const server = createMcpServer({
 });
 ```
 
-Four things to get right:
+Five things to get right:
 
+- **The server is authenticated by default (R12).** `createMcpServer` (and `createA2AServer`)
+  throw at creation unless you pass `authenticate` (returns the caller's principal) or
+  `authorize` (a boolean gate), or opt out explicitly with `insecure: true` (loud warning; demos
+  and tests). Both bind `127.0.0.1`; widen with `host`. Pass `strict: app.strict` and `insecure`
+  becomes a config error. Use `authorizeTool(tool, { principal, request })` to decide which tools
+  a caller can see and call (an unauthorized tool is reported as unknown); without it every
+  authenticated caller may use every served tool.
 - **Redaction is required.** `redact` has no default — the payload crosses into a rendered
   iframe, and a list that silently defaults to empty makes "we forgot" look like "nothing to
   mask". Pass `[]` to assert the latter explicitly.

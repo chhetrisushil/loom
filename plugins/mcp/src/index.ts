@@ -19,6 +19,8 @@ export {
   ToolNotFoundPayload,
   mcpDispatchIndex,
   mcpInvoke$,
+  mcpToolCapability,
+  mcpToolResource,
   registerMcpInvoke,
 } from "./mcpInvoke$";
 export type {

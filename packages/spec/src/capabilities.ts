@@ -292,7 +292,7 @@ export const CAPABILITIES: readonly Capability[] = [
     package: "@loom/plugin-mcp",
     level: "L2",
     summary:
-      "Serves loom tools/resources over MCP JSON-RPC (initialize / tools/list / tools/call / resources/list / resources/read) — the A2AServer analogue for the MCP ecosystem. Audience-scoped listing and dispatch; app-originated calls to `journaled` tools denied by default.",
+      "Serves loom tools/resources over MCP JSON-RPC (initialize / tools/list / tools/call / resources/list / resources/read) — the A2AServer analogue for the MCP ecosystem. Audience-scoped listing and dispatch; app-originated calls to `journaled` tools denied by default. Authenticated by default (R12): refuses creation without `authenticate`/`authorize` or an explicit `insecure: true`, loopback-bound, per-tool `authorizeTool`.",
     evidence: {
       conformanceTest: "plugins/mcp-app/src/mcpApp.test.ts",
     },

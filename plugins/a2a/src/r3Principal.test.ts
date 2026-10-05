@@ -108,7 +108,7 @@ describe("A2A under strict execution authz", () => {
       strictRuntime(),
       flow,
       { name: "G", version: "1.0.0", capabilities: {}, skills: [] },
-      { port: 0 }
+      { port: 0, insecure: true, warn: () => {} }
     );
     await server.start();
     const sent = await fetch(`${server.url}/tasks/send`, {
