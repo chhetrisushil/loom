@@ -82,9 +82,38 @@ export interface ReasoningCache {
   set(key: string, value: LlmResponse): void;
 }
 
+/**
+ * The request a {@link ModelInvoker} receives: the reasoning request minus the routing-only
+ * fields and minus `signal` (a signal is not data — an effect-backed invoker gets its
+ * cancellation from the effect context, not from here).
+ */
+export interface ModelCallRequest {
+  messages: LlmMessageInput[];
+  system?: LlmContent;
+  tools?: LlmToolSpecInput[];
+  maxTokens?: number;
+  temperature?: number;
+}
+
+/**
+ * R9 — how a chosen route's model call is MADE. Without one, the runtime calls
+ * `route.provider.complete` directly, which is outside the effect ring (no K2 authorization,
+ * no metering, no kill switch). Supplying an invoker hands the call to the host so it can run
+ * as an effect: `agentLoop$` passes one that resolves each call through `ctx.execute`, so the
+ * call is authorized, metered, kill-switched and `guardRequest`-checked, and is JOURNALED —
+ * a replay serves the recorded response instead of re-calling the model.
+ *
+ * The runtime's response cache is BYPASSED when an invoker is supplied: a cache hit would skip
+ * the invoker, so whether a durable frame exists would depend on a process-local cache and a
+ * replay could diverge from the run.
+ */
+export type ModelInvoker = (route: ModelRoute, request: ModelCallRequest) => Promise<LlmResponse>;
+
 export interface ReasonOptions {
   /** When provided, route/elevation choices are recorded through it (P9). */
   decide?: DecideFn;
+  /** R9 — make each model call through the host instead of the route's provider. See {@link ModelInvoker}. */
+  invoke?: ModelInvoker;
   signal?: AbortSignal;
   /** Namespaces decision ids so multiple reason() calls in one execution don't collide. */
   decisionKey?: string;

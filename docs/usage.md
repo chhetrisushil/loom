@@ -146,8 +146,8 @@ option:
 
 | Group | Options |
 |---|---|
-| `execution` | `dispatcher` (where executions run — in-process / remote / Cloud Run), `effectMiddleware` (retries, metering, safety, redaction… — see Step 11), `registerEffects`, `validateInput`, `now` |
-| `security` | `authorizer` (capability protection ring — deny ungranted effects, K2), `policies` (app-global `policy$` via a `PolicyAuthorizer`), `secrets` (`{ resolver }` — resolve `secretRef` input + redact `secret()` output, K10-R2; see [data classification](data-classification.md)), `compliance` (`{ subjectOf, tenantOf?, erase?: { shred } }` — subject index + `app.exportSubject`/`app.eraseSubject`, T3; see [compliance](compliance.md)), `executionAuthorizer`, `resumeAuthenticator`, `onExecutionDenied` |
+| `execution` | `dispatcher` (where executions run — in-process / remote / Cloud Run), `effectMiddleware` (retries, metering, safety, redaction… — see Step 11), `registerEffects`, `validateInput`, `now`, `envelope` (the autonomy envelope — spawn caps, spend budget, rate limit; see Step 11 "Strict mode") |
+| `security` | `authorizer` (capability protection ring — deny ungranted effects, K2), `policies` (app-global `policy$` via a `PolicyAuthorizer`), `secrets` (`{ resolver }` — resolve `secretRef` input + redact `secret()` output, K10-R2; see [data classification](data-classification.md)), `compliance` (`{ subjectOf, tenantOf?, erase?: { shred } }` — subject index + `app.exportSubject`/`app.eraseSubject`, T3; see [compliance](compliance.md)), `executionAuthorizer`, `resumeAuthenticator`, `onExecutionDenied`, `strict` (the strict profile — see Step 11), `killSwitch` (stop effects system-wide / per tenant / per flow) |
 | `observability` | `onEvent` (tap every committed event), `telemetry`, `onWarn`, `onStorageError` |
 | `durability` | `retention` (`{ archive? }` — expose `app.lifecycle` for `loom retention run`, K10.1), `snapshotEvery` |
 | `checks` | `validate` (`false \| "warn" \| "error"` — boot-time flow-graph validation), `verify`, `manifest` |
@@ -416,6 +416,39 @@ The parent and losing branches remain immutable — a full audit trail of what w
 ## Step 11 — Harden it: grants, quotas, safety, secrets & isolation
 
 Everything so far is the happy path. The **kernel-hardening rings (K1–K12, T1–T2)** add the guardrails that make a flow safe to run against real systems and real tenants. Every ring is **opt-in and byte-identical to the un-hardened path when unwired** — you add exactly the ones you need, and each verdict lands on the log as a durable, replayable fact (audit for free). Full API in the [reference](api-reference.org#kernel-hardening); the reasoning is in [Kernel Hardening](loom-2.0/04-kernel-hardening.md).
+
+**Strict mode (R9)** — every default above is permissive: no authorizer means every effect is allowed, no deadline means an execution may run forever, a child may spawn children without bound, and nothing meters spend. `security.strict` flips the baseline for an app whose agents act on their own:
+
+```ts
+const app = defineConfig({
+  storage: sqliteStorage({ dir: ".loom" }),
+  flows: [investigateFlow],
+  security: {
+    strict: true,                                   // or { defaultDeadlineMs: 3_600_000 }
+    authorizer: new GrantTable({ investigate: ["lookup-metrics", "triage-llm"] }),
+    executionAuthorizer,                            // who may start / resume / cancel
+  },
+  // execution: { envelope: { spawn: { maxDepth: 3 }, rateLimit: { capacity: 50, refillPerSecond: 20 } } },
+});
+```
+
+Under `strict`, `defineConfig` **throws** (listing every problem at once) unless you supply the two authorizers — only you can write them, so loom refuses their absence rather than guessing — and unless pre-flight verification stays on (`checks.verify` defaults to `"error"`; `"off"` is refused). It then applies, each overridable or `false` to disable:
+
+| Bound | Strict default | Why this value |
+|---|---|---|
+| default execution deadline (flows that declare none) | 24 h | The deadline counts *suspended* time, so a human-approval flow parked for a day must not be cancelled by a default meant to catch a stuck run. It is the "runs forever" backstop, not a latency target; tighten per flow with `flow$({ deadlineMs })`. A flow's own deadline and an explicit `start({ deadlineMs })` always win. It does not change the flow fingerprint, so enabling strict does not strand in-flight executions. |
+| child spawn depth (`envelope.spawn.maxDepth`) | 5 | Root = 0. Deeper than five levels is a recursion, not a plan. |
+| child fan-out (`envelope.spawn.maxFanOut`) | 32 | Children one `awaitChildren`/`awaitAll` group may start. |
+| per-execution token budget (`envelope.budget.perExecution`) | 1,000,000 tokens | Admission control before each effect, recorded as `RESOURCE_METERED`. Needs a provider that reports `usage`; set `envelope.budget.pricing` for another unit. |
+| kill switch (`app.killSwitch`) | in-memory | `stopAll()` / `stopTenant(id)` / `stopWorkflow(id)`; supply your own `KillSwitchRegistry` over a shared store to stop across processes. |
+
+Deliberately **not** defaulted: a rate limit (`envelope.rateLimit`, a token bucket per execution / tenant / flow / process) and the per-agent / per-tenant lifetime budgets — their safe value depends on the workload, and a wrong default throttles legitimate work, which is how a safety feature gets switched off. A refusal is a typed, non-retryable error — `QuotaExceededError`, `RateLimitExceededError`, `KillSwitchEngagedError`, `SpawnLimitExceededError` — and `retryMiddleware` does not retry the new ones.
+
+Two things the app still has to do, because it owns the objects: pass `app.envelope.spawn` to `superviseChildren({ runtime, flows, limits })` (the supervisor refuses a spawn over the cap — the child is never started and the parent resumes with a failed child instead of hanging), and give agents the effect ring: `agentLoop$` with `reasoning` calls its routes' providers directly unless you set `reasoningToolId` (see `registerReasoningRoutes`), and `llmSkillSelector(provider)` likewise — `requireEffectRing: true` makes `agentLoop$` refuse both.
+
+**Not strict** (the default) behaves exactly as before and logs **one** advisory through `observability.onWarn` naming what is left permissive. `strict: false` is the explicit opt-out: same behaviour, no advisory. `create-loom-app` scaffolds `strict: true` with a `GrantTable` + `executionAuthorizer` stub in `app/security.ts`.
+
+What the kill switch cannot do: it refuses the *next* effect. It does not interrupt an effect already running or cancel a running execution's children (the kernel's cancel cascade is a separate, later change).
 
 **Capability grants (K2)** — least-privilege authority. A `GrantTable` maps a principal to the effect ids it may invoke; an ungranted effect never runs — it records `EFFECT_DENIED` and fails the step.
 

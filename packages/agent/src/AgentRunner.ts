@@ -92,6 +92,13 @@ export class AgentRunner {
     if (config.provider === undefined && config.reasoning === undefined) {
       throw new Error("AgentRunner requires a `provider` or a `reasoning` runtime");
     }
+    if (config.skillSelector?.effectBacked === true) {
+      // An effect-backed selector needs an execution to journal its model call in; a step
+      // handler has none. Refused here rather than falling back to an unguarded call.
+      throw new Error(
+        "AgentRunner cannot run an effect-backed skillSelector (llmSkillSelector({ toolId })): it has no execution to journal the call in. Use agentLoop$, or llmSkillSelector(provider)."
+      );
+    }
     this.maxIterations = config.maxIterations ?? 10;
     this.parallelTools = config.parallelTools ?? false;
   }

@@ -241,6 +241,8 @@ interface LoomConfig {
   capabilityAgents?: Record<string, string>;     // capabilityId → agentId
   effectMiddleware?: EffectMiddleware[];         // ordered; retries/metering/safety/redaction (K3/K6/K10/K12)
   authorizer?: CapabilityAuthorizer;             // (2.0, K2) capability protection ring — deny ungranted effects
+  // grouped (R9):  security: { strict?: boolean | { defaultDeadlineMs?: number | false }; killSwitch?: KillSwitchRegistry }
+  //                execution: { envelope?: AutonomyEnvelopeOptions }   — see "Strict mode" in usage.md
   timers?: {                                     // (2.0, T1) durable timers & cron
     store: TimerStore; pollMs?: number; schedules?: ScheduleDefinition[]; fenced?: boolean };
   telemetry?: TelemetryAdapter[];
@@ -253,9 +255,20 @@ interface LoomApp {
   effectRuntime: EffectRuntime;
   projectionRuntime: ProjectionRuntime;
   bus: InProcessA2ABus;
+  strict: boolean;                               // (R9) security.strict was enabled
+  envelope?: { spawn: SpawnLimits; ledger: BudgetLedger };   // (R9) pass spawn to superviseChildren({ limits })
+  killSwitch?: KillSwitchRegistry;               // (R9) supplied, or the in-memory one strict creates
   stores: { eventStore: EventStore; snapshotStore: SnapshotStore; branchRegistry?: BranchRegistry };
   close(): Promise<void>;
 }
+
+interface AutonomyEnvelopeOptions {              // (R9) execution.envelope
+  spawn?: { maxDepth?: number | false; maxFanOut?: number | false };     // strict: 5 / 32
+  budget?: false | { perExecution?: Budget | false;                       // strict: { maxTokens: 1_000_000 }
+                     perAgent?: Budget; perTenant?: Budget; pricing?: Pricing };   // cumulative; no default
+  rateLimit?: false | RateLimitOptions;                                   // no default
+}
+const STRICT_DEFAULTS: { defaultDeadlineMs: 86_400_000; spawnMaxDepth: 5; spawnMaxFanOut: 32; perExecutionMaxTokens: 1_000_000 }
 #+end_src
 
 *Bring your own storage:* ~kind: "custom"~ uses any async-first ~EventStore~/~SnapshotStore~ (+ optional ~BranchRegistry~) verbatim — Postgres/Redis/DynamoDB (see [[file:examples/postgres-backend/README.md][the Postgres reference]]). The SQLite stores are lazily loaded, so ~kind: "memory"~ never pulls ~better-sqlite3~/~node:fs~ into a browser bundle.
@@ -374,6 +387,30 @@ function nestedBudgetMiddleware(options: {
 interface BudgetScope { level: string; key: string; budget: Budget; }   // budget = { maxTokens?, maxCostUsd? }
 class BudgetLedger { /* accumulates spend per scope key */ }
 #+end_src
+
+*Autonomy envelope & scoped kill switch (R9).* ~rateLimitMiddleware~ is a token bucket per execution / tenant / workflow / process; ~killSwitchMiddleware~ consults a ~KillSwitchRegistry~ before every effect. Both refuse with a typed error carrying ~retryable: false~ (which ~retryMiddleware~'s default classifier honours) and record ~SAFETY_BLOCKED~ (~category: "rate-limit" | "kill-switch"~).
+
+#+begin_src typescript
+function rateLimitMiddleware(options: {
+  capacity: number; refillPerSecond: number;
+  scope?: "execution" | "tenant" | "workflow" | "global";   // default "execution"
+  clock?: () => number; maxBuckets?: number;                 // LRU-bounded; default 10_000
+}): EffectMiddleware
+class RateLimitExceededError extends Error { scope; key; retryAfterMs; readonly retryable: false }
+
+interface KillSwitchRegistry { check(ctx: EffectContext): KillVerdict | undefined | Promise<KillVerdict | undefined> }
+interface KillVerdict { scope: "system" | "tenant" | "workflow"; key?: string; reason: string }
+class InMemoryKillSwitch implements KillSwitchRegistry {
+  stopAll(reason?): void; resumeAll(): void;
+  stopTenant(tenant, reason?): void; resumeTenant(tenant): void;      // matches ctx.principal.tenant
+  stopWorkflow(workflowId, reason?): void; resumeWorkflow(workflowId): void;
+  status(): { system?: string; tenants: Record<string,string>; workflows: Record<string,string> }
+}
+function killSwitchMiddleware(registry: KillSwitchRegistry): EffectMiddleware   // outermost; fails CLOSED if check() throws
+class KillSwitchEngagedError extends SafetyViolationError { scope; key?; readonly retryable: false }
+#+end_src
+
+The kill switch refuses the NEXT effect. It does not interrupt an in-flight effect or cancel an execution's children (kernel cancel cascade, separate).
 
 ** ~@loom/registry~ — agent registry
 
@@ -517,6 +554,13 @@ function fanout$(options: FanoutOptions)                        // bounded concu
 const CHILD_DONE: string; const CHILD_FAILED: string            // userspace events the fold skips
 function childIdFor(parentId: string, label: string, index?: number): string
 function parentOf(executionId: string): string | undefined; function depthOf(executionId: string): number
+
+// R9 — the autonomy envelope for spawning. Both bounds are off when unset.
+interface SpawnLimits { maxDepth?: number; maxFanOut?: number }    // deepest child (root 0, child 1); children per group
+function boundOrchestration(limits: SpawnLimits): { awaitChild; awaitChildren; awaitAll }  // parent-side: throws BEFORE the spawn decision is recorded
+// SupervisorDeps.limits?: SpawnLimits — the backstop: a refused spawn starts NO child, reports via onError, and
+// resumes the parent with a failed child (awaitChild throws childFailed; awaitChildren returns failed entries).
+class SpawnLimitExceededError extends Error { limit: "maxDepth" | "maxFanOut"; max; actual; readonly retryable: false }
 #+end_src
 
 ** ~@loom/saga~ — compensation without a syscall
@@ -1649,7 +1693,12 @@ function agentStep$(config: { id: string; name?: string; agent: AgentDefinition;
 
 class SkillRegistry { register(skill): this; get(id); all(); ids(); find(query): SkillMatch[] }   // deterministic keyword scoring
 function deterministicSkillSelector(maxSkills?: number): SkillSelector
-function llmSkillSelector(provider: LlmProvider, maxSkills?: number): SkillSelector
+function llmSkillSelector(provider: LlmProvider, maxSkills?: number): SkillSelector      // calls the provider DIRECTLY (outside authz/metering/kill switch; guardRequest runs)
+function llmSkillSelector(options: { toolId: string; maxSkills?: number }): SkillSelector // (R9) effect-backed: agentLoop$ only; a journaled frame `<agent>#skills:select`
+// agentLoop$ config (R9): reasoningToolId?: string | ((routeId) => string)   — each `reasoning` model call becomes a journaled
+//   ctx.execute frame `<agent>#turn:<i>:call:<n>` (authz, metering, kill switch, guardRequest, recorded on replay);
+//   requireEffectRing?: boolean — refuse `reasoning` without reasoningToolId and a non-effect-backed skillSelector.
+function registerReasoningRoutes(effects: { register(id, effect) }, reasoning: ReasoningRuntime, o?: { prefix?: string; stream?: boolean }): (routeId: string) => string
 #+end_src
 
 Emits ~SKILLS_SELECTED~ / ~AGENT_TOOL_CALL~ / ~AGENT_COMPLETED~ events via ~ctx.emit~.

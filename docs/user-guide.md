@@ -1069,6 +1069,9 @@ interface LoomApp {
   effectRuntime: EffectRuntime;
   projectionRuntime: ProjectionRuntime;
   bus: InProcessA2ABus;
+  strict: boolean;                                              // R9: security.strict was enabled
+  envelope?: { spawn: SpawnLimits; ledger: BudgetLedger };      // R9: pass spawn to superviseChildren({ limits })
+  killSwitch?: KillSwitchRegistry;                              // R9: stop effects system/tenant/flow-wide
   stores: {                                                     // optional ones present only when CONFIGURED
     eventStore: EventStore; snapshotStore: SnapshotStore;
     branchRegistry?: BranchRegistry; memoryStore?: MemoryStore;
@@ -1349,6 +1352,16 @@ class of the effect it performs with `step$({ effectClass })`. A flow's effectiv
 over everything it reaches, composed conservatively. Omit the vocabulary and the rule is a no-op; a
 flow that declares a ceiling but reaches *unclassified* steps is reported as **only partially
 verified** rather than passing clean. See [`loom verify`](usage-cli.md#loom-verify---config-module---manifest-path).
+
+### Strict mode & the autonomy envelope (R9)
+
+The kernel's defaults are permissive — a missing authorizer allows every effect, nothing bounds a run's duration, spawn depth or spend. `defineConfig({ security: { strict: true } })` is the baseline for agents that act unattended; the full table of defaults and the reasoning behind each is in [usage.md, Step 11](usage.md#step-11--harden-it-grants-quotas-safety-secrets--isolation).
+
+- **What strict refuses.** `defineConfig` throws, listing every problem, without `security.authorizer` and `security.executionAuthorizer`, and if `checks.verify` is `"off"`. Not strict, you get one advisory via `observability.onWarn`; `strict: false` silences it.
+- **The envelope** (`execution.envelope`): `spawn: { maxDepth, maxFanOut }` (hand `app.envelope.spawn` to `superviseChildren({ limits })`; `boundOrchestration(limits)` gives the parent-side refusal before anything durable happens), `budget: { perExecution, perAgent, perTenant, pricing }` (via `nestedBudgetMiddleware`, which meters on its own — do not also install `meteringMiddleware`), and `rateLimit` (`rateLimitMiddleware`: a token bucket, process-local, wall-clock driven, so it lives at the effect layer and never in the fold).
+- **Kill switch** (`security.killSwitch`, or `app.killSwitch` under strict): `InMemoryKillSwitch` has `stopAll` / `stopTenant` / `stopWorkflow` and their `resume*`; a `KillSwitchRegistry` over a shared store stops across processes. It is the outermost middleware and fails closed if the registry throws. It stops the next effect only — it does not cancel running executions or their children.
+- **Closing the model-call bypasses.** `agentLoop$({ reasoning })` and `llmSkillSelector(provider)` call a provider directly, outside authorization, metering and the kill switch. Use `reasoningToolId` (with `registerReasoningRoutes(effects, reasoning)`) so each routed call is a journaled effect frame, and `llmSkillSelector({ toolId })` so the selection is one; `requireEffectRing: true` refuses the direct spellings. A skill-selection or reasoning call made this way is charged to the execution and served from the log on replay.
+- **Refusals are typed and non-retryable**: `QuotaExceededError`, `RateLimitExceededError`, `KillSwitchEngagedError`, `SpawnLimitExceededError` (each also carries `retryable: false`, which `retryMiddleware`'s default classifier honours).
 
 ### Resource accounting & quotas (K3)
 

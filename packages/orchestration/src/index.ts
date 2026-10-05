@@ -8,7 +8,10 @@
 export {
   type ChildResult,
   type ChildSupervisor,
+  type SpawnLimits,
   type SupervisorDeps,
+  SpawnLimitExceededError,
+  boundOrchestration,
   CHILD_DONE,
   CHILD_FAILED,
   awaitAll,

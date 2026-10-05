@@ -366,7 +366,7 @@ export const CAPABILITIES: readonly Capability[] = [
     package: "@loom/classify",
     level: "L2",
     summary:
-      "`tainted(value, origin)` attaches provenance to a VALUE at ingress (plain JSON, so it survives the log and replay). `guardRequest` REFUSES tainted content in system / assistant / tool-description position and fences it in a `user` message, and it runs at every site that hands a request to an `LlmProvider`: `createLlmEffect`, `AgentRunner.complete`, and `ReasoningRuntime.call`. Producers (both opt-in): `registerMcpInvoke({ taintResults })` taints the whole result; `A2APeerClient({ taintResults })` taints `content` only, its flag's literal type selecting the output type.",
+      "`tainted(value, origin)` attaches provenance to a VALUE at ingress (plain JSON, so it survives the log and replay). `guardRequest` REFUSES tainted content in system / assistant / tool-description position and fences it in a `user` message, and it runs at every site that hands a request to an `LlmProvider`: `createLlmEffect`, `AgentRunner.complete`, `ReasoningRuntime.call`, and the direct-provider form of `llmSkillSelector` (R9 closed that last one — it was the one site that did not run it). Producers (both opt-in): `registerMcpInvoke({ taintResults })` taints the whole result; `A2APeerClient({ taintResults })` taints `content` only, its flag's literal type selecting the output type.",
     evidence: {
       conformanceTest: "packages/llm/src/untrusted.test.ts",
       usedIn:
@@ -380,7 +380,7 @@ export const CAPABILITIES: readonly Capability[] = [
     package: "@loom/agent",
     level: "L2",
     summary:
-      "`agentLoop$(ctx, config, input)` runs a ReAct loop from a RUNNER BODY, one durable frame per turn: ids minted `#turn:<i>` / `#turn:<i>:tool:<j>` per the ADR 0061 identity rule, the model call resolved through the EffectRuntime by `modelToolId` (so K2, metering, retry, idempotency and `guardRequest` all apply), and `requireApproval` parking the execution on a gate BEFORE a destructive tool runs. `agentStep$` is retained as the cheap opaque form — one frame instead of 2N.",
+      "`agentLoop$(ctx, config, input)` runs a ReAct loop from a RUNNER BODY, one durable frame per turn: ids minted `#turn:<i>` / `#turn:<i>:tool:<j>` per the ADR 0061 identity rule, the model call resolved through the EffectRuntime by `modelToolId` (so K2, metering, retry, idempotency and `guardRequest` all apply) — or, with `reasoning` + `reasoningToolId` (R9), each routed call as a journaled effect frame, and with `requireEffectRing` any model call outside the ring is refused, and `requireApproval` parking the execution on a gate BEFORE a destructive tool runs. `agentStep$` is retained as the cheap opaque form — one frame instead of 2N.",
     evidence: {
       conformanceTest: "packages/agent/src/agentLoopCrash.test.ts",
       usedIn:

@@ -15,7 +15,9 @@ export interface RetryOptions {
   /**
    * Decide whether a given error is retryable. Default: all (non-control) errors
    * EXCEPT `TypedFailure` (DE-4) — a declared domain outcome is not transient, so
-   * retrying it by default would just burn attempts on a deterministic result.
+   * retrying it by default would just burn attempts on a deterministic result — and any
+   * error that declares `retryable: false` (R9's `KillSwitchEngagedError`,
+   * `RateLimitExceededError`, `SpawnLimitExceededError`).
    * An explicit `isRetryable` retains full control (retrying a TypedFailure
    * in-memory is legal: no durable event has been emitted yet).
    */
@@ -48,7 +50,13 @@ export function retryMiddleware(options: RetryOptions = {}): EffectMiddleware {
   const factor = options.factor ?? 2;
   const maxDelayMs = options.maxDelayMs ?? 30_000;
   const useJitter = options.jitter ?? true;
-  const isRetryable = options.isRetryable ?? ((err: unknown) => !(err instanceof TypedFailure));
+  const isRetryable =
+    options.isRetryable ??
+    ((err: unknown) =>
+      !(err instanceof TypedFailure) &&
+      // R9 — a control-plane refusal (kill switch, rate limit, spawn cap) marks itself
+      // `retryable: false`: it is a decision, and retrying repeats it.
+      (err as { retryable?: unknown } | null)?.retryable !== false);
   const sleep = options.sleep ?? defaultSleep;
 
   return async (ctx, _input, next) => {

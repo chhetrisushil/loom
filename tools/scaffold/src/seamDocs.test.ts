@@ -77,6 +77,8 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
   const NO_SEAM_YET: Record<string, string> = {
     Scheduler: "no conformance kit — not advertised as a third-party seam",
     Warmer: "no conformance kit — not advertised as a third-party seam",
+    KillSwitchRegistry:
+      "no conformance kit yet — a 3-line contract (`check(ctx)` → verdict | none; a throw fails closed)",
     // Covered by an existing seam rather than needing their own:
     SnapshotStore: "scaffolded by the `store` seam, alongside EventStore",
     BranchRegistry: "scaffolded by the `store` seam, behind its `branching` option",
@@ -166,6 +168,7 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
       ArchiveStores: "a HOLDER of two documented seams ({ eventStore, snapshotStore }), not one",
       ManifestView: "compiler-manifest DATA — there is no behaviour to supply",
       CatalogLike: "an adapter shape for an existing catalog object, not a pluggable backend",
+      ResolvedEnvelope: "an OUTPUT on LoomApp (the resolved bounds), not something an app supplies",
     };
     const options = [...config.matchAll(/^\s{2,4}(\w+)\?:\s*([A-Z]\w+);/gm)];
     const missing: string[] = [];

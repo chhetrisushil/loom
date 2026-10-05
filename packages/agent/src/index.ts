@@ -3,9 +3,18 @@ export type { AgentConfig, InterruptedAgentRun } from "./AgentRunner";
 export { SkillRegistry } from "./SkillRegistry";
 export type { SkillMatch } from "./SkillRegistry";
 export { deterministicSkillSelector, llmSkillSelector } from "./SkillSelector";
-export type { SkillSelector } from "./SkillSelector";
-export { agentLoop$ } from "./agentLoop$";
-export type { AgentLoopConfig, AgentModelCall, ApprovalPolicy } from "./agentLoop$";
+export type {
+  SkillSelectionRequest,
+  SkillSelector,
+  SkillSelectorContext,
+} from "./SkillSelector";
+export { agentLoop$, registerReasoningRoutes } from "./agentLoop$";
+export type {
+  AgentLoopConfig,
+  AgentModelCall,
+  ApprovalPolicy,
+  EffectRegistry,
+} from "./agentLoop$";
 export { chunkDeltas } from "./chunkDeltas";
 export type { ChunkDeltasOptions, ChunkedSink } from "./chunkDeltas";
 export { createAgentModelEffect } from "./createAgentModelEffect";

@@ -67,6 +67,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Strict mode and the autonomy envelope (R9, 1P half; no kernel change).** Every default was
+  permissive: no authorizer allowed every effect, no deadline let a run go forever, spawn depth
+  and breadth were unbounded, nothing metered spend, and the kill switch was a synchronous
+  per-process predicate.
+  - `defineConfig({ security: { strict } })`: `true` (or `{ defaultDeadlineMs }`) makes
+    composition THROW, listing every problem, without `security.authorizer` and
+    `security.executionAuthorizer` and if `checks.verify` is `"off"`; it applies a 24 h default
+    execution deadline to flows that declare none (by wrapping `start`/`resume`/`resumeAs`/
+    `restoreFromState`, so the flow fingerprint is NOT changed), spawn caps (depth 5, fan-out 32),
+    a 1M-token per-execution budget, verification on (`"error"`), and an in-memory kill switch.
+    Not strict, behaviour is unchanged and ONE advisory naming what is permissive goes through
+    `observability.onWarn`; `strict: false` is the silent opt-out. New `execution.envelope`
+    (`spawn`, `budget { perExecution, perAgent, perTenant, pricing }`, `rateLimit`) and
+    `security.killSwitch`; `app.strict`, `app.envelope`, `app.killSwitch`; `STRICT_DEFAULTS`.
+  - `@loom/middleware`: `rateLimitMiddleware` (token bucket per execution / tenant / workflow /
+    process, LRU-bounded, injectable clock), `killSwitchMiddleware` + `KillSwitchRegistry` +
+    `InMemoryKillSwitch` (system / tenant / workflow stop, fails closed), and typed refusals
+    `RateLimitExceededError` and `KillSwitchEngagedError`, both `retryable: false` — which
+    `retryMiddleware`'s default classifier now honours.
+  - `@loom/orchestration`: `SpawnLimits`, `boundOrchestration` (parent-side refusal before the
+    spawn decision is recorded), `SupervisorDeps.limits` (a refused spawn starts no child and
+    resumes the parent with a failed child), `SpawnLimitExceededError`.
+  - `@loom/agent` / `@loom/reasoning`: `agentLoop$({ reasoning, reasoningToolId })` routes each
+    model call through the EffectRuntime as a journaled frame (`registerReasoningRoutes`),
+    `llmSkillSelector({ toolId })` does the same for skill selection, and
+    `requireEffectRing` refuses the direct-provider spellings. `ReasoningRuntime.reason` takes an
+    optional `invoke` (`ModelInvoker`).
+  - `create-loom-app` / `loom new` scaffold `strict: true` with an `app/security.ts` stub.
+  - New error names for control-plane classifiers (loom-ui `isControlPlaneError`):
+    `RateLimitExceededError`, `KillSwitchEngagedError`, `SpawnLimitExceededError`.
+
+  Behavioural notes: (1) `defineConfig` without `security.strict` now logs one `onWarn` advisory
+  — an app that asserted its `onWarn` sink stayed empty must set `strict: false`. (2) The
+  direct-provider `llmSkillSelector(provider)` now runs `guardRequest`. (3) Residuals, by
+  design: the kill switch refuses the NEXT effect and does not cancel running executions or
+  their children (kernel cancel cascade, later); a skill selection or routed call made through a
+  `ctx.decide` scope would drop its charge, which is why both are journaled frames instead; the
+  per-agent/per-tenant budgets are cumulative per process and eventually consistent across nodes;
+  an effect-backed `skillSelector` is refused by `AgentRunner`.
+
 - **`@loom/verify` declared reach for code a flow hands its `ctx` to (backlog L32).** A flow
   that calls `planner.compose(input, ctx)` reached nothing as far as capability-compat,
   effect-class and suspension-safety could tell, and was not reported either. The compiler now

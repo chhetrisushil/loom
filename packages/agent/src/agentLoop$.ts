@@ -1,5 +1,6 @@
 import type { AgentDefinition, ToolDefinition } from "@loom/core";
 import { loadInstructions } from "@loom/core";
+import type { Effect } from "@loom/effect-runtime";
 import type {
   LlmContent,
   LlmMessageInput,
@@ -8,10 +9,11 @@ import type {
   LlmToolSpecInput,
 } from "@loom/llm";
 import type { TieredMemory } from "@loom/memory";
-import type { ReasoningRuntime } from "@loom/reasoning";
+import type { ModelInvoker, ReasoningRuntime } from "@loom/reasoning";
 import type { ExecutionContext } from "@loom/workflow-runtime";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
+import { createAgentModelEffect } from "./createAgentModelEffect";
 import { toolResultContent } from "./toolResultContent";
 import { buildToolMenu, toolInputJsonSchema } from "./toolSchema";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
@@ -46,6 +48,9 @@ export interface AgentModelCall {
   messages: LlmMessageInput[];
   tools?: LlmToolSpecInput[];
   system?: LlmContent;
+  /** R9 — set only by a routed turn forwarding the reasoning request's own sampling bounds. */
+  maxTokens?: number;
+  temperature?: number;
 }
 
 /** What a tool call must clear before it runs. Returning `false` parks the loop on a gate. */
@@ -84,14 +89,33 @@ export interface AgentLoopConfig {
    *
    * From a runner body the real seam is in reach, so this passes `ctx.decide`.
    *
-   * **The trade-off, stated rather than hidden.** On this path the model call is
-   * made by the Reasoning Runtime's own routes, so it does NOT pass through the
-   * `EffectRuntime`: `guardRequest` still runs (R2 guards `ReasoningRuntime.call`),
-   * but K2 authorization, metering and K9 in-doubt do not apply to it. The
-   * `modelToolId` path gets the full ring and no routing. Pick per agent; they
-   * are alternatives, and one of the two is required.
+   * **The ring, and how to get it (R9).** By default the Reasoning Runtime's routes call their
+   * providers DIRECTLY: `guardRequest` still runs (R2 guards `ReasoningRuntime.call`), but K2
+   * authorization, metering and quotas, the kill switch and K9 in-doubt do not apply, and the
+   * model call is not journaled (a resumed run re-calls the model). Set
+   * {@link reasoningToolId} and each route's call is instead resolved through the
+   * `EffectRuntime` as a durable frame (`#turn:<i>:call:<n>`), which brings all of those and a
+   * recorded response; {@link registerReasoningRoutes} registers one effect per route. The
+   * `modelToolId` path always had the full ring and no routing; this gives routing the same.
+   * {@link requireEffectRing} turns the unguarded default into a refusal.
    */
   reasoning?: ReasoningRuntime;
+  /**
+   * R9 — route each `reasoning` model call through the effect ring. Either one effect id for
+   * every route, or a function from the route id to the effect id registered for it (see
+   * {@link registerReasoningRoutes}). Each call is a journaled `ctx.execute` frame with the id
+   * `<agent>#turn:<i>:call:<n>` (`n` counts the route + elevation calls within the turn, which
+   * the recorded decisions make deterministic), so authorization, metering, the kill switch and
+   * `guardRequest` apply and a replay serves the recorded response. Ignored without `reasoning`.
+   */
+  reasoningToolId?: string | ((routeId: string) => string);
+  /**
+   * R9 — refuse to run any model call outside the effect ring. With this set, `agentLoop$`
+   * throws up front when `reasoning` is configured without {@link reasoningToolId}, and when a
+   * `skillSelector` calls a provider directly instead of being `effectBacked`. Scaffolded apps
+   * and `@loom/app`'s strict profile are meant to set it; default `false` keeps today's behaviour.
+   */
+  requireEffectRing?: boolean;
   systemPrompt?: string;
   maxIterations?: number;
   /**
@@ -259,6 +283,18 @@ export async function agentLoop$(
     // answer, which is what an absent model access would otherwise look like.
     throw new Error("agentLoop$ requires a `modelToolId` or a `reasoning` runtime");
   }
+  if (config.requireEffectRing === true) {
+    if (config.reasoning !== undefined && config.reasoningToolId === undefined) {
+      throw new Error(
+        "agentLoop$ requireEffectRing: `reasoning` calls its routes' providers directly, outside authorization/metering/the kill switch. Set `reasoningToolId` (see registerReasoningRoutes) or drop `reasoning` for `modelToolId`."
+      );
+    }
+    if (config.skillSelector !== undefined && config.skillSelector.effectBacked !== true) {
+      throw new Error(
+        "agentLoop$ requireEffectRing: this `skillSelector` calls a provider directly, outside authorization/metering/the kill switch. Use llmSkillSelector({ toolId }) or deterministicSkillSelector()."
+      );
+    }
+  }
   if (
     config.compaction !== undefined &&
     config.compaction.afterMessages === undefined &&
@@ -281,9 +317,20 @@ export async function agentLoop$(
   if (config.skills !== undefined && config.skills.all().length > 0) {
     const selector = config.skillSelector ?? deterministicSkillSelector();
     const registry = config.skills;
-    const selected = await ctx.decide<string[]>(`${idPrefix}#skills`, () =>
-      selector.select(input, registry)
-    );
+    // An effect-backed selector's model call is a durable frame of its own (charged to the
+    // execution, served from the log on replay), and the parse is a pure function of it — so
+    // it needs no `decide` wrapper. Wrapping it would also be wrong: the call would then run
+    // inside a decider's transient scope, where its spend never reaches the fold.
+    const selected =
+      selector.effectBacked === true
+        ? await selector.select(input, registry, {
+            invoke: (toolId, request) =>
+              ctx.execute(
+                { _tag: "TaskDefinition", kind: "llm", id: `${idPrefix}#skills:select`, toolId },
+                request
+              ) as Promise<LlmResponse>,
+          })
+        : await ctx.decide<string[]>(`${idPrefix}#skills`, () => selector.select(input, registry));
     for (const id of selected) {
       const skill = registry.get(id);
       if (skill === undefined) continue;
@@ -466,11 +513,33 @@ export async function agentLoop$(
     // Routed turn: the route and each elevation are recorded through the REAL
     // decision seam, so a replay takes the route that ran.
     if (config.reasoning !== undefined) {
+      // R9 — each model call as a journaled effect frame, when a tool id is configured.
+      // `callSeq` is per turn; the route + elevation decisions are recorded, so a replay makes
+      // the same sequence of calls and finds each frame under the same id.
+      let callSeq = 0;
+      const reasoningToolId = config.reasoningToolId;
+      const invoke: ModelInvoker | undefined =
+        reasoningToolId === undefined
+          ? undefined
+          : (route, request) =>
+              ctx.execute(
+                {
+                  _tag: "TaskDefinition",
+                  kind: "llm",
+                  id: `${idPrefix}#turn:${turn}:call:${callSeq++}`,
+                  toolId:
+                    typeof reasoningToolId === "string"
+                      ? reasoningToolId
+                      : reasoningToolId(route.id),
+                },
+                request satisfies AgentModelCall
+              ) as Promise<LlmResponse>;
       const routed = await config.reasoning.reason(
         { ...turnRequest, strategy: "agent" },
         {
           decide: ctx.decide,
           decisionKey: `${idPrefix}#turn:${turn}`,
+          ...(invoke !== undefined && { invoke }),
         }
       );
       lastContent = routed.content;
@@ -507,4 +576,38 @@ export async function agentLoop$(
   }
 
   return { content: lastContent, toolCallLog, iterations };
+}
+
+/** The minimal registration surface of an `EffectRuntime` (`app.effectRuntime`). */
+export interface EffectRegistry {
+  register(toolId: string, effect: Effect): void;
+}
+
+/**
+ * R9 — register one model effect per route of `reasoning` under `<prefix>:<routeId>`, and
+ * return the route-id → effect-id mapping for {@link AgentLoopConfig.reasoningToolId}:
+ *
+ * ```ts
+ * const toolIdFor = registerReasoningRoutes(app.effectRuntime, reasoning);
+ * agentLoop$(ctx, { definition, reasoning, reasoningToolId: toolIdFor }, input);
+ * ```
+ *
+ * Grant each returned id to the flow in the authorizer, exactly as you would `modelToolId`.
+ */
+export function registerReasoningRoutes(
+  effects: EffectRegistry,
+  reasoning: ReasoningRuntime,
+  options: { prefix?: string; stream?: boolean } = {}
+): (routeId: string) => string {
+  const prefix = options.prefix ?? "model";
+  const toolIdFor = (routeId: string): string => `${prefix}:${routeId}`;
+  for (const route of reasoning.availableRoutes) {
+    effects.register(
+      toolIdFor(route.id),
+      createAgentModelEffect(route.provider, {
+        ...(options.stream !== undefined && { stream: options.stream }),
+      })
+    );
+  }
+  return toolIdFor;
 }

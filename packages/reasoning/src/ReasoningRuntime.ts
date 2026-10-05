@@ -5,6 +5,7 @@ import { tagRouter } from "./router";
 import type {
   ConfidenceSignal,
   DecideFn,
+  ModelInvoker,
   ModelRoute,
   ReasonOptions,
   ReasoningCache,
@@ -79,7 +80,7 @@ export class ReasoningRuntime {
     let current = this.routes[currentIdx] as ModelRoute;
     const trace: ReasoningTraceEntry[] = [];
 
-    let res = await this.call(current, req, signal);
+    let res = await this.call(current, req, signal, opts.invoke);
     let confidence = await this.confidence.score(req, res);
     trace.push({ modelId: current.id, tier: current.tier, confidence, elevated: false });
 
@@ -94,7 +95,7 @@ export class ReasoningRuntime {
       const chosenId = await decide(`reason:${key}:elevate:${step}`, () => next.id);
       currentIdx = this.indexOf(chosenId);
       current = this.routes[currentIdx] as ModelRoute;
-      res = await this.call(current, req, signal);
+      res = await this.call(current, req, signal, opts.invoke);
       confidence = await this.confidence.score(req, res);
       trace.push({ modelId: current.id, tier: current.tier, confidence, elevated: true });
     }
@@ -122,8 +123,29 @@ export class ReasoningRuntime {
   private async call(
     route: ModelRoute,
     req: ReasoningRequest,
-    signal: AbortSignal | undefined
+    signal: AbortSignal | undefined,
+    invoke: ModelInvoker | undefined
   ): Promise<LlmResponse> {
+    if (invoke !== undefined) {
+      // R9 — the host makes the call (as an effect, inside the ring). No cache: see ModelInvoker.
+      // `guardRequest` still runs here, so a custom invoker that is NOT an effect cannot
+      // receive tainted content either; the effect it resolves to guards again, harmlessly
+      // (a guarded request is untainted, and guarding it is the identity).
+      const guarded = guardRequest({
+        messages: req.messages,
+        ...(req.system !== undefined && { system: req.system }),
+        ...(req.tools !== undefined && { tools: req.tools }),
+        ...(req.maxTokens !== undefined && { maxTokens: req.maxTokens }),
+        ...(req.temperature !== undefined && { temperature: req.temperature }),
+      });
+      return invoke(route, {
+        messages: guarded.messages,
+        ...(guarded.system !== undefined && { system: guarded.system }),
+        ...(guarded.tools !== undefined && { tools: guarded.tools }),
+        ...(guarded.maxTokens !== undefined && { maxTokens: guarded.maxTokens }),
+        ...(guarded.temperature !== undefined && { temperature: guarded.temperature }),
+      });
+    }
     const cacheKey = this.cache !== undefined ? this.keyFor(route.id, req) : undefined;
     if (cacheKey !== undefined) {
       const hit = this.cache?.get(cacheKey);
