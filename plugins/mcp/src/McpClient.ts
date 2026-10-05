@@ -3,6 +3,7 @@ import type { ToolDefinition } from "@loom/core";
 import type { EffectRuntime } from "@loom/effect-runtime";
 import { ToolEffect } from "@loom/effect-runtime";
 import { z } from "zod";
+import { refuseMalformedInput } from "./inputShape";
 import {
   DEFAULT_MCP_PROTOCOL_VERSION,
   MCP_PROTOCOL_VERSION_META_KEY,
@@ -33,6 +34,29 @@ interface JsonRpcResponse<T = unknown> {
 
 /** Bound on server-controlled text interpolated into thrown errors (audit SEC-5). */
 const MAX_ERROR_TEXT = 2048;
+
+/** Provider-safe tool names (OpenAI/Anthropic/Gemini all accept this set). */
+const TOOL_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+function emitSkipWarning(name: unknown): void {
+  const shown = typeof name === "string" ? JSON.stringify(name.slice(0, 64)) : "(non-string)";
+  (
+    globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } }
+  ).process?.emitWarning?.(
+    `MCP tool ${shown} skipped: its name is not ^[A-Za-z0-9_-]{1,64}$ (providers reject it, and a long name is third-party text in the prompt).`,
+    { code: "LOOM_MCP_TOOL_NAME" }
+  );
+}
+
+export interface ListToolsOptions {
+  resultFidelity?: McpResultFidelity;
+  trustDescriptions?: boolean;
+  /**
+   * Keep tools whose name is not provider-safe (`^[A-Za-z0-9_-]{1,64}$`). Default
+   * false: the name is the effect id AND what a model is shown. Set it only when
+   * the tools are NOT handed to a model (`mcpInvoke$`, an app view).
+   */
+  anyToolName?: boolean;
+}
 
 export class McpClient {
   private sessionId: string | undefined;
@@ -164,14 +188,21 @@ export class McpClient {
    * schema descriptions: without it agent loops show the model each tool's
    * structure (names, types, `required`) but NOT the server's prose (ADR 0085).
    */
-  async listTools(
-    options: { resultFidelity?: McpResultFidelity; trustDescriptions?: boolean } = {}
-  ): Promise<MappedMcpTool[]> {
+  async listTools(options: ListToolsOptions = {}): Promise<MappedMcpTool[]> {
     const result = await this.rpc<{ tools: McpTool[] }>("tools/list");
     const fidelity = options.resultFidelity ?? "value";
-    return (result.tools ?? []).map((mcpTool) =>
-      this.mapTool(mcpTool, fidelity, options.trustDescriptions === true)
-    );
+    const mapped: MappedMcpTool[] = [];
+    for (const mcpTool of result.tools ?? []) {
+      // The name is the effect id AND what the model is shown; providers reject
+      // one outside this charset (a 400 on every run), and a long one is prose.
+      if (typeof mcpTool?.name !== "string") continue;
+      if (options.anyToolName !== true && !TOOL_NAME_RE.test(mcpTool.name)) {
+        emitSkipWarning(mcpTool?.name);
+        continue;
+      }
+      mapped.push(this.mapTool(mcpTool, fidelity, options.trustDescriptions === true));
+    }
+    return mapped;
   }
 
   /**
@@ -181,7 +212,7 @@ export class McpClient {
    */
   async registerInto(
     effectRuntime: EffectRuntime,
-    options: { resultFidelity?: McpResultFidelity; trustDescriptions?: boolean } = {}
+    options: ListToolsOptions = {}
   ): Promise<ToolDefinition[]> {
     const mapped = await this.listTools(options);
     for (const { definition, effect } of mapped) {
@@ -299,6 +330,9 @@ export class McpClient {
     });
 
     const effect = new ToolEffect(async (input: unknown) => {
+      // R4b — the shape verdict is journaled WITH the step (see inputShape.ts).
+      const refusal = refuseMalformedInput(mcpTool.inputSchema, input);
+      if (refusal !== undefined) return refusal;
       if (fidelity === "value") return this.callTool(mcpTool.name, input);
       const result = await this.callToolResult(mcpTool.name, input);
       throwIfToolError(mcpTool.name, result);

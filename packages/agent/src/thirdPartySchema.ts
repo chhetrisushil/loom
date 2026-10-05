@@ -1,25 +1,30 @@
 /**
  * R4b — a THIRD PARTY's JSON Schema (an MCP server's `inputSchema`) is bytes we
  * did not write that are about to be placed in a model prompt. This module
- * turns it into something safe to send, and into a small structural check.
+ * turns it into something safe to send.
  *
  * Sanitisation is an ALLOWLIST of JSON Schema keywords (everything else —
  * `x-*` extensions, `default`, `examples`, `$comment`, `$id`, `$schema`, … — is
  * dropped), under hard bounds: depth {@link MAX_DEPTH}, {@link MAX_NODES}
- * schema nodes, strings capped at {@link MAX_STR}. A cyclic structure, or one
+ * schema nodes, free text capped at {@link MAX_TEXT}. A cyclic structure, or one
  * past any bound, is REFUSED as a whole (`undefined`); the caller falls back to
- * `{ type: "object" }` and warns. It never throws. A `$ref` survives only if it
- * is a same-document pointer (`#`, `#/…`): nothing is ever fetched, and a
- * remote ref is dropped (the node becomes permissive).
+ * `{ type: "object" }` and warns. It never throws. Nothing is ever fetched:
+ * a remote `$ref` is dropped (the node becomes permissive).
  *
  * Free text (`description`, `title`) is stripped unless the caller states trust
  * (`keepText`): it is read as instructions by every provider (ADR 0085). What
- * remains textual and is NOT removable without destroying the schema — property
- * names and `enum`/`const` strings — is capped at {@link MAX_STR} chars; a
- * hostile server can still say something short there, which is why the
- * description is the default-deny surface and not a complete defence.
+ * remains textual and is NOT removable without destroying the schema is
+ * constrained so it cannot carry prose: property / `$defs` / `definitions` keys
+ * must be identifier-shaped ({@link NAME_RE}, else the entry is dropped and its
+ * `required` mention with it); `enum`/`const` strings are at most
+ * {@link MAX_VALUE} chars with no control / zero-width / bidi characters (else
+ * the keyword is dropped); `format` is from JSON Schema's standard list;
+ * `pattern` must compile (never run); a `$ref` survives only if it names a kept
+ * `$defs`/`definitions` entry (or `#`). A total budget of
+ * {@link MAX_ATTACKER_CHARS} characters across all of those refuses the whole
+ * schema. A hostile server can still say a few words inside the budget; the
+ * description is the default-deny surface, this is the bound on the rest.
  */
-import type { ToolInputCheck, ToolInputIssue } from "./toolSchema";
 
 const MAX_DEPTH = 16;
 const MAX_NODES = 1000;
@@ -27,6 +32,41 @@ const MAX_STR = 200;
 const MAX_TEXT = 1000;
 const MAX_LIST = 100;
 const MAX_SIZE = 64 * 1024;
+/** Property / `$defs` / `definitions` keys must look like identifiers, not sentences. */
+const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+/** `enum` / `const` strings and `pattern` are capped tighter than free text. */
+const MAX_VALUE = 64;
+const MAX_PATTERN = 128;
+/**
+ * Total attacker-controlled characters one schema may carry (names, `$defs` keys,
+ * `enum`/`const` strings, `pattern`, `format`, `$ref`). Past it the whole schema
+ * is refused. Without it the per-item caps still admit ~64KB of prose per tool.
+ */
+export const MAX_ATTACKER_CHARS = 4096;
+/** Control, format (zero-width, bidi) and line/paragraph-separator characters. */
+const HIDDEN_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+/** JSON Schema's standard `format` vocabulary (draft 2020-12 section 7.3). */
+const FORMATS = new Set([
+  "date-time",
+  "date",
+  "time",
+  "duration",
+  "email",
+  "idn-email",
+  "hostname",
+  "idn-hostname",
+  "ipv4",
+  "ipv6",
+  "uri",
+  "uri-reference",
+  "iri",
+  "iri-reference",
+  "uuid",
+  "uri-template",
+  "json-pointer",
+  "relative-json-pointer",
+  "regex",
+]);
 
 type Json = Record<string, unknown>;
 
@@ -53,7 +93,7 @@ const isPrim = (v: unknown): v is string | number | boolean | null =>
   v === null ||
   typeof v === "boolean" ||
   (typeof v === "number" && Number.isFinite(v)) ||
-  (typeof v === "string" && v.length <= MAX_STR);
+  (typeof v === "string" && v.length <= MAX_VALUE && !HIDDEN_RE.test(v));
 
 class Refused extends Error {}
 
@@ -61,7 +101,27 @@ interface St {
   nodes: number;
   keepText: boolean;
   ancestors: Set<unknown>;
+  /** Attacker-controlled characters kept so far (see {@link MAX_ATTACKER_CHARS}). */
+  chars: number;
+  /** Output nodes carrying a `$ref`, resolved against the kept `$defs` at the end. */
+  refs: Json[];
 }
+
+/** Charge `n` attacker characters against the budget; over it, refuse the schema. */
+function spend(st: St, n: number): void {
+  st.chars += n;
+  if (st.chars > MAX_ATTACKER_CHARS) throw new Refused();
+}
+
+const validPattern = (p: string): boolean => {
+  if (p.length > MAX_PATTERN || HIDDEN_RE.test(p)) return false;
+  try {
+    new RegExp(p, "u"); // compiled to prove it is a regex; NEVER executed
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 function node(raw: unknown, depth: number, st: St): unknown {
   if (typeof raw === "boolean") return raw; // `true` / `false` subschemas
@@ -84,25 +144,28 @@ function node(raw: unknown, depth: number, st: St): unknown {
       if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
     }
     if (typeof raw.uniqueItems === "boolean") out.uniqueItems = raw.uniqueItems;
-    for (const k of ["format", "pattern"] as const) {
-      const v = raw[k];
-      if (typeof v === "string" && v.length <= MAX_STR) out[k] = v;
+    if (typeof raw.format === "string" && FORMATS.has(raw.format)) out.format = raw.format;
+    if (typeof raw.pattern === "string" && validPattern(raw.pattern)) {
+      spend(st, raw.pattern.length);
+      out.pattern = raw.pattern;
     }
-    if (
-      Array.isArray(raw.required) &&
-      raw.required.length <= MAX_LIST &&
-      raw.required.every((x) => typeof x === "string" && x.length <= MAX_STR)
-    )
-      out.required = [...raw.required];
-    if (Array.isArray(raw.enum) && raw.enum.length <= MAX_LIST && raw.enum.every(isPrim))
+    if (Array.isArray(raw.enum) && raw.enum.length <= MAX_LIST && raw.enum.every(isPrim)) {
+      for (const x of raw.enum) if (typeof x === "string") spend(st, x.length);
       out.enum = [...raw.enum];
-    if (isPrim(raw.const)) out.const = raw.const;
+    }
+    if (isPrim(raw.const)) {
+      if (typeof raw.const === "string") spend(st, raw.const.length);
+      out.const = raw.const;
+    }
+    // A same-document pointer to the root (`#`) or to a `$defs`/`definitions`
+    // entry; whether the entry SURVIVED is decided once the tree is built.
     if (
       typeof raw.$ref === "string" &&
-      raw.$ref.length <= MAX_STR &&
-      /^#(\/[^\s]*)?$/.test(raw.$ref)
-    )
+      (raw.$ref === "#" || /^#\/(\$defs|definitions)\/[A-Za-z0-9_.-]{1,64}$/.test(raw.$ref))
+    ) {
       out.$ref = raw.$ref;
+      st.refs.push(out);
+    }
     if (st.keepText) {
       for (const k of ["description", "title"] as const) {
         const v = raw[k];
@@ -124,11 +187,23 @@ function node(raw: unknown, depth: number, st: St): unknown {
       if (!isObj(v)) throw new Refused();
       const map: Json = {};
       for (const [name, sub] of Object.entries(v)) {
-        if (name === "__proto__") continue;
-        if (name.length > MAX_STR) throw new Refused();
+        // A key that is not identifier-shaped is dropped, not kept: a sentence
+        // in a property name is prompt text. Dropping one entry degrades a tool
+        // less than refusing its whole schema, and `required` is pruned below.
+        if (!NAME_RE.test(name)) continue;
+        spend(st, name.length);
         map[name] = node(sub, depth + 1, st);
       }
       out[k] = map;
+    }
+    // `required` names only properties that survived: a name nothing declares
+    // is either dropped attacker text or a dangling claim.
+    if (Array.isArray(raw.required) && raw.required.length <= MAX_LIST) {
+      const props = isObj(out.properties) ? out.properties : {};
+      const req = raw.required.filter(
+        (x): x is string => typeof x === "string" && Object.hasOwn(props, x)
+      );
+      if (req.length > 0) out.required = [...new Set(req)];
     }
     return out;
   } finally {
@@ -143,8 +218,17 @@ function node(raw: unknown, depth: number, st: St): unknown {
 export function sanitizeJsonSchema(raw: unknown, opts: { keepText: boolean }): Json | undefined {
   try {
     if (!isObj(raw)) return undefined;
-    const st: St = { nodes: 0, keepText: opts.keepText, ancestors: new Set() };
+    const st: St = { nodes: 0, keepText: opts.keepText, ancestors: new Set(), chars: 0, refs: [] };
     const out = node(raw, 0, st) as Json;
+    // A `$ref` to a `$defs`/`definitions` entry that was dropped (or never
+    // existed) is dangling — providers 400 on it — so it is removed.
+    for (const r of st.refs) {
+      const ref = r.$ref as string;
+      if (ref === "#") continue;
+      const [, section, name] = ref.split("/") as [string, string, string];
+      const defs = out[section];
+      if (!isObj(defs) || !Object.hasOwn(defs, name)) Reflect.deleteProperty(r, "$ref");
+    }
     if (JSON.stringify(out).length > MAX_SIZE) return undefined;
     // Providers require an object root; a non-object root is not describable.
     const t = out.type;
@@ -153,55 +237,4 @@ export function sanitizeJsonSchema(raw: unknown, opts: { keepText: boolean }): J
   } catch {
     return undefined;
   }
-}
-
-function typeOk(v: unknown, t: string): boolean {
-  switch (t) {
-    case "string":
-      return typeof v === "string";
-    case "number":
-      return typeof v === "number" && Number.isFinite(v);
-    case "integer":
-      return typeof v === "number" && Number.isInteger(v);
-    case "boolean":
-      return typeof v === "boolean";
-    case "null":
-      return v === null;
-    case "array":
-      return Array.isArray(v);
-    case "object":
-      return isObj(v);
-    default:
-      return true;
-  }
-}
-
-/**
- * The MINIMAL structural check for a tool whose only schema is JSON Schema: an
- * object, every `required` key present, and each declared top-level property
- * of a declared `type`. It is NOT a JSON Schema validator (no nesting, `enum`,
- * bounds, combinators): the MCP server remains the authority for those, and it
- * validates on `tools/call`. Looser than the server by construction, so it can
- * only refuse inputs the server's own schema also rejects.
- */
-export function checkJsonSchemaShape(schema: Json, input: unknown): ToolInputCheck {
-  const issues: ToolInputIssue[] = [];
-  if (!isObj(input)) {
-    return { ok: false, truncated: false, issues: [{ path: "", message: "expected an object" }] };
-  }
-  const required = Array.isArray(schema.required) ? (schema.required as string[]) : [];
-  for (const k of required) {
-    if (!Object.hasOwn(input, k) || input[k] === undefined)
-      issues.push({ path: k.slice(0, MAX_STR), message: "required" });
-  }
-  const props = isObj(schema.properties) ? schema.properties : {};
-  for (const [k, sub] of Object.entries(props)) {
-    if (!Object.hasOwn(input, k) || input[k] === undefined || !isObj(sub)) continue;
-    const t = sub.type;
-    const types = typeof t === "string" ? [t] : Array.isArray(t) ? (t as string[]) : undefined;
-    if (types !== undefined && !types.some((x) => typeOk(input[k], x)))
-      issues.push({ path: k.slice(0, MAX_STR), message: `expected ${types.join(" | ")}` });
-  }
-  if (issues.length === 0) return { ok: true };
-  return { ok: false, truncated: issues.length > 5, issues: issues.slice(0, 5) };
 }

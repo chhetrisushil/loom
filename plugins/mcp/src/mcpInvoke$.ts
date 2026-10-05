@@ -225,7 +225,7 @@ export function registerMcpInvoke(
       return Promise.resolve(snapshot.byName);
     }
     refreshing ??= client
-      .listTools()
+      .listTools({ anyToolName: true }) // never shown to a model: dotted names are legitimate
       .then((tools) => {
         snapshot = { at: Date.now(), byName: new Map(tools.map((t) => [t.definition.id, t])) };
         return snapshot.byName;

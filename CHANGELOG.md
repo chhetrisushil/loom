@@ -86,21 +86,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `toolInputJsonSchema(zod, json?, { trustText })` prefers it. The schema is THIRD-PARTY
   bytes bound for a prompt, so it is sanitised first (`sanitizeJsonSchema`): a keyword
   allowlist (unknown / `x-*` / `default` / `examples` dropped), depth 16, 1000 nodes, 64KB,
-  strings 200 chars, remote `$ref` dropped (nothing is fetched), cyclic or oversized refused
-  as a whole and sent as `{ type: "object" }` with a one-time `LOOM_AGENT_TOOL_SCHEMA`
-  warning (the run never fails). **Taint:** `description`/`title` inside the schema, and the
+  remote `$ref` dropped (nothing is fetched), cyclic or oversized refused
+  as a whole and sent as `{ type: "object" }` with a `LOOM_AGENT_TOOL_SCHEMA`
+  warning per tool id (the run never fails). **The text that must stay is constrained, not
+  merely capped** (a per-item cap still admitted ~64KB of prose per tool): property and
+  `$defs`/`definitions` keys must match `^[A-Za-z0-9_.-]{1,64}$` (else the entry is dropped,
+  and its `required` mention; `required` only names kept properties); `enum`/`const` strings are
+  at most 64 chars with no control / zero-width / bidi characters (else the keyword is dropped);
+  `format` only from JSON Schema's standard list; `pattern` at most 128 chars and must compile
+  under `new RegExp(p, "u")` (compiled, never run); a `$ref` survives only if it names a kept
+  `$defs`/`definitions` entry or `#`; and ALL of that attacker-controlled text together is
+  budgeted at 4096 characters per tool, past which the whole schema is refused. A hostile
+  server can still say a few words inside the budget; the description is the default-deny
+  surface. **Taint:** `description`/`title` inside the schema, and the
   MCP tool's own description, were read as instructions yet never passed `guardRequest`
-  (a plain string carries no taint). They are now stripped (the description becomes the tool
-  id) unless the operator opts in with `listTools/registerInto({ trustDescriptions: true })`.
+  (a plain string carries no taint). They are now stripped (the description becomes the fixed
+  string "Third-party tool; description withheld") unless the operator opts in with
+  `listTools/registerInto({ trustDescriptions: true })` (a trusted description is still capped
+  at 1000 chars, with a one-time `LOOM_AGENT_TRUSTED_TOOL_TEXT` warning per tool).
   Strip-by-default rather than taint-and-refuse: `guardRequest` refuses the WHOLE request on a
   tainted description, so every MCP agent would fail to run; ADR 0085's MCP producer is
   likewise opt-in (`taintResults`) and its `unwrapTainted` is the operator's visible
-  decision, which `trustDescriptions` mirrors. Property names and `enum`/`const` strings
-  remain (structural, capped at 200 chars). **Validation:** a tool with a `jsonInputSchema`
-  is now also shape-checked before it runs (`checkJsonSchemaShape`: object input, `required`
-  keys present, declared top-level property types) so a malformed call is refused as
-  `invalid_tool_input`; nested rules, enums and bounds stay the MCP server's job. No new
-  dependency.
+  decision, which `trustDescriptions` mirrors. **Tool names:** the name is the effect id and
+  what the model sees, so `listTools` skips (with a `LOOM_MCP_TOOL_NAME` warning) any tool whose
+  name is not `^[A-Za-z0-9_-]{1,64}$` (providers 400 on one, and a long name is prompt text);
+  `listTools({ anyToolName: true })` opts out for tools never shown to a model (`mcpInvoke$` and an
+  app view use it: `loom.surface.since` is a legitimate dotted name).
+  **Validation:** an MCP tool now checks its own call's shape INSIDE its effect
+  (object input, `required` keys present, declared top-level property types) and returns a
+  recorded `{ error: { code: "invalid_tool_input", ... } }` RESULT; nested rules, enums and
+  bounds stay the server's job. It is in the effect, not in the agent loop before
+  `ctx.execute`, so replay is deterministic: the schema comes from a LIVE `tools/list` at
+  boot, and a gate outside the journaled step would refuse, after server schema drift, a call
+  the log records as executed. Note a direct flow caller of an MCP tool now also receives that
+  result, instead of the server's error, for a malformed call. **Hazard (R4b vs R4):** R4's
+  zod gate reads a STATIC definition the deployer controls (hence "drain before upgrading");
+  R4b's schema is remote and drifts on its own, so it is kept out of the gate. What the model
+  is SHOWN still comes from the live listing, so a drifted schema changes the menu on the next
+  model call of a resumed run (the recorded model responses still replay). Pre-R4b executions
+  are unaffected (MCP tools were `z.unknown()`, nothing was gated). No new dependency.
 
 - **Agent loops executed any effect id the model named, with unvalidated input, and showed the model no argument schemas (R4).**
   `agentLoop$` ran `ctx.execute({ toolId: toolCall.name })` and `AgentRunner` (hence `agentStep$`)

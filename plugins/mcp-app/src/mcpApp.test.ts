@@ -544,7 +544,9 @@ describe("MCP server — audience and seam boundaries", () => {
       url: s.url,
       headers: { "x-audience": "app" },
     });
-    expect((await asApp.listTools()).map((t) => t.definition.id)).toEqual(["loom.surface.since"]);
+    expect((await asApp.listTools({ anyToolName: true })).map((t) => t.definition.id)).toEqual([
+      "loom.surface.since",
+    ]);
   });
 
   // The heart of it: a View can call any tool the host proxies. Enrichment is

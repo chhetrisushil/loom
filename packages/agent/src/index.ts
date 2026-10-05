@@ -27,5 +27,5 @@ export {
   toolSpecFor,
   validateToolInput,
 } from "./toolSchema";
-export { checkJsonSchemaShape, sanitizeJsonSchema } from "./thirdPartySchema";
+export { sanitizeJsonSchema } from "./thirdPartySchema";
 export type { ToolInputCheck, ToolInputIssue } from "./toolSchema";
