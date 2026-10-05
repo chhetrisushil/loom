@@ -127,7 +127,11 @@ today refusing the `__loom_` prefix and the blank id) is called on resume paths 
 1448, `resume` 1765, `resumeAs` 2013), so the shape refusal is a creation-only variant applied where a
 caller names a NEW id (`start`, line 1570; the fork child id, line 2324), never on resume of an existing one
 (existing logs stay resumable; `cancel` at 1382 is unaffected). `chainId` is itself a caller id whose root
-segment may not match the shape, so `<chainId>~<n>` is unambiguous.
+segment may not match the shape, so `<chainId>~<n>` is unambiguous. A caller starting `foo~1::x` under an
+existing `foo~1` is not a new hazard: it is the same as a caller starting `foo::g#0` under `foo` today (the
+supervisor adopts it idempotently, and `start` is authorized exactly as today). The parent-exists read is not
+atomic with the child append; the worst case is a child of a later-deleted log, which is benign. The fork
+child id (`WorkflowRuntime.ts` ~2324) goes through the same derived check, so `fork(…, "foo~3")` is refused.
 (b) The continuation start verifies that an *existing* sequence 0 carries
 `continuedFrom.executionId === predecessor`, and otherwise raises a typed `ContinuationConflictError`
 instead of treating it as success.

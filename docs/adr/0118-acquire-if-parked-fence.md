@@ -71,8 +71,12 @@ Ignored, because they are audit appends that follow a park without answering it:
 (unfenced, `recordExecutionDenied`), `OUTCOME_RECORDED` (ADR 0116, terminal-only anyway), `STEP_FAILED`
 while parked (ADR 0105), `MESSAGE_CONSUMED` (ADR 0110: it is written by the running owner, before a park or
 after the `EXECUTION_RESUMED` that answers one, so it never answers by itself), `EXECUTION_MIGRATED`,
-annotations and every other kind. An allow-list, so a kind added later defaults to ignorable; a fitness test
-requires every `EVENT_SCHEMA` kind to be classified, so adding one forces the decision. The token is the right
+annotations and every other kind. The classification is a **required** `Record<EventKind, "answering" | "ignorable">`
+in `@loom/event-runtime` (no default: an unclassified kind is a compile error, so adding one forces the
+decision). At runtime a kind absent from the map (only possible in a mixed fleet, where a newer node wrote a
+kind this node does not know) is treated as **answering**: fail-closed, it costs at worst a `contended`
+(retried by D4), never a fenced-out body. The SQL scan therefore filters `kind NOT IN (<ignorable list>)`, not
+`= ANY(<answering list>)`. The token is the right
 condition because it is what every legitimate writer's append is checked against (`StaleFenceError`,
 `event-runtime/src/fencing`), and it moves **only** when someone acquires, never when an unfenced audit
 event is appended. The caller passes the token under which the park it is answering was written: events
@@ -85,10 +89,20 @@ interleave with an append). **Postgres** cannot do it as one statement: its appe
 subquery (`PostgresEventStore.ts:177`) and takes no lock on the `fences` row, so under READ COMMITTED an
 append that passed the guard at token 6 could commit after a single-statement `NOT EXISTS` had already
 looked, and the acquire would fence out a body that had just been answered. So (1) the append's fence guard
-reads the row `FOR SHARE` (the row exists only for a fenced execution, so the unfenced hot path is
-unchanged) and (2) `acquireFenceIf` is a transaction: `SELECT fence … FOR UPDATE` (waits for in-flight
+reads the row `FOR SHARE` **only when the appended batch contains an answering kind** (`EXECUTION_RESUMED`,
+`EXECUTION_SUSPENDED`, or a terminal kind including `EXECUTION_CONTINUED`) and (2) `acquireFenceIf` is a transaction: `SELECT fence … FOR UPDATE` (waits for in-flight
 appends, blocks new ones), then a **separate statement** scanning `events` for an answering kind past
-`parkSeq` (a fresh snapshot, so it sees every committed append), then the `UPDATE`. A conformance case
+`parkSeq` (a fresh snapshot, so it sees every committed append), then the `UPDATE`. Why only answering appends: `fences` rows are created on the first `acquireFence`
+(`PostgresEventStore.ts:445-446`) and never deleted, so a `FOR SHARE` on every append of any ever-fenced
+execution would add xmax/multixact writes and WAL to the hot path (ceiling ~5.7K exec/s, ADR 0074/0075). The
+invariant (append lands implies the acquire is stale, or acquire wins implies the append is `StaleFenceError`)
+only constrains answering appends; step, effect and audit appends keep today's plain guard. Both append paths
+take it: the single-append guard (`:177`) and the `appendMany` JOIN path (`PostgresEventStore.ts:287`, `LEFT JOIN
+fences f …` becomes a locking read, `FOR SHARE OF f`, when any batch row is answering). No deadlock: an append
+locks the fence row `FOR SHARE` then inserts in one statement; the acquirer locks the fence row `FOR UPDATE`
+then runs a read-only scan, so neither holds a lock the other waits on in the opposite order. **Acceptance:**
+the R8k PR runs `tools/bench-throughput` on fenced and unfenced executions before and after, and records the
+numbers in this ADR's acceptance. A conformance case
 races a resume append against `acquireFenceIf` and requires "append lands and acquire is `stale`" or
 "acquire wins and the append is `StaleFenceError`", never both succeeding. The sharded and tenant
 decorators forward it. A store without it keeps today's behaviour (the caller falls back to `acquireFence` and the documented
@@ -130,6 +144,11 @@ resume had been recorded, so no body was running. Bounded (3 attempts); **exhaus
 ADR 0110's inbox notify-resume (which "fences up front") pass it; the R8 supervisor's bounded-acquisition
 loop collapses to one attempt.
 
+**The inbox notify path appends `[MESSAGE_CONSUMED, EXECUTION_RESUMED]` as ONE atomic `appendMany` under the
+acquired fence.** `EXECUTION_RESUMED` is the only answering event of the pair; `MESSAGE_CONSUMED` stays
+ignorable (a consumed message with no resume cannot answer a park, and the two never land apart, so a crash
+leaves either both or neither). The re-driver therefore re-derives from the log and delivers exactly once.
+
 ### D3 — Retention does not delete a child its parent is parked on
 
 `LogLifecycle` is unchanged. `@loom/orchestration` exports `pinParkedChildren(supervisor)`, a
@@ -153,9 +172,20 @@ It also needs a **live** re-driver, because `recover()` is app-called and a live
 an error leaves a parked parent waiting for an operator (the R8 lesson). On `contended` the *caller of the
 resume* (the supervisor's resume path; ADR 0110's park-time self-resume) writes a **due-later re-drive
 row** to the existing `TimerStore` for the execution and returns. `TimerRecord` gains an optional
-`redrive?: { attempt: number }` (additive; the SQL timer tables gain a nullable JSON column, additive
-migration, and the timer conformance kit gains a round-trip case); `wakeAt` is the due time, so the row is
-still idempotent per `(executionId, wakeAt)`. Backoff is exponential with full jitter
+`redrive?: { attempt: number }` (additive, `TimerStore` is unversioned). **SQL migration, guarded for
+both stores** (`CREATE TABLE IF NOT EXISTS` never adds a column, `SqliteTimerStore.ts:23-26`): SQLite runs
+`ALTER TABLE timers ADD COLUMN redrive TEXT` only when `pragma table_info(timers)` lacks `redrive`; Postgres
+runs `ALTER TABLE timers ADD COLUMN IF NOT EXISTS redrive JSONB` inside `migrate(pool)`
+(`PostgresTimerStore.ts:27`). The timer conformance kit gains a round-trip case and a **migration case: open an
+old-shape table, then write a redrive row**. `wakeAt` is the due time and the row is idempotent per
+`(executionId, wakeAt)`. **Collision rule:** the primary key plus `ON CONFLICT DO NOTHING`
+(`PostgresTimerStore.ts:33`, `INSERT OR IGNORE` in SQLite) would drop the `redrive` flag when a redrive row
+lands on an existing plain row. Chosen: `schedule` **upserts `redrive` on conflict**
+(`ON CONFLICT (execution_id, wake_at) DO UPDATE SET redrive = COALESCE(EXCLUDED.redrive, timers.redrive)`;
+SQLite equivalent `ON CONFLICT … DO UPDATE`), so a flagged row is never downgraded and a plain schedule never
+clears the flag; jitter is additionally applied but nothing relies on it. **Flag:** redrive rows are written
+only when `kernel.features.redrive` is on (like `inbox`, off until the fleet is upgraded); flag off keeps the
+old behaviour (the error is surfaced and `recover()` re-drives). Backoff is exponential with full jitter
 (`base 200 ms`, doubling, capped at `30 s`, jitter from the injected rng so DST is deterministic), at most
 `maxRedriveAttempts` (default 8) rows in succession, the attempt number carried in the row.
 `TimerService.fire` is widened: a row with `redrive` set is **not** judged by `suspendedOn.wakeAt` (which
@@ -168,7 +198,10 @@ re-driver runs under the existing lease claim, so two nodes do not both drive it
 ## Replay and migration
 
 No event or fold change. A runtime on 2.1.0 with an older store falls back to `acquireFence`; an older
-runtime ignores the optional method. Mixed fleets are safe in both directions.
+runtime ignores the optional method. The `acquireFenceIf` half is safe in both directions. The redrive rows
+are **not**: an older node's `TimerService.fire` judges every row by `suspendedOn.wakeAt` and retires a redrive
+row as obsolete, a silent loss of the re-drive. That is why redrive writes sit behind `kernel.features.redrive`
+(D4) until every node runs 2.1.0; with the flag off nothing new is written.
 
 ## Tests
 
@@ -181,10 +214,12 @@ via `onError` after `maxRedriveAttempts`). **DST (round 3)**: a dead acquirer le
 both read `cur = 5`; A acquires (6), B re-reads the park (unanswered), **A's resume commits between B's
 re-read and B's acquire**, B acquires with `{ fence: 6, parkSeq }` — assert B is `stale`, B ends
 `not-suspended`, A's running body is **never fenced out** and exactly one `EXECUTION_RESUMED` is recorded;
-run it over every interleaving of the four steps with crashes. Conformance: `acquireFenceIf` is `stale`
+run it over every interleaving of the four steps with crashes. **DST: crash mid-notify** (between the
+fence acquire and the `appendMany`, and after it) over the inbox path: the redrive completes the wake with
+exactly one `MESSAGE_CONSUMED` and one `EXECUTION_RESUMED`, never two deliveries and never none. Conformance: `acquireFenceIf` is `stale`
 when an `EXECUTION_RESUMED` / `EXECUTION_SUSPENDED` / terminal kind exists past `parkSeq` even though the
 token matches, and is NOT stale for `EXECUTION_DENIED`, `OUTCOME_RECORDED`, `STEP_FAILED`,
-`MESSAGE_CONSUMED`; plus the Postgres append-vs-acquire race case (D1).
+`MESSAGE_CONSUMED`; plus the Postgres append-vs-acquire race case (D1; answering append vs `acquireFenceIf`, on both the single-append and the `appendMany` JOIN path), and an unclassified-kind case (a kind absent from the map is treated as answering).
 Conformance case (token and `parkSeq` match → new token returned; token moved → `stale`, token unchanged; concurrent
 callers → exactly one wins; **an unfenced append after the park (an `EXECUTION_DENIED`) does NOT make the
 acquire stale — the negative for the head-based design**); DST: two supervisors race a park with crashes between acquire and append

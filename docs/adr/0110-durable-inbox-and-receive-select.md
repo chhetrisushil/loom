@@ -195,8 +195,12 @@ commit, the message sits in the stream with nobody resuming for it. Three closur
 3. **Cross-process senders get a durable wake.** `runtime.send` finishes by scheduling a **due-now row in
    the existing `TimerStore`** — **coalesced**: the row is skipped when the chain head is not parked on an
    inbox wait (nothing to wake: the running owner's quiescence commit, closure 1, reads the stream) or when
-   a due-now row for that head already exists (one row wakes the notify path, which drains every message
-   past the cursors; N sends in a burst cost one row, not N). The check-then-insert race is benign (at worst
+   a due-now row for that head already exists, defined as `wakeAt <= now AND redrive IS NULL` (a supervisor
+   redrive row, ADR 0118 D4, must not suppress an inbox wake; one row wakes the notify path, which drains every message
+   past the cursors; N sends in a burst cost one row, not N). The notify path appends `[MESSAGE_CONSUMED, EXECUTION_RESUMED]` as ONE atomic `appendMany` under the
+   fence acquired with `acquireFenceIf` (the resume is the only answering event; `MESSAGE_CONSUMED` stays
+   ignorable, ADR 0118 D1); DST adds "crash mid-notify, the redrive completes with exactly one delivery".
+   The check-then-insert race is benign (at worst
    two rows; the second fire is a no-op under the fenced resume). The R2 implementation plan **must include
    a load test** (a burst of 10,000 sends to one parked chain: timer rows written, TimerService fires,
    wake latency) before the PR is merged, and records the measured row count in its ADR acceptance.
