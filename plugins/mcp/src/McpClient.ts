@@ -160,11 +160,18 @@ export class McpClient {
    * Every tool the server offers, each mapped to a Loom `ToolDefinition` +
    * effect. `resultFidelity` governs what those effects yield — see
    * {@link McpResultFidelity}; the definitions and schema pins are unaffected.
+   * `trustDescriptions` (default false, R4b) vouches for the server's tool and
+   * schema descriptions: without it agent loops show the model each tool's
+   * structure (names, types, `required`) but NOT the server's prose (ADR 0085).
    */
-  async listTools(options: { resultFidelity?: McpResultFidelity } = {}): Promise<MappedMcpTool[]> {
+  async listTools(
+    options: { resultFidelity?: McpResultFidelity; trustDescriptions?: boolean } = {}
+  ): Promise<MappedMcpTool[]> {
     const result = await this.rpc<{ tools: McpTool[] }>("tools/list");
     const fidelity = options.resultFidelity ?? "value";
-    return (result.tools ?? []).map((mcpTool) => this.mapTool(mcpTool, fidelity));
+    return (result.tools ?? []).map((mcpTool) =>
+      this.mapTool(mcpTool, fidelity, options.trustDescriptions === true)
+    );
   }
 
   /**
@@ -174,7 +181,7 @@ export class McpClient {
    */
   async registerInto(
     effectRuntime: EffectRuntime,
-    options: { resultFidelity?: McpResultFidelity } = {}
+    options: { resultFidelity?: McpResultFidelity; trustDescriptions?: boolean } = {}
   ): Promise<ToolDefinition[]> {
     const mapped = await this.listTools(options);
     for (const { definition, effect } of mapped) {
@@ -272,7 +279,11 @@ export class McpClient {
     }
   }
 
-  private mapTool(mcpTool: McpTool, fidelity: McpResultFidelity): MappedMcpTool {
+  private mapTool(
+    mcpTool: McpTool,
+    fidelity: McpResultFidelity,
+    trustDescriptions = false
+  ): MappedMcpTool {
     const definition = tool$({
       id: mcpTool.name,
       name: mcpTool.name,
@@ -280,6 +291,11 @@ export class McpClient {
       kind: "tool",
       inputSchema: z.unknown() as z.ZodType<unknown>,
       outputSchema: z.unknown() as z.ZodType<unknown>,
+      // R4b — the server's own JSON Schema, so an agent loop shows the model real
+      // arguments. It is third-party: agent loops bound/sanitise it and, unless
+      // `trustDescriptions` was passed, strip its text and this tool's description.
+      jsonInputSchema: mcpTool.inputSchema,
+      ...(trustDescriptions && { trustJsonSchemaText: true }),
     });
 
     const effect = new ToolEffect(async (input: unknown) => {

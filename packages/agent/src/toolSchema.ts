@@ -1,4 +1,5 @@
 import type { ZodTypeAny } from "zod";
+import { checkJsonSchemaShape, sanitizeJsonSchema } from "./thirdPartySchema";
 
 /**
  * A minimal Zod 3 → JSON Schema converter, enough to tell a model the argument
@@ -204,7 +205,20 @@ function withDescription(schema: ZodTypeAny, inner: Json): Json {
  * JSON Schema (draft 2020-12 vocabulary) for a tool's Zod input schema. A tool
  * with no schema (possible from untyped JS) is described as a bare object.
  */
-export function toolInputJsonSchema(schema: ZodTypeAny | undefined): Record<string, unknown> {
+export function toolInputJsonSchema(
+  schema: ZodTypeAny | undefined,
+  jsonInputSchema?: Readonly<Record<string, unknown>>,
+  opts: { trustText?: boolean } = {}
+): Record<string, unknown> {
+  // R4b — a declared JSON Schema (MCP) wins over the Zod schema, which for such
+  // a tool is a placeholder `z.unknown()`. Third-party bytes: bounded, sanitised,
+  // free text stripped unless trusted. Refused => bare object, never a failed run.
+  if (jsonInputSchema !== undefined) {
+    const clean = sanitizeJsonSchema(jsonInputSchema, { keepText: opts.trustText === true });
+    if (clean !== undefined) return clean;
+    warnThirdPartySchema();
+    return { type: "object" };
+  }
   if (schema === undefined) return { type: "object" };
   const j = convert(schema, 0, { lazies: new Set() });
   // Providers require an object root. A non-object root is not describable.
@@ -214,6 +228,45 @@ export function toolInputJsonSchema(schema: ZodTypeAny | undefined): Record<stri
   if (j.type === undefined && !("anyOf" in j) && !("allOf" in j) && !("oneOf" in j))
     return { ...j, type: "object" };
   return j;
+}
+
+let warnedThirdPartySchema = false;
+function warnThirdPartySchema(): void {
+  if (warnedThirdPartySchema) return;
+  warnedThirdPartySchema = true;
+  const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
+    .process;
+  proc?.emitWarning?.(
+    'A tool\'s JSON input schema was refused (cyclic, too deep/large, or not an object schema); the model is shown a bare `{ type: "object" }` for it. The tool still runs.',
+    { code: "LOOM_AGENT_TOOL_SCHEMA" }
+  );
+}
+
+/** Test seam: re-arm the one-time advisory. */
+export function resetToolSchemaWarning(): void {
+  warnedThirdPartySchema = false;
+}
+
+/**
+ * What the model may be told about a tool: its description and JSON Schema. A
+ * tool carrying a `jsonInputSchema` is third-party (ADR 0085): unless it states
+ * `trustJsonSchemaText`, its description is replaced by its id and the schema's
+ * text is stripped.
+ */
+export function toolSpecFor(t: {
+  id: string;
+  description: string;
+  inputSchema?: ZodTypeAny;
+  jsonInputSchema?: Readonly<Record<string, unknown>>;
+  trustJsonSchemaText?: boolean;
+}): { name: string; description: string; inputSchema: Record<string, unknown> } {
+  const thirdParty = t.jsonInputSchema !== undefined;
+  const trusted = !thirdParty || t.trustJsonSchemaText === true;
+  return {
+    name: t.id,
+    description: trusted ? t.description : t.id,
+    inputSchema: toolInputJsonSchema(t.inputSchema, t.jsonInputSchema, { trustText: trusted }),
+  };
 }
 
 export interface ToolInputIssue {
@@ -296,11 +349,25 @@ function withinInputBounds(input: unknown): boolean {
  * choosing a listed tool or fixing its arguments, and an off-menu name is
  * information about the model, not a fault in the run.
  */
-export function buildToolMenu(tools: ReadonlyArray<{ id: string; inputSchema?: ZodTypeAny }>): {
+export function buildToolMenu(
+  tools: ReadonlyArray<{
+    id: string;
+    inputSchema?: ZodTypeAny;
+    jsonInputSchema?: Readonly<Record<string, unknown>>;
+  }>
+): {
   has: (name: string) => boolean;
   check: (name: string, input: unknown) => { error: Record<string, unknown> } | undefined;
 } {
   const byId = new Map(tools.map((t) => [t.id, t]));
+  // R4b — the structural shape the model was shown, built once per tool.
+  const shapes = new Map(
+    tools.flatMap((t) =>
+      t.jsonInputSchema === undefined
+        ? []
+        : [[t.id, toolInputJsonSchema(undefined, t.jsonInputSchema)] as const]
+    )
+  );
   return {
     has: (name) => byId.has(name),
     check(name, input) {
@@ -313,7 +380,9 @@ export function buildToolMenu(tools: ReadonlyArray<{ id: string; inputSchema?: Z
           },
         };
       }
-      const v = validateToolInput(tool.inputSchema, input);
+      let v = validateToolInput(tool.inputSchema, input);
+      const shape = shapes.get(name);
+      if (v.ok && shape !== undefined) v = checkJsonSchemaShape(shape, input);
       if (v.ok) return undefined;
       return {
         error: {

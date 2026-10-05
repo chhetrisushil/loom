@@ -18,7 +18,7 @@ import { parallelLimit, throwIfAborted } from "@loom/scheduler";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { toolResultContent } from "./toolResultContent";
-import { buildToolMenu, toolInputJsonSchema } from "./toolSchema";
+import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
 export interface AgentConfig {
@@ -141,11 +141,10 @@ export class AgentRunner {
     // with MCP dynamic dispatch (ADR 0063) a description is third-party bytes. Carry
     // them as `LlmContent` so `guardRequest` sees any taint and REFUSES it, instead
     // of a `string` annotation asserting a cleanliness nothing checked.
-    const toolSpecs: LlmToolSpecInput[] = toolDefs.map((t) => ({
-      name: t.id,
-      description: t.description as LlmContent,
-      inputSchema: toolInputJsonSchema(t.inputSchema),
-    }));
+    const toolSpecs: LlmToolSpecInput[] = toolDefs.map((t) => {
+      const spec = toolSpecFor(t);
+      return { ...spec, description: spec.description as LlmContent };
+    });
     // R4 — only the menu the model was shown may run; see `buildToolMenu`.
     const menu = buildToolMenu(toolDefs);
 

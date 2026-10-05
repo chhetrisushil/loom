@@ -8,6 +8,10 @@ export interface ToolConfig<TIn, TOut> {
   kind?: EffectKind;
   inputSchema: z.ZodSchema<TIn>;
   outputSchema: z.ZodSchema<TOut>;
+  /** R4b — see {@link ToolDefinition.jsonInputSchema}. */
+  jsonInputSchema?: Readonly<Record<string, unknown>>;
+  /** R4b — see {@link ToolDefinition.trustJsonSchemaText}. */
+  trustJsonSchemaText?: boolean;
   /**
    * K9 — declared delivery semantic (see {@link ToolDefinition.idempotent}).
    * `false` = mutating & non-idempotent: recovery parks an unknown-state attempt
@@ -55,6 +59,10 @@ export function tool$<TIn = unknown, TOut = unknown>(
     kind: config.kind ?? "tool",
     inputSchema: config.inputSchema,
     outputSchema: config.outputSchema,
+    ...(config.jsonInputSchema !== undefined && { jsonInputSchema: config.jsonInputSchema }),
+    ...(config.trustJsonSchemaText !== undefined && {
+      trustJsonSchemaText: config.trustJsonSchemaText,
+    }),
     ...(config.idempotent !== undefined && { idempotent: config.idempotent }),
     ...(config.errors !== undefined && { errors: config.errors }),
     ...(config.mode !== undefined && { mode: config.mode }),
