@@ -75,7 +75,15 @@ over the SAME stores (a process restart, or a second node) picks up where the la
   resume that loses the append race still runs the parent body in memory, so a child is started
   only once the parent is DURABLY parked on that exact key, and what is started comes from the
   durable spawn decision, never from the in-memory one. A parent that was ever fenced is resumed
-  under a fresh fence (as `TimerService` does). `resumed` counts a resume only once its append is
+  under a fresh fence the supervisor acquires itself (`TimerService` fences up front; the
+  supervisor only on `StaleFenceError`). **Residual, kernel follow-up:** `acquireFence` is not
+  conditional on the parent still being parked, so a rival supervisor fencing between this one's
+  acquire and append makes the resume fail stale, and one fencing between its durable resume and
+  its read-back supersedes the holder of the already-running parent body. Acquisitions are
+  therefore bounded to two per resume, the park is re-read before each, and a resume still stale
+  after that goes to `onError` (`recover()` retries it). The fix is an "acquire-if-parked" fence
+  SPI, for the Wave 2 kernel design. A live resume refused `not-suspended` is quiet when the
+  durable log shows that park already answered. `resumed` counts a resume only once its append is
   durable; a failed append goes to `onError`.
 - **Group members on different nodes.** The in-memory `remaining` count is never trusted: when a
   member settles with siblings outstanding, the unsettled siblings are re-read from the log (after
@@ -88,9 +96,25 @@ over the SAME stores (a process restart, or a second node) picks up where the la
   should refuse to delete a child whose parent is still parked on it. When a terminal event was
   compacted away the fold still gives the outcome, but a failed child's error text and a
   cancelled child's reason are lost.
+- **A slow store is retried, never silently abandoned.** The live path waits ~1s for the parent's
+  park to become durable. If it is still unreadable (a slow store), the supervisor backs off
+  exponentially and `adopt`s the parent from the log, for as long as it is non-terminal; only
+  after 10 minutes is the give-up reported through `onError` (a park that stays on a different key
+  is a losing resume's phantom and stops quietly). A resume whose outcome cannot be observed
+  (hung store) is "unknown": not counted as resumed, retried the same way. `recover()` is opt-in
+  and is NOT needed for this: the live path heals a slow store by itself; `recover()` is for a
+  node that restarted or died.
+- **Leaving no state behind.** A park answered ELSEWHERE (another node resumed the parent) never
+  delivers its terminal event here, so a periodic sweep (every 30s while anything is held) and
+  every adoption / `recover()` re-check the log and drop what is held for answered or terminated
+  parks. The retention-deletion facts are held in a bounded map (50 000; an eviction makes a miss
+  rescan the lifecycle stream, so it costs time, never correctness), keyed by id and judged
+  against when the spawn was decided, so a REUSED parent id is not failed by its previous
+  incarnation's deletion. `size()` reports all of it.
 - **Scope of `recover()`.** It scans whatever the store enumerates, ACROSS TENANTS unless the store
   is tenant-scoped; use a tenant-scoped store or `source` to confine a pass. The supervisor drops
-  its per-park state (specs, started, groups, member index) when the park is answered.
+  its per-park state (specs, started, groups, member index) when the park is answered here or
+  elsewhere (see above).
 
 Child ids, `maxDepth`/`limits`, and the system grant for starts and resumes behave exactly as live.
 Restart policies (retry a failed child) are NOT part of the supervisor: it starts and resumes only.
