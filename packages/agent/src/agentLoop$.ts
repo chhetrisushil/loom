@@ -16,7 +16,7 @@ import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { createAgentModelEffect } from "./createAgentModelEffect";
 import { toolResultContent } from "./toolResultContent";
-import { buildToolMenu, toolInputJsonSchema } from "./toolSchema";
+import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
 // ── R1 — the agent loop as a RUNNER BODY, not a step handler ─────────────────
@@ -244,11 +244,10 @@ export function resetReasoningRingWarning(): void {
 
 /** Build the model's tool menu, carrying `LlmContent` so a tainted description is REFUSED (R2). */
 function toolSpecsFor(tools: readonly ToolDefinition[]): LlmToolSpecInput[] {
-  return tools.map((t) => ({
-    name: t.id,
-    description: t.description as LlmContent,
-    inputSchema: toolInputJsonSchema(t.inputSchema),
-  }));
+  return tools.map((t) => {
+    const spec = toolSpecFor(t);
+    return { ...spec, description: spec.description as LlmContent };
+  });
 }
 
 // ── The byte counter (compaction's `afterBytes` trigger) ─────────────────────

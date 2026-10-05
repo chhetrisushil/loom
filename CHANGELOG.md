@@ -79,6 +79,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The snapshot written at every suspend is kept: with `snapshotEvery` unset it is the only
     thing that bounds a resume's tail. It hands the state to the store by reference (no copy).
 
+- **MCP-mapped tools showed the model `{}` for their arguments (R4b).** R4 sent each tool's Zod
+  schema as JSON Schema, but an MCP tool's schema is already JSON Schema and its Zod form is a
+  `z.unknown()` placeholder. New optional `ToolDefinition.jsonInputSchema` (and
+  `trustJsonSchemaText`); `@loom/plugin-mcp` `mapTool` sets it from the server's `inputSchema`,
+  and `toolInputJsonSchema(zod, json?, { trustText })` prefers it. The schema is THIRD-PARTY
+  bytes bound for a prompt, so it is sanitised first (`sanitizeJsonSchema`): a keyword
+  allowlist (unknown / `x-*` / `default` / `examples` dropped), depth 16, 1000 nodes, 64KB,
+  strings 200 chars, remote `$ref` dropped (nothing is fetched), cyclic or oversized refused
+  as a whole and sent as `{ type: "object" }` with a one-time `LOOM_AGENT_TOOL_SCHEMA`
+  warning (the run never fails). **Taint:** `description`/`title` inside the schema, and the
+  MCP tool's own description, were read as instructions yet never passed `guardRequest`
+  (a plain string carries no taint). They are now stripped (the description becomes the tool
+  id) unless the operator opts in with `listTools/registerInto({ trustDescriptions: true })`.
+  Strip-by-default rather than taint-and-refuse: `guardRequest` refuses the WHOLE request on a
+  tainted description, so every MCP agent would fail to run; ADR 0085's MCP producer is
+  likewise opt-in (`taintResults`) and its `unwrapTainted` is the operator's visible
+  decision, which `trustDescriptions` mirrors. Property names and `enum`/`const` strings
+  remain (structural, capped at 200 chars). **Validation:** a tool with a `jsonInputSchema`
+  is now also shape-checked before it runs (`checkJsonSchemaShape`: object input, `required`
+  keys present, declared top-level property types) so a malformed call is refused as
+  `invalid_tool_input`; nested rules, enums and bounds stay the MCP server's job. No new
+  dependency.
+
 - **Agent loops executed any effect id the model named, with unvalidated input, and showed the model no argument schemas (R4).**
   `agentLoop$` ran `ctx.execute({ toolId: toolCall.name })` and `AgentRunner` (hence `agentStep$`)
   ran `effectRuntime.execute(toolCall.name, ...)` for WHATEVER name the model returned, so under

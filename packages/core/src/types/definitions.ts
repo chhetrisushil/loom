@@ -86,6 +86,25 @@ export interface ToolDefinition<TIn = unknown, TOut = unknown> {
   inputSchema: ZodSchema<TIn>;
   outputSchema: ZodSchema<TOut>;
   /**
+   * R4b — the tool's input as a JSON Schema object, for tools whose schema is
+   * already JSON Schema (an MCP server's `inputSchema`) and so has no Zod form.
+   * Agent loops send it to the model (bounded and sanitised: depth/size caps, no
+   * remote `$ref`, unknown keywords dropped) in place of the schema derived from
+   * `inputSchema`, and check a call's input against its structure (object root,
+   * `required`, top-level property types). Third-party bytes: see
+   * {@link ToolDefinition.trustJsonSchemaText}.
+   */
+  jsonInputSchema?: Readonly<Record<string, unknown>>;
+  /**
+   * R4b — when `true`, the operator vouches for the free text (`description`,
+   * `title`) of `jsonInputSchema` AND of this definition's `description`, so
+   * agent loops send it to the model. Default (absent): a tool that carries a
+   * `jsonInputSchema` is third-party, its description is replaced by its id and
+   * the schema's `description`/`title` strings are stripped — they are read as
+   * instructions by every provider (ADR 0085).
+   */
+  trustJsonSchemaText?: boolean;
+  /**
    * K9 — the tool's declared delivery semantic. Effects are at-least-once (a
    * crash between the effect and its STEP_COMPLETED append re-runs it on
    * recovery). `idempotent: true` asserts a re-run is safe (dedupe at the
