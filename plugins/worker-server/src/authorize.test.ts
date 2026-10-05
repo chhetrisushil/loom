@@ -55,3 +55,61 @@ describe("worker server authorize gate", () => {
     expect(exec.status).toBe(200);
   });
 });
+
+// R3 round 1 (P1-1) — a worker that runs as the system, and the package principal on the wire.
+describe("worker server and the system identity", () => {
+  let server: WorkerServer | undefined;
+  afterEach(async () => {
+    await server?.stop();
+    server = undefined;
+  });
+
+  it("refuses to be built around a worker that runs as the system without an authorize gate", () => {
+    const sys: WorkerRuntime = { ...fakeWorker, runsAsSystem: true };
+    expect(() => createWorkerServer(sys)).toThrow(/SYSTEM identity/);
+    expect(() => createWorkerServer(sys, { authorize: () => true })).not.toThrow();
+  });
+
+  const seen: Array<{ allocate?: unknown; execute?: unknown }> = [];
+  const spy: WorkerRuntime = {
+    async allocate(r) {
+      seen.push({ allocate: r.principal });
+      return { leaseId: "l" };
+    },
+    async execute(_l, p) {
+      seen.push({ execute: p.principal });
+      return {
+        executionId: p.executionId,
+        status: "completed",
+        state: {} as never,
+        lastSequence: 0,
+      };
+    },
+    async release() {},
+  };
+  const post = (url: string, principal: unknown) =>
+    fetch(`${url}/execute`, {
+      method: "POST",
+      body: JSON.stringify({ executionPackage: { ...pkg, principal } }),
+    });
+
+  it("drops the package principal when the server cannot authenticate the dispatcher", async () => {
+    seen.length = 0;
+    server = createWorkerServer(spy);
+    await server.start();
+    expect((await post(server.url, { actor: "alice" })).status).toBe(200);
+    expect(seen).toEqual([{ allocate: undefined }, { execute: undefined }]);
+  });
+
+  it("forwards the package principal to allocate and execute once authorize passes, and rejects a non-object one", async () => {
+    seen.length = 0;
+    server = createWorkerServer(spy, { authorize: () => true });
+    await server.start();
+    expect((await post(server.url, { actor: "alice", tenant: "t1" })).status).toBe(200);
+    expect(seen).toEqual([
+      { allocate: { actor: "alice", tenant: "t1" } },
+      { execute: { actor: "alice", tenant: "t1" } },
+    ]);
+    expect((await post(server.url, "alice")).status).toBe(400);
+  });
+});

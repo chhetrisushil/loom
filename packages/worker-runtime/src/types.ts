@@ -28,6 +28,17 @@ export interface ExecutionPackage {
   fromSequence?: number;
   /** Opaque routing/telemetry metadata; never load-bearing for correctness. */
   metadata?: Record<string, unknown>;
+  /**
+   * R3 (DISPATCHER_SPI 1.2.0) — the AUTHENTICATED principal this dispatch acts for (a
+   * `PrincipalChain`: `actor`, `tenant`, …), as JSON. A worker that fails closed on a missing
+   * principal (`security.strict`) authorizes the start/resume/query/cancel against it; a package
+   * WITHOUT one is anonymous and is refused there unless the worker was explicitly given the
+   * kernel's system identity. It crosses the wire as plain data, so a receiving worker must
+   * only honour it from a caller it has AUTHENTICATED (the worker-server does so only when its
+   * `authorize` gate is configured): whoever can post a package can otherwise name any actor.
+   * Never load-bearing for placement.
+   */
+  principal?: Record<string, unknown>;
 }
 
 /** Where an execution ended for this dispatch. A suspend is a normal outcome. */
@@ -58,6 +69,8 @@ export interface ExecutionResult {
 export interface WorkerRequest {
   executionId: string;
   metadata?: Record<string, unknown>;
+  /** R3 — the dispatch's principal (see {@link ExecutionPackage.principal}), so allocation is authorized as the caller. */
+  principal?: Record<string, unknown>;
 }
 
 /**
@@ -85,6 +98,13 @@ export interface WorkerLease {
  * stay isolated behind the interface.
  */
 export interface WorkerRuntime {
+  /**
+   * R3 — OPTIONAL: `true` when this worker runs principal-less packages under the kernel's
+   * SYSTEM identity (it bypasses the execution authorizer). A transport that exposes the worker
+   * to a network (the worker-server) refuses to be built around such a worker without an
+   * authentication gate, because every caller it admits would otherwise be the system.
+   */
+  readonly runsAsSystem?: boolean;
   allocate(request: WorkerRequest): Promise<WorkerLease>;
   execute(lease: WorkerLease, pkg: ExecutionPackage): Promise<ExecutionResult>;
   release(lease: WorkerLease): Promise<void>;

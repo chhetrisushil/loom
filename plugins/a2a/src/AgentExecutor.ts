@@ -1,4 +1,5 @@
 import type { ExecutionState } from "@loom/core";
+import type { PrincipalChain } from "@loom/effect-runtime";
 import type { RegisteredFlow, ResumeEvent, WorkflowRuntime } from "@loom/workflow-runtime";
 import type { A2ATask, A2ATaskResult, A2ATaskStatus } from "./types";
 
@@ -16,11 +17,21 @@ import type { A2ATask, A2ATaskResult, A2ATaskStatus } from "./types";
  * only has to move bytes to/from this interface.
  */
 export interface AgentExecutor {
-  submit(task: A2ATask): Promise<{ id: string }>;
+  submit(task: A2ATask, call?: ExecutorCall): Promise<{ id: string }>;
   /** Poll a task's status/result. `null` ⇒ unknown task (→ 404). */
-  get(taskId: string): Promise<A2ATaskResult | null>;
+  get(taskId: string, call?: ExecutorCall): Promise<A2ATaskResult | null>;
   /** Deliver the input an `input-required` (suspended) task is waiting on. */
-  provideInput(taskId: string, event: ResumeEvent): Promise<{ id: string }>;
+  provideInput(taskId: string, event: ResumeEvent, call?: ExecutorCall): Promise<{ id: string }>;
+}
+
+/**
+ * R3 — per-call context from the transport. `principal` is the AUTHENTICATED identity of whoever
+ * made the request (resolved by the transport from its connection, never from the task body);
+ * the executor applies it to the runtime call so a runtime that fails closed (`security.strict`)
+ * authorizes the task as that caller. Absent ⇒ anonymous, which such a runtime refuses.
+ */
+export interface ExecutorCall {
+  principal?: PrincipalChain;
 }
 
 /** Map a Loom execution status onto an A2A task status. */
@@ -70,23 +81,33 @@ export class LoomAgentExecutor implements AgentExecutor {
     private readonly flow: RegisteredFlow
   ) {}
 
-  async submit(task: A2ATask): Promise<{ id: string }> {
+  async submit(task: A2ATask, call: ExecutorCall = {}): Promise<{ id: string }> {
     const prompt = task.message.parts.map((p) => p.text).join("\n");
+    const identity = call.principal !== undefined ? { principal: call.principal } : {};
     const handle = await this.runtime.start(
       this.flow,
       { prompt },
-      task.id ? { executionId: task.id } : undefined
+      {
+        ...(task.id && { executionId: task.id }),
+        ...identity,
+      }
     );
     return { id: handle.executionId };
   }
 
-  async get(taskId: string): Promise<A2ATaskResult | null> {
-    const state = await this.runtime.loadState(taskId);
+  async get(taskId: string, call: ExecutorCall = {}): Promise<A2ATaskResult | null> {
+    const identity = call.principal !== undefined ? { principal: call.principal } : {};
+    const state = await this.runtime.loadState(taskId, identity);
     return state ? toTaskResult(taskId, state) : null;
   }
 
-  async provideInput(taskId: string, event: ResumeEvent): Promise<{ id: string }> {
-    const handle = await this.runtime.resume(taskId, event);
+  async provideInput(
+    taskId: string,
+    event: ResumeEvent,
+    call: ExecutorCall = {}
+  ): Promise<{ id: string }> {
+    const identity = call.principal !== undefined ? { principal: call.principal } : {};
+    const handle = await this.runtime.resume(taskId, event, identity);
     return { id: handle.executionId };
   }
 }

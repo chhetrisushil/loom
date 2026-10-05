@@ -22,7 +22,9 @@ export interface CarrierOptions {
    * context — NEVER from the request body. The mounting transport authenticates the
    * connection (mTLS, bearer token, signed header, …) and supplies this bound to that
    * identity; the carrier ignores any client-supplied `principal` in the wire params.
-   * Omitted → no principal is asserted and the runtime's default identity applies.
+   * Omitted → no principal is asserted and the runtime's default identity applies (under
+   * `security.strict` that is ANONYMOUS, which an execution authorizer refuses).
+   * Applied to every `execution.*` method — start, resume, getState and cancel.
    *
    * This is the trust boundary: the K2/K12 authz ring keys tenant/actor grants and the
    * DelegationAuthorizer confused-deputy binding on this principal, so it must reflect who
@@ -81,6 +83,12 @@ export async function handleRpc(
 ): Promise<JsonRpcResponse> {
   const { id, method, params } = request;
   const resolveFlow = options.resolveFlow ?? ((fid: string) => runtime.getFlow(fid));
+  // SECURITY: the principal comes from the transport's AUTHENTICATED connection, never the body
+  // — and it is resolved ONCE for the request and applied to EVERY execution method. (It used to
+  // reach `execution.start` only, so under a runtime that fails closed on a missing principal a
+  // wire client could start an execution and never resume, read or cancel it.)
+  const principal = options.resolvePrincipal?.(request);
+  const identity = principal !== undefined ? { principal } : {};
 
   try {
     switch (method) {
@@ -93,14 +101,11 @@ export async function handleRpc(
         if (flow === undefined) {
           return err(id, RPC_ERRORS.invalidParams, `no flow registered: "${p.flowId}"`);
         }
-        // SECURITY: the principal (the identity the K2/K12 authz ring keys on) comes from
-        // the transport's AUTHENTICATED connection via resolvePrincipal — never from the
-        // request body. A wire client cannot self-assert an actor/tenant, so a captured
-        // delegation token can't be replayed by supplying a matching `actor` field.
-        const principal = options.resolvePrincipal?.(request);
+        // A wire client cannot self-assert an actor/tenant, so a captured delegation token
+        // can't be replayed by supplying a matching `actor` field (see `principal` above).
         const handle = await runtime.start(flow, p.input, {
           ...(p.executionId !== undefined && { executionId: p.executionId }),
-          ...(principal !== undefined && { principal }),
+          ...identity,
         });
         await settle(runtime, handle);
         return ok(id, stateView(handle.getState()));
@@ -108,14 +113,14 @@ export async function handleRpc(
 
       case "execution.resume": {
         const p = params as ResumeParams;
-        const handle = await runtime.resume(p.executionId, p.event);
+        const handle = await runtime.resume(p.executionId, p.event, identity);
         await settle(runtime, handle);
         return ok(id, stateView(handle.getState()));
       }
 
       case "execution.getState": {
         const p = params as IdParams;
-        const state = await runtime.loadState(p.executionId);
+        const state = await runtime.loadState(p.executionId, identity);
         if (state === null) {
           return err(id, RPC_ERRORS.invalidParams, `no execution: "${p.executionId}"`);
         }
@@ -124,7 +129,7 @@ export async function handleRpc(
 
       case "execution.cancel": {
         const p = params as IdParams;
-        const cancelled = await runtime.cancel(p.executionId, p.reason);
+        const cancelled = await runtime.cancel(p.executionId, p.reason, identity);
         return ok(id, { cancelled });
       }
 

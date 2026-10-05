@@ -67,6 +67,7 @@ export class LocalDispatcher implements ExecutionDispatcher {
         const lease = await this.worker.allocate({
           executionId: pkg.executionId,
           ...(meta !== undefined && { metadata: meta as Record<string, unknown> }),
+          ...(pkg.principal !== undefined && { principal: pkg.principal }),
         });
         this.leases.set(pkg.executionId, lease);
         try {

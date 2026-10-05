@@ -160,3 +160,27 @@ describe("executeGraph — fan-out into per-branch executions + lineage join", (
     }
   });
 });
+
+describe("executeGraph principal (R3)", () => {
+  it("dispatches every node as the given principal", async () => {
+    const seen: unknown[] = [];
+    const spy = {
+      async dispatch(pkg: { principal?: unknown; executionId: string }) {
+        seen.push(pkg.principal);
+        return { executionId: pkg.executionId, status: "completed", state: {}, lastSequence: 0 };
+      },
+    };
+    await executeGraph(
+      spy as never,
+      [
+        { id: "a", flowId: "f" },
+        { id: "b", flowId: "f" },
+      ] as GraphNode[],
+      { principal: { actor: "alice", tenant: "t1" } }
+    );
+    expect(seen).toEqual([
+      { actor: "alice", tenant: "t1" },
+      { actor: "alice", tenant: "t1" },
+    ]);
+  });
+});

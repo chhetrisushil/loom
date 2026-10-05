@@ -213,7 +213,7 @@ export interface SecurityOptions {
   /**
    * C.1 — authorizes execution lifecycle operations (`start`/`resume`/`cancel`, and the
    * public `loadState`). Without `strict`, consulted only for calls that carry a `principal`.
-   * `executionPolicy()` from `@loom/workflow-runtime` is the first-party reference policy.
+   * `executionAccessPolicy()` from `@loom/workflow-runtime` is the first-party reference policy.
    *
    * SECURITY CONTRACT, restated from {@link WorkflowRuntime} because this is where it is
    * now wired: outside `strict`, principal-less calls bypass the gate BY DESIGN, so the

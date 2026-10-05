@@ -471,15 +471,28 @@ function childStartOptions(
   childId: string,
   spec: { grants?: readonly string[]; expiresAt?: number },
   delegation: { secret: string } | undefined,
-  system: { system?: SystemGrant }
-): { executionId: string; principal?: PrincipalChain; system?: SystemGrant } {
+  system: { system?: SystemGrant },
+  parentExecutionId: string | undefined
+): {
+  executionId: string;
+  principal?: PrincipalChain;
+  system?: SystemGrant;
+  parentExecutionId?: string;
+} {
   // R3 — a child start is the supervisor acting, so it presents the system grant (bypasses the
   // execution authorizer only); the delegation principal, when any, still reaches its effects.
+  // `parentExecutionId` lets an owner-tracking execution policy give the child its parent's owner.
+  const parent = parentExecutionId !== undefined ? { parentExecutionId } : {};
   if (delegation === undefined || spec.grants === undefined) {
-    return { executionId: childId, ...system };
+    return { executionId: childId, ...system, ...parent };
   }
   const token = signDelegation(delegation.secret, childId, [...spec.grants], spec.expiresAt);
-  return { executionId: childId, principal: { actor: childId, delegation: token }, ...system };
+  return {
+    executionId: childId,
+    principal: { actor: childId, delegation: token },
+    ...system,
+    ...parent,
+  };
 }
 
 /**
@@ -669,7 +682,8 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
                     member.childId,
                     member,
                     deps.delegation,
-                    deps.runtime.systemOptions()
+                    deps.runtime.systemOptions(),
+                    group.parentId
                   )
                 )
                 .catch(fail);
@@ -715,7 +729,13 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
             .start(
               flow,
               spec.input,
-              childStartOptions(childId, spec, deps.delegation, deps.runtime.systemOptions())
+              childStartOptions(
+                childId,
+                spec,
+                deps.delegation,
+                deps.runtime.systemOptions(),
+                parentId
+              )
             )
             .catch(fail);
         })();

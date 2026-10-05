@@ -1,7 +1,12 @@
 import type { EventEnvelope } from "@loom/core";
 import type { EventStore } from "@loom/event-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
-import type { ExecutionHandle, ResumeEvent, WorkflowRuntime } from "@loom/workflow-runtime";
+import type {
+  ExecutionHandle,
+  ResumeEvent,
+  RunOptions,
+  WorkflowRuntime,
+} from "@loom/workflow-runtime";
 
 export interface WaitOptions {
   timeoutMs?: number;
@@ -62,13 +67,18 @@ export function driveToSuspend(handle: ExecutionHandle): Promise<unknown> {
  * Resume a durably-suspended execution with a resume event — the runtime-level
  * counterpart to an orchestrator's `resolveApproval`. Defaults to an
  * `ApprovalGranted` approval.
+ *
+ * `options` is forwarded to `runtime.resume` — pass `{ principal }` (or
+ * `runtime.systemOptions()`) to drive an app that fails closed on a missing principal
+ * (`security.strict`); without one the resume is anonymous and such an app refuses it.
  */
 export function resumeWith(
   runtime: WorkflowRuntime,
   executionId: string,
-  event: ResumeEvent = { eventType: "ApprovalGranted", payload: { approved: true } }
+  event: ResumeEvent = { eventType: "ApprovalGranted", payload: { approved: true } },
+  options?: RunOptions
 ): Promise<ExecutionHandle> {
-  return runtime.resume(executionId, event);
+  return runtime.resume(executionId, event, options);
 }
 
 /** Read an execution's durable event log — the raw material for a golden fixture. */

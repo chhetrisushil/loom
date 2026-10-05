@@ -27,6 +27,8 @@ const reg = (id: string, runner: FlowRunner<never, unknown>): RegisteredFlow =>
 describe("R3 — child supervisor under strict execution authz", () => {
   it("spawns the child and resumes the parent; an anonymous app call on the same runtime is refused", async () => {
     const errors: unknown[] = [];
+    const policy = executionAccessPolicy();
+    const seen = new Set<string>();
     const holder: { sup?: ReturnType<typeof superviseChildren> } = {};
     const flows = {
       child: reg("child", async () => ({ v: 42 })),
@@ -38,9 +40,12 @@ describe("R3 — child supervisor under strict execution authz", () => {
       eventStore: new InMemoryAsyncEventStore(),
       snapshotStore: new InMemoryAsyncSnapshotStore(),
       effectRuntime: new EffectRuntime(),
-      executionAuthorizer: executionAccessPolicy(),
+      executionAuthorizer: policy,
       executionAuthz: { requirePrincipal: true },
-      onEvent: (e) => holder.sup?.onEvent(e),
+      onEvent: (e) => {
+        seen.add(e.executionId);
+        holder.sup?.onEvent(e);
+      },
     });
     for (const f of Object.values(flows)) {
       runtime.registerFlow(f.definition, f.runner as FlowRunner<unknown, unknown>);
@@ -61,5 +66,18 @@ describe("R3 — child supervisor under strict execution authz", () => {
     expect(state?.status).toBe("completed");
     expect(state?.variables._output).toEqual({ v: 42 });
     await expect(runtime.loadState("P")).rejects.toMatchObject({ name: "ExecutionDeniedError" });
+    // R3 round 1 — the supervisor's child inherits its parent's owner, so "owner unknown" is not
+    // the normal state of a child: the parent's owner can read it, another tenant cannot.
+    const alice = { actor: "alice", tenant: "t" };
+    expect(policy.tracked).toBe(2);
+    const childId = [...seen].find((i) => i !== "P");
+    expect(childId).toBeDefined();
+    expect(policy.ownerOf(childId as string)).toEqual(alice);
+    expect((await runtime.loadState(childId as string, { principal: alice }))?.status).toBe(
+      "completed"
+    );
+    await expect(
+      runtime.loadState(childId as string, { principal: { actor: "eve", tenant: "t2" } })
+    ).rejects.toMatchObject({ name: "ExecutionDeniedError" });
   }, 20000);
 });

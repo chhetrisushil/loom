@@ -66,6 +66,7 @@ function build(opts: {
         seen.push(r);
         return authorizer.authorize(r);
       },
+      committed: (r) => authorizer.committed?.(r),
     },
     ...(opts.strict && { executionAuthz: { requirePrincipal: true } }),
   });

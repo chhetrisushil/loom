@@ -185,7 +185,7 @@ export interface WorkflowRuntimeDeps {
    * before: principal-less calls bypass {@link executionAuthorizer}. With
    * `requirePrincipal: true` the authorizer is ALSO consulted for a call that carries NO
    * principal (the request arrives with `principal: undefined`, and the policy decides —
-   * `executionPolicy()` denies it unless `allowAnonymous`), so an edge that forgot to
+   * `executionAccessPolicy()` denies it unless `allowAnonymous`), so an edge that forgot to
    * attach a principal is refused rather than waved through.
    *
    * Kernel-internal machinery that legitimately has no principal today (TimerService wakes
@@ -541,6 +541,69 @@ export class WorkflowRuntime {
     });
     if (verdict.allowed) return undefined;
     return verdict.reason !== undefined ? { reason: verdict.reason } : {};
+  }
+
+  /**
+   * R3 — tell the authorizer a start is DURABLE (see {@link ExecutionAuthorizer.committed}).
+   * The principal is withheld when the start rode the system grant: that principal (a child's
+   * delegation identity, say) is not the owner of the execution.
+   */
+  private notifyStarted(
+    executionId: string,
+    workflowId: string,
+    principal: PrincipalChain | undefined,
+    system: SystemGrant | undefined,
+    parentExecutionId: string | undefined
+  ): void {
+    const committed = this.executionAuthorizer?.committed;
+    if (committed === undefined) return;
+    const viaSystem = system !== undefined && system === this.systemGrantToken;
+    try {
+      committed.call(this.executionAuthorizer, {
+        op: "start",
+        executionId,
+        workflowId,
+        ...(!viaSystem && principal !== undefined && { principal }),
+        ...(parentExecutionId !== undefined && { parentExecutionId }),
+      });
+    } catch {
+      // The start already happened; ownership bookkeeping must not undo or fail it.
+    }
+  }
+
+  /**
+   * R3 — existence is not an oracle for an ANONYMOUS caller under `strict`: an execution that
+   * does not exist is judged by the authorizer BEFORE "not found" is revealed, so a principal-less
+   * caller learns nothing from the difference (the policy sees `workflowId: ""` — there is none).
+   * Deliberately NOT applied to a caller that presents a principal: `loadState(id, { principal })`
+   * returning `null` is how an edge asks "does this exist?" before starting it, and a policy
+   * cannot tell a free id from a forbidden one without breaking that. An identified caller can
+   * therefore still tell "not found" from "denied" — documented residual. Off unless the
+   * runtime fails closed.
+   */
+  private async denyMissing(
+    op: ExecutionOp,
+    executionId: string,
+    principal: PrincipalChain | undefined,
+    system: SystemGrant | undefined
+  ): Promise<void> {
+    if (
+      !this.requirePrincipal ||
+      principal !== undefined ||
+      !this.authzApplies(principal, system)
+    ) {
+      return;
+    }
+    const denial = this.authzDenial(op, executionId, "", principal, system);
+    if (denial !== undefined) {
+      await this.denyOp(op, executionId, "", principal, denial.reason, undefined);
+    }
+  }
+
+  /** Sequence 0 survives compaction, so its workflow id answers "what is this execution?". */
+  private async workflowIdOf(executionId: string): Promise<string | undefined> {
+    const first = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    return first?.workflowId || undefined;
   }
 
   /** Fire the audit callback, best-effort record (resume/cancel), and throw. */
@@ -1108,7 +1171,39 @@ export class WorkflowRuntime {
    * duplicate at sequence 0, and an execution started unfenced is still fenced out by the
    * first later `acquireFence` (a fencing store refuses a MISSING token once one exists).
    */
-  async acquireFence(executionId: string): Promise<number | undefined> {
+  async acquireFence(
+    executionId: string,
+    options?: { principal?: PrincipalChain; system?: SystemGrant }
+  ): Promise<number | undefined> {
+    // R3 — a fence SUPERSEDES the current holder (a kill-class effect), and one acquired for an
+    // id nobody has written poisons a later start of it, so it is gated like the ops it
+    // enables: `cancel` on an execution that exists, `start` on one that does not.
+    if (this.authzApplies(options?.principal, options?.system)) {
+      const workflowId = await this.workflowIdOf(executionId);
+      const op: ExecutionOp = workflowId === undefined ? "start" : "cancel";
+      const denial = this.authzDenial(
+        op,
+        executionId,
+        workflowId ?? "",
+        options?.principal,
+        options?.system
+      );
+      if (denial !== undefined) {
+        await this.denyOp(
+          op,
+          executionId,
+          workflowId ?? "",
+          options?.principal,
+          denial.reason,
+          undefined
+        );
+      }
+    }
+    return this.fenceOf(executionId);
+  }
+
+  /** The ungated fence acquisition, for callers that already authorized the op. */
+  private async fenceOf(executionId: string): Promise<number | undefined> {
     if (this.eventStore.acquireFence === undefined) return undefined;
     return this.eventStore.acquireFence(executionId);
   }
@@ -1142,6 +1237,7 @@ export class WorkflowRuntime {
     if (this.authzApplies(options?.principal, options?.system)) {
       const gate = live?.getState() ?? (await this.foldState(executionId));
       if (gate === null || gate === undefined) {
+        await this.denyMissing("cancel", executionId, options?.principal, options?.system);
         throw new Error(`No execution found for id: ${executionId}`);
       }
       const cancelDenial = this.authzDenial(
@@ -1174,7 +1270,7 @@ export class WorkflowRuntime {
     if (state.status === "completed" || state.status === "failed" || state.status === "cancelled") {
       return false;
     }
-    const fence = await this.acquireFence(executionId);
+    const fence = await this.fenceOf(executionId);
     const sequence = state.sequence + 1;
     const envelope: EventEnvelope = {
       id: `${executionId}-${sequence}`,
@@ -1201,6 +1297,33 @@ export class WorkflowRuntime {
     assertNotReserved(preloadedState.executionId);
     // Before any read or append (see `start`): an invalid budget must leave the log untouched.
     assertValidBudget("deadlineMs", options?.deadlineMs, "restoreFromState options");
+    // R3 — restoring a state IS driving that execution on, so it is gated and authenticated
+    // exactly like `resume` (it used to skip both). The state is caller-supplied, so a denial
+    // is reported but never written into the log under an unverified sequence.
+    const restoreDenial = this.authzDenial(
+      "resume",
+      preloadedState.executionId,
+      preloadedState.workflowId,
+      options?.principal,
+      options?.system
+    );
+    if (restoreDenial !== undefined) {
+      await this.denyOp(
+        "resume",
+        preloadedState.executionId,
+        preloadedState.workflowId,
+        options?.principal,
+        restoreDenial.reason,
+        undefined
+      );
+    }
+    const restoreApproval =
+      resumeEvent !== undefined
+        ? this.verifyApproval(preloadedState.executionId, resumeEvent)
+        : undefined;
+    if (resumeEvent !== undefined) {
+      assertAuthorizedOverride(preloadedState.executionId, resumeEvent, restoreApproval);
+    }
     // K11 — the preloaded state carries the recorded flow-code fingerprint;
     // restore resolves the same way a resume does: current code, a pinned
     // version matching the recorded hash, or a loud refusal.
@@ -1220,7 +1343,12 @@ export class WorkflowRuntime {
       vm,
       flow.runner as FlowRunner<unknown, unknown>,
       originalInput,
-      resumeEvent ? [{ eventType: resumeEvent.eventType, payload: resumeEvent.payload }] : [],
+      resumeEvent
+        ? [
+            ...(restoreApproval !== undefined ? [restoreApproval] : []),
+            { eventType: resumeEvent.eventType, payload: resumeEvent.payload },
+          ]
+        : [],
       options?.fence,
       options?.deadlineMs ?? flow.definition.deadlineMs,
       options?.principal
@@ -1349,6 +1477,15 @@ export class WorkflowRuntime {
         options.fence
       );
     }
+    // R3 — the start is committed (a caller-chosen id's sequence 0 is durable; a minted ulid
+    // cannot collide), so only now does the authorizer learn who owns the id.
+    this.notifyStarted(
+      executionId,
+      definition.id,
+      options?.principal,
+      options?.system,
+      options?.parentExecutionId
+    );
 
     return this.execute(
       executionId,
@@ -1518,6 +1655,7 @@ export class WorkflowRuntime {
       firstEvent = allEvents[0];
     }
     if (firstEvent === undefined) {
+      await this.denyMissing("resume", executionId, options?.principal, options?.system);
       throw new Error(`No execution found for id: ${executionId}`);
     }
     const startPayload = firstEvent.payload as { input?: unknown };
@@ -1691,6 +1829,7 @@ export class WorkflowRuntime {
     assertNotReserved(executionId);
     const allEvents = await this.eventStore.read(executionId);
     if (allEvents.length === 0) {
+      await this.denyMissing("resume", executionId, options.principal, options.system);
       throw new Error(`No execution found for id: ${executionId}`);
     }
     const firstEvent = allEvents[0]!;
@@ -1848,7 +1987,10 @@ export class WorkflowRuntime {
     options?: { principal?: PrincipalChain; system?: SystemGrant }
   ): Promise<ExecutionState | null> {
     const state = await this.foldState(executionId);
-    if (state === null) return null;
+    if (state === null) {
+      await this.denyMissing("query", executionId, options?.principal, options?.system);
+      return null;
+    }
     // C.1 — gate the query. Folding is pure (no side effects), so authorizing AFTER
     // is safe: on a denial we simply withhold the data (no durable record — a read
     // must never write). Kernel-internal callers use `foldState` and bypass this.
@@ -1983,6 +2125,51 @@ export class WorkflowRuntime {
     // of a fork, and it was paid even when the store could copy the prefix natively.
     assertNotReserved(parentExecutionId);
     if (opts?.executionId !== undefined) assertNotReserved(opts.executionId);
+    const childId = opts?.executionId ?? ulid();
+    // R3 — a fork READS the parent (its whole prefix, input included) and CREATES an execution,
+    // so it is gated as `query` on the parent and `start` on the child, before anything is read
+    // beyond sequence 0 or written. Both used to be skipped.
+    if (this.authzApplies(opts?.principal, opts?.system)) {
+      const parentWorkflowId = await this.workflowIdOf(parentExecutionId);
+      if (parentWorkflowId === undefined) {
+        await this.denyMissing("query", parentExecutionId, opts?.principal, opts?.system);
+      } else {
+        const queryDenial = this.authzDenial(
+          "query",
+          parentExecutionId,
+          parentWorkflowId,
+          opts?.principal,
+          opts?.system
+        );
+        if (queryDenial !== undefined) {
+          await this.denyOp(
+            "query",
+            parentExecutionId,
+            parentWorkflowId,
+            opts?.principal,
+            queryDenial.reason,
+            undefined
+          );
+        }
+        const startDenial = this.authzDenial(
+          "start",
+          childId,
+          parentWorkflowId,
+          opts?.principal,
+          opts?.system
+        );
+        if (startDenial !== undefined) {
+          await this.denyOp(
+            "start",
+            childId,
+            parentWorkflowId,
+            opts?.principal,
+            startDenial.reason,
+            undefined
+          );
+        }
+      }
+    }
     const tip = await headOf(this.eventStore, parentExecutionId);
     if (tip === null) {
       throw new Error(`No execution found for id: ${parentExecutionId}`);
@@ -2003,8 +2190,6 @@ export class WorkflowRuntime {
       const latest = await this.snapshotStore.loadLatest(parentExecutionId);
       if (atSequence > Math.max(tip, latest?.sequence ?? tip)) throw await outOfRange();
     }
-
-    const childId = opts?.executionId ?? ulid();
 
     // Only two things need the parent's events: folding the state at the fork point (which
     // starts from the nearest snapshot at/below it, so usually a short tail), and the copy
@@ -2140,6 +2325,10 @@ export class WorkflowRuntime {
         });
       }
     }
+
+    // R3 — the child exists now: its owner is whoever forked it (or, for a kernel-internal
+    // fork, inherited from the parent by the policy).
+    this.notifyStarted(childId, workflowId, opts?.principal, opts?.system, parentExecutionId);
 
     return {
       executionId: childId,

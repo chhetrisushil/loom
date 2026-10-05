@@ -200,3 +200,49 @@ describe("T2.4 — a non-TS client starts, suspends, resumes, and replays over J
     expect(abi.syscalls.length).toBeGreaterThan(0);
   });
 });
+
+// R3 round 1 (P2-3) — the transport's authenticated principal reaches EVERY execution method.
+describe("carrier principal under fail-closed execution authz", () => {
+  it("start, resume, getState and cancel all carry the principal resolved by the transport", async () => {
+    const { executionAccessPolicy } = await import("@loom/workflow-runtime");
+    const effects = new EffectRuntime();
+    effects.register("act-tool", new ToolEffect(async (input: unknown) => input));
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: effects,
+      executionAuthorizer: executionAccessPolicy(),
+      executionAuthz: { requirePrincipal: true },
+    });
+    const flow = makeFlow();
+    runtime.registerFlow(flow.definition, flow.runner);
+    const alice = { actor: "alice", tenant: "t1" };
+    const opts = { resolvePrincipal: () => alice };
+    let n = 0;
+    const rpc = (method: string, params: unknown, o: object = opts) =>
+      handleRpc(runtime, { jsonrpc: "2.0", id: ++n, method, params } as never, o);
+
+    const started = await rpc("execution.start", {
+      flowId: FLOW,
+      input: { n: 1 },
+      executionId: "w1",
+    });
+    expect(started.error).toBeUndefined();
+    expect((await rpc("execution.getState", { executionId: "w1" })).error).toBeUndefined();
+    const resumed = await rpc("execution.resume", {
+      executionId: "w1",
+      event: { eventType: "Approval", payload: {} },
+    });
+    expect(resumed.error).toBeUndefined();
+    expect((await rpc("execution.cancel", { executionId: "w1" })).error).toBeUndefined();
+
+    // no resolvePrincipal => anonymous on every method => refused
+    for (const [m, p] of [
+      ["execution.getState", { executionId: "w1" }],
+      ["execution.resume", { executionId: "w1", event: { eventType: "Approval", payload: {} } }],
+      ["execution.cancel", { executionId: "w1" }],
+    ] as const) {
+      expect((await rpc(m, p, {})).error).toBeDefined();
+    }
+  });
+});

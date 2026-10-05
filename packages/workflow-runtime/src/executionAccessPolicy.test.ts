@@ -16,6 +16,16 @@ const req = (
   workflowId = "wf"
 ): ExecutionAuthzRequest => ({ op, executionId, workflowId, ...(principal && { principal }) });
 
+/** A start the runtime committed: authorize, then the durable-start notification. */
+const startOf = (
+  p: ReturnType<typeof executionAccessPolicy>,
+  principal: ExecutionAuthzRequest["principal"],
+  id = "e1"
+): void => {
+  const r = req("start", principal, id);
+  if (p.authorize(r).allowed) p.committed?.(r);
+};
+
 const alice = { actor: "alice", tenant: "t1" };
 const alice2 = { actor: "alice2", tenant: "t1" };
 const eve = { actor: "eve", tenant: "t2" };
@@ -34,7 +44,7 @@ describe("executionAccessPolicy", () => {
 
   it("tenant isolation: same tenant allowed, another tenant denied (resume/cancel/query)", () => {
     const p = executionAccessPolicy();
-    expect(p.authorize(req("start", alice)).allowed).toBe(true);
+    startOf(p, alice);
     for (const op of ["resume", "cancel", "query"] as const) {
       expect(p.authorize(req(op, alice2)).allowed).toBe(true);
       const d = p.authorize(req(op, eve));
@@ -46,14 +56,14 @@ describe("executionAccessPolicy", () => {
     const p = executionAccessPolicy({
       rules: { cancel: "owner", resume: "owner", query: "owner" },
     });
-    p.authorize(req("start", alice));
+    startOf(p, alice);
     expect(p.authorize(req("cancel", alice)).allowed).toBe(true);
     expect(p.authorize(req("cancel", alice2)).allowed).toBe(false);
   });
 
   it("op-specific rules: deny closes an op; any skips ownership", () => {
     const p = executionAccessPolicy({ rules: { cancel: "deny", query: "any" } });
-    p.authorize(req("start", alice));
+    startOf(p, alice);
     expect(p.authorize(req("cancel", alice)).allowed).toBe(false);
     expect(p.authorize(req("query", eve)).allowed).toBe(true);
   });
@@ -73,8 +83,8 @@ describe("executionAccessPolicy", () => {
 
   it("first writer wins: a later start naming a known id cannot re-assign its owner", () => {
     const p = executionAccessPolicy();
-    p.authorize(req("start", alice, "e9"));
-    p.authorize(req("start", eve, "e9"));
+    startOf(p, alice, "e9");
+    startOf(p, eve, "e9");
     expect(p.ownerOf("e9")).toEqual({ actor: "alice", tenant: "t1" });
     expect(p.authorize(req("resume", eve, "e9")).allowed).toBe(false);
   });
@@ -86,11 +96,14 @@ describe("executionAccessPolicy", () => {
     expect(p.authorize(req("start", { actor: "x" }, "c", "wf")).allowed).toBe(false);
   });
 
-  it("tracked owners are bounded (FIFO)", () => {
+  it("tracked owners are bounded and NEVER evicted: a full table refuses the next start", () => {
     const p = executionAccessPolicy({ maxTracked: 2 });
-    for (const id of ["a", "b", "c"]) p.authorize(req("start", alice, id));
+    for (const id of ["a", "b"]) startOf(p, alice, id);
+    expect(p.authorize(req("start", alice, "c")).allowed).toBe(false);
+    startOf(p, alice, "c");
     expect(p.tracked).toBe(2);
-    expect(p.ownerOf("a")).toBeUndefined();
+    expect(p.ownerOf("a")).toEqual({ actor: "alice", tenant: "t1" });
+    expect(p.ownerOf("c")).toBeUndefined();
     expect(() => executionAccessPolicy({ maxTracked: 0 })).toThrow();
   });
 });
