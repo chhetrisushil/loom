@@ -2,6 +2,11 @@ import type { EventEnvelope } from "@loom/core";
 import { fail } from "@loom/core";
 import type { PrincipalChain } from "@loom/effect-runtime";
 import { signDelegation } from "@loom/effect-runtime";
+import {
+  type ExecutionEnumerable,
+  isReservedStream,
+  iterateExecutionIds,
+} from "@loom/event-runtime";
 import { ResumeRefusedError } from "@loom/workflow-runtime";
 import type {
   ExecutionContext,
@@ -455,9 +460,37 @@ export interface SupervisorDeps {
   limits?: SpawnLimits;
 }
 
+/** What one {@link ChildSupervisor.recover} pass found and did. */
+export interface RecoverSummary {
+  /** Executions enumerated (each costs one fold — see `recover`). */
+  scanned: number;
+  /** Parents found parked on a `CHILD_DONE` gate. */
+  parked: number;
+  /** Parents resumed because every child they awaited had already settled. */
+  resumed: number;
+  /** Children (or group members) started because the log held a spawn but no child. */
+  started: number;
+}
+
 export interface ChildSupervisor {
   /** Wire this into `WorkflowRuntimeDeps.onEvent` (it sees every execution's events). */
   onEvent(event: EventEnvelope): void;
+  /**
+   * R8 — boot catch-up. Enumerate the store, find every execution parked on a `CHILD_DONE`
+   * gate, rebuild its spawn spec / group from the log, and: resume it if every child it awaits
+   * already settled, start any child the log recorded but nobody started, and otherwise adopt
+   * it (a child still running here will complete into the supervisor as usual).
+   *
+   * Call it once after wiring `onEvent`, and again whenever you like as a sweeper: it is
+   * idempotent and safe to run from several supervisors at once (see `superviseChildren`).
+   *
+   * COST: one `listExecutionsPage` scan of the store plus ONE FOLD per execution (O(store));
+   * memory stays O(page) — nothing is retained for executions that are not parked on children.
+   * Without `listExecutionsPage`/`listExecutions` on the store it throws (nothing to enumerate);
+   * the lazy per-event adoption in `onEvent` still works without it. Pass `source` to scan a
+   * narrower enumeration (e.g. a candidate list from your own index).
+   */
+  recover(options?: { source?: ExecutionEnumerable; pageSize?: number }): Promise<RecoverSummary>;
 }
 
 /**
@@ -495,6 +528,16 @@ function childStartOptions(
   };
 }
 
+/** A write the store refused because another writer's append took the slot first. */
+function isLostRace(err: unknown): boolean {
+  const name = (err as { name?: unknown } | null)?.name;
+  return (
+    name === "DuplicateSequenceError" ||
+    name === "DuplicateEnvelopeIdError" ||
+    name === "StaleFenceError"
+  );
+}
+
 /**
  * The supervisor that turns spawn intents into running children and their completions
  * into parent resumes. Correlation is store-read-free — the spawn spec comes from the
@@ -524,6 +567,14 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   const memberOf = new Map<string, { groupId: string; index: number }>();
 
   const fail = (err: unknown): void => deps.onError?.(err);
+  // Fire-and-forget work (child starts, refusals) that `recover` awaits before it reports.
+  const inflight = new Set<Promise<void>>();
+  const track = (p: Promise<void>): void => {
+    inflight.add(p);
+    void p.finally(() => inflight.delete(p));
+  };
+  let resumedTotal = 0;
+  let startedTotal = 0;
 
   // The settled outcome of a child, derived from its terminal event. Completions carry an
   // `output`; failures/cancels flatten to the string the kernel records (EXECUTION_FAILED
@@ -564,7 +615,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   // instantly — a read-after-write visibility gap the durability gate bounds but a slower
   // store can still exceed. Without the retry the resume throws and the parent hangs forever.
   // Bounded backoff (~1s) backstops the gate; a genuinely missing parent still surfaces via
-  // onError after the retries. `payload` is `{ output }` for a single child or `{ outputs }`
+  // onError after the retries. `payload` is `{ output }` for a single child or `{ settled }`
   // for a group.
   //
   // TWO shapes of the same gap, both retriable: the parent's log may not be readable at all
@@ -573,23 +624,397 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   // resuming a still-running parent. Matching on the machine-readable reason, not the
   // message: every other refusal (gate-mismatch, kernel-event-type) is permanent and
   // retrying it would just delay a real error by a second.
-  const resumeParent = async (parentId: string, payload: unknown, attempt = 0): Promise<void> => {
+  //
+  // R8 — DOUBLE-RESUME SAFETY. The resume ingress gate checks only the gate's NAME
+  // (`CHILD_DONE`), not its `correlationKey`, so a duplicate resume that lands after the parent
+  // has moved on to its NEXT `awaitChild` would answer the wrong gate. Two guards:
+  //   • `key` — before resuming, the parent must be parked on exactly this child/group
+  //     (`suspendedOn.correlationKey === key`); parked on anything else, the resume is stale
+  //     and is dropped. (Residual: the window between this read and the resume's own fold;
+  //     closing it needs an expected-park argument on `resume`, a kernel change.)
+  //   • lost races — a second supervisor resuming the same park is refused by the append
+  //     itself (`DuplicateSequenceError`, or `not-suspended` once the first resume folds). For
+  //     an ADOPTED resume (the parent was just read as parked on this key) either means "someone
+  //     else resumed it": harmless, swallowed, not reported and not retried.
+  const resumeParent = async (
+    parentId: string,
+    payload: unknown,
+    opts: { key?: string; adopted?: boolean } = {},
+    attempt = 0
+  ): Promise<void> => {
     try {
+      if (opts.key !== undefined) {
+        const s = await deps.runtime
+          .loadState(parentId, deps.runtime.systemOptions())
+          .catch(() => null);
+        if (
+          s?.status === "suspended" &&
+          !(s.suspendedOn?.on === CHILD_DONE && s.suspendedOn.correlationKey === opts.key)
+        ) {
+          return; // parked on a later gate: this completion is stale.
+        }
+      }
       await deps.runtime.resume(
         parentId,
         { eventType: CHILD_DONE, payload },
         deps.runtime.systemOptions()
       );
+      resumedTotal++;
     } catch (err) {
+      if (isLostRace(err)) return; // another supervisor's resume of this very park won.
+      if (err instanceof ResumeRefusedError) {
+        if (err.reason === "gate-mismatch") return; // the parent moved on to another gate.
+        if (err.reason === "not-suspended" && opts.adopted === true) return; // resumed already.
+      }
       const transient =
         (err instanceof Error && /No execution found/.test(err.message)) ||
         (err instanceof ResumeRefusedError && err.reason === "not-suspended");
       if (transient && attempt < 10) {
         await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
-        return resumeParent(parentId, payload, attempt + 1);
+        return resumeParent(parentId, payload, opts, attempt + 1);
       }
       fail(err);
     }
+  };
+
+  // Start one child, tolerating a concurrent supervisor having started it first (the durable
+  // bootstrap refuses a duplicate id): a start that failed because the child now EXISTS is not
+  // an error, it is the race this design expects.
+  const startChild = async (
+    flow: RegisteredFlow,
+    childId: string,
+    spec: { input: unknown; grants?: readonly string[]; expiresAt?: number },
+    parentId: string | undefined
+  ): Promise<void> => {
+    try {
+      await deps.runtime.start(
+        flow,
+        spec.input,
+        childStartOptions(childId, spec, deps.delegation, deps.runtime.systemOptions(), parentId)
+      );
+      startedTotal++;
+    } catch (err) {
+      const exists = await deps.runtime
+        .loadState(childId, deps.runtime.systemOptions())
+        .then((s) => s !== null)
+        .catch(() => false);
+      if (!exists) fail(err);
+    }
+  };
+
+  // Spawn handling for a parent's CHILD_DONE suspend on `correlationKey`: start the single
+  // child / every unstarted group member, or refuse per the R9 envelope. Called from the live
+  // `EXECUTION_SUSPENDED` event and from recovery (for a spawn the log recorded but nobody started).
+  const handleSuspend = (correlationKey: string): void => {
+    if (started.has(correlationKey)) return;
+
+    // Parallel spawn: one suspend, start every member of the group.
+    const group = groups.get(correlationKey);
+    if (group !== undefined) {
+      // R9 — the envelope, enforced where children actually start. Checked BEFORE the
+      // idempotency marker and before any member starts, so a refused group starts none.
+      const breach = limitBreach(
+        deps.limits,
+        depthOf(group.members[0]?.childId ?? correlationKey),
+        group.members.length,
+        correlationKey
+      );
+      if (breach !== undefined) {
+        for (const m of group.members) memberOf.delete(m.childId);
+        groups.delete(correlationKey);
+        fail(breach);
+        const refused: ChildResult = {
+          status: "failed",
+          error: `${breach.name}: ${breach.message}`,
+        };
+        track(
+          (async () => {
+            await waitParentDurable(group.parentId);
+            await resumeParent(
+              group.parentId,
+              { settled: group.members.map(() => refused) },
+              { key: correlationKey }
+            );
+          })()
+        );
+        return;
+      }
+      started.add(correlationKey); // idempotency: a replayed suspend won't re-fan-out.
+      const runnable = group.members.map((m) => ({ member: m, flow: deps.flows[m.flowId] }));
+      for (const { member, flow } of runnable) {
+        if (flow === undefined && !started.has(member.childId)) {
+          // A member with no registered flow can never start, so the group can never
+          // complete and the parent stays suspended (parity with the single-child
+          // missing-flow case). Surface it; the other members still run.
+          fail(new Error(`orchestration: no flow registered for "${member.flowId}"`));
+        }
+      }
+      // One durability gate covers the whole group — all members share the one parent
+      // suspend — then start each member (idempotently) exactly as a single child.
+      track(
+        (async () => {
+          await waitParentDurable(group.parentId);
+          for (const { member, flow } of runnable) {
+            if (flow === undefined || started.has(member.childId)) continue;
+            started.add(member.childId);
+            await startChild(flow, member.childId, member, group.parentId);
+          }
+        })()
+      );
+      return;
+    }
+
+    // Single child.
+    const childId = correlationKey;
+    const spec = specs.get(childId);
+    if (spec === undefined) return;
+    const flow = deps.flows[spec.flowId];
+    if (flow === undefined) {
+      // Reclaim the spec — this child will never start, so no terminal
+      // event will ever arrive to clean it up (audit MEM-LOW, pre-existing).
+      specs.delete(childId);
+      fail(new Error(`orchestration: no flow registered for "${spec.flowId}"`));
+      return;
+    }
+    // R9 — the envelope, enforced where the child actually starts.
+    const breach = limitBreach(deps.limits, depthOf(childId), 1, childId);
+    if (breach !== undefined) {
+      specs.delete(childId);
+      fail(breach);
+      const parentOfRefused = parentOf(childId);
+      if (parentOfRefused !== undefined) {
+        track(
+          (async () => {
+            await waitParentDurable(parentOfRefused);
+            await resumeParent(
+              parentOfRefused,
+              { __childFailed: { status: "failed", error: `${breach.name}: ${breach.message}` } },
+              { key: childId }
+            );
+          })()
+        );
+      }
+      return;
+    }
+    started.add(childId);
+    // Start the child only once the parent's suspend is DURABLE (see waitParentDurable).
+    const parentId = parentOf(childId);
+    track(
+      (async () => {
+        await waitParentDurable(parentId);
+        await startChild(flow, childId, spec, parentId);
+      })()
+    );
+  };
+
+  const TERMINAL = new Set(["EXECUTION_COMPLETED", "EXECUTION_FAILED", "EXECUTION_CANCELLED"]);
+
+  // The settled outcome of a child as the DURABLE LOG has it: a settled result, "running" (it
+  // exists, is not terminal), or "absent" (no events: never started). `hint` is a terminal event
+  // the caller just observed live — `onEvent` fires before the durable write drains, so the log
+  // alone could still read that child as running.
+  const settledOf = async (
+    childId: string,
+    hint?: EventEnvelope
+  ): Promise<ChildResult | "running" | "absent"> => {
+    if (hint !== undefined && hint.executionId === childId && TERMINAL.has(hint.eventType)) {
+      return settle(hint);
+    }
+    const st = await deps.runtime.loadState(childId, deps.runtime.systemOptions());
+    if (st === null) return "absent";
+    if (st.status !== "completed" && st.status !== "failed" && st.status !== "cancelled") {
+      return "running";
+    }
+    const log = await deps.runtime.events.read(childId);
+    for (let i = log.length - 1; i >= 0; i--) {
+      const e = log[i];
+      if (e !== undefined && TERMINAL.has(e.eventType)) return settle(e);
+    }
+    // The terminal event was compacted away; the fold still knows the outcome.
+    if (st.status === "completed") return { status: "completed", output: st.variables._output };
+    if (st.status === "cancelled") return { status: "cancelled" };
+    return { status: "failed", error: "execution failed (terminal event compacted)" };
+  };
+
+  // R8 — rebuild the supervisor's state for ONE parked parent from the durable log, then act:
+  // resume it if everything it awaits already settled, start what was recorded but never
+  // started, or hand running children back to the live path. Per-parent serialized.
+  //
+  // What is read: the parent's fold (parked on CHILD_DONE? on which key?), the parent's log (the
+  // spawn `DECISION_RECORDED` for that key — the spec / group members), and each awaited child's
+  // state + terminal event. No store-wide scan; O(parent log + awaited children).
+  const adoptOnce = async (parentId: string, hint?: EventEnvelope): Promise<void> => {
+    const sys = deps.runtime.systemOptions();
+    const st = await deps.runtime.loadState(parentId, sys).catch(() => null);
+    if (st?.status !== "suspended" || st.suspendedOn?.on !== CHILD_DONE) return;
+    const key = st.suspendedOn.correlationKey;
+    if (key === undefined) return;
+    if (started.has(key)) {
+      // Already adopted/live. A terminal event that raced the adoption (not yet durable when the
+      // children were read) is routed to the ordinary path now that its slot exists.
+      if (hint !== undefined && (memberOf.has(hint.executionId) || started.has(hint.executionId))) {
+        onChildTerminal(hint);
+      }
+      return;
+    }
+    // The spawn decision for this park. Last wins (a key is only ever recorded once per park).
+    let single: ReturnType<typeof asSpawnChoice>;
+    let grp: ReturnType<typeof asGroupChoice>;
+    for (const e of await deps.runtime.events.read(parentId)) {
+      if (e.eventType !== "DECISION_RECORDED") continue;
+      const choice = (e.payload as { choice?: unknown }).choice;
+      const one = asSpawnChoice(choice);
+      if (one !== undefined && one.childId === key) single = one;
+      const many = asGroupChoice(choice);
+      if (many !== undefined && many.groupId === key) grp = many;
+    }
+    if (single === undefined && grp === undefined) {
+      fail(
+        new Error(
+          `orchestration: execution "${parentId}" is parked on ${CHILD_DONE} "${key}" but its log records no spawn for it — cannot supervise`
+        )
+      );
+      return;
+    }
+
+    if (grp !== undefined) {
+      const g = {
+        parentId,
+        members: grp.members,
+        results: new Array<ChildResult>(grp.members.length),
+        remaining: grp.members.length,
+      };
+      groups.set(key, g);
+      let unstarted = false;
+      for (const [index, m] of grp.members.entries()) {
+        const r = await settledOf(m.childId, hint);
+        if (r === "absent") {
+          unstarted = true;
+          memberOf.set(m.childId, { groupId: key, index });
+        } else if (r === "running") {
+          started.add(m.childId);
+          memberOf.set(m.childId, { groupId: key, index });
+        } else {
+          g.results[index] = r;
+          g.remaining -= 1;
+        }
+      }
+      if (g.remaining === 0) {
+        groups.delete(key);
+        await resumeParent(parentId, { settled: g.results }, { key, adopted: true });
+      } else if (unstarted) {
+        handleSuspend(key);
+      } else {
+        started.add(key);
+      }
+      return;
+    }
+
+    const one = single as NonNullable<typeof single>;
+    specs.set(key, {
+      flowId: one.flowId,
+      input: one.input,
+      ...(one.grants !== undefined && { grants: one.grants }),
+      ...(one.expiresAt !== undefined && { expiresAt: one.expiresAt }),
+    });
+    const r = await settledOf(key, hint);
+    if (r === "absent") {
+      handleSuspend(key);
+    } else if (r === "running") {
+      started.add(key);
+    } else {
+      specs.delete(key);
+      await resumeParent(
+        parentId,
+        r.status === "completed" ? { output: r.output } : { __childFailed: r },
+        { key, adopted: true }
+      );
+    }
+  };
+
+  const tails = new Map<string, Promise<void>>();
+  const adopt = (parentId: string, hint?: EventEnvelope): Promise<void> => {
+    const next = (tails.get(parentId) ?? Promise.resolve())
+      .then(() => adoptOnce(parentId, hint))
+      .catch(fail);
+    tails.set(parentId, next);
+    void next.then(() => {
+      if (tails.get(parentId) === next) tails.delete(parentId);
+    });
+    return next;
+  };
+
+  // A terminal event for a child execution (the live path, and recovery's re-route).
+  const onChildTerminal = (event: EventEnvelope): void => {
+    const execId = event.executionId;
+    // A group member terminating: SETTLE it into the group's slot (wait-all — success
+    // AND failure both fill a slot) rather than resuming the parent directly (the parent
+    // awaits the WHOLE group). When the last member settles, resume once with the array.
+    const location = memberOf.get(execId);
+    if (location !== undefined) {
+      memberOf.delete(execId);
+      started.delete(execId);
+      const group = groups.get(location.groupId);
+      if (group === undefined) return;
+      group.results[location.index] = settle(event);
+      group.remaining -= 1;
+      if (group.remaining === 0) {
+        groups.delete(location.groupId);
+        started.delete(location.groupId); // fan-out idempotency marker; group is done.
+        // Results are positionally aligned with `children` (index order), NOT completion
+        // order — the deterministic contract awaitChildren promises.
+        void resumeParent(group.parentId, { settled: group.results }, { key: location.groupId });
+      }
+      return;
+    }
+
+    const parentId = parentOf(execId);
+    if (!started.has(execId)) {
+      // R8 — a child this process never saw spawned (it was started before a restart, or by
+      // another process). Rebuild its parent's park from the log instead of dropping it.
+      if (parentId !== undefined) void adopt(parentId, event);
+      return;
+    }
+    if (parentId !== undefined) {
+      if (event.eventType === "EXECUTION_COMPLETED") {
+        void resumeParent(
+          parentId,
+          { output: (event.payload as { output?: unknown }).output },
+          { key: execId }
+        );
+      } else {
+        // Propagate the child's abnormal termination so the parent's `awaitChild` THROWS
+        // `childFailed` (and, uncaught, fails the parent — which propagates one level up
+        // if the parent is itself a child) instead of hanging forever.
+        void resumeParent(parentId, { __childFailed: settle(event) }, { key: execId });
+      }
+    }
+    // Bound the supervisor's maps: once a child is terminal it needs no more bookkeeping.
+    specs.delete(execId);
+    started.delete(execId);
+  };
+
+  const recover = async (options?: {
+    source?: ExecutionEnumerable;
+    pageSize?: number;
+  }): Promise<RecoverSummary> => {
+    const source = options?.source ?? (deps.runtime.events as unknown as ExecutionEnumerable);
+    const summary: RecoverSummary = { scanned: 0, parked: 0, resumed: 0, started: 0 };
+    const resumed0 = resumedTotal;
+    const started0 = startedTotal;
+    for await (const id of iterateExecutionIds(source, options?.pageSize)) {
+      if (isReservedStream(id)) continue;
+      summary.scanned++;
+      const st = await deps.runtime.loadState(id, deps.runtime.systemOptions()).catch(() => null);
+      if (st?.status !== "suspended" || st.suspendedOn?.on !== CHILD_DONE) continue;
+      summary.parked++;
+      await adopt(id);
+    }
+    // Child starts / refusals are fire-and-forget (gated on `waitParentDurable`); wait for them.
+    await Promise.allSettled([...inflight]);
+    summary.resumed = resumedTotal - resumed0;
+    summary.started = startedTotal - started0;
+    return summary;
   };
 
   return {
@@ -629,116 +1054,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         if (condition?.on !== CHILD_DONE) return;
         const correlationKey = condition.correlationKey;
         if (correlationKey === undefined || started.has(correlationKey)) return;
-
-        // Parallel spawn: one suspend, start every member of the group.
-        const group = groups.get(correlationKey);
-        if (group !== undefined) {
-          // R9 — the envelope, enforced where children actually start. Checked BEFORE the
-          // idempotency marker and before any member starts, so a refused group starts none.
-          const breach = limitBreach(
-            deps.limits,
-            depthOf(group.members[0]?.childId ?? correlationKey),
-            group.members.length,
-            correlationKey
-          );
-          if (breach !== undefined) {
-            for (const m of group.members) memberOf.delete(m.childId);
-            groups.delete(correlationKey);
-            fail(breach);
-            const refused: ChildResult = {
-              status: "failed",
-              error: `${breach.name}: ${breach.message}`,
-            };
-            void (async () => {
-              await waitParentDurable(group.parentId);
-              await resumeParent(group.parentId, {
-                settled: group.members.map(() => refused),
-              });
-            })();
-            return;
-          }
-          started.add(correlationKey); // idempotency: a replayed suspend won't re-fan-out.
-          const runnable = group.members.map((m) => ({ member: m, flow: deps.flows[m.flowId] }));
-          for (const { member, flow } of runnable) {
-            if (flow === undefined) {
-              // A member with no registered flow can never start, so the group can never
-              // complete and the parent stays suspended (parity with the single-child
-              // missing-flow case). Surface it; the other members still run.
-              fail(new Error(`orchestration: no flow registered for "${member.flowId}"`));
-            }
-          }
-          // One durability gate covers the whole group — all members share the one parent
-          // suspend — then start each member (idempotently) exactly as a single child.
-          void (async () => {
-            await waitParentDurable(group.parentId);
-            for (const { member, flow } of runnable) {
-              if (flow === undefined || started.has(member.childId)) continue;
-              started.add(member.childId);
-              await deps.runtime
-                .start(
-                  flow,
-                  member.input,
-                  childStartOptions(
-                    member.childId,
-                    member,
-                    deps.delegation,
-                    deps.runtime.systemOptions(),
-                    group.parentId
-                  )
-                )
-                .catch(fail);
-            }
-          })();
-          return;
-        }
-
-        // Single child.
-        const childId = correlationKey;
-        const spec = specs.get(childId);
-        if (spec === undefined) return;
-        const flow = deps.flows[spec.flowId];
-        if (flow === undefined) {
-          // Reclaim the spec — this child will never start, so no terminal
-          // event will ever arrive to clean it up (audit MEM-LOW, pre-existing).
-          specs.delete(childId);
-          fail(new Error(`orchestration: no flow registered for "${spec.flowId}"`));
-          return;
-        }
-        // R9 — the envelope, enforced where the child actually starts.
-        const breach = limitBreach(deps.limits, depthOf(childId), 1, childId);
-        if (breach !== undefined) {
-          specs.delete(childId);
-          fail(breach);
-          const parentOfRefused = parentOf(childId);
-          if (parentOfRefused !== undefined) {
-            void (async () => {
-              await waitParentDurable(parentOfRefused);
-              await resumeParent(parentOfRefused, {
-                __childFailed: { status: "failed", error: `${breach.name}: ${breach.message}` },
-              });
-            })();
-          }
-          return;
-        }
-        started.add(childId);
-        // Start the child only once the parent's suspend is DURABLE (see waitParentDurable).
-        const parentId = parentOf(childId);
-        void (async () => {
-          await waitParentDurable(parentId);
-          await deps.runtime
-            .start(
-              flow,
-              spec.input,
-              childStartOptions(
-                childId,
-                spec,
-                deps.delegation,
-                deps.runtime.systemOptions(),
-                parentId
-              )
-            )
-            .catch(fail);
-        })();
+        handleSuspend(correlationKey);
         return;
       }
 
@@ -767,43 +1083,9 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           }
         }
 
-        // A group member terminating: SETTLE it into the group's slot (wait-all — success
-        // AND failure both fill a slot) rather than resuming the parent directly (the parent
-        // awaits the WHOLE group). When the last member settles, resume once with the array.
-        const location = memberOf.get(execId);
-        if (location !== undefined) {
-          memberOf.delete(execId);
-          started.delete(execId);
-          const group = groups.get(location.groupId);
-          if (group === undefined) return;
-          group.results[location.index] = settle(event);
-          group.remaining -= 1;
-          if (group.remaining === 0) {
-            groups.delete(location.groupId);
-            started.delete(location.groupId); // fan-out idempotency marker; group is done.
-            // Results are positionally aligned with `children` (index order), NOT completion
-            // order — the deterministic contract awaitChildren promises.
-            void resumeParent(group.parentId, { settled: group.results });
-          }
-          return;
-        }
-
-        if (!started.has(execId)) return;
-        const parentId = parentOf(execId);
-        if (parentId !== undefined) {
-          if (event.eventType === "EXECUTION_COMPLETED") {
-            void resumeParent(parentId, { output: (event.payload as { output?: unknown }).output });
-          } else {
-            // Propagate the child's abnormal termination so the parent's `awaitChild` THROWS
-            // `childFailed` (and, uncaught, fails the parent — which propagates one level up
-            // if the parent is itself a child) instead of hanging forever.
-            void resumeParent(parentId, { __childFailed: settle(event) });
-          }
-        }
-        // Bound the supervisor's maps: once a child is terminal it needs no more bookkeeping.
-        specs.delete(execId);
-        started.delete(execId);
+        onChildTerminal(event);
       }
     },
+    recover,
   };
 }

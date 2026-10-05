@@ -8,6 +8,7 @@
 export {
   type ChildResult,
   type ChildSupervisor,
+  type RecoverSummary,
   type SpawnLimits,
   type SupervisorDeps,
   SpawnLimitExceededError,

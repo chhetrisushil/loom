@@ -51,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`superviseChildren` is restart-safe (R8; no ABI change).** Spawn specs, group aggregation and the started set lived only in process memory, filled by live `onEvent`, so after a restart a recovered child's completion hit `if (!started.has(id)) return` and the parent was never resumed, and a group with 2 of 3 members settled lost its results. The supervisor now rebuilds a parent's state from the log: a child terminal event it did not see spawned triggers a per-parent rehydration (the parent's park, its spawn `DECISION_RECORDED`, each child's terminal event), and the new `supervisor.recover({ source?, pageSize? })` does a boot catch-up (resume parents whose children all settled while down, start children recorded but never started, adopt the rest; returns `{ scanned, parked, resumed, started }`). Double resume is harmless: a lost race is swallowed, a start whose id exists is not an error, and a resume is dropped unless the parent is parked on that exact child/group key (the resume gate checks only the gate NAME, so a late duplicate used to be able to answer the parent's next `awaitChild`). `ChildSupervisor` gains the `recover` method (additive for callers; a hand-written `ChildSupervisor` must add it). `recover()` costs one store scan + one fold per execution; there is no parked-parent index. Restart policies remain out of scope. `KERNEL_ABI` and `EVENT_SCHEMA` unchanged.
+
 - **Fold, live-commit and resume cost were super-linear (R1a; no ABI change).** Folded state is
   byte-identical, `KERNEL_ABI` and `EVENT_SCHEMA` are unchanged.
   - `DECISION_RECORDED` spread the whole `_decisions` map per event: folding 5k / 10k / 20k
