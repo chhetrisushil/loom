@@ -42,6 +42,18 @@ export class McpClient {
 
   constructor(private readonly config: McpServerConfig) {}
 
+  /**
+   * The hostname of the server this client targets (no port, no brackets) — a stable identity
+   * for per-tool grants (`mcp.invoke:<host>/<tool>`).
+   */
+  get serverHost(): string | undefined {
+    try {
+      return new URL(this.config.url).hostname.replace(/^\[|\]$/g, "").replace(/:/g, "_");
+    } catch {
+      return undefined;
+    }
+  }
+
   /** The protocol version this client offers before any negotiation. */
   private get offeredVersion(): string {
     return this.config.protocolVersion ?? DEFAULT_MCP_PROTOCOL_VERSION;

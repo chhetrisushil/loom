@@ -53,6 +53,11 @@ export interface LoomAgentExecutorOptions {
   namespaceByPrincipal?: boolean;
 }
 
+/** R12 — does this principal carry the minimum identity a per-caller namespace needs? */
+export function hasActor(principal: PrincipalChain): boolean {
+  return typeof principal.actor === "string" && principal.actor.length > 0;
+}
+
 /**
  * R12 — a stable, opaque key for a principal; the namespace its tasks live in. Two callers with
  * different identity can never address each other's execution ids, because the id the runtime
@@ -61,6 +66,14 @@ export interface LoomAgentExecutorOptions {
  */
 export function principalNamespace(principal: PrincipalChain | undefined): string {
   if (principal === undefined) return "anonymous";
+  // Fail closed: `PrincipalChain` makes every field optional and allows extras, so a principal
+  // identifying callers by another field (`{ sub }`) would hash to ONE shared namespace and hand
+  // every such caller each other's tasks. An actor is the minimum identity.
+  if (!hasActor(principal)) {
+    throw new Error(
+      "principalNamespace: the principal has no non-empty string `actor` — it cannot be given a per-caller task namespace"
+    );
+  }
   const identity = JSON.stringify([
     principal.tenant ?? null,
     principal.actor ?? null,

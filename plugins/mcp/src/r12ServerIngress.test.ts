@@ -110,4 +110,73 @@ describe("R12 — MCP server is secure by default", () => {
     ).json()) as { result: { structuredContent: { ran: string } } };
     expect(ok.result.structuredContent.ran).toBe("delete");
   });
+
+  it("resources tied to a hidden tool's ui:// template are hidden and unreadable too", async () => {
+    const ui = (uri: string) => ({ resourceUri: uri });
+    server = createMcpServer({
+      port: 0,
+      tools: [
+        { ...tool("read"), ui: ui("ui://read") },
+        { ...tool("delete"), ui: ui("ui://delete") },
+      ],
+      resources: [
+        { uri: "ui://read", mimeType: "text/html", text: "r" },
+        { uri: "ui://delete", mimeType: "text/html", text: "SECRET" },
+        { uri: "doc://plain", text: "p" },
+      ],
+      authenticate: (req) => PRINCIPALS[req.headers.authorization ?? ""],
+      authorizeTool: (t, { principal }) => principal?.actor === "admin" || t.name === "read",
+    });
+    await server.start();
+    const list = async (auth: string) =>
+      (
+        (await (await rpc(server?.url ?? "", "resources/list", {}, auth)).json()) as {
+          result: { resources: { uri: string }[] };
+        }
+      ).result.resources.map((r) => r.uri);
+    expect(await list("Bearer reader")).toEqual(["ui://read", "doc://plain"]);
+    expect(await list("Bearer admin")).toEqual(["ui://read", "ui://delete", "doc://plain"]);
+    const denied = (await (
+      await rpc(server.url, "resources/read", { uri: "ui://delete" }, "Bearer reader")
+    ).json()) as { error?: { message: string } };
+    expect(denied.error?.message).toBe("unknown resource: ui://delete");
+    const ok = await (
+      await rpc(server.url, "resources/read", { uri: "ui://delete" }, "Bearer admin")
+    ).json();
+    expect(JSON.stringify(ok)).toContain("SECRET");
+  });
+
+  it("authorizeAppJournaledCall receives the principal", async () => {
+    let seen: unknown;
+    server = createMcpServer({
+      port: 0,
+      tools: [
+        { ...tool("j"), mode: "journaled", ui: { resourceUri: "ui://j", visibility: ["app"] } },
+      ],
+      authenticate: (req) => PRINCIPALS[req.headers.authorization ?? ""],
+      audienceOf: () => "app",
+      authorizeAppJournaledCall: (_t, _req, principal) => {
+        seen = principal;
+        return true;
+      },
+    });
+    await server.start();
+    await rpc(server.url, "tools/call", { name: "j", arguments: {} }, "Bearer admin");
+    expect(seen).toEqual({ actor: "admin" });
+  });
+
+  it("a strict runtime makes insecure a config error without passing `strict`", () => {
+    expect(() =>
+      createMcpServer({ port: 0, insecure: true, runtime: { requiresPrincipal: true } })
+    ).toThrow(/refused under security.strict/);
+    const warnings: string[] = [];
+    createMcpServer({
+      port: 0,
+      insecure: true,
+      strict: false,
+      runtime: { requiresPrincipal: true },
+      warn: (m) => warnings.push(m),
+    });
+    expect(warnings).toHaveLength(1);
+  });
 });

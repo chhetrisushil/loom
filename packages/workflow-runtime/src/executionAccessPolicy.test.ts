@@ -42,6 +42,19 @@ describe("executionAccessPolicy", () => {
     ).toBe(true);
   });
 
+  it("a principal without a non-empty string actor can never match another such principal (R12 review)", () => {
+    const p = executionAccessPolicy({ rules: { query: "owner", cancel: "tenant" } });
+    for (const bad of [{ actor: "", tenant: "t1" }, { tenant: "t1" }, { sub: "a" }]) {
+      const r = req("start", bad as never);
+      expect(p.authorize(r).allowed).toBe(false);
+      p.committed?.(r);
+      for (const op of ["resume", "cancel", "query"] as const) {
+        expect(p.authorize(req(op, bad as never)).allowed).toBe(false);
+      }
+    }
+    expect(p.tracked).toBe(0);
+  });
+
   it("tenant isolation: same tenant allowed, another tenant denied (resume/cancel/query)", () => {
     const p = executionAccessPolicy();
     startOf(p, alice);

@@ -105,6 +105,10 @@ export interface McpServerOptions {
    * (`tools/call`) `tool`. A tool the caller may not use is reported as unknown — never as
    * forbidden, which would confirm it exists. Default: every authenticated caller may use every
    * served tool (so supply this whenever tools differ in sensitivity).
+   *
+   * `resources/list` and `resources/read` follow it: a resource that is the `ui.resourceUri`
+   * template of a tool the caller may not use (and of no tool they may use) is hidden and reads
+   * as unknown. Other resources (not tied to any tool) are served to every authenticated caller.
    */
   authorizeTool?: (
     tool: McpServedTool,
@@ -116,11 +120,16 @@ export interface McpServerOptions {
    */
   insecure?: boolean;
   /**
-   * R12 — pass `app.strict` (`security.strict`). Under strict the server is a config error
-   * unless it authenticates, and `insecure: true` is refused. (The app does not construct this
-   * server, so it cannot enforce this for you.)
+   * R12 — `security.strict`: `insecure: true` is refused. DEFAULTS from {@link runtime} when one
+   * is given (`runtime.requiresPrincipal`); set explicitly to override. (The app does not
+   * construct this server, so it cannot enforce this for you.)
    */
   strict?: boolean;
+  /**
+   * R12 — the workflow runtime this server fronts (or any `{ requiresPrincipal }`): a runtime
+   * that fails closed on principal-less calls makes this server strict by default.
+   */
+  runtime?: { readonly requiresPrincipal?: boolean };
   /** Where the insecure-mode warning goes. Default `console.warn`. */
   warn?: (message: string) => void;
   /**
@@ -157,7 +166,8 @@ export interface McpServerOptions {
    */
   authorizeAppJournaledCall?: (
     tool: McpServedTool,
-    req: http.IncomingMessage
+    req: http.IncomingMessage,
+    principal?: PrincipalChain
   ) => boolean | Promise<boolean>;
 }
 
@@ -262,7 +272,8 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
   const port = options.port ?? 3002;
   const host = options.host ?? "127.0.0.1";
   const authenticated = options.authenticate !== undefined || options.authorize !== undefined;
-  if (options.strict === true && options.insecure === true) {
+  const strict = options.strict ?? options.runtime?.requiresPrincipal === true;
+  if (strict && options.insecure === true) {
     throw new Error(
       "createMcpServer: `insecure: true` is refused under security.strict — authenticate callers."
     );
@@ -330,6 +341,21 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
   ): Promise<void> {
     const { id, method, params } = body;
     const caller = { request: req, ...(principal !== undefined && { principal }) };
+    // Resources tied (via `ui.resourceUri`) to a tool this caller may not use stay hidden —
+    // unless a tool they MAY use shares the template. Computed per request, only when a gate is set.
+    const hiddenResources = async (): Promise<Set<string>> => {
+      const hidden = new Set<string>();
+      if (options.authorizeTool === undefined) return hidden;
+      const shown = new Set<string>();
+      for (const t of tools.values()) {
+        const uri = t.ui?.resourceUri;
+        if (uri === undefined) continue;
+        if (await mayUse(t)) shown.add(uri);
+        else hidden.add(uri);
+      }
+      for (const uri of shown) hidden.delete(uri);
+      return hidden;
+    };
     const mayUse = async (tool: McpServedTool): Promise<boolean> =>
       options.authorizeTool === undefined || (await options.authorizeTool(tool, caller));
     if (typeof method !== "string") {
@@ -378,7 +404,12 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       }
 
       case "resources/list": {
-        rpcResult(res, id, { resources: [...resources.values()].map(describeResource) });
+        const hidden = await hiddenResources();
+        rpcResult(res, id, {
+          resources: [...resources.values()]
+            .filter((r) => !hidden.has(r.uri))
+            .map(describeResource),
+        });
         return;
       }
 
@@ -389,7 +420,7 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
           return;
         }
         const resource = resources.get(uri);
-        if (resource === undefined) {
+        if (resource === undefined || (await hiddenResources()).has(uri)) {
           rpcError(res, id, JSON_RPC_INVALID_PARAMS, `unknown resource: ${uri}`);
           return;
         }
@@ -427,7 +458,8 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
         // by the user's UI and needs its own authority, so it is denied by
         // default rather than inheriting the execution's.
         if (audience === "app" && tool.mode === "journaled") {
-          const allowed = (await options.authorizeAppJournaledCall?.(tool, req)) ?? false;
+          const allowed =
+            (await options.authorizeAppJournaledCall?.(tool, req, principal)) ?? false;
           if (!allowed) {
             rpcResult(res, id, {
               content: [

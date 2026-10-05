@@ -134,7 +134,9 @@ export function executionAccessPolicy(options: ExecutionAccessOptions = {}): Exe
           ? allow
           : deny("an authenticated principal is required (anonymous calls are refused)");
       }
-      if (principal.actor === undefined) return deny("the principal names no actor");
+      if (typeof principal.actor !== "string" || principal.actor.length === 0) {
+        return deny("the principal names no actor");
+      }
       if (options.requireTenant === true && principal.tenant === undefined) {
         return deny("the principal names no tenant");
       }
@@ -172,7 +174,7 @@ export function executionAccessPolicy(options: ExecutionAccessOptions = {}): Exe
     committed(request: ExecutionAuthzRequest): void {
       if (request.op !== "start") return;
       const { principal, executionId, parentExecutionId } = request;
-      if (principal?.actor !== undefined) {
+      if (typeof principal?.actor === "string" && principal.actor.length > 0) {
         adopt(executionId, {
           actor: principal.actor,
           ...(principal.tenant !== undefined && { tenant: principal.tenant }),
