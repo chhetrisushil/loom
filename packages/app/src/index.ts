@@ -21,7 +21,11 @@ export {
 } from "./strict";
 export {
   InProcessA2ABus,
+  approvalPayload,
+  unsafeAutoApprove,
   type ApprovalDecision,
+  type ApprovalProof,
+  type ApprovalRequest,
   type DispatchOptions,
   type DispatchResult,
 } from "./InProcessA2ABus";

@@ -399,11 +399,25 @@ defineConfig({
   },
 });
 
-await runtime.resume(id, signResume(answerApproval(state, { approved: true }), { actor: "alice", secret, exp: Date.now() + 60_000 }));
+await runtime.resume(
+  id,
+  signResume(answerApproval(state, { approved: true }), {
+    actor: "alice",
+    secret,                                   // 16+ bytes
+    exp: Date.now() + 60_000,                 // required
+    executionId: id,                          // the signature is for THIS execution…
+    parkedAtSequence: (await runtime.parkedAtSequence(id))!, // …and THIS park
+  }),
+  { principal: { actor: "alice" } }           // must match the signing actor
+);
 ```
 
-An unsigned, actor-less, forged or expired approval is refused (`ApprovalRejectedError`); a
-verified one records `APPROVAL_GRANTED { actor, verifiedBy }`. `InProcessA2ABus` no longer
+A signature is single-use: it is refused at another execution (a fork included) and at a later
+park of the same gate. An unsigned, actor-less, forged, expired or replayed approval is refused
+(`ApprovalRejectedError`); a verified one records `APPROVAL_GRANTED { actor, verifiedBy }`. Show the
+approver the tool call from the log and recompute `approvalViewDigest(correlationKey, tool, input)`
+from what you render. Through the bus, sign `approvalPayload(request, decision)` and return
+`{ ...decision, proof }` from `onApproval`. `InProcessA2ABus` no longer
 approves for you: without `onApproval` the gate stays parked (`resolveApproval` answers it);
 `onApproval: unsafeAutoApprove` is the demo-only opt-in.
 

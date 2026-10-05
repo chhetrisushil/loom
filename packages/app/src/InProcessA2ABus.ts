@@ -34,6 +34,31 @@ interface Registration {
 export interface ApprovalDecision {
   approved: boolean;
   approvedBy: string;
+  /**
+   * R13 — the approver's signed proof (`signResume` from `@loom/workflow-runtime`), for an app
+   * whose runtime wires a `resumeAuthenticator`. Sign the payload the bus will send — build it
+   * with {@link approvalPayload} — then return `{ ...decision, proof }`:
+   *
+   * ```ts
+   * onApproval: async (req) => {
+   *   const decision = { approved: true, approvedBy: "alice" };
+   *   const signed = signResume(
+   *     { eventType: req.gate, payload: approvalPayload(req, decision) },
+   *     { actor: "alice", secret, exp: Date.now() + 60_000,
+   *       executionId: req.executionId, parkedAtSequence: req.parkedAtSequence! }
+   *   );
+   *   return { ...decision, proof: (signed.payload as { proof: ApprovalProof }).proof };
+   * }
+   * ```
+   */
+  proof?: ApprovalProof | undefined;
+}
+
+/** The `proof` object `signResume` puts in an approval payload. */
+export interface ApprovalProof {
+  actor: string;
+  sig: string;
+  exp: number;
 }
 
 /**
@@ -46,6 +71,26 @@ export interface ApprovalRequest {
   executionId: string;
   gate: string;
   viewDigest?: string | undefined;
+  /**
+   * Sequence of the `EXECUTION_SUSPENDED` that parked the execution (the state's sequence at the
+   * park). What a signed approval binds to (single use per park); see `ApprovalDecision.proof`.
+   */
+  parkedAtSequence?: number | undefined;
+}
+
+/**
+ * The exact resume payload the bus sends for `decision` at `request`: the decision plus the
+ * gate's `viewDigest` echoed (and the `proof`, if the decision has one). An approver who signs
+ * must sign THIS — the proof covers the whole payload except itself.
+ */
+export function approvalPayload(
+  request: ApprovalRequest,
+  decision: ApprovalDecision
+): Record<string, unknown> {
+  return {
+    ...decision,
+    ...(request.viewDigest !== undefined && { viewDigest: request.viewDigest }),
+  };
 }
 
 /**
@@ -53,10 +98,16 @@ export interface ApprovalRequest {
  * used to have when no `onApproval` was supplied (R13 removed that default — a gate the bus
  * resumes itself is an approval nobody made). Named loudly so it is visible in review.
  */
-export const unsafeAutoApprove = async (): Promise<ApprovalDecision> => ({
-  approved: true,
-  approvedBy: "unsafeAutoApprove",
-});
+export const unsafeAutoApprove = async (): Promise<ApprovalDecision> => {
+  if (!warnedAutoApprove) {
+    warnedAutoApprove = true;
+    console.warn(
+      "[loom] unsafeAutoApprove is approving a gate: no human decided this. Demos and tests only — never in a deployment."
+    );
+  }
+  return { approved: true, approvedBy: "unsafeAutoApprove" };
+};
+let warnedAutoApprove = false;
 
 export interface DispatchOptions {
   onProgress?: ((line: string) => void) | undefined;
@@ -256,7 +307,11 @@ export class InProcessA2ABus {
     options: Pick<DispatchOptions, "principal" | "onApproval" | "onStatus"> = {}
   ): Promise<DispatchResult> {
     const entry = this.parked.get(taskId);
-    if (entry === undefined) throw new Error(`task "${taskId}" is not parked at a gate`);
+    if (entry === undefined) {
+      throw new Error(
+        `task "${taskId}" is not parked at a gate this bus remembers (it was answered, never parked here, or evicted past maxTasks). The execution itself may still be parked: answer it directly with runtime.resume(executionId, answerApproval(state, decision)) from @loom/workflow-runtime.`
+      );
+    }
     const principal = options.principal ?? this.defaultPrincipal;
     const result = await this.resume(taskId, entry.flowId, entry.request, decision, principal);
     // Only forget the park once the runtime accepted the answer (a refusal throws above).
@@ -277,10 +332,7 @@ export class InProcessA2ABus {
       flowId,
       resumeEvent: {
         eventType: request.gate,
-        payload: {
-          ...decision,
-          ...(request.viewDigest !== undefined && { viewDigest: request.viewDigest }),
-        },
+        payload: approvalPayload(request, decision),
       },
       ...(principal !== undefined && { principal }),
     });
@@ -315,6 +367,7 @@ export class InProcessA2ABus {
               executionId,
               gate,
               ...(cond?.viewDigest !== undefined && { viewDigest: cond.viewDigest }),
+              parkedAtSequence: result.state.sequence,
             };
       // No approver, an unreadable gate, or a timer wake (the kernel's, not an approver's):
       // the gate stays parked and the caller is told so.

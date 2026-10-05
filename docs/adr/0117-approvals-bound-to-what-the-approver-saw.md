@@ -34,34 +34,57 @@ Three gaps let an approval mean less than it appears to.
 ### D1 — The gate declares a digest of the proposal; the resume must echo it
 
 `SuspendConfig` / `SuspendCondition` gain an optional `viewDigest`. A parking caller sets it to
-`viewDigest(proposal)` (`fnv1a64` over `canonicalJson`, core's one canonicalization and hash).
-It is recorded in the existing `EXECUTION_SUSPENDED` condition, which the fold copies into
+`viewDigest(proposal)` (SHA-256 over `canonicalJson`, tagged `v2:`; review round 1 replaced the
+64-bit FNV `v1:` of the first cut, which a proposal-choosing adversary could collide). The runtime
+compares the echoed string for exact equality, so an execution that parked with a `v1:` digest is
+still resumed by echoing it. It is recorded in the existing `EXECUTION_SUSPENDED` condition, which the fold copies into
 `suspendedOn` verbatim, so it is durable and fold-visible with no new event. In `assertResumable`,
 after the gate-name check: if the parked condition declares a `viewDigest` and the resume payload
 does not carry the same `payload.viewDigest`, the resume is refused with
 `ResumeRefusedError { reason: "view-digest-mismatch" }` BEFORE the append. A timer wake is exempt
-(it is the kernel's, not an approver's). A gate that declares no digest behaves exactly as before.
+(it is the kernel's, not an approver's; see D5 for what that exemption is allowed to carry). A gate
+that declares no digest behaves exactly as before.
 
 `answerApproval(state, decision)` builds the resume event from the parked state, echoing the
 digest; keep that state with the UI so "echoed" means "this is what I was shown".
 
 `agentLoop$({ requireApproval })` declares `approvalViewDigest(gateKey, tool, input)` by default
-(`gateKey` is the gate's `<executionId>#turn:<n>:tool:<j>` correlation key, which pins execution
-and position, so an approval cannot be replayed at another execution's identical call).
+(`gateKey` is the gate's `<executionId>#<loop id>#turn:<n>:tool:<j>` correlation key, which pins
+execution, loop and position: two loops in one flow do not share `#turn:0:tool:0`). The proposal
+itself is NOT copied into the suspend condition — tool input is model output of arbitrary size and
+the condition is folded into every state read, snapshot and replay — so a UI renders the proposal
+from the tool call in the log and recomputes `approvalViewDigest(correlationKey, tool, input)`
+from exactly what it renders. An input `canonicalJson` refuses (nested past 1024) cannot be shown
+to anyone, so the call is refused to the model like any declined call rather than failing the run.
 `bindApproval: false` restores the unbound gate.
 
 ### D2 — `signedResumeAuthenticator`, the reference ResumeAuthenticator
 
-`signedResumeAuthenticator({ gates, keys, authorize?, now? })` verifies an HMAC-SHA256 over the
-whole event — `eventType`, payload (including the echoed `viewDigest`), `discardLegacyAnswers`,
-actor and expiry — and returns `verified { actor, verifiedBy: "hmac-sha256" }`, so the runtime
-records `APPROVAL_GRANTED`. It rejects an actor-less, unsigned, unknown-actor, forged, tampered or
-expired approval, and an actor `authorize` does not allow (the role/grant hook). Events for gates
-not in `gates` are `not-applicable`. `signResume(event, { actor, secret, exp? })` is the
-approver-side half. It passes `runResumeAuthenticatorConformance`.
+`signedResumeAuthenticator({ gates, keys, authorize?, requireActor?, now? })` verifies an
+HMAC-SHA256 over the whole event — `eventType`, payload (including the echoed `viewDigest`),
+`discardLegacyAnswers`, actor, expiry — **and the park it answers**: the SPI gains an additive
+optional `verify(event, { executionId, parkedAtSequence, principal })`. The runtime computes
+`parkedAtSequence` (the sequence of the parking `EXECUTION_SUSPENDED`) and passes it; authenticators
+written before it ignore the argument. The signature therefore holds for exactly one park of one
+execution: it is refused at another execution — **including a fork**, which copies the parent's
+park but has its own id — and at a later park of the same gate (a loop). Without a context
+(or an unparked execution) it rejects. `signResume(event, { actor, secret, exp, executionId,
+parkedAtSequence })` is the approver half; `runtime.parkedAtSequence(executionId)` is the value.
 
-Limits, stated: the SPI hands `verify` the event only, so a signature is not bound to an
-execution id except through the digest (D1), and there is no replay window beyond `exp`.
+- `exp` is required. The park binding, not `exp`, is what stops replay; `exp` bounds how long a
+  leaked signature for a still-open park is good for.
+- The proof's actor must equal the calling principal's `actor` when the call carries one
+  (`requireActor` overrides; no principal means the proof is the only identity). The recorded
+  actor is the signer, and under the default it is also the caller.
+- Secrets under 16 bytes (empty included) are refused: at construction for a record, at lookup for
+  a function; `signResume` refuses them too. `keys` may return `string | string[]` for rotation.
+- It rejects actor-less, unsigned, unknown-actor, forged, tampered and expired approvals and an
+  actor `authorize` does not allow. Gates not in `gates` are `not-applicable`. It passes
+  `runResumeAuthenticatorConformance`, which gains a case that the optional context is tolerated.
+
+What a signature does NOT do: the secret store and role model are the app's, and a proof is a
+bearer artefact until its park is answered or `exp` passes — an approver who signs for a park
+authorises it for anyone who can submit that exact event.
 
 ### D3 — Strict requires one
 
@@ -75,9 +98,27 @@ notice names the gap. The scaffold generates one.
 
 With no `onApproval`, `InProcessA2ABus.dispatch` returns `{ status: "working", suspended }` and
 the gate stays suspended; `bus.resolveApproval(taskId, decision)` answers it later.
-`onApproval` now receives `{ executionId, gate, viewDigest }`, and the bus echoes the digest.
+`onApproval` now receives `{ executionId, gate, viewDigest, parkedAtSequence }`, and the bus
+echoes the digest. A decision may carry a typed `proof`; `approvalPayload(request, decision)` is the
+exact payload the bus will send, so an approver can sign it — a strict app with a
+`signedResumeAuthenticator` approves through the bus this way (a bare bus approval is refused).
+`resolveApproval` on a task the bus does not remember (answered, or evicted past `maxTasks`) throws
+an error naming `runtime.resume` + `answerApproval` as the direct path.
 The resume uses the gate's own name (it used to hard-code `"ApprovalGranted"`, which the ingress
-gate refuses for any other name). `unsafeAutoApprove` is the loudly named opt-in for demos.
+gate refuses for any other name). `unsafeAutoApprove` is the loudly named opt-in for demos and logs a warning once per process.
+
+### D5 — `TIMER_FIRED` is the kernel's wake, not a caller's answer
+
+A timed approval gate (`suspend({ on: "Approval", timeout, viewDigest })`) has two legitimate
+wakes. The digest exemption for the timer wake had a hole: a caller-supplied
+`TIMER_FIRED { approved: true }` answered the gate past the digest check and the authenticator
+(`not-applicable`), and the flow received `{ approved: true }`. Now (a) on a runtime that fails
+closed (`requirePrincipal`, i.e. `security.strict`) a `TIMER_FIRED` resume without the runtime's
+system grant is refused before the append (`ResumeRefusedError`, `timer-wake-not-system`);
+`TimerService` already passes `systemOptions()`; and (b) on every runtime the recorded payload is
+normalised to exactly `{ wakeAt }` from the parked condition, so no caller field reaches the flow.
+A non-strict runtime cannot tell a caller from the timer (it has no system grant), so there an early
+manual wake is still possible but is a timeout, never an approval.
 
 ## Consequences
 
@@ -89,8 +130,12 @@ gate refuses for any other name). `unsafeAutoApprove` is the loudly named opt-in
 - **BREAKING (strict):** strict apps supply `resumeAuthenticator` or acknowledge its absence.
 - Executions already parked carry no digest and resume unchanged; replay of an approved execution
   folds identically (the digest lives in a condition the fold already carried).
-- The digest detects staleness and accident; it is not a MAC and is not collision-resistant against
-  an adversary choosing both proposals. WHO approved is the authenticator's job.
+- The digest detects staleness and accident (SHA-256, so also a crafted collision); it is not a MAC.
+  WHO approved, and for which park, is the authenticator's job (D2).
+- **BREAKING (`signResume`).** It now requires `exp`, `executionId` and `parkedAtSequence`;
+  `signedResumeAuthenticator` rejects an event it is given no park context for.
+- `agentLoop$` gate correlation keys gain the loop id: `<executionId>#<loop id>#turn:<n>:tool:<j>`.
+  Executions already parked keep the key (and digest) they recorded.
 
 ## Rejected
 
