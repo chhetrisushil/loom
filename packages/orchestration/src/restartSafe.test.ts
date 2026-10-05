@@ -1,7 +1,7 @@
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { TypedFailure } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore, iterateExecutionIds } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import {
   type FlowRunner,
@@ -51,6 +51,15 @@ const groupInstant = mk("groupInstant", async (ctx) =>
     children: [1, 2, 3].map((n) => ({ flowId: "instant", input: { n } })),
   })
 );
+// re-parks after the resume, so a duplicate resume lands on a LATER park (the window).
+const groupRepark = mk("groupRepark", async (ctx) => {
+  const first = await awaitAll(ctx, {
+    key: "g",
+    children: [1, 2, 3].map((n) => ({ flowId: "instant", input: { n } })),
+  });
+  await awaitChild(ctx, { key: "after", flowId: "gated", input: {} });
+  return first;
+});
 const caught = mk("caught", async (ctx) => {
   try {
     await awaitChild(ctx, { key: "c", flowId: "boom", input: {} });
@@ -71,7 +80,16 @@ const twice = mk("twice", async (ctx) => {
   const b = await awaitChild<{ v: unknown }>(ctx, { key: "k2", flowId: "gated", input: {} });
   return { a, b };
 });
+// A parent whose SECOND spawn key is non-deterministic (ctx.decide records it, but a losing
+// resume that runs the body in memory computes its own).
+const orphan = mk("orphan", async (ctx) => {
+  await awaitChild(ctx, { key: "k1", flowId: "instant", input: { n: 1 } });
+  const k = await ctx.decide("pick", () => `x${Math.random().toString(36).slice(2)}`);
+  return awaitChild(ctx, { key: k as string, flowId: "gated", input: {} });
+});
 const flows: Record<string, RegisteredFlow> = {
+  orphan,
+  groupRepark,
   gated,
   instant,
   boom,
@@ -90,7 +108,13 @@ type World = ReturnType<typeof world>;
 /** One "process": a fresh runtime + (optionally) a fresh supervisor over the shared stores. */
 function boot(
   w: World,
-  opts: { supervise?: boolean; strict?: boolean; limits?: { maxDepth?: number } } = {}
+  opts: {
+    supervise?: boolean;
+    strict?: boolean;
+    limits?: { maxDepth?: number };
+    /** Hold every CHILD_DONE resume this process issues until it resolves (a slow resume). */
+    holdResume?: Promise<void>;
+  } = {}
 ) {
   const errors: unknown[] = [];
   const holder: { sup?: ChildSupervisor } = {};
@@ -105,6 +129,14 @@ function boot(
     }),
     onEvent: (e) => holder.sup?.onEvent(e),
   });
+  if (opts.holdResume !== undefined) {
+    const orig = runtime.resume.bind(runtime);
+    const hold = opts.holdResume;
+    runtime.resume = async (...args: Parameters<typeof orig>) => {
+      if (args[1].eventType === "CHILD_DONE") await hold;
+      return orig(...args);
+    };
+  }
   for (const f of Object.values(flows)) {
     runtime.registerFlow(f.definition, f.runner as FlowRunner<unknown, unknown>);
   }
@@ -229,7 +261,7 @@ describe("R8 — restart-safe superviseChildren", () => {
   it("two supervisors racing over the same store resume the parent exactly once, quietly", async () => {
     const w = world();
     const down = boot(w, { supervise: false });
-    await down.runtime.start("groupInstant", {}, { executionId: "G" });
+    await down.runtime.start("groupRepark", {}, { executionId: "G" });
     await until(down.runtime, "G", (s) => s.status === "suspended");
     for (const n of [1, 2, 3]) {
       await down.runtime.start("instant", { n }, { executionId: `G::g#${n - 1}` });
@@ -237,10 +269,13 @@ describe("R8 — restart-safe superviseChildren", () => {
     const s1 = boot(w);
     const s2 = boot(w);
     const [r1, r2] = await Promise.all([s1.sup.recover(), s2.sup.recover()]);
-    await completed(s1.runtime, "G");
-    expect(r1.resumed + r2.resumed).toBeGreaterThanOrEqual(1);
+    await until(s1.runtime, "G::after", (s) => s.status === "suspended");
+    await new Promise((r) => setTimeout(r, 200)); // a late duplicate resume would land here
+    expect(r1.resumed + r2.resumed).toBe(1);
     expect(await resumedCount(w, "G")).toBe(1);
-    expect((await s1.runtime.loadState("G", sys(s1.runtime)))?.variables._output).toEqual([
+    expect((await s1.runtime.loadState("G", sys(s1.runtime)))?.status).toBe("suspended");
+    await s1.runtime.resume("G::after", { eventType: "GO", payload: 0 }, sys(s1.runtime));
+    expect((await completed(s1.runtime, "G")).variables._output).toEqual([
       { v: 1 },
       { v: 2 },
       { v: 3 },
@@ -297,4 +332,159 @@ describe("R8 — restart-safe superviseChildren", () => {
     expect(parent.variables._output).toMatchObject({ caught: true });
     expect(up.errors.length).toBe(1);
   }, 20000);
+
+  // ── review round 1 ──────────────────────────────────────────────────────────────────────
+  it("P1-a: a slow resume that passed the key check cannot answer the parent's NEXT park", async () => {
+    const w = world();
+    const down = boot(w, { supervise: false });
+    await down.runtime.start("twice", {}, { executionId: "T" });
+    await until(down.runtime, "T", (s) => s.status === "suspended"); // parked on k1
+    await down.runtime.start("instant", { n: 1 }, { executionId: "T::k1" }); // k1 already settled
+    let release!: () => void;
+    const b = boot(w, {
+      holdResume: new Promise<void>((r) => {
+        release = r;
+      }),
+    });
+    const a = boot(w);
+    const bDone = b.sup.recover(); // passes the key check on k1, then stalls inside resume()
+    await new Promise((r) => setTimeout(r, 100));
+    await a.sup.recover(); // the live path: delivers k1, T runs on and re-parks on k2
+    await until(a.runtime, "T::k2", (s) => s.status === "suspended");
+    release(); // B's stale resume of k1 now lands on a parent parked on k2
+    await bDone;
+    await new Promise((r) => setTimeout(r, 100));
+    expect((await a.runtime.loadState("T", sys(a.runtime)))?.status).toBe("suspended");
+    await a.runtime.resume("T::k2", { eventType: "GO", payload: 9 }, sys(a.runtime));
+    expect((await completed(a.runtime, "T")).variables._output).toEqual({
+      a: { v: 1 },
+      b: { v: 9 },
+    });
+    expect(await resumedCount(w, "T")).toBe(2);
+    expect([...a.errors, ...b.errors]).toEqual([]);
+  }, 20000);
+
+  it("P1-b: group members that settle on DIFFERENT nodes still resume the parent", async () => {
+    const w = world();
+    const a = boot(w);
+    await a.runtime.start("group", {}, { executionId: "G" });
+    for (const i of [0, 1, 2]) await until(a.runtime, `G::g#${i}`, (s) => s.status === "suspended");
+    const b = boot(w);
+    await b.sup.recover(); // B adopts: all three running
+    await b.runtime.resume("G::g#0", { eventType: "GO", payload: "a" }, sys(b.runtime));
+    await a.runtime.resume("G::g#1", { eventType: "GO", payload: "b" }, sys(a.runtime));
+    await a.runtime.resume("G::g#2", { eventType: "GO", payload: "c" }, sys(a.runtime));
+    const parent = await completed(a.runtime, "G");
+    expect(parent.variables._output).toEqual([
+      { status: "completed", output: { v: "a" } },
+      { status: "completed", output: { v: "b" } },
+      { status: "completed", output: { v: "c" } },
+    ]);
+    expect(await resumedCount(w, "G")).toBe(1);
+    expect([...a.errors, ...b.errors]).toEqual([]);
+    await new Promise((r) => setTimeout(r, 100));
+    // neither node keeps state for a park that was answered (settled here OR elsewhere)
+    expect(a.sup.size()).toEqual({ specs: 0, started: 0, groups: 0, memberOf: 0 });
+    expect(b.sup.size()).toEqual({ specs: 0, started: 0, groups: 0, memberOf: 0 });
+  }, 20000);
+
+  it("P1-c: a losing resume's in-memory re-run starts NO phantom child", async () => {
+    const w = world();
+    const down = boot(w, { supervise: false });
+    await down.runtime.start("orphan", {}, { executionId: "P" });
+    await until(down.runtime, "P", (s) => s.status === "suspended");
+    await down.runtime.start("instant", { n: 1 }, { executionId: "P::k1" });
+    const s1 = boot(w);
+    const s2 = boot(w);
+    await Promise.all([s1.sup.recover(), s2.sup.recover()]);
+    await new Promise((r) => setTimeout(r, 1600)); // outlast the durability gate
+    const ids: string[] = [];
+    for await (const id of iterateExecutionIds(w.events as never)) ids.push(id);
+    const kids = ids.filter((id) => id.startsWith("P::") && id !== "P::k1");
+    expect(kids.length).toBe(1);
+    const parked = await s1.runtime.loadState("P", sys(s1.runtime));
+    expect(parked?.suspendedOn?.correlationKey).toBe(kids[0]);
+  }, 20000);
+
+  it("P2-a: a fenced parent is still resumed (the supervisor takes its own fence)", async () => {
+    const w = world();
+    const down = boot(w, { supervise: false });
+    await down.runtime.start("single", {}, { executionId: "P" });
+    await until(down.runtime, "P", (s) => s.status === "suspended");
+    await down.runtime.start("instant", { n: 5 }, { executionId: "P::k" });
+    await down.runtime.acquireFence("P", sys(down.runtime)); // someone fenced P (timer/recovery)
+    const up = boot(w);
+    const summary = await up.sup.recover();
+    expect(up.errors).toEqual([]);
+    expect(summary.resumed).toBe(1);
+    expect((await completed(up.runtime, "P")).status).toBe("completed");
+  }, 20000);
+
+  it("P2-a: a resume whose append fails is REPORTED and not counted as resumed", async () => {
+    const w = world();
+    const down = boot(w, { supervise: false });
+    await down.runtime.start("single", {}, { executionId: "P" });
+    await until(down.runtime, "P", (s) => s.status === "suspended");
+    await down.runtime.start("instant", { n: 5 }, { executionId: "P::k" });
+    const append = w.events.append.bind(w.events);
+    w.events.append = async (e: EventEnvelope) => {
+      if (e.executionId === "P" && e.eventType === "EXECUTION_RESUMED")
+        throw new Error("disk full");
+      return append(e);
+    };
+    const up = boot(w);
+    const summary = await up.sup.recover();
+    expect(summary.resumed).toBe(0);
+    expect(up.errors.length).toBeGreaterThanOrEqual(1);
+  }, 20000);
+
+  it("P2-b: a member reclaimed by retention is settled as failed, never re-run", async () => {
+    const w = world();
+    const a = boot(w);
+    await a.runtime.start("group", {}, { executionId: "G" });
+    for (const i of [0, 1, 2]) await until(a.runtime, `G::g#${i}`, (s) => s.status === "suspended");
+    await a.runtime.resume("G::g#0", { eventType: "GO", payload: "a" }, sys(a.runtime));
+    await until(a.runtime, "G::g#0", (s) => s.status === "completed");
+    // retention reclaims member 0: the fact is journalled, then the values go.
+    const prior = await w.events.read("__loom_lifecycle__");
+    await w.events.append({
+      id: "del-1",
+      workflowId: "__loom_lifecycle__",
+      executionId: "__loom_lifecycle__",
+      eventType: "EXECUTION_DELETED",
+      sequence: prior.length,
+      timestamp: Date.now(),
+      payload: { executionId: "G::g#0" },
+    } as EventEnvelope);
+    await w.events.deleteExecution("G::g#0");
+    await w.snaps.deleteExecution("G::g#0");
+    const b = boot(w); // restart
+    await b.runtime.resume("G::g#1", { eventType: "GO", payload: "b" }, sys(b.runtime));
+    await b.runtime.resume("G::g#2", { eventType: "GO", payload: "c" }, sys(b.runtime));
+    const parent = await completed(b.runtime, "G");
+    expect(await w.events.read("G::g#0")).toEqual([]); // NOT started again
+    const out = parent.variables._output as { status: string; error?: string }[];
+    expect(out[0]?.status).toBe("failed");
+    expect(out[0]?.error).toMatch(/reclaimed by retention/);
+    expect(out[1]).toEqual({ status: "completed", output: { v: "b" } });
+  }, 20000);
+
+  it("P3: the supervisor's maps do not grow across many cycles", async () => {
+    const w = world();
+    const a = boot(w);
+    for (let i = 0; i < 12; i++) {
+      await a.runtime.start("groupRepark", {}, { executionId: `G${i}` });
+      await until(a.runtime, `G${i}::after`, (s) => s.status === "suspended");
+      await a.runtime.resume(`G${i}::after`, { eventType: "GO", payload: 0 }, sys(a.runtime));
+      await completed(a.runtime, `G${i}`);
+    }
+    for (let i = 0; i < 6; i++) {
+      await a.runtime.start("single", {}, { executionId: `S${i}` });
+      await until(a.runtime, `S${i}::k`, (s) => s.status === "suspended");
+      await a.runtime.resume(`S${i}::k`, { eventType: "GO", payload: i }, sys(a.runtime));
+      await completed(a.runtime, `S${i}`);
+    }
+    await new Promise((r) => setTimeout(r, 100));
+    expect(a.sup.size()).toEqual({ specs: 0, started: 0, groups: 0, memberOf: 0 });
+  }, 30000);
 });
