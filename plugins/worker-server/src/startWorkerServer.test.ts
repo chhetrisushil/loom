@@ -46,4 +46,14 @@ describe("startWorkerServer (container entrypoint, R12 round 2)", () => {
     server = await startWorkerServer(worker, { port: 0 });
     expect(server.url).toContain("127.0.0.1");
   });
+
+  it("passes authorize through to the worker server", async () => {
+    server = await startWorkerServer(worker, {
+      port: 0,
+      host: "127.0.0.1",
+      authorize: () => false,
+    });
+    expect((await fetch(`${server.url}/health`)).status).toBe(200);
+    expect((await fetch(`${server.url}/run`, { method: "POST", body: "{}" })).status).toBe(401);
+  });
 });
