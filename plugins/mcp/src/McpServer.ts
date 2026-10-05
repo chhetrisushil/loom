@@ -288,6 +288,11 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
       `[loom] WARNING: MCP server is running with insecure: true — NO authentication; any caller that can reach ${host}:${port} can list and invoke every served tool.`
     );
   }
+  if (authenticated && options.runtime === undefined && options.strict === undefined) {
+    (options.warn ?? ((m: string) => console.warn(m)))(
+      "[loom] WARNING: createMcpServer was given no `runtime` and no `strict` — strict mode is advisory here (insecure: true is not refused under security.strict). Pass `runtime` (or `strict: app.strict`)."
+    );
+  }
   const urlHost =
     host === "0.0.0.0" || host === "::" ? "localhost" : host.includes(":") ? `[${host}]` : host;
   const protocolVersion = options.protocolVersion ?? DEFAULT_MCP_PROTOCOL_VERSION;

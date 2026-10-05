@@ -29,7 +29,7 @@ New package `@loom/platform-cloudrun`:
   estimates win, else `planning`/`heavy` lane → 4 vCPU / 8 GiB, else 1 vCPU /
   512 MiB (the plan's Epic 7 example).
 - Container: `startWorkerServer(worker)` (in `@loom/worker-server`) reads Cloud
-  Run's `$PORT`; a reference `Dockerfile` + `deploy.md` document the image and
+  Run's `$PORT` and binds `$HOST` (default `0.0.0.0`; `createWorkerServer` itself is loopback); a reference `Dockerfile` + `deploy.md` document the image and
   `gcloud run deploy`.
 
 **Suspend/timeout reconciliation (the crux for Cloud Run).** A worker returns

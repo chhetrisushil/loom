@@ -49,6 +49,25 @@ describe("R12 — MCP server is secure by default", () => {
     expect((await rpc(server.url, "tools/list", {})).status).toBe(200);
   });
 
+  it("authenticated without `runtime` or `strict` warns (once per server) that strictness is advisory (round 2)", async () => {
+    const warnings: string[] = [];
+    const mk = (extra: object) =>
+      createMcpServer({
+        port: 0,
+        authenticate: () => ({ actor: "a" }),
+        warn: (m) => warnings.push(m),
+        tools: [tool("a")],
+        ...extra,
+      });
+    mk({});
+    expect(warnings.filter((w) => /runtime/.test(w))).toHaveLength(1);
+    warnings.length = 0;
+    mk({ strict: false });
+    mk({ strict: true });
+    mk({ runtime: { requiresPrincipal: false } });
+    expect(warnings).toHaveLength(0);
+  });
+
   it("strict refuses insecure", () => {
     expect(() => createMcpServer({ port: 0, strict: true, insecure: true })).toThrow(
       /refused under security.strict/

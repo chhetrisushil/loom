@@ -11,7 +11,9 @@ scale-to-zero are a natural fit.
   snapshots. **Do not** use local SQLite in the container — each instance is
   ephemeral; state must live outside it.
 - A worker entrypoint that registers your flows/effects and calls
-  `startWorkerServer(new LocalWorkerRuntime(runtime))`.
+  `startWorkerServer(new LocalWorkerRuntime(runtime))`. The entrypoint binds all interfaces
+  (`0.0.0.0`, or `$HOST`) as Cloud Run requires; `createWorkerServer` alone defaults to loopback.
+  Pass an `authorize` hook (or keep the service private behind IAM).
 
 ## Wiring (caller side)
 

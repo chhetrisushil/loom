@@ -247,6 +247,18 @@ describe("R12 — A2A server is secure by default", () => {
     expect(warnings.filter((w) => /actor/.test(w))).toHaveLength(1);
   });
 
+  it("a whitespace-only actor is refused like no actor (R12 round 2)", async () => {
+    expect(() => principalNamespace({ actor: "   " })).toThrow(/actor/);
+    server = createA2AServer(runtime(), flow, card, {
+      port: 0,
+      warn: () => {},
+      authenticate: (req) =>
+        req.headers.authorization === undefined ? undefined : { actor: "  \t" },
+    });
+    await server.start();
+    expect((await send(server.url, "Bearer x", task("w"))).status).toBe(401);
+  });
+
   it("strict: an authorize-only (no principal) caller is refused 401", async () => {
     server = createA2AServer(runtime(), flow, card, {
       port: 0,
