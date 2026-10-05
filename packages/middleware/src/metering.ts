@@ -62,6 +62,8 @@ export interface MeteringOptions {
 
 export class QuotaExceededError extends Error {
   readonly reason: string;
+  /** A budget refusal is a decision; retrying repeats it (`retryMiddleware` honours this). */
+  readonly retryable = false;
   constructor(reason: string) {
     super(`Quota exceeded: ${reason}`);
     this.name = "QuotaExceededError";

@@ -1,7 +1,9 @@
 import { step$ } from "@loom/core";
 import { GrantTable, ToolEffect } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryKillSwitch } from "@loom/middleware";
+import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import type { ExecutionAuthorizer, FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -127,7 +129,7 @@ describe("security.strict — config", () => {
         security: { strict: true, authorizer: grants("f"), executionAuthorizer: allowAll },
         execution: { envelope: { budget: false } },
       })
-    ).toThrow(/budget: false/);
+    ).toThrow(/no spend bound/);
   });
 
   it("the flat spelling throws like every other grouped option", () => {
@@ -412,5 +414,83 @@ describe("the envelope — budget, rate limit, kill switch", () => {
     const h = await app.runtime.start(flow, {}, { executionId: "e" });
     await expect(h.waitForCompletion()).rejects.toThrow(/remote stop/);
     await app.close();
+  });
+});
+
+describe("strict — resume never re-applies the default deadline (P1)", () => {
+  const park: FlowRunner<unknown, unknown> = async (ctx) => {
+    await ctx.suspend({ on: "Go", correlationKey: "k" });
+    return {};
+  };
+  const DAY = 24 * 60 * 60 * 1000;
+  const shared = () => ({
+    kind: "custom" as const,
+    eventStore: new InMemoryAsyncEventStore(),
+    snapshotStore: new InMemoryAsyncSnapshotStore(),
+  });
+  const strictOn = (flow: RegisteredFlow, storage: ReturnType<typeof shared>, now: () => number) =>
+    defineConfig({
+      storage,
+      flows: [flow],
+      execution: { now },
+      security: {
+        strict: true,
+        authorizer: grants(flow.definition.id),
+        executionAuthorizer: allowAll,
+      },
+    });
+
+  it("an execution started WITHOUT strict and resumed under strict 3 days later completes", async () => {
+    const flow = flowOf("p", park, []);
+    const storage = shared();
+    let skew = 0;
+    const now = () => Date.now() + skew;
+    const plain = defineConfig({ storage, flows: [flow], execution: { now } });
+    const h = await plain.runtime.start(flow, {}, { executionId: "e" });
+    await h.waitForSuspend();
+    skew = 3 * DAY;
+    const strict = strictOn(flow, storage, now);
+    const r = await strict.runtime.resume("e", {
+      eventType: "Go",
+      payload: {},
+      correlationKey: "k",
+    });
+    expect((await r.waitForCompletion()).status).toBe("completed");
+    await strict.close();
+  });
+
+  it("a strict-started execution with an explicit 7d deadline is not cancelled by a resume after 2 days", async () => {
+    const flow = flowOf("p", park, []);
+    const storage = shared();
+    let skew = 0;
+    const now = () => Date.now() + skew;
+    const a = strictOn(flow, storage, now);
+    const h = await a.runtime.start(flow, {}, { executionId: "e", deadlineMs: 7 * DAY });
+    await h.waitForSuspend();
+    skew = 2 * DAY;
+    const b = strictOn(flow, storage, now);
+    const r = await b.runtime.resume("e", { eventType: "Go", payload: {}, correlationKey: "k" });
+    expect((await r.waitForCompletion()).status).toBe("completed");
+    await b.close();
+  });
+});
+
+describe("strict — spend must be bounded (P2)", () => {
+  const cfg = (envelope: unknown) => () =>
+    defineConfig({
+      storage: { kind: "memory" },
+      flows: [flowOf("f", twice)],
+      security: { strict: true, authorizer: grants("f"), executionAuthorizer: allowAll },
+      execution: { envelope: envelope as never },
+    });
+  it("refuses budget:false with rateLimit:false", () => {
+    expect(cfg({ budget: false, rateLimit: false })).toThrow(/spend/);
+  });
+  it("refuses perExecution:false with no other spend bound", () => {
+    expect(cfg({ budget: { perExecution: false } })).toThrow(/spend/);
+  });
+  it("accepts perExecution:false when perAgent is set", () => {
+    const app = cfg({ budget: { perExecution: false, perAgent: { maxTokens: 10 } } })();
+    return app.close();
   });
 });

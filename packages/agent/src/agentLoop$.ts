@@ -112,8 +112,11 @@ export interface AgentLoopConfig {
   /**
    * R9 — refuse to run any model call outside the effect ring. With this set, `agentLoop$`
    * throws up front when `reasoning` is configured without {@link reasoningToolId}, and when a
-   * `skillSelector` calls a provider directly instead of being `effectBacked`. Scaffolded apps
-   * and `@loom/app`'s strict profile are meant to set it; default `false` keeps today's behaviour.
+   * `skillSelector` calls a provider directly instead of being `effectBacked`.
+   * `@loom/app`'s strict profile CANNOT set this for you (it does not construct agents): pass it
+   * at each call site. Without it, `agentLoop$` emits a one-time process warning
+   * (`LOOM_AGENT_RING`) when `reasoning` is used with no `reasoningToolId`. Default `false`
+   * keeps today's behaviour.
    */
   requireEffectRing?: boolean;
   systemPrompt?: string;
@@ -209,6 +212,24 @@ export interface AgentLoopConfig {
 
 const DEFAULT_GATE = "AgentToolApproval";
 
+let warnedReasoningOutsideRing = false;
+/** One advisory per process: `reasoning` without `reasoningToolId` calls providers unguarded (R9). */
+function warnReasoningOutsideRing(): void {
+  if (warnedReasoningOutsideRing) return;
+  warnedReasoningOutsideRing = true;
+  const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
+    .process;
+  proc?.emitWarning?.(
+    "agentLoop$: `reasoning` is used without `reasoningToolId`, so its routed model calls bypass authorization, metering, the kill switch and the journal. Set `reasoningToolId` (see registerReasoningRoutes) or `requireEffectRing: true`.",
+    { code: "LOOM_AGENT_RING" }
+  );
+}
+
+/** Test seam: re-arm the one-time advisory. */
+export function resetReasoningRingWarning(): void {
+  warnedReasoningOutsideRing = false;
+}
+
 /** Build the model's tool menu, carrying `LlmContent` so a tainted description is REFUSED (R2). */
 function toolSpecsFor(tools: readonly ToolDefinition[]): LlmToolSpecInput[] {
   return tools.map((t) => ({
@@ -283,6 +304,13 @@ export async function agentLoop$(
     // answer, which is what an absent model access would otherwise look like.
     throw new Error("agentLoop$ requires a `modelToolId` or a `reasoning` runtime");
   }
+  if (
+    config.requireEffectRing !== true &&
+    config.reasoning !== undefined &&
+    config.reasoningToolId === undefined
+  ) {
+    warnReasoningOutsideRing();
+  }
   if (config.requireEffectRing === true) {
     if (config.reasoning !== undefined && config.reasoningToolId === undefined) {
       throw new Error(
@@ -317,20 +345,24 @@ export async function agentLoop$(
   if (config.skills !== undefined && config.skills.all().length > 0) {
     const selector = config.skillSelector ?? deterministicSkillSelector();
     const registry = config.skills;
-    // An effect-backed selector's model call is a durable frame of its own (charged to the
-    // execution, served from the log on replay), and the parse is a pure function of it — so
-    // it needs no `decide` wrapper. Wrapping it would also be wrong: the call would then run
-    // inside a decider's transient scope, where its spend never reaches the fold.
-    const selected =
+    // The selection is journaled as a DECISION in both forms, so replay serves the ids that
+    // actually ran — never a re-parse of the recorded model response against the CURRENT
+    // registry (a skill added or removed since would change the selected set). For an
+    // effect-backed selector the model call inside the decider is still a durable `ctx.execute`
+    // frame (authorized, metered, kill-switched, served from the log), not a transient call, so
+    // its spend reaches the fold. Switching an in-flight execution from the provider form to
+    // the `toolId` form serves the existing `#skills` decision and makes no new call.
+    const selected = await ctx.decide<string[]>(`${idPrefix}#skills`, () =>
       selector.effectBacked === true
-        ? await selector.select(input, registry, {
+        ? selector.select(input, registry, {
             invoke: (toolId, request) =>
               ctx.execute(
                 { _tag: "TaskDefinition", kind: "llm", id: `${idPrefix}#skills:select`, toolId },
                 request
               ) as Promise<LlmResponse>,
           })
-        : await ctx.decide<string[]>(`${idPrefix}#skills`, () => selector.select(input, registry));
+        : selector.select(input, registry)
+    );
     for (const id of selected) {
       const skill = registry.get(id);
       if (skill === undefined) continue;

@@ -6,6 +6,7 @@ import {
   KillSwitchEngagedError,
   killSwitchMiddleware,
 } from "./killSwitchRegistry";
+import { QuotaExceededError } from "./metering";
 import { RateLimitExceededError, rateLimitMiddleware } from "./rateLimit";
 import { retryMiddleware } from "./retry";
 
@@ -205,5 +206,20 @@ describe("scoped kill switch (R9)", () => {
       )
     ).rejects.toBeInstanceOf(KillSwitchEngagedError);
     expect(check).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("QuotaExceededError (R9)", () => {
+  it("is non-retryable like every other control-plane refusal", async () => {
+    expect(new QuotaExceededError("tokens 5 >= budget 5").retryable).toBe(false);
+    let calls = 0;
+    const mw = retryMiddleware({ maxRetries: 3, baseDelayMs: 1, sleep: async () => {} });
+    await expect(
+      mw(ctx(), {}, async () => {
+        calls++;
+        throw new QuotaExceededError("over");
+      })
+    ).rejects.toBeInstanceOf(QuotaExceededError);
+    expect(calls).toBe(1);
   });
 });

@@ -16,11 +16,11 @@ import { ReasoningRuntime } from "@loom/reasoning";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner } from "@loom/workflow-runtime";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { SkillRegistry } from "./SkillRegistry";
 import { llmSkillSelector } from "./SkillSelector";
-import { agentLoop$, registerReasoningRoutes } from "./agentLoop$";
+import { agentLoop$, registerReasoningRoutes, resetReasoningRingWarning } from "./agentLoop$";
 import { createAgentModelEffect } from "./createAgentModelEffect";
 
 // ── R9 — the two model-call sites that bypassed the effect ring ───────────────
@@ -451,5 +451,182 @@ describe("llmSkillSelector (R9)", () => {
     await expect(
       llmSkillSelector({ toolId: "select" }).select({ prompt: "x" }, registry())
     ).rejects.toThrow(/agentLoop\$/);
+  });
+});
+
+describe("replay under the effect ring (R9 fix round)", () => {
+  const sql = skill$({
+    id: "sql",
+    name: "SQL",
+    description: "writing SQL",
+    instructions: instructions$("Prefer CTEs."),
+  });
+  const agent = agent$({ id: "dba", name: "DBA", tools: [lookup] });
+
+  /** Runs `body`, parks on a gate, then returns — a resume replays `body` from the log. */
+  const parkAfter =
+    (body: (ctx: Parameters<FlowRunner<unknown, unknown>>[0]) => Promise<unknown>) =>
+    async (ctx: Parameters<FlowRunner<unknown, unknown>>[0]) => {
+      await body(ctx);
+      await ctx.suspend({ on: "Go", correlationKey: "k" });
+      return { content: "done" };
+    };
+
+  async function startThenResume(
+    rt: WorkflowRuntime,
+    runner: FlowRunner<unknown, unknown>,
+    id = "r"
+  ) {
+    rt.registerFlow(flowDef, runner);
+    const h = await rt.start(flowDef, {}, { executionId: id });
+    await h.waitForSuspend();
+    const r = await rt.resume(id, { eventType: "Go", payload: {}, correlationKey: "k" });
+    return r.waitForCompletion();
+  }
+
+  it("routed AND elevated reasoning calls are served from the log on resume: no extra model calls", async () => {
+    const cheapCalls: LlmRequest[] = [];
+    const bigCalls: LlmRequest[] = [];
+    const reasoning = new ReasoningRuntime({
+      routes: [
+        { id: "cheap", provider: counting(cheapCalls), tier: 0 },
+        { id: "big", provider: counting(bigCalls), tier: 1 },
+      ],
+      confidence: {
+        score: async (_req: unknown, res: LlmResponse) => (res === answer ? 0.1 : 0.9),
+      },
+    });
+    const effects = new EffectRuntime();
+    const toolIdFor = registerReasoningRoutes(effects, reasoning);
+    const store = new InMemoryAsyncEventStore();
+    const rt = runtimeFor(effects, store);
+    const state = await startThenResume(
+      rt,
+      parkAfter(async (ctx) => {
+        await agentLoop$(
+          ctx,
+          { definition: agent, reasoning, reasoningToolId: toolIdFor },
+          { prompt: "go" }
+        );
+      })
+    );
+    expect(state.status).toBe("completed");
+    // The elevated hop really happened (one routed + one elevated frame), once each.
+    const log = JSON.stringify(await store.read("r"));
+    expect(log).toContain("dba#turn:0:call:0");
+    expect(log).toContain("dba#turn:0:call:1");
+    expect(cheapCalls).toHaveLength(1);
+    expect(bigCalls).toHaveLength(1);
+  });
+
+  const selModel = (calls: LlmRequest[], pick: string): LlmProvider => ({
+    async complete(request) {
+      calls.push(request);
+      return { content: pick, stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+    },
+  });
+
+  it("the selected skill set is journaled: replay serves the ids, it does not re-parse against a changed registry", async () => {
+    const selCalls: LlmRequest[] = [];
+    const effects = new EffectRuntime();
+    effects.register("select", createAgentModelEffect(selModel(selCalls, "sql")));
+    effects.register("model", createAgentModelEffect(counting([])));
+    const rt = runtimeFor(effects);
+    let registry = new SkillRegistry().register(sql);
+    const base = llmSkillSelector({ toolId: "select" });
+    const parsed: string[][] = [];
+    const selector = {
+      ...base,
+      async select(...a: Parameters<typeof base.select>) {
+        const ids = await base.select(...a);
+        parsed.push(ids);
+        return ids;
+      },
+    };
+    const state = await startThenResume(
+      rt,
+      parkAfter(async (ctx) => {
+        await agentLoop$(
+          ctx,
+          {
+            definition: agent$({ id: "a", name: "A", tools: [] }),
+            modelToolId: "model",
+            skills: registry,
+            skillSelector: selector,
+          },
+          { prompt: "sql please" }
+        );
+        // After the first pass the registry loses the skill the recorded response named.
+        registry = new SkillRegistry().register(
+          skill$({
+            id: "other",
+            name: "O",
+            description: "x",
+            instructions: instructions$("Other."),
+          })
+        );
+      })
+    );
+    expect(state.status).toBe("completed");
+    expect(selCalls).toHaveLength(1);
+    // Journaled once: the replayed pass served the recorded ids and never re-derived them.
+    expect(parsed).toEqual([["sql"]]);
+  });
+
+  it("switching provider form -> toolId form mid-flight serves the old #skills decision, no new call", async () => {
+    const providerCalls: LlmRequest[] = [];
+    const selCalls: LlmRequest[] = [];
+    const effects = new EffectRuntime();
+    effects.register("select", createAgentModelEffect(selModel(selCalls, "sql")));
+    effects.register("model", createAgentModelEffect(counting([])));
+    const rt = runtimeFor(effects);
+    const registry = new SkillRegistry().register(sql);
+    let useToolId = false;
+    const state = await startThenResume(
+      rt,
+      parkAfter(async (ctx) => {
+        await agentLoop$(
+          ctx,
+          {
+            definition: agent$({ id: "a", name: "A", tools: [] }),
+            modelToolId: "model",
+            skills: registry,
+            skillSelector: useToolId
+              ? llmSkillSelector({ toolId: "select" })
+              : llmSkillSelector(selModel(providerCalls, "sql")),
+          },
+          { prompt: "sql please" }
+        );
+        useToolId = true; // the deploy between the park and the resume
+      })
+    );
+    expect(state.status).toBe("completed");
+    expect(providerCalls).toHaveLength(1);
+    expect(selCalls).toHaveLength(0); // the old decision was served; no second selection
+  });
+
+  it("warns once when `reasoning` runs outside the ring without requireEffectRing", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      resetReasoningRingWarning();
+      const reasoning = new ReasoningRuntime({
+        routes: [{ id: "cheap", provider: counting([]), tier: 0 }],
+      });
+      const rt = runtimeFor(new EffectRuntime());
+      for (const id of ["w1", "w2"]) {
+        await run(
+          rt,
+          async (ctx) => {
+            await agentLoop$(ctx, { definition: agent, reasoning }, { prompt: "go" });
+            return { content: "" };
+          },
+          id
+        );
+      }
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0]?.[1]).toMatchObject({ code: "LOOM_AGENT_RING" });
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

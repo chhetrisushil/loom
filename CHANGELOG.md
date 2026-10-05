@@ -74,8 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `defineConfig({ security: { strict } })`: `true` (or `{ defaultDeadlineMs }`) makes
     composition THROW, listing every problem, without `security.authorizer` and
     `security.executionAuthorizer` and if `checks.verify` is `"off"`; it applies a 24 h default
-    execution deadline to flows that declare none (by wrapping `start`/`resume`/`resumeAs`/
-    `restoreFromState`, so the flow fingerprint is NOT changed), spawn caps (depth 5, fan-out 32),
+    execution deadline to flows STARTED under strict that declare none (by wrapping `runtime.start`
+    only — never `resume`/`resumeAs`/`restoreFromState` — so the flow fingerprint is NOT changed
+    and a resume never cancels an execution the default was not meant for), spawn caps (depth 5, fan-out 32),
     a 1M-token per-execution budget, verification on (`"error"`), and an in-memory kill switch.
     Not strict, behaviour is unchanged and ONE advisory naming what is permissive goes through
     `observability.onWarn`; `strict: false` is the silent opt-out. New `execution.envelope`
@@ -106,6 +107,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ctx.decide` scope would drop its charge, which is why both are journaled frames instead; the
   per-agent/per-tenant budgets are cumulative per process and eventually consistent across nodes;
   an effect-backed `skillSelector` is refused by `AgentRunner`.
+
+  Limits of the 1P half, stated plainly (each closes in a later kernel/R3 wave, not here):
+  - **The default deadline is not durable per execution.** The kernel anchors a deadline to the
+    logged start but stores neither the default nor an explicit `start({ deadlineMs })`; a resume
+    re-arms `options.deadlineMs ?? flow.deadlineMs`. So a strict-started flow with no
+    `flow$({ deadlineMs })` is unbounded again after its first resume. Declare the deadline on
+    the flow for one that survives resume. A durable per-execution deadline is the kernel half.
+  - **Refusals are ordinary `STEP_FAILED`** (untyped). A flow that CATCHES a kill-switch / rate /
+    budget / spawn refusal and continues will, on replay, re-run that step live (at-least-once
+    for untyped failures). Do not catch-and-continue past a control-plane refusal.
+  - **A rate-limit trip is terminal** (`retryable: false`; `retryAfterMs` is informational).
+    The strict middleware order is kill switch, redaction, rate limit, budget, then yours, so a
+    user `retryMiddleware` sits INSIDE the limiter and cannot retry a trip.
+  - **Tenant scope is not durable yet.** `stopTenant` and `perTenant` read `ctx.principal.tenant`,
+    which is not carried across timers, recovery, dispatchers or child spawn until R3; only
+    `stopAll` / `stopWorkflow` are reliable across those until then.
+  - **Spawn caps are best-effort.** Depth is read from the child-id string and fan-out is per
+    `awaitChildren`/`awaitAll` group. A `runtime.start` made from inside an effect, an A2A or
+    remote dispatcher hop, or a freshly minted id is not counted.
+  - **Budget is blind to `ctx.decide` / `invokeTransient` spend** (their emit is a no-op), not
+    only skill selection: a model call made inside a decider is never charged.
+  - **`requireEffectRing` cannot be forced by strict** (it does not construct agents). Set it per
+    `agentLoop$` call site; without it `agentLoop$` warns once per process (`LOOM_AGENT_RING`)
+    when `reasoning` is used without `reasoningToolId`.
+  - **Remote / Cloud Run workers**: strict and the envelope apply to the EffectRuntime of THIS
+    process only; a worker process needs its own middleware and authorizer.
+
+  Fixed in review: strict no longer wraps `resume`/`resumeAs`/`restoreFromState` (the wrapper
+  cancelled in-flight executions on resume and replaced an explicit longer deadline); strict now
+  refuses ANY configuration with no effective spend bound (`budget: false` with `rateLimit:
+  false`, or `perExecution: false` with no `perAgent`/`perTenant`); `QuotaExceededError` now
+  carries `retryable: false` (so the default retry classifier stops retrying a spent budget);
+  an effect-backed skill selection is journaled as a decision (replay serves the selected ids
+  instead of re-parsing the recorded response against the current registry, and switching an
+  in-flight execution from `llmSkillSelector(provider)` to `llmSkillSelector({ toolId })` serves
+  the old `#skills` decision with no new model call).
 
 - **`@loom/verify` declared reach for code a flow hands its `ctx` to (backlog L32).** A flow
   that calls `planner.compose(input, ctx)` reached nothing as far as capability-compat,
