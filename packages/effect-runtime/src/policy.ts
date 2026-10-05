@@ -9,6 +9,7 @@
 // every authorizer, so the decision is deterministic and replay-safe.
 
 import type { PolicyDefinition } from "@loom/core";
+import { capabilityIds } from "./authz";
 import type { CapabilityAuthorizer, CapabilityDecision, CapabilityRequest } from "./authz";
 
 /**
@@ -113,7 +114,7 @@ function compile(policy: PolicyDefinition): CompiledPolicy {
 
 /** A compiled match rule fires when every present field matches the request. */
 function matchFires(rule: CompiledMatch, req: CapabilityRequest): boolean {
-  if (rule.effect && !rule.effect.test(req.toolId)) return false;
+  if (rule.effect && !capabilityIds(req).some((id) => rule.effect?.test(id))) return false;
   if (rule.tenant && !rule.tenant.test(req.principal?.tenant ?? "")) return false;
   if (rule.step && !rule.step.test(req.stepId)) return false;
   return true;
@@ -210,13 +211,14 @@ export class PolicyAuthorizer implements CapabilityAuthorizer {
       allowed: false,
       reason: `effect "${req.toolId}" denied by policy`,
     };
+    const ids = capabilityIds(req);
     for (const policy of policies) {
       // (1) deny-wins — an explicit deny list entry.
-      if (patternSetMatches(policy.deny, req.toolId)) return deny;
+      if (ids.some((id) => patternSetMatches(policy.deny, id))) return deny;
       // (2) allow-list — its presence restricts to matching effects.
       if (!patternSetEmpty(policy.allow)) {
         state.constrained = true;
-        if (patternSetMatches(policy.allow, req.toolId)) state.allowed = true;
+        if (ids.some((id) => patternSetMatches(policy.allow, id))) state.allowed = true;
       }
       // (3) rich match rules — deny fires immediately; allow contributes.
       for (const rule of policy.match) {

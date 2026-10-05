@@ -412,7 +412,7 @@ describe("the template's client half", () => {
 
 describe("MCP server — audience and seam boundaries", () => {
   async function serve(overrides: Parameters<typeof createMcpServer>[0] = {}) {
-    const s = createMcpServer({ port: 0, ...overrides });
+    const s = createMcpServer({ port: 0, insecure: true, warn: () => {}, ...overrides });
     await s.start();
     // Loopback ADDRESS, not the name `localhost`: the name costs a resolver round trip
     // (getaddrinfo on libuv's 4-thread pool) per new connection, and under a loaded

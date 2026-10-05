@@ -119,7 +119,7 @@ async function startEchoServer(): Promise<A2AServer> {
       capabilities: { streaming: false },
       skills: [{ id: "echo", name: "Echo", description: "Echoes the prompt back" }],
     },
-    { port: 0 }
+    { port: 0, insecure: true, warn: () => {} }
   );
   await s.start();
   return loopbackServer(s);

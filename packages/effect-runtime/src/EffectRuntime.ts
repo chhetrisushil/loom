@@ -51,6 +51,19 @@ export class EffectRuntime {
     return this.runSeam<TIn, TOut>(toolId, input, ctx, "journaled");
   }
 
+  // R12 — the sub-resource a call targets, for per-resource authorization. Never throws: a
+  // resolver that fails yields "no resource", which only an effect-wide grant satisfies.
+  private resourceOf(toolId: string, input: unknown): string | undefined {
+    const effect = this.registry.get(toolId);
+    if (effect?.resourceOf === undefined) return undefined;
+    try {
+      const r = effect.resourceOf(input);
+      return typeof r === "string" && r.length > 0 ? r : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   // The shared execute path for both seams. `seam` records which entry point the
   // caller came through, so the effect-mode boundary is enforced in exactly one
   // place and cannot be spoofed by hand-building a context that merely *looks*
@@ -66,8 +79,10 @@ export class EffectRuntime {
     // durable, auditable fact (P9). Checked before registry lookup so probing for
     // unregistered effects is denied too.
     if (this.authorizer !== undefined) {
+      const resource = this.resourceOf(toolId, input);
       const decision = this.authorizer.authorize({
         toolId,
+        ...(resource !== undefined && { resource }),
         executionId: ctx.executionId,
         workflowId: ctx.workflowId,
         stepId: ctx.stepId,

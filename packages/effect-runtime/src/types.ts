@@ -239,6 +239,18 @@ export interface Effect<TIn = unknown, TOut = unknown> {
    */
   readonly mode?: EffectMode;
   /**
+   * R12 — the sub-resource one call of this effect targets, for per-resource authorization.
+   * ONE registered effect can front many resources (`mcp.invoke` fronts every tool on an MCP
+   * server); an authorizer that only sees the effect id can allow all of them or none. When
+   * declared, the runtime evaluates it on the call's input and puts the result on
+   * `CapabilityRequest.resource`, so a grant or policy can name `<effectId>:<resource>`.
+   *
+   * Pure and cheap — it runs before the effect, on the raw (pre-redaction) input. Returning
+   * `undefined` (or throwing) means "no resource": only an effect-wide grant then applies, so a
+   * per-resource grant fails CLOSED rather than matching nothing-in-particular.
+   */
+  resourceOf?(input: TIn): string | undefined;
+  /**
    * Advisory pre-warm (latency-only, off the durable path). If present, the
    * kernel may call it BEFORE the effect is needed to spin up a cold resource
    * the effect depends on — a K7 isolated child process, an LLM provider
