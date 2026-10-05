@@ -76,7 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     opts out). Off, the runtime is byte-identical.
   - Kernel-internal principal-less callers (`TimerService` wakes and schedule starts,
     `recoverAbandoned`, `retireAbandonedBranches`, the `superviseChildren` child start and parent
-    resume, `LocalWorkerRuntime`) present `runtime.systemOptions()`: an identity-compared,
+    resume) present `runtime.systemOptions()`: an identity-compared,
     per-instance `SystemGrant` that skips the execution authorizer only (it is not a principal and
     never reaches an effect). `runtime.systemStateReader()` serves read-only observers.
   - `executionAccessPolicy()` in `@loom/workflow-runtime`: per-op `owner`/`tenant`/`any`/`deny`
@@ -84,10 +84,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     It passes the `ExecutionAuthorizer` conformance kit. The scaffold's `app/security.ts` now uses
     it (owner-only, same tenant) and its `main.ts`/test attach a principal.
   - Behavioural note: a strict app that starts executions without a principal now gets
-    `ExecutionDeniedError`; attach one, or opt out. An A2A server or wire carrier without
-    `resolvePrincipal` is refused under strict. Interim until R3's kernel half (ADR 0111): the
+    `ExecutionDeniedError`; attach one, or opt out. Interim until R3's kernel half (ADR 0111): the
     principal is not durable, so ownership is remembered in-process by the policy (lost on restart
     unless `resolveOwner` answers) and internal paths act as the system.
+  - **Review round 1 (Opus), all fixed:**
+    - *`LocalWorkerRuntime` is no longer the system.* It applied the grant to every package, so
+      every dispatcher-routed caller (`InProcessA2ABus`, `executeGraph`, `PlacementDispatcher`, a
+      worker-server) bypassed the authorizer: an anonymous dispatch read and approved another
+      actor's execution. It now takes NO grant by default; `new LocalWorkerRuntime(runtime, {
+      system: runtime.systemOptions().system })` is the explicit opt-in for a recovery/timer
+      re-drive target, applies to principal-less packages only, and sets `runsAsSystem`.
+      `ExecutionPackage.principal` and `WorkerRequest.principal` (optional JSON) carry the caller
+      across the seam and every dispatcher forwards them (**Dispatcher SPI 1.1.0 to 1.2.0**,
+      minor: optional fields, plus the optional `WorkerRuntime.runsAsSystem`). `InProcessA2ABus`
+      takes `options.principal` (bus default) / `DispatchOptions.principal` (per call);
+      `executeGraph` takes `options.principal`. `createWorkerServer` throws when built around a
+      `runsAsSystem` worker without `authorize`, and honours a package's `principal` only when
+      `authorize` is set (it is the authenticated dispatcher's claim); without it the field is
+      dropped and the dispatch is anonymous.
+    - *Owner hijack.* The reference policy recorded the owner inside `authorize("start")`, before
+      the start committed, so a start that then FAILED (duplicate id, invalid input) still took
+      the id. `ExecutionAuthorizer.committed?(request)` is called once the bootstrap is durable and
+      is where ownership is recorded; `authorize` no longer adopts. A start with no principal of
+      its own inherits its parent's owner (`RunOptions.parentExecutionId`, set by the child
+      supervisor; a fork's child gets the forker's). A schedule occurrence or timer wake has no
+      parent and no principal, so it has no owner (refused for owner/tenant scopes unless
+      `resolveOwner` answers).
+    - *Every execution op is gated.* `fork` (`query` on the parent + `start` on the child),
+      `restoreFromState` (`resume`, and the `resumeAuthenticator` now runs) and `acquireFence`
+      (`cancel` on an existing execution, `start` on a new id) took no identity and skipped the
+      authorizer; each now takes `{ principal, system }` like `resume`. The full op table is in
+      usage.md.
+    - *The owner table never evicts.* A flood used to evict a victim's owner (takeover under
+      `unknownOwner: "allow"`, DoS under `"deny"`). At `maxTracked` further starts are refused;
+      `adopt` returns whether it recorded. `"allow"` is documented unsafe without `resolveOwner`.
+    - *Principal on the wire.* `handleRpc` now applies `resolvePrincipal` to
+      `execution.resume`/`getState`/`cancel`, not only `start`. `createA2AServer` takes
+      `resolvePrincipal(req)` and `LoomAgentExecutor.submit/get/provideInput` a `{ principal }`
+      call context. An A2A server or wire carrier WITHOUT a principal resolver is anonymous and a
+      strict runtime refuses it; with one it works. The in-process bus works with a principal
+      (above).
+    - *Smaller:* an `"owner"`-scoped op whose `resolveOwner` answer names no actor is denied (it
+      used to fall back to the tenant); `@loom/testing`'s `resumeWith` takes a fourth `options`
+      argument (`{ principal }` / `runtime.systemOptions()`); under strict an ANONYMOUS
+      cancel/loadState/resume of an unknown id is denied by the policy instead of answering "not
+      found" (an identified caller can still tell the two apart: `loadState(id, { principal })`
+      returning `null` is how an edge asks "is this id free?").
 
 - **Strict mode and the autonomy envelope (R9, 1P half; no kernel change).** Every default was
   permissive: no authorizer allowed every effect, no deadline let a run go forever, spawn depth

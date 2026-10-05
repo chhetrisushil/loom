@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as http from "node:http";
 import { BadRequestError, exposeError } from "@loom/core";
+import type { PrincipalChain } from "@loom/effect-runtime";
 import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 import { LoomAgentExecutor } from "./AgentExecutor";
 import type { A2ATask, AgentCard } from "./types";
@@ -14,6 +15,17 @@ export interface A2AServerOptions {
    * scheme (shared secret, mTLS, …); the server supplies the gate.
    */
   authorize?: (req: http.IncomingMessage) => boolean | Promise<boolean>;
+  /**
+   * R3 — the AUTHENTICATED principal behind a request, derived from the same connection facts
+   * `authorize` checked (mTLS peer, verified bearer token, signed header) — NEVER from the task
+   * body. Applied to the runtime call for every task route (`/tasks/send`, `GET /tasks/:id`).
+   * Without it every task is anonymous, which a runtime that fails closed (`security.strict`)
+   * refuses (`ExecutionDeniedError`): an A2A server is an edge, and under strict an edge must
+   * say who is calling. Returning `undefined` for a request means "anonymous".
+   */
+  resolvePrincipal?: (
+    req: http.IncomingMessage
+  ) => PrincipalChain | undefined | Promise<PrincipalChain | undefined>;
   /**
    * Called with the real error behind a 500, alongside the `errorId` the caller was given.
    * The response itself carries no internal detail, so this is the only place it surfaces —
@@ -98,6 +110,10 @@ export function createA2AServer(
           }
         }
 
+        // R3 — who is calling, resolved once per request, after `authorize`.
+        const principal = await options.resolvePrincipal?.(req);
+        const call = principal !== undefined ? { principal } : {};
+
         if (method === "POST" && url === "/tasks/send") {
           const task = (await parseBody(req)) as A2ATask;
           // `task.id` becomes the executionId VERBATIM, so it is screened here rather than
@@ -121,7 +137,7 @@ export function createA2AServer(
             json(res, 400, { error: `task.id exceeds ${MAX_TASK_ID_LENGTH} characters` });
             return;
           }
-          const { id } = await executor.submit(task);
+          const { id } = await executor.submit(task, call);
           json(res, 202, { id });
           return;
         }
@@ -145,7 +161,7 @@ export function createA2AServer(
             json(res, 400, { error: "task id is not validly percent-encoded" });
             return;
           }
-          const result = await executor.get(taskId);
+          const result = await executor.get(taskId, call);
           if (result === null) {
             json(res, 404, { error: `task ${taskId} not found` });
             return;

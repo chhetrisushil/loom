@@ -280,7 +280,9 @@ export async function recoverAbandoned(
       const fresh = await runtime.loadState(executionId, runtime.systemOptions());
       if (fresh === null || (fresh.status !== "running" && fresh.status !== "pending")) continue;
 
-      const fence = options.fenced ? await runtime.acquireFence(executionId) : undefined;
+      const fence = options.fenced
+        ? await runtime.acquireFence(executionId, runtime.systemOptions())
+        : undefined;
       const resumeEvent = { eventType: EXECUTION_RECOVERED, payload: {} };
 
       if (options.dispatcher !== undefined) {

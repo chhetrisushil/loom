@@ -27,6 +27,11 @@ export interface ExecuteGraphOptions {
   branchRegistry?: BranchRegistry;
   /** Derive a node's executionId. Default: `${parent ?? "graph"}:${node.id}`. */
   executionIdFor?: (node: GraphNode) => string;
+  /**
+   * R3 — the authenticated principal every node is dispatched as (`ExecutionPackage.principal`).
+   * A worker that fails closed (`security.strict`) refuses a node without one.
+   */
+  principal?: Record<string, unknown>;
 }
 
 export interface GraphNodeResult {
@@ -87,6 +92,7 @@ export async function executeGraph(
         flowId: node.flowId,
         ...(node.input !== undefined && { input: node.input }),
         ...(node.metadata !== undefined && { metadata: node.metadata as Record<string, unknown> }),
+        ...(options.principal !== undefined && { principal: options.principal }),
       };
       const result = await dispatcher.dispatch(pkg, node.metadata);
       return { id: node.id, executionId, result };

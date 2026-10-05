@@ -17,6 +17,14 @@ export interface WorkerServerOptions {
    * UNAUTHENTICATED**: a caller can run any registered flow and inject resume/approval
    * events into any execution. Only run it that way behind a trusted network / proxy.
    * `/health` is always open.
+   *
+   * R3 — MANDATORY in front of a worker that runs principal-less packages as the kernel's SYSTEM
+   * identity (`worker.runsAsSystem`, i.e. `new LocalWorkerRuntime(runtime, { system })`): every
+   * caller this server admits is then the system, bypassing the execution authorizer, so
+   * `createWorkerServer` throws without it. It also gates `executionPackage.principal`: a
+   * package's principal is honoured ONLY when this is set (an authenticated dispatcher is
+   * trusted to name the actor it acts for); without it the field is dropped and the dispatch is
+   * anonymous, which a runtime that fails closed (`security.strict`) refuses.
    */
   authorize?: (req: http.IncomingMessage) => boolean | Promise<boolean>;
   /**
@@ -94,6 +102,11 @@ export function createWorkerServer(
   worker: WorkerRuntime,
   options: WorkerServerOptions = {}
 ): WorkerServer {
+  if (worker.runsAsSystem === true && options.authorize === undefined) {
+    throw new Error(
+      "createWorkerServer: this worker runs packages as the kernel's SYSTEM identity (runsAsSystem), so an unauthenticated server would hand that identity to every caller on the network. Pass `authorize`, or build the worker without the `system` grant."
+    );
+  }
   const requestedPort = options.port ?? 0;
   let resolvedPort = requestedPort;
 
@@ -121,15 +134,36 @@ export function createWorkerServer(
 
         if (method === "POST" && url === "/execute") {
           const body = (await parseBody(req)) as { executionPackage?: ExecutionPackage };
-          const pkg = body.executionPackage;
-          if (!pkg || typeof pkg.executionId !== "string" || typeof pkg.flowId !== "string") {
+          const received = body.executionPackage;
+          if (
+            !received ||
+            typeof received.executionId !== "string" ||
+            typeof received.flowId !== "string"
+          ) {
             json(res, 400, { error: "invalid executionPackage" });
             return;
           }
+          // R3 — the package's principal is the dispatcher's CLAIM about who it acts for. It is
+          // only as good as the gate that authenticated the dispatcher, so without `authorize`
+          // it is dropped (the dispatch is anonymous), and with it, it must be a plain JSON object.
+          const { principal: claimed, ...rest } = received;
+          if (
+            claimed !== undefined &&
+            options.authorize !== undefined &&
+            (claimed === null || typeof claimed !== "object" || Array.isArray(claimed))
+          ) {
+            json(res, 400, { error: "invalid executionPackage.principal" });
+            return;
+          }
+          const pkg: ExecutionPackage =
+            claimed !== undefined && options.authorize !== undefined
+              ? { ...rest, principal: claimed }
+              : rest;
 
           const lease = await worker.allocate({
             executionId: pkg.executionId,
             ...(pkg.metadata !== undefined && { metadata: pkg.metadata }),
+            ...(pkg.principal !== undefined && { principal: pkg.principal }),
           });
           try {
             const result = await worker.execute(lease, pkg);

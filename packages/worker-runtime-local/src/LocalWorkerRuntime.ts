@@ -7,8 +7,28 @@ import type {
   WorkerRequest,
   WorkerRuntime,
 } from "@loom/worker-runtime";
-import type { SystemGrant, WorkflowRuntime } from "@loom/workflow-runtime";
+import type { RunOptions, SystemGrant, WorkflowRuntime } from "@loom/workflow-runtime";
 
+type Principal = NonNullable<RunOptions["principal"]>;
+
+/** What a worker acts as for one operation: the package's principal, else the trusted grant, else nobody. */
+type Identity = { principal?: Principal; system?: SystemGrant };
+
+export interface LocalWorkerRuntimeOptions {
+  /**
+   * R3 — the kernel's SYSTEM identity (`runtime.systemOptions().system`). OFF by default, and
+   * that is the point: a `LocalWorkerRuntime` is reached by every dispatcher-routed caller
+   * (`InProcessA2ABus`, `executeGraph`, `PlacementDispatcher`, a worker-server), so giving it
+   * the grant made each of them the system, bypassing the execution authorizer.
+   *
+   * Pass it ONLY to a worker that serves the kernel's own re-drives (a `TimerDispatcher` /
+   * `recoverAbandoned` target) and is not reachable by user-originated dispatch. It applies to
+   * principal-LESS packages only: a package that carries a `principal` is always authorized as
+   * that principal, grant or not. A worker built with it reports `runsAsSystem`, which the
+   * worker-server uses to refuse an unauthenticated listener.
+   */
+  system?: SystemGrant;
+}
 /**
  * The in-process WorkerRuntime: the zero-cloud reference implementation of the
  * Platform SPI. It runs an {@link ExecutionPackage} directly on a local
@@ -25,15 +45,32 @@ import type { SystemGrant, WorkflowRuntime } from "@loom/workflow-runtime";
  */
 export class LocalWorkerRuntime implements WorkerRuntime {
   private leaseCounter = 0;
+  private readonly system: SystemGrant | undefined;
+  readonly runsAsSystem: boolean;
 
-  constructor(private readonly runtime: WorkflowRuntime) {}
+  constructor(
+    private readonly runtime: WorkflowRuntime,
+    options: LocalWorkerRuntimeOptions = {}
+  ) {
+    this.system = options.system;
+    this.runsAsSystem = options.system !== undefined;
+  }
+
+  /** The identity one operation runs as. A carried principal wins over the (opt-in) grant. */
+  private identity(principal?: Record<string, unknown>): Identity {
+    if (principal !== undefined) return { principal: principal as Principal };
+    return this.system !== undefined ? { system: this.system } : {};
+  }
 
   async allocate(request: WorkerRequest): Promise<WorkerLease> {
     // In-process capacity is unbounded here (the scheduler/dispatcher already
     // owns concurrency limits), so a lease is a correlation token — plus, on a
     // fencing store (K9.4), the monotonic token that makes this dispatch the
     // execution's sole legitimate writer until someone allocates a newer one.
-    const fence = await this.runtime.acquireFence(request.executionId);
+    const fence = await this.runtime.acquireFence(
+      request.executionId,
+      this.identity(request.principal)
+    );
     return {
       leaseId: `local-${request.executionId}-${++this.leaseCounter}`,
       ...(fence !== undefined && { fence }),
@@ -46,7 +83,7 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     // A recovery of an already-terminal/suspended execution short-circuits to the
     // folded state (no handle, no re-run) — see resolveHandle.
     if (handle === null) {
-      const state = await this.runtime.loadState(pkg.executionId, this.runtime.systemOptions());
+      const state = await this.runtime.loadState(pkg.executionId, this.identity(pkg.principal));
       return toResult(state!);
     }
 
@@ -87,13 +124,14 @@ export class LocalWorkerRuntime implements WorkerRuntime {
    *    response" must not re-run or restart).
    */
   private async resolveHandle(pkg: ExecutionPackage, fence?: number) {
-    // R3 — a dispatched execution is the kernel's own re-drive, so it presents the system grant
-    // (a no-op unless the runtime fails closed on a missing principal).
-    const runOpts = { ...(fence !== undefined && { fence }), ...this.runtime.systemOptions() };
+    // R3 — the dispatch acts as the principal it carries; only a worker explicitly given the
+    // system grant acts as the system, and only for a package that names no principal.
+    const identity = this.identity(pkg.principal);
+    const runOpts = { ...(fence !== undefined && { fence }), ...identity };
     if (pkg.resumeEvent) {
       return this.runtime.resume(pkg.executionId, pkg.resumeEvent, runOpts);
     }
-    const existing = await this.runtime.loadState(pkg.executionId, this.runtime.systemOptions());
+    const existing = await this.runtime.loadState(pkg.executionId, identity);
     if (!existing) {
       return this.startFresh(pkg, runOpts);
     }
@@ -120,16 +158,15 @@ export class LocalWorkerRuntime implements WorkerRuntime {
    */
   async cancel(executionId: string, reason?: string): Promise<boolean> {
     try {
-      return await this.runtime.cancel(executionId, reason, this.runtime.systemOptions());
+      // The cancel SPI carries no principal, so only a worker holding the grant can cancel on a
+      // runtime that fails closed (best-effort by contract: a refusal is `false`).
+      return await this.runtime.cancel(executionId, reason, this.identity());
     } catch {
       return false;
     }
   }
 
-  private async startFresh(
-    pkg: ExecutionPackage,
-    runOpts?: { fence?: number; system?: SystemGrant }
-  ) {
+  private async startFresh(pkg: ExecutionPackage, runOpts?: { fence?: number } & Identity) {
     const flow = this.runtime.getFlow(pkg.flowId);
     if (!flow) {
       throw new Error(`No flow registered for flowId: "${pkg.flowId}"`);

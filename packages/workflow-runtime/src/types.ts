@@ -272,6 +272,11 @@ export interface RunOptions {
    * by identity against the runtime's own; anything else is ignored. Not a principal.
    */
   system?: SystemGrant;
+  /**
+   * R3 — the execution that spawned this one (the child supervisor sets it). Descriptive: only
+   * reported on {@link ExecutionAuthorizer.committed} so a policy can inherit the owner.
+   */
+  parentExecutionId?: string;
 }
 
 /** R3 — opaque, identity-compared capability held by kernel-internal callers. Not forgeable by copy. */
@@ -297,6 +302,12 @@ export interface ExecutionAuthzRequest {
   executionId: string;
   workflowId: string;
   principal?: PrincipalChain;
+  /**
+   * R3 — on a {@link ExecutionAuthorizer.committed} notification only: the execution whose
+   * supervisor/forker started this one (a child workflow, a fork), when the runtime knows it. A
+   * policy may inherit the parent's owner for a start that carries no principal of its own.
+   */
+  parentExecutionId?: string;
 }
 
 export type ExecutionAuthzVerdict = { allowed: true } | { allowed: false; reason?: string };
@@ -308,6 +319,16 @@ export type ExecutionAuthzVerdict = { allowed: true } | { allowed: false; reason
  */
 export interface ExecutionAuthorizer {
   authorize(request: ExecutionAuthzRequest): ExecutionAuthzVerdict;
+  /**
+   * R3 — called once a `start` (or the child of a `fork`) is DURABLE: the bootstrap
+   * `EXECUTION_STARTED` is written, so the id is this caller's. `authorize("start")` is called
+   * BEFORE that and can still be followed by a refusal (a duplicate id, invalid input, a
+   * storage error), so a policy that records ownership must do it here, never in `authorize` —
+   * otherwise a refused start still takes the id. Called for every committed start, with or
+   * without a principal (a system-started execution has none, or inherits `parentExecutionId`).
+   * Synchronous; a throw is swallowed (the start has already happened).
+   */
+  committed?(request: ExecutionAuthzRequest): void;
 }
 
 /**
@@ -756,6 +777,10 @@ export interface ForkOptions {
    * which is exactly the work you do NOT want on the lane running the parent.
    */
   computeTarget?: string;
+  /** R3 — the caller. Gated as `query` on the parent and `start` on the child (see `fork`). */
+  principal?: PrincipalChain;
+  /** R3 — the kernel-internal system grant (see `WorkflowRuntime.systemOptions`). */
+  system?: SystemGrant;
 }
 
 export interface ForkResult {

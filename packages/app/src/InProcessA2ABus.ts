@@ -46,6 +46,14 @@ export interface DispatchOptions {
   // Stable id for the underlying execution so progress can be correlated before
   // the flow starts running. Defaults to a derived id.
   executionId?: string | undefined;
+  /**
+   * R3 — the authenticated principal this dispatch acts for; overrides the bus-level default
+   * (`InProcessA2ABusOptions.principal`). Forwarded on every package the dispatch sends (the
+   * start AND each approval resume), so a runtime that fails closed (`security.strict`)
+   * authorizes the dispatch as that caller. With none, the dispatch is anonymous and a strict
+   * runtime refuses it — the bus's default dispatcher holds no system grant.
+   */
+  principal?: Record<string, unknown> | undefined;
 }
 
 export interface DispatchResult {
@@ -80,6 +88,12 @@ export interface InProcessA2ABusOptions {
    * Default 1,000. Raise it if callers poll `getTask` long after `submit` resolves.
    */
   maxTasks?: number;
+  /**
+   * R3 — default principal for every dispatch through this bus (a single-tenant agent process
+   * acting as one identity). A per-dispatch `DispatchOptions.principal` overrides it. Omit it on
+   * a bus that serves several callers and pass the caller's principal per dispatch.
+   */
+  principal?: Record<string, unknown>;
 }
 
 export class InProcessA2ABus {
@@ -88,6 +102,7 @@ export class InProcessA2ABus {
   private readonly tasks = new Map<string, A2ATaskResult>();
   private readonly dispatcher: ExecutionDispatcher;
   private readonly maxTasks: number;
+  private readonly defaultPrincipal: Record<string, unknown> | undefined;
   /**
    * Monotonic id counter. Deliberately NOT `tasks.size`, which this used to be: `size`
    * shrinks when the cap above evicts, so ids would start repeating and a new task would
@@ -109,6 +124,7 @@ export class InProcessA2ABus {
   ) {
     this.dispatcher = dispatcher ?? new LocalDispatcher(new LocalWorkerRuntime(runtime));
     this.maxTasks = Math.max(1, options.maxTasks ?? 1_000);
+    this.defaultPrincipal = options.principal;
   }
 
   /** Record a task result, evicting oldest-first past the cap. */
@@ -161,6 +177,7 @@ export class InProcessA2ABus {
     }
 
     const executionId = options.executionId ?? `task-${capabilityId}-${this.issued++}`;
+    const principal = options.principal ?? this.defaultPrincipal;
     const flowId = reg.flow.definition.id;
     // The A2A task envelope that would travel over the wire to the agent. In this
     // in-process transport we hand its input straight to the agent's flow.
@@ -191,6 +208,7 @@ export class InProcessA2ABus {
         workflowId: flowId,
         flowId,
         input,
+        ...(principal !== undefined && { principal }),
       });
 
       while (result.status === "suspended") {
@@ -202,6 +220,7 @@ export class InProcessA2ABus {
           workflowId: flowId,
           flowId,
           resumeEvent: { eventType: "ApprovalGranted", payload: decision },
+          ...(principal !== undefined && { principal }),
         });
       }
 

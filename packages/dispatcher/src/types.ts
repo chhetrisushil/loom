@@ -9,8 +9,14 @@ import type { ExecutionPackage, ExecutionResult } from "@loom/worker-runtime";
  * `@loom/worker-runtime`); it settles the dispatch with that refusal. MINOR: no method changed,
  * a non-retrying dispatcher already conforms, and the kit case runs only when the caller opts in
  * with `overWorker`, so no 1.0 dispatcher newly fails the kit.
+ *
+ * 1.2.0 (R3, ADR 0111) — `ExecutionPackage.principal` and `WorkerRequest.principal` (both
+ * optional JSON) carry the authenticated caller across the dispatch seam, and `WorkerRuntime`
+ * gains the optional `runsAsSystem` marker. MINOR: every field is optional, a dispatcher that
+ * forwards the package whole (all four first-party ones do) already conforms, and a worker that
+ * ignores `principal` behaves as before.
  */
-export const DISPATCHER_SPI_VERSION = "1.1.0";
+export const DISPATCHER_SPI_VERSION = "1.2.0";
 
 /**
  * Placement hints the scheduler/orchestrator attaches to a dispatch. The

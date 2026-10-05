@@ -319,7 +319,9 @@ export class TimerService {
       if (stillWaiting) {
         // K9.4 — in fenced deployments, acquire a newer token first so a
         // duplicate cross-node fire loses at the store instead of double-writing.
-        const fence = this.fenced ? await this.runtime.acquireFence(executionId) : undefined;
+        const fence = this.fenced
+          ? await this.runtime.acquireFence(executionId, this.runtime.systemOptions())
+          : undefined;
         const resumeEvent = { eventType: TIMER_FIRED, payload: { wakeAt } };
 
         if (this.dispatcher !== undefined) {

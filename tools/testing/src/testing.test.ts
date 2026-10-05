@@ -103,3 +103,30 @@ describe("VCR llm provider", () => {
     await expect(replay.complete(req)).rejects.toThrow(/no cassette entry/);
   });
 });
+
+describe("resumeWith under a fail-closed runtime (R3)", () => {
+  it("forwards options, so a strict app can be driven with a principal", async () => {
+    const { WorkflowRuntime, executionAccessPolicy } = await import("@loom/workflow-runtime");
+    const { EffectRuntime } = await import("@loom/effect-runtime");
+    const { InMemoryAsyncEventStore } = await import("@loom/event-runtime");
+    const { InMemoryAsyncSnapshotStore } = await import("@loom/snapshot-runtime");
+    const effects = new EffectRuntime();
+    effects.register("metrics-tool", new ToolEffect(async () => ({ cpu: 1 })));
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: effects,
+      executionAuthorizer: executionAccessPolicy(),
+      executionAuthz: { requirePrincipal: true },
+    });
+    runtime.registerFlow(gatedFlow.definition, gatedFlow.runner);
+    const alice = { actor: "alice", tenant: "t1" };
+    const h = await runtime.start(gatedFlow, { incidentId: "i9" }, { principal: alice });
+    await h.waitForSuspend();
+    await expect(resumeWith(runtime, h.executionId)).rejects.toMatchObject({
+      name: "ExecutionDeniedError",
+    });
+    const done = await resumeWith(runtime, h.executionId, undefined, { principal: alice });
+    expect((await done.waitForCompletion()).status).toBe("completed");
+  });
+});

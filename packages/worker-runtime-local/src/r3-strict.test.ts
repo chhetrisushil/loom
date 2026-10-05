@@ -7,8 +7,8 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LocalWorkerRuntime } from "./LocalWorkerRuntime";
 
-// R3 — a dispatched execution is the kernel re-driving work, so it must keep working when the
-// runtime fails closed on principal-less calls (and the app's own anonymous call must not).
+// R3 — a worker explicitly handed the system grant (a recovery/timer re-drive target) keeps working
+// when the runtime fails closed on principal-less calls (and the app's own anonymous call must not).
 describe("LocalWorkerRuntime under fail-closed execution authz", () => {
   it("starts, suspends, resumes and cancels via the system grant", async () => {
     const runtime = new WorkflowRuntime({
@@ -27,7 +27,7 @@ describe("LocalWorkerRuntime under fail-closed execution authz", () => {
       { _tag: "FlowDefinition", id: "f", name: "f", version: "1.0.0", ...io, steps: [] } as never,
       runner
     );
-    const worker = new LocalWorkerRuntime(runtime);
+    const worker = new LocalWorkerRuntime(runtime, { system: runtime.systemOptions().system! });
     const lease = await worker.allocate({ executionId: "x1" });
     const first = await worker.execute(lease, {
       executionId: "x1",
