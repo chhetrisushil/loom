@@ -149,7 +149,7 @@ function boot(
     const orig = runtime.resume.bind(runtime);
     const hold = opts.holdResume;
     runtime.resume = async (...args: Parameters<typeof orig>) => {
-      if (args[1].eventType === "CHILD_DONE") await hold;
+      if ((args[1] as { eventType?: string }).eventType === "CHILD_DONE") await hold;
       return orig(...args);
     };
   }
@@ -578,7 +578,8 @@ describe("R8 — restart-safe superviseChildren", () => {
         const orig = rt.resume.bind(rt);
         let first = true;
         rt.resume = async (...args: Parameters<typeof orig>) => {
-          if (args[1].eventType !== "CHILD_DONE" || !first) return orig(...args);
+          if ((args[1] as { eventType?: string }).eventType !== "CHILD_DONE" || !first)
+            return orig(...args);
           first = false;
           const h = await orig(...args); // another supervisor's answer, in effect
           await until(rt, "P", (s) => s.status !== "suspended");
@@ -699,7 +700,7 @@ describe("R8 — restart-safe superviseChildren", () => {
         const resume = rt.resume.bind(rt);
         rt.resume = async (...args: Parameters<typeof resume>) => {
           const h = await resume(...args);
-          if (args[1].eventType === "CHILD_DONE") hang = true;
+          if ((args[1] as { eventType?: string }).eventType === "CHILD_DONE") hang = true;
           return h;
         };
         const load = rt.loadState.bind(rt);
