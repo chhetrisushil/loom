@@ -8,6 +8,9 @@
 - Part of: keeping speculative kernel primitives out until a workload demonstrably needs them
   (P10). Companion to the T4 draft in
   [the requirements rewrite](../requirements/2026-07-15-perpetual-agents-sentinel-workloads.md) §5.
+- Amendment (proposed, 2026-10-05): [ADR 0109](0109-bounded-history-and-continue-as-new.md) proposes
+  promoting this draft under the Part-R relaxation of the second-consumer rule. If accepted, D1's evidence
+  gate is waived and D2 becomes its specification; D3 stands. Nothing here changes until then.
 
 ## Context
 
