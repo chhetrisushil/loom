@@ -67,6 +67,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **R3 round 2 (1P half).** A dispatched resume was gated as `cancel` at `acquireFence`: under
+  `cancel: "deny"` a legitimate dispatched resume was refused (and audited as a cancel).
+  `acquireFence` takes `gateAs: "resume"`, which `LocalWorkerRuntime.allocate` passes; the public
+  default is unchanged. `RunOptions.parentExecutionId` now seeds owner inheritance only on a
+  system-granted start or a fork. A throwing `committed` hook is reported via `onWarn`. Residuals
+  documented in usage.md: an identified caller can tell not-found from denied; a fence on a fresh
+  id records no owner; `createWorkerServer`'s `authorize` is a boolean gate and trusts the
+  package's principal.
 - **Fail-closed execution authorization and a first-party `ExecutionAuthorizer` (R3, 1P half; no
   ABI or event-schema change).** The execution authorizer was consulted only when a call carried a
   `principal`, and loom shipped no implementation, so every app hand-wrote one.

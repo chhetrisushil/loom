@@ -553,7 +553,8 @@ export class WorkflowRuntime {
     workflowId: string,
     principal: PrincipalChain | undefined,
     system: SystemGrant | undefined,
-    parentExecutionId: string | undefined
+    parentExecutionId: string | undefined,
+    viaFork = false
   ): void {
     const committed = this.executionAuthorizer?.committed;
     if (committed === undefined) return;
@@ -564,10 +565,15 @@ export class WorkflowRuntime {
         executionId,
         workflowId,
         ...(!viaSystem && principal !== undefined && { principal }),
-        ...(parentExecutionId !== undefined && { parentExecutionId }),
+        // Lineage is trusted only from the supervisor (system grant) or the fork path, never from
+        // a caller-supplied `RunOptions.parentExecutionId` (an anonymous start must not seed the
+        // owner table from a parent it names).
+        ...(parentExecutionId !== undefined && (viaSystem || viaFork) && { parentExecutionId }),
       });
-    } catch {
-      // The start already happened; ownership bookkeeping must not undo or fail it.
+    } catch (err) {
+      // The start already happened; ownership bookkeeping must not undo or fail it. The starter
+      // is left without a recorded owner (fail-closed), so say so.
+      this.onWarn(`authorizer.committed threw for "${executionId}": ${String(err)}`);
     }
   }
 
@@ -1173,14 +1179,17 @@ export class WorkflowRuntime {
    */
   async acquireFence(
     executionId: string,
-    options?: { principal?: PrincipalChain; system?: SystemGrant }
+    options?: { principal?: PrincipalChain; system?: SystemGrant; gateAs?: "resume" }
   ): Promise<number | undefined> {
     // R3 — a fence SUPERSEDES the current holder (a kill-class effect), and one acquired for an
     // id nobody has written poisons a later start of it, so it is gated like the ops it
     // enables: `cancel` on an execution that exists, `start` on one that does not.
     if (this.authzApplies(options?.principal, options?.system)) {
       const workflowId = await this.workflowIdOf(executionId);
-      const op: ExecutionOp = workflowId === undefined ? "start" : "cancel";
+      // `gateAs: "resume"` — a dispatcher fencing an EXISTING execution to RESUME it (not to kill
+      // it) is judged as the resume it enables, so a `cancel: "deny"` policy does not refuse a
+      // legitimate dispatched resume (and the audit names the op that was attempted).
+      const op: ExecutionOp = workflowId === undefined ? "start" : (options?.gateAs ?? "cancel");
       const denial = this.authzDenial(
         op,
         executionId,
@@ -2328,7 +2337,7 @@ export class WorkflowRuntime {
 
     // R3 — the child exists now: its owner is whoever forked it (or, for a kernel-internal
     // fork, inherited from the parent by the policy).
-    this.notifyStarted(childId, workflowId, opts?.principal, opts?.system, parentExecutionId);
+    this.notifyStarted(childId, workflowId, opts?.principal, opts?.system, parentExecutionId, true);
 
     return {
       executionId: childId,

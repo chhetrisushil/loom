@@ -67,10 +67,10 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     // owns concurrency limits), so a lease is a correlation token — plus, on a
     // fencing store (K9.4), the monotonic token that makes this dispatch the
     // execution's sole legitimate writer until someone allocates a newer one.
-    const fence = await this.runtime.acquireFence(
-      request.executionId,
-      this.identity(request.principal)
-    );
+    const fence = await this.runtime.acquireFence(request.executionId, {
+      ...this.identity(request.principal),
+      gateAs: "resume",
+    });
     return {
       leaseId: `local-${request.executionId}-${++this.leaseCounter}`,
       ...(fence !== undefined && { fence }),

@@ -91,3 +91,34 @@ describe("P1-1 — LocalWorkerRuntime holds no system grant by default", () => {
     ).toBe(true);
   });
 });
+
+describe("R3 round 2 (P2-A) — a dispatched resume is gated as resume, not cancel", () => {
+  it("under cancel:deny the owner's dispatched resume works; a stranger's is refused as resume", async () => {
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: new EffectRuntime(),
+      executionAuthorizer: executionAccessPolicy({
+        rules: { resume: "owner", query: "owner", cancel: "deny" },
+      }),
+      executionAuthz: { requirePrincipal: true },
+    });
+    runtime.registerFlow(
+      { _tag: "FlowDefinition", id: "f", name: "f", version: "1.0.0", ...io, steps: [] } as never,
+      (async (ctx) => ({ approved: await ctx.suspend({ on: "GO" }) })) as FlowRunner<
+        unknown,
+        unknown
+      >
+    );
+    const h = await runtime.start("f", {}, { executionId: "a1", principal: alice });
+    await h.waitForSuspend();
+    const d = new LocalDispatcher(new LocalWorkerRuntime(runtime));
+    await expect(
+      d.dispatch(pkg("a1", { principal: mallory, resumeEvent: { eventType: "GO", payload: 1 } }))
+    ).rejects.toThrow(/operation "resume" on "a1" denied/);
+    const done = await d.dispatch(
+      pkg("a1", { principal: alice, resumeEvent: { eventType: "GO", payload: 1 } })
+    );
+    expect(done.status).toBe("completed");
+  });
+});

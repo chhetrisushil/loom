@@ -464,12 +464,14 @@ Every public `WorkflowRuntime` method that reads or changes an execution, and it
 | `cancel` | `cancel` | |
 | `loadState` | `query` | |
 | `fork` | `query` (parent) + `start` (child) | the child is owned by the forker |
-| `acquireFence` | `cancel` (execution exists) / `start` (new id) | supersedes the current holder |
+| `acquireFence` | `cancel` (execution exists) / `start` (new id) | supersedes the current holder. A dispatcher fencing to RESUME passes `gateAs: "resume"` (`LocalWorkerRuntime.allocate` does), so a `cancel: "deny"` policy does not refuse a dispatched resume; a caller allowed `resume` can therefore fence. A fence on a FRESH id is gated as `start` but records no owner, so an identified principal can pre-fence an id it could start anyway |
 | `systemOptions`, `systemStateReader` | grant | in-process capability: never hand to request-derived code |
 | `events` | none | raw `EventStore`; in-process only, whoever holds the runtime holds the log |
 | `invokeTransient` | none | no execution identity; governed by the effect ring (K2), not this authorizer |
 | `register`, `registerFlow`, `getFlow`, `getFlowIds`, `hasEffect`, `effectModeOf`, `warmFlow`, `hasResumeAuthenticator`, `hasTimerStore`, `clock` | none | no execution |
 | `ExecutionHandle` methods | none | a handle is a capability returned to an authorized caller |
+
+Residuals of the op table: an identified caller can still tell "not found" from "denied" (only an ANONYMOUS caller is denied before existence is revealed, because `loadState(id, { principal })` returning `null` is how an edge asks whether an id is free). `RunOptions.parentExecutionId` seeds owner inheritance only on a system-granted start (the supervisor) or a fork; a caller-supplied value is ignored. A `committed` hook that throws is reported through `onWarn` and the start stands, leaving the execution with no recorded owner (owner-scoped ops on it are refused, fail-closed). `createWorkerServer`'s `authorize` is a boolean gate: an admitted dispatcher can name any actor in `package.principal`, so the principal is trusted only as far as that gate, and a worker-remote forwarding a client's principal must authenticate the client at its own edge.
 
 **Limits of strict and the envelope** (what they do not do, so you do not read them as coverage):
 
