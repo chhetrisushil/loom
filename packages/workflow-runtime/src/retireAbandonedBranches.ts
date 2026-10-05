@@ -107,7 +107,7 @@ export async function retireAbandonedBranches(
 
   for (const child of await registry.children(parentExecutionId)) {
     summary.scanned++;
-    const state = await runtime.loadState(child.executionId);
+    const state = await runtime.loadState(child.executionId, runtime.systemOptions());
     if (state === null) continue; // already reclaimed
     if (state.status !== "running" && state.status !== "pending" && state.status !== "suspended") {
       continue; // already terminal — retention can have it
@@ -141,7 +141,8 @@ export async function retireAbandonedBranches(
       await runtime.cancel(
         child.executionId,
         options.reason?.(candidate) ??
-          `branch abandoned: forked from ${parentExecutionId} at ${child.forkSequence}`
+          `branch abandoned: forked from ${parentExecutionId} at ${child.forkSequence}`,
+        runtime.systemOptions()
       );
       summary.retired++;
     } catch {

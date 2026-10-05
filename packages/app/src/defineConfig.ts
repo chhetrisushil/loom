@@ -212,13 +212,18 @@ export interface SecurityOptions {
   resumeAuthenticator?: ResumeAuthenticator;
   /**
    * C.1 — authorizes execution lifecycle operations (`start`/`resume`/`cancel`, and the
-   * public `loadState`), consulted only for calls that carry a `principal`.
+   * public `loadState`). Without `strict`, consulted only for calls that carry a `principal`.
+   * `executionPolicy()` from `@loom/workflow-runtime` is the first-party reference policy.
    *
    * SECURITY CONTRACT, restated from {@link WorkflowRuntime} because this is where it is
-   * now wired: principal-less calls bypass the gate BY DESIGN, so the kernel's own
-   * machinery (TimerService, recovery) keeps working. The integrator is therefore
+   * now wired: outside `strict`, principal-less calls bypass the gate BY DESIGN, so the
+   * kernel's own machinery (TimerService, recovery) keeps working; the integrator is then
    * responsible for attaching an authenticated principal to every externally-originated
-   * call. This is edge-enforced policy, not a substitute for authenticating the caller.
+   * call. Under `strict` (R3) a principal-less call is NOT waved through — it reaches this
+   * authorizer with `principal: undefined` and the policy decides — while the kernel's own
+   * machinery presents the runtime's system grant instead (INTERIM: the principal is not yet
+   * durable across recovery/timers/dispatcher/child spawn; R3's kernel half). Edge-enforced
+   * policy, still not a substitute for authenticating the caller.
    *
    * Distinct from {@link authorizer}, which gates EFFECTS (the K2 capability ring). This
    * one gates the execution's lifecycle; an app that needs both wires both.
@@ -1067,6 +1072,11 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     ...(config.executionAuthorizer !== undefined && {
       executionAuthorizer: config.executionAuthorizer,
     }),
+    // R3 — under strict a principal-less lifecycle call reaches the authorizer (fail-closed).
+    ...(strict &&
+      strictOpts?.requirePrincipal !== false && {
+        executionAuthz: { requirePrincipal: true },
+      }),
     ...(config.onExecutionDenied !== undefined && {
       onExecutionDenied: config.onExecutionDenied,
     }),

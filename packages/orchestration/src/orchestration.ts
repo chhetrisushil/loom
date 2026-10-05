@@ -3,7 +3,12 @@ import { fail } from "@loom/core";
 import type { PrincipalChain } from "@loom/effect-runtime";
 import { signDelegation } from "@loom/effect-runtime";
 import { ResumeRefusedError } from "@loom/workflow-runtime";
-import type { ExecutionContext, RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+import type {
+  ExecutionContext,
+  RegisteredFlow,
+  SystemGrant,
+  WorkflowRuntime,
+} from "@loom/workflow-runtime";
 
 // ── Cross-execution orchestration (child workflows) ───────────────────────────
 //
@@ -465,11 +470,16 @@ export interface ChildSupervisor {
 function childStartOptions(
   childId: string,
   spec: { grants?: readonly string[]; expiresAt?: number },
-  delegation: { secret: string } | undefined
-): { executionId: string; principal?: PrincipalChain } {
-  if (delegation === undefined || spec.grants === undefined) return { executionId: childId };
+  delegation: { secret: string } | undefined,
+  system: { system?: SystemGrant }
+): { executionId: string; principal?: PrincipalChain; system?: SystemGrant } {
+  // R3 — a child start is the supervisor acting, so it presents the system grant (bypasses the
+  // execution authorizer only); the delegation principal, when any, still reaches its effects.
+  if (delegation === undefined || spec.grants === undefined) {
+    return { executionId: childId, ...system };
+  }
   const token = signDelegation(delegation.secret, childId, [...spec.grants], spec.expiresAt);
-  return { executionId: childId, principal: { actor: childId, delegation: token } };
+  return { executionId: childId, principal: { actor: childId, delegation: token }, ...system };
 }
 
 /**
@@ -527,7 +537,9 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   const waitParentDurable = async (parentId: string | undefined): Promise<void> => {
     if (parentId === undefined) return;
     for (let i = 0; i < 200; i++) {
-      const s = await deps.runtime.loadState(parentId).catch(() => undefined);
+      const s = await deps.runtime
+        .loadState(parentId, deps.runtime.systemOptions())
+        .catch(() => undefined);
       if (s?.status === "suspended") break;
       await new Promise((r) => setTimeout(r, 5));
     }
@@ -550,7 +562,11 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   // retrying it would just delay a real error by a second.
   const resumeParent = async (parentId: string, payload: unknown, attempt = 0): Promise<void> => {
     try {
-      await deps.runtime.resume(parentId, { eventType: CHILD_DONE, payload });
+      await deps.runtime.resume(
+        parentId,
+        { eventType: CHILD_DONE, payload },
+        deps.runtime.systemOptions()
+      );
     } catch (err) {
       const transient =
         (err instanceof Error && /No execution found/.test(err.message)) ||
@@ -649,7 +665,12 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
                 .start(
                   flow,
                   member.input,
-                  childStartOptions(member.childId, member, deps.delegation)
+                  childStartOptions(
+                    member.childId,
+                    member,
+                    deps.delegation,
+                    deps.runtime.systemOptions()
+                  )
                 )
                 .catch(fail);
             }
@@ -691,7 +712,11 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         void (async () => {
           await waitParentDurable(parentId);
           await deps.runtime
-            .start(flow, spec.input, childStartOptions(childId, spec, deps.delegation))
+            .start(
+              flow,
+              spec.input,
+              childStartOptions(childId, spec, deps.delegation, deps.runtime.systemOptions())
+            )
             .catch(fail);
         })();
         return;
