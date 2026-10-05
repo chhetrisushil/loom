@@ -1,5 +1,6 @@
 import { LocalDispatcher } from "@loom/dispatcher";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
+import type { PrincipalChain } from "@loom/effect-runtime";
 import type { A2ATask, A2ATaskResult, A2ATaskStatus, AgentCard } from "@loom/plugin-a2a";
 import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
 import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
@@ -179,6 +180,7 @@ export class InProcessA2ABus {
   private readonly capabilities = new Map<string, Registration>();
   private readonly tasks = new Map<string, A2ATaskResult>();
   private readonly dispatcher: ExecutionDispatcher;
+  private readonly runtime: WorkflowRuntime;
   private readonly maxTasks: number;
   private readonly defaultPrincipal: Record<string, unknown> | undefined;
   /** Tasks parked at an unanswered gate → the flow to resume. Bounded like `tasks`. */
@@ -202,6 +204,7 @@ export class InProcessA2ABus {
     dispatcher?: ExecutionDispatcher,
     options: InProcessA2ABusOptions = {}
   ) {
+    this.runtime = runtime;
     this.dispatcher = dispatcher ?? new LocalDispatcher(new LocalWorkerRuntime(runtime));
     this.maxTasks = Math.max(1, options.maxTasks ?? 1_000);
     this.defaultPrincipal = options.principal;
@@ -360,6 +363,16 @@ export class InProcessA2ABus {
     while (result.status === "suspended") {
       const cond = result.state.suspendedOn;
       const gate = cond?.on;
+      // R13 — the park is where the log says, not the result's tip: an audit event
+      // (`EXECUTION_DENIED`) trailing the park would otherwise move the tip off it. Left
+      // undefined when it cannot be read — an approval signed against a guess is refused anyway.
+      const parkedAtSequence = await this.runtime
+        .parkedAtSequence(executionId, {
+          ...(principal !== undefined && { principal: principal as PrincipalChain }),
+        })
+        .catch(() => undefined);
+      // A dispatcher that placed the execution on a log this runtime cannot read (remote) has
+      // only the result's own sequence to offer.
       const request: ApprovalRequest | undefined =
         gate === undefined
           ? undefined
@@ -367,7 +380,7 @@ export class InProcessA2ABus {
               executionId,
               gate,
               ...(cond?.viewDigest !== undefined && { viewDigest: cond.viewDigest }),
-              parkedAtSequence: result.state.sequence,
+              parkedAtSequence: parkedAtSequence ?? result.state.sequence,
             };
       // No approver, an unreadable gate, or a timer wake (the kernel's, not an approver's):
       // the gate stays parked and the caller is told so.

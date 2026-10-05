@@ -37,9 +37,10 @@ function make(opts: { viewOf?: (n: number) => unknown; auth?: boolean; twice?: b
     })
   );
   const eventStore = new InMemoryAsyncEventStore();
+  const snapshots = new InMemoryAsyncSnapshotStore();
   const runtime = new WorkflowRuntime({
     eventStore,
-    snapshotStore: new InMemoryAsyncSnapshotStore(),
+    snapshotStore: snapshots,
     effectRuntime: effects,
     ...(opts.auth && {
       resumeAuthenticator: signedResumeAuthenticator({
@@ -68,7 +69,7 @@ function make(opts: { viewOf?: (n: number) => unknown; auth?: boolean; twice?: b
     return ctx.run(apply, {});
   }) as FlowRunner<unknown, unknown>;
   runtime.registerFlow(definition, runner);
-  return { runtime, flow: { definition, runner }, eventStore, applied: () => applied };
+  return { runtime, flow: { definition, runner }, eventStore, snapshots, applied: () => applied };
 }
 
 async function parked(h: ReturnType<typeof make>, n = 1) {
@@ -429,5 +430,87 @@ describe("R13 round 1 — TIMER_FIRED is the kernel's wake, not a caller's appro
     expect(h.seen).toHaveLength(1);
     expect((h.seen[0] as { approved?: boolean }).approved).toBeUndefined();
     expect(h.applied()).toBe(0);
+  });
+});
+
+// R13 round 2 — the park is found for ANY number of events after it. Layout: a snapshot covers
+// the park, the carried stray-scan fast path is active (a 2nd resume of the same execution in
+// this process), and N audit events trail the park. The probe used to walk back 16 point reads
+// and then bind the TIP, so a validly signed approval was rejected ("signature does not verify")
+// at 16+ trailing events.
+describe("R13 round 2 — the park is located however many events trail it", () => {
+  async function trailed(trailing: number) {
+    const h = make({ viewOf: () => ({ p: 1 }), auth: true, twice: true });
+    const { id } = await parked(h);
+    // 1st resume: a verified approval that re-parks at the same gate — it leaves a clean
+    // stray scan carried, so the 2nd resume takes the fast path (no whole-log read).
+    const first = await sign(
+      h,
+      id,
+      answerApproval((await h.runtime.loadState(id))!, { approved: true })
+    );
+    await (await h.runtime.resume(id, first)).waitForSuspend();
+    const park = (await h.runtime.parkedAtSequence(id))!;
+    const live = (await h.runtime.loadState(id))!;
+    expect(live.sequence).toBe(park);
+    // a snapshot covers the park
+    await h.snapshots.save({
+      id: `${id}@${live.sequence}`,
+      executionId: id,
+      workflowId: "f",
+      sequence: live.sequence,
+      state: live,
+      createdAt: 0,
+    });
+    for (let i = 0; i < trailing; i++) {
+      const tip = (await h.eventStore.read(id)).length;
+      await h.eventStore.append({
+        id: `${id}-${tip}-denied`,
+        workflowId: "f",
+        executionId: id,
+        eventType: "EXECUTION_DENIED",
+        sequence: tip,
+        timestamp: 1,
+        payload: { op: "resume", principal: `p${i}` },
+      });
+    }
+    return { h, id, park };
+  }
+
+  for (const n of [0, 15, 16, 40, 200]) {
+    it(`${n} trailing events: signed approval at the park sequence is accepted`, async () => {
+      const { h, id, park } = await trailed(n);
+      expect(await h.runtime.parkedAtSequence(id)).toBe(park);
+      const signed = await sign(
+        h,
+        id,
+        answerApproval((await h.runtime.loadState(id))!, { approved: true })
+      );
+      await (await h.runtime.resume(id, signed)).waitForCompletion();
+      expect(h.applied()).toBe(1);
+    });
+  }
+
+  it("restoreFromState binds the park, not the preloaded tip", async () => {
+    const { h, id } = await trailed(3);
+    const state = (await h.runtime.loadState(id))!;
+    expect(state.sequence).toBeGreaterThan((await h.runtime.parkedAtSequence(id))!);
+    const signed = await sign(h, id, answerApproval(state, { approved: true }));
+    // verified at the PARK (not refused), so the approval is recorded; before the fix the MAC
+    // was checked against the tip and this threw ApprovalRejectedError
+    await h.runtime.restoreFromState(state, signed);
+    await new Promise((r) => setTimeout(r, 50));
+    const log = await h.eventStore.read(id);
+    expect(log.some((e) => e.eventType === "APPROVAL_GRANTED")).toBe(true);
+  });
+
+  it("a park the log does not hold is refused as park-not-located, never bound to the tip", async () => {
+    const { h, id } = await trailed(3);
+    const state = (await h.runtime.loadState(id))!;
+    const other = make({ viewOf: () => ({ p: 1 }), auth: true }); // its log holds nothing of `id`
+    const signed = await sign(h, id, answerApproval(state, { approved: true }));
+    const err = await refusal(other.runtime.restoreFromState(state, signed));
+    expect(err).toBeInstanceOf(ApprovalRejectedError);
+    expect((err as ApprovalRejectedError).reason).toContain("park-not-located");
   });
 });

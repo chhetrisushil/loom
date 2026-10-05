@@ -23,8 +23,25 @@ const io = z.any();
 
 const KEY = "alice-secret-0123456789";
 
-function make(gate = "Approval", auth = false) {
-  const eventStore = new InMemoryAsyncEventStore();
+function make(gate = "Approval", auth = false, denyAfterPark = false) {
+  const inner = new InMemoryAsyncEventStore();
+  // Models an audit event (EXECUTION_DENIED) landing right after the park, before the result is read.
+  const eventStore = denyAfterPark
+    ? Object.assign(Object.create(inner) as InMemoryAsyncEventStore, {
+        async append(e: Parameters<InMemoryAsyncEventStore["append"]>[0]) {
+          await inner.append(e);
+          if (e.eventType === "EXECUTION_SUSPENDED") {
+            await inner.append({
+              ...e,
+              id: `${e.executionId}-${e.sequence + 1}-denied`,
+              eventType: "EXECUTION_DENIED",
+              sequence: e.sequence + 1,
+              payload: { op: "resume" },
+            });
+          }
+        },
+      })
+    : inner;
   const runtime = new WorkflowRuntime({
     eventStore,
     snapshotStore: new InMemoryAsyncSnapshotStore(),
@@ -199,6 +216,33 @@ describe("InProcessA2ABus approvals (R13)", () => {
       }
     );
     const r = await bus.resolveApproval("s2", {
+      ...decision,
+      proof: (signed.payload as { proof: ApprovalProof }).proof,
+    });
+    expect(r.status).toBe("completed");
+    expect(ran()).toBe(1);
+  });
+
+  // Round 2: the request bound to the result's TIP; an audit event trailing the park moved the tip
+  // off the park and every signed bus approval was refused.
+  it("the approval request names the PARK, not the tip, when an audit event trails it", async () => {
+    const { bus, runtime, ran } = make("Approval", true, true);
+    const parked = await bus.dispatch("cap", {}, "go", { executionId: "s3" });
+    const req = parked.suspended!;
+    expect((await runtime.loadState("s3"))!.sequence).toBeGreaterThan(req.parkedAtSequence!);
+    expect(req.parkedAtSequence).toBe(await runtime.parkedAtSequence("s3"));
+    const decision = { approved: true, approvedBy: "alice" };
+    const signed = signResume(
+      { eventType: req.gate, payload: approvalPayload(req, decision) },
+      {
+        actor: "alice",
+        secret: KEY,
+        exp: Date.now() + 60_000,
+        executionId: req.executionId,
+        parkedAtSequence: req.parkedAtSequence!,
+      }
+    );
+    const r = await bus.resolveApproval("s3", {
       ...decision,
       proof: (signed.payload as { proof: ApprovalProof }).proof,
     });
