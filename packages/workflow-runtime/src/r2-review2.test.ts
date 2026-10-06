@@ -154,7 +154,19 @@ describe("P2-B — backlog accounting is amortized O(1); a pinned stream is boun
         refusal = e;
         break;
       }
-      if (i % 20 === 19) await tick(15);
+      // Let the owner catch up on the hot topic before the next burst. A fixed sleep raced it: on a
+      // slow runner the consumer fell 100 behind and the BACKLOG cap refused first. What this test
+      // is about is the RETAINED cap, so wait for consumption itself (read through `inner`, which
+      // the scan counter does not see).
+      if (i % 20 === 19) {
+        const target = sent;
+        await until(
+          async () =>
+            (await inner.read("e1")).filter((e) => e.eventType === "MESSAGE_CONSUMED").length >=
+            target,
+          10_000
+        );
+      }
     }
     expect(refusal).toBeInstanceOf(InboxFullError);
     expect((refusal as Error).message).toMatch(/pins every entry above it/);
