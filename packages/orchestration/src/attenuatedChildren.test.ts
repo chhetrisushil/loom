@@ -8,7 +8,12 @@ import {
 } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { type FlowRunner, type RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+import {
+  type FlowRunner,
+  type RegisteredFlow,
+  WorkflowRuntime,
+  executionAccessPolicy,
+} from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
@@ -106,6 +111,8 @@ function build(opts: {
   supervise?: boolean;
   /** R3k review P1 — a principalResolver written for identity records (answers undefined otherwise). */
   identityOnlyResolver?: boolean;
+  /** R3k round 3 — gate lifecycle ops with the reference executionAccessPolicy. */
+  authz?: boolean;
 }) {
   const attempted: string[] = [];
   const effects = new EffectRuntime([], {
@@ -133,6 +140,7 @@ function build(opts: {
   const runtime = new WorkflowRuntime({
     ...stores,
     effectRuntime: effects,
+    ...(opts.authz === true && { executionAuthorizer: executionAccessPolicy() }),
     ...(opts.identityOnlyResolver === true && {
       principalResolver: {
         resolve: (record: { identity?: { actor?: string } }) =>
@@ -372,5 +380,41 @@ describe("attenuated authority for spawned children (R5)", () => {
     const ref = codec.toRef({ actor: "kid", delegation: token }) as string;
     const mac = ref.split(".")[1]!;
     expect(mac).not.toBe(token.sig);
+  });
+
+  // ── R3k review round 3 (ADR 0111 D6, user decision B) — a delegated child's LIFECYCLE is
+  // reachable through its trusted recorded parent; its EFFECTS stay under the delegation. ──────
+
+  async function parkedDelegated(tool: string) {
+    const a = build({ grants: ["read-rows"], tool, park: true, authz: true });
+    await a.runtime.start(
+      a.parent as RegisteredFlow,
+      {},
+      { executionId: PARENT, principal: { actor: "alice", tenant: "t1" } }
+    );
+    for (let i = 0; i < 400 && (await a.runtime.loadState(CHILD))?.status !== "suspended"; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return a;
+  }
+  const alice = { actor: "alice", tenant: "t1" };
+  const mallory = { actor: "mallory", tenant: "t2" };
+
+  it("round 3: the parent's owner may query and cancel a delegated child; a stranger may not", async () => {
+    const a = await parkedDelegated("read-rows");
+    await expect(a.runtime.loadState(CHILD, { principal: mallory })).rejects.toThrow(/denied/);
+    await expect(a.runtime.cancel(CHILD, "x", { principal: mallory })).rejects.toThrow(/denied/);
+    expect((await a.runtime.loadState(CHILD, { principal: alice }))?.status).toBe("suspended");
+    await expect(a.runtime.cancel(CHILD, "x", { principal: alice })).resolves.toBe(true);
+  });
+
+  it("round 3: the parent's owner may resume a delegated child, and its effects stay denied beyond its grants", async () => {
+    const a = await parkedDelegated("delete-table");
+    await expect(
+      a.runtime.resume(CHILD, { eventType: "GO", payload: {} }, { principal: mallory })
+    ).rejects.toThrow(/denied/);
+    const h = await a.runtime.resume(CHILD, { eventType: "GO", payload: {} }, { principal: alice });
+    await expect(h.waitForCompletion()).rejects.toThrow(/not in the delegated grant set/);
+    expect(a.attempted).not.toContain("delete-table");
   });
 });

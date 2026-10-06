@@ -467,6 +467,15 @@ const STRAY_WARNING_MEMORY = 4096;
 /** R3k round 2 (ADR 0111 D6) — how far up a `parent` chain an owner is looked for. */
 const MAX_LINEAGE_HOPS = 8;
 
+/** The `parent` recorded on an execution's sequence 0 (`undefined` for any other envelope). */
+function parentOfFirst(first: EventEnvelope | undefined): string | undefined {
+  if (first === undefined || first.sequence !== 0 || first.eventType !== "EXECUTION_STARTED") {
+    return undefined;
+  }
+  const parent = (first.payload as { parent?: unknown } | null | undefined)?.parent;
+  return typeof parent === "string" && parent.length > 0 ? parent : undefined;
+}
+
 /** The owner(s) an authorization request carries: the recorded one, or the lineage's nearest. */
 interface AuthzOwners {
   owner?: NonNullable<ExecutionAuthzRequest["owner"]>;
@@ -676,7 +685,9 @@ export class WorkflowRuntime {
   private async recordedPrincipal(
     executionId: string,
     known?: { first: EventEnvelope | undefined }
-  ): Promise<{ legacy: true } | { legacy: false; chain: PrincipalChain | undefined }> {
+  ): Promise<
+    { legacy: true } | { legacy: false; chain: PrincipalChain | undefined; parent?: string }
+  > {
     let first: EventEnvelope | undefined;
     const live = known === undefined ? this.startRecords.get(executionId) : undefined;
     if (live !== undefined) {
@@ -686,6 +697,7 @@ export class WorkflowRuntime {
           codec: this.principalCodec,
           resolver: this.principalResolver,
         }),
+        ...(live.parent !== undefined && { parent: live.parent }),
       };
     }
     if (known !== undefined) {
@@ -701,6 +713,9 @@ export class WorkflowRuntime {
         throw err;
       }
     }
+    // The `parent` rides sequence 0 beside the principal, so one read answers both (round 3).
+    const parent = parentOfFirst(first);
+    const withParent = parent !== undefined ? { parent } : {};
     const stored = storedPrincipalOf(first);
     switch (stored.kind) {
       case "legacy":
@@ -708,7 +723,7 @@ export class WorkflowRuntime {
       case "shredded":
         return { legacy: false, chain: { principalShredded: true } };
       case "malformed":
-        return { legacy: false, chain: { principalUnresolved: stored.why } };
+        return { legacy: false, chain: { principalUnresolved: stored.why }, ...withParent };
       case "record":
         return {
           legacy: false,
@@ -716,6 +731,7 @@ export class WorkflowRuntime {
             codec: this.principalCodec,
             resolver: this.principalResolver,
           }),
+          ...withParent,
         };
     }
   }
@@ -735,9 +751,10 @@ export class WorkflowRuntime {
   }
 
   /**
-   * D5/D6 — the owner an `ExecutionAuthzRequest` carries, only when the authorizer will be asked:
-   * the recorded `owner`, or — for an execution recorded as ANONYMOUS (no identity at all, not a
-   * shredded/unrestorable one) — the `parentOwner` found up its trusted lineage.
+   * D5/D6 — the owners an `ExecutionAuthzRequest` carries, only when the authorizer will be asked:
+   * the recorded `owner`, and — whenever the execution's recorded `parent` is present (written only
+   * at a trusted start) — the `parentOwner` found up that lineage. A shredded/unrestorable record
+   * is an unknown owner and gets neither: it never borrows its parent's authority.
    */
   private async ownerForAuthz(
     executionId: string,
@@ -752,60 +769,43 @@ export class WorkflowRuntime {
       const recorded = await this.recordedPrincipal(executionId, known);
       if (recorded.legacy) return {};
       const owner = ownerOfChain(recorded.chain);
-      if (owner !== undefined) return { owner };
-      if (recorded.chain !== undefined) return {}; // shredded / unrestorable / delegation-only: unknown
-      const parentOwner = await this.lineageOwner(executionId, known);
-      return parentOwner !== undefined ? { parentOwner } : {};
+      if (owner === undefined && recorded.chain !== undefined) return {}; // shredded / unrestorable / delegation-only: unknown
+      const parentOwner =
+        recorded.parent !== undefined
+          ? await this.lineageOwner(executionId, recorded.parent)
+          : undefined;
+      return {
+        ...(owner !== undefined && { owner }),
+        ...(parentOwner !== undefined && { parentOwner }),
+      };
     } catch {
       return {}; // an owner we cannot read is an unknown owner: the policy decides
     }
   }
 
-  /** The `parent` recorded on an execution's sequence 0 (live starts answer from memory). */
-  private async recordedParent(
-    executionId: string,
-    known?: { first: EventEnvelope | undefined }
-  ): Promise<string | undefined> {
-    if (known === undefined) {
-      const live = this.startRecords.get(executionId);
-      if (live !== undefined) return live.parent;
-    }
-    const first =
-      known !== undefined
-        ? known.first
-        : (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
-    if (first === undefined || first.sequence !== 0 || first.eventType !== "EXECUTION_STARTED") {
-      return undefined;
-    }
-    const parent = (first.payload as { parent?: unknown } | null | undefined)?.parent;
-    return typeof parent === "string" && parent.length > 0 ? parent : undefined;
-  }
-
   /**
-   * D6 — the nearest RECORDED owner up `executionId`'s `parent` chain. `parent` is written only at
-   * a trusted start (the supervisor's lineage grant), so the chain is the kernel's, not a caller's.
-   * Bounded at {@link MAX_LINEAGE_HOPS} and cycle-safe; an unreadable link, a shredded or
-   * unrestorable ancestor, a chain that ends, or one that runs out of hops, is an UNKNOWN owner.
+   * D6 — the nearest RECORDED owner up `executionId`'s `parent` chain, starting at `firstParent`
+   * (already read with the execution's own record, so the first hop costs no extra seq-0 read).
+   * `parent` is written only at a trusted start (the supervisor's lineage grant), so the chain is
+   * the kernel's, not a caller's. Bounded at {@link MAX_LINEAGE_HOPS} and cycle-safe; an
+   * unreadable link, a shredded or unrestorable ancestor, a chain that ends, or one that runs out
+   * of hops, is an UNKNOWN owner.
    */
   private async lineageOwner(
     executionId: string,
-    known?: { first: EventEnvelope | undefined }
+    firstParent: string
   ): Promise<NonNullable<ExecutionAuthzRequest["owner"]> | undefined> {
     const seen = new Set<string>([executionId]);
-    let current = executionId;
-    let knownFirst = known;
+    let parentId: string | undefined = firstParent;
     for (let hop = 0; hop < MAX_LINEAGE_HOPS; hop++) {
-      const parentId = await this.recordedParent(current, knownFirst);
-      knownFirst = undefined;
       if (parentId === undefined || seen.has(parentId)) return undefined;
       seen.add(parentId);
       const recorded = await this.recordedPrincipal(parentId);
-      if (!recorded.legacy) {
-        const owner = ownerOfChain(recorded.chain);
-        if (owner !== undefined) return owner;
-        if (recorded.chain !== undefined) return undefined; // shredded / unrestorable ancestor
-      }
-      current = parentId;
+      if (recorded.legacy) return undefined;
+      const owner = ownerOfChain(recorded.chain);
+      if (owner !== undefined) return owner;
+      if (recorded.chain !== undefined) return undefined; // shredded / unrestorable ancestor
+      parentId = recorded.parent;
     }
     return undefined;
   }
@@ -1922,10 +1922,10 @@ export class WorkflowRuntime {
       resolver: this.principalResolver,
     });
     // `parent` (the supervisor's `parentExecutionId`) is lineage, not identity (D1). Recorded only
-    // under the condition `notifyStarted` trusts it: a valid system grant. A caller-supplied one
-    // is NOT written when an executionAuthorizer draws a boundary, or any starter could pin another
-    // execution's retention (R8k predicate). With NO authorizer there is no boundary to cross
-    // (every op is unrestricted) and the supervisor's lineage is recorded as before.
+    // when trusted — the call carries the runtime's lineage grant or a valid system grant — in
+    // EVERY mode, with or without an authorizer; an untrusted (caller-supplied) one is omitted,
+    // so a non-supervisor caller can never pin another execution's retention (R8k predicate) or
+    // forge lineage, and a recorded `parent` is always the kernel's.
     const parent =
       typeof options?.parentExecutionId === "string" &&
       options.parentExecutionId.length > 0 &&
@@ -1979,7 +1979,10 @@ export class WorkflowRuntime {
       options?.lineage
     );
 
-    this.startRecords.set(executionId, { record: principalRecord, parent });
+    // Identity-guarded: a synchronous throw below must remove only THIS start's entry, never a
+    // live execution's of the same id.
+    const startRecord = { record: principalRecord, parent };
+    this.startRecords.set(executionId, startRecord);
     try {
       return this.execute(
         executionId,
@@ -1993,7 +1996,7 @@ export class WorkflowRuntime {
         actingAs
       );
     } catch (err) {
-      this.startRecords.delete(executionId);
+      if (this.startRecords.get(executionId) === startRecord) this.startRecords.delete(executionId);
       throw err;
     }
   }
