@@ -152,7 +152,7 @@ export class FlowEditor {
     // spelling is `surface(ctx)`, and the file must import it to type-check. Reuse an existing
     // import of `surface` in ANY form (multi-line, aliased, namespace); alias ours around a clash.
     const existing = this.surfaceImportCallee();
-    const callee = existing ?? (this.hasLocalBinding("surface") ? "loomSurface" : "surface");
+    const callee = existing ?? this.freshName("surface", "loomSurface");
     const escaped = callee.replace(/[.$]/g, "\\$&");
     if (new RegExp(`(?:ctx\\.ui|${escaped}\\s*\\(\\s*ctx\\s*\\))\\.set\\s*\\(`).test(this.src)) {
       this.notes.push("UI surface already present — left as-is");
@@ -194,6 +194,14 @@ export class FlowEditor {
       }
     }
     return undefined;
+  }
+
+  /** `preferred` when unbound, else the first unbound of `fallback`, `fallback2`, `fallback3`, … */
+  private freshName(preferred: string, fallback: string): string {
+    if (!this.hasLocalBinding(preferred)) return preferred;
+    let name = fallback;
+    for (let i = 2; this.hasLocalBinding(name); i++) name = `${fallback}${i}`;
+    return name;
   }
 
   /** Whether `name` is already bound anywhere in the file (declaration, parameter, import). */
